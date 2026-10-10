@@ -468,6 +468,17 @@ device selection or leasing. Plans with only quoted targets and literal checks
 make no Jev calls and need no key; recognised back, dialog and fixed-scroll
 steps also stay model-free.
 
+Dialog steps require one unconditional accept or dismiss action, such as
+`Accept the permission dialog` or `Dismiss the alert`. Conditions, negation and
+multiple actions, such as `Accept the dialog if it appears` or
+`Do not dismiss the alert`, refuse before allocation; Jev cannot override this restriction.
+
+Context-bound iOS QA reads require the unchanged target app already in the
+foreground. They never activate or relaunch it, or retry a failed read through
+recovery. A missing, backgrounded or changed target refuses
+`ACTION_CONTEXT_CHANGED`; an observed `app-not-running` result follows the
+[process-change rule](#saved-blocks).
+
 An iOS accept or dismiss step against a system (SpringBoard) alert picks one
 button by exact label, so `Allow` never matches `Allow Once`, and the runner
 taps that button element itself. It never taps a coordinate through the app or

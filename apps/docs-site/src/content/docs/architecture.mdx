@@ -78,7 +78,7 @@ The product layers above are organized; underneath, three implementation layers 
 
 | Implementation tier | Tool | Role |
 |-------|------|------|
-| **Device interaction (iOS)** | In-tree `rn-fast-runner` XCTest rig (`packages/rn-fast-runner/`) — `POST /command` HTTP | Native iOS device control. Always calls `XCUIApplication.activate()` per request (D1219, PR #164). The in-tree runner is the sole iOS device backend. |
+| **Device interaction (iOS)** | In-tree `rn-fast-runner` XCTest rig (`packages/rn-fast-runner/`) — `POST /command` HTTP | The sole iOS device backend. For current QA observation and dialog dispatch rules, see the [CLI contract](https://github.com/Lykhoyda/rn-dev-agent/blob/develop/packages/qaren-cli/README.md#plan-checks-and-screen-evidence). |
 | **Device interaction (Android)** | In-tree `rn-android-runner` (`packages/rn-android-runner/`) — UiAutomator instrumentation via `adb shell am instrument` | Native Android device control. The in-tree runner is the sole Android device backend (default-on; `RN_ANDROID_RUNNER=0` errors, it does not fall back). |
 | **App introspection** | Custom MCP server → Hermes CDP via WebSocket | Persistent WebSocket — reads React fiber tree, store state, network, console, errors |
 | **E2E testing** | maestro-runner `>= 1.1.28` (versioned pin-cache only; attested 1.1.28 default) | YAML-based persistent test files; underlying format for actions in `.rn-agent/actions/` |
