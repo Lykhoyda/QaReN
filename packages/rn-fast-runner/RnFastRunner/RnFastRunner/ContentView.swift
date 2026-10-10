@@ -17,6 +17,11 @@ struct ContentView: View {
                 .font(.body)
                 .foregroundStyle(.secondary)
                 .padding(.top, 4)
+#if os(iOS)
+            if AlertFixture.enabled {
+                AlertFixtureControls()
+            }
+#endif
             Spacer()
             Text("XCUITest bridge")
                 .font(.caption)

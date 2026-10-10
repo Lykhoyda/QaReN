@@ -43,6 +43,25 @@ enum DispatchGuard {
     return keyboardContainsPoint || liveHittable == false ? .occluded : .proceed
   }
 
+  enum TapAnchor: Equatable {
+    case firstWindow
+    case liveTarget
+    case alert(Int)
+    case outsideAlerts
+  }
+
+  // XCTest treats an app alert as an interruption unless the gesture is anchored inside it.
+  static func tapAnchor(point: CGPoint, liveTarget: CGRect?, alerts: [CGRect]) -> TapAnchor {
+    let visible = alerts.indices.filter { !alerts[$0].isEmpty }
+    guard !visible.isEmpty else { return .firstWindow }
+    let containing = visible.filter { alerts[$0].contains(point) }
+    guard let topmost = containing.last else { return .outsideAlerts }
+    if let liveTarget, liveTarget.contains(point), containing.contains(where: { alerts[$0].contains(liveTarget) }) {
+      return .liveTarget
+    }
+    return .alert(topmost)
+  }
+
   struct NodeIdentity {
     let type: String
     let label: String?

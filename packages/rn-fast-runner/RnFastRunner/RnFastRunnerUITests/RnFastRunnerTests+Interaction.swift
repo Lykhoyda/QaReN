@@ -665,6 +665,16 @@ extension RnFastRunnerTests {
   static let occludedDispatchMessage =
     "FOCUS_TARGET_OCCLUDED: the focus or tap point is covered by another element (keyboard, bar or overlay); no tap or typing was performed. Scroll the target clear, then retry."
 
+  // A blocked gesture is never synthesized, but a multi-gesture command may already have run earlier ones.
+  static func appAlertInterruptionResponse(singleGesture: Bool = true) -> Response {
+    let performed = singleGesture ? "no gesture was performed" : "earlier gestures of this command may have run"
+    return Response(ok: false, error: ErrorPayload(
+      code: "APP_ALERT_INTERRUPTION",
+      message: "APP_ALERT_INTERRUPTION: an open app alert blocks the gesture point and no alert button was pressed; \(performed). Snapshot the alert and tap one of its buttons.",
+      mutation: singleGesture ? "none" : "possible"
+    ))
+  }
+
   static let movedDispatchMessage =
     "TARGET_MOVED_BEFORE_DISPATCH: target moved before dispatch; no tap or typing was performed. Refresh the snapshot and retry."
 
@@ -684,6 +694,7 @@ extension RnFastRunnerTests {
 
   func liveTargetCheck(app: XCUIApplication, command: Command, deadline: Double, checkHittability: Bool = true) -> DispatchGuard.TargetCheck {
     lastMovedFrames = nil
+    lastLiveTarget = nil
     guard let index = command.snapshotNodeIndex,
           let retained = retainedSnapshotTargets[index],
           retained.generation == currentSnapshotGeneration,
@@ -722,6 +733,7 @@ extension RnFastRunnerTests {
           live = frame
           let owner = retained.ownerRect.map { CGRect(x: $0.x, y: $0.y, width: $0.width, height: $0.height) }
           let agree = DispatchGuard.framesAgree(retained: expected, live: frame, owner: owner)
+          if agree { self.lastLiveTarget = target }
           if !agree {
             let label = target.label
             let identifier = target.identifier
@@ -909,11 +921,11 @@ extension RnFastRunnerTests {
     return element.exists ? element : nil
   }
 
-  func tapAt(app: XCUIApplication, x: Double, y: Double) -> RunnerInteractionOutcome {
+  func tapAt(app: XCUIApplication, x: Double, y: Double, anchor: XCUIElement? = nil) -> RunnerInteractionOutcome {
     if let outcome = selectFocusedTvElement(app: app, point: CGPoint(x: x, y: y), action: "tap") {
       return outcome
     }
-    return performCoordinateTap(app: app, x: x, y: y)
+    return performCoordinateTap(app: app, x: x, y: y, anchor: anchor)
   }
 
   func mouseClickAt(app: XCUIApplication, x: Double, y: Double, button: String) throws {
@@ -1126,11 +1138,11 @@ extension RnFastRunnerTests {
     return app
   }
 
-  private func performCoordinateTap(app: XCUIApplication, x: Double, y: Double) -> RunnerInteractionOutcome {
+  private func performCoordinateTap(app: XCUIApplication, x: Double, y: Double, anchor: XCUIElement?) -> RunnerInteractionOutcome {
 #if os(tvOS)
     return .unsupported("coordinate tap is not supported on tvOS; move focus with swipe or scroll, then select the focused element")
 #else
-    interactionCoordinate(app: app, x: x, y: y).tap()
+    interactionCoordinate(app: app, x: x, y: y, anchor: anchor).tap()
     return .performed
 #endif
   }
@@ -1172,13 +1184,31 @@ extension RnFastRunnerTests {
   }
 
 #if !os(tvOS)
-  private func interactionCoordinate(app: XCUIApplication, x: Double, y: Double) -> XCUICoordinate {
-    let root = interactionRoot(app: app)
+  private func interactionCoordinate(app: XCUIApplication, x: Double, y: Double, anchor: XCUIElement? = nil) -> XCUICoordinate {
+    let root = anchor ?? coordinateAnchor(app: app, point: CGPoint(x: x, y: y), liveTarget: nil).element
     let origin = root.coordinate(withNormalizedOffset: CGVector(dx: 0, dy: 0))
     let rootFrame = root.frame
     let offsetX = x - Double(rootFrame.origin.x)
     let offsetY = y - Double(rootFrame.origin.y)
     return origin.withOffset(CGVector(dx: offsetX, dy: offsetY))
+  }
+
+  func coordinateAnchor(app: XCUIApplication, point: CGPoint, liveTarget: XCUIElement?) -> (decision: DispatchGuard.TapAnchor, element: XCUIElement) {
+    var alerts: [XCUIElement] = []
+    var alertFrames: [CGRect] = []
+    var liveFrame: CGRect?
+    let exception = RunnerObjCExceptionCatcher.catchException({
+      alerts = app.alerts.allElementsBoundByIndex
+      alertFrames = alerts.map(\.frame)
+      liveFrame = liveTarget?.frame
+    })
+    guard exception == nil else { return (.firstWindow, interactionRoot(app: app)) }
+    let decision = DispatchGuard.tapAnchor(point: point, liveTarget: liveFrame, alerts: alertFrames)
+    switch decision {
+    case .liveTarget: return (decision, liveTarget ?? interactionRoot(app: app))
+    case .alert(let index): return (decision, alerts[index])
+    case .firstWindow, .outsideAlerts: return (decision, interactionRoot(app: app))
+    }
   }
 #endif
 

@@ -74,6 +74,9 @@ class RnFastRunnerTests: XCTestCase {
     retained: CGRect, live: CGRect,
     retainedIdentity: DispatchGuard.NodeIdentity, liveIdentity: DispatchGuard.NodeIdentity?
   )?
+  // The live element the latest target check resolved with the retained frame.
+  var lastLiveTarget: XCUIElement?
+  var appAlertInterruptions = 0
   var lastExactTypeTarget: RecordedExactTypeTarget?
   var needsFirstInteractionDelay = false
   let interactiveTypes: Set<XCUIElement.ElementType> = [
@@ -132,6 +135,22 @@ class RnFastRunnerTests: XCTestCase {
 
   override func setUp() {
     continueAfterFailure = true
+    // Claim target-app alerts untouched so XCTest's default handler never presses their cancel button.
+    addUIInterruptionMonitor(withDescription: "rn-fast-runner target app alert") { [weak self] element in
+      guard let self, self.isTargetAppAlert(element) else { return false }
+      self.appAlertInterruptions += 1
+      return true
+    }
+  }
+
+  func isTargetAppAlert(_ element: XCUIElement) -> Bool {
+    var owned = false
+    _ = RunnerObjCExceptionCatcher.catchException({
+      guard element.elementType == .alert else { return }
+      let frame = element.frame
+      owned = (self.currentApp ?? self.app).alerts.allElementsBoundByIndex.contains { $0.frame == frame }
+    })
+    return owned
   }
 
   @MainActor

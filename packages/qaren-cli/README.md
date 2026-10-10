@@ -308,6 +308,14 @@ point outside it leaves that check unavailable. A negative check refuses with
 (toolbars named `Toolbar`, nested same-origin containers kept apart); a missing
 capability takes the runner rebuild path.
 
+An iOS coordinate tap whose point lies inside an open app alert is anchored on
+the frame-verified live target, or on the alert itself, so XCTest does not treat
+that alert as an interruption. With an app alert open, a tap outside every alert
+refuses with `APP_ALERT_INTERRUPTION` and mutation `none`. The runner's
+interruption monitor claims target-app alerts without touching them, so XCTest's
+default handler never presses an alert button; another gesture blocked that way
+returns the same code.
+
 Before dispatch, the walker also treats a press or fill target whose centre lies
 outside its trusted clipping viewport or covered by an observed keyboard frame
 (unless the keyboard is proven hidden) as covered. Keyboard-owned targets use
@@ -1278,7 +1286,7 @@ ios:
 
 For `prepare`, the same pair belongs under `build.ios_workspace` in the scenario, alongside `build.owner: cli`. Workspace paths are relative to the app root, remain under `ios/`, and must resolve through plain directories to an existing `.xcworkspace` with a plain `contents.xcworkspacedata` file. No scheme discovery, Expo upgrade or automatic fallback after a failed build occurs. An iOS section in shared `check` config does not select this route for Android.
 
-This route runs `xcrun xcodebuild` in Debug against the generic iOS Simulator destination, with signing and the React Native packager launch disabled. Products and DerivedData are isolated under the run directory. The existing finite-build process group and lock remain authoritative; only a clean exit with proven group shutdown can proceed to single-bundle verification, exact-device installation, separate Metro and launch. A missing or ambiguous app, wrong bundle/platform/scheme or unsupported dev-client launcher still fails before installation. Workspace and scheme selection participate in the native cache fingerprint; omitting the opt-in preserves existing Expo cache keys.
+This route runs `xcrun xcodebuild` in Debug against the generic iOS Simulator destination, with certificate-free ad-hoc simulator signing (`CODE_SIGN_IDENTITY=-`, no team or provisioning profile) so entitlements such as keychain access survive, and the React Native packager launch disabled. Products and DerivedData are isolated under the run directory. The existing finite-build process group and lock remain authoritative; only a clean exit with proven group shutdown can proceed to single-bundle verification, exact-device installation, separate Metro and launch. A missing or ambiguous app, wrong bundle/platform/scheme or unsupported dev-client launcher still fails before installation. Workspace and scheme selection, and the build-settings revision, participate in the native cache fingerprint, so an earlier unsigned workspace build is not reused; omitting the opt-in preserves existing Expo cache keys.
 
 **Native preparation remains explicit.** Supply a workspace whose native dependencies and generated inputs are ready for Xcode. QaReN retains its existing clean/incremental policy: an unproven generated native directory is regenerated through owned `expo prebuild --clean`, then the workspace is revalidated before compilation; a git-visible native tree is not regenerated. The workspace route adds no CocoaPods synchronization or codegen command of its own, and workspace existence is not proof that those inputs are current after a dependency update. A build failure is reported, not retried through another backend.
 

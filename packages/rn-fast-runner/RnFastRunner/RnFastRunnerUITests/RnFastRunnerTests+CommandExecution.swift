@@ -174,6 +174,7 @@ extension RnFastRunnerTests {
     while true {
       var response: Response?
       var swiftError: Error?
+      appAlertInterruptions = 0
       let exceptionMessage = RunnerObjCExceptionCatcher.catchException({
         do {
           response = try self.executeOnMain(command: command)
@@ -183,6 +184,10 @@ extension RnFastRunnerTests {
       })
 
       if let exceptionMessage {
+        // XCTest aborts the gesture before synthesizing it when our monitor claimed an app alert.
+        if appAlertInterruptions > 0 {
+          return Self.appAlertInterruptionResponse(singleGesture: [.tap, .longPress, .drag].contains(command.command))
+        }
         if command.qaReadOnly == true { return qaReadOnlyRefusal() }
         if command.platformPresence == true {
           return platformPresenceFailure()
@@ -448,10 +453,16 @@ extension RnFastRunnerTests {
         case .proceed:
           break
         }
+        var anchor: XCUIElement?
+#if !os(tvOS)
+        let resolved = coordinateAnchor(app: activeApp, point: CGPoint(x: x, y: y), liveTarget: lastLiveTarget)
+        if resolved.decision == .outsideAlerts { return Self.appAlertInterruptionResponse() }
+        anchor = resolved.element
+#endif
         var outcome = RunnerInteractionOutcome.performed
         let timing = measureGesture {
           withTemporaryScrollIdleTimeoutIfSupported(activeApp) {
-            outcome = tapAt(app: activeApp, x: x, y: y)
+            outcome = tapAt(app: activeApp, x: x, y: y, anchor: anchor)
           }
         }
         if let response = unsupportedResponse(for: outcome) {
