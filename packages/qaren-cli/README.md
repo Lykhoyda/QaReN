@@ -314,7 +314,10 @@ that alert as an interruption. With an app alert open, a tap outside every alert
 refuses with `APP_ALERT_INTERRUPTION` and mutation `none`. The runner's
 interruption monitor claims target-app alerts without touching them, so XCTest's
 default handler never presses an alert button; another gesture blocked that way
-returns the same code.
+returns the same code. A blocked single-gesture command reports mutation `none`;
+a multi-gesture command reports mutation `possible` because earlier gestures
+may already have run. Take a fresh snapshot of the alert and explicitly tap
+the intended button.
 
 Before dispatch, the walker also treats a press or fill target whose centre lies
 outside its trusted clipping viewport or covered by an observed keyboard frame

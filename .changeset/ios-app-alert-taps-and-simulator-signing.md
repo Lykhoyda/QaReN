@@ -2,4 +2,4 @@
 'qaren': patch
 ---
 
-On iOS, a tap aimed into an open app alert now presses that alert's own button instead of letting XCTest press its cancel button first, other gestures behind the alert fail as `APP_ALERT_INTERRUPTION` without pressing anything, and workspace simulator builds are ad-hoc signed so apps that read the keychain launch cleanly.
+On iOS, taps inside app alerts now anchor on the intended target or alert, blocked gestures refuse with `APP_ALERT_INTERRUPTION` without choosing an alert button, and workspace simulator builds use ad-hoc signing to preserve keychain entitlements.
