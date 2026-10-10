@@ -10,8 +10,7 @@ The repository is mid-pivot from rn-dev-agent (an MCP server plus host plugins
 that drive React Native apps on simulators) to QaReN: a Rust CLI that owns the
 run and spawns a TypeScript child that reads the screen. `main` still ships
 rn-dev-agent 1.0.x; `develop` carries the migration as one PR per phase and
-merges into `main` as 2.0.0 only with approval after exact-head independent QA
-passes on both the Test App baseline and the staging app. The QaReN
+merges into `main` as 2.0.0 once the label path runs end to end. The QaReN
 structure outline and TDD that the phase PRs cite are the specification; each
 phase PR names its Linear issue in the QaReN project.
 
