@@ -23,7 +23,7 @@ check() {
   fi
 }
 
-tmp="$(mktemp -d)"
+tmp="$(mktemp -d "$ROOT/.test-qaren-install.XXXXXX")"
 trap 'rm -rf "$tmp"' EXIT
 
 mkdir -p "$tmp/stubs" "$tmp/plugin/scripts"
@@ -743,18 +743,35 @@ check "dangling root: an ensure-qaren message, not a raw tool error" yes \
   "$(grep -q '^ensure-qaren: cannot use' "$tmp/stderr" && ! grep -q '^mkdir' "$tmp/stderr" && echo yes || echo "no: $(cat "$tmp/stderr")")"
 check "dangling root: the link target is never created" no "$([ -e "$tmp/nowhere" ] && echo yes || echo no)"
 
-# --install links ~/.local/bin/qaren to the verified binary and never replaces what it did not create.
+# Select the first writable PATH directory, even outside HOME.
+reset_home
+write_manifest "$tmp/good.tgz"
+mkdir -p "$tmp/path-bin" "$tmp/home/.local/bin" "$tmp/read-only-tools"
+for tool in $REQUIRED_TOOLS bash node readlink ln; do
+  ln -s "$(command -v "$tool")" "$tmp/read-only-tools/$tool"
+done
+chmod 555 "$tmp/read-only-tools"
+out=$(PATH="$tmp/read-only-tools:$tmp/path-bin:$tmp/home/.local/bin" run_install "$tmp/good.tgz"); rc=$?
+check "PATH link: install exits 0" 0 "$rc"
+check "PATH link: first writable directory outside HOME gets the link" "$REAL_DEST/bin/qaren" "$(readlink "$tmp/path-bin/qaren")"
+check "PATH link: qaren runs without changing PATH" qaren "$(PATH="$tmp/read-only-tools:$tmp/path-bin:$tmp/home/.local/bin" /bin/bash -c qaren)"
+check "PATH link: stdout is exactly the binary path" "$REAL_DEST/bin/qaren" "$out"
+check "PATH link: no export notice" no "$(grep -q 'export PATH=' "$tmp/stderr" && echo yes || echo no)"
+check "PATH link: does not prefer ~/.local/bin" no "$([ -e "$tmp/home/.local/bin/qaren" ] && echo yes || echo no)"
+
+# With no writable PATH directory, preserve the fallback and command ownership.
+run_link_install() { PATH="$tmp/read-only-tools" run_install "$1"; }
 LINK="$tmp/home/.local/bin/qaren"
 reset_home
 write_manifest "$tmp/good.tgz"
-out=$(run_install "$tmp/good.tgz"); rc=$?
+out=$(run_link_install "$tmp/good.tgz"); rc=$?
 check "link: install exits 0" 0 "$rc"
 check "link: missing ~/.local/bin is created and links the binary" "$REAL_DEST/bin/qaren" "$(readlink "$LINK")"
 check "link: the linked binary runs" qaren "$("$LINK")"
 check "link: stdout is still exactly the binary path" "$REAL_DEST/bin/qaren" "$out"
 check "link: names the PATH line when ~/.local/bin is not on PATH" yes \
-  "$(grep -q 'add ~/.local/bin to PATH' "$tmp/stderr" && echo yes || echo "no: $(cat "$tmp/stderr")")"
-out=$(run_install "$tmp/does-not-exist.tgz"); rc=$?
+  "$(grep -Fxq 'qaren: no writable directory is on PATH; add ~/.local/bin to PATH: export PATH="$HOME/.local/bin:$PATH"' "$tmp/stderr" && echo yes || echo "no: $(cat "$tmp/stderr")")"
+out=$(run_link_install "$tmp/does-not-exist.tgz"); rc=$?
 check "link: re-install is idempotent" "0 $REAL_DEST/bin/qaren $REAL_DEST/bin/qaren" "$rc $out $(readlink "$LINK")"
 out=$(PATH="$tmp/home/.local/bin:$PATH" run_install "$tmp/does-not-exist.tgz")
 check "link: no PATH line when ~/.local/bin is on PATH" no "$(grep -q 'to PATH' "$tmp/stderr" && echo yes || echo no)"
@@ -762,12 +779,12 @@ check "link: no PATH line when ~/.local/bin is on PATH" no "$(grep -q 'to PATH' 
 OLDER="$(cd -P "$tmp" && pwd -P)/home/.qaren/runtime/0.0.1/bin/qaren"
 rm "$LINK" && ln -s "$OLDER" "$LINK"
 check "link: an older-runtime link is planted" "$OLDER" "$(readlink "$LINK")"
-run_install "$tmp/does-not-exist.tgz" >/dev/null
+run_link_install "$tmp/does-not-exist.tgz" >/dev/null
 check "link: a link to an older runtime is replaced" "$REAL_DEST/bin/qaren" "$(readlink "$LINK")"
 
 rm "$LINK"
 printf 'mine\n' > "$LINK"
-out=$(run_install "$tmp/does-not-exist.tgz"); rc=$?
+out=$(run_link_install "$tmp/does-not-exist.tgz"); rc=$?
 check "link: a foreign file leaves the install green" "0 $REAL_DEST/bin/qaren" "$rc $out"
 check "link: a foreign file is byte-identical" "mine" "$(cat "$LINK")"
 check "link: a foreign file is named on stderr" yes \
@@ -775,13 +792,14 @@ check "link: a foreign file is named on stderr" yes \
 
 rm "$LINK"
 ln -s "$tmp/elsewhere/qaren" "$LINK"
-run_install "$tmp/does-not-exist.tgz" >/dev/null; rc=$?
+run_link_install "$tmp/does-not-exist.tgz" >/dev/null; rc=$?
 check "link: a link outside the runtime root is left untouched" "0 $tmp/elsewhere/qaren" "$rc $(readlink "$LINK")"
 
 reset_home
 write_manifest "$tmp/good.tgz" 1
-run_install "$tmp/good.tgz" >/dev/null; rc=$?
+run_link_install "$tmp/good.tgz" >/dev/null; rc=$?
 check "link: a refused install creates no link" "1 no" "$rc $([ -e "$LINK" ] || [ -L "$LINK" ] && echo yes || echo no)"
 
+chmod 755 "$tmp/read-only-tools"
 [ -f "$tmp/sleep-pids" ] && kill $(cat "$tmp/sleep-pids") 2>/dev/null
 exit "$fail"

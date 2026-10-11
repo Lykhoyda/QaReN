@@ -21,9 +21,10 @@ test('installation exposes qaren on an unchanged user PATH and preserves foreign
   const dir = mkdtempSync(join(root, '.test-qaren-command-'));
   try {
     const home = join(dir, 'home');
-    const userBin = join(home, 'bin');
+    const userBin = join(dir, 'bin');
     const plugin = join(dir, 'plugin');
     const script = join(plugin, 'scripts', 'ensure-qaren.sh');
+    mkdirSync(home, { recursive: true });
     mkdirSync(userBin, { recursive: true });
     mkdirSync(join(plugin, 'scripts'), { recursive: true });
     copyFileSync(join(root, 'packages/qaren-plugin/scripts/ensure-qaren.sh'), script);
@@ -79,11 +80,8 @@ test('installation exposes qaren on an unchanged user PATH and preserves foreign
     rmSync(userBin, { recursive: true });
     symlinkSync(foreignBin, userBin);
     assert.equal(install().status, 0);
-    assert.equal(existsSync(join(foreignBin, 'qaren')), false);
-    assert.equal(execFileSync(join(home, '.local/bin/qaren'), ['--version'], {
-      encoding: 'utf8',
-    }), 'qaren 9.8.7\n');
-    env.PATH = `${home}/.local/bin:${process.env.PATH}`;
+    assert.equal(existsSync(join(foreignBin, 'qaren')), true);
+    assert.equal(existsSync(join(home, '.local/bin/qaren')), false);
     assert.equal(install().status, 0);
     assert.equal(invoke().stdout, 'qaren 9.8.7\n');
   } finally {

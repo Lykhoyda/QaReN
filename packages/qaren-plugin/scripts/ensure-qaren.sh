@@ -375,22 +375,16 @@ install() {
 
 # A link problem is a stderr notice, never a failed install.
 link_on_path() {
-  local bin="$1" dir="$HOME/.local/bin" target tmp candidate real_home real_dir
+  local bin="$1" dir="$HOME/.local/bin" target tmp candidate on_path=false
   local -a path_dirs
-  case ":$PATH:" in
-    *":$dir:"*) ;;
-    *)
-      real_home=$(cd -P "$HOME" && pwd -P)
-      IFS=: read -r -a path_dirs <<< "$PATH"
-      for candidate in "${path_dirs[@]}"; do
-        [[ "$candidate" = /* ]] && [ -d "$candidate" ] || continue
-        real_dir=$(cd -P "$candidate" && pwd -P) || continue
-        [[ "$real_dir" = "$real_home"/* ]] && [ -O "$real_dir" ] && [ -w "$real_dir" ] || continue
-        dir="$candidate"
-        break
-      done
-      ;;
-  esac
+  IFS=: read -r -a path_dirs <<< "$PATH:"
+  for candidate in "${path_dirs[@]}"; do
+    candidate="${candidate:-.}"
+    [ -d "$candidate" ] && [ -w "$candidate" ] || continue
+    dir="$candidate"
+    on_path=true
+    break
+  done
   target="$dir/qaren"
   mkdir -p "$dir" 2>/dev/null || { echo "qaren: cannot create $dir; run qaren as $bin" >&2; return 0; }
   if [ -e "$target" ] || [ -L "$target" ]; then
@@ -406,10 +400,9 @@ link_on_path() {
     echo "qaren: cannot link $target; run qaren as $bin" >&2
     return 0
   fi
-  case ":$PATH:" in
-    *":$dir:"*) ;;
-    *) echo "qaren: no writable directory under HOME is on PATH; add ~/.local/bin to PATH: export PATH=\"\$HOME/.local/bin:\$PATH\"" >&2 ;;
-  esac
+  if [ "$on_path" = false ]; then
+    echo "qaren: no writable directory is on PATH; add ~/.local/bin to PATH: export PATH=\"\$HOME/.local/bin:\$PATH\"" >&2
+  fi
 }
 
 case "$MODE" in

@@ -98,8 +98,7 @@ bash scripts/install-qaren-from-source.sh
 
 from the repository root on an Apple silicon Mac with Node 24 or newer and
 Rust/Cargo. It builds the release tarball, verifies it through the plugin
-installer below and links `qaren` into a writable directory under your home
-already on PATH, preferring `~/.local/bin` when it is on PATH.
+installer below and links `qaren` into the first writable directory already on PATH.
 
 For development builds:
 
@@ -138,10 +137,9 @@ it does not require the source checkout's `dist/` or `QAREN_RUNTIME` override.
 The SessionStart hook only runs `--print-bin`; it never downloads. That mode
 always exits 0 and prints either the verified binary path, an install or repair
 instruction, or nothing, so its exit status alone does not prove installation.
-`--install` also links `qaren` into `~/.local/bin` when it is on PATH, otherwise
-into the first writable PATH directory whose resolved location is under your
-home. It replaces only a link into `~/.qaren/runtime/`; any other file there is
-left alone with a notice. If no such directory exists, it links `~/.local/bin/qaren`
+`--install` also links `qaren` into the first writable directory on PATH
+(for example `/opt/homebrew/bin` or `/usr/local/bin` on a Mac). It replaces only
+a link into `~/.qaren/runtime/`; any other file there is left alone with a notice. If no PATH directory is writable, it links `~/.local/bin/qaren`
 and prints the required `export PATH=` line; until then use the printed binary path.
 This development checkout's manifest does not imply that a QaReN release asset
 has been published; use `scripts/install-qaren-from-source.sh` above while that
