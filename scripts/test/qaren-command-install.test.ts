@@ -40,16 +40,27 @@ test('installation exposes qaren on an unchanged user PATH and preserves foreign
       env: { ...process.env, COPYFILE_DISABLE: '1' },
     });
     const bytes = readFileSync(archive);
-    writeFileSync(join(plugin, 'runner-manifest.json'), JSON.stringify({
-      version,
-      assets: { qaren: { 'darwin-arm64': {
-        name, sha256: createHash('sha256').update(bytes).digest('hex'), bytes: bytes.length,
-      } } },
-    }));
+    writeFileSync(
+      join(plugin, 'runner-manifest.json'),
+      JSON.stringify({
+        version,
+        assets: {
+          qaren: {
+            'darwin-arm64': {
+              name,
+              sha256: createHash('sha256').update(bytes).digest('hex'),
+              bytes: bytes.length,
+            },
+          },
+        },
+      }),
+    );
     const env = { ...process.env, HOME: home, PATH: `${userBin}:${process.env.PATH}` };
-    const install = () => spawnSync('bash', [script, '--install', '--from-file', archive], {
-      env, encoding: 'utf8',
-    });
+    const install = () =>
+      spawnSync('bash', [script, '--install', '--from-file', archive], {
+        env,
+        encoding: 'utf8',
+      });
     let result = install();
     assert.equal(result.status, 0, result.stderr);
     const invoke = () => spawnSync('bash', ['-c', 'qaren --version'], { env, encoding: 'utf8' });
