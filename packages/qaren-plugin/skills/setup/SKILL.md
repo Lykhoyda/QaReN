@@ -70,7 +70,7 @@ This plan needs no `TYPESAFE_API_KEY`.
 
 ## 6. Run
 
-The first run builds and installs the app; a cold native build can outlast the host's command timeout (10 minutes in Claude Code), which kills a foreground run before its receipt. Start it with the host's background-command mode (in Claude Code, Bash with `run_in_background: true`), never with `&` or `nohup`: qaren cancels a run whose calling process exits.
+The first run builds and installs the app; a cold native build can take longer than 10 minutes, and Claude Code stops both foreground and background commands at that limit. Start the check detached from the host, with `sh` staying resident as its parent: qaren cancels a run whose calling process exits, so never background `qaren` itself with `&` or `nohup`.
 
 First create the output directory and note the path it prints as `<dir>`:
 
@@ -78,12 +78,18 @@ First create the output directory and note the path it prints as `<dir>`:
 mktemp -d "${TMPDIR:-/tmp}/qaren-setup.XXXXXX"
 ```
 
-Then start in the background:
+Then start the check; this command returns at once:
 
 ```sh
-<qaren path from step 1> check --plan-file .qaren/plans/smoke.md [device flags from step 4] --json > <dir>/receipt.json 2> <dir>/progress.log
+nohup sh -c '<qaren path from step 1> check --plan-file .qaren/plans/smoke.md [device flags from step 4] --json > <dir>/receipt.json 2> <dir>/progress.log; echo $? > <dir>/exit' < /dev/null > /dev/null 2>&1 &
 ```
 
-Within a minute `<dir>/progress.log` contains `▸ watch live: qaren watch <run-id>`; if the background command ends first, the check refused before its run started, so go to the receipt. Follow the run in the foreground with `<qaren path> watch <run-id> --plain`, which prints each finished stage and exits when the run ends. If the host's timeout stops the viewer first, run it again: the viewer holds no lock, so stopping it never affects the run. Exit 3 means telemetry is unavailable: retry once after a few seconds, then wait for the background command instead.
+Within a minute `<dir>/progress.log` contains `▸ watch live: qaren watch <run-id>`; tell the user they can follow the run live with `qaren watch <run-id>` in their own terminal. If `<dir>/exit` appears first, the check refused before its run started, so go to the receipt. Otherwise follow the run in short calls that each end well within the host's limit, repeating until `<dir>/exit` exists:
 
-Once the background command has ended, `<dir>/receipt.json` holds the receipt. Report its `result`, `run_id` and `next_action`. When `result` is not `pass`, quote `failure.code` and `failure.next_action` verbatim if present and stop. When a `pass` receipt's `next_action` is a `qaren cleanup` command, teardown was incomplete: offer to run it. On `pass`, QaReN is set up: next, the `using-qaren` skill writes a plan for a feature.
+```sh
+for i in $(seq 20); do [ -s <dir>/exit ] && break; sleep 5; done; tail -n 3 <dir>/progress.log
+```
+
+Stopping a poll never affects the run. If `<dir>/exit` never appears, `<qaren path> status <run-id> --json` reports the run's state and its next action.
+
+Once `<dir>/exit` exists, `<dir>/receipt.json` holds the receipt. Report its `result`, `run_id` and `next_action`. When `result` is not `pass`, quote `failure.code` and `failure.next_action` verbatim if present and stop. When a `pass` receipt's `next_action` is a `qaren cleanup` command, teardown was incomplete: offer to run it. On `pass`, QaReN is set up: next, the `using-qaren` skill writes a plan for a feature.
