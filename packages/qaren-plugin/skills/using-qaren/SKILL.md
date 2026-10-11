@@ -15,7 +15,7 @@ QaReN walks a Markdown QA plan on the iOS simulator, or a booted Android emulato
 | follow a run | `qaren watch --latest` |
 | see saved blocks | `qaren actions list` |
 
-`check` and `pr` use the one booted simulator. If none or several are booted, pick the device as the `setup` skill does and append its `--device` or `--boot-device --device` flags.
+For iOS, `check` and `pr` use the one booted simulator. If none or several are booted, pick the device as the `setup` skill does and append its `--device` or `--boot-device --device` flags. For Android device selection, follow [Check a plan](https://github.com/Lykhoyda/rn-dev-agent/blob/develop/packages/qaren-cli/README.md#check-a-plan).
 
 Report the receipt's `result` and `run_id`. When `result` is not `pass`, quote `failure.code` and `failure.next_action` verbatim if present; never retry a refusal by editing the plan to dodge it.
 

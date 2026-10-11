@@ -92,4 +92,4 @@ for i in $(seq 20); do [ -s <dir>/exit ] && break; sleep 5; done; tail -n 3 <dir
 
 Stopping a poll never affects the run. If `<dir>/exit` never appears, `<qaren path> status <run-id> --json` reports the run's state and its next action.
 
-Once `<dir>/exit` exists, `<dir>/receipt.json` holds the receipt. Report its `result`, `run_id` and `next_action`. When `result` is not `pass`, quote `failure.code` and `failure.next_action` verbatim if present and stop. When a `pass` receipt's `next_action` is a `qaren cleanup` command, teardown was incomplete: offer to run it. On `pass`, QaReN is set up: next, the `using-qaren` skill writes a plan for a feature.
+Once `<dir>/exit` exists, read `<dir>/receipt.json`; if it is empty, report the exit code and the diagnostic from `<dir>/progress.log` and stop. Otherwise report the receipt's `result`, `run_id` and `next_action`. When `result` is not `pass`, quote `failure.code` and `failure.next_action` verbatim if present and stop. When a `pass` receipt's `next_action` is a `qaren cleanup` command, teardown was incomplete: offer to run it. On `pass`, QaReN is set up: next, the `using-qaren` skill writes a plan for a feature.

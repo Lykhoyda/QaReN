@@ -109,9 +109,10 @@ cargo build --manifest-path packages/qaren-cli/Cargo.toml --locked
 Run these commands from the repository root with Node satisfying the
 [core package's engines requirement](../qaren-core/package.json) and Rust/Cargo
 available. The binary is
-`packages/qaren-cli/target/debug/qaren`; its screen child uses the generated
-`packages/qaren-core/dist/`. Set `QAREN_RUNTIME` to its absolute path when running
-the binary from another location. See [Check a plan](#check-a-plan) for when
+`packages/qaren-cli/target/debug/qaren`; it locates the generated screen child in
+`packages/qaren-core/dist/` relative to the resolved binary path, independently
+of the working directory. `QAREN_RUNTIME` overrides that runtime directory.
+See [Check a plan](#check-a-plan) for when
 `TYPESAFE_API_KEY` is required.
 
 ### Plugin runtime installation
