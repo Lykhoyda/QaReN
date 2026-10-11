@@ -629,8 +629,9 @@ export class ObservedPrivacy {
   private sensitivePixels = false;
   private sensitiveInWindow = false;
   private sensitiveLatest = false;
-  // Fields typed into without a readable value; '' when the field is unknown.
-  private readonly concealedFields = new Set<string>();
+  // Fields typed into without a readable value, by any identity ('' is any input); only a seen field can leave.
+  private readonly concealedFields = new Set<{ ids: string[]; seen: boolean }>();
+  private shown: Element[] = [];
 
   constructor(private readonly typed: readonly string[] = []) {}
 
@@ -641,16 +642,10 @@ export class ObservedPrivacy {
 
   observe(screen: Screen): void {
     this.sensitiveLatest = false;
-    const shown = screen.elements.filter((element) => !element.offscreen);
+    this.shown = screen.elements.filter((element) => !element.offscreen);
     for (const field of this.concealedFields)
-      if (
-        !shown.some((element) =>
-          field
-            ? element.testID === field || element.label === field
-            : element.kind === 'input' || isPrivateInput(element),
-        )
-      )
-        this.concealedFields.delete(field);
+      if (this.showing(field.ids)) field.seen = true;
+      else if (field.seen) this.concealedFields.delete(field);
     if (this.concealedFields.size > 0) this.mark();
     if (privateScreens.get(screen)?.sensitivePixels === true) this.mark();
     for (const value of privateScreens.get(screen)?.secrets ?? []) this.secret.add(value);
@@ -715,11 +710,23 @@ export class ObservedPrivacy {
     if (value) this.filledValues.add(value);
   }
 
-  concealFallback(value: string, secure = false, field = ''): void {
-    this.concealedFields.add(field);
+  concealFallback(value: string, secure = false, ...fields: (string | undefined)[]): void {
+    const ids = fields.filter((field): field is string => Boolean(field));
+    if (ids.length === 0) ids.push('');
+    this.concealedFields.add({ ids, seen: this.showing(ids) });
     this.concealed.add(value);
     if (secure) this.secret.add(value);
     this.mark();
+  }
+
+  private showing(ids: readonly string[]): boolean {
+    return this.shown.some((element) =>
+      ids.some((id) =>
+        id
+          ? element.testID === id || element.label === id
+          : element.kind === 'input' || isPrivateInput(element),
+      ),
+    );
   }
 
   private mark(): void {

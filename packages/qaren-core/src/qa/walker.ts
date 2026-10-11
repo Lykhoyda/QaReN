@@ -838,7 +838,12 @@ export async function walkBlock(
           : `the keyboard state before tapping "${quoted}" is unknown`,
         before.screen,
       );
-    privacy.concealFallback(item.text, false, quoted);
+    privacy.concealFallback(
+      item.text,
+      false,
+      quoted,
+      target.element.testID ?? target.element.label,
+    );
     privateFills.push(item.line);
     let tap: ActResult;
     try {

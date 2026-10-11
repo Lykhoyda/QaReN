@@ -2251,3 +2251,24 @@ test('without React a second wrapper for the field refuses before any tap', asyn
   assert.deepEqual(fake.typed, []);
   assert.ok(!fake.log.some((line) => line.startsWith('press')));
 });
+
+const publishWindow = async (markdown: string, options: AppOptions = {}) => {
+  const typed: string[] = [];
+  const privacy = new ObservedPrivacy(typed);
+  const outcome = await walkBlock(blocks(markdown)[0], app(options).deps, 0, typed, privacy);
+  assert.equal(outcome.block.outcome, 'pass', JSON.stringify(outcome.failure));
+  privacy.startWindow();
+  return privacy.windowClean();
+};
+
+test('a wrapper fill keeps the publish window dirty while its form stays on screen', async () => {
+  assert.equal(await publishWindow(plan(EMAIL, 'qa-hidden-email', '')), false);
+  assert.equal(await publishWindow(plan()), true);
+});
+
+test('a focus-only fill keeps the publish window dirty with no field to see leave', async () => {
+  const fillOnly = '## QA\n\n### Code\n\n1. Fill "qa-otp-code" with "1234"\n';
+  const focused = { initial: [submit], initialKeyboard: true, reactFocused: true } as const;
+  assert.equal(await publishWindow(fillOnly, focused), false);
+  assert.equal(await publishWindow(otpPlan(), focused), false);
+});
