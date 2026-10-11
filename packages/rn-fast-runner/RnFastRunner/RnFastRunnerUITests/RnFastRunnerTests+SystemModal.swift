@@ -46,6 +46,97 @@ extension RnFastRunnerTests {
     #endif
   }
 
+  // Taps the SpringBoard button element itself; never a coordinate through the app, never app activation.
+  func systemAlertTap(label: String?) -> Response {
+    #if os(macOS) || os(tvOS)
+      return Response(ok: false, error: ErrorPayload(code: "UNSUPPORTED", message: "system alert taps are iOS-only", mutation: "none"))
+    #else
+    let refuse = { (code: String, message: String) in
+      Response(ok: false, error: ErrorPayload(code: code, message: "\(code): \(message); nothing was tapped", mutation: "none"))
+    }
+    guard let label, !label.isEmpty else {
+      return refuse("INVALID_ARGUMENT", "systemAlertTap requires the chosen button label")
+    }
+    // The tap changes the screen, so a recorded type target no longer holds.
+    lastExactTypeTarget = nil
+    guard let modal = firstBlockingSystemModal(in: springboard),
+          let tapped = systemModalSignature(modal) else {
+      return refuse("SYSTEM_ALERT_NOT_FOUND", "no readable blocking system alert is in front")
+    }
+    let actions = actionableElements(in: modal)
+    let labels = actions.map { $0.label }
+    let index: Int
+    switch SystemAlertTap.resolve(labels: labels, chosen: label) {
+    case .notFound:
+      return refuse("SYSTEM_ALERT_BUTTON_NOT_FOUND", "the alert has no button with exactly that label")
+    case .ambiguous(let count):
+      return refuse("SYSTEM_ALERT_BUTTON_AMBIGUOUS", "the alert has \(count) buttons with that label")
+    case .button(let found):
+      index = found
+    }
+    let button = actions[index]
+    let frame = button.frame
+    var unchanged = false
+    let revalidation = RunnerObjCExceptionCatcher.catchException({
+      unchanged = button.exists && button.label == label
+    })
+    guard revalidation == nil, unchanged,
+          let front = firstBlockingSystemModal(in: springboard),
+          systemModalSignature(front) == tapped else {
+      return refuse("SYSTEM_ALERT_CHANGED", "the alert or its button changed before the tap")
+    }
+    if let exception = RunnerObjCExceptionCatcher.catchException({ button.tap() }) {
+      return Response(ok: false, error: ErrorPayload(
+        code: "SYSTEM_ALERT_TAP_FAILED",
+        message: "SYSTEM_ALERT_TAP_FAILED: the alert button tap raised \(exception)",
+        mutation: "possible"
+      ))
+    }
+    let deadline = ProcessInfo.processInfo.systemUptime + 2.0
+    var closed = false
+    repeat {
+      closed = SystemAlertTap.closed(tapped: tapped, observed: observeSystemModals())
+      if !closed { sleepFor(0.1) }
+    } while !closed && ProcessInfo.processInfo.systemUptime < deadline
+    var data = DataPayload(message: "tapped")
+    data.tappedLabel = labels[index]
+    data.tappedRect = SnapshotRect(
+      x: Double(frame.origin.x), y: Double(frame.origin.y),
+      width: Double(frame.width), height: Double(frame.height)
+    )
+    data.alertClosed = closed
+    return Response(ok: true, data: data)
+    #endif
+  }
+
+  #if !os(macOS) && !os(tvOS)
+  // Unlike the safe probes, an exception here is reported, never read as an empty alert.
+  private func systemModalSignature(_ modal: XCUIElement) -> SystemAlertTap.Signature? {
+    var signature: SystemAlertTap.Signature?
+    let exception = RunnerObjCExceptionCatcher.catchException({
+      signature = SystemAlertTap.Signature(
+        title: modal.label,
+        buttons: modal.buttons.allElementsBoundByIndex.map { $0.label }
+      )
+    })
+    return exception == nil ? signature : nil
+  }
+
+  private func observeSystemModals() -> SystemAlertTap.Observation {
+    var modals: [XCUIElement] = []
+    let exception = RunnerObjCExceptionCatcher.catchException({
+      modals = self.springboard.alerts.allElementsBoundByIndex + self.springboard.sheets.allElementsBoundByIndex
+    })
+    guard exception == nil else { return .unreadable }
+    var signatures: [SystemAlertTap.Signature] = []
+    for modal in modals {
+      guard let signature = systemModalSignature(modal) else { return .unreadable }
+      signatures.append(signature)
+    }
+    return .modals(signatures)
+  }
+  #endif
+
   private func firstBlockingSystemModal(in springboard: XCUIApplication) -> XCUIElement? {
     let disableSafeProbe = RunnerEnv.isTruthy("RN_FAST_RUNNER_DISABLE_SAFE_MODAL_PROBE")
     let queryElements: (() -> [XCUIElement]) -> [XCUIElement] = { fetch in

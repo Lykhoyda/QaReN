@@ -1,12 +1,13 @@
 import { sleep as cancellableSleep } from '../domain/cancellation.js';
 import type { ToolResult } from '../utils.js';
+import type { ToolErrorCode } from '../types.js';
 import type { QaDispatchContext } from '../domain/qa-dispatch.js';
 import { okResult, failResult, warnResult } from '../utils.js';
 import { maestroRefusalResult, runMaestroInline, yamlEscape } from '../maestro-invoke.js';
 import { detectPlatform } from './platform-utils.js';
-import { fetchSnapshotNodes, pressCandidate } from './device-interact.js';
+import { extractMutationDisposition, fetchSnapshotNodes } from './device-interact.js';
 import type { SnapshotFetchResult } from './device-interact.js';
-import { hasActiveSession, getActiveSession } from '../agent-device-wrapper.js';
+import { hasActiveSession, getActiveSession, runNative } from '../agent-device-wrapper.js';
 import { shouldRejectMaestroDeviceAuthority } from '../domain/maestro-device-authority.js';
 
 // iOS dialog button labels. Note: "Don't Allow" uses U+2019 typographic apostrophe,
@@ -59,7 +60,10 @@ export interface SystemDialogArgs {
 const realSleep = cancellableSleep;
 
 let fetchSnapshotNodesFn: typeof fetchSnapshotNodes = fetchSnapshotNodes;
-let pressCandidateFn: typeof pressCandidate = pressCandidate;
+type TapSystemAlert = (label: string, qaContext?: QaDispatchContext) => Promise<ToolResult>;
+const tapSystemAlert: TapSystemAlert = (label, qaContext) =>
+  runNative(['system-alert-tap', label], { qaContext });
+let tapSystemAlertFn: TapSystemAlert = tapSystemAlert;
 let runMaestroInlineFn: typeof runMaestroInline = runMaestroInline;
 let sleepFn: (ms: number) => Promise<void> = realSleep;
 let iosSessionActiveFn: () => boolean = () =>
@@ -77,11 +81,11 @@ export function _setSleepForTest(fn: (ms: number) => Promise<void>): void {
 export function _resetSleepForTest(): void {
   sleepFn = realSleep;
 }
-export function _setPressCandidateForTest(fn: typeof pressCandidate): void {
-  pressCandidateFn = fn;
+export function _setTapSystemAlertForTest(fn: TapSystemAlert): void {
+  tapSystemAlertFn = fn;
 }
-export function _resetPressCandidateForTest(): void {
-  pressCandidateFn = pressCandidate;
+export function _resetTapSystemAlertForTest(): void {
+  tapSystemAlertFn = tapSystemAlert;
 }
 export function _setRunMaestroInlineForTest(fn: typeof runMaestroInline): void {
   runMaestroInlineFn = fn;
@@ -101,6 +105,29 @@ export interface RunnerDialogOutcome {
   matchedLabel?: string;
   dialogTitle?: string;
   availableButtons?: string[];
+  tappedRect?: { x: number; y: number; width: number; height: number };
+  refusal?: { code: ToolErrorCode; message: string; mutation: 'none' | 'observed' };
+}
+
+function tapProof(result: ToolResult): {
+  tappedLabel?: unknown;
+  tappedRect?: unknown;
+  alertClosed?: unknown;
+} {
+  try {
+    const data = (JSON.parse(result.content[0]?.text ?? '{}') as { data?: unknown }).data;
+    return data && typeof data === 'object' ? data : {};
+  } catch {
+    return {};
+  }
+}
+
+function isRect(value: unknown): value is { x: number; y: number; width: number; height: number } {
+  if (!value || typeof value !== 'object') return false;
+  const r = value as Record<string, unknown>;
+  return ['x', 'y', 'width', 'height'].every(
+    (k) => typeof r[k] === 'number' && Number.isFinite(r[k]),
+  );
 }
 
 // SpringBoard modals require the native runner; QA snapshot uncertainty never permits fallback.
@@ -129,27 +156,54 @@ export async function tapSystemDialogViaRunner(
   if (!root || root.type !== 'Alert') return null;
   const buttons = snap.nodes.slice(1);
   for (const label of labels) {
-    const match = buttons.find((n) => n.label === label || n.identifier === label);
-    if (!match) continue;
-    let press: ToolResult;
+    // Exact label only: the chosen label is always one of these known constants, never app or user text.
+    if (!buttons.some((n) => n.label === label)) continue;
+    // One chosen label, one dispatch: the runner taps that SpringBoard button element, never a coordinate.
+    const chosen = label;
+    let tap: ToolResult;
     try {
-      press = await pressCandidateFn(
-        { ref: match.ref, label: match.label },
-        'click',
-        undefined,
-        false,
-        qaContext,
-      );
+      tap = await tapSystemAlertFn(chosen, qaContext);
     } catch (error) {
       qaContext?.refuse('ACTION_OUTCOME_UNCERTAIN');
       throw error;
     }
     qaContext?.assertComplete();
-    if (press.isError) {
-      qaContext?.refuse('ACTION_OUTCOME_UNCERTAIN');
-      continue;
+    if (tap.isError) {
+      if (extractMutationDisposition(tap) !== 'none') qaContext?.refuse('ACTION_OUTCOME_UNCERTAIN');
+      const { code, error } = JSON.parse(tap.content[0]?.text ?? '{}') as {
+        code?: ToolErrorCode;
+        error?: string;
+      };
+      return {
+        tapped: false,
+        dialogTitle: root.label,
+        refusal: {
+          code: code ?? 'DIALOG_TAP_UNPROVEN',
+          message: error ?? 'the alert button tap was refused; nothing was tapped',
+          mutation: 'none',
+        },
+      };
     }
-    return { tapped: true, matchedLabel: label, dialogTitle: root.label };
+    const proof = tapProof(tap);
+    const unproven = (why: string): RunnerDialogOutcome => ({
+      tapped: false,
+      dialogTitle: root.label,
+      refusal: {
+        code: 'DIALOG_TAP_UNPROVEN',
+        message: `DIALOG_TAP_UNPROVEN: ${why}`,
+        mutation: 'observed',
+      },
+    });
+    if (proof.tappedLabel !== chosen || !isRect(proof.tappedRect))
+      return unproven(`the runner did not prove it tapped the "${chosen}" button`);
+    if (proof.alertClosed !== true)
+      return unproven(`"${chosen}" was tapped but the alert stayed open`);
+    return {
+      tapped: true,
+      matchedLabel: chosen,
+      dialogTitle: root.label,
+      tappedRect: proof.tappedRect,
+    };
   }
   return {
     tapped: false,
@@ -277,12 +331,24 @@ async function handleSystemDialog(
   if (platform === 'ios') {
     const runner = await tapSystemDialogViaRunner(labels, args.qaContext);
     if (runner?.tapped) {
-      return okResult({
-        tapped: true,
+      return okResult(
+        {
+          tapped: true,
+          platform,
+          matchedLabel: runner.matchedLabel,
+          tappedLabel: runner.matchedLabel,
+          tappedRect: runner.tappedRect,
+          dialogTitle: runner.dialogTitle,
+          via: 'rn-fast-runner',
+        },
+        { meta: { verify: 'exact' } },
+      );
+    }
+    if (runner?.refusal) {
+      return failResult(runner.refusal.message, runner.refusal.code, {
+        mutation: runner.refusal.mutation,
         platform,
-        matchedLabel: runner.matchedLabel,
         dialogTitle: runner.dialogTitle,
-        via: 'rn-fast-runner',
       });
     }
     if (runner) {

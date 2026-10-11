@@ -35,6 +35,7 @@ test('a runner without FILL_EVIDENCE_V1 is incompatible on both platforms', () =
         'HIT_TESTED_DISPATCH_V1',
         'TARGET_FRAME_GUARD_V1',
         'SNAPSHOT_FIDELITY_V1',
+        'SYSTEM_ALERT_TAP_V1',
       ],
     ],
     [REQUIRED_ANDROID_COMMANDS, REQUIRED_ANDROID_FEATURES, ['APP_SCOPED_EXACT_INTERACTION']],

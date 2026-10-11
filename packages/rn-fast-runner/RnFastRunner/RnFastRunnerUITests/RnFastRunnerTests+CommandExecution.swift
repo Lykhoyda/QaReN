@@ -174,6 +174,7 @@ extension RnFastRunnerTests {
     while true {
       var response: Response?
       var swiftError: Error?
+      appAlertInterruptions = 0
       let exceptionMessage = RunnerObjCExceptionCatcher.catchException({
         do {
           response = try self.executeOnMain(command: command)
@@ -183,6 +184,10 @@ extension RnFastRunnerTests {
       })
 
       if let exceptionMessage {
+        // XCTest aborts the gesture before synthesizing it when our monitor claimed an app alert.
+        if appAlertInterruptions > 0 {
+          return Self.appAlertInterruptionResponse(singleGesture: [.tap, .longPress, .drag].contains(command.command))
+        }
         if command.qaReadOnly == true { return qaReadOnlyRefusal() }
         if command.platformPresence == true {
           return platformPresenceFailure()
@@ -272,6 +277,10 @@ extension RnFastRunnerTests {
       retainSnapshotTargets(payload.nodes ?? [])
       needsPostSnapshotInteractionDelay = true
       return Response(ok: true, data: payload)
+    }
+    // Selecting or activating the app could let XCTest resolve the blocking alert first.
+    if command.command == .systemAlertTap, readOnlyApp == nil {
+      return systemAlertTap(label: command.text)
     }
     var activeApp = readOnlyApp ?? currentApp ?? app
     if readOnlyApp == nil, !isRunnerLifecycleCommand(command.command) {
@@ -444,10 +453,16 @@ extension RnFastRunnerTests {
         case .proceed:
           break
         }
+        var anchor: XCUIElement?
+#if !os(tvOS)
+        let resolved = coordinateAnchor(app: activeApp, point: CGPoint(x: x, y: y), liveTarget: lastLiveTarget)
+        if resolved.decision == .outsideAlerts { return Self.appAlertInterruptionResponse() }
+        anchor = resolved.element
+#endif
         var outcome = RunnerInteractionOutcome.performed
         let timing = measureGesture {
           withTemporaryScrollIdleTimeoutIfSupported(activeApp) {
-            outcome = tapAt(app: activeApp, x: x, y: y)
+            outcome = tapAt(app: activeApp, x: x, y: y, anchor: anchor)
           }
         }
         if let response = unsupportedResponse(for: outcome) {
@@ -1153,34 +1168,8 @@ extension RnFastRunnerTests {
           via: result.via
         )
       )
-    case .alert:
-      let action = (command.action ?? "get").lowercased()
-      let alert = activeApp.alerts.firstMatch
-      if !alert.exists {
-        return Response(ok: false, error: ErrorPayload(message: "alert not found"))
-      }
-      if action == "accept" {
-        guard let button = alert.buttons.allElementsBoundByIndex.first else {
-          return Response(ok: false, error: ErrorPayload(message: "alert accept button not found"))
-        }
-        let outcome = activateElement(app: activeApp, element: button, action: "alert accept")
-        if let response = unsupportedResponse(for: outcome) {
-          return response
-        }
-        return Response(ok: true, data: DataPayload(message: "accepted"))
-      }
-      if action == "dismiss" {
-        guard let button = alert.buttons.allElementsBoundByIndex.last else {
-          return Response(ok: false, error: ErrorPayload(message: "alert dismiss button not found"))
-        }
-        let outcome = activateElement(app: activeApp, element: button, action: "alert dismiss")
-        if let response = unsupportedResponse(for: outcome) {
-          return response
-        }
-        return Response(ok: true, data: DataPayload(message: "dismissed"))
-      }
-      let buttonLabels = alert.buttons.allElementsBoundByIndex.map { $0.label }
-      return Response(ok: true, data: DataPayload(message: alert.label, items: buttonLabels))
+    case .systemAlertTap:
+      return systemAlertTap(label: command.text)
     case .pinch:
       guard let scale = command.scale, scale > 0 else {
         return Response(ok: false, error: ErrorPayload(message: "pinch requires scale > 0"))

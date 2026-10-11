@@ -40,7 +40,7 @@ test('mutating classification: every gesture/typing/lifecycle verb is mutating',
     'backSystem',
     'rotate',
     'appSwitcher',
-    'alert',
+    'systemAlertTap',
     'activate',
     'terminate',
     'shutdown',
@@ -61,6 +61,10 @@ test('mutating classification: every gesture/typing/lifecycle verb is mutating',
   ]) {
     assert.equal(isMutatingCommand(c), false, `${c} must be read-only`);
   }
+});
+
+test('the removed positional alert verb is not a known mutating command', () => {
+  assert.equal(isMutatingCommand('alert'), false);
 });
 
 test('ambiguity: pre-send and protocol failures are NOT ambiguous', () => {

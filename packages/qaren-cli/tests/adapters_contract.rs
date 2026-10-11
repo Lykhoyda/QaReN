@@ -441,8 +441,12 @@ fn explicit_ios_workspace_build_is_finite_generic_and_preserves_literal_names() 
             "generic/platform=iOS Simulator",
             "-derivedDataPath",
             "/runs/check one/ios-derived-data",
-            "CODE_SIGNING_ALLOWED=NO",
-            "CODE_SIGNING_REQUIRED=NO",
+            "CODE_SIGNING_ALLOWED=YES",
+            "CODE_SIGNING_REQUIRED=YES",
+            "CODE_SIGN_IDENTITY=-",
+            "CODE_SIGN_STYLE=Manual",
+            "DEVELOPMENT_TEAM=",
+            "PROVISIONING_PROFILE_SPECIFIER=",
             "build"
         ]
     );

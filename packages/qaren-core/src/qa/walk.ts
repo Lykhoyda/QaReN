@@ -191,6 +191,8 @@ function act(handler: () => Promise<ToolResult>, proven: boolean): Promise<ActRe
           typedLength?: number;
           observedLengths?: unknown;
           caseNormalizedChars?: unknown;
+          tappedLabel?: unknown;
+          tappedRect?: unknown;
         }>(result);
         logActionSettle(meta);
         if (data?.executed === false || data?.tapped === false)
@@ -201,6 +203,18 @@ function act(handler: () => Promise<ToolResult>, proven: boolean): Promise<ActRe
             mutation: 'none',
             error: 'the action did not execute',
           };
+        const verified = meta?.verify === 'exact';
+        const rect = data?.tappedRect as Record<string, unknown> | undefined;
+        const dialog =
+          verified &&
+          typeof data?.tappedLabel === 'string' &&
+          rect &&
+          ['x', 'y', 'width', 'height'].every((k) => typeof rect[k] === 'number')
+            ? {
+                label: data.tappedLabel,
+                rect: rect as { x: number; y: number; width: number; height: number },
+              }
+            : undefined;
         const observed = data?.observedLengths;
         const kept =
           typeof data?.typedLength === 'number' &&
@@ -212,7 +226,8 @@ function act(handler: () => Promise<ToolResult>, proven: boolean): Promise<ActRe
         const chars = data?.caseNormalizedChars;
         return {
           ok: true,
-          proven: proven || meta?.verify === 'exact',
+          proven: proven || verified,
+          ...(dialog ? { dialog } : {}),
           ...(kept ? { kept } : {}),
           ...(typeof chars === 'number' ? { caseNormalized: { chars } } : {}),
         };
@@ -482,7 +497,7 @@ async function openSession(
       act(
         () =>
           action === 'accept' ? accept({ platform, qaContext }) : dismiss({ platform, qaContext }),
-        true,
+        false,
       ),
     async screenshot(name) {
       if (stop.stopping) return undefined;

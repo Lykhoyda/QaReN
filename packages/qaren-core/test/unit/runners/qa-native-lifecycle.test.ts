@@ -78,6 +78,8 @@ class Harness {
   var reads = 0
   var refuseRead = false
   var throwRead = false
+  var appAlertInterruptions = 0
+  static func appAlertInterruptionResponse(singleGesture: Bool = true) -> Response { Response(ok: false) }
   func sleepFor(_ seconds: Double) { sleeps += 1 }
   func shouldRetryException(_ command: Command, message: String) -> Bool { true }
   func shouldRetryCommand(_ command: Command) -> Bool { true }
@@ -94,6 +96,8 @@ class Harness {
   func snapshotPlatformPresence(app: XCUIApplication, appId: String, presenceBudgetMs: Int) -> DataPayload { DataPayload() }
   func retainSnapshotTargets(_ nodes: [Int]) {}
   func observedProcessIdentifier(_ target: XCUIApplication) -> Int? { 7 }
+  var alertTaps = 0
+  func systemAlertTap(label: String?) -> Response { alertTaps += 1; return Response(ok: true) }
 ${helpers}
 ${safe}
 ${prepare}
@@ -148,6 +152,10 @@ existenceWaits = 0
 let present = Harness()
 let presentTap = try present.run(command("tap", qa: false))
 precondition(presentTap.ok && existenceWaits == 0, "a present app must not pay an existence wait")
+let alert = Harness(); alert.currentApp!.state = .runningBackground
+let beforeAlert = activations
+let alertResult = try alert.run(command("systemAlertTap", qa: false))
+precondition(alertResult.ok && alert.alertTaps == 1 && activations == beforeAlert && alert.reads == 0, "a system alert tap must never select or activate the app")
 let gone = Harness(); gone.currentApp!.exists = false; gone.app.exists = false
 _ = try gone.run(command("tap", qa: false))
 precondition(existenceWaits > 0, "a missing app must still be waited for")

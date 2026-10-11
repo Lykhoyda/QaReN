@@ -26,6 +26,8 @@ export interface LedgerRow {
   kept?: { typed: number; observed: number[] };
   // Characters typed into a field that changed only their letter case.
   caseNormalized?: { chars: number };
+  // The system dialog button the runner proved it tapped.
+  dialog?: { label: string; rect: { x: number; y: number; width: number; height: number } };
 }
 
 // The value-free announcement that a plan line begins; its row later carries the same operationId.

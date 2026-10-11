@@ -401,6 +401,13 @@ export type ToolErrorCode =
   | 'RUNNER_DISABLED'
   // GH #656: runner lacks the feature required for exact keyboard targeting.
   | 'RN_FAST_RUNNER_STALE'
+  // A SpringBoard alert tap the runner refused before tapping, or one it could not prove.
+  | 'SYSTEM_ALERT_NOT_FOUND'
+  | 'SYSTEM_ALERT_BUTTON_NOT_FOUND'
+  | 'SYSTEM_ALERT_BUTTON_AMBIGUOUS'
+  | 'SYSTEM_ALERT_CHANGED'
+  | 'SYSTEM_ALERT_TAP_FAILED'
+  | 'DIALOG_TAP_UNPROVEN'
   // GH #383: runner speaks an incompatible wire protocol even after the
   // reap-and-reinstall path ran — stale prebuilt artifacts need a rebuild.
   | 'RUNNER_PROTOCOL_MISMATCH'

@@ -123,6 +123,7 @@ test('GH-656: iOS feature compatibility rejects old swipe-capable artifacts only
         'HIT_TESTED_DISPATCH_V1',
         'TARGET_FRAME_GUARD_V1',
         'SNAPSHOT_FIDELITY_V1',
+        'SYSTEM_ALERT_TAP_V1',
       ],
     },
   );
@@ -136,6 +137,7 @@ test('GH-656: iOS feature compatibility rejects old swipe-capable artifacts only
           'HIT_TESTED_DISPATCH_V1',
           'TARGET_FRAME_GUARD_V1',
           'SNAPSHOT_FIDELITY_V1',
+          'SYSTEM_ALERT_TAP_V1',
         ],
       },
       null,
@@ -252,6 +254,7 @@ test('GH-656: stale cached keyboard ref refuses before generic iOS healing', asy
             'HIT_TESTED_DISPATCH_V1',
             'TARGET_FRAME_GUARD_V1',
             'SNAPSHOT_FIDELITY_V1',
+            'SYSTEM_ALERT_TAP_V1',
           ],
           commands: REQUIRED_IOS_COMMANDS,
         }),

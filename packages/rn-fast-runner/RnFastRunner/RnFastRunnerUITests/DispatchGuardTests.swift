@@ -12,6 +12,26 @@ final class DispatchGuardTests: XCTestCase {
     XCTAssertEqual(DispatchGuard.decide(liveHittable: false, keyboardContainsPoint: false), .occluded)
   }
 
+  func testTapInsideAnAppAlertAnchorsOnTheLiveTargetNotTheFirstWindow() {
+    let alert = CGRect(x: 41, y: 375, width: 320, height: 152)
+    let discard = CGRect(x: 205, y: 463, width: 140, height: 48)
+    let point = CGPoint(x: discard.midX, y: discard.midY)
+    XCTAssertEqual(DispatchGuard.tapAnchor(point: point, liveTarget: discard, alerts: [alert]), .liveTarget)
+    XCTAssertEqual(DispatchGuard.tapAnchor(point: point, liveTarget: nil, alerts: [alert]), .alert(0))
+    let behind = CGRect(x: 0, y: 440, width: 402, height: 100)
+    XCTAssertEqual(DispatchGuard.tapAnchor(point: point, liveTarget: behind, alerts: [alert]), .alert(0))
+    XCTAssertEqual(DispatchGuard.tapAnchor(point: point, liveTarget: nil, alerts: [.zero, alert]), .alert(1))
+  }
+
+  func testTapOutsideAnOpenAppAlertIsRefusedAndWithoutOneKeepsTheFirstWindow() {
+    let alert = CGRect(x: 41, y: 375, width: 320, height: 152)
+    let row = CGRect(x: 0, y: 100, width: 402, height: 44)
+    let point = CGPoint(x: row.midX, y: row.midY)
+    XCTAssertEqual(DispatchGuard.tapAnchor(point: point, liveTarget: row, alerts: [alert]), .outsideAlerts)
+    XCTAssertEqual(DispatchGuard.tapAnchor(point: point, liveTarget: row, alerts: []), .firstWindow)
+    XCTAssertEqual(DispatchGuard.tapAnchor(point: point, liveTarget: row, alerts: [.zero]), .firstWindow)
+  }
+
   func testUnavailableHitTestProceeds() {
     XCTAssertEqual(DispatchGuard.decide(liveHittable: nil, keyboardContainsPoint: false), .proceed)
   }

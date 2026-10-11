@@ -27,7 +27,7 @@ impl NativeFingerprint {
     pub fn with_ios_workspace(mut self, spec: Option<&crate::scenario::IosWorkspaceBuild>) -> Self {
         if let Some(spec) = spec {
             let bytes = serde_json::to_vec(&(
-                "qaren-ios-workspace-build/1",
+                "qaren-ios-workspace-build/2",
                 &self.value,
                 &spec.workspace,
                 &spec.scheme,

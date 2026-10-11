@@ -308,6 +308,17 @@ point outside it leaves that check unavailable. A negative check refuses with
 (toolbars named `Toolbar`, nested same-origin containers kept apart); a missing
 capability takes the runner rebuild path.
 
+An iOS coordinate tap whose point lies inside an open app alert is anchored on
+the frame-verified live target, or on the alert itself, so XCTest does not treat
+that alert as an interruption. With an app alert open, a tap outside every alert
+refuses with `APP_ALERT_INTERRUPTION` and mutation `none`. The runner's
+interruption monitor claims target-app alerts without touching them, so XCTest's
+default handler never presses an alert button; another gesture blocked that way
+returns the same code. A blocked single-gesture command reports mutation `none`;
+a multi-gesture command reports mutation `possible` because earlier gestures
+may already have run. Take a fresh snapshot of the alert and explicitly tap
+the intended button.
+
 Before dispatch, the walker also treats a press or fill target whose centre lies
 outside its trusted clipping viewport or covered by an observed keyboard frame
 (unless the keyboard is proven hidden) as covered. Keyboard-owned targets use
@@ -456,6 +467,35 @@ line is unparseable; a missing or rejected key refuses `JEV_UNREACHABLE` before
 device selection or leasing. Plans with only quoted targets and literal checks
 make no Jev calls and need no key; recognised back, dialog and fixed-scroll
 steps also stay model-free.
+
+Dialog steps require one unconditional accept or dismiss action, such as
+`Accept the permission dialog` or `Dismiss the alert`. Conditions, negation and
+multiple actions, such as `Accept the dialog if it appears` or
+`Do not dismiss the alert`, refuse before allocation; Jev cannot override this restriction.
+
+Context-bound iOS QA reads require the unchanged target app already in the
+foreground. They never activate or relaunch it, or retry a failed read through
+recovery. A missing, backgrounded or changed target refuses
+`ACTION_CONTEXT_CHANGED`; an observed `app-not-running` result follows the
+[process-change rule](#saved-blocks).
+
+An iOS accept or dismiss step against a system (SpringBoard) alert picks one
+button by exact label, so `Allow` never matches `Allow Once`, and the runner
+taps that button element itself. It never taps a coordinate through the app or
+activates the app first. The step passes only when the runner reports that exact
+label tapped and the alert absent from a successful read of every system alert
+and sheet. A completed tap it cannot prove fails with `DIALOG_TAP_UNPROVEN`, and
+a tap that raised in the runner fails `ACTION_OUTCOME_UNCERTAIN`; neither is
+retried, even if the screen changed. A runner refusal before tapping
+(`SYSTEM_ALERT_BUTTON_NOT_FOUND`, `SYSTEM_ALERT_BUTTON_AMBIGUOUS`,
+`SYSTEM_ALERT_CHANGED`) keeps its code. A runner without `SYSTEM_ALERT_TAP_V1`
+refuses `RN_FAST_RUNNER_STALE` without tapping. The proven label and frame land on
+the ledger row as `dialog`, in the receipt's `ledger.dialogs`, and in a
+value-free `dialog-tap` run-log line. The button lists are English. A localized
+alert fails `DIALOG_BUTTON_NOT_FOUND` rather than guessing. The permission
+outcome itself is the app's to show: assert it with the plan's next step.
+In-app alerts that are not SpringBoard-owned still use a text tap and need a
+screen change to pass.
 
 Unparseable lines refuse before allocation; unresolved screen targets refuse during the walk.
 Native platform presence establishes observed presence, not complete visual exposure
@@ -1260,7 +1300,7 @@ ios:
 
 For `prepare`, the same pair belongs under `build.ios_workspace` in the scenario, alongside `build.owner: cli`. Workspace paths are relative to the app root, remain under `ios/`, and must resolve through plain directories to an existing `.xcworkspace` with a plain `contents.xcworkspacedata` file. No scheme discovery, Expo upgrade or automatic fallback after a failed build occurs. An iOS section in shared `check` config does not select this route for Android.
 
-This route runs `xcrun xcodebuild` in Debug against the generic iOS Simulator destination, with signing and the React Native packager launch disabled. Products and DerivedData are isolated under the run directory. The existing finite-build process group and lock remain authoritative; only a clean exit with proven group shutdown can proceed to single-bundle verification, exact-device installation, separate Metro and launch. A missing or ambiguous app, wrong bundle/platform/scheme or unsupported dev-client launcher still fails before installation. Workspace and scheme selection participate in the native cache fingerprint; omitting the opt-in preserves existing Expo cache keys.
+This route runs `xcrun xcodebuild` in Debug against the generic iOS Simulator destination, with certificate-free ad-hoc simulator signing (`CODE_SIGN_IDENTITY=-`, no team or provisioning profile) so entitlements such as keychain access survive, and the React Native packager launch disabled. Products and DerivedData are isolated under the run directory. The existing finite-build process group and lock remain authoritative; only a clean exit with proven group shutdown can proceed to single-bundle verification, exact-device installation, separate Metro and launch. A missing or ambiguous app, wrong bundle/platform/scheme or unsupported dev-client launcher still fails before installation. Workspace and scheme selection, and the build-settings revision, participate in the native cache fingerprint, so an earlier unsigned workspace build is not reused; omitting the opt-in preserves existing Expo cache keys.
 
 **Native preparation remains explicit.** Supply a workspace whose native dependencies and generated inputs are ready for Xcode. QaReN retains its existing clean/incremental policy: an unproven generated native directory is regenerated through owned `expo prebuild --clean`, then the workspace is revalidated before compilation; a git-visible native tree is not regenerated. The workspace route adds no CocoaPods synchronization or codegen command of its own, and workspace existence is not proof that those inputs are current after a dependency update. A build failure is reported, not retried through another backend.
 

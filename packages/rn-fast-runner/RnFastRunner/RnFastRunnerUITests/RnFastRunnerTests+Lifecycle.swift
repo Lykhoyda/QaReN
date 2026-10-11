@@ -218,9 +218,6 @@ extension RnFastRunnerTests {
     switch command.command {
     case .interactionFrame, .findText, .readText, .snapshot, .screenshot:
       return true
-    case .alert:
-      let action = (command.action ?? "get").lowercased()
-      return action == "get"
     default:
       return false
     }

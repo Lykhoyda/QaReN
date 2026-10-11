@@ -30,7 +30,7 @@ fn workspace_hash_uses_domain_separated_typed_json_bytes() {
         scheme: "App\\Debug".into(),
     };
     let bytes = serde_json::to_vec(&(
-        "qaren-ios-workspace-build/1",
+        "qaren-ios-workspace-build/2",
         &prior.value,
         &spec.workspace,
         &spec.scheme,
@@ -38,9 +38,9 @@ fn workspace_hash_uses_domain_separated_typed_json_bytes() {
     .unwrap();
     assert_eq!(
         bytes,
-        br#"["qaren-ios-workspace-build/1","rnfp1:prior-native-inputs","ios/My \"App\".xcworkspace","App\\Debug"]"#
+        br#"["qaren-ios-workspace-build/2","rnfp1:prior-native-inputs","ios/My \"App\".xcworkspace","App\\Debug"]"#
     );
-    let expected = "rnfp1:58811e70a526e0c38597b23ff566399d78ff387c0ba664bd22185ff98fb3ffc8";
+    let expected = "rnfp1:8c131379d0df721b64df109680d2b7541b98f98a6e8e7a35e85816d6b2819fcb";
     let actual = prior.clone().with_ios_workspace(Some(&spec));
     assert_eq!(actual.value, expected);
     assert_eq!(actual, prior.with_ios_workspace(Some(&spec)));

@@ -1628,6 +1628,7 @@ export interface RunIOSArgs {
     | 'findText'
     | 'type'
     | 'verifyInput'
+    | 'systemAlertTap'
     | 'keyboardDismiss'
     | 'isScreenStatic'
     | 'screenshot'
@@ -2371,6 +2372,15 @@ export async function runIOS(args: RunIOSArgs): Promise<ToolResult> {
       'RN_FAST_RUNNER_STALE: the active iOS runner cannot safely validate exact keyboard targets; reopen the device session to rebuild before retrying.',
       'RN_FAST_RUNNER_STALE',
       { missingFeatures: ['EXACT_KEYBOARD_TARGET_GUARD'], dispatched: false },
+    );
+  }
+
+  // An older runner could only tap a SpringBoard alert by coordinate through the app, which proves nothing.
+  if (args.command === 'systemAlertTap' && !lastKnownCapabilities.includes('SYSTEM_ALERT_TAP_V1')) {
+    return failResult(
+      'RN_FAST_RUNNER_STALE: the active iOS runner cannot tap a system alert button by its label; reopen the device session to rebuild before retrying.',
+      'RN_FAST_RUNNER_STALE',
+      { missingFeatures: ['SYSTEM_ALERT_TAP_V1'], dispatched: false, mutation: 'none' },
     );
   }
 

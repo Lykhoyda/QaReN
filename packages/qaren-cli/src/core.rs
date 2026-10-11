@@ -212,6 +212,8 @@ pub struct Row {
     pub kept: Option<KeptCounts>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub case_normalized: Option<CaseNormalized>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub dialog: Option<DialogTap>,
 }
 
 fn is_zero(value: &u64) -> bool {
@@ -257,6 +259,21 @@ impl KeptCounts {
             self.observed.len()
         ))
     }
+}
+
+// The system dialog button the runner proved it tapped; labels are system UI text, never input values.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct DialogTap {
+    pub label: String,
+    pub rect: DialogRect,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct DialogRect {
+    pub x: f64,
+    pub y: f64,
+    pub width: f64,
+    pub height: f64,
 }
 
 impl Row {

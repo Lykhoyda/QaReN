@@ -490,7 +490,7 @@ test('exact fill preparation cannot renew the original mutation deadline', async
   assert.equal(context.authorizations, 0);
 });
 
-test('actual dialog preparation is read-only and its native identity refusal stays latched', async () => {
+test('actual dialog preparation is read-only and taps the alert button by its exact label', async () => {
   session();
   const sends = runner((body) => {
     if (body.command === 'snapshot') {
@@ -507,21 +507,29 @@ test('actual dialog preparation is read-only and its native identity refusal sta
       });
       return dialog;
     }
-    assert.equal(body.command, 'tap');
+    assert.equal(body.command, 'systemAlertTap');
+    assert.equal(body.text, 'Allow');
     assert.equal(body.qaReadOnly, undefined);
+    assert.equal(body.x, undefined);
     return {
       ok: false,
-      error: { code: 'KEYBOARD_TARGET_STALE', message: 'identity changed', mutation: 'none' },
+      error: {
+        code: 'SYSTEM_ALERT_CHANGED',
+        message: 'SYSTEM_ALERT_CHANGED: the alert changed before the tap; nothing was tapped',
+        mutation: 'none',
+      },
     };
   });
   const context = new QaDispatchContext(10, () => 1);
-  await assert.rejects(
-    createDeviceAcceptSystemDialogHandler()({ platform: 'ios', qaContext: context }),
-    /ACTION_CONTEXT_CHANGED/,
-  );
-  assert.deepEqual(sends, ['snapshot', 'tap']);
+  const result = await createDeviceAcceptSystemDialogHandler()({
+    platform: 'ios',
+    qaContext: context,
+  });
+  const env = JSON.parse(result.content[0].text);
+  assert.equal(env.code, 'SYSTEM_ALERT_CHANGED');
+  assert.equal(env.meta.mutation, 'none');
+  assert.deepEqual(sends, ['snapshot', 'systemAlertTap']);
   assert.equal(context.authorizations, 1);
-  assert.throws(() => context.assertComplete(), /ACTION_CONTEXT_CHANGED/);
 });
 
 for (const mode of ['proof', 'transition'] as const) {

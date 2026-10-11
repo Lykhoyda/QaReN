@@ -23,6 +23,8 @@ pub struct LedgerSummary {
     // Passing fills whose final value was not verified, with the ledger row's value-free reason.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub unverified_fills: Vec<UnverifiedFill>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub dialogs: Vec<DialogEvidence>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -39,6 +41,13 @@ pub struct UnverifiedFill {
     pub case_normalized: Option<crate::core::CaseNormalized>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub detail: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct DialogEvidence {
+    pub line: u64,
+    pub label: String,
+    pub rect: crate::core::DialogRect,
 }
 
 pub fn summarize(ledger: &Ledger) -> LedgerSummary {
@@ -68,6 +77,18 @@ pub fn summarize(ledger: &Ledger) -> LedgerSummary {
                         case_normalized: row.case_normalized.clone(),
                         detail: row.fill_detail(),
                     })
+            })
+            .collect(),
+        dialogs: ledger
+            .steps
+            .iter()
+            .filter(|row| row.outcome == "pass")
+            .filter_map(|row| {
+                row.dialog.as_ref().map(|tap| DialogEvidence {
+                    line: row.line,
+                    label: tap.label.clone(),
+                    rect: tap.rect.clone(),
+                })
             })
             .collect(),
     }

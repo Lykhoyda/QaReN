@@ -15,6 +15,12 @@ final class CommandSurfaceTests: XCTestCase {
     )
   }
 
+  // The positional alert verb tapped the last button, which is Allow on a permission prompt.
+  func testPositionalAlertVerbIsGone() {
+    XCTAssertNil(CommandType(rawValue: "alert"))
+    XCTAssertNotNil(CommandType(rawValue: "systemAlertTap"))
+  }
+
   func testAndroidKeyboardVerbIsNotAnIOSCase() {
     XCTAssertNil(CommandType(rawValue: "dismissKeyboard"))
     XCTAssertNil(CommandType(rawValue: "definitelyBogusVerb"))

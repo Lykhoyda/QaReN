@@ -25,7 +25,7 @@ enum CommandType: String, Codable, CaseIterable {
   case rotate
   case appSwitcher
   case keyboardDismiss
-  case alert
+  case systemAlertTap
   case pinch
   case isScreenStatic
   case uptime
@@ -172,6 +172,9 @@ struct DataPayload: Codable {
   let textEntryRoute: String?
   let occlusionCheck: String?
   var appProcessIdentifier: Int? = nil
+  var tappedLabel: String? = nil
+  var tappedRect: SnapshotRect? = nil
+  var alertClosed: Bool? = nil
 
   init(
     message: String? = nil,

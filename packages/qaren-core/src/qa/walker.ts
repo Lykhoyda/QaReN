@@ -80,6 +80,8 @@ export interface ActResult {
   ambiguous?: boolean;
   // An unverified fill whose field held the same shorter value on every attempt, one length per attempt.
   kept?: { typed: number; observed: number[] };
+  // The system dialog button the runner proved it tapped, with its frame; value-free.
+  dialog?: { label: string; rect: { x: number; y: number; width: number; height: number } };
 }
 
 export interface WalkerDeps {
@@ -1592,11 +1594,18 @@ export async function walkBlock(
               act!.evidence === 'case-normalized');
           const recased = item.kind === 'fill' && act!.evidence === 'case-normalized';
           const noMutationRefusal = !act!.ok && act!.mutation === 'none';
+          // A refused dialog tap may have pressed something else, so a changed screen never stands in for its proof.
+          const dialogRefused = item.kind === 'dialog' && !act!.ok;
           if (
             !noMutationRefusal &&
+            !dialogRefused &&
             (item.kind === 'fill' ? (act!.ok && act!.proven) || unverified : act!.proven || changed)
           ) {
             const target = stepTarget(item);
+            if (act!.dialog)
+              deps.note?.(
+                `dialog-tap ${JSON.stringify({ v: 1, line: item.line, label: act!.dialog.label, rect: act!.dialog.rect })}`,
+              );
             emit({
               ...base(item, attempt),
               ...(ref ? { ref } : {}),
@@ -1606,6 +1615,7 @@ export async function walkBlock(
                   (element ? elementSelector(element) : undefined),
               ),
               outcome: 'pass',
+              ...(act!.dialog ? { dialog: act!.dialog } : {}),
               ...(unverified && recased
                 ? {
                     reason: redact(
@@ -1621,6 +1631,17 @@ export async function walkBlock(
                     }
                   : {}),
             });
+            break;
+          }
+          if (dialogRefused && act!.mutation !== 'none') {
+            outcome = failed(
+              item,
+              attempt,
+              `${act!.error ?? 'DIALOG_TAP_UNPROVEN: the dialog tap was not proven'}; not retrying`,
+              after.screen,
+              shot,
+              ref,
+            );
             break;
           }
           if (item.kind === 'fill' && act!.mutation !== 'none') {

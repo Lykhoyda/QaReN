@@ -448,6 +448,7 @@ const RN_FAST_RUNNER_COMMANDS = new Set<string>([
   'scroll',
   'longpress',
   'pinch',
+  'system-alert-tap',
 ]);
 
 // GH #321: verbs that can change what's on screen, so a cached snapshot can no
@@ -465,6 +466,7 @@ const SNAPSHOT_MUTATING_VERBS = new Set<string>([
   'drag',
   'longpress',
   'pinch',
+  'system-alert-tap',
 ]);
 
 export function getCachedScreenRect(): { width: number; height: number } | null {
@@ -521,6 +523,12 @@ export function buildRunIOSArgs(
       }
       return { command: 'tap', x, y, ...(bundleId ? { bundleId } : {}) };
     }
+    case 'system-alert-tap':
+      return {
+        command: 'systemAlertTap',
+        text: cliArgs[1] ?? '',
+        ...(bundleId ? { bundleId } : {}),
+      };
     case 'verify-input': {
       // GH #581: secret-safe exact read-back; the input descriptor is attached
       // by runNative's exact-target decoration. Text is a RAW fixed slot —

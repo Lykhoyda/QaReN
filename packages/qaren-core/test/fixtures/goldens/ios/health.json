@@ -41,7 +41,7 @@
       "rotate",
       "appSwitcher",
       "keyboardDismiss",
-      "alert",
+      "systemAlertTap",
       "pinch",
       "isScreenStatic",
       "uptime",
