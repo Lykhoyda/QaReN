@@ -75,7 +75,9 @@ impl VideoPublication {
     pub fn withholding_reason(&self) -> Option<&'static str> {
         match self {
             Self::Eligible => None,
-            Self::WithheldFill => Some("the plan contains a fill or type step"),
+            Self::WithheldFill => {
+                Some("the walk typed into a field, from the plan or a login replay")
+            }
             Self::WithheldPrivacy => Some("screenshot privacy disallowed capture during the walk"),
             Self::Unknown => Some("video publication eligibility is missing or unknown"),
         }

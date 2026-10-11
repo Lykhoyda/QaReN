@@ -882,6 +882,7 @@ fn withheld_or_unknown_eligibility_never_uploads_video() {
         let mut pr: serde_json::Value =
             serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
         pr["blocks"] = serde_json::json!([]);
+        let fill = eligibility == Some(serde_json::json!("withheld-fill"));
         if let Some(value) = eligibility {
             pr["videoPublication"] = value;
         } else {
@@ -906,6 +907,14 @@ fn withheld_or_unknown_eligibility_never_uploads_video() {
         assert!(!comment.args.iter().any(|arg| arg.contains("video.mp4")));
         let body = std::fs::read_to_string(dir.join("comment.md")).unwrap();
         assert!(body.contains("Video withheld:"));
+        if fill {
+            assert!(
+                body.contains(
+                    "Video withheld: the walk typed into a field, from the plan or a login replay.\n"
+                ),
+                "{body}"
+            );
+        }
         assert!(!body.contains("Video of the walk is attached"));
         assert!(dir.join("media/video.mp4").is_file());
         assert_eq!(runner.0.remaining(), 0);
