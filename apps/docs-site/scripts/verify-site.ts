@@ -105,9 +105,9 @@ const verbs = new Set(
   [...(usage ?? '').matchAll(/\bqaren +([a-z][a-z-]*)/g)].map(([, verb]) => verb),
 );
 check('USAGE names verbs', verbs.size > 0);
-const cliText = exists('cli/index.html') ? page('cli/index.html').replace(/<[^>]+>/g, '') : '';
+const cliHtml = exists('cli/index.html') ? page('cli/index.html') : '';
 for (const verb of verbs)
-  check(`cli page documents qaren ${verb}`, cliText.includes(`qaren ${verb}`));
+  check(`cli page has a qaren ${verb} section`, cliHtml.includes(`id="qaren-${verb}"`));
 
 console.log('\nverify-site: no 1.x tool names');
 const legacy = htmlFiles().filter(
