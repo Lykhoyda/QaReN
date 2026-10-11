@@ -531,3 +531,90 @@ fn status_of_missing_run_is_unknown() {
         FailureCode::RunRecordUnavailable
     );
 }
+
+fn borrowed_walking_record(repo: &std::path::Path) -> RunRecord {
+    let mut record = common::base_record(
+        repo,
+        "schema: qaren/1\nname: check\nplatform: android\ncandidate:\n  project_root: test-app\n  app_id: com.rndevagent.testapp\n  revision: HEAD\n  dev_client_scheme: rndatest\nmetro:\n  port: 8792\nandroid_emulator:\n  serial: emulator-5554\n  avd: Pixel_9_API_37\n",
+        "borrowed",
+        Phase::Walking,
+    );
+    record.resources.android_emulator = Some(qaren::runrecord::BorrowedEmulatorResource {
+        serial: "emulator-5554".to_string(),
+        avd: "Pixel_9_API_37".to_string(),
+        server_port: 5147,
+        api_level: 37,
+        abi: "x86_64".to_string(),
+    });
+    record.resources.adb_path = Some(repo.join("sdk/platform-tools/adb"));
+    record.resources.adb_local_serial = Some("emulator-5554".to_string());
+    record
+}
+
+#[test]
+fn android_borrowed_status_probes_through_the_borrowed_server() {
+    let repo = common::temp_repo();
+    borrowed_walking_record(&repo).save(&repo).unwrap();
+    let mut mock = MockRunner::new();
+    mock.adb_servers.push((5147, 41));
+    mock.expect_run(
+        "adb version",
+        CmdOutput::success("Android Debug Bridge version 1.0.41\n"),
+    );
+    mock.expect_run("-s emulator-5554 get-state", CmdOutput::success("device\n"));
+    mock.expect_run(
+        "-s emulator-5554 shell pm path",
+        CmdOutput::success("package:/data/app/base.apk\n"),
+    );
+    mock.expect_run("-s emulator-5554 shell pidof", CmdOutput::success("4242\n"));
+
+    let receipt = status(&mut mock, &repo, "borrowed");
+
+    for probe in [
+        "adb_server_alive",
+        "device_online",
+        "app_installed",
+        "app_running",
+    ] {
+        assert_eq!(
+            receipt.outcomes[probe], "pass",
+            "{probe}: {:?}",
+            receipt.outcomes
+        );
+    }
+    assert!(!receipt.outcomes.contains_key("farm_recorded"));
+    assert!(mock
+        .calls
+        .iter()
+        .all(|c| !c.rendered().contains("android-farm")));
+    for call in mock.calls.iter().filter(|c| c.label != "adb-version") {
+        assert!(call.env.contains(&(
+            "ADB_SERVER_SOCKET".to_string(),
+            "tcp:127.0.0.1:5147".to_string()
+        )));
+    }
+    assert_eq!(mock.remaining(), 0);
+}
+
+#[test]
+fn android_borrowed_status_never_starts_or_restarts_the_adb_server() {
+    for server in [None, Some(40)] {
+        let repo = common::temp_repo();
+        borrowed_walking_record(&repo).save(&repo).unwrap();
+        let mut mock = MockRunner::new();
+        if let Some(version) = server {
+            mock.adb_servers.push((5147, version));
+            mock.expect_run(
+                "adb version",
+                CmdOutput::success("Android Debug Bridge version 1.0.41\n"),
+            );
+        }
+
+        let receipt = status(&mut mock, &repo, "borrowed");
+
+        assert_eq!(receipt.outcomes["device_probes"], "inconclusive");
+        assert!(!receipt.outcomes.contains_key("farm_recorded"));
+        assert!(mock.calls.iter().all(|c| c.label == "adb-version"));
+        assert_eq!(mock.remaining(), 0);
+    }
+}

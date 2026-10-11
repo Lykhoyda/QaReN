@@ -383,6 +383,10 @@ fn probe_ios(runner: &mut dyn Runner, record: &RunRecord, outcomes: &mut Vec<(St
 }
 
 fn probe_android(runner: &mut dyn Runner, record: &RunRecord, outcomes: &mut Vec<(String, Probe)>) {
+    if record.resources.android_emulator.is_some() {
+        probe_borrowed_emulator(runner, record, outcomes);
+        return;
+    }
     if record.resources.usb_device.is_some() || record.scenario.android_usb.is_some() {
         probe_usb(runner, record, outcomes);
         return;
@@ -462,8 +466,56 @@ fn probe_android(runner: &mut dyn Runner, record: &RunRecord, outcomes: &mut Vec
         .as_ref()
         .map(|s| s.server_port)
         .expect("server probe passed");
+    probe_device_and_app(runner, record, &adb, server_port, serial, outcomes);
+}
 
-    let state = runner.run(&android::adb_get_state_spec(&adb, server_port, serial));
+// A borrowed emulator is reached only through the adb server it was borrowed from.
+fn probe_borrowed_emulator(
+    runner: &mut dyn Runner,
+    record: &RunRecord,
+    outcomes: &mut Vec<(String, Probe)>,
+) {
+    let emulator = record
+        .resources
+        .android_emulator
+        .as_ref()
+        .expect("borrowed branch");
+    let Some(serial) = record
+        .resources
+        .adb_local_serial
+        .as_ref()
+        .filter(|s| **s == emulator.serial)
+    else {
+        outcomes.push(("adb_serial_recorded".to_string(), Probe::Fail));
+        return;
+    };
+    let Some(adb) = record.resources.adb_path.clone() else {
+        outcomes.push(("adb_available".to_string(), Probe::Inconclusive));
+        return;
+    };
+    let port = emulator.server_port;
+    let alive = runner.adb_server_version(port).is_ok();
+    outcomes.push((
+        "adb_server_alive".to_string(),
+        if alive { Probe::Pass } else { Probe::Fail },
+    ));
+    // Without a server, or with an adb that would restart it, no adb client runs.
+    if !alive || android::borrowed_server_compatible(runner, &adb, port).is_err() {
+        outcomes.push(("device_probes".to_string(), Probe::Inconclusive));
+        return;
+    }
+    probe_device_and_app(runner, record, &adb, port, serial, outcomes);
+}
+
+fn probe_device_and_app(
+    runner: &mut dyn Runner,
+    record: &RunRecord,
+    adb: &Path,
+    server_port: u16,
+    serial: &str,
+    outcomes: &mut Vec<(String, Probe)>,
+) {
+    let state = runner.run(&android::adb_get_state_spec(adb, server_port, serial));
     let device_probe = tri(&state, state.ok() && state.stdout.trim() == "device");
     outcomes.push(("device_online".to_string(), device_probe));
     if device_probe != Probe::Pass {
@@ -472,7 +524,7 @@ fn probe_android(runner: &mut dyn Runner, record: &RunRecord, outcomes: &mut Vec
     }
 
     let installed = runner.run(&android::pm_path_spec(
-        &adb,
+        adb,
         server_port,
         serial,
         &record.candidate.app_id,
@@ -486,7 +538,7 @@ fn probe_android(runner: &mut dyn Runner, record: &RunRecord, outcomes: &mut Vec
     ));
 
     let running = runner.run(&android::pidof_spec(
-        &adb,
+        adb,
         server_port,
         serial,
         &record.candidate.app_id,

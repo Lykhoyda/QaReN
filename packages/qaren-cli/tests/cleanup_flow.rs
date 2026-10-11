@@ -2119,3 +2119,418 @@ fn an_unproven_owner_keeps_its_runner_driver_without_signaling() {
     let stored = RunRecord::load(&repo, "core-run").unwrap();
     assert_eq!(stored.resources.runner_drivers.len(), 1);
 }
+
+const BORROWED: &str = "emulator-5554";
+const ADB_CLIENT_41: &str = "Android Debug Bridge version 1.0.41\nVersion 36.0.0-13206524\n";
+const RUNNER_FORWARD: &str =
+    "emulator-5554 tcp:41234 tcp:22089\nemulator-5556 tcp:41299 tcp:22089\n";
+const RUNNER_INSTRUMENTING: &str = "ACTIVITY MANAGER INSTRUMENTATION (dumpsys activity instrumentation)\n  Active instrumentation:\n    ActiveInstrumentation{1 ComponentInfo{dev.lykhoyda.rndevagent.androidrunner.test/androidx.test.runner.AndroidJUnitRunner}}\n";
+const NO_INSTRUMENTATION: &str =
+    "ACTIVITY MANAGER INSTRUMENTATION (dumpsys activity instrumentation)\n  (nothing)\n";
+
+// A `qaren check` run on a borrowed emulator whose qaren process died mid-walk.
+fn borrowed_record(repo: &std::path::Path) -> RunRecord {
+    let mut record = common::base_record(
+        repo,
+        &format!(
+            "schema: qaren/1\nname: check\nplatform: android\ncandidate:\n  project_root: test-app\n  app_id: com.rndevagent.testapp\n  revision: HEAD\n  dev_client_scheme: rndatest\nmetro:\n  port: 8791\nandroid_emulator:\n  serial: {BORROWED}\n  avd: Pixel_9_API_37\n"
+        ),
+        "borrowed-run",
+        Phase::Walking,
+    );
+    record.resources.core = Some(qaren::runrecord::CoreResource {
+        pgid: 9000,
+        identity: Some(common::identity(9000, LSTART)),
+    });
+    record.resources.lease = Some(
+        qaren::lease::acquire(
+            &mut MockRunner::new(),
+            &repo.join("locks"),
+            qaren::scenario::Platform::Android,
+            BORROWED,
+            "borrowed-run",
+            None,
+        )
+        .unwrap(),
+    );
+    record.resources.android_emulator = Some(qaren::runrecord::BorrowedEmulatorResource {
+        serial: BORROWED.to_string(),
+        avd: "Pixel_9_API_37".to_string(),
+        server_port: 5037,
+        api_level: 37,
+        abi: "x86_64".to_string(),
+    });
+    record.resources.adb_path = Some(repo.join("sdk/platform-tools/adb"));
+    record.resources.adb_local_serial = Some(BORROWED.to_string());
+    record.resources.adb_reverse_port = Some(8791);
+    record.resources.app_install = Some(qaren::runrecord::AppInstallResource {
+        app_id: "com.rndevagent.testapp".to_string(),
+        serial: BORROWED.to_string(),
+        server_port: 5037,
+        artifact: qaren::buildplan::CachedArtifact {
+            path: repo.join("app-debug.apk"),
+            sha256: "a".repeat(64),
+            kind: qaren::buildplan::ArtifactKind::Apk,
+        },
+        via: "adb-install".to_string(),
+        installed_at: "2026-08-12T16:00:00Z".to_string(),
+        removal: None,
+    });
+    record
+}
+
+// The dead owner, its core group gone, then the borrowed server's version matching the recorded adb.
+fn borrowed_mock() -> MockRunner {
+    let mut mock = MockRunner::new();
+    mock.adb_servers.push((5037, 41));
+    owner_gone(&mut mock);
+    mock.expect_run("ps -A", CmdOutput::success("1 1 S\n"));
+    mock
+}
+
+fn adb_commands(mock: &MockRunner) -> Vec<String> {
+    mock.calls
+        .iter()
+        .filter(|c| c.program.ends_with("/adb"))
+        .map(|c| c.args.join(" "))
+        .collect()
+}
+
+fn assert_no_owned_server_legs(receipt: &qaren::receipt::Receipt) {
+    for leg in [
+        "adb_server",
+        "adb_connection",
+        "app_install",
+        "adb_vendor_key",
+        "farm_lease",
+    ] {
+        assert!(
+            !receipt.cleanup.contains_key(leg),
+            "{leg}: {:?}",
+            receipt.cleanup
+        );
+    }
+}
+
+#[test]
+fn android_borrowed_cleanup_removes_reverse_and_releases_runner() {
+    let repo = common::temp_repo();
+    let record = borrowed_record(&repo);
+    let lock = record.resources.lease.as_ref().unwrap().lock_dir.clone();
+    record.save(&repo).unwrap();
+    let mut mock = borrowed_mock();
+    mock.expect_run("adb version", CmdOutput::success(ADB_CLIENT_41));
+    mock.expect_run(
+        &format!("-s {BORROWED} reverse --remove tcp:8791"),
+        CmdOutput::success(""),
+    );
+    mock.expect_run(
+        &format!("-s {BORROWED} reverse --list"),
+        CmdOutput::success("host-19 tcp:8081 tcp:8081\n"),
+    );
+    mock.expect_run("forward --list", CmdOutput::success(RUNNER_FORWARD));
+    mock.expect_run(
+        "dumpsys activity instrumentation",
+        CmdOutput::success(RUNNER_INSTRUMENTING),
+    );
+    mock.expect_run(
+        &format!("-s {BORROWED} forward --remove tcp:41234"),
+        CmdOutput::success(""),
+    );
+    mock.expect_run(
+        "am force-stop dev.lykhoyda.rndevagent.androidrunner.test",
+        CmdOutput::success(""),
+    );
+    mock.expect_run(
+        "am force-stop dev.lykhoyda.rndevagent.androidrunner",
+        CmdOutput::success(""),
+    );
+    mock.expect_run(
+        "forward --list",
+        CmdOutput::success("emulator-5556 tcp:41299 tcp:22089\n"),
+    );
+    mock.expect_run(
+        "dumpsys activity instrumentation",
+        CmdOutput::success(NO_INSTRUMENTATION),
+    );
+
+    let receipt = cleanup(&mut mock, &repo, "borrowed-run");
+
+    assert_eq!(
+        receipt.result,
+        ReceiptResult::Cleaned,
+        "{:?}",
+        receipt.cleanup
+    );
+    assert_eq!(receipt.cleanup["adb_reverse"], "removed");
+    assert_eq!(receipt.cleanup["android_runner"], "removed");
+    assert_eq!(receipt.cleanup["device_lease"], "removed");
+    assert_no_owned_server_legs(&receipt);
+    assert!(!lock.exists());
+    assert_eq!(mock.remaining(), 0);
+    for call in mock
+        .calls
+        .iter()
+        .filter(|c| c.program.ends_with("/adb") && c.label != "adb-version")
+    {
+        assert!(call.env.contains(&(
+            "ADB_SERVER_SOCKET".to_string(),
+            "tcp:127.0.0.1:5037".to_string()
+        )));
+        let rendered = call.rendered();
+        assert!(
+            !rendered.contains("uninstall")
+                && !rendered.contains("kill-server")
+                && !rendered.contains("emu kill")
+        );
+    }
+    assert!(!adb_commands(&mock).iter().any(|c| c.contains("41299")));
+}
+
+#[test]
+fn android_borrowed_cleanup_absent_reverse_is_absent() {
+    let repo = common::temp_repo();
+    let record = borrowed_record(&repo);
+    let lock = record.resources.lease.as_ref().unwrap().lock_dir.clone();
+    record.save(&repo).unwrap();
+    let mut mock = borrowed_mock();
+    mock.expect_run("adb version", CmdOutput::success(ADB_CLIENT_41));
+    mock.expect_run(
+        "reverse --remove tcp:8791",
+        CmdOutput::failed(1, "adb: error: listener 'tcp:8791' not found"),
+    );
+    // A walk that never started a runner leaves nothing to release, and must not hold the lease.
+    mock.expect_run("forward --list", CmdOutput::success(""));
+    mock.expect_run(
+        "dumpsys activity instrumentation",
+        CmdOutput::success(NO_INSTRUMENTATION),
+    );
+
+    let receipt = cleanup(&mut mock, &repo, "borrowed-run");
+
+    assert_eq!(receipt.cleanup["adb_reverse"], "absent");
+    assert_eq!(receipt.cleanup["android_runner"], "absent");
+    assert_eq!(receipt.cleanup["device_lease"], "removed");
+    assert_eq!(receipt.result, ReceiptResult::Cleaned);
+    assert!(!adb_commands(&mock).iter().any(|c| c.contains("force-stop")));
+    assert!(!lock.exists());
+    assert_eq!(mock.remaining(), 0);
+}
+
+#[test]
+fn android_borrowed_cleanup_refuses_without_the_runs_lease() {
+    for foreign in [false, true] {
+        let repo = common::temp_repo();
+        let mut record = borrowed_record(&repo);
+        if foreign {
+            // A second run now holds the emulator's lease.
+            record.resources.lease.as_mut().unwrap().holder = "another-run-holder".to_string();
+        } else {
+            let lease = record.resources.lease.take().unwrap();
+            assert_eq!(
+                qaren::lease::release(&lease),
+                qaren::buildplan::ReleaseOutcome::Removed
+            );
+        }
+        record.save(&repo).unwrap();
+        let mut mock = borrowed_mock();
+
+        let receipt = cleanup(&mut mock, &repo, "borrowed-run");
+
+        for leg in ["adb_reverse", "android_runner"] {
+            assert_eq!(
+                receipt.cleanup[leg], "refused: the device lease is not held by this run",
+                "{leg}"
+            );
+        }
+        assert_eq!(receipt.result, ReceiptResult::Refused);
+        assert!(adb_commands(&mock).is_empty(), "{:?}", adb_commands(&mock));
+        assert_no_owned_server_legs(&receipt);
+        if foreign {
+            assert!(receipt.cleanup["device_lease"].starts_with("unresolved: retained"));
+        }
+        assert_eq!(mock.remaining(), 0);
+    }
+}
+
+#[test]
+fn android_borrowed_cleanup_waits_for_a_live_owner() {
+    let repo = common::temp_repo();
+    let record = borrowed_record(&repo);
+    let lock = record.resources.lease.as_ref().unwrap().lock_dir.clone();
+    record.save(&repo).unwrap();
+    let mut mock = MockRunner::new();
+    mock.adb_servers.push((5037, 41));
+    mock.expect_run(
+        "ps -p 999 -o lstart=",
+        CmdOutput::success("Wed Aug 12 15:00:00 2026"),
+    );
+    mock.expect_run("ps -p 999 -o stat=", CmdOutput::success("S"));
+
+    let receipt = cleanup(&mut mock, &repo, "borrowed-run");
+
+    assert_eq!(
+        receipt.cleanup["core"],
+        "refused: the run's qaren process is alive or unproven gone"
+    );
+    assert_eq!(receipt.result, ReceiptResult::Refused);
+    assert!(adb_commands(&mock).is_empty());
+    assert!(lock.exists());
+    assert_eq!(mock.remaining(), 0);
+}
+
+#[test]
+fn android_borrowed_runner_release_unverified_retains_the_lease() {
+    let repo = common::temp_repo();
+    let record = borrowed_record(&repo);
+    let lock = record.resources.lease.as_ref().unwrap().lock_dir.clone();
+    record.save(&repo).unwrap();
+    let mut mock = borrowed_mock();
+    mock.expect_run("adb version", CmdOutput::success(ADB_CLIENT_41));
+    mock.expect_run("reverse --remove tcp:8791", CmdOutput::success(""));
+    mock.expect_run("reverse --list", CmdOutput::success(""));
+    mock.expect_run("forward --list", CmdOutput::success(""));
+    mock.expect_run(
+        "dumpsys activity instrumentation",
+        CmdOutput::success(RUNNER_INSTRUMENTING),
+    );
+    mock.expect_run("am force-stop", CmdOutput::success(""));
+    mock.expect_run("am force-stop", CmdOutput::success(""));
+    mock.expect_run("forward --list", CmdOutput::success(""));
+    mock.expect_run(
+        "dumpsys activity instrumentation",
+        CmdOutput::success(RUNNER_INSTRUMENTING),
+    );
+
+    let receipt = cleanup(&mut mock, &repo, "borrowed-run");
+
+    assert!(
+        receipt.cleanup["android_runner"].starts_with("unresolved"),
+        "{:?}",
+        receipt.cleanup
+    );
+    assert!(receipt.cleanup["device_lease"].starts_with("unresolved: retained"));
+    assert!(receipt.cleanup["device_lease"].contains("android_runner"));
+    assert_eq!(receipt.result, ReceiptResult::Failed);
+    assert!(lock.exists());
+    assert_eq!(mock.remaining(), 0);
+}
+
+#[test]
+fn android_borrowed_cleanup_never_runs_an_adb_the_borrowed_server_would_not_accept() {
+    for server in [None, Some(40)] {
+        let repo = common::temp_repo();
+        let record = borrowed_record(&repo);
+        let lock = record.resources.lease.as_ref().unwrap().lock_dir.clone();
+        record.save(&repo).unwrap();
+        let mut mock = MockRunner::new();
+        owner_gone(&mut mock);
+        mock.expect_run("ps -A", CmdOutput::success("1 1 S\n"));
+        if let Some(version) = server {
+            mock.adb_servers.push((5037, version));
+            mock.expect_run("adb version", CmdOutput::success(ADB_CLIENT_41));
+        }
+
+        let receipt = cleanup(&mut mock, &repo, "borrowed-run");
+
+        for leg in ["adb_reverse", "android_runner"] {
+            assert!(
+                receipt.cleanup[leg].starts_with("unresolved"),
+                "{leg}: {:?}",
+                receipt.cleanup
+            );
+        }
+        assert!(adb_commands(&mock).iter().all(|c| c == "version"));
+        assert!(lock.exists());
+        assert_eq!(mock.remaining(), 0);
+    }
+}
+
+#[test]
+fn android_borrowed_remove_app_is_refused() {
+    let repo = common::temp_repo();
+    let record = borrowed_record(&repo);
+    record.save(&repo).unwrap();
+    let mut mock = MockRunner::new();
+
+    let receipt = qaren::commands::cleanup::cleanup_with(
+        &mut mock,
+        &repo,
+        "borrowed-run",
+        Some(&format!("borrowed-run/{BORROWED}/com.rndevagent.testapp")),
+    );
+
+    assert_eq!(receipt.result, ReceiptResult::Refused);
+    let failure = receipt.failure.unwrap();
+    assert_eq!(failure.code, FailureCode::AppRemovalNotConfirmed);
+    assert!(failure
+        .detail
+        .contains("a borrowed emulator keeps the app; uninstall it yourself"));
+    assert!(receipt.next_action.contains("uninstall"));
+    assert!(!receipt.next_action.contains("--confirm-remove-app"));
+    assert!(mock.calls.is_empty());
+}
+
+#[test]
+fn android_borrowed_reverse_still_listed_after_removal_is_unresolved() {
+    let repo = common::temp_repo();
+    let record = borrowed_record(&repo);
+    let lock = record.resources.lease.as_ref().unwrap().lock_dir.clone();
+    record.save(&repo).unwrap();
+    let mut mock = borrowed_mock();
+    mock.expect_run("adb version", CmdOutput::success(ADB_CLIENT_41));
+    mock.expect_run("reverse --remove tcp:8791", CmdOutput::success(""));
+    mock.expect_run(
+        "reverse --list",
+        CmdOutput::success("host-19 tcp:8791 tcp:8791\n"),
+    );
+    mock.expect_run("forward --list", CmdOutput::success(""));
+    mock.expect_run(
+        "dumpsys activity instrumentation",
+        CmdOutput::success(NO_INSTRUMENTATION),
+    );
+
+    let receipt = cleanup(&mut mock, &repo, "borrowed-run");
+
+    assert!(
+        receipt.cleanup["adb_reverse"].starts_with("unresolved"),
+        "{:?}",
+        receipt.cleanup
+    );
+    assert!(receipt.cleanup["device_lease"].contains("adb_reverse"));
+    assert!(lock.exists());
+    assert_eq!(mock.remaining(), 0);
+}
+
+#[test]
+fn android_borrowed_runner_forward_that_cannot_be_parsed_is_not_absent() {
+    let repo = common::temp_repo();
+    let record = borrowed_record(&repo);
+    let lock = record.resources.lease.as_ref().unwrap().lock_dir.clone();
+    record.save(&repo).unwrap();
+    let mut mock = borrowed_mock();
+    mock.expect_run("adb version", CmdOutput::success(ADB_CLIENT_41));
+    mock.expect_run(
+        "reverse --remove tcp:8791",
+        CmdOutput::failed(1, "adb: error: listener 'tcp:8791' not found"),
+    );
+    let odd = "emulator-5554 localabstract:runner tcp:22089\n";
+    mock.expect_run("forward --list", CmdOutput::success(odd));
+    mock.expect_run(
+        "dumpsys activity instrumentation",
+        CmdOutput::success(NO_INSTRUMENTATION),
+    );
+    mock.expect_run("am force-stop", CmdOutput::success(""));
+    mock.expect_run("am force-stop", CmdOutput::success(""));
+    mock.expect_run("forward --list", CmdOutput::success(odd));
+    mock.expect_run(
+        "dumpsys activity instrumentation",
+        CmdOutput::success(NO_INSTRUMENTATION),
+    );
+
+    let receipt = cleanup(&mut mock, &repo, "borrowed-run");
+
+    assert!(receipt.cleanup["android_runner"].starts_with("unresolved"));
+    assert!(lock.exists());
+    assert_eq!(mock.remaining(), 0);
+}

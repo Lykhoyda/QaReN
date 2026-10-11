@@ -180,6 +180,30 @@ pub fn parse_client_version(stdout: &str) -> Option<u32> {
         .and_then(|n| n.parse().ok())
 }
 
+// Any adb call would start a missing server or restart one of another version; prove neither applies.
+pub fn borrowed_server_compatible(
+    runner: &mut dyn crate::exec::Runner,
+    adb: &Path,
+    server_port: u16,
+) -> Result<(), String> {
+    let server = runner.adb_server_version(server_port).map_err(|_| {
+        format!("no adb server answers on port {server_port}; start it, then re-run")
+    })?;
+    let output = runner.run(&client_version_spec(adb));
+    let client = output
+        .ok()
+        .then(|| parse_client_version(&output.stdout))
+        .flatten()
+        .ok_or_else(|| format!("cannot read the version of {}", adb.display()))?;
+    if client != server {
+        return Err(format!(
+            "adb at {} is version {client}, the server on port {server_port} is {server}; running it would restart the server",
+            adb.display()
+        ));
+    }
+    Ok(())
+}
+
 pub fn devices_spec(adb: &Path, server_port: u16) -> CmdSpec {
     adb_client("adb-devices", adb, server_port, &["devices"], 20)
 }
@@ -337,6 +361,23 @@ pub fn adb_reverse_spec(adb: &Path, server_port: u16, serial: &str, metro_port: 
     )
 }
 
+// A borrowed emulator's existing mapping is someone else's: never rebind it.
+pub fn adb_reverse_no_rebind_spec(
+    adb: &Path,
+    server_port: u16,
+    serial: &str,
+    metro_port: u16,
+) -> CmdSpec {
+    let forward = format!("tcp:{metro_port}");
+    adb_client(
+        "adb-reverse",
+        adb,
+        server_port,
+        &["-s", serial, "reverse", "--no-rebind", &forward, &forward],
+        30,
+    )
+}
+
 pub fn adb_reverse_remove_spec(
     adb: &Path,
     server_port: u16,
@@ -356,6 +397,24 @@ pub fn adb_reverse_remove_spec(
 // The intent carries the app id as its package constraint so the deep link can
 // only resolve into the app this run installed, never a chooser or another
 // scheme handler.
+pub fn adb_reverse_list_spec(adb: &Path, server_port: u16, serial: &str) -> CmdSpec {
+    adb_client(
+        "adb-reverse-list",
+        adb,
+        server_port,
+        &["-s", serial, "reverse", "--list"],
+        20,
+    )
+}
+
+// `reverse --list` lines are `<transport> tcp:<device> tcp:<host>`; the device side names the mapping.
+pub fn reverse_listed(stdout: &str, port: u16) -> bool {
+    let device = format!("tcp:{port}");
+    stdout
+        .lines()
+        .any(|line| line.split_whitespace().nth(1) == Some(device.as_str()))
+}
+
 pub fn am_start_deeplink_spec(
     adb: &Path,
     server_port: u16,
@@ -420,6 +479,82 @@ pub fn adb_get_state_spec(adb: &Path, server_port: u16, serial: &str) -> CmdSpec
         &["-s", serial, "get-state"],
         20,
     )
+}
+
+// The core's runner packages and its device port; a core sync test pins both.
+pub const RUNNER_PACKAGES: [&str; 2] = [
+    "dev.lykhoyda.rndevagent.androidrunner.test",
+    "dev.lykhoyda.rndevagent.androidrunner",
+];
+pub const RUNNER_DEVICE_PORT: u16 = 22089;
+
+pub fn forward_list_spec(adb: &Path, server_port: u16) -> CmdSpec {
+    adb_client(
+        "adb-forward-list",
+        adb,
+        server_port,
+        &["forward", "--list"],
+        20,
+    )
+}
+
+pub fn forward_remove_spec(adb: &Path, server_port: u16, serial: &str, host_port: u16) -> CmdSpec {
+    let local = format!("tcp:{host_port}");
+    adb_client(
+        "adb-forward-remove",
+        adb,
+        server_port,
+        &["-s", serial, "forward", "--remove", &local],
+        20,
+    )
+}
+
+pub fn force_stop_spec(adb: &Path, server_port: u16, serial: &str, package: &str) -> CmdSpec {
+    adb_client(
+        "adb-force-stop",
+        adb,
+        server_port,
+        &["-s", serial, "shell", "am", "force-stop", package],
+        20,
+    )
+}
+
+pub fn dumpsys_instrumentation_spec(adb: &Path, server_port: u16, serial: &str) -> CmdSpec {
+    adb_client(
+        "adb-dumpsys-instrumentation",
+        adb,
+        server_port,
+        &[
+            "-s",
+            serial,
+            "shell",
+            "dumpsys",
+            "activity",
+            "instrumentation",
+        ],
+        20,
+    )
+}
+
+// `forward --list` lines `<serial> <host> tcp:<runner device port>`: the runner's forwards on this serial.
+fn runner_forward_lines<'a>(stdout: &'a str, serial: &'a str) -> impl Iterator<Item = &'a str> {
+    let device = format!("tcp:{RUNNER_DEVICE_PORT}");
+    stdout.lines().filter_map(move |line| {
+        let fields: Vec<&str> = line.split_whitespace().collect();
+        (fields.len() == 3 && fields[0] == serial && fields[2] == device).then_some(fields[1])
+    })
+}
+
+// Host ports of the runner's tcp forwards on this serial.
+pub fn runner_forwards(stdout: &str, serial: &str) -> Vec<u16> {
+    runner_forward_lines(stdout, serial)
+        .filter_map(|local| local.strip_prefix("tcp:")?.parse().ok())
+        .collect()
+}
+
+// Any forward to the runner's device port on this serial, removable or not.
+pub fn runner_forward_remains(stdout: &str, serial: &str) -> bool {
+    runner_forward_lines(stdout, serial).next().is_some()
 }
 
 pub fn pm_path_spec(adb: &Path, server_port: u16, serial: &str, app_id: &str) -> CmdSpec {

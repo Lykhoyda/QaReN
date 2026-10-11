@@ -1486,3 +1486,94 @@ fn adb_client_version_is_the_protocol_number_the_server_reports() {
     assert_eq!(spec.program, "/sdk/platform-tools/adb");
     assert_eq!(spec.args, ["version"]);
 }
+
+#[test]
+fn runner_forwards_matches_only_this_serial_and_port() {
+    let list = "emulator-5554 tcp:41234 tcp:22089\n\
+                emulator-5556 tcp:41235 tcp:22089\n\
+                emulator-5554 tcp:41236 tcp:8081\n\
+                emulator-55540 tcp:41237 tcp:22089\n\
+                emulator-5554 tcp:41238 tcp:22089\n\
+                emulator-5554 localabstract:x tcp:22089\n";
+    assert_eq!(
+        android::runner_forwards(list, "emulator-5554"),
+        vec![41234, 41238]
+    );
+    assert!(android::runner_forwards(list, "emulator-5558").is_empty());
+    assert!(android::runner_forwards("", "emulator-5554").is_empty());
+    assert!(android::runner_forward_remains(list, "emulator-5554"));
+    assert!(!android::runner_forward_remains(
+        "emulator-5554 tcp:41236 tcp:8081\n",
+        "emulator-5554"
+    ));
+    // A runner forward whose host side is not a tcp port still counts as present.
+    assert!(android::runner_forward_remains(
+        "emulator-5554 localabstract:x tcp:22089\n",
+        "emulator-5554"
+    ));
+    assert_eq!(android::RUNNER_DEVICE_PORT, 22089);
+    assert_eq!(
+        android::RUNNER_PACKAGES,
+        [
+            "dev.lykhoyda.rndevagent.androidrunner.test",
+            "dev.lykhoyda.rndevagent.androidrunner"
+        ]
+    );
+}
+
+#[test]
+fn borrowed_runner_release_commands_go_through_the_borrowed_server() {
+    let adb = Path::new("/sdk/platform-tools/adb");
+    for (spec, args) in [
+        (
+            android::forward_list_spec(adb, 5147),
+            vec!["forward", "--list"],
+        ),
+        (
+            android::forward_remove_spec(adb, 5147, "emulator-5554", 41234),
+            vec!["-s", "emulator-5554", "forward", "--remove", "tcp:41234"],
+        ),
+        (
+            android::force_stop_spec(adb, 5147, "emulator-5554", android::RUNNER_PACKAGES[0]),
+            vec![
+                "-s",
+                "emulator-5554",
+                "shell",
+                "am",
+                "force-stop",
+                "dev.lykhoyda.rndevagent.androidrunner.test",
+            ],
+        ),
+        (
+            android::dumpsys_instrumentation_spec(adb, 5147, "emulator-5554"),
+            vec![
+                "-s",
+                "emulator-5554",
+                "shell",
+                "dumpsys",
+                "activity",
+                "instrumentation",
+            ],
+        ),
+    ] {
+        assert_eq!(spec.args, args);
+        assert!(spec.program.ends_with("/adb"));
+        assert!(spec.env.contains(&(
+            "ADB_SERVER_SOCKET".to_string(),
+            "tcp:127.0.0.1:5147".to_string()
+        )));
+    }
+}
+
+#[test]
+fn reverse_listed_matches_the_device_side_port_only() {
+    let list = "host-19 tcp:8081 tcp:8081\nUsbFfs tcp:8791 tcp:9000\n";
+    assert!(android::reverse_listed(list, 8081));
+    assert!(android::reverse_listed(list, 8791));
+    assert!(!android::reverse_listed(list, 9000));
+    assert!(!android::reverse_listed(list, 879));
+    assert!(!android::reverse_listed("", 8081));
+    let spec =
+        android::adb_reverse_list_spec(Path::new("/sdk/platform-tools/adb"), 5147, "emulator-5554");
+    assert_eq!(spec.args, ["-s", "emulator-5554", "reverse", "--list"]);
+}

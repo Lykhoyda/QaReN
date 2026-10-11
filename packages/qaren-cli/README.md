@@ -248,6 +248,23 @@ it. Add `android/` to `.gitignore`, or generate and commit it before the run.
 The APK is installed with `adb -s <serial>`, and a fingerprint-matched cached APK is reused
 the same way. The run keeps the app and the emulator.
 
+The Metro reverse is created with `adb reverse --no-rebind`: when the emulator
+already maps that port, the run refuses `DEVICE_BUSY` before the walk and
+leaves the mapping alone. Teardown, and `qaren cleanup <run-id>` after a crash
+or `SIGKILL`, release what the run put on the emulator, and only while the run
+still holds the device lease; otherwise those legs are refused and no adb
+command runs. Before any adb command, the borrowed server must answer with the
+version of the recorded `adb`. The `adb_reverse` leg removes the run's reverse
+and counts only once `reverse --list` no longer shows it. The `android_runner`
+leg waits for the core to be gone, then removes the runner's forwards to device
+port 22089, force-stops both runner packages, and verifies that `forward --list`
+and `dumpsys activity instrumentation` no longer show them. A walk that never
+started a runner reads as `absent`. An unproven leg keeps the lease, so a later
+`qaren cleanup <run-id>` can finish. The adb server, the app and the emulator are
+never touched: `--remove-app` on a borrowed emulator refuses
+`APP_REMOVAL_NOT_CONFIRMED` (uninstall the app yourself), and `qaren status`
+probes the emulator only through the borrowed adb server.
+
 ### Android runner provisioning
 
 The Android runner uses the runtime's shipped source; no published runner APK
@@ -1684,7 +1701,7 @@ build_and_ready — so revisit this once live reuse is measurable.
   `app_install` leg, executed before Android resource teardown while the
   lease, tunnel and private adb server are still alive, and only on the
   leased Android emulator route
-  (USB, iOS and records without a farm lease are refused before any cleanup
+  (USB, iOS, borrowed emulators and records without a farm lease are refused before any cleanup
   command runs; CLI git-root discovery precedes record loading). It requires
   `--confirm-remove-app <run-id>/<remote-serial>/<app-id>`
   naming exactly the loaded record's run id, recorded `emulator-*` serial
