@@ -1019,7 +1019,8 @@ login block fails when login recovery is needed. A second
 failure of the same step fails it, recovery never runs inside the login replay, and
 capture, Jev, process, replay-miss and cancellation refusals are never recovered. The
 ledger's `recoveries` counts recoveries that let the step retry; `escapes` and `llmTurns`
-stay `0`. Login fills are masked like plan fills; for the video, see [Test a pull request](#test-a-pull-request).
+stay `0`. Login fills are masked like plan fills; see [Video publication](#video-publication)
+for recording eligibility.
 
 Recovery counts as a device mutation for replay eligibility: a selector miss
 after recovery is terminal and never initiates another re-walk. The second ordinary
@@ -1149,13 +1150,8 @@ screen is recorded from just before the walk to just after it and encoded to
 `media/video.mp4` (H.264, 30 fps); without `ffmpeg`, or when a capture cannot
 start, the run continues and the receipt's `video` outcome says why. The local
 recording stays complete; `qaren publish` uploads only
-`media/video-published.mp4`, a copy that starts when the walk proved the app's
-bundle and passed [overlay clearance](#check-a-plan), so launcher, server-picker,
-relaunch and dev chrome frames before admission never reach the pull request.
-Without an admission time or a successful trim, or when an app process change,
-launcher/server-picker fallback, floating button or open dev menu is observed
-after admission, no video is uploaded, even if recovery clears the overlay and
-the retry passes. Blocks the walk saved are copied to `blocks/` before the
+`media/video-published.mp4`, trimmed under the [video publication contract](#video-publication).
+Blocks the walk saved are copied to `blocks/` before the
 worktree is removed. If the pull
 request moved during the run, the receipt names the tested commit in
 `tested_older_commit`. On Android, `pr` borrows an emulator like `check`; its
@@ -1193,7 +1189,7 @@ removes the `needs-qa` label only if the current head is the tested head; otherw
 `publication.json` and the receipt record `retained-head-changed`.
 
 A saved block is published only verbatim, and only when the walk was eligible
-for publication (no fill/type step and no private value observed) and the
+under the [video publication contract](#video-publication) and the
 machine redaction would leave the block unchanged. Any other block stays in the
 run's `blocks/` directory and is never rewritten; `publication.json` and the
 receipt record `withheld <slug>: <reason>`. Published blocks are committed to the
@@ -1241,14 +1237,35 @@ concurrent publisher fails until the holder exits. The file remains after releas
 its existence does not mean publication is active. Do not delete it to bypass
 contention.
 
+### Video publication
+
 Video publication eligibility and a value-free withholding reason are persisted
-in `pr.json`. A plan containing any fill/type step or a walk whose screenshot
-privacy disallowed capture keeps the recording local. A saved login replayed
-before any plan step passes does not withhold the video: the uploaded copy starts
-after it, and is withheld if a typed or private value appears on screen afterwards;
-a login later in the walk still withholds it. Missing, unknown or
-unreadable eligibility also withholds the video; the comment explains why, without
-changing the run verdict. Local recordings contain raw pixels. Transient prefilled
+in `pr.json`. A plan containing any fill/type step keeps the recording local,
+even if that step never executes. Otherwise, the uploaded copy starts when the
+walk proved the app's bundle and passed [overlay clearance](#check-a-plan).
+Sensitive observations from admission onwards withhold it.
+
+A successful saved login replay before any plan step passes moves the uploaded
+copy's start to the end of that replay. Its fills alone do not withhold the video.
+The last observed login screen must be clean: a typed or private value still
+visible there, or observed at any later capture, withholds the video for the rest
+of that window. Complete values of three or more characters also withhold capture
+when echoed with changed capitalization. A fill without readable input content
+keeps its field sensitive until the field leaves the screen; an unknown field
+keeps visible inputs sensitive. Login fills after any plan step passes withhold
+the video, including a second login after an earlier publication window opened.
+The login exception never resets run-wide screenshot withholding or masking
+history.
+
+Launcher, server-picker, relaunch and dev chrome frames before admission never
+reach the pull request. Without a start time or a successful trim, or when an app
+process change, launcher/server-picker fallback, floating button or open dev menu
+is observed after admission, no video is uploaded, even if recovery clears the
+overlay and the retry passes. A pre-plan login does not reset these interruptions.
+Missing, unknown or unreadable eligibility also withholds the video; the comment
+explains why, without changing the run verdict.
+
+Local recordings contain raw pixels. Transient prefilled
 values between captures remain a limitation for 2.1; there is no continuous privacy
 monitoring or pixel redaction.
 
