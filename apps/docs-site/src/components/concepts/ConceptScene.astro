@@ -1,0 +1,120 @@
+---
+interface Props {
+  id: string;
+  title?: string;
+  caption?: string;
+  steps: number;
+  stepMs?: number;
+  holdMs?: number;
+}
+const { id, title, caption, steps, stepMs = 1400, holdMs = 3200 } = Astro.props;
+---
+
+<figure
+  class="concept-scene not-content"
+  data-scene-id={id}
+  data-steps={steps}
+  data-step-ms={stepMs}
+  data-hold-ms={holdMs}
+>
+  {title && <figcaption class="scene-title">{title}</figcaption>}
+  <div class="scene-stage"><slot /></div>
+  {caption && <p class="scene-caption">{caption}</p>}
+</figure>
+
+<style is:global>
+  .concept-scene {
+    margin: 1.75rem 0;
+    padding: 1.25rem 1.4rem 1.1rem;
+    background: var(--sl-color-gray-7);
+    border: 1px solid var(--sl-color-gray-5);
+    border-radius: 10px;
+  }
+
+  .concept-scene .scene-title {
+    font-family: var(--sl-font-system-mono);
+    font-size: 0.7rem;
+    font-weight: 600;
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+    color: var(--sl-color-accent);
+    margin-bottom: 1rem;
+  }
+
+  .concept-scene .scene-caption {
+    font-size: 0.82rem;
+    color: var(--sl-color-gray-2);
+    margin: 0.9rem 0 0;
+  }
+
+  .concept-scene.is-animated [data-step] {
+    opacity: 0;
+    transform: translateY(4px);
+    transition:
+      opacity 0.3s ease,
+      transform 0.3s ease;
+  }
+
+  .concept-scene.is-animated [data-step].is-on {
+    opacity: 1;
+    transform: none;
+  }
+
+  .concept-scene.is-animated [data-until].is-past {
+    opacity: 0.35;
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .concept-scene.is-animated [data-step] {
+      opacity: 1;
+      transform: none;
+      transition: none;
+    }
+    .concept-scene.is-animated [data-until].is-past {
+      opacity: 1;
+    }
+  }
+</style>
+
+<script>
+  const reduced = matchMedia('(prefers-reduced-motion: reduce)').matches;
+  for (const scene of document.querySelectorAll<HTMLElement>('[data-scene-id]')) {
+    const steps = Number(scene.dataset.steps ?? 0);
+    if (!steps || reduced || !('IntersectionObserver' in window)) continue;
+    const stepMs = Number(scene.dataset.stepMs ?? 1400);
+    const holdMs = Number(scene.dataset.holdMs ?? 3200);
+    const parts = [...scene.querySelectorAll<HTMLElement>('[data-step]')];
+    const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+    let visible = false;
+    let running = false;
+
+    const apply = (active: number) => {
+      for (const el of parts) {
+        el.classList.toggle('is-on', Number(el.dataset.step) <= active);
+        el.classList.toggle('is-past', active > Number(el.dataset.until ?? Infinity));
+      }
+    };
+
+    const play = async () => {
+      if (running) return;
+      running = true;
+      scene.classList.add('is-animated');
+      while (visible) {
+        for (let s = 1; s <= steps && visible; s += 1) {
+          apply(s);
+          await sleep(s === steps ? holdMs : stepMs);
+        }
+      }
+      running = false;
+      apply(steps);
+    };
+
+    new IntersectionObserver(
+      ([entry]) => {
+        visible = entry.isIntersecting;
+        if (visible) play();
+      },
+      { threshold: 0.35 },
+    ).observe(scene);
+  }
+</script>

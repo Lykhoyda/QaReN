@@ -1,0 +1,83 @@
+---
+import ConceptScene from './ConceptScene.astro';
+---
+
+<ConceptScene
+  id="verify-loop"
+  title="The verification loop"
+  caption="Phase 6 of /rn-feature-dev: the agent proves the feature on the simulator before reporting done."
+  steps={6}
+>
+  <ol class="vl-loop">
+    <li data-step="1"><b>Implement</b><span>writes the feature</span></li>
+    <li data-step="2"><b>Connect</b><span>CDP over WebSocket</span></li>
+    <li data-step="3"><b>Navigate</b><span>to the changed screen</span></li>
+    <li data-step="4"><b>Read</b><span>component tree + store state</span></li>
+    <li data-step="5"><b>Exercise</b><span>taps the real UI</span></li>
+    <li data-step="6" class="vl-final"><b>Report</b><span>with evidence</span></li>
+  </ol>
+  <p class="vl-tagline" data-step="6">report with evidence — not "it should work now"</p>
+</ConceptScene>
+
+<style is:global>
+  .vl-loop {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 0.6rem;
+    list-style: none;
+    padding: 0;
+    margin: 0;
+    counter-reset: vl;
+  }
+
+  .vl-loop li {
+    counter-increment: vl;
+    background: var(--sl-color-gray-6);
+    border: 1px solid var(--sl-color-gray-5);
+    border-radius: 8px;
+    padding: 0.6rem 0.75rem;
+    font-size: 0.8rem;
+    line-height: 1.4;
+  }
+
+  .vl-loop li::before {
+    content: counter(vl);
+    display: inline-block;
+    font-family: var(--sl-font-system-mono);
+    font-size: 0.65rem;
+    color: var(--sl-color-accent);
+    border: 1px solid var(--sl-color-accent-low);
+    background: var(--sl-color-accent-low);
+    border-radius: 4px;
+    padding: 0 0.35rem;
+    margin-bottom: 0.35rem;
+  }
+
+  .vl-loop b {
+    display: block;
+    color: var(--sl-color-white);
+  }
+
+  .vl-loop span {
+    color: var(--sl-color-gray-2);
+    font-size: 0.74rem;
+  }
+
+  .vl-loop .vl-final {
+    border-color: var(--sl-color-accent);
+    background: var(--sl-color-accent-low);
+  }
+
+  .vl-tagline {
+    margin: 0.8rem 0 0;
+    font-family: var(--sl-font-system-mono);
+    font-size: 0.75rem;
+    color: var(--sl-color-accent);
+  }
+
+  @media (max-width: 40rem) {
+    .vl-loop {
+      grid-template-columns: repeat(2, 1fr);
+    }
+  }
+</style>
