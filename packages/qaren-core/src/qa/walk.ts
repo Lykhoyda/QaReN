@@ -661,7 +661,16 @@ async function main(): Promise<void> {
       }),
     );
     return finish(
-      resultForWalk({ ...ledger, admittedAtMs: opened.admittedAtMs }, request.lease),
+      resultForWalk(
+        {
+          ...ledger,
+          admittedAtMs: opened.admittedAtMs,
+          ...(ledger.publishFromMs !== undefined
+            ? { publishFromMs: request.t0 + ledger.publishFromMs }
+            : {}),
+        },
+        request.lease,
+      ),
       () => opened.close(),
     );
   } catch (error) {

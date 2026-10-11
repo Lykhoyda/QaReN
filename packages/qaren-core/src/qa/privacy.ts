@@ -627,6 +627,11 @@ export class ObservedPrivacy {
   private readonly codeRows = new WeakMap<Screen, Element[][]>();
   private readonly codeElements = new WeakSet<Element>();
   private sensitivePixels = false;
+  private sensitiveInWindow = false;
+  private sensitiveLatest = false;
+  // Fields typed into without a readable value, by any identity ('' is any input); only a seen field can leave.
+  private readonly concealedFields = new Set<{ ids: string[]; seen: boolean }>();
+  private shown: Element[] = [];
 
   constructor(private readonly typed: readonly string[] = []) {}
 
@@ -636,7 +641,13 @@ export class ObservedPrivacy {
   }
 
   observe(screen: Screen): void {
-    this.sensitivePixels ||= privateScreens.get(screen)?.sensitivePixels === true;
+    this.sensitiveLatest = false;
+    this.shown = screen.elements.filter((element) => !element.offscreen);
+    for (const field of this.concealedFields)
+      if (this.showing(field.ids)) field.seen = true;
+      else if (field.seen) this.concealedFields.delete(field);
+    if (this.concealedFields.size > 0) this.mark();
+    if (privateScreens.get(screen)?.sensitivePixels === true) this.mark();
     for (const value of privateScreens.get(screen)?.secrets ?? []) this.secret.add(value);
     for (const value of inputValues(screen)) this.observed.add(value);
     for (const value of inputValues(screen, true)) this.concealed.add(value);
@@ -662,7 +673,7 @@ export class ObservedPrivacy {
         );
         if (boxes.includes(element) || echo || merged) this.codeElements.add(element);
       }
-      this.sensitivePixels ||= rows.length > 0;
+      if (rows.length > 0) this.mark();
     }
     for (const element of screen.elements)
       if (element.secure) {
@@ -677,13 +688,21 @@ export class ObservedPrivacy {
         .flatMap((element) => [element.label ?? '', element.value ?? '']),
     ];
     const values = this.privateSet();
-    this.sensitivePixels ||=
+    const folded = text.map((line) => line.normalize('NFC').toLowerCase());
+    if (
       text.some((line) => matchPrivate(line, values, 'persisted').hit) ||
       values.values.some(
         (value) =>
           chars(value.text.trim()) < SHORT &&
           forms(value.text).some((form) => text.some((line) => line.includes(form))),
-      );
+      ) ||
+      values.values.some(
+        (value) =>
+          chars(value.text.trim()) >= SHORT &&
+          folded.some((line) => line.includes(value.text.trim().normalize('NFC').toLowerCase())),
+      )
+    )
+      this.mark();
   }
 
   didFill(value?: string): void {
@@ -691,14 +710,42 @@ export class ObservedPrivacy {
     if (value) this.filledValues.add(value);
   }
 
-  concealFallback(value: string, secure = false): void {
+  concealFallback(value: string, secure = false, ...fields: (string | undefined)[]): void {
+    const ids = fields.filter((field): field is string => Boolean(field));
+    if (ids.length === 0) ids.push('');
+    this.concealedFields.add({ ids, seen: this.showing(ids) });
     this.concealed.add(value);
     if (secure) this.secret.add(value);
+    this.mark();
+  }
+
+  private showing(ids: readonly string[]): boolean {
+    return this.shown.some((element) =>
+      ids.some((id) =>
+        id
+          ? element.testID === id || element.label === id
+          : element.kind === 'input' || isPrivateInput(element),
+      ),
+    );
+  }
+
+  private mark(): void {
     this.sensitivePixels = true;
+    this.sensitiveInWindow = true;
+    this.sensitiveLatest = true;
   }
 
   canScreenshot(): boolean {
     return !this.sensitivePixels;
+  }
+
+  // The published video starts here, still showing the latest screen; screenshots keep the run-wide flag.
+  startWindow(): void {
+    this.sensitiveInWindow = this.sensitiveLatest;
+  }
+
+  windowClean(): boolean {
+    return !this.sensitiveInWindow;
   }
 
   privateSet(): PrivateSet {

@@ -86,6 +86,19 @@ fn the_admission_time_survives_ledger_round_trip() {
 }
 
 #[test]
+fn the_publish_window_survives_ledger_round_trip() {
+    let mut raw = ledger(
+        json!([]),
+        json!({"walkMs":0,"steps":0,"passed":0,"failed":0}),
+    );
+    raw["admittedAtMs"] = json!(1_791_100_000_123u64);
+    raw["publishFromMs"] = json!(1_791_100_004_567u64);
+    let parsed: Ledger = serde_json::from_value(raw.clone()).unwrap();
+    assert_eq!(parsed.publish_from_ms, Some(1_791_100_004_567));
+    assert_eq!(serde_json::to_value(parsed).unwrap(), raw);
+}
+
+#[test]
 fn malformed_timing_is_dropped_without_rejecting_the_row_or_ledger() {
     let row: Row = serde_json::from_value(json!({"block":"qa","line":1,"attempt":1,"kind":"step",
         "resolvedBy":"exact","t":5,"outcome":"pass","timing":{"captureMs":-1}}))

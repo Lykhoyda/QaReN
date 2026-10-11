@@ -315,3 +315,39 @@ test('every contiguous three-character fragment of a secure secret is masked, wh
       text,
     );
 });
+
+test('the publish window clears earlier sensitive pixels for the video, never for screenshots', () => {
+  const privacy = new ObservedPrivacy(['ada@example.com']);
+  privacy.observe(screen([element('@email', 'ada@example.com', { kind: 'text' })]));
+  privacy.startWindow();
+  assert.equal(privacy.windowClean(), false);
+  privacy.observe(screen([element('@title', 'Settings', { kind: 'text' })]));
+  assert.equal(privacy.windowClean(), false);
+  privacy.startWindow();
+  assert.equal(privacy.windowClean(), true);
+  assert.equal(privacy.canScreenshot(), false);
+  privacy.observe(screen([element('@greeting', 'Signed in as ada@example.com', { kind: 'text' })]));
+  assert.equal(privacy.windowClean(), false);
+});
+
+test('a case-changed echo of a typed value dirties the publish window', () => {
+  const privacy = new ObservedPrivacy(['alice@example.test']);
+  privacy.startWindow();
+  privacy.observe(
+    screen([element('@greeting', 'Signed in as Alice@Example.TEST', { kind: 'text' })]),
+  );
+  assert.equal(privacy.windowClean(), false);
+});
+
+test('a concealed fill dirties the publish window until its field leaves the screen', () => {
+  const privacy = new ObservedPrivacy(['123456']);
+  const form = screen([element('@otp', '', { kind: 'input', testID: 'otp_code' })]);
+  privacy.observe(form);
+  privacy.concealFallback('123456', false, 'otp_code');
+  privacy.observe(form);
+  privacy.startWindow();
+  assert.equal(privacy.windowClean(), false);
+  privacy.observe(screen([element('@done', 'Login complete', { kind: 'text' })]));
+  privacy.startWindow();
+  assert.equal(privacy.windowClean(), true);
+});

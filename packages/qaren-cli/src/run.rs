@@ -803,11 +803,12 @@ fn run_inner(
                 ));
             }
         }
-        // Only the uploaded copy starts at the admitted app; the local recording stays complete.
+        // Only the uploaded copy starts at the admitted app, or after a pre-plan login; the local recording stays complete.
         let video = if video == VideoStatus::Available || outcome.ledger.publication_interrupted {
             let offset = outcome
                 .ledger
-                .admitted_at_ms
+                .publish_from_ms
+                .or(outcome.ledger.admitted_at_ms)
                 .map(|at| at.saturating_sub(recording_from));
             record::publication_copy(
                 ctx.runner,

@@ -68,6 +68,9 @@ pub struct Ledger {
     // Epoch ms at which the walk proved the app's bundle and cleared its dev overlays; earlier recorded frames are never published.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub admitted_at_ms: Option<u64>,
+    // Epoch ms after a pre-plan login replay; the uploaded copy starts here instead of admission.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub publish_from_ms: Option<u64>,
     #[serde(default)]
     pub publication_interrupted: bool,
     pub path: String,
@@ -1102,6 +1105,7 @@ pub fn synthesized_ledger(rows: &[Row], verdict: &str, seen: &str) -> Ledger {
         verdict: verdict.to_string(),
         video_publication: None,
         admitted_at_ms: None,
+        publish_from_ms: None,
         publication_interrupted: false,
         path: "walk".to_string(),
         blocks: Vec::new(),

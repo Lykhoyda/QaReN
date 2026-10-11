@@ -90,7 +90,7 @@ pub fn video_path(run_dir: &Path) -> PathBuf {
     media_dir(run_dir).join("video.mp4")
 }
 
-// The copy `qaren publish` uploads; it starts at the admitted app, while video.mp4 stays complete.
+// Only this trimmed copy is uploaded; video.mp4 retains the complete local recording.
 pub fn published_video_path(run_dir: &Path) -> PathBuf {
     media_dir(run_dir).join("video-published.mp4")
 }
