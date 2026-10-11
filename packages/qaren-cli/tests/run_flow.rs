@@ -2215,7 +2215,7 @@ fn two_booted_simulators_refuse_without_a_device_and_borrow_the_named_one_with_i
     let mut refusing = MockRunner::new();
     script_preflight_booted(&mut refusing, &repo, &booted_json_two());
     let receipt = run(&mut refusing, &request(&repo, &app, 30));
-    assert_ne!(receipt.result, ReceiptResult::Pass);
+    assert_eq!(receipt.result, ReceiptResult::Refused);
     assert_eq!(
         receipt.failure.as_ref().unwrap().code,
         FailureCode::DeviceUnavailable
@@ -2291,6 +2291,7 @@ fn a_named_device_that_is_not_booted_refuses() {
     assert_ne!(receipt.result, ReceiptResult::Pass);
     let failure = receipt.failure.as_ref().unwrap();
     assert_eq!(failure.code, FailureCode::DeviceUnavailable);
+    assert_eq!(receipt.result, ReceiptResult::Refused);
     assert!(failure.detail.contains(OTHER_UDID), "{}", failure.detail);
     assert_eq!(mock.remaining(), 0);
 }
@@ -2327,6 +2328,7 @@ fn boot_device_requires_ios_and_an_exact_uuid_before_any_preflight() {
         req.boot_device = true;
         let mut mock = MockRunner::new();
         let receipt = run(&mut mock, &req);
+        assert_eq!(receipt.result, ReceiptResult::Refused);
         assert_eq!(receipt.failure.unwrap().code, expected);
         assert!(mock.calls.is_empty());
         assert!(!req.lock_root.exists());
@@ -2842,6 +2844,7 @@ fn android_check_borrows_the_named_emulator_among_two() {
     let receipt = run(&mut mock, &req);
     let failure = receipt.failure.unwrap();
     assert_eq!(failure.code, FailureCode::DeviceUnavailable);
+    assert_eq!(receipt.result, ReceiptResult::Refused);
     assert!(
         failure.detail.starts_with("2 booted emulators"),
         "{}",
@@ -2927,6 +2930,7 @@ fn android_check_refuses_an_adb_client_newer_than_the_server() {
     let receipt = run(&mut mock, &req);
     let failure = receipt.failure.unwrap();
     assert_eq!(failure.code, FailureCode::DeviceUnavailable);
+    assert_eq!(receipt.result, ReceiptResult::Refused);
     assert!(
         failure
             .detail
@@ -2963,6 +2967,7 @@ fn android_check_refuses_when_no_adb_server_listens() {
     let receipt = run(&mut mock, &req);
     let failure = receipt.failure.unwrap();
     assert_eq!(failure.code, FailureCode::DeviceUnavailable);
+    assert_eq!(receipt.result, ReceiptResult::Refused);
     assert!(
         failure
             .detail
@@ -3004,6 +3009,7 @@ fn android_check_refuses_unborrowable_devices_without_a_lease() {
         let receipt = run(&mut mock, &req);
         let failure = receipt.failure.unwrap();
         assert_eq!(failure.code, FailureCode::DeviceUnavailable, "{case}");
+        assert_eq!(receipt.result, ReceiptResult::Refused);
         assert!(failure.detail.starts_with(detail), "{case}: {}", failure.detail);
         assert_eq!(mock.remaining(), 0, "{case}");
         assert!(!req.lock_root.exists(), "{case}");
@@ -3022,6 +3028,7 @@ fn android_check_refuses_a_remote_adb_socket() {
     let receipt = run(&mut mock, &req);
     let failure = receipt.failure.unwrap();
     assert_eq!(failure.code, FailureCode::DeviceUnavailable);
+    assert_eq!(receipt.result, ReceiptResult::Refused);
     assert!(
         failure.detail.contains("not a loopback adb server"),
         "{}",

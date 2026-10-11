@@ -1259,8 +1259,9 @@ receipt to stdout; argument/usage errors are the sole exception — they exit
 `2` with help on stderr and an empty stdout. All human-readable narration
 goes to stderr. Exit codes: `0` ready / cleaned / planned / working /
 prewarmed, `1` failed, `2` usage, `3` unknown, `4` refused (contended
-device or build lock, missing prewarm authorization, unprovable ownership,
-unconfirmed app removal, or rejected cooperative-handoff evidence).
+device or build lock, an unavailable device, missing prewarm authorization,
+unprovable ownership, unconfirmed app removal, or rejected cooperative-handoff
+evidence).
 
 `--remove-app` and `--confirm-remove-app` must be supplied together and only
 on `cleanup`; a missing flag or confirmation value, or use on another verb,
@@ -1394,7 +1395,7 @@ lock root (the per-user default covers the single-operator dev-machine
 model). A run-scoped `--one-device <serial>` adb server (host adb key
 pinned explicitly) is the only path to the phone; `expo run:android` routes
 through it via `ADB_SERVER_SOCKET` + `ANDROID_SERIAL`. An `unauthorized` or
-`offline` device is a structured `DEVICE_UNAVAILABLE` failure. Cleanup
+`offline` device is a structured `DEVICE_UNAVAILABLE` refusal (exit 4). Cleanup
 releases the claim only after every resource that can still address the
 device (reverse mapping, adb server, and the build/Metro process group that
 drives adb through that socket and serial) is proven removed or absent.

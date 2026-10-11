@@ -300,7 +300,7 @@ fn usb_prepare_refuses_contended_device_and_cleanup_stays_ownership_safe() {
 }
 
 #[test]
-fn usb_prepare_fails_when_device_is_unauthorized() {
+fn usb_prepare_refuses_when_device_is_unauthorized() {
     let repo = common::temp_repo();
     let scenario_path = write_scenario(&repo, &usb_scenario_yaml(8794));
     let sdk = android_sdk(&repo);
@@ -337,7 +337,7 @@ fn usb_prepare_fails_when_device_is_unauthorized() {
             Some(sdk.to_string_lossy().into_owned()),
         ),
     );
-    assert_eq!(receipt.result, ReceiptResult::Failed);
+    assert_eq!(receipt.result, ReceiptResult::Refused);
     let failure = receipt.failure.as_ref().unwrap();
     assert_eq!(failure.code, FailureCode::DeviceUnavailable);
     assert!(failure.next_action.contains("cleanup"));
