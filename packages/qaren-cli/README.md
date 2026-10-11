@@ -230,9 +230,10 @@ else 5037. `qaren` asks that server for its version over the adb protocol and
 issues no server start or stop command: with no server answering it refuses
 `DEVICE_UNAVAILABLE`, and so it does when `adb version` under `ANDROID_HOME`
 differs from the server's, because a client of another version would restart the
-server. The check holds at the start of the run; if the server exits later, the
-next adb call starts a new one, and another tool restarting the server mid-run is
-outside `qaren`'s control. Automatic selection counts only emulators in adb's
+server. This admission check does not continuously monitor the server; another
+tool restarting it mid-run is outside `qaren`'s control. If it exits during the
+build or walk, a subsequent adb call can start a new server. Status and cleanup
+recheck compatibility as described below. Automatic selection counts only emulators in adb's
 `device` state whose `sys.boot_completed` is `1`, ignoring those still booting.
 Exactly one must qualify; otherwise selection refuses `DEVICE_UNAVAILABLE`
 (exit 4). With several boot-completed emulators, `--device emulator-NNNN`
@@ -253,17 +254,23 @@ already maps that port, the run refuses `DEVICE_BUSY` before the walk and
 leaves the mapping alone. Teardown, and `qaren cleanup <run-id>` after a crash
 or `SIGKILL`, release what the run put on the emulator, and only while the run
 still holds the device lease; otherwise those legs are refused and no adb
-command runs. Before any adb command, the borrowed server must answer with the
-version of the recorded `adb`. The `adb_reverse` leg removes the run's reverse
-and counts only once `reverse --list` no longer shows it. The `android_runner`
-leg waits for the core to be gone, then removes the runner's forwards to device
-port 22089, force-stops both runner packages, and verifies that `forward --list`
-and `dumpsys activity instrumentation` no longer show them. A walk that never
-started a runner reads as `absent`. An unproven leg keeps the lease, so a later
-`qaren cleanup <run-id>` can finish. The adb server, the app and the emulator are
-never touched: `--remove-app` on a borrowed emulator refuses
+command runs. Before the release sequence, the borrowed server must answer with
+the version of the recorded `adb`; a missing or incompatible server leaves the
+release unresolved. The `adb_reverse` leg verifies a successful removal with
+`reverse --list`; adb's explicit listener-not-found response counts as `absent`.
+The `android_runner` leg requires proven core and runner-driver shutdown, then
+removes the runner's forwards on the selected emulator, force-stops both runner
+packages, and verifies absence through `forward --list` and
+`dumpsys activity instrumentation`. The runner port and packages are defined in
+[`src/adapters/android.rs`](src/adapters/android.rs) and checked against the core by
+the [runner sync test](../qaren-core/test/unit/qaren-cli-android-runner-sync.test.ts).
+A walk that never started a runner reads as `absent`; a run that never reached
+the walk needs no runner release. An unproven leg keeps the lease, so a later
+`qaren cleanup <run-id>` can finish. Cleanup preserves the adb server, installed
+app and running emulator: `--remove-app` on a borrowed emulator refuses
 `APP_REMOVAL_NOT_CONFIRMED` (uninstall the app yourself), and `qaren status`
-probes the emulator only through the borrowed adb server.
+probes the emulator only through the borrowed adb server, rechecking compatibility
+before device probes and reporting them as inconclusive if that check fails.
 
 ### Android runner provisioning
 

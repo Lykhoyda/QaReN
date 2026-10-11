@@ -394,9 +394,6 @@ pub fn adb_reverse_remove_spec(
     )
 }
 
-// The intent carries the app id as its package constraint so the deep link can
-// only resolve into the app this run installed, never a chooser or another
-// scheme handler.
 pub fn adb_reverse_list_spec(adb: &Path, server_port: u16, serial: &str) -> CmdSpec {
     adb_client(
         "adb-reverse-list",
@@ -415,6 +412,9 @@ pub fn reverse_listed(stdout: &str, port: u16) -> bool {
         .any(|line| line.split_whitespace().nth(1) == Some(device.as_str()))
 }
 
+// The intent carries the app id as its package constraint so the deep link can
+// only resolve into the app this run installed, never a chooser or another
+// scheme handler.
 pub fn am_start_deeplink_spec(
     adb: &Path,
     server_port: u16,
