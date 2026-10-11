@@ -109,6 +109,96 @@ pub fn tunnel_spec(host: &str, adb_port: u16) -> CmdSpec {
     }
 }
 
+// The borrowed server: ADB_SERVER_SOCKET (loopback only), then ANDROID_ADB_SERVER_PORT, then 5037.
+pub fn borrowed_server_port(socket: Option<&str>, port: Option<&str>) -> Result<u16, String> {
+    let parse = |raw: &str| raw.parse::<u16>().ok().filter(|p| *p > 0);
+    if let Some(socket) = socket.filter(|s| !s.is_empty()) {
+        return ["tcp:localhost:", "tcp:127.0.0.1:"]
+            .iter()
+            .find_map(|prefix| socket.strip_prefix(prefix))
+            .and_then(parse)
+            .ok_or_else(|| {
+                format!(
+                    "ADB_SERVER_SOCKET {socket:?} is not a loopback adb server (tcp:localhost:<port> or tcp:127.0.0.1:<port>)"
+                )
+            });
+    }
+    match port.filter(|p| !p.is_empty()) {
+        Some(raw) => {
+            parse(raw).ok_or_else(|| format!("ANDROID_ADB_SERVER_PORT {raw:?} is not a TCP port"))
+        }
+        None => Ok(5037),
+    }
+}
+
+// A plain TCP connect, so no adb client ever gets the chance to auto-start a server.
+pub fn server_listening(port: u16) -> bool {
+    let addr = std::net::SocketAddr::from(([127, 0, 0, 1], port));
+    std::net::TcpStream::connect_timeout(&addr, std::time::Duration::from_millis(500)).is_ok()
+}
+
+pub fn devices_spec(adb: &Path, server_port: u16) -> CmdSpec {
+    adb_client("adb-devices", adb, server_port, &["devices"], 20)
+}
+
+// (serial, state) pairs from `adb devices`, skipping the header and blank lines.
+pub fn parse_devices(stdout: &str) -> Vec<(String, String)> {
+    stdout
+        .lines()
+        .filter(|l| !l.starts_with("List of devices") && !l.starts_with('*'))
+        .filter_map(|l| {
+            let mut parts = l.split_whitespace();
+            Some((parts.next()?.to_string(), parts.next()?.to_string()))
+        })
+        .collect()
+}
+
+pub fn getprop_spec(adb: &Path, server_port: u16, serial: &str, prop: &str) -> CmdSpec {
+    adb_client(
+        "adb-getprop",
+        adb,
+        server_port,
+        &["-s", serial, "shell", "getprop", prop],
+        20,
+    )
+}
+
+pub fn avd_name_spec(adb: &Path, server_port: u16, serial: &str) -> CmdSpec {
+    adb_client(
+        "adb-emu-avd-name",
+        adb,
+        server_port,
+        &["-s", serial, "emu", "avd", "name"],
+        20,
+    )
+}
+
+pub fn parse_avd_name(stdout: &str) -> Option<String> {
+    stdout
+        .lines()
+        .map(str::trim)
+        .find(|l| !l.is_empty() && *l != "OK")
+        .map(str::to_string)
+}
+
+// --no-daemon so no Gradle JVM outlives the run's build group; ANDROID_HOME is inherited.
+pub fn gradle_assemble_spec(project_root: &Path, abi: &str, deadline_seconds: u64) -> CmdSpec {
+    CmdSpec::new(
+        "gradle-assemble",
+        "./gradlew",
+        &[
+            ":app:assembleDebug",
+            &format!("-PreactNativeArchitectures={abi}"),
+            "--no-daemon",
+            "--console=plain",
+        ],
+        deadline_seconds,
+    )
+    .cwd(&project_root.join("android"))
+    .env("CI", "1")
+    .env("EXPO_NO_TELEMETRY", "1")
+}
+
 pub fn server_socket(server_port: u16) -> String {
     format!("tcp:127.0.0.1:{server_port}")
 }

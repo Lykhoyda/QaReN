@@ -211,6 +211,16 @@ pub struct AdbServerResource {
     pub log: PathBuf,
 }
 
+// Only the borrowed server's port is recorded: qaren never starts or stops that adb server.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BorrowedEmulatorResource {
+    pub serial: String,
+    pub avd: String,
+    pub server_port: u16,
+    pub api_level: u32,
+    pub abi: String,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct UsbDeviceResource {
     pub serial: String,
@@ -290,6 +300,8 @@ pub struct Resources {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub usb_device: Option<UsbDeviceResource>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub android_emulator: Option<BorrowedEmulatorResource>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub build_lock: Option<BuildLockResource>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub adb_reverse_port: Option<u16>,
@@ -317,6 +329,16 @@ pub struct Resources {
 }
 
 impl Resources {
+    // The adb path, device serial and server port every device command of this run goes through.
+    pub fn adb_endpoint(&self) -> Option<(PathBuf, String, u16)> {
+        let port = self
+            .adb_server
+            .as_ref()
+            .map(|s| s.server_port)
+            .or_else(|| self.android_emulator.as_ref().map(|e| e.server_port))?;
+        Some((self.adb_path.clone()?, self.adb_local_serial.clone()?, port))
+    }
+
     pub fn build_process(&self) -> Option<&BuildProcess> {
         self.build_process.as_ref()
     }

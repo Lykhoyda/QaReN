@@ -2334,27 +2334,587 @@ fn boot_device_requires_ios_and_an_exact_uuid_before_any_preflight() {
     }
 }
 
+const EMULATOR: &str = "emulator-5554";
+const ANDROID_TOOLS: &[&str] = &["git", "pnpm", "node", "lsof", "curl", "ps", "java"];
+const ONE_EMULATOR: &str = "List of devices attached\nemulator-5554\tdevice\n\n";
+
+// A real platform-tools/adb file: the borrow and the prereq check both require it on disk.
+fn android_request(repo: &Path, app: &Path) -> RunRequest {
+    let home = repo.join("sdk");
+    std::fs::create_dir_all(home.join("platform-tools")).unwrap();
+    std::fs::write(home.join("platform-tools/adb"), "").unwrap();
+    let mut req = request(repo, app, 30);
+    req.platform = Platform::Android;
+    req.android_home = Some(home.to_string_lossy().into_owned());
+    req
+}
+
+fn android_mock() -> MockRunner {
+    let mut mock = MockRunner::new();
+    mock.listening.push(5037);
+    mock
+}
+
+fn script_borrow(mock: &mut MockRunner, devices: &str, serial: &str) {
+    mock.expect_run("adb devices", CmdOutput::success(devices));
+    mock.expect_run(
+        &format!("-s {serial} shell getprop sys.boot_completed"),
+        CmdOutput::success("1\n"),
+    );
+    mock.expect_run("getprop ro.build.version.sdk", CmdOutput::success("37\n"));
+    mock.expect_run("getprop ro.product.cpu.abi", CmdOutput::success("x86_64\n"));
+    mock.expect_run(
+        &format!("-s {serial} emu avd name"),
+        CmdOutput::success("Pixel_9_API_37\r\nOK\r\n"),
+    );
+}
+
+// Node, plan preflight, the borrow, candidate, prereqs, disk and self identity, then the Metro port after the lease.
+fn script_android_preflight(mock: &mut MockRunner, repo: &Path, devices: &str, serial: &str) {
+    mock.expect_run("node --version", CmdOutput::success("v26.8.1\n"));
+    script_plan(mock, repo);
+    script_borrow(mock, devices, serial);
+    mock.expect_run("git", CmdOutput::success(&format!("{}\n", repo.display())));
+    mock.expect_run("git", CmdOutput::success(&format!("{}\n", repo.display())));
+    mock.expect_run("git", CmdOutput::success(&format!("{}\n", "b".repeat(40))));
+    mock.expect_run(
+        "git",
+        CmdOutput::success("?? test-app/.qaren/config.yaml\0?? test-app/plan.md\0"),
+    );
+    for tool in ANDROID_TOOLS {
+        mock.expect_run("which", CmdOutput::success(&format!("/usr/bin/{tool}\n")));
+    }
+    mock.expect_run("df", df_ok());
+    mock.expect_run("ps", CmdOutput::success("Wed Aug 12 15:59:00 2026\n"));
+    mock.expect_run("ps", CmdOutput::success("qaren check\n"));
+    mock.expect_run("lsof", free_port());
+}
+
+fn adb_calls(mock: &MockRunner) -> Vec<String> {
+    mock.calls
+        .iter()
+        .filter(|c| c.program.ends_with("/adb"))
+        .map(|c| c.args.join(" "))
+        .collect()
+}
+
+fn no_ios_or_expo_android_build(mock: &MockRunner) {
+    for call in &mock.calls {
+        let rendered = call.rendered();
+        assert!(
+            !rendered.contains("xcrun") && !rendered.contains("run:android"),
+            "{rendered}"
+        );
+    }
+}
+
+// Install by serial → reverse → Metro → deeplink → readiness → verify → walk → teardown.
+fn script_android_launch_walk_teardown(mock: &mut MockRunner) {
+    mock.expect_run(
+        "install -r -d",
+        CmdOutput::success("Performing Streamed Install\nSuccess\n"),
+    );
+    mock.expect_run("reverse tcp:8791 tcp:8791", CmdOutput::success("8791\n"));
+    mock.expect_spawn(
+        "expo start",
+        Spawned {
+            pid: 6000,
+            pgid: 6000,
+        },
+    );
+    mock.expect_run("ps", CmdOutput::success("Wed Aug 12 16:01:00 2026"));
+    mock.expect_run("ps", CmdOutput::success("node expo start"));
+    mock.expect_run("ps", CmdOutput::success("Wed Aug 12 16:01:00 2026"));
+    mock.expect_run("ps", CmdOutput::success("S"));
+    mock.expect_run("lsof", CmdOutput::success("6001"));
+    mock.expect_run("ps", CmdOutput::success("6000"));
+    mock.expect_run("curl", CmdOutput::success("packager-status:running"));
+    mock.expect_run("expo-platform", CmdOutput::success(""));
+    mock.expect_run("am start", CmdOutput::success("Starting: Intent"));
+    mock.expect_run("ps", CmdOutput::success(&format!("{LSTART}\n")));
+    mock.expect_run("ps", CmdOutput::success("S\n"));
+    mock.expect_run("lsof", CmdOutput::success("6001\n"));
+    mock.expect_run("ps", CmdOutput::success("6000\n"));
+    mock.expect_run("curl", CmdOutput::success("packager-status:running"));
+    mock.expect_run(
+        "pm path com.rndevagent.testapp",
+        CmdOutput::success("package:/data/app/~~x/com.rndevagent.testapp/base.apk\n"),
+    );
+    mock.expect_run("pidof com.rndevagent.testapp", CmdOutput::success("4242\n"));
+    mock.expect_run("ls-files", CmdOutput::success(""));
+    script_drift_status(mock);
+    mock.expect_spawn_piped("walk.js", 9000, &pass_stdout(), Some(0));
+    script_core_identity(mock);
+    script_drift_status(mock);
+    mock.expect_run("git", CmdOutput::success(&format!("{}\n", "b".repeat(40))));
+    mock.expect_run(
+        "git",
+        CmdOutput::success("?? test-app/.qaren/config.yaml\0?? test-app/plan.md\0"),
+    );
+    mock.expect_run("ps -A", CmdOutput::success("1 1 S\n6000 6000 S\n"));
+    script_metro_teardown(mock, EMULATOR, None);
+}
+
+// One finite build: the gated spawn, its group identity, then its group proven gone.
+fn script_android_finite_build(mock: &mut MockRunner, command: &str, pid: i32, exit: i32) {
+    mock.expect_spawn_piped(command, pid, "", Some(exit));
+    mock.expect_run("ps", CmdOutput::success("Wed Aug 12 16:00:00 2026"));
+    mock.expect_run("ps", CmdOutput::success("qaren-build"));
+    mock.expect_run("ps -A", CmdOutput::success("1 1 S\n"));
+}
+
+const PREBUILD: &str = "expo prebuild --platform android --clean";
+const GRADLE: &str =
+    "./gradlew :app:assembleDebug -PreactNativeArchitectures=x86_64 --no-daemon --console=plain";
+
+#[test]
+fn android_check_prebuilds_an_absent_android_dir_before_gradle() {
+    let (repo, app) = app_repo();
+    let req = android_request(&repo, &app);
+    let mut mock = android_mock();
+    script_android_preflight(&mut mock, &repo, ONE_EMULATOR, EMULATOR);
+    mock.expect_run("pnpm install --frozen-lockfile", CmdOutput::success(""));
+    mock.expect_run("ls-files", CmdOutput::success(""));
+    script_android_finite_build(&mut mock, PREBUILD, 5000, 0);
+    script_android_finite_build(&mut mock, GRADLE, 5001, 0);
+    script_android_launch_walk_teardown(&mut mock);
+
+    let (receipt, events) = run_with_events(&mut mock, &req);
+
+    assert_eq!(receipt.result, ReceiptResult::Pass, "{:?}", receipt.failure);
+    assert_eq!(mock.remaining(), 0);
+    assert_subsequence(
+        &labels(&mock),
+        &[
+            "expo-prebuild",
+            "gradle-assemble",
+            "adb-install",
+            "adb-reverse",
+            "adb-am-start",
+        ],
+    );
+    let gradle = mock
+        .calls
+        .iter()
+        .find(|c| c.label == "gradle-assemble")
+        .unwrap();
+    assert_eq!(
+        gradle.cwd.as_deref(),
+        Some(app.canonicalize().unwrap().join("android").as_path())
+    );
+    assert!(gradle.env.contains(&("CI".to_string(), "1".to_string())));
+    assert!(!mock
+        .calls
+        .iter()
+        .any(|c| c.rendered().contains("run:android")));
+    let trail = stage_trail(&events);
+    let at = |stage: &str| {
+        trail
+            .iter()
+            .position(|s| s == stage)
+            .unwrap_or_else(|| panic!("{stage} not in {trail:?}"))
+    };
+    assert!(at("native_build passed") < at("install_launch_ready running"));
+    assert!(at("install_launch_ready running") < at("install_launch_ready passed"));
+    assert!(
+        !trail
+            .iter()
+            .any(|s| s.starts_with("install_launch_ready skipped")),
+        "{trail:?}"
+    );
+}
+
+#[test]
+fn android_check_prebuild_failure_is_build_failed() {
+    let (repo, app) = app_repo();
+    let req = android_request(&repo, &app);
+    let mut mock = android_mock();
+    script_android_preflight(&mut mock, &repo, ONE_EMULATOR, EMULATOR);
+    mock.expect_run("pnpm install --frozen-lockfile", CmdOutput::success(""));
+    mock.expect_run("ls-files", CmdOutput::success(""));
+    script_android_finite_build(&mut mock, PREBUILD, 5000, 1);
+
+    let receipt = run(&mut mock, &req);
+
+    assert_eq!(
+        receipt.failure.as_ref().unwrap().code,
+        FailureCode::BuildFailed
+    );
+    assert_eq!(mock.remaining(), 0);
+    assert!(!labels(&mock).iter().any(|l| l == "gradle-assemble"));
+    let devices: Vec<String> = adb_calls(&mock)
+        .into_iter()
+        .filter(|c| !c.contains("getprop") && !c.contains("emu avd name") && c != "devices")
+        .collect();
+    assert!(devices.is_empty(), "{devices:?}");
+    assert_eq!(receipt.cleanup["device_lease"], "removed");
+}
+
+#[test]
+fn android_check_present_android_dir_skips_prebuild() {
+    use qaren::buildplan::{save_json, state_path, NativeCacheState, CACHE_SCHEMA};
+    let (repo, app) = app_repo();
+    std::fs::create_dir_all(app.join("android")).unwrap();
+    std::fs::write(app.join("android/gradlew"), "#!/bin/sh\n").unwrap();
+    let mut fp_runner = qaren::exec::MockRunner::new();
+    fp_runner.expect_run("ls-files", CmdOutput::success(""));
+    let fp = qaren::fingerprint::compute(&mut fp_runner, &repo, &app, "android").unwrap();
+    save_json(
+        &state_path(&repo, "android", "com.rndevagent.testapp"),
+        &NativeCacheState {
+            schema: CACHE_SCHEMA.to_string(),
+            fingerprint_parts: fp.parts.clone(),
+            platform: "android".to_string(),
+            app_id: "com.rndevagent.testapp".to_string(),
+            worktree_root: repo.canonicalize().unwrap(),
+            fingerprint: fp.value,
+            built_at: "2026-10-11T00:00:00Z".to_string(),
+            candidate_sha: "b".repeat(40),
+            lockfile_sha256: String::new(),
+            generated_native_dirs: vec!["android".to_string()],
+            artifact: None,
+        },
+    )
+    .unwrap();
+    let req = android_request(&repo, &app);
+    let mut mock = android_mock();
+    script_android_preflight(&mut mock, &repo, ONE_EMULATOR, EMULATOR);
+    mock.expect_run("pnpm install --frozen-lockfile", CmdOutput::success(""));
+    mock.expect_run("ls-files", CmdOutput::success(""));
+    script_android_finite_build(&mut mock, GRADLE, 5001, 0);
+    script_android_launch_walk_teardown(&mut mock);
+
+    let receipt = run(&mut mock, &req);
+
+    assert_eq!(receipt.result, ReceiptResult::Pass, "{:?}", receipt.failure);
+    assert_eq!(
+        receipt.build.as_ref().unwrap().decision,
+        qaren::buildplan::BuildDecision::Incremental
+    );
+    assert_eq!(mock.remaining(), 0);
+    assert!(!labels(&mock).iter().any(|l| l == "expo-prebuild"));
+}
+
+#[test]
+fn android_check_records_generated_android_dir_then_reuses() {
+    let (repo, app) = app_repo();
+    let mut req = android_request(&repo, &app);
+    let mut mock = android_mock();
+    script_android_preflight(&mut mock, &repo, ONE_EMULATOR, EMULATOR);
+    mock.expect_run("pnpm install --frozen-lockfile", CmdOutput::success(""));
+    mock.expect_run("ls-files", CmdOutput::success(""));
+    script_android_finite_build(&mut mock, PREBUILD, 5000, 0);
+    script_android_finite_build(&mut mock, GRADLE, 5001, 0);
+    script_android_launch_walk_teardown(&mut mock);
+    let first = run(&mut mock, &req);
+    assert_eq!(first.result, ReceiptResult::Pass, "{:?}", first.failure);
+    assert_eq!(mock.remaining(), 0);
+    let state = qaren::buildplan::state_path(&repo, "android", "com.rndevagent.testapp");
+    let state: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(state).unwrap()).unwrap();
+    assert_eq!(
+        state["generated_native_dirs"],
+        serde_json::json!(["android"])
+    );
+
+    req.runs_root = repo.join("runs-2");
+    let mut mock = android_mock();
+    script_android_preflight(&mut mock, &repo, ONE_EMULATOR, EMULATOR);
+    mock.expect_run("pnpm install --frozen-lockfile", CmdOutput::success(""));
+    mock.expect_run("ls-files", CmdOutput::success(""));
+    script_android_launch_walk_teardown(&mut mock);
+    let second = run(&mut mock, &req);
+    assert_eq!(second.result, ReceiptResult::Pass, "{:?}", second.failure);
+    assert_eq!(
+        second.build.as_ref().unwrap().decision,
+        qaren::buildplan::BuildDecision::Reuse
+    );
+    assert_eq!(mock.remaining(), 0);
+    assert!(!labels(&mock)
+        .iter()
+        .any(|l| l == "expo-prebuild" || l == "gradle-assemble"));
+}
+
 #[test]
 fn android_check_does_not_require_the_shared_configs_ios_workspace() {
     let (repo, app) = app_repo();
     configure_workspace(&app, "ios/Missing.xcworkspace", "Native");
-    let mut req = request(&repo, &app, 30);
-    req.platform = Platform::Android;
-    let mut mock = MockRunner::new();
-    mock.expect_run("node --version", CmdOutput::success("v24.14.0\n"));
-    script_plan(&mut mock, &repo);
+    let req = android_request(&repo, &app);
+    let mut mock = android_mock();
+    script_android_preflight(&mut mock, &repo, ONE_EMULATOR, EMULATOR);
+    mock.expect_run("pnpm install --frozen-lockfile", CmdOutput::success(""));
+    mock.expect_run("ls-files", CmdOutput::success(""));
+    script_android_finite_build(&mut mock, PREBUILD, 5000, 0);
+    script_android_finite_build(&mut mock, GRADLE, 5001, 0);
+    script_android_launch_walk_teardown(&mut mock);
 
     let receipt = run(&mut mock, &req);
 
-    assert_eq!(receipt.result, ReceiptResult::Refused);
+    assert_eq!(receipt.result, ReceiptResult::Pass, "{:?}", receipt.failure);
+    assert_eq!(receipt.cleanup["device_lease"], "removed");
+    assert_eq!(mock.remaining(), 0);
+    no_ios_or_expo_android_build(&mock);
+    let record = RunRecord::load(&req.runs_root, &run_id()).unwrap();
+    let emulator = record.resources.android_emulator.as_ref().unwrap();
+    assert_eq!(
+        (
+            emulator.serial.as_str(),
+            emulator.avd.as_str(),
+            emulator.server_port
+        ),
+        (EMULATOR, "Pixel_9_API_37", 5037)
+    );
+    assert_eq!((emulator.api_level, emulator.abi.as_str()), (37, "x86_64"));
+    assert!(record.resources.adb_server.is_none());
+    assert_eq!(
+        record.scenario.android_emulator.as_ref().unwrap().serial,
+        EMULATOR
+    );
+    assert!(record.scenario.build.ios_workspace.is_none());
+}
+
+#[test]
+fn android_check_reuse_installs_the_cached_apk_by_serial() {
+    use qaren::buildplan::{
+        hash_artifact, save_json, state_path, ArtifactKind, CachedArtifact, NativeCacheState,
+        CACHE_SCHEMA,
+    };
+    let (repo, app) = app_repo();
+    let apk = repo.join("cached").join("app-debug.apk");
+    std::fs::create_dir_all(apk.parent().unwrap()).unwrap();
+    std::fs::write(&apk, b"cached apk").unwrap();
+    let mut fp_runner = qaren::exec::MockRunner::new();
+    fp_runner.expect_run("ls-files", CmdOutput::success(""));
+    let fp = qaren::fingerprint::compute(&mut fp_runner, &repo, &app, "android").unwrap();
+    save_json(
+        &state_path(&repo, "android", "com.rndevagent.testapp"),
+        &NativeCacheState {
+            schema: CACHE_SCHEMA.to_string(),
+            fingerprint_parts: fp.parts.clone(),
+            platform: "android".to_string(),
+            app_id: "com.rndevagent.testapp".to_string(),
+            worktree_root: repo.canonicalize().unwrap(),
+            fingerprint: fp.value,
+            built_at: "2026-10-11T00:00:00Z".to_string(),
+            candidate_sha: "b".repeat(40),
+            lockfile_sha256: String::new(),
+            generated_native_dirs: Vec::new(),
+            artifact: Some(CachedArtifact {
+                path: apk.clone(),
+                sha256: hash_artifact(&apk).unwrap(),
+                kind: ArtifactKind::Apk,
+            }),
+        },
+    )
+    .unwrap();
+    let req = android_request(&repo, &app);
+    let mut mock = android_mock();
+    script_android_preflight(&mut mock, &repo, ONE_EMULATOR, EMULATOR);
+    mock.expect_run("pnpm install --frozen-lockfile", CmdOutput::success(""));
+    mock.expect_run("ls-files", CmdOutput::success(""));
+    script_android_launch_walk_teardown(&mut mock);
+
+    let receipt = run(&mut mock, &req);
+
+    assert_eq!(
+        receipt.result,
+        ReceiptResult::Pass,
+        "{:?} {:?}",
+        receipt.failure,
+        receipt.build
+    );
+    assert_eq!(mock.remaining(), 0);
+    no_ios_or_expo_android_build(&mock);
+    assert!(!labels(&mock)
+        .iter()
+        .any(|l| l == "expo-prebuild" || l == "gradle-assemble"));
+    let adb = adb_calls(&mock);
+    let position = |needle: &str| {
+        adb.iter()
+            .position(|c| c.contains(needle))
+            .unwrap_or_else(|| panic!("{needle} not in {adb:?}"))
+    };
+    assert_eq!(
+        adb[position("install")],
+        format!("-s {EMULATOR} install -r -d {}", apk.display())
+    );
+    assert!(
+        position("install") < position("reverse") && position("reverse") < position("am start")
+    );
+    for call in mock.calls.iter().filter(|c| c.program.ends_with("/adb")) {
+        assert!(
+            call.env.contains(&(
+                "ADB_SERVER_SOCKET".to_string(),
+                "tcp:127.0.0.1:5037".to_string()
+            )),
+            "{}",
+            call.rendered()
+        );
+    }
+    let walk = mock.calls.iter().find(|c| c.label == "core-walk").unwrap();
+    assert!(walk
+        .env
+        .contains(&("ANDROID_SERIAL".to_string(), EMULATOR.to_string())));
+    assert!(!mock.piped_stdin_text(0).contains("\"adb\""));
+    let record = RunRecord::load(&req.runs_root, &run_id()).unwrap();
+    assert_eq!(record.resources.adb_reverse_port, Some(8791));
+    let install = record.resources.app_install.as_ref().unwrap();
+    assert_eq!(
+        (install.serial.as_str(), install.via.as_str()),
+        (EMULATOR, "adb-install")
+    );
+    assert!(record.resources.runner_host.is_none());
+}
+
+#[test]
+fn android_check_borrows_the_named_emulator_among_two() {
+    const TWO: &str = "List of devices attached\nemulator-5554\tdevice\nemulator-5556\tdevice\n";
+    let (repo, app) = app_repo();
+    let mut req = android_request(&repo, &app);
+    let mut mock = android_mock();
+    mock.expect_run("node --version", CmdOutput::success("v26.8.1\n"));
+    script_plan(&mut mock, &repo);
+    mock.expect_run("adb devices", CmdOutput::success(TWO));
+    let receipt = run(&mut mock, &req);
+    let failure = receipt.failure.unwrap();
+    assert_eq!(failure.code, FailureCode::DeviceUnavailable);
+    assert!(
+        failure.detail.starts_with("2 booted emulators"),
+        "{}",
+        failure.detail
+    );
+    assert_eq!(mock.remaining(), 0);
+    assert!(!req.lock_root.exists());
+
+    req.device = Some("emulator-5556".into());
+    let mut mock = android_mock();
+    script_android_preflight(&mut mock, &repo, TWO, "emulator-5556");
+    mock.expect_run("pnpm install --frozen-lockfile", CmdOutput::success(""));
+    mock.expect_run("ls-files", CmdOutput::success(""));
+    script_android_finite_build(&mut mock, PREBUILD, 5000, 0);
+    script_android_finite_build(&mut mock, GRADLE, 5001, 0);
+    script_android_launch_walk_teardown(&mut mock);
+    let receipt = run(&mut mock, &req);
+    assert_eq!(receipt.result, ReceiptResult::Pass, "{:?}", receipt.failure);
+    assert_eq!(mock.remaining(), 0);
+    let record = RunRecord::load(&req.runs_root, &receipt.run_id).unwrap();
+    assert_eq!(
+        record.resources.adb_local_serial.as_deref(),
+        Some("emulator-5556")
+    );
+    assert!(adb_calls(&mock)
+        .iter()
+        .filter(|c| c.starts_with("-s "))
+        .all(|c| c.starts_with("-s emulator-5556 ")));
+}
+
+#[test]
+fn android_check_refuses_when_no_adb_server_listens() {
+    let (repo, app) = app_repo();
+    let req = android_request(&repo, &app);
+    let mut mock = MockRunner::new();
+    mock.expect_run("node --version", CmdOutput::success("v26.8.1\n"));
+    script_plan(&mut mock, &repo);
+    let receipt = run(&mut mock, &req);
+    let failure = receipt.failure.unwrap();
+    assert_eq!(failure.code, FailureCode::DeviceUnavailable);
+    assert!(
+        failure
+            .detail
+            .contains("no adb server is running on port 5037"),
+        "{}",
+        failure.detail
+    );
+    assert!(adb_calls(&mock).is_empty());
+    assert_eq!(mock.remaining(), 0);
+    assert!(!req.lock_root.exists());
+}
+
+#[test]
+fn android_check_refuses_unborrowable_devices_without_a_lease() {
+    for (case, devices, boot_completed, detail) in [
+        (
+            "booting",
+            ONE_EMULATOR,
+            Some(""),
+            "emulator-5554 has not finished booting",
+        ),
+        (
+            "physical_only",
+            "List of devices attached\n0A1B2C3D\tdevice\nemulator-5556\toffline\n",
+            None,
+            "no booted emulator; 1 other device(s) ignored: physical devices are not supported in this release",
+        ),
+    ] {
+        let (repo, app) = app_repo();
+        let req = android_request(&repo, &app);
+        let mut mock = android_mock();
+        mock.expect_run("node --version", CmdOutput::success("v26.8.1\n"));
+        script_plan(&mut mock, &repo);
+        mock.expect_run("adb devices", CmdOutput::success(devices));
+        if let Some(value) = boot_completed {
+            mock.expect_run("getprop sys.boot_completed", CmdOutput::success(value));
+        }
+        let receipt = run(&mut mock, &req);
+        let failure = receipt.failure.unwrap();
+        assert_eq!(failure.code, FailureCode::DeviceUnavailable, "{case}");
+        assert!(failure.detail.starts_with(detail), "{case}: {}", failure.detail);
+        assert_eq!(mock.remaining(), 0, "{case}");
+        assert!(!req.lock_root.exists(), "{case}");
+    }
+}
+
+#[test]
+fn android_check_refuses_a_remote_adb_socket() {
+    let (repo, app) = app_repo();
+    let req = android_request(&repo, &app);
+    let mut mock = android_mock();
+    mock.environment
+        .insert("ADB_SERVER_SOCKET".into(), "tcp:10.0.0.5:5037".into());
+    mock.expect_run("node --version", CmdOutput::success("v26.8.1\n"));
+    script_plan(&mut mock, &repo);
+    let receipt = run(&mut mock, &req);
+    let failure = receipt.failure.unwrap();
+    assert_eq!(failure.code, FailureCode::DeviceUnavailable);
+    assert!(
+        failure.detail.contains("not a loopback adb server"),
+        "{}",
+        failure.detail
+    );
+    assert!(adb_calls(&mock).is_empty());
+    assert!(!req.lock_root.exists());
+}
+
+#[test]
+fn android_check_refuses_fresh_install_before_preflight() {
+    let (repo, app) = app_repo();
+    let mut req = android_request(&repo, &app);
+    req.fresh_install = true;
+    let mut mock = android_mock();
+    let receipt = run(&mut mock, &req);
     assert_eq!(
         receipt.failure.unwrap().code,
         FailureCode::PlatformUnsupported
     );
-    assert_eq!(mock.remaining(), 0);
-    assert_eq!(mock.calls.len(), 2);
+    assert!(mock.calls.is_empty());
     assert!(!req.lock_root.exists());
-    assert!(!req.runs_root.exists());
+}
+
+#[test]
+fn android_check_requires_dev_client_scheme() {
+    let (repo, app) = app_repo();
+    std::fs::write(
+        app.join(".qaren/config.yaml"),
+        "appId: com.rndevagent.testapp\nmetroPort: 8791\n",
+    )
+    .unwrap();
+    let req = android_request(&repo, &app);
+    let mut mock = android_mock();
+    let receipt = run(&mut mock, &req);
+    let failure = receipt.failure.unwrap();
+    assert_eq!(failure.code, FailureCode::DevClientSchemeRequired);
+    assert!(!failure.detail.contains("iOS"), "{}", failure.detail);
+    assert!(mock.calls.is_empty());
 }
 
 #[test]

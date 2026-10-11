@@ -45,16 +45,13 @@ pub struct CoreTarget {
     pub metro_port: u16,
     pub metro_url_for_device: String,
     pub worktree: PathBuf,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub adb: Option<AdbTarget>,
 }
 
-#[derive(Debug, Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct AdbTarget {
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub server_socket: Option<String>,
+// The borrowed emulator the core's adb calls are pinned to.
+pub struct AndroidEnv {
     pub serial: String,
+    pub server_port: u16,
+    pub platform_tools: PathBuf,
 }
 
 // The ledger the child returns as its result line; the wire is a contract, so it is read strictly.
@@ -386,8 +383,9 @@ pub fn spawn_spec(
     worktree: &Path,
     lease: &str,
     metro_port: u16,
+    android: Option<&AndroidEnv>,
 ) -> CmdSpec {
-    CmdSpec::new(
+    let spec = CmdSpec::new(
         "core-walk",
         &node.to_string_lossy(),
         &[&runtime_dir.join("qa").join("walk.js").to_string_lossy()],
@@ -395,7 +393,21 @@ pub fn spawn_spec(
     )
     .cwd(worktree)
     .env("QAREN_DEVICE_LEASE", lease)
-    .env("QAREN_METRO_PORT", &metro_port.to_string())
+    .env("QAREN_METRO_PORT", &metro_port.to_string());
+    let Some(android) = android else {
+        return spec;
+    };
+    let mut path = std::ffi::OsString::from(&android.platform_tools);
+    if let Some(inherited) = std::env::var_os("PATH").filter(|p| !p.is_empty()) {
+        path.push(":");
+        path.push(inherited);
+    }
+    spec.env("ANDROID_SERIAL", &android.serial)
+        .env(
+            "ADB_SERVER_SOCKET",
+            &crate::adapters::android::server_socket(android.server_port),
+        )
+        .env("PATH", &path.to_string_lossy())
 }
 
 pub fn preflight_spec(node: &Path, runtime_dir: &Path, plan_file: &Path) -> CmdSpec {

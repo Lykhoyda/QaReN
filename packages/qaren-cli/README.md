@@ -39,9 +39,8 @@ does not end the command. Ending it reveals any earlier command still running,
 or clears the label when none remain.
 Preflight and dependencies pass when their work completes; verify runs after
 every build decision, including reuse. Reuse skips prebuild and native compile.
-On iOS, native compile ends before install/launch/ready; on Android, the build
-stage includes those operations and the separate install/launch/ready stage is
-skipped. Recording can overlap steps. Requested recording starts as running and
+On iOS and on a borrowed Android emulator, native compile (including any
+prebuild of an absent native directory) ends before install/launch/ready. Recording can overlap steps. Requested recording starts as running and
 stays failed after a startup failure, even if retained-resource cleanup succeeds;
 recording is skipped only when it was not requested. Failures close running stages.
 Only `check` and `pr` produce the value-free `logs/events.jsonl` stream.
@@ -217,10 +216,21 @@ qaren check --plan-file plan.md --device <simulator-UUID> --json
 ```
 
 The configuration keys, defaults and validation are owned by
-[`src/config.rs`](src/config.rs). iOS requires `appId` and `devClientScheme`;
-only `pnpm` is supported as the app package manager. `--config` selects another
-configuration file. `check` currently supports iOS simulators only;
-`--platform android` refuses with `PLATFORM_UNSUPPORTED`.
+[`src/config.rs`](src/config.rs). Both platforms require `appId` and
+`devClientScheme`; only `pnpm` is supported as the app package manager.
+`--config` selects another configuration file.
+
+`--platform android` borrows one booted emulator on the host's already running
+adb server: `ADB_SERVER_SOCKET` (loopback only), else `ANDROID_ADB_SERVER_PORT`,
+else 5037. `qaren` probes that port and never starts or stops an adb server; with
+no server listening it refuses `DEVICE_UNAVAILABLE`. With several booted emulators,
+`--device emulator-NNNN` chooses one; physical devices are not supported, and
+`--boot-device` and `--fresh-install` refuse on Android. `ANDROID_HOME` must name
+the SDK whose `platform-tools/adb` reaches that server. The build is a Gradle
+`:app:assembleDebug` limited to the emulator's ABI, preceded by
+`expo prebuild --platform android --clean` when `android/` is absent; the APK is
+installed with `adb -s <serial>`, and a fingerprint-matched cached APK is reused
+the same way. The run keeps the app and the emulator.
 
 Plans contain a `## QA` section, named `###` blocks, numbered actions and
 `✓` checks. See the executable
@@ -1115,8 +1125,8 @@ after admission, no video is uploaded, even if recovery clears the overlay and
 the retry passes. Blocks the walk saved are copied to `blocks/` before the
 worktree is removed. If the pull
 request moved during the run, the receipt names the tested commit in
-`tested_older_commit`. Like `check`, `pr` currently refuses Android with
-`PLATFORM_UNSUPPORTED`.
+`tested_older_commit`. On Android, `pr` borrows an emulator like `check`; its
+video is unavailable in this release.
 
 Normal teardown and dead-owner recovery remove the PR worktree only after
 cleanup proves the recorded build, core, Metro, recorder and runner-host

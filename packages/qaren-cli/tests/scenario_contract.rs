@@ -292,3 +292,89 @@ fn qaren_owner_usb_still_requires_adb_server_port() {
         failure.detail
     );
 }
+
+fn emulator_yaml(serial: &str, avd: &str) -> String {
+    format!(
+        "schema: qaren/1\nname: check\nplatform: android\ncandidate:\n  project_root: test-app\n  app_id: com.rndevagent.testapp\n  revision: HEAD\n  dev_client_scheme: rndatest\nmetro:\n  port: 8791\nandroid_emulator:\n  serial: {serial}\n  avd: {avd}\n"
+    )
+}
+
+#[test]
+fn android_emulator_matrix() {
+    for (serial, avd) in [
+        ("emulator-5554", "Pixel_9_API_37"),
+        ("emulator-65534", "a.b-c_d"),
+        ("emulator-5554", &"x".repeat(128)),
+    ] {
+        assert!(parse(&emulator_yaml(serial, avd)).is_ok(), "{serial} {avd}");
+    }
+    for (serial, avd) in [
+        ("emulator-554", "avd"),
+        ("emulator-555444", "avd"),
+        ("emulator-55a4", "avd"),
+        ("0A1B2C3D", "avd"),
+        ("127.0.0.1:5555", "avd"),
+        ("emulator-5554", "\"\""),
+        ("emulator-5554", "bad/avd"),
+        ("emulator-5554", &"x".repeat(129)),
+    ] {
+        let failure = parse(&emulator_yaml(serial, avd)).expect_err("must refuse");
+        assert_eq!(failure.code, FailureCode::ScenarioInvalid, "{serial} {avd}");
+    }
+    let base = emulator_yaml("emulator-5554", "avd");
+    let usb = format!("{base}android_usb:\n  serial: 0A1B2C3D\n  adb_server_port: 15037\n");
+    let farm = format!(
+        "{base}android:\n  ssh_host: nuc\n  farm_path: bin/android-farm\n  slot: 1\n  adb_server_port: 15037\n"
+    );
+    let handoff = base.replace("metro:\n  port: 8791\n", "build:\n  owner: qaren\n");
+    for yaml in [
+        usb,
+        farm,
+        handoff.replace("  dev_client_scheme: rndatest\n", ""),
+    ] {
+        assert_eq!(
+            parse(&yaml).expect_err("must refuse").code,
+            FailureCode::ScenarioInvalid,
+            "{yaml}"
+        );
+    }
+    let ios = format!(
+        "{}android_emulator:\n  serial: emulator-5554\n  avd: avd\n",
+        valid_ios_yaml()
+    );
+    assert_eq!(
+        parse(&ios).expect_err("ios must refuse").code,
+        FailureCode::ScenarioInvalid
+    );
+    let unschemed = parse(&base.replace("  dev_client_scheme: rndatest\n", "")).unwrap_err();
+    assert_eq!(unschemed.code, FailureCode::DevClientSchemeRequired);
+    assert!(!unschemed.detail.contains("iOS"), "{}", unschemed.detail);
+}
+
+#[test]
+fn prepare_refuses_a_borrowed_emulator_scenario_before_any_command() {
+    let dir = std::env::temp_dir().join(format!("qaren-emulator-prepare-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("scenario.yaml");
+    std::fs::write(&path, emulator_yaml("emulator-5554", "avd")).unwrap();
+    let mut mock = qaren::exec::MockRunner::new();
+    let receipt = qaren::commands::prepare::prepare(
+        &mut mock,
+        &qaren::commands::prepare::PrepareArgs {
+            scenario_path: path.clone(),
+            dry_run: true,
+            android_home: None,
+            lock_root: dir.join(".locks"),
+            runs_root: dir.clone(),
+        },
+    );
+    let failure = receipt.failure.unwrap();
+    assert_eq!(failure.code, FailureCode::ScenarioInvalid);
+    assert!(
+        failure.detail.contains("only by qaren check"),
+        "{}",
+        failure.detail
+    );
+    assert!(mock.calls.is_empty());
+    std::fs::remove_dir_all(&dir).unwrap();
+}

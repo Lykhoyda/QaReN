@@ -69,7 +69,6 @@ fn request() -> CoreRequest {
             metro_port: 8791,
             metro_url_for_device: "http://127.0.0.1:8791".to_string(),
             worktree: PathBuf::from("/tmp/app"),
-            adb: None,
         },
     }
 }
@@ -106,6 +105,7 @@ fn spec() -> qaren::exec::CmdSpec {
         Path::new("/tmp/app"),
         &request().lease,
         8791,
+        None,
     )
 }
 
@@ -1249,4 +1249,40 @@ fn a_runner_driver_is_recorded_only_as_this_simulator_s_own_group_leader() {
         }
         assert_eq!(mock.remaining(), 0);
     }
+}
+
+#[test]
+fn the_android_core_is_pinned_to_the_borrowed_serial_server_and_platform_tools() {
+    let env = core::AndroidEnv {
+        serial: "emulator-5554".to_string(),
+        server_port: 5147,
+        platform_tools: PathBuf::from("/sdk/platform-tools"),
+    };
+    let android = core::spawn_spec(
+        Path::new("/usr/local/bin/node"),
+        Path::new("/runtime"),
+        Path::new("/tmp/app"),
+        &request().lease,
+        8791,
+        Some(&env),
+    );
+    let get = |key: &str| {
+        android
+            .env
+            .iter()
+            .find(|(k, _)| k == key)
+            .map(|(_, v)| v.as_str())
+            .unwrap_or_else(|| panic!("{key} unset"))
+    };
+    assert_eq!(get("ANDROID_SERIAL"), "emulator-5554");
+    assert_eq!(get("ADB_SERVER_SOCKET"), "tcp:127.0.0.1:5147");
+    assert!(
+        get("PATH").starts_with("/sdk/platform-tools:"),
+        "{}",
+        get("PATH")
+    );
+    assert!(!spec()
+        .env
+        .iter()
+        .any(|(k, _)| k == "ANDROID_SERIAL" || k == "PATH"));
 }

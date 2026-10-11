@@ -19,6 +19,8 @@ pub struct Scenario {
     pub android: Option<AndroidSpec>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub android_usb: Option<AndroidUsbSpec>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub android_emulator: Option<AndroidEmulatorSpec>,
     #[serde(default)]
     pub build: BuildSpec,
     #[serde(default)]
@@ -46,6 +48,12 @@ pub struct CandidateSpec {
     pub dev_client_scheme: Option<String>,
 }
 
+pub fn is_emulator_serial(serial: &str) -> bool {
+    serial.strip_prefix("emulator-").is_some_and(|port| {
+        (4..=5).contains(&port.len()) && port.bytes().all(|b| b.is_ascii_digit())
+    })
+}
+
 fn is_dev_client_scheme(scheme: &str) -> bool {
     let mut bytes = scheme.bytes();
     scheme.len() <= 128
@@ -60,7 +68,7 @@ pub(crate) fn require_launch_scheme(scheme: Option<&str>) -> Result<(), Failure>
     Err(Failure::new(
         "config",
         FailureCode::DevClientSchemeRequired,
-        "iOS CLI-owned builds require a 1–128-byte dev-client URI scheme matching [A-Za-z][A-Za-z0-9+.-]*",
+        "CLI-owned builds require a 1–128-byte dev-client URI scheme matching [A-Za-z][A-Za-z0-9+.-]*",
         "set devClientScheme in .qaren/config.yaml (candidate.dev_client_scheme for prepare) to the app's registered URI scheme",
     ))
 }
@@ -93,6 +101,14 @@ pub struct AndroidUsbSpec {
     pub serial: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub adb_server_port: Option<u16>,
+}
+
+// The booted emulator `qaren check` borrows on the host's running adb server.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct AndroidEmulatorSpec {
+    pub serial: String,
+    pub avd: String,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -382,7 +398,9 @@ impl Scenario {
                 )));
             }
         }
-        if self.platform == Platform::Ios && self.build.owner == BuildOwner::Cli {
+        if (self.platform == Platform::Ios || self.android_emulator.is_some())
+            && self.build.owner == BuildOwner::Cli
+        {
             require_launch_scheme(self.candidate.dev_client_scheme.as_deref())?;
         } else if let Some(scheme) = &self.candidate.dev_client_scheme {
             if !is_dev_client_scheme(scheme) {
@@ -415,9 +433,12 @@ impl Scenario {
                     .ios
                     .as_ref()
                     .ok_or_else(|| invalid("platform ios requires an `ios:` section".into()))?;
-                if self.android.is_some() || self.android_usb.is_some() {
+                if self.android.is_some()
+                    || self.android_usb.is_some()
+                    || self.android_emulator.is_some()
+                {
                     return Err(invalid(
-                        "platform ios must not carry an `android:` or `android_usb:` section"
+                        "platform ios must not carry an `android:`, `android_usb:` or `android_emulator:` section"
                             .into(),
                     ));
                 }
@@ -442,6 +463,14 @@ impl Scenario {
                     return Err(invalid(
                         "platform android must not carry an `ios:` section".into(),
                     ));
+                }
+                if let Some(emulator) = &self.android_emulator {
+                    if self.android.is_some() || self.android_usb.is_some() {
+                        return Err(invalid(
+                            "platform android must carry exactly one of `android:` (farm), `android_usb:` or `android_emulator:`".into(),
+                        ));
+                    }
+                    return self.validate_android_emulator(emulator);
                 }
                 let android = match (&self.android, &self.android_usb) {
                     (Some(android), None) => {
@@ -508,6 +537,40 @@ impl Scenario {
                     ));
                 }
             }
+        }
+        Ok(())
+    }
+
+    fn validate_android_emulator(&self, emulator: &AndroidEmulatorSpec) -> Result<(), Failure> {
+        let invalid = |detail: String| {
+            Failure::new(
+                "validate",
+                FailureCode::ScenarioInvalid,
+                detail,
+                "fix the scenario file against packages/qaren-cli/README.md",
+            )
+        };
+        if self.build.owner != BuildOwner::Cli {
+            return Err(invalid(
+                "android_emulator is borrowed by qaren check and requires build.owner cli".into(),
+            ));
+        }
+        if !is_emulator_serial(&emulator.serial) {
+            return Err(invalid(format!(
+                "android_emulator.serial {:?} must match emulator-NNNN (4 or 5 digits)",
+                emulator.serial
+            )));
+        }
+        let avd_ok = (1..=128).contains(&emulator.avd.len())
+            && emulator
+                .avd
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-'));
+        if !avd_ok {
+            return Err(invalid(format!(
+                "android_emulator.avd {:?} must be 1–128 bytes of [A-Za-z0-9._-]",
+                emulator.avd
+            )));
         }
         Ok(())
     }

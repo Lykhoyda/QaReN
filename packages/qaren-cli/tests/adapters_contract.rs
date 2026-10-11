@@ -1331,3 +1331,94 @@ fn android_launch_deactivates_the_dev_menu_auto_launch() {
         ]
     );
 }
+
+#[test]
+fn borrowed_adb_server_port_is_loopback_only_and_defaults_to_5037() {
+    use android::borrowed_server_port as port;
+    assert_eq!(port(None, None), Ok(5037));
+    assert_eq!(port(Some(""), Some("")), Ok(5037));
+    assert_eq!(port(None, Some("5147")), Ok(5147));
+    assert_eq!(port(Some("tcp:127.0.0.1:5147"), Some("6000")), Ok(5147));
+    assert_eq!(port(Some("tcp:localhost:5148"), None), Ok(5148));
+    for bad in [
+        "tcp:10.0.0.5:5037",
+        "tcp:0.0.0.0:5037",
+        "localabstract:adb",
+        "tcp:127.0.0.1:0",
+        "tcp:127.0.0.1:99999",
+        "tcp:127.0.0.1:",
+    ] {
+        assert!(port(Some(bad), None).is_err(), "{bad}");
+    }
+    assert!(port(None, Some("adb")).is_err());
+}
+
+#[test]
+fn adb_devices_lists_serial_state_pairs_without_the_header() {
+    let out = "* daemon started successfully\nList of devices attached\nemulator-5554\tdevice\nemulator-5556\toffline\n0A1B2C3D\tunauthorized usb:1-1\n\n";
+    assert_eq!(
+        android::parse_devices(out),
+        vec![
+            ("emulator-5554".to_string(), "device".to_string()),
+            ("emulator-5556".to_string(), "offline".to_string()),
+            ("0A1B2C3D".to_string(), "unauthorized".to_string()),
+        ]
+    );
+    assert!(android::parse_devices("List of devices attached\n\n").is_empty());
+    assert_eq!(
+        android::parse_avd_name("Pixel_9_API_37\r\nOK\r\n").as_deref(),
+        Some("Pixel_9_API_37")
+    );
+    assert_eq!(android::parse_avd_name("OK\n"), None);
+}
+
+#[test]
+fn borrowed_emulator_reads_go_through_the_borrowed_server_and_pin_the_serial() {
+    let adb = Path::new("/sdk/platform-tools/adb");
+    for (spec, args) in [
+        (android::devices_spec(adb, 5147), vec!["devices"]),
+        (
+            android::getprop_spec(adb, 5147, "emulator-5554", "ro.product.cpu.abi"),
+            vec![
+                "-s",
+                "emulator-5554",
+                "shell",
+                "getprop",
+                "ro.product.cpu.abi",
+            ],
+        ),
+        (
+            android::avd_name_spec(adb, 5147, "emulator-5554"),
+            vec!["-s", "emulator-5554", "emu", "avd", "name"],
+        ),
+    ] {
+        assert_eq!(spec.program, "/sdk/platform-tools/adb");
+        assert_eq!(spec.args, args);
+        assert!(spec.env.contains(&(
+            "ADB_SERVER_SOCKET".to_string(),
+            "tcp:127.0.0.1:5147".to_string()
+        )));
+    }
+}
+
+#[test]
+fn gradle_assemble_is_finite_abi_limited_and_daemonless() {
+    let spec = android::gradle_assemble_spec(Path::new("/w/test-app"), "arm64-v8a", 2400);
+    assert_eq!(spec.program, "./gradlew");
+    assert_eq!(
+        spec.args,
+        [
+            ":app:assembleDebug",
+            "-PreactNativeArchitectures=arm64-v8a",
+            "--no-daemon",
+            "--console=plain"
+        ]
+    );
+    assert_eq!(spec.cwd.as_deref(), Some(Path::new("/w/test-app/android")));
+    assert_eq!(spec.timeout_seconds, 2400);
+    assert!(spec.env.contains(&("CI".to_string(), "1".to_string())));
+    assert!(spec
+        .env
+        .contains(&("EXPO_NO_TELEMETRY".to_string(), "1".to_string())));
+    assert!(!spec.env.iter().any(|(k, _)| k == "ANDROID_HOME"));
+}

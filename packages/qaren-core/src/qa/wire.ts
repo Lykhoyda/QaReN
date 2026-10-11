@@ -31,7 +31,6 @@ export interface WireTarget {
   metroPort: number;
   metroUrlForDevice: string;
   worktree: string;
-  adb?: { serverSocket?: string; serial: string };
 }
 
 export interface WireRequest {
@@ -183,7 +182,6 @@ export function parseRequest(line: string): WireRequest {
   if (envelope.seq !== 1) throw new WireError('the request must be seq 1');
   const p = envelope.payload as Partial<WireRequest> | null;
   const target = p?.target as Partial<WireTarget> | undefined;
-  const adb = target?.adb as Partial<NonNullable<WireTarget['adb']>> | undefined;
   const bad =
     !p ||
     typeof p.runId !== 'string' ||
@@ -207,11 +205,6 @@ export function parseRequest(line: string): WireRequest {
     (target.metroPort as number) > 65535 ||
     typeof target.metroUrlForDevice !== 'string' ||
     typeof target.worktree !== 'string' ||
-    (adb !== undefined &&
-      (typeof adb !== 'object' ||
-        adb === null ||
-        typeof adb.serial !== 'string' ||
-        (adb.serverSocket !== undefined && typeof adb.serverSocket !== 'string'))) ||
     (p.loginBlock !== undefined && (!isValidActionId(p.loginBlock) || !p.loginMarker)) ||
     (p.loginMarker !== undefined && !validMarker(p.loginMarker));
   if (bad) throw new WireError('the request payload is missing required fields');

@@ -5,23 +5,26 @@ use qaren::failure::FailureCode;
 use qaren::scenario::Platform;
 
 #[test]
-fn launch_scheme_requirement_uses_the_selected_check_platform_not_config_sections() {
+fn launch_scheme_is_required_on_every_check_platform() {
     let repo = common::temp_repo();
     let path = repo.join("config.yaml");
     std::fs::write(&path, "appId: com.test.app\nios: {}\nandroid: {}\n").unwrap();
     let (config, _) = CheckConfig::load(&path).unwrap();
-    assert!(config.validate_for_platform(Platform::Android).is_ok());
-    let failure = config.validate_for_platform(Platform::Ios).unwrap_err();
-    assert_eq!(failure.code, FailureCode::DevClientSchemeRequired);
-    assert!(failure.code.is_refusal());
+    for platform in [Platform::Ios, Platform::Android] {
+        let failure = config.validate_for_platform(platform).unwrap_err();
+        assert_eq!(failure.code, FailureCode::DevClientSchemeRequired);
+        assert!(failure.code.is_refusal());
+        assert!(!failure.detail.contains("iOS"), "{}", failure.detail);
+    }
 }
 
 #[test]
-fn ios_check_config_owns_bounded_launch_scheme_validation_without_echoing_input() {
+fn check_config_owns_bounded_launch_scheme_validation_without_echoing_input() {
     let mut config: CheckConfig = serde_yaml::from_str("appId: com.test.app\n").unwrap();
     for scheme in ["A", "Expo+test-1.2", &"a".repeat(128)] {
         config.dev_client_scheme = Some(scheme.into());
         assert!(config.validate_for_platform(Platform::Ios).is_ok());
+        assert!(config.validate_for_platform(Platform::Android).is_ok());
     }
     let mut refusal = None;
     for scheme in [
@@ -40,7 +43,10 @@ fn ios_check_config_owns_bounded_launch_scheme_validation_without_echoing_input(
         assert!(failure.code.is_refusal());
         let json = serde_json::to_value(failure).unwrap();
         assert_eq!(refusal.get_or_insert(json.clone()), &json);
-        assert!(config.validate_for_platform(Platform::Android).is_ok());
+        let android =
+            serde_json::to_value(config.validate_for_platform(Platform::Android).unwrap_err())
+                .unwrap();
+        assert_eq!(android, json);
     }
 }
 

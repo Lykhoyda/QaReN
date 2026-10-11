@@ -300,6 +300,9 @@ pub trait Runner {
     fn try_reap(&mut self, _pid: i32) -> bool {
         false
     }
+    fn tcp_listening(&self, port: u16) -> bool {
+        crate::adapters::android::server_listening(port)
+    }
 }
 
 pub(crate) struct CleanupRunner<'a>(pub(crate) &'a mut dyn Runner);
@@ -339,6 +342,9 @@ impl Runner for CleanupRunner<'_> {
     }
     fn try_reap(&mut self, pid: i32) -> bool {
         self.0.try_reap(pid)
+    }
+    fn tcp_listening(&self, port: u16) -> bool {
+        self.0.tcp_listening(port)
     }
 }
 
@@ -879,6 +885,8 @@ pub struct MockRunner {
     pub cancel_at_ms: Option<(u64, String)>,
     // (command substring, ms): the scripted clock advances while a matching command runs.
     pub advance_on: Option<(String, u64)>,
+    // Loopback ports the scripted host reports listening; the real probe never runs.
+    pub listening: Vec<u16>,
     script: VecDeque<MockExpectation>,
     now_ms: u64,
 }
@@ -896,6 +904,7 @@ impl MockRunner {
             cancel_after: None,
             cancel_at_ms: None,
             advance_on: None,
+            listening: Vec::new(),
             script: VecDeque::new(),
             now_ms: 1_770_000_000_000,
         }
@@ -1001,6 +1010,9 @@ impl Default for MockRunner {
 impl Runner for MockRunner {
     fn env_var(&self, name: &str) -> Option<String> {
         self.environment.get(name).cloned()
+    }
+    fn tcp_listening(&self, port: u16) -> bool {
+        self.listening.contains(&port)
     }
     fn execute(&mut self, spec: &CmdSpec, _interruptible: bool) -> CmdOutput {
         self.calls.push(spec.clone());

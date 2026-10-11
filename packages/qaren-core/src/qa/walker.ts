@@ -161,6 +161,20 @@ const unresolvedText = (quoted: string) =>
     reason: `"${quoted}" stayed unresolved: matching text has no trusted frame or the native snapshot is incomplete`,
   });
 
+// Until Android dialogs carry tap proof, an Android dialog step refuses before any driver runs.
+export function platformDialog(
+  platform: string,
+  dialog: WalkerDeps['dialog'],
+): WalkerDeps['dialog'] {
+  if (platform !== 'android') return dialog;
+  return async () => {
+    throw new ResolutionError({
+      refuse: 'TARGET_UNSUPPORTED',
+      reason: 'Android system dialogs arrive in S5b',
+    });
+  };
+}
+
 export const WAIT_BUDGET_MS = 15_000;
 export const WAIT_POLL_MS = 500;
 export const SCROLL_ATTEMPTS = 6;
