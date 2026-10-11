@@ -84,7 +84,7 @@ Then start the check; this command returns at once:
 nohup sh -c '<qaren path from step 1> check --plan-file .qaren/plans/smoke.md [device flags from step 4] --json > <dir>/receipt.json 2> <dir>/progress.log; echo $? > <dir>/exit' < /dev/null > /dev/null 2>&1 &
 ```
 
-Within a minute `<dir>/progress.log` contains `▸ watch live: qaren watch <run-id>`; tell the user they can follow the run live with `qaren watch <run-id>` in their own terminal. If `<dir>/exit` appears first, the check refused before its run started, so go to the receipt. Otherwise follow the run in short calls that each end well within the host's limit, repeating until `<dir>/exit` exists:
+Within a minute `<dir>/progress.log` contains `▸ watch live: qaren watch <run-id>`; tell the user they can follow the run live with `qaren watch <run-id>` in their own terminal. If `<dir>/exit` appears first, the check refused before its run started, so go to the receipt, or to `<dir>/progress.log` when the receipt is empty. Otherwise follow the run in short calls that each end well within the host's limit, repeating until `<dir>/exit` exists:
 
 ```sh
 for i in $(seq 20); do [ -s <dir>/exit ] && break; sleep 5; done; tail -n 3 <dir>/progress.log
