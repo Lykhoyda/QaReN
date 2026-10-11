@@ -1,19 +1,61 @@
 ---
 name: sending-feedback
-description: Use when the user wants to send feedback, report an rn-dev-agent bug, request a plugin feature, or says the rn-dev-agent MCP transport or tools are unavailable. Collects sanitized diagnostics and guides creation of a reviewed GitHub issue.
+description: Use when the user wants to report a QaReN bug or request a feature. Drafts a sanitized GitHub issue and files it only after the user confirms.
 ---
 
-# sending-feedback — Report rn-dev-agent Issues Safely
+# sending-feedback — Report a QaReN Issue
 
-Follow the complete workflow in `../../commands/send-feedback.md`.
+Draft the issue locally, show it in full, and file it only after the user says yes.
 
-Collect diagnostics with the plugin-owned `scripts/collect-feedback.sh`,
-resolving the plugin root with the workflow's Step 2 snippet — each host's
-workflow document owns its own root resolution. The packaged collector at
-`scripts/collect-feedback.sh` under the resolved plugin root is the supported
-surface on every host. The `rn-collect-feedback` executable is a guarded
-legacy fallback only — plugin installs do not add global executables; it
-exists solely for repo checkouts that put `bin/` on `PATH`.
+## 1. Gather the environment
 
-The workflow's review gate is mandatory. Show the exact sanitized issue body
-to the user and obtain confirmation before submitting it with `gh`.
+Run each command and keep its first line of output:
+
+```sh
+qaren --version
+sw_vers -productVersion
+xcodebuild -version | head -1
+node --version
+```
+
+If a command is missing or fails, record that instead of guessing a value.
+
+## 2. Add the run, when the report is about one
+
+Take these fields from that run's receipt (the JSON `qaren check` or `qaren pr` printed):
+
+- `result`
+- `run_id`
+- `failure.code`
+- `failure.next_action`
+
+Include `~/.qaren/runs/<run-id>/report.md`. It is value-free by design: plan lines come
+from the walk's privacy-projected rows, not the raw plan file. If it shows a value the
+user typed, stop and report that as a privacy bug rather than filing the draft.
+
+Never include, unless the user explicitly asks for it:
+
+- anything under the run's `media/` or `screenshots/` directories;
+- plan text containing typed values;
+- values from `.qaren/config.yaml`.
+
+## 3. Show the draft
+
+Write the title and body to a temporary file, then show the whole file to the user. The body
+holds a short summary, the steps to reproduce, the expected and actual behaviour, the
+environment from step 1 and the run fields from step 2.
+
+## 4. File it after an explicit yes
+
+Only after the user confirms the exact draft:
+
+```sh
+gh issue create --repo Lykhoyda/rn-dev-agent --title "<title>" --body-file <file>
+```
+
+If the user asks for changes, update the file and show it again before filing.
+
+## 5. Report the issue URL
+
+Print the URL `gh` returns. If `gh` is not authenticated, say so and leave the draft file
+for the user to submit.
