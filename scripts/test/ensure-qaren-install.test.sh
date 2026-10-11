@@ -743,21 +743,32 @@ check "dangling root: an ensure-qaren message, not a raw tool error" yes \
   "$(grep -q '^ensure-qaren: cannot use' "$tmp/stderr" && ! grep -q '^mkdir' "$tmp/stderr" && echo yes || echo "no: $(cat "$tmp/stderr")")"
 check "dangling root: the link target is never created" no "$([ -e "$tmp/nowhere" ] && echo yes || echo no)"
 
-# Select the first writable PATH directory, even outside HOME.
+# Link into the first standard user bin directory on PATH; app-private writable directories are skipped.
 reset_home
 write_manifest "$tmp/good.tgz"
-mkdir -p "$tmp/path-bin" "$tmp/home/.local/bin" "$tmp/read-only-tools"
+mkdir -p "$tmp/app-bin" "$tmp/home/bin" "$tmp/home/.local/bin" "$tmp/read-only-tools"
 for tool in $REQUIRED_TOOLS bash node readlink ln; do
   ln -s "$(command -v "$tool")" "$tmp/read-only-tools/$tool"
 done
 chmod 555 "$tmp/read-only-tools"
-out=$(PATH="$tmp/read-only-tools:$tmp/path-bin:$tmp/home/.local/bin" run_install "$tmp/good.tgz"); rc=$?
+STANDARD_PATH="$tmp/read-only-tools:$tmp/app-bin:$tmp/home/bin:$tmp/home/.local/bin"
+out=$(PATH="$STANDARD_PATH" run_install "$tmp/good.tgz"); rc=$?
 check "PATH link: install exits 0" 0 "$rc"
-check "PATH link: first writable directory outside HOME gets the link" "$REAL_DEST/bin/qaren" "$(readlink "$tmp/path-bin/qaren")"
-check "PATH link: qaren runs without changing PATH" qaren "$(PATH="$tmp/read-only-tools:$tmp/path-bin:$tmp/home/.local/bin" /bin/bash -c qaren)"
+check "PATH link: the first standard bin directory on PATH gets the link" "$REAL_DEST/bin/qaren" "$(readlink "$tmp/home/bin/qaren")"
+check "PATH link: qaren runs without changing PATH" qaren "$(PATH="$STANDARD_PATH" /bin/bash -c qaren)"
 check "PATH link: stdout is exactly the binary path" "$REAL_DEST/bin/qaren" "$out"
 check "PATH link: no export notice" no "$(grep -q 'export PATH=' "$tmp/stderr" && echo yes || echo no)"
-check "PATH link: does not prefer ~/.local/bin" no "$([ -e "$tmp/home/.local/bin/qaren" ] && echo yes || echo no)"
+check "PATH link: an app-private writable directory is skipped" no "$([ -e "$tmp/app-bin/qaren" ] && echo yes || echo no)"
+check "PATH link: only one link is made" no "$([ -e "$tmp/home/.local/bin/qaren" ] && echo yes || echo no)"
+
+reset_home
+rm -f "$tmp/app-bin/qaren"
+out=$(PATH="$tmp/read-only-tools:$tmp/app-bin" run_install "$tmp/good.tgz"); rc=$?
+check "app-private PATH only: install exits 0" "0 $REAL_DEST/bin/qaren" "$rc $out"
+check "app-private PATH only: nothing is linked there" no "$([ -e "$tmp/app-bin/qaren" ] && echo yes || echo no)"
+check "app-private PATH only: falls back to ~/.local/bin" "$REAL_DEST/bin/qaren" "$(readlink "$tmp/home/.local/bin/qaren")"
+check "app-private PATH only: prints the export line" yes \
+  "$(grep -Fxq 'qaren: no standard bin directory is on PATH; add ~/.local/bin to PATH: export PATH="$HOME/.local/bin:$PATH"' "$tmp/stderr" && echo yes || echo "no: $(cat "$tmp/stderr")")"
 
 # Empty and relative PATH entries name the caller's directory, never a place to link qaren.
 reset_home
@@ -768,7 +779,7 @@ check "relative PATH: nothing is linked in the working directory" "no no" \
   "$([ -e "$tmp/cwd/qaren" ] && echo yes || echo no) $([ -e "$tmp/cwd/rel-bin/qaren" ] && echo yes || echo no)"
 check "relative PATH: falls back to ~/.local/bin" "$REAL_DEST/bin/qaren" "$(readlink "$tmp/home/.local/bin/qaren")"
 
-# With no writable PATH directory, preserve the fallback and command ownership.
+# With no standard bin directory on PATH, preserve the fallback and command ownership.
 run_link_install() { PATH="$tmp/read-only-tools" run_install "$1"; }
 LINK="$tmp/home/.local/bin/qaren"
 reset_home
@@ -779,7 +790,7 @@ check "link: missing ~/.local/bin is created and links the binary" "$REAL_DEST/b
 check "link: the linked binary runs" qaren "$("$LINK")"
 check "link: stdout is still exactly the binary path" "$REAL_DEST/bin/qaren" "$out"
 check "link: names the PATH line when ~/.local/bin is not on PATH" yes \
-  "$(grep -Fxq 'qaren: no writable directory is on PATH; add ~/.local/bin to PATH: export PATH="$HOME/.local/bin:$PATH"' "$tmp/stderr" && echo yes || echo "no: $(cat "$tmp/stderr")")"
+  "$(grep -Fxq 'qaren: no standard bin directory is on PATH; add ~/.local/bin to PATH: export PATH="$HOME/.local/bin:$PATH"' "$tmp/stderr" && echo yes || echo "no: $(cat "$tmp/stderr")")"
 out=$(run_link_install "$tmp/does-not-exist.tgz"); rc=$?
 check "link: re-install is idempotent" "0 $REAL_DEST/bin/qaren $REAL_DEST/bin/qaren" "$rc $out $(readlink "$LINK")"
 out=$(PATH="$tmp/home/.local/bin:$PATH" run_install "$tmp/does-not-exist.tgz")

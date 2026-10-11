@@ -379,8 +379,12 @@ link_on_path() {
   local -a path_dirs
   IFS=: read -r -a path_dirs <<< "$PATH"
   for candidate in "${path_dirs[@]}"; do
-    # Empty and relative entries resolve against the caller's directory, not a stable bin.
-    [[ "$candidate" == /* ]] && [ -d "$candidate" ] && [ -w "$candidate" ] || continue
+    # Only standard user bins; other writable PATH entries may belong to an app or toolchain.
+    case "$candidate" in
+      "$HOME/.local/bin" | "$HOME/bin" | /opt/homebrew/bin | /usr/local/bin) ;;
+      *) continue ;;
+    esac
+    [ -d "$candidate" ] && [ -w "$candidate" ] || continue
     dir="$candidate"
     on_path=true
     break
@@ -401,7 +405,7 @@ link_on_path() {
     return 0
   fi
   if [ "$on_path" = false ]; then
-    echo "qaren: no writable directory is on PATH; add ~/.local/bin to PATH: export PATH=\"\$HOME/.local/bin:\$PATH\"" >&2
+    echo "qaren: no standard bin directory is on PATH; add ~/.local/bin to PATH: export PATH=\"\$HOME/.local/bin:\$PATH\"" >&2
   fi
 }
 

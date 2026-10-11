@@ -151,11 +151,12 @@ it does not require the source checkout's `dist/` or `QAREN_RUNTIME` override.
 The SessionStart hook only runs `--print-bin`; it never downloads. That mode
 always exits 0 and prints either the verified binary path, an install or repair
 instruction, or nothing, so its exit status alone does not prove installation.
-`--install` also links `qaren` into the first existing, writable absolute directory
-on PATH (for example `/opt/homebrew/bin` or `/usr/local/bin` on a Mac); empty and
-relative PATH entries are skipped. It replaces only
+`--install` also links `qaren` into the first standard user bin directory that is
+on PATH, exists and is writable: `~/.local/bin`, `~/bin`, `/opt/homebrew/bin` or
+`/usr/local/bin`. Other PATH entries, such as an IDE's or a Node version manager's
+private bin, are skipped. It replaces only
 a link into `~/.qaren/runtime/`; any other file there is left alone with a notice.
-If no PATH directory qualifies, it links `~/.local/bin/qaren` and prints
+If no standard directory qualifies, it links `~/.local/bin/qaren` and prints
 `export PATH="$HOME/.local/bin:$PATH"`; run that line to use the bare command.
 It never edits shell rc files. Link problems are stderr notices and do not fail
 installation; stdout remains exactly the installed binary path, which you can
