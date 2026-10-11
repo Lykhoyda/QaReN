@@ -1537,7 +1537,7 @@ fn resolve_device(
     }
 }
 
-// The one booted emulator on the host's already running adb server; qaren never starts that server.
+// Borrowing requires an existing server without claiming its process lifecycle.
 fn borrow_emulator(
     runner: &mut dyn Runner,
     device: Option<&str>,

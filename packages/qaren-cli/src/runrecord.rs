@@ -211,7 +211,7 @@ pub struct AdbServerResource {
     pub log: PathBuf,
 }
 
-// Only the borrowed server's port is recorded: qaren never starts or stops that adb server.
+// Borrowing records no adb-server process ownership; cleanup keeps the host server.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BorrowedEmulatorResource {
     pub serial: String,

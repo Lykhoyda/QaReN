@@ -1,8 +1,9 @@
 # qaren — plan-based React Native QA CLI
 
 `qaren check` owns a QA run against the current app worktree: it leases a
-simulator, prepares the app and Metro, starts the TypeScript screen child,
-walks a Markdown plan, writes evidence, and tears down owned resources.
+borrowed iOS simulator or Android emulator, prepares the app and Metro,
+starts the TypeScript screen child, walks a Markdown plan, writes evidence,
+and tears down owned resources.
 QaReN is still in development; this checkout is not the published 1.x MCP plugin.
 The scenario-based preparation verbs remain available for explicit iOS,
 NUC Android and USB Android setup experiments.
@@ -40,9 +41,11 @@ or clears the label when none remain.
 Preflight and dependencies pass when their work completes; verify runs after
 every build decision, including reuse. Reuse skips prebuild and native compile.
 On iOS and on a borrowed Android emulator, native compile (including any
-prebuild of an absent native directory) ends before install/launch/ready. Recording can overlap steps. Requested recording starts as running and
+prebuild of an absent native directory) ends before install/launch/ready.
+Recording can overlap steps. Requested recording starts as running and
 stays failed after a startup failure, even if retained-resource cleanup succeeds;
-recording is skipped only when it was not requested. Failures close running stages.
+recording is skipped when it was not requested or is unavailable for the platform
+(see [Test a pull request](#test-a-pull-request)). Failures close running stages.
 Only `check` and `pr` produce the value-free `logs/events.jsonl` stream.
 The startup progress hint names the command to watch that run.
 Telemetry uses a bounded, nonblocking writer queue with a reserved final-event
@@ -213,6 +216,7 @@ From the app's directory, supply `.qaren/config.yaml` and a Markdown plan:
 
 ```sh
 qaren check --plan-file plan.md --device <simulator-UUID> --json
+qaren check --platform android --plan-file plan.md --device emulator-5554 --json
 ```
 
 The configuration keys, defaults and validation are owned by
@@ -223,7 +227,7 @@ The configuration keys, defaults and validation are owned by
 `--platform android` borrows one booted emulator on the host's already running
 adb server: `ADB_SERVER_SOCKET` (loopback only), else `ANDROID_ADB_SERVER_PORT`,
 else 5037. `qaren` asks that server for its version over the adb protocol and
-never starts or stops an adb server: with no server answering it refuses
+issues no server start or stop command: with no server answering it refuses
 `DEVICE_UNAVAILABLE`, and so it does when `adb version` under `ANDROID_HOME`
 differs from the server's, because a client of another version would restart the
 server. The check holds at the start of the run; if the server exits later, the
@@ -489,6 +493,8 @@ Dialog steps require one unconditional accept or dismiss action, such as
 `Accept the permission dialog` or `Dismiss the alert`. Conditions, negation and
 multiple actions, such as `Accept the dialog if it appears` or
 `Do not dismiss the alert`, refuse before allocation; Jev cannot override this restriction.
+On Android, dialog steps and dialog recovery refuse `TARGET_UNSUPPORTED`
+before calling a driver in this release.
 
 Context-bound iOS QA reads require the unchanged target app already in the
 foreground. They never activate or relaunch it, or retry a failed read through
@@ -764,7 +770,7 @@ plan preflight -> device selection -> lease + durable run record
                -> app preparation -> screen proof -> walk -> teardown
 ```
 
-By default `check` borrows the only booted simulator, or the booted target
+On iOS, `check` borrows the only booted simulator, or the booted target
 selected by `--device`. `--boot-device --device <simulator-UUID>` opts into
 booting that exact iOS simulator under the lease. `--fresh-install` opts into
 removing the selected app and its data, proving absence, then installing it
@@ -779,10 +785,12 @@ device lease remain claimed for `qaren cleanup`. The developer
 [check gate](../../scripts/gate-qaren-check.sh) forwards the boot opt-in with
 `QAREN_BOOT_DEVICE=1` alongside `QAREN_DEVICE_UDID`.
 
-iOS preparation and cached Android preparation request the dev-client manifest
-from Metro once with the `expo-platform` header before launch, so the client's
-own first request is not the slow cold one. Fresh Android preparation keeps
-launch and Metro under `expo run:android` and does not perform this warmup.
+iOS preparation, borrowed-emulator builds and cached Android preparation
+request the dev-client manifest from Metro once with the `expo-platform`
+header before launch, so the client's own first request is not the slow cold
+one. Fresh Android scenario-based
+`prepare` keeps launch and Metro under `expo run:android` and does not perform
+this warmup.
 A manifest or dev-client launch timeout refuses with `CORE_REFUSED`; the launch is retried once
 only when the measured one-minute host load exceeds the launch envelope. Other
 manifest and launch errors remain `BUILD_FAILED`. Cleanup retained resources
@@ -1005,8 +1013,8 @@ and [freshness regressions](../qaren-core/test/unit/qa/temporal-walker.test.ts).
 Recovery requires admitted screen evidence. iOS phrase steps behind a system or
 permission alert can refuse `SCREEN_EVIDENCE_INCOMPLETE` before recovery because
 platform presence excludes that system surface; phrase-step dialog recovery is
-best-effort. Android dialog recovery is not supported by `qaren check` in this
-release (see [Check a plan](#check-a-plan)). An action reporting `tapped: false`
+best-effort. For Android dialog limits, see [Check a plan](#check-a-plan).
+An action reporting `tapped: false`
 or `executed: false` establishes no action proof and cannot count as a recovery.
 
 Dev-overlay recovery must re-prove clearance before retrying the step. A failed
@@ -1489,8 +1497,9 @@ fingerprint, and building candidate sha:
    recorded qaren build with unchanged, completely fingerprinted inputs.
    Committed native directories keep incremental builds for changed or
    incomplete fingerprints. iOS follows the
-   [CLI-owned build routes](#cli-owned-ios-build-routes); Android recompiles
-   with `expo run:android` over the existing Gradle caches.
+   [CLI-owned build routes](#cli-owned-ios-build-routes); borrowed Android
+   emulators follow [Check a plan](#check-a-plan), while scenario-based Android
+   `prepare` recompiles with `expo run:android` over the existing Gradle caches.
 3. **Clean** — mandatory whenever compatibility is unprovable: no/corrupt
    state, cross-worktree state, unproven generated-dir provenance, changed or
    incomplete fingerprints for an existing generated native directory, or
