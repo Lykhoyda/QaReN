@@ -43,7 +43,9 @@ chmod +x "$tmp/stubs/sysctl" "$tmp/stubs/curl"
 # sleep records its pid so the parked children of killed installers can be cleaned up.
 printf '#!/bin/sh\necho $$ >> "%s/sleep-pids"\nexec "%s" "$@"\n' "$tmp" "$(command -v sleep)" > "$tmp/stubs/sleep"
 chmod +x "$tmp/stubs/uname" "$tmp/stubs/sleep"
-export PATH="$tmp/stubs:$PATH"
+# ~/bin leads the standard bins, so default installs never link into the real /opt/homebrew/bin or /usr/local/bin.
+export PATH="$tmp/stubs:$tmp/home/bin:$PATH"
+mkdir -p "$tmp/home/bin"
 REQUIRED_TOOLS="uname dirname cat tar gzip shasum wc cut tr head du mktemp mkdir mv cp rm find ls sleep perl"
 
 # make_tarball <out> <kind>: good | dotdot | absolute | symlink | stray | bomb | manyfiles | large | flood | rodir | zerodir
@@ -162,7 +164,7 @@ kill_paused() {
   wait "$PAUSED_PID" 2>/dev/null
 }
 
-reset_home() { rm -rf "$tmp/home"; mkdir -p "$tmp/home"; }
+reset_home() { rm -rf "$tmp/home"; mkdir -p "$tmp/home/bin"; }
 
 DEST="$tmp/home/.qaren/runtime/$VERSION"
 # The installer resolves the runtime root to its real path (/var is /private/var on macOS).
@@ -743,7 +745,7 @@ check "dangling root: an ensure-qaren message, not a raw tool error" yes \
   "$(grep -q '^ensure-qaren: cannot use' "$tmp/stderr" && ! grep -q '^mkdir' "$tmp/stderr" && echo yes || echo "no: $(cat "$tmp/stderr")")"
 check "dangling root: the link target is never created" no "$([ -e "$tmp/nowhere" ] && echo yes || echo no)"
 
-# Link into the first standard user bin directory on PATH; app-private writable directories are skipped.
+# A standard user bin directory on PATH wins over an earlier writable app-private directory.
 reset_home
 write_manifest "$tmp/good.tgz"
 mkdir -p "$tmp/app-bin" "$tmp/home/bin" "$tmp/home/.local/bin" "$tmp/read-only-tools"
@@ -761,14 +763,16 @@ check "PATH link: no export notice" no "$(grep -q 'export PATH=' "$tmp/stderr" &
 check "PATH link: an app-private writable directory is skipped" no "$([ -e "$tmp/app-bin/qaren" ] && echo yes || echo no)"
 check "PATH link: only one link is made" no "$([ -e "$tmp/home/.local/bin/qaren" ] && echo yes || echo no)"
 
+# With no standard bin directory on PATH, the first writable absolute directory still makes qaren invocable.
 reset_home
 rm -f "$tmp/app-bin/qaren"
 out=$(PATH="$tmp/read-only-tools:$tmp/app-bin" run_install "$tmp/good.tgz"); rc=$?
-check "app-private PATH only: install exits 0" "0 $REAL_DEST/bin/qaren" "$rc $out"
-check "app-private PATH only: nothing is linked there" no "$([ -e "$tmp/app-bin/qaren" ] && echo yes || echo no)"
-check "app-private PATH only: falls back to ~/.local/bin" "$REAL_DEST/bin/qaren" "$(readlink "$tmp/home/.local/bin/qaren")"
-check "app-private PATH only: prints the export line" yes \
-  "$(grep -Fxq 'qaren: no standard bin directory is on PATH; add ~/.local/bin to PATH: export PATH="$HOME/.local/bin:$PATH"' "$tmp/stderr" && echo yes || echo "no: $(cat "$tmp/stderr")")"
+check "no standard dir: install exits 0" "0 $REAL_DEST/bin/qaren" "$rc $out"
+check "no standard dir: the first writable PATH directory gets the link" "$REAL_DEST/bin/qaren" "$(readlink "$tmp/app-bin/qaren")"
+check "no standard dir: qaren runs without changing PATH" qaren "$(PATH="$tmp/read-only-tools:$tmp/app-bin" /bin/bash -c qaren)"
+check "no standard dir: no export notice" no "$(grep -q 'export PATH=' "$tmp/stderr" && echo yes || echo no)"
+check "no standard dir: no ~/.local/bin link" no "$([ -e "$tmp/home/.local/bin/qaren" ] && echo yes || echo no)"
+rm -f "$tmp/app-bin/qaren"
 
 # Empty and relative PATH entries name the caller's directory, never a place to link qaren.
 reset_home
@@ -779,7 +783,7 @@ check "relative PATH: nothing is linked in the working directory" "no no" \
   "$([ -e "$tmp/cwd/qaren" ] && echo yes || echo no) $([ -e "$tmp/cwd/rel-bin/qaren" ] && echo yes || echo no)"
 check "relative PATH: falls back to ~/.local/bin" "$REAL_DEST/bin/qaren" "$(readlink "$tmp/home/.local/bin/qaren")"
 
-# With no standard bin directory on PATH, preserve the fallback and command ownership.
+# With no writable PATH directory, preserve the fallback and command ownership.
 run_link_install() { PATH="$tmp/read-only-tools" run_install "$1"; }
 LINK="$tmp/home/.local/bin/qaren"
 reset_home
@@ -790,7 +794,7 @@ check "link: missing ~/.local/bin is created and links the binary" "$REAL_DEST/b
 check "link: the linked binary runs" qaren "$("$LINK")"
 check "link: stdout is still exactly the binary path" "$REAL_DEST/bin/qaren" "$out"
 check "link: names the PATH line when ~/.local/bin is not on PATH" yes \
-  "$(grep -Fxq 'qaren: no standard bin directory is on PATH; add ~/.local/bin to PATH: export PATH="$HOME/.local/bin:$PATH"' "$tmp/stderr" && echo yes || echo "no: $(cat "$tmp/stderr")")"
+  "$(grep -Fxq 'qaren: no writable directory is on PATH; add ~/.local/bin to PATH: export PATH="$HOME/.local/bin:$PATH"' "$tmp/stderr" && echo yes || echo "no: $(cat "$tmp/stderr")")"
 out=$(run_link_install "$tmp/does-not-exist.tgz"); rc=$?
 check "link: re-install is idempotent" "0 $REAL_DEST/bin/qaren $REAL_DEST/bin/qaren" "$rc $out $(readlink "$LINK")"
 out=$(PATH="$tmp/home/.local/bin:$PATH" run_install "$tmp/does-not-exist.tgz")
@@ -821,5 +825,11 @@ run_link_install "$tmp/good.tgz" >/dev/null; rc=$?
 check "link: a refused install creates no link" "1 no" "$rc $([ -e "$LINK" ] || [ -L "$LINK" ] && echo yes || echo no)"
 
 chmod 755 "$tmp/read-only-tools"
+leaked=""
+IFS=: read -r -a real_dirs <<< "${PATH#"$tmp/stubs:$tmp/home/bin:"}"
+for d in "${real_dirs[@]}"; do
+  [ -L "$d/qaren" ] && [[ "$(readlink "$d/qaren")" == "$tmp"/* || "$(readlink "$d/qaren")" == "$(cd -P "$tmp" && pwd -P)"/* ]] && leaked="$leaked $d"
+done
+check "no install linked qaren into a real PATH directory" "" "$leaked"
 [ -f "$tmp/sleep-pids" ] && kill $(cat "$tmp/sleep-pids") 2>/dev/null
 exit "$fail"

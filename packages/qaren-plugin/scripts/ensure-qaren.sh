@@ -375,19 +375,24 @@ install() {
 
 # A link problem is a stderr notice, never a failed install.
 link_on_path() {
-  local bin="$1" dir="$HOME/.local/bin" target tmp candidate on_path=false
+  local bin="$1" dir="$HOME/.local/bin" target tmp candidate pass on_path=false
   local -a path_dirs
   IFS=: read -r -a path_dirs <<< "$PATH"
-  for candidate in "${path_dirs[@]}"; do
-    # Only standard user bins; other writable PATH entries may belong to an app or toolchain.
-    case "$candidate" in
-      "$HOME/.local/bin" | "$HOME/bin" | /opt/homebrew/bin | /usr/local/bin) ;;
-      *) continue ;;
-    esac
-    [ -d "$candidate" ] && [ -w "$candidate" ] || continue
-    dir="$candidate"
-    on_path=true
-    break
+  # Prefer a standard user bin; otherwise any writable PATH entry keeps qaren invocable at once.
+  for pass in standard any; do
+    for candidate in "${path_dirs[@]}"; do
+      # Empty and relative entries resolve against the caller's directory, not a stable bin.
+      [[ "$candidate" == /* ]] && [ -d "$candidate" ] && [ -w "$candidate" ] || continue
+      if [ "$pass" = standard ]; then
+        case "$candidate" in
+          "$HOME/.local/bin" | "$HOME/bin" | /opt/homebrew/bin | /usr/local/bin) ;;
+          *) continue ;;
+        esac
+      fi
+      dir="$candidate"
+      on_path=true
+      break 2
+    done
   done
   target="$dir/qaren"
   mkdir -p "$dir" 2>/dev/null || { echo "qaren: cannot create $dir; run qaren as $bin" >&2; return 0; }
@@ -405,7 +410,7 @@ link_on_path() {
     return 0
   fi
   if [ "$on_path" = false ]; then
-    echo "qaren: no standard bin directory is on PATH; add ~/.local/bin to PATH: export PATH=\"\$HOME/.local/bin:\$PATH\"" >&2
+    echo "qaren: no writable directory is on PATH; add ~/.local/bin to PATH: export PATH=\"\$HOME/.local/bin:\$PATH\"" >&2
   fi
 }
 

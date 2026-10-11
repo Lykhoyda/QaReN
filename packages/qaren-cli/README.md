@@ -153,10 +153,11 @@ always exits 0 and prints either the verified binary path, an install or repair
 instruction, or nothing, so its exit status alone does not prove installation.
 `--install` also links `qaren` into the first standard user bin directory that is
 on PATH, exists and is writable: `~/.local/bin`, `~/bin`, `/opt/homebrew/bin` or
-`/usr/local/bin`. Other PATH entries, such as an IDE's or a Node version manager's
-private bin, are skipped. It replaces only
+`/usr/local/bin`, so an earlier IDE or toolchain bin is passed over. With none of
+those on PATH it uses the first writable absolute PATH directory, so the bare
+command still works at once; empty and relative entries are skipped. It replaces only
 a link into `~/.qaren/runtime/`; any other file there is left alone with a notice.
-If no standard directory qualifies, it links `~/.local/bin/qaren` and prints
+If no PATH directory qualifies, it links `~/.local/bin/qaren` and prints
 `export PATH="$HOME/.local/bin:$PATH"`; run that line to use the bare command.
 It never edits shell rc files. Link problems are stderr notices and do not fail
 installation; stdout remains exactly the installed binary path, which you can
