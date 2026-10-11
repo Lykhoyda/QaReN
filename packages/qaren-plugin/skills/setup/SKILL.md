@@ -7,7 +7,7 @@ description: "Set up QaReN in this app: install the qaren CLI onto PATH, write .
 
 Run these steps in order from the app's root directory. Each step names when to stop; when you stop, tell the user the one reason and the fix.
 
-QaReN 2.0 needs an Apple silicon Mac with Xcode, Node 24 or newer, pnpm, and an Expo app that uses `expo-dev-client`. iOS simulators only.
+QaReN 2.0 needs an Apple silicon Mac with Xcode, Node 24 or newer, pnpm, and an Expo app that uses `expo-dev-client`. This setup prepares an iOS simulator; for a booted Android emulator, see the CLI README's [Check a plan](https://github.com/Lykhoyda/rn-dev-agent/blob/develop/packages/qaren-cli/README.md#check-a-plan).
 
 ## 1. CLI
 
