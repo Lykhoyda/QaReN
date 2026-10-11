@@ -1251,8 +1251,10 @@ The last observed login screen must be clean: a typed or private value still
 visible there, or observed at any later capture, withholds the video for the rest
 of that window. Complete values of three or more characters also withhold capture
 when echoed with changed capitalization. A fill without readable input content
-keeps its field sensitive until the field leaves the screen; an unknown field
-keeps visible inputs sensitive. Login fills after any plan step passes withhold
+keeps a privacy guard active until a matching field has been observed on screen
+and then disappears. If the field is unknown, an input must be observed and then
+all inputs must disappear; a field never observed keeps the window private.
+Login fills after any plan step passes withhold
 the video, including a second login after an earlier publication window opened.
 The login exception never resets run-wide screenshot withholding or masking
 history.
