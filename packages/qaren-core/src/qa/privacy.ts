@@ -628,6 +628,7 @@ export class ObservedPrivacy {
   private readonly codeElements = new WeakSet<Element>();
   private sensitivePixels = false;
   private sensitiveInWindow = false;
+  private sensitiveLatest = false;
 
   constructor(private readonly typed: readonly string[] = []) {}
 
@@ -637,6 +638,7 @@ export class ObservedPrivacy {
   }
 
   observe(screen: Screen): void {
+    this.sensitiveLatest = false;
     if (privateScreens.get(screen)?.sensitivePixels === true) this.mark();
     for (const value of privateScreens.get(screen)?.secrets ?? []) this.secret.add(value);
     for (const value of inputValues(screen)) this.observed.add(value);
@@ -703,15 +705,16 @@ export class ObservedPrivacy {
   private mark(): void {
     this.sensitivePixels = true;
     this.sensitiveInWindow = true;
+    this.sensitiveLatest = true;
   }
 
   canScreenshot(): boolean {
     return !this.sensitivePixels;
   }
 
-  // The published video starts here; still screenshots keep the run-wide flag.
+  // The published video starts here, still showing the latest screen; screenshots keep the run-wide flag.
   startWindow(): void {
-    this.sensitiveInWindow = false;
+    this.sensitiveInWindow = this.sensitiveLatest;
   }
 
   windowClean(): boolean {

@@ -368,6 +368,23 @@ test('a typed login value on screen after the replay withholds the video', async
   assert.equal(ledger.videoPublication, 'withheld-privacy');
 });
 
+test('a typed login value on the last login screen withholds the video', async () => {
+  const f = fake(
+    [
+      loginWall,
+      loginWall,
+      passwordInput,
+      screen(['Settings', 'hunter2-secret']),
+      screen(['Settings']),
+      screen(['Profile']),
+    ],
+    { login: typingLogin },
+  );
+  const ledger = await runPlan([block('1. Tap "Settings"\n')], f.deps);
+  assert.equal(ledger.verdict, 'PASS');
+  assert.equal(ledger.videoPublication, 'withheld-privacy');
+});
+
 test('a login after a plan step passed withholds the video with no publish window', async () => {
   const f = fake(
     [
