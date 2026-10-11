@@ -27,9 +27,9 @@ A plan is a Markdown file. `qaren check` and `qaren pr` take it with `--plan-fil
   `##` heading. Without one, the whole file is read.
 - Each `###` heading starts a named block. Steps before the first `###` heading form a
   block named after the plan's `#` title, or `plan` when there is none.
-- Every other non-empty line is either a numbered step (`1.` or `1)`) or a check that
-  starts with `✓` or `✔`, optionally after a `-` or `*` bullet. Any other line refuses the
-  plan with "not a numbered step or a ✓ line".
+- Other headings are skipped. Every other non-empty line is a numbered step (`1.` or `1)`),
+  a check that starts with `✓` or `✔` (optionally after a `-` or `*` bullet), or a
+  `Starts on:` line. Any other line refuses the plan with "not a numbered step or a ✓ line".
 - HTML comments are ignored.
 - A block with no steps, two blocks with the same title, or two titles that produce the
   same block ID refuse the plan.

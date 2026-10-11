@@ -52,19 +52,20 @@ The screen layer's own codes appear at the start of `failure.detail` or in the r
 | `APP_PROCESS_CHANGED`        | On iOS, the app crashed or restarted between captures                         |
 | `CDP_NOT_CONNECTED`          | The app's JavaScript runtime did not attach in time; the detail carries the host load |
 
-## After the walk
+## Teardown, cleanup and publish
 
 | Code                  | What happened                                                        | What to do                                                       |
 | --------------------- | -------------------------------------------------------------------- | ---------------------------------------------------------------- |
-| `CLEANUP_INCOMPLETE`  | Teardown could not resolve some resources                            | Re-run `qaren cleanup <run-id> --json`                           |
+| `CLEANUP_INCOMPLETE`  | `qaren cleanup` could not resolve some resources                     | Re-run `qaren cleanup <run-id> --json`                           |
 | `OWNERSHIP_UNPROVEN`  | The run's processes were not proven gone                             | Run `qaren cleanup <run-id>`, then re-run `qaren pr`             |
 | `RUN_CANCELLED`       | The run was cancelled                                                | Re-run when ready; the cleanup map names anything retained       |
 | `PR_UNAVAILABLE`      | `gh` could not read the pull request                                 | Check `gh auth status` and the pull request, then re-run         |
 
 ## Incomplete teardown
 
-When a run cannot prove that a process or the PR worktree is gone, it keeps the device lease
-and records what it kept. The next run on that device refuses `DEVICE_BUSY` until the lease is
+When a run cannot prove that a process is gone, it keeps the device lease and records what it
+kept. A PR worktree it cannot remove stays recorded for `qaren cleanup` without holding the
+lease. The next run on that device refuses `DEVICE_BUSY` until the lease is
 released. Run:
 
 ```sh

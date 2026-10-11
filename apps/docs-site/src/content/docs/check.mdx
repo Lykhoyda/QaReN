@@ -64,7 +64,9 @@ must be git-ignored; otherwise the build fails `BUILD_FAILED` before generating 
 | `--boot-device`                 | iOS only. Boot the simulator named by `--device` under the lease.                  |
 | `--json`                        | Accepted for scripts; the receipt is always JSON on stdout.                        |
 
-`--fresh-install` and `--boot-device` refuse on Android.
+On Android, `--fresh-install` refuses `PLATFORM_UNSUPPORTED` (exit 4) and `--boot-device` is a
+usage error (exit 2). `--boot-device` without a simulator UUID in `--device` is a usage error
+too.
 
 ## The receipt
 
@@ -73,7 +75,7 @@ The fields you read most:
 
 | Field                  | Meaning                                                                    |
 | ---------------------- | -------------------------------------------------------------------------- |
-| `result`               | `pass`, `fail` or `refused`                                                |
+| `result`               | `pass`, `fail`, `failed` or `refused`                                      |
 | `run_id`               | The run's ID; its evidence is under `~/.qaren/runs/<run-id>/`              |
 | `failure.code`         | The typed failure or refusal code                                          |
 | `failure.detail`       | What happened                                                              |
@@ -118,7 +120,8 @@ the walk and checks them again after it. A change in between fails the run with
 ## Leases, cancellation and cleanup
 
 One run holds a device at a time. Device leases live under `~/.qaren/locks`, or under
-`QAREN_LOCK_ROOT` when it is set to an absolute path. A second run on the same device
+`QAREN_LOCK_ROOT` when it is set; it must be an absolute path, and a relative value fails the
+run. A second run on the same device
 refuses `DEVICE_BUSY`; a lease whose holder has died is reclaimed by running that run's own
 cleanup.
 

@@ -3,7 +3,8 @@ title: Saved blocks
 description: How a passing block is saved, replayed on the next run, and patched when the app changes.
 ---
 
-Every block that passes is saved, so the next run can replay it by the exact identities
+A block that passes is saved, unless one of the [conditions below](#when-a-block-is-not-saved)
+applies, so the next run can replay it by the exact identities
 it used instead of resolving each target again.
 
 ## Where blocks live
@@ -14,8 +15,9 @@ holds `.qaren/config.yaml`. The slug is the block's ID from its heading; see
 suffix.
 
 The file is a Maestro-shaped action: each plan line as a comment, followed by the commands
-with the exact `testID` the step used, or its label when it had no `testID`. Its replay
-semantics are the [rn-flow/1 dialect](../actions/rn-flow-1/).
+with the exact `testID` the step used, or its label when it had no `testID`. The walk replays
+the file by those stored identities; the [rn-flow/1 dialect](../actions/rn-flow-1/) is the
+separate compile contract for saved actions.
 
 ## Replay, then walk
 
