@@ -1,9 +1,169 @@
 ---
 title: "Changelog"
-description: "Release history for rn-dev-agent"
+description: "Release history for QaReN"
 ---
 
-## Claude plugin
+## Plugin
+
+### 1.0.13
+
+#### Patch Changes
+
+- fd4f88a: `device_fill` gains `focused: true`, which types into the already focused iOS field through a synthesized text event and confirms the value through the React tree only when that named field is the focused responder, returning `typed: true, verified: false` when it cannot.
+- e0a5803: Doctor reports learned-action compatibility as its own read-only row — missing or low enginePin, regex text selectors, and unreadable actions — so a pinned-ok runner can no longer hide replay refusals behind ENGINE_PIN_MISMATCH.
+- 0c2e0a4: `/qa-pr` posts a human-reviewer comment (the feature, the verdict, the commit and platform tested, the video, what was tested, repro steps) and then removes the `needs-qa` label when it is present.
+- 466b3f5: The React-tree replay refusal `frontmost proof cannot cover every mounted renderer` now carries `meta.coverage` with its reasons and renderer ids.
+- 466b3f5: The React-tree replay refusal's `meta.coverage` now names the phase and message of each scan error, and the frontmost prover reads style keys directly so styles it cannot enumerate no longer abort the scan.
+- bc219d9: Ship one committed bundled runtime with host-neutral `rn-dev-agent-core` metadata from `packages/claude-plugin`, which both the Claude and Codex marketplaces now install (Codex selects its generated `.codex-plugin/plugin.json`, `codex.mcp.json`, `bin/` launchers and `codex-*` adapters from the same directory), so a Codex local registration must point at `packages/claude-plugin` instead of the removed `packages/codex-plugin` runtime (GH #892).
+- 466b3f5: Expand TextInput designation scans to 20,000 fibers.
+- 466b3f5: Raise React-tree `typeText` and input read-back to a shared 500,000-work-unit limit (a measured diagnostic, not a performance recommendation) and make TextInput designation recognize React alternates.
+- Updated dependencies [fd4f88a]
+- Updated dependencies [e0a5803]
+- Updated dependencies [466b3f5]
+- Updated dependencies [466b3f5]
+- Updated dependencies [bc219d9]
+- Updated dependencies [466b3f5]
+- Updated dependencies [466b3f5]
+  - rn-dev-agent-core@1.0.12
+
+### 1.0.12
+
+#### Patch Changes
+
+- 14358df: `/qa-pr` now proves an app-facing PR on the user path only (no `cdp_navigate`, deep link, or relaunch), with the Expo dev menu disabled and hidden, a recorded path, a saved or reused Maestro action rehearsed off camera, video started before the on-camera `cdp_run_action` proof replay, and a GitHub comment at the live head with the video first and 390 px images.
+
+### 1.0.11
+
+#### Patch Changes
+
+- 087d5b5: Pin an iOS simulator dev client with the same initial-URL launch the managed build uses instead of an openurl confirmation.
+- 087d5b5: Record recognized authority refusals as one code-and-platform group across emission shapes, persist an explicit non-membership verdict, and retain runner traces for every failed replay and for recognized authority refusals without treating successful diagnostic calls as verified recovery. Stored symptoms and submitted feedback now redact UUID-shaped device identifiers. Dispose the previous CDP client before an Android managed relaunch or re-prove so Metro's inspector proxy sees one debugger per page.
+- Updated dependencies [087d5b5]
+- Updated dependencies [087d5b5]
+  - rn-dev-agent-core@1.0.11
+
+### 1.0.10
+
+#### Patch Changes
+
+- ce181d2: Add first-class Cursor Plugin manifests and `${CURSOR_PLUGIN_ROOT}` spawn on the Claude package, keep the process lock on Claude and Cursor spawns, make the lock-conflict message host-neutral without kill, lock-delete, or `--no-lock` advice, and resolve reused Claude command/skill helper paths through a host-neutral plugin-root fallback that includes `CURSOR_PLUGIN_ROOT` (GH #1038, #872).
+- 8601c96: Sanitize `/qa-pr` comments before posting, exempting only `--attach` destinations; check again after rewrite.
+- 0ff6b0f: Redact hostname, machine UUID, and local paths from `/qa-pr` GitHub comments.
+- Updated dependencies [ce181d2]
+  - rn-dev-agent-core@1.0.10
+
+### 1.0.9
+
+#### Patch Changes
+
+- c3fc818: Managed dev-client launches and relaunches now keep the Expo dev-menu onboarding tutorial and launch-time sheet from auto-opening over a native segment or after a reload on a fresh install, on by default and configurable per target class with `autoHideDevMenu` in `.rn-agent/config.json` (GH #1004).
+- 814337d: Document the one-source-owner-per-worktree and one-exact-device-target-per-session authority bounds in the workflow skill, with pointers from the CLAUDE.md template and other workflow skills (GH #1026). Source ownership is the worktree/checkout, not only the app package root: a sibling app root in the same checkout is also blocked, and separate linked worktrees are independent copies. A session holds one `(platform, deviceId, appId)` target at a time and replaces it after runner, proof, any explicitly started Observe, and any active recorder are released and no incompatible install receipt is bound. Authoritative cross-target `cross_platform_verify` is currently unsupported.
+- d76a9e2: Publish each release's runner zips and bundled runner trust root before the Version Packages merge advertises the plugin version, so a fresh install never verifies against a stale runner-manifest.json.
+- 5c10049: Fix saved-action tab presses by resolving wrappers around a single native host and proving visibility from the owning route scope with navigator controls bound to their enclosing navigator and transparent destination providers, while preserving refusals for ambiguous controls and inactive content (HELPERS_VERSION bumped to 70 so connected sessions re-inject).
+- 7ab6ae4: Normalize native recordings to 30 fps H.264 at their captured resolution through the authenticated stop boundary while preserving captured timing, stage the conversion inside the private runtime directory, refuse symlinked PR-body destinations, and embed proof screenshots and demo GIFs at 400px width in the generated PR body.
+- 2085479: `rn_session` status and `cdp_status` now report the running product on the envelope: `product.coreVersion` is the core package the live session process loaded, and `product.pluginVersion` is included when the host plugin manifest differs (GH #1025).
+- Updated dependencies [c3fc818]
+- Updated dependencies [814337d]
+- Updated dependencies [5c10049]
+- Updated dependencies [7ab6ae4]
+- Updated dependencies [2085479]
+  - rn-dev-agent-core@1.0.9
+
+### 1.0.8
+
+#### Patch Changes
+
+- f1d414e: Print snapshot and find element refs as `@eN`, matching the pinned form the current frame authorises for press, and accept a copied bare `eN` at the argv boundary (GH #979).
+- fa2cd21: Refuse managed-dev-client replay of flows that clear app state, and make login-path refusals name the actual next step.
+- bc86d57: Add the `rn-pr-qa` agent and `/qa-pr` workflow so a GitHub PR can be device-tested on iOS simulator, Android emulator, and physical device.
+- Updated dependencies [f1d414e]
+- Updated dependencies [fa2cd21]
+  - rn-dev-agent-core@1.0.8
+
+### 1.0.7
+
+#### Patch Changes
+
+- b352043: Report the managed-Metro readiness failure from the pre-kill launcher state and log tail, and raise the budget to a 90 s default configurable via `.rn-agent/config.json` → `metro.readinessTimeoutMs` (GH #992).
+- Updated dependencies [b352043]
+  - rn-dev-agent-core@1.0.7
+
+### 1.0.6
+
+#### Patch Changes
+
+- 8517ebc: Admit the canonical `expo-updates` runtime-version CLI and the verified developer `git` it shells out to in the Darwin managed-Metro sandbox profile, so Expo dev-client manifests under a `fingerprint` runtime-version policy stop failing with `spawn EPERM`.
+- a7e439f: Re-pin the vendored `vercel-labs/agent-skills` best-practice corpus to upstream commit `063bee94` and regenerate the rules routing index.
+- Updated dependencies [8517ebc]
+  - rn-dev-agent-core@1.0.6
+
+### 1.0.5
+
+#### Patch Changes
+
+- 6d6dc39: Allow the managed-Metro Darwin sandbox to write the resolved, run-owned `react-native-css-interop/.cache` directory while preserving all other sandbox restrictions and enforcement checks.
+- 6d6dc39: Accept the renamed Apple platform code-signing leaf authority during managed-Metro sandbox verification while preserving the trusted Apple chain, identity, and rejection requirements.
+- 5008fd6: Discover deeply nested Redux and React Query stores and dispatch Redux actions through their Provider when an app bridge has no registered store.
+- 6d6dc39: Record private per-attempt managed-Metro enforcement diagnostics with preparation outcomes, fixed-schema flags, timings, exits and predefined error categories without retaining arbitrary stderr text or changing permissions, timeouts or fallback behavior.
+- 6d6dc39: Deliver the attested command snapshot to the managed-Metro sandbox preflight shim before signaling admission, so a shell-shim command no longer intermittently sources an empty snapshot and degrades enforcement to reported-v1.
+- 6d6dc39: Detect a wildcard-bound Metro listener in the managed-Metro sandbox preflight by probing every local address shape, so a real Expo server that listens on all interfaces no longer reads as unoccupied and falls back to reported-v1.
+- cc992e6: Omit automatic hook state from component trees while preserving existing explicit component-state inspection.
+- e0d25c8: Retain a bounded closed-vocabulary projection of runner failure evidence on `maestro_run` results and `cdp_run_action` RunRecords before the temporary report tree is deleted, withholding text, images, terminal output and original artifacts.
+- 6d6dc39: Allow the managed-Metro Darwin sandbox to look up the FSEvents service so Metro's native file watcher works on app-scale trees under enforcement instead of exhausting descriptors, without adding any executable, file, or network permission.
+- e0d25c8: Recognize the rn-dev-agent instruction block in CLAUDE.local.md during workflow preflight without modifying either Claude instruction file or hiding read errors.
+- Updated dependencies [6d6dc39]
+- Updated dependencies [6d6dc39]
+- Updated dependencies [5008fd6]
+- Updated dependencies [6d6dc39]
+- Updated dependencies [6d6dc39]
+- Updated dependencies [6d6dc39]
+- Updated dependencies [cc992e6]
+- Updated dependencies [e0d25c8]
+- Updated dependencies [6d6dc39]
+- Updated dependencies [e0d25c8]
+  - rn-dev-agent-core@1.0.5
+
+### 1.0.4
+
+#### Patch Changes
+
+- abd7562: Report managed-Metro cleanup obligations with missing stop-proof evidence as unrecoverable in-band while preserving the obligation and authority fence.
+- 4047a2e: Resolve the Observe Device pane's live frame through the same authority-fenced device target as the mirror, so a parked runner or stale CDP no longer leaves the pane blank after `cdp_run_action`.
+- fa85d1f: Expose observed replay runtime-state writes with exact sidecar paths—session-private when fenced and project-local under `.rn-agent/state` for unfenced compatibility—and document the current fresh-session action history.
+- Updated dependencies [abd7562]
+- Updated dependencies [4047a2e]
+- Updated dependencies [fa85d1f]
+  - rn-dev-agent-core@1.0.4
+
+### 1.0.3
+
+#### Patch Changes
+
+- 7652515: Walk up to the nearest pressable ancestor for React-tree replay taps whose exact target is not a designatable TextInput, keeping input designation first and reporting type-path eligibility refusals as `INTERACTION_NOT_ACTUATED` with the helper's reason, with pointer-event eligibility read on host views only and inherited root-to-leaf.
+- Updated dependencies [7652515]
+  - rn-dev-agent-core@1.0.3
+
+### 1.0.2
+
+#### Patch Changes
+
+- f76cd30: Allow React-tree replay taps to designate an exact editable TextInput for only the adjacent inputText step without dispatching press or focus callbacks, and resolve a stock TextInput whose composite and host fibers share one onChangeText as a single typeText target instead of refusing it as ambiguous.
+- Updated dependencies [f76cd30]
+  - rn-dev-agent-core@1.0.2
+
+### 1.0.1
+
+#### Patch Changes
+
+- 7911ebd: Recognize a modal-hosted testID as frontmost when its React return chain threads through the modal host fiber's alternate, instead of refusing it as behind the active modal.
+- 7911ebd: Re-prove the exact CDP session target before completing a partitioned native segment's deferred origin, so a passing native prefix survives the runner park/resume handoff into the React-tree suffix instead of failing with an empty before-first-step envelope.
+- 7911ebd: Resume id-based iOS action waits through the React tree with Maestro-compatible timed visibility semantics.
+- d30f866: Reuse completed WebDriverAgent builds across maestro-runner spawns through a toolchain-fingerprinted persistent store with atomic publication, removing the ~75 s per-invocation WDA rebuild while keeping per-spawn cache isolation, corruption fallback, and cold-build behavior.
+- Updated dependencies [7911ebd]
+- Updated dependencies [7911ebd]
+- Updated dependencies [7911ebd]
+- Updated dependencies [d30f866]
+  - rn-dev-agent-core@1.0.1
 
 ### 1.0.0
 
@@ -1655,7 +1815,105 @@ identifier, hittable? }`, with a `fullNodeCount`. Far fewer tokens; `@ref`s for
 
   #188 shipped these to `main` with no version bump, leaving them undeliverable to marketplace installs; this patch publishes them.
 
-## Core MCP server
+## Core
+
+### 1.0.12
+
+#### Patch Changes
+
+- fd4f88a: `device_fill` gains `focused: true`, which types into the already focused iOS field through a synthesized text event and confirms the value through the React tree only when that named field is the focused responder, returning `typed: true, verified: false` when it cannot.
+- e0a5803: Doctor reports learned-action compatibility as its own read-only row — missing or low enginePin, regex text selectors, and unreadable actions — so a pinned-ok runner can no longer hide replay refusals behind ENGINE_PIN_MISMATCH.
+- 466b3f5: The React-tree replay refusal `frontmost proof cannot cover every mounted renderer` now carries `meta.coverage` with its reasons and renderer ids.
+- 466b3f5: The React-tree replay refusal's `meta.coverage` now names the phase and message of each scan error, and the frontmost prover reads style keys directly so styles it cannot enumerate no longer abort the scan.
+- bc219d9: Ship one committed bundled runtime with host-neutral `rn-dev-agent-core` metadata from `packages/claude-plugin`, which both the Claude and Codex marketplaces now install (Codex selects its generated `.codex-plugin/plugin.json`, `codex.mcp.json`, `bin/` launchers and `codex-*` adapters from the same directory), so a Codex local registration must point at `packages/claude-plugin` instead of the removed `packages/codex-plugin` runtime (GH #892).
+- 466b3f5: Expand TextInput designation scans to 20,000 fibers.
+- 466b3f5: Raise React-tree `typeText` and input read-back to a shared 500,000-work-unit limit (a measured diagnostic, not a performance recommendation) and make TextInput designation recognize React alternates.
+
+### 1.0.11
+
+#### Patch Changes
+
+- 087d5b5: Pin an iOS simulator dev client with the same initial-URL launch the managed build uses instead of an openurl confirmation.
+- 087d5b5: Record recognized authority refusals as one code-and-platform group across emission shapes, persist an explicit non-membership verdict, and retain runner traces for every failed replay and for recognized authority refusals without treating successful diagnostic calls as verified recovery. Stored symptoms and submitted feedback now redact UUID-shaped device identifiers. Dispose the previous CDP client before an Android managed relaunch or re-prove so Metro's inspector proxy sees one debugger per page.
+
+### 1.0.10
+
+#### Patch Changes
+
+- ce181d2: Add first-class Cursor Plugin manifests and `${CURSOR_PLUGIN_ROOT}` spawn on the Claude package, keep the process lock on Claude and Cursor spawns, make the lock-conflict message host-neutral without kill, lock-delete, or `--no-lock` advice, and resolve reused Claude command/skill helper paths through a host-neutral plugin-root fallback that includes `CURSOR_PLUGIN_ROOT` (GH #1038, #872).
+
+### 1.0.9
+
+#### Patch Changes
+
+- c3fc818: Managed dev-client launches and relaunches now keep the Expo dev-menu onboarding tutorial and launch-time sheet from auto-opening over a native segment or after a reload on a fresh install, on by default and configurable per target class with `autoHideDevMenu` in `.rn-agent/config.json` (GH #1004).
+- 814337d: Document the one-source-owner-per-worktree and one-exact-device-target-per-session authority bounds in the workflow skill, with pointers from the CLAUDE.md template and other workflow skills (GH #1026). Source ownership is the worktree/checkout, not only the app package root: a sibling app root in the same checkout is also blocked, and separate linked worktrees are independent copies. A session holds one `(platform, deviceId, appId)` target at a time and replaces it after runner, proof, any explicitly started Observe, and any active recorder are released and no incompatible install receipt is bound. Authoritative cross-target `cross_platform_verify` is currently unsupported.
+- 5c10049: Fix saved-action tab presses by resolving wrappers around a single native host and proving visibility from the owning route scope with navigator controls bound to their enclosing navigator and transparent destination providers, while preserving refusals for ambiguous controls and inactive content (HELPERS_VERSION bumped to 70 so connected sessions re-inject).
+- 7ab6ae4: Normalize native recordings to 30 fps H.264 at their captured resolution through the authenticated stop boundary while preserving captured timing, stage the conversion inside the private runtime directory, refuse symlinked PR-body destinations, and embed proof screenshots and demo GIFs at 400px width in the generated PR body.
+- 2085479: `rn_session` status and `cdp_status` now report the running product on the envelope: `product.coreVersion` is the core package the live session process loaded, and `product.pluginVersion` is included when the host plugin manifest differs (GH #1025).
+
+### 1.0.8
+
+#### Patch Changes
+
+- f1d414e: Print snapshot and find element refs as `@eN`, matching the pinned form the current frame authorises for press, and accept a copied bare `eN` at the argv boundary (GH #979).
+- fa2cd21: Refuse managed-dev-client replay of flows that clear app state, and make login-path refusals name the actual next step.
+
+### 1.0.7
+
+#### Patch Changes
+
+- b352043: Report the managed-Metro readiness failure from the pre-kill launcher state and log tail, and raise the budget to a 90 s default configurable via `.rn-agent/config.json` → `metro.readinessTimeoutMs` (GH #992).
+
+### 1.0.6
+
+#### Patch Changes
+
+- 8517ebc: Admit the canonical `expo-updates` runtime-version CLI and the verified developer `git` it shells out to in the Darwin managed-Metro sandbox profile, so Expo dev-client manifests under a `fingerprint` runtime-version policy stop failing with `spawn EPERM`.
+
+### 1.0.5
+
+#### Patch Changes
+
+- 6d6dc39: Allow the managed-Metro Darwin sandbox to write the resolved, run-owned `react-native-css-interop/.cache` directory while preserving all other sandbox restrictions and enforcement checks.
+- 6d6dc39: Accept the renamed Apple platform code-signing leaf authority during managed-Metro sandbox verification while preserving the trusted Apple chain, identity, and rejection requirements.
+- 5008fd6: Discover deeply nested Redux and React Query stores and dispatch Redux actions through their Provider when an app bridge has no registered store.
+- 6d6dc39: Record private per-attempt managed-Metro enforcement diagnostics with preparation outcomes, fixed-schema flags, timings, exits and predefined error categories without retaining arbitrary stderr text or changing permissions, timeouts or fallback behavior.
+- 6d6dc39: Deliver the attested command snapshot to the managed-Metro sandbox preflight shim before signaling admission, so a shell-shim command no longer intermittently sources an empty snapshot and degrades enforcement to reported-v1.
+- 6d6dc39: Detect a wildcard-bound Metro listener in the managed-Metro sandbox preflight by probing every local address shape, so a real Expo server that listens on all interfaces no longer reads as unoccupied and falls back to reported-v1.
+- cc992e6: Omit automatic hook state from component trees while preserving existing explicit component-state inspection.
+- e0d25c8: Retain a bounded closed-vocabulary projection of runner failure evidence on `maestro_run` results and `cdp_run_action` RunRecords before the temporary report tree is deleted, withholding text, images, terminal output and original artifacts.
+- 6d6dc39: Allow the managed-Metro Darwin sandbox to look up the FSEvents service so Metro's native file watcher works on app-scale trees under enforcement instead of exhausting descriptors, without adding any executable, file, or network permission.
+- e0d25c8: Recognize the rn-dev-agent instruction block in CLAUDE.local.md during workflow preflight without modifying either Claude instruction file or hiding read errors.
+
+### 1.0.4
+
+#### Patch Changes
+
+- abd7562: Report managed-Metro cleanup obligations with missing stop-proof evidence as unrecoverable in-band while preserving the obligation and authority fence.
+- 4047a2e: Resolve the Observe Device pane's live frame through the same authority-fenced device target as the mirror, so a parked runner or stale CDP no longer leaves the pane blank after `cdp_run_action`.
+- fa85d1f: Expose observed replay runtime-state writes with exact sidecar paths—session-private when fenced and project-local under `.rn-agent/state` for unfenced compatibility—and document the current fresh-session action history.
+
+### 1.0.3
+
+#### Patch Changes
+
+- 7652515: Walk up to the nearest pressable ancestor for React-tree replay taps whose exact target is not a designatable TextInput, keeping input designation first and reporting type-path eligibility refusals as `INTERACTION_NOT_ACTUATED` with the helper's reason, with pointer-event eligibility read on host views only and inherited root-to-leaf.
+
+### 1.0.2
+
+#### Patch Changes
+
+- f76cd30: Allow React-tree replay taps to designate an exact editable TextInput for only the adjacent inputText step without dispatching press or focus callbacks, and resolve a stock TextInput whose composite and host fibers share one onChangeText as a single typeText target instead of refusing it as ambiguous.
+
+### 1.0.1
+
+#### Patch Changes
+
+- 7911ebd: Recognize a modal-hosted testID as frontmost when its React return chain threads through the modal host fiber's alternate, instead of refusing it as behind the active modal.
+- 7911ebd: Re-prove the exact CDP session target before completing a partitioned native segment's deferred origin, so a passing native prefix survives the runner park/resume handoff into the React-tree suffix instead of failing with an empty before-first-step envelope.
+- 7911ebd: Resume id-based iOS action waits through the React tree with Maestro-compatible timed visibility semantics.
+- d30f866: Reuse completed WebDriverAgent builds across maestro-runner spawns through a toolchain-fingerprinted persistent store with atomic publication, removing the ~75 s per-invocation WDA rebuild while keeping per-spawn cache isolation, corruption fallback, and cold-build behavior.
 
 ### 1.0.0
 
