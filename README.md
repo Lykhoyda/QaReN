@@ -6,6 +6,8 @@ backward compatibility with rn-dev-agent 1.x; to move from 1.0.14, follow
 The rn-dev-agent product and marketplace instructions below describe the
 published 1.x release.
 
+For first use in an app, follow [Set up an app](packages/qaren-cli/README.md#set-up-an-app).
+
 ## Watch a QaReN run
 
 Watch test stages in a second terminal:

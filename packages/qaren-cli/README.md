@@ -8,6 +8,19 @@ QaReN is still in development; this checkout is not the published 1.x MCP plugin
 The scenario-based preparation verbs remain available for explicit iOS,
 NUC Android and USB Android setup experiments.
 
+## Set up an app
+
+With the QaReN plugin loaded in Claude Code, run `/qaren:setup` from the app's
+root. The [`setup` skill](../qaren-plugin/skills/setup/SKILL.md) owns the guided
+onboarding steps: resolve an installed CLI, detect the Expo app, write
+`.qaren/config.yaml` and `.qaren/plans/smoke.md`, select an iOS simulator, and
+run the first check. It preserves existing configuration until you approve a
+change. The [`using-qaren` skill](../qaren-plugin/skills/using-qaren/SKILL.md)
+then writes feature plans. These replace `rn-setup` and `using-rn-dev-agent`;
+the old skill names have no aliases.
+
+For installation before a release is available, use [Build](#build).
+
 ## Watch a run
 
 ```sh
@@ -96,9 +109,10 @@ To install `qaren` from this checkout the way a release installs it, run
 bash scripts/install-qaren-from-source.sh
 ```
 
-from the repository root on an Apple silicon Mac with Node 24 or newer and
-Rust/Cargo. It builds the release tarball, verifies it through the plugin
-installer below and links `qaren` into the first writable directory already on PATH.
+from the repository root on an Apple silicon Mac with Node 24 or newer,
+Corepack and Rust/Cargo. It installs workspace dependencies, builds the release
+tarball and verifies it through the [plugin installer](#plugin-runtime-installation),
+which also handles PATH linking.
 
 For development builds:
 
@@ -139,8 +153,12 @@ always exits 0 and prints either the verified binary path, an install or repair
 instruction, or nothing, so its exit status alone does not prove installation.
 `--install` also links `qaren` into the first writable directory on PATH
 (for example `/opt/homebrew/bin` or `/usr/local/bin` on a Mac). It replaces only
-a link into `~/.qaren/runtime/`; any other file there is left alone with a notice. If no PATH directory is writable, it links `~/.local/bin/qaren`
-and prints the required `export PATH=` line; until then use the printed binary path.
+a link into `~/.qaren/runtime/`; any other file there is left alone with a notice.
+If no PATH directory is writable, it links `~/.local/bin/qaren` and prints
+`export PATH="$HOME/.local/bin:$PATH"`; run that line to use the bare command.
+It never edits shell rc files. Link problems are stderr notices and do not fail
+installation; stdout remains exactly the installed binary path, which you can
+use directly if linking fails.
 This development checkout's manifest does not imply that a QaReN release asset
 has been published; use `scripts/install-qaren-from-source.sh` above while that
 asset is unavailable.
@@ -216,14 +234,14 @@ actions, so remove 1.x first and install 2.0 as a new product.
    - Released plugin: the plugin list shows `qaren@qaren`, and
      `bash scripts/ensure-qaren.sh --print-bin` prints a binary path whose
      `--version` reports `qaren 2.0.0` or later.
-   - Source build: `<checkout>/packages/qaren-cli/target/debug/qaren --version`
-     reports the checkout's workspace version. The version moves to 2.0.0 only
+   - Source install: the binary path printed by
+     `scripts/install-qaren-from-source.sh` reports the checkout's workspace
+     version with `--version`. The version moves to 2.0.0 only
      when the release is cut, so a `develop` build still shows the pre-release
-     version (for example `qaren 1.0.13`). From the app directory, run that absolute
-     path with `QAREN_RUNTIME=<checkout>/packages/qaren-core/dist` (see
-     [Build](#build)).
-   - In the app, write `.qaren/config.yaml` and run a first plan with that
-     binary as in [Check a plan](#check-a-plan); a PASS receipt with a run under
+     version (for example `qaren 1.0.13`). The installed runtime needs no
+     `QAREN_RUNTIME` override; see [Build](#build) for development binaries.
+   - In the app, follow [Set up an app](#set-up-an-app), or write configuration
+     and run a plan manually as in [Check a plan](#check-a-plan); a PASS receipt with a run under
      `~/.qaren/runs/` completes the upgrade.
 
 ## Check a plan
