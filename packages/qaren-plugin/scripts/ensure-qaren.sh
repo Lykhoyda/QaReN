@@ -6,7 +6,7 @@
 #                                                 other diagnostics go to stderr; always exits 0
 #   ensure-qaren.sh --install [--from-file <tgz>] downloads (or takes) the tarball, verifies its
 #                                                 sha256 and length against runner-manifest.json,
-#                                                 installs it into ~/.qaren/runtime/<v>/ and links ~/.local/bin/qaren;
+#                                                 installs it into ~/.qaren/runtime/<v>/ and links qaren onto PATH;
 #                                                 stdout is exactly the binary path; rerun --install after interruption
 set -euo pipefail
 
@@ -375,7 +375,22 @@ install() {
 
 # A link problem is a stderr notice, never a failed install.
 link_on_path() {
-  local bin="$1" dir="$HOME/.local/bin" target tmp
+  local bin="$1" dir="$HOME/.local/bin" target tmp candidate real_home real_dir
+  local -a path_dirs
+  case ":$PATH:" in
+    *":$dir:"*) ;;
+    *)
+      real_home=$(cd -P "$HOME" && pwd -P)
+      IFS=: read -r -a path_dirs <<< "$PATH"
+      for candidate in "${path_dirs[@]}"; do
+        [[ "$candidate" = /* ]] && [ -d "$candidate" ] || continue
+        real_dir=$(cd -P "$candidate" && pwd -P) || continue
+        [[ "$real_dir" = "$real_home"/* ]] && [ -O "$real_dir" ] && [ -w "$real_dir" ] || continue
+        dir="$candidate"
+        break
+      done
+      ;;
+  esac
   target="$dir/qaren"
   mkdir -p "$dir" 2>/dev/null || { echo "qaren: cannot create $dir; run qaren as $bin" >&2; return 0; }
   if [ -e "$target" ] || [ -L "$target" ]; then
@@ -393,7 +408,7 @@ link_on_path() {
   fi
   case ":$PATH:" in
     *":$dir:"*) ;;
-    *) echo "qaren: add ~/.local/bin to PATH: export PATH=\"\$HOME/.local/bin:\$PATH\"" >&2 ;;
+    *) echo "qaren: no writable directory under HOME is on PATH; add ~/.local/bin to PATH: export PATH=\"\$HOME/.local/bin:\$PATH\"" >&2 ;;
   esac
 }
 

@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Installs qaren from this checkout the way a release would: builds the release tarball, vouches for
 # it in a temporary copy of the plugin, then installs it through ensure-qaren.sh --install.
-# stdout is the installed binary path; ~/.local/bin/qaren links to it.
+# stdout is the installed binary path; a user directory on PATH links to it.
 #
 # Run: bash scripts/install-qaren-from-source.sh
 set -euo pipefail

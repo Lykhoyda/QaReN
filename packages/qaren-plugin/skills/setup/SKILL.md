@@ -14,7 +14,7 @@ QaReN 2.0 needs an Apple silicon Mac with Xcode, Node 24 or newer, pnpm, and an 
 The plugin root is two directories above this skill's base directory. Resolve one absolute qaren path and use it for every later `qaren` command in this session:
 
 1. Run `bash <plugin root>/scripts/ensure-qaren.sh --print-bin`. If it prints an absolute path ending in `/bin/qaren`, that is the plugin-verified binary; use it and go to step 2.
-2. Otherwise run `bash <plugin root>/scripts/ensure-qaren.sh --install`. It verifies the release tarball, prints the installed binary path, which you use, and links `~/.local/bin/qaren` to it. Pass the user any notice it prints about PATH or an existing `~/.local/bin/qaren`.
+2. Otherwise run `bash <plugin root>/scripts/ensure-qaren.sh --install`. It verifies the release tarball, prints the installed binary path, which you use, and links `qaren` into a writable PATH directory under the user's home, preferring `~/.local/bin` when it is on PATH. Pass the user any notice it prints about PATH or an existing command.
 3. If it refuses because this plugin version carries no qaren tarball, QaReN is not released yet. If `command -v qaren` resolves, through links, to a binary under `~/.qaren/runtime/` and `qaren --version` prints `qaren <version>` with the `version` in `<plugin root>/.claude-plugin/plugin.json`, it is a source install made through the same verified installer; use that resolved path. Otherwise tell the user the one line to run from a `develop` checkout of `Lykhoyda/rn-dev-agent`, and offer to run it for them if they give the checkout path; it needs Rust (https://rustup.rs) as well and prints the binary path to use:
 
    ```sh
