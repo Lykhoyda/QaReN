@@ -315,3 +315,13 @@ test('every contiguous three-character fragment of a secure secret is masked, wh
       text,
     );
 });
+
+test('the publish window clears earlier sensitive pixels for the video, never for screenshots', () => {
+  const privacy = new ObservedPrivacy(['ada@example.com']);
+  privacy.observe(screen([element('@email', 'ada@example.com', { kind: 'text' })]));
+  privacy.startWindow();
+  assert.equal(privacy.windowClean(), true);
+  assert.equal(privacy.canScreenshot(), false);
+  privacy.observe(screen([element('@greeting', 'Signed in as ada@example.com', { kind: 'text' })]));
+  assert.equal(privacy.windowClean(), false);
+});

@@ -1019,7 +1019,7 @@ login block fails when login recovery is needed. A second
 failure of the same step fails it, recovery never runs inside the login replay, and
 capture, Jev, process, replay-miss and cancellation refusals are never recovered. The
 ledger's `recoveries` counts recoveries that let the step retry; `escapes` and `llmTurns`
-stay `0`. Login fills are masked like plan fills and withhold the video.
+stay `0`. Login fills are masked like plan fills; for the video, see [Test a pull request](#test-a-pull-request).
 
 Recovery counts as a device mutation for replay eligibility: a selector miss
 after recovery is terminal and never initiates another re-walk. The second ordinary
@@ -1243,7 +1243,10 @@ contention.
 
 Video publication eligibility and a value-free withholding reason are persisted
 in `pr.json`. A plan containing any fill/type step or a walk whose screenshot
-privacy disallowed capture keeps the recording local. Missing, unknown or
+privacy disallowed capture keeps the recording local. A saved login replayed
+before any plan step passes does not withhold the video: the uploaded copy starts
+after it, and is withheld if a typed or private value appears on screen afterwards;
+a login later in the walk still withholds it. Missing, unknown or
 unreadable eligibility also withholds the video; the comment explains why, without
 changing the run verdict. Local recordings contain raw pixels. Transient prefilled
 values between captures remain a limitation for 2.1; there is no continuous privacy

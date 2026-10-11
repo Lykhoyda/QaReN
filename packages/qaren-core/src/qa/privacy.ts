@@ -627,6 +627,7 @@ export class ObservedPrivacy {
   private readonly codeRows = new WeakMap<Screen, Element[][]>();
   private readonly codeElements = new WeakSet<Element>();
   private sensitivePixels = false;
+  private sensitiveInWindow = false;
 
   constructor(private readonly typed: readonly string[] = []) {}
 
@@ -636,7 +637,7 @@ export class ObservedPrivacy {
   }
 
   observe(screen: Screen): void {
-    this.sensitivePixels ||= privateScreens.get(screen)?.sensitivePixels === true;
+    if (privateScreens.get(screen)?.sensitivePixels === true) this.mark();
     for (const value of privateScreens.get(screen)?.secrets ?? []) this.secret.add(value);
     for (const value of inputValues(screen)) this.observed.add(value);
     for (const value of inputValues(screen, true)) this.concealed.add(value);
@@ -662,7 +663,7 @@ export class ObservedPrivacy {
         );
         if (boxes.includes(element) || echo || merged) this.codeElements.add(element);
       }
-      this.sensitivePixels ||= rows.length > 0;
+      if (rows.length > 0) this.mark();
     }
     for (const element of screen.elements)
       if (element.secure) {
@@ -677,13 +678,15 @@ export class ObservedPrivacy {
         .flatMap((element) => [element.label ?? '', element.value ?? '']),
     ];
     const values = this.privateSet();
-    this.sensitivePixels ||=
+    if (
       text.some((line) => matchPrivate(line, values, 'persisted').hit) ||
       values.values.some(
         (value) =>
           chars(value.text.trim()) < SHORT &&
           forms(value.text).some((form) => text.some((line) => line.includes(form))),
-      );
+      )
+    )
+      this.mark();
   }
 
   didFill(value?: string): void {
@@ -694,11 +697,25 @@ export class ObservedPrivacy {
   concealFallback(value: string, secure = false): void {
     this.concealed.add(value);
     if (secure) this.secret.add(value);
+    this.mark();
+  }
+
+  private mark(): void {
     this.sensitivePixels = true;
+    this.sensitiveInWindow = true;
   }
 
   canScreenshot(): boolean {
     return !this.sensitivePixels;
+  }
+
+  // The published video starts here; still screenshots keep the run-wide flag.
+  startWindow(): void {
+    this.sensitiveInWindow = false;
+  }
+
+  windowClean(): boolean {
+    return !this.sensitiveInWindow;
   }
 
   privateSet(): PrivateSet {

@@ -310,37 +310,121 @@ test('a configured but unreadable login block fails at the step', async () => {
   assert.match(outcome.failure?.seen ?? '', /the login block did not pass/);
 });
 
-test('login fills are masked and withhold the video', async () => {
-  const wall = screen(['Welcome'], 'app', { Welcome: 'login-screen' });
-  const input: Screen = {
-    ...screen([]),
-    elements: [
-      {
-        ref: '@e1',
-        kind: 'input',
-        testID: 'password',
-        placeholder: 'Password',
-        hittable: true,
-        disabled: false,
-        secure: false,
-        offscreen: false,
-        semantic: { press: 'unsupported', fill: 'supported', visibility: 'visible' },
-      },
-    ],
-  };
-  const f = fake(
-    [wall, wall, input, screen(['Settings']), screen(['Settings']), screen(['Profile'])],
+const passwordInput: Screen = {
+  ...screen([]),
+  elements: [
     {
-      login: {
-        marker: { id: 'login-screen' },
-        block: block('### Login\n1. Type "hunter2-secret" into "password"\n'),
-      },
+      ref: '@e1',
+      kind: 'input',
+      testID: 'password',
+      placeholder: 'Password',
+      hittable: true,
+      disabled: false,
+      secure: false,
+      offscreen: false,
+      semantic: { press: 'unsupported', fill: 'supported', visibility: 'visible' },
     },
+  ],
+};
+const loginWall = screen(['Welcome'], 'app', { Welcome: 'login-screen' });
+const typingLogin = {
+  marker: { id: 'login-screen' },
+  block: block('### Login\n1. Type "hunter2-secret" into "password"\n'),
+};
+
+test('a login before any plan pass publishes from after the replay', async () => {
+  const f = fake(
+    [
+      loginWall,
+      loginWall,
+      passwordInput,
+      screen(['Settings']),
+      screen(['Settings']),
+      screen(['Profile']),
+    ],
+    { login: typingLogin },
   );
   const ledger = await runPlan([block('1. Tap "Settings"\n')], f.deps);
   assert.equal(ledger.verdict, 'PASS');
-  assert.equal(ledger.videoPublication, 'withheld-fill');
+  assert.equal(ledger.videoPublication, 'eligible');
+  assert.equal(typeof ledger.publishFromMs, 'number');
   assert.ok(!JSON.stringify(ledger).includes('hunter2-secret'));
+});
+
+test('a typed login value on screen after the replay withholds the video', async () => {
+  const f = fake(
+    [
+      loginWall,
+      loginWall,
+      passwordInput,
+      screen(['Settings']),
+      screen(['Settings']),
+      screen(['Signed in as hunter2-secret']),
+    ],
+    { login: typingLogin },
+  );
+  const ledger = await runPlan([block('1. Tap "Settings"\n')], f.deps);
+  assert.equal(ledger.verdict, 'PASS');
+  assert.equal(ledger.videoPublication, 'withheld-privacy');
+});
+
+test('a login after a plan step passed withholds the video with no publish window', async () => {
+  const f = fake(
+    [
+      screen(['Settings']),
+      screen(['Home']),
+      loginWall,
+      loginWall,
+      passwordInput,
+      screen(['Profile']),
+      screen(['Profile']),
+      screen(['Done']),
+    ],
+    { login: typingLogin },
+  );
+  const ledger = await runPlan([block('1. Tap "Settings"\n2. Tap "Profile"\n')], f.deps);
+  assert.equal(ledger.verdict, 'PASS');
+  assert.equal(ledger.recoveries, 1);
+  assert.equal(ledger.videoPublication, 'withheld-fill');
+  assert.equal(ledger.publishFromMs, undefined);
+});
+
+test('a second login after the publish window opened withholds the video', async () => {
+  const f = fake(
+    [
+      loginWall,
+      loginWall,
+      passwordInput,
+      screen(['Settings']),
+      screen(['Settings']),
+      screen(['Home']),
+      loginWall,
+      loginWall,
+      passwordInput,
+      screen(['Profile']),
+      screen(['Profile']),
+      screen(['Done']),
+    ],
+    { login: typingLogin },
+  );
+  const ledger = await runPlan([block('1. Tap "Settings"\n2. Tap "Profile"\n')], f.deps);
+  assert.equal(ledger.verdict, 'PASS');
+  assert.equal(ledger.recoveries, 2);
+  assert.equal(ledger.videoPublication, 'withheld-fill');
+  assert.equal(ledger.publishFromMs, undefined);
+});
+
+test('a plan fill withholds the video even after a pre-plan login', async () => {
+  const name: Screen = {
+    ...passwordInput,
+    elements: [{ ...passwordInput.elements[0], testID: 'name', placeholder: 'Name' }],
+  };
+  const f = fake([loginWall, loginWall, passwordInput, name, name, screen(['Saved'])], {
+    login: typingLogin,
+  });
+  const ledger = await runPlan([block('1. Type "Ada" into "name"\n')], f.deps);
+  assert.equal(ledger.verdict, 'PASS');
+  assert.equal(ledger.videoPublication, 'withheld-fill');
 });
 
 test('a stored login block becomes exact-target items', () => {

@@ -186,6 +186,16 @@ export interface WalkOptions {
   fromLine?: number;
   mode?: 'walk' | 'replay';
   recover?: boolean;
+  login?: boolean;
+}
+
+export interface WalkSequence {
+  observation: number;
+  operation?: number;
+  publicationInterrupted?: boolean;
+  momentum?: boolean;
+  planPassed?: boolean;
+  window?: { fromMs: number; typed: number };
 }
 
 // Capture and process refusals, ambiguity and the replay-miss path are never recovered.
@@ -205,14 +215,7 @@ export async function walkBlock(
   shotIndex = 0,
   typed: string[] = [],
   privacy = new ObservedPrivacy(typed),
-  sequence: {
-    observation: number;
-    operation?: number;
-    publicationInterrupted?: boolean;
-    momentum?: boolean;
-  } = {
-    observation: 0,
-  },
+  sequence: WalkSequence = { observation: 0 },
   opts: WalkOptions = {},
   operations = new Map<number, number>(),
 ): Promise<WalkOutcome> {
@@ -627,6 +630,7 @@ export async function walkBlock(
       // Row timing is passive; the row is recorded without it.
     }
     const timed = timing ? { ...row, timing } : row;
+    if (row.outcome === 'pass' && !opts.login) sequence.planPassed = true;
     rows.push(timed);
     deps.row(valueFree(timed));
   };
@@ -1004,6 +1008,7 @@ export async function walkBlock(
     const login = deps.login?.block;
     if (!login) return 'fail' as const;
     loginReplayed = true;
+    sequence.window = undefined;
     let taken = 0;
     const counted: WalkerDeps = {
       ...deps,
@@ -1015,14 +1020,18 @@ export async function walkBlock(
     // Walk mode: a stale stored selector fails the login instead of asking for a re-walk.
     const nested = await walkBlock(login, counted, shots, typed, privacy, sequence, {
       recover: false,
+      login: true,
     });
     shots += taken;
     separateRowOperations(nested.rows);
     rows.push(...nested.rows);
     if (nested.refusal) return { refuse: nested.refusal };
-    return nested.failure
-      ? { fail: `the login block did not pass: ${nested.failure.seen}` }
-      : ('pass' as const);
+    if (nested.failure) return { fail: `the login block did not pass: ${nested.failure.seen}` };
+    if (!sequence.planPassed) {
+      privacy.startWindow();
+      sequence.window = { fromMs: deps.now(), typed: typed.length };
+    }
+    return 'pass' as const;
   };
   // At most one recovery per item; 'retry' re-runs the item from a fresh capture.
   const recovery = async (
@@ -1956,16 +1965,20 @@ export async function runPlan(
       deps.login?.block?.items.flatMap((i) => (i.kind === 'fill' ? [i.text] : [])) ?? [],
     );
     let recoveries = 0;
-    // A login replay adds its own fills to `typed`.
+    // A login replay before any plan pass opens the publishable window.
     const videoPublication = (): NonNullable<WalkResult['videoPublication']> =>
       blocks.some((block) => block.items.some((item) => item.kind === 'fill')) ||
-      typed.length > planTyped
+      typed.length > (sequence.window?.typed ?? planTyped)
         ? 'withheld-fill'
-        : privacy.canScreenshot()
+        : (sequence.window ? privacy.windowClean() : privacy.canScreenshot())
           ? 'eligible'
           : 'withheld-privacy';
     const calls = (): JevCall[] => [...preflightCalls, ...(deps.judge?.calls ?? [])];
-    const sequence = { observation: 0, publicationInterrupted: false };
+    const sequence: WalkSequence = {
+      observation: 0,
+      publicationInterrupted: false,
+      planPassed: false,
+    };
     const walk = async (block: Block, opts?: WalkOptions, operations?: Map<number, number>) => {
       const outcome = await walkBlock(
         block,
@@ -2022,6 +2035,7 @@ export async function runPlan(
           recoveries,
         ),
         videoPublication: videoPublication(),
+        ...(sequence.window ? { publishFromMs: sequence.window.fromMs } : {}),
         publicationInterrupted:
           sequence.publicationInterrupted || deps.publicationInterrupted?.() === true,
       };

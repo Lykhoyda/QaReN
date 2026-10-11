@@ -56,6 +56,7 @@ export interface Ledger {
   verdict: 'PASS' | 'FAIL';
   videoPublication?: 'eligible' | 'withheld-fill' | 'withheld-privacy' | 'unknown';
   admittedAtMs?: number;
+  publishFromMs?: number;
   publicationInterrupted?: boolean;
   path: LedgerPath;
   blocks: BlockResult[];
