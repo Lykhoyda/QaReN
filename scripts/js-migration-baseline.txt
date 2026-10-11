@@ -69,7 +69,6 @@ packages/qaren-core/test/unit/gh-186-reacquire-tier.test.js
 packages/qaren-core/test/unit/gh-186-runflow-validator.test.js
 packages/qaren-core/test/unit/gh-201-maestro-app-file-args.test.js
 packages/qaren-core/test/unit/gh-201-resolve-ios-app-file.test.js
-packages/qaren-core/test/unit/gh-202-contract-doc-presence.test.js
 packages/qaren-core/test/unit/gh-202-detect-ios-external-runner.test.js
 packages/qaren-core/test/unit/gh-202-ensure-single-runner.test.js
 packages/qaren-core/test/unit/gh-202-foreign-runner-notice.test.js
