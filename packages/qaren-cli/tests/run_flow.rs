@@ -5968,3 +5968,34 @@ fn android_check_refuses_a_metro_port_already_reversed_on_the_emulator() {
     let record = RunRecord::load(&req.runs_root, &run_id()).unwrap();
     assert_eq!(record.resources.adb_reverse_port, None);
 }
+
+#[test]
+fn android_check_cancelled_before_reverse_leaves_an_existing_mapping() {
+    let (repo, app) = app_repo();
+    seed_cached_apk(&repo, &app);
+    let req = android_request(&repo, &app);
+    let mut mock = android_mock();
+    script_android_preflight(&mut mock, &repo, ONE_EMULATOR, EMULATOR);
+    mock.expect_run("pnpm install --frozen-lockfile", CmdOutput::success(""));
+    mock.expect_run("ls-files", CmdOutput::success(""));
+    mock.expect_run(
+        "install -r -d",
+        CmdOutput::success("Performing Streamed Install\nSuccess\n"),
+    );
+    // SIGTERM lands after the install, before this run's reverse command runs.
+    mock.cancel_after = Some(("install -r -d".into(), "received SIGTERM".into()));
+
+    let receipt = run(&mut mock, &req);
+
+    let failure = receipt.failure.as_ref().unwrap();
+    assert_eq!(failure.code, FailureCode::RunCancelled, "{failure:?}");
+    // tcp:8791 may already be reversed by something else: this run made no
+    // mapping, so teardown leaves the port alone.
+    assert!(!adb_calls(&mock).iter().any(|c| c.contains("reverse")));
+    assert!(!receipt.cleanup.contains_key("adb_reverse"));
+    assert_eq!(receipt.cleanup["device_lease"], "removed");
+    assert_eq!(mock.remaining(), 0);
+    let record = RunRecord::load(&req.runs_root, &run_id()).unwrap();
+    assert_eq!(record.resources.adb_reverse_port, None);
+    assert!(record.resources.lease.is_none());
+}
