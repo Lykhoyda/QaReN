@@ -197,6 +197,15 @@ jobs:
             echo "::error::bin/qaren embeds builder paths" >&2
             exit 1
           fi
+      - name: Source install links qaren onto PATH and finds its runtime through the link
+        run: |
+          # The toolchain stays where the runner installed it; only the install home is fresh.
+          export CARGO_HOME="${CARGO_HOME:-$HOME/.cargo}" RUSTUP_HOME="${RUSTUP_HOME:-$HOME/.rustup}"
+          export HOME="$RUNNER_TEMP/home2"
+          mkdir -p "$HOME"
+          bash scripts/install-qaren-from-source.sh
+          GOT=$(env -u QAREN_RUNTIME "$HOME/.local/bin/qaren" --version)
+          [ "$GOT" = "qaren $V" ] || { echo "::error::linked qaren --version printed '$GOT'" >&2; exit 1; }
 
   test:
     name: Build & Test

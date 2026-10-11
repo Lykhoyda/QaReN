@@ -90,6 +90,18 @@ Interactive controls, lanes and timed replay remain later slices.
 
 ## Build
 
+To install `qaren` from this checkout the way a release installs it, run
+
+```sh
+bash scripts/install-qaren-from-source.sh
+```
+
+from the repository root on an Apple silicon Mac with Node 24 or newer and
+Rust/Cargo. It builds the release tarball, verifies it through the plugin
+installer below and links `~/.local/bin/qaren`; nothing needs exporting.
+
+For development builds:
+
 ```sh
 corepack yarn install --immutable
 corepack yarn build:core
@@ -125,9 +137,13 @@ it does not require the source checkout's `dist/` or `QAREN_RUNTIME` override.
 The SessionStart hook only runs `--print-bin`; it never downloads. That mode
 always exits 0 and prints either the verified binary path, an install or repair
 instruction, or nothing, so its exit status alone does not prove installation.
-Use the reported binary path for CLI commands; installation does not add it to PATH.
+`--install` also links `~/.local/bin/qaren` to the installed binary, replacing
+only a link into `~/.qaren/runtime/`; any other file there is left alone with a
+notice. When `~/.local/bin` is not on PATH it prints the `export PATH=` line to
+add; until then use the printed binary path.
 This development checkout's manifest does not imply that a QaReN release asset
-has been published; use the source build above while that asset is unavailable.
+has been published; use `scripts/install-qaren-from-source.sh` above while that
+asset is unavailable.
 
 ## Upgrading from rn-dev-agent 1.x (1.0.14) to 2.0
 

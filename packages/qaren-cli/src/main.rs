@@ -49,6 +49,8 @@ fn runtime_dir_from(explicit: Option<std::ffi::OsString>, exe: Option<PathBuf>) 
     if let Some(explicit) = explicit.filter(|value| !value.is_empty()) {
         return PathBuf::from(explicit);
     }
+    // macOS current_exe() returns a PATH symlink itself, not the installed binary.
+    let exe = exe.map(|exe| exe.canonicalize().unwrap_or(exe));
     let Some(bin_dir) = exe.as_deref().and_then(|exe| exe.parent()) else {
         return PathBuf::from("packages/qaren-core/dist");
     };
@@ -553,6 +555,26 @@ mod tests {
         assert_eq!(
             super::runtime_dir_from(Some("".into()), Some(exe)),
             installed
+        );
+        std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn runtime_dir_follows_a_symlinked_binary_to_its_installed_runtime() {
+        let root = std::env::temp_dir().join(format!("qaren-runtime-link-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let install = root.join("install");
+        std::fs::create_dir_all(install.join("bin")).unwrap();
+        std::fs::create_dir_all(install.join("runtime/qa")).unwrap();
+        std::fs::create_dir_all(root.join("links")).unwrap();
+        std::fs::write(install.join("bin/qaren"), "").unwrap();
+        std::fs::write(install.join("runtime/qa/walk.js"), "").unwrap();
+        let link = root.join("links/qaren");
+        std::os::unix::fs::symlink(install.join("bin/qaren"), &link).unwrap();
+
+        assert_eq!(
+            super::runtime_dir_from(None, Some(link)),
+            install.join("runtime").canonicalize().unwrap()
         );
         std::fs::remove_dir_all(&root).unwrap();
     }
