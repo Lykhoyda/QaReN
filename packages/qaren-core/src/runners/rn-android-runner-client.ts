@@ -439,8 +439,6 @@ export function isInstrumentationRegistered(
 
 export type AndroidInstallAction = 'reuse' | 'install' | 'build-then-install';
 
-/** Decide how to provision the runner: reuse (already on device), install the built
- *  APKs, or cold-build then install (fresh machine — mirrors the iOS cold xcodebuild). */
 export function resolveAndroidInstallAction(opts: {
   instrumentationRegistered: boolean;
   apksExist: boolean;

@@ -2280,8 +2280,7 @@ pub(crate) fn build_and_ready(ctx: &mut Ctx) -> Result<(), Failure> {
         Platform::Android => {
             if let Some(emulator) = ctx.record.resources.android_emulator.clone() {
                 if !project_root.join("android").is_dir() {
-                    // A generated dir git would track changes the candidate's native inputs mid-run.
-                    // The trailing slash matters: a dir-only ignore pattern never matches an absent path.
+                    // Keep the slash so dir-only ignore patterns protect against mid-run candidate drift.
                     let ignored = ctx.runner.run(&CmdSpec::new(
                         "git-check-ignore",
                         "git",

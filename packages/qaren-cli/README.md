@@ -232,18 +232,29 @@ issues no server start or stop command: with no server answering it refuses
 differs from the server's, because a client of another version would restart the
 server. The check holds at the start of the run; if the server exits later, the
 next adb call starts a new one, and another tool restarting the server mid-run is
-outside `qaren`'s control. With several booted emulators,
-`--device emulator-NNNN` chooses one; physical devices are not supported, and
+outside `qaren`'s control. Automatic selection counts only emulators in adb's
+`device` state whose `sys.boot_completed` is `1`, ignoring those still booting.
+Exactly one must qualify; otherwise selection refuses `DEVICE_UNAVAILABLE`
+(exit 4). With several boot-completed emulators, `--device emulator-NNNN`
+chooses one; an explicitly selected emulator still booting refuses without
+waiting or switching devices. Physical devices are not supported, and
 `--boot-device` and `--fresh-install` refuse on Android. `ANDROID_HOME` must name
 the SDK whose `platform-tools/adb` reaches that server. The build is a Gradle
 `:app:assembleDebug` limited to the emulator's ABI, preceded by
 `expo prebuild --platform android --clean` when `android/` is absent. An absent
 `android/` must be git-ignored: one git would track would change the candidate's
-native inputs mid-run, so the build refuses before generating it. The APK is
-installed with `adb -s <serial>`, and a fingerprint-matched cached APK is reused
-the same way. The run keeps the app and the emulator. The Android runner is always
-built with Gradle from the runtime's shipped source on first use; no published
-runner APK is installed. A runner left on the emulator by rn-dev-agent 1.x is
+native inputs mid-run, so the build fails with `BUILD_FAILED` before generating
+it. Add `android/` to `.gitignore`, or generate and commit it before the run.
+The APK is installed with `adb -s <serial>`, and a fingerprint-matched cached APK is reused
+the same way. The run keeps the app and the emulator.
+
+### Android runner provisioning
+
+The Android runner uses the runtime's shipped source; no published runner APK
+is downloaded or installed. Provisioning reuses registered instrumentation,
+otherwise installs existing local runner APKs, or builds them with Gradle when
+absent. A cold build requires the Android SDK and a JDK on PATH. A runner left
+on the emulator by rn-dev-agent 1.x is
 signed differently and cannot be replaced in place: uninstall
 `dev.lykhoyda.rndevagent.androidrunner` and `dev.lykhoyda.rndevagent.androidrunner.test`
 from that emulator first. Android `check` does not yet

@@ -97,16 +97,9 @@ Skip this check on systems without `xcodebuild` (non-macOS, no Xcode) — `rn-fa
 
 Android device automation is owned by the in-tree `rn-android-runner` Gradle project (`packages/rn-android-runner/`) — the sole Android device backend, there is no external CLI to install. Only flag this row as critical when the user is targeting Android.
 
-Verify the project ships with the plugin and its prebuilt APKs are present:
-
-```bash
-ls ${CLAUDE_PLUGIN_ROOT:-${CURSOR_PLUGIN_ROOT:-${RN_DEV_AGENT_CODEX_PLUGIN_ROOT:-${CODEX_PLUGIN_ROOT:?set it to the installed rn-dev-agent plugin root, then re-run}}}}/scripts/rn-android-runner/build.gradle.kts 2>/dev/null && \
-  ls ${CLAUDE_PLUGIN_ROOT:-${CURSOR_PLUGIN_ROOT:-${RN_DEV_AGENT_CODEX_PLUGIN_ROOT:-${CODEX_PLUGIN_ROOT:?set it to the installed rn-dev-agent plugin root, then re-run}}}}/scripts/rn-android-runner/app/build/outputs/apk/androidTest/debug/app-debug-androidTest.apk 2>/dev/null
-```
-
-- **Both present** → OK. The runner installs its APKs and starts its UiAutomator instrumentation (`dev.lykhoyda.rndevagent.androidrunner`) lazily on the first `device_*` call against a booted emulator. The runner is default-on; opt out with `RN_ANDROID_RUNNER=0` (which now ERRORS with `RUNNER_DISABLED` on a `device_*` call — it does NOT fall back to anything).
-- **build.gradle.kts present, APK MISSING** → NEEDS_BUILD. Build the runner once with a booted emulator: `cd ${CLAUDE_PLUGIN_ROOT:-${CURSOR_PLUGIN_ROOT:-${RN_DEV_AGENT_CODEX_PLUGIN_ROOT:-${CODEX_PLUGIN_ROOT:?set it to the installed rn-dev-agent plugin root, then re-run}}}}/scripts/rn-android-runner && ./gradlew assembleDebug assembleDebugAndroidTest`. The APKs land under `app/build/outputs/apk/`.
-- **build.gradle.kts missing** → the plugin install is corrupt; reinstall via `/plugin install rn-dev-agent@rn-dev-agent`.
+For cold-build prerequisites, reuse and installation, follow
+the [Android runner provisioning contract](../../../qaren-cli/README.md#android-runner-provisioning).
+Missing local APKs alone do not mean the installation is corrupt.
 
 Skip this check on systems without `adb` / no Android target. If the user is iOS-only, mark this row N/A (Android-only) and continue. Since #202 the plugin terminates a stale legacy `AgentDeviceRunner` at session-open by default (scoped to the target simulator UDID) and clears orphaned `~/.agent-device/daemon.{json,lock}`; opt out with `RN_DEVICE_KILL_LEGACY=0`.
 
@@ -314,7 +307,7 @@ Present results as a table:
 | Node.js | OK (v24.0.0) | — |
 | CDP bridge | OK | — |
 | rn-fast-runner (iOS) | OK (built) / NEEDS_BUILD / N/A (non-macOS) | NEEDS_BUILD self-builds on first use (slow); offer the one-time `xcodebuild build-for-testing` to skip the wait (see check 3 above) |
-| rn-android-runner (Android) | OK (APKs present) / NEEDS_BUILD / N/A (iOS-only setup) | NEEDS_BUILD: `cd ${CLAUDE_PLUGIN_ROOT:-${CURSOR_PLUGIN_ROOT:-${RN_DEV_AGENT_CODEX_PLUGIN_ROOT:-${CODEX_PLUGIN_ROOT:?set it to the installed rn-dev-agent plugin root, then re-run}}}}/scripts/rn-android-runner && ./gradlew assembleDebug assembleDebugAndroidTest` — only if targeting Android |
+| rn-android-runner (Android) | OK / N/A (iOS-only setup) | Follow [Android runner provisioning](../../../qaren-cli/README.md#android-runner-provisioning) |
 | maestro-runner | pinned-ok (>= 1.1.28 pin-cache) / FAIL (missing, older, unattested, checksum, unsupported) | `bash ${CLAUDE_PLUGIN_ROOT:-${CURSOR_PLUGIN_ROOT:-${RN_DEV_AGENT_CODEX_PLUGIN_ROOT:-${CODEX_PLUGIN_ROOT:?set it to the installed rn-dev-agent plugin root, then re-run}}}}/scripts/ensure-maestro-runner.sh` then re-diagnose. Never PATH, ~/.maestro-runner, or brew maestro. |
 | Learned actions | OK (N compatible) / FAIL (`enginePin=N [ids]`; `regexSelector=N [ids]`) / YELLOW (`unreadable=N [ids]`) | `maestro-runner-pin.js diagnose-actions --root "$APP_ROOT" --json`. Print counts and action ids only. Never migrate, rewrite, print YAML, or print a private inherit source path from doctor. |
 | iOS Simulator | BOOTED (iPhone 16) | — |
