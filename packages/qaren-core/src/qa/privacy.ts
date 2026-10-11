@@ -629,6 +629,8 @@ export class ObservedPrivacy {
   private sensitivePixels = false;
   private sensitiveInWindow = false;
   private sensitiveLatest = false;
+  // Fields typed into without a readable value; '' when the field is unknown.
+  private readonly concealedFields = new Set<string>();
 
   constructor(private readonly typed: readonly string[] = []) {}
 
@@ -639,6 +641,17 @@ export class ObservedPrivacy {
 
   observe(screen: Screen): void {
     this.sensitiveLatest = false;
+    const shown = screen.elements.filter((element) => !element.offscreen);
+    for (const field of this.concealedFields)
+      if (
+        !shown.some((element) =>
+          field
+            ? element.testID === field || element.label === field
+            : element.kind === 'input' || isPrivateInput(element),
+        )
+      )
+        this.concealedFields.delete(field);
+    if (this.concealedFields.size > 0) this.mark();
     if (privateScreens.get(screen)?.sensitivePixels === true) this.mark();
     for (const value of privateScreens.get(screen)?.secrets ?? []) this.secret.add(value);
     for (const value of inputValues(screen)) this.observed.add(value);
@@ -680,12 +693,18 @@ export class ObservedPrivacy {
         .flatMap((element) => [element.label ?? '', element.value ?? '']),
     ];
     const values = this.privateSet();
+    const folded = text.map((line) => line.normalize('NFC').toLowerCase());
     if (
       text.some((line) => matchPrivate(line, values, 'persisted').hit) ||
       values.values.some(
         (value) =>
           chars(value.text.trim()) < SHORT &&
           forms(value.text).some((form) => text.some((line) => line.includes(form))),
+      ) ||
+      values.values.some(
+        (value) =>
+          chars(value.text.trim()) >= SHORT &&
+          folded.some((line) => line.includes(value.text.trim().normalize('NFC').toLowerCase())),
       )
     )
       this.mark();
@@ -696,7 +715,8 @@ export class ObservedPrivacy {
     if (value) this.filledValues.add(value);
   }
 
-  concealFallback(value: string, secure = false): void {
+  concealFallback(value: string, secure = false, field = ''): void {
+    this.concealedFields.add(field);
     this.concealed.add(value);
     if (secure) this.secret.add(value);
     this.mark();

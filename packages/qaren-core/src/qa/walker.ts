@@ -838,7 +838,7 @@ export async function walkBlock(
           : `the keyboard state before tapping "${quoted}" is unknown`,
         before.screen,
       );
-    privacy.concealFallback(item.text);
+    privacy.concealFallback(item.text, false, quoted);
     privateFills.push(item.line);
     let tap: ActResult;
     try {
@@ -966,7 +966,7 @@ export async function walkBlock(
     )
       return;
     if (!(await focusProven('none', quoted))) return;
-    privacy.concealFallback(item.text);
+    privacy.concealFallback(item.text, false, quoted);
     privateFills.push(item.line);
     let entry: ActResult;
     try {
@@ -1487,7 +1487,7 @@ export async function walkBlock(
                 continue;
               }
               if (item.kind === 'fill' && element && isPrivateInput(element)) {
-                privacy.concealFallback(item.text, element.secure);
+                privacy.concealFallback(item.text, element.secure, element.testID ?? element.label);
                 if (!privateFills.includes(item.line)) privateFills.push(item.line);
               }
               act = await mutate(item, before, (context) =>
