@@ -77,7 +77,7 @@ test('Android authority upgrades use the bounded artifact rebuild owner', () => 
   assert.ok(err.message.startsWith('RUNNER_OWNERSHIP_MISMATCH'));
   assert.match(
     runnerSource,
-    /err instanceof AndroidAuthorityStaleError[\s\S]*?runBoundedAndroidRunnerRebuild\(\s*err,\s*async \(signal\)[\s\S]*?signal\.throwIfAborted\(\)[\s\S]*?invalidateAndroidRunnerApks\(\)[\s\S]*?_forceLocalBuild: true[\s\S]*?_rebuildSignal: signal/,
+    /err instanceof AndroidAuthorityStaleError[\s\S]*?runBoundedAndroidRunnerRebuild\(\s*err,\s*async \(signal\)[\s\S]*?signal\.throwIfAborted\(\)[\s\S]*?invalidateAndroidRunnerApks\(\)[\s\S]*?_forceReinstall: true[\s\S]*?_rebuildSignal: signal/,
   );
   assert.match(
     runnerSource,

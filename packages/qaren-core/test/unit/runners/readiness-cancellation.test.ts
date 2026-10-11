@@ -194,7 +194,7 @@ test('native startup settles cancellation and rejects buffered readiness without
       return Response.json({ ok: phase === 'success-continuation' });
     });
     const pending = withCancellation(controller.signal, () =>
-      android.startAndroidRunner('emulator-test', 'com.example.app', 0, { _forceLocalBuild: true }),
+      android.startAndroidRunner('emulator-test', 'com.example.app', 0),
     );
     const rejected = assert.rejects(pending);
     await reached;

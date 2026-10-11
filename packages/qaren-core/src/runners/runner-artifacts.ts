@@ -16,8 +16,6 @@ export type RunnerPlatform = 'ios' | 'android';
 export type ArtifactProvenance = 'cache' | 'downloaded' | 'build-local';
 
 export const RUNNER_REPO = 'Lykhoyda/rn-dev-agent';
-export const ANDROID_APP_APK_NAME = 'app-debug.apk';
-export const ANDROID_TEST_APK_NAME = 'app-debug-androidTest.apk';
 
 const DOWNLOAD_TIMEOUT_MS = 60_000;
 // The manifest records exact byte counts; a small slack absorbs boundary/overhead
@@ -235,12 +233,6 @@ function iosExtractedOk(deps: ArtifactDeps): (productsDir: string) => boolean {
     deps.listFiles(join(productsDir, 'Build', 'Products')).some((f) => f.endsWith('.xctestrun'));
 }
 
-function androidExtractedOk(deps: ArtifactDeps): (productsDir: string) => boolean {
-  return (productsDir) =>
-    deps.existsSync(join(productsDir, ANDROID_APP_APK_NAME)) &&
-    deps.existsSync(join(productsDir, ANDROID_TEST_APK_NAME));
-}
-
 export async function resolveIosRunnerArtifacts(
   version: string | null,
   localDerivedDataPath: string,
@@ -257,27 +249,12 @@ export async function resolveIosRunnerArtifacts(
   return { provenance: r.provenance, derivedDataPath, note: r.note };
 }
 
-export async function resolveAndroidRunnerArtifacts(
-  version: string | null,
-  local: { appApk: string; testApk: string },
-  deps: ArtifactDeps = defaultArtifactDeps(),
-  forceLocalBuild = false,
-): Promise<ResolvedAndroidArtifacts> {
-  throwIfCancelled();
-  if (forceLocalBuild) {
-    return { provenance: 'build-local', appApk: local.appApk, testApk: local.testApk };
-  }
-  const r = await acquireArtifact('android', version, deps, androidExtractedOk(deps));
-  throwIfCancelled();
-  if (r.provenance === 'build-local') {
-    return { provenance: r.provenance, appApk: local.appApk, testApk: local.testApk, note: r.note };
-  }
-  return {
-    provenance: r.provenance,
-    appApk: join(r.productsDir!, ANDROID_APP_APK_NAME),
-    testApk: join(r.productsDir!, ANDROID_TEST_APK_NAME),
-    note: r.note,
-  };
+// No published runner is compatible with this version: Android always builds the shipped source.
+export function resolveAndroidRunnerArtifacts(local: {
+  appApk: string;
+  testApk: string;
+}): ResolvedAndroidArtifacts {
+  return { provenance: 'build-local', ...local };
 }
 
 // --- Production IO ports ---

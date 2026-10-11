@@ -439,7 +439,7 @@ export function isInstrumentationRegistered(
 
 export type AndroidInstallAction = 'reuse' | 'install' | 'build-then-install';
 
-/** Decide how to provision the runner: reuse (already on device), install the prebuilt
+/** Decide how to provision the runner: reuse (already on device), install the built
  *  APKs, or cold-build then install (fresh machine — mirrors the iOS cold xcodebuild). */
 export function resolveAndroidInstallAction(opts: {
   instrumentationRegistered: boolean;
@@ -452,7 +452,7 @@ export function resolveAndroidInstallAction(opts: {
 
 async function ensureAndroidRunnerInstalled(
   deviceId?: string,
-  opts: { forceReinstall?: boolean; forceLocalBuild?: boolean; signal?: AbortSignal } = {},
+  opts: { forceReinstall?: boolean; signal?: AbortSignal } = {},
 ): Promise<'prebuilt' | 'local'> {
   throwIfCancelled(opts.signal);
   try {
@@ -486,15 +486,7 @@ async function ensureAndroidRunnerInstalled(
     if (isAbort(error)) throw error;
     // adb/pm unavailable → treat as not registered; the install/adb step below surfaces the real error.
   }
-  const artifacts = await withCancellation(cancellationSignal(opts.signal), () =>
-    resolveAndroidRunnerArtifacts(
-      getPluginVersion(),
-      { appApk: APK_APP, testApk: APK_TEST },
-      undefined,
-      opts.forceLocalBuild,
-    ),
-  );
-  throwIfCancelled(opts.signal);
+  const artifacts = resolveAndroidRunnerArtifacts({ appApk: APK_APP, testApk: APK_TEST });
   const provenance = artifactProvenanceToState(artifacts.provenance);
   if (artifacts.note) pendingUpgradeNote = artifacts.note;
 
@@ -1341,12 +1333,6 @@ export interface StartAndroidRunnerOpts {
   allowArtifactRebuild?: boolean;
   /** Internal: set by the rebuild retry so the install action can't 'reuse'. */
   _forceReinstall?: boolean;
-  /**
-   * GH #382 (Codex P1): set by the rebuild retry so artifact resolution bypasses
-   * the prebuilt tier and Gradle-rebuilds from source — a stale prebuilt APK must
-   * not be re-selected when healing a missing-command surface.
-   */
-  _forceLocalBuild?: boolean;
   _rebuildSignal?: AbortSignal;
 }
 
@@ -1378,7 +1364,6 @@ export async function startAndroidRunner(
           invalidateAndroidRunnerApks();
           return startAndroidRunnerAttempt(deviceId, bundleId, devicePort, {
             _forceReinstall: true,
-            _forceLocalBuild: true,
             _rebuildSignal: signal,
           });
         },
@@ -1412,7 +1397,6 @@ export async function startAndroidRunner(
           invalidateAndroidRunnerApks();
           return startAndroidRunnerAttempt(deviceId, bundleId, devicePort, {
             _forceReinstall: true,
-            _forceLocalBuild: true,
             _rebuildSignal: signal,
           });
         },
@@ -1495,11 +1479,9 @@ async function startAndroidRunnerAttempt(
   }
 
   throwIfCancelled(opts._rebuildSignal);
-  // Self-install on first use (no external CLI) — resolve prebuilt (or build/install)
-  // the in-tree runner APKs if the instrumentation isn't on the device yet.
+  // Self-install on first use: build and install the shipped runner source if it isn't on the device yet.
   const provenance = await ensureAndroidRunnerInstalled(deviceId, {
     forceReinstall,
-    forceLocalBuild: opts._forceLocalBuild === true,
     signal: opts._rebuildSignal,
   });
 

@@ -241,7 +241,12 @@ the SDK whose `platform-tools/adb` reaches that server. The build is a Gradle
 `android/` must be git-ignored: one git would track would change the candidate's
 native inputs mid-run, so the build refuses before generating it. The APK is
 installed with `adb -s <serial>`, and a fingerprint-matched cached APK is reused
-the same way. The run keeps the app and the emulator. Android `check` does not yet
+the same way. The run keeps the app and the emulator. The Android runner is always
+built with Gradle from the runtime's shipped source on first use; no published
+runner APK is installed. A runner left on the emulator by rn-dev-agent 1.x is
+signed differently and cannot be replaced in place: uninstall
+`dev.lykhoyda.rndevagent.androidrunner` and `dev.lykhoyda.rndevagent.androidrunner.test`
+from that emulator first. Android `check` does not yet
 detect a foreign automation driver (another `uiautomator`, instrumentation or
 Maestro session) on the borrowed emulator; borrow one no other automation uses.
 
