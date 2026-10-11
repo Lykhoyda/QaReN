@@ -106,7 +106,15 @@ test('D4: the walk hides the floating button before the other dev-menu actions',
   );
 });
 
-for (const resolver of ['turbo', 'native', 'bridge', 'require', 'missing', 'methodless', 'throws']) {
+for (const resolver of [
+  'turbo',
+  'native',
+  'bridge',
+  'require',
+  'missing',
+  'methodless',
+  'throws',
+]) {
   test(`D5: turning hot reloading off through ${resolver} executes the setting or warns`, async () => {
     const calls: boolean[] = [];
     const settings = {
