@@ -76,7 +76,7 @@ impl VideoPublication {
         match self {
             Self::Eligible => None,
             Self::WithheldFill => {
-                Some("the walk typed into a field, from the plan or a login replay")
+                Some("the plan has a fill or type step, or a login replay typed into a field")
             }
             Self::WithheldPrivacy => Some("screenshot privacy disallowed capture during the walk"),
             Self::Unknown => Some("video publication eligibility is missing or unknown"),

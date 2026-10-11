@@ -910,7 +910,7 @@ fn withheld_or_unknown_eligibility_never_uploads_video() {
         if fill {
             assert!(
                 body.contains(
-                    "Video withheld: the walk typed into a field, from the plan or a login replay.\n"
+                    "Video withheld: the plan has a fill or type step, or a login replay typed into a field.\n"
                 ),
                 "{body}"
             );
@@ -919,6 +919,40 @@ fn withheld_or_unknown_eligibility_never_uploads_video() {
         assert!(dir.join("media/video.mp4").is_file());
         assert_eq!(runner.0.remaining(), 0);
     }
+}
+
+#[test]
+fn withheld_fill_reason_holds_when_the_plan_fill_never_ran() {
+    let (runs, dir) = run_dir(false);
+    let path = dir.join("pr.json");
+    let mut pr: serde_json::Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+    pr["blocks"] = serde_json::json!([]);
+    pr["videoPublication"] = serde_json::json!("withheld-fill");
+    std::fs::write(&path, serde_json::to_vec(&pr).unwrap()).unwrap();
+    let ledger: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(dir.join("ledger.json")).unwrap()).unwrap();
+    assert!(ledger["steps"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .all(|step| step["kind"] != "fill"));
+    let mut runner = Git(MockRunner::new());
+    script_comment_and_label(&mut runner.0);
+    let receipt = publish(&mut runner, &runs, RUN, &machine());
+    assert_eq!(
+        receipt.result,
+        ReceiptResult::Published,
+        "{:?}",
+        receipt.failure
+    );
+    let body = std::fs::read_to_string(dir.join("comment.md")).unwrap();
+    assert!(
+        body.contains(
+            "Video withheld: the plan has a fill or type step, or a login replay typed into a field.\n"
+        ),
+        "{body}"
+    );
+    assert!(!body.contains("the walk typed"), "{body}");
 }
 
 #[test]

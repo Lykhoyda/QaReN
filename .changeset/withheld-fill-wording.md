@@ -2,4 +2,4 @@
 "qaren": patch
 ---
 
-Say accurately why a video is withheld when the walk typed into a field, whether from the plan or a login replay.
+Say accurately why a video is withheld for input: the plan has a fill or type step, or a login replay typed into a field.

@@ -1256,8 +1256,8 @@ and then disappears. If the field is unknown, an input must be observed and then
 all inputs must disappear; a field never observed keeps the window private.
 Login fills after any plan step passes withhold
 the video, including a second login after an earlier publication window opened.
-The comment's fill-related withholding reason covers both plan input and saved
-login replay input.
+The comment's fill-related withholding reason covers both a plan fill or type
+step, executed or not, and saved login replay input.
 The login exception never resets run-wide screenshot withholding or masking
 history.
 
