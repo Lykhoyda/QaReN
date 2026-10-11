@@ -1618,35 +1618,80 @@ fn borrow_emulator(
     } else {
         format!("; {physical} other device(s) ignored: physical devices are not supported in this release")
     };
-    let serial = match (device, emulators.as_slice()) {
-        (Some(wanted), _) => emulators
-            .iter()
-            .find(|serial| **serial == wanted)
-            .copied()
-            .ok_or_else(|| {
-                unavailable(
-                    format!(
-                        "{wanted} is not a booted emulator on the adb server at port {port} ({} booted{ignored})",
-                        emulators.len()
-                    ),
-                    "boot the emulator named by --device, then re-run",
-                )
-            })?,
-        (None, [one]) => *one,
-        (None, []) => {
-            return Err(unavailable(
-                format!("no booted emulator{ignored}"),
-                "boot the emulator to walk on, then re-run",
+    let mut boot_completed = |serial: &str| {
+        let output = runner.run(&android::getprop_spec(
+            &adb,
+            port,
+            serial,
+            "sys.boot_completed",
+        ));
+        if output.ok() {
+            Ok(output.stdout.trim() == "1")
+        } else {
+            Err(unavailable(
+                format!(
+                    "cannot read sys.boot_completed of {serial}: {}",
+                    output.summary()
+                ),
+                "check that the emulator is responsive, then re-run",
             ))
         }
-        (None, many) => {
-            return Err(unavailable(
-                format!(
-                    "{} booted emulators; qaren check borrows exactly one{ignored}",
-                    many.len()
-                ),
-                "pass --device emulator-NNNN, or shut down the emulators you are not testing on",
-            ))
+    };
+    let not_booted = |serials: &[&str]| {
+        unavailable(
+            format!(
+                "{} has not finished booting (sys.boot_completed is not 1)",
+                serials.join(", ")
+            ),
+            "wait for the emulator to finish booting, then re-run",
+        )
+    };
+    let serial = match device {
+        Some(wanted) => {
+            let serial = emulators
+                .iter()
+                .find(|serial| **serial == wanted)
+                .copied()
+                .ok_or_else(|| {
+                    unavailable(
+                        format!(
+                            "{wanted} is not a booted emulator on the adb server at port {port} ({} booted{ignored})",
+                            emulators.len()
+                        ),
+                        "boot the emulator named by --device, then re-run",
+                    )
+                })?;
+            if !boot_completed(serial)? {
+                return Err(not_booted(&[serial]));
+            }
+            serial
+        }
+        None => {
+            let mut ready = Vec::new();
+            for serial in &emulators {
+                if boot_completed(serial)? {
+                    ready.push(*serial);
+                }
+            }
+            match ready.as_slice() {
+                [one] => *one,
+                [] if !emulators.is_empty() => return Err(not_booted(&emulators)),
+                [] => {
+                    return Err(unavailable(
+                        format!("no booted emulator{ignored}"),
+                        "boot the emulator to walk on, then re-run",
+                    ))
+                }
+                many => {
+                    return Err(unavailable(
+                        format!(
+                            "{} booted emulators; qaren check borrows exactly one{ignored}",
+                            many.len()
+                        ),
+                        "pass --device emulator-NNNN, or shut down the emulators you are not testing on",
+                    ))
+                }
+            }
         }
     }
     .to_string();
@@ -1661,16 +1706,6 @@ fn borrow_emulator(
             ))
         }
     };
-    if read(
-        android::getprop_spec(&adb, port, &serial, "sys.boot_completed"),
-        "sys.boot_completed",
-    )? != "1"
-    {
-        return Err(unavailable(
-            format!("{serial} has not finished booting (sys.boot_completed is not 1)"),
-            "wait for the emulator to finish booting, then re-run",
-        ));
-    }
     let malformed = |what: &str| {
         unavailable(
             format!("{serial} reported an unreadable {what}"),

@@ -2787,6 +2787,12 @@ fn android_check_borrows_the_named_emulator_among_two() {
     script_plan(&mut mock, &repo);
     mock.expect_run("adb version", CmdOutput::success(ADB_CLIENT_41));
     mock.expect_run("adb devices", CmdOutput::success(TWO));
+    for serial in ["emulator-5554", "emulator-5556"] {
+        mock.expect_run(
+            &format!("-s {serial} shell getprop sys.boot_completed"),
+            CmdOutput::success("1\n"),
+        );
+    }
     let receipt = run(&mut mock, &req);
     let failure = receipt.failure.unwrap();
     assert_eq!(failure.code, FailureCode::DeviceUnavailable);
@@ -2817,6 +2823,46 @@ fn android_check_borrows_the_named_emulator_among_two() {
     assert!(adb_calls(&mock)
         .iter()
         .filter(|c| c.starts_with("-s "))
+        .all(|c| c.starts_with("-s emulator-5556 ")));
+}
+
+#[test]
+fn android_check_auto_selects_the_only_boot_completed_emulator() {
+    const TWO: &str = "List of devices attached\nemulator-5554\tdevice\nemulator-5556\tdevice\n";
+    let (repo, app) = app_repo();
+    let req = android_request(&repo, &app);
+    let mut mock = android_mock();
+    mock.expect_run("node --version", CmdOutput::success("v26.8.1\n"));
+    script_plan(&mut mock, &repo);
+    mock.expect_run("adb version", CmdOutput::success(ADB_CLIENT_41));
+    mock.expect_run("adb devices", CmdOutput::success(TWO));
+    mock.expect_run(
+        "-s emulator-5554 shell getprop sys.boot_completed",
+        CmdOutput::success("\n"),
+    );
+    mock.expect_run(
+        "-s emulator-5556 shell getprop sys.boot_completed",
+        CmdOutput::success("1\n"),
+    );
+    mock.expect_run("getprop ro.build.version.sdk", CmdOutput::success("37\n"));
+    mock.expect_run("getprop ro.product.cpu.abi", CmdOutput::success("x86_64\n"));
+    mock.expect_run(
+        "-s emulator-5556 emu avd name",
+        CmdOutput::success("Pixel_9_API_37\r\nOK\r\n"),
+    );
+    // Stop right after the borrow: the candidate read refuses, proving which emulator was taken.
+    mock.expect_run("git", CmdOutput::failed(128, "not a git repository"));
+    let receipt = run(&mut mock, &req);
+    assert_ne!(
+        receipt.failure.as_ref().map(|f| f.code),
+        Some(FailureCode::DeviceUnavailable),
+        "{:?}",
+        receipt.failure
+    );
+    assert_eq!(mock.remaining(), 0);
+    assert!(adb_calls(&mock)
+        .iter()
+        .filter(|c| c.starts_with("-s ") && !c.ends_with("sys.boot_completed"))
         .all(|c| c.starts_with("-s emulator-5556 ")));
 }
 
