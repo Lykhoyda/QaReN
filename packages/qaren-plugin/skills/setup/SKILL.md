@@ -55,7 +55,7 @@ xcrun simctl list devices booted -j
 
 ## 5. Smoke plan
 
-Read the app's first screen in source and pick one static text the user sees there; the `✓` check reads visible text, so never use a `testID` there. Write `.qaren/plans/smoke.md`, quoted targets only:
+Read the app's launch path in source (its root navigator and any auth gate) and pick one static text the user sees on the screen the app opens on; the `✓` check reads visible text, so never use a `testID` there. Never assume the signed-out screen: when a saved sign-in decides where the app opens, an earlier install's session on that simulator survives this run, so pick a text shown on launch both signed in and signed out, or ask the user which screen the app opens on now. Write `.qaren/plans/smoke.md`, quoted targets only:
 
 ```markdown
 ## QA
@@ -70,8 +70,12 @@ This plan needs no `TYPESAFE_API_KEY`.
 
 ## 6. Run
 
+The first run builds and installs the app; a cold native build can outlast the host's command timeout (10 minutes in Claude Code), which kills a foreground run before its receipt. Start it with the host's background-command mode (in Claude Code, Bash with `run_in_background: true`), never with `&` or `nohup`: qaren cancels a run whose calling process exits.
+
 ```sh
-<qaren path from step 1> check --plan-file .qaren/plans/smoke.md [device flags from step 4] --json
+mkdir -p ~/.qaren/setup && <qaren path from step 1> check --plan-file .qaren/plans/smoke.md [device flags from step 4] --json > ~/.qaren/setup/receipt.json 2> ~/.qaren/setup/progress.log
 ```
 
-The first run builds and installs the app, so it takes minutes. Report the receipt's `result` and `run_id`. When `result` is not `pass`, quote `failure.code` and `failure.next_action` verbatim if present and stop. On `pass`, QaReN is set up: next, the `using-qaren` skill writes a plan for a feature.
+Within a minute `~/.qaren/setup/progress.log` contains `▸ watch live: qaren watch <run-id>`. Follow the run in the foreground with `<qaren path> watch <run-id> --plain`, which prints each finished stage and exits when the run ends; exit 3 means its telemetry is not written yet, so retry. If the host's timeout stops the viewer first, run it again: the viewer holds no lock, so stopping it never affects the run.
+
+Once the background command has ended, `~/.qaren/setup/receipt.json` holds the receipt. Report its `result` and `run_id`. When `result` is not `pass`, quote `failure.code` and `failure.next_action` verbatim if present and stop. On `pass`, QaReN is set up: next, the `using-qaren` skill writes a plan for a feature.
