@@ -389,8 +389,8 @@ impl qaren::exec::Runner for IosBuildRunner {
     fn env_var(&self, name: &str) -> Option<String> {
         self.inner.env_var(name)
     }
-    fn tcp_listening(&self, port: u16) -> bool {
-        self.inner.tcp_listening(port)
+    fn adb_server_version(&self, port: u16) -> Result<u32, String> {
+        self.inner.adb_server_version(port)
     }
     fn execute(&mut self, spec: &qaren::exec::CmdSpec, interruptible: bool) -> CmdOutput {
         self.inner.execute(spec, interruptible)

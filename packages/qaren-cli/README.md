@@ -222,15 +222,22 @@ The configuration keys, defaults and validation are owned by
 
 `--platform android` borrows one booted emulator on the host's already running
 adb server: `ADB_SERVER_SOCKET` (loopback only), else `ANDROID_ADB_SERVER_PORT`,
-else 5037. `qaren` probes that port and never starts or stops an adb server; with
-no server listening it refuses `DEVICE_UNAVAILABLE`. With several booted emulators,
+else 5037. `qaren` asks that server for its version over the adb protocol and
+never starts or stops an adb server: with no server answering it refuses
+`DEVICE_UNAVAILABLE`, and so it does when `adb version` under `ANDROID_HOME`
+differs from the server's, because a client of another version would restart the
+server. The check holds at the start of the run; if the server exits later, the
+next adb call starts a new one, and another tool restarting the server mid-run is
+outside `qaren`'s control. With several booted emulators,
 `--device emulator-NNNN` chooses one; physical devices are not supported, and
 `--boot-device` and `--fresh-install` refuse on Android. `ANDROID_HOME` must name
 the SDK whose `platform-tools/adb` reaches that server. The build is a Gradle
 `:app:assembleDebug` limited to the emulator's ABI, preceded by
 `expo prebuild --platform android --clean` when `android/` is absent; the APK is
 installed with `adb -s <serial>`, and a fingerprint-matched cached APK is reused
-the same way. The run keeps the app and the emulator.
+the same way. The run keeps the app and the emulator. Android `check` does not yet
+detect a foreign automation driver (another `uiautomator`, instrumentation or
+Maestro session) on the borrowed emulator; borrow one no other automation uses.
 
 Plans contain a `## QA` section, named `###` blocks, numbered actions and
 `✓` checks. See the executable

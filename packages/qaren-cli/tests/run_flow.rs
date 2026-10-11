@@ -2334,6 +2334,7 @@ fn boot_device_requires_ios_and_an_exact_uuid_before_any_preflight() {
     }
 }
 
+const ADB_CLIENT_41: &str = "Android Debug Bridge version 1.0.41\nVersion 36.0.0-13206524\nInstalled as /sdk/platform-tools/adb\n";
 const EMULATOR: &str = "emulator-5554";
 const ANDROID_TOOLS: &[&str] = &["git", "pnpm", "node", "lsof", "curl", "ps", "java"];
 const ONE_EMULATOR: &str = "List of devices attached\nemulator-5554\tdevice\n\n";
@@ -2351,11 +2352,12 @@ fn android_request(repo: &Path, app: &Path) -> RunRequest {
 
 fn android_mock() -> MockRunner {
     let mut mock = MockRunner::new();
-    mock.listening.push(5037);
+    mock.adb_servers.push((5037, 41));
     mock
 }
 
 fn script_borrow(mock: &mut MockRunner, devices: &str, serial: &str) {
+    mock.expect_run("adb version", CmdOutput::success(ADB_CLIENT_41));
     mock.expect_run("adb devices", CmdOutput::success(devices));
     mock.expect_run(
         &format!("-s {serial} shell getprop sys.boot_completed"),
@@ -2544,7 +2546,12 @@ fn android_check_prebuild_failure_is_build_failed() {
     assert!(!labels(&mock).iter().any(|l| l == "gradle-assemble"));
     let devices: Vec<String> = adb_calls(&mock)
         .into_iter()
-        .filter(|c| !c.contains("getprop") && !c.contains("emu avd name") && c != "devices")
+        .filter(|c| {
+            !c.contains("getprop")
+                && !c.contains("emu avd name")
+                && c != "devices"
+                && c != "version"
+        })
         .collect();
     assert!(devices.is_empty(), "{devices:?}");
     assert_eq!(receipt.cleanup["device_lease"], "removed");
@@ -2741,7 +2748,11 @@ fn android_check_reuse_installs_the_cached_apk_by_serial() {
     assert!(
         position("install") < position("reverse") && position("reverse") < position("am start")
     );
-    for call in mock.calls.iter().filter(|c| c.program.ends_with("/adb")) {
+    for call in mock
+        .calls
+        .iter()
+        .filter(|c| c.program.ends_with("/adb") && c.label != "adb-version")
+    {
         assert!(
             call.env.contains(&(
                 "ADB_SERVER_SOCKET".to_string(),
@@ -2774,6 +2785,7 @@ fn android_check_borrows_the_named_emulator_among_two() {
     let mut mock = android_mock();
     mock.expect_run("node --version", CmdOutput::success("v26.8.1\n"));
     script_plan(&mut mock, &repo);
+    mock.expect_run("adb version", CmdOutput::success(ADB_CLIENT_41));
     mock.expect_run("adb devices", CmdOutput::success(TWO));
     let receipt = run(&mut mock, &req);
     let failure = receipt.failure.unwrap();
@@ -2806,6 +2818,46 @@ fn android_check_borrows_the_named_emulator_among_two() {
         .iter()
         .filter(|c| c.starts_with("-s "))
         .all(|c| c.starts_with("-s emulator-5556 ")));
+}
+
+#[test]
+fn android_check_refuses_an_adb_client_newer_than_the_server() {
+    let (repo, app) = app_repo();
+    let req = android_request(&repo, &app);
+    let mut mock = android_mock();
+    mock.expect_run("node --version", CmdOutput::success("v26.8.1\n"));
+    script_plan(&mut mock, &repo);
+    mock.expect_run(
+        "adb version",
+        CmdOutput::success(&ADB_CLIENT_41.replace("1.0.41", "1.0.42")),
+    );
+    let receipt = run(&mut mock, &req);
+    let failure = receipt.failure.unwrap();
+    assert_eq!(failure.code, FailureCode::DeviceUnavailable);
+    assert!(
+        failure
+            .detail
+            .contains("is version 42, the running server is 41"),
+        "{}",
+        failure.detail
+    );
+    assert_eq!(adb_calls(&mock), ["version"]);
+    assert_eq!(mock.remaining(), 0);
+    assert!(!req.lock_root.exists());
+}
+
+#[test]
+fn android_check_refuses_an_unreadable_adb_client_version() {
+    let (repo, app) = app_repo();
+    let req = android_request(&repo, &app);
+    let mut mock = android_mock();
+    mock.expect_run("node --version", CmdOutput::success("v26.8.1\n"));
+    script_plan(&mut mock, &repo);
+    mock.expect_run("adb version", CmdOutput::success("not adb\n"));
+    let receipt = run(&mut mock, &req);
+    assert_eq!(receipt.failure.unwrap().code, FailureCode::PrereqMissing);
+    assert_eq!(adb_calls(&mock), ["version"]);
+    assert!(!req.lock_root.exists());
 }
 
 #[test]
@@ -2851,6 +2903,7 @@ fn android_check_refuses_unborrowable_devices_without_a_lease() {
         let mut mock = android_mock();
         mock.expect_run("node --version", CmdOutput::success("v26.8.1\n"));
         script_plan(&mut mock, &repo);
+        mock.expect_run("adb version", CmdOutput::success(ADB_CLIENT_41));
         mock.expect_run("adb devices", CmdOutput::success(devices));
         if let Some(value) = boot_completed {
             mock.expect_run("getprop sys.boot_completed", CmdOutput::success(value));

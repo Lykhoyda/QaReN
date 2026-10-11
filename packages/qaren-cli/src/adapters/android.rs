@@ -131,10 +131,53 @@ pub fn borrowed_server_port(socket: Option<&str>, port: Option<&str>) -> Result<
     }
 }
 
-// A plain TCP connect, so no adb client ever gets the chance to auto-start a server.
-pub fn server_listening(port: u16) -> bool {
+// The server's own host:version reply: proves an adb server listens, without any client that could restart it.
+pub fn server_version(port: u16) -> Result<u32, String> {
+    use std::io::{Read, Write};
+    let budget = std::time::Duration::from_millis(500);
     let addr = std::net::SocketAddr::from(([127, 0, 0, 1], port));
-    std::net::TcpStream::connect_timeout(&addr, std::time::Duration::from_millis(500)).is_ok()
+    let mut stream = std::net::TcpStream::connect_timeout(&addr, budget)
+        .map_err(|e| format!("cannot connect to 127.0.0.1:{port}: {e}"))?;
+    stream
+        .set_read_timeout(Some(budget))
+        .and_then(|()| stream.set_write_timeout(Some(budget)))
+        .and_then(|()| stream.write_all(b"000chost:version"))
+        .map_err(|e| format!("cannot ask 127.0.0.1:{port} for its version: {e}"))?;
+    let mut head = [0u8; 8];
+    stream
+        .read_exact(&mut head)
+        .map_err(|e| format!("no adb reply from 127.0.0.1:{port}: {e}"))?;
+    let not_adb = || format!("127.0.0.1:{port} did not answer as an adb server");
+    if &head[..4] != b"OKAY" {
+        return Err(not_adb());
+    }
+    let len = parse_hex(&head[4..])
+        .filter(|n| (1..=8).contains(n))
+        .ok_or_else(not_adb)?;
+    let mut body = vec![0u8; len as usize];
+    stream.read_exact(&mut body).map_err(|_| not_adb())?;
+    parse_hex(&body).ok_or_else(not_adb)
+}
+
+fn parse_hex(bytes: &[u8]) -> Option<u32> {
+    bytes
+        .iter()
+        .all(u8::is_ascii_hexdigit)
+        .then(|| u32::from_str_radix(std::str::from_utf8(bytes).ok()?, 16).ok())
+        .flatten()
+}
+
+pub fn client_version_spec(adb: &Path) -> CmdSpec {
+    CmdSpec::new("adb-version", &adb.to_string_lossy(), &["version"], 20)
+}
+
+// "Android Debug Bridge version 1.0.N": N is the number the server reports.
+pub fn parse_client_version(stdout: &str) -> Option<u32> {
+    stdout
+        .lines()
+        .find_map(|l| l.trim().strip_prefix("Android Debug Bridge version "))
+        .and_then(|v| v.rsplit('.').next())
+        .and_then(|n| n.parse().ok())
 }
 
 pub fn devices_spec(adb: &Path, server_port: u16) -> CmdSpec {

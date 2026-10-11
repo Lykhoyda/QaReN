@@ -1567,10 +1567,33 @@ fn borrow_emulator(
             "point ADB_SERVER_SOCKET at the local adb server your emulator uses, then re-run",
         )
     })?;
-    if !runner.tcp_listening(port) {
+    let Ok(server) = runner.adb_server_version(port) else {
         return Err(unavailable(
             format!("no adb server is running on port {port}; start your emulator first"),
             "boot the emulator (which starts its adb server), then re-run",
+        ));
+    };
+    // A client of another version would kill the borrowed server and start its own.
+    let client = runner.run(&android::client_version_spec(&adb));
+    let Some(client) = client
+        .ok()
+        .then(|| android::parse_client_version(&client.stdout))
+        .flatten()
+    else {
+        return Err(Failure::new(
+            "device",
+            FailureCode::PrereqMissing,
+            format!("cannot read the version of {}", adb.display()),
+            "check the platform-tools under ANDROID_HOME, then re-run",
+        ));
+    };
+    if client != server {
+        return Err(unavailable(
+            format!(
+                "adb at {} is version {client}, the running server is {server}; running it would restart the server",
+                android_home.unwrap_or_default()
+            ),
+            "use the same platform-tools as the running adb server, then re-run",
         ));
     }
     let listed = runner.run(&android::devices_spec(&adb, port));

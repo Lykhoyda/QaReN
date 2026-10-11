@@ -1422,3 +1422,67 @@ fn gradle_assemble_is_finite_abi_limited_and_daemonless() {
         .contains(&("EXPO_NO_TELEMETRY".to_string(), "1".to_string())));
     assert!(!spec.env.iter().any(|(k, _)| k == "ANDROID_HOME"));
 }
+
+fn one_reply_server(reply: Option<&'static [u8]>) -> u16 {
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = listener.local_addr().unwrap().port();
+    std::thread::spawn(move || {
+        use std::io::{Read, Write};
+        let (mut stream, _) = listener.accept().unwrap();
+        let mut request = [0u8; 16];
+        stream.read_exact(&mut request).unwrap();
+        assert_eq!(&request, b"000chost:version");
+        match reply {
+            Some(bytes) => stream.write_all(bytes).unwrap(),
+            None => std::thread::sleep(std::time::Duration::from_secs(3)),
+        }
+    });
+    port
+}
+
+#[test]
+fn adb_server_version_speaks_the_host_protocol_and_fails_closed() {
+    assert_eq!(
+        android::server_version(one_reply_server(Some(b"OKAY00040029"))),
+        Ok(41)
+    );
+    for reply in [
+        Some(&b"FAIL0007unknown"[..]),
+        Some(&b"OKAY0004"[..]),
+        Some(&b"OKAY00040g29"[..]),
+        Some(&b"HTTP/1.1 400"[..]),
+        None,
+    ] {
+        let started = std::time::Instant::now();
+        let port = one_reply_server(reply);
+        assert!(android::server_version(port).is_err(), "{reply:?}");
+        assert!(
+            started.elapsed() < std::time::Duration::from_secs(2),
+            "{reply:?}"
+        );
+    }
+    let closed = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = closed.local_addr().unwrap().port();
+    drop(closed);
+    assert!(android::server_version(port).is_err());
+}
+
+#[test]
+fn adb_client_version_is_the_protocol_number_the_server_reports() {
+    assert_eq!(
+        android::parse_client_version(
+            "Android Debug Bridge version 1.0.41\nVersion 36.0.0-13206524\nInstalled as /sdk/platform-tools/adb\n"
+        ),
+        Some(41)
+    );
+    for garbage in [
+        "",
+        "adb: command not found",
+        "Android Debug Bridge version 1.0.x\n",
+    ] {
+        assert_eq!(android::parse_client_version(garbage), None, "{garbage}");
+    }
+    let spec = android::client_version_spec(Path::new("/sdk/platform-tools/adb"));
+    assert_eq!(spec.program, "/sdk/platform-tools/adb");
+    assert_eq!(spec.args, ["version"]);
+}
