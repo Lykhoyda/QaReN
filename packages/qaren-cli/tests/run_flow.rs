@@ -2477,6 +2477,7 @@ fn android_check_prebuilds_an_absent_android_dir_before_gradle() {
     script_android_preflight(&mut mock, &repo, ONE_EMULATOR, EMULATOR);
     mock.expect_run("pnpm install --frozen-lockfile", CmdOutput::success(""));
     mock.expect_run("ls-files", CmdOutput::success(""));
+    mock.expect_run("check-ignore -q android/", CmdOutput::success(""));
     script_android_finite_build(&mut mock, PREBUILD, 5000, 0);
     script_android_finite_build(&mut mock, GRADLE, 5001, 0);
     script_android_launch_walk_teardown(&mut mock);
@@ -2527,6 +2528,48 @@ fn android_check_prebuilds_an_absent_android_dir_before_gradle() {
 }
 
 #[test]
+fn android_check_refuses_to_generate_an_android_dir_git_would_track() {
+    for (case, ignore, detail) in [
+        (
+            "tracked",
+            CmdOutput::failed(1, ""),
+            "android/ is absent and not git-ignored",
+        ),
+        (
+            "git_failed",
+            CmdOutput::failed(128, "fatal"),
+            "cannot tell whether git ignores android/",
+        ),
+    ] {
+        let (repo, app) = app_repo();
+        let req = android_request(&repo, &app);
+        let mut mock = android_mock();
+        script_android_preflight(&mut mock, &repo, ONE_EMULATOR, EMULATOR);
+        mock.expect_run("pnpm install --frozen-lockfile", CmdOutput::success(""));
+        mock.expect_run("ls-files", CmdOutput::success(""));
+        mock.expect_run("check-ignore -q android/", ignore);
+
+        let receipt = run(&mut mock, &req);
+
+        let failure = receipt.failure.as_ref().unwrap();
+        assert_eq!(failure.code, FailureCode::BuildFailed, "{case}");
+        assert!(
+            failure.detail.contains(detail),
+            "{case}: {}",
+            failure.detail
+        );
+        assert_eq!(mock.remaining(), 0, "{case}");
+        assert!(
+            !labels(&mock)
+                .iter()
+                .any(|l| l == "expo-prebuild" || l == "gradle-assemble" || l == "adb-install"),
+            "{case}"
+        );
+        assert_eq!(receipt.cleanup["device_lease"], "removed", "{case}");
+    }
+}
+
+#[test]
 fn android_check_prebuild_failure_is_build_failed() {
     let (repo, app) = app_repo();
     let req = android_request(&repo, &app);
@@ -2534,6 +2577,7 @@ fn android_check_prebuild_failure_is_build_failed() {
     script_android_preflight(&mut mock, &repo, ONE_EMULATOR, EMULATOR);
     mock.expect_run("pnpm install --frozen-lockfile", CmdOutput::success(""));
     mock.expect_run("ls-files", CmdOutput::success(""));
+    mock.expect_run("check-ignore -q android/", CmdOutput::success(""));
     script_android_finite_build(&mut mock, PREBUILD, 5000, 1);
 
     let receipt = run(&mut mock, &req);
@@ -2610,6 +2654,7 @@ fn android_check_records_generated_android_dir_then_reuses() {
     script_android_preflight(&mut mock, &repo, ONE_EMULATOR, EMULATOR);
     mock.expect_run("pnpm install --frozen-lockfile", CmdOutput::success(""));
     mock.expect_run("ls-files", CmdOutput::success(""));
+    mock.expect_run("check-ignore -q android/", CmdOutput::success(""));
     script_android_finite_build(&mut mock, PREBUILD, 5000, 0);
     script_android_finite_build(&mut mock, GRADLE, 5001, 0);
     script_android_launch_walk_teardown(&mut mock);
@@ -2651,6 +2696,7 @@ fn android_check_does_not_require_the_shared_configs_ios_workspace() {
     script_android_preflight(&mut mock, &repo, ONE_EMULATOR, EMULATOR);
     mock.expect_run("pnpm install --frozen-lockfile", CmdOutput::success(""));
     mock.expect_run("ls-files", CmdOutput::success(""));
+    mock.expect_run("check-ignore -q android/", CmdOutput::success(""));
     script_android_finite_build(&mut mock, PREBUILD, 5000, 0);
     script_android_finite_build(&mut mock, GRADLE, 5001, 0);
     script_android_launch_walk_teardown(&mut mock);
@@ -2809,6 +2855,7 @@ fn android_check_borrows_the_named_emulator_among_two() {
     script_android_preflight(&mut mock, &repo, TWO, "emulator-5556");
     mock.expect_run("pnpm install --frozen-lockfile", CmdOutput::success(""));
     mock.expect_run("ls-files", CmdOutput::success(""));
+    mock.expect_run("check-ignore -q android/", CmdOutput::success(""));
     script_android_finite_build(&mut mock, PREBUILD, 5000, 0);
     script_android_finite_build(&mut mock, GRADLE, 5001, 0);
     script_android_launch_walk_teardown(&mut mock);

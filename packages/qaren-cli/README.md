@@ -237,7 +237,9 @@ outside `qaren`'s control. With several booted emulators,
 `--boot-device` and `--fresh-install` refuse on Android. `ANDROID_HOME` must name
 the SDK whose `platform-tools/adb` reaches that server. The build is a Gradle
 `:app:assembleDebug` limited to the emulator's ABI, preceded by
-`expo prebuild --platform android --clean` when `android/` is absent; the APK is
+`expo prebuild --platform android --clean` when `android/` is absent. An absent
+`android/` must be git-ignored: one git would track would change the candidate's
+native inputs mid-run, so the build refuses before generating it. The APK is
 installed with `adb -s <serial>`, and a fingerprint-matched cached APK is reused
 the same way. The run keeps the app and the emulator. Android `check` does not yet
 detect a foreign automation driver (another `uiautomator`, instrumentation or

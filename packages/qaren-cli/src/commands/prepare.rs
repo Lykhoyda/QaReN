@@ -2280,6 +2280,40 @@ pub(crate) fn build_and_ready(ctx: &mut Ctx) -> Result<(), Failure> {
         Platform::Android => {
             if let Some(emulator) = ctx.record.resources.android_emulator.clone() {
                 if !project_root.join("android").is_dir() {
+                    // A generated dir git would track changes the candidate's native inputs mid-run.
+                    // The trailing slash matters: a dir-only ignore pattern never matches an absent path.
+                    let ignored = ctx.runner.run(&CmdSpec::new(
+                        "git-check-ignore",
+                        "git",
+                        &[
+                            "-C",
+                            &project_root.to_string_lossy(),
+                            "check-ignore",
+                            "-q",
+                            "android/",
+                        ],
+                        20,
+                    ));
+                    match ignored.exit_code {
+                        Some(0) if !ignored.timed_out => {}
+                        Some(1) if !ignored.timed_out => {
+                            return Err(Failure::new(
+                                "build",
+                                FailureCode::BuildFailed,
+                                "android/ is absent and not git-ignored; generating it would change the candidate's native inputs during the run",
+                                "add android/ to .gitignore, or generate and commit it, then re-run",
+                            ));
+                        }
+                        _ => {
+                            return Err(build_failure(
+                                ctx,
+                                format!(
+                                    "cannot tell whether git ignores android/: {}",
+                                    ignored.summary()
+                                ),
+                            ))
+                        }
+                    }
                     // Like expo run:ios, the borrowed-emulator build generates an absent native dir itself.
                     run_finite_build(
                         ctx,
