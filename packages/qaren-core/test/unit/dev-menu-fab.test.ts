@@ -100,8 +100,32 @@ for (const [name, preferences] of [
 }
 
 test('D4: the walk hides the floating button before the other dev-menu actions', () => {
-  assert.deepEqual([...WALK_DEV_SETTINGS], ['hideDevMenuFab', 'disableDevMenu', 'hideDevMenu']);
+  assert.deepEqual(
+    [...WALK_DEV_SETTINGS],
+    ['hideDevMenuFab', 'disableDevMenu', 'disableFastRefresh', 'hideDevMenu'],
+  );
 });
+
+for (const [returned, ok] of [
+  ['ok', true],
+  ['no_method_available', false],
+] as const) {
+  test(`D5: turning hot reloading off reports ${returned}`, async () => {
+    const expressions: string[] = [];
+    const client = createMockClient({
+      evaluate: async (expression: string) => {
+        expressions.push(expression);
+        return { value: returned };
+      },
+    });
+    const env = parseEnvelope(
+      await createDevSettingsHandler(() => client)({ action: 'disableFastRefresh' }),
+    );
+    assert.ok(expressions.some((expression) => /setHotLoadingEnabled\(false\)/.test(expression)));
+    assert.equal(env.data.executed, ok);
+    if (!ok) assert.ok(env.meta?.warning);
+  });
+}
 
 type DevAction = (typeof WALK_DEV_SETTINGS)[number];
 
@@ -163,7 +187,13 @@ test('overlays: an app without the preferences module passes and is still verifi
     hideDevMenuFab: () => warnResult({ action: 'hideDevMenuFab', executed: false }, 'no module'),
   });
   assert.equal(parseEnvelope(await done).ok, true);
-  assert.deepEqual(calls, ['hideDevMenuFab', 'disableDevMenu', 'hideDevMenu', 'read']);
+  assert.deepEqual(calls, [
+    'hideDevMenuFab',
+    'disableDevMenu',
+    'disableFastRefresh',
+    'hideDevMenu',
+    'read',
+  ]);
 });
 
 test('overlays: failed actions can pass only when native evidence proves clearance', async () => {
@@ -185,7 +215,14 @@ for (const surface of ['expo_dev_menu', 'react_native_dev_menu']) {
     const env = parseEnvelope(await done);
     assert.equal(env.ok, true);
     assert.equal(env.data.executed, true);
-    assert.deepEqual(calls, ['hideDevMenuFab', 'disableDevMenu', 'hideDevMenu', 'read', 'read']);
+    assert.deepEqual(calls, [
+      'hideDevMenuFab',
+      'disableDevMenu',
+      'disableFastRefresh',
+      'hideDevMenu',
+      'read',
+      'read',
+    ]);
   });
 
   test(`overlays: ${surface} still open after a failed hide is re-read and refused`, async () => {
@@ -308,6 +345,7 @@ test('recovery: a hidden dev menu re-runs the overlay clearing', async () => {
     'hideDevMenu',
     'hideDevMenuFab',
     'disableDevMenu',
+    'disableFastRefresh',
     'hideDevMenu',
     'read',
   ]);
