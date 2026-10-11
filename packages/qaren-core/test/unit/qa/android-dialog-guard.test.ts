@@ -4,7 +4,7 @@ import { test } from 'node:test';
 import { parsePlan } from '../../../dist/qa/plan.js';
 import { join } from '../../../dist/qa/screen.js';
 import type { NativeNode, Screen } from '../../../dist/qa/screen.js';
-import { platformDialog, walkBlock } from '../../../dist/qa/walker.js';
+import { walkBlock } from '../../../dist/qa/walker.js';
 import type { WalkerDeps } from '../../../dist/qa/walker.js';
 
 function screen(): Screen {
@@ -24,14 +24,21 @@ function screen(): Screen {
 
 function fake(platform: 'ios' | 'android') {
   const handled: string[] = [];
+  const driver: string[] = [];
   let clock = 0;
   const deps: WalkerDeps = {
-    captureScreen: async () => screen(),
+    ...(platform === 'android'
+      ? { dialogUnsupported: 'Android system dialogs arrive in S5b' }
+      : {}),
+    captureScreen: async () => {
+      driver.push('capture');
+      return screen();
+    },
     press: async () => ({ ok: true, proven: false }),
     fill: async () => ({ ok: true, proven: true }),
     scroll: async () => ({ ok: true, proven: false }),
     back: async () => ({ ok: true, proven: false }),
-    dialog: platformDialog(platform, async (action, context) => {
+    dialog: async (action, context) => {
       context.authorize();
       handled.push(action);
       return {
@@ -39,15 +46,18 @@ function fake(platform: 'ios' | 'android') {
         proven: true,
         dialog: { label: 'Allow', rect: { x: 1, y: 2, width: 3, height: 4 } },
       };
-    }),
-    screenshot: async (name) => name,
+    },
+    screenshot: async (name) => {
+      driver.push('screenshot');
+      return name;
+    },
     now: () => (clock += 100),
     async sleep(ms) {
       clock += ms;
     },
     row: () => undefined,
   };
-  return { deps, handled };
+  return { deps, handled, driver };
 }
 
 const block = () => parsePlan('1. Dismiss the system dialog\n').blocks![0];
@@ -61,6 +71,7 @@ test('android_dialog_step_refuses_before_any_driver', async () => {
     /^TARGET_UNSUPPORTED: Android system dialogs arrive in S5b/,
   );
   assert.deepEqual(f.handled, []);
+  assert.deepEqual(f.driver, []);
 });
 
 test('an iOS dialog step still reaches its handler', async () => {

@@ -105,6 +105,8 @@ export interface WalkerDeps {
   scroll(direction: 'down' | 'up', context: QaDispatchContext): Promise<ActResult>;
   back(context: QaDispatchContext): Promise<ActResult>;
   dialog(action: 'accept' | 'dismiss', context: QaDispatchContext): Promise<ActResult>;
+  // Set where dialog steps have no proven driver: such a step refuses before any capture.
+  dialogUnsupported?: string;
   screenshot(name: string): Promise<string | undefined>;
   now(): number;
   sleep(ms: number): Promise<void>;
@@ -160,20 +162,6 @@ const unresolvedText = (quoted: string) =>
     refuse: 'VISIBILITY_UNSURE',
     reason: `"${quoted}" stayed unresolved: matching text has no trusted frame or the native snapshot is incomplete`,
   });
-
-// Until Android dialogs carry tap proof, an Android dialog step refuses before any driver runs.
-export function platformDialog(
-  platform: string,
-  dialog: WalkerDeps['dialog'],
-): WalkerDeps['dialog'] {
-  if (platform !== 'android') return dialog;
-  return async () => {
-    throw new ResolutionError({
-      refuse: 'TARGET_UNSUPPORTED',
-      reason: 'Android system dialogs arrive in S5b',
-    });
-  };
-}
 
 export const WAIT_BUDGET_MS = 15_000;
 export const WAIT_POLL_MS = 500;
@@ -1091,6 +1079,13 @@ export async function walkBlock(
       let currentAttempt = 1;
       resolvedBy = item.source === 'jev' && !replay ? 'jev' : 'exact';
       if (item.kind === 'fill' && item.text && !typed.includes(item.text)) typed.push(item.text);
+      if (item.kind === 'dialog' && deps.dialogUnsupported) {
+        const refused = new ResolutionError({
+          refuse: 'TARGET_UNSUPPORTED',
+          reason: deps.dialogUnsupported,
+        });
+        return failed(item, currentAttempt, refused.message, latest, undefined);
+      }
       try {
         if (item.kind === 'check') {
           const next = block.items[block.items.indexOf(item) + 1];

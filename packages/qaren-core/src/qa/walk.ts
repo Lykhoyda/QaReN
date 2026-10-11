@@ -56,7 +56,7 @@ import { redactApiKey } from '../util/redact.js';
 import { createStop, watchOwnerPipe, watchParent } from './stop.js';
 import { prove } from './prove.js';
 import { admit, awaitBundleReady } from './admission.js';
-import { type ActResult, type WalkerDeps, loginBlock, platformDialog, runPlan } from './walker.js';
+import { type ActResult, type WalkerDeps, loginBlock, runPlan } from './walker.js';
 import { loadBlock, readBlock } from './blocks.js';
 import {
   type ResultPayload,
@@ -493,13 +493,15 @@ async function openSession(
     scroll: (direction, qaContext) =>
       act(() => scroll({ direction, amount: 0.6, qaContext }), false),
     back: (qaContext) => act(() => back({ qaContext }), false),
-    dialog: platformDialog(platform, (action, qaContext) =>
+    dialog: (action, qaContext) =>
       act(
         () =>
           action === 'accept' ? accept({ platform, qaContext }) : dismiss({ platform, qaContext }),
         false,
       ),
-    ),
+    ...(platform === 'android'
+      ? { dialogUnsupported: 'Android system dialogs arrive in S5b' }
+      : {}),
     async screenshot(name) {
       if (stop.stopping) return undefined;
       const path = join(request.runDir, name);
