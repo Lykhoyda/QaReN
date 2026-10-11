@@ -838,8 +838,14 @@ Before each iOS launch, `prepare` writes the app's Expo dev-menu preferences wit
 at launch, onboarding finished. A failed write is recorded as
 `dev_menu_defaults: unconfirmed` and the launch continues. At walk start the core
 also hides the floating button through Expo's `DevMenuPreferences` module and
-reads the setting back, disables the shake gesture, and closes an open menu.
-Apps without the preferences module skip that setting change but still require
+reads the setting back, disables the shake gesture, attempts to disable Fast
+Refresh through `DevSettings.setHotLoadingEnabled(false)`, and closes an open
+menu. Disabling Fast Refresh prevents saved-block YAML writes in the app folder
+from triggering the dev client's `Refreshing...` banner during recording. This
+attempt is best-effort: an unavailable or throwing API does not itself refuse
+the walk, and native overlay clearance does not prove Fast Refresh is disabled.
+The same clearance sequence runs again after a successful dev-menu recovery.
+Apps without the preferences module skip the floating-button setting change but still require
 native clearance evidence. The shared clearance mechanism accepts only a complete
 native snapshot with neither a floating button nor an open dev menu in front,
 briefly re-reading while overlays settle. An unconfirmed floating-button hide

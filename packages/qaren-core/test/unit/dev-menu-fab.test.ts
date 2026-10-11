@@ -106,22 +106,35 @@ test('D4: the walk hides the floating button before the other dev-menu actions',
   );
 });
 
-for (const [returned, ok] of [
-  ['ok', true],
-  ['no_method_available', false],
-] as const) {
-  test(`D5: turning hot reloading off reports ${returned}`, async () => {
-    const expressions: string[] = [];
-    const client = createMockClient({
-      evaluate: async (expression: string) => {
-        expressions.push(expression);
-        return { value: returned };
+for (const resolver of ['turbo', 'native', 'bridge', 'require', 'missing', 'methodless', 'throws']) {
+  test(`D5: turning hot reloading off through ${resolver} executes the setting or warns`, async () => {
+    const calls: boolean[] = [];
+    const settings = {
+      setHotLoadingEnabled(enabled: boolean) {
+        calls.push(enabled);
+        if (resolver === 'throws') throw new Error('unsupported');
       },
+    };
+    const context = {
+      ...(resolver === 'turbo' || resolver === 'throws' || resolver === 'methodless'
+        ? { __turboModuleProxy: () => (resolver === 'methodless' ? {} : settings) }
+        : {}),
+      ...(resolver === 'native' ? { nativeModuleProxy: { DevSettings: settings } } : {}),
+      ...(resolver === 'bridge'
+        ? { __fbBatchedBridge: { getCallableModule: () => settings } }
+        : {}),
+      ...(resolver === 'require' ? { require: () => ({ DevSettings: settings }) } : {}),
+    };
+    const client = createMockClient({
+      evaluate: async (expression: string) => ({ value: runInNewContext(expression, context) }),
     });
     const env = parseEnvelope(
       await createDevSettingsHandler(() => client)({ action: 'disableFastRefresh' }),
     );
-    assert.ok(expressions.some((expression) => /setHotLoadingEnabled\(false\)/.test(expression)));
+    const unavailable = resolver === 'missing' || resolver === 'methodless';
+    const ok = !unavailable && resolver !== 'throws';
+    assert.deepEqual(calls, unavailable ? [] : [false]);
+    assert.equal(env.ok, true);
     assert.equal(env.data.executed, ok);
     if (!ok) assert.ok(env.meta?.warning);
   });
