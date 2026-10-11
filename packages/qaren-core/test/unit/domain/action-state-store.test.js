@@ -35,9 +35,11 @@ function dbPathOf(root) {
   return join(root, '.qaren', 'state', 'actions.db');
 }
 
+// The DB deduplicates (action_id, ts), so each record needs its own timestamp.
+let runRecordSeq = 0;
 function makeRunRecord(overrides = {}) {
   return {
-    timestamp: new Date().toISOString(),
+    timestamp: new Date(Date.UTC(2026, 0, 1) + ++runRecordSeq * 1000).toISOString(),
     durationMs: 1234,
     status: 'pass',
     trigger: 'agent',

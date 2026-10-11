@@ -1,4 +1,4 @@
-use crate::adapters::ios;
+use crate::adapters::{android, ios};
 use crate::buildplan::BuildDecision;
 use crate::cancel::ensure_running;
 use crate::candidate::{self, sha256_hex};
@@ -19,12 +19,12 @@ use crate::receipt::{Receipt, ReceiptResult};
 use crate::record::{self, VideoStatus};
 use crate::report::{self, ReportInput};
 use crate::runrecord::{
-    capture_pid_identity, FinalVerification, IosSimResource, Phase, PrWorktreeResource, Resources,
-    RunRecord, TerminalResult, RUN_SCHEMA,
+    capture_pid_identity, BorrowedEmulatorResource, FinalVerification, IosSimResource, Phase,
+    PrWorktreeResource, Resources, RunRecord, TerminalResult, RUN_SCHEMA,
 };
 use crate::scenario::{
-    BuildSpec, CandidateSpec, Deadlines, DepsSpec, IosSpec, MetroSpec, Platform, Scenario,
-    SCENARIO_SCHEMA,
+    is_emulator_serial, AndroidEmulatorSpec, BuildSpec, CandidateSpec, Deadlines, DepsSpec,
+    IosSpec, MetroSpec, Platform, Scenario, SCENARIO_SCHEMA,
 };
 use crate::timefmt;
 use crate::worktree;
@@ -71,6 +71,7 @@ struct Device {
     id: String,
     name: String,
     ios: Option<(String, String)>,
+    android: Option<BorrowedEmulatorResource>,
     needs_boot: bool,
 }
 
@@ -183,6 +184,14 @@ fn run_inner(
 ) -> Result<Receipt, Failure> {
     events::stage("preflight", StageState::Running, None, None);
     validate_boot_device(req.platform, req.device.as_deref(), req.boot_device)?;
+    if req.fresh_install && req.platform == Platform::Android {
+        return Err(Failure::new(
+            "device",
+            FailureCode::PlatformUnsupported,
+            "--fresh-install is not available on Android in this release",
+            "re-run without --fresh-install, or with --platform ios",
+        ));
+    }
     let (config, config_raw) = CheckConfig::load(&req.config_path)?;
     config.validate_for_platform(req.platform)?;
     if req.platform == Platform::Ios {
@@ -216,7 +225,13 @@ fn run_inner(
             "leave the plan file alone during the run, then re-run",
         ));
     }
-    let device = resolve_device(runner, req.platform, req.device.as_deref(), req.boot_device)?;
+    let device = resolve_device(
+        runner,
+        req.platform,
+        req.device.as_deref(),
+        req.boot_device,
+        req.android_home.as_deref(),
+    )?;
     let run_id = format!("check-{}", timefmt::compact_utc(started_ms));
     let run_dir = RunRecord::run_dir(&req.runs_root, &run_id);
     let mut project_root = req.project_root.clone();
@@ -321,6 +336,15 @@ fn run_inner(
             device_type: device_type.clone(),
             runtime: runtime.clone(),
         });
+    if let Some(emulator) = &device.android {
+        let home = req
+            .android_home
+            .as_deref()
+            .expect("resolved with ANDROID_HOME");
+        resources.adb_path = Some(android::adb_path(home));
+        resources.adb_local_serial = Some(emulator.serial.clone());
+        resources.android_emulator = Some(emulator.clone());
+    }
     resources.pr_worktree = unowned_worktree
         .as_ref()
         .map(|(repo_root, path)| PrWorktreeResource {
@@ -367,7 +391,7 @@ fn run_inner(
         return Ok(finish_failed(ctx, f));
     }
 
-    if req.fresh_install || req.boot_device {
+    if req.platform == Platform::Ios && (req.fresh_install || req.boot_device) {
         if let Err(f) = core::fresh_install_admission(
             ctx.runner,
             &node,
@@ -390,7 +414,7 @@ fn run_inner(
             return Ok(finish_failed(ctx, f));
         }
     }
-    if req.fresh_install || req.boot_device {
+    if req.platform == Platform::Ios && (req.fresh_install || req.boot_device) {
         if let Err(f) = core::fresh_install_admission(
             ctx.runner,
             &node,
@@ -464,13 +488,8 @@ fn run_inner(
         if let Err(f) = prepare::build_and_ready(&mut ctx) {
             return Ok(finish_failed(ctx, f));
         }
-        // The iOS arm splits native_build from install inside build_and_ready; Android's spans both.
-        if req.platform == Platform::Android {
-            events::stage("native_build", StageState::Passed, None, None);
-            events::stage("install_launch_ready", StageState::Skipped, None, None);
-        } else {
-            events::stage("install_launch_ready", StageState::Passed, None, None);
-        }
+        // build_and_ready splits native_build from install, as on iOS.
+        events::stage("install_launch_ready", StageState::Passed, None, None);
     }
     let t = ctx.mark("build_and_ready", t);
     events::stage("verify", StageState::Running, None, None);
@@ -520,7 +539,12 @@ fn run_inner(
     let mut video = None;
     // Taken before the spawn, so the trim offset can only cut later than the true admission frame.
     let recording_from = ctx.runner.now_epoch_ms();
-    if pr_state.is_some() {
+    if pr_state.is_some() && req.platform == Platform::Android {
+        events::stage("recording", StageState::Skipped, None, None);
+        video = Some(VideoStatus::Unavailable(
+            "Android recording arrives in a later slice".to_string(),
+        ));
+    } else if pr_state.is_some() {
         events::stage("recording", StageState::Running, None, None);
         if let Err(status) = record::start(ctx.runner, &mut ctx.record, &ctx.runs_root, &device.id)
         {
@@ -555,19 +579,27 @@ fn run_inner(
             metro_port: config.metro_port,
             metro_url_for_device: format!("http://127.0.0.1:{}", config.metro_port),
             worktree: project_root.clone(),
-            adb: None,
         },
     };
+    let android_env = device.android.as_ref().map(|emulator| core::AndroidEnv {
+        serial: emulator.serial.clone(),
+        server_port: emulator.server_port,
+        platform_tools: android::adb_path(req.android_home.as_deref().unwrap_or_default())
+            .parent()
+            .expect("adb lives in platform-tools")
+            .to_path_buf(),
+    });
     let spec = core::spawn_spec(
         &node,
         &req.runtime_dir,
         &project_root,
         &lease.wire(),
         config.metro_port,
+        android_env.as_ref(),
     );
     // Ownership needs proven absence first: a host already up on this simulator is never the run's.
-    let runner_host = (ios::probe_runner_hosts(ctx.runner, &device.id)
-        == ios::RunnerHostPresence::Absent)
+    let runner_host = (req.platform == Platform::Ios
+        && ios::probe_runner_hosts(ctx.runner, &device.id) == ios::RunnerHostPresence::Absent)
         .then(|| crate::runrecord::RunnerHostResource {
             udid: device.id.clone(),
             bundle_ids: vec![
@@ -928,6 +960,13 @@ fn identity_values(device: &Device, metro_port: u16, resources: &Resources) -> V
             .map(|tunnel| tunnel.local_port.to_string()),
     );
     values.extend(resources.adb_reverse_port.map(|port| port.to_string()));
+    if let Some(emulator) = &resources.android_emulator {
+        values.extend([
+            emulator.serial.clone(),
+            emulator.avd.clone(),
+            emulator.server_port.to_string(),
+        ]);
+    }
     values.retain(|value| !value.is_empty());
     values.sort();
     values.dedup();
@@ -1418,16 +1457,16 @@ fn resolve_device(
     platform: Platform,
     device: Option<&str>,
     boot_device: bool,
+    android_home: Option<&str>,
 ) -> Result<Device, Failure> {
     match platform {
-        Platform::Android => Err(Failure::new(
-            "device",
-            FailureCode::PlatformUnsupported,
-            "qaren check walks a booted iOS simulator in this release; the borrowed Android emulator path is not wired yet",
-            "re-run with --platform ios",
-        )),
+        Platform::Android => borrow_emulator(runner, device, android_home),
         Platform::Ios => {
-            let output = runner.run(&if boot_device { ios::list_devices_spec() } else { ios::list_booted_spec() });
+            let output = runner.run(&if boot_device {
+                ios::list_devices_spec()
+            } else {
+                ios::list_booted_spec()
+            });
             if !output.ok() || (boot_device && !output.stderr.is_empty()) {
                 return Err(Failure::new(
                     "device",
@@ -1440,6 +1479,7 @@ fn resolve_device(
                 id: sim.udid.clone(),
                 name: sim.name.clone(),
                 ios: Some((sim.device_type.clone(), sim.runtime.clone())),
+                android: None,
                 needs_boot: sim.state == ios::SimState::Shutdown,
             };
             if boot_device {
@@ -1495,6 +1535,218 @@ fn resolve_device(
             }
         }
     }
+}
+
+// Borrowing requires an existing server without claiming its process lifecycle.
+fn borrow_emulator(
+    runner: &mut dyn Runner,
+    device: Option<&str>,
+    android_home: Option<&str>,
+) -> Result<Device, Failure> {
+    let unavailable = |detail: String, next: &str| {
+        Failure::new("device", FailureCode::DeviceUnavailable, detail, next)
+    };
+    let adb = android_home
+        .map(android::adb_path)
+        .filter(|adb| adb.is_file())
+        .ok_or_else(|| {
+            Failure::new(
+                "device",
+                FailureCode::PrereqMissing,
+                "ANDROID_HOME is unset or has no platform-tools/adb",
+                "export ANDROID_HOME to the Android SDK your emulator runs from, then re-run",
+            )
+        })?;
+    let port = android::borrowed_server_port(
+        runner.env_var("ADB_SERVER_SOCKET").as_deref(),
+        runner.env_var("ANDROID_ADB_SERVER_PORT").as_deref(),
+    )
+    .map_err(|detail| {
+        unavailable(
+            detail,
+            "point ADB_SERVER_SOCKET at the local adb server your emulator uses, then re-run",
+        )
+    })?;
+    let Ok(server) = runner.adb_server_version(port) else {
+        return Err(unavailable(
+            format!("no adb server is running on port {port}; start your emulator first"),
+            "boot the emulator (which starts its adb server), then re-run",
+        ));
+    };
+    // A client of another version would kill the borrowed server and start its own.
+    let client = runner.run(&android::client_version_spec(&adb));
+    let Some(client) = client
+        .ok()
+        .then(|| android::parse_client_version(&client.stdout))
+        .flatten()
+    else {
+        return Err(Failure::new(
+            "device",
+            FailureCode::PrereqMissing,
+            format!("cannot read the version of {}", adb.display()),
+            "check the platform-tools under ANDROID_HOME, then re-run",
+        ));
+    };
+    if client != server {
+        return Err(unavailable(
+            format!(
+                "adb at {} is version {client}, the running server is {server}; running it would restart the server",
+                android_home.unwrap_or_default()
+            ),
+            "use the same platform-tools as the running adb server, then re-run",
+        ));
+    }
+    let listed = runner.run(&android::devices_spec(&adb, port));
+    if !listed.ok() {
+        return Err(unavailable(
+            format!("adb devices failed: {}", listed.summary()),
+            "check the adb server, then re-run",
+        ));
+    }
+    let attached = android::parse_devices(&listed.stdout);
+    let emulators: Vec<&str> = attached
+        .iter()
+        .filter(|(serial, state)| state == "device" && is_emulator_serial(serial))
+        .map(|(serial, _)| serial.as_str())
+        .collect();
+    let physical = attached
+        .iter()
+        .filter(|(serial, _)| !serial.starts_with("emulator-"))
+        .count();
+    let ignored = if physical == 0 {
+        String::new()
+    } else {
+        format!("; {physical} other device(s) ignored: physical devices are not supported in this release")
+    };
+    let mut boot_completed = |serial: &str| {
+        let output = runner.run(&android::getprop_spec(
+            &adb,
+            port,
+            serial,
+            "sys.boot_completed",
+        ));
+        if output.ok() {
+            Ok(output.stdout.trim() == "1")
+        } else {
+            Err(unavailable(
+                format!(
+                    "cannot read sys.boot_completed of {serial}: {}",
+                    output.summary()
+                ),
+                "check that the emulator is responsive, then re-run",
+            ))
+        }
+    };
+    let not_booted = |serials: &[&str]| {
+        unavailable(
+            format!(
+                "{} has not finished booting (sys.boot_completed is not 1)",
+                serials.join(", ")
+            ),
+            "wait for the emulator to finish booting, then re-run",
+        )
+    };
+    let serial = match device {
+        Some(wanted) => {
+            let serial = emulators
+                .iter()
+                .find(|serial| **serial == wanted)
+                .copied()
+                .ok_or_else(|| {
+                    unavailable(
+                        format!(
+                            "{wanted} is not a booted emulator on the adb server at port {port} ({} booted{ignored})",
+                            emulators.len()
+                        ),
+                        "boot the emulator named by --device, then re-run",
+                    )
+                })?;
+            if !boot_completed(serial)? {
+                return Err(not_booted(&[serial]));
+            }
+            serial
+        }
+        None => {
+            let mut ready = Vec::new();
+            for serial in &emulators {
+                if boot_completed(serial)? {
+                    ready.push(*serial);
+                }
+            }
+            match ready.as_slice() {
+                [one] => *one,
+                [] if !emulators.is_empty() => return Err(not_booted(&emulators)),
+                [] => {
+                    return Err(unavailable(
+                        format!("no booted emulator{ignored}"),
+                        "boot the emulator to walk on, then re-run",
+                    ))
+                }
+                many => {
+                    return Err(unavailable(
+                        format!(
+                            "{} booted emulators; qaren check borrows exactly one{ignored}",
+                            many.len()
+                        ),
+                        "pass --device emulator-NNNN, or shut down the emulators you are not testing on",
+                    ))
+                }
+            }
+        }
+    }
+    .to_string();
+    let mut read = |spec: CmdSpec, what: &str| {
+        let output = runner.run(&spec);
+        if output.ok() {
+            Ok(output.stdout.trim().to_string())
+        } else {
+            Err(unavailable(
+                format!("cannot read {what} of {serial}: {}", output.summary()),
+                "check that the emulator is responsive, then re-run",
+            ))
+        }
+    };
+    let malformed = |what: &str| {
+        unavailable(
+            format!("{serial} reported an unreadable {what}"),
+            "check the emulator image, then re-run",
+        )
+    };
+    let api_level = read(
+        android::getprop_spec(&adb, port, &serial, "ro.build.version.sdk"),
+        "ro.build.version.sdk",
+    )?
+    .parse::<u32>()
+    .map_err(|_| malformed("ro.build.version.sdk"))?;
+    let abi = read(
+        android::getprop_spec(&adb, port, &serial, "ro.product.cpu.abi"),
+        "ro.product.cpu.abi",
+    )?;
+    if abi.is_empty()
+        || !abi
+            .bytes()
+            .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || matches!(b, b'_' | b'-'))
+    {
+        return Err(malformed("ro.product.cpu.abi"));
+    }
+    let avd = android::parse_avd_name(&read(
+        android::avd_name_spec(&adb, port, &serial),
+        "the AVD name",
+    )?)
+    .ok_or_else(|| malformed("AVD name"))?;
+    Ok(Device {
+        id: serial.clone(),
+        name: avd.clone(),
+        ios: None,
+        android: Some(BorrowedEmulatorResource {
+            serial,
+            avd,
+            server_port: port,
+            api_level,
+            abi,
+        }),
+        needs_boot: false,
+    })
 }
 
 fn locate_worktree(
@@ -1578,6 +1830,10 @@ fn build_scenario(
         }),
         android: None,
         android_usb: None,
+        android_emulator: device.android.as_ref().map(|emulator| AndroidEmulatorSpec {
+            serial: emulator.serial.clone(),
+            avd: emulator.avd.clone(),
+        }),
         build: BuildSpec {
             ios_workspace: config
                 .ios

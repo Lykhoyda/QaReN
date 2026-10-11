@@ -79,9 +79,8 @@ impl CheckConfig {
             if let Some(build) = self.ios.as_ref().and_then(|ios| ios.build.as_ref()) {
                 build.validate_for(platform, BuildOwner::Cli)?;
             }
-            require_launch_scheme(self.dev_client_scheme.as_deref())?;
         }
-        Ok(())
+        require_launch_scheme(self.dev_client_scheme.as_deref())
     }
 
     // Returns the bytes it parsed so the run record hashes exactly that configuration.

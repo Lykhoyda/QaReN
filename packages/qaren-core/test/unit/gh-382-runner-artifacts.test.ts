@@ -11,8 +11,6 @@ import {
   artifactProvenanceToState,
   resolveIosRunnerArtifacts,
   resolveAndroidRunnerArtifacts,
-  ANDROID_APP_APK_NAME,
-  ANDROID_TEST_APK_NAME,
   RUNNER_REPO,
 } from '../../dist/runners/runner-artifacts.js';
 
@@ -161,7 +159,6 @@ const IOS_MANIFEST = {
 };
 // Paths are relative to the extraction (products) dir the fake unzip receives.
 const IOS_EXTRACT = ['Build/Products/RnFastRunner.xctestrun'];
-const ANDROID_EXTRACT = [ANDROID_APP_APK_NAME, ANDROID_TEST_APK_NAME];
 const LOCAL_DD = '/plugin/scripts/rn-fast-runner/build/DerivedData';
 const LOCAL_APKS = {
   appApk: '/plugin/.../app-debug.apk',
@@ -300,46 +297,11 @@ test('iOS: unzip leaves no xctestrun -> build-local', async () => {
 
 // --- Android orchestrator ---
 
-test('Android: download ok -> downloaded, apk paths under products', async () => {
-  const { deps, calls } = makeDeps({
-    manifest: IOS_MANIFEST,
-    downloadSha: 'GOOD',
-    extractProduces: ANDROID_EXTRACT,
+test('Android always uses the runner built from the shipped source, never a published one', () => {
+  assert.deepEqual(resolveAndroidRunnerArtifacts(LOCAL_APKS), {
+    provenance: 'build-local',
+    ...LOCAL_APKS,
   });
-  const r = await resolveAndroidRunnerArtifacts('0.62.3', LOCAL_APKS, deps);
-  assert.equal(r.provenance, 'downloaded');
-  const products = join('/cache', '0.62.3', 'android', 'products');
-  assert.equal(r.appApk, join(products, ANDROID_APP_APK_NAME));
-  assert.equal(r.testApk, join(products, ANDROID_TEST_APK_NAME));
-  assert.equal(calls.fetch.length, 1);
-  assert.match(r.note ?? '', /~5 MB/);
-});
-
-test('Android: valid cache -> cache, no network', async () => {
-  const cacheDir = join('/cache', '0.62.3', 'android');
-  const zip = join(cacheDir, 'rn-android-runner-0.62.3.zip');
-  const products = join(cacheDir, 'products');
-  const { deps, calls } = makeDeps({
-    manifest: IOS_MANIFEST,
-    files: [zip, join(products, ANDROID_APP_APK_NAME), join(products, ANDROID_TEST_APK_NAME)],
-    shas: { [zip]: 'GOOD' },
-  });
-  const r = await resolveAndroidRunnerArtifacts('0.62.3', LOCAL_APKS, deps);
-  assert.equal(r.provenance, 'cache');
-  assert.equal(r.appApk, join(products, ANDROID_APP_APK_NAME));
-  assert.equal(calls.fetch.length, 0);
-});
-
-test('Android: RN_RUNNER_BUILD=local -> build-local uses local apks', async () => {
-  const { deps, calls } = makeDeps({
-    env: { RN_RUNNER_BUILD: 'local' },
-    manifest: IOS_MANIFEST,
-  });
-  const r = await resolveAndroidRunnerArtifacts('0.62.3', LOCAL_APKS, deps);
-  assert.equal(r.provenance, 'build-local');
-  assert.equal(r.appApk, LOCAL_APKS.appApk);
-  assert.equal(r.testApk, LOCAL_APKS.testApk);
-  assert.equal(calls.fetch.length, 0);
 });
 
 // --- forceLocalBuild: recovery must bypass prebuilt (Codex P1: stale-artifact heal) ---
@@ -358,25 +320,9 @@ test('iOS: forceLocalBuild bypasses a valid cache -> build-local, no network', a
   assert.equal(calls.fetch.length, 0);
 });
 
-test('Android: forceLocalBuild bypasses a valid cache -> build-local, uses local apks', async () => {
-  const cacheDir = join('/cache', '0.62.3', 'android');
-  const zip = join(cacheDir, 'rn-android-runner-0.62.3.zip');
-  const products = join(cacheDir, 'products');
-  const { deps, calls } = makeDeps({
-    manifest: IOS_MANIFEST,
-    files: [zip, join(products, ANDROID_APP_APK_NAME), join(products, ANDROID_TEST_APK_NAME)],
-    shas: { [zip]: 'GOOD' },
-  });
-  const r = await resolveAndroidRunnerArtifacts('0.62.3', LOCAL_APKS, deps, true);
-  assert.equal(r.provenance, 'build-local');
-  assert.equal(r.appApk, LOCAL_APKS.appApk);
-  assert.equal(r.testApk, LOCAL_APKS.testApk);
-  assert.equal(calls.fetch.length, 0);
-});
-
-test('both artifact resolvers stop ambient cancellation before mutation and after download', async () => {
+test('the iOS artifact resolver stops ambient cancellation before mutation and after download', async () => {
   const { withCancellation, RunCancelledError } = await import('../../dist/domain/cancellation.js');
-  for (const platform of ['ios', 'android'] as const) {
+  {
     for (const phase of ['before', 'download'] as const) {
       const controller = new AbortController();
       const reason = new RunCancelledError();
@@ -395,9 +341,7 @@ test('both artifact resolvers stop ambient cancellation before mutation and afte
       };
       if (phase === 'before') controller.abort(reason);
       const pending = withCancellation(controller.signal, () =>
-        platform === 'ios'
-          ? resolveIosRunnerArtifacts('0.62.3', LOCAL_DD, deps)
-          : resolveAndroidRunnerArtifacts('0.62.3', LOCAL_APKS, deps),
+        resolveIosRunnerArtifacts('0.62.3', LOCAL_DD, deps),
       );
       await assert.rejects(pending, (error) => error === reason);
       assert.equal(mutations, phase === 'before' ? 0 : 1);

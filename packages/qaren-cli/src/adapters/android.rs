@@ -109,6 +109,139 @@ pub fn tunnel_spec(host: &str, adb_port: u16) -> CmdSpec {
     }
 }
 
+// The borrowed server: ADB_SERVER_SOCKET (loopback only), then ANDROID_ADB_SERVER_PORT, then 5037.
+pub fn borrowed_server_port(socket: Option<&str>, port: Option<&str>) -> Result<u16, String> {
+    let parse = |raw: &str| raw.parse::<u16>().ok().filter(|p| *p > 0);
+    if let Some(socket) = socket.filter(|s| !s.is_empty()) {
+        return ["tcp:localhost:", "tcp:127.0.0.1:"]
+            .iter()
+            .find_map(|prefix| socket.strip_prefix(prefix))
+            .and_then(parse)
+            .ok_or_else(|| {
+                format!(
+                    "ADB_SERVER_SOCKET {socket:?} is not a loopback adb server (tcp:localhost:<port> or tcp:127.0.0.1:<port>)"
+                )
+            });
+    }
+    match port.filter(|p| !p.is_empty()) {
+        Some(raw) => {
+            parse(raw).ok_or_else(|| format!("ANDROID_ADB_SERVER_PORT {raw:?} is not a TCP port"))
+        }
+        None => Ok(5037),
+    }
+}
+
+// The server's own host:version reply: proves an adb server listens, without any client that could restart it.
+pub fn server_version(port: u16) -> Result<u32, String> {
+    use std::io::{Read, Write};
+    let budget = std::time::Duration::from_millis(500);
+    let addr = std::net::SocketAddr::from(([127, 0, 0, 1], port));
+    let mut stream = std::net::TcpStream::connect_timeout(&addr, budget)
+        .map_err(|e| format!("cannot connect to 127.0.0.1:{port}: {e}"))?;
+    stream
+        .set_read_timeout(Some(budget))
+        .and_then(|()| stream.set_write_timeout(Some(budget)))
+        .and_then(|()| stream.write_all(b"000chost:version"))
+        .map_err(|e| format!("cannot ask 127.0.0.1:{port} for its version: {e}"))?;
+    let mut head = [0u8; 8];
+    stream
+        .read_exact(&mut head)
+        .map_err(|e| format!("no adb reply from 127.0.0.1:{port}: {e}"))?;
+    let not_adb = || format!("127.0.0.1:{port} did not answer as an adb server");
+    if &head[..4] != b"OKAY" {
+        return Err(not_adb());
+    }
+    let len = parse_hex(&head[4..])
+        .filter(|n| (1..=8).contains(n))
+        .ok_or_else(not_adb)?;
+    let mut body = vec![0u8; len as usize];
+    stream.read_exact(&mut body).map_err(|_| not_adb())?;
+    parse_hex(&body).ok_or_else(not_adb)
+}
+
+fn parse_hex(bytes: &[u8]) -> Option<u32> {
+    bytes
+        .iter()
+        .all(u8::is_ascii_hexdigit)
+        .then(|| u32::from_str_radix(std::str::from_utf8(bytes).ok()?, 16).ok())
+        .flatten()
+}
+
+pub fn client_version_spec(adb: &Path) -> CmdSpec {
+    CmdSpec::new("adb-version", &adb.to_string_lossy(), &["version"], 20)
+}
+
+// "Android Debug Bridge version 1.0.N": N is the number the server reports.
+pub fn parse_client_version(stdout: &str) -> Option<u32> {
+    stdout
+        .lines()
+        .find_map(|l| l.trim().strip_prefix("Android Debug Bridge version "))
+        .and_then(|v| v.rsplit('.').next())
+        .and_then(|n| n.parse().ok())
+}
+
+pub fn devices_spec(adb: &Path, server_port: u16) -> CmdSpec {
+    adb_client("adb-devices", adb, server_port, &["devices"], 20)
+}
+
+// (serial, state) pairs from `adb devices`, skipping the header and blank lines.
+pub fn parse_devices(stdout: &str) -> Vec<(String, String)> {
+    stdout
+        .lines()
+        .filter(|l| !l.starts_with("List of devices") && !l.starts_with('*'))
+        .filter_map(|l| {
+            let mut parts = l.split_whitespace();
+            Some((parts.next()?.to_string(), parts.next()?.to_string()))
+        })
+        .collect()
+}
+
+pub fn getprop_spec(adb: &Path, server_port: u16, serial: &str, prop: &str) -> CmdSpec {
+    adb_client(
+        "adb-getprop",
+        adb,
+        server_port,
+        &["-s", serial, "shell", "getprop", prop],
+        20,
+    )
+}
+
+pub fn avd_name_spec(adb: &Path, server_port: u16, serial: &str) -> CmdSpec {
+    adb_client(
+        "adb-emu-avd-name",
+        adb,
+        server_port,
+        &["-s", serial, "emu", "avd", "name"],
+        20,
+    )
+}
+
+pub fn parse_avd_name(stdout: &str) -> Option<String> {
+    stdout
+        .lines()
+        .map(str::trim)
+        .find(|l| !l.is_empty() && *l != "OK")
+        .map(str::to_string)
+}
+
+// --no-daemon so no Gradle JVM outlives the run's build group; ANDROID_HOME is inherited.
+pub fn gradle_assemble_spec(project_root: &Path, abi: &str, deadline_seconds: u64) -> CmdSpec {
+    CmdSpec::new(
+        "gradle-assemble",
+        "./gradlew",
+        &[
+            ":app:assembleDebug",
+            &format!("-PreactNativeArchitectures={abi}"),
+            "--no-daemon",
+            "--console=plain",
+        ],
+        deadline_seconds,
+    )
+    .cwd(&project_root.join("android"))
+    .env("CI", "1")
+    .env("EXPO_NO_TELEMETRY", "1")
+}
+
 pub fn server_socket(server_port: u16) -> String {
     format!("tcp:127.0.0.1:{server_port}")
 }

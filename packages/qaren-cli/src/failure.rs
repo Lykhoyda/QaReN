@@ -74,6 +74,7 @@ impl FailureCode {
             self,
             FailureCode::DepsNotPrewarmed
                 | FailureCode::DeviceClaimContended
+                | FailureCode::DeviceUnavailable
                 | FailureCode::BuildContended
                 | FailureCode::OwnershipUnproven
                 | FailureCode::HandoffNotPending

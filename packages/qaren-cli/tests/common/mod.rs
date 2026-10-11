@@ -294,6 +294,7 @@ impl std::ops::DerefMut for IosBuildRunner {
 
 struct BuildStart {
     stdin: Box<dyn std::io::Write + Send>,
+    label: String,
     run_dir: PathBuf,
     output: Option<PathBuf>,
     xcode: bool,
@@ -334,6 +335,22 @@ impl std::io::Write for BuildStart {
                 record.run_id
             );
         }
+        // The borrowed-emulator arm: prebuild generates the Gradle project, Gradle writes the debug APK.
+        if record.scenario.android_emulator.is_some() {
+            let android = record.candidate.project_root.join("android");
+            match self.label.as_str() {
+                "expo-prebuild" => {
+                    std::fs::create_dir_all(&android).unwrap();
+                    std::fs::write(android.join("gradlew"), "#!/bin/sh\n").unwrap();
+                }
+                "gradle-assemble" => {
+                    let apk = android.join("app/build/outputs/apk/debug");
+                    std::fs::create_dir_all(&apk).unwrap();
+                    std::fs::write(apk.join("app-debug.apk"), "built apk").unwrap();
+                }
+                _ => {}
+            }
+        }
         if let Some(output) = &self.output {
             write_ios_app(&output.join("testapp.app"));
             if self.ambiguous_app {
@@ -371,6 +388,9 @@ impl std::io::Write for BuildStart {
 impl qaren::exec::Runner for IosBuildRunner {
     fn env_var(&self, name: &str) -> Option<String> {
         self.inner.env_var(name)
+    }
+    fn adb_server_version(&self, port: u16) -> Result<u32, String> {
+        self.inner.adb_server_version(port)
     }
     fn execute(&mut self, spec: &qaren::exec::CmdSpec, interruptible: bool) -> CmdOutput {
         self.inner.execute(spec, interruptible)
@@ -434,7 +454,7 @@ impl qaren::exec::Runner for IosBuildRunner {
         let mut child = self.inner.spawn_piped_unchecked(spec, log)?;
         if matches!(
             spec.label.as_str(),
-            "expo-run-ios" | "xcodebuild-ios" | "expo-prebuild"
+            "expo-run-ios" | "xcodebuild-ios" | "expo-prebuild" | "gradle-assemble"
         ) {
             let run_dir = log.parent().unwrap().parent().unwrap().to_path_buf();
             let record: RunRecord =
@@ -460,6 +480,7 @@ impl qaren::exec::Runner for IosBuildRunner {
                 .filter(|_| !self.omit_app);
             child.stdin = Box::new(BuildStart {
                 stdin: child.stdin,
+                label: spec.label.clone(),
                 run_dir,
                 output,
                 xcode: spec.label == "xcodebuild-ios",

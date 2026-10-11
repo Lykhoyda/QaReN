@@ -300,6 +300,9 @@ pub trait Runner {
     fn try_reap(&mut self, _pid: i32) -> bool {
         false
     }
+    fn adb_server_version(&self, port: u16) -> Result<u32, String> {
+        crate::adapters::android::server_version(port)
+    }
 }
 
 pub(crate) struct CleanupRunner<'a>(pub(crate) &'a mut dyn Runner);
@@ -339,6 +342,9 @@ impl Runner for CleanupRunner<'_> {
     }
     fn try_reap(&mut self, pid: i32) -> bool {
         self.0.try_reap(pid)
+    }
+    fn adb_server_version(&self, port: u16) -> Result<u32, String> {
+        self.0.adb_server_version(port)
     }
 }
 
@@ -879,6 +885,8 @@ pub struct MockRunner {
     pub cancel_at_ms: Option<(u64, String)>,
     // (command substring, ms): the scripted clock advances while a matching command runs.
     pub advance_on: Option<(String, u64)>,
+    // (port, version) of the adb servers the scripted host runs; the real probe never runs.
+    pub adb_servers: Vec<(u16, u32)>,
     script: VecDeque<MockExpectation>,
     now_ms: u64,
 }
@@ -896,6 +904,7 @@ impl MockRunner {
             cancel_after: None,
             cancel_at_ms: None,
             advance_on: None,
+            adb_servers: Vec::new(),
             script: VecDeque::new(),
             now_ms: 1_770_000_000_000,
         }
@@ -1001,6 +1010,13 @@ impl Default for MockRunner {
 impl Runner for MockRunner {
     fn env_var(&self, name: &str) -> Option<String> {
         self.environment.get(name).cloned()
+    }
+    fn adb_server_version(&self, port: u16) -> Result<u32, String> {
+        self.adb_servers
+            .iter()
+            .find(|(p, _)| *p == port)
+            .map(|(_, version)| *version)
+            .ok_or_else(|| "connection refused".to_string())
     }
     fn execute(&mut self, spec: &CmdSpec, _interruptible: bool) -> CmdOutput {
         self.calls.push(spec.clone());

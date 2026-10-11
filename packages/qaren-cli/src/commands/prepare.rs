@@ -197,6 +197,14 @@ fn prepare_validated(
     started_ms: u64,
 ) -> Result<Receipt, Failure> {
     let (scenario, raw) = Scenario::load(&args.scenario_path)?;
+    if scenario.android_emulator.is_some() {
+        return Err(Failure::new(
+            "validate",
+            FailureCode::ScenarioInvalid,
+            "android_emulator is set only by qaren check and qaren pr",
+            "remove android_emulator from the scenario; prepare allocates through `android:` or `android_usb:`",
+        ));
+    }
     let scenario_sha256 = candidate::sha256_hex(raw.as_bytes());
     let scenario_dir = args
         .scenario_path
@@ -1541,20 +1549,8 @@ pub(crate) fn run_reuse_path(ctx: &mut Ctx, plan: &BuildPlan, t: u64) -> Result<
             }
         }
         Platform::Android => {
-            let adb = ctx.record.resources.adb_path.clone().expect("allocated");
-            let serial = ctx
-                .record
-                .resources
-                .adb_local_serial
-                .clone()
-                .expect("allocated");
-            let server_port = ctx
-                .record
-                .resources
-                .adb_server
-                .as_ref()
-                .expect("allocated")
-                .server_port;
+            let (adb, serial, server_port) =
+                ctx.record.resources.adb_endpoint().expect("allocated");
             ensure_running(ctx.runner, "build")?;
             let installed = ctx.runner.run(&android::adb_install_spec(
                 &adb,
@@ -1652,20 +1648,8 @@ pub(crate) fn run_reuse_path(ctx: &mut Ctx, plan: &BuildPlan, t: u64) -> Result<
                 .as_deref()
                 .expect("reuse was decided with a scheme");
             let url = devclient::launch_url(scheme, metro_port);
-            let adb = ctx.record.resources.adb_path.clone().expect("allocated");
-            let serial = ctx
-                .record
-                .resources
-                .adb_local_serial
-                .clone()
-                .expect("allocated");
-            let server_port = ctx
-                .record
-                .resources
-                .adb_server
-                .as_ref()
-                .expect("allocated")
-                .server_port;
+            let (adb, serial, server_port) =
+                ctx.record.resources.adb_endpoint().expect("allocated");
             android::am_start_deeplink_spec(
                 &adb,
                 server_port,
@@ -1881,15 +1865,16 @@ pub(crate) fn record_build_result(ctx: &mut Ctx, fp: &NativeFingerprint) -> Resu
         ));
         return Ok(());
     }
-    if let (ArtifactKind::Apk, Some(serial), Some(server)) = (
+    // A run that installed by serial already recorded that install; only an expo install is recorded here.
+    if let (ArtifactKind::Apk, Some((_, serial, server_port)), None) = (
         kind,
-        ctx.record.resources.adb_local_serial.clone(),
-        ctx.record.resources.adb_server.as_ref(),
+        ctx.record.resources.adb_endpoint(),
+        &ctx.record.resources.app_install,
     ) {
         ctx.record.resources.app_install = Some(AppInstallResource {
             app_id: app_id.clone(),
             serial,
-            server_port: server.server_port,
+            server_port,
             artifact: state.artifact.clone().expect("published artifact"),
             via: "expo-run-android".into(),
             installed_at: timefmt::iso8601_utc(ctx.runner.now_epoch_ms()),
@@ -2293,19 +2278,77 @@ pub(crate) fn build_and_ready(ctx: &mut Ctx) -> Result<(), Failure> {
             return Ok(());
         }
         Platform::Android => {
-            let serial = ctx
+            if let Some(emulator) = ctx.record.resources.android_emulator.clone() {
+                if !project_root.join("android").is_dir() {
+                    // Keep the slash so dir-only ignore patterns protect against mid-run candidate drift.
+                    let ignored = ctx.runner.run(&CmdSpec::new(
+                        "git-check-ignore",
+                        "git",
+                        &[
+                            "-C",
+                            &project_root.to_string_lossy(),
+                            "check-ignore",
+                            "-q",
+                            "android/",
+                        ],
+                        20,
+                    ));
+                    match ignored.exit_code {
+                        Some(0) if !ignored.timed_out => {}
+                        Some(1) if !ignored.timed_out => {
+                            return Err(Failure::new(
+                                "build",
+                                FailureCode::BuildFailed,
+                                "android/ is absent and not git-ignored; generating it would change the candidate's native inputs during the run",
+                                "add android/ to .gitignore, or generate and commit it, then re-run",
+                            ));
+                        }
+                        _ => {
+                            return Err(build_failure(
+                                ctx,
+                                format!(
+                                    "cannot tell whether git ignores android/: {}",
+                                    ignored.summary()
+                                ),
+                            ))
+                        }
+                    }
+                    // Like expo run:ios, the borrowed-emulator build generates an absent native dir itself.
+                    run_finite_build(
+                        ctx,
+                        &native_prebuild_spec(&project_root, "android", deadline),
+                    )?;
+                }
+                if !project_root.join("android").join("gradlew").is_file() {
+                    return Err(build_failure(
+                        ctx,
+                        format!(
+                            "no Gradle wrapper at {}",
+                            project_root.join("android/gradlew").display()
+                        ),
+                    ));
+                }
+                run_finite_build(
+                    ctx,
+                    &android::gradle_assemble_spec(&project_root, &emulator.abi, deadline),
+                )?;
+                let (path, kind) =
+                    locate_built_apk(&project_root).map_err(|e| build_failure(ctx, e))?;
+                let sha256 = buildplan::hash_artifact(&path).map_err(|e| build_failure(ctx, e))?;
+                let mut plan = ctx.record.build.clone().expect("build planned");
+                plan.artifact = Some(CachedArtifact { path, sha256, kind });
+                ctx.record.build = Some(plan.clone());
+                ctx.save()?;
+                crate::events::stage("native_build", StageState::Passed, None, None);
+                crate::events::stage("install_launch_ready", StageState::Running, None, None);
+                run_reuse_path(ctx, &plan, ctx.runner.now_epoch_ms())?;
+                return Ok(());
+            }
+            let (_, serial, server_port) = ctx
                 .record
                 .resources
-                .adb_local_serial
-                .clone()
+                .adb_endpoint()
                 .expect("android allocated");
-            let server_port = ctx
-                .record
-                .resources
-                .adb_server
-                .as_ref()
-                .expect("android allocated")
-                .server_port;
             android::build_spec(&project_root, &serial, server_port, port, deadline)
         }
     };
@@ -2422,19 +2465,7 @@ fn ready_probes_pass(ctx: &mut Ctx, metro_resource: &MetroResource) -> bool {
             launchctl.ok() && ios::app_running_in_launchctl(&launchctl.stdout, &app_id)
         }
         Platform::Android => {
-            let Some(adb) = ctx.record.resources.adb_path.clone() else {
-                return false;
-            };
-            let Some(serial) = ctx.record.resources.adb_local_serial.clone() else {
-                return false;
-            };
-            let Some(server_port) = ctx
-                .record
-                .resources
-                .adb_server
-                .as_ref()
-                .map(|s| s.server_port)
-            else {
+            let Some((adb, serial, server_port)) = ctx.record.resources.adb_endpoint() else {
                 return false;
             };
             let installed =

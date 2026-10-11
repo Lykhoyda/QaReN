@@ -77,7 +77,7 @@ benchmarks.
 | **210× faster replays** | A 3-step wizard that took ~14 min as an interactive walk replays in **~4 s** as a saved action. Average session time across the measured features dropped from ~12 min to ~4 min once actions existed |
 | **Flows that repair themselves** | When a `testID` drifts, the saved action fuzzy-matches the live snapshot, patches its own YAML, and retries. Cosmetic drift is absorbed; genuinely broken product logic is surfaced, never auto-fixed |
 | **Minutes, not sessions** | Simple features land in 3–5 min, complex multi-step flows in 11–25 min. **Zero crashes and zero manual interventions across all 35 measured features** |
-| **iOS and Android, one contract** | In-tree XCTest and UiAutomator runners give real taps, typing, scrolling, and screenshots — shipped as prebuilt artifacts so first use skips the cold build |
+| **iOS and Android, one contract** | In-tree XCTest and UiAutomator runners give real taps, typing, scrolling, and screenshots; see [Android runner provisioning](packages/qaren-cli/README.md#android-runner-provisioning) for Android setup |
 | **Claude, Codex, and Cursor** | Claude and Cursor: 17 slash commands + 11 skills + 6 agents. Codex: 28 native skills (17 workflow + 11 domain). The same MCP tools on every host |
 
 [Full benchmarks and methodology →](https://lykhoyda.github.io/rn-dev-agent/benchmarks/)
@@ -313,7 +313,7 @@ recovery diagnosis read-only and prints the exact commands for you to confirm an
 | Node.js ≥ 24 | Yes | No |
 | CDP bridge deps | Yes | Yes |
 | rn-fast-runner (iOS) | iOS targets only | Prebuilt artifact on releases; one-time `xcodebuild build-for-testing` fallback |
-| rn-android-runner (Android) | Android targets only | Prebuilt artifact on releases; Gradle build fallback on first use |
+| rn-android-runner (Android) | Android targets only | See [Android runner provisioning](packages/qaren-cli/README.md#android-runner-provisioning) |
 | [maestro-runner](https://github.com/devicelab-dev/maestro-runner) | Yes | Yes (pin-cache engine `>= 1.1.28`, attested 1.1.28 checksum-verified) |
 | iOS Simulator / Android Emulator | One platform | No |
 | Session-bound Metro | Yes | Project integration starts or validates it through literal `pnpm ios` / `pnpm android` |

@@ -499,6 +499,9 @@ async function openSession(
           action === 'accept' ? accept({ platform, qaContext }) : dismiss({ platform, qaContext }),
         false,
       ),
+    ...(platform === 'android'
+      ? { dialogUnsupported: 'Android system dialogs arrive in S5b' }
+      : {}),
     async screenshot(name) {
       if (stop.stopping) return undefined;
       const path = join(request.runDir, name);
