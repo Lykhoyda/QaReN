@@ -72,10 +72,18 @@ This plan needs no `TYPESAFE_API_KEY`.
 
 The first run builds and installs the app; a cold native build can outlast the host's command timeout (10 minutes in Claude Code), which kills a foreground run before its receipt. Start it with the host's background-command mode (in Claude Code, Bash with `run_in_background: true`), never with `&` or `nohup`: qaren cancels a run whose calling process exits.
 
+First create the output directory and note the path it prints as `<dir>`:
+
 ```sh
-mkdir -p ~/.qaren/setup && <qaren path from step 1> check --plan-file .qaren/plans/smoke.md [device flags from step 4] --json > ~/.qaren/setup/receipt.json 2> ~/.qaren/setup/progress.log
+mktemp -d "${TMPDIR:-/tmp}/qaren-setup.XXXXXX"
 ```
 
-Within a minute `~/.qaren/setup/progress.log` contains `▸ watch live: qaren watch <run-id>`. Follow the run in the foreground with `<qaren path> watch <run-id> --plain`, which prints each finished stage and exits when the run ends; exit 3 means its telemetry is not written yet, so retry. If the host's timeout stops the viewer first, run it again: the viewer holds no lock, so stopping it never affects the run.
+Then start in the background:
 
-Once the background command has ended, `~/.qaren/setup/receipt.json` holds the receipt. Report its `result` and `run_id`. When `result` is not `pass`, quote `failure.code` and `failure.next_action` verbatim if present and stop. On `pass`, QaReN is set up: next, the `using-qaren` skill writes a plan for a feature.
+```sh
+<qaren path from step 1> check --plan-file .qaren/plans/smoke.md [device flags from step 4] --json > <dir>/receipt.json 2> <dir>/progress.log
+```
+
+Within a minute `<dir>/progress.log` contains `▸ watch live: qaren watch <run-id>`; if the background command ends first, the check refused before its run started, so go to the receipt. Follow the run in the foreground with `<qaren path> watch <run-id> --plain`, which prints each finished stage and exits when the run ends. If the host's timeout stops the viewer first, run it again: the viewer holds no lock, so stopping it never affects the run. Exit 3 means telemetry is unavailable: retry once after a few seconds, then wait for the background command instead.
+
+Once the background command has ended, `<dir>/receipt.json` holds the receipt. Report its `result` and `run_id`. When `result` is not `pass`, quote `failure.code` and `failure.next_action` verbatim if present and stop. On `pass`, QaReN is set up: next, the `using-qaren` skill writes a plan for a feature.
