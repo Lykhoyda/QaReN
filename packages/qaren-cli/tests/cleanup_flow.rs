@@ -2122,11 +2122,12 @@ fn an_unproven_owner_keeps_its_runner_driver_without_signaling() {
 
 const BORROWED: &str = "emulator-5554";
 const ADB_CLIENT_41: &str = "Android Debug Bridge version 1.0.41\nVersion 36.0.0-13206524\n";
+// Real `adb forward --list` bytes end with a blank line.
 const RUNNER_FORWARD: &str =
-    "emulator-5554 tcp:41234 tcp:22089\nemulator-5556 tcp:41299 tcp:22089\n";
-const RUNNER_INSTRUMENTING: &str = "ACTIVITY MANAGER INSTRUMENTATION (dumpsys activity instrumentation)\n  Active instrumentation:\n    ActiveInstrumentation{1 ComponentInfo{dev.lykhoyda.rndevagent.androidrunner.test/androidx.test.runner.AndroidJUnitRunner}}\n";
-const NO_INSTRUMENTATION: &str =
-    "ACTIVITY MANAGER INSTRUMENTATION (dumpsys activity instrumentation)\n  (nothing)\n";
+    "emulator-5554 tcp:41234 tcp:22089\nemulator-5556 tcp:41299 tcp:22089\n\n";
+// `dumpsys activity processes <runner>` on an API 37 emulator, runner instrumenting and stopped.
+const RUNNER_PROCESSES: &str = include_str!("fixtures/android-runner-processes-running.txt");
+const NO_RUNNER_PROCESS: &str = include_str!("fixtures/android-runner-processes-stopped.txt");
 
 // A `qaren check` run on a borrowed emulator whose qaren process died mid-walk.
 fn borrowed_record(repo: &std::path::Path) -> RunRecord {
@@ -2230,8 +2231,8 @@ fn android_borrowed_cleanup_removes_reverse_and_releases_runner() {
     );
     mock.expect_run("forward --list", CmdOutput::success(RUNNER_FORWARD));
     mock.expect_run(
-        "dumpsys activity instrumentation",
-        CmdOutput::success(RUNNER_INSTRUMENTING),
+        "dumpsys activity processes",
+        CmdOutput::success(RUNNER_PROCESSES),
     );
     mock.expect_run(
         &format!("-s {BORROWED} forward --remove tcp:41234"),
@@ -2247,11 +2248,11 @@ fn android_borrowed_cleanup_removes_reverse_and_releases_runner() {
     );
     mock.expect_run(
         "forward --list",
-        CmdOutput::success("emulator-5556 tcp:41299 tcp:22089\n"),
+        CmdOutput::success("emulator-5556 tcp:41299 tcp:22089\n\n"),
     );
     mock.expect_run(
-        "dumpsys activity instrumentation",
-        CmdOutput::success(NO_INSTRUMENTATION),
+        "dumpsys activity processes",
+        CmdOutput::success(NO_RUNNER_PROCESS),
     );
 
     let receipt = cleanup(&mut mock, &repo, "borrowed-run");
@@ -2300,10 +2301,11 @@ fn android_borrowed_cleanup_absent_reverse_is_absent() {
         CmdOutput::failed(1, "adb: error: listener 'tcp:8791' not found"),
     );
     // A walk that never started a runner leaves nothing to release, and must not hold the lease.
-    mock.expect_run("forward --list", CmdOutput::success(""));
+    // Real adb prints a lone newline for an empty forward list.
+    mock.expect_run("forward --list", CmdOutput::success("\n"));
     mock.expect_run(
-        "dumpsys activity instrumentation",
-        CmdOutput::success(NO_INSTRUMENTATION),
+        "dumpsys activity processes",
+        CmdOutput::success(NO_RUNNER_PROCESS),
     );
 
     let receipt = cleanup(&mut mock, &repo, "borrowed-run");
@@ -2389,17 +2391,17 @@ fn android_borrowed_runner_release_unverified_retains_the_lease() {
     mock.expect_run("adb version", CmdOutput::success(ADB_CLIENT_41));
     mock.expect_run("reverse --remove tcp:8791", CmdOutput::success(""));
     mock.expect_run("reverse --list", CmdOutput::success(""));
-    mock.expect_run("forward --list", CmdOutput::success(""));
+    mock.expect_run("forward --list", CmdOutput::success("\n"));
     mock.expect_run(
-        "dumpsys activity instrumentation",
-        CmdOutput::success(RUNNER_INSTRUMENTING),
+        "dumpsys activity processes",
+        CmdOutput::success(RUNNER_PROCESSES),
     );
     mock.expect_run("am force-stop", CmdOutput::success(""));
     mock.expect_run("am force-stop", CmdOutput::success(""));
-    mock.expect_run("forward --list", CmdOutput::success(""));
+    mock.expect_run("forward --list", CmdOutput::success("\n"));
     mock.expect_run(
-        "dumpsys activity instrumentation",
-        CmdOutput::success(RUNNER_INSTRUMENTING),
+        "dumpsys activity processes",
+        CmdOutput::success(RUNNER_PROCESSES),
     );
 
     let receipt = cleanup(&mut mock, &repo, "borrowed-run");
@@ -2484,10 +2486,10 @@ fn android_borrowed_reverse_still_listed_after_removal_is_unresolved() {
         "reverse --list",
         CmdOutput::success("host-19 tcp:8791 tcp:8791\n"),
     );
-    mock.expect_run("forward --list", CmdOutput::success(""));
+    mock.expect_run("forward --list", CmdOutput::success("\n"));
     mock.expect_run(
-        "dumpsys activity instrumentation",
-        CmdOutput::success(NO_INSTRUMENTATION),
+        "dumpsys activity processes",
+        CmdOutput::success(NO_RUNNER_PROCESS),
     );
 
     let receipt = cleanup(&mut mock, &repo, "borrowed-run");
@@ -2500,6 +2502,45 @@ fn android_borrowed_reverse_still_listed_after_removal_is_unresolved() {
     assert!(receipt.cleanup["device_lease"].contains("adb_reverse"));
     assert!(lock.exists());
     assert_eq!(mock.remaining(), 0);
+}
+
+#[test]
+fn android_borrowed_runner_unrecognised_process_dump_is_not_absent() {
+    // This image answers `dumpsys activity instrumentation` with an error and exit 0, runner up or not.
+    let unsupported = include_str!("fixtures/android-dumpsys-unsupported.txt");
+    for (dump, ok) in [(unsupported, true), ("", true), ("denied", false)] {
+        let repo = common::temp_repo();
+        let record = borrowed_record(&repo);
+        let lock = record.resources.lease.as_ref().unwrap().lock_dir.clone();
+        record.save(&repo).unwrap();
+        let mut mock = borrowed_mock();
+        mock.expect_run("adb version", CmdOutput::success(ADB_CLIENT_41));
+        mock.expect_run(
+            "reverse --remove tcp:8791",
+            CmdOutput::failed(1, "adb: error: listener 'tcp:8791' not found"),
+        );
+        mock.expect_run("forward --list", CmdOutput::success("\n"));
+        mock.expect_run(
+            "dumpsys activity processes dev.lykhoyda.rndevagent.androidrunner",
+            if ok {
+                CmdOutput::success(dump)
+            } else {
+                CmdOutput::failed(1, dump)
+            },
+        );
+
+        let receipt = cleanup(&mut mock, &repo, "borrowed-run");
+
+        assert!(
+            receipt.cleanup["android_runner"].starts_with("unresolved"),
+            "{dump:?}: {:?}",
+            receipt.cleanup
+        );
+        assert!(receipt.cleanup["device_lease"].contains("android_runner"));
+        assert!(lock.exists());
+        assert!(!adb_commands(&mock).iter().any(|c| c.contains("force-stop")));
+        assert_eq!(mock.remaining(), 0);
+    }
 }
 
 #[test]
@@ -2517,15 +2558,15 @@ fn android_borrowed_runner_forward_that_cannot_be_parsed_is_not_absent() {
     let odd = "emulator-5554 localabstract:runner tcp:22089\n";
     mock.expect_run("forward --list", CmdOutput::success(odd));
     mock.expect_run(
-        "dumpsys activity instrumentation",
-        CmdOutput::success(NO_INSTRUMENTATION),
+        "dumpsys activity processes",
+        CmdOutput::success(NO_RUNNER_PROCESS),
     );
     mock.expect_run("am force-stop", CmdOutput::success(""));
     mock.expect_run("am force-stop", CmdOutput::success(""));
     mock.expect_run("forward --list", CmdOutput::success(odd));
     mock.expect_run(
-        "dumpsys activity instrumentation",
-        CmdOutput::success(NO_INSTRUMENTATION),
+        "dumpsys activity processes",
+        CmdOutput::success(NO_RUNNER_PROCESS),
     );
 
     let receipt = cleanup(&mut mock, &repo, "borrowed-run");

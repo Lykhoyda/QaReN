@@ -519,9 +519,10 @@ pub fn force_stop_spec(adb: &Path, server_port: u16, serial: &str, package: &str
     )
 }
 
-pub fn dumpsys_instrumentation_spec(adb: &Path, server_port: u16, serial: &str) -> CmdSpec {
+// The runner's process and its instrumentation, in one ActivityManager dump.
+pub fn runner_processes_spec(adb: &Path, server_port: u16, serial: &str) -> CmdSpec {
     adb_client(
-        "adb-dumpsys-instrumentation",
+        "adb-dumpsys-runner-processes",
         adb,
         server_port,
         &[
@@ -530,10 +531,21 @@ pub fn dumpsys_instrumentation_spec(adb: &Path, server_port: u16, serial: &str) 
             "shell",
             "dumpsys",
             "activity",
-            "instrumentation",
+            "processes",
+            RUNNER_PACKAGES[1],
         ],
         20,
     )
+}
+
+const PROCESSES_HEADER: &str = "ACTIVITY MANAGER RUNNING PROCESSES (dumpsys activity processes)";
+
+// Some(listed) only for a recognised processes dump: the instrumentation runs in the runner
+// package's process, so any mention of that package is a live runner. Anything else is None,
+// which never reads as absence.
+pub fn runner_in_processes(stdout: &str) -> Option<bool> {
+    let first = stdout.lines().find(|line| !line.trim().is_empty())?;
+    (first.trim() == PROCESSES_HEADER).then(|| stdout.contains(RUNNER_PACKAGES[1]))
 }
 
 // `forward --list` lines `<serial> <host> tcp:<runner device port>`: the runner's forwards on this serial.
@@ -541,7 +553,8 @@ fn runner_forward_lines<'a>(stdout: &'a str, serial: &'a str) -> impl Iterator<I
     let device = format!("tcp:{RUNNER_DEVICE_PORT}");
     stdout.lines().filter_map(move |line| {
         let fields: Vec<&str> = line.split_whitespace().collect();
-        (fields.len() == 3 && fields[0] == serial && fields[2] == device).then_some(fields[1])
+        // Lazy: real output has blank lines, whose fields cannot be indexed.
+        (fields.len() == 3 && fields[0] == serial && fields[2] == device).then(|| fields[1])
     })
 }
 

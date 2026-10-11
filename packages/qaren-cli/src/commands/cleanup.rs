@@ -1392,17 +1392,17 @@ fn read_runner(
     if !forwards.ok() {
         return Err(format!("adb forward --list: {}", forwards.summary()));
     }
-    let instrumentation = runner.run(&android::dumpsys_instrumentation_spec(adb, port, serial));
-    if !instrumentation.ok() {
-        return Err(format!(
-            "dumpsys activity instrumentation: {}",
-            instrumentation.summary()
-        ));
+    let processes = runner.run(&android::runner_processes_spec(adb, port, serial));
+    if !processes.ok() {
+        return Err(format!("dumpsys activity processes: {}", processes.summary()));
     }
+    let Some(instrumenting) = android::runner_in_processes(&processes.stdout) else {
+        return Err("dumpsys activity processes: unrecognised output".to_string());
+    };
     Ok(RunnerState {
         forwards: android::runner_forwards(&forwards.stdout, serial),
         forward_remains: android::runner_forward_remains(&forwards.stdout, serial),
-        instrumenting: instrumentation.stdout.contains(android::RUNNER_PACKAGES[1]),
+        instrumenting,
     })
 }
 

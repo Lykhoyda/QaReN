@@ -437,6 +437,19 @@ export function isInstrumentationRegistered(
   return new RegExp(`(^|:)${escaped}(\\s|$)`, 'm').test(pmListStdout);
 }
 
+const PROCESSES_HEADER = 'ACTIVITY MANAGER RUNNING PROCESSES (dumpsys activity processes)';
+
+/**
+ * Whether `dumpsys activity processes <runner>` lists the runner, whose process
+ * hosts its instrumentation. Undefined unless the output is a recognised
+ * processes dump, so an unsupported or failed dump never reads as absence.
+ */
+export function androidRunnerProcessListed(stdout: string): boolean | undefined {
+  const first = stdout.split('\n').find((line) => line.trim() !== '');
+  if (first?.trim() !== PROCESSES_HEADER) return undefined;
+  return stdout.includes('dev.lykhoyda.rndevagent.androidrunner');
+}
+
 export type AndroidInstallAction = 'reuse' | 'install' | 'build-then-install';
 
 export function resolveAndroidInstallAction(opts: {
@@ -820,11 +833,19 @@ export async function reapMismatchedAndroidRunner(
               })
             ).stdout,
           );
-          const instrumentation = String(
+          const processes = String(
             (
               await execFileAsync(
                 'adb',
-                ['-s', expected.deviceId, 'shell', 'dumpsys', 'activity', 'instrumentation'],
+                [
+                  '-s',
+                  expected.deviceId,
+                  'shell',
+                  'dumpsys',
+                  'activity',
+                  'processes',
+                  'dev.lykhoyda.rndevagent.androidrunner',
+                ],
                 {
                   timeout: ADB_CLEANUP_TIMEOUT_MS,
                   signal,
@@ -841,7 +862,7 @@ export async function reapMismatchedAndroidRunner(
               }
               return line.includes(`tcp:${expected.devicePort ?? DEFAULT_PORT}`);
             });
-          if (forwardRemains || instrumentation.includes('dev.lykhoyda.rndevagent.androidrunner')) {
+          if (forwardRemains || androidRunnerProcessListed(processes) !== false) {
             throw new Error(
               `RUNNER_CLEANUP_UNCONFIRMED: Android runner resources remain for ${expected.deviceId}`,
             );

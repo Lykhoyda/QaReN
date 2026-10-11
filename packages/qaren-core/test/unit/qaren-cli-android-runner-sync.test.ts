@@ -41,3 +41,14 @@ test('the CLI runner packages equal the packages the core force-stops', () => {
   const cli = [...body.matchAll(/"([^"]+)"/g)].map((m) => m[1]);
   assert.deepEqual(cli, [...OWNED_PACKAGES]);
 });
+
+test('the CLI and the core recognise the same runner processes dump', () => {
+  const cli = match(
+    CLI_ANDROID,
+    /const PROCESSES_HEADER: &str = "([^"]+)";/,
+    'PROCESSES_HEADER',
+  )[1];
+  const core = match(CLIENT, /const PROCESSES_HEADER = '([^']+)';/, 'PROCESSES_HEADER')[1];
+  assert.equal(cli, core);
+  assert.doesNotMatch(CLIENT, /'activity',\s*'instrumentation'/);
+});

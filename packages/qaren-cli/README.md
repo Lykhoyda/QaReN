@@ -260,8 +260,9 @@ release unresolved. The `adb_reverse` leg verifies a successful removal with
 `reverse --list`; adb's explicit listener-not-found response counts as `absent`.
 The `android_runner` leg requires proven core and runner-driver shutdown, then
 removes the runner's forwards on the selected emulator, force-stops both runner
-packages, and verifies absence through `forward --list` and
-`dumpsys activity instrumentation`. The runner port and packages are defined in
+packages, and verifies absence through `forward --list` and the runner package's
+entry in `dumpsys activity processes`; output that is not a recognised processes
+dump leaves the leg unresolved. The runner port and packages are defined in
 [`src/adapters/android.rs`](src/adapters/android.rs) and checked against the core by
 the [runner sync test](../qaren-core/test/unit/qaren-cli-android-runner-sync.test.ts).
 A walk that never started a runner reads as `absent`; a run that never reached

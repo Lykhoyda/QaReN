@@ -2467,7 +2467,9 @@ fn script_android_launch_walk_release(mock: &mut MockRunner, runner_running: boo
     script_borrowed_release(mock, runner_running);
 }
 
-const RUNNER_INSTRUMENTING: &str = "  Active instrumentation:\n    ActiveInstrumentation{1 ComponentInfo{dev.lykhoyda.rndevagent.androidrunner.test/androidx.test.runner.AndroidJUnitRunner}}\n";
+// `dumpsys activity processes <runner>` on an API 37 emulator, runner instrumenting and stopped.
+const RUNNER_PROCESSES: &str = include_str!("fixtures/android-runner-processes-running.txt");
+const NO_RUNNER_PROCESS: &str = include_str!("fixtures/android-runner-processes-stopped.txt");
 
 // Teardown's borrowed-emulator release: the Metro reverse, then the core's runner.
 fn script_borrowed_release(mock: &mut MockRunner, runner_running: bool) {
@@ -2475,22 +2477,23 @@ fn script_borrowed_release(mock: &mut MockRunner, runner_running: bool) {
     mock.expect_run("reverse --remove tcp:8791", CmdOutput::success(""));
     mock.expect_run("reverse --list", CmdOutput::success(""));
     if runner_running {
+        // Real adb bytes: a trailing blank line when non-empty, a lone newline when empty.
         mock.expect_run(
             "forward --list",
-            CmdOutput::success(&format!("{EMULATOR} tcp:41234 tcp:22089\n")),
+            CmdOutput::success(&format!("{EMULATOR} tcp:41234 tcp:22089\n\n")),
         );
         mock.expect_run(
-            "dumpsys activity instrumentation",
-            CmdOutput::success(RUNNER_INSTRUMENTING),
+            "dumpsys activity processes",
+            CmdOutput::success(RUNNER_PROCESSES),
         );
         mock.expect_run("forward --remove tcp:41234", CmdOutput::success(""));
         mock.expect_run("am force-stop", CmdOutput::success(""));
         mock.expect_run("am force-stop", CmdOutput::success(""));
     }
-    mock.expect_run("forward --list", CmdOutput::success(""));
+    mock.expect_run("forward --list", CmdOutput::success("\n"));
     mock.expect_run(
-        "dumpsys activity instrumentation",
-        CmdOutput::success("  (nothing)\n"),
+        "dumpsys activity processes",
+        CmdOutput::success(NO_RUNNER_PROCESS),
     );
 }
 
@@ -5923,7 +5926,7 @@ fn android_teardown_releases_before_the_lease() {
     assert!(adb
         .last()
         .unwrap()
-        .contains("dumpsys activity instrumentation"));
+        .contains("dumpsys activity processes"));
     assert!(!adb
         .iter()
         .any(|c| c.contains("uninstall") || c.contains("kill-server")));

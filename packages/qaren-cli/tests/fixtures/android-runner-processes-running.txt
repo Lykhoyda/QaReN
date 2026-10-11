@@ -1,0 +1,106 @@
+ACTIVITY MANAGER RUNNING PROCESSES (dumpsys activity processes)
+  All known processes:
+  *APP* UID 10243 ProcessRecord{5d121d8 15062:dev.lykhoyda.rndevagent.androidrunner/u0a243}
+    user #0 uid=10243 gids={3003, 50243, 20243, 9997}
+    mRequiredAbi=x86_64 instructionSet=null 
+    dir=/data/app/~~mqgomDabHs9YK_B3zkZ8Aw==/dev.lykhoyda.rndevagent.androidrunner-91QkTKRFWbyOByKbm6J51w==/base.apk publicDir=/data/app/~~mqgomDabHs9YK_B3zkZ8Aw==/dev.lykhoyda.rndevagent.androidrunner-91QkTKRFWbyOByKbm6J51w==/base.apk data=/data/user/0/dev.lykhoyda.rndevagent.androidrunner 
+    packageList={dev.lykhoyda.rndevagent.androidrunner}
+    compat={420dpi} 
+    mInstr=ActiveInstrumentation{5d8d7e5 {dev.lykhoyda.rndevagent.androidrunner.test/androidx.test.runner.AndroidJUnitRunner} 1 procs} 
+    thread=com.android.server.am.ApplicationThreadDeferred@f39e2ba 
+    pid=15062 
+    lastActivityTime=-1s388ms startUpTime=-1s438ms startElapsedTime=-1s438ms
+    startSeq=105 lruSeq=4526 
+    mountMode=DEFAULT 
+    lastRssTime=-1s439ms rssProcState=20 rssStatType=0 nextRssTime=+8s710ms
+    lastRss=0.00 lastCachedRss=0.00
+    trimMemoryLevel=0
+    procStateMemTracker: best=4 () / pending state=1 highest=1 1.0x
+    lastRequestedGc=-1s388ms lastLowMemory=-1s388ms reportLowMemory=false
+    currentHostingComponentTypes=0x8 historicalHostingComponentTypes=0x8
+    reportedInteraction=false fgInteractionTime=-1s290ms
+    adjSeq=6175 
+    oom adj: max=1001 curRaw=0 setRaw=0 cur=0 set=0 
+    mCurSchedGroup=2 setSchedGroup=2 systemNoUi=false 
+    curProcState=4 mRepProcState=4 setProcState=4 lastStateTime=-1s290ms
+    curCapability=-CMNFUATI setCapability=-CMNFUATI
+    curCpuTimeReasons=0x1 setCpuTimeReasons=0x1 curImplicitCpuTimeReasons=0x1 setImplicitCpuTimeReasons=0x1 
+    
+    cached=false empty=false 
+    scheduleServiceTimeoutPending=false 
+    mIsReceivingBroadcast=false 
+    mBroadcastReceiverSchedGroup=-2147483648 
+    lastCompactTime=0 lastCompactProfile=INVALID 
+    hasPendingCompaction=false 
+    isPendingFreeze=false isFrozen=false 
+    earliestFreezableTimeMs=--
+    Configuration={1.0 310mcc260mnc [en_US] ldltr sw411dp w411dp h923dp 420dpi nrml long compactNeeded port finger qwerty/v/v dpad/v winConfig={ mBounds=Rect(0, 0 - 1080, 2424) mAppBounds=Rect(0, 0 - 1080, 2424) mMaxBounds=Rect(0, 0 - 1080, 2424) mDisplayRotation=ROTATION_0 mWindowingMode=fullscreen mActivityType=undefined mAlwaysOnTop=undefined mRotation=ROTATION_0} s.9 fontWeightAdjustment=0} 
+    OverrideConfiguration={0.0 ?mcc0mnc ?localeList ?layoutDir ?swdp ?wdp ?hdp ?density ?lsize ?long ?round ?ldr ?wideColorGamut ?orien ?uimode ?night ?touch ?keyb/?/? ?nav/? winConfig={ mBounds=Rect(0, 0 - 0, 0) mAppBounds=null mMaxBounds=Rect(0, 0 - 0, 0) mDisplayRotation=undefined mWindowingMode=undefined mActivityType=undefined mAlwaysOnTop=undefined mRotation=undefined} ?fontWeightAdjustment} 
+    mLastReportedConfiguration={1.0 310mcc260mnc [en_US] ldltr sw411dp w411dp h923dp 420dpi nrml long compactNeeded port finger qwerty/v/v dpad/v winConfig={ mBounds=Rect(0, 0 - 1080, 2424) mAppBounds=Rect(0, 0 - 1080, 2424) mMaxBounds=Rect(0, 0 - 1080, 2424) mDisplayRotation=ROTATION_0 mWindowingMode=fullscreen mActivityType=undefined mAlwaysOnTop=undefined mRotation=ROTATION_0} s.9 fontWeightAdjustment=0} 
+  
+  Active instrumentation:
+    Instrumentation #0: ActiveInstrumentation{5d8d7e5 {dev.lykhoyda.rndevagent.androidrunner.test/androidx.test.runner.AndroidJUnitRunner} 1 procs}
+      mClass=ComponentInfo{dev.lykhoyda.rndevagent.androidrunner.test/androidx.test.runner.AndroidJUnitRunner} mFinished=false 
+      mRunningProcesses:
+        #0: ProcessRecord{5d121d8 15062:dev.lykhoyda.rndevagent.androidrunner/u0a243}
+      mTargetProcesses=[dev.lykhoyda.rndevagent.androidrunner] 
+      mTargetInfo=ApplicationInfo{496656b dev.lykhoyda.rndevagent.androidrunner} 
+        packageName=dev.lykhoyda.rndevagent.androidrunner
+        labelRes=0x0 nonLocalizedLabel=rn-dev-agent Android runner icon=0x0 banner=0x0
+        processName=dev.lykhoyda.rndevagent.androidrunner
+        uid=10243 flags=0x20a9be46 privateFlags=0x8c001000 theme=0x1030241
+        sourceDir=/data/app/~~mqgomDabHs9YK_B3zkZ8Aw==/dev.lykhoyda.rndevagent.androidrunner-91QkTKRFWbyOByKbm6J51w==/base.apk
+        resourceDirs=[/product/overlay/EmulationPixel10a/EmulationPixel10aOverlay.apk, /product/overlay/NavigationBarModeGestural/NavigationBarModeGesturalOverlay.apk]
+        overlayPaths=[/product/overlay/EmulationPixel10a/EmulationPixel10aOverlay.apk, /product/overlay/NavigationBarModeGestural/NavigationBarModeGesturalOverlay.apk, /data/resource-cache/com.android.systemui-neutral-jrHk.frro, /data/resource-cache/com.android.systemui-accent-wHxm.frro, /data/resource-cache/com.android.systemui-dynamic-xlPH.frro]
+        dataDir=/data/user/0/dev.lykhoyda.rndevagent.androidrunner
+        enabled=true minSdkVersion=23 targetSdkVersion=35 versionCode=1 targetSandboxVersion=1
+        createTimestamp=4529200
+      mWatcher=android.app.IInstrumentationWatcher$Stub$Proxy@2b1f8c8 
+      mUiAutomationConnection=android.app.IUiAutomationConnection$Stub$Proxy@2440d61 
+      mHasBackgroundActivityStartsPermission=true 
+      mHasBackgroundForegroundServiceStartsPermission=true 
+      mArguments=Bundle[mParcelledData.dataSize=1004] 
+  
+  OOM levels:
+    -900: SYSTEM_ADJ (   73,728K)
+    -800: PERSISTENT_PROC_ADJ (   73,728K)
+    -700: PERSISTENT_SERVICE_ADJ (   73,728K)
+      0: FOREGROUND_APP_ADJ (   73,728K)
+     100: VISIBLE_APP_ADJ (   92,160K)
+     200: PERCEPTIBLE_APP_ADJ (  110,592K)
+     225: PERCEPTIBLE_MEDIUM_APP_ADJ (  129,024K)
+     250: PERCEPTIBLE_LOW_APP_ADJ (  129,024K)
+     300: BACKUP_APP_ADJ (  221,184K)
+     400: HEAVY_WEIGHT_APP_ADJ (  221,184K)
+     500: SERVICE_ADJ (  221,184K)
+     600: HOME_APP_ADJ (  221,184K)
+     700: PREVIOUS_APP_ADJ (  221,184K)
+     800: SERVICE_B_ADJ (  221,184K)
+     900: CACHED_APP_MIN_ADJ (  221,184K)
+     999: CACHED_APP_MAX_ADJ (  322,560K)
+  
+  Process OOM control (42 total, non-act at 2, non-svc at 2):
+    Proc #2: fg       F/ /FGS  -CMNFUATI  t: 0 15062:dev.lykhoyda.rndevagent.androidrunner/u0a243 (instrumentation)
+        oom: max=1001 curRaw=0 setRaw=0 cur=0 set=0 
+        state: cur=FGS  set=FGS   lastRss=0.00 lastCachedRss=0.00
+        cached=false empty=false hasAboveClient=false 
+  
+    mHomeProcess: ProcessRecord{8afa779 1028:com.google.android.apps.nexuslauncher/u0a186}
+    mPreviousProcess: null
+
+  Raw LRU list (dumpsys activity lru):
+    Other:
+    #39: fg       FGS  -CMNFUATI 15062:dev.lykhoyda.rndevagent.androidrunner/u0a243
+
+  Process LRU list (sorted by oom_adj, 42 total, non-act at 2, non-svc at 2):
+    Proc #2: fg       F/ /FGS  -CMNFUATI  t: 0 15062:dev.lykhoyda.rndevagent.androidrunner/u0a243 (instrumentation)
+  
+  PID mappings:
+    PID #15062: ProcessRecord{5d121d8 15062:dev.lykhoyda.rndevagent.androidrunner/u0a243}
+  mPreviousProcessVisibleTime: 0
+  mDeviceIdleAllowlist=[2000, 10103, 10106, 10116, 10160, 10200, 10206, 10218, 10219, 10220]
+  mDeviceIdleExceptIdleAllowlist=[2000, 10103, 10104, 10106, 10116, 10119, 10156, 10158, 10160, 10200, 10206, 10218, 10219, 10220]
+  mDeviceIdleTempAllowlist=[1000]
+  mFgsStartTempAllowList:
+    1000:  duration=30000 callingUid=1000 reasonCode=KEY_CHAIN reason=keychain expiration=2026-10-11 23:15:32.327 (+469ms)
+  mForceBackgroundCheck=false

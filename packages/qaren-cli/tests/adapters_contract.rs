@@ -1521,6 +1521,32 @@ fn runner_forwards_matches_only_this_serial_and_port() {
     );
 }
 
+// Real `adb forward --list` bytes: a lone newline when empty, a trailing blank line otherwise.
+#[test]
+fn runner_forwards_survive_blank_and_short_lines() {
+    for empty in ["\n", "\n\n", "   \n", "emulator-5594\n", "emulator-5594 tcp:22089\n"] {
+        assert!(android::runner_forwards(empty, "emulator-5594").is_empty());
+        assert!(!android::runner_forward_remains(empty, "emulator-5594"));
+    }
+    let live = "emulator-5594 tcp:22089 tcp:22089\n\n";
+    assert_eq!(android::runner_forwards(live, "emulator-5594"), vec![22089]);
+    assert!(android::runner_forward_remains(live, "emulator-5594"));
+}
+
+// `dumpsys activity processes <runner>` on an API 37 emulator, while the runner instruments and after it stops.
+#[test]
+fn runner_processes_witness_reads_only_a_recognised_dump() {
+    let running = include_str!("fixtures/android-runner-processes-running.txt");
+    let stopped = include_str!("fixtures/android-runner-processes-stopped.txt");
+    assert_eq!(android::runner_in_processes(running), Some(true));
+    assert_eq!(android::runner_in_processes(stopped), Some(false));
+    // The `instrumentation` subcommand this image does not support exits 0 with an error, runner up or not.
+    let unsupported = include_str!("fixtures/android-dumpsys-unsupported.txt");
+    for unknown in [unsupported, "", "\n", "Can't find service: activity\n"] {
+        assert_eq!(android::runner_in_processes(unknown), None, "{unknown:?}");
+    }
+}
+
 #[test]
 fn borrowed_runner_release_commands_go_through_the_borrowed_server() {
     let adb = Path::new("/sdk/platform-tools/adb");
@@ -1545,14 +1571,15 @@ fn borrowed_runner_release_commands_go_through_the_borrowed_server() {
             ],
         ),
         (
-            android::dumpsys_instrumentation_spec(adb, 5147, "emulator-5554"),
+            android::runner_processes_spec(adb, 5147, "emulator-5554"),
             vec![
                 "-s",
                 "emulator-5554",
                 "shell",
                 "dumpsys",
                 "activity",
-                "instrumentation",
+                "processes",
+                "dev.lykhoyda.rndevagent.androidrunner",
             ],
         ),
     ] {
