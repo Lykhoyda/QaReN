@@ -11,13 +11,13 @@ QaReN walks a Markdown QA plan on the iOS simulator like a user would and return
 |---|---|
 | use QaReN for the first time, or `qaren` is not found, or `.qaren/config.yaml` is missing | run the `setup` skill (`/qaren:setup`) |
 | test a feature in the working tree | write a plan (below), then `qaren check --plan-file .qaren/plans/<feature>.md --json` |
-| QA a pull request | write a plan, then `qaren pr <number> --plan-file .qaren/plans/<feature>.md --json`; after the user reviews the receipt, `qaren publish <run-id>` |
+| QA a pull request | write a plan, then `qaren pr <number> --plan-file .qaren/plans/<feature>.md --json`; `qaren publish <run-id>` only when the user asks, after they confirm the plan and recording may be posted to that pull request |
 | follow a run | `qaren watch --latest` |
 | see saved blocks | `qaren actions list` |
 
-`check` and `pr` use the one booted simulator. If none or several are booted, pick the device as the `setup` skill does.
+`check` and `pr` use the one booted simulator. If none or several are booted, pick the device as the `setup` skill does and append its `--device` or `--boot-device --device` flags.
 
-Report the receipt's `result` and `run_id`. On anything but `PASS`, quote `failure.code` and `failure.next_action` verbatim; never retry a refusal by editing the plan to dodge it.
+Report the receipt's `result` and `run_id`. When `result` is not `pass`, quote `failure.code` and `failure.next_action` verbatim if present; never retry a refusal by editing the plan to dodge it.
 
 ## Write a plan
 
