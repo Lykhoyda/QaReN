@@ -10,16 +10,9 @@ NUC Android and USB Android setup experiments.
 
 ## Set up an app
 
-With the QaReN plugin loaded in Claude Code, run `/qaren:setup` from the app's
-root. The [`setup` skill](../qaren-plugin/skills/setup/SKILL.md) owns the guided
-onboarding steps: resolve an installed CLI, detect the Expo app, write
-`.qaren/config.yaml` and `.qaren/plans/smoke.md`, select an iOS simulator, and
-run the first check. It preserves existing configuration until you approve a
-change. The [`using-qaren` skill](../qaren-plugin/skills/using-qaren/SKILL.md)
-then writes feature plans. These replace `rn-setup` and `using-rn-dev-agent`;
-the old skill names have no aliases.
-
-For installation before a release is available, use [Build](#build).
+Start with [Set up QaReN](../../README.md#set-up-qaren) for installation and
+Claude Code plugin loading. The [`setup` skill](../qaren-plugin/skills/setup/SKILL.md)
+owns the guided onboarding procedure; [Check a plan](#check-a-plan) covers manual runs.
 
 ## Watch a run
 
@@ -103,16 +96,7 @@ Interactive controls, lanes and timed replay remain later slices.
 
 ## Build
 
-To install `qaren` from this checkout the way a release installs it, run
-
-```sh
-bash scripts/install-qaren-from-source.sh
-```
-
-from the repository root on an Apple silicon Mac with Node 24 or newer,
-Corepack and Rust/Cargo. It installs workspace dependencies, builds the release
-tarball and verifies it through the [plugin installer](#plugin-runtime-installation),
-which also handles PATH linking.
+For the supported source installation, follow [Set up QaReN](../../README.md#set-up-qaren).
 
 For development builds:
 
@@ -163,8 +147,8 @@ It never edits shell rc files. Link problems are stderr notices and do not fail
 installation; stdout remains exactly the installed binary path, which you can
 use directly if linking fails.
 This development checkout's manifest does not imply that a QaReN release asset
-has been published; use `scripts/install-qaren-from-source.sh` above while that
-asset is unavailable.
+has been published; use the [source installation](../../README.md#set-up-qaren)
+while that asset is unavailable.
 
 ## Upgrading from rn-dev-agent 1.x (1.0.14) to 2.0
 

@@ -23,7 +23,7 @@ Report the receipt's `result` and `run_id`. When `result` is not `pass`, quote `
 
 1. Read the feature's screens in source for `testID`s and visible labels.
 2. Write one `###` block per user journey under `## QA`: numbered user actions such as `Tap "…"`, `Fill "…" with "…"`, `Wait for "…" to appear`, scroll and back, with `✓ "…"` checks of what the user should then see.
-3. Quote every target, preferring `testID`s over labels.
+3. Quote every action target, preferring `testID`s over labels. For `✓` checks, choose visible text according to [Plan checks and screen evidence](https://github.com/Lykhoyda/rn-dev-agent/blob/develop/packages/qaren-cli/README.md#plan-checks-and-screen-evidence).
 4. Use unquoted phrase steps only when `TYPESAFE_API_KEY` is set; without it they refuse.
 5. Follow the user's path only: no deep links or navigation shortcuts.
 6. Save it as `.qaren/plans/<feature>.md`.
