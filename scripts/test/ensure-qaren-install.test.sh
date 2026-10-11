@@ -23,7 +23,7 @@ check() {
   fi
 }
 
-tmp="$(mktemp -d "$ROOT/.test-qaren-install.XXXXXX")"
+tmp="$(mktemp -d)"
 trap 'rm -rf "$tmp"' EXIT
 
 mkdir -p "$tmp/stubs" "$tmp/plugin/scripts"
@@ -758,6 +758,15 @@ check "PATH link: qaren runs without changing PATH" qaren "$(PATH="$tmp/read-onl
 check "PATH link: stdout is exactly the binary path" "$REAL_DEST/bin/qaren" "$out"
 check "PATH link: no export notice" no "$(grep -q 'export PATH=' "$tmp/stderr" && echo yes || echo no)"
 check "PATH link: does not prefer ~/.local/bin" no "$([ -e "$tmp/home/.local/bin/qaren" ] && echo yes || echo no)"
+
+# Empty and relative PATH entries name the caller's directory, never a place to link qaren.
+reset_home
+mkdir -p "$tmp/cwd/rel-bin"
+out=$(cd "$tmp/cwd" && PATH=":rel-bin:$tmp/read-only-tools" run_install "$tmp/good.tgz"); rc=$?
+check "relative PATH: install exits 0" "0 $REAL_DEST/bin/qaren" "$rc $out"
+check "relative PATH: nothing is linked in the working directory" "no no" \
+  "$([ -e "$tmp/cwd/qaren" ] && echo yes || echo no) $([ -e "$tmp/cwd/rel-bin/qaren" ] && echo yes || echo no)"
+check "relative PATH: falls back to ~/.local/bin" "$REAL_DEST/bin/qaren" "$(readlink "$tmp/home/.local/bin/qaren")"
 
 # With no writable PATH directory, preserve the fallback and command ownership.
 run_link_install() { PATH="$tmp/read-only-tools" run_install "$1"; }

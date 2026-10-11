@@ -377,10 +377,10 @@ install() {
 link_on_path() {
   local bin="$1" dir="$HOME/.local/bin" target tmp candidate on_path=false
   local -a path_dirs
-  IFS=: read -r -a path_dirs <<< "$PATH:"
+  IFS=: read -r -a path_dirs <<< "$PATH"
   for candidate in "${path_dirs[@]}"; do
-    candidate="${candidate:-.}"
-    [ -d "$candidate" ] && [ -w "$candidate" ] || continue
+    # Empty and relative entries resolve against the caller's directory, not a stable bin.
+    [[ "$candidate" == /* ]] && [ -d "$candidate" ] && [ -w "$candidate" ] || continue
     dir="$candidate"
     on_path=true
     break
