@@ -76,7 +76,8 @@ qaren update
 
 Run from the rn-dev-agent checkout root. Fast-forwards the checkout with `git pull --ff-only`
 from its tracked upstream, then rebuilds and reinstalls qaren through the source installer. It
-refuses, touching nothing, outside a checkout, with local changes, or when the pull fails.
+refuses outside a checkout, with local changes, or when the pull fails, leaving your working
+tree, branch and installed qaren unchanged.
 Prints one line saying whether the build is already current, updated or newly installed.
 
 ## qaren --version
