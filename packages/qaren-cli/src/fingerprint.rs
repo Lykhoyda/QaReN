@@ -11,12 +11,10 @@ pub struct NativeFingerprint {
     pub value: String,
     pub file_count: usize,
     pub native_dir_in_candidate: bool,
-    // Reuse of a cached binary is only legal when the input set is provably
-    // complete; a dynamic app.config.* is complete only once the app's own
-    // @expo/fingerprint has evaluated it.
+    // Reuse requires proven inputs; dynamic configs also require Expo evaluation.
     pub complete: bool,
     pub incompleteness: Vec<String>,
-    // Hash-only evidence of what `value` composes: rnfp, plus expo and toolchain for a dynamic config.
+    // Hash-only evidence: rnfp, iOS toolchain, and Expo for evaluated dynamic configs.
     pub parts: BTreeMap<String, String>,
     pub expo_fingerprint_ms: Option<u64>,
     // The closed-template cause when a dynamic config's Expo fingerprint could not be computed.

@@ -37,7 +37,7 @@ fn runs_root() -> Result<PathBuf, String> {
     qaren_home().map(|home| home.join("runs"))
 }
 
-// Verified dev-client builds shared by every worktree on this machine, keyed by native fingerprint.
+// Verified iOS dev-client builds shared across worktrees, keyed by native fingerprint.
 fn native_cache_root() -> Result<PathBuf, String> {
     qaren_home().map(|home| home.join("native-cache"))
 }

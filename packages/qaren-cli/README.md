@@ -1444,7 +1444,7 @@ ios:
 
 For `prepare`, the same pair belongs under `build.ios_workspace` in the scenario, alongside `build.owner: cli`. Workspace paths are relative to the app root, remain under `ios/`, and must resolve through plain directories to an existing `.xcworkspace` with a plain `contents.xcworkspacedata` file. No scheme discovery, Expo upgrade or automatic fallback after a failed build occurs. An iOS section in shared `check` config does not select this route for Android.
 
-This route runs `xcrun xcodebuild` in Debug against the generic iOS Simulator destination, with certificate-free ad-hoc simulator signing (`CODE_SIGN_IDENTITY=-`, no team or provisioning profile) so entitlements such as keychain access survive, and the React Native packager launch disabled. Products and DerivedData are isolated under the run directory. The existing finite-build process group and lock remain authoritative; only a clean exit with proven group shutdown can proceed to single-bundle verification, exact-device installation, separate Metro and launch. A missing or ambiguous app, wrong bundle/platform/scheme or unsupported dev-client launcher still fails before installation. Workspace and scheme selection, and the build-settings revision, participate in the native cache fingerprint, so an earlier unsigned workspace build is not reused; omitting the opt-in preserves existing Expo cache keys.
+This route runs `xcrun xcodebuild` in Debug against the generic iOS Simulator destination, with certificate-free ad-hoc simulator signing (`CODE_SIGN_IDENTITY=-`, no team or provisioning profile) so entitlements such as keychain access survive, and the React Native packager launch disabled. Products and DerivedData are isolated under the run directory. The existing finite-build process group and lock remain authoritative; only a clean exit with proven group shutdown can proceed to single-bundle verification, exact-device installation, separate Metro and launch. A missing or ambiguous app, wrong bundle/platform/scheme or unsupported dev-client launcher still fails before installation. Workspace and scheme selection, and the build-settings revision, participate in the native cache fingerprint, so an earlier unsigned workspace build is not reused; see [Native-fingerprint build selection](#native-fingerprint-build-selection) for the shared store and toolchain binding used by both routes.
 
 **Native preparation remains explicit.** Supply a workspace whose native dependencies and generated inputs are ready for Xcode. QaReN retains its existing clean/incremental policy: an unproven generated native directory is regenerated through owned `expo prebuild --clean`, then the workspace is revalidated before compilation; a git-visible native tree is not regenerated. The workspace route adds no CocoaPods synchronization or codegen command of its own, and workspace existence is not proof that those inputs are current after a dependency update. A build failure is reported, not retried through another backend.
 
@@ -1479,9 +1479,8 @@ and temporary policy live in
 project instead of the workspace containing the scenario. The path must BE a
 git toplevel — a subdirectory of some larger repo is refused
 (`CANDIDATE_PATH_INVALID`) so a run can never bind to files outside the
-project it named. Project cache state lives under `<worktree>/.qaren/`, verified
-iOS dev-client builds are shared per machine under `~/.qaren/native-cache/` (see
-[Native-fingerprint build selection](#native-fingerprint-build-selection)), and the
+project it named. For project cache state and shared builds, see
+[Native-fingerprint build selection](#native-fingerprint-build-selection). The
 fingerprint enumerates only that worktree. Run records remain host-level;
 `status`/`cleanup` load them by run id without requiring the app directory.
 qaren never discovers, enumerates, or couples other projects.
@@ -1599,8 +1598,9 @@ conservative, not a full JS parser.
 qaren is pnpm-only; other package managers' lockfiles are out of contract.
 
 **Decision.** Verified iOS dev-client builds live in a machine store,
-`~/.qaren/native-cache/ios/<app_id>/<fingerprint>/`, shared by every clone and
-`qaren pr` worktree on this machine. Per-worktree cache state lives at
+`~/.qaren/native-cache/ios/<app_id>/<fingerprint>/`, with `:` replaced by `-`
+in the fingerprint directory name, shared by every clone and `qaren pr`
+worktree on this machine. Per-worktree cache state lives at
 `<worktree>/.qaren/native-cache/<platform>-<app_id>.json`
 (`qaren-native-cache/2`; a state with an older schema is invalid), bound to the
 exact worktree, platform, app id, fingerprint, and building candidate sha; it
@@ -1632,10 +1632,11 @@ holds the cached APK, kept under this worktree's `.qaren/native-cache/artifacts/
    [CLI-owned build routes](#cli-owned-ios-build-routes); borrowed Android
    emulators follow [Check a plan](#check-a-plan), while scenario-based Android
    `prepare` recompiles with `expo run:android` over the existing Gradle caches.
-3. **Clean** — mandatory whenever compatibility is unprovable and no verified
+3. **Clean** — `build.strategy: clean` always bypasses reuse. Otherwise, mandatory
+   whenever compatibility is unprovable and no verified
    stored build exists: no/corrupt state, cross-worktree state, unproven generated-dir provenance, changed or
-   incomplete fingerprints for an existing generated native directory, or
-   `build.strategy: clean`. A generated (git-ignored) native dir is regenerated
+   incomplete fingerprints for an existing generated native directory.
+   A generated (git-ignored) native dir is regenerated
    using only `expo prebuild --platform <platform> --clean`, which deletes the
    directory with its installed native dependencies and build outputs; build
    caches outside it are kept. A git-visible native dir
