@@ -1297,7 +1297,9 @@ Video publication eligibility and a value-free withholding reason are persisted
 in `pr.json`. A plan containing any fill/type step keeps the recording local,
 even if that step never executes. Otherwise, the uploaded copy starts when the
 walk proved the app's bundle and passed [overlay clearance](#check-a-plan).
-Sensitive observations from admission onwards withhold it.
+Sensitive observations from admission onwards withhold it. The uploaded copy
+ends at the last step row, so the device session closing after the walk never
+reaches it; the local recording stays complete.
 
 A successful saved login replay before any plan step passes moves the uploaded
 copy's start to the end of that replay. Its fills alone do not withhold the video.

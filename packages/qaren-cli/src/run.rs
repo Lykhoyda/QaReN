@@ -810,10 +810,13 @@ fn run_inner(
                 .publish_from_ms
                 .or(outcome.ledger.admitted_at_ms)
                 .map(|at| at.saturating_sub(recording_from));
+            // Row t is relative to t0, taken after the recording started, so it can only cut before the true last-row frame.
+            let end = outcome.ledger.steps.iter().map(|s| s.t).max();
             record::publication_copy(
                 ctx.runner,
                 &run_dir,
                 offset,
+                end,
                 outcome.ledger.publication_interrupted,
             )
         } else {
