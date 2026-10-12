@@ -578,6 +578,7 @@ fn run_inner(
         login_marker: config.login_marker.clone(),
         target: CoreTarget {
             device_id: device.id.clone(),
+            device_name: device.name.clone(),
             metro_port: config.metro_port,
             metro_url_for_device: format!("http://127.0.0.1:{}", config.metro_port),
             worktree: project_root.clone(),

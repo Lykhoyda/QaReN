@@ -42,6 +42,7 @@ pub struct CoreRequest {
 #[serde(rename_all = "camelCase")]
 pub struct CoreTarget {
     pub device_id: String,
+    pub device_name: String,
     pub metro_port: u16,
     pub metro_url_for_device: String,
     pub worktree: PathBuf,

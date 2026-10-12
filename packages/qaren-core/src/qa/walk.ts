@@ -55,7 +55,7 @@ import { summarizeJev } from './ledger.js';
 import { redactApiKey } from '../util/redact.js';
 import { createStop, watchOwnerPipe, watchParent } from './stop.js';
 import { prove } from './prove.js';
-import { admit, awaitBundleReady, createBundleReload } from './admission.js';
+import { admit, awaitBundleReady, createBundleReload, metroDevicePin } from './admission.js';
 import { type ActResult, type WalkerDeps, loginBlock, runPlan } from './walker.js';
 import { loadBlock, readBlock } from './blocks.js';
 import {
@@ -341,6 +341,7 @@ async function openSession(
       await cdp.disconnect().catch(() => undefined);
     }));
   onClose(close);
+  const devicePin = metroDevicePin(platform, target.deviceName);
   const proof = await admit(
     {
       metroPort: target.metroPort,
@@ -352,10 +353,11 @@ async function openSession(
           Math.max(1, Math.min(REACT_READY_TIMEOUT_MS, request.walkBudgetMs - now() - 1000)),
           REACT_READY_POLL_MS,
           stop.signal,
+          devicePin,
         );
         await cdp.connectExact(
           target.metroPort,
-          { platform, bundleId: appId },
+          { platform, bundleId: appId, ...(devicePin ? { deviceName: devicePin } : {}) },
           'default',
           5,
           undefined,
@@ -402,7 +404,7 @@ async function openSession(
   const admittedSnapshots = postAdmissionSnapshots(snapshot, appId);
   cancellationSignal();
   log(
-    `bundle proven: ${proof.scriptURL} (${proof.appModules} app modules under ${target.worktree})`,
+    `bundle proven: ${proof.scriptURL} (${proof.appModules} app modules under ${target.worktree}) on device ${JSON.stringify(devicePin ?? target.deviceId)}`,
   );
 
   const rawSnapshot = async (

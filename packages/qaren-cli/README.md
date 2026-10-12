@@ -1148,6 +1148,11 @@ Launch admission shares the remaining walk deadline across target readiness,
 WebSocket handshakes, probes and retry sleeps. The connect-time dev-build check
 and helper injection wait for the runtime's answer until that deadline rather
 than a fixed request timeout; no answer by the deadline is a readiness timeout.
+On iOS, readiness and attachment accept only a runtime Metro reports under the
+run's simulator name, so another booted simulator running the same app on the
+same port is not attached. Metro identifies a simulator only by name: give each
+booted simulator a distinct name, because a same-named one is refused as
+ambiguous only once both have registered.
 A timeout with measured 1-minute
 host load above 10 is an environment refusal (`CDP_NOT_CONNECTED`), rather than
 a product FAIL. It retries attachment once only if the remaining budget can

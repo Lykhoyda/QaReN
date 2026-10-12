@@ -99,6 +99,50 @@ test('empty startup targets become selectable on the same exact port after polli
   assert.deepEqual(clock.requested, [endpoint, endpoint, endpoint]);
 });
 
+test("a sibling simulator's runtime on the shared port does not satisfy the run device's wait", async (t) => {
+  const sibling = target({
+    id: 'sibling-1',
+    title: 'com.example.app (qaren-check)',
+    deviceName: 'qaren-check',
+    webSocketDebuggerUrl: `ws://127.0.0.1:${managedPort}/inspector/debug?device=sibling&page=1`,
+  });
+  let reads = 0;
+  const clock = setup(t, async () =>
+    Response.json(++reads === 1 ? [sibling] : [sibling, target()]),
+  );
+  let settled = false;
+  const waiting = waitForExactPortTargets(managedPort, 30_000, 500, undefined, 'iPhone').then(
+    () => {
+      settled = true;
+    },
+  );
+  await setImmediate();
+  assert.equal(settled, false, 'only the sibling is registered');
+  await clock.advance(500);
+  await waiting;
+  assert.equal(reads, 2);
+
+  const result = await discoverExactPort(managedPort, { ...filters, deviceName: 'iPhone' });
+  assert.deepEqual(
+    result.targets.map((entry) => entry.id),
+    ['owned-1'],
+  );
+});
+
+test("a wait pinned to the run device times out when only a sibling's runtime registers", async (t) => {
+  const clock = setup(t, async () =>
+    Response.json([target({ id: 'sibling-1', deviceName: 'qaren-check' })]),
+  );
+  const waiting = assert.rejects(
+    waitForExactPortTargets(managedPort, 1000, 500, undefined, 'iPhone'),
+    /Timed out waiting for a CDP target from device "iPhone" on port 8341 after 1000ms/,
+  );
+  await setImmediate();
+  await clock.advance(500);
+  await clock.advance(500);
+  await waiting;
+});
+
 test('a non-array target response fails immediately instead of polling', async (t) => {
   const clock = setup(t, async () => Response.json({ length: 1 }));
   await assert.rejects(

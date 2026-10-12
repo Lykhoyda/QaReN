@@ -1467,6 +1467,7 @@ fn check_runs_the_phases_in_order_and_ends_pass_with_a_report() {
         serde_json::from_str(mock.piped_stdin_text(1).trim()).unwrap();
     assert_eq!(request_line["payload"]["appId"], "com.rndevagent.testapp");
     assert_eq!(request_line["payload"]["target"]["deviceId"], UDID);
+    assert_eq!(request_line["payload"]["target"]["deviceName"], "qa-company-app");
     assert_eq!(
         request_line["payload"]["preflightCalls"],
         probe_json()["callDetails"]

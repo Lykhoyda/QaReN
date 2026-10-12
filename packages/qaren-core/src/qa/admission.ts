@@ -34,6 +34,14 @@ export interface AdmissionSteps {
 
 type Proven = Extract<ProveOutcome, { ok: true }>;
 
+// iOS simulators share host loopback, so a sibling's runtime registers on the run's Metro; Android's Metro device name is a model, not the serial.
+export function metroDevicePin(
+  platform: 'ios' | 'android',
+  deviceName: string,
+): string | undefined {
+  return platform === 'ios' ? deviceName.trim() : undefined;
+}
+
 // A first launch can attach while Metro still builds the bundle; React readiness, not a fixed wait, gates the proof.
 export async function awaitBundleReady(
   evaluate: (expression: string) => Promise<{ value?: unknown }>,

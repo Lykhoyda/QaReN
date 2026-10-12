@@ -66,6 +66,7 @@ fn request() -> CoreRequest {
         login_marker: None,
         target: CoreTarget {
             device_id: "AAAA-1111".to_string(),
+            device_name: "qaren-check".to_string(),
             metro_port: 8791,
             metro_url_for_device: "http://127.0.0.1:8791".to_string(),
             worktree: PathBuf::from("/tmp/app"),
@@ -145,6 +146,7 @@ fn scripted_rows_and_a_pass_result_become_a_typed_ledger() {
     assert_eq!(envelope["type"], "request");
     assert_eq!(envelope["runId"], RUN);
     assert_eq!(envelope["payload"]["target"]["metroPort"], 8791);
+    assert_eq!(envelope["payload"]["target"]["deviceName"], "qaren-check");
     assert_eq!(envelope["payload"]["lease"], request().lease);
     let spawn = &mock.calls[0];
     assert_eq!(spawn.label, "core-walk");

@@ -166,6 +166,8 @@ export async function waitForExactPortTargets(
   timeoutMs: number,
   pollMs: number,
   signal?: AbortSignal,
+  // Simulators share host loopback: another device's runtime on this port is not the run's.
+  deviceName?: string,
 ): Promise<void> {
   if (!Number.isInteger(port) || port < 1 || port > 65535) {
     throw new RangeError('port must be an integer between 1 and 65535');
@@ -193,12 +195,19 @@ export async function waitForExactPortTargets(
     }
     remaining = deadline - performance.now();
     if (remaining <= 0) break;
-    if (raw.length > 0) return;
+    if (
+      deviceName === undefined
+        ? raw.length > 0
+        : raw.some((target) => target?.deviceName?.trim() === deviceName)
+    )
+      return;
     await sleep(Math.min(pollMs, remaining), signal);
     remaining = deadline - performance.now();
   }
   throw new TargetReadinessTimeoutError(
-    `Timed out waiting for CDP targets on port ${port} after ${timeoutMs}ms`,
+    deviceName === undefined
+      ? `Timed out waiting for CDP targets on port ${port} after ${timeoutMs}ms`
+      : `Timed out waiting for a CDP target from device ${JSON.stringify(deviceName)} on port ${port} after ${timeoutMs}ms`,
   );
 }
 
