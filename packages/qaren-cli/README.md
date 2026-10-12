@@ -8,6 +8,12 @@ QaReN is still in development; this checkout is not the published 1.x MCP plugin
 The scenario-based preparation verbs remain available for explicit iOS,
 NUC Android and USB Android setup experiments.
 
+## Set up an app
+
+Start with [Set up QaReN](../../README.md#set-up-qaren) for installation and
+Claude Code plugin loading. The [`setup` skill](../qaren-plugin/skills/setup/SKILL.md)
+owns the guided onboarding procedure; [Check a plan](#check-a-plan) covers manual runs.
+
 ## Watch a run
 
 ```sh
@@ -90,6 +96,10 @@ Interactive controls, lanes and timed replay remain later slices.
 
 ## Build
 
+For the supported source installation, follow [Set up QaReN](../../README.md#set-up-qaren).
+
+For development builds:
+
 ```sh
 corepack yarn install --immutable
 corepack yarn build:core
@@ -99,9 +109,10 @@ cargo build --manifest-path packages/qaren-cli/Cargo.toml --locked
 Run these commands from the repository root with Node satisfying the
 [core package's engines requirement](../qaren-core/package.json) and Rust/Cargo
 available. The binary is
-`packages/qaren-cli/target/debug/qaren`; its screen child uses the generated
-`packages/qaren-core/dist/`. Set `QAREN_RUNTIME` to its absolute path when running
-the binary from another location. See [Check a plan](#check-a-plan) for when
+`packages/qaren-cli/target/debug/qaren`; it locates the generated screen child in
+`packages/qaren-core/dist/` relative to the resolved binary path, independently
+of the working directory. `QAREN_RUNTIME` overrides that runtime directory.
+See [Check a plan](#check-a-plan) for when
 `TYPESAFE_API_KEY` is required.
 
 ### Plugin runtime installation
@@ -125,9 +136,20 @@ it does not require the source checkout's `dist/` or `QAREN_RUNTIME` override.
 The SessionStart hook only runs `--print-bin`; it never downloads. That mode
 always exits 0 and prints either the verified binary path, an install or repair
 instruction, or nothing, so its exit status alone does not prove installation.
-Use the reported binary path for CLI commands; installation does not add it to PATH.
+`--install` also links `qaren` into the first standard user bin directory that is
+on PATH, exists and is writable: `~/.local/bin`, `~/bin`, `/opt/homebrew/bin` or
+`/usr/local/bin`, so an earlier IDE or toolchain bin is passed over. With none of
+those on PATH it uses the first writable absolute PATH directory, so the bare
+command still works at once; empty and relative entries are skipped. It replaces only
+a link into `~/.qaren/runtime/`; any other file there is left alone with a notice.
+If no PATH directory qualifies, it links `~/.local/bin/qaren` and prints
+`export PATH="$HOME/.local/bin:$PATH"`; run that line to use the bare command.
+It never edits shell rc files. Link problems are stderr notices and do not fail
+installation; stdout remains exactly the installed binary path, which you can
+use directly if linking fails.
 This development checkout's manifest does not imply that a QaReN release asset
-has been published; use the source build above while that asset is unavailable.
+has been published; use the [source installation](../../README.md#set-up-qaren)
+while that asset is unavailable.
 
 ## Upgrading from rn-dev-agent 1.x (1.0.14) to 2.0
 
@@ -200,14 +222,14 @@ actions, so remove 1.x first and install 2.0 as a new product.
    - Released plugin: the plugin list shows `qaren@qaren`, and
      `bash scripts/ensure-qaren.sh --print-bin` prints a binary path whose
      `--version` reports `qaren 2.0.0` or later.
-   - Source build: `<checkout>/packages/qaren-cli/target/debug/qaren --version`
-     reports the checkout's workspace version. The version moves to 2.0.0 only
+   - Source install: the binary path printed by
+     `scripts/install-qaren-from-source.sh` reports the checkout's workspace
+     version with `--version`. The version moves to 2.0.0 only
      when the release is cut, so a `develop` build still shows the pre-release
-     version (for example `qaren 1.0.13`). From the app directory, run that absolute
-     path with `QAREN_RUNTIME=<checkout>/packages/qaren-core/dist` (see
-     [Build](#build)).
-   - In the app, write `.qaren/config.yaml` and run a first plan with that
-     binary as in [Check a plan](#check-a-plan); a PASS receipt with a run under
+     version (for example `qaren 1.0.13`). The installed runtime needs no
+     `QAREN_RUNTIME` override; see [Build](#build) for development binaries.
+   - In the app, follow [Set up an app](#set-up-an-app), or write configuration
+     and run a plan manually as in [Check a plan](#check-a-plan); a PASS receipt with a run under
      `~/.qaren/runs/` completes the upgrade.
 
 ## Check a plan

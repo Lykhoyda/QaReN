@@ -25,10 +25,10 @@ The package cut, literal `qaren check`, Jev seam, Phase 4 blocks, and PR run/pub
 - `packages/qaren-core/`: TypeScript screen child, entered through `src/qa/walk.ts`. The `qa/` module owns parsing, judgments, screen projections, walking and the ledger, using the kept handlers, CDP helpers, native runners and learned-action domain. `corepack yarn build:core` generates uncommitted `dist/`; entries run as `node packages/qaren-core/dist/<entry>.js`. The package is private; `scripts/build-qaren-tarball.ts` bundles its spawned entries into the CLI tarball.
 - `packages/qaren-plugin/`: the one host package. Claude, Cursor and Codex
   manifests (`.claude-plugin/`, `.cursor-plugin/`, `.codex-plugin/`), a
-  SessionStart-only `hooks/hooks.json`, and `skills/`. The five skills keep
-  their rn-dev-agent wording until Phase 8 rewrites them; commands arrive in
-  Phase 8. Its `package.json` is the version source for changesets and `qaren`
-  is the only released package.
+  SessionStart-only `hooks/hooks.json`, and `skills/`. `setup` (`/qaren:setup`)
+  and `using-qaren` are written for the 2.0 CLI; the other three skills keep
+  their rn-dev-agent wording until Phase 8 rewrites them. Its `package.json`
+  is the version source for changesets and `qaren` is the only released package.
 - `packages/rn-fast-runner/` (package `qaren-ios-runner`) and
   `packages/rn-android-runner/` (package `qaren-android-runner`): native
   runner sources.
