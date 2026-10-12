@@ -19,11 +19,17 @@ type DevAction =
   | 'togglePerfMonitor'
   | 'dismissRedBox'
   | 'disableDevMenu'
+  | 'disableFastRefresh'
   | 'hideDevMenu'
   | 'hideDevMenuFab';
 
-// Walk start: hide Expo's floating dev-menu button first, then shake and any open menu.
-export const WALK_DEV_SETTINGS = ['hideDevMenuFab', 'disableDevMenu', 'hideDevMenu'] as const;
+// Walk start: hide Expo's floating dev-menu button first, then shake, hot reloading (so QaReN's own writes cannot refresh the app mid-recording) and any open menu.
+export const WALK_DEV_SETTINGS = [
+  'hideDevMenuFab',
+  'disableDevMenu',
+  'disableFastRefresh',
+  'hideDevMenu',
+] as const;
 
 // The floating button fades out over ~0.3 s after its preference flips.
 const DEV_FAB_READS = 4;
@@ -132,6 +138,16 @@ const ACTION_EXPRESSIONS: Record<Exclude<DevAction, 'hideDevMenu' | 'hideDevMenu
       var ds = ${RESOLVE_DEV_SETTINGS};
       if (ds && typeof ds.setIsShakeToShowDevMenuEnabled === 'function') {
         ds.setIsShakeToShowDevMenuEnabled(false);
+        return "ok";
+      }
+    } catch(e) {}
+    return "no_method_available";
+  })()`,
+  disableFastRefresh: `(function() {
+    try {
+      var ds = ${RESOLVE_DEV_SETTINGS};
+      if (ds && typeof ds.setHotLoadingEnabled === 'function') {
+        ds.setHotLoadingEnabled(false);
         return "ok";
       }
     } catch(e) {}
