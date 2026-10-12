@@ -433,6 +433,11 @@ strict binding refuses `NO_TEXT_INPUT_TARGET` before any text mutation for a
 non-native-input target. Phrase fills and stored replay selectors do not use
 this fallback; ambiguous targets and potentially mutated fills still fail.
 
+On Android API 26 and later, a fresh read of the bound input with null text
+and no hint showing counts as empty, so clearing a plain field verifies as
+`exact`. A clear that reads back the placeholder remains `ambiguous`. Stale
+reads, and null text with unknown hint state, remain `unreadable`.
+
 Separate React-only input projections still count when matching a quoted strict fill,
 so a native input and a React-only input sharing its testID refuse as
 `TARGET_AMBIGUOUS` before any tap. A strict fill never acts on a React-only
@@ -733,6 +738,11 @@ The reset preserves descendant text evidence. The same distinction applies to
 a reset clears the earlier style restriction without proving native visibility.
 
 ### Input value masking
+
+The Android runner keeps exact-fill values and reconstructable fallback
+keycodes out of device logs. Its device-tool snapshots also avoid logging
+off-screen node text while preserving the snapshot's node fields and order.
+These protections apply to the runner's operations, not logging by the app.
 
 Planned fill values are classified before progress streams. Streamed rows contain
 only value-free progress metadata and eligible screenshot paths; plan text,

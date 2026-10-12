@@ -56,8 +56,9 @@ object TextInputRecipe {
 
     // A read of the bound input's accessibility node. Android reports null text
     // for an empty field that shows no hint, so a fresh read of a field known
-    // not to show one is "". A stale node, unknown hint state (API < 26) or a
-    // hint-showing field keeps its raw text, so null stays unreadable there.
+    // not to show one is "". Stale nodes are always unreadable; fresh nodes
+    // with unknown hint state (API < 26) or a showing hint keep their raw text,
+    // so null stays unreadable there.
     fun readableText(fresh: Boolean, text: String?, showingHint: Boolean?): String? {
         if (!fresh) return null
         return if (showingHint == false) text.orEmpty() else text
