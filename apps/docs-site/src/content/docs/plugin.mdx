@@ -24,7 +24,7 @@ loads.
 | ----------- | ------------------------------- | ---------------------------------------------------------------------------------------------------------------- |
 | Claude Code | `.claude-plugin/plugin.json`    | The three skills it lists, and the SessionStart hook in `hooks/hooks.json`.                                      |
 | Codex       | `.codex-plugin/plugin.json`     | Every skill under `skills/`.                                                                                     |
-| Cursor      | `.cursor-plugin/plugin.json`    | No hooks: the manifest sets them empty, so Cursor does not run the SessionStart hook. It declares no skill list. |
+| Cursor      | `.cursor-plugin/plugin.json`    | The manifest sets hooks empty and declares no skill list.                                                       |
 
 The SessionStart hook only verifies the installed runtime. It prints the verified binary
 path or the command to install or repair it, and it never downloads.

@@ -125,11 +125,14 @@ Setup writes the smoke plan in this shape, with the text it picked from your fir
 ✓ "<text>"
 ```
 
-Run it again yourself from the app's root directory:
+Run it again yourself from the app's root directory, on the simulator setup used:
 
 ```sh
-qaren check --plan-file .qaren/plans/smoke.md --json
+qaren check --plan-file .qaren/plans/smoke.md --device <udid> --json
 ```
+
+`<udid>` is the simulator setup chose or booted. With exactly one booted simulator you can
+leave `--device <udid>` out; with several, `qaren check` refuses without it.
 
 Follow it from a second terminal:
 
