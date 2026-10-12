@@ -6,6 +6,7 @@ package dev.lykhoyda.rndevagent.androidrunner
 
 import android.content.Intent
 import android.widget.Button
+import android.widget.EditText
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.filters.LargeTest
 import androidx.test.platform.app.InstrumentationRegistry
@@ -57,6 +58,34 @@ class QaHierarchyInstrumentedTest {
         val clear = node(qaSnapshot(), QaHierarchyFixtureActivity.CLEAR_IDENTIFIER)
         val tapped = dispatcher.dispatch(press(QaHierarchyFixtureActivity.CLEAR_IDENTIFIER, clear))
         assertTrue(tapped.toString(), tapped.getJSONObject("data").getBoolean("tapped"))
+    }
+
+    @Test
+    fun aCoveredFillRefusesBeforeItsFocusTapAndLeavesTheInputUnchanged() {
+        val covered = node(qaSnapshot(), QaHierarchyFixtureActivity.COVERED_INPUT_IDENTIFIER)
+        try {
+            dispatcher.dispatch(
+                fill(QaHierarchyFixtureActivity.COVERED_INPUT_IDENTIFIER, covered, "after", "op-covered-fill"),
+            )
+            fail("a fill whose focus tap point is covered must refuse")
+        } catch (refusal: FocusTargetOccludedException) {
+            assertTrue(refusal.message!!, refusal.message!!.startsWith("FOCUS_TARGET_OCCLUDED:"))
+            assertEquals(MutationDisposition.NONE, refusal.mutation)
+        }
+        assertEquals(
+            QaHierarchyFixtureActivity.COVERED_INPUT_TEXT,
+            inputText(QaHierarchyFixtureActivity.COVERED_INPUT_IDENTIFIER),
+        )
+    }
+
+    @Test
+    fun anUncoveredFillTapsItsFocusPointAndTypes() {
+        val open = node(qaSnapshot(), QaHierarchyFixtureActivity.OPEN_INPUT_IDENTIFIER)
+        val typed = dispatcher.dispatch(
+            fill(QaHierarchyFixtureActivity.OPEN_INPUT_IDENTIFIER, open, "after", "op-open-fill"),
+        ).getJSONObject("data")
+        assertEquals(typed.toString(), "performed", typed.getString("focusTap"))
+        assertEquals("after", inputText(QaHierarchyFixtureActivity.OPEN_INPUT_IDENTIFIER))
     }
 
     @Test
@@ -118,6 +147,19 @@ class QaHierarchyInstrumentedTest {
         return (0 until nodes.length()).map { nodes.getJSONObject(it) }
             .single { it.getString("identifier") == identifier }
     }
+
+    private fun fill(identifier: String, node: JSONObject, text: String, operationToken: String): JSONObject =
+        JSONObject()
+            .put("command", "fill")
+            .put("appBundleId", testPackage)
+            .put("text", text)
+            .put("snapshotIdentifier", identifier)
+            .put("snapshotElementType", EditText::class.java.name)
+            .put("targetBounds", node.getJSONObject("rect"))
+            .put("operationToken", operationToken)
+
+    private fun inputText(identifier: String): String? =
+        UiDevice.getInstance(instrumentation).findObject(By.desc(identifier))?.text
 
     private fun press(identifier: String, node: JSONObject): JSONObject {
         val rect = node.getJSONObject("rect")
