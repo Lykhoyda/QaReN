@@ -501,6 +501,7 @@ class CommandDispatcher(
                 includeSystemUi,
                 requestedPoint(cmd),
             )
+            val editable = target.isEditable
             val dispatched = try {
                 target.performAction(AccessibilityNodeInfo.ACTION_CLICK)
             } finally {
@@ -514,10 +515,19 @@ class CommandDispatcher(
                     "The exact accessibility target rejected ACTION_CLICK; no coordinate fallback was attempted.",
                 )
             }
-            return JSONObject()
+            val result = JSONObject()
                 .put("tapped", true)
                 .put("method", "accessibility-action")
                 .put("identifier", exactIdentifier)
+            if (editable) {
+                val shown = KeyboardEffect.await(
+                    { imeBoundsInScreen() != null },
+                    SystemClock::uptimeMillis,
+                    SystemClock::sleep,
+                )
+                result.put("keyboardShown", shown)
+            }
+            return result
         }
 
         val x = cmd.getDouble("x").roundToInt()

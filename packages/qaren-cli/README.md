@@ -588,15 +588,17 @@ of the window dump that device tools keep: an `Application` root with the
 display bounds, one `Window` per app application window from bottom to top,
 each with its tree in pre-order and its ancestry, and a `Keyboard` node with the
 input method's bounds. Each read carries a runner-minted snapshot generation
-and the keyboard state. A window of another package above the app that
-intersects it, such as a permission dialog or another app, becomes the
-snapshot under an `Alert` root, so literal steps see a front dialog; the status
-and navigation bars do not count. A node not visible to the user counts as off
-screen, so a quoted step never passes on a scrolled-out control. A node the
-traversal cannot read is counted as dropped, and more than 600 nodes truncate
-the read; either leaves the capture incomplete. An RN `Modal` is a second
-`Window`: literal steps see its content, but phrase actions inside an Android
-modal refuse in this release.
+and the keyboard state. An exact tap on an editable field returns once the
+keyboard it opens is listed, or after 2 s when none opens, so the read after
+the tap sees that keyboard as the tap's effect. A window of another package
+above the app that intersects it, such as a permission dialog or another app,
+becomes the snapshot under an `Alert` root, so literal steps see a front
+dialog; the status and navigation bars do not count. A node not visible to the
+user counts as off screen, so a quoted step never passes on a scrolled-out
+control. A node the traversal cannot read is counted as dropped, and more than
+600 nodes truncate the read; either leaves the capture incomplete. An RN
+`Modal` is a second `Window`: literal steps see its content, but phrase actions
+inside an Android modal refuse in this release.
 
 Context-bound iOS QA reads require the unchanged target app already in the
 foreground. They never activate or relaunch it, or retry a failed read through

@@ -28,19 +28,22 @@ class QaHierarchyFixtureActivity : Activity() {
             showSoftInputOnFocus = false
         }
         coveredInput.setText(COVERED_INPUT_TEXT)
+        // The one input that opens the soft keyboard when it takes focus.
+        val keyboardInput = EditText(this).apply { contentDescription = KEYBOARD_INPUT_IDENTIFIER }
         val column = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             addView(clear, LinearLayout.LayoutParams(ROW_WIDTH, ROW_HEIGHT))
             addView(covered, LinearLayout.LayoutParams(ROW_WIDTH, ROW_HEIGHT))
             addView(openInput, LinearLayout.LayoutParams(ROW_WIDTH, ROW_HEIGHT))
             addView(coveredInput, LinearLayout.LayoutParams(ROW_WIDTH, ROW_HEIGHT))
+            addView(keyboardInput, LinearLayout.LayoutParams(ROW_WIDTH, ROW_HEIGHT))
         }
         val cover = clickableCover(COVER_IDENTIFIER)
         val inputCover = clickableCover(INPUT_COVER_IDENTIFIER)
         // The test APK's own process has no Kotlin stdlib, so no lambda returns Unit here.
         // Rows start below the status bar: an edge-to-edge window draws under it, and a
         // system window over the point is itself an occluder.
-        val columnParams = FrameLayout.LayoutParams(ROW_WIDTH, ROW_HEIGHT * 4, Gravity.TOP)
+        val columnParams = FrameLayout.LayoutParams(ROW_WIDTH, ROW_HEIGHT * 5, Gravity.TOP)
         columnParams.topMargin = TOP_OFFSET
         val coverParams = FrameLayout.LayoutParams(ROW_WIDTH, ROW_HEIGHT, Gravity.TOP)
         coverParams.topMargin = TOP_OFFSET + ROW_HEIGHT
@@ -71,6 +74,7 @@ class QaHierarchyFixtureActivity : Activity() {
         const val OPEN_INPUT_IDENTIFIER = "qa-open-input"
         const val COVERED_INPUT_IDENTIFIER = "qa-covered-input"
         const val INPUT_COVER_IDENTIFIER = "qa-input-cover"
+        const val KEYBOARD_INPUT_IDENTIFIER = "qa-keyboard-input"
         const val COVERED_INPUT_TEXT = "before"
         const val ROW_WIDTH = 600
         const val ROW_HEIGHT = 240

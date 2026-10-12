@@ -5,6 +5,7 @@
 package dev.lykhoyda.rndevagent.androidrunner
 
 import android.content.Intent
+import android.graphics.Rect
 import android.view.accessibility.AccessibilityWindowInfo
 import android.widget.Button
 import android.widget.EditText
@@ -109,6 +110,25 @@ class QaHierarchyInstrumentedTest {
         assertEquals("after", inputText(QaHierarchyFixtureActivity.OPEN_INPUT_IDENTIFIER))
     }
 
+    // The keyboard a tap opens is that tap's visible effect: the read after the tap must see it.
+    @Test
+    fun anExactTapThatOpensTheKeyboardReturnsOnceTheKeyboardIsShown() {
+        assertFalse(qaSnapshot().getBoolean("keyboardVisible"))
+        val input = node(qaSnapshot(), QaHierarchyFixtureActivity.KEYBOARD_INPUT_IDENTIFIER)
+        val tapped = dispatcher.dispatch(
+            press(QaHierarchyFixtureActivity.KEYBOARD_INPUT_IDENTIFIER, input, EditText::class.java.name),
+        )
+        assertTrue(tapped.toString(), tapped.getJSONObject("data").getBoolean("tapped"))
+        // Read the window list directly: a QA read waits for accessibility idle first, which can hide the race.
+        assertTrue("the keyboard must be listed when the tap returns", keyboardWindowListed())
+        assertTrue(qaSnapshot().getBoolean("keyboardVisible"))
+    }
+
+    private fun keyboardWindowListed(): Boolean = instrumentation.uiAutomation.windows.any {
+        it.type == AccessibilityWindowInfo.TYPE_INPUT_METHOD &&
+            !Rect().also(it::getBoundsInScreen).isEmpty
+    }
+
     @Test
     fun aQaSnapshotHasConsistentAncestryAndANewGeneration() {
         val first = qaSnapshot()
@@ -182,13 +202,13 @@ class QaHierarchyInstrumentedTest {
     private fun inputText(identifier: String): String? =
         UiDevice.getInstance(instrumentation).findObject(By.desc(identifier))?.text
 
-    private fun press(identifier: String, node: JSONObject): JSONObject {
+    private fun press(identifier: String, node: JSONObject, type: String = Button::class.java.name): JSONObject {
         val rect = node.getJSONObject("rect")
         return JSONObject()
             .put("command", "tap")
             .put("appBundleId", testPackage)
             .put("exactIdentifier", identifier)
-            .put("exactType", Button::class.java.name)
+            .put("exactType", type)
             .put("x", rect.getInt("x") + rect.getInt("width") / 2)
             .put("y", rect.getInt("y") + rect.getInt("height") / 2)
     }
