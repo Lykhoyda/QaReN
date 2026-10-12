@@ -17,6 +17,7 @@ import {
   elementSelector,
   centreCovered,
   clearanceScroll,
+  keyboardClearance,
   keyboardFallbackTarget,
   bindFillIdentity,
   bindDispatchIdentity,
@@ -82,6 +83,8 @@ export interface ActResult {
   kept?: { typed: number; observed: number[] };
   // The system dialog button the runner proved it tapped, with its frame; value-free.
   dialog?: { label: string; rect: { x: number; y: number; width: number; height: number } };
+  // Android exact tap on an editable field: whether its keyboard was shown within the tap's settle budget.
+  keyboardShown?: boolean;
 }
 
 export interface WalkerDeps {
@@ -102,7 +105,12 @@ export interface WalkerDeps {
   reactFocused?(testID: string): Promise<boolean>;
   // A value-free diagnostic line for the run log.
   note?(line: string): void;
-  scroll(direction: 'down' | 'up', context: QaDispatchContext): Promise<ActResult>;
+  // clearance: pixels a keyboard-covered target's centre must travel; an adapter may size the swipe from it.
+  scroll(
+    direction: 'down' | 'up',
+    context: QaDispatchContext,
+    clearance?: number,
+  ): Promise<ActResult>;
   back(context: QaDispatchContext): Promise<ActResult>;
   dialog(action: 'accept' | 'dismiss', context: QaDispatchContext): Promise<ActResult>;
   // Set where dialog steps have no proven driver: such a step refuses before any capture.
@@ -1324,6 +1332,7 @@ export async function walkBlock(
           let initial = held?.decision;
           let freshness = attempt === 1 ? 1 : 0;
           let occluded: 'up' | 'down' | undefined;
+          let clearance: number | undefined;
           let scrollNeedsReadback = false;
           let scrollError: string | undefined;
           let act: ActResult;
@@ -1421,8 +1430,10 @@ export async function walkBlock(
                     );
                     break;
                   }
+                  const distance = clearance;
+                  clearance = undefined;
                   const result = await mutate(item, before, (context) =>
-                    deps.scroll(resolution.scroll, context),
+                    deps.scroll(resolution.scroll, context, distance),
                   );
                   scrolled = true;
                   scrollNeedsReadback = !result.ok && !result.proven;
@@ -1489,6 +1500,7 @@ export async function walkBlock(
                 }
                 refusedIdentity = element;
                 occluded = clearanceScroll(element);
+                clearance = keyboardClearance(element, before.screen);
                 continue;
               }
               if (item.kind === 'fill' && element && isPrivateInput(element)) {
@@ -1678,6 +1690,8 @@ export async function walkBlock(
             );
             break;
           }
+          // Named, never decisive: a shown keyboard is no pass and a missing one no refusal by itself.
+          const noKeyboard = act!.keyboardShown === false ? 'the keyboard did not open; ' : '';
           if (attempt < maxAttempts) {
             if (
               (item.kind === 'press' || item.kind === 'fill') &&
@@ -1693,9 +1707,7 @@ export async function walkBlock(
               ...(shot ? { screenshot: shot } : {}),
               outcome: 'retry',
               reason: redact(
-                act!.error
-                  ? `${act!.error}; the screen did not change; retrying once`
-                  : 'the screen did not change; retrying once',
+                `${act!.error ? `${act!.error}; ` : ''}${noKeyboard}the screen did not change; retrying once`,
               ),
             });
             continue;
@@ -1721,8 +1733,8 @@ export async function walkBlock(
                 : `; the target was ${reported(element)} before and ${reported(afterTarget)} after`
               : '';
           const unchanged = act!.error
-            ? `${act!.error}; ${unchangedScreen}${stillness}${selection}`
-            : `${unchangedScreen}${stillness}${selection}`;
+            ? `${act!.error}; ${noKeyboard}${unchangedScreen}${stillness}${selection}`
+            : `${noKeyboard}${unchangedScreen}${stillness}${selection}`;
           const recovering = await recovery(item, attempt, unchanged);
           if (recovering === 'retry') {
             again = true;

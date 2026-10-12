@@ -55,6 +55,8 @@ export const REQUIRED_IOS_FEATURES = [
 export const REQUIRED_ANDROID_FEATURES = [
   'APP_SCOPED_EXACT_INTERACTION',
   'FILL_EVIDENCE_V1',
+  // Android's narrower occlusion guard, not the iOS accessibility hit test.
+  'DISPATCH_OCCLUSION_GUARD_V1',
 ] as const;
 
 export const REQUIRED_ANDROID_COMMANDS = [

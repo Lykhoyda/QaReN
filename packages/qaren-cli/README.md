@@ -306,9 +306,11 @@ absent. A cold build requires the Android SDK and a JDK on PATH. A runner left
 on the emulator by rn-dev-agent 1.x is
 signed differently and cannot be replaced in place: uninstall
 `dev.lykhoyda.rndevagent.androidrunner` and `dev.lykhoyda.rndevagent.androidrunner.test`
-from that emulator first. Android `check` does not yet
-detect a foreign automation driver (another `uiautomator`, instrumentation or
-Maestro session) on the borrowed emulator; borrow one no other automation uses.
+from that emulator first. Admission on the borrowed emulator refuses
+`BUSY_FOREIGN_FLOW` with the process scan's message when another UIAutomator or
+agent-device process runs there (`adb -s <serial> shell ps -A`). The scan does
+not recognise every driver and fails open when `ps` cannot run, so borrow an
+emulator no other automation uses.
 
 Plans contain a `## QA` section, named `###` blocks, numbered actions and
 `✓` checks. See the executable
@@ -369,7 +371,8 @@ same-label owning ancestor in the retained snapshot contains the label and the
 live frame equals that owner's frame; the tap goes to the unchanged point. A later
 screen change cannot turn a proven no-mutation refusal into a passing action.
 An unproven press passes only when the screen changes. That comparison includes
-each control's selected state (iOS selected trait), so a control that shows
+each control's selected state (the iOS selected trait or Android accessibility
+selection), so a control that shows
 selection alone proves its press by becoming selected; a press that leaves it
 unchanged still fails, naming whether the target stayed selected.
 Before its one retry, the walker re-captures until the same target (resolved
@@ -395,6 +398,19 @@ point outside it leaves that check unavailable. A negative check refuses with
 `HIT_TESTED_DISPATCH_V1`, `TARGET_FRAME_GUARD_V1` and `SNAPSHOT_FIDELITY_V1`
 (toolbars named `Toolbar`, nested same-origin containers kept apart); a missing
 capability takes the runner rebuild path.
+
+The Android runner's `DISPATCH_OCCLUSION_GUARD_V1` is narrower than the iOS
+accessibility hit test. Before an exact tap, or the focus tap of an exact fill,
+it refuses `FOCUS_TARGET_OCCLUDED` with mutation `none` when an enabled
+clickable node of the target's window is drawn above the target at the point,
+or when a window above the target's window covers the point: the input method,
+a system window, another package's window, or an app window such as an RN
+`Modal`. An unresolvable draw order refuses `exact-target-unresolved`; a
+disabled, invisible or moved target stays `exact-target-not-hittable`. A
+non-clickable cover in the same window, or one hidden from accessibility, is
+not seen, and a target with neither resource id nor content description keeps
+the coordinate tap. Core requires the capability; an older runner takes the
+rebuild path.
 
 An iOS coordinate tap whose point lies inside an open app alert is anchored on
 the frame-verified live target, or on the alert itself, so XCTest does not treat
@@ -568,6 +584,27 @@ multiple actions, such as `Accept the dialog if it appears` or
 `Do not dismiss the alert`, refuse before allocation; Jev cannot override this restriction.
 On Android, dialog steps and dialog recovery refuse `TARGET_UNSUPPORTED`
 before calling a driver in this release.
+
+Android QA reads take one live traversal of the accessibility windows instead
+of the window dump that device tools keep: an `Application` root with the
+display bounds, one `Window` per app application window from bottom to top,
+each with its tree in pre-order and its ancestry, and a `Keyboard` node with
+the input method's bounds. Each read carries a runner-minted snapshot
+generation and the keyboard state. An exact tap on an editable field returns
+once the keyboard it opens is listed, so the read after the tap sees that
+keyboard as the tap's effect. The wait is bounded by the tap's post-act settle
+budget and does not happen when settle is off. A field that opens no keyboard,
+such as with a hardware keyboard, spends that budget, and if the screen then
+did not change, the step's failure says the keyboard did not open. The runner's
+report never decides a step on its own; the screen comparison does. A window of
+another package above the app that intersects it, such as a permission dialog
+or another app, becomes the snapshot under an `Alert` root, so literal steps
+see a front dialog; the status and navigation bars do not count. A node not
+visible to the user counts as off screen, so a quoted step never passes on a
+scrolled-out control. A node the traversal cannot read is counted as dropped,
+and more than 600 nodes truncate the read; either leaves the capture
+incomplete. An RN `Modal` is a second `Window`: literal steps see its content,
+but phrase actions inside an Android modal refuse in this release.
 
 Context-bound iOS QA reads require the unchanged target app already in the
 foreground. They never activate or relaunch it, or retry a failed read through

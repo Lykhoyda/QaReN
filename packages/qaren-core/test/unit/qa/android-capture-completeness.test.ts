@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import { afterEach, beforeEach, test } from 'node:test';
-import { captureScreen } from '../../../dist/qa/capture.js';
+import { captureScreen, nativeDevOverlayUncleared } from '../../../dist/qa/capture.js';
+import { keyboardCoversElement } from '../../../dist/qa/screen.js';
 import { NativeSnapshotIncomplete } from '../../../dist/qa/private-input.js';
 import { parsePlan } from '../../../dist/qa/plan.js';
 import { runPlan } from '../../../dist/qa/walker.js';
@@ -36,8 +37,10 @@ afterEach(() => {
   clearRefMap();
 });
 
+// QA reads carry the live-traversal hierarchy; these flat fixtures are depth-0 roots.
 const node = {
   index: 0,
+  depth: 0,
   type: 'android.widget.Button',
   label: 'Save',
   identifier: 'save',
@@ -200,4 +203,402 @@ test('Android input text reported as a label stays masked with its echo', async 
   assert.equal(result.verdict, 'FAIL');
   assert.match(result.failure!.seen, /Sent to •••/);
   assert.equal(JSON.stringify({ result, rows: f.rows }).includes(secret), false);
+});
+
+// The QA snapshot shape the runner builds from one live traversal of the windows.
+const display = { x: 0, y: 0, width: 1080, height: 2400 };
+const qaNode = (index: number, parentIndex: number | undefined, depth: number, rest: object) => ({
+  index,
+  depth,
+  ...(parentIndex === undefined ? {} : { parentIndex }),
+  label: '',
+  identifier: '',
+  packageName: 'com.test',
+  enabled: true,
+  hittable: false,
+  checked: false,
+  selected: false,
+  visibleToUser: true,
+  ...rest,
+});
+const qaSnapshot = (nodes: object[], extra: object = {}) => ({
+  nodes,
+  truncated: false,
+  normalizationDroppedNodes: 0,
+  snapshotGeneration: 7,
+  keyboardVisible: false,
+  ...extra,
+});
+const appRoots = () => [
+  qaNode(0, undefined, 0, { type: 'Application', rect: display }),
+  qaNode(1, 0, 1, { type: 'Window', rect: display }),
+  qaNode(2, 1, 2, { type: 'android.widget.FrameLayout', rect: display }),
+];
+const control = (index: number, rest: object) =>
+  qaNode(index, 2, 3, { type: 'android.widget.Button', hittable: true, ...rest });
+
+test('Android QA roots, ancestry and selection survive the client into a complete capture', async () => {
+  const data = qaSnapshot([
+    ...appRoots(),
+    control(3, {
+      label: 'Home',
+      identifier: 'tab-home',
+      selected: true,
+      rect: { x: 0, y: 2200, width: 540, height: 200 },
+    }),
+  ]);
+  let mapped: Record<string, unknown>[] = [];
+  _setFetchForTest(async (url) => {
+    if (String(url).endsWith('/health'))
+      return Response.json({
+        ok: true,
+        protocolVersion: RUNNER_PROTOCOL_VERSION,
+        runnerVersion: getPluginVersion(),
+        commands: REQUIRED_ANDROID_COMMANDS,
+        capabilities: [...REQUIRED_ANDROID_FEATURES, QA_READ_ONLY_CAPABILITY],
+      });
+    return Response.json({ ok: true, data });
+  });
+  const envelope = parseEnvelope(
+    await runAndroid({
+      command: 'snapshot',
+      deviceId: 'test-emulator',
+      bundleId: 'com.test',
+      qaReadOnly: true,
+    }),
+  );
+  mapped = envelope.data.nodes;
+  assert.deepEqual(
+    mapped.map((n) => [n.type, n.index, n.depth, n.parentIndex]),
+    [
+      ['Application', 0, 0, undefined],
+      ['Window', 1, 1, 0],
+      ['android.widget.FrameLayout', 2, 2, 1],
+      ['android.widget.Button', 3, 3, 2],
+    ],
+  );
+  assert.equal(envelope.data.snapshotGeneration, 7);
+  assert.equal(envelope.data.keyboardVisible, false);
+
+  const screen = await capture(data);
+  assert.equal(screen.captureCoverage?.native, 'complete');
+  assert.equal(screen.front, 'app');
+  assert.equal(screen.keyboardVisible, false);
+  assert.equal(screen.elements.find((e) => e.testID === 'tab-home')?.selected, true);
+});
+
+test('an Android node not visible to the user is offscreen and never a quoted PASS', async () => {
+  const data = qaSnapshot([
+    ...appRoots(),
+    // Scrolled out: clipped to an empty rect whose origin sits inside the viewport.
+    control(3, {
+      label: 'Archive',
+      identifier: 'archive-row',
+      hittable: false,
+      visibleToUser: false,
+      rect: { x: 0, y: 1200, width: 1080, height: 0 },
+    }),
+    // Laid out on screen but not shown.
+    qaNode(4, 2, 3, {
+      type: 'android.widget.TextView',
+      label: 'Invisible notice',
+      visibleToUser: false,
+      rect: { x: 0, y: 400, width: 1080, height: 100 },
+    }),
+  ]);
+  const screen = await capture(data);
+  assert.equal(screen.captureCoverage?.native, 'complete');
+  const archive = screen.elements.find((e) => e.testID === 'archive-row')!;
+  assert.equal(archive.offscreen, true);
+  assert.equal(archive.visibilityEvidence, 'offscreen');
+  for (const plan of ['1. Wait for "archive-row"', '✓ "Invisible notice"']) {
+    const f = walker(
+      [],
+      scriptedJudge(() => assert.fail('literal plans must not call Jev')),
+    );
+    f.deps.captureScreen = () => capture(data);
+    const result = await runPlan(parsePlan(plan).blocks!, f.deps);
+    assert.notEqual(result.verdict, 'PASS', plan);
+    assert.deepEqual(f.actions, [], plan);
+  }
+});
+
+test('scrolled-out pager pages past the viewport edge keep the walk-start overlay gate clear', async () => {
+  const data = qaSnapshot([
+    ...appRoots(),
+    qaNode(3, 2, 3, {
+      type: 'android.widget.HorizontalScrollView',
+      rect: { x: 0, y: 0, width: 1080, height: 2089 },
+    }),
+    control(4, { identifier: 'onboarding-skip', rect: { x: 55, y: 2209, width: 71, height: 56 } }),
+    // The runner keeps an off-screen page as its empty clipped rect at its own origin.
+    qaNode(5, 3, 4, {
+      type: 'android.view.ViewGroup',
+      visibleToUser: false,
+      rect: { x: 2160, y: 0, width: 0, height: 2089 },
+    }),
+    qaNode(6, 5, 5, {
+      type: 'android.widget.TextView',
+      label: 'Page three',
+      visibleToUser: false,
+      rect: { x: 2625, y: 1136, width: 0, height: 74 },
+    }),
+  ]);
+  _setFetchForTest(async (url) => {
+    if (String(url).endsWith('/health'))
+      return Response.json({
+        ok: true,
+        protocolVersion: RUNNER_PROTOCOL_VERSION,
+        runnerVersion: getPluginVersion(),
+        commands: REQUIRED_ANDROID_COMMANDS,
+        capabilities: [...REQUIRED_ANDROID_FEATURES, QA_READ_ONLY_CAPABILITY],
+      });
+    return Response.json({ ok: true, data });
+  });
+  const envelope = parseEnvelope(
+    await runAndroid({
+      command: 'snapshot',
+      deviceId: 'test-emulator',
+      bundleId: 'com.test',
+      qaReadOnly: true,
+    }),
+  );
+  assert.equal(
+    nativeDevOverlayUncleared({
+      ...envelope.data,
+      snapshotVerdict: envelope.meta.snapshotVerdict,
+      surface: 'app',
+    }),
+    false,
+  );
+
+  const screen = await capture(data);
+  assert.equal(screen.captureCoverage?.native, 'complete');
+  assert.equal(screen.elements.find((e) => e.label === 'Page three')?.offscreen, true);
+  const f = walker(
+    [],
+    scriptedJudge(() => assert.fail('literal plans must not call Jev')),
+  );
+  f.deps.captureScreen = () => capture(data);
+  const result = await runPlan(parsePlan('✓ "Page three"').blocks!, f.deps);
+  assert.notEqual(result.verdict, 'PASS');
+});
+
+test('the Android Keyboard node marks a centre-covered field keyboard-covered', async () => {
+  const keyboard = { x: 0, y: 1500, width: 1080, height: 900 };
+  const screen = await capture(
+    qaSnapshot(
+      [
+        ...appRoots(),
+        control(3, {
+          type: 'android.widget.EditText',
+          label: 'Email',
+          identifier: 'email',
+          rect: { x: 40, y: 1700, width: 1000, height: 120 },
+        }),
+        control(4, {
+          label: 'Save',
+          identifier: 'save',
+          rect: { x: 40, y: 300, width: 1000, height: 120 },
+        }),
+        qaNode(5, 0, 1, { type: 'Keyboard', packageName: 'com.example.ime', rect: keyboard }),
+      ],
+      { keyboardVisible: true },
+    ),
+  );
+  assert.equal(screen.captureCoverage?.native, 'complete');
+  assert.equal(screen.keyboardVisible, true);
+  assert.deepEqual(screen.keyboardFrame, keyboard);
+  assert.equal(keyboardCoversElement(screen.elements.find((e) => e.testID === 'email')!), true);
+  assert.equal(keyboardCoversElement(screen.elements.find((e) => e.testID === 'save')!), false);
+});
+
+// The Android Keyboard node carries no keys, so the keyboard opening is the tap's only visible effect.
+test('an Android field tap whose only effect is opening the keyboard passes on its first press', async () => {
+  const form = (keyboardVisible: boolean) =>
+    qaSnapshot(
+      [
+        ...appRoots(),
+        control(3, {
+          type: 'android.widget.EditText',
+          label: 'Email',
+          identifier: 'rhf-email',
+          rect: { x: 40, y: 500, width: 1000, height: 120 },
+        }),
+        ...(keyboardVisible
+          ? [
+              qaNode(4, 0, 1, {
+                type: 'Keyboard',
+                packageName: 'com.example.ime',
+                rect: { x: 0, y: 1500, width: 1080, height: 900 },
+              }),
+            ]
+          : []),
+      ],
+      { keyboardVisible },
+    );
+  const closed = await capture(form(false));
+  const open = await capture(form(true));
+  const f = walker(
+    [closed, open],
+    scriptedJudge(() => assert.fail('literal plans must not call Jev')),
+    {
+      ok: false,
+      proven: false,
+      mutation: 'possible',
+      error:
+        'INTERACTION_EFFECT_UNVERIFIED: The tap was dispatched but produced no observable UI change.',
+    },
+  );
+  const result = await runPlan(parsePlan('1. Tap "rhf-email"').blocks!, f.deps);
+  assert.equal(result.verdict, 'PASS', result.failure?.seen);
+  assert.equal(f.actions.length, 1);
+});
+
+// Android reports a field the keyboard covers as not visible to the user while its rect stays on screen.
+const keyboardForm = (field7: { y: number; visibleToUser: boolean }) =>
+  qaSnapshot(
+    [
+      ...appRoots(),
+      control(3, {
+        type: 'android.widget.EditText',
+        identifier: 'qa-kb-input-1',
+        rect: { x: 63, y: 600, width: 954, height: 93 },
+      }),
+      control(4, {
+        type: 'android.widget.EditText',
+        identifier: 'qa-kb-input-7',
+        // The runner derives hittable from enabled and visible-to-user.
+        hittable: field7.visibleToUser,
+        visibleToUser: field7.visibleToUser,
+        rect: { x: 63, y: field7.y, width: 954, height: 93 },
+      }),
+      control(5, {
+        type: 'android.widget.TextView',
+        label: 'Field 7',
+        hittable: false,
+        visibleToUser: field7.visibleToUser,
+        rect: { x: 63, y: field7.y - 60, width: 300, height: 50 },
+      }),
+      qaNode(6, 0, 1, {
+        type: 'Keyboard',
+        packageName: 'com.example.ime',
+        rect: { x: 0, y: 1517, width: 1080, height: 883 },
+      }),
+    ],
+    { keyboardVisible: true },
+  );
+
+test('an Android field the keyboard hides is keyboard-covered, not scrolled out', async () => {
+  const screen = await capture(keyboardForm({ y: 2049, visibleToUser: false }));
+  assert.equal(screen.captureCoverage?.native, 'complete');
+  const field = screen.elements.find((e) => e.testID === 'qa-kb-input-7')!;
+  assert.equal(field.offscreen, false);
+  assert.equal(field.hittable, true);
+  assert.equal(keyboardCoversElement(field), true);
+  const f = walker(
+    [],
+    scriptedJudge(() => assert.fail('literal plans must not call Jev')),
+  );
+  f.deps.captureScreen = () => capture(keyboardForm({ y: 2049, visibleToUser: false }));
+  const result = await runPlan(parsePlan('✓ "Field 7"').blocks!, f.deps);
+  assert.notEqual(result.verdict, 'PASS');
+});
+
+test('a keyboard-hidden Android field is cleared by one scroll and then filled', async () => {
+  const covered = await capture(keyboardForm({ y: 2049, visibleToUser: false }));
+  const cleared = await capture(keyboardForm({ y: 1200, visibleToUser: true }));
+  const f = walker(
+    [covered, cleared],
+    scriptedJudge(() => assert.fail('literal plans must not call Jev')),
+  );
+  const result = await runPlan(parsePlan('1. Type "x" into "qa-kb-input-7"').blocks!, f.deps);
+  assert.equal(result.verdict, 'PASS', result.failure?.seen);
+  assert.deepEqual(f.actions, ['scroll down', 'fill @e4 x']);
+});
+
+test('a keyboard-hidden Android field still covered after one scroll refuses as under the keyboard', async () => {
+  const covered = await capture(keyboardForm({ y: 2049, visibleToUser: false }));
+  const still = await capture(keyboardForm({ y: 1714, visibleToUser: false }));
+  const f = walker(
+    [covered, still],
+    scriptedJudge(() => assert.fail('literal plans must not call Jev')),
+  );
+  const result = await runPlan(parsePlan('1. Type "x" into "qa-kb-input-7"').blocks!, f.deps);
+  assert.equal(result.verdict, 'FAIL');
+  assert.match(result.failure!.seen, /stayed off screen after one scroll: .*under the keyboard/);
+  assert.deepEqual(f.actions, ['scroll down']);
+});
+
+test('the clearance scroll for a keyboard-hidden field carries the distance that clears the keyboard', async () => {
+  const covered = await capture(keyboardForm({ y: 2049, visibleToUser: false }));
+  const cleared = await capture(keyboardForm({ y: 700, visibleToUser: true }));
+  const f = walker(
+    [covered, cleared],
+    scriptedJudge(() => assert.fail('literal plans must not call Jev')),
+  );
+  const clearances: (number | undefined)[] = [];
+  const scroll = f.deps.scroll;
+  f.deps.scroll = (direction, context, clearance) => {
+    clearances.push(clearance);
+    return scroll(direction, context);
+  };
+  const result = await runPlan(parsePlan('1. Type "x" into "qa-kb-input-7"').blocks!, f.deps);
+  assert.equal(result.verdict, 'PASS', result.failure?.seen);
+  // Centre 2049 + 93 / 2 moves to the middle of the 1517 px above the keyboard.
+  assert.deepEqual(clearances, [2049 + 93 / 2 - 1517 / 2]);
+});
+
+test('a not-visible Android field away from the keyboard stays off screen', async () => {
+  const screen = await capture(keyboardForm({ y: 400, visibleToUser: false }));
+  const field = screen.elements.find((e) => e.testID === 'qa-kb-input-7')!;
+  assert.equal(field.offscreen, true);
+  assert.equal(keyboardCoversElement(field), false);
+});
+
+test('an Android Alert-rooted snapshot reads as a front dialog', async () => {
+  const pkg = 'com.android.permissioncontroller';
+  const screen = await capture(
+    qaSnapshot([
+      qaNode(0, undefined, 0, {
+        type: 'Alert',
+        packageName: pkg,
+        rect: { x: 80, y: 900, width: 920, height: 600 },
+      }),
+      qaNode(1, 0, 1, {
+        type: 'android.widget.Button',
+        label: 'Allow',
+        packageName: pkg,
+        hittable: true,
+        rect: { x: 100, y: 1300, width: 400, height: 120 },
+      }),
+    ]),
+  );
+  assert.equal(screen.front, 'dialog');
+});
+
+test('Android QA ancestry the client cannot trust is dropped and counted, never silently stripped', async () => {
+  for (const broken of [
+    { parentIndex: 9 },
+    { parentIndex: 3 },
+    { parentIndex: -1 },
+    { depth: 7 },
+    { depth: 'three' },
+    { index: 'x' },
+  ]) {
+    const data = qaSnapshot([
+      ...appRoots(),
+      control(3, {
+        label: 'Save',
+        identifier: 'save',
+        rect: { x: 0, y: 0, width: 100, height: 50 },
+        ...broken,
+      }),
+    ]);
+    await assert.rejects(
+      capture(data),
+      (error) => error instanceof NativeSnapshotIncomplete && error.causes.includes('dropped=1'),
+      JSON.stringify(broken),
+    );
+  }
 });

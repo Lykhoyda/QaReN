@@ -1371,3 +1371,82 @@ test('a key that navigates away cannot substitute for the original explicit subm
   );
   assert.match(outcome.failure?.seen ?? '', /login_submit/);
 });
+
+// Android: the runner's DISPATCH_OCCLUSION_GUARD_V1 refusal as walk.ts's act() reports it.
+const ANDROID_OCCLUDED: ActResult = {
+  ok: false,
+  proven: false,
+  mutation: 'none',
+  error:
+    'FOCUS_TARGET_OCCLUDED: FOCUS_TARGET_OCCLUDED: the tap point is covered by another element; no tap was performed',
+};
+
+function androidAt(y: number): Screen {
+  const display = { x: 0, y: 0, width: 1080, height: 2400 };
+  const node = (rest: Partial<NativeNode> & Pick<NativeNode, 'ref' | 'index'>): NativeNode => ({
+    visibleToUser: true,
+    enabled: true,
+    hittable: false,
+    ...rest,
+  });
+  return covered(
+    join(
+      [
+        node({ ref: '@e0', index: 0, depth: 0, type: 'Application', rect: display }),
+        node({ ref: '@e1', index: 1, depth: 1, parentIndex: 0, type: 'Window', rect: display }),
+        node({
+          ref: '@e2',
+          index: 2,
+          depth: 2,
+          parentIndex: 1,
+          type: 'android.widget.FrameLayout',
+          rect: display,
+        }),
+        node({
+          ref: '@e3',
+          index: 3,
+          depth: 3,
+          parentIndex: 2,
+          type: 'android.widget.Button',
+          identifier: 'go',
+          label: 'Go',
+          hittable: true,
+          rect: { x: 40, y, width: 1000, height: 120 },
+        }),
+      ],
+      [],
+    ),
+  );
+}
+
+test('Android: occluded once scrolls once, re-resolves and presses the same identity again', async () => {
+  const screens = [androidAt(1900), androidAt(1100), androidAt(1100), done()];
+  const f = fake(screens, { press: [ANDROID_OCCLUDED] });
+  const outcome = await walkBlock(block('1. Tap "go"\n'), f.deps);
+  assert.equal(outcome.block.outcome, 'pass');
+  assert.deepEqual(f.calls, [
+    'capture',
+    'press @e3',
+    'scroll down',
+    'capture',
+    'capture',
+    'press @e3',
+    'capture',
+  ]);
+  assert.equal(targetOf(screens[1], '@e3')?.testID, 'go');
+});
+
+test('Android: occluded twice stays off screen after one scroll, never an uncertain outcome', async () => {
+  const f = fake([androidAt(1900), androidAt(1850)], {
+    press: [ANDROID_OCCLUDED, ANDROID_OCCLUDED],
+  });
+  const outcome = await walkBlock(block('1. Tap "go"\n'), f.deps);
+  assert.equal(outcome.block.outcome, 'fail');
+  assert.equal(f.calls.filter((c) => c.startsWith('press')).length, 2);
+  assert.equal(f.calls.filter((c) => c.startsWith('scroll')).length, 1);
+  assert.match(
+    outcome.failure?.seen ?? '',
+    /^FOCUS_TARGET_OCCLUDED: .*"go" stayed off screen after one scroll/,
+  );
+  assert.doesNotMatch(JSON.stringify(outcome), /ACTION_OUTCOME_UNCERTAIN/);
+});

@@ -413,6 +413,34 @@ test('a bundle still building at the attach deadline refuses as an attach timeou
   assert.ok(!calls.includes('prove'), calls.join());
 });
 
+test('an Android foreign-driver warning refuses admission with its message', async () => {
+  const { androidForeignDriverMessage } =
+    await import('../../../dist/runners/external-runner-detect.js');
+  const argv: string[][] = [];
+  const exec = (async (_bin: string, args: string[]) => {
+    argv.push(args);
+    return {
+      stdout:
+        'USER PID PPID VSZ RSS WCHAN ADDR S NAME\nshell 4242 1 0 0 0 0 S uiautomator\nu0_a1 99 1 0 0 0 0 S dev.lykhoyda.rndevagent.androidrunner\n',
+    };
+  }) as never;
+  const message = await androidForeignDriverMessage('emulator-5554', exec);
+  assert.deepEqual(argv, [['-s', 'emulator-5554', 'shell', 'ps', '-A']]);
+  assert.match(message ?? '', /competing Android UIAutomator/);
+  const { calls, stop, steps } = harness({ foreignDriver: async () => message });
+  await assert.rejects(admit(steps, stop), (error: Error & { code?: string }) => {
+    assert.equal(error.code, 'BUSY_FOREIGN_FLOW');
+    assert.match(error.message, /competing Android UIAutomator/);
+    return true;
+  });
+  assert.ok(!calls.includes('open'));
+
+  const ownRunnerOnly = (async () => ({
+    stdout: 'u0_a1 99 1 0 0 0 0 S dev.lykhoyda.rndevagent.androidrunner\n',
+  })) as never;
+  assert.equal(await androidForeignDriverMessage('emulator-5554', ownRunnerOnly), undefined);
+});
+
 // A fake dev client: each runtime is its own global object; a reload swaps it for a fresh one.
 function devClient() {
   const reads: string[] = [];

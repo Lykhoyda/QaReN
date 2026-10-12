@@ -1623,6 +1623,20 @@ async function effectVerificationEnabled(
   }
 }
 
+// The keyboard an exact Android tap opens is that tap's effect, so the runner waits
+// for it within the budget the post-act settle applies to the same tap (waitForSettle's
+// default and ceiling); with settle off the runner does not wait.
+async function tapKeyboardWaitMs(
+  settleOpts: SettlePerCallOpts | undefined,
+): Promise<number | undefined> {
+  if (!(await effectVerificationEnabled(settleOpts, {}))) return undefined;
+  const { SETTLE_DEFAULT_BUDGET_MS, SETTLE_MAX_BUDGET_MS } = await import('./lifecycle/settle.js');
+  const requested = settleOpts?.timeoutMs;
+  return typeof requested === 'number' && Number.isFinite(requested) && requested >= 0
+    ? Math.min(requested, SETTLE_MAX_BUDGET_MS)
+    : SETTLE_DEFAULT_BUDGET_MS;
+}
+
 // The effect probe compares a pre-interaction hierarchy hash against the
 // post-settle one, so a missing baseline is not evidence of a swallowed tap.
 // Any preceding mutating verb invalidates the baseline, so re-establish it
@@ -2155,6 +2169,10 @@ export async function runNative(
       },
       androidPolicy,
     );
+    if (android.command === 'tap' && android.exactIdentifier !== undefined) {
+      const keyboardWaitMs = await tapKeyboardWaitMs(opts.settle);
+      if (keyboardWaitMs !== undefined) android.keyboardWaitMs = keyboardWaitMs;
+    }
     let result = await runAndroid({ ...android, deviceId: activeSession?.deviceId });
     result = await settleWithRetryIfNoChange(
       result,

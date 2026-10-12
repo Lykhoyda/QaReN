@@ -38,7 +38,11 @@ test('a runner without FILL_EVIDENCE_V1 is incompatible on both platforms', () =
         'SYSTEM_ALERT_TAP_V1',
       ],
     ],
-    [REQUIRED_ANDROID_COMMANDS, REQUIRED_ANDROID_FEATURES, ['APP_SCOPED_EXACT_INTERACTION']],
+    [
+      REQUIRED_ANDROID_COMMANDS,
+      REQUIRED_ANDROID_FEATURES,
+      ['APP_SCOPED_EXACT_INTERACTION', 'DISPATCH_OCCLUSION_GUARD_V1'],
+    ],
   ] as const) {
     const health = { protocolVersion: 2, commands: [...commands], capabilities: [...others] };
     assert.deepEqual(classifyRunnerCompatibility(health, null, commands, features), {

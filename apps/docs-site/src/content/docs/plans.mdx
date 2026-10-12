@@ -93,6 +93,8 @@ during the walk instead.
 - On iOS, an accept or dismiss step against a system alert taps one button by exact
   English label, so `Allow` never matches `Allow Once`. A localized alert fails
   `DIALOG_BUTTON_NOT_FOUND`. Assert the permission's effect with the next step.
-- On Android, dialog steps refuse `TARGET_UNSUPPORTED` in this release.
+- For Android dialog and modal limits, snapshot visibility and covered-target recovery,
+  see the CLI guide's [walk contract](https://github.com/Lykhoyda/rn-dev-agent/blob/develop/packages/qaren-cli/README.md#check-a-plan)
+  and [occluded taps and focus](https://github.com/Lykhoyda/rn-dev-agent/blob/develop/packages/qaren-cli/README.md#occluded-taps-and-focus).
 - A plan with any fill step keeps a pull request's video local; see
   [Test a pull request](../pull-requests/#video).

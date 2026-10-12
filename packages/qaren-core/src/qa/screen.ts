@@ -37,7 +37,7 @@ export interface Element {
   placeholder?: string;
   hittable: boolean;
   disabled: boolean;
-  // The platform reports the control selected (iOS selected trait); a selection-only change is still a change.
+  // A platform-reported selection-only change still proves a screen change.
   selected?: true;
   secure: boolean;
   offscreen: boolean;
@@ -82,6 +82,8 @@ export interface Screen {
   appProcessIdentifier?: number;
   keyboardVisible?: boolean;
   keyboardFrame?: NonNullable<NativeNode['rect']>;
+  // A captured keyboard without its keys (Android's synthetic node); its presence alone is the visible change.
+  keylessKeyboard?: true;
   // Literal text and merged labels not painted under the keyboard; present only when one is captured.
   uncoveredText?: string[];
   uncoveredLabelText?: string[];
@@ -160,6 +162,8 @@ export interface NativeNode {
   hittable?: boolean;
   enabled?: boolean;
   selected?: boolean;
+  // Android only: a scrolled-out node keeps an empty clipped rect inside the viewport.
+  visibleToUser?: boolean;
   secure?: boolean;
   value?: string;
   rect?: { x: number; y: number; width: number; height: number };
@@ -452,6 +456,51 @@ export function join(
       false);
   const offscreen = offscreenNodes(nodes, presence);
   const viewport = outsideViewport(nodes);
+  const keyboardIndex = nodes.findIndex(
+    (n) => n.type === 'Keyboard' && !!n.rect && n.rect.width > 0 && n.rect.height > 0,
+  );
+  const keyboardFrame = keyboardIndex >= 0 ? nodes[keyboardIndex].rect : undefined;
+  const keylessKeyboard = keyboardIndex >= 0 && !nodes.some((n) => n.parentIndex === keyboardIndex);
+  const windowOf = (index: number): number | undefined => {
+    for (
+      let p = nodes[index].parentIndex;
+      p !== undefined && p >= 0 && p < index;
+      p = nodes[p].parentIndex
+    )
+      if (nodes[p].type === 'Window') return p;
+    return undefined;
+  };
+  const keyboardWindow = keyboardIndex >= 0 ? windowOf(keyboardIndex) : undefined;
+  const ownWindow =
+    keyboardWindow !== undefined && nodes.findIndex((n) => n.type === 'Window') !== keyboardWindow;
+  const screenRect = nodes[0]?.type === 'Application' ? nodes[0].rect : undefined;
+  // A docked full-width keyboard paints its chrome below the frame XCUI reports, to the screen bottom.
+  const keyboardBottom =
+    keyboardFrame && screenRect && keyboardFrame.width >= screenRect.width
+      ? Math.max(keyboardFrame.y + keyboardFrame.height, screenRect.y + screenRect.height)
+      : keyboardFrame && keyboardFrame.y + keyboardFrame.height;
+  const underKeyboard = (n: NativeNode, i: number): boolean => {
+    if (!keyboardFrame || keyboardBottom === undefined || !n.rect) return false;
+    if (ownWindow && windowOf(i) === keyboardWindow) return false;
+    if (n.type === 'Keyboard') return false;
+    for (let p = n.parentIndex; p !== undefined && p >= 0 && p < i; p = nodes[p].parentIndex)
+      if (nodes[p].type === 'Keyboard') return false;
+    const x = n.rect.x + n.rect.width / 2;
+    const y = n.rect.y + n.rect.height / 2;
+    return (
+      x >= keyboardFrame.x &&
+      x < keyboardFrame.x + keyboardFrame.width &&
+      y >= keyboardFrame.y &&
+      y < keyboardBottom
+    );
+  };
+  // Android reports a node the keyboard covers as not visible to the user; it is covered, not scrolled out.
+  const keyboardHidden = (n: NativeNode, i: number): boolean =>
+    n.visibleToUser === false &&
+    !!n.rect &&
+    n.rect.width > 0 &&
+    n.rect.height > 0 &&
+    underKeyboard(n, i);
   const contradicted = frameContradictions(nodes);
   const chrome = scrollChromeNodes(nodes, presence);
   const associationDiagnostics = new Map<number, HostAssociationDiagnostic>();
@@ -627,16 +676,21 @@ export function join(
       ref: n.ref,
       kind,
       nativeKind,
-      hittable: n.hittable === true,
+      // Android's hittable is enabled and visible-to-user; the keyboard explains a covered node's invisibility.
+      hittable: n.hittable === true || (keyboardHidden(n, nodeIndex) && n.enabled !== false),
       disabled: n.enabled === false || match?.disabled === true,
       ...(n.selected === true ? { selected: true as const } : {}),
       secure: n.secure === true || n.type === 'SecureTextField',
-      offscreen: viewport.has(nodeIndex),
-      visibilityEvidence: contradicted.has(nodeIndex)
-        ? 'unresolved'
-        : viewport.has(nodeIndex)
+      offscreen:
+        viewport.has(nodeIndex) || (n.visibleToUser === false && !keyboardHidden(n, nodeIndex)),
+      visibilityEvidence:
+        n.visibleToUser === false && !keyboardHidden(n, nodeIndex)
           ? 'offscreen'
-          : 'visible',
+          : contradicted.has(nodeIndex)
+            ? 'unresolved'
+            : viewport.has(nodeIndex)
+              ? 'offscreen'
+              : 'visible',
       semantic: {
         ...capabilities,
         ...(headings.has(nodeIndex) ? { heading: headings.get(nodeIndex)! } : {}),
@@ -844,43 +898,6 @@ export function join(
   const labelText: string[] = [];
   const unresolvedText: string[] = [];
   const paintedKeys = new Map<number, string>();
-  const keyboardIndex = nodes.findIndex(
-    (n) => n.type === 'Keyboard' && !!n.rect && n.rect.width > 0 && n.rect.height > 0,
-  );
-  const keyboardFrame = keyboardIndex >= 0 ? nodes[keyboardIndex].rect : undefined;
-  const windowOf = (index: number): number | undefined => {
-    for (
-      let p = nodes[index].parentIndex;
-      p !== undefined && p >= 0 && p < index;
-      p = nodes[p].parentIndex
-    )
-      if (nodes[p].type === 'Window') return p;
-    return undefined;
-  };
-  const keyboardWindow = keyboardIndex >= 0 ? windowOf(keyboardIndex) : undefined;
-  const ownWindow =
-    keyboardWindow !== undefined && nodes.findIndex((n) => n.type === 'Window') !== keyboardWindow;
-  const screenRect = nodes[0]?.type === 'Application' ? nodes[0].rect : undefined;
-  // A docked full-width keyboard paints its chrome below the frame XCUI reports, to the screen bottom.
-  const keyboardBottom =
-    keyboardFrame && screenRect && keyboardFrame.width >= screenRect.width
-      ? Math.max(keyboardFrame.y + keyboardFrame.height, screenRect.y + screenRect.height)
-      : keyboardFrame && keyboardFrame.y + keyboardFrame.height;
-  const underKeyboard = (n: NativeNode, i: number): boolean => {
-    if (!keyboardFrame || keyboardBottom === undefined || !n.rect) return false;
-    if (ownWindow && windowOf(i) === keyboardWindow) return false;
-    if (n.type === 'Keyboard') return false;
-    for (let p = n.parentIndex; p !== undefined && p >= 0 && p < i; p = nodes[p].parentIndex)
-      if (nodes[p].type === 'Keyboard') return false;
-    const x = n.rect.x + n.rect.width / 2;
-    const y = n.rect.y + n.rect.height / 2;
-    return (
-      x >= keyboardFrame.x &&
-      x < keyboardFrame.x + keyboardFrame.width &&
-      y >= keyboardFrame.y &&
-      y < keyboardBottom
-    );
-  };
   const uncoveredText: string[] = [];
   const uncoveredLabelText: string[] = [];
   for (const { n, e, i } of ordered) {
@@ -956,6 +973,7 @@ export function join(
     elements: elements.filter((_, i) => !duplicates.has(i)),
     visibleText,
     ...(keyboardFrame ? { keyboardFrame, uncoveredText, uncoveredLabelText } : {}),
+    ...(keylessKeyboard ? { keylessKeyboard: true as const } : {}),
     paintedText,
     ...(labelText.length ? { labelText } : {}),
     ...(unresolvedText.length ? { unresolvedText } : {}),
@@ -1228,6 +1246,7 @@ export function screenSignature(screen: Screen): string {
   );
   return JSON.stringify({
     front: screen.front,
+    ...(screen.keylessKeyboard ? { keyboard: true } : {}),
     text: screen.visibleText.filter((text) => !secureLines.has(text)),
     elements: screen.elements
       .filter((e) => e.label !== undefined || e.testID !== undefined || e.value !== undefined)

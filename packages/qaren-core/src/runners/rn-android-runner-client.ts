@@ -181,6 +181,8 @@ export interface RunAndroidArgs {
   focusX?: number;
   focusY?: number;
   focusWaitMs?: number;
+  /** An exact tap on an editable field waits this long for its keyboard: the tap's post-act settle budget. */
+  keyboardWaitMs?: number;
   secureInput?: boolean;
   operationToken?: string;
   _staleRef?: string;
@@ -195,6 +197,9 @@ interface RunnerResponse {
 
 interface RunnerSnapshotNode {
   index?: number;
+  depth?: number;
+  parentIndex?: number;
+  presence?: unknown;
   type?: string;
   label?: string;
   identifier?: string;
@@ -203,6 +208,8 @@ interface RunnerSnapshotNode {
   rect?: { x: number; y: number; width: number; height: number };
   enabled?: boolean;
   hittable?: boolean;
+  selected?: boolean;
+  visibleToUser?: boolean;
   secure?: boolean;
 }
 
@@ -1731,8 +1738,12 @@ export async function stopAndroidRunner(deviceId?: string, signal?: AbortSignal)
 // type/snapshot/screenshot run long; everything else is fast. Hoisted out of the
 // old inline postCommand so the recovery wrapper reuses the exact same budget for
 // both the original send and the resend (mirrors the iOS commandTimeoutMs helper).
-function commandTimeoutMs(command: unknown): number {
-  return command === 'type' || command === 'snapshot' || command === 'screenshot' ? 35_000 : 10_000;
+// A tap that may wait for its keyboard gets that wait on top, so the wait never reads as a timeout.
+function commandTimeoutMs(body: { command?: unknown; keyboardWaitMs?: unknown }): number {
+  const { command, keyboardWaitMs } = body;
+  const base =
+    command === 'type' || command === 'snapshot' || command === 'screenshot' ? 35_000 : 10_000;
+  return command === 'tap' && typeof keyboardWaitMs === 'number' ? base + keyboardWaitMs : base;
 }
 
 // One /command round-trip with no recovery. Bounds the request so a wedged
@@ -1831,13 +1842,14 @@ async function probeCommandStatus(
 async function postCommandWithRecovery(
   body: {
     command?: unknown;
+    keyboardWaitMs?: unknown;
   },
   qaContext?: QaDispatchContext,
 ): Promise<{ resp: RunnerResponse; recovery?: TransportRecovery }> {
   const state = runnerState;
   if (!state) throw new Error('rn-android-runner not started');
   const commandId = generateCommandId();
-  const timeoutMs = commandTimeoutMs(body.command);
+  const timeoutMs = commandTimeoutMs(body);
   try {
     return {
       resp: await sendCommandOnce(state.hostPort, { ...body, commandId }, timeoutMs, qaContext),
@@ -1923,8 +1935,36 @@ export async function androidSnapshotNodesViaProbe(
   }
 }
 
-function mapRunnerNodesToFlat(nodes: RunnerSnapshotNode[]): FlatNode[] {
+function isNonNegativeSafeInteger(value: unknown): value is number {
+  return typeof value === 'number' && Number.isSafeInteger(value) && value >= 0;
+}
+
+// QA reads carry the live-traversal hierarchy. A node whose index, depth or parent
+// cannot be trusted is dropped (and so counted) rather than stripped of ancestry.
+function qaHierarchy(
+  n: RunnerSnapshotNode,
+  depths: Map<number, number>,
+): Pick<FlatNode, 'index' | 'depth' | 'parentIndex'> | undefined {
+  if (
+    !isNonNegativeSafeInteger(n.index) ||
+    depths.has(n.index) ||
+    !isNonNegativeSafeInteger(n.depth)
+  )
+    return undefined;
+  if (n.parentIndex === undefined)
+    return n.depth === 0 ? { index: n.index, depth: n.depth } : undefined;
+  if (
+    !isNonNegativeSafeInteger(n.parentIndex) ||
+    n.parentIndex >= n.index ||
+    depths.get(n.parentIndex) !== n.depth - 1
+  )
+    return undefined;
+  return { index: n.index, depth: n.depth, parentIndex: n.parentIndex };
+}
+
+function mapRunnerNodesToFlat(nodes: RunnerSnapshotNode[], qa = false): FlatNode[] {
   const out: FlatNode[] = [];
+  const depths = new Map<number, number>();
   let synthCounter = 0;
   for (const n of nodes) {
     if (
@@ -1935,8 +1975,14 @@ function mapRunnerNodesToFlat(nodes: RunnerSnapshotNode[]): FlatNode[] {
       n.rect.height < 0
     )
       continue;
+    const hierarchy = qa ? qaHierarchy(n, depths) : undefined;
+    if (qa && !hierarchy) continue;
     const ref = `@e${n.index ?? synthCounter++}`;
-    const flat: FlatNode = { ref, type: n.type ?? '', rect: n.rect };
+    const flat: FlatNode = { ref, type: n.type ?? '', rect: n.rect, ...hierarchy };
+    if (hierarchy) depths.set(hierarchy.index!, hierarchy.depth!);
+    if (qa && Object.hasOwn(n, 'presence')) flat.presence = n.presence;
+    if (qa && n.selected === true) flat.selected = true;
+    if (qa && typeof n.visibleToUser === 'boolean') flat.visibleToUser = n.visibleToUser;
     if (n.label !== undefined) flat.label = n.label;
     if (n.identifier !== undefined) flat.identifier = n.identifier;
     if (n.packageName !== undefined) flat.packageName = n.packageName;
@@ -2031,6 +2077,7 @@ export async function runAndroid(args: RunAndroidArgs): Promise<ToolResult> {
   if (args.focusX !== undefined) body.focusX = args.focusX;
   if (args.focusY !== undefined) body.focusY = args.focusY;
   if (args.focusWaitMs !== undefined) body.focusWaitMs = args.focusWaitMs;
+  if (args.keyboardWaitMs !== undefined) body.keyboardWaitMs = args.keyboardWaitMs;
   if (args.secureInput !== undefined) body.secureInput = args.secureInput;
   if (args.operationToken !== undefined) body.operationToken = args.operationToken;
 
@@ -2154,7 +2201,10 @@ export async function runAndroid(args: RunAndroidArgs): Promise<ToolResult> {
   }
 
   if (args.command === 'tap') {
-    const data = resp.data as { tapped?: unknown } | undefined;
+    const data = resp.data as { tapped?: unknown; keyboardShown?: unknown } | undefined;
+    // Meta, so an unverified-effect refusal built from this result still names the keyboard.
+    if (data?.tapped === true && typeof data.keyboardShown === 'boolean')
+      return okResult(data, { meta: { ...recoveryMeta, keyboardShown: data.keyboardShown } });
     if (data?.tapped !== true) {
       // NOTE: ACTION_CLICK is atomic, but a false coordinate click can mean the
       // touch-up failed after the app already received the touch-down.
@@ -2184,10 +2234,20 @@ export async function runAndroid(args: RunAndroidArgs): Promise<ToolResult> {
       nodes?: RunnerSnapshotNode[];
       truncated?: unknown;
       normalizationDroppedNodes?: unknown;
+      snapshotGeneration?: unknown;
+      keyboardVisible?: unknown;
     };
     if (Array.isArray(data.nodes)) {
-      const flat = mapRunnerNodesToFlat(data.nodes);
-      const outcome = updateRefMapFromFlat(flat);
+      const flat = mapRunnerNodesToFlat(data.nodes, qaReadOnly);
+      const freshness = {
+        ...(isNonNegativeSafeInteger(data.snapshotGeneration)
+          ? { snapshotGeneration: data.snapshotGeneration }
+          : {}),
+        ...(typeof data.keyboardVisible === 'boolean'
+          ? { keyboardVisible: data.keyboardVisible }
+          : {}),
+      };
+      const outcome = updateRefMapFromFlat(flat, freshness);
       const snapshotVerdict = buildSnapshotVerdict('rn-android-runner', flat.length, outcome);
       const producerDropped = data.normalizationDroppedNodes;
       const dropped =
@@ -2201,6 +2261,7 @@ export async function runAndroid(args: RunAndroidArgs): Promise<ToolResult> {
           nodes: flat,
           ...(typeof data.truncated === 'boolean' ? { truncated: data.truncated } : {}),
           ...(Number.isSafeInteger(dropped) ? { normalizationDroppedNodes: dropped } : {}),
+          ...freshness,
         },
         { meta: { snapshotVerdict, ...recoveryMeta } },
       );

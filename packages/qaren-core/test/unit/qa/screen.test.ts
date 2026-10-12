@@ -275,3 +275,35 @@ test('the screen signature returns canonical content without hashing', () => {
   assert.equal(signature, screenSignature(structuredClone(screen)));
   assert.notEqual(signature, screenSignature({ ...screen, front: 'dialog' }));
 });
+
+test('a keyboard with captured keys adds nothing beyond its keys to the screen signature', () => {
+  const nodes: NativeNode[] = [
+    {
+      ref: '@app',
+      index: 0,
+      type: 'Application',
+      rect: { x: 0, y: 0, width: 402, height: 874 },
+    },
+    {
+      ref: '@kb',
+      index: 1,
+      parentIndex: 0,
+      type: 'Keyboard',
+      rect: { x: 0, y: 560, width: 402, height: 314 },
+    },
+    {
+      ref: '@q',
+      index: 2,
+      parentIndex: 1,
+      type: 'Key',
+      label: 'q',
+      rect: { x: 4, y: 570, width: 36, height: 44 },
+    },
+  ];
+  const screen = joinScreen(nodes, []);
+  assert.equal(screen.keylessKeyboard, undefined);
+  assert.equal(JSON.parse(screenSignature(screen)).keyboard, undefined);
+  const keyless = joinScreen(nodes.slice(0, 2), []);
+  assert.equal(keyless.keylessKeyboard, true);
+  assert.equal(JSON.parse(screenSignature(keyless)).keyboard, true);
+});

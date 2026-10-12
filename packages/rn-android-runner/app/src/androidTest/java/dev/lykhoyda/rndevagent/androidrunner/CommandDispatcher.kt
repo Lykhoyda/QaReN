@@ -6,6 +6,7 @@ package dev.lykhoyda.rndevagent.androidrunner
 
 import android.accessibilityservice.AccessibilityServiceInfo
 import android.app.Instrumentation
+import android.content.Context
 import android.content.Intent
 import android.graphics.Point
 import android.graphics.Rect
@@ -16,6 +17,7 @@ import android.util.Base64
 import android.view.InputDevice
 import android.view.KeyCharacterMap
 import android.view.KeyEvent
+import android.view.WindowManager
 import android.view.accessibility.AccessibilityNodeInfo
 import android.view.accessibility.AccessibilityWindowInfo
 import androidx.test.uiautomator.By
@@ -99,6 +101,9 @@ class CommandDispatcher(
 
         const val CLICKABLE_ANCESTOR_MAX_DEPTH = 16
 
+        const val OCCLUDED_MESSAGE =
+            "FOCUS_TARGET_OCCLUDED: the tap point is covered by another element; no tap was performed"
+
         const val SYSTEM_UI_OPT_IN_HINT =
             "For system UI outside the app, call device_find with includeSystemUi=true " +
                 "and action=\"click\"."
@@ -141,7 +146,8 @@ class CommandDispatcher(
         }
 
         val data = when (command) {
-            "snapshot" -> snapshot(appPackage)
+            // Fork A: QA reads take one live traversal of the windows; device tools keep the XML dump.
+            "snapshot" -> if (cmd.optBoolean("qaReadOnly", false)) qaSnapshot(appPackage!!) else snapshot(appPackage)
             "tap", "press" -> tap(cmd)
             "type", "fill" -> type(cmd)
             "verifyInput" -> verifyInput(cmd)
@@ -261,6 +267,147 @@ class CommandDispatcher(
             .put("normalizationDroppedNodes", normalizationDroppedNodes)
     }
 
+    private var qaSnapshotGeneration = 0
+
+    private fun qaSnapshot(appPackage: String): JSONObject {
+        if (!device.wait(Until.hasObject(By.pkg(appPackage)), 10_000)) {
+            throw AccessibilityUnavailableException(
+                "App $appPackage is foreground but absent from UIAutomator accessibility after 10000ms; restart the rn-android-runner session or fix the app's accessibility exposure"
+            )
+        }
+        val live = instrumentation.uiAutomation.windows.map { info ->
+            val root = info.root
+            info to rawWindow(info, root?.packageName?.toString()) to root
+        }
+        val front = QaHierarchy.front(live.map { it.first.second }, appPackage)
+            ?: throw AccessibilityUnavailableException(
+                "App $appPackage has no application window in the accessibility window list; refusing an app-less QA snapshot"
+            )
+        val read = when (front) {
+            is QaHierarchy.Front.App -> front.windows.map { it.id }.toSet()
+            is QaHierarchy.Front.Alert -> setOf(front.window.id)
+        }
+        val budget = CopyBudget(QaHierarchy.MAX_NODES + 1)
+        val windows = live.map { (pair, root) ->
+            val window = pair.second
+            if (window.id in read && root != null) window.copy(root = copyNode(root, budget)) else window
+        }
+        val assembled = QaHierarchy.assemble(windows, appPackage, displayBounds())
+        qaSnapshotGeneration += 1
+        val nodes = JSONArray()
+        assembled.nodes.forEach { nodes.put(qaNodeJson(it)) }
+        return JSONObject()
+            .put("nodes", nodes)
+            .put("truncated", assembled.truncated || budget.exhausted)
+            .put("normalizationDroppedNodes", assembled.droppedNodes)
+            .put("snapshotGeneration", qaSnapshotGeneration)
+            .put("keyboardVisible", assembled.keyboardVisible)
+    }
+
+    private class CopyBudget(private val limit: Int) {
+        private var used = 0
+        var exhausted = false
+            private set
+
+        fun take(): Boolean {
+            if (used >= limit) {
+                exhausted = true
+                return false
+            }
+            used += 1
+            return true
+        }
+    }
+
+    // A node that cannot be read is null, which the assembly counts as dropped.
+    private fun copyNode(node: AccessibilityNodeInfo, budget: CopyBudget): QaHierarchy.RawNode? = try {
+        val bounds = Rect().also { node.getBoundsInScreen(it) }
+        val children = mutableListOf<QaHierarchy.RawNode?>()
+        for (index in 0 until node.childCount) {
+            if (!budget.take()) break
+            val child = node.getChild(index)
+            children.add(
+                child?.let {
+                    try {
+                        copyNode(it, budget)
+                    } finally {
+                        it.recycle()
+                    }
+                },
+            )
+        }
+        QaHierarchy.RawNode(
+            className = node.className?.toString(),
+            text = node.text?.toString(),
+            contentDescription = node.contentDescription?.toString(),
+            viewIdResourceName = node.viewIdResourceName,
+            packageName = node.packageName?.toString(),
+            bounds = QaHierarchy.Bounds(bounds.left, bounds.top, bounds.right, bounds.bottom),
+            enabled = node.isEnabled,
+            visibleToUser = node.isVisibleToUser,
+            selected = node.isSelected,
+            checked = node.isChecked,
+            password = node.isPassword,
+            children = children,
+        )
+    } catch (e: RuntimeException) {
+        null
+    }
+
+    private fun rawWindow(info: AccessibilityWindowInfo, packageName: String?): QaHierarchy.RawWindow {
+        val bounds = Rect().also { info.getBoundsInScreen(it) }
+        return QaHierarchy.RawWindow(
+            id = info.id,
+            kind = when (info.type) {
+                AccessibilityWindowInfo.TYPE_APPLICATION -> QaHierarchy.WindowKind.APPLICATION
+                AccessibilityWindowInfo.TYPE_INPUT_METHOD -> QaHierarchy.WindowKind.INPUT_METHOD
+                AccessibilityWindowInfo.TYPE_SYSTEM -> QaHierarchy.WindowKind.SYSTEM
+                else -> QaHierarchy.WindowKind.OTHER
+            },
+            layer = info.layer,
+            packageName = packageName,
+            bounds = QaHierarchy.Bounds(bounds.left, bounds.top, bounds.right, bounds.bottom),
+        )
+    }
+
+    private fun liveWindows(): List<QaHierarchy.RawWindow> =
+        instrumentation.uiAutomation.windows.map { rawWindow(it, it.root?.packageName?.toString()) }
+
+    private fun displayBounds(): QaHierarchy.Bounds {
+        val size = Point()
+        val windowManager = instrumentation.context.getSystemService(Context.WINDOW_SERVICE) as WindowManager
+        @Suppress("DEPRECATION")
+        windowManager.defaultDisplay.getRealSize(size)
+        return QaHierarchy.Bounds(0, 0, size.x, size.y)
+    }
+
+    private fun qaNodeJson(node: QaHierarchy.QaNode): JSONObject {
+        val json = JSONObject()
+            .put("index", node.index)
+            .put("depth", node.depth)
+        node.parentIndex?.let { json.put("parentIndex", it) }
+        json
+            .put("type", node.type)
+            .put("label", node.label)
+            .put("identifier", node.identifier)
+            .put("packageName", node.packageName)
+            .put("checked", node.checked)
+            .put(
+                "rect",
+                JSONObject()
+                    .put("x", node.rect.left)
+                    .put("y", node.rect.top)
+                    .put("width", node.rect.right - node.rect.left)
+                    .put("height", node.rect.bottom - node.rect.top),
+            )
+            .put("hittable", node.hittable)
+            .put("enabled", node.enabled)
+            .put("selected", node.selected)
+            .put("visibleToUser", node.visibleToUser)
+        if (node.secure) json.put("secure", true)
+        return json
+    }
+
     private fun snapshotNode(node: AccessibilityNodeInfo, index: Int, bounds: Rect): JSONObject {
         val text = xmlSafe(node.text)
         val desc = xmlSafe(node.contentDescription)
@@ -354,6 +501,7 @@ class CommandDispatcher(
                 includeSystemUi,
                 requestedPoint(cmd),
             )
+            val editable = target.isEditable
             val dispatched = try {
                 target.performAction(AccessibilityNodeInfo.ACTION_CLICK)
             } finally {
@@ -367,10 +515,21 @@ class CommandDispatcher(
                     "The exact accessibility target rejected ACTION_CLICK; no coordinate fallback was attempted.",
                 )
             }
-            return JSONObject()
+            val result = JSONObject()
                 .put("tapped", true)
                 .put("method", "accessibility-action")
                 .put("identifier", exactIdentifier)
+            // The core passes the post-act settle budget of this tap; without one the tap does not wait.
+            if (editable && cmd.has("keyboardWaitMs")) {
+                val shown = KeyboardEffect.await(
+                    { imeBoundsInScreen() != null },
+                    cmd.optLong("keyboardWaitMs", 0L).coerceAtLeast(0L),
+                    SystemClock::uptimeMillis,
+                    SystemClock::sleep,
+                )
+                result.put("keyboardShown", shown)
+            }
+            return result
         }
 
         val x = cmd.getDouble("x").roundToInt()
@@ -534,7 +693,7 @@ class CommandDispatcher(
             owner
         }
         try {
-            requireNoSameWindowOccluder(clickable, requested)
+            requireUnoccluded(clickable, requested)
             return clickable
         } catch (error: Throwable) {
             clickable.recycle()
@@ -542,7 +701,9 @@ class CommandDispatcher(
         }
     }
 
-    private fun requireNoSameWindowOccluder(
+    // DISPATCH_OCCLUSION_GUARD_V1: an enabled clickable node of the target's window
+    // drawn above it, or a window above it, at the point refuses the tap.
+    private fun requireUnoccluded(
         target: AccessibilityNodeInfo,
         requested: Point,
     ) {
@@ -553,8 +714,7 @@ class CommandDispatcher(
         val stack = ArrayDeque<AccessibilityNodeInfo>()
         stack.addLast(AccessibilityNodeInfo.obtain(root))
         var visited = 0
-        var occluded = false
-        var zOrderUnresolved = false
+        var sameWindow = ExactPressSafety.OcclusionVerdict.CLEAR
         val bounds = Rect()
         while (stack.isNotEmpty() && visited++ < 20_000) {
             val candidate = stack.removeLast()
@@ -566,21 +726,26 @@ class CommandDispatcher(
                 candidate.isClickable && !bounds.isEmpty &&
                 bounds.contains(requested.x, requested.y)
             if (actionableAtPoint) {
-                when (zOrderPath(candidate)?.let {
+                sameWindow = zOrderPath(candidate)?.let {
                     ExactPressSafety.sameWindowOcclusion(targetPath, it)
-                }) {
-                    ExactPressSafety.OcclusionVerdict.OCCLUDED -> occluded = true
-                    ExactPressSafety.OcclusionVerdict.CLEAR -> Unit
-                    else -> zOrderUnresolved = true
-                }
+                } ?: ExactPressSafety.OcclusionVerdict.UNKNOWN
             }
             candidate.recycle()
-            if (occluded || zOrderUnresolved) break
+            if (sameWindow != ExactPressSafety.OcclusionVerdict.CLEAR) break
         }
         val traversalComplete = ExactPressSafety.traversalComplete(stack.size)
         while (stack.isNotEmpty()) stack.removeLast().recycle()
-        if (occluded) throw exactTargetNotHittable()
-        if (zOrderUnresolved) throw exactTargetZOrderUnresolved()
+        val otherWindows = ExactPressSafety.coveredByOtherWindow(
+            liveWindows(),
+            target.windowId,
+            requested.x,
+            requested.y,
+        )
+        when (ExactPressSafety.occlusionOutcome(sameWindow, otherWindows)) {
+            ExactPressSafety.Outcome.OCCLUDED -> throw FocusTargetOccludedException(OCCLUDED_MESSAGE)
+            ExactPressSafety.Outcome.UNRESOLVED -> throw exactTargetZOrderUnresolved()
+            ExactPressSafety.Outcome.CLEAR -> Unit
+        }
         if (!traversalComplete) {
             throw ExactPressException(
                 "INTERACTION_NOT_ACTUATED",
@@ -589,6 +754,69 @@ class CommandDispatcher(
                 "Exact Android occlusion traversal exhausted its budget; refusing partial evidence.",
             )
         }
+    }
+
+    // The exact focus tap binds the input's own accessibility node, then runs the
+    // same occlusion guard before any tap.
+    private fun requireFocusTapUnoccluded(input: UiObject2, appPackage: String?, x: Int, y: Int) {
+        val node = inputNode(input, appPackage) ?: throw ExactPressException(
+            "INTERACTION_NOT_ACTUATED",
+            "none",
+            "exact-target-unresolved",
+            "The exact Android input could not be bound to one accessibility node; no tap or typing was performed.",
+        )
+        try {
+            requireUnoccluded(node, Point(x, y))
+        } finally {
+            node.recycle()
+        }
+    }
+
+    private fun inputNode(input: UiObject2, appPackage: String?): AccessibilityNodeInfo? {
+        val className = runCatching { input.className }.getOrNull() ?: return null
+        val identifier = runCatching { objectIdentifier(input) }.getOrNull()
+        val visible = runCatching { Rect(input.visibleBounds) }.getOrNull() ?: return null
+        val matches = mutableListOf<AccessibilityNodeInfo>()
+        val stack = ArrayDeque<AccessibilityNodeInfo>()
+        instrumentation.uiAutomation.windows.forEach { window ->
+            val root = window.root ?: return@forEach
+            if (window.type == AccessibilityWindowInfo.TYPE_APPLICATION &&
+                (appPackage == null || root.packageName?.toString() == appPackage)
+            ) {
+                stack.addLast(AccessibilityNodeInfo.obtain(root))
+            }
+        }
+        var visited = 0
+        val bounds = Rect()
+        while (stack.isNotEmpty() && visited++ < 20_000) {
+            val node = stack.removeLast()
+            for (index in 0 until node.childCount) {
+                node.getChild(index)?.let { stack.addLast(it) }
+            }
+            val nodeIdentifier = normalizeIdentifier(node.viewIdResourceName.orEmpty())
+                .ifBlank { node.contentDescription?.toString().orEmpty() }
+                .ifBlank { null }
+            node.getBoundsInScreen(bounds)
+            if (node.className?.toString() == className && nodeIdentifier == identifier &&
+                (identifier != null || bounds == visible)
+            ) {
+                matches.add(node)
+            } else {
+                node.recycle()
+            }
+        }
+        val complete = ExactPressSafety.traversalComplete(stack.size)
+        while (stack.isNotEmpty()) stack.removeLast().recycle()
+        val chosen = if (!complete) {
+            null
+        } else {
+            matches.singleOrNull() ?: matches.filter {
+                it.getBoundsInScreen(bounds)
+                bounds == visible
+            }.singleOrNull()
+        }
+        matches.forEach { if (it !== chosen) it.recycle() }
+        return chosen
     }
 
     private fun exactTargetZOrderUnresolved(): ExactPressException = ExactPressException(
@@ -686,6 +914,7 @@ class CommandDispatcher(
                     )
                 }
             }
+            requireFocusTapUnoccluded(target, cmd.optString("appBundleId").ifBlank { null }, fx, fy)
             device.click(fx, fy)
             val deadline = SystemClock.uptimeMillis() + cmd.optLong("focusWaitMs", 1500L)
             var focused = false
@@ -1282,9 +1511,8 @@ class CommandDispatcher(
         return Rect(l.toInt(), t.toInt(), r.toInt(), b.toInt())
     }
 
-    private fun normalizeIdentifier(resourceId: String): String {
-        return resourceId.substringAfter(":id/", resourceId).substringAfterLast("/")
-    }
+    private fun normalizeIdentifier(resourceId: String): String =
+        QaHierarchy.normalizeIdentifier(resourceId)
 
     private fun durationToSteps(durationMs: Int): Int {
         return (durationMs / 5).coerceIn(1, 200)

@@ -132,6 +132,18 @@ class ExactFillPrivacyInstrumentedTest {
         )
         assertFalse(snapshot.toString().contains(canary))
         assertLogcatFree(canary)
+
+        // The QA read is its own live traversal and keeps off-screen nodes as
+        // visibleToUser false; it must not log their text either.
+        shell("logcat -b all -c")
+        val qaSnapshot = dispatcher.dispatch(
+            JSONObject()
+                .put("command", "snapshot")
+                .put("qaReadOnly", true)
+                .put("appBundleId", InstrumentationRegistry.getInstrumentation().context.packageName),
+        )
+        assertTrue(qaSnapshot.optBoolean("ok"))
+        assertLogcatFree(canary)
     }
 
     private fun assertLogcatFree(canary: String) {

@@ -210,3 +210,22 @@ for (const data of [{ tapped: false }, { executed: false }, { tapped: true, exec
     }
   });
 }
+
+test('act carries the keyboard a tap reported, on success and refusal, logged value-free', async () => {
+  for (const ok of [true, false]) {
+    for (const shown of [true, false]) {
+      const f = fixture();
+      const outcome = await f.act(async () => result({ keyboardShown: shown }, ok), false);
+      assert.equal(outcome.ok, ok);
+      assert.equal(outcome.keyboardShown, shown);
+      assert.ok(f.logs.includes(`action-keyboard=${JSON.stringify({ shown })}`), f.logs.join());
+      assert.ok(!f.logs.join('').includes('PRIVATE-'));
+    }
+  }
+  for (const meta of [undefined, {}, { keyboardShown: 'PRIVATE-canary' }, { keyboardShown: 1 }]) {
+    const f = fixture();
+    const outcome = await f.act(async () => result(meta), false);
+    assert.equal(outcome.keyboardShown, undefined);
+    assert.deepEqual(f.logs, [`action-settle=${JSON.stringify(unknown)}`]);
+  }
+});

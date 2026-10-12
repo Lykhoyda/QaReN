@@ -34,6 +34,7 @@ import {
 import { foregroundSurfaceFromSnapshot } from '../handlers/expo-dev-menu.js';
 import { compileFlow, FlowCompileError } from '../flow/compile.js';
 import { foreignFlowGate } from '../lifecycle/foreign-flow-gate.js';
+import { androidForeignDriverMessage } from '../runners/external-runner-detect.js';
 import { observeRunnerDrivers } from '../runners/rn-fast-runner-client.js';
 import type { ToolResult } from '../utils.js';
 import { HandlerError, adapt, describeError, fillEvidence, unwrap } from './adapt.js';
@@ -195,6 +196,7 @@ function act(handler: () => Promise<ToolResult>, proven: boolean): Promise<ActRe
           tappedRect?: unknown;
         }>(result);
         logActionSettle(meta);
+        const keyboard = actionKeyboard(meta);
         if (data?.executed === false || data?.tapped === false)
           return {
             ok: false,
@@ -227,18 +229,21 @@ function act(handler: () => Promise<ToolResult>, proven: boolean): Promise<ActRe
         return {
           ok: true,
           proven: proven || verified,
+          ...(keyboard !== undefined ? { keyboardShown: keyboard } : {}),
           ...(dialog ? { dialog } : {}),
           ...(kept ? { kept } : {}),
           ...(typeof chars === 'number' ? { caseNormalized: { chars } } : {}),
         };
       } catch (error) {
         logActionSettle(error instanceof HandlerError ? error.meta : undefined);
+        const keyboard = actionKeyboard(error instanceof HandlerError ? error.meta : undefined);
         const { code, message } = describeError(error);
         return {
           ok: false,
           proven: false,
           mutation: extractMutationDisposition(result),
           error: `${code}: ${message}`,
+          ...(keyboard !== undefined ? { keyboardShown: keyboard } : {}),
           ...(fillEvidence(error) ? { evidence: fillEvidence(error) } : {}),
           ...(code === 'TARGET_AMBIGUOUS' ? { ambiguous: true } : {}),
         };
@@ -277,6 +282,18 @@ function readLoginBlock(request: WireRequest): NonNullable<WalkerDeps['login']>[
   } catch {
     return undefined;
   }
+}
+
+// Whether the keyboard an exact Android tap waited for was shown; logged value-free.
+function actionKeyboard(meta?: Record<string, unknown>): boolean | undefined {
+  const shown = meta?.keyboardShown;
+  if (typeof shown !== 'boolean') return undefined;
+  try {
+    log(`action-keyboard=${JSON.stringify({ shown })}`);
+  } catch {
+    // Diagnostics cannot change an action's outcome.
+  }
+  return shown;
 }
 
 function logActionSettle(meta?: Record<string, unknown>): void {
@@ -374,8 +391,10 @@ async function openSession(
               ),
           }
         : {}),
-      // The lease coordinates qaren processes only; a foreign Maestro or XCUITest driver is a probe.
+      // The lease coordinates qaren processes only; a foreign Maestro, XCUITest or UIAutomator driver is a probe.
       foreignDriver: async () => {
+        if (platform === 'android')
+          return interruptible(() => androidForeignDriverMessage(target.deviceId));
         if (platform !== 'ios') return undefined;
         const foreign = await interruptible(() => foreignFlowGate.check(target.deviceId));
         return foreign.active
@@ -518,8 +537,18 @@ async function openSession(
       ),
     press: (ref, qaContext) => act(() => press({ ref, qaContext }), false),
     fill: (ref, text, qaContext) => act(() => fill({ ref, text, qaContext }), true),
-    scroll: (direction, qaContext) =>
-      act(() => scroll({ direction, amount: 0.6, qaContext }), false),
+    // Android sizes a keyboard clearance scroll from the overlap; iOS keeps its fixed swipe.
+    scroll: (direction, qaContext, clearance) =>
+      act(
+        () =>
+          scroll({
+            direction,
+            amount: 0.6,
+            ...(platform === 'android' && clearance !== undefined ? { distance: clearance } : {}),
+            qaContext,
+          }),
+        false,
+      ),
     back: (qaContext) => act(() => back({ qaContext }), false),
     dialog: (action, qaContext) =>
       act(

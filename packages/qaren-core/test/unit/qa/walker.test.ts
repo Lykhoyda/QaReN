@@ -376,6 +376,38 @@ test('a not-ok press on an unchanged screen retries once and fails naming the ha
   );
 });
 
+// The runner reports keyboardShown false when a tap on an editable field opened no keyboard within its settle budget.
+test('a press whose keyboard never opened fails naming the absent keyboard, never a pass', async () => {
+  const f = fake([screen(['Email'])], {
+    press: {
+      ok: false,
+      proven: false,
+      mutation: 'possible',
+      error:
+        'INTERACTION_EFFECT_UNVERIFIED: The tap was dispatched but produced no observable UI change.',
+      keyboardShown: false,
+    },
+  });
+  const outcome = await walkBlock(block('1. Tap "Email"\n'), f.deps);
+  assert.equal(outcome.block.outcome, 'fail');
+  assert.equal(f.calls.filter((c) => c.startsWith('press')).length, 2);
+  assert.match(
+    outcome.rows[0].reason ?? '',
+    /the keyboard did not open; the screen did not change; retrying once/,
+  );
+  assert.match(
+    outcome.failure?.seen ?? '',
+    /INTERACTION_EFFECT_UNVERIFIED: .*; the keyboard did not open; the screen did not change after two attempts/,
+  );
+});
+
+test('a shown keyboard is not a pass on its own: an unchanged screen still fails', async () => {
+  const f = fake([screen(['Email'])], { press: { ok: true, proven: false, keyboardShown: true } });
+  const outcome = await walkBlock(block('1. Tap "Email"\n'), f.deps);
+  assert.equal(outcome.block.outcome, 'fail');
+  assert.doesNotMatch(outcome.failure?.seen ?? '', /keyboard/);
+});
+
 const NOT_OK: ActResult = { ok: false, proven: false, error: 'scroll timed out' };
 
 function withOffscreenLoadMore(): Screen {
