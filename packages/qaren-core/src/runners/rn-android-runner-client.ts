@@ -181,6 +181,8 @@ export interface RunAndroidArgs {
   focusX?: number;
   focusY?: number;
   focusWaitMs?: number;
+  /** An exact tap on an editable field waits this long for its keyboard: the tap's post-act settle budget. */
+  keyboardWaitMs?: number;
   secureInput?: boolean;
   operationToken?: string;
   _staleRef?: string;
@@ -1736,8 +1738,12 @@ export async function stopAndroidRunner(deviceId?: string, signal?: AbortSignal)
 // type/snapshot/screenshot run long; everything else is fast. Hoisted out of the
 // old inline postCommand so the recovery wrapper reuses the exact same budget for
 // both the original send and the resend (mirrors the iOS commandTimeoutMs helper).
-function commandTimeoutMs(command: unknown): number {
-  return command === 'type' || command === 'snapshot' || command === 'screenshot' ? 35_000 : 10_000;
+// A tap that may wait for its keyboard gets that wait on top, so the wait never reads as a timeout.
+function commandTimeoutMs(body: { command?: unknown; keyboardWaitMs?: unknown }): number {
+  const { command, keyboardWaitMs } = body;
+  const base =
+    command === 'type' || command === 'snapshot' || command === 'screenshot' ? 35_000 : 10_000;
+  return command === 'tap' && typeof keyboardWaitMs === 'number' ? base + keyboardWaitMs : base;
 }
 
 // One /command round-trip with no recovery. Bounds the request so a wedged
@@ -1836,13 +1842,14 @@ async function probeCommandStatus(
 async function postCommandWithRecovery(
   body: {
     command?: unknown;
+    keyboardWaitMs?: unknown;
   },
   qaContext?: QaDispatchContext,
 ): Promise<{ resp: RunnerResponse; recovery?: TransportRecovery }> {
   const state = runnerState;
   if (!state) throw new Error('rn-android-runner not started');
   const commandId = generateCommandId();
-  const timeoutMs = commandTimeoutMs(body.command);
+  const timeoutMs = commandTimeoutMs(body);
   try {
     return {
       resp: await sendCommandOnce(state.hostPort, { ...body, commandId }, timeoutMs, qaContext),
@@ -2070,6 +2077,7 @@ export async function runAndroid(args: RunAndroidArgs): Promise<ToolResult> {
   if (args.focusX !== undefined) body.focusX = args.focusX;
   if (args.focusY !== undefined) body.focusY = args.focusY;
   if (args.focusWaitMs !== undefined) body.focusWaitMs = args.focusWaitMs;
+  if (args.keyboardWaitMs !== undefined) body.keyboardWaitMs = args.keyboardWaitMs;
   if (args.secureInput !== undefined) body.secureInput = args.secureInput;
   if (args.operationToken !== undefined) body.operationToken = args.operationToken;
 
@@ -2193,7 +2201,10 @@ export async function runAndroid(args: RunAndroidArgs): Promise<ToolResult> {
   }
 
   if (args.command === 'tap') {
-    const data = resp.data as { tapped?: unknown } | undefined;
+    const data = resp.data as { tapped?: unknown; keyboardShown?: unknown } | undefined;
+    // Meta, so an unverified-effect refusal built from this result still names the keyboard.
+    if (data?.tapped === true && typeof data.keyboardShown === 'boolean')
+      return okResult(data, { meta: { ...recoveryMeta, keyboardShown: data.keyboardShown } });
     if (data?.tapped !== true) {
       // NOTE: ACTION_CLICK is atomic, but a false coordinate click can mean the
       // touch-up failed after the app already received the touch-down.

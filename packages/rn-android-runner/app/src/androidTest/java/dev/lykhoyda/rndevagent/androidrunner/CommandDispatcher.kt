@@ -519,9 +519,11 @@ class CommandDispatcher(
                 .put("tapped", true)
                 .put("method", "accessibility-action")
                 .put("identifier", exactIdentifier)
-            if (editable) {
+            // The core passes the post-act settle budget of this tap; without one the tap does not wait.
+            if (editable && cmd.has("keyboardWaitMs")) {
                 val shown = KeyboardEffect.await(
                     { imeBoundsInScreen() != null },
+                    cmd.optLong("keyboardWaitMs", 0L).coerceAtLeast(0L),
                     SystemClock::uptimeMillis,
                     SystemClock::sleep,
                 )

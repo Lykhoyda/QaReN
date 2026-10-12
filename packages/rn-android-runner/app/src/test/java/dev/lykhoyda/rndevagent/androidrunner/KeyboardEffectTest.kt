@@ -19,24 +19,38 @@ class KeyboardEffectTest {
         }
     }
 
+    // The bound the core passes: its post-act settle budget for the tap.
+    private val budget = 6_000L
+
     @Test fun aKeyboardAlreadyShownReturnsWithoutSleeping() {
         val clock = Clock()
-        assertTrue(KeyboardEffect.await({ true }, { clock.now }, clock::sleep))
+        assertTrue(KeyboardEffect.await({ true }, budget, { clock.now }, clock::sleep))
         assertEquals(emptyList<Long>(), clock.sleeps)
     }
 
     @Test fun aKeyboardThatOpensLaterEndsTheWaitAtItsFirstSighting() {
         val clock = Clock()
         val opensAt = clock.now + 420
-        assertTrue(KeyboardEffect.await({ clock.now >= opensAt }, { clock.now }, clock::sleep))
+        assertTrue(KeyboardEffect.await({ clock.now >= opensAt }, budget, { clock.now }, clock::sleep))
         assertTrue(clock.now - 1_000L in 420L until 420L + KeyboardEffect.POLL_MS)
     }
 
-    @Test fun aKeyboardThatNeverOpensEndsTheWaitAtTheBound() {
+    @Test fun aKeyboardThatNeverOpensEndsTheWaitAtTheGivenBound() {
+        for (bound in listOf(budget, 1_234L)) {
+            val clock = Clock()
+            assertFalse(KeyboardEffect.await({ false }, bound, { clock.now }, clock::sleep))
+            assertEquals(bound, clock.now - 1_000L)
+            assertTrue(clock.sleeps.all { it in 1..KeyboardEffect.POLL_MS })
+        }
+    }
+
+    // No bound from the caller (settle off, or a caller that passes none) means no wait at all.
+    @Test fun aZeroBoundReadsOnceAndNeverSleeps() {
         val clock = Clock()
-        assertFalse(KeyboardEffect.await({ false }, { clock.now }, clock::sleep))
-        assertEquals(KeyboardEffect.WAIT_MS, clock.now - 1_000L)
-        assertTrue(clock.sleeps.all { it in 1..KeyboardEffect.POLL_MS })
+        var reads = 0
+        assertFalse(KeyboardEffect.await({ reads++; false }, 0L, { clock.now }, clock::sleep))
+        assertEquals(1, reads)
+        assertEquals(emptyList<Long>(), clock.sleeps)
     }
 
     @Test fun aFailedReadCountsAsNotYetShown() {
@@ -44,6 +58,7 @@ class KeyboardEffectTest {
         var reads = 0
         val opened = KeyboardEffect.await(
             { if (reads++ == 0) throw IllegalStateException("window list unavailable") else true },
+            budget,
             { clock.now },
             clock::sleep,
         )

@@ -6,6 +6,7 @@ package dev.lykhoyda.rndevagent.androidrunner
 
 import android.content.Intent
 import android.graphics.Rect
+import android.os.SystemClock
 import android.view.accessibility.AccessibilityWindowInfo
 import android.widget.Button
 import android.widget.EditText
@@ -116,12 +117,35 @@ class QaHierarchyInstrumentedTest {
         assertFalse(qaSnapshot().getBoolean("keyboardVisible"))
         val input = node(qaSnapshot(), QaHierarchyFixtureActivity.KEYBOARD_INPUT_IDENTIFIER)
         val tapped = dispatcher.dispatch(
-            press(QaHierarchyFixtureActivity.KEYBOARD_INPUT_IDENTIFIER, input, EditText::class.java.name),
+            press(QaHierarchyFixtureActivity.KEYBOARD_INPUT_IDENTIFIER, input, EditText::class.java.name)
+                .put("keyboardWaitMs", CORE_SETTLE_BUDGET_MS),
         )
-        assertTrue(tapped.toString(), tapped.getJSONObject("data").getBoolean("tapped"))
+        val data = tapped.getJSONObject("data")
+        assertTrue(tapped.toString(), data.getBoolean("tapped"))
+        assertTrue(tapped.toString(), data.getBoolean("keyboardShown"))
         // Read the window list directly: a QA read waits for accessibility idle first, which can hide the race.
         assertTrue("the keyboard must be listed when the tap returns", keyboardWindowListed())
         assertTrue(qaSnapshot().getBoolean("keyboardVisible"))
+    }
+
+    // A field that opens no keyboard spends the caller's bound and says so; without a bound the tap does not wait.
+    @Test
+    fun anExactTapThatOpensNoKeyboardReportsItNotShownAtTheCallersBound() {
+        val input = node(qaSnapshot(), QaHierarchyFixtureActivity.OPEN_INPUT_IDENTIFIER)
+        val bound = 1_500L
+        val start = SystemClock.uptimeMillis()
+        val bounded = dispatcher.dispatch(
+            press(QaHierarchyFixtureActivity.OPEN_INPUT_IDENTIFIER, input, EditText::class.java.name)
+                .put("keyboardWaitMs", bound),
+        ).getJSONObject("data")
+        assertTrue(SystemClock.uptimeMillis() - start >= bound)
+        assertTrue(bounded.toString(), bounded.getBoolean("tapped"))
+        assertFalse(bounded.toString(), bounded.getBoolean("keyboardShown"))
+        val unbounded = dispatcher.dispatch(
+            press(QaHierarchyFixtureActivity.OPEN_INPUT_IDENTIFIER, input, EditText::class.java.name),
+        ).getJSONObject("data")
+        assertTrue(unbounded.toString(), unbounded.getBoolean("tapped"))
+        assertFalse(unbounded.toString(), unbounded.has("keyboardShown"))
     }
 
     private fun keyboardWindowListed(): Boolean = instrumentation.uiAutomation.windows.any {
@@ -217,5 +241,8 @@ class QaHierarchyInstrumentedTest {
         // One dispatcher per run, as a runner session keeps one; its init enables the
         // interactive window list that QA reads gate on.
         private val sharedDispatcher by lazy { CommandDispatcher(InstrumentationRegistry.getInstrumentation()) }
+
+        // The core's default post-act settle budget, which it passes as an exact tap's keyboard bound.
+        const val CORE_SETTLE_BUDGET_MS = 6_000L
     }
 }

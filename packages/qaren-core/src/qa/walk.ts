@@ -196,6 +196,7 @@ function act(handler: () => Promise<ToolResult>, proven: boolean): Promise<ActRe
           tappedRect?: unknown;
         }>(result);
         logActionSettle(meta);
+        const keyboard = actionKeyboard(meta);
         if (data?.executed === false || data?.tapped === false)
           return {
             ok: false,
@@ -228,18 +229,21 @@ function act(handler: () => Promise<ToolResult>, proven: boolean): Promise<ActRe
         return {
           ok: true,
           proven: proven || verified,
+          ...(keyboard !== undefined ? { keyboardShown: keyboard } : {}),
           ...(dialog ? { dialog } : {}),
           ...(kept ? { kept } : {}),
           ...(typeof chars === 'number' ? { caseNormalized: { chars } } : {}),
         };
       } catch (error) {
         logActionSettle(error instanceof HandlerError ? error.meta : undefined);
+        const keyboard = actionKeyboard(error instanceof HandlerError ? error.meta : undefined);
         const { code, message } = describeError(error);
         return {
           ok: false,
           proven: false,
           mutation: extractMutationDisposition(result),
           error: `${code}: ${message}`,
+          ...(keyboard !== undefined ? { keyboardShown: keyboard } : {}),
           ...(fillEvidence(error) ? { evidence: fillEvidence(error) } : {}),
           ...(code === 'TARGET_AMBIGUOUS' ? { ambiguous: true } : {}),
         };
@@ -278,6 +282,18 @@ function readLoginBlock(request: WireRequest): NonNullable<WalkerDeps['login']>[
   } catch {
     return undefined;
   }
+}
+
+// Whether the keyboard an exact Android tap waited for was shown; logged value-free.
+function actionKeyboard(meta?: Record<string, unknown>): boolean | undefined {
+  const shown = meta?.keyboardShown;
+  if (typeof shown !== 'boolean') return undefined;
+  try {
+    log(`action-keyboard=${JSON.stringify({ shown })}`);
+  } catch {
+    // Diagnostics cannot change an action's outcome.
+  }
+  return shown;
 }
 
 function logActionSettle(meta?: Record<string, unknown>): void {

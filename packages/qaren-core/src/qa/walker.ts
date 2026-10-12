@@ -83,6 +83,8 @@ export interface ActResult {
   kept?: { typed: number; observed: number[] };
   // The system dialog button the runner proved it tapped, with its frame; value-free.
   dialog?: { label: string; rect: { x: number; y: number; width: number; height: number } };
+  // Android exact tap on an editable field: whether its keyboard was shown within the tap's settle budget.
+  keyboardShown?: boolean;
 }
 
 export interface WalkerDeps {
@@ -1688,6 +1690,8 @@ export async function walkBlock(
             );
             break;
           }
+          // Named, never decisive: a shown keyboard is no pass and a missing one no refusal by itself.
+          const noKeyboard = act!.keyboardShown === false ? 'the keyboard did not open; ' : '';
           if (attempt < maxAttempts) {
             if (
               (item.kind === 'press' || item.kind === 'fill') &&
@@ -1703,9 +1707,7 @@ export async function walkBlock(
               ...(shot ? { screenshot: shot } : {}),
               outcome: 'retry',
               reason: redact(
-                act!.error
-                  ? `${act!.error}; the screen did not change; retrying once`
-                  : 'the screen did not change; retrying once',
+                `${act!.error ? `${act!.error}; ` : ''}${noKeyboard}the screen did not change; retrying once`,
               ),
             });
             continue;
@@ -1731,8 +1733,8 @@ export async function walkBlock(
                 : `; the target was ${reported(element)} before and ${reported(afterTarget)} after`
               : '';
           const unchanged = act!.error
-            ? `${act!.error}; ${unchangedScreen}${stillness}${selection}`
-            : `${unchangedScreen}${stillness}${selection}`;
+            ? `${act!.error}; ${noKeyboard}${unchangedScreen}${stillness}${selection}`
+            : `${noKeyboard}${unchangedScreen}${stillness}${selection}`;
           const recovering = await recovery(item, attempt, unchanged);
           if (recovering === 'retry') {
             again = true;
