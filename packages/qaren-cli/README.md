@@ -1290,7 +1290,8 @@ The login exception never resets run-wide screenshot withholding or masking
 history.
 
 Launcher, server-picker, relaunch and dev chrome frames before admission never
-reach the pull request. Without a start time or a successful trim, or when an app
+reach the pull request. Without a start time, a last step row establishing a
+positive-duration window, or a successful trim, or when an app
 process change, launcher/server-picker fallback, floating button or open dev menu
 is observed after admission, no video is uploaded, even if recovery clears the
 overlay and the retry passes. A pre-plan login does not reset these interruptions.
