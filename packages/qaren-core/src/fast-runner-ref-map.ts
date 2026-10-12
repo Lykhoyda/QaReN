@@ -113,10 +113,9 @@ interface ExtentEntry {
 
 // #519 review: honest hittable (#395) guarantees only the CENTER is on-screen,
 // so a straddling card (x=250..550 on a 402pt viewport) is legitimately
-// hittable and would seed the union past the physical screen. iOS snapshots
-// always carry Application/Window nodes whose extent is authoritative — their
-// union caps the estimate. Android emits Java class names (never these types),
-// so the CI-Android no-full-window constraint above is untouched: no cap.
+// hittable and would seed the union past the physical screen. Application/Window
+// extents cap the estimate for iOS and Android QA snapshots. Android device-tool
+// snapshots retain Java class names and therefore use the uncapped estimate.
 const WINDOW_TYPES = new Set(['Application', 'Window']);
 
 // width > 300 keeps the same sanity floor the old heuristic used (ignore

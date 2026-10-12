@@ -37,7 +37,7 @@ export interface Element {
   placeholder?: string;
   hittable: boolean;
   disabled: boolean;
-  // The platform reports the control selected (iOS selected trait); a selection-only change is still a change.
+  // A platform-reported selection-only change still proves a screen change.
   selected?: true;
   secure: boolean;
   offscreen: boolean;
