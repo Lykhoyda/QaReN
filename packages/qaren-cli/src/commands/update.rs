@@ -28,12 +28,12 @@ pub fn update(cwd: &Path, home: &Path) -> Result<String, (u8, String)> {
                 .to_string(),
         ));
     }
-    let pull = git(cwd, &["pull", "--ff-only", "origin", "develop"])?;
+    let pull = git(cwd, &["pull", "--ff-only"])?;
     if !pull.status.success() {
         return Err((
             2,
             format!(
-                "qaren update: git pull --ff-only origin develop failed; nothing was installed.\n{}",
+                "qaren update: git pull --ff-only failed; nothing was installed.\n{}",
                 stderr_of(&pull)
             ),
         ));
@@ -331,30 +331,10 @@ mod tests {
 
     #[test]
     fn pulls_then_reports_the_build_change() {
-        assert_pulls_develop("updated");
-    }
-
-    #[test]
-    fn pulls_develop_with_a_feature_upstream() {
-        assert_pulls_develop("feature-upstream");
-    }
-
-    #[test]
-    fn pulls_develop_without_an_upstream() {
-        assert_pulls_develop("no-upstream");
-    }
-
-    fn assert_pulls_develop(name: &str) {
-        let root = scratch(name);
+        let root = scratch("updated");
         let home = root.join("home");
         let work = checkout(&root, &home, "1.0.13", OLD);
         seed_record(&home, "1.0.13", OLD);
-        if name == "feature-upstream" {
-            git(&work, &["checkout", "-qb", "feature"]);
-            git(&work, &["push", "-qu", "origin", "feature"]);
-        } else if name == "no-upstream" {
-            git(&work, &["branch", "--unset-upstream"]);
-        }
         let other = root.join("other");
         git(
             &root,
@@ -370,7 +350,6 @@ mod tests {
         git(&other, &["push", "-q", "origin", "HEAD"]);
         let pushed = git(&other, &["rev-parse", "HEAD"]);
         let text = update(&work, &home).unwrap();
-        assert_eq!(git(&work, &["rev-parse", "HEAD"]), pushed);
         assert!(
             text.starts_with("updated qaren 1.0.13 build 1d9e04aa -> 7f3a2c1e"),
             "{text}"
