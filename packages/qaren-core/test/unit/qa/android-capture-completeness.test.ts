@@ -455,6 +455,85 @@ test('an Android field tap whose only effect is opening the keyboard passes on i
   assert.equal(f.actions.length, 1);
 });
 
+// Android reports a field the keyboard covers as not visible to the user while its rect stays on screen.
+const keyboardForm = (field7: { y: number; visibleToUser: boolean }) =>
+  qaSnapshot(
+    [
+      ...appRoots(),
+      control(3, {
+        type: 'android.widget.EditText',
+        identifier: 'qa-kb-input-1',
+        rect: { x: 63, y: 600, width: 954, height: 93 },
+      }),
+      control(4, {
+        type: 'android.widget.EditText',
+        identifier: 'qa-kb-input-7',
+        visibleToUser: field7.visibleToUser,
+        rect: { x: 63, y: field7.y, width: 954, height: 93 },
+      }),
+      control(5, {
+        type: 'android.widget.TextView',
+        label: 'Field 7',
+        hittable: false,
+        visibleToUser: field7.visibleToUser,
+        rect: { x: 63, y: field7.y - 60, width: 300, height: 50 },
+      }),
+      qaNode(6, 0, 1, {
+        type: 'Keyboard',
+        packageName: 'com.example.ime',
+        rect: { x: 0, y: 1517, width: 1080, height: 883 },
+      }),
+    ],
+    { keyboardVisible: true },
+  );
+
+test('an Android field the keyboard hides is keyboard-covered, not scrolled out', async () => {
+  const screen = await capture(keyboardForm({ y: 2049, visibleToUser: false }));
+  assert.equal(screen.captureCoverage?.native, 'complete');
+  const field = screen.elements.find((e) => e.testID === 'qa-kb-input-7')!;
+  assert.equal(field.offscreen, false);
+  assert.equal(keyboardCoversElement(field), true);
+  const f = walker(
+    [],
+    scriptedJudge(() => assert.fail('literal plans must not call Jev')),
+  );
+  f.deps.captureScreen = () => capture(keyboardForm({ y: 2049, visibleToUser: false }));
+  const result = await runPlan(parsePlan('✓ "Field 7"').blocks!, f.deps);
+  assert.notEqual(result.verdict, 'PASS');
+});
+
+test('a keyboard-hidden Android field is cleared by one scroll and then filled', async () => {
+  const covered = await capture(keyboardForm({ y: 2049, visibleToUser: false }));
+  const cleared = await capture(keyboardForm({ y: 1200, visibleToUser: true }));
+  const f = walker(
+    [covered, cleared],
+    scriptedJudge(() => assert.fail('literal plans must not call Jev')),
+  );
+  const result = await runPlan(parsePlan('1. Type "x" into "qa-kb-input-7"').blocks!, f.deps);
+  assert.equal(result.verdict, 'PASS', result.failure?.seen);
+  assert.deepEqual(f.actions, ['scroll down', 'fill @e4 x']);
+});
+
+test('a keyboard-hidden Android field still covered after one scroll refuses as under the keyboard', async () => {
+  const covered = await capture(keyboardForm({ y: 2049, visibleToUser: false }));
+  const still = await capture(keyboardForm({ y: 1714, visibleToUser: false }));
+  const f = walker(
+    [covered, still],
+    scriptedJudge(() => assert.fail('literal plans must not call Jev')),
+  );
+  const result = await runPlan(parsePlan('1. Type "x" into "qa-kb-input-7"').blocks!, f.deps);
+  assert.equal(result.verdict, 'FAIL');
+  assert.match(result.failure!.seen, /stayed off screen after one scroll: .*under the keyboard/);
+  assert.deepEqual(f.actions, ['scroll down']);
+});
+
+test('a not-visible Android field away from the keyboard stays off screen', async () => {
+  const screen = await capture(keyboardForm({ y: 400, visibleToUser: false }));
+  const field = screen.elements.find((e) => e.testID === 'qa-kb-input-7')!;
+  assert.equal(field.offscreen, true);
+  assert.equal(keyboardCoversElement(field), false);
+});
+
 test('an Android Alert-rooted snapshot reads as a front dialog', async () => {
   const pkg = 'com.android.permissioncontroller';
   const screen = await capture(
