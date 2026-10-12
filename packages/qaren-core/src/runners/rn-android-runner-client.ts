@@ -17,9 +17,9 @@ import {
 } from '../domain/cancellation.js';
 import type { ChildProcess } from 'node:child_process';
 import { promisify } from 'node:util';
-import { existsSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { randomBytes, randomUUID } from 'node:crypto';
+import { createHash, randomBytes, randomUUID } from 'node:crypto';
 import type { ToolResult } from '../utils.js';
 import { okResult, failResult } from '../utils.js';
 import {
@@ -58,6 +58,12 @@ import {
 } from './transport-recovery.js';
 import { readProcessBirth } from '../lifecycle/process-birth.js';
 import { openAuthorityStore } from '../util/sqlite-store.js';
+import {
+  resolveAndroidInstallAction,
+  type AndroidRunnerBuildIdentity,
+} from '../domain/android-runner-build.js';
+export { resolveAndroidInstallAction } from '../domain/android-runner-build.js';
+export type { AndroidInstallAction } from '../domain/android-runner-build.js';
 
 const execFileAsync = promisify(execFile);
 
@@ -70,9 +76,8 @@ const MAIN_LOOP_CLASS =
 const HEALTH_POLL_INTERVAL_MS = 150;
 const HEALTH_PROBE_TIMEOUT_MS = 1_000;
 
-// Self-install (parity with the iOS rn-fast-runner cold build): the in-tree runner
-// ships as a Gradle project; its APKs build/install on first use so there's no
-// external CLI to install (matches the /setup + /doctor docs).
+// The in-tree runner ships as a Gradle project. Provisioning refreshes its
+// expected APKs before comparing installed bytes, then installs only if needed.
 const RN_ANDROID_RUNNER_DIR = resolveNativeRunnerDir('rn-android-runner');
 const GRADLEW = join(RN_ANDROID_RUNNER_DIR, 'gradlew');
 const APK_APP = join(
@@ -457,15 +462,37 @@ export function androidRunnerProcessListed(stdout: string): boolean | undefined 
   return stdout.includes('dev.lykhoyda.rndevagent.androidrunner');
 }
 
-export type AndroidInstallAction = 'reuse' | 'install' | 'build-then-install';
-
-export function resolveAndroidInstallAction(opts: {
-  instrumentationRegistered: boolean;
-  apksExist: boolean;
-}): AndroidInstallAction {
-  if (opts.instrumentationRegistered) return 'reuse';
-  if (opts.apksExist) return 'install';
-  return 'build-then-install';
+async function installedAndroidApkHash(
+  packageName: string,
+  deviceId: string | undefined,
+  signal?: AbortSignal,
+): Promise<string | undefined> {
+  try {
+    const options = { timeout: ADB_CLEANUP_TIMEOUT_MS, signal };
+    const { stdout: paths } = await execFileAsync(
+      'adb',
+      [...adbSerialArgs(deviceId), 'shell', 'pm', 'path', packageName],
+      options,
+    );
+    // Only a single ordinary installed APK is comparable to our build output.
+    // adb shell joins its arguments remotely: admit no shell metacharacters.
+    const path = /^package:(\/data\/app\/[A-Za-z0-9_./=+~-]+\/base\.apk)$/.exec(paths.trim())?.[1];
+    if (!path || path.split('/').includes('..')) return undefined;
+    const { stdout } = await execFileAsync(
+      'adb',
+      [...adbSerialArgs(deviceId), 'shell', 'sha256sum', path],
+      options,
+    );
+    const parts = stdout.trim().split(/\s+/);
+    return parts.length === 2 && parts[1] === path && /^[a-f0-9]{64}$/.test(parts[0])
+      ? parts[0]
+      : undefined;
+  } catch (error) {
+    throwIfCancelled(signal);
+    if (isAbort(error)) throw error;
+    // Unreadable installed bytes never authorize reuse; install the expected pair.
+    return undefined;
+  }
 }
 
 async function ensureAndroidRunnerInstalled(
@@ -495,6 +522,7 @@ async function ensureAndroidRunnerInstalled(
         'adb',
         [...adbSerialArgs(deviceId), 'shell', 'pm', 'list', 'instrumentation'],
         {
+          timeout: ADB_CLEANUP_TIMEOUT_MS,
           signal: opts.signal,
         },
       )
@@ -508,14 +536,13 @@ async function ensureAndroidRunnerInstalled(
   const provenance = artifactProvenanceToState(artifacts.provenance);
   if (artifacts.note) pendingUpgradeNote = artifacts.note;
 
-  const action = resolveAndroidInstallAction({
-    instrumentationRegistered:
-      !opts.forceReinstall && isInstrumentationRegistered(pmOut, INSTRUMENTATION),
-    apksExist: existsSync(artifacts.appApk) && existsSync(artifacts.testApk),
-  });
-  if (action === 'reuse') return provenance;
-
-  if (action === 'build-then-install') {
+  // Gradle's incremental build establishes the expected bytes for the current
+  // shipped source, even when APKs from an earlier checkout still exist.
+  if (
+    artifacts.provenance === 'build-local' ||
+    !existsSync(artifacts.appApk) ||
+    !existsSync(artifacts.testApk)
+  ) {
     try {
       await execFileAsync(GRADLEW, buildGradleAssembleArgs(), {
         cwd: RN_ANDROID_RUNNER_DIR,
@@ -527,11 +554,34 @@ async function ensureAndroidRunnerInstalled(
       throwIfCancelled(opts.signal);
       if (isAbort(err)) throw err;
       throw new Error(
-        `rn-android-runner cold build failed (gradlew assembleDebug assembleDebugAndroidTest in ${RN_ANDROID_RUNNER_DIR}). ` +
+        `rn-android-runner source build failed (gradlew assembleDebug assembleDebugAndroidTest in ${RN_ANDROID_RUNNER_DIR}). ` +
           `Ensure the Android SDK + a JDK are installed and on PATH. ${err instanceof Error ? err.message : String(err)}`,
       );
     }
   }
+
+  throwIfCancelled(opts.signal);
+  const expectedBuild: AndroidRunnerBuildIdentity = {
+    appSha256: createHash('sha256').update(readFileSync(artifacts.appApk)).digest('hex'),
+    testSha256: createHash('sha256').update(readFileSync(artifacts.testApk)).digest('hex'),
+  };
+  const instrumentationRegistered =
+    !opts.forceReinstall && isInstrumentationRegistered(pmOut, INSTRUMENTATION);
+  let installedBuild: AndroidRunnerBuildIdentity | undefined;
+  if (instrumentationRegistered) {
+    const [appSha256, testSha256] = await Promise.all([
+      installedAndroidApkHash('dev.lykhoyda.rndevagent.androidrunner', deviceId, opts.signal),
+      installedAndroidApkHash('dev.lykhoyda.rndevagent.androidrunner.test', deviceId, opts.signal),
+    ]);
+    if (appSha256 && testSha256) installedBuild = { appSha256, testSha256 };
+  }
+  const action = resolveAndroidInstallAction({
+    instrumentationRegistered,
+    apksExist: true,
+    expectedBuild,
+    installedBuild,
+  });
+  if (action === 'reuse') return provenance;
 
   try {
     await execFileAsync('adb', buildAdbInstallArgs(deviceId, artifacts.appApk), {
@@ -1327,10 +1377,9 @@ export function androidRetryCleanupContext(
   return state ?? (error.deviceId ? { deviceId: error.deviceId } : null);
 }
 
-// GH #418: deleting the APKs is the artifact invalidation — apksExist flips
-// false, so resolveAndroidInstallAction returns 'build-then-install' (Gradle).
-// The invalidation and the install-action check share RUNNER_APK_PATHS so
-// they cannot drift apart.
+// GH #418: deleting the APKs invalidates Gradle's outputs. Provisioning refreshes
+// these same files before installed-byte selection, so the retry cannot choose
+// the invalidated build.
 const RUNNER_APK_PATHS = [APK_APP, APK_TEST] as const;
 
 export function androidRunnerApksExist(): boolean {
@@ -1505,7 +1554,7 @@ async function startAndroidRunnerAttempt(
   }
 
   throwIfCancelled(opts._rebuildSignal);
-  // Self-install on first use: build and install the shipped runner source if it isn't on the device yet.
+  // Refresh the shipped-source build and select the installed pair by its bytes.
   const provenance = await ensureAndroidRunnerInstalled(deviceId, {
     forceReinstall,
     signal: opts._rebuildSignal,
