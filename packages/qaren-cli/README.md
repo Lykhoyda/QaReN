@@ -1386,7 +1386,7 @@ validates the scenario + candidate and emits the planned command sequence
 ```
 prepare ──► validate (scenario schema, candidate git sha, lockfile sha256)
         ──► prereqs  (tools present, metro port free)
-        ──► plan     native fingerprint + cache state ──► reuse | incremental | clean
+        ──► plan     native fingerprint + machine store + cache state ──► reuse | incremental | clean
                      (decision + evidence recorded; non-reuse takes the
                       host-level build serialization lock)
         ──► allocate  iOS:  simctl create qaren-<run-id> + bootstatus -b
@@ -1479,7 +1479,9 @@ and temporary policy live in
 project instead of the workspace containing the scenario. The path must BE a
 git toplevel — a subdirectory of some larger repo is refused
 (`CANDIDATE_PATH_INVALID`) so a run can never bind to files outside the
-project it named. Project caches live under `<worktree>/.qaren/`, and the
+project it named. Project cache state lives under `<worktree>/.qaren/`, verified
+dev-client builds are shared per machine under `~/.qaren/native-cache/` (see
+[Native-fingerprint build selection](#native-fingerprint-build-selection)), and the
 fingerprint enumerates only that worktree. Run records remain host-level;
 `status`/`cleanup` load them by run id without requiring the app directory.
 qaren never discovers, enumerates, or couples other projects.
@@ -1560,6 +1562,9 @@ dynamic or template-literal arguments, escaped literals and other unsupported
 syntax make the fingerprint **incomplete**, forbidding cached reuse (visible
 in decision evidence). Unresolvable local refs and `workspace:` dependencies
 in any of those sections also make it incomplete.
+On iOS the value also binds the selected Xcode (`xcodebuild -version`), so a
+build is never reused across Xcode versions, and an unavailable Xcode makes the
+fingerprint incomplete. Android binds the manifest hash alone.
 
 **Dynamic `app.config.*` (iOS).** qaren cannot trace a dynamic config itself,
 so it runs the app's own `@expo/fingerprint` (resolved through the app's `expo`
@@ -1568,8 +1573,7 @@ install, never downloaded) as `pnpm exec node <cli> fingerprint:generate
 transforms (`CI` removed, `EXPO_NO_TELEMETRY=1`). Expo evaluates the config,
 loads `.env` files, and hashes the evaluated config, the modules it loaded,
 autolinked native modules and config-plugin inputs. The fingerprint value then
-also binds that hash and the selected Xcode (`xcodebuild -version`), and the
-receipt notes record `fingerprint_parts` (hashes only), `fingerprint_complete`
+also binds that hash, and the receipt notes record `fingerprint_parts` (hashes only), `fingerprint_complete`
 and `expo_fingerprint_ms`.
 A successful evaluation clears only the dynamic-config incompleteness; every
 other reason still forbids reuse. If evaluation is unavailable (the package does
@@ -1581,7 +1585,7 @@ logged or stored. A config whose evaluated value changes between runs (an
 environment read, a time or random value) changes the hash and rebuilds.
 Limits: environment read only by native build scripts (a Podfile reading `ENV`,
 for example) and the CocoaPods version are not bound; Android keeps a dynamic
-config incomplete; and the Xcode identity is bound only for dynamic configs.
+config incomplete.
 
 An incomplete fingerprint over an existing generated native directory requires a
 clean prebuild, which deletes that directory with its installed native
@@ -1594,14 +1598,20 @@ out-of-worktree targets make the fingerprint incomplete. The scanner is
 conservative, not a full JS parser.
 qaren is pnpm-only; other package managers' lockfiles are out of contract.
 
-**Decision.** Cache state lives at
+**Decision.** Verified dev-client builds live in a machine store,
+`~/.qaren/native-cache/<platform>/<app_id>/<fingerprint>/`, shared by every
+clone and `qaren pr` worktree on this machine. Per-worktree cache state lives at
 `<worktree>/.qaren/native-cache/<platform>-<app_id>.json`
-(`qaren-native-cache/2`; a state with an older schema is invalid and rebuilds clean once), bound to the exact worktree, platform, app id,
-fingerprint, and building candidate sha:
+(`qaren-native-cache/2`; a state with an older schema is invalid), bound to the
+exact worktree, platform, app id, fingerprint, and building candidate sha; it
+records whether qaren generated the native directory, which decides incremental
+versus clean, but holds no artifact:
 
-1. **Reuse** — state matches this worktree/platform/app, fingerprints are
-   equal and complete, the cached artifact's content hash verifies, its
-   kind matches the platform, and `dev_client_scheme` is configured. The
+1. **Reuse** — the machine store holds a build of this complete fingerprint
+   whose content hash verifies against its record, its kind matches the
+   platform, and `dev_client_scheme` is configured. Missing, invalid or
+   other-worktree state does not block reuse and appears in the evidence, as
+   does `artifact from machine store <path>`. The
    verified dev client is installed (`simctl install` / `adb install -r
    -d`), Metro is spawned candidate-bound (`expo start --port`), and the
    dev client is deep-linked onto it (package-constrained `am start` on
@@ -1609,8 +1619,8 @@ fingerprint, and building candidate sha:
    does not open at launch). Fresh candidate JS always comes from Metro; the evidence
    records which candidate built the binary and which serves JS — native
    compatibility is proven by the fingerprint, never inferred from the sha.
-2. **Incremental** — reuse is invalid (committed native inputs changed, artifact
-   stale/missing/unverified, no scheme, incomplete fingerprint) but the
+2. **Incremental** — reuse is invalid (committed native inputs changed, stored
+   artifact stale/missing/unverified, no scheme, incomplete fingerprint) but the
    worktree-keyed caches are provably this project's: the state binds this
    exact worktree/app and any generated native dir was created by a
    recorded qaren build with unchanged, completely fingerprinted inputs.
@@ -1619,8 +1629,8 @@ fingerprint, and building candidate sha:
    [CLI-owned build routes](#cli-owned-ios-build-routes); borrowed Android
    emulators follow [Check a plan](#check-a-plan), while scenario-based Android
    `prepare` recompiles with `expo run:android` over the existing Gradle caches.
-3. **Clean** — mandatory whenever compatibility is unprovable: no/corrupt
-   state, cross-worktree state, unproven generated-dir provenance, changed or
+3. **Clean** — mandatory whenever compatibility is unprovable and no verified
+   stored build exists: no/corrupt state, cross-worktree state, unproven generated-dir provenance, changed or
    incomplete fingerprints for an existing generated native directory, or
    `build.strategy: clean`. A generated (git-ignored) native dir is regenerated
    using only `expo prebuild --platform <platform> --clean`, which deletes the
@@ -1635,19 +1645,22 @@ includes the same `expo prebuild --platform <platform> --clean` command before
 compilation on both platforms.
 
 After a successful build the dev client (single `.app` bundle / debug apk)
-is copied and content-hashed in a staging directory under
-`.qaren/native-cache/artifacts/<platform>/<app_id>-<fingerprint-key>/`.
-Copying checks cancellation between entries and file chunks. A final
+is copied and content-hashed in a staging directory inside its fingerprint's
+store entry. Copying checks cancellation between entries and file chunks. A final
 cancellation check precedes renaming staging to a run-specific generation and
 atomically saving cache state with the readiness-rechecked fingerprint
 (native-input drift during the build fails the run as `CANDIDATE_DRIFTED`).
 Cancellation before that publication removes staging and preserves the previous
-artifact and state without pruning or rebinding installation ownership. A failed
-state save removes the new generation and retains the previous state. An
+state without rebinding installation ownership. A failed state save removes the
+new generation and retains the previous state. A complete fingerprint then
+publishes `artifact.json` (`path`, `sha256`, `kind`, `built_at`, `candidate_sha`)
+create-new: the first build of a fingerprint wins, a concurrent or later build of
+the same fingerprint keeps its own generation and never rewrites the record, and
+an incomplete fingerprint is never published. A stored build that fails
+verification is refused and left in place, so that fingerprint rebuilds until
+its store entry directory is deleted. Nothing in the store is pruned. An
 ambiguous artifact (zero or several bundles) skips caching with a recorded
-reason — never a guess. Only successful publication permits ownership rebinding
-and pruning the same platform+app's directories for older fingerprints;
-generations within the current fingerprint bucket are retained.
+reason, never a guess. Only a saved state permits ownership rebinding.
 
 **Build serialization.** Native builds (incremental and clean) take a
 host-level `native-build-<platform>` lock before allocation. A live holder
