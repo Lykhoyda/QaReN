@@ -1902,7 +1902,8 @@ interface SwipeArgs {
 // Covers iPhone 17 Pro / 15 Pro / 14 Pro Max and similar Android 1080x2400 phones.
 const DEFAULT_SCREEN = { width: 402, height: 874 };
 const SWIPE_FRACTION = 0.4;
-const CLEARANCE_BAND_FRACTION = 0.9;
+// The middle of the band: chrome above the keyboard and the top bar sit at its edges.
+const CLEARANCE_BAND_FRACTION = 0.6;
 const DEFAULT_SWIPE_DURATION_MS = 300;
 
 function computeSwipeFromDirection(

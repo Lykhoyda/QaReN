@@ -54,8 +54,9 @@ test('a clearance distance sizes the swipe, inside the band above the keyboard',
   assert.ok(y1 < KEYBOARD.rect.y && y2 >= 0, `${y1} ${y2}`);
 });
 
-test('a clearance distance longer than the band is capped inside it', () => {
+test('a clearance swipe longer than the band keeps clear of the band edges', () => {
+  // Chrome above the keyboard and the top bar sit at the band edges, outside the scrolled content.
   const [y1, y2] = clearanceSwipe(5000);
-  assert.ok(y1 < KEYBOARD.rect.y && y2 >= 0, `${y1} ${y2}`);
-  assert.ok(y1 - y2 >= KEYBOARD.rect.y * 0.8, `${y1 - y2}`);
+  assert.ok(y1 <= KEYBOARD.rect.y * 0.8 + 1 && y2 >= KEYBOARD.rect.y * 0.2 - 1, `${y1} ${y2}`);
+  assert.ok(y1 - y2 >= KEYBOARD.rect.y * 0.6 - 2, `${y1 - y2}`);
 });

@@ -468,6 +468,8 @@ const keyboardForm = (field7: { y: number; visibleToUser: boolean }) =>
       control(4, {
         type: 'android.widget.EditText',
         identifier: 'qa-kb-input-7',
+        // The runner derives hittable from enabled and visible-to-user.
+        hittable: field7.visibleToUser,
         visibleToUser: field7.visibleToUser,
         rect: { x: 63, y: field7.y, width: 954, height: 93 },
       }),
@@ -492,6 +494,7 @@ test('an Android field the keyboard hides is keyboard-covered, not scrolled out'
   assert.equal(screen.captureCoverage?.native, 'complete');
   const field = screen.elements.find((e) => e.testID === 'qa-kb-input-7')!;
   assert.equal(field.offscreen, false);
+  assert.equal(field.hittable, true);
   assert.equal(keyboardCoversElement(field), true);
   const f = walker(
     [],

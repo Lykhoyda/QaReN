@@ -676,7 +676,8 @@ export function join(
       ref: n.ref,
       kind,
       nativeKind,
-      hittable: n.hittable === true,
+      // Android's hittable is enabled and visible-to-user; the keyboard explains a covered node's invisibility.
+      hittable: n.hittable === true || (keyboardHidden(n, nodeIndex) && n.enabled !== false),
       disabled: n.enabled === false || match?.disabled === true,
       ...(n.selected === true ? { selected: true as const } : {}),
       secure: n.secure === true || n.type === 'SecureTextField',
