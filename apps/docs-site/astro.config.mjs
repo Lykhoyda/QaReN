@@ -75,7 +75,10 @@ export default defineConfig({
       sidebar: [
         {
           label: 'Start here',
-          items: [{ label: 'What QaReN does', slug: 'index' }],
+          items: [
+            { label: 'What QaReN does', slug: 'index' },
+            { label: 'Getting started', slug: 'getting-started' },
+          ],
         },
         {
           label: 'Using QaReN',
@@ -94,6 +97,7 @@ export default defineConfig({
             { label: 'Configuration', slug: 'configuration' },
             { label: 'CLI', slug: 'cli' },
             { label: 'Troubleshooting', slug: 'troubleshooting' },
+            { label: 'Plugin', slug: 'plugin' },
             { label: 'Changelog', slug: 'changelog' },
           ],
         },
