@@ -1,8 +1,9 @@
 package dev.lykhoyda.rndevagent.androidrunner
 
 // Story 10 (#391): text-input recipe helpers for the `type` command. RN
-// TextInput is EditText-backed, so the focused node accepts ACTION_SET_TEXT
-// (UiObject2.setText) — atomic, full-Unicode, fires RN's onChangeText. This
+// TextInput is EditText-backed, so the bound node accepts ACTION_SET_TEXT
+// (performed on its AccessibilityNodeInfo, never through UiObject2.setText,
+// which logs the value) — atomic, full-Unicode, fires RN's onChangeText. This
 // object holds the pure logic around that primary path: classifying the
 // read-back outcome and mapping ASCII characters to keyevents for the
 // fallback tier (Maestro's 75 ms pacing). Kept free of android.* imports so
@@ -52,6 +53,15 @@ object TextInputRecipe {
             SetTextOutcome.TRANSFORMED -> beforeWasEmpty
             SetTextOutcome.REJECTED -> false
         }
+
+    // A read of the bound input's accessibility node. Android reports null text
+    // for an empty field that shows no hint, so a fresh read of a field known
+    // not to show one is "". A stale node, unknown hint state (API < 26) or a
+    // hint-showing field keeps its raw text, so null stays unreadable there.
+    fun readableText(fresh: Boolean, text: String?, showingHint: Boolean?): String? {
+        if (!fresh) return null
+        return if (showingHint == false) text.orEmpty() else text
+    }
 
     fun classifyVerify(
         expected: String,
