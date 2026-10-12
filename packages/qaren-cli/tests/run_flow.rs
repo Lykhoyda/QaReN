@@ -113,6 +113,7 @@ fn request(repo: &Path, app: &Path, step_seconds: u64) -> RunRequest {
         runtime_dir: PathBuf::from("/runtime"),
         node: Some(PathBuf::from("/usr/local/bin/node")),
         lock_root: repo.join(".locks"),
+        native_cache_root: repo.join(".native-store"),
         runs_root: repo.join("runs"),
         android_home: None,
         budgets: Budgets {
@@ -221,7 +222,7 @@ fn workspace_products_are_retained_when_cache_publication_fails() {
         let cache = qaren::buildplan::cache_dir(&repo);
         std::fs::create_dir_all(&cache).unwrap();
         if failure == "copy" {
-            std::fs::write(cache.join("artifacts"), "block cache copy").unwrap();
+            std::fs::write(repo.join(".native-store"), "block cache copy").unwrap();
         } else {
             std::fs::create_dir(qaren::buildplan::state_path(
                 &repo,
@@ -352,7 +353,9 @@ fn workspace_cache_persistence_reuses_only_the_same_workspace_and_scheme() {
             panic!("successful build must persist reusable native state");
         };
         assert_eq!(state.fingerprint, plan.fingerprint);
-        let artifact = state.artifact.unwrap();
+        let artifact = common::stored_record(&req.native_cache_root, "ios", &state.fingerprint)
+            .unwrap()
+            .artifact;
         assert_eq!(
             artifact.sha256,
             buildplan::hash_artifact(&artifact.path).unwrap()
@@ -378,6 +381,111 @@ fn workspace_cache_persistence_reuses_only_the_same_workspace_and_scheme() {
     assert_ne!(artifacts[1], artifacts[2]);
     assert_ne!(fingerprints[2], fingerprints[3]);
     assert_ne!(artifacts[2], artifacts[3]);
+}
+
+#[test]
+fn a_fresh_clone_reuses_another_clones_build_and_never_overwrites_the_store() {
+    use qaren::buildplan::{self, BuildDecision, STORE_RECORD};
+    use qaren::exec::Runner;
+    let store = common::temp_repo().join("machine-store");
+    let mut record_bytes = Vec::new();
+    for (index, case) in ["first", "second", "corrupted"].into_iter().enumerate() {
+        let (repo, app) = app_repo();
+        common::write_ios_workspace(&app, "ios/Native.xcworkspace");
+        configure_workspace(&app, "ios/Native.xcworkspace", "Native");
+        let mut req = request(&repo, &app, 30);
+        req.native_cache_root = store.clone();
+        let mut mock = MockRunner::new();
+        mock.sleep(std::time::Duration::from_secs(60 * index as u64));
+        let reuse = case == "second";
+        script_preflight(&mut mock, &repo);
+        mock.expect_run("pnpm install --frozen-lockfile", CmdOutput::success(""));
+        if reuse {
+            mock.expect_run("ls-files", CmdOutput::success(common::IOS_NATIVE_FILES));
+            common::script_xcode(&mut mock);
+            common::script_ios_install_and_launch(&mut mock);
+            script_ready_recheck(&mut mock, common::IOS_NATIVE_FILES);
+        } else {
+            script_provision_build(&mut mock, "xcodebuild", common::IOS_NATIVE_FILES);
+        }
+        script_drift_status(&mut mock);
+        script_host_probe(&mut mock, UDID, hosts_absent());
+        let shifted = format!(
+            "check-{}",
+            qaren::timefmt::compact_utc(1_770_000_000_000 + 60_000 * index as u64)
+        );
+        mock.expect_spawn_piped(
+            "walk.js",
+            9000,
+            &pass_stdout().replace(&run_id(), &shifted),
+            Some(0),
+        );
+        script_core_identity(&mut mock);
+        script_teardown(&mut mock);
+
+        let receipt = run(&mut mock, &req);
+
+        assert_eq!(
+            receipt.result,
+            ReceiptResult::Pass,
+            "{case}: {:?}",
+            receipt.failure
+        );
+        assert_eq!(mock.remaining(), 0, "{case}");
+        let plan = receipt.build.unwrap();
+        assert_eq!(
+            plan.decision == BuildDecision::Reuse,
+            reuse,
+            "{case}: {}",
+            plan.reason
+        );
+        let entry =
+            buildplan::store_dir(&store, "ios", "com.rndevagent.testapp", &plan.fingerprint);
+        let stored = common::stored_record(&store, "ios", &plan.fingerprint).unwrap();
+        match case {
+            "first" => record_bytes = std::fs::read(entry.join(STORE_RECORD)).unwrap(),
+            "second" => {
+                assert!(
+                    plan.evidence
+                        .iter()
+                        .any(|e| e.contains("no native cache state recorded")),
+                    "{:?}",
+                    plan.evidence
+                );
+                assert!(
+                    plan.evidence.iter().any(|e| e.contains(&format!(
+                        "artifact from machine store {}",
+                        stored.artifact.path.display()
+                    ))),
+                    "{:?}",
+                    plan.evidence
+                );
+                let install = mock
+                    .calls
+                    .iter()
+                    .find(|c| c.label == "simctl-install")
+                    .unwrap();
+                assert_eq!(install.args[3], stored.artifact.path.to_string_lossy());
+                std::fs::write(stored.artifact.path.join("binary"), b"corrupted").unwrap();
+            }
+            _ => {
+                assert!(
+                    receipt.outcomes["artifact_cache"].contains("already holds a build"),
+                    "{:?}",
+                    receipt.outcomes
+                );
+                assert_eq!(
+                    std::fs::read(&stored.artifact.path.join("binary")).unwrap(),
+                    b"corrupted"
+                );
+            }
+        }
+        assert_eq!(
+            std::fs::read(entry.join(STORE_RECORD)).unwrap(),
+            record_bytes,
+            "{case}"
+        );
+    }
 }
 
 #[test]
@@ -2672,7 +2780,6 @@ fn android_check_present_android_dir_skips_prebuild() {
             candidate_sha: "b".repeat(40),
             lockfile_sha256: String::new(),
             generated_native_dirs: vec!["android".to_string()],
-            artifact: None,
         },
     )
     .unwrap();
@@ -2777,17 +2884,20 @@ fn android_check_does_not_require_the_shared_configs_ios_workspace() {
 
 // A native cache entry whose APK matches the worktree, so the run decides Reuse.
 fn seed_cached_apk(repo: &Path, app: &Path) -> std::path::PathBuf {
-    use qaren::buildplan::{
-        hash_artifact, save_json, state_path, ArtifactKind, CachedArtifact, NativeCacheState,
-        CACHE_SCHEMA,
-    };
+    use qaren::buildplan::{save_json, state_path, ArtifactKind, NativeCacheState, CACHE_SCHEMA};
     let apk = repo.join("cached").join("app-debug.apk");
     std::fs::create_dir_all(apk.parent().unwrap()).unwrap();
     std::fs::write(&apk, b"cached apk").unwrap();
     let mut fp_runner = qaren::exec::MockRunner::new();
     fp_runner.expect_run("ls-files", CmdOutput::success(""));
-    common::script_xcode(&mut fp_runner);
     let fp = qaren::fingerprint::compute(&mut fp_runner, repo, app, "android").unwrap();
+    let cached = common::seed_store(
+        &repo.join(".native-store"),
+        "android",
+        &fp.value,
+        &apk,
+        ArtifactKind::Apk,
+    );
     save_json(
         &state_path(repo, "android", "com.rndevagent.testapp"),
         &NativeCacheState {
@@ -2801,15 +2911,10 @@ fn seed_cached_apk(repo: &Path, app: &Path) -> std::path::PathBuf {
             candidate_sha: "b".repeat(40),
             lockfile_sha256: String::new(),
             generated_native_dirs: Vec::new(),
-            artifact: Some(CachedArtifact {
-                path: apk.clone(),
-                sha256: hash_artifact(&apk).unwrap(),
-                kind: ArtifactKind::Apk,
-            }),
         },
     )
     .unwrap();
-    apk
+    cached.path
 }
 
 #[test]
@@ -3618,7 +3723,7 @@ fn fresh_install_reset_build_readiness_walk_and_teardown_share_one_durable_lease
 
 #[test]
 fn fresh_install_resets_or_proves_absence_before_cached_install_under_the_same_lease() {
-    use qaren::buildplan::{self, ArtifactKind, CachedArtifact, NativeCacheState, CACHE_SCHEMA};
+    use qaren::buildplan::{self, ArtifactKind, NativeCacheState, CACHE_SCHEMA};
     for installed in [false, true] {
         let (repo, app) = app_repo();
         std::fs::write(
@@ -3632,6 +3737,13 @@ fn fresh_install_resets_or_proves_absence_before_cached_install_under_the_same_l
         fp_mock.expect_run("ls-files", CmdOutput::success(""));
         common::script_xcode(&mut fp_mock);
         let fp = qaren::fingerprint::compute(&mut fp_mock, &repo, &app, "ios").unwrap();
+        common::seed_store(
+            &repo.join(".native-store"),
+            "ios",
+            &fp.value,
+            &cached,
+            ArtifactKind::AppBundle,
+        );
         buildplan::save_json(
             &buildplan::state_path(&repo, "ios", "com.rndevagent.testapp"),
             &NativeCacheState {
@@ -3645,11 +3757,6 @@ fn fresh_install_resets_or_proves_absence_before_cached_install_under_the_same_l
                 candidate_sha: "a".repeat(40),
                 lockfile_sha256: "c".repeat(64),
                 generated_native_dirs: vec!["ios".into()],
-                artifact: Some(CachedArtifact {
-                    sha256: buildplan::hash_artifact(&cached).unwrap(),
-                    path: cached,
-                    kind: ArtifactKind::AppBundle,
-                }),
             },
         )
         .unwrap();
@@ -5768,7 +5875,8 @@ fn every_build_decision_reports_fingerprint_completeness_and_reuse_reports_ready
             "incomplete" => incomplete_files.as_str(),
             _ => common::IOS_NATIVE_FILES,
         };
-        let reuse = case == "warm";
+        // An unreadable worktree state no longer blocks the verified machine-store build.
+        let reuse = matches!(case, "warm" | "old-schema");
         let mut req = request(&repo, &app, 30);
         req.runs_root = repo.join(format!("runs-{index}"));
         let mut mock = MockRunner::new();

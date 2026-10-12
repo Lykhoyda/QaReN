@@ -38,6 +38,7 @@ fn prepare_args(scenario_path: &Path, android_home: Option<String>) -> PrepareAr
         dry_run: false,
         android_home,
         lock_root: scenario_path.parent().unwrap().join(".locks"),
+        native_cache_root: scenario_path.parent().unwrap().join(".native-store"),
         runs_root: scenario_path.parent().unwrap().to_path_buf(),
     }
 }
@@ -1400,6 +1401,7 @@ fn handoff_dry_run_plans_allocation_only() {
         dry_run: true,
         android_home: None,
         lock_root: repo.join(".locks"),
+        native_cache_root: repo.join(".native-store"),
         runs_root: repo.to_path_buf(),
     };
     let receipt = prepare(&mut mock, &args);

@@ -64,6 +64,43 @@ pub fn script_expo_fingerprint(mock: &mut MockRunner, hash: &str, xcode: &str) {
     mock.expect_run("xcodebuild -version", CmdOutput::success(xcode));
 }
 
+pub fn stored_record(
+    store_root: &std::path::Path,
+    platform: &str,
+    fingerprint: &str,
+) -> Option<qaren::buildplan::StoreRecord> {
+    let dir =
+        qaren::buildplan::store_dir(store_root, platform, "com.rndevagent.testapp", fingerprint);
+    qaren::buildplan::load_store_record(&dir).unwrap()
+}
+
+pub fn seed_store(
+    store_root: &std::path::Path,
+    platform: &str,
+    fingerprint: &str,
+    src: &std::path::Path,
+    kind: qaren::buildplan::ArtifactKind,
+) -> qaren::buildplan::CachedArtifact {
+    use qaren::buildplan::{
+        copy_artifact, hash_artifact, publish_store_record, store_dir, CachedArtifact, StoreRecord,
+    };
+    let dir = store_dir(store_root, platform, "com.rndevagent.testapp", fingerprint);
+    let path = dir.join("seed-run").join(src.file_name().unwrap());
+    copy_artifact(&MockRunner::new(), src, &path).unwrap();
+    let artifact = CachedArtifact {
+        sha256: hash_artifact(&path).unwrap(),
+        path,
+        kind,
+    };
+    let record = StoreRecord {
+        artifact: artifact.clone(),
+        built_at: "2026-10-11T00:00:00Z".to_string(),
+        candidate_sha: "a".repeat(40),
+    };
+    assert!(publish_store_record(&dir, &record).unwrap());
+    artifact
+}
+
 pub const XCODE_VERSION: &str = "Xcode 27.0\nBuild version 27A266a\n";
 
 pub fn script_xcode(mock: &mut MockRunner) {

@@ -166,7 +166,7 @@ fn output_fields_mask_on_load_and_keep_the_json_string_contract() {
 
 #[test]
 fn cache_handoff_and_native_suite_writers_preserve_identity_and_mask_output() {
-    use qaren::buildplan::{self, ArtifactKind, CachedArtifact, DepsPrewarm, NativeCacheState};
+    use qaren::buildplan::{self, DepsPrewarm, NativeCacheState};
     use qaren::handoff::{ExpectedReceipt, HandoffDocument};
     use qaren::native_suite::{CleanupEvidence, NativeSuite, SuiteProcess};
     let dir = common::temp_repo();
@@ -185,18 +185,12 @@ fn cache_handoff_and_native_suite_writers_preserve_identity_and_mask_output() {
         candidate_sha: "sha".into(),
         lockfile_sha256: "sha".into(),
         generated_native_dirs: Vec::new(),
-        artifact: Some(CachedArtifact {
-            path: identity.join("app"),
-            sha256: "sha".into(),
-            kind: ArtifactKind::AppBundle,
-        }),
     };
     let cache_path = buildplan::state_path(&dir, "ios", "app");
     buildplan::save_json(&cache_path, &state).unwrap();
     let loaded: NativeCacheState =
         serde_json::from_slice(&std::fs::read(&cache_path).unwrap()).unwrap();
     assert_eq!(loaded.worktree_root, identity);
-    assert_eq!(loaded.artifact.unwrap().path, identity.join("app"));
     let prewarm = DepsPrewarm {
         schema: buildplan::PREWARM_SCHEMA.into(),
         worktree_root: identity.clone(),

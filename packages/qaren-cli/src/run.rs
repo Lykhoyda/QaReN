@@ -51,6 +51,7 @@ pub struct RunRequest {
     pub node: Option<PathBuf>,
     pub lock_root: PathBuf,
     pub runs_root: PathBuf,
+    pub native_cache_root: PathBuf,
     pub android_home: Option<String>,
     pub budgets: Budgets,
     // `qaren pr`: the run happens on a detached worktree at this PR's head.
@@ -375,6 +376,7 @@ fn run_inner(
     let mut ctx = Ctx {
         runner,
         runs_root: req.runs_root.clone(),
+        native_cache_root: req.native_cache_root.clone(),
         record,
         started_ms,
         timings: Vec::new(),

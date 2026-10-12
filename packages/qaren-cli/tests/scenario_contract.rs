@@ -365,6 +365,7 @@ fn prepare_refuses_a_borrowed_emulator_scenario_before_any_command() {
             dry_run: true,
             android_home: None,
             lock_root: dir.join(".locks"),
+            native_cache_root: dir.join(".native-store"),
             runs_root: dir.clone(),
         },
     );

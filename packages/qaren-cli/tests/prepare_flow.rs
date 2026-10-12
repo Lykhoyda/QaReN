@@ -35,6 +35,7 @@ fn prepare_args(
         // Per-test lock root keeps parallel tests from contending on the
         // shared build-serialization lock name.
         lock_root: scenario_path.parent().unwrap().join(".locks"),
+        native_cache_root: scenario_path.parent().unwrap().join(".native-store"),
         runs_root: scenario_path.parent().unwrap().to_path_buf(),
     }
 }
@@ -1722,8 +1723,7 @@ fn dry_run_plans_without_allocating() {
 fn ios_reuse_dry_run_lists_each_launch_step_once_in_execution_order() {
     use qaren::adapters::{ios, metro};
     use qaren::buildplan::{
-        hash_artifact, save_json, state_path, ArtifactKind, BuildDecision, CachedArtifact,
-        NativeCacheState, CACHE_SCHEMA,
+        save_json, state_path, ArtifactKind, BuildDecision, NativeCacheState, CACHE_SCHEMA,
     };
     use qaren::exec::CmdSpec;
 
@@ -1741,6 +1741,14 @@ fn ios_reuse_dry_run_lists_each_launch_step_once_in_execution_order() {
     common::script_xcode(&mut fp_runner);
     let fp = qaren::fingerprint::compute(&mut fp_runner, &repo, &project, "ios").unwrap();
     assert!(fp.complete);
+    let artifact = common::seed_store(
+        &scenario_path.parent().unwrap().join(".native-store"),
+        "ios",
+        &fp.value,
+        &artifact,
+        ArtifactKind::AppBundle,
+    )
+    .path;
     let cache = NativeCacheState {
         schema: CACHE_SCHEMA.to_string(),
         fingerprint_parts: Default::default(),
@@ -1752,11 +1760,6 @@ fn ios_reuse_dry_run_lists_each_launch_step_once_in_execution_order() {
         candidate_sha: "b".repeat(40),
         lockfile_sha256: "c".repeat(64),
         generated_native_dirs: vec!["ios".to_string()],
-        artifact: Some(CachedArtifact {
-            path: artifact.clone(),
-            sha256: hash_artifact(&artifact).unwrap(),
-            kind: ArtifactKind::AppBundle,
-        }),
     };
     save_json(
         &state_path(&repo, "ios", &scenario.candidate.app_id),
@@ -1885,7 +1888,6 @@ fn dry_run_plans_generated_native_regeneration_before_every_build_route() {
                     candidate_sha: "b".repeat(40),
                     lockfile_sha256: "c".repeat(64),
                     generated_native_dirs: vec![platform.to_string()],
-                    artifact: None,
                 };
                 save_json(
                     &state_path(&repo, platform, &scenario.candidate.app_id),
@@ -2047,7 +2049,7 @@ fn build_process_death_fails_with_log_evidence() {
 }
 
 #[test]
-fn recording_a_build_retires_run_output_and_prunes_only_older_artifacts_for_the_same_app() {
+fn recording_a_build_retires_run_output_and_publishes_to_the_machine_store_without_pruning() {
     let repo = common::temp_repo();
     let scenario_path = write_scenario(&repo, &ios_scenario_yaml(8797));
     let retained_caches = ["test-app/ios/Pods/cached", "DerivedData/cached"];
@@ -2067,16 +2069,17 @@ fn recording_a_build_retires_run_output_and_prunes_only_older_artifacts_for_the_
     std::fs::create_dir_all(products.join("testapp.app")).unwrap();
     std::fs::write(products.join("testapp.app").join("binary"), b"native bits").unwrap();
 
-    let artifacts = qaren::buildplan::cache_dir(&repo)
-        .join("artifacts")
-        .join("ios");
-    let stale = artifacts.join(format!("com.rndevagent.testapp-{}", "a".repeat(16)));
-    let other_app = artifacts.join(format!("com.other.app-{}", "b".repeat(16)));
-    let not_a_fp_key = artifacts.join("com.rndevagent.testapp-scratch");
-    for dir in [&stale, &other_app, &not_a_fp_key] {
-        std::fs::create_dir_all(dir).unwrap();
-        std::fs::write(dir.join("old.app"), b"old bits").unwrap();
-    }
+    let store_root = scenario_path.parent().unwrap().join(".native-store");
+    let older = repo.join("older.app");
+    std::fs::create_dir_all(&older).unwrap();
+    std::fs::write(older.join("binary"), b"old bits").unwrap();
+    let older = common::seed_store(
+        &store_root,
+        "ios",
+        &format!("rnfp1:{}", "a".repeat(64)),
+        &older,
+        qaren::buildplan::ArtifactKind::AppBundle,
+    );
 
     let mut mock = MockRunner::new();
     script_validation(&mut mock, &repo, IOS_TOOLS);
@@ -2148,7 +2151,10 @@ fn recording_a_build_retires_run_output_and_prunes_only_older_artifacts_for_the_
         qaren::buildplan::StateStatus::Loaded(state) => state,
         other => panic!("expected recorded cache state, got {other:?}"),
     };
-    let cached = state.artifact.as_ref().unwrap();
+    let cached = &common::stored_record(&store_root, "ios", &state.fingerprint)
+        .unwrap()
+        .artifact;
+    assert!(cached.path.starts_with(&store_root));
     assert!(cached.path.exists(), "the new artifact must survive");
     let reported = receipt.build.as_ref().unwrap().artifact.as_ref().unwrap();
     assert_eq!(reported.path, cached.path);
@@ -2181,17 +2187,10 @@ fn recording_a_build_retires_run_output_and_prunes_only_older_artifacts_for_the_
         cached.sha256,
         qaren::buildplan::hash_artifact(&products.join("testapp.app")).unwrap()
     );
-    assert!(
-        !stale.exists(),
-        "an older fingerprint's artifact must be pruned"
-    );
-    assert!(
-        other_app.exists(),
-        "another app's artifact must never be pruned"
-    );
-    assert!(
-        not_a_fp_key.exists(),
-        "a directory that is not a fingerprint artifact must never be pruned"
+    assert_eq!(
+        qaren::buildplan::hash_artifact(&older.path).unwrap(),
+        older.sha256,
+        "another fingerprint's stored build is never pruned"
     );
     assert_eq!(probing.inner.remaining(), 0);
     let prebuilds: Vec<_> = probing
@@ -2244,7 +2243,7 @@ fn recording_a_build_retains_source_on_cache_or_evidence_publication_failure() {
                 let cache = qaren::buildplan::cache_dir(repo);
                 std::fs::create_dir_all(&cache).unwrap();
                 match fault {
-                    "copy" => std::fs::write(cache.join("artifacts"), b"not a directory").unwrap(),
+                    "copy" => std::fs::write(repo.join(".native-store"), b"not a directory").unwrap(),
                     "hash" => std::fs::write(
                         run_dir.join("ios-build/testapp.app/binary"),
                         b"changed after install",
@@ -2621,10 +2620,8 @@ fn recording_a_build_cancelled_mid_copy_preserves_previous_cache() {
     );
     let staged_binary = std::rc::Rc::new(std::cell::RefCell::new(std::path::PathBuf::new()));
     let copy_path = staged_binary.clone();
-    let artifacts = qaren::buildplan::cache_dir(&repo).join("artifacts/ios");
-    let stale = artifacts.join(format!("com.rndevagent.testapp-{}", "a".repeat(16)));
-    std::fs::create_dir_all(&stale).unwrap();
-    std::fs::write(stale.join("old.app"), b"pruning canary").unwrap();
+    let store_root = scenario.parent().unwrap().join(".native-store");
+    let probe_store = store_root.clone();
     let previous = std::rc::Rc::new(std::cell::RefCell::new(std::path::PathBuf::new()));
     let previous_path = previous.clone();
     let saved_state = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
@@ -2646,16 +2643,10 @@ fn recording_a_build_cancelled_mid_copy_preserves_previous_cache() {
             let record: RunRecord =
                 serde_json::from_slice(&std::fs::read(run_dir.join("run.json")).unwrap()).unwrap();
             let fp = record.build.as_ref().unwrap().fingerprint.clone();
-            let key: String = fp
-                .chars()
-                .filter(|c| c.is_ascii_hexdigit())
-                .take(16)
-                .collect();
             let root = record.candidate.repo_root.clone();
-            *copy_path.borrow_mut() = qaren::buildplan::cache_dir(&root)
-                .join("artifacts/ios")
-                .join(format!("com.rndevagent.testapp-{key}"))
-                .join(format!(".staging-{}", record.run_id))
+            *copy_path.borrow_mut() =
+                qaren::buildplan::store_dir(&probe_store, "ios", "com.rndevagent.testapp", &fp)
+                    .join(format!(".staging-{}", record.run_id))
                 .join("testapp.app/binary");
             std::fs::write(
                 run_dir.join("ios-build/testapp.app/binary"),
@@ -2684,11 +2675,6 @@ fn recording_a_build_cancelled_mid_copy_preserves_previous_cache() {
                 candidate_sha: record.candidate.git_sha,
                 lockfile_sha256: String::new(),
                 generated_native_dirs: Vec::new(),
-                artifact: Some(qaren::buildplan::CachedArtifact {
-                    sha256: qaren::buildplan::hash_artifact(&old).unwrap(),
-                    path: old.clone(),
-                    kind: qaren::buildplan::ArtifactKind::AppBundle,
-                }),
             };
             let path = qaren::buildplan::state_path(&root, "ios", "com.rndevagent.testapp");
             qaren::buildplan::save_json(&path, &state).unwrap();
@@ -2708,13 +2694,14 @@ fn recording_a_build_cancelled_mid_copy_preserves_previous_cache() {
         b"previous build"
     );
     assert_eq!(std::fs::read(&state_path).unwrap(), *saved_state.borrow());
-    assert_eq!(
-        std::fs::read(stale.join("old.app")).unwrap(),
-        b"pruning canary"
-    );
     let staged = probing.cancel_copy.as_ref().unwrap().borrow();
     let staging_dir = staged.parent().unwrap().parent().unwrap();
     assert!(!staging_dir.exists());
+    assert!(!staging_dir
+        .parent()
+        .unwrap()
+        .join(qaren::buildplan::STORE_RECORD)
+        .exists());
     assert!(!staging_dir.parent().unwrap().join(&run_id).exists());
     let record = RunRecord::load(&repo, &run_id).unwrap();
     assert!(record

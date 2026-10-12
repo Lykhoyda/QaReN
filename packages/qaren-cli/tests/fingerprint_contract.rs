@@ -675,7 +675,7 @@ fn build_after(
 ) -> qaren::buildplan::BuildPlan {
     use qaren::buildplan::{
         decide, ArtifactKind, ArtifactStatus, CachedArtifact, DecisionInputs, NativeCacheState,
-        StateStatus, CACHE_SCHEMA,
+        StateStatus, StoreRecord, CACHE_SCHEMA,
     };
     let cached = NativeCacheState {
         schema: CACHE_SCHEMA.to_string(),
@@ -688,7 +688,9 @@ fn build_after(
         candidate_sha: "a".repeat(40),
         lockfile_sha256: "b".repeat(64),
         generated_native_dirs: vec![platform.to_string()],
-        artifact: Some(CachedArtifact {
+    };
+    let stored = StoreRecord {
+        artifact: CachedArtifact {
             path: root.join(if platform == "ios" {
                 "testapp.app"
             } else {
@@ -700,7 +702,9 @@ fn build_after(
             } else {
                 ArtifactKind::Apk
             },
-        }),
+        },
+        built_at: cached.built_at.clone(),
+        candidate_sha: cached.candidate_sha.clone(),
     };
     decide(
         &DecisionInputs {
@@ -719,7 +723,7 @@ fn build_after(
             native_dir_in_candidate: false,
         },
         &StateStatus::Loaded(Box::new(cached.clone())),
-        Some(ArtifactStatus::Verified),
+        (recorded.value == fp.value).then_some((stored, ArtifactStatus::Verified)),
     )
 }
 

@@ -1,7 +1,7 @@
 mod common;
 
 use qaren::buildplan::{
-    self, ArtifactKind, BuildDecision, CachedArtifact, NativeCacheState, CACHE_SCHEMA,
+    self, ArtifactKind, BuildDecision, NativeCacheState, CACHE_SCHEMA,
     PREWARM_SCHEMA,
 };
 use qaren::commands::prepare::{prepare, PrepareArgs};
@@ -14,7 +14,6 @@ use qaren::runrecord::{AdbServerResource, MetroResource, Phase, RunRecord, UsbDe
 use qaren::scenario::Scenario;
 use std::path::{Path, PathBuf};
 
-static NO_PARTS: std::collections::BTreeMap<String, String> = std::collections::BTreeMap::new();
 
 const LSTART: &str = "Wed Aug 12 16:01:00 2026";
 const USB_SERIAL: &str = "R5CT123ABC";
@@ -44,6 +43,7 @@ fn args(repo: &Path, scenario_path: &Path, android_home: Option<String>) -> Prep
         dry_run: false,
         android_home,
         lock_root: repo.join(".locks"),
+        native_cache_root: repo.join(".native-store"),
         runs_root: repo.to_path_buf(),
     }
 }
@@ -456,6 +456,13 @@ fn workspace_dry_run_reports_xcode_only_when_the_bound_cache_cannot_be_reused() 
         }
         if index == 0 {
             initial_fingerprint = Some(plan.fingerprint.clone());
+            common::seed_store(
+                &options.native_cache_root,
+                "ios",
+                &plan.fingerprint,
+                &app_dir,
+                ArtifactKind::AppBundle,
+            );
             buildplan::save_json(
                 &buildplan::state_path(&repo, "ios", "com.rndevagent.testapp"),
                 &NativeCacheState {
@@ -469,11 +476,6 @@ fn workspace_dry_run_reports_xcode_only_when_the_bound_cache_cannot_be_reused() 
                     candidate_sha: "b".repeat(40),
                     lockfile_sha256: "c".repeat(64),
                     generated_native_dirs: vec![],
-                    artifact: Some(CachedArtifact {
-                        path: app_dir.clone(),
-                        sha256: buildplan::hash_artifact(&app_dir).unwrap(),
-                        kind: ArtifactKind::AppBundle,
-                    }),
                 },
             )
             .unwrap();
@@ -509,7 +511,6 @@ fn assert_ios_prepare_reuses_cached_client(workspace: bool) {
     // A previous build's verified dev client and cache state.
     let app_dir = repo.join("cached").join("testapp.app");
     common::write_ios_app(&app_dir);
-    let artifact_sha = buildplan::hash_artifact(&app_dir).unwrap();
     // The fingerprint the plan phase will compute for this repo.
     let mut fp_mock = MockRunner::new();
     fp_mock.expect_run("ls-files", CmdOutput::success(""));
@@ -517,6 +518,14 @@ fn assert_ios_prepare_reuses_cached_client(workspace: bool) {
     let fp = qaren::fingerprint::compute(&mut fp_mock, &repo, &repo.join("test-app"), "ios")
         .unwrap()
         .with_ios_workspace(scenario.build.ios_workspace.as_ref());
+    let app_dir = common::seed_store(
+        &repo.join(".native-store"),
+        "ios",
+        &fp.value,
+        &app_dir,
+        ArtifactKind::AppBundle,
+    )
+    .path;
     let state = NativeCacheState {
         schema: CACHE_SCHEMA.to_string(),
         fingerprint_parts: Default::default(),
@@ -528,11 +537,6 @@ fn assert_ios_prepare_reuses_cached_client(workspace: bool) {
         candidate_sha: "a".repeat(40),
         lockfile_sha256: "c".repeat(64),
         generated_native_dirs: vec!["ios".to_string()],
-        artifact: Some(CachedArtifact {
-            path: app_dir.clone(),
-            sha256: artifact_sha,
-            kind: ArtifactKind::AppBundle,
-        }),
     };
     buildplan::save_json(
         &buildplan::state_path(&repo, "ios", "com.rndevagent.testapp"),
@@ -671,22 +675,28 @@ fn assert_ios_prepare_reuses_cached_client(workspace: bool) {
 }
 
 #[test]
-fn tampered_cached_artifact_is_refused_for_reuse() {
+fn tampered_stored_artifact_is_refused_for_reuse_and_left_in_place() {
     let repo = common::temp_repo();
-
+    let scenario_path = write_scenario(&repo, &ios_reuse_scenario_yaml(8791));
+    let mut options = args(&repo, &scenario_path, None);
+    options.dry_run = true;
     let app_dir = repo.join("cached").join("testapp.app");
-    std::fs::create_dir_all(&app_dir).unwrap();
-    std::fs::write(app_dir.join("binary"), b"native bits").unwrap();
-    let recorded_sha = buildplan::hash_artifact(&app_dir).unwrap();
-    // Tamper after recording.
-    std::fs::write(app_dir.join("binary"), b"swapped bits").unwrap();
-
+    common::write_ios_app(&app_dir);
     let mut fp_mock = MockRunner::new();
     fp_mock.expect_run("ls-files", CmdOutput::success(""));
     common::script_xcode(&mut fp_mock);
     let fp =
         qaren::fingerprint::compute(&mut fp_mock, &repo, &repo.join("test-app"), "ios").unwrap();
-
+    let stored = common::seed_store(
+        &options.native_cache_root,
+        "ios",
+        &fp.value,
+        &app_dir,
+        ArtifactKind::AppBundle,
+    );
+    std::fs::write(stored.path.join("binary"), b"swapped bits").unwrap();
+    let record = stored.path.parent().unwrap().parent().unwrap().join(buildplan::STORE_RECORD);
+    let recorded = std::fs::read(&record).unwrap();
     let state = NativeCacheState {
         schema: CACHE_SCHEMA.to_string(),
         fingerprint_parts: Default::default(),
@@ -698,46 +708,39 @@ fn tampered_cached_artifact_is_refused_for_reuse() {
         candidate_sha: "a".repeat(40),
         lockfile_sha256: "c".repeat(64),
         generated_native_dirs: vec!["ios".to_string()],
-        artifact: Some(CachedArtifact {
-            path: app_dir,
-            sha256: recorded_sha,
-            kind: ArtifactKind::AppBundle,
-        }),
     };
-    let scenario: Scenario = serde_yaml::from_str(&ios_reuse_scenario_yaml(8791)).unwrap();
-    scenario.validate().unwrap();
-
-    // Decision-level check through the same verification prepare uses.
-    let status = match &state.artifact {
-        Some(artifact) => match buildplan::hash_artifact(&artifact.path) {
-            Ok(h) if h == artifact.sha256 => buildplan::ArtifactStatus::Verified,
-            Ok(_) => buildplan::ArtifactStatus::Mismatch,
-            Err(_) => buildplan::ArtifactStatus::MissingFile,
-        },
-        None => unreachable!(),
-    };
-    assert_eq!(status, buildplan::ArtifactStatus::Mismatch);
-    let plan = buildplan::decide(
-        &buildplan::DecisionInputs {
-            platform: "ios",
-            app_id: "com.rndevagent.testapp",
-            worktree_root: &repo,
-            candidate_sha: &"b".repeat(40),
-            fingerprint: &fp.value,
-            fingerprint_parts: &NO_PARTS,
-            fingerprint_complete: fp.complete,
-            incompleteness: &fp.incompleteness,
-            expo_unavailable: fp.expo_unavailable.as_deref(),
-            scheme: Some("rndatest"),
-            force_clean: false,
-            native_dir_exists: false,
-            native_dir_in_candidate: false,
-        },
-        &buildplan::StateStatus::Loaded(Box::new(state)),
-        Some(status),
+    buildplan::save_json(
+        &buildplan::state_path(&repo, "ios", "com.rndevagent.testapp"),
+        &state,
+    )
+    .unwrap();
+    let mut mock = MockRunner::new();
+    script_validation(
+        &mut mock,
+        &repo,
+        &["git", "pnpm", "node", "lsof", "curl", "ps", "xcrun"],
     );
-    assert_ne!(plan.decision, BuildDecision::Reuse, "{}", plan.reason);
+    mock.expect_run(
+        "expo run:ios --help",
+        CmdOutput::success(common::IOS_BUILD_HELP),
+    );
+    mock.expect_run("lsof", free_port());
+    mock.expect_run("ls-files", CmdOutput::success(""));
+    common::script_xcode(&mut mock);
+
+    let receipt = prepare(&mut mock, &options);
+
+    assert_eq!(receipt.result, ReceiptResult::Planned, "{:?}", receipt.failure);
+    assert_eq!(mock.remaining(), 0);
+    let plan = receipt.build.unwrap();
+    assert_eq!(plan.decision, BuildDecision::Incremental, "{}", plan.reason);
+    assert!(plan.reason.contains("stale"), "{}", plan.reason);
     assert!(plan.artifact.is_none());
+    assert_eq!(std::fs::read(&record).unwrap(), recorded);
+    assert_eq!(
+        std::fs::read(stored.path.join("binary")).unwrap(),
+        b"swapped bits"
+    );
 }
 
 #[test]
@@ -1386,6 +1389,14 @@ fn android_reuse_path_records_install_provenance_after_a_successful_adb_install(
     fp_mock.expect_run("ls-files", CmdOutput::success(""));
     let fp = qaren::fingerprint::compute(&mut fp_mock, &repo, &repo.join("test-app"), "android")
         .unwrap();
+    let apk = common::seed_store(
+        &repo.join(".native-store"),
+        "android",
+        &fp.value,
+        &apk,
+        ArtifactKind::Apk,
+    )
+    .path;
     let state = NativeCacheState {
         schema: CACHE_SCHEMA.to_string(),
         fingerprint_parts: Default::default(),
@@ -1397,11 +1408,6 @@ fn android_reuse_path_records_install_provenance_after_a_successful_adb_install(
         candidate_sha: "a".repeat(40),
         lockfile_sha256: "c".repeat(64),
         generated_native_dirs: vec!["android".to_string()],
-        artifact: Some(CachedArtifact {
-            path: apk.clone(),
-            sha256: artifact_sha.clone(),
-            kind: ArtifactKind::Apk,
-        }),
     };
     buildplan::save_json(
         &buildplan::state_path(&repo, "android", "com.rndevagent.testapp"),

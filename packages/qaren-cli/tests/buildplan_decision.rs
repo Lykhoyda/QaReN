@@ -1,7 +1,7 @@
 use qaren::buildplan::{
     claim_lock, decide, lock_dir, release_lock, ArtifactKind, ArtifactStatus, BuildDecision,
     CachedArtifact, DecisionInputs, LockHolder, LockOutcome, LockPolicy, NativeCacheState,
-    ReleaseOutcome, StateStatus, CACHE_SCHEMA,
+    ReleaseOutcome, StateStatus, StoreRecord, CACHE_SCHEMA,
 };
 use qaren::exec::{CmdOutput, MockRunner};
 use qaren::runrecord::PidIdentity;
@@ -46,8 +46,18 @@ fn state(worktree: &Path, fingerprint: &str) -> NativeCacheState {
         candidate_sha: SHA_A.to_string(),
         lockfile_sha256: "c".repeat(64),
         generated_native_dirs: vec!["ios".to_string()],
-        artifact: Some(artifact()),
     }
+}
+
+fn stored(status: ArtifactStatus) -> Option<(StoreRecord, ArtifactStatus)> {
+    Some((
+        StoreRecord {
+            artifact: artifact(),
+            built_at: "2026-08-13T00:00:00Z".to_string(),
+            candidate_sha: SHA_A.to_string(),
+        },
+        status,
+    ))
 }
 
 fn inputs<'a>(worktree: &'a Path, fingerprint: &'a str) -> DecisionInputs<'a> {
@@ -74,7 +84,7 @@ fn matching_fingerprint_with_verified_artifact_and_scheme_reuses() {
     let plan = decide(
         &inputs(&worktree, FP),
         &StateStatus::Loaded(Box::new(state(&worktree, FP))),
-        Some(ArtifactStatus::Verified),
+        stored(ArtifactStatus::Verified),
     );
     assert_eq!(plan.decision, BuildDecision::Reuse);
     assert!(!plan.regenerate_native_dir);
@@ -96,7 +106,7 @@ fn stale_artifact_content_is_never_reused() {
     let plan = decide(
         &inputs(&worktree, FP),
         &StateStatus::Loaded(Box::new(state(&worktree, FP))),
-        Some(ArtifactStatus::Mismatch),
+        stored(ArtifactStatus::Mismatch),
     );
     assert_eq!(plan.decision, BuildDecision::Incremental);
     assert!(
@@ -112,7 +122,7 @@ fn missing_artifact_file_downgrades_to_incremental() {
     let plan = decide(
         &inputs(&worktree, FP),
         &StateStatus::Loaded(Box::new(state(&worktree, FP))),
-        Some(ArtifactStatus::MissingFile),
+        stored(ArtifactStatus::MissingFile),
     );
     assert_eq!(plan.decision, BuildDecision::Incremental);
     assert!(plan.artifact.is_none());
@@ -121,16 +131,16 @@ fn missing_artifact_file_downgrades_to_incremental() {
 #[test]
 fn wrong_platform_artifact_kind_is_never_reused() {
     let worktree = temp_dir();
-    let mut wrong_kind = state(&worktree, FP);
-    wrong_kind.artifact = Some(CachedArtifact {
+    let mut wrong_kind = stored(ArtifactStatus::Verified);
+    wrong_kind.as_mut().unwrap().0.artifact = CachedArtifact {
         path: PathBuf::from("/cache/app.apk"),
         sha256: "f".repeat(64),
         kind: ArtifactKind::Apk,
-    });
+    };
     let plan = decide(
         &inputs(&worktree, FP),
-        &StateStatus::Loaded(Box::new(wrong_kind)),
-        Some(ArtifactStatus::Verified),
+        &StateStatus::Loaded(Box::new(state(&worktree, FP))),
+        wrong_kind,
     );
     assert_ne!(plan.decision, BuildDecision::Reuse);
     assert!(plan.artifact.is_none());
@@ -145,7 +155,7 @@ fn missing_scheme_downgrades_matching_fingerprint_to_incremental() {
     let plan = decide(
         &no_scheme,
         &StateStatus::Loaded(Box::new(state(&worktree, FP))),
-        Some(ArtifactStatus::Verified),
+        stored(ArtifactStatus::Verified),
     );
     assert_eq!(plan.decision, BuildDecision::Incremental);
     assert!(plan.reason.contains("dev_client_scheme"), "{}", plan.reason);
@@ -161,7 +171,7 @@ fn incomplete_matching_fingerprint_regenerates_generated_native_dir() {
     let plan = decide(
         &incomplete,
         &StateStatus::Loaded(Box::new(state(&worktree, FP))),
-        Some(ArtifactStatus::Verified),
+        stored(ArtifactStatus::Verified),
     );
     assert_eq!(plan.decision, BuildDecision::Clean);
     assert!(plan.regenerate_native_dir);
@@ -224,11 +234,7 @@ fn native_input_changes_regenerate_only_existing_generated_dirs_on_both_platform
                 let mut cached = state(&worktree, FP);
                 cached.platform = platform.to_string();
                 cached.generated_native_dirs = vec![platform.to_string()];
-                let plan = decide(
-                    &current,
-                    &StateStatus::Loaded(Box::new(cached)),
-                    Some(ArtifactStatus::Verified),
-                );
+                let plan = decide(&current, &StateStatus::Loaded(Box::new(cached)), None);
                 let regenerate = exists && !in_candidate;
                 assert_eq!(
                     plan.decision,
@@ -270,13 +276,13 @@ fn corrupt_state_mandates_clean_build() {
 }
 
 #[test]
-fn state_bound_to_another_worktree_mandates_clean_build() {
+fn state_bound_to_another_worktree_without_a_stored_build_mandates_clean_build() {
     let worktree = temp_dir();
     let other = temp_dir();
     let plan = decide(
         &inputs(&worktree, FP),
         &StateStatus::Loaded(Box::new(state(&other, FP))),
-        Some(ArtifactStatus::Verified),
+        None,
     );
     assert_eq!(plan.decision, BuildDecision::Clean);
     assert!(
@@ -322,7 +328,7 @@ fn scenario_forced_clean_overrides_everything() {
     let plan = decide(
         &forced,
         &StateStatus::Loaded(Box::new(state(&worktree, FP))),
-        Some(ArtifactStatus::Verified),
+        stored(ArtifactStatus::Verified),
     );
     assert_eq!(plan.decision, BuildDecision::Clean);
     assert!(
@@ -482,7 +488,7 @@ fn incomplete_matching_fingerprint_without_a_generated_dir_names_its_cause() {
     let plan = decide(
         &incomplete,
         &StateStatus::Loaded(Box::new(state(&worktree, FP))),
-        Some(ArtifactStatus::Verified),
+        stored(ArtifactStatus::Verified),
     );
     assert_eq!(plan.decision, BuildDecision::Incremental);
     assert!(
@@ -606,11 +612,7 @@ fn a_previous_cache_schema_is_invalid_and_builds_clean_once() {
     std::fs::write(&path, old.to_string()).unwrap();
     let loaded = qaren::buildplan::load_state(&worktree, "ios", "com.rndevagent.testapp");
     assert!(matches!(loaded, StateStatus::Invalid(_)), "{loaded:?}");
-    let plan = decide(
-        &inputs(&worktree, FP),
-        &loaded,
-        Some(ArtifactStatus::Verified),
-    );
+    let plan = decide(&inputs(&worktree, FP), &loaded, None);
     assert_eq!(plan.decision, BuildDecision::Clean);
 }
 
@@ -670,4 +672,79 @@ fn parts_missing_from_an_incomplete_recorded_build_are_unknown_not_changed() {
             );
         }
     }
+}
+
+fn has(plan: &qaren::buildplan::BuildPlan, needle: &str) -> bool {
+    plan.evidence.iter().any(|e| e.contains(needle))
+}
+
+#[test]
+fn a_verified_stored_build_reuses_without_worktree_state() {
+    let worktree = temp_dir();
+    let other = temp_dir();
+    for native_dir_exists in [true, false] {
+        let fresh = DecisionInputs {
+            native_dir_exists,
+            ..inputs(&worktree, FP)
+        };
+        for (state, gate) in [
+            (StateStatus::Missing, "no native cache state recorded"),
+            (StateStatus::Invalid("bad json".into()), "bad json"),
+            (
+                StateStatus::Loaded(Box::new(state(&other, FP))),
+                "different worktree",
+            ),
+        ] {
+            let plan = decide(&fresh, &state, stored(ArtifactStatus::Verified));
+            assert_eq!(plan.decision, BuildDecision::Reuse, "{}", plan.reason);
+            assert_eq!(plan.artifact, Some(artifact()));
+            assert!(!plan.regenerate_native_dir);
+            assert!(has(&plan, gate), "{:?}", plan.evidence);
+            assert!(
+                has(&plan, "artifact from machine store /cache/testapp.app"),
+                "{:?}",
+                plan.evidence
+            );
+            assert!(has(&plan, SHA_A) && has(&plan, SHA_B), "{:?}", plan.evidence);
+        }
+    }
+}
+
+#[test]
+fn a_stored_build_needs_verification_completeness_and_a_scheme_to_reuse() {
+    let worktree = temp_dir();
+    let incompleteness = vec!["app.config.ts is a dynamic config".to_string()];
+    let no_scheme = DecisionInputs {
+        scheme: None,
+        ..inputs(&worktree, FP)
+    };
+    let incomplete = DecisionInputs {
+        fingerprint_complete: false,
+        incompleteness: &incompleteness,
+        ..inputs(&worktree, FP)
+    };
+    for (current, status) in [
+        (&inputs(&worktree, FP), ArtifactStatus::Mismatch),
+        (&inputs(&worktree, FP), ArtifactStatus::MissingFile),
+        (&no_scheme, ArtifactStatus::Verified),
+        (&incomplete, ArtifactStatus::Verified),
+    ] {
+        let fresh = decide(current, &StateStatus::Missing, stored(status));
+        assert_eq!(fresh.decision, BuildDecision::Clean, "{status:?}");
+        assert!(fresh.artifact.is_none());
+        let warm = decide(
+            current,
+            &StateStatus::Loaded(Box::new(state(&worktree, FP))),
+            stored(status),
+        );
+        assert_ne!(warm.decision, BuildDecision::Reuse, "{status:?}");
+        assert!(warm.artifact.is_none());
+    }
+    let stale = decide(
+        &inputs(&worktree, FP),
+        &StateStatus::Loaded(Box::new(state(&worktree, FP))),
+        stored(ArtifactStatus::Mismatch),
+    );
+    assert_eq!(stale.decision, BuildDecision::Incremental);
+    assert!(stale.reason.contains("stale"), "{}", stale.reason);
 }
