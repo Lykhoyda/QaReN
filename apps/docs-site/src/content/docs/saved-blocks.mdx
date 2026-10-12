@@ -1,0 +1,97 @@
+---
+title: Saved blocks
+description: How a passing block is saved, replayed on the next run, and patched when the app changes.
+---
+
+A block that passes is saved, unless one of the [conditions below](#when-a-block-is-not-saved)
+applies, so the next run can replay it by the exact identities
+it used instead of resolving each target again.
+
+## Where blocks live
+
+A passing block is written to `.qaren/actions/<slug>.yaml` in the app directory, the one that
+holds `.qaren/config.yaml`. The slug is the block's ID from its heading; see
+[Write a plan](../plans/#structure). Very long slugs are shortened with a hash
+suffix.
+
+The file is a Maestro-shaped action: each plan line as a comment, followed by the commands
+with the exact `testID` the step used, or its label when it had no `testID`. The walk replays
+the file by those stored identities; the [rn-flow/1 dialect](../actions/rn-flow-1/) is the
+separate compile contract for saved actions.
+
+## Replay, then walk
+
+On the next run, a block whose plan lines, platform and app are unchanged is replayed by its
+stored identities. Quoted targets and literal checks make no Jev calls on replay; phrase checks
+still ask Jev.
+
+| Situation                                                        | Outcome                                                         |
+| ---------------------------------------------------------------- | --------------------------------------------------------------- |
+| A stored identity resolves                                       | The step replays                                                |
+| A stored identity no longer resolves, before the step changed the app | The block is walked again from that line; earlier steps stay done |
+| A stored identity is ambiguous                                   | `TARGET_AMBIGUOUS`, without walking again                        |
+| A check fails                                                    | FAIL; the block is never walked again or rewritten               |
+
+When a re-walked block passes, only the commands from the re-walked line on are rewritten,
+and every `✓` comment stays byte-identical. A failing block is never saved; blocks that passed
+earlier in the same run stay saved.
+
+The ledger's `path` is `walk`, `replay` or `replay→walk@<line>`, and each block reports its
+`source` as `discovered`, `replayed` or `patched`. The receipt lists `blocks_written`.
+
+## When a block is not saved
+
+A block that passed is left unsaved, and `blocks_not_saved` gives the reason without naming
+any value, when:
+
+- a step had neither a `testID` nor a label to store;
+- it has a phrase wait;
+- it fills a secure or private input;
+- a fill fell back to the keyboard;
+- a protected value from the plan or the run appears in the block, which reports
+  `contains a protected plan-typed value`;
+- a quoted wait or scroll target has no unique `testID` or unique visible text.
+
+An edited or incompatible block file is treated as new and walked again. Existing saved
+blocks are never removed.
+
+## Inspecting blocks
+
+```sh
+qaren actions list [--json]
+qaren actions show <slug>
+```
+
+Both read the `.qaren/actions/` directory of the current directory. `.yaml` and `.yml` files
+are both read; a slug with both extensions is refused. Symlinked action directories and files
+are refused.
+
+## Login recovery
+
+When an action shows no success evidence after its one retry, a step's target does not resolve,
+or a phrase check is still unsure after its re-ask, qaren tries one deterministic recovery and
+then runs the step once more from a fresh capture. In order, it:
+
+1. accepts a recognized system dialog in front;
+2. clears a developer menu or floating developer button in front;
+3. replays the login block, when the login marker is on screen.
+
+Configure the login block in `.qaren/config.yaml`:
+
+```yaml
+loginBlock: sign-in
+loginMarker:
+  id: login-screen
+```
+
+`loginBlock` names a saved block, `.qaren/actions/sign-in.yaml` here, saved for this app and
+platform. `loginMarker` has exactly one of `id` (a `testID`) or `text` (a label). The two keys
+are set together. A missing or incompatible login block fails when login recovery is needed.
+
+A second failure of the same step fails it. Recovery never runs inside the login replay, and
+capture, Jev, app-process, replay-miss and cancellation refusals are never recovered. The
+ledger's `recoveries` counts recoveries that let a step retry.
+
+An observed React Native red box fails the current step at once and never triggers recovery.
+On iOS, a change of the app's process between captures, such as a crash or restart, fails the
+walk with `APP_PROCESS_CHANGED`.

@@ -1,0 +1,80 @@
+---
+title: Configuration
+description: Every key in .qaren/config.yaml, with its type, default and meaning.
+---
+
+`qaren check` and `qaren pr` read `.qaren/config.yaml` from the directory they run in;
+`--config <path>` selects another file. Unknown keys are rejected.
+
+```yaml
+appId: com.example.testapp
+devClientScheme: testapp
+metroPort: 8791
+loginBlock: sign-in
+loginMarker:
+  id: login-screen
+```
+
+## Keys
+
+| Key               | Type             | Default | Meaning                                                                                       |
+| ----------------- | ---------------- | ------- | --------------------------------------------------------------------------------------------- |
+| `appId`           | string           | —       | Required. The app's bundle ID on iOS or package name on Android.                              |
+| `devClientScheme` | string           | —       | Required for `check` and `pr`. The app's registered dev-client URI scheme, 1–128 bytes matching `[A-Za-z][A-Za-z0-9+.-]*`. |
+| `packageManager`  | string           | `pnpm`  | The app's package manager. Only `pnpm` is supported.                                          |
+| `metroPort`       | integer          | `8791`  | The port of the Metro server the run starts. At least `1024`.                                 |
+| `nodePath`        | string           | `node` on `PATH` | An absolute path to the Node binary to use. It must be Node 24 or newer.             |
+| `loginBlock`      | string           | —       | The slug of a saved block that signs in; see [login recovery](../saved-blocks/#login-recovery). |
+| `loginMarker`     | object           | —       | What shows the login screen: exactly one non-empty `id` (a `testID`) or `text` (a label).     |
+| `ios`             | object           | —       | iOS settings, below.                                                                          |
+| `android`         | object           | —       | Android settings, below.                                                                      |
+
+`loginBlock` and `loginMarker` are set together. `loginBlock` must be an action slug: it
+starts with a letter or digit, then letters, digits, `_`, `.` or `-`, at most 64 characters,
+without `..`.
+
+## `ios`
+
+| Key               | Type   | Meaning                                                                    |
+| ----------------- | ------ | -------------------------------------------------------------------------- |
+| `deviceType`      | string | Accepted, but not used by `check` or `pr`, which borrow a booted simulator. |
+| `runtime`         | string | Accepted, but not used by `check` or `pr`.                                 |
+| `build.workspace` | string | An existing `ios/*.xcworkspace`, relative to the app directory.            |
+| `build.scheme`    | string | The Xcode scheme to build in that workspace, 1–256 bytes.                  |
+
+By default the iOS build uses the app's Expo CLI in generic build-only mode. Older Expo CLIs
+lack that mode: set `ios.build` with both `workspace` and `scheme` to build an existing Xcode
+workspace instead.
+
+```yaml
+appId: com.example.testapp
+devClientScheme: testapp
+ios:
+  build:
+    workspace: ios/TestApp.xcworkspace
+    scheme: TestApp
+```
+
+The workspace route builds Debug for the iOS Simulator with ad-hoc simulator signing. It runs no
+CocoaPods or codegen step of its own, so the workspace's native dependencies must already be
+ready for Xcode.
+
+## `android`
+
+| Key   | Type   | Meaning                 |
+| ----- | ------ | ----------------------- |
+| `avd` | string | Accepted, but not used by `check` or `pr`. |
+
+`check` and `pr` on Android borrow an emulator that is already booted; see
+[Check a plan](../check/#android).
+
+## Environment
+
+| Variable              | Meaning                                                                         |
+| --------------------- | ------------------------------------------------------------------------------- |
+| `TYPESAFE_API_KEY`    | Required by plans with phrase steps or phrase checks; see [Write a plan](../plans/#when-the-plan-needs-typesafe_api_key). |
+| `ANDROID_HOME`        | The Android SDK whose `platform-tools/adb` reaches the running adb server.      |
+| `QAREN_NODE`          | The Node binary to use; it takes precedence over `nodePath`.                    |
+| `QAREN_LOCK_ROOT`     | An absolute directory for device leases. Defaults to `~/.qaren/locks`.          |
+| `QAREN_WALK_SECONDS`  | The walk budget in seconds. Defaults to `1200`.                                 |
+| `QAREN_STEP_SECONDS`  | The per-step budget in seconds. Defaults to `1200`.                             |

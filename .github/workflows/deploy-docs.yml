@@ -5,12 +5,9 @@ on:
     branches: [main]
     paths:
       - 'apps/docs-site/**'
-      - 'packages/rn-dev-agent-core/src/**'
-      - 'packages/shared-agent-knowledge/agents/*.md'
-      - 'packages/shared-agent-knowledge/commands/*.md'
-      - 'packages/shared-agent-knowledge/skills/**'
-      - 'CHANGELOG.md'
-      - 'packages/*/CHANGELOG.md'
+      - 'packages/qaren-plugin/CHANGELOG.md'
+      - 'packages/qaren-core/CHANGELOG.md'
+      - 'packages/qaren-cli/src/main.rs'
       - '.github/workflows/deploy-docs.yml'
 
 # Phase 134.5 (deepsec MEDIUM): least-privilege permissions. The deploy

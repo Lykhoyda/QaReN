@@ -1,0 +1,98 @@
+---
+title: Write a plan
+description: The Markdown grammar qaren walks, and what a check reads from the screen.
+---
+
+A plan is a Markdown file. `qaren check` and `qaren pr` take it with `--plan-file`.
+
+```md
+# Test App smoke
+
+## QA
+
+### Onboarding to the tasks tab
+
+1. Tap "onboarding-skip"
+2. Tap "onboarding-done"
+3. Wait for "Welcome" to appear
+✓ "Welcome"
+4. Tap "tab-tasks"
+5. Wait for "task-header" to appear
+✓ "Tasks ("
+```
+
+## Structure
+
+- When the plan has a `## QA` section, only the lines under it are read, up to the next
+  `##` heading. Without one, the whole file is read.
+- Each `###` heading starts a named block. Steps before the first `###` heading form a
+  block named after the plan's `#` title, or `plan` when there is none.
+- Other headings are skipped. Every other non-empty line is a numbered step (`1.` or `1)`),
+  a check that starts with `✓` or `✔` (optionally after a `-` or `*` bullet), or a
+  `Starts on:` line. Any other line refuses the plan with "not a numbered step or a ✓ line".
+- HTML comments are ignored.
+- A block with no steps, two blocks with the same title, or two titles that produce the
+  same block ID refuse the plan.
+
+The block ID is the heading in lowercase, with every run of characters outside `a-z` and
+`0-9` replaced by a hyphen. It names the [saved block](../saved-blocks/) file.
+
+## Steps
+
+| Kind     | Verbs                                                                   | Example                              |
+| -------- | ----------------------------------------------------------------------- | ------------------------------------ |
+| Press    | tap, press, click, open, select, choose, toggle, hit, go to             | `Tap "tab-tasks"`                    |
+| Fill     | type, enter, input, write, fill in                                      | `Type "Buy milk" into "task-input"`  |
+| Fill     | the same verbs, target first                                            | `Fill "task-input" with "Buy milk"`  |
+| Scroll   | scroll, scroll down, scroll up, optionally `until` a target             | `Scroll down until "Settings"`       |
+| Wait     | wait for, wait until, optionally ending `to appear` or `is visible`     | `Wait for "Welcome" to appear`       |
+| Back     | back, go back, navigate back, press back, tap back button               | `Go back`                            |
+| Dialog   | accept, allow, dismiss, deny, decline, cancel with dialog, prompt, alert or permission | `Accept the permission dialog` |
+
+A fill always needs its text in quotes. A dialog step needs exactly one unconditional
+action: `Accept the dialog if it appears` and `Do not dismiss the alert` refuse.
+
+## Quoted and phrase targets
+
+A **quoted** target, such as `Tap "tab-tasks"`, resolves locally against the labels and
+test IDs on screen. Two or more distinct matches refuse with `TARGET_AMBIGUOUS`; that
+refusal is never retried or re-walked.
+
+A **phrase** target, such as `Tap the tasks tab`, has no quotes. Jev, QaReN's screen
+judge, picks the element.
+
+## Checks
+
+A check is **literal** only when its whole payload is one quoted string: `✓ "Welcome"`.
+It passes when that text is visible on screen as a substring. Text hidden under the
+keyboard, React-only text and images do not count.
+
+Any other check is a **phrase** check, such as `✓ The tasks screen shows the task count`.
+Jev judges it against the captured screen.
+
+A failing check fails the plan. A literal check that still cannot be decided after a fresh
+capture ends `CHECK_UNSURE`.
+
+## When the plan needs `TYPESAFE_API_KEY`
+
+Phrase targets, phrase checks and lines with no verb the grammar knows need Jev, so they
+need `TYPESAFE_API_KEY`. A plan with any of them runs a Jev readiness probe first; a
+missing or rejected key refuses `JEV_UNREACHABLE` before a device is selected.
+
+A plan with only quoted targets and literal checks makes no Jev calls and needs no key.
+Back, dialog and plain scroll steps never call Jev.
+
+## Refusals before the walk
+
+An unparseable line refuses the plan with `PLAN_UNPARSEABLE` before a device is leased.
+The refusal lists each line and its reason. A screen target that does not resolve refuses
+during the walk instead.
+
+## Platform notes
+
+- On iOS, an accept or dismiss step against a system alert taps one button by exact
+  English label, so `Allow` never matches `Allow Once`. A localized alert fails
+  `DIALOG_BUTTON_NOT_FOUND`. Assert the permission's effect with the next step.
+- On Android, dialog steps refuse `TARGET_UNSUPPORTED` in this release.
+- A plan with any fill step keeps a pull request's video local; see
+  [Test a pull request](../pull-requests/#video).
