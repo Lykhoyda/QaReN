@@ -80,6 +80,7 @@ fn ios_handoff_prepare_allocates_and_issues_typed_handoff_without_building() {
     script_self_identity(&mut mock);
     mock.expect_run("pnpm install --frozen-lockfile", CmdOutput::success(""));
     mock.expect_run("ls-files", CmdOutput::success(""));
+    common::script_xcode(&mut mock);
     mock.expect_run("simctl create", CmdOutput::success(&format!("{UDID}\n")));
     mock.expect_run(
         "simctl bootstatus",

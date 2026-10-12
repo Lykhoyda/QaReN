@@ -252,7 +252,10 @@ fn ios_prepare_continues_with_a_note_when_dev_menu_defaults_fail() {
 }
 
 fn script_ios_prepare(mock: &mut MockRunner, repo: &std::path::Path, defaults: CmdOutput) {
-    let empty = |m: &mut MockRunner| m.expect_run("ls-files", CmdOutput::success(""));
+    let empty = |m: &mut MockRunner| {
+        m.expect_run("ls-files", CmdOutput::success(""));
+        common::script_xcode(m);
+    };
     script_ios_prepare_fingerprints(mock, repo, defaults, empty, empty);
 }
 
@@ -1342,6 +1345,7 @@ fn simulator_allocation_is_recorded_before_create() {
     mock.expect_run("ps", CmdOutput::success("qaren prepare\n"));
     common::script_ios_deps(&mut mock);
     mock.expect_run("ls-files", CmdOutput::success(""));
+    common::script_xcode(&mut mock);
     mock.expect_run("simctl create", CmdOutput::failed(1, "boom"));
 
     let mut probing = RecordProbeRunner {
@@ -1388,6 +1392,7 @@ fn candidate_drift_during_build_fails_prepare() {
     mock.expect_run("ps", CmdOutput::success("qaren prepare\n"));
     common::script_ios_deps(&mut mock);
     mock.expect_run("ls-files", CmdOutput::success(""));
+    common::script_xcode(&mut mock);
     mock.expect_run("simctl create", CmdOutput::success(&format!("{UDID}\n")));
     mock.expect_run(
         "simctl bootstatus",
@@ -1480,6 +1485,7 @@ fn candidate_dirty_drift_during_build_fails_prepare() {
     mock.expect_run("ps", CmdOutput::success("qaren prepare\n"));
     common::script_ios_deps(&mut mock);
     mock.expect_run("ls-files", CmdOutput::success(""));
+    common::script_xcode(&mut mock);
     mock.expect_run("simctl create", CmdOutput::success(&format!("{UDID}\n")));
     mock.expect_run(
         "simctl bootstatus",
@@ -1523,6 +1529,7 @@ fn candidate_dirty_content_drift_during_build_fails_prepare() {
     mock.expect_run("ps", CmdOutput::success("qaren prepare\n"));
     common::script_ios_deps(&mut mock);
     mock.expect_run("ls-files", CmdOutput::success(""));
+    common::script_xcode(&mut mock);
     mock.expect_run("simctl create", CmdOutput::success(&format!("{UDID}\n")));
     mock.expect_run(
         "simctl bootstatus",
@@ -1572,6 +1579,7 @@ fn script_prepare_to_recheck(
     mock.expect_run("ps", CmdOutput::success("qaren prepare\n"));
     common::script_ios_deps(mock);
     mock.expect_run("ls-files", CmdOutput::success(""));
+    common::script_xcode(mock);
     mock.expect_run("simctl create", CmdOutput::success(&format!("{UDID}\n")));
     mock.expect_run(
         "simctl bootstatus",
@@ -1607,6 +1615,7 @@ fn qaren_state_created_during_build_is_not_candidate_drift() {
     let mut mock = MockRunner::new();
     script_prepare_to_recheck(&mut mock, &repo, "", "?? .qaren/\0");
     mock.expect_run("ls-files", CmdOutput::success(""));
+    common::script_xcode(&mut mock);
 
     let receipt = prepare(&mut mock, &prepare_args(&scenario_path, false, None));
     assert_eq!(
@@ -1630,6 +1639,7 @@ fn preexisting_qaren_state_does_not_mark_the_candidate_dirty() {
         "?? .qaren/runs/some-run/run.json\0",
     );
     mock.expect_run("ls-files", CmdOutput::success(""));
+    common::script_xcode(&mut mock);
 
     let receipt = prepare(&mut mock, &prepare_args(&scenario_path, false, None));
     assert_eq!(
@@ -1692,6 +1702,7 @@ fn dry_run_plans_without_allocating() {
     );
     mock.expect_run("lsof", free_port());
     mock.expect_run("ls-files", CmdOutput::success(""));
+    common::script_xcode(&mut mock);
 
     let receipt = prepare(&mut mock, &prepare_args(&scenario_path, true, None));
     assert_eq!(receipt.result, ReceiptResult::Planned);
@@ -1727,6 +1738,7 @@ fn ios_reuse_dry_run_lists_each_launch_step_once_in_execution_order() {
     let files = "test-app/package.json\0";
     let mut fp_runner = qaren::exec::MockRunner::new();
     fp_runner.expect_run("ls-files", CmdOutput::success(files));
+    common::script_xcode(&mut fp_runner);
     let fp = qaren::fingerprint::compute(&mut fp_runner, &repo, &project, "ios").unwrap();
     assert!(fp.complete);
     let cache = NativeCacheState {
@@ -1760,6 +1772,7 @@ fn ios_reuse_dry_run_lists_each_launch_step_once_in_execution_order() {
     );
     mock.expect_run("lsof", free_port());
     mock.expect_run("ls-files", CmdOutput::success(files));
+    common::script_xcode(&mut mock);
     let receipt = prepare(&mut mock, &prepare_args(&scenario_path, true, None));
     assert_eq!(receipt.result, ReceiptResult::Planned);
     assert_eq!(
@@ -1851,6 +1864,8 @@ fn dry_run_plans_generated_native_regeneration_before_every_build_route() {
                 fp_runner.expect_run("ls-files", CmdOutput::success(&files));
                 if incomplete && platform == "ios" {
                     common::script_expo_fingerprint_unresolvable(&mut fp_runner);
+                } else if platform == "ios" {
+                    common::script_xcode(&mut fp_runner);
                 }
                 let fp = qaren::fingerprint::compute(&mut fp_runner, &repo, &project, platform)
                     .unwrap()
@@ -1903,6 +1918,8 @@ fn dry_run_plans_generated_native_regeneration_before_every_build_route() {
                 mock.expect_run("ls-files", CmdOutput::success(&files));
                 if incomplete && platform == "ios" {
                     common::script_expo_fingerprint_unresolvable(&mut mock);
+                } else if platform == "ios" {
+                    common::script_xcode(&mut mock);
                 }
                 let sdk = (platform == "android").then(|| android_sdk(&repo));
                 let receipt = prepare(
@@ -1995,6 +2012,7 @@ fn build_process_death_fails_with_log_evidence() {
     mock.expect_run("ps", CmdOutput::success("qaren prepare\n"));
     common::script_ios_deps(&mut mock);
     mock.expect_run("ls-files", CmdOutput::success(""));
+    common::script_xcode(&mut mock);
     mock.expect_run("simctl create", CmdOutput::success(&format!("{UDID}\n")));
     mock.expect_run("simctl bootstatus", CmdOutput::success(""));
     mock.build_log = Some("CommandError: xcodebuild exited with error code 65\n".into());
@@ -2067,6 +2085,7 @@ fn recording_a_build_retires_run_output_and_prunes_only_older_artifacts_for_the_
     mock.expect_run("ps", CmdOutput::success("qaren prepare\n"));
     common::script_ios_deps(&mut mock);
     mock.expect_run("ls-files", CmdOutput::success(""));
+    common::script_xcode(&mut mock);
     mock.expect_run("simctl create", CmdOutput::success(&format!("{UDID}\n")));
     mock.expect_run(
         "simctl bootstatus",
@@ -2094,6 +2113,7 @@ fn recording_a_build_retires_run_output_and_prunes_only_older_artifacts_for_the_
     mock.expect_run("git", CmdOutput::success(&format!("{}\n", "b".repeat(40))));
     mock.expect_run("git", CmdOutput::success(""));
     mock.expect_run("ls-files", CmdOutput::success(""));
+    common::script_xcode(&mut mock);
 
     let mut probing = RecordProbeRunner {
         inner: mock,
@@ -2207,6 +2227,7 @@ fn recording_a_build_retains_source_on_cache_or_evidence_publication_failure() {
         let mut mock = MockRunner::new();
         script_prepare_to_recheck(&mut mock, &repo, "", "");
         mock.expect_run("ls-files", CmdOutput::success(""));
+        common::script_xcode(&mut mock);
         let mut probing = RecordProbeRunner {
             inner: mock,
             repo: repo.clone(),
@@ -2295,6 +2316,7 @@ fn recording_a_build_does_not_retire_symlinked_paths() {
         let mut mock = MockRunner::new();
         script_prepare_to_recheck(&mut mock, &repo, "", "");
         mock.expect_run("ls-files", CmdOutput::success(""));
+        common::script_xcode(&mut mock);
         let mut probing = RecordProbeRunner {
             inner: mock,
             repo: repo.clone(),
@@ -2353,6 +2375,7 @@ fn unproven_or_unpersisted_build_group_absence_retains_run_output() {
         mock.expect_run("ps", CmdOutput::success("qaren prepare"));
         common::script_ios_deps(&mut mock);
         mock.expect_run("ls-files", CmdOutput::success(""));
+        common::script_xcode(&mut mock);
         mock.expect_run("simctl create", CmdOutput::success(UDID));
         mock.expect_run("simctl bootstatus", CmdOutput::success(""));
         mock.expect_spawn_piped("expo run:ios", 5000, "", Some(0));
@@ -2610,6 +2633,7 @@ fn recording_a_build_cancelled_mid_copy_preserves_previous_cache() {
     let mut mock = MockRunner::new();
     script_prepare_to_recheck(&mut mock, &repo, "", "");
     mock.expect_run("ls-files", CmdOutput::success(""));
+    common::script_xcode(&mut mock);
     let mut probing = RecordProbeRunner {
         inner: mock,
         repo: repo.clone(),
@@ -2721,6 +2745,7 @@ fn dry_run_reports_hash_only_parts_and_the_completeness_gate_without_its_reasons
         let scenario_path = write_scenario(&repo, &yaml);
         let mut fp_runner = qaren::exec::MockRunner::new();
         fp_runner.expect_run("ls-files", CmdOutput::success(files));
+        common::script_xcode(&mut fp_runner);
         let fp = qaren::fingerprint::compute(&mut fp_runner, &repo, &project, "ios").unwrap();
         assert_eq!(fp.complete, complete);
         assert_eq!(
@@ -2739,6 +2764,7 @@ fn dry_run_reports_hash_only_parts_and_the_completeness_gate_without_its_reasons
         );
         mock.expect_run("lsof", free_port());
         mock.expect_run("ls-files", CmdOutput::success(files));
+        common::script_xcode(&mut mock);
         let receipt = prepare(&mut mock, &prepare_args(&scenario_path, true, None));
 
         assert_eq!(receipt.result, ReceiptResult::Planned);
@@ -2780,6 +2806,7 @@ fn dry_run_total_timing_includes_the_fingerprint_computation() {
     );
     mock.expect_run("lsof", free_port());
     mock.expect_run("ls-files", CmdOutput::success("test-app/package.json\0"));
+    common::script_xcode(&mut mock);
     let receipt = prepare(&mut mock, &prepare_args(&scenario_path, true, None));
 
     assert_eq!(receipt.result, ReceiptResult::Planned);

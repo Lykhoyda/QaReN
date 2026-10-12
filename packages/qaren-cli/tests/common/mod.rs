@@ -64,6 +64,12 @@ pub fn script_expo_fingerprint(mock: &mut MockRunner, hash: &str, xcode: &str) {
     mock.expect_run("xcodebuild -version", CmdOutput::success(xcode));
 }
 
+pub const XCODE_VERSION: &str = "Xcode 27.0\nBuild version 27A266a\n";
+
+pub fn script_xcode(mock: &mut MockRunner) {
+    mock.expect_run("xcodebuild -version", CmdOutput::success(XCODE_VERSION));
+}
+
 pub fn script_expo_fingerprint_unresolvable(mock: &mut MockRunner) {
     mock.expect_run(
         "require.resolve",

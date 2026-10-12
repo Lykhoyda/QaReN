@@ -328,6 +328,7 @@ fn workspace_cache_persistence_reuses_only_the_same_workspace_and_scheme() {
         mock.expect_run("pnpm install --frozen-lockfile", CmdOutput::success(""));
         if reuse {
             mock.expect_run("ls-files", CmdOutput::success(common::IOS_NATIVE_FILES));
+            common::script_xcode(&mut mock);
             common::script_ios_install_and_launch(&mut mock);
             script_ready_recheck(&mut mock, common::IOS_NATIVE_FILES);
         } else {
@@ -481,6 +482,7 @@ fn pre_spawn_build_error_retires_pending_before_releasing_ownership() {
     script_preflight(&mut mock, &repo);
     common::script_ios_deps(&mut mock);
     mock.expect_run("ls-files", CmdOutput::success(""));
+    common::script_xcode(&mut mock);
 
     let receipt = run(&mut mock, &req);
     assert_eq!(receipt.result, ReceiptResult::Failed);
@@ -508,6 +510,7 @@ fn invalid_spawned_build_group_retains_pending_and_both_locks_without_starting()
     script_preflight(&mut mock, &repo);
     common::script_ios_deps(&mut mock);
     mock.expect_run("ls-files", CmdOutput::success(""));
+    common::script_xcode(&mut mock);
     mock.expect_spawn_piped("expo run:ios", 1, "", Some(0));
     mock.expect_run("ps", CmdOutput::success(LSTART));
     mock.expect_run("ps", CmdOutput::success("qaren-build"));
@@ -546,6 +549,7 @@ fn failed_spawn_retirement_save_or_interruption_retains_pending_and_both_locks()
         script_preflight(&mut mock, &repo);
         common::script_ios_deps(&mut mock);
         mock.expect_run("ls-files", CmdOutput::success(""));
+        common::script_xcode(&mut mock);
         let outcome =
             std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| run(&mut mock, &req)));
         match fault {
@@ -610,6 +614,7 @@ fn finite_build_failures_never_install_or_walk_and_unproven_groups_retain_both_l
                 ""
             }),
         );
+        common::script_xcode(&mut mock);
         mock.expect_spawn_piped(
             if workspace {
                 "xcodebuild"
@@ -749,6 +754,7 @@ fn workspace_changed_by_clean_prebuild_refuses_before_creating_output_or_buildin
         script_preflight(&mut mock, &repo);
         mock.expect_run("pnpm install --frozen-lockfile", CmdOutput::success(""));
         mock.expect_run("ls-files", CmdOutput::success(""));
+        common::script_xcode(&mut mock);
         mock.expect_spawn_piped("expo prebuild", 5000, "", Some(0));
         mock.expect_run("ps", CmdOutput::success(LSTART));
         mock.expect_run("ps", CmdOutput::success("qaren-build"));
@@ -954,6 +960,7 @@ fn script_provision_after_deps(mock: &mut MockRunner) {
 
 fn script_provision_build(mock: &mut MockRunner, command: &str, native_files: &str) {
     mock.expect_run("ls-files", CmdOutput::success(native_files));
+    common::script_xcode(mock);
     common::script_finite_ios_build_with(mock, command);
     script_ready_recheck(mock, native_files);
 }
@@ -973,6 +980,7 @@ fn script_ready_recheck(mock: &mut MockRunner, native_files: &str) {
         CmdOutput::success("512\t0\tUIKitApplication:com.rndevagent.testapp[abc]"),
     );
     mock.expect_run("ls-files", CmdOutput::success(native_files)); // fingerprint recheck
+    common::script_xcode(mock);
 }
 
 // The app-root status the walk's worktree drift is measured against, before and after the core.
@@ -1658,6 +1666,7 @@ fn a_cancel_during_the_build_stops_it_with_proof_and_releases_both_locks() {
     script_preflight(&mut mock, &repo);
     common::script_ios_deps(&mut mock);
     mock.expect_run("ls-files", CmdOutput::success(""));
+    common::script_xcode(&mut mock);
     mock.expect_spawn_piped("expo run:ios", 5000, "", None);
     mock.expect_run("ps", CmdOutput::success(LSTART));
     mock.expect_run("ps", CmdOutput::success("qaren-build"));
@@ -2777,6 +2786,7 @@ fn seed_cached_apk(repo: &Path, app: &Path) -> std::path::PathBuf {
     std::fs::write(&apk, b"cached apk").unwrap();
     let mut fp_runner = qaren::exec::MockRunner::new();
     fp_runner.expect_run("ls-files", CmdOutput::success(""));
+    common::script_xcode(&mut fp_runner);
     let fp = qaren::fingerprint::compute(&mut fp_runner, repo, app, "android").unwrap();
     save_json(
         &state_path(repo, "android", "com.rndevagent.testapp"),
@@ -3620,6 +3630,7 @@ fn fresh_install_resets_or_proves_absence_before_cached_install_under_the_same_l
         common::write_ios_app(&cached);
         let mut fp_mock = MockRunner::new();
         fp_mock.expect_run("ls-files", CmdOutput::success(""));
+        common::script_xcode(&mut fp_mock);
         let fp = qaren::fingerprint::compute(&mut fp_mock, &repo, &app, "ios").unwrap();
         buildplan::save_json(
             &buildplan::state_path(&repo, "ios", "com.rndevagent.testapp"),
@@ -3656,6 +3667,7 @@ fn fresh_install_resets_or_proves_absence_before_cached_install_under_the_same_l
         }
         script_app_presence(&mut mock, false);
         mock.expect_run("ls-files", CmdOutput::success(""));
+        common::script_xcode(&mut mock);
         common::script_ios_app_verification(&mut mock);
         mock.expect_run(&format!("simctl install {UDID}"), CmdOutput::success(""));
         mock.expect_spawn(
@@ -3691,6 +3703,7 @@ fn fresh_install_resets_or_proves_absence_before_cached_install_under_the_same_l
             CmdOutput::success("512\t0\tUIKitApplication:com.rndevagent.testapp[abc]"),
         );
         mock.expect_run("ls-files", CmdOutput::success(""));
+        common::script_xcode(&mut mock);
         script_drift_status(&mut mock);
         script_host_probe(&mut mock, UDID, hosts_absent());
         mock.expect_spawn_piped("walk.js", 9000, &pass_stdout(), Some(0));
@@ -5763,6 +5776,7 @@ fn every_build_decision_reports_fingerprint_completeness_and_reuse_reports_ready
         mock.expect_run("pnpm install --frozen-lockfile", CmdOutput::success(""));
         if reuse {
             mock.expect_run("ls-files", CmdOutput::success(files));
+            common::script_xcode(&mut mock);
             script_warm_launch_after_one_metro_retry(&mut mock);
             script_ready_recheck(&mut mock, files);
         } else {
@@ -5952,10 +5966,7 @@ fn android_teardown_releases_before_the_lease() {
     }
     assert_eq!(mock.remaining(), 0);
     let adb = adb_calls(&mock);
-    assert!(adb
-        .last()
-        .unwrap()
-        .contains("dumpsys activity processes"));
+    assert!(adb.last().unwrap().contains("dumpsys activity processes"));
     assert!(!adb
         .iter()
         .any(|c| c.contains("uninstall") || c.contains("kill-server")));

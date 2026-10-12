@@ -413,6 +413,7 @@ fn workspace_dry_run_reports_xcode_only_when_the_bound_cache_cannot_be_reused() 
         );
         mock.expect_run("lsof", free_port());
         mock.expect_run("ls-files", CmdOutput::success(common::IOS_NATIVE_FILES));
+        common::script_xcode(&mut mock);
 
         let receipt = prepare(&mut mock, &options);
 
@@ -425,7 +426,13 @@ fn workspace_dry_run_reports_xcode_only_when_the_bound_cache_cannot_be_reused() 
         assert_eq!(mock.remaining(), 0);
         assert!(mock.calls.iter().all(|c| matches!(
             c.label.as_str(),
-            "git-toplevel" | "git-head" | "git-dirty" | "which" | "lsof-port" | "git-ls-files"
+            "git-toplevel"
+                | "git-head"
+                | "git-dirty"
+                | "which"
+                | "lsof-port"
+                | "git-ls-files"
+                | "xcode-version"
         )));
         assert!(mock.spawned_logs.is_empty());
         assert!(!options.lock_root.exists());
@@ -506,6 +513,7 @@ fn assert_ios_prepare_reuses_cached_client(workspace: bool) {
     // The fingerprint the plan phase will compute for this repo.
     let mut fp_mock = MockRunner::new();
     fp_mock.expect_run("ls-files", CmdOutput::success(""));
+    common::script_xcode(&mut fp_mock);
     let fp = qaren::fingerprint::compute(&mut fp_mock, &repo, &repo.join("test-app"), "ios")
         .unwrap()
         .with_ios_workspace(scenario.build.ios_workspace.as_ref());
@@ -544,6 +552,7 @@ fn assert_ios_prepare_reuses_cached_client(workspace: bool) {
         common::script_ios_deps(&mut mock);
     }
     mock.expect_run("ls-files", CmdOutput::success(""));
+    common::script_xcode(&mut mock);
     mock.expect_run("simctl create", CmdOutput::success(&format!("{UDID}\n")));
     mock.expect_run(
         "simctl bootstatus",
@@ -589,6 +598,7 @@ fn assert_ios_prepare_reuses_cached_client(workspace: bool) {
     mock.expect_run("git", CmdOutput::success(&format!("{}\n", "b".repeat(40))));
     mock.expect_run("git", CmdOutput::success(""));
     mock.expect_run("ls-files", CmdOutput::success(""));
+    common::script_xcode(&mut mock);
 
     let receipt = prepare(&mut mock, &args(&repo, &scenario_path, None));
     assert_eq!(
@@ -673,6 +683,7 @@ fn tampered_cached_artifact_is_refused_for_reuse() {
 
     let mut fp_mock = MockRunner::new();
     fp_mock.expect_run("ls-files", CmdOutput::success(""));
+    common::script_xcode(&mut fp_mock);
     let fp =
         qaren::fingerprint::compute(&mut fp_mock, &repo, &repo.join("test-app"), "ios").unwrap();
 
