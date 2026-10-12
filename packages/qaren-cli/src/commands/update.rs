@@ -317,6 +317,24 @@ mod tests {
     }
 
     #[test]
+    fn refuses_a_checkout_without_an_upstream() {
+        let root = scratch("no-upstream");
+        let home = root.join("home");
+        let work = checkout(&root, &home, "1.0.13", NEW);
+        git(&work, &["branch", "--unset-upstream"]);
+        let head = git(&work, &["rev-parse", "HEAD"]);
+        let (code, msg) = update(&work, &home).unwrap_err();
+        assert_eq!(code, 2);
+        assert!(msg.contains("git pull --ff-only"), "{msg}");
+        assert!(
+            msg.lines().nth(1).is_some_and(|line| !line.is_empty()),
+            "git's own message is passed on: {msg}"
+        );
+        assert_eq!(git(&work, &["rev-parse", "HEAD"]), head);
+        assert_untouched(&home);
+    }
+
+    #[test]
     fn already_current() {
         let root = scratch("current");
         let home = root.join("home");
