@@ -48,6 +48,14 @@ export async function detectAndroidExternalRunner(
   }
 }
 
+/** Admission probe for one emulator: the detector's message when another driver holds it. */
+export async function androidForeignDriverMessage(
+  serial: string,
+  execFileImpl: typeof execFile = execFile,
+): Promise<string | undefined> {
+  return (await detectAndroidExternalRunner(execFileImpl, ['-s', serial]))?.message;
+}
+
 export interface IosExternalRunnerWarning {
   platform: 'ios';
   code: 'IOS_XCUITEST_COMPETITOR';

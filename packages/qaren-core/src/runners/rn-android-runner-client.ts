@@ -195,6 +195,9 @@ interface RunnerResponse {
 
 interface RunnerSnapshotNode {
   index?: number;
+  depth?: number;
+  parentIndex?: number;
+  presence?: unknown;
   type?: string;
   label?: string;
   identifier?: string;
@@ -203,6 +206,8 @@ interface RunnerSnapshotNode {
   rect?: { x: number; y: number; width: number; height: number };
   enabled?: boolean;
   hittable?: boolean;
+  selected?: boolean;
+  visibleToUser?: boolean;
   secure?: boolean;
 }
 
@@ -1923,8 +1928,36 @@ export async function androidSnapshotNodesViaProbe(
   }
 }
 
-function mapRunnerNodesToFlat(nodes: RunnerSnapshotNode[]): FlatNode[] {
+function isNonNegativeSafeInteger(value: unknown): value is number {
+  return typeof value === 'number' && Number.isSafeInteger(value) && value >= 0;
+}
+
+// QA reads carry the live-traversal hierarchy. A node whose index, depth or parent
+// cannot be trusted is dropped (and so counted) rather than stripped of ancestry.
+function qaHierarchy(
+  n: RunnerSnapshotNode,
+  depths: Map<number, number>,
+): Pick<FlatNode, 'index' | 'depth' | 'parentIndex'> | undefined {
+  if (
+    !isNonNegativeSafeInteger(n.index) ||
+    depths.has(n.index) ||
+    !isNonNegativeSafeInteger(n.depth)
+  )
+    return undefined;
+  if (n.parentIndex === undefined)
+    return n.depth === 0 ? { index: n.index, depth: n.depth } : undefined;
+  if (
+    !isNonNegativeSafeInteger(n.parentIndex) ||
+    n.parentIndex >= n.index ||
+    depths.get(n.parentIndex) !== n.depth - 1
+  )
+    return undefined;
+  return { index: n.index, depth: n.depth, parentIndex: n.parentIndex };
+}
+
+function mapRunnerNodesToFlat(nodes: RunnerSnapshotNode[], qa = false): FlatNode[] {
   const out: FlatNode[] = [];
+  const depths = new Map<number, number>();
   let synthCounter = 0;
   for (const n of nodes) {
     if (
@@ -1935,8 +1968,14 @@ function mapRunnerNodesToFlat(nodes: RunnerSnapshotNode[]): FlatNode[] {
       n.rect.height < 0
     )
       continue;
+    const hierarchy = qa ? qaHierarchy(n, depths) : undefined;
+    if (qa && !hierarchy) continue;
     const ref = `@e${n.index ?? synthCounter++}`;
-    const flat: FlatNode = { ref, type: n.type ?? '', rect: n.rect };
+    const flat: FlatNode = { ref, type: n.type ?? '', rect: n.rect, ...hierarchy };
+    if (hierarchy) depths.set(hierarchy.index!, hierarchy.depth!);
+    if (qa && Object.hasOwn(n, 'presence')) flat.presence = n.presence;
+    if (qa && n.selected === true) flat.selected = true;
+    if (qa && typeof n.visibleToUser === 'boolean') flat.visibleToUser = n.visibleToUser;
     if (n.label !== undefined) flat.label = n.label;
     if (n.identifier !== undefined) flat.identifier = n.identifier;
     if (n.packageName !== undefined) flat.packageName = n.packageName;
@@ -2184,10 +2223,20 @@ export async function runAndroid(args: RunAndroidArgs): Promise<ToolResult> {
       nodes?: RunnerSnapshotNode[];
       truncated?: unknown;
       normalizationDroppedNodes?: unknown;
+      snapshotGeneration?: unknown;
+      keyboardVisible?: unknown;
     };
     if (Array.isArray(data.nodes)) {
-      const flat = mapRunnerNodesToFlat(data.nodes);
-      const outcome = updateRefMapFromFlat(flat);
+      const flat = mapRunnerNodesToFlat(data.nodes, qaReadOnly);
+      const freshness = {
+        ...(isNonNegativeSafeInteger(data.snapshotGeneration)
+          ? { snapshotGeneration: data.snapshotGeneration }
+          : {}),
+        ...(typeof data.keyboardVisible === 'boolean'
+          ? { keyboardVisible: data.keyboardVisible }
+          : {}),
+      };
+      const outcome = updateRefMapFromFlat(flat, freshness);
       const snapshotVerdict = buildSnapshotVerdict('rn-android-runner', flat.length, outcome);
       const producerDropped = data.normalizationDroppedNodes;
       const dropped =
@@ -2201,6 +2250,7 @@ export async function runAndroid(args: RunAndroidArgs): Promise<ToolResult> {
           nodes: flat,
           ...(typeof data.truncated === 'boolean' ? { truncated: data.truncated } : {}),
           ...(Number.isSafeInteger(dropped) ? { normalizationDroppedNodes: dropped } : {}),
+          ...freshness,
         },
         { meta: { snapshotVerdict, ...recoveryMeta } },
       );

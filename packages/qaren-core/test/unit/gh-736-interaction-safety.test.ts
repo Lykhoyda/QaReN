@@ -186,14 +186,14 @@ test('stale Android runners without scoped exact-interaction semantics are rejec
   assert.deepEqual(classifyAndroidHealth(common), {
     compatible: false,
     reason: 'missing-features',
-    missing: ['APP_SCOPED_EXACT_INTERACTION', 'FILL_EVIDENCE_V1'],
+    missing: ['APP_SCOPED_EXACT_INTERACTION', 'FILL_EVIDENCE_V1', 'DISPATCH_OCCLUSION_GUARD_V1'],
   });
   assert.deepEqual(
     classifyRunnerCompatibility(common, null, REQUIRED_ANDROID_COMMANDS, REQUIRED_ANDROID_FEATURES),
     {
       compatible: false,
       reason: 'missing-features',
-      missing: ['APP_SCOPED_EXACT_INTERACTION', 'FILL_EVIDENCE_V1'],
+      missing: ['APP_SCOPED_EXACT_INTERACTION', 'FILL_EVIDENCE_V1', 'DISPATCH_OCCLUSION_GUARD_V1'],
     },
   );
   assert.deepEqual(
@@ -606,12 +606,22 @@ test('exact press disambiguates duplicates by the requested point and clicks the
   assert.match(source, /"exact-target-unresolved"/);
   assert.match(source, /ExactPressSafety\.traversalComplete\(stack\.size\)/);
   assert.match(source, /ExactPressSafety\.liveTargetIsHittable/);
-  assert.match(source, /requireNoSameWindowOccluder\(clickable, requested\)/);
+  assert.match(source, /requireUnoccluded\(clickable, requested\)/);
   assert.match(source, /ExactPressSafety\.sameWindowOcclusion\(targetPath, it\)/);
-  assert.match(source, /ExactPressSafety\.OcclusionVerdict\.OCCLUDED -> occluded = true/);
-  assert.match(source, /else -> zOrderUnresolved = true/);
+  // DISPATCH_OCCLUSION_GUARD_V1: a covered point is the walker's typed occlusion refusal.
+  assert.match(source, /ExactPressSafety\.coveredByOtherWindow\(/);
+  assert.match(source, /ExactPressSafety\.occlusionOutcome\(sameWindow, otherWindows\)/);
+  assert.match(
+    source,
+    /ExactPressSafety\.Outcome\.OCCLUDED -> throw FocusTargetOccludedException\(OCCLUDED_MESSAGE\)/,
+  );
+  assert.match(source, /"FOCUS_TARGET_OCCLUDED: the tap point is covered by another element/);
+  assert.match(
+    source,
+    /ExactPressSafety\.Outcome\.UNRESOLVED -> throw exactTargetZOrderUnresolved\(\)/,
+  );
   assert.match(source, /candidate\.isClickable/);
-  assert.match(source, /requireNoSameWindowOccluder\(clickable, requested\)\s*return clickable/);
+  assert.match(source, /requireUnoccluded\(clickable, requested\)\s*return clickable/);
   assert.match(source, /"exact-target-not-hittable"/);
   // A coordinate outside the display is refused before any injection.
   assert.match(

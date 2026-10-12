@@ -36,6 +36,8 @@ export interface FlatNode {
   enabled?: boolean;
   hittable?: boolean;
   selected?: boolean;
+  /** Android QA reads: the accessibility visible-to-user fact. */
+  visibleToUser?: boolean;
   /** GH #581: Android password fields; never cached beyond the snapshot nodes. */
   secure?: boolean;
 }

@@ -160,6 +160,8 @@ export interface NativeNode {
   hittable?: boolean;
   enabled?: boolean;
   selected?: boolean;
+  // Android only: a scrolled-out node keeps an empty clipped rect inside the viewport.
+  visibleToUser?: boolean;
   secure?: boolean;
   value?: string;
   rect?: { x: number; y: number; width: number; height: number };
@@ -631,12 +633,15 @@ export function join(
       disabled: n.enabled === false || match?.disabled === true,
       ...(n.selected === true ? { selected: true as const } : {}),
       secure: n.secure === true || n.type === 'SecureTextField',
-      offscreen: viewport.has(nodeIndex),
-      visibilityEvidence: contradicted.has(nodeIndex)
-        ? 'unresolved'
-        : viewport.has(nodeIndex)
+      offscreen: viewport.has(nodeIndex) || n.visibleToUser === false,
+      visibilityEvidence:
+        n.visibleToUser === false
           ? 'offscreen'
-          : 'visible',
+          : contradicted.has(nodeIndex)
+            ? 'unresolved'
+            : viewport.has(nodeIndex)
+              ? 'offscreen'
+              : 'visible',
       semantic: {
         ...capabilities,
         ...(headings.has(nodeIndex) ? { heading: headings.get(nodeIndex)! } : {}),

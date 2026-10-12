@@ -34,6 +34,7 @@ import {
 import { foregroundSurfaceFromSnapshot } from '../handlers/expo-dev-menu.js';
 import { compileFlow, FlowCompileError } from '../flow/compile.js';
 import { foreignFlowGate } from '../lifecycle/foreign-flow-gate.js';
+import { androidForeignDriverMessage } from '../runners/external-runner-detect.js';
 import { observeRunnerDrivers } from '../runners/rn-fast-runner-client.js';
 import type { ToolResult } from '../utils.js';
 import { HandlerError, adapt, describeError, fillEvidence, unwrap } from './adapt.js';
@@ -374,8 +375,10 @@ async function openSession(
               ),
           }
         : {}),
-      // The lease coordinates qaren processes only; a foreign Maestro or XCUITest driver is a probe.
+      // The lease coordinates qaren processes only; a foreign Maestro, XCUITest or UIAutomator driver is a probe.
       foreignDriver: async () => {
+        if (platform === 'android')
+          return interruptible(() => androidForeignDriverMessage(target.deviceId));
         if (platform !== 'ios') return undefined;
         const foreign = await interruptible(() => foreignFlowGate.check(target.deviceId));
         return foreign.active
