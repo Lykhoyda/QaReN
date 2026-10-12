@@ -24,6 +24,10 @@ object QaHierarchy {
         val isEmpty: Boolean get() = right <= left || bottom <= top
         val isInverted: Boolean get() = right < left || bottom < top
 
+        // Android clips a scrolled-out node's far edge to the viewport but keeps its
+        // true origin, which inverts the rect; it is still that node's empty clipped rect.
+        fun collapsed(): Bounds = Bounds(left, top, maxOf(left, right), maxOf(top, bottom))
+
         fun contains(x: Int, y: Int): Boolean =
             !isEmpty && x >= left && x < right && y >= top && y < bottom
 
@@ -179,7 +183,7 @@ object QaHierarchy {
                     dropped += 1
                     continue
                 }
-                val bounds = raw.bounds
+                val bounds = raw.bounds?.let { if (it.isInverted && !raw.visibleToUser) it.collapsed() else it }
                 val kept = if (bounds == null || bounds.isInverted) {
                     dropped += 1
                     parentIndex

@@ -52,7 +52,7 @@ class QaHierarchyTest {
         assertEquals(2, out.droppedNodes)
     }
 
-    @Test fun anInvertedRectIsDroppedButAnEmptyClippedRectIsKept() {
+    @Test fun aVisibleNodeWithAnInvertedRectIsDroppedButAnEmptyClippedRectIsKept() {
         val tree = node(
             "A",
             children = listOf(
@@ -64,6 +64,27 @@ class QaHierarchyTest {
 
         assertEquals(listOf("Application", "Window", "A", "Clipped"), out.nodes.map { it.type })
         assertEquals(1, out.droppedNodes)
+    }
+
+    // A pager page scrolled out to the right: Android clips the right edge to the
+    // viewport but keeps the true left, so the reported rect is inverted.
+    @Test fun aScrolledOutNodeWithAnInvertedClippedRectIsKeptEmptyAtItsOrigin() {
+        val page = node(
+            "Page",
+            bounds = Bounds(2160, 0, 1080, 2089),
+            visibleToUser = false,
+            children = listOf(node("Title", bounds = Bounds(2625, 1136, 1080, 1210), visibleToUser = false)),
+        )
+        val pager = node("Pager", bounds = Bounds(0, 0, 1080, 2089), children = listOf(node("Shown"), page))
+        val out = QaHierarchy.assemble(listOf(appWindow(pager)), app, display)
+
+        assertEquals(listOf("Application", "Window", "Pager", "Shown", "Page", "Title"), out.nodes.map { it.type })
+        assertEquals(listOf(null, 0, 1, 2, 2, 4), out.nodes.map { it.parentIndex })
+        assertEquals(Bounds(2160, 0, 2160, 2089), out.nodes[4].rect)
+        assertEquals(Bounds(2625, 1136, 2625, 1210), out.nodes[5].rect)
+        assertEquals(listOf(false, false), out.nodes.drop(4).map { it.visibleToUser })
+        assertEquals(listOf(false, false), out.nodes.drop(4).map { it.hittable })
+        assertEquals(0, out.droppedNodes)
     }
 
     @Test fun aWindowWhoseRootIsUnreadableCountsAsDropped() {

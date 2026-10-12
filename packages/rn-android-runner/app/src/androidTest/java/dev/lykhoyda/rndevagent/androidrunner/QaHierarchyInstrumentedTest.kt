@@ -5,6 +5,7 @@
 package dev.lykhoyda.rndevagent.androidrunner
 
 import android.content.Intent
+import android.view.accessibility.AccessibilityWindowInfo
 import android.widget.Button
 import android.widget.EditText
 import androidx.test.ext.junit.runners.AndroidJUnit4
@@ -15,6 +16,7 @@ import androidx.test.uiautomator.UiDevice
 import androidx.test.uiautomator.Until
 import org.json.JSONArray
 import org.json.JSONObject
+import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
@@ -28,10 +30,11 @@ import org.junit.runner.RunWith
 class QaHierarchyInstrumentedTest {
     private val instrumentation = InstrumentationRegistry.getInstrumentation()
     private val testPackage: String = instrumentation.context.packageName
-    private val dispatcher by lazy { CommandDispatcher(instrumentation) }
+    private val dispatcher get() = sharedDispatcher
 
     @Before
     fun launchFixture() {
+        checkNotNull(dispatcher) // before the fixture launches, so the window list is enabled
         val intent = Intent()
             .setClassName(testPackage, QaHierarchyFixtureActivity::class.java.name)
             .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TASK)
@@ -42,7 +45,25 @@ class QaHierarchyInstrumentedTest {
                 10_000,
             ),
         )
+        // QA reads gate on the accessibility window list, which can trail the view found above.
+        val deadline = System.currentTimeMillis() + 10_000
+        while (!fixtureWindowListed() && System.currentTimeMillis() < deadline) Thread.sleep(100)
+        assertTrue(fixtureWindowListed())
     }
+
+    // A fill leaves the keyboard up; relaunching over it can leave the window list without the fixture.
+    @After
+    fun leaveFixture() {
+        UiDevice.getInstance(instrumentation).pressHome()
+    }
+
+    private fun fixtureWindowListed(): Boolean = ForegroundGate.hasForegroundWindow(
+        instrumentation.uiAutomation.windows.map {
+            ForegroundGate.WindowSignature(it.type, it.root?.packageName?.toString())
+        },
+        testPackage,
+        AccessibilityWindowInfo.TYPE_APPLICATION,
+    )
 
     @Test
     fun anOccludedExactPressRefusesWithTheOcclusionPrefixAndNoMutation() {
@@ -170,5 +191,11 @@ class QaHierarchyInstrumentedTest {
             .put("exactType", Button::class.java.name)
             .put("x", rect.getInt("x") + rect.getInt("width") / 2)
             .put("y", rect.getInt("y") + rect.getInt("height") / 2)
+    }
+
+    companion object {
+        // One dispatcher per run, as a runner session keeps one; its init enables the
+        // interactive window list that QA reads gate on.
+        private val sharedDispatcher by lazy { CommandDispatcher(InstrumentationRegistry.getInstrumentation()) }
     }
 }

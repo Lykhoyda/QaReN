@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { afterEach, beforeEach, test } from 'node:test';
-import { captureScreen } from '../../../dist/qa/capture.js';
+import { captureScreen, nativeDevOverlayUncleared } from '../../../dist/qa/capture.js';
 import { keyboardCoversElement } from '../../../dist/qa/screen.js';
 import { NativeSnapshotIncomplete } from '../../../dist/qa/private-input.js';
 import { parsePlan } from '../../../dist/qa/plan.js';
@@ -321,6 +321,67 @@ test('an Android node not visible to the user is offscreen and never a quoted PA
     assert.notEqual(result.verdict, 'PASS', plan);
     assert.deepEqual(f.actions, [], plan);
   }
+});
+
+test('scrolled-out pager pages past the viewport edge keep the walk-start overlay gate clear', async () => {
+  const data = qaSnapshot([
+    ...appRoots(),
+    qaNode(3, 2, 3, {
+      type: 'android.widget.HorizontalScrollView',
+      rect: { x: 0, y: 0, width: 1080, height: 2089 },
+    }),
+    control(4, { identifier: 'onboarding-skip', rect: { x: 55, y: 2209, width: 71, height: 56 } }),
+    // The runner keeps an off-screen page as its empty clipped rect at its own origin.
+    qaNode(5, 3, 4, {
+      type: 'android.view.ViewGroup',
+      visibleToUser: false,
+      rect: { x: 2160, y: 0, width: 0, height: 2089 },
+    }),
+    qaNode(6, 5, 5, {
+      type: 'android.widget.TextView',
+      label: 'Page three',
+      visibleToUser: false,
+      rect: { x: 2625, y: 1136, width: 0, height: 74 },
+    }),
+  ]);
+  _setFetchForTest(async (url) => {
+    if (String(url).endsWith('/health'))
+      return Response.json({
+        ok: true,
+        protocolVersion: RUNNER_PROTOCOL_VERSION,
+        runnerVersion: getPluginVersion(),
+        commands: REQUIRED_ANDROID_COMMANDS,
+        capabilities: [...REQUIRED_ANDROID_FEATURES, QA_READ_ONLY_CAPABILITY],
+      });
+    return Response.json({ ok: true, data });
+  });
+  const envelope = parseEnvelope(
+    await runAndroid({
+      command: 'snapshot',
+      deviceId: 'test-emulator',
+      bundleId: 'com.test',
+      qaReadOnly: true,
+    }),
+  );
+  assert.equal(
+    nativeDevOverlayUncleared({
+      ...envelope.data,
+      snapshotVerdict: envelope.meta.snapshotVerdict,
+      surface: 'app',
+    }),
+    false,
+  );
+
+  const screen = await capture(data);
+  assert.equal(screen.captureCoverage?.native, 'complete');
+  assert.equal(screen.elements.find((e) => e.label === 'Page three')?.offscreen, true);
+  const f = walker(
+    [],
+    scriptedJudge(() => assert.fail('literal plans must not call Jev')),
+  );
+  f.deps.captureScreen = () => capture(data);
+  const result = await runPlan(parsePlan('✓ "Page three"').blocks!, f.deps);
+  assert.notEqual(result.verdict, 'PASS');
 });
 
 test('the Android Keyboard node marks a centre-covered field keyboard-covered', async () => {
