@@ -85,7 +85,7 @@ reason and the fix.
 2. **App.** It checks that `package.json` lists `expo` and `expo-dev-client` and that
    `pnpm-lock.yaml` exists. It asks before running `pnpm install`. It reads the bundle
    identifier and the app's `slug` from `pnpm exec expo config`; when that fails, it asks
-   you for the bundle identifier and dev-client scheme rather than guessing.
+   you for both values rather than guessing.
 3. **Config.** It writes `.qaren/config.yaml`:
 
    ```yaml
