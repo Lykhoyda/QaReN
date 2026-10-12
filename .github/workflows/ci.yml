@@ -85,6 +85,9 @@ jobs:
       - name: Docs app build
         run: corepack yarn workspace qaren-docs build
 
+      - name: Docs site verifier unit test
+        run: node --test scripts/test/verify-site.test.ts
+
   unit-tests:
     name: Unit tests (batch ${{ matrix.batch }}/5)
     runs-on: ubuntu-latest

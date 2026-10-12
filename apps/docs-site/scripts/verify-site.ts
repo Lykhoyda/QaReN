@@ -3,7 +3,7 @@ import { join, relative, resolve, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
-const DIST = resolve(HERE, '../dist');
+const DIST = process.env.DOCS_DIST ?? resolve(HERE, '../dist');
 const MAIN_RS = resolve(HERE, '../../../packages/qaren-cli/src/main.rs');
 const BASE = '/rn-dev-agent';
 let failed = 0;
@@ -48,7 +48,11 @@ function checkInternalLinks() {
     for (const [, href] of html.matchAll(/(?:href|src)="([^"#?]+)[#?]?[^"]*"/g)) {
       if (/^(?:[a-z][a-z0-9+.-]*:|\/\/)/i.test(href)) continue;
       const url = new URL(href, pageUrl).pathname.replace(/\/$/, '') || '/';
-      if (url !== BASE && !url.startsWith(`${BASE}/`)) continue;
+      if (url !== BASE && !url.startsWith(`${BASE}/`)) {
+        broken += 1;
+        console.error(`  link outside the site base ${url} in ${file.slice(DIST.length)}`);
+        continue;
+      }
       if (KNOWN_BROKEN.has(url)) continue;
       const rel = url === BASE ? '' : url.slice(BASE.length + 1);
       if (
