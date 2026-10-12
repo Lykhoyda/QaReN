@@ -3,6 +3,7 @@ pub mod complete;
 pub mod prepare;
 pub mod prewarm;
 pub mod status;
+pub mod update;
 
 use crate::exec::{CmdSpec, Runner};
 use crate::failure::{Failure, FailureCode};

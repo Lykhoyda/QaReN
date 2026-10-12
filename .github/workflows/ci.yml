@@ -197,7 +197,7 @@ jobs:
             echo "::error::bin/qaren embeds builder paths" >&2
             exit 1
           fi
-      - name: Source install links qaren onto PATH and finds its runtime through the link
+      - name: Source install links qaren onto PATH, finds its runtime through the link, and qaren update reinstalls it
         run: |
           # The toolchain stays where the runner installed it; only the install home is fresh.
           export CARGO_HOME="${CARGO_HOME:-$HOME/.cargo}" RUSTUP_HOME="${RUSTUP_HOME:-$HOME/.rustup}"
@@ -209,6 +209,23 @@ jobs:
           [ "$(readlink "$HOME/bin/qaren")" = "$BIN" ] || { echo "::error::qaren is not linked into the first standard bin directory on PATH" >&2; exit 1; }
           GOT=$(env -u QAREN_RUNTIME qaren --version)
           [ "$GOT" = "qaren $V" ] || { echo "::error::qaren from PATH printed '$GOT'" >&2; exit 1; }
+          # qaren update fast-forwards first, so give the checkout a local upstream to pull from.
+          git checkout -q -B ci-update
+          git init -q --bare "$RUNNER_TEMP/upstream.git"
+          # The checkout is shallow; the empty upstream must accept its grafted history.
+          git -C "$RUNNER_TEMP/upstream.git" config receive.shallowUpdate true
+          git push -q "$RUNNER_TEMP/upstream.git" ci-update
+          git remote add upstream "$RUNNER_TEMP/upstream.git"
+          git fetch -q upstream
+          git branch -u upstream/ci-update
+          OUT=$(qaren update); echo "$OUT"
+          case "$OUT" in *"already current"*) ;; *) echo "::error::update after a fresh install did not report current" >&2; exit 1 ;; esac
+          # A different tarball mtime is a different build, so this replaces the runtime the running qaren update started from.
+          OUT=$(SOURCE_DATE_EPOCH=1 qaren update); echo "$OUT"
+          case "$OUT" in *"updated qaren"*) ;; *) echo "::error::a changed build was not reported as updated" >&2; exit 1 ;; esac
+          [ "$(readlink "$HOME/bin/qaren")" = "$BIN" ] || { echo "::error::qaren update moved the PATH link" >&2; exit 1; }
+          GOT=$(env -u QAREN_RUNTIME qaren --version)
+          [ "$GOT" = "qaren $V" ] || { echo "::error::qaren from PATH printed '$GOT' after update" >&2; exit 1; }
 
   test:
     name: Build & Test
