@@ -1479,8 +1479,9 @@ and temporary policy live in
 project instead of the workspace containing the scenario. The path must BE a
 git toplevel — a subdirectory of some larger repo is refused
 (`CANDIDATE_PATH_INVALID`) so a run can never bind to files outside the
-project it named. For project cache state and shared builds, see
-[Native-fingerprint build selection](#native-fingerprint-build-selection). The
+project it named. Project cache state lives under `<worktree>/.qaren/`, verified
+iOS dev-client builds are shared per machine under `~/.qaren/native-cache/` (see
+[Native-fingerprint build selection](#native-fingerprint-build-selection)), and the
 fingerprint enumerates only that worktree. Run records remain host-level;
 `status`/`cleanup` load them by run id without requiring the app directory.
 qaren never discovers, enumerates, or couples other projects.
