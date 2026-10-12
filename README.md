@@ -357,12 +357,14 @@ instructions.
 
 <a id="prebuilt-runners"></a>
 
-**Prebuilt runners:** on a released version, the device runners install from a verified prebuilt
+**Prebuilt iOS runner:** on a released version, the iOS runner installs from a verified prebuilt
 artifact (SHA-256-checked local cache, then the GitHub Release asset for your exact plugin
 version), so the first `device_snapshot action=open` skips the cold build. Resolution is fail-open
 — offline, a checksum mismatch, or a dev checkout falls back transparently to the on-machine build
 (the host's `doctor` workflow reports which one you got). Force local builds with
 `RN_RUNNER_BUILD=local`.
+
+For Android, see [Android runner provisioning](packages/qaren-cli/README.md#android-runner-provisioning).
 
 When an iOS runner launched from a prebuilt lacks required capabilities or commands,
 startup attempts to persist a `stale` marker under

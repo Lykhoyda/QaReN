@@ -300,9 +300,13 @@ before device probes and reporting them as inconclusive if that check fails.
 ### Android runner provisioning
 
 The Android runner uses the runtime's shipped source; no published runner APK
-is downloaded or installed. Provisioning reuses registered instrumentation,
-otherwise installs existing local runner APKs, or builds them with Gradle when
-absent. A cold build requires the Android SDK and a JDK on PATH. A runner left
+is downloaded or installed. Before starting instrumentation, provisioning asks
+Gradle to refresh the main and test APKs from the shipped source, then compares
+their SHA-256 hashes with both installed packages. It reuses only a matching
+pair; a mismatch or unreadable installed identity reinstalls both expected APKs.
+Package versions and the launch-supplied runner version do not prove freshness.
+Provisioning requires the Android SDK and a JDK on PATH; unchanged source uses
+Gradle's incremental build. A runner left
 on the emulator by rn-dev-agent 1.x is
 signed differently and cannot be replaced in place: uninstall
 `dev.lykhoyda.rndevagent.androidrunner` and `dev.lykhoyda.rndevagent.androidrunner.test`

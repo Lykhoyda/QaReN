@@ -8,8 +8,21 @@ import { promisify } from 'node:util';
 import { EventEmitter } from 'node:events';
 import { PassThrough } from 'node:stream';
 import { setImmediate } from 'node:timers/promises';
+import { tmpdir } from 'node:os';
+import { dirname, join } from 'node:path';
 
 test('native startup settles cancellation and rejects buffered readiness without persistence', async (t) => {
+  const root = fs.mkdtempSync(join(tmpdir(), 'qaren-readiness-'));
+  const removeFixture = fs.rmSync;
+  for (const [relativePath, bytes] of [
+    ['debug/app-debug.apk', 'readiness fixture main APK'],
+    ['androidTest/debug/app-debug-androidTest.apk', 'readiness fixture test APK'],
+  ]) {
+    const apk = join(root, 'rn-android-runner/app/build/outputs/apk', relativePath);
+    fs.mkdirSync(dirname(apk), { recursive: true });
+    fs.writeFileSync(apk, bytes);
+  }
+  t.after(() => removeFixture(root, { recursive: true, force: true }));
   const originalExists = fs.existsSync;
   const originalReadDir = fs.readdirSync;
   const originalLstat = fs.lstatSync;
@@ -104,8 +117,18 @@ test('native startup settles cancellation and rejects buffered readiness without
   });
   const { withCancellation, RunCancelledError } =
     await import('../../../dist/domain/cancellation.js');
-  const ios = await import('../../../dist/runners/rn-fast-runner-client.js');
-  const android = await import('../../../dist/runners/rn-android-runner-client.js');
+  const previousRoot = process.env.QAREN_NATIVE_RUNNER_ROOT;
+  process.env.QAREN_NATIVE_RUNNER_ROOT = root;
+  let ios: typeof import('../../../dist/runners/rn-fast-runner-client.js');
+  let android: typeof import('../../../dist/runners/rn-android-runner-client.js');
+  try {
+    ios = await import('../../../dist/runners/rn-fast-runner-client.js');
+    android = await import('../../../dist/runners/rn-android-runner-client.js');
+  } finally {
+    if (previousRoot === undefined) delete process.env.QAREN_NATIVE_RUNNER_ROOT;
+    else process.env.QAREN_NATIVE_RUNNER_ROOT = previousRoot;
+  }
+  t.after(() => android._setFetchForTest(globalThis.fetch));
   const previousLease = process.env.QAREN_DEVICE_LEASE;
   process.env.QAREN_DEVICE_LEASE = 'test:abcdefghijklmnop';
   t.after(() => {
@@ -132,7 +155,10 @@ test('native startup settles cancellation and rejects buffered readiness without
   );
   const pmReason = new RunCancelledError();
   const pmRejected = assert.rejects(pmPending, (error) => error === pmReason);
-  await pmStarted;
+  await Promise.race([
+    pmStarted,
+    pmPending.then(() => assert.fail('startup completed before the instrumentation query')),
+  ]);
   const beforeAbort = commands.length;
   const beforeMutations = mutations.length;
   const beforeBindings = bindings;
@@ -197,7 +223,10 @@ test('native startup settles cancellation and rejects buffered readiness without
       android.startAndroidRunner('emulator-test', 'com.example.app', 0),
     );
     const rejected = assert.rejects(pending);
-    await reached;
+    await Promise.race([
+      reached,
+      pending.then(() => assert.fail('startup completed before the health callback')),
+    ]);
     await setImmediate();
     if (phase === 'polling') controller.abort(new RunCancelledError());
     await rejected;

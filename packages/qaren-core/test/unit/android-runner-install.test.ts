@@ -23,14 +23,24 @@ test('isInstrumentationRegistered: false when absent or empty', () => {
   assert.equal(isInstrumentationRegistered('', INSTR), false);
 });
 
-test('resolveAndroidInstallAction: reuse when already registered', () => {
+test('resolveAndroidInstallAction: reuse requires the expected main and test build identity', () => {
+  const build = { appSha256: 'a'.repeat(64), testSha256: 'b'.repeat(64) };
   assert.equal(
     resolveAndroidInstallAction({ instrumentationRegistered: true, apksExist: false }),
+    'build-then-install',
+  );
+  assert.equal(
+    resolveAndroidInstallAction({
+      instrumentationRegistered: true,
+      apksExist: true,
+      expectedBuild: build,
+      installedBuild: build,
+    }),
     'reuse',
   );
   assert.equal(
     resolveAndroidInstallAction({ instrumentationRegistered: true, apksExist: true }),
-    'reuse',
+    'install',
   );
 });
 
