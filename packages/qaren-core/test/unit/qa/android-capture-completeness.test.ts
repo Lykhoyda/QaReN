@@ -413,6 +413,48 @@ test('the Android Keyboard node marks a centre-covered field keyboard-covered', 
   assert.equal(keyboardCoversElement(screen.elements.find((e) => e.testID === 'save')!), false);
 });
 
+// The Android Keyboard node carries no keys, so the keyboard opening is the tap's only visible effect.
+test('an Android field tap whose only effect is opening the keyboard passes on its first press', async () => {
+  const form = (keyboardVisible: boolean) =>
+    qaSnapshot(
+      [
+        ...appRoots(),
+        control(3, {
+          type: 'android.widget.EditText',
+          label: 'Email',
+          identifier: 'rhf-email',
+          rect: { x: 40, y: 500, width: 1000, height: 120 },
+        }),
+        ...(keyboardVisible
+          ? [
+              qaNode(4, 0, 1, {
+                type: 'Keyboard',
+                packageName: 'com.example.ime',
+                rect: { x: 0, y: 1500, width: 1080, height: 900 },
+              }),
+            ]
+          : []),
+      ],
+      { keyboardVisible },
+    );
+  const closed = await capture(form(false));
+  const open = await capture(form(true));
+  const f = walker(
+    [closed, open],
+    scriptedJudge(() => assert.fail('literal plans must not call Jev')),
+    {
+      ok: false,
+      proven: false,
+      mutation: 'possible',
+      error:
+        'INTERACTION_EFFECT_UNVERIFIED: The tap was dispatched but produced no observable UI change.',
+    },
+  );
+  const result = await runPlan(parsePlan('1. Tap "rhf-email"').blocks!, f.deps);
+  assert.equal(result.verdict, 'PASS', result.failure?.seen);
+  assert.equal(f.actions.length, 1);
+});
+
 test('an Android Alert-rooted snapshot reads as a front dialog', async () => {
   const pkg = 'com.android.permissioncontroller';
   const screen = await capture(

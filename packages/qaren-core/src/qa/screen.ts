@@ -82,6 +82,8 @@ export interface Screen {
   appProcessIdentifier?: number;
   keyboardVisible?: boolean;
   keyboardFrame?: NonNullable<NativeNode['rect']>;
+  // A captured keyboard without its keys (Android's synthetic node); its presence alone is the visible change.
+  keylessKeyboard?: true;
   // Literal text and merged labels not painted under the keyboard; present only when one is captured.
   uncoveredText?: string[];
   uncoveredLabelText?: string[];
@@ -853,6 +855,7 @@ export function join(
     (n) => n.type === 'Keyboard' && !!n.rect && n.rect.width > 0 && n.rect.height > 0,
   );
   const keyboardFrame = keyboardIndex >= 0 ? nodes[keyboardIndex].rect : undefined;
+  const keylessKeyboard = keyboardIndex >= 0 && !nodes.some((n) => n.parentIndex === keyboardIndex);
   const windowOf = (index: number): number | undefined => {
     for (
       let p = nodes[index].parentIndex;
@@ -961,6 +964,7 @@ export function join(
     elements: elements.filter((_, i) => !duplicates.has(i)),
     visibleText,
     ...(keyboardFrame ? { keyboardFrame, uncoveredText, uncoveredLabelText } : {}),
+    ...(keylessKeyboard ? { keylessKeyboard: true as const } : {}),
     paintedText,
     ...(labelText.length ? { labelText } : {}),
     ...(unresolvedText.length ? { unresolvedText } : {}),
@@ -1233,6 +1237,7 @@ export function screenSignature(screen: Screen): string {
   );
   return JSON.stringify({
     front: screen.front,
+    ...(screen.keylessKeyboard ? { keyboard: true } : {}),
     text: screen.visibleText.filter((text) => !secureLines.has(text)),
     elements: screen.elements
       .filter((e) => e.label !== undefined || e.testID !== undefined || e.value !== undefined)
