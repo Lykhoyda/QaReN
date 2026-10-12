@@ -62,7 +62,11 @@ import {
 import type { RunnerIncompatibilityReason } from './protocol.js';
 import type { QuiescenceStatus } from './quiescence.js';
 import { buildRunnerQuiescenceEnv } from './quiescence.js';
-import { artifactProvenanceToState, resolveIosRunnerArtifacts } from './runner-artifacts.js';
+import {
+  artifactProvenanceToState,
+  markPrebuiltRunnerStale,
+  resolveIosRunnerArtifacts,
+} from './runner-artifacts.js';
 import { resolveNativeRunnerDir } from './runtime-paths.js';
 import {
   decideRecovery,
@@ -546,6 +550,16 @@ export const runnerRebuildBudget = {
     }
   },
 };
+
+export function markStalePrebuiltRunner(): void {
+  const pluginVersion = getPluginVersion();
+  if (runnerState?.provenance !== 'prebuilt' || pluginVersion === null) return;
+  try {
+    markPrebuiltRunnerStale(pluginVersion, 'ios');
+  } catch {
+    /* fail-open: the rebuild budget still bounds cold rebuilds */
+  }
+}
 
 export function resetRunnerRebuildBudgetForCurrentPlugin(): void {
   const pluginVersion = getPluginVersion();

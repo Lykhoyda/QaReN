@@ -324,12 +324,24 @@ recovery diagnosis read-only and prints the exact commands for you to confirm an
 Claude automation failures and Codex missing prerequisites are reported with step-by-step manual
 instructions.
 
+<a id="prebuilt-runners"></a>
+
 **Prebuilt runners:** on a released version, the device runners install from a verified prebuilt
 artifact (SHA-256-checked local cache, then the GitHub Release asset for your exact plugin
 version), so the first `device_snapshot action=open` skips the cold build. Resolution is fail-open
 — offline, a checksum mismatch, or a dev checkout falls back transparently to the on-machine build
 (the host's `doctor` workflow reports which one you got). Force local builds with
 `RN_RUNNER_BUILD=local`.
+
+When an iOS runner launched from a prebuilt lacks required capabilities or commands,
+startup attempts to persist a `stale` marker under
+`~/.qaren/runtime/runners/<plugin-version>/ios/` before checking the one-rebuild-per-version
+budget. With that marker present, later starts select the local runner without reusing or
+downloading that version's prebuilt, including after a process restart; cached products
+remain intact and other versions are unaffected. A spent rebuild budget still refuses
+the current start. Authority mismatches and stale local runners do not mark the prebuilt.
+If the marker cannot be written, the rebuild budget still applies, but persistent
+rejection is not guaranteed.
 
 </details>
 

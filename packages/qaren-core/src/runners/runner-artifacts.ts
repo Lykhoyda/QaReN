@@ -132,6 +132,17 @@ export function artifactProvenanceToState(p: ArtifactProvenance): 'prebuilt' | '
 
 // --- Orchestration (uses injected deps) ---
 
+// A released prebuilt is immutable per version, so one proven to lack required runner capabilities stays rejected.
+const STALE_PREBUILT_MARKER = 'stale';
+
+export function markPrebuiltRunnerStale(
+  version: string,
+  platform: RunnerPlatform,
+  deps: ArtifactDeps = defaultArtifactDeps(),
+): void {
+  deps.mkdirp(join(deps.cacheDir(version, platform), STALE_PREBUILT_MARKER));
+}
+
 interface AcquireResult {
   provenance: ArtifactProvenance;
   productsDir?: string;
@@ -154,6 +165,7 @@ async function acquireArtifact(
   if (assets.length === 0) return { provenance: 'build-local' };
 
   const cacheDir = deps.cacheDir(version, platform);
+  if (deps.existsSync(join(cacheDir, STALE_PREBUILT_MARKER))) return { provenance: 'build-local' };
   const productsDir = join(cacheDir, 'products');
 
   // Cache is valid only when every zip is present with a matching SHA-256 AND the

@@ -503,7 +503,8 @@ such as `field kept 10 of 13 chars on 2 attempts` when counts exist; the report
 line shows the same detail. The list is omitted when empty. A runner
 must advertise `FILL_EVIDENCE_V1` on both iOS and Android. Session startup routes
 a missing capability through the bounded source-rebuild path instead of
-accepting the released artifact. An active iOS runner missing it refuses focused
+accepting the released artifact; see [prebuilt runner selection](../../README.md#prebuilt-runners)
+for persistent rejection of stale iOS prebuilts. An active iOS runner missing it refuses focused
 replacement with `RN_FAST_RUNNER_STALE`
 and no mutation instead of appending. A refused replacement keeps the runner's
 mutation disposition. The [focused replacement tests](../qaren-core/test/unit/device-fill-focused-replace.test.ts)
