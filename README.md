@@ -17,9 +17,14 @@ and Rust/Cargo. It builds and verifies the runtime; see the
 [installation contract](packages/qaren-cli/README.md#plugin-runtime-installation)
 for PATH linking, the fallback export and existing-command protection.
 
-To update later, run `qaren update` from the same checkout root: it fast-forwards
-the checkout (refusing when it has local changes), rebuilds and reinstalls, and
-reports whether the build is already current, updated or newly installed.
+To update later, run `qaren update` from the same checkout root. It pulls the
+latest `origin develop` into the current branch with `git pull --ff-only origin develop`,
+then rebuilds and reinstalls. It refuses before pulling if the checkout has local
+changes (including untracked files); if the pull cannot fast-forward or otherwise
+fails, it stops without installing. Commit or stash local changes before retrying.
+The command compares installed tarball hashes for the checkout's version and reports
+`already current`, `updated <old> -> <new>`, or `installed` when no previous build
+record exists for that version.
 
 From your app's root, load the checkout's plugin in Claude Code:
 
