@@ -1818,7 +1818,12 @@ pub(crate) fn record_build_result(ctx: &mut Ctx, fp: &NativeFingerprint) -> Resu
         }
     };
     let bucket = buildplan::store_dir(&ctx.native_cache_root, platform, &app_id, &fp.value);
-    let staging = bucket.join(format!(".staging-{}", ctx.record.run_id));
+    // Lanes share the store, and run ids are only second-unique.
+    let staging = bucket.join(format!(
+        ".staging-{}-{}",
+        ctx.record.run_id,
+        std::process::id()
+    ));
     let dest_dir = bucket.join(&ctx.record.run_id);
     let staged = staging.join(src.file_name().unwrap_or_default());
     let dest = dest_dir.join(src.file_name().unwrap_or_default());

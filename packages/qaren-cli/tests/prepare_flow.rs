@@ -2243,7 +2243,9 @@ fn recording_a_build_retains_source_on_cache_or_evidence_publication_failure() {
                 let cache = qaren::buildplan::cache_dir(repo);
                 std::fs::create_dir_all(&cache).unwrap();
                 match fault {
-                    "copy" => std::fs::write(repo.join(".native-store"), b"not a directory").unwrap(),
+                    "copy" => {
+                        std::fs::write(repo.join(".native-store"), b"not a directory").unwrap()
+                    }
                     "hash" => std::fs::write(
                         run_dir.join("ios-build/testapp.app/binary"),
                         b"changed after install",
@@ -2646,8 +2648,8 @@ fn recording_a_build_cancelled_mid_copy_preserves_previous_cache() {
             let root = record.candidate.repo_root.clone();
             *copy_path.borrow_mut() =
                 qaren::buildplan::store_dir(&probe_store, "ios", "com.rndevagent.testapp", &fp)
-                    .join(format!(".staging-{}", record.run_id))
-                .join("testapp.app/binary");
+                    .join(format!(".staging-{}-{}", record.run_id, std::process::id()))
+                    .join("testapp.app/binary");
             std::fs::write(
                 run_dir.join("ios-build/testapp.app/binary"),
                 vec![7u8; 2 * 1024 * 1024],

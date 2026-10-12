@@ -705,7 +705,11 @@ fn a_verified_stored_build_reuses_without_worktree_state() {
                 "{:?}",
                 plan.evidence
             );
-            assert!(has(&plan, SHA_A) && has(&plan, SHA_B), "{:?}", plan.evidence);
+            assert!(
+                has(&plan, SHA_A) && has(&plan, SHA_B),
+                "{:?}",
+                plan.evidence
+            );
         }
     }
 }
@@ -747,4 +751,35 @@ fn a_stored_build_needs_verification_completeness_and_a_scheme_to_reuse() {
     );
     assert_eq!(stale.decision, BuildDecision::Incremental);
     assert!(stale.reason.contains("stale"), "{}", stale.reason);
+}
+
+#[test]
+fn store_records_name_their_artifact_relative_to_the_entry_and_are_written_once() {
+    use qaren::buildplan::{load_store_record, publish_store_record, store_dir, STORE_RECORD};
+    let root = temp_dir();
+    let dir = store_dir(&root, "ios", "com.rndevagent.testapp", FP);
+    std::fs::create_dir_all(dir.join("run-1/testapp.app")).unwrap();
+    let mut record = stored(ArtifactStatus::Verified).unwrap().0;
+    record.artifact.path = dir.join("run-1/testapp.app");
+    assert!(publish_store_record(&dir, &record).unwrap());
+    let raw: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(dir.join(STORE_RECORD)).unwrap()).unwrap();
+    assert_eq!(raw["path"], "run-1/testapp.app");
+    assert_eq!(load_store_record(&dir).unwrap(), Some(record.clone()));
+    let mut second = record.clone();
+    second.artifact.path = dir.join("run-2/testapp.app");
+    assert!(!publish_store_record(&dir, &second).unwrap());
+    assert_eq!(load_store_record(&dir).unwrap(), Some(record.clone()));
+    let mut outside = record.clone();
+    outside.artifact.path = root.join("elsewhere.app");
+    let other = store_dir(&root, "ios", "com.rndevagent.testapp", "rnfp1:bbbb");
+    std::fs::create_dir_all(&other).unwrap();
+    assert!(publish_store_record(&other, &outside).is_err());
+    assert!(!other.join(STORE_RECORD).exists());
+    for escaping in ["../escape.app", "/abs/testapp.app"] {
+        let mut raw = raw.clone();
+        raw["path"] = escaping.into();
+        std::fs::write(other.join(STORE_RECORD), raw.to_string()).unwrap();
+        assert!(load_store_record(&other).is_err(), "{escaping}");
+    }
 }

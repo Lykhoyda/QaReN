@@ -59,7 +59,7 @@ pub fn store_dir(store_root: &Path, platform: &str, app_id: &str, fingerprint: &
         .join(fingerprint.replace(':', "-"))
 }
 
-// A record whose artifact is outside its own fingerprint directory is not this entry's build.
+// The record names its artifact relative to the entry, so it never points outside it.
 pub fn load_store_record(dir: &Path) -> Result<Option<StoreRecord>, String> {
     let path = dir.join(STORE_RECORD);
     let raw = match std::fs::read_to_string(&path) {
@@ -67,34 +67,46 @@ pub fn load_store_record(dir: &Path) -> Result<Option<StoreRecord>, String> {
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
         Err(e) => return Err(format!("cannot read {}: {e}", path.display())),
     };
-    let record: StoreRecord = serde_json::from_str(&raw)
+    let mut record: StoreRecord = serde_json::from_str(&raw)
         .map_err(|e| format!("{} does not parse: {e}", path.display()))?;
-    let contained = record.artifact.path.starts_with(dir)
-        && record
-            .artifact
-            .path
+    let relative = &record.artifact.path;
+    if relative.as_os_str().is_empty()
+        || !relative
             .components()
-            .all(|c| c != std::path::Component::ParentDir);
-    if !contained {
+            .all(|c| matches!(c, std::path::Component::Normal(_)))
+    {
         return Err(format!(
             "{} names an artifact outside its entry",
             path.display()
         ));
     }
+    record.artifact.path = dir.join(relative);
     Ok(Some(record))
 }
 
 // Create-new via hard link: readers never see a partial record and a second writer loses.
 pub fn publish_store_record(dir: &Path, record: &StoreRecord) -> std::io::Result<bool> {
+    let mut on_disk = record.clone();
+    on_disk.artifact.path = record
+        .artifact
+        .path
+        .strip_prefix(dir)
+        .map_err(|_| {
+            std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "artifact is outside its store entry",
+            )
+        })?
+        .to_path_buf();
     let tmp = dir.join(format!(
         ".{STORE_RECORD}.{}.{}",
         std::process::id(),
         crate::timefmt::epoch_ms()
     ));
-    let body = serde_json::to_string_pretty(record)
+    let body = serde_json::to_string_pretty(&on_disk)
         .map_err(|e| std::io::Error::other(format!("serialize: {e}")))?;
-    std::fs::write(&tmp, body)?;
-    let linked = std::fs::hard_link(&tmp, dir.join(STORE_RECORD));
+    let linked =
+        std::fs::write(&tmp, body).and_then(|()| std::fs::hard_link(&tmp, dir.join(STORE_RECORD)));
     let _ = std::fs::remove_file(&tmp);
     match linked {
         Ok(()) => Ok(true),
