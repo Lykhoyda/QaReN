@@ -17,9 +17,8 @@ and Rust/Cargo. It builds and verifies the runtime; see the
 [installation contract](packages/qaren-cli/README.md#plugin-runtime-installation)
 for PATH linking, the fallback export and existing-command protection.
 
-To update later, run `qaren update` from the same checkout root: it fast-forwards
-the checkout (refusing when it has local changes), rebuilds and reinstalls, and
-reports whether the build is already current, updated or newly installed.
+To update later, run `qaren update` from the same checkout root; see the
+[source update contract](packages/qaren-cli/README.md#update-from-source).
 
 From your app's root, load the checkout's plugin in Claude Code:
 

@@ -96,9 +96,7 @@ Interactive controls, lanes and timed replay remain later slices.
 
 ## Build
 
-For the supported source installation, follow [Set up QaReN](../../README.md#set-up-qaren);
-`qaren update`, run from the checkout root, repeats it after a `git pull --ff-only`
-and refuses a checkout with local changes or a pull that cannot fast-forward.
+For the supported source installation, follow [Set up QaReN](../../README.md#set-up-qaren).
 
 For development builds:
 
@@ -116,6 +114,27 @@ available. The binary is
 of the working directory. `QAREN_RUNTIME` overrides that runtime directory.
 See [Check a plan](#check-a-plan) for when
 `TYPESAFE_API_KEY` is required.
+
+### Update from source
+
+Run `qaren update` from the rn-dev-agent checkout root, not your app's directory.
+It runs `git pull --ff-only` against the current branch's tracked upstream,
+then rebuilds and reinstalls through the source installer. It does not choose a
+remote or branch; a `develop` checkout follows its configured upstream.
+
+Local changes, including untracked files, cause refusal before pulling or
+installing; commit or stash them before retrying. A failed pull, including a
+missing upstream or a history that cannot fast-forward, stops without installing.
+An installer failure does not roll back a successful pull.
+
+The result compares installed tarball hashes for the version read after pulling:
+`already current` for an unchanged hash, `updated <old> -> <new>` for a changed
+hash, or `installed` when that version has no previous build record. Rebuilding
+and reinstalling still happen when the result is `already current`. The result
+also includes the checkout HEAD and installed binary path.
+
+For a plugin installation, use the host's plugin update and then the
+[runtime installer](#plugin-runtime-installation).
 
 ### Plugin runtime installation
 
