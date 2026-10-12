@@ -5,6 +5,7 @@ import { fileURLToPath } from 'node:url';
 const HERE = dirname(fileURLToPath(import.meta.url));
 const DIST = process.env.DOCS_DIST ?? resolve(HERE, '../dist');
 const MAIN_RS = resolve(HERE, '../../../packages/qaren-cli/src/main.rs');
+const PLUGIN_JSON = resolve(HERE, '../../../packages/qaren-plugin/.claude-plugin/plugin.json');
 const BASE = '/rn-dev-agent';
 let failed = 0;
 
@@ -36,13 +37,10 @@ function htmlFiles(dir = DIST) {
 // KNOWN pre-existing broken references, skipped by the link check with a reason.
 // Not introduced by this plan; remove an entry once the underlying asset ships.
 const KNOWN_BROKEN = new Set();
-// shortcut: the 1.x getting-started page stays until the setup pages replace it; drop this then.
-const LEGACY_PAGE = 'getting-started/';
 
 function checkInternalLinks() {
   let broken = 0;
   for (const file of htmlFiles()) {
-    if (relative(DIST, file).startsWith(LEGACY_PAGE)) continue;
     const html = readFileSync(file, 'utf8');
     const pageUrl = `https://site${BASE}/${relative(DIST, dirname(file))}/`.replace(/\/+$/, '/');
     for (const [, href] of html.matchAll(/(?:href|src)="([^"#?]+)[#?]?[^"]*"/g)) {
@@ -80,6 +78,7 @@ console.log('verify-site: pages');
 check('dist exists (run `yarn build` first)', existsSync(DIST));
 for (const slug of [
   '',
+  'getting-started',
   'plans',
   'check',
   'pull-requests',
@@ -89,6 +88,7 @@ for (const slug of [
   'configuration',
   'cli',
   'troubleshooting',
+  'plugin',
   'changelog',
 ]) {
   check(`${slug || 'index'} built`, exists(join(slug, 'index.html')));
@@ -113,10 +113,19 @@ const cliHtml = exists('cli/index.html') ? page('cli/index.html') : '';
 for (const verb of verbs)
   check(`cli page has a qaren ${verb} section`, cliHtml.includes(`id="qaren-${verb}"`));
 
+console.log('\nverify-site: skill drift');
+const skills = (JSON.parse(readFileSync(PLUGIN_JSON, 'utf8')).skills ?? []).map((path) =>
+  path.replace(/^\.\/skills\//, ''),
+);
+check('plugin manifest lists skills', skills.length > 0);
+const pluginHtml = exists('plugin/index.html') ? page('plugin/index.html') : '';
+for (const skill of skills)
+  check(`plugin page names /qaren:${skill}`, pluginHtml.includes(`/qaren:${skill}`));
+
 console.log('\nverify-site: no 1.x tool names');
 const legacy = htmlFiles().filter(
   (file) =>
-    !['changelog/', LEGACY_PAGE].some((prefix) => relative(DIST, file).startsWith(prefix)) &&
+    !relative(DIST, file).startsWith('changelog/') &&
     /\b(?:cdp|device)_[a-z]/.test(readFileSync(file, 'utf8')),
 );
 check('no page outside the changelog names a cdp_ or device_ tool', legacy.length === 0);

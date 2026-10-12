@@ -1,9 +1,9 @@
 ---
-name: sending-feedback
+name: feedback
 description: Use when the user wants to report a QaReN bug or request a feature. Drafts a sanitized GitHub issue and files it only after the user confirms.
 ---
 
-# sending-feedback — Report a QaReN Issue
+# Report a QaReN issue
 
 Draft the issue locally, show it in full, and file it only after the user says yes.
 

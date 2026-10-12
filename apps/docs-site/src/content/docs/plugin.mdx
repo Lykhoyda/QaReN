@@ -1,0 +1,38 @@
+---
+title: Plugin
+description: The QaReN plugin's three skills and what each host loads.
+---
+
+The `qaren` plugin teaches a coding agent to drive the `qaren` CLI. It ships three skills.
+Each one runs the CLI; none of them drives a device directly.
+
+| Skill         | Claude Code name    | Use it to                                                                                                           |
+| ------------- | ------------------- | ------------------------------------------------------------------------------------------------------------------- |
+| `setup`       | `/qaren:setup`      | install `qaren` onto PATH, write `.qaren/config.yaml`, pick the simulator and run a first smoke check. See [Getting started](../getting-started/). |
+| `using-qaren` | `/qaren:using-qaren` | write a plan for a feature, then run `qaren check` on the working tree or `qaren pr` on a pull request, and report the receipt. |
+| `feedback`    | `/qaren:feedback`   | draft a sanitized GitHub issue about QaReN, show it in full, and file it only after you confirm.                   |
+
+Codex invokes the same skills with its own syntax. In Claude Code or Codex, you can also ask in plain words, such as "QA this pull request with QaReN"; the agent picks
+the matching skill from its description.
+
+## Hosts
+
+The plugin folder carries one manifest per host. Each manifest decides what that host
+loads.
+
+| Host        | Manifest                        | What it loads                                                                                                    |
+| ----------- | ------------------------------- | ---------------------------------------------------------------------------------------------------------------- |
+| Claude Code | `.claude-plugin/plugin.json`    | The three skills it lists, and the SessionStart hook in `hooks/hooks.json`.                                      |
+| Codex       | `.codex-plugin/plugin.json`     | Every skill under `skills/`.                                                                                     |
+| Cursor      | `.cursor-plugin/plugin.json`    | The manifest sets hooks empty and declares no skill list.                                                       |
+
+The SessionStart hook only verifies the installed runtime. It prints the verified binary
+path or the command to install or repair it, and it never downloads.
+
+## Feedback
+
+`/qaren:feedback` gathers `qaren --version`, the macOS, Xcode and Node versions and, for a
+report about a run, the receipt's `result`, `run_id`, `failure.code` and
+`failure.next_action` with the run's `report.md`. It leaves out the run's media and
+screenshots, plan text with typed values and the values in `.qaren/config.yaml` unless you
+ask for them. It files the issue with `gh` only after you confirm the exact draft.

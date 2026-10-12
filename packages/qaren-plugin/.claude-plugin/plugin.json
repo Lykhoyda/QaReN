@@ -21,9 +21,7 @@
   "skills": [
     "./skills/using-qaren",
     "./skills/setup",
-    "./skills/creating-actions",
-    "./skills/rn-device-control",
-    "./skills/sending-feedback"
+    "./skills/feedback"
   ],
   "agents": [],
   "commands": []
