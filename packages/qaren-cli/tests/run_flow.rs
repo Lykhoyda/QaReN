@@ -5508,13 +5508,21 @@ fn a_playable_encode_reclaims_the_runs_raw_capture_and_reports_the_bytes() {
             fail_core_spawn: false,
         });
         let mock = &mut runner.0.inner;
+        let admitted = mock.now_epoch_ms() + 4_100;
+        if encodes {
+            mock.advance_on = Some(("ps -p 7100".into(), 2_000));
+        }
         script_pr_preflight(mock, &repo, &wt);
         script_provision(mock);
         script_pr_provenance_recheck(mock);
         script_drift_status(mock);
         script_recorder_start(mock);
         script_host_probe(mock, UDID, hosts_absent());
-        mock.expect_spawn_piped("walk.js", 9000, &pr_pass_stdout(), Some(0));
+        let stdout = pr_pass_stdout().replace(
+            "\"recoveries\":0",
+            &format!("\"recoveries\":0,\"admittedAtMs\":{admitted}"),
+        );
+        mock.expect_spawn_piped("walk.js", 9000, &stdout, Some(0));
         script_core_identity(mock);
         script_drift_status(mock);
         mock.expect_run("git", CmdOutput::success(&format!("{PR_HEAD}\n")));
@@ -5530,6 +5538,8 @@ fn a_playable_encode_reclaims_the_runs_raw_capture_and_reports_the_bytes() {
         if encodes {
             mock.expect_run("ffmpeg", CmdOutput::success(""));
             mock.expect_run("ffprobe", CmdOutput::success("3.5\n"));
+            mock.expect_run("ffmpeg", CmdOutput::success(""));
+            mock.expect_run("ffprobe", CmdOutput::success("0.1\n"));
         } else {
             mock.expect_run("ffmpeg", CmdOutput::failed(1, "encode failed"));
         }
@@ -5552,6 +5562,31 @@ fn a_playable_encode_reclaims_the_runs_raw_capture_and_reports_the_bytes() {
         assert!(other.exists(), "another run's capture is never touched");
         if encodes {
             assert!(media.join("video.mp4").is_file());
+            assert!(media.join("video-published.mp4").is_file());
+            let request = runner
+                .0
+                .inner
+                .piped_stdin
+                .iter()
+                .find_map(|input| {
+                    serde_json::from_slice::<serde_json::Value>(&input.lock().unwrap()).ok()
+                })
+                .unwrap();
+            let duration = request["payload"]["t0"].as_u64().unwrap() + 200 - admitted;
+            let args = &runner
+                .0
+                .inner
+                .calls
+                .iter()
+                .filter(|c| c.label == "ffmpeg-encode")
+                .nth(1)
+                .unwrap()
+                .args;
+            let t = args.iter().position(|a| a == "-t").unwrap();
+            assert_eq!(
+                args[t + 1],
+                format!("{}.{:03}", duration / 1000, duration % 1000)
+            );
             assert_eq!(receipt.outcomes["reclaimed"], "media/raw.mov: 4096 bytes");
         } else {
             assert!(!receipt.outcomes.contains_key("reclaimed"));
