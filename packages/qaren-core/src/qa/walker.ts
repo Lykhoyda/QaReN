@@ -17,6 +17,7 @@ import {
   elementSelector,
   centreCovered,
   clearanceScroll,
+  keyboardClearance,
   keyboardFallbackTarget,
   bindFillIdentity,
   bindDispatchIdentity,
@@ -102,7 +103,12 @@ export interface WalkerDeps {
   reactFocused?(testID: string): Promise<boolean>;
   // A value-free diagnostic line for the run log.
   note?(line: string): void;
-  scroll(direction: 'down' | 'up', context: QaDispatchContext): Promise<ActResult>;
+  // clearance: pixels a keyboard-covered target's centre must travel; an adapter may size the swipe from it.
+  scroll(
+    direction: 'down' | 'up',
+    context: QaDispatchContext,
+    clearance?: number,
+  ): Promise<ActResult>;
   back(context: QaDispatchContext): Promise<ActResult>;
   dialog(action: 'accept' | 'dismiss', context: QaDispatchContext): Promise<ActResult>;
   // Set where dialog steps have no proven driver: such a step refuses before any capture.
@@ -1324,6 +1330,7 @@ export async function walkBlock(
           let initial = held?.decision;
           let freshness = attempt === 1 ? 1 : 0;
           let occluded: 'up' | 'down' | undefined;
+          let clearance: number | undefined;
           let scrollNeedsReadback = false;
           let scrollError: string | undefined;
           let act: ActResult;
@@ -1421,8 +1428,10 @@ export async function walkBlock(
                     );
                     break;
                   }
+                  const distance = clearance;
+                  clearance = undefined;
                   const result = await mutate(item, before, (context) =>
-                    deps.scroll(resolution.scroll, context),
+                    deps.scroll(resolution.scroll, context, distance),
                   );
                   scrolled = true;
                   scrollNeedsReadback = !result.ok && !result.proven;
@@ -1489,6 +1498,7 @@ export async function walkBlock(
                 }
                 refusedIdentity = element;
                 occluded = clearanceScroll(element);
+                clearance = keyboardClearance(element, before.screen);
                 continue;
               }
               if (item.kind === 'fill' && element && isPrivateInput(element)) {

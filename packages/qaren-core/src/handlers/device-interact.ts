@@ -1902,6 +1902,7 @@ interface SwipeArgs {
 // Covers iPhone 17 Pro / 15 Pro / 14 Pro Max and similar Android 1080x2400 phones.
 const DEFAULT_SCREEN = { width: 402, height: 874 };
 const SWIPE_FRACTION = 0.4;
+const CLEARANCE_BAND_FRACTION = 0.9;
 const DEFAULT_SWIPE_DURATION_MS = 300;
 
 function computeSwipeFromDirection(
@@ -1957,14 +1958,19 @@ function scrollBand(): { width: number; height: number } {
 // Scroll direction → finger gesture is INVERTED vs swipe ("scroll down" = content
 // moves up = finger moves up) and scaled by `amount` (0..1). Centred half-spans
 // keep the gesture inside the viewport.
+// A vertical clearance distance replaces the amount, capped inside the band.
 function computeScrollFromDirection(
   direction: 'up' | 'down' | 'left' | 'right',
   amount: number,
   screen: { width: number; height: number },
+  distance?: number,
 ): { x1: number; y1: number; x2: number; y2: number } {
   const cx = Math.round(screen.width / 2);
   const cy = Math.round(screen.height / 2);
-  const dy = Math.round(screen.height * SWIPE_FRACTION * amount);
+  const dy =
+    distance !== undefined && Number.isFinite(distance) && distance > 0
+      ? Math.round(Math.min(distance, screen.height * CLEARANCE_BAND_FRACTION))
+      : Math.round(screen.height * SWIPE_FRACTION * amount);
   const dx = Math.round(screen.width * SWIPE_FRACTION * amount);
   switch (direction) {
     case 'down':
@@ -1988,9 +1994,10 @@ export function buildDirectionalScrollCliArgs(
   direction: 'up' | 'down' | 'left' | 'right',
   amount?: number,
   durationMs?: number,
+  distance?: number,
 ): string[] {
   const clamped = Math.min(Math.max(amount ?? 0.5, 0), 1);
-  const coords = computeScrollFromDirection(direction, clamped, scrollBand());
+  const coords = computeScrollFromDirection(direction, clamped, scrollBand(), distance);
   const duration = durationMs ?? DEFAULT_SWIPE_DURATION_MS;
   return [
     'scroll',
@@ -2156,6 +2163,8 @@ interface ScrollArgs {
   qaContext?: QaDispatchContext;
   direction: 'up' | 'down' | 'left' | 'right';
   amount?: number;
+  // Pixels to move the content, for a keyboard clearance scroll.
+  distance?: number;
 }
 
 export function createDeviceScrollHandler(): (args: ScrollArgs) => Promise<ToolResult> {
@@ -2168,7 +2177,12 @@ export function createDeviceScrollHandler(): (args: ScrollArgs) => Promise<ToolR
     // uses `RunnerDaemonProxy.synthesize(eventRecord)` which is raw HID event
     // injection and returns as soon as events are delivered.
     const amount = Math.min(Math.max(args.amount ?? 0.5, 0), 1);
-    const { x1, y1, x2, y2 } = computeScrollFromDirection(args.direction, amount, scrollBand());
+    const { x1, y1, x2, y2 } = computeScrollFromDirection(
+      args.direction,
+      amount,
+      scrollBand(),
+      args.distance,
+    );
     // GH #383: adopt persisted per-device state so a respawned worker sees a
     // live runner before this fast-path gate.
     if (!args.qaContext) adoptPersistedFastRunnerState(getActiveSession()?.deviceId);
@@ -2203,9 +2217,10 @@ export function createDeviceScrollHandler(): (args: ScrollArgs) => Promise<ToolR
     // Daemon / Android fallthrough: dispatch the COORDINATE form. The arg
     // builders throw on the raw direction form, so this previously crashed on
     // Android (always) and on the iOS fast-runner fallback.
-    return runNative(buildDirectionalScrollCliArgs(args.direction, args.amount), {
-      qaContext: args.qaContext,
-    });
+    return runNative(
+      buildDirectionalScrollCliArgs(args.direction, args.amount, undefined, args.distance),
+      { qaContext: args.qaContext },
+    );
   });
 }
 

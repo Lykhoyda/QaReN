@@ -33,3 +33,29 @@ test('with the keyboard up, the scroll band stays above it', () => {
 test('without a keyboard the band is the full screen as before', () => {
   assert.ok(swipeYs([WINDOW], false).some((y) => y > KEYBOARD.rect.y));
 });
+
+function clearanceSwipe(distance: number): number[] {
+  clearRefMap();
+  updateRefMapFromFlat([WINDOW, KEYBOARD] as never, {
+    snapshotGeneration: 1,
+    keyboardVisible: true,
+  });
+  try {
+    const [, , y1, , y2] = buildDirectionalScrollCliArgs('down', 0.6, undefined, distance);
+    return [Number(y1), Number(y2)];
+  } finally {
+    clearRefMap();
+  }
+}
+
+test('a clearance distance sizes the swipe, inside the band above the keyboard', () => {
+  const [y1, y2] = clearanceSwipe(300);
+  assert.equal(y1 - y2, 300);
+  assert.ok(y1 < KEYBOARD.rect.y && y2 >= 0, `${y1} ${y2}`);
+});
+
+test('a clearance distance longer than the band is capped inside it', () => {
+  const [y1, y2] = clearanceSwipe(5000);
+  assert.ok(y1 < KEYBOARD.rect.y && y2 >= 0, `${y1} ${y2}`);
+  assert.ok(y1 - y2 >= KEYBOARD.rect.y * 0.8, `${y1 - y2}`);
+});

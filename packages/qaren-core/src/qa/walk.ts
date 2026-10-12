@@ -493,8 +493,18 @@ async function openSession(
       ),
     press: (ref, qaContext) => act(() => press({ ref, qaContext }), false),
     fill: (ref, text, qaContext) => act(() => fill({ ref, text, qaContext }), true),
-    scroll: (direction, qaContext) =>
-      act(() => scroll({ direction, amount: 0.6, qaContext }), false),
+    // Android sizes a keyboard clearance scroll from the overlap; iOS keeps its fixed swipe.
+    scroll: (direction, qaContext, clearance) =>
+      act(
+        () =>
+          scroll({
+            direction,
+            amount: 0.6,
+            ...(platform === 'android' && clearance !== undefined ? { distance: clearance } : {}),
+            qaContext,
+          }),
+        false,
+      ),
     back: (qaContext) => act(() => back({ qaContext }), false),
     dialog: (action, qaContext) =>
       act(

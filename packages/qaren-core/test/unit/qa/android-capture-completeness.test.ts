@@ -527,6 +527,25 @@ test('a keyboard-hidden Android field still covered after one scroll refuses as 
   assert.deepEqual(f.actions, ['scroll down']);
 });
 
+test('the clearance scroll for a keyboard-hidden field carries the distance that clears the keyboard', async () => {
+  const covered = await capture(keyboardForm({ y: 2049, visibleToUser: false }));
+  const cleared = await capture(keyboardForm({ y: 700, visibleToUser: true }));
+  const f = walker(
+    [covered, cleared],
+    scriptedJudge(() => assert.fail('literal plans must not call Jev')),
+  );
+  const clearances: (number | undefined)[] = [];
+  const scroll = f.deps.scroll;
+  f.deps.scroll = (direction, context, clearance) => {
+    clearances.push(clearance);
+    return scroll(direction, context);
+  };
+  const result = await runPlan(parsePlan('1. Type "x" into "qa-kb-input-7"').blocks!, f.deps);
+  assert.equal(result.verdict, 'PASS', result.failure?.seen);
+  // Centre 2049 + 93 / 2 moves to the middle of the 1517 px above the keyboard.
+  assert.deepEqual(clearances, [2049 + 93 / 2 - 1517 / 2]);
+});
+
 test('a not-visible Android field away from the keyboard stays off screen', async () => {
   const screen = await capture(keyboardForm({ y: 400, visibleToUser: false }));
   const field = screen.elements.find((e) => e.testID === 'qa-kb-input-7')!;

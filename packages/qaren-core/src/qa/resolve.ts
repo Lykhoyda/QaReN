@@ -321,6 +321,16 @@ export function centreCovered(element: Element, screen: Screen): boolean {
   );
 }
 
+// Pixels a keyboard-covered centre travels to the middle of the band above the keyboard.
+export function keyboardClearance(element: Element, screen: Screen): number | undefined {
+  const frame = elementFrame(element);
+  const keyboard = screen.keyboardFrame;
+  if (!frame || !keyboard || screen.keyboardVisible === false || !keyboardCoversElement(element))
+    return undefined;
+  const centre = frame.y + frame.height / 2;
+  return centre >= keyboard.y ? centre - keyboard.y / 2 : undefined;
+}
+
 // An occluded target scrolls toward the screen centre: down from the lower half, up from the upper.
 export function clearanceScroll(element: Element): 'up' | 'down' {
   const frame = elementFrame(element);
