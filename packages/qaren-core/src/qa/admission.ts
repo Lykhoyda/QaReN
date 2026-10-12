@@ -65,17 +65,17 @@ export interface BundleReloadSteps {
 }
 
 // The runtime a reload replaces carries the mark; its replacement starts without it.
+// The mark is a hex nonce, so it needs no quoting inside the evaluated expression.
 const markBundleExpression = (mark: string) =>
-  `(function () { globalThis.__QAREN_BUNDLE_MARK = ${JSON.stringify(mark)}; return globalThis.__QAREN_BUNDLE_MARK; })()`;
-const bundleMarkedExpression = (mark: string) =>
-  `globalThis.__QAREN_BUNDLE_MARK === ${JSON.stringify(mark)}`;
+  `(function () { globalThis.__QAREN_BUNDLE_MARK = '${mark}'; return globalThis.__QAREN_BUNDLE_MARK; })()`;
+const bundleMarkedExpression = (mark: string) => `globalThis.__QAREN_BUNDLE_MARK === '${mark}'`;
 
 // A reload is over once the marked runtime is gone, React is ready in its replacement, the walk helpers are back and that bundle passes the origin proof.
 export function createBundleReload(steps: BundleReloadSteps): {
   mark(): Promise<void>;
   settled(): Promise<void>;
 } {
-  const mark = randomUUID();
+  const mark = randomUUID().replaceAll('-', '');
   const pollMs = steps.pollMs ?? REACT_READY_POLL_MS;
   const replaced = async (deadline: number): Promise<void> => {
     for (;;) {
@@ -109,23 +109,23 @@ export function createBundleReload(steps: BundleReloadSteps): {
           async () => {
             await replaced(deadline);
             await awaitBundleReady(steps.evaluate, deadline, pollMs);
+            const waitMs = Math.max(1, deadline - performance.now());
+            if (!(await interruptible(() => steps.reinjectHelpers(waitMs))))
+              throw new HandlerError(
+                'HELPERS_NOT_INJECTED',
+                'the walk helpers could not be injected into the reloaded bundle',
+              );
+            const proof = await interruptible(steps.prove);
+            if (!proof.ok) throw new HandlerError(proof.code, proof.message);
           },
         );
       } catch (error) {
-        if (isAbort(error)) throw error;
+        if (isAbort(error) || error instanceof HandlerError) throw error;
         throw new HandlerError(
           'CDP_NOT_CONNECTED',
           `the Fast Refresh reload was not proven finished: ${describeError(error).message}`,
         );
       }
-      const waitMs = Math.max(1, deadline - performance.now());
-      if (!(await interruptible(() => steps.reinjectHelpers(waitMs))))
-        throw new HandlerError(
-          'HELPERS_NOT_INJECTED',
-          'the walk helpers could not be injected into the reloaded bundle',
-        );
-      const proof = await interruptible(steps.prove);
-      if (!proof.ok) throw new HandlerError(proof.code, proof.message);
     },
   };
 }

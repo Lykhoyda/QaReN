@@ -531,3 +531,20 @@ test('a reloaded bundle the walk helpers cannot reach refuses before the origin 
   await assert.rejects(reload.settled(), { code: 'HELPERS_NOT_INJECTED' });
   assert.equal(proven, false);
 });
+
+for (const late of ['helpers', 'proof'] as const) {
+  test(`${late === 'helpers' ? 'helper injection' : 'an origin proof'} still running at the deadline refuses before step 1`, async () => {
+    const client = devClient();
+    const never = new Promise<never>(() => {});
+    const reload = createBundleReload({
+      evaluate: client.evaluate,
+      reinjectHelpers: async () => (late === 'helpers' ? never : true),
+      prove: async () => (late === 'proof' ? never : PROVEN),
+      deadline: () => performance.now() + 50,
+      pollMs: 1,
+    });
+    await reload.mark();
+    client.script.push('ready');
+    await assert.rejects(reload.settled(), { code: 'CDP_NOT_CONNECTED' });
+  });
+}
