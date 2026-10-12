@@ -902,12 +902,14 @@ menu. Disabling Fast Refresh prevents saved-block YAML writes in the app folder
 from triggering the dev client's `Refreshing...` banner during recording. This
 attempt is best-effort: an unavailable or throwing API does not itself refuse
 the walk, and native overlay clearance does not prove Fast Refresh is disabled.
-On Android that setting reloads the JS bundle, so the walk marks the running
-bundle first and starts step 1 only after the marked runtime is gone, React is
-ready again within the admission readiness deadline, the walk helpers are
+On Android that setting reloads the JS bundle, so the walk must mark the running
+runtime before attempting it; failure to mark refuses before step 1. When the
+setting reports that it executed, step 1 waits until the marked runtime is gone,
+React is ready again within the admission readiness budget, the walk helpers are
 injected into the new runtime and the reloaded bundle passes the origin proof;
-otherwise the walk refuses before step 1. The same clearance sequence runs again
-after a successful dev-menu recovery, except that Android does not set Fast
+otherwise the walk refuses before step 1. An unavailable or failed setting skips
+the reload wait and continues best-effort overlay clearance. The same clearance
+sequence runs again after a successful dev-menu recovery, except that Android does not set Fast
 Refresh again, because that would reload the app mid-walk.
 Apps without the preferences module skip the floating-button setting change but still require
 native clearance evidence. The shared clearance mechanism accepts only a complete

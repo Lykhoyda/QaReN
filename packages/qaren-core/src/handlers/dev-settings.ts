@@ -60,11 +60,11 @@ function envelopeError(result: ToolResult): string {
   }
 }
 
-// The one walk-start and post-recovery proof that no Expo dev chrome is in front of the app.
 export function clearDevOverlays(deps: DevOverlayDependencies): Promise<ToolResult> {
   return clearOverlays(deps, WALK_DEV_SETTINGS);
 }
 
+// The one walk-start and post-recovery proof that no Expo dev chrome is in front of the app.
 async function clearOverlays(
   deps: DevOverlayDependencies,
   actions: readonly (typeof WALK_DEV_SETTINGS)[number][],
