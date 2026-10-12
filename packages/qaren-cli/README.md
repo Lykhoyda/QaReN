@@ -1480,7 +1480,7 @@ project instead of the workspace containing the scenario. The path must BE a
 git toplevel — a subdirectory of some larger repo is refused
 (`CANDIDATE_PATH_INVALID`) so a run can never bind to files outside the
 project it named. Project cache state lives under `<worktree>/.qaren/`, verified
-dev-client builds are shared per machine under `~/.qaren/native-cache/` (see
+iOS dev-client builds are shared per machine under `~/.qaren/native-cache/` (see
 [Native-fingerprint build selection](#native-fingerprint-build-selection)), and the
 fingerprint enumerates only that worktree. Run records remain host-level;
 `status`/`cleanup` load them by run id without requiring the app directory.
@@ -1598,20 +1598,23 @@ out-of-worktree targets make the fingerprint incomplete. The scanner is
 conservative, not a full JS parser.
 qaren is pnpm-only; other package managers' lockfiles are out of contract.
 
-**Decision.** Verified dev-client builds live in a machine store,
-`~/.qaren/native-cache/<platform>/<app_id>/<fingerprint>/`, shared by every
-clone and `qaren pr` worktree on this machine. Per-worktree cache state lives at
+**Decision.** Verified iOS dev-client builds live in a machine store,
+`~/.qaren/native-cache/ios/<app_id>/<fingerprint>/`, shared by every clone and
+`qaren pr` worktree on this machine. Per-worktree cache state lives at
 `<worktree>/.qaren/native-cache/<platform>-<app_id>.json`
 (`qaren-native-cache/2`; a state with an older schema is invalid), bound to the
 exact worktree, platform, app id, fingerprint, and building candidate sha; it
 records whether qaren generated the native directory, which decides incremental
-versus clean, but holds no artifact:
+versus clean. Android never reads or writes the machine store: its state also
+holds the cached APK, kept under this worktree's `.qaren/native-cache/artifacts/`.
 
-1. **Reuse** — the machine store holds a build of this complete fingerprint
-   whose content hash verifies against its record, its kind matches the
-   platform, and `dev_client_scheme` is configured. Missing, invalid or
+1. **Reuse** — on iOS, the machine store holds a build of this complete
+   fingerprint whose content hash verifies against its record, its kind matches
+   the platform, and `dev_client_scheme` is configured. Missing, invalid or
    other-worktree state does not block reuse and appears in the evidence, as
-   does `artifact from machine store <path>`. The
+   does `artifact from machine store <path>`. On Android, the state matches this
+   worktree/platform/app, fingerprints are equal and complete, and the state's
+   APK verifies, with `dev_client_scheme` configured. The
    verified dev client is installed (`simctl install` / `adb install -r
    -d`), Metro is spawned candidate-bound (`expo start --port`), and the
    dev client is deep-linked onto it (package-constrained `am start` on
@@ -1646,20 +1649,23 @@ compilation on both platforms.
 
 After a successful build the dev client (single `.app` bundle / debug apk)
 is copied and content-hashed in a staging directory inside its fingerprint's
-store entry. Copying checks cancellation between entries and file chunks. A final
+store entry (iOS) or under `.qaren/native-cache/artifacts/android/<app_id>-<fingerprint-key>/`
+(Android). Copying checks cancellation between entries and file chunks. A final
 cancellation check precedes renaming staging to a run-specific generation and
 atomically saving cache state with the readiness-rechecked fingerprint
 (native-input drift during the build fails the run as `CANDIDATE_DRIFTED`).
 Cancellation before that publication removes staging and preserves the previous
 state without rebinding installation ownership. A failed state save removes the
-new generation and retains the previous state. A complete fingerprint then
+new generation and retains the previous state. On iOS a complete fingerprint then
 publishes `artifact.json` (`path` relative to the entry, `sha256`, `kind`, `built_at`, `candidate_sha`)
 create-new: the first build of a fingerprint wins, a concurrent or later build of
 the same fingerprint keeps its own generation and never rewrites the record, and
 an incomplete fingerprint is never published. A stored build that fails
 verification is refused and left in place, so that fingerprint rebuilds until
-its store entry directory is deleted. Nothing in the store is pruned. An
-ambiguous artifact (zero or several bundles) skips caching with a recorded
+its store entry directory is deleted. Nothing in the store is pruned; every
+fingerprint keeps one generation per build until the store is cleaned by hand.
+Android prunes the same app's directories for older fingerprints after a saved
+state. An ambiguous artifact (zero or several bundles) skips caching with a recorded
 reason, never a guess. Only a saved state permits ownership rebinding.
 
 **Build serialization.** Native builds (incremental and clean) take a

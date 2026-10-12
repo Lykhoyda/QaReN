@@ -2780,6 +2780,7 @@ fn android_check_present_android_dir_skips_prebuild() {
             candidate_sha: "b".repeat(40),
             lockfile_sha256: String::new(),
             generated_native_dirs: vec!["android".to_string()],
+            artifact: None,
         },
     )
     .unwrap();
@@ -2841,6 +2842,75 @@ fn android_check_records_generated_android_dir_then_reuses() {
     assert!(!labels(&mock)
         .iter()
         .any(|l| l == "expo-prebuild" || l == "gradle-assemble"));
+    let cached = second.build.unwrap().artifact.unwrap().path;
+    assert!(
+        cached.ends_with(format!(
+            ".qaren/native-cache/artifacts/android/{}/{}/app-debug.apk",
+            cached
+                .parent()
+                .unwrap()
+                .parent()
+                .unwrap()
+                .file_name()
+                .unwrap()
+                .to_str()
+                .unwrap(),
+            run_id()
+        )),
+        "{}",
+        cached.display()
+    );
+    assert!(!req.native_cache_root.exists());
+}
+
+#[test]
+fn android_never_reads_or_writes_the_machine_store() {
+    use qaren::buildplan::{store_dir, ArtifactKind, BuildDecision, STORE_RECORD};
+    let (repo, app) = app_repo();
+    let req = android_request(&repo, &app);
+    let mut fp_runner = qaren::exec::MockRunner::new();
+    fp_runner.expect_run("ls-files", CmdOutput::success(""));
+    let fp = qaren::fingerprint::compute(&mut fp_runner, &repo, &app, "android").unwrap();
+    let apk = repo.join("elsewhere/app-debug.apk");
+    std::fs::create_dir_all(apk.parent().unwrap()).unwrap();
+    std::fs::write(&apk, b"another clone's apk").unwrap();
+    common::seed_store(
+        &req.native_cache_root,
+        "android",
+        &fp.value,
+        &apk,
+        ArtifactKind::Apk,
+    );
+    let entry = store_dir(
+        &req.native_cache_root,
+        "android",
+        "com.rndevagent.testapp",
+        &fp.value,
+    );
+    let record = std::fs::read(entry.join(STORE_RECORD)).unwrap();
+    let mut mock = android_mock();
+    script_android_preflight(&mut mock, &repo, ONE_EMULATOR, EMULATOR);
+    mock.expect_run("pnpm install --frozen-lockfile", CmdOutput::success(""));
+    mock.expect_run("ls-files", CmdOutput::success(""));
+    mock.expect_run("check-ignore -q android/", CmdOutput::success(""));
+    script_android_finite_build(&mut mock, PREBUILD, 5000, 0);
+    script_android_finite_build(&mut mock, GRADLE, 5001, 0);
+    script_android_launch_walk_teardown(&mut mock);
+
+    let receipt = run(&mut mock, &req);
+
+    assert_eq!(receipt.result, ReceiptResult::Pass, "{:?}", receipt.failure);
+    assert_eq!(mock.remaining(), 0);
+    let plan = receipt.build.unwrap();
+    assert_eq!(plan.decision, BuildDecision::Clean, "{}", plan.reason);
+    assert!(!plan.evidence.iter().any(|e| e.contains("machine store")));
+    assert_eq!(std::fs::read(entry.join(STORE_RECORD)).unwrap(), record);
+    let entries: Vec<_> = std::fs::read_dir(&entry)
+        .unwrap()
+        .map(|e| e.unwrap().file_name().into_string().unwrap())
+        .collect();
+    assert_eq!(entries.len(), 2, "{entries:?}");
+    assert!(entries.contains(&"seed-run".to_string()), "{entries:?}");
 }
 
 #[test]
@@ -2884,20 +2954,16 @@ fn android_check_does_not_require_the_shared_configs_ios_workspace() {
 
 // A native cache entry whose APK matches the worktree, so the run decides Reuse.
 fn seed_cached_apk(repo: &Path, app: &Path) -> std::path::PathBuf {
-    use qaren::buildplan::{save_json, state_path, ArtifactKind, NativeCacheState, CACHE_SCHEMA};
+    use qaren::buildplan::{
+        hash_artifact, save_json, state_path, ArtifactKind, CachedArtifact, NativeCacheState,
+        CACHE_SCHEMA,
+    };
     let apk = repo.join("cached").join("app-debug.apk");
     std::fs::create_dir_all(apk.parent().unwrap()).unwrap();
     std::fs::write(&apk, b"cached apk").unwrap();
     let mut fp_runner = qaren::exec::MockRunner::new();
     fp_runner.expect_run("ls-files", CmdOutput::success(""));
     let fp = qaren::fingerprint::compute(&mut fp_runner, repo, app, "android").unwrap();
-    let cached = common::seed_store(
-        &repo.join(".native-store"),
-        "android",
-        &fp.value,
-        &apk,
-        ArtifactKind::Apk,
-    );
     save_json(
         &state_path(repo, "android", "com.rndevagent.testapp"),
         &NativeCacheState {
@@ -2911,10 +2977,15 @@ fn seed_cached_apk(repo: &Path, app: &Path) -> std::path::PathBuf {
             candidate_sha: "b".repeat(40),
             lockfile_sha256: String::new(),
             generated_native_dirs: Vec::new(),
+            artifact: Some(CachedArtifact {
+                path: apk.clone(),
+                sha256: hash_artifact(&apk).unwrap(),
+                kind: ArtifactKind::Apk,
+            }),
         },
     )
     .unwrap();
-    cached.path
+    apk
 }
 
 #[test]
@@ -3757,6 +3828,7 @@ fn fresh_install_resets_or_proves_absence_before_cached_install_under_the_same_l
                 candidate_sha: "a".repeat(40),
                 lockfile_sha256: "c".repeat(64),
                 generated_native_dirs: vec!["ios".into()],
+                artifact: None,
             },
         )
         .unwrap();

@@ -1,7 +1,7 @@
 mod common;
 
 use qaren::buildplan::{
-    self, ArtifactKind, BuildDecision, NativeCacheState, CACHE_SCHEMA,
+    self, ArtifactKind, BuildDecision, CachedArtifact, NativeCacheState, CACHE_SCHEMA,
     PREWARM_SCHEMA,
 };
 use qaren::commands::prepare::{prepare, PrepareArgs};
@@ -13,7 +13,6 @@ use qaren::receipt::ReceiptResult;
 use qaren::runrecord::{AdbServerResource, MetroResource, Phase, RunRecord, UsbDeviceResource};
 use qaren::scenario::Scenario;
 use std::path::{Path, PathBuf};
-
 
 const LSTART: &str = "Wed Aug 12 16:01:00 2026";
 const USB_SERIAL: &str = "R5CT123ABC";
@@ -476,6 +475,7 @@ fn workspace_dry_run_reports_xcode_only_when_the_bound_cache_cannot_be_reused() 
                     candidate_sha: "b".repeat(40),
                     lockfile_sha256: "c".repeat(64),
                     generated_native_dirs: vec![],
+                    artifact: None,
                 },
             )
             .unwrap();
@@ -537,6 +537,7 @@ fn assert_ios_prepare_reuses_cached_client(workspace: bool) {
         candidate_sha: "a".repeat(40),
         lockfile_sha256: "c".repeat(64),
         generated_native_dirs: vec!["ios".to_string()],
+        artifact: None,
     };
     buildplan::save_json(
         &buildplan::state_path(&repo, "ios", "com.rndevagent.testapp"),
@@ -695,7 +696,13 @@ fn tampered_stored_artifact_is_refused_for_reuse_and_left_in_place() {
         ArtifactKind::AppBundle,
     );
     std::fs::write(stored.path.join("binary"), b"swapped bits").unwrap();
-    let record = stored.path.parent().unwrap().parent().unwrap().join(buildplan::STORE_RECORD);
+    let record = stored
+        .path
+        .parent()
+        .unwrap()
+        .parent()
+        .unwrap()
+        .join(buildplan::STORE_RECORD);
     let recorded = std::fs::read(&record).unwrap();
     let state = NativeCacheState {
         schema: CACHE_SCHEMA.to_string(),
@@ -708,6 +715,7 @@ fn tampered_stored_artifact_is_refused_for_reuse_and_left_in_place() {
         candidate_sha: "a".repeat(40),
         lockfile_sha256: "c".repeat(64),
         generated_native_dirs: vec!["ios".to_string()],
+        artifact: None,
     };
     buildplan::save_json(
         &buildplan::state_path(&repo, "ios", "com.rndevagent.testapp"),
@@ -730,7 +738,12 @@ fn tampered_stored_artifact_is_refused_for_reuse_and_left_in_place() {
 
     let receipt = prepare(&mut mock, &options);
 
-    assert_eq!(receipt.result, ReceiptResult::Planned, "{:?}", receipt.failure);
+    assert_eq!(
+        receipt.result,
+        ReceiptResult::Planned,
+        "{:?}",
+        receipt.failure
+    );
     assert_eq!(mock.remaining(), 0);
     let plan = receipt.build.unwrap();
     assert_eq!(plan.decision, BuildDecision::Incremental, "{}", plan.reason);
@@ -1389,14 +1402,6 @@ fn android_reuse_path_records_install_provenance_after_a_successful_adb_install(
     fp_mock.expect_run("ls-files", CmdOutput::success(""));
     let fp = qaren::fingerprint::compute(&mut fp_mock, &repo, &repo.join("test-app"), "android")
         .unwrap();
-    let apk = common::seed_store(
-        &repo.join(".native-store"),
-        "android",
-        &fp.value,
-        &apk,
-        ArtifactKind::Apk,
-    )
-    .path;
     let state = NativeCacheState {
         schema: CACHE_SCHEMA.to_string(),
         fingerprint_parts: Default::default(),
@@ -1408,6 +1413,11 @@ fn android_reuse_path_records_install_provenance_after_a_successful_adb_install(
         candidate_sha: "a".repeat(40),
         lockfile_sha256: "c".repeat(64),
         generated_native_dirs: vec!["android".to_string()],
+        artifact: Some(CachedArtifact {
+            path: apk.clone(),
+            sha256: artifact_sha.clone(),
+            kind: ArtifactKind::Apk,
+        }),
     };
     buildplan::save_json(
         &buildplan::state_path(&repo, "android", "com.rndevagent.testapp"),

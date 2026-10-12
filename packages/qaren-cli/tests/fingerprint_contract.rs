@@ -688,6 +688,7 @@ fn build_after(
         candidate_sha: "a".repeat(40),
         lockfile_sha256: "b".repeat(64),
         generated_native_dirs: vec![platform.to_string()],
+        artifact: None,
     };
     let stored = StoreRecord {
         artifact: CachedArtifact {

@@ -1760,6 +1760,7 @@ fn ios_reuse_dry_run_lists_each_launch_step_once_in_execution_order() {
         candidate_sha: "b".repeat(40),
         lockfile_sha256: "c".repeat(64),
         generated_native_dirs: vec!["ios".to_string()],
+        artifact: None,
     };
     save_json(
         &state_path(&repo, "ios", &scenario.candidate.app_id),
@@ -1888,6 +1889,7 @@ fn dry_run_plans_generated_native_regeneration_before_every_build_route() {
                     candidate_sha: "b".repeat(40),
                     lockfile_sha256: "c".repeat(64),
                     generated_native_dirs: vec![platform.to_string()],
+                    artifact: None,
                 };
                 save_json(
                     &state_path(&repo, platform, &scenario.candidate.app_id),
@@ -2677,6 +2679,7 @@ fn recording_a_build_cancelled_mid_copy_preserves_previous_cache() {
                 candidate_sha: record.candidate.git_sha,
                 lockfile_sha256: String::new(),
                 generated_native_dirs: Vec::new(),
+                artifact: None,
             };
             let path = qaren::buildplan::state_path(&root, "ios", "com.rndevagent.testapp");
             qaren::buildplan::save_json(&path, &state).unwrap();

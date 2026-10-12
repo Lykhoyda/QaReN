@@ -46,6 +46,7 @@ fn state(worktree: &Path, fingerprint: &str) -> NativeCacheState {
         candidate_sha: SHA_A.to_string(),
         lockfile_sha256: "c".repeat(64),
         generated_native_dirs: vec!["ios".to_string()],
+        artifact: None,
     }
 }
 
@@ -782,4 +783,27 @@ fn store_records_name_their_artifact_relative_to_the_entry_and_are_written_once(
         std::fs::write(other.join(STORE_RECORD), raw.to_string()).unwrap();
         assert!(load_store_record(&other).is_err(), "{escaping}");
     }
+}
+
+#[test]
+fn android_reuse_still_needs_this_worktrees_state() {
+    let worktree = temp_dir();
+    let android = DecisionInputs {
+        platform: "android",
+        ..inputs(&worktree, FP)
+    };
+    let mut apk = stored(ArtifactStatus::Verified);
+    apk.as_mut().unwrap().0.artifact.kind = ArtifactKind::Apk;
+    let fresh = decide(&android, &StateStatus::Missing, apk.clone());
+    assert_eq!(fresh.decision, BuildDecision::Clean, "{}", fresh.reason);
+    let mut recorded = state(&worktree, FP);
+    recorded.platform = "android".to_string();
+    let warm = decide(&android, &StateStatus::Loaded(Box::new(recorded)), apk);
+    assert_eq!(warm.decision, BuildDecision::Reuse, "{}", warm.reason);
+    assert!(
+        has(&warm, "cached artifact /cache/testapp.app verified"),
+        "{:?}",
+        warm.evidence
+    );
+    assert!(!has(&warm, "machine store"), "{:?}", warm.evidence);
 }

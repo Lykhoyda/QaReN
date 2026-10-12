@@ -34,6 +34,9 @@ pub struct NativeCacheState {
     pub lockfile_sha256: String,
     #[serde(default)]
     pub generated_native_dirs: Vec<String>,
+    // Android only: its build stays in this worktree; iOS builds live in the machine store.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub artifact: Option<CachedArtifact>,
     #[serde(default)]
     pub fingerprint_parts: BTreeMap<String, String>,
 }
@@ -288,10 +291,13 @@ pub fn decide(
             ("ios", ArtifactKind::AppBundle) | ("android", ArtifactKind::Apk)
         )
     };
-    // A verified build of this exact fingerprint needs nothing from this worktree's state.
-    if let (Some((record, ArtifactStatus::Verified)), true, Some(scheme)) =
-        (&store, inputs.fingerprint_complete, inputs.scheme)
-    {
+    // A verified iOS build of this exact fingerprint needs nothing from this worktree's state.
+    if let (Some((record, ArtifactStatus::Verified)), true, Some(scheme), "ios") = (
+        &store,
+        inputs.fingerprint_complete,
+        inputs.scheme,
+        inputs.platform,
+    ) {
         if kind_ok(&record.artifact) {
             let mut evidence = match state {
                 StateStatus::Missing => {
@@ -492,13 +498,34 @@ pub fn decide(
                 vec![match_evidence, sha_evidence],
             );
         }
-        // A verified artifact with a scheme already reused above.
         match store {
-            Some((_, ArtifactStatus::Verified)) => incremental(
-                "fingerprint matches but candidate.dev_client_scheme is not configured, so a cached dev client cannot be launched; using a keyed incremental build"
-                    .to_string(),
-                vec![match_evidence, sha_evidence],
-            ),
+            Some((record, ArtifactStatus::Verified)) => match inputs.scheme {
+                Some(scheme) => BuildPlan {
+                    decision: BuildDecision::Reuse,
+                    fingerprint: inputs.fingerprint.to_string(),
+                    reason: OutputText::from_output("native inputs are unchanged and the cached dev client is content-verified; reusing it with fresh candidate JS via Metro"),
+                    evidence: [
+                        match_evidence,
+                        sha_evidence,
+                        format!(
+                            "cached artifact {} verified against recorded sha256 {}",
+                            record.artifact.path.display(),
+                            record.artifact.sha256
+                        ),
+                        format!("dev client launch scheme {scheme:?} is configured"),
+                    ]
+                    .iter()
+                    .map(|text| OutputText::from_output(text))
+                    .collect(),
+                    artifact: Some(record.artifact),
+                    regenerate_native_dir: false,
+                },
+                None => incremental(
+                    "fingerprint matches but candidate.dev_client_scheme is not configured, so a cached dev client cannot be launched; using a keyed incremental build"
+                        .to_string(),
+                    vec![match_evidence, sha_evidence],
+                ),
+            },
             Some((record, ArtifactStatus::Mismatch)) => incremental(
                 "cached artifact content no longer matches its recorded sha256; refusing the stale binary and using a keyed incremental build"
                     .to_string(),
