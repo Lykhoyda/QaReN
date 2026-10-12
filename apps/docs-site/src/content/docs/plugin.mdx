@@ -6,13 +6,13 @@ description: The QaReN plugin's three skills and what each host loads.
 The `qaren` plugin teaches a coding agent to drive the `qaren` CLI. It ships three skills.
 Each one runs the CLI; none of them drives a device directly.
 
-| Skill         | Slash name          | Use it to                                                                                                           |
+| Skill         | Claude Code name    | Use it to                                                                                                           |
 | ------------- | ------------------- | ------------------------------------------------------------------------------------------------------------------- |
 | `setup`       | `/qaren:setup`      | install `qaren` onto PATH, write `.qaren/config.yaml`, pick the simulator and run a first smoke check. See [Getting started](../getting-started/). |
 | `using-qaren` | `/qaren:using-qaren` | write a plan for a feature, then run `qaren check` on the working tree or `qaren pr` on a pull request, and report the receipt. |
 | `feedback`    | `/qaren:feedback`   | draft a sanitized GitHub issue about QaReN, show it in full, and file it only after you confirm.                   |
 
-You can also ask in plain words, such as "QA this pull request with QaReN"; the agent picks
+Codex and Cursor invoke the same skills with their own syntax. You can also ask in plain words, such as "QA this pull request with QaReN"; the agent picks
 the matching skill from its description.
 
 ## Hosts
