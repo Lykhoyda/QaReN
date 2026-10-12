@@ -5510,7 +5510,8 @@ fn a_playable_encode_reclaims_the_runs_raw_capture_and_reports_the_bytes() {
         let mock = &mut runner.0.inner;
         let admitted = mock.now_epoch_ms() + 4_100;
         if encodes {
-            mock.advance_on = Some(("ps -p 7100".into(), 2_000));
+            // PR1142's recorder start delay (t0 - recording_from).
+            mock.advance_on = Some(("ps -p 7100".into(), 559));
         }
         script_pr_preflight(mock, &repo, &wt);
         script_provision(mock);
@@ -5518,10 +5519,12 @@ fn a_playable_encode_reclaims_the_runs_raw_capture_and_reports_the_bytes() {
         script_drift_status(mock);
         script_recorder_start(mock);
         script_host_probe(mock, UDID, hosts_absent());
-        let stdout = pr_pass_stdout().replace(
-            "\"recoveries\":0",
-            &format!("\"recoveries\":0,\"admittedAtMs\":{admitted}"),
-        );
+        let stdout = pr_pass_stdout()
+            .replace(
+                "\"recoveries\":0",
+                &format!("\"recoveries\":0,\"admittedAtMs\":{admitted}"),
+            )
+            .replace("\"t\":200", "\"t\":33526");
         mock.expect_spawn_piped("walk.js", 9000, &stdout, Some(0));
         script_core_identity(mock);
         script_drift_status(mock);
@@ -5563,16 +5566,6 @@ fn a_playable_encode_reclaims_the_runs_raw_capture_and_reports_the_bytes() {
         if encodes {
             assert!(media.join("video.mp4").is_file());
             assert!(media.join("video-published.mp4").is_file());
-            let request = runner
-                .0
-                .inner
-                .piped_stdin
-                .iter()
-                .find_map(|input| {
-                    serde_json::from_slice::<serde_json::Value>(&input.lock().unwrap()).ok()
-                })
-                .unwrap();
-            let duration = request["payload"]["t0"].as_u64().unwrap() + 200 - admitted;
             let args = &runner
                 .0
                 .inner
@@ -5582,11 +5575,12 @@ fn a_playable_encode_reclaims_the_runs_raw_capture_and_reports_the_bytes() {
                 .nth(1)
                 .unwrap()
                 .args;
-            let t = args.iter().position(|a| a == "-t").unwrap();
-            assert_eq!(
-                args[t + 1],
-                format!("{}.{:03}", duration / 1000, duration % 1000)
-            );
+            let ms = |flag: &str| {
+                let at = args.iter().position(|a| a == flag).unwrap();
+                (args[at + 1].parse::<f64>().unwrap() * 1000.0).round() as u64
+            };
+            // The cut lands at full-video max(row.t), never rebased past the recorder start delay into teardown.
+            assert_eq!(ms("-ss") + ms("-t"), 33_526);
             assert_eq!(receipt.outcomes["reclaimed"], "media/raw.mov: 4096 bytes");
         } else {
             assert!(!receipt.outcomes.contains_key("reclaimed"));

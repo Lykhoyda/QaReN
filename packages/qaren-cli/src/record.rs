@@ -370,24 +370,15 @@ pub fn publication_copy(
     let Some(offset) = admitted_offset_ms else {
         return VideoStatus::Unavailable("no admitted app frame was recorded".into());
     };
-    let Some(duration) = end_offset_ms
-        .and_then(|end| end.checked_sub(offset))
-        .filter(|duration| *duration > 0)
-    else {
-        return VideoStatus::Unavailable(
-            "no positive bounded publication window was recorded".into(),
-        );
-    };
     let start = format!("{}.{:03}", offset / 1000, offset % 1000);
     let source = video_path(run_dir).to_string_lossy().into_owned();
-    let input = vec![
-        "-ss".to_string(),
-        start,
-        "-i".to_string(),
-        source,
-        "-t".to_string(),
-        format!("{}.{:03}", duration / 1000, duration % 1000),
-    ];
+    let mut input = vec!["-ss".to_string(), start, "-i".to_string(), source];
+    if let Some(d) = end_offset_ms
+        .and_then(|end| end.checked_sub(offset))
+        .filter(|d| *d > 0)
+    {
+        input.extend(["-t".to_string(), format!("{}.{:03}", d / 1000, d % 1000)]);
+    }
     let input: Vec<&str> = input.iter().map(String::as_str).collect();
     if !ffmpeg_encode(runner, &input, &out, None) || probe_duration_ms(runner, &out).is_none() {
         let _ = std::fs::remove_file(&out);
@@ -527,30 +518,25 @@ mod tests {
     }
 
     #[test]
-    fn an_unbounded_or_empty_window_withholds_the_copy() {
+    fn without_a_positive_window_the_copy_is_untrimmed_at_the_end() {
         for end in [None, Some(12_000), Some(12_345)] {
             let run_dir = temp_run_dir();
             std::fs::write(video_path(&run_dir), "complete").unwrap();
-            std::fs::write(published_video_path(&run_dir), "stale").unwrap();
             let mut runner = SizedEncodes {
                 mock: MockRunner::new(),
                 sizes: vec![10],
             };
             runner.mock.expect_run("ffmpeg", CmdOutput::success(""));
-            runner.mock.expect_run("ffprobe", CmdOutput::success("5.0\n"));
-            assert!(
-                matches!(
-                    publication_copy(&mut runner, &run_dir, Some(12_345), end, false),
-                    VideoStatus::Unavailable(_)
-                ),
+            runner
+                .mock
+                .expect_run("ffprobe", CmdOutput::success("5.0\n"));
+            assert_eq!(
+                publication_copy(&mut runner, &run_dir, Some(12_345), end, false),
+                VideoStatus::Available,
                 "end: {end:?}"
             );
-            assert!(runner.mock.calls.is_empty());
-            assert!(!published_video_path(&run_dir).exists());
-            assert_eq!(
-                std::fs::read_to_string(video_path(&run_dir)).unwrap(),
-                "complete"
-            );
+            assert!(!runner.mock.calls[0].args.iter().any(|a| a == "-t"));
+            assert_eq!(runner.mock.remaining(), 0);
             std::fs::remove_dir_all(run_dir).unwrap();
         }
     }
@@ -564,7 +550,9 @@ mod tests {
             sizes: vec![10],
         };
         runner.mock.expect_run("ffmpeg", CmdOutput::success(""));
-        runner.mock.expect_run("ffprobe", CmdOutput::success("7.0\n"));
+        runner
+            .mock
+            .expect_run("ffprobe", CmdOutput::success("7.0\n"));
         assert_eq!(
             publication_copy(&mut runner, &run_dir, Some(12_345), Some(20_000), false),
             VideoStatus::Available
