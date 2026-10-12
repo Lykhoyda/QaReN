@@ -35,11 +35,20 @@ export const WALK_DEV_SETTINGS = [
 const DEV_FAB_READS = 4;
 const DEV_FAB_READ_INTERVAL_MS = 250;
 
+// Android reloads the JS bundle whenever hot loading is set, so the walk must wait for the reloaded app.
+export interface FastRefreshReload {
+  // Before the setting: marks the runtime the reload replaces.
+  mark(): Promise<void>;
+  // After it: resolves once the reloaded app is proven ready, and throws a typed refusal otherwise.
+  settled(): Promise<void>;
+}
+
 export interface DevOverlayDependencies {
   devSettings(args: { action: (typeof WALK_DEV_SETTINGS)[number] }): Promise<ToolResult>;
   devOverlayUncleared(): Promise<boolean>;
   log(message: string): void;
   sleep?(ms: number): Promise<void>;
+  fastRefreshReload?: FastRefreshReload;
 }
 
 function envelopeError(result: ToolResult): string {
@@ -51,18 +60,28 @@ function envelopeError(result: ToolResult): string {
   }
 }
 
+export function clearDevOverlays(deps: DevOverlayDependencies): Promise<ToolResult> {
+  return clearOverlays(deps, WALK_DEV_SETTINGS);
+}
+
 // The one walk-start and post-recovery proof that no Expo dev chrome is in front of the app.
-export async function clearDevOverlays(deps: DevOverlayDependencies): Promise<ToolResult> {
+async function clearOverlays(
+  deps: DevOverlayDependencies,
+  actions: readonly (typeof WALK_DEV_SETTINGS)[number][],
+): Promise<ToolResult> {
   const pause = deps.sleep ?? sleep;
-  for (const action of WALK_DEV_SETTINGS) {
+  for (const action of actions) {
     throwIfCancelled();
-    const error = await deps.devSettings({ action }).then(
-      (result) => (result.isError ? envelopeError(result) : undefined),
-      (thrown: unknown) => {
-        if (isAbort(thrown)) throw thrown;
-        return thrown instanceof Error ? thrown.message : String(thrown);
-      },
-    );
+    const reload = action === 'disableFastRefresh' ? deps.fastRefreshReload : undefined;
+    await reload?.mark();
+    const result = await deps.devSettings({ action }).catch((thrown: unknown) => {
+      if (isAbort(thrown)) throw thrown;
+      return thrown instanceof Error ? thrown.message : String(thrown);
+    });
+    const error =
+      typeof result === 'string' ? result : result.isError ? envelopeError(result) : undefined;
+    if (typeof result !== 'string' && !result.isError && envelopeData(result)?.executed === true)
+      await reload?.settled();
     if (error === undefined) continue;
     if (action !== 'hideDevMenuFab') {
       deps.log(`${action}: ${error}`);
@@ -101,7 +120,13 @@ export async function recoverDevOverlays(deps: DevOverlayDependencies): Promise<
   const hidden = await deps.devSettings({ action: 'hideDevMenu' });
   if (hidden.isError || (!overlayUncleared && envelopeData(hidden)?.executed === false))
     return hidden;
-  return clearDevOverlays(deps);
+  // Hot loading stays off once the walk start set it; setting it again on Android would reload the app mid-walk.
+  return clearOverlays(
+    deps,
+    deps.fastRefreshReload
+      ? WALK_DEV_SETTINGS.filter((action) => action !== 'disableFastRefresh')
+      : WALK_DEV_SETTINGS,
+  );
 }
 
 function envelopeData(result: ToolResult): { executed?: unknown } | undefined {

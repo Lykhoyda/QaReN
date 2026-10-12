@@ -7,8 +7,11 @@ import {
   LOAD_ENVELOPE,
   admit,
   awaitBundleReady,
+  createBundleReload,
   type AdmissionSteps,
 } from '../../../dist/qa/admission.js';
+import { REACT_READY_PROBE_JS } from '../../../dist/injected-helpers.js';
+import { runInNewContext } from 'node:vm';
 
 const PROVEN = {
   ok: true,
@@ -437,3 +440,139 @@ test('an Android foreign-driver warning refuses admission with its message', asy
   })) as never;
   assert.equal(await androidForeignDriverMessage('emulator-5554', ownRunnerOnly), undefined);
 });
+
+// A fake dev client: each runtime is its own global object; a reload swaps it for a fresh one.
+function devClient() {
+  const reads: string[] = [];
+  let runtime: Record<string, unknown> = { ready: true };
+  const script: Array<'old' | 'closed' | 'unready' | 'ready'> = [];
+  const evaluate = async (expression: string): Promise<{ value?: unknown; error?: string }> => {
+    const next = script.shift();
+    if (next === 'closed') {
+      reads.push('closed');
+      throw new Error('WebSocket closed');
+    }
+    if (next === 'unready' || next === 'ready') runtime = { ready: next === 'ready' };
+    if (expression === REACT_READY_PROBE_JS) {
+      reads.push(`react ${runtime.ready}`);
+      return { value: runtime.ready };
+    }
+    reads.push('mark');
+    return { value: runInNewContext(expression, runtime) };
+  };
+  return { reads, script, evaluate };
+}
+
+test('a Fast Refresh reload is over only once the marked runtime is gone, React is ready again, the helpers are back and the bundle is proven', async () => {
+  const client = devClient();
+  const calls: string[] = [];
+  const reload = createBundleReload({
+    evaluate: client.evaluate,
+    reinjectHelpers: async () => {
+      calls.push(`helpers after ${client.reads.at(-1)}`);
+      return true;
+    },
+    prove: async () => {
+      calls.push('prove');
+      return PROVEN;
+    },
+    deadline: () => performance.now() + 5_000,
+    pollMs: 1,
+  });
+  await reload.mark();
+  // The marked runtime still answers React ready, then the socket drops, then the replacement boots.
+  client.script.push('old', 'old', 'closed', 'unready', 'unready', 'ready', 'ready');
+  await reload.settled();
+  assert.ok(
+    client.script.length <= 1,
+    `the old runtime answering ready never ends the wait: ${client.reads.join()}`,
+  );
+  assert.deepEqual(calls, ['helpers after react true', 'prove']);
+});
+
+test('a runtime that never reloads refuses as an attach timeout and is never proven', async () => {
+  const client = devClient();
+  let proven = false;
+  const reload = createBundleReload({
+    evaluate: client.evaluate,
+    reinjectHelpers: async () => true,
+    prove: async () => {
+      proven = true;
+      return PROVEN;
+    },
+    deadline: () => performance.now() + 20,
+    pollMs: 1,
+  });
+  await reload.mark();
+  await assert.rejects(reload.settled(), (error: Error & { code?: string }) => {
+    assert.equal(error.code, 'CDP_NOT_CONNECTED');
+    assert.match(error.message, /reload/);
+    return true;
+  });
+  assert.equal(proven, false);
+});
+
+test('a reloaded bundle from another origin refuses with the origin proof', async () => {
+  const client = devClient();
+  const reload = createBundleReload({
+    evaluate: client.evaluate,
+    reinjectHelpers: async () => true,
+    prove: async () => ({
+      ok: false,
+      code: 'METRO_ORIGIN_MISMATCH',
+      message: "scriptURL 127.0.0.1:9999 is not the run's Metro port 8081",
+    }),
+    deadline: () => performance.now() + 5_000,
+    pollMs: 1,
+  });
+  await reload.mark();
+  client.script.push('ready');
+  await assert.rejects(reload.settled(), { code: 'METRO_ORIGIN_MISMATCH' });
+});
+
+test('a runtime that cannot be marked refuses before the setting that reloads it', async () => {
+  const reload = createBundleReload({
+    evaluate: async () => ({ error: 'ReferenceError' }),
+    reinjectHelpers: async () => true,
+    prove: async () => PROVEN,
+    deadline: () => performance.now() + 5_000,
+    pollMs: 1,
+  });
+  await assert.rejects(reload.mark(), { code: 'CDP_NOT_CONNECTED' });
+});
+
+test('a reloaded bundle the walk helpers cannot reach refuses before the origin proof', async () => {
+  const client = devClient();
+  let proven = false;
+  const reload = createBundleReload({
+    evaluate: client.evaluate,
+    reinjectHelpers: async () => false,
+    prove: async () => {
+      proven = true;
+      return PROVEN;
+    },
+    deadline: () => performance.now() + 5_000,
+    pollMs: 1,
+  });
+  await reload.mark();
+  client.script.push('ready');
+  await assert.rejects(reload.settled(), { code: 'HELPERS_NOT_INJECTED' });
+  assert.equal(proven, false);
+});
+
+for (const late of ['helpers', 'proof'] as const) {
+  test(`${late === 'helpers' ? 'helper injection' : 'an origin proof'} still running at the deadline refuses before step 1`, async () => {
+    const client = devClient();
+    const never = new Promise<never>(() => {});
+    const reload = createBundleReload({
+      evaluate: client.evaluate,
+      reinjectHelpers: async () => (late === 'helpers' ? never : true),
+      prove: async () => (late === 'proof' ? never : PROVEN),
+      deadline: () => performance.now() + 50,
+      pollMs: 1,
+    });
+    await reload.mark();
+    client.script.push('ready');
+    await assert.rejects(reload.settled(), { code: 'CDP_NOT_CONNECTED' });
+  });
+}

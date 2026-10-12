@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto';
 import { loadavg } from 'node:os';
 import {
   interruptible,
@@ -50,6 +51,83 @@ export async function awaitBundleReady(
       throw new TargetReadinessTimeoutError('React never became ready on the attached client');
     await sleep(Math.min(pollMs, remaining));
   }
+}
+
+export interface BundleReloadSteps {
+  evaluate(expression: string): Promise<{ value?: unknown; error?: string }>;
+  // The walk's injected helpers, injected again into the replacement runtime within the deadline.
+  reinjectHelpers(waitMs: number): Promise<boolean>;
+  // The admission origin proof, read again on the reloaded bundle.
+  prove(): Promise<ProveOutcome>;
+  // The admission readiness deadline, taken when the reload starts.
+  deadline(): number;
+  pollMs?: number;
+}
+
+// The runtime a reload replaces carries the mark; its replacement starts without it.
+// The mark is a hex nonce, so it needs no quoting inside the evaluated expression.
+const markBundleExpression = (mark: string) =>
+  `(function () { globalThis.__QAREN_BUNDLE_MARK = '${mark}'; return globalThis.__QAREN_BUNDLE_MARK; })()`;
+const bundleMarkedExpression = (mark: string) => `globalThis.__QAREN_BUNDLE_MARK === '${mark}'`;
+
+// A reload is over once the marked runtime is gone, React is ready in its replacement, the walk helpers are back and that bundle passes the origin proof.
+export function createBundleReload(steps: BundleReloadSteps): {
+  mark(): Promise<void>;
+  settled(): Promise<void>;
+} {
+  const mark = randomUUID().replaceAll('-', '');
+  const pollMs = steps.pollMs ?? REACT_READY_POLL_MS;
+  const replaced = async (deadline: number): Promise<void> => {
+    for (;;) {
+      try {
+        const answer = await interruptible(() => steps.evaluate(bundleMarkedExpression(mark)));
+        if (answer.value === false) return;
+      } catch (error) {
+        if (isAbort(error)) throw error;
+      }
+      const remaining = deadline - performance.now();
+      if (remaining <= 0)
+        throw new TargetReadinessTimeoutError('the dev client never reloaded its bundle');
+      await sleep(Math.min(pollMs, remaining));
+    }
+  };
+  return {
+    async mark() {
+      const answer = await interruptible(() => steps.evaluate(markBundleExpression(mark)));
+      if (answer.value !== mark)
+        throw new HandlerError(
+          'CDP_NOT_CONNECTED',
+          `the running bundle could not be marked before Fast Refresh was turned off (${answer.error ?? 'no answer'})`,
+        );
+    },
+    async settled() {
+      const deadline = steps.deadline();
+      try {
+        await withDeadline(
+          deadline,
+          new TargetReadinessTimeoutError('the reload did not finish before the attach deadline'),
+          async () => {
+            await replaced(deadline);
+            await awaitBundleReady(steps.evaluate, deadline, pollMs);
+            const waitMs = Math.max(1, deadline - performance.now());
+            if (!(await interruptible(() => steps.reinjectHelpers(waitMs))))
+              throw new HandlerError(
+                'HELPERS_NOT_INJECTED',
+                'the walk helpers could not be injected into the reloaded bundle',
+              );
+            const proof = await interruptible(steps.prove);
+            if (!proof.ok) throw new HandlerError(proof.code, proof.message);
+          },
+        );
+      } catch (error) {
+        if (isAbort(error) || error instanceof HandlerError) throw error;
+        throw new HandlerError(
+          'CDP_NOT_CONNECTED',
+          `the Fast Refresh reload was not proven finished: ${describeError(error).message}`,
+        );
+      }
+    },
+  };
 }
 
 export async function admit(

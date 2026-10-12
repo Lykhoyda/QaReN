@@ -56,7 +56,7 @@ import { summarizeJev } from './ledger.js';
 import { redactApiKey } from '../util/redact.js';
 import { createStop, watchOwnerPipe, watchParent } from './stop.js';
 import { prove } from './prove.js';
-import { admit, awaitBundleReady } from './admission.js';
+import { admit, awaitBundleReady, createBundleReload } from './admission.js';
 import { type ActResult, type WalkerDeps, loginBlock, runPlan } from './walker.js';
 import { loadBlock, readBlock } from './blocks.js';
 import {
@@ -445,8 +445,36 @@ async function openSession(
   });
   const devOverlayUncleared = async (): Promise<boolean> =>
     nativeDevOverlayUncleared(await rawSnapshot());
+  // Android reloads the bundle when hot loading is set: step 1 must read the reloaded, re-proven app.
+  const reload =
+    platform === 'android'
+      ? createBundleReload({
+          evaluate: (expr) => cdp.evaluate(expr),
+          reinjectHelpers: (waitMs) => cdp.reinjectHelpers(waitMs),
+          prove: () => prove({ evaluate: (expr) => cdp.evaluate(expr) }, target),
+          deadline: () =>
+            performance.now() +
+            Math.max(1, Math.min(REACT_READY_TIMEOUT_MS, request.walkBudgetMs - now() - 1000)),
+        })
+      : undefined;
+  const overlays = {
+    devSettings,
+    devOverlayUncleared,
+    log,
+    ...(reload
+      ? {
+          fastRefreshReload: {
+            mark: reload.mark,
+            settled: async () => {
+              await reload.settled();
+              log('Fast Refresh off: the reloaded bundle is proven');
+            },
+          },
+        }
+      : {}),
+  };
   try {
-    unwrap(await clearDevOverlays({ devSettings, devOverlayUncleared, log }));
+    unwrap(await clearDevOverlays(overlays));
   } catch (error) {
     await close();
     throw error;
@@ -527,16 +555,7 @@ async function openSession(
     now,
     cancelled: () => stop.stopping,
     diagnostic: (event) => log(`timing ${JSON.stringify(event)}`),
-    hideDevMenu: () =>
-      act(
-        () =>
-          recoverDevOverlays({
-            devSettings,
-            devOverlayUncleared,
-            log,
-          }),
-        false,
-      ),
+    hideDevMenu: () => act(() => recoverDevOverlays(overlays), false),
     ...(login ? { login } : {}),
     sleep,
     row: emitRow,

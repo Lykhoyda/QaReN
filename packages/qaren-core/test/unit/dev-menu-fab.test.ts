@@ -405,3 +405,85 @@ test('recovery: a failed dev-menu hide is returned as it is', async () => {
   assert.equal(parseEnvelope(await done).code, 'DEV_MENU_HIDE_UNVERIFIED');
   assert.deepEqual(calls, ['read', 'hideDevMenu']);
 });
+
+// Android reloads the JS bundle whenever hot loading is set; the walk must not read the reloading app.
+function reloading(
+  disable: () => ToolResult = () => okResult({ action: 'disableFastRefresh', executed: true }),
+  settled: () => Promise<void> = async () => {},
+) {
+  const calls: string[] = [];
+  const deps = {
+    async devSettings({ action }: { action: DevAction }) {
+      calls.push(action);
+      return action === 'disableFastRefresh' ? disable() : okResult({ action, executed: true });
+    },
+    async devOverlayUncleared() {
+      calls.push('read');
+      return false;
+    },
+    log: (message: string) => calls.push(`log ${message}`),
+    sleep: async () => {},
+    fastRefreshReload: {
+      async mark() {
+        calls.push('mark');
+      },
+      async settled() {
+        calls.push('settled');
+        await settled();
+      },
+    },
+  };
+  return { calls, deps };
+}
+
+test('overlays: a reloading Fast Refresh setting is marked before and proven settled before the menu hide and reads', async () => {
+  const { calls, deps } = reloading();
+  assert.equal(parseEnvelope(await clearDevOverlays(deps)).ok, true);
+  assert.deepEqual(calls, [
+    'hideDevMenuFab',
+    'disableDevMenu',
+    'mark',
+    'disableFastRefresh',
+    'settled',
+    'hideDevMenu',
+    'read',
+  ]);
+});
+
+for (const [name, disable] of [
+  ['unavailable', () => warnResult({ action: 'disableFastRefresh', executed: false }, 'none')],
+  ['failed', () => failResult('Dev settings error: gone')],
+] as [string, () => ToolResult][]) {
+  test(`overlays: an ${name} Fast Refresh setting reloads nothing, so nothing waits on a reload`, async () => {
+    const { calls, deps } = reloading(disable);
+    assert.equal(parseEnvelope(await clearDevOverlays(deps)).ok, true);
+    assert.ok(!calls.includes('settled'), calls.join());
+    assert.equal(calls.at(-1), 'read');
+  });
+}
+
+test('overlays: a reload that is never proven settled refuses before any later action or step', async () => {
+  const { calls, deps } = reloading(undefined, async () => {
+    throw Object.assign(new Error('the reload never finished'), { code: 'CDP_NOT_CONNECTED' });
+  });
+  await assert.rejects(clearDevOverlays(deps), /the reload never finished/);
+  assert.equal(calls.at(-1), 'settled');
+});
+
+test('recovery: a reloading Fast Refresh setting is not sent again mid-walk', async () => {
+  const { calls, deps } = reloading();
+  let reads = 0;
+  deps.devOverlayUncleared = async () => {
+    calls.push('read');
+    return reads++ === 0;
+  };
+  assert.equal(parseEnvelope(await recoverDevOverlays(deps)).ok, true);
+  assert.deepEqual(calls, [
+    'read',
+    'hideDevMenu',
+    'hideDevMenuFab',
+    'disableDevMenu',
+    'hideDevMenu',
+    'read',
+  ]);
+});
