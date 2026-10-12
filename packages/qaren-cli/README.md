@@ -1653,7 +1653,7 @@ atomically saving cache state with the readiness-rechecked fingerprint
 Cancellation before that publication removes staging and preserves the previous
 state without rebinding installation ownership. A failed state save removes the
 new generation and retains the previous state. A complete fingerprint then
-publishes `artifact.json` (`path`, `sha256`, `kind`, `built_at`, `candidate_sha`)
+publishes `artifact.json` (`path` relative to the entry, `sha256`, `kind`, `built_at`, `candidate_sha`)
 create-new: the first build of a fingerprint wins, a concurrent or later build of
 the same fingerprint keeps its own generation and never rewrites the record, and
 an incomplete fingerprint is never published. A stored build that fails
