@@ -3,8 +3,32 @@ saved blocks and persists passing walks. For current build and usage instruction
 read the [QaReN CLI guide](packages/qaren-cli/README.md). QaReN 2.0.0 has no
 backward compatibility with rn-dev-agent 1.x; to move from 1.0.14, follow
 [Upgrading from rn-dev-agent 1.x](packages/qaren-cli/README.md#upgrading-from-rn-dev-agent-1x-1014-to-20).
-The rn-dev-agent product and marketplace instructions below describe the
-published 1.x release.
+
+## Set up QaReN
+
+Until a QaReN release asset is published, install from this checkout's root:
+
+```sh
+bash scripts/install-qaren-from-source.sh
+```
+
+The source installer requires an Apple silicon Mac, Node 24 or newer, Corepack
+and Rust/Cargo. It builds and verifies the runtime; see the
+[installation contract](packages/qaren-cli/README.md#plugin-runtime-installation)
+for PATH linking, the fallback export and existing-command protection.
+
+From your app's root, load the checkout's plugin in Claude Code:
+
+```sh
+claude --plugin-dir /absolute/path/to/rn-dev-agent/packages/qaren-plugin
+```
+
+Then run `/qaren:setup`. The [setup skill](packages/qaren-plugin/skills/setup/SKILL.md)
+owns app requirements and onboarding: it writes `.qaren/config.yaml` and a smoke
+plan, selects a simulator and runs the first check. The
+[using-qaren skill](packages/qaren-plugin/skills/using-qaren/SKILL.md) writes
+subsequent feature plans. These replace `rn-setup` and `using-rn-dev-agent`
+without aliases. For manual runs, see [Check a plan](packages/qaren-cli/README.md#check-a-plan).
 
 ## Watch a QaReN run
 
@@ -16,6 +40,9 @@ qaren watch --latest
 
 See the [watch guide](packages/qaren-cli/README.md#watch-a-run) for selecting a
 run, SSH usage, output modes, privacy, stage semantics and exit codes.
+
+The rn-dev-agent product and marketplace instructions below describe the
+published 1.x release, not this QaReN checkout.
 
 <div align="center">
 
@@ -324,12 +351,24 @@ recovery diagnosis read-only and prints the exact commands for you to confirm an
 Claude automation failures and Codex missing prerequisites are reported with step-by-step manual
 instructions.
 
+<a id="prebuilt-runners"></a>
+
 **Prebuilt runners:** on a released version, the device runners install from a verified prebuilt
 artifact (SHA-256-checked local cache, then the GitHub Release asset for your exact plugin
 version), so the first `device_snapshot action=open` skips the cold build. Resolution is fail-open
 — offline, a checksum mismatch, or a dev checkout falls back transparently to the on-machine build
 (the host's `doctor` workflow reports which one you got). Force local builds with
 `RN_RUNNER_BUILD=local`.
+
+When an iOS runner launched from a prebuilt lacks required capabilities or commands,
+startup attempts to persist a `stale` marker under
+`~/.qaren/runtime/runners/<plugin-version>/ios/` before checking the one-rebuild-per-version
+budget. With that marker present, later starts select the local runner without reusing or
+downloading that version's prebuilt, including after a process restart; cached products
+remain intact and other versions are unaffected. A spent rebuild budget still refuses
+the current start. Authority mismatches and stale local runners do not mark the prebuilt.
+If the marker cannot be written, the rebuild budget still applies, but persistent
+rejection is not guaranteed.
 
 </details>
 

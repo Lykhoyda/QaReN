@@ -83,32 +83,5 @@ already posted rather than posting a duplicate.
 
 ## Video
 
-The local recording, `media/video.mp4`, stays complete. Publish uploads only
-`media/video-published.mp4`, a trimmed copy that starts once the walk proved the app's
-bundle and cleared any developer overlay.
-
-The run records the upload's eligibility in `pr.json`:
-
-| Value              | Meaning                                                          |
-| ------------------ | ---------------------------------------------------------------- |
-| `eligible`         | The trimmed copy can be uploaded                                 |
-| `withheld-fill`    | The plan contains a fill or type step, even one that never ran   |
-| `withheld-privacy` | Screenshot privacy disallowed capture during the walk           |
-| `unknown`          | Eligibility is missing or unreadable, so the video is withheld   |
-
-No video is uploaded either when the trimmed copy has no start time or the trim fails, or
-when an app process change, a launcher or server-picker fallback, the floating developer
-button or an open developer menu is seen after the app was proven. That holds even when
-recovery cleared the overlay and the step passed. The comment says why, and the verdict does
-not change.
-
-### After a login replay
-
-When a saved [login block](../saved-blocks/#login-recovery) replays successfully
-before any plan step passes, the uploaded copy starts at the end of that replay, and its fills
-alone do not withhold the video. The last login screen must be clean: a typed or private value
-still visible there, or seen in any later capture, withholds the video. A login fill after a
-plan step has passed withholds it too.
-
-Local recordings contain raw pixels. Values that appear between two captures are not
-detected; there is no continuous privacy monitoring or pixel redaction.
+See the authoritative [video publication contract](https://github.com/Lykhoyda/rn-dev-agent/blob/develop/packages/qaren-cli/README.md#video-publication)
+for trim boundaries, withholding rules, login replay behavior and local recording privacy limits.

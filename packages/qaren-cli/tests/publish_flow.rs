@@ -2045,6 +2045,7 @@ fn a_post_admission_interruption_withholds_the_copy_and_upload() {
         &mut encoder,
         &dir,
         Some(12_345),
+        None,
         ledger.publication_interrupted,
     );
     assert_eq!(

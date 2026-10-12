@@ -11,8 +11,11 @@ import android.content.Intent
 import android.graphics.Point
 import android.graphics.Rect
 import android.os.Build
+import android.os.Bundle
 import android.os.SystemClock
 import android.util.Base64
+import android.view.InputDevice
+import android.view.KeyCharacterMap
 import android.view.KeyEvent
 import android.view.WindowManager
 import android.view.accessibility.AccessibilityNodeInfo
@@ -24,10 +27,6 @@ import androidx.test.uiautomator.UiObject2
 import androidx.test.uiautomator.Until
 import org.json.JSONArray
 import org.json.JSONObject
-import org.xmlpull.v1.XmlPullParser
-import org.xmlpull.v1.XmlPullParserException
-import org.xmlpull.v1.XmlPullParserFactory
-import java.io.ByteArrayOutputStream
 import java.io.File
 import java.util.regex.Pattern
 import kotlin.math.abs
@@ -62,7 +61,6 @@ class FocusTargetOccludedException(message: String) :
 class SetTextRejectedException(message: String, mutation: MutationDisposition) :
     TypedRunnerException("SET_TEXT_REJECTED", message, mutation)
 
-class SnapshotParseException(message: String) : IllegalStateException(message)
 class AccessibilityUnavailableException(message: String) : IllegalStateException(message)
 class ExactPressException(
     val pressCode: String,
@@ -237,56 +235,31 @@ class CommandDispatcher(
             }
         }
 
-        val bytes = ByteArrayOutputStream()
-        device.dumpWindowHierarchy(bytes)
-        val xml = bytes.toString("UTF-8")
+        // The runner reads the windows itself: UiDevice.dumpWindowHierarchy logs
+        // every off-screen child with its text. This keeps that dump's roots,
+        // pre-order, visible-children rule, bounds and node fields.
+        device.waitForIdle()
+        val roots = windowRoots()
+        val display = Rect(0, 0, device.displayWidth, device.displayHeight)
         val nodes = JSONArray()
         var normalizationDroppedNodes = 0
-        val parser = XmlPullParserFactory.newInstance().newPullParser()
-        parser.setInput(xml.reader())
 
-        try {
-            var index = 0
-            while (parser.eventType != XmlPullParser.END_DOCUMENT) {
-                if (parser.eventType == XmlPullParser.START_TAG && parser.name == "node") {
-                    val bounds = parseBounds(parser.getAttributeValue(null, "bounds"))
-                    if (bounds != null) {
-                        val resourceId = parser.getAttributeValue(null, "resource-id").orEmpty()
-                        val text = parser.getAttributeValue(null, "text").orEmpty()
-                        val desc = parser.getAttributeValue(null, "content-desc").orEmpty()
-                        val className = parser.getAttributeValue(null, "class").orEmpty()
-                        val packageName = parser.getAttributeValue(null, "package").orEmpty()
-                        val checked = parser.getAttributeValue(null, "checked") == "true"
-                        val visible = parser.getAttributeValue(null, "visible-to-user") != "false"
-                        val enabled = parser.getAttributeValue(null, "enabled") != "false"
-                        val secure = parser.getAttributeValue(null, "password") == "true"
-                        val identifier = normalizeIdentifier(resourceId).ifBlank { desc }
-
-                        val node = JSONObject()
-                            .put("index", index)
-                            .put("type", className)
-                            .put("label", text.ifBlank { desc })
-                            .put("identifier", identifier)
-                            .put("packageName", packageName)
-                            .put("checked", checked)
-                            .put("rect", JSONObject().put("x", bounds.left).put("y", bounds.top).put("width", bounds.width()).put("height", bounds.height()))
-                            .put("hittable", HittableSemantics.fromSnapshotNode(enabled, visible))
-                            .put("enabled", enabled)
-                        if (secure) node.put("secure", true)
-                        nodes.put(node)
-                        index += 1
-                    } else {
-                        normalizationDroppedNodes += 1
-                    }
-                }
-                parser.next()
+        fun visit(node: AccessibilityNodeInfo) {
+            // The dump wrote bounds as Rect.toShortString() and the parser
+            // dropped what it could not read back (negative coordinates).
+            val bounds = parseBounds(visibleBoundsInScreen(node, display, trimScrollableParent = false).toShortString())
+            if (bounds != null) {
+                nodes.put(snapshotNode(node, nodes.length(), bounds))
+            } else {
+                normalizationDroppedNodes += 1
             }
-        } catch (e: XmlPullParserException) {
-            val head = xml.take(512)
-            throw SnapshotParseException(
-                "UIAutomator window-hierarchy XML failed to parse: ${e.message ?: e.javaClass.simpleName}. Head: $head"
-            )
+            for (index in 0 until node.childCount) {
+                val child = node.getChild(index) ?: continue
+                if (child.isVisibleToUser) visit(child)
+                child.recycle()
+            }
         }
+        roots.forEach { visit(it) }
 
         return JSONObject()
             .put("nodes", nodes)
@@ -433,6 +406,86 @@ class CommandDispatcher(
             .put("visibleToUser", node.visibleToUser)
         if (node.secure) json.put("secure", true)
         return json
+    }
+
+    private fun snapshotNode(node: AccessibilityNodeInfo, index: Int, bounds: Rect): JSONObject {
+        val text = xmlSafe(node.text)
+        val desc = xmlSafe(node.contentDescription)
+        val visible = node.isVisibleToUser
+        val enabled = node.isEnabled
+        val json = JSONObject()
+            .put("index", index)
+            .put("type", xmlSafe(node.className))
+            .put("label", text.ifBlank { desc })
+            .put("identifier", normalizeIdentifier(xmlSafe(node.viewIdResourceName)).ifBlank { desc })
+            .put("packageName", xmlSafe(node.packageName))
+            .put("checked", node.isChecked)
+            .put("rect", JSONObject().put("x", bounds.left).put("y", bounds.top).put("width", bounds.width()).put("height", bounds.height()))
+            .put("hittable", HittableSemantics.fromSnapshotNode(enabled, visible))
+            .put("enabled", enabled)
+        if (node.isPassword) json.put("secure", true)
+        return json
+    }
+
+    // The dump's roots: the active window's root plus every window's root (on
+    // every display from API 30), collected in a HashSet as UiDevice does, so
+    // the iteration order, and with it each node's index, is the same.
+    private fun windowRoots(): Array<AccessibilityNodeInfo> {
+        val automation = instrumentation.uiAutomation
+        val roots = HashSet<AccessibilityNodeInfo>()
+        automation.rootInActiveWindow?.let { roots.add(it) }
+        val windows = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+            val byDisplay = automation.windowsOnAllDisplays
+            (0 until byDisplay.size()).flatMap { byDisplay.valueAt(it) }
+        } else {
+            automation.windows
+        }
+        windows.forEach { window -> window.root?.let { roots.add(it) } }
+        return roots.toTypedArray()
+    }
+
+    // UiAutomator's visible-bounds rule: screen bounds clipped to the display
+    // and the node's window (a disjoint clip is ignored, as Rect.intersect
+    // leaves the rect unchanged), then optionally to the first scrollable
+    // ancestor's own visible bounds. UiObject2.visibleBounds trims; the
+    // window dump does not.
+    private fun visibleBoundsInScreen(
+        node: AccessibilityNodeInfo,
+        display: Rect,
+        trimScrollableParent: Boolean,
+    ): Rect {
+        val bounds = Rect()
+        node.getBoundsInScreen(bounds)
+        bounds.intersect(display)
+        node.window?.let { window ->
+            val windowBounds = Rect()
+            window.getBoundsInScreen(windowBounds)
+            bounds.intersect(windowBounds)
+        }
+        if (trimScrollableParent) {
+            var ancestor = node.parent
+            while (ancestor != null) {
+                if (ancestor.isScrollable) {
+                    bounds.intersect(visibleBoundsInScreen(ancestor, display, trimScrollableParent = true))
+                    break
+                }
+                ancestor = ancestor.parent
+            }
+        }
+        return bounds
+    }
+
+    // The dump replaced characters XML cannot carry with '.'; null read as "".
+    private fun xmlSafe(value: CharSequence?): String {
+        if (value == null) return ""
+        val out = StringBuilder(value.length)
+        for (ch in value) {
+            val invalid = ch in '\u0001'..'\u0008' || ch in '\u000B'..'\u000C' ||
+                ch in '\u000E'..'\u001F' || ch in '\u007F'..'\u0084' ||
+                ch in '\u0086'..'\u009F' || ch in '\uFDD0'..'\uFDDF'
+            if (invalid) out.append('.') else out.append(ch)
+        }
+        return out.toString()
     }
 
     private fun tap(cmd: JSONObject): JSONObject {
@@ -873,14 +926,22 @@ class CommandDispatcher(
         // (emoji survive), fires the change events RN's onChangeText listens
         // to. Read back to classify the outcome; per-char keyevents (Maestro's
         // 75 ms pacing) only when the set was flat-out ignored and every
-        // character has a keyevent representation.
-        val before = try {
-            target.text
-        } catch (e: StaleObjectException) {
-            null
+        // character has a keyevent representation. The value goes through the
+        // bound input's own node: UiObject2.setText would log it.
+        val node = when (val binding = bindInputNode(target, requireFocused = true)) {
+            is InputBinding.Bound -> binding.node
+            else -> throw NoTextInputTargetException(
+                "NO_TEXT_INPUT_TARGET: the focused input could not be bound to exactly one accessibility node; no typing was performed"
+            )
         }
-        target.text = text
-        var outcome = TextInputRecipe.classifySetText(text, before, readTargetText(target))
+        val before = readInput(node).text
+        node.performAction(
+            AccessibilityNodeInfo.ACTION_SET_TEXT,
+            Bundle().apply {
+                putCharSequence(AccessibilityNodeInfo.ACTION_ARGUMENT_SET_TEXT_CHARSEQUENCE, text)
+            },
+        )
+        var outcome = TextInputRecipe.classifySetText(text, before, readInput(node).text)
         var method = "setText"
 
         if (outcome == TextInputRecipe.SetTextOutcome.REJECTED) {
@@ -909,19 +970,19 @@ class CommandDispatcher(
             // move-to-end + deletes so the keyevent pass can't append.
             val staleLen = before?.length ?: 0
             if (staleLen > 0) {
-                device.pressKeyCode(KeyEvent.KEYCODE_MOVE_END, 0)
-                repeat(staleLen) { device.pressKeyCode(KeyEvent.KEYCODE_DEL, 0) }
+                injectKey(KeyEvent.KEYCODE_MOVE_END, 0)
+                repeat(staleLen) { injectKey(KeyEvent.KEYCODE_DEL, 0) }
             }
             for (ch in text) {
                 val stroke = TextInputRecipe.keyStrokeFor(ch) ?: continue
-                device.pressKeyCode(
+                injectKey(
                     stroke.keyCode,
                     if (stroke.shift) KeyEvent.META_SHIFT_ON else 0,
                 )
                 SystemClock.sleep(TextInputRecipe.KEYEVENT_PACING_MS)
             }
             method = "keyevents"
-            outcome = TextInputRecipe.classifySetText(text, before, readTargetText(target))
+            outcome = TextInputRecipe.classifySetText(text, before, readInput(node).text)
             // Codex P2 round-2 (#564): the keyevent tier is judged strictly —
             // a TRANSFORMED read-back on a field that started non-empty can be
             // an under-deleted `old + text` remnant, not a formatter, so only
@@ -938,7 +999,7 @@ class CommandDispatcher(
         // landed, so a keyevent pass could double-apply. Report honestly and
         // let the bridge's own verification layers arbitrate.
 
-        recordTypeTarget(target, cmd)
+        recordTypeTarget(target, node, cmd)
         // GH #581: requested text is never echoed back (secret safety).
         return JSONObject()
             .put("typed", true)
@@ -952,6 +1013,7 @@ class CommandDispatcher(
 
     private data class RecordedTypeTarget(
         val target: UiObject2,
+        val node: AccessibilityNodeInfo,
         val operationToken: String?,
         val className: String,
         val identifier: String?,
@@ -968,7 +1030,7 @@ class CommandDispatcher(
     private fun optionalString(cmd: JSONObject, key: String): String? =
         cmd.optString(key).ifBlank { null }
 
-    private fun recordTypeTarget(target: UiObject2, cmd: JSONObject) {
+    private fun recordTypeTarget(target: UiObject2, node: AccessibilityNodeInfo, cmd: JSONObject) {
         val className = runCatching { target.className ?: "" }
             .getOrDefault(optionalString(cmd, "snapshotElementType").orEmpty())
         val identifier = runCatching { objectIdentifier(target) }
@@ -977,6 +1039,7 @@ class CommandDispatcher(
             .getOrElse { describedBounds(cmd) ?: Rect() }
         recordedTypeTarget = RecordedTypeTarget(
             target = target,
+            node = node,
             operationToken = optionalString(cmd, "operationToken"),
             className = className,
             identifier = identifier,
@@ -1119,10 +1182,14 @@ class CommandDispatcher(
         val expected = cmd.optString("text")
         val recorded = recordedTypeTarget
         var target: UiObject2? = null
+        var recordedNode: AccessibilityNodeInfo? = null
         var lostVerdict = "target-lost"
         val operationToken = optionalString(cmd, "operationToken")
         if (operationToken != null) {
-            if (recorded?.operationToken == operationToken) target = recorded.target
+            if (recorded?.operationToken == operationToken) {
+                target = recorded.target
+                recordedNode = recorded.node
+            }
         } else {
             val candidates = inputCandidates()
             val descriptorAgrees = recorded != null && TextInputRecipe.recordedDescriptorAgrees(
@@ -1195,20 +1262,26 @@ class CommandDispatcher(
                 }
             }
         }
-        val bound = target
+        val resolved = target
             ?: return JSONObject().put("verifyVerdict", lostVerdict).put("verifyStable", false)
+        val bound = recordedNode ?: when (val binding = bindInputNode(resolved, requireFocused = false)) {
+            is InputBinding.Bound -> binding.node
+            InputBinding.Ambiguous ->
+                return JSONObject().put("verifyVerdict", "ambiguous").put("verifyStable", false)
+            InputBinding.Absent ->
+                return JSONObject().put("verifyVerdict", "target-lost").put("verifyStable", false)
+        }
         val secure = cmd.optBoolean("secureInput", false)
         var previous: TextInputRecipe.VerifyObservation? = null
         var verdict = "unreadable"
         var stable = false
         for (attempt in 0 until 3) {
-            val raw = readTargetText(bound)
-            val hint = readTargetHint(bound)
+            val read = readInput(bound)
             val observation = TextInputRecipe.verifyObservation(
                 expected,
-                raw,
-                hint.value,
-                hint.known,
+                read.text,
+                read.hint,
+                read.hintKnown,
                 secure,
             )
             verdict = observation.verdict
@@ -1227,23 +1300,114 @@ class CommandDispatcher(
     // auto-advance), and reading "whatever is focused now" would misread a
     // successful write as a rejection from the next empty field (codex P2
     // round-2). A node staled by a re-render yields null → UNVERIFIED.
-    private fun readTargetText(target: UiObject2): String? {
+    private data class InputRead(val text: String?, val hint: String?, val hintKnown: Boolean)
+
+    private fun readInput(node: AccessibilityNodeInfo): InputRead {
         device.waitForIdle(500)
-        return try {
-            target.text
-        } catch (e: StaleObjectException) {
-            null
+        val fresh = try {
+            node.refresh()
+        } catch (e: IllegalStateException) {
+            false
+        }
+        val hintState = Build.VERSION.SDK_INT >= Build.VERSION_CODES.O
+        return InputRead(
+            text = TextInputRecipe.readableText(
+                fresh,
+                node.text?.toString(),
+                if (hintState) node.isShowingHintText else null,
+            ),
+            hint = if (fresh && hintState) node.hintText?.toString() else null,
+            hintKnown = fresh && hintState,
+        )
+    }
+
+    private sealed interface InputBinding {
+        data class Bound(val node: AccessibilityNodeInfo) : InputBinding
+        data object Ambiguous : InputBinding
+        data object Absent : InputBinding
+    }
+
+    // The resolved input's own accessibility node, which UiObject2 does not
+    // expose: across the windows UiAutomator searches, exactly one visible node
+    // with the input's class, identifier and visible bounds (and, before a
+    // write, input focus). An incomplete traversal cannot prove uniqueness.
+    // A layout still settling (the keyboard opening) gets a short retry.
+    private fun bindInputNode(target: UiObject2, requireFocused: Boolean): InputBinding {
+        val deadline = SystemClock.uptimeMillis() + 1_000L
+        while (true) {
+            val binding = matchInputNode(target, requireFocused)
+            if (binding !is InputBinding.Absent || SystemClock.uptimeMillis() >= deadline) return binding
+            SystemClock.sleep(100)
         }
     }
 
-    private data class HintRead(val value: String?, val known: Boolean)
-
-    private fun readTargetHint(target: UiObject2): HintRead {
-        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) return HintRead(null, false)
-        return try {
-            HintRead(target.hint, true)
+    private fun matchInputNode(target: UiObject2, requireFocused: Boolean): InputBinding {
+        val roots = windowRoots()
+        val className: String
+        val identifier: String?
+        val visible: Rect
+        val display: Rect
+        try {
+            className = target.className.orEmpty()
+            identifier = objectIdentifier(target)
+            visible = Rect(target.visibleBounds)
+            val displayId = target.displayId
+            display = Rect(0, 0, device.getDisplayWidth(displayId), device.getDisplayHeight(displayId))
         } catch (e: StaleObjectException) {
-            HintRead(null, false)
+            return InputBinding.Absent
+        }
+        val matches = mutableListOf<AccessibilityNodeInfo>()
+        val stack = ArrayDeque<AccessibilityNodeInfo>()
+        roots.forEach { stack.addLast(it) }
+        var visited = 0
+        while (stack.isNotEmpty() && visited++ < 20_000) {
+            val node = stack.removeLast()
+            // UiAutomator's own search never enters an invisible subtree.
+            if (!node.isVisibleToUser) {
+                node.recycle()
+                continue
+            }
+            for (index in 0 until node.childCount) {
+                node.getChild(index)?.let { stack.addLast(it) }
+            }
+            val nodeIdentifier = normalizeIdentifier(node.viewIdResourceName.orEmpty())
+                .ifBlank { node.contentDescription?.toString().orEmpty() }
+                .ifBlank { null }
+            val same = node.className?.toString().orEmpty() == className &&
+                nodeIdentifier == identifier &&
+                (!requireFocused || node.isFocused) &&
+                visibleBoundsInScreen(node, display, trimScrollableParent = true) == visible
+            if (same) matches.add(node) else node.recycle()
+        }
+        val complete = ExactPressSafety.traversalComplete(stack.size)
+        while (stack.isNotEmpty()) stack.removeLast().recycle()
+        if (!complete || matches.size > 1) {
+            matches.forEach { it.recycle() }
+            return InputBinding.Ambiguous
+        }
+        return matches.singleOrNull()?.let { InputBinding.Bound(it) } ?: InputBinding.Absent
+    }
+
+    // UiDevice.pressKeyCode's key events without its debug line, which names
+    // every keycode and would let a typed value be rebuilt from logcat.
+    private fun injectKey(keyCode: Int, metaState: Int) {
+        device.waitForIdle()
+        val time = SystemClock.uptimeMillis()
+        val automation = instrumentation.uiAutomation
+        for (action in intArrayOf(KeyEvent.ACTION_DOWN, KeyEvent.ACTION_UP)) {
+            val event = KeyEvent(
+                time,
+                time,
+                action,
+                keyCode,
+                0,
+                metaState,
+                KeyCharacterMap.VIRTUAL_KEYBOARD,
+                0,
+                0,
+                InputDevice.SOURCE_KEYBOARD,
+            )
+            if (!automation.injectInputEvent(event, true)) return
         }
     }
 

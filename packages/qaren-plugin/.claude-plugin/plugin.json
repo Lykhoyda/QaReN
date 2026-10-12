@@ -20,7 +20,7 @@
   ],
   "skills": [
     "./skills/using-qaren",
-    "./skills/rn-setup",
+    "./skills/setup",
     "./skills/creating-actions",
     "./skills/rn-device-control",
     "./skills/sending-feedback"

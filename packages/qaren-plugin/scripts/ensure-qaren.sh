@@ -6,7 +6,8 @@
 #                                                 other diagnostics go to stderr; always exits 0
 #   ensure-qaren.sh --install [--from-file <tgz>] downloads (or takes) the tarball, verifies its
 #                                                 sha256 and length against runner-manifest.json,
-#                                                 and installs it into ~/.qaren/runtime/<v>/; rerun --install after interruption
+#                                                 installs it into ~/.qaren/runtime/<v>/ and links qaren onto PATH;
+#                                                 stdout is exactly the binary path; rerun --install after interruption
 set -euo pipefail
 
 MODE=""
@@ -253,6 +254,7 @@ install() {
     *) refuse "the qaren runtime directory $RUNTIME_ROOT resolves to a directory you do not own, or inside one; point it at storage you own" ;;
   esac
   dest="$RUNTIME_ROOT/$version"
+  INSTALLED_BIN="$dest/bin/qaren"
   # Leftover staging means a killed install to heal, even when the runtime itself is complete.
   has_staging "$version" || ! installed_bin "$version" "$sha" || return 0
 
@@ -371,7 +373,48 @@ install() {
   echo "$dest/bin/qaren"
 }
 
+# A link problem is a stderr notice, never a failed install.
+link_on_path() {
+  local bin="$1" dir="$HOME/.local/bin" target tmp candidate pass on_path=false
+  local -a path_dirs
+  IFS=: read -r -a path_dirs <<< "$PATH"
+  # Prefer a standard user bin; otherwise any writable PATH entry keeps qaren invocable at once.
+  for pass in standard any; do
+    for candidate in "${path_dirs[@]}"; do
+      # Empty and relative entries resolve against the caller's directory, not a stable bin.
+      [[ "$candidate" == /* ]] && [ -d "$candidate" ] && [ -w "$candidate" ] || continue
+      if [ "$pass" = standard ]; then
+        case "$candidate" in
+          "$HOME/.local/bin" | "$HOME/bin" | /opt/homebrew/bin | /usr/local/bin) ;;
+          *) continue ;;
+        esac
+      fi
+      dir="$candidate"
+      on_path=true
+      break 2
+    done
+  done
+  target="$dir/qaren"
+  mkdir -p "$dir" 2>/dev/null || { echo "qaren: cannot create $dir; run qaren as $bin" >&2; return 0; }
+  if [ -e "$target" ] || [ -L "$target" ]; then
+    if [ ! -L "$target" ] || [[ "$(readlink "$target")" != "$RUNTIME_ROOT"/* ]]; then
+      echo "qaren: $target already exists and is not a qaren install link; run qaren as $bin or replace that file yourself" >&2
+      return 0
+    fi
+  fi
+  tmp="$dir/.qaren-link.$$"
+  # rename(2) swaps the link itself, even when the old one points at a directory.
+  if ! { ln -s "$bin" "$tmp" && perl -e "rename(\$ARGV[0], \$ARGV[1]) or exit 1" "$tmp" "$target"; }; then
+    rm -f "$tmp"
+    echo "qaren: cannot link $target; run qaren as $bin" >&2
+    return 0
+  fi
+  if [ "$on_path" = false ]; then
+    echo "qaren: no writable directory is on PATH; add ~/.local/bin to PATH: export PATH=\"\$HOME/.local/bin:\$PATH\"" >&2
+  fi
+}
+
 case "$MODE" in
   --print-bin) print_bin || true ;;
-  --install) install ;;
+  --install) install; link_on_path "$INSTALLED_BIN" ;;
 esac

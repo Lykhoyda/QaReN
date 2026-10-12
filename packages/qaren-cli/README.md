@@ -8,6 +8,12 @@ QaReN is still in development; this checkout is not the published 1.x MCP plugin
 The scenario-based preparation verbs remain available for explicit iOS,
 NUC Android and USB Android setup experiments.
 
+## Set up an app
+
+Start with [Set up QaReN](../../README.md#set-up-qaren) for installation and
+Claude Code plugin loading. The [`setup` skill](../qaren-plugin/skills/setup/SKILL.md)
+owns the guided onboarding procedure; [Check a plan](#check-a-plan) covers manual runs.
+
 ## Watch a run
 
 ```sh
@@ -90,6 +96,10 @@ Interactive controls, lanes and timed replay remain later slices.
 
 ## Build
 
+For the supported source installation, follow [Set up QaReN](../../README.md#set-up-qaren).
+
+For development builds:
+
 ```sh
 corepack yarn install --immutable
 corepack yarn build:core
@@ -99,9 +109,10 @@ cargo build --manifest-path packages/qaren-cli/Cargo.toml --locked
 Run these commands from the repository root with Node satisfying the
 [core package's engines requirement](../qaren-core/package.json) and Rust/Cargo
 available. The binary is
-`packages/qaren-cli/target/debug/qaren`; its screen child uses the generated
-`packages/qaren-core/dist/`. Set `QAREN_RUNTIME` to its absolute path when running
-the binary from another location. See [Check a plan](#check-a-plan) for when
+`packages/qaren-cli/target/debug/qaren`; it locates the generated screen child in
+`packages/qaren-core/dist/` relative to the resolved binary path, independently
+of the working directory. `QAREN_RUNTIME` overrides that runtime directory.
+See [Check a plan](#check-a-plan) for when
 `TYPESAFE_API_KEY` is required.
 
 ### Plugin runtime installation
@@ -125,9 +136,20 @@ it does not require the source checkout's `dist/` or `QAREN_RUNTIME` override.
 The SessionStart hook only runs `--print-bin`; it never downloads. That mode
 always exits 0 and prints either the verified binary path, an install or repair
 instruction, or nothing, so its exit status alone does not prove installation.
-Use the reported binary path for CLI commands; installation does not add it to PATH.
+`--install` also links `qaren` into the first standard user bin directory that is
+on PATH, exists and is writable: `~/.local/bin`, `~/bin`, `/opt/homebrew/bin` or
+`/usr/local/bin`, so an earlier IDE or toolchain bin is passed over. With none of
+those on PATH it uses the first writable absolute PATH directory, so the bare
+command still works at once; empty and relative entries are skipped. It replaces only
+a link into `~/.qaren/runtime/`; any other file there is left alone with a notice.
+If no PATH directory qualifies, it links `~/.local/bin/qaren` and prints
+`export PATH="$HOME/.local/bin:$PATH"`; run that line to use the bare command.
+It never edits shell rc files. Link problems are stderr notices and do not fail
+installation; stdout remains exactly the installed binary path, which you can
+use directly if linking fails.
 This development checkout's manifest does not imply that a QaReN release asset
-has been published; use the source build above while that asset is unavailable.
+has been published; use the [source installation](../../README.md#set-up-qaren)
+while that asset is unavailable.
 
 ## Upgrading from rn-dev-agent 1.x (1.0.14) to 2.0
 
@@ -200,14 +222,14 @@ actions, so remove 1.x first and install 2.0 as a new product.
    - Released plugin: the plugin list shows `qaren@qaren`, and
      `bash scripts/ensure-qaren.sh --print-bin` prints a binary path whose
      `--version` reports `qaren 2.0.0` or later.
-   - Source build: `<checkout>/packages/qaren-cli/target/debug/qaren --version`
-     reports the checkout's workspace version. The version moves to 2.0.0 only
+   - Source install: the binary path printed by
+     `scripts/install-qaren-from-source.sh` reports the checkout's workspace
+     version with `--version`. The version moves to 2.0.0 only
      when the release is cut, so a `develop` build still shows the pre-release
-     version (for example `qaren 1.0.13`). From the app directory, run that absolute
-     path with `QAREN_RUNTIME=<checkout>/packages/qaren-core/dist` (see
-     [Build](#build)).
-   - In the app, write `.qaren/config.yaml` and run a first plan with that
-     binary as in [Check a plan](#check-a-plan); a PASS receipt with a run under
+     version (for example `qaren 1.0.13`). The installed runtime needs no
+     `QAREN_RUNTIME` override; see [Build](#build) for development binaries.
+   - In the app, follow [Set up an app](#set-up-an-app), or write configuration
+     and run a plan manually as in [Check a plan](#check-a-plan); a PASS receipt with a run under
      `~/.qaren/runs/` completes the upgrade.
 
 ## Check a plan
@@ -449,6 +471,11 @@ strict binding refuses `NO_TEXT_INPUT_TARGET` before any text mutation for a
 non-native-input target. Phrase fills and stored replay selectors do not use
 this fallback; ambiguous targets and potentially mutated fills still fail.
 
+On Android API 26 and later, a fresh read of the bound input with null text
+and no hint showing counts as empty, so clearing a plain field verifies as
+`exact`. A clear that reads back the placeholder remains `ambiguous`. Stale
+reads, and null text with unknown hint state, remain `unreadable`.
+
 Separate React-only input projections still count when matching a quoted strict fill,
 so a native input and a React-only input sharing its testID refuse as
 `TARGET_AMBIGUOUS` before any tap. A strict fill never acts on a React-only
@@ -519,7 +546,8 @@ such as `field kept 10 of 13 chars on 2 attempts` when counts exist; the report
 line shows the same detail. The list is omitted when empty. A runner
 must advertise `FILL_EVIDENCE_V1` on both iOS and Android. Session startup routes
 a missing capability through the bounded source-rebuild path instead of
-accepting the released artifact. An active iOS runner missing it refuses focused
+accepting the released artifact; see [prebuilt runner selection](../../README.md#prebuilt-runners)
+for persistent rejection of stale iOS prebuilts. An active iOS runner missing it refuses focused
 replacement with `RN_FAST_RUNNER_STALE`
 and no mutation instead of appending. A refused replacement keeps the runner's
 mutation disposition. The [focused replacement tests](../qaren-core/test/unit/device-fill-focused-replace.test.ts)
@@ -765,6 +793,11 @@ a reset clears the earlier style restriction without proving native visibility.
 
 ### Input value masking
 
+The Android runner keeps exact-fill values and reconstructable fallback
+keycodes out of device logs. Its device-tool snapshots also avoid logging
+off-screen node text while preserving the snapshot's node fields and order.
+These protections apply to the runner's operations, not logging by the app.
+
 Planned fill values are classified before progress streams. Streamed rows contain
 only value-free progress metadata and eligible screenshot paths; plan text,
 reasons, selectors and block names appear only in the final projected ledger.
@@ -894,8 +927,14 @@ Before each iOS launch, `prepare` writes the app's Expo dev-menu preferences wit
 at launch, onboarding finished. A failed write is recorded as
 `dev_menu_defaults: unconfirmed` and the launch continues. At walk start the core
 also hides the floating button through Expo's `DevMenuPreferences` module and
-reads the setting back, disables the shake gesture, and closes an open menu.
-Apps without the preferences module skip that setting change but still require
+reads the setting back, disables the shake gesture, attempts to disable Fast
+Refresh through `DevSettings.setHotLoadingEnabled(false)`, and closes an open
+menu. Disabling Fast Refresh prevents saved-block YAML writes in the app folder
+from triggering the dev client's `Refreshing...` banner during recording. This
+attempt is best-effort: an unavailable or throwing API does not itself refuse
+the walk, and native overlay clearance does not prove Fast Refresh is disabled.
+The same clearance sequence runs again after a successful dev-menu recovery.
+Apps without the preferences module skip the floating-button setting change but still require
 native clearance evidence. The shared clearance mechanism accepts only a complete
 native snapshot with neither a floating button nor an open dev menu in front,
 briefly re-reading while overlays settle. An unconfirmed floating-button hide
@@ -1299,7 +1338,9 @@ Video publication eligibility and a value-free withholding reason are persisted
 in `pr.json`. A plan containing any fill/type step keeps the recording local,
 even if that step never executes. Otherwise, the uploaded copy starts when the
 walk proved the app's bundle and passed [overlay clearance](#check-a-plan).
-Sensitive observations from admission onwards withhold it.
+Sensitive observations from admission onwards withhold it. The uploaded copy
+ends at the last step row, so the device session closing after the walk never
+reaches it; the local recording stays complete.
 
 A successful saved login replay before any plan step passes moves the uploaded
 copy's start to the end of that replay. Its fills alone do not withhold the video.

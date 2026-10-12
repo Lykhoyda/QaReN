@@ -131,8 +131,7 @@ Copy-adapt the complete worked example: `examples/add-product-to-cart.yaml`.
 Before replaying, call `rn_session({action: "status"})`.
 `SESSION_AUTHORITY_REQUIRED` is not UI drift. If `state` is `blocked`, stop,
 follow `recoveryRequirement.nextAction` verbatim, then re-read status before any
-replay. Full contract: `using-rn-dev-agent` skill § "Session ownership
-recovery".
+replay.
 
 Replay through the orchestrator — not raw `maestro_run` — so the run is recorded and auto-repair-aware:
 
@@ -155,8 +154,7 @@ After any later auto-repair or manual selector edit, **update the embedded diagr
 `rn_session({action: "status"})`: if `state` is `blocked`, the failure is
 `SESSION_AUTHORITY_REQUIRED`, not UI drift, and no selector edit or repair can
 fix it — stop, follow `recoveryRequirement.nextAction` verbatim (same
-pre-flight as Step 6), then re-read status before any further replay. Full
-contract: `using-rn-dev-agent` skill § "Session ownership recovery".
+pre-flight as Step 6), then re-read status before any further replay.
 
 Otherwise a saved action that stops passing is usually **UI drift**, not a
 broken feature. Diagnose in this order:

@@ -19,6 +19,7 @@ import {
   acquireRunnerRebuildLock,
   releaseRunnerRebuildLock,
   runnerRebuildBudget,
+  markStalePrebuiltRunner,
   consumePendingFastRunnerArtifactNote,
   getRunnerPostMortem,
 } from './runners/rn-fast-runner-client.js';
@@ -1062,6 +1063,7 @@ export interface EnsureRunnerDeps {
   releaseBuildLock?: () => void;
   rebuildBudget?: { alreadyRebuiltFor(v: string): boolean; recordRebuild(v: string): void };
   pluginVersion?: string | null;
+  markPrebuiltStale?: () => void;
 }
 
 export type EnsureRunnerResult =
@@ -1103,6 +1105,8 @@ async function rebuildStaleRunnerArtifact(
     : first.staleReason === 'missing-features'
       ? 'RN_FAST_RUNNER_STALE'
       : 'RUNNER_COMMANDS_STALE';
+  // ANT-353: runs before reap clears the runner's provenance and before the budget gate can refuse.
+  if (!authorityMismatch) (deps.markPrebuiltStale ?? markStalePrebuiltRunner)();
   const plugin = deps.pluginVersion !== undefined ? deps.pluginVersion : getPluginVersion();
   const budget = deps.rebuildBudget ?? runnerRebuildBudget;
   if (plugin !== null && budget.alreadyRebuiltFor(plugin)) {

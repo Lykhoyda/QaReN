@@ -8,6 +8,91 @@ use std::path::PathBuf;
 
 const LSTART: &str = "Wed Aug 12 16:01:00 2026";
 
+#[test]
+#[ignore = "requires ffmpeg and ffprobe on PATH"]
+fn real_publication_of_the_pr1142_timeline_has_no_dark_frame() {
+    use std::process::Command;
+    let dir = common::temp_repo();
+    std::fs::create_dir_all(dir.join("media")).unwrap();
+    let source = record::video_path(&dir);
+    // PR1142: admitted at 18.900 s, last row at 33.526 s, runner teardown dark from 34.030 s.
+    let generated = Command::new("ffmpeg")
+        .args([
+            "-v",
+            "error",
+            "-y",
+            "-f",
+            "lavfi",
+            "-i",
+            "color=red:s=16x16:r=30:d=18.9",
+            "-f",
+            "lavfi",
+            "-i",
+            "color=green:s=16x16:r=30:d=15.13",
+            "-f",
+            "lavfi",
+            "-i",
+            "color=black:s=16x16:r=30:d=6.7",
+            "-filter_complex",
+            "[0:v][1:v][2:v]concat=n=3:v=1:a=0",
+            "-c:v",
+            "libx264",
+        ])
+        .arg(&source)
+        .output()
+        .unwrap();
+    assert!(
+        generated.status.success(),
+        "{}",
+        String::from_utf8_lossy(&generated.stderr)
+    );
+    let original = std::fs::read(&source).unwrap();
+    let mut runner = qaren::exec::RealRunner::new();
+    assert_eq!(
+        record::publication_copy(&mut runner, &dir, Some(18_900), Some(33_526), false),
+        VideoStatus::Available,
+    );
+    let copy = record::published_video_path(&dir);
+    let duration = Command::new("ffprobe")
+        .args([
+            "-v",
+            "error",
+            "-show_entries",
+            "format=duration",
+            "-of",
+            "csv=p=0",
+        ])
+        .arg(&copy)
+        .output()
+        .unwrap();
+    assert!(duration.status.success());
+    let seconds: f64 = String::from_utf8(duration.stdout)
+        .unwrap()
+        .trim()
+        .parse()
+        .unwrap();
+    assert!((seconds - 14.626).abs() < 0.05, "duration: {seconds}");
+    let frames = Command::new("ffmpeg")
+        .args(["-v", "error", "-i"])
+        .arg(&copy)
+        .args(["-f", "rawvideo", "-pix_fmt", "rgb24", "-"])
+        .output()
+        .unwrap();
+    assert!(frames.status.success());
+    let dark = frames
+        .stdout
+        .chunks_exact(16 * 16 * 3)
+        .filter(|frame| {
+            !frame
+                .chunks_exact(3)
+                .all(|p| p[1] > 80 && p[0] < 20 && p[2] < 20)
+        })
+        .count();
+    assert_eq!(dark, 0);
+    assert_eq!(std::fs::read(&source).unwrap(), original);
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
 fn walking_record() -> (PathBuf, RunRecord) {
     let repo = common::temp_repo();
     let record = common::base_record(

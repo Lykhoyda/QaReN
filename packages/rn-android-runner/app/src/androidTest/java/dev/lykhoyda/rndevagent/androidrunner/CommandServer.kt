@@ -76,8 +76,6 @@ class CommandServer(
             json(Response.Status.OK, body)
         } catch (e: TypedRunnerException) {
             errorResponse(command, e.code, e.message ?: e.code, Response.Status.OK, e.mutation.wire)
-        } catch (e: SnapshotParseException) {
-            errorResponse(command, "SNAPSHOT_PARSE_FAILED", e.message ?: "snapshot parse failed", Response.Status.OK)
         } catch (e: ExactPressException) {
             errorResponse(
                 command,
