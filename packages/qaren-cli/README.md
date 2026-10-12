@@ -96,7 +96,9 @@ Interactive controls, lanes and timed replay remain later slices.
 
 ## Build
 
-For the supported source installation, follow [Set up QaReN](../../README.md#set-up-qaren).
+For the supported source installation, follow [Set up QaReN](../../README.md#set-up-qaren);
+`qaren update`, run from the checkout root, repeats it after a `git pull --ff-only`
+and refuses a checkout with local changes or a pull that cannot fast-forward.
 
 For development builds:
 
