@@ -121,10 +121,11 @@ fn workspace_binding_preserves_all_facts_and_cannot_make_incomplete_inputs_compl
 fn default_expo_backend_keeps_the_legacy_cache_key() {
     let mut runner = MockRunner::new();
     runner.expect_run("ls-files", CmdOutput::success(""));
+    common::script_xcode(&mut runner);
     let root = Path::new("/candidate");
     let prior = compute(&mut runner, root, root, "ios").unwrap();
     assert_eq!(
-        prior.value,
+        prior.parts["rnfp"],
         "rnfp1:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
     );
     assert_eq!(prior.clone().with_ios_workspace(None), prior);
@@ -150,12 +151,12 @@ fn plugin_project(plugin: &str) -> std::path::PathBuf {
     root
 }
 
+const PLUGIN_FILES: &str = "app.json\0plugins/withX.js\0config/x.json\0";
+
 fn fingerprint(root: &Path) -> NativeFingerprint {
     let mut runner = MockRunner::new();
-    runner.expect_run(
-        "ls-files",
-        CmdOutput::success("app.json\0plugins/withX.js\0config/x.json\0"),
-    );
+    runner.expect_run("ls-files", CmdOutput::success(PLUGIN_FILES));
+    common::script_xcode(&mut runner);
     compute(&mut runner, root, root, "ios").unwrap()
 }
 
@@ -302,6 +303,7 @@ fn react_native_config_imports_are_traced() {
                 "ls-files",
                 CmdOutput::success(&format!("app.json\0{name}\0config/x.json\0")),
             );
+            common::script_xcode(&mut runner);
             compute(&mut runner, &root, &root, "ios").unwrap()
         };
         let before = compute_config();
@@ -442,6 +444,9 @@ fn local_dependency_project(spec: &str) -> std::path::PathBuf {
 fn local_fingerprint(root: &Path, platform: &str) -> NativeFingerprint {
     let mut runner = MockRunner::new();
     runner.expect_run("ls-files", CmdOutput::success("package.json\0"));
+    if platform == "ios" {
+        common::script_xcode(&mut runner);
+    }
     compute(&mut runner, root, root, platform).unwrap()
 }
 
@@ -600,6 +605,7 @@ fn package_fingerprint(root: &Path) -> NativeFingerprint {
         "ls-files",
         CmdOutput::success("app.json\0plugins/withX.ts\0pnpm-lock.yaml\0"),
     );
+    common::script_xcode(&mut runner);
     compute(&mut runner, root, root, "ios").unwrap()
 }
 
@@ -647,6 +653,9 @@ fn local_package_fingerprint(root: &Path, platform: &str) -> NativeFingerprint {
         "ls-files",
         CmdOutput::success("package.json\0app.json\0plugins/withX.js\0"),
     );
+    if platform == "ios" {
+        common::script_xcode(&mut runner);
+    }
     compute(&mut runner, root, root, platform).unwrap()
 }
 
@@ -666,7 +675,7 @@ fn build_after(
 ) -> qaren::buildplan::BuildPlan {
     use qaren::buildplan::{
         decide, ArtifactKind, ArtifactStatus, CachedArtifact, DecisionInputs, NativeCacheState,
-        StateStatus, CACHE_SCHEMA,
+        StateStatus, StoreRecord, CACHE_SCHEMA,
     };
     let cached = NativeCacheState {
         schema: CACHE_SCHEMA.to_string(),
@@ -679,7 +688,10 @@ fn build_after(
         candidate_sha: "a".repeat(40),
         lockfile_sha256: "b".repeat(64),
         generated_native_dirs: vec![platform.to_string()],
-        artifact: Some(CachedArtifact {
+        artifact: None,
+    };
+    let stored = StoreRecord {
+        artifact: CachedArtifact {
             path: root.join(if platform == "ios" {
                 "testapp.app"
             } else {
@@ -691,7 +703,9 @@ fn build_after(
             } else {
                 ArtifactKind::Apk
             },
-        }),
+        },
+        built_at: cached.built_at.clone(),
+        candidate_sha: cached.candidate_sha.clone(),
     };
     decide(
         &DecisionInputs {
@@ -710,7 +724,7 @@ fn build_after(
             native_dir_in_candidate: false,
         },
         &StateStatus::Loaded(Box::new(cached.clone())),
-        Some(ArtifactStatus::Verified),
+        (recorded.value == fp.value).then_some((stored, ArtifactStatus::Verified)),
     )
 }
 
@@ -824,6 +838,9 @@ fn nested_package_resolution_in_plugins_and_config_closures_is_incomplete() {
                         "package.json\0app.json\0plugins/withX.js\0react-native.config.js\0",
                     ),
                 );
+                if platform == "ios" {
+                    common::script_xcode(&mut runner);
+                }
                 compute(&mut runner, &root, &root, platform).unwrap()
             };
             let before = compute_current();
@@ -990,17 +1007,54 @@ fn evaluated(root: &Path, hash: &str, xcode: &str) -> NativeFingerprint {
 }
 
 #[test]
-fn static_config_never_runs_expo_and_keeps_its_cache_key() {
+fn static_config_never_runs_expo_and_binds_the_xcode_version() {
     let root = plugin_project("module.exports = c => c;");
     let fp = fingerprint(&root);
     assert!(fp.complete, "{:?}", fp.incompleteness);
     assert_eq!(fp.expo_fingerprint_ms, None);
-    assert_eq!(fp.parts.keys().collect::<Vec<_>>(), ["rnfp"]);
-    assert_eq!(fp.parts["rnfp"], fp.value);
+    assert_eq!(fp.parts.keys().collect::<Vec<_>>(), ["rnfp", "toolchain"]);
+    assert_ne!(fp.parts["rnfp"], fp.value);
     assert_eq!(
         matching_build(&root, &fp, "ios").decision,
         qaren::buildplan::BuildDecision::Reuse
     );
+    let mut runner = MockRunner::new();
+    runner.expect_run("ls-files", CmdOutput::success(PLUGIN_FILES));
+    runner.expect_run(
+        "xcodebuild -version",
+        CmdOutput::success("Xcode 27.1\nBuild version 27B5\n"),
+    );
+    let other_xcode = compute(&mut runner, &root, &root, "ios").unwrap();
+    assert_eq!(other_xcode.parts["rnfp"], fp.parts["rnfp"]);
+    assert_ne!(other_xcode.value, fp.value);
+}
+
+#[test]
+fn static_config_without_xcode_never_reuses() {
+    let root = plugin_project("module.exports = c => c;");
+    let mut runner = MockRunner::new();
+    runner.expect_run("ls-files", CmdOutput::success(PLUGIN_FILES));
+    runner.expect_run(
+        "xcodebuild -version",
+        CmdOutput::failed(1, "no developer dir"),
+    );
+    let fp = compute(&mut runner, &root, &root, "ios").unwrap();
+    assert!(!fp.complete);
+    assert!(fp.incompleteness[0].starts_with("toolchain identity unavailable"));
+    assert_ne!(
+        matching_build(&root, &fp, "ios").decision,
+        qaren::buildplan::BuildDecision::Reuse
+    );
+}
+
+#[test]
+fn android_static_config_keeps_its_cache_key() {
+    let root = plugin_project("module.exports = c => c;");
+    let mut runner = MockRunner::new();
+    runner.expect_run("ls-files", CmdOutput::success(PLUGIN_FILES));
+    let fp = compute(&mut runner, &root, &root, "android").unwrap();
+    assert_eq!(fp.parts.keys().collect::<Vec<_>>(), ["rnfp"]);
+    assert_eq!(fp.parts["rnfp"], fp.value);
 }
 
 #[test]

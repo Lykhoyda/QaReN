@@ -30,6 +30,7 @@ const request: WireRequest = {
   lease: 'check-1:0123456789abcdef0123456789abcdef',
   target: {
     deviceId: 'UDID',
+    deviceName: 'iPhone 17',
     metroPort: 8791,
     metroUrlForDevice: 'http://127.0.0.1:8791',
     worktree: '/tmp/app',
@@ -213,6 +214,20 @@ test('malformed envelopes and requests are rejected', () => {
       ),
     /missing required fields/,
   );
+  for (const deviceName of [undefined, '', '  '])
+    assert.throws(
+      () =>
+        parseRequest(
+          JSON.stringify({
+            v: 1,
+            runId: 'check-1',
+            seq: 1,
+            type: 'request',
+            payload: { ...request, target: { ...request.target, deviceName } },
+          }),
+        ),
+      /missing required fields/,
+    );
 });
 
 test('a multibyte character split across chunks still decodes', async () => {

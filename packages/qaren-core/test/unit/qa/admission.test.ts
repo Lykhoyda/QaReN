@@ -8,6 +8,7 @@ import {
   admit,
   awaitBundleReady,
   createBundleReload,
+  metroDevicePin,
   type AdmissionSteps,
 } from '../../../dist/qa/admission.js';
 import { REACT_READY_PROBE_JS } from '../../../dist/injected-helpers.js';
@@ -576,3 +577,8 @@ for (const late of ['helpers', 'proof'] as const) {
     await assert.rejects(reload.settled(), { code: 'CDP_NOT_CONNECTED' });
   });
 }
+
+test("an iOS attach is pinned to the run's simulator; Android's Metro device name is a model, so it is not", () => {
+  assert.equal(metroDevicePin('ios', 'qa-pr1080-testapp-r2'), 'qa-pr1080-testapp-r2');
+  assert.equal(metroDevicePin('android', 'emulator-5574'), undefined);
+});

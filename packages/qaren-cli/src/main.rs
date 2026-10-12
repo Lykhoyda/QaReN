@@ -37,6 +37,15 @@ fn runs_root() -> Result<PathBuf, String> {
     qaren_home().map(|home| home.join("runs"))
 }
 
+// Verified iOS dev-client builds shared across worktrees, keyed by native fingerprint.
+fn native_cache_root() -> Result<PathBuf, String> {
+    qaren_home().map(|home| home.join("native-cache"))
+}
+
+fn build_roots() -> Result<(PathBuf, PathBuf, PathBuf), String> {
+    Ok((lock_root()?, runs_root()?, native_cache_root()?))
+}
+
 // The core runtime: QAREN_RUNTIME, else the installed <exe>/../runtime, else the source checkout.
 fn runtime_dir() -> PathBuf {
     runtime_dir_from(
@@ -310,8 +319,8 @@ fn main() -> ExitCode {
             runner.watch_caller();
             qaren::progress::enable();
             qaren::events::init();
-            match lock_root().and_then(|lock| runs_root().map(|runs| (lock, runs))) {
-                Ok((lock_root, runs_root)) => {
+            match build_roots() {
+                Ok((lock_root, runs_root, native_cache_root)) => {
                     let project_root =
                         std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
                     let request = RunRequest {
@@ -330,6 +339,7 @@ fn main() -> ExitCode {
                         node: std::env::var_os("QAREN_NODE").map(PathBuf::from),
                         lock_root,
                         runs_root,
+                        native_cache_root,
                         android_home: std::env::var("ANDROID_HOME").ok(),
                         budgets: check_budgets(),
                         pr: (verb == "pr").then(|| run::PrTarget {
@@ -350,14 +360,15 @@ fn main() -> ExitCode {
             ),
             Err(detail) => failed_receipt("publish", roots_failure(detail), &runner),
         },
-        "prepare" => match lock_root().and_then(|lock| runs_root().map(|runs| (lock, runs))) {
-            Ok((lock_root, runs_root)) => {
+        "prepare" => match build_roots() {
+            Ok((lock_root, runs_root, native_cache_root)) => {
                 let prepare_args = prepare::PrepareArgs {
                     scenario_path: PathBuf::from(&positional[1]),
                     dry_run,
                     android_home: std::env::var("ANDROID_HOME").ok(),
                     lock_root,
                     runs_root,
+                    native_cache_root,
                 };
                 prepare::prepare(&mut runner, &prepare_args)
             }

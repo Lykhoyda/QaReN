@@ -51,6 +51,7 @@ pub struct RunRequest {
     pub node: Option<PathBuf>,
     pub lock_root: PathBuf,
     pub runs_root: PathBuf,
+    pub native_cache_root: PathBuf,
     pub android_home: Option<String>,
     pub budgets: Budgets,
     // `qaren pr`: the run happens on a detached worktree at this PR's head.
@@ -375,6 +376,7 @@ fn run_inner(
     let mut ctx = Ctx {
         runner,
         runs_root: req.runs_root.clone(),
+        native_cache_root: req.native_cache_root.clone(),
         record,
         started_ms,
         timings: Vec::new(),
@@ -576,6 +578,7 @@ fn run_inner(
         login_marker: config.login_marker.clone(),
         target: CoreTarget {
             device_id: device.id.clone(),
+            device_name: device.name.clone(),
             metro_port: config.metro_port,
             metro_url_for_device: format!("http://127.0.0.1:{}", config.metro_port),
             worktree: project_root.clone(),

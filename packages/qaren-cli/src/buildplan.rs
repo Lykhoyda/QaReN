@@ -34,10 +34,88 @@ pub struct NativeCacheState {
     pub lockfile_sha256: String,
     #[serde(default)]
     pub generated_native_dirs: Vec<String>,
+    // Android only: its build stays in this worktree; iOS builds live in the machine store.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub artifact: Option<CachedArtifact>,
     #[serde(default)]
     pub fingerprint_parts: BTreeMap<String, String>,
+}
+
+// The machine store's record for one fingerprint; written once, never rewritten.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct StoreRecord {
+    #[serde(flatten)]
+    pub artifact: CachedArtifact,
+    pub built_at: String,
+    pub candidate_sha: String,
+}
+
+pub const STORE_RECORD: &str = "artifact.json";
+
+pub fn store_dir(store_root: &Path, platform: &str, app_id: &str, fingerprint: &str) -> PathBuf {
+    debug_assert!(fingerprint
+        .chars()
+        .all(|c| c.is_ascii_alphanumeric() || c == ':'));
+    store_root
+        .join(platform)
+        .join(app_id)
+        .join(fingerprint.replace(':', "-"))
+}
+
+// The record names its artifact relative to the entry, so it never points outside it.
+pub fn load_store_record(dir: &Path) -> Result<Option<StoreRecord>, String> {
+    let path = dir.join(STORE_RECORD);
+    let raw = match std::fs::read_to_string(&path) {
+        Ok(raw) => raw,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(e) => return Err(format!("cannot read {}: {e}", path.display())),
+    };
+    let mut record: StoreRecord = serde_json::from_str(&raw)
+        .map_err(|e| format!("{} does not parse: {e}", path.display()))?;
+    let relative = &record.artifact.path;
+    if relative.as_os_str().is_empty()
+        || !relative
+            .components()
+            .all(|c| matches!(c, std::path::Component::Normal(_)))
+    {
+        return Err(format!(
+            "{} names an artifact outside its entry",
+            path.display()
+        ));
+    }
+    record.artifact.path = dir.join(relative);
+    Ok(Some(record))
+}
+
+// Create-new via hard link: readers never see a partial record and a second writer loses.
+pub fn publish_store_record(dir: &Path, record: &StoreRecord) -> std::io::Result<bool> {
+    let mut on_disk = record.clone();
+    on_disk.artifact.path = record
+        .artifact
+        .path
+        .strip_prefix(dir)
+        .map_err(|_| {
+            std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "artifact is outside its store entry",
+            )
+        })?
+        .to_path_buf();
+    let tmp = dir.join(format!(
+        ".{STORE_RECORD}.{}.{}",
+        std::process::id(),
+        crate::timefmt::epoch_ms()
+    ));
+    let body = serde_json::to_string_pretty(&on_disk)
+        .map_err(|e| std::io::Error::other(format!("serialize: {e}")))?;
+    let linked =
+        std::fs::write(&tmp, body).and_then(|()| std::fs::hard_link(&tmp, dir.join(STORE_RECORD)));
+    let _ = std::fs::remove_file(&tmp);
+    match linked {
+        Ok(()) => Ok(true),
+        Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => Ok(false),
+        Err(e) => Err(e),
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -174,10 +252,20 @@ pub struct DecisionInputs<'a> {
     pub native_dir_in_candidate: bool,
 }
 
+fn sha_evidence(built: &str, current: &str) -> String {
+    if built == current {
+        format!("recorded build and current candidate are the same sha {current}")
+    } else {
+        format!(
+            "recorded build was of candidate {built}; current candidate {current} serves fresh JS via Metro, native compatibility proven by fingerprint, never by sha"
+        )
+    }
+}
+
 pub fn decide(
     inputs: &DecisionInputs,
     state: &StateStatus,
-    artifact_status: Option<ArtifactStatus>,
+    store: Option<(StoreRecord, ArtifactStatus)>,
 ) -> BuildPlan {
     let regenerate = inputs.native_dir_exists && !inputs.native_dir_in_candidate;
     let clean = |reason: String, evidence: Vec<String>| BuildPlan {
@@ -196,6 +284,64 @@ pub fn decide(
             "scenario build.strategy=clean mandates a clean native build".to_string(),
             Vec::new(),
         );
+    }
+    let kind_ok = |a: &CachedArtifact| {
+        matches!(
+            (inputs.platform, a.kind),
+            ("ios", ArtifactKind::AppBundle) | ("android", ArtifactKind::Apk)
+        )
+    };
+    // A verified iOS build of this exact fingerprint needs nothing from this worktree's state.
+    if let (Some((record, ArtifactStatus::Verified)), true, Some(scheme), "ios") = (
+        &store,
+        inputs.fingerprint_complete,
+        inputs.scheme,
+        inputs.platform,
+    ) {
+        if kind_ok(&record.artifact) {
+            let mut evidence = match state {
+                StateStatus::Missing => {
+                    vec!["no native cache state recorded for this worktree/app".to_string()]
+                }
+                StateStatus::Invalid(reason) => {
+                    vec![format!(
+                        "native cache state is unreadable or invalid: {reason}"
+                    )]
+                }
+                StateStatus::Loaded(state) if state.worktree_root != inputs.worktree_root => {
+                    vec![format!(
+                        "native cache state is bound to a different worktree: recorded {}, current {}",
+                        state.worktree_root.display(),
+                        inputs.worktree_root.display()
+                    )]
+                }
+                StateStatus::Loaded(_) => Vec::new(),
+            };
+            evidence.extend([
+                format!(
+                    "native fingerprint {} matches the stored build",
+                    inputs.fingerprint
+                ),
+                sha_evidence(&record.candidate_sha, inputs.candidate_sha),
+                format!(
+                    "artifact from machine store {} verified against recorded sha256 {}",
+                    record.artifact.path.display(),
+                    record.artifact.sha256
+                ),
+                format!("dev client launch scheme {scheme:?} is configured"),
+            ]);
+            return BuildPlan {
+                decision: BuildDecision::Reuse,
+                fingerprint: inputs.fingerprint.to_string(),
+                reason: OutputText::from_output("native inputs are unchanged and the cached dev client is content-verified; reusing it with fresh candidate JS via Metro"),
+                evidence: evidence
+                    .iter()
+                    .map(|text| OutputText::from_output(text))
+                    .collect(),
+                artifact: Some(record.artifact.clone()),
+                regenerate_native_dir: false,
+            };
+        }
     }
     let state =
         match state {
@@ -322,17 +468,7 @@ pub fn decide(
     // The candidate SHA binds evidence; the fingerprint proves native
     // compatibility. A SHA delta with an identical fingerprint is the
     // JS-only-change case reuse exists for — the comparison is always recorded.
-    let sha_evidence = if state.candidate_sha == inputs.candidate_sha {
-        format!(
-            "recorded build and current candidate are the same sha {}",
-            inputs.candidate_sha
-        )
-    } else {
-        format!(
-            "recorded build was of candidate {}; current candidate {} serves fresh JS via Metro, native compatibility proven by fingerprint, never by sha",
-            state.candidate_sha, inputs.candidate_sha
-        )
-    };
+    let sha_evidence = sha_evidence(&state.candidate_sha, inputs.candidate_sha);
     if state.fingerprint == inputs.fingerprint {
         let match_evidence = format!(
             "native fingerprint {} matches the recorded build",
@@ -355,37 +491,33 @@ pub fn decide(
         }
         // A cached artifact of the wrong kind for the platform indicates a
         // corrupt cache state; it can never authorize reuse.
-        let kind_ok = state.artifact.as_ref().is_none_or(|a| {
-            matches!(
-                (inputs.platform, a.kind),
-                ("ios", ArtifactKind::AppBundle) | ("android", ArtifactKind::Apk)
-            )
-        });
-        if !kind_ok {
+        if store.as_ref().is_some_and(|(r, _)| !kind_ok(&r.artifact)) {
             return incremental(
                 "cached artifact kind does not match the platform; refusing it and using a keyed incremental build"
                     .to_string(),
                 vec![match_evidence, sha_evidence],
             );
         }
-        match (&state.artifact, artifact_status) {
-            (Some(artifact), Some(ArtifactStatus::Verified)) => match inputs.scheme {
+        match store {
+            Some((record, ArtifactStatus::Verified)) => match inputs.scheme {
                 Some(scheme) => BuildPlan {
                     decision: BuildDecision::Reuse,
                     fingerprint: inputs.fingerprint.to_string(),
-                    reason: crate::redact::OutputText::from_output("native inputs are unchanged and the cached dev client is content-verified; reusing it with fresh candidate JS via Metro"
-                            ),
+                    reason: OutputText::from_output("native inputs are unchanged and the cached dev client is content-verified; reusing it with fresh candidate JS via Metro"),
                     evidence: [
                         match_evidence,
                         sha_evidence,
                         format!(
                             "cached artifact {} verified against recorded sha256 {}",
-                            artifact.path.display(),
-                            artifact.sha256
+                            record.artifact.path.display(),
+                            record.artifact.sha256
                         ),
                         format!("dev client launch scheme {scheme:?} is configured"),
-                    ].iter().map(|text| crate::redact::OutputText::from_output(text)).collect(),
-                    artifact: Some(artifact.clone()),
+                    ]
+                    .iter()
+                    .map(|text| OutputText::from_output(text))
+                    .collect(),
+                    artifact: Some(record.artifact),
                     regenerate_native_dir: false,
                 },
                 None => incremental(
@@ -394,25 +526,25 @@ pub fn decide(
                     vec![match_evidence, sha_evidence],
                 ),
             },
-            (Some(artifact), Some(ArtifactStatus::Mismatch)) => incremental(
+            Some((record, ArtifactStatus::Mismatch)) => incremental(
                 "cached artifact content no longer matches its recorded sha256; refusing the stale binary and using a keyed incremental build"
                     .to_string(),
                 vec![
                     match_evidence,
                     sha_evidence,
-                    format!("artifact {} failed content verification", artifact.path.display()),
+                    format!("artifact {} failed content verification", record.artifact.path.display()),
                 ],
             ),
-            (Some(artifact), Some(ArtifactStatus::MissingFile)) => incremental(
+            Some((record, ArtifactStatus::MissingFile)) => incremental(
                 "recorded cached artifact is missing on disk; using a keyed incremental build"
                     .to_string(),
                 vec![
                     match_evidence,
                     sha_evidence,
-                    format!("artifact {} not found", artifact.path.display()),
+                    format!("artifact {} not found", record.artifact.path.display()),
                 ],
             ),
-            (Some(_), None) | (None, _) => incremental(
+            None => incremental(
                 "fingerprint matches but no verified cached artifact is available; using a keyed incremental build"
                     .to_string(),
                 vec![match_evidence, sha_evidence],

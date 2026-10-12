@@ -680,7 +680,12 @@ export class CDPClient {
       typeof filtersOrPlatform === 'string'
         ? { platform: filtersOrPlatform }
         : (filtersOrPlatform ?? {});
-    return this.connectWithCurrentPolicy(portHint, filters, intent);
+    // A bare reconnect after an exact attach keeps its identity (platform, bundle, device); explicit filters replace it.
+    const scoped =
+      this._exactDiscoveryPort !== undefined && filtersOrPlatform === undefined
+        ? this._connectFilters
+        : filters;
+    return this.connectWithCurrentPolicy(portHint, scoped, intent);
   }
 
   async listTargets(portHint?: number): Promise<{ port: number; targets: HermesTarget[] }> {

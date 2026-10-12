@@ -1,7 +1,7 @@
 use crate::adapters::{android, devclient, ios, metro};
 use crate::buildplan::{
     self, ArtifactKind, ArtifactStatus, BuildDecision, BuildPlan, CachedArtifact, LockHolder,
-    LockOutcome, LockPolicy, StateStatus,
+    LockOutcome, LockPolicy, StateStatus, StoreRecord,
 };
 use crate::cancel::ensure_running;
 use crate::candidate;
@@ -28,6 +28,7 @@ pub struct PrepareArgs {
     pub android_home: Option<String>,
     pub lock_root: PathBuf,
     pub runs_root: PathBuf,
+    pub native_cache_root: PathBuf,
 }
 
 fn platform_dir(platform: Platform) -> &'static str {
@@ -50,6 +51,7 @@ fn qaren_metro_port(scenario: &Scenario) -> u16 {
 pub(crate) struct Ctx<'a> {
     pub(crate) runner: &'a mut dyn Runner,
     pub(crate) runs_root: PathBuf,
+    pub(crate) native_cache_root: PathBuf,
     pub(crate) record: RunRecord,
     pub(crate) started_ms: u64,
     pub(crate) timings: Vec<(String, u64)>,
@@ -279,6 +281,7 @@ fn prepare_validated(
             &scenario_sha256,
             &run_id,
             started_ms,
+            &args.native_cache_root,
         ));
     }
 
@@ -344,6 +347,7 @@ fn prepare_validated(
     let mut ctx = Ctx {
         runner,
         runs_root: args.runs_root.clone(),
+        native_cache_root: args.native_cache_root.clone(),
         record,
         started_ms,
         timings: Vec::new(),
@@ -1049,13 +1053,14 @@ pub(crate) fn plan_build(ctx: &mut Ctx) -> Result<BuildPlan, Failure> {
     let fp = fingerprint::compute(ctx.runner, &repo_root, &project_root, platform)?
         .with_ios_workspace(ctx.record.scenario.build.ios_workspace.as_ref());
     let state = buildplan::load_state(&repo_root, platform, &ctx.record.candidate.app_id);
-    // The artifact is content-verified only when it could authorize reuse.
-    let artifact_status = match &state {
-        StateStatus::Loaded(s) if s.fingerprint == fp.value => {
-            s.artifact.as_ref().map(verify_artifact)
-        }
-        _ => None,
-    };
+    let store = cached_artifact(
+        &ctx.native_cache_root,
+        platform,
+        &ctx.record.candidate.app_id,
+        &fp,
+        &state,
+        &mut ctx.notes,
+    );
     let scheme = ctx.record.scenario.candidate.dev_client_scheme.clone();
     let native_dir_exists = project_root.join(platform).is_dir();
     let inputs = buildplan::DecisionInputs {
@@ -1078,7 +1083,46 @@ pub(crate) fn plan_build(ctx: &mut Ctx) -> Result<BuildPlan, Failure> {
         ctx.notes
             .push(("expo_fingerprint_ms".to_string(), ms.to_string()));
     }
-    Ok(buildplan::decide(&inputs, &state, artifact_status))
+    Ok(buildplan::decide(&inputs, &state, store))
+}
+
+// The cached artifact is content-verified only when it could authorize reuse. iOS reads the
+// machine store; Android keeps its build in this worktree's state.
+fn cached_artifact(
+    store_root: &Path,
+    platform: &str,
+    app_id: &str,
+    fp: &NativeFingerprint,
+    state: &StateStatus,
+    notes: &mut Vec<(String, String)>,
+) -> Option<(StoreRecord, ArtifactStatus)> {
+    if platform != "ios" {
+        let StateStatus::Loaded(s) = state else {
+            return None;
+        };
+        let artifact = s.artifact.clone().filter(|_| s.fingerprint == fp.value)?;
+        let status = verify_artifact(&artifact);
+        let record = StoreRecord {
+            artifact,
+            built_at: s.built_at.clone(),
+            candidate_sha: s.candidate_sha.clone(),
+        };
+        return Some((record, status));
+    }
+    if !fp.complete {
+        return None;
+    }
+    let dir = buildplan::store_dir(store_root, platform, app_id, &fp.value);
+    match buildplan::load_store_record(&dir) {
+        Ok(record) => record.map(|record| {
+            let status = verify_artifact(&record.artifact);
+            (record, status)
+        }),
+        Err(reason) => {
+            notes.push(("native_store".to_string(), format!("ignored: {reason}")));
+            None
+        }
+    }
 }
 
 // Hash-only parts and the completeness gate's own boolean; never the incompleteness reasons.
@@ -1717,9 +1761,15 @@ fn artifact_install_failure(run_id: &str, artifact: &CachedArtifact, summary: St
             "cached dev client {} failed to install: {summary}",
             artifact.path.display()
         ),
-        format!(
-            "delete the cached artifact to force a rebuild, then qaren cleanup {run_id} --json and re-run prepare"
-        ),
+        match artifact.kind {
+            ArtifactKind::AppBundle => format!(
+                "delete the machine store entry {} to force a rebuild, then qaren cleanup {run_id} --json and re-run prepare",
+                artifact.path.parent().and_then(Path::parent).unwrap_or(&artifact.path).display()
+            ),
+            ArtifactKind::Apk => format!(
+                "delete the cached artifact to force a rebuild, then qaren cleanup {run_id} --json and re-run prepare"
+            ),
+        },
     )
 }
 
@@ -1815,17 +1865,27 @@ pub(crate) fn record_build_result(ctx: &mut Ctx, fp: &NativeFingerprint) -> Resu
             return Ok(());
         }
     };
-    let fp_key: String = fp
-        .value
-        .chars()
-        .filter(|c| c.is_ascii_hexdigit())
-        .take(16)
-        .collect();
-    let bucket = buildplan::cache_dir(&repo_root)
-        .join("artifacts")
-        .join(platform)
-        .join(format!("{app_id}-{fp_key}"));
-    let staging = bucket.join(format!(".staging-{}", ctx.record.run_id));
+    let ios = platform == "ios";
+    let bucket = if ios {
+        buildplan::store_dir(&ctx.native_cache_root, platform, &app_id, &fp.value)
+    } else {
+        let fp_key: String = fp
+            .value
+            .chars()
+            .filter(|c| c.is_ascii_hexdigit())
+            .take(16)
+            .collect();
+        buildplan::cache_dir(&repo_root)
+            .join("artifacts")
+            .join(platform)
+            .join(format!("{app_id}-{fp_key}"))
+    };
+    // Lanes share the iOS store, and run ids are only second-unique.
+    let staging = bucket.join(format!(
+        ".staging-{}-{}",
+        ctx.record.run_id,
+        std::process::id()
+    ));
     let dest_dir = bucket.join(&ctx.record.run_id);
     let staged = staging.join(src.file_name().unwrap_or_default());
     let dest = dest_dir.join(src.file_name().unwrap_or_default());
@@ -1848,11 +1908,12 @@ pub(crate) fn record_build_result(ctx: &mut Ctx, fp: &NativeFingerprint) -> Resu
             return Ok(());
         }
     };
-    let artifact = Some(CachedArtifact {
+    let artifact = CachedArtifact {
         path: dest,
         sha256,
         kind,
-    });
+    };
+    let built_at = timefmt::iso8601_utc(ctx.runner.now_epoch_ms());
     let generated =
         ctx.record.candidate.project_root.join(platform).is_dir() && !fp.native_dir_in_candidate;
     let state = buildplan::NativeCacheState {
@@ -1861,7 +1922,7 @@ pub(crate) fn record_build_result(ctx: &mut Ctx, fp: &NativeFingerprint) -> Resu
         app_id: app_id.clone(),
         worktree_root: repo_root.clone(),
         fingerprint: fp.value.clone(),
-        built_at: timefmt::iso8601_utc(ctx.runner.now_epoch_ms()),
+        built_at: built_at.clone(),
         candidate_sha: ctx.record.candidate.git_sha.clone(),
         lockfile_sha256: ctx
             .record
@@ -1874,7 +1935,7 @@ pub(crate) fn record_build_result(ctx: &mut Ctx, fp: &NativeFingerprint) -> Resu
         } else {
             Vec::new()
         },
-        artifact,
+        artifact: (!ios).then(|| artifact.clone()),
         fingerprint_parts: fp.parts.clone(),
     };
     let path = buildplan::state_path(&repo_root, platform, &app_id);
@@ -1906,30 +1967,59 @@ pub(crate) fn record_build_result(ctx: &mut Ctx, fp: &NativeFingerprint) -> Resu
             app_id: app_id.clone(),
             serial,
             server_port,
-            artifact: state.artifact.clone().expect("published artifact"),
+            artifact: artifact.clone(),
             via: "expo-run-android".into(),
             installed_at: timefmt::iso8601_utc(ctx.runner.now_epoch_ms()),
             removal: None,
         });
     }
-    ctx.notes.push((
-        "artifact_cache".into(),
-        "cached the built dev client for fingerprint-matched reuse".into(),
-    ));
-    let pruned = prune_stale_artifacts(bucket.parent().expect("platform cache"), &app_id, &fp_key);
-    if pruned > 0 {
-        ctx.notes.push((
-            "artifact_cache".into(),
-            format!(
-                "pruned {pruned} artifact director{} for older native fingerprints",
-                if pruned == 1 { "y" } else { "ies" }
+    let record = StoreRecord {
+        artifact: artifact.clone(),
+        built_at,
+        candidate_sha: ctx.record.candidate.git_sha.clone(),
+    };
+    let published = match (ios, fp.complete) {
+        (false, _) => {
+            "cached the built dev client for fingerprint-matched reuse in this worktree".to_string()
+        }
+        (true, false) => "kept this run's copy; an incomplete fingerprint is never published for reuse".to_string(),
+        (true, true) => match buildplan::publish_store_record(&bucket, &record) {
+            Ok(true) => format!(
+                "published the built dev client to the machine store at {}",
+                bucket.display()
             ),
-        ));
-    }
-    if platform != "ios" || !ctx.record.resources.can_release_build_ownership() {
+            Ok(false) => format!(
+                "kept this run's copy; the machine store already holds a build of this fingerprint at {}",
+                bucket.display()
+            ),
+            Err(e) => format!("kept this run's copy; could not publish to the machine store: {e}"),
+        },
+    };
+    ctx.notes.push(("artifact_cache".into(), published));
+    if !ios {
+        let keep = bucket
+            .file_name()
+            .and_then(|name| name.to_str())
+            .and_then(|name| name.strip_prefix(&format!("{app_id}-")))
+            .unwrap_or_default()
+            .to_string();
+        let pruned =
+            prune_stale_artifacts(bucket.parent().expect("platform cache"), &app_id, &keep);
+        if pruned > 0 {
+            ctx.notes.push((
+                "artifact_cache".into(),
+                format!(
+                    "pruned {pruned} artifact director{} for older native fingerprints",
+                    if pruned == 1 { "y" } else { "ies" }
+                ),
+            ));
+        }
         return Ok(());
     }
-    let (Some(source), Some(cached)) = (verified, state.artifact) else {
+    if !ctx.record.resources.can_release_build_ownership() {
+        return Ok(());
+    }
+    let (Some(source), cached) = (verified, artifact) else {
         return Ok(());
     };
     ctx.record.build.as_mut().expect("build planned").artifact = Some(cached);
@@ -2525,6 +2615,7 @@ fn dry_run_receipt(
     scenario_sha256: &str,
     run_id: &str,
     started_ms: u64,
+    native_cache_root: &Path,
 ) -> Receipt {
     let now = runner.now_epoch_ms();
     let mut receipt = Receipt::new(
@@ -2592,12 +2683,16 @@ fn dry_run_receipt(
         Ok(fp) => {
             let fp = fp.with_ios_workspace(scenario.build.ios_workspace.as_ref());
             let state = buildplan::load_state(&cand.repo_root, platform, &cand.app_id);
-            let artifact_status = match &state {
-                StateStatus::Loaded(s) if s.fingerprint == fp.value => {
-                    s.artifact.as_ref().map(verify_artifact)
-                }
-                _ => None,
-            };
+            let mut notes = Vec::new();
+            let store = cached_artifact(
+                native_cache_root,
+                platform,
+                &cand.app_id,
+                &fp,
+                &state,
+                &mut notes,
+            );
+            receipt.outcomes.extend(notes);
             let inputs = buildplan::DecisionInputs {
                 platform,
                 app_id: &cand.app_id,
@@ -2613,7 +2708,7 @@ fn dry_run_receipt(
                 native_dir_exists: cand.project_root.join(platform).is_dir(),
                 native_dir_in_candidate: fp.native_dir_in_candidate,
             };
-            receipt.build = Some(buildplan::decide(&inputs, &state, artifact_status));
+            receipt.build = Some(buildplan::decide(&inputs, &state, store));
             receipt.outcomes.extend(fingerprint_notes(&fp));
         }
         Err(failure) => {

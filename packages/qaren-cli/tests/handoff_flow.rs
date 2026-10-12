@@ -38,6 +38,7 @@ fn prepare_args(scenario_path: &Path, android_home: Option<String>) -> PrepareAr
         dry_run: false,
         android_home,
         lock_root: scenario_path.parent().unwrap().join(".locks"),
+        native_cache_root: scenario_path.parent().unwrap().join(".native-store"),
         runs_root: scenario_path.parent().unwrap().to_path_buf(),
     }
 }
@@ -80,6 +81,7 @@ fn ios_handoff_prepare_allocates_and_issues_typed_handoff_without_building() {
     script_self_identity(&mut mock);
     mock.expect_run("pnpm install --frozen-lockfile", CmdOutput::success(""));
     mock.expect_run("ls-files", CmdOutput::success(""));
+    common::script_xcode(&mut mock);
     mock.expect_run("simctl create", CmdOutput::success(&format!("{UDID}\n")));
     mock.expect_run(
         "simctl bootstatus",
@@ -1399,6 +1401,7 @@ fn handoff_dry_run_plans_allocation_only() {
         dry_run: true,
         android_home: None,
         lock_root: repo.join(".locks"),
+        native_cache_root: repo.join(".native-store"),
         runs_root: repo.to_path_buf(),
     };
     let receipt = prepare(&mut mock, &args);

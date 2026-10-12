@@ -110,15 +110,25 @@ fn phrase_named_files_preserve_native_fingerprints_and_drift_detection() {
         let scenario = common::scenario_from(&common::ios_scenario_yaml(8793));
         let mut runner = RealRunner::new();
         let baseline = resolve(&mut runner, &scenario, &repo).unwrap();
+        // Only the host's Xcode availability may leave a real iOS fingerprint incomplete here.
+        let complete_but_toolchain = |fp: &qaren::fingerprint::NativeFingerprint| {
+            fp.incompleteness
+                .iter()
+                .all(|reason| reason.starts_with("toolchain identity unavailable"))
+        };
         let before = qaren::fingerprint::compute(&mut runner, &repo, &project, "ios").unwrap();
-        assert!(before.complete);
+        assert!(
+            complete_but_toolchain(&before),
+            "{:?}",
+            before.incompleteness
+        );
         assert!(before.native_dir_in_candidate);
         assert!(before.file_count >= 2);
         assert!(verify_unchanged_with(&mut runner, &baseline, false).is_ok());
         std::fs::write(project.join("app.json"), r#"{"expo":{"name":"after"}}"#).unwrap();
         let after = qaren::fingerprint::compute(&mut runner, &repo, &project, "ios").unwrap();
         assert_ne!(before.value, after.value, "tracked={tracked}");
-        assert!(after.complete);
+        assert!(complete_but_toolchain(&after), "{:?}", after.incompleteness);
         let changed = resolve(&mut runner, &scenario, &repo).unwrap();
         assert_ne!(
             baseline.worktree_fingerprint, changed.worktree_fingerprint,

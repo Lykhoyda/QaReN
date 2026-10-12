@@ -92,6 +92,29 @@ test('exact-port discovery survives reconnects and ordinary entry points for the
   }
 });
 
+test("a later bare autoConnect keeps the exact attach's device pin instead of binding a sibling", async () => {
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = (async () => ({
+    json: async () => [bridgelessTarget({ id: 'sibling-1', deviceName: 'qaren-check' })],
+  })) as unknown as typeof fetch;
+  const client = new CDPClient(managedPort);
+  const pinned = /Pinned device "Owned Simulator" has no live CDP target/;
+  try {
+    await assert.rejects(
+      client.connectExact(managedPort, {
+        platform: 'ios',
+        bundleId: 'com.example.app',
+        deviceName: 'Owned Simulator',
+      }),
+      pinned,
+    );
+    await assert.rejects(client.autoConnect(), pinned);
+  } finally {
+    await client.disconnect();
+    globalThis.fetch = originalFetch;
+  }
+});
+
 test('authoritative discovery re-resolves rotated target IDs from the managed port', async () => {
   const requestedFilters: Record<string, unknown>[] = [];
   const selected = await discoverAuthoritativeTarget(

@@ -11,12 +11,10 @@ pub struct NativeFingerprint {
     pub value: String,
     pub file_count: usize,
     pub native_dir_in_candidate: bool,
-    // Reuse of a cached binary is only legal when the input set is provably
-    // complete; a dynamic app.config.* is complete only once the app's own
-    // @expo/fingerprint has evaluated it.
+    // Reuse requires proven inputs; dynamic configs also require Expo evaluation.
     pub complete: bool,
     pub incompleteness: Vec<String>,
-    // Hash-only evidence of what `value` composes: rnfp, plus expo and toolchain for a dynamic config.
+    // Hash-only evidence: rnfp, iOS toolchain, and Expo for evaluated dynamic configs.
     pub parts: BTreeMap<String, String>,
     pub expo_fingerprint_ms: Option<u64>,
     // The closed-template cause when a dynamic config's Expo fingerprint could not be computed.
@@ -779,7 +777,7 @@ pub fn compute(
     let mut incompleteness = Vec::new();
     let mut dep_manifest: Vec<(String, String)> = Vec::new();
     let mut packages: BTreeSet<String> = BTreeSet::new();
-    let mut evaluated: Option<(String, Result<String, String>)> = None;
+    let mut evaluated: Option<String> = None;
     let mut expo_fingerprint_ms = None;
     let mut expo_unavailable = None;
     if let Some(config) = &dynamic_config {
@@ -788,7 +786,7 @@ pub fn compute(
             let expo = expo_fingerprint(runner, project_root, platform_dir);
             expo_fingerprint_ms = Some(runner.monotonic_ms().saturating_sub(started));
             match expo {
-                Ok(expo) => evaluated = Some((expo, toolchain_digest(runner))),
+                Ok(expo) => evaluated = Some(expo),
                 Err(reason) => expo_unavailable = Some(reason),
             }
         }
@@ -801,7 +799,10 @@ pub fn compute(
             incompleteness.push(format!("Expo fingerprint unavailable: {reason}"));
         }
     }
-    if let Some((_, Err(reason))) = &evaluated {
+    // An unavailable Expo fingerprint already forbids reuse, so the Xcode identity is not read.
+    let toolchain =
+        (platform_dir == "ios" && expo_unavailable.is_none()).then(|| toolchain_digest(runner));
+    if let Some(Err(reason)) = &toolchain {
         incompleteness.push(format!(
             "toolchain identity unavailable ({reason}); reuse across an unknown Xcode is unprovable"
         ));
@@ -913,12 +914,17 @@ pub fn compute(
     let file_count = entries.len();
     let rnfp = format!("{FINGERPRINT_VERSION}:{}", sha256_hex(manifest.as_bytes()));
     let mut parts = BTreeMap::from([("rnfp".to_string(), rnfp.clone())]);
-    let value = match evaluated {
-        Some((expo, toolchain)) => {
+    let value = match toolchain {
+        Some(toolchain) => {
             let toolchain = toolchain.unwrap_or_else(|_| "unavailable".to_string());
-            let bytes = serde_json::to_vec(&("qaren-expo-native/1", &rnfp, &expo, &toolchain))
-                .expect("fingerprint parts serialize to JSON");
-            parts.insert("expo".to_string(), expo);
+            let bytes = match &evaluated {
+                Some(expo) => serde_json::to_vec(&("qaren-expo-native/1", &rnfp, expo, &toolchain)),
+                None => serde_json::to_vec(&("qaren-native/2", &rnfp, &toolchain)),
+            }
+            .expect("fingerprint parts serialize to JSON");
+            if let Some(expo) = evaluated {
+                parts.insert("expo".to_string(), expo);
+            }
             parts.insert("toolchain".to_string(), toolchain);
             format!("{FINGERPRINT_VERSION}:{}", sha256_hex(&bytes))
         }

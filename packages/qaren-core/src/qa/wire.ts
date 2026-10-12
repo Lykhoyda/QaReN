@@ -28,6 +28,8 @@ export interface Envelope<T = unknown> {
 
 export interface WireTarget {
   deviceId: string;
+  // The name Metro reports for the device's runtime; on iOS that is the simulator's name.
+  deviceName: string;
   metroPort: number;
   metroUrlForDevice: string;
   worktree: string;
@@ -200,6 +202,8 @@ export function parseRequest(line: string): WireRequest {
     typeof p.lease !== 'string' ||
     !target ||
     typeof target.deviceId !== 'string' ||
+    typeof target.deviceName !== 'string' ||
+    target.deviceName.trim() === '' ||
     !Number.isInteger(target.metroPort) ||
     (target.metroPort as number) < 1 ||
     (target.metroPort as number) > 65535 ||
