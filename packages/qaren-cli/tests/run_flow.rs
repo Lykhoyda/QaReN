@@ -2414,11 +2414,18 @@ fn no_ios_or_expo_android_build(mock: &MockRunner) {
 
 // Install by serial → reverse → Metro → deeplink → readiness → verify → walk → teardown.
 fn script_android_launch_walk_teardown(mock: &mut MockRunner) {
+    script_android_launch_walk_release(mock, false);
+}
+
+fn script_android_launch_walk_release(mock: &mut MockRunner, runner_running: bool) {
     mock.expect_run(
         "install -r -d",
         CmdOutput::success("Performing Streamed Install\nSuccess\n"),
     );
-    mock.expect_run("reverse tcp:8791 tcp:8791", CmdOutput::success("8791\n"));
+    mock.expect_run(
+        "reverse --no-rebind tcp:8791 tcp:8791",
+        CmdOutput::success("8791\n"),
+    );
     mock.expect_spawn(
         "expo start",
         Spawned {
@@ -2457,6 +2464,37 @@ fn script_android_launch_walk_teardown(mock: &mut MockRunner) {
     );
     mock.expect_run("ps -A", CmdOutput::success("1 1 S\n6000 6000 S\n"));
     script_metro_teardown(mock, EMULATOR, None);
+    script_borrowed_release(mock, runner_running);
+}
+
+// `dumpsys activity processes <runner>` on an API 37 emulator, runner instrumenting and stopped.
+const RUNNER_PROCESSES: &str = include_str!("fixtures/android-runner-processes-running.txt");
+const NO_RUNNER_PROCESS: &str = include_str!("fixtures/android-runner-processes-stopped.txt");
+
+// Teardown's borrowed-emulator release: the Metro reverse, then the core's runner.
+fn script_borrowed_release(mock: &mut MockRunner, runner_running: bool) {
+    mock.expect_run("adb version", CmdOutput::success(ADB_CLIENT_41));
+    mock.expect_run("reverse --remove tcp:8791", CmdOutput::success(""));
+    mock.expect_run("reverse --list", CmdOutput::success(""));
+    if runner_running {
+        // Real adb bytes: a trailing blank line when non-empty, a lone newline when empty.
+        mock.expect_run(
+            "forward --list",
+            CmdOutput::success(&format!("{EMULATOR} tcp:41234 tcp:22089\n\n")),
+        );
+        mock.expect_run(
+            "dumpsys activity processes",
+            CmdOutput::success(RUNNER_PROCESSES),
+        );
+        mock.expect_run("forward --remove tcp:41234", CmdOutput::success(""));
+        mock.expect_run("am force-stop", CmdOutput::success(""));
+        mock.expect_run("am force-stop", CmdOutput::success(""));
+    }
+    mock.expect_run("forward --list", CmdOutput::success("\n"));
+    mock.expect_run(
+        "dumpsys activity processes",
+        CmdOutput::success(NO_RUNNER_PROCESS),
+    );
 }
 
 // One finite build: the gated spawn, its group identity, then its group proven gone.
@@ -2728,21 +2766,20 @@ fn android_check_does_not_require_the_shared_configs_ios_workspace() {
     assert!(record.scenario.build.ios_workspace.is_none());
 }
 
-#[test]
-fn android_check_reuse_installs_the_cached_apk_by_serial() {
+// A native cache entry whose APK matches the worktree, so the run decides Reuse.
+fn seed_cached_apk(repo: &Path, app: &Path) -> std::path::PathBuf {
     use qaren::buildplan::{
         hash_artifact, save_json, state_path, ArtifactKind, CachedArtifact, NativeCacheState,
         CACHE_SCHEMA,
     };
-    let (repo, app) = app_repo();
     let apk = repo.join("cached").join("app-debug.apk");
     std::fs::create_dir_all(apk.parent().unwrap()).unwrap();
     std::fs::write(&apk, b"cached apk").unwrap();
     let mut fp_runner = qaren::exec::MockRunner::new();
     fp_runner.expect_run("ls-files", CmdOutput::success(""));
-    let fp = qaren::fingerprint::compute(&mut fp_runner, &repo, &app, "android").unwrap();
+    let fp = qaren::fingerprint::compute(&mut fp_runner, repo, app, "android").unwrap();
     save_json(
-        &state_path(&repo, "android", "com.rndevagent.testapp"),
+        &state_path(repo, "android", "com.rndevagent.testapp"),
         &NativeCacheState {
             schema: CACHE_SCHEMA.to_string(),
             fingerprint_parts: fp.parts.clone(),
@@ -2762,6 +2799,13 @@ fn android_check_reuse_installs_the_cached_apk_by_serial() {
         },
     )
     .unwrap();
+    apk
+}
+
+#[test]
+fn android_check_reuse_installs_the_cached_apk_by_serial() {
+    let (repo, app) = app_repo();
+    let apk = seed_cached_apk(&repo, &app);
     let req = android_request(&repo, &app);
     let mut mock = android_mock();
     script_android_preflight(&mut mock, &repo, ONE_EMULATOR, EMULATOR);
@@ -5853,4 +5897,105 @@ fn script_warm_launch_after_one_metro_retry(mock: &mut MockRunner) {
         "simctl launch --terminate-running-process",
         CmdOutput::success(""),
     );
+}
+
+#[test]
+fn android_teardown_releases_before_the_lease() {
+    let (repo, app) = app_repo();
+    seed_cached_apk(&repo, &app);
+    let req = android_request(&repo, &app);
+    let mut mock = android_mock();
+    script_android_preflight(&mut mock, &repo, ONE_EMULATOR, EMULATOR);
+    mock.expect_run("pnpm install --frozen-lockfile", CmdOutput::success(""));
+    mock.expect_run("ls-files", CmdOutput::success(""));
+    // The walk's runner is still up at teardown.
+    script_android_launch_walk_release(&mut mock, true);
+
+    let receipt = run(&mut mock, &req);
+
+    assert_eq!(receipt.result, ReceiptResult::Pass, "{:?}", receipt.failure);
+    // Both legs ran under the run's own lease, and only then was the lease released.
+    assert_eq!(receipt.cleanup["adb_reverse"], "removed");
+    assert_eq!(receipt.cleanup["android_runner"], "removed");
+    assert_eq!(receipt.cleanup["device_lease"], "removed");
+    for leg in ["adb_server", "adb_connection", "app_install"] {
+        assert!(!receipt.cleanup.contains_key(leg), "{leg}");
+    }
+    assert_eq!(mock.remaining(), 0);
+    let adb = adb_calls(&mock);
+    assert!(adb
+        .last()
+        .unwrap()
+        .contains("dumpsys activity processes"));
+    assert!(!adb
+        .iter()
+        .any(|c| c.contains("uninstall") || c.contains("kill-server")));
+    let record = RunRecord::load(&req.runs_root, &run_id()).unwrap();
+    assert!(record.resources.lease.is_none());
+}
+
+#[test]
+fn android_check_refuses_a_metro_port_already_reversed_on_the_emulator() {
+    let (repo, app) = app_repo();
+    seed_cached_apk(&repo, &app);
+    let req = android_request(&repo, &app);
+    let mut mock = android_mock();
+    script_android_preflight(&mut mock, &repo, ONE_EMULATOR, EMULATOR);
+    mock.expect_run("pnpm install --frozen-lockfile", CmdOutput::success(""));
+    mock.expect_run("ls-files", CmdOutput::success(""));
+    mock.expect_run(
+        "install -r -d",
+        CmdOutput::success("Performing Streamed Install\nSuccess\n"),
+    );
+    mock.expect_run(
+        "reverse --no-rebind tcp:8791 tcp:8791",
+        CmdOutput::failed(1, "adb: error: cannot rebind existing socket"),
+    );
+
+    let receipt = run(&mut mock, &req);
+
+    let failure = receipt.failure.as_ref().unwrap();
+    assert_eq!(failure.code, FailureCode::DeviceBusy, "{failure:?}");
+    assert_eq!(receipt.result, ReceiptResult::Refused);
+    assert!(failure.detail.contains("tcp:8791"));
+    // The mapping belongs to someone else: it is neither taken over nor removed.
+    assert!(!adb_calls(&mock)
+        .iter()
+        .any(|c| c.contains("reverse --remove")));
+    assert_eq!(receipt.cleanup["device_lease"], "removed");
+    assert!(!receipt.cleanup.contains_key("adb_reverse"));
+    assert_eq!(mock.remaining(), 0);
+    let record = RunRecord::load(&req.runs_root, &run_id()).unwrap();
+    assert_eq!(record.resources.adb_reverse_port, None);
+}
+
+#[test]
+fn android_check_cancelled_before_reverse_leaves_an_existing_mapping() {
+    let (repo, app) = app_repo();
+    seed_cached_apk(&repo, &app);
+    let req = android_request(&repo, &app);
+    let mut mock = android_mock();
+    script_android_preflight(&mut mock, &repo, ONE_EMULATOR, EMULATOR);
+    mock.expect_run("pnpm install --frozen-lockfile", CmdOutput::success(""));
+    mock.expect_run("ls-files", CmdOutput::success(""));
+    mock.expect_run(
+        "install -r -d",
+        CmdOutput::success("Performing Streamed Install\nSuccess\n"),
+    );
+    // SIGTERM lands after the install, before this run's reverse command runs.
+    mock.cancel_after = Some(("install -r -d".into(), "received SIGTERM".into()));
+
+    let receipt = run(&mut mock, &req);
+
+    let failure = receipt.failure.as_ref().unwrap();
+    assert_eq!(failure.code, FailureCode::RunCancelled, "{failure:?}");
+    // tcp:8791 may already be reversed by something else: this run made no
+    // mapping, so teardown leaves the port alone.
+    assert!(!adb_calls(&mock).iter().any(|c| c.contains("reverse")));
+    assert!(!receipt.cleanup.contains_key("adb_reverse"));
+    assert_eq!(receipt.cleanup["device_lease"], "removed");
+    assert_eq!(mock.remaining(), 0);
+    let record = RunRecord::load(&req.runs_root, &run_id()).unwrap();
+    assert_eq!(record.resources.adb_reverse_port, None);
+    assert!(record.resources.lease.is_none());
 }

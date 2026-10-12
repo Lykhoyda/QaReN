@@ -1235,6 +1235,11 @@ fn teardown(ctx: &mut Ctx, wait_unresolved: bool) -> (Vec<(String, String)>, boo
     if ctx.record.resources.ios_simulator.is_some() {
         outcomes.push(("simulator".to_string(), Outcome::Kept));
     }
+    // Released while the lease is still this run's; an unclean leg below retains it.
+    outcomes.extend(crate::commands::cleanup::release_borrowed_android(
+        ctx.runner,
+        &ctx.record,
+    ));
     if let Some(lease) = ctx.record.resources.lease.clone() {
         let unclean = unclean_legs(&outcomes);
         let outcome = if ctx.record.resources.can_release_build_ownership() && unclean.is_empty() {

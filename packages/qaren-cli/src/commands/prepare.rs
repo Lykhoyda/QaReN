@@ -1578,13 +1578,39 @@ pub(crate) fn run_reuse_path(ctx: &mut Ctx, plan: &BuildPlan, t: u64) -> Result<
             // may exist on the device.
             ctx.record.resources.adb_reverse_port = Some(metro_port);
             ctx.save()?;
-            ensure_running(ctx.runner, "build")?;
-            let reversed = ctx.runner.run(&android::adb_reverse_spec(
-                &adb,
-                server_port,
-                &serial,
-                metro_port,
-            ));
+            let borrowed = ctx.record.resources.android_emulator.is_some();
+            let reverse = if borrowed {
+                android::adb_reverse_no_rebind_spec(&adb, server_port, &serial, metro_port)
+            } else {
+                android::adb_reverse_spec(&adb, server_port, &serial, metro_port)
+            };
+            if !borrowed {
+                ensure_running(ctx.runner, "build")?;
+            }
+            let executed = ctx.runner.commands_executed();
+            let reversed = ctx.runner.run(&reverse);
+            if borrowed && ctx.runner.commands_executed() == executed {
+                // A cancelled run refuses the command unexecuted, so any
+                // mapping on the port is not this run's.
+                ctx.record.resources.adb_reverse_port = None;
+                ctx.save()?;
+                ensure_running(ctx.runner, "build")?;
+            }
+            if borrowed && !reversed.ok() && reverse_already_bound(&reversed) {
+                // Not this run's mapping, so cleanup must never remove it.
+                ctx.record.resources.adb_reverse_port = None;
+                ctx.save()?;
+                return Err(Failure::new(
+                    "build",
+                    FailureCode::DeviceBusy,
+                    format!(
+                        "tcp:{metro_port} is already reversed on {serial} by something else; qaren does not take it over"
+                    ),
+                    format!(
+                        "remove that mapping (adb -s {serial} reverse --remove tcp:{metro_port}) or choose another Metro port, then re-run"
+                    ),
+                ));
+            }
             if !reversed.ok() {
                 return Err(Failure::new(
                     "build",
@@ -1716,6 +1742,11 @@ pub(crate) fn recheck_fingerprint(
         ));
     }
     Ok(fp)
+}
+
+// adb's own refusal of `reverse --no-rebind` for a port the device already maps.
+fn reverse_already_bound(output: &crate::exec::CmdOutput) -> bool {
+    output.stdout.contains("cannot rebind") || output.stderr.contains("cannot rebind")
 }
 
 fn locate_built_apk(project_root: &Path) -> Result<(PathBuf, ArtifactKind), String> {

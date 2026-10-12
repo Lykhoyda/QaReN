@@ -151,14 +151,20 @@ pub fn cleanup_with(
             receipt.scenario = Some(super::scenario_identity(&record));
             receipt.candidate = Some(record.candidate.clone());
             receipt.device = Some(super::device_identity(&record));
-            let next_action = "re-run with --remove-app --confirm-remove-app <run-id>/<remote-serial>/<app-id> naming exactly this run, its leased emulator serial and its app id, or omit --remove-app for legacy cleanup";
+            let next_action = match record.resources.android_emulator.as_ref() {
+                Some(emulator) => format!(
+                    "omit --remove-app; to remove the app, run adb -s {} uninstall {} yourself",
+                    emulator.serial, record.candidate.app_id
+                ),
+                None => "re-run with --remove-app --confirm-remove-app <run-id>/<remote-serial>/<app-id> naming exactly this run, its leased emulator serial and its app id, or omit --remove-app for legacy cleanup".to_string(),
+            };
             receipt.failure = Some(Failure::new(
                 "cleanup",
                 FailureCode::AppRemovalNotConfirmed,
                 detail,
-                next_action,
+                next_action.clone(),
             ));
-            receipt.next_action = next_action.to_string();
+            receipt.next_action = next_action;
             receipt.commands_executed = runner.commands_executed();
             return receipt;
         }
@@ -258,6 +264,10 @@ pub fn cleanup_with(
                 };
                 outcomes.push(("simulator".to_string(), outcome));
             }
+        }
+        // A borrowed emulator has no owned server, tunnel or claim; the lease release below still gates on its legs.
+        Platform::Android if record.resources.android_emulator.is_some() => {
+            outcomes.extend(release_borrowed_android(runner, &record));
         }
         Platform::Android => {
             let server = record.resources.adb_server.clone();
@@ -726,13 +736,8 @@ fn push_reverse_outcome(
                     Outcome::Unresolved("adb reverse --remove timed out".to_string())
                 } else if removed.ok() {
                     Outcome::Removed
-                } else if (removed.stdout.contains("listener")
-                    || removed.stderr.contains("listener"))
-                    && (removed.stdout.contains("not found")
-                        || removed.stderr.contains("not found"))
-                {
-                    // adb's own "listener 'tcp:<port>' not found": the mapping
-                    // is positively absent. A missing *device* error is not.
+                } else if listener_not_found(&removed) {
+                    // A missing *device* error is not proof of absence.
                     Outcome::Absent
                 } else {
                     Outcome::Unresolved(format!(
@@ -755,6 +760,9 @@ fn push_reverse_outcome(
 }
 
 fn removal_confirmed(record: &RunRecord, confirmation: &str) -> Result<(), String> {
+    if record.resources.android_emulator.is_some() {
+        return Err("a borrowed emulator keeps the app; uninstall it yourself".to_string());
+    }
     let farm_route = record.scenario.platform == Platform::Android
         && record.resources.usb_device.is_none()
         && record.scenario.android_usb.is_none();
@@ -1186,13 +1194,231 @@ pub(crate) fn cleanup_runner_host(runner: &mut dyn Runner, record: &RunRecord) -
     })
 }
 
+// Releases what a run put on a borrowed emulator: its Metro reverse and the core's runner.
+// The adb server, the app and the emulator are never touched.
+pub(crate) fn release_borrowed_android(
+    runner: &mut dyn Runner,
+    record: &RunRecord,
+) -> Vec<(String, Outcome)> {
+    let mut cleanup_runner = crate::exec::CleanupRunner(runner);
+    let runner: &mut dyn Runner = &mut cleanup_runner;
+    let Some(emulator) = record.resources.android_emulator.as_ref() else {
+        return Vec::new();
+    };
+    let mut legs: Vec<&str> = Vec::new();
+    if record.resources.adb_reverse_port.is_some() {
+        legs.push("adb_reverse");
+    }
+    // Only a walk starts a runner. Walking is saved before the core spawns, so a run killed
+    // while spawning it is probed too.
+    if record.phase == Phase::Walking
+        || record.resources.core.is_some()
+        || record.resources.core_cleanup.is_some()
+    {
+        legs.push("android_runner");
+    }
+    if legs.is_empty() {
+        return Vec::new();
+    }
+    let every = |outcome: Outcome| {
+        legs.iter()
+            .map(|leg| (leg.to_string(), outcome.clone()))
+            .collect::<Vec<_>>()
+    };
+    let held = record.resources.lease.as_ref().is_some_and(|lease| {
+        crate::buildplan::read_holder(&lease.lock_dir)
+            .is_some_and(|h| h.holder == lease.holder && h.run_id == record.run_id)
+    });
+    if !held {
+        return every(Outcome::Refused(
+            "the device lease is not held by this run".into(),
+        ));
+    }
+    let (Some(adb), Some(serial)) = (
+        record.resources.adb_path.clone(),
+        record.resources.adb_local_serial.clone(),
+    ) else {
+        return every(Outcome::Unresolved(
+            "the run's adb path or serial is not recorded; remove its reverse and runner manually"
+                .into(),
+        ));
+    };
+    if serial != emulator.serial {
+        return every(Outcome::Refused(format!(
+            "recorded serial {serial:?} is not the borrowed emulator {:?}; not addressing it",
+            emulator.serial
+        )));
+    }
+    let port = emulator.server_port;
+    if let Err(reason) = android::borrowed_server_compatible(runner, &adb, port) {
+        return every(Outcome::Unresolved(reason));
+    }
+    legs.iter()
+        .map(|leg| {
+            let outcome = match *leg {
+                "adb_reverse" => {
+                    let reverse_port = record.resources.adb_reverse_port.expect("leg recorded");
+                    release_reverse(runner, &adb, port, &serial, reverse_port)
+                }
+                _ => release_android_runner(runner, record, &adb, port, &serial),
+            };
+            (leg.to_string(), outcome)
+        })
+        .collect()
+}
+
+fn release_reverse(
+    runner: &mut dyn Runner,
+    adb: &Path,
+    port: u16,
+    serial: &str,
+    reverse_port: u16,
+) -> Outcome {
+    let removed = runner.run(&android::adb_reverse_remove_spec(
+        adb,
+        port,
+        serial,
+        reverse_port,
+    ));
+    if removed.timed_out {
+        Outcome::Unresolved("adb reverse --remove timed out".to_string())
+    } else if listener_not_found(&removed) {
+        Outcome::Absent
+    } else if !removed.ok() {
+        Outcome::Unresolved(format!(
+            "adb reverse --remove tcp:{reverse_port}: {}",
+            removed.summary()
+        ))
+    } else {
+        // A reported removal counts only once the device no longer lists the mapping.
+        let listed = runner.run(&android::adb_reverse_list_spec(adb, port, serial));
+        if !listed.ok() {
+            Outcome::Unresolved(format!("adb reverse --list: {}", listed.summary()))
+        } else if android::reverse_listed(&listed.stdout, reverse_port) {
+            Outcome::Unresolved(format!(
+                "adb reverse --remove tcp:{reverse_port} succeeded but the device still lists it"
+            ))
+        } else {
+            Outcome::Removed
+        }
+    }
+}
+
+// adb's own "listener 'tcp:<port>' not found": the mapping is positively absent.
+fn listener_not_found(output: &CmdOutput) -> bool {
+    (output.stdout.contains("listener") || output.stderr.contains("listener"))
+        && (output.stdout.contains("not found") || output.stderr.contains("not found"))
+}
+
+// The checks of the core's runner reaper, ported so cleanup needs no Node runtime.
+fn release_android_runner(
+    runner: &mut dyn Runner,
+    record: &RunRecord,
+    adb: &Path,
+    port: u16,
+    serial: &str,
+) -> Outcome {
+    let core_quiescent = record.resources.core.is_none()
+        && record
+            .resources
+            .core_cleanup
+            .as_ref()
+            .is_none_or(|evidence| {
+                matches!(
+                    evidence.outcome,
+                    GroupCleanupResult::Removed | GroupCleanupResult::Absent
+                )
+            });
+    if !core_quiescent {
+        return Outcome::Refused("core quiescence is unproven; runner left untouched".into());
+    }
+    if !record.resources.runner_drivers.is_empty() {
+        return Outcome::Refused(
+            "runner driver quiescence is unproven; runner left untouched".into(),
+        );
+    }
+    let found = match read_runner(runner, adb, port, serial) {
+        Ok(state) => state,
+        Err(reason) => return Outcome::Unresolved(reason),
+    };
+    if found.absent() {
+        return Outcome::Absent;
+    }
+    for host_port in found.forwards {
+        runner.run(&android::forward_remove_spec(adb, port, serial, host_port));
+    }
+    for package in android::RUNNER_PACKAGES {
+        runner.run(&android::force_stop_spec(adb, port, serial, package));
+    }
+    match read_runner(runner, adb, port, serial) {
+        Ok(after) if after.absent() => Outcome::Removed,
+        Ok(after) => Outcome::Unresolved(format!(
+            "the runner remains after force-stop (forward {}, instrumentation {})",
+            if after.forward_remains {
+                "listed"
+            } else {
+                "gone"
+            },
+            if after.instrumenting {
+                "running"
+            } else {
+                "gone"
+            }
+        )),
+        Err(reason) => Outcome::Unresolved(reason),
+    }
+}
+
+struct RunnerState {
+    forwards: Vec<u16>,
+    forward_remains: bool,
+    instrumenting: bool,
+}
+
+impl RunnerState {
+    fn absent(&self) -> bool {
+        !self.forward_remains && !self.instrumenting
+    }
+}
+
+// Only successful reads count; a failed probe never reads as absence.
+fn read_runner(
+    runner: &mut dyn Runner,
+    adb: &Path,
+    port: u16,
+    serial: &str,
+) -> Result<RunnerState, String> {
+    let forwards = runner.run(&android::forward_list_spec(adb, port));
+    if !forwards.ok() {
+        return Err(format!("adb forward --list: {}", forwards.summary()));
+    }
+    let processes = runner.run(&android::runner_processes_spec(adb, port, serial));
+    if !processes.ok() {
+        return Err(format!("dumpsys activity processes: {}", processes.summary()));
+    }
+    let Some(instrumenting) = android::runner_in_processes(&processes.stdout) else {
+        return Err("dumpsys activity processes: unrecognised output".to_string());
+    };
+    Ok(RunnerState {
+        forwards: android::runner_forwards(&forwards.stdout, serial),
+        forward_remains: android::runner_forward_remains(&forwards.stdout, serial),
+        instrumenting,
+    })
+}
+
 pub(crate) fn producers_quiescent(outcomes: &[(String, Outcome)]) -> bool {
     outcomes
         .iter()
         .filter(|(name, _)| {
             matches!(
                 name.as_str(),
-                "build_process" | "core" | "metro" | "recorder" | "runner_driver" | "runner_host"
+                "build_process"
+                    | "core"
+                    | "metro"
+                    | "recorder"
+                    | "runner_driver"
+                    | "runner_host"
+                    | "android_runner"
             )
         })
         .all(|(_, outcome)| matches!(outcome, Outcome::Removed | Outcome::Absent))
