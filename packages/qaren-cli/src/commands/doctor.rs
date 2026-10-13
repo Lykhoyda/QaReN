@@ -940,6 +940,23 @@ fn json_mcp_servers(file: &Path) -> Vec<String> {
 }
 
 // Only the section header is ever reported; the body can hold secrets.
+fn table_header_end(line: &str) -> Option<usize> {
+    let mut quote = None;
+    let mut escaped = false;
+    for (index, ch) in line.char_indices() {
+        match quote {
+            Some('"') if escaped => escaped = false,
+            Some('"') if ch == '\\' => escaped = true,
+            Some(open) if ch == open => quote = None,
+            Some(_) => {}
+            None if ch == '"' || ch == '\'' => quote = Some(ch),
+            None if ch == ']' => return Some(index),
+            None => {}
+        }
+    }
+    None
+}
+
 fn toml_mcp_headers(text: &str) -> Vec<String> {
     let mut current: Option<&str> = None;
     let mut headers: Vec<String> = Vec::new();
@@ -948,7 +965,7 @@ fn toml_mcp_headers(text: &str) -> Vec<String> {
             // Only the table name: a trailing `# ...` comment can hold private notes.
             current = line
                 .starts_with("[mcp_servers.")
-                .then(|| line.find(']').map_or(line, |end| &line[..=end]));
+                .then(|| table_header_end(line).map_or(line, |end| &line[..=end]));
         } else if let Some(header) = current {
             if MCP_MARKERS.iter().any(|marker| line.contains(marker))
                 && !headers.iter().any(|seen| seen == header)
@@ -1590,6 +1607,21 @@ mod tests {
     fn toml_header_comments_are_never_reported() {
         let text = "[mcp_servers.rn] # TOKEN=private-value\ncommand = \"cdp-supervisor\"\n";
         assert_eq!(toml_mcp_headers(text), vec!["[mcp_servers.rn]".to_string()]);
+    }
+
+    #[test]
+    fn toml_headers_keep_brackets_inside_quoted_keys() {
+        let text = "[mcp_servers.\"rn]agent\"] # note\ncommand = \"cdp-supervisor\"\n\
+            [mcp_servers.'lit]x'.env]\ncommand = \"cdp-supervisor\"\n\
+            [mcp_servers.plain]\ncommand = \"cdp-supervisor\"\n";
+        assert_eq!(
+            toml_mcp_headers(text),
+            vec![
+                "[mcp_servers.\"rn]agent\"]".to_string(),
+                "[mcp_servers.'lit]x'.env]".to_string(),
+                "[mcp_servers.plain]".to_string(),
+            ]
+        );
     }
 
     #[test]
