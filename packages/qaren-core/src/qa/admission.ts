@@ -7,14 +7,16 @@ import {
   isAbort,
   sleep,
 } from '../domain/cancellation.js';
-import { TargetReadinessTimeoutError } from '../cdp/discovery.js';
-import { CDPProbeTimeoutError, CDPHandshakeTimeoutError } from '../cdp/connect.js';
+import { TargetReadinessTimeoutError, TargetListAttemptTimeoutError } from '../cdp/discovery.js';
+import {
+  CDPProbeTimeoutError,
+  CDPHandshakeTimeoutError,
+  CDPTargetClosedError,
+} from '../cdp/connect.js';
 import { REACT_READY_POLL_MS } from '../cdp/setup.js';
 import { REACT_READY_PROBE_JS } from '../injected-helpers.js';
 import { HandlerError, describeError } from './adapt.js';
 import type { ProveOutcome } from './prove.js';
-
-export const LOAD_ENVELOPE = 10;
 
 export interface AdmissionSteps {
   metroPort: number;
@@ -23,7 +25,7 @@ export interface AdmissionSteps {
   attach(deadline: number): Promise<void>;
   // Inside the attach deadline: the attached client must have run its bundle before anything reads it.
   bundleReady?(deadline: number): Promise<void>;
-  // A launch stuck on the dev-launcher never recovers by waiting: the one retry relaunches first.
+  // A launch stuck on the dev-launcher gets one relaunch after its readiness wait.
   relaunch?(): Promise<void>;
   foreignDriver(): Promise<string | undefined>;
   open(): Promise<void>;
@@ -169,50 +171,55 @@ async function refuseForeignDriver(steps: AdmissionSteps): Promise<void> {
 }
 
 async function attach(steps: AdmissionSteps): Promise<void> {
-  let failure: unknown;
-  try {
-    const deadline = performance.now() + steps.remainingMs();
-    await withDeadline(deadline, new CDPProbeTimeoutError('CDP attach deadline exceeded'), () =>
-      attachReady(steps, deadline),
-    );
-    return;
-  } catch (error) {
-    if (isAbort(error)) throw error;
-    failure = error;
-  }
-  const load = (steps.load ?? (() => loadavg()[0]))();
-  const loaded = load > LOAD_ENVELOPE;
-  const timedOut = (error: unknown) =>
-    error instanceof TargetReadinessTimeoutError ||
-    error instanceof CDPProbeTimeoutError ||
-    error instanceof CDPHandshakeTimeoutError;
-  const retry = loaded && timedOut(failure) && steps.remainingMs() >= steps.readinessMs;
+  const deadline = performance.now() + steps.remainingMs();
+  let relaunched = false;
   let relaunchFailure: string | undefined;
-  if (retry && steps.relaunch) {
-    await refuseForeignDriver(steps);
-    try {
-      await interruptible(steps.relaunch);
-    } catch (error) {
-      if (isAbort(error)) throw error;
-      relaunchFailure = describeError(error).message;
-    }
+  try {
+    await withDeadline(
+      deadline,
+      new CDPProbeTimeoutError('CDP attach deadline exceeded'),
+      async () => {
+        for (;;) {
+          try {
+            await attachReady(steps, deadline);
+            return;
+          } catch (error) {
+            if (isAbort(error)) throw error;
+            const transient =
+              error instanceof TargetReadinessTimeoutError ||
+              error instanceof CDPProbeTimeoutError ||
+              error instanceof CDPHandshakeTimeoutError ||
+              error instanceof CDPTargetClosedError;
+            const remaining = Math.min(deadline - performance.now(), steps.remainingMs());
+            if (!transient || remaining <= 0) throw error;
+            if (
+              !relaunched &&
+              steps.relaunch &&
+              remaining >= steps.readinessMs &&
+              error instanceof TargetReadinessTimeoutError &&
+              !(error instanceof TargetListAttemptTimeoutError)
+            ) {
+              await refuseForeignDriver(steps);
+              relaunched = true;
+              try {
+                await interruptible(steps.relaunch);
+              } catch (relaunchError) {
+                if (isAbort(relaunchError)) throw relaunchError;
+                relaunchFailure = describeError(relaunchError).message;
+                throw error;
+              }
+            }
+            await sleep(Math.min(REACT_READY_POLL_MS, remaining));
+          }
+        }
+      },
+    );
+  } catch (error) {
+    if (isAbort(error) || error instanceof HandlerError) throw error;
+    const load = (steps.load ?? (() => loadavg()[0]))();
+    throw new HandlerError(
+      'CDP_NOT_CONNECTED',
+      `cannot attach to the dev client through Metro ${steps.metroPort}: ${describeError(error).message} (host 1-minute load ${load.toFixed(1)}${relaunchFailure === undefined ? '' : `; relaunch failed: ${relaunchFailure}`})`,
+    );
   }
-  if (retry && relaunchFailure === undefined) {
-    try {
-      const deadline = performance.now() + steps.remainingMs();
-      await withDeadline(deadline, new CDPProbeTimeoutError('CDP attach deadline exceeded'), () =>
-        attachReady(steps, deadline),
-      );
-      return;
-    } catch (error) {
-      if (isAbort(error)) throw error;
-      failure = error;
-    }
-  }
-  const environment = loaded && timedOut(failure);
-  const measured = `host 1-minute load ${load.toFixed(1)} is ${loaded ? 'above' : 'within'} the envelope ${LOAD_ENVELOPE}`;
-  throw new HandlerError(
-    'CDP_NOT_CONNECTED',
-    `cannot attach to the dev client through Metro ${steps.metroPort}: ${describeError(failure).message} (${measured}${environment ? `; an environment refusal ${retry ? 'after one retry' : 'without enough budget for another readiness wait'}` : ''}${relaunchFailure === undefined ? '' : `; relaunch failed: ${relaunchFailure}`})`,
-  );
 }

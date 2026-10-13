@@ -12,6 +12,7 @@ import {
 import type { SelectTargetFilters } from './discovery.js';
 import { sleep } from './state.js';
 import { CDP_TIMEOUT_FAST } from './timeout-config.js';
+import { CDPRequestTimeoutError } from './transport.js';
 import { probeReactReachable } from './setup.js';
 import type { CDPClientState, EvaluateResult, HermesTarget } from '../types.js';
 
@@ -69,6 +70,8 @@ export class CDPProbeTimeoutError extends Error {
     this.name = 'CDPProbeTimeoutError';
   }
 }
+
+export class CDPTargetClosedError extends Error {}
 
 /**
  * GH #184: run the bounded picker probe only for a status-intent connect against
@@ -241,10 +244,13 @@ export async function discoverAndConnect(
       connectedTarget = candidate;
     } catch (err) {
       if (isAbort(err)) throw err;
-      // GH #184: picker-blocking affects the whole bundle — every other
-      // candidate is the same stale C++ target, so don't waste a probe on each.
+      // Refusal or page replacement returns control to the discovery owner.
       if (err instanceof ConnectionSetupSupersededError) throw err;
-      if (err instanceof PickerBlockingBundleError || err instanceof TargetReadinessTimeoutError) {
+      if (
+        err instanceof PickerBlockingBundleError ||
+        err instanceof TargetReadinessTimeoutError ||
+        err instanceof CDPTargetClosedError
+      ) {
         ctx.setState('disconnected');
         throw err;
       }
@@ -404,6 +410,7 @@ async function connectToTarget(
         );
       } catch (error) {
         if (isAbort(error)) throw error;
+        if (!(error instanceof CDPRequestTimeoutError)) throw error;
         probeTimedOut = true;
         throw new Error('Target failed pre-flight probe (1+1) — likely a dead JS context');
       }
@@ -436,10 +443,12 @@ async function connectToTarget(
         closeConnectionAttempt(ctx, attemptWs);
         throw err;
       }
-      // GH #184: the picker-blocking abort is deterministic, not transient —
-      // don't burn the retry budget on it; clean up and surface it immediately.
-      // An expired attach deadline leaves no budget to retry either.
-      if (err instanceof PickerBlockingBundleError || err instanceof TargetReadinessTimeoutError) {
+      // The caller owns refusal, deadline expiry and rediscovery after page replacement.
+      if (
+        err instanceof PickerBlockingBundleError ||
+        err instanceof TargetReadinessTimeoutError ||
+        err instanceof CDPTargetClosedError
+      ) {
         if (!closeConnectionAttempt(ctx, attemptWs)) {
           throw new ConnectionSetupSupersededError();
         }
@@ -571,11 +580,11 @@ export function connectWebSocket(
           if (!settled) {
             settled = true;
             clearTimeout(guard);
-            reject(new Error(`WebSocket closed before connecting: ${code}`));
+            reject(new CDPTargetClosedError(`WebSocket closed before connecting: ${code}`));
             return;
           }
           if (ctx.getWs() === ws) {
-            ctx.rejectAllPending(new Error(`WebSocket closed: ${code}`));
+            ctx.rejectAllPending(new CDPTargetClosedError(`WebSocket closed: ${code}`));
             ctx.handleClose(code);
           }
         });

@@ -1232,16 +1232,17 @@ run's simulator name, so another booted simulator running the same app on the
 same port is not attached. Metro identifies a simulator only by name: give each
 booted simulator a distinct name, because a same-named one is refused as
 ambiguous only once both have registered.
-A timeout with measured 1-minute
-host load above 10 is an environment refusal (`CDP_NOT_CONNECTED`), rather than
-a product FAIL. It retries attachment once only if the remaining budget can
-cover a full readiness wait. Immediately before relaunch it checks for a foreign
-driver; a conflict refuses `BUSY_FOREIGN_FLOW` without relaunching. It relaunches
-the iOS dev client on the exact simulator with the CLI's original `initialUrl`
-using `simctl launch --terminate-running-process`, then waits again. A failed
-relaunch skips the second wait and remains an environment refusal; insufficient
-budget refuses immediately. Deterministic attachment rejections are neither
-retried nor classified as environmental.
+Transient target-list and runtime-probe timeouts retry within that same deadline,
+regardless of host load, with bounded polling and exact-port rediscovery between
+attachment attempts. Exhausted readiness refuses `CDP_NOT_CONNECTED`; invalid
+metadata and deterministic attachment rejections refuse immediately. Host load
+is diagnostic and does not decide whether the app is ready.
+After an exhausted readiness wait, an iOS dev client can be relaunched once if
+the remaining deadline still covers a full readiness wait. Immediately before
+relaunch it checks for a foreign driver; a conflict refuses `BUSY_FOREIGN_FLOW`
+without relaunching. It relaunches on the exact simulator with the CLI's original
+`initialUrl` using `simctl launch --terminate-running-process`, then waits again
+within the original deadline. A failed relaunch refuses without another wait.
 If the CLI's walk deadline expires before the core reports admission, the CLI
 also returns `CDP_NOT_CONNECTED` with measured host load (or an explicit
 unavailable measurement), regardless of load. After admission, deadline

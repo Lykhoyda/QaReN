@@ -4,7 +4,6 @@ import { TargetReadinessTimeoutError } from '../../../dist/cdp/discovery.js';
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
-  LOAD_ENVELOPE,
   admit,
   awaitBundleReady,
   createBundleReload,
@@ -92,10 +91,25 @@ test('a stop during the attach wait ends the wait instead of running to its time
   assert.deepEqual(calls, ['close']);
 });
 
-test('an attach timeout under host load is retried once and refused as environment with the load', async () => {
+test('cancellation during the retry pause prevents another attach', async () => {
+  const { CDPProbeTimeoutError } = await import('../../../dist/cdp/connect.js');
+  const { calls, stop, steps } = harness();
+  let attempts = 0;
+  steps.attach = async () => {
+    attempts++;
+    setTimeout(() => stop.begin(), 20);
+    throw new CDPProbeTimeoutError('JS is not ready yet');
+  };
+  await assert.rejects(admit(steps, stop), { code: 'RUN_CANCELLED' });
+  assert.equal(attempts, 1);
+  assert.deepEqual(calls, ['close']);
+});
+
+test('an exhausted attach deadline refuses with the diagnostic host load', async () => {
   let attempts = 0;
   const { calls, stop, steps } = harness({
     load: () => 42.25,
+    remainingMs: () => 20,
     attach: async () => {
       attempts++;
       throw new TargetReadinessTimeoutError(
@@ -106,16 +120,15 @@ test('an attach timeout under host load is retried once and refused as environme
   await assert.rejects(admit(steps, stop), (error: Error & { code?: string }) => {
     assert.equal(error.code, 'CDP_NOT_CONNECTED');
     assert.match(error.message, /Metro 8081/);
-    assert.match(error.message, /1-minute load 42\.3 is above the envelope 10/);
-    assert.match(error.message, /environment refusal/);
+    assert.match(error.message, /1-minute load 42\.3/);
+    assert.match(error.message, /deadline exceeded/);
     return true;
   });
-  assert.equal(attempts, 2);
+  assert.equal(attempts, 1);
   assert.ok(!calls.includes('open'));
-  assert.equal(LOAD_ENVELOPE, 10);
 });
 
-test('within the load envelope an attach failure is refused at once, with the load recorded', async () => {
+test('a deterministic attach failure is refused at once, with the load recorded', async () => {
   let attempts = 0;
   const { stop, steps } = harness({
     load: () => 3,
@@ -126,17 +139,17 @@ test('within the load envelope an attach failure is refused at once, with the lo
   });
   await assert.rejects(admit(steps, stop), (error: Error & { code?: string }) => {
     assert.equal(error.code, 'CDP_NOT_CONNECTED');
-    assert.match(error.message, /1-minute load 3\.0 is within the envelope 10/);
+    assert.match(error.message, /1-minute load 3\.0/);
     assert.doesNotMatch(error.message, /environment refusal/);
     return true;
   });
   assert.equal(attempts, 1);
 });
 
-test('a retried attach that connects under load continues the admission', async () => {
+test('a retried attach that connects at low load continues the admission', async () => {
   let attempts = 0;
   const { calls, stop, steps } = harness({
-    load: () => 50,
+    load: () => 3,
     attach: async () => {
       if (++attempts === 1) throw new TargetReadinessTimeoutError('no target yet');
     },
@@ -170,18 +183,16 @@ test('cancellation during bundle proof refuses the proven result', async () => {
   assert.equal(calls.at(-1), 'close');
 });
 
-test('a loaded timeout with only 15 seconds left refuses without a second 30-second wait', async () => {
+test('a transient timeout can retry with less than a full readiness window remaining', async () => {
   let attempts = 0;
   const { stop, steps } = harness({
-    load: () => 42,
     remainingMs: () => 15_000,
     attach: async () => {
-      attempts++;
-      throw new TargetReadinessTimeoutError('readiness timeout');
+      if (++attempts === 1) throw new TargetReadinessTimeoutError('readiness timeout');
     },
   });
-  await assert.rejects(admit(steps, stop), /environment refusal without enough budget/);
-  assert.equal(attempts, 1);
+  assert.deepEqual(await admit(steps, stop), PROVEN);
+  assert.equal(attempts, 2);
 });
 
 test('a deterministic rejection under load is never retried or called environmental', async () => {
@@ -230,21 +241,20 @@ test('abort during each awaited admission primitive rejects before any later eff
   }
 });
 
-test('loaded handshake timeout retries once and remains an environment refusal', async () => {
+test('handshake attempts share one deadline at low load', async () => {
   const { CDPHandshakeTimeoutError } = await import('../../../dist/cdp/connect.js');
-  let attempts = 0;
+  const deadlines: number[] = [];
   const { calls, stop, steps } = harness({
-    load: () => 42,
-    attach: async () => {
-      attempts++;
+    load: () => 3,
+    remainingMs: () => 1200,
+    attach: async (deadline) => {
+      deadlines.push(deadline);
       throw new CDPHandshakeTimeoutError('handshake timed out');
     },
   });
-  await assert.rejects(
-    admit(steps, stop),
-    /host 1-minute load 42.0.*environment refusal after one retry/,
-  );
-  assert.equal(attempts, 2);
+  await assert.rejects(admit(steps, stop), /CDP attach deadline exceeded/);
+  assert.ok(deadlines.length >= 2);
+  assert.equal(new Set(deadlines).size, 1, 'retry must not extend the deadline');
   assert.deepEqual(calls, ['close']);
 });
 
@@ -268,22 +278,22 @@ test('the single retry relaunches the app before waiting again', async () => {
   assert.deepEqual(order, ['attach', 'foreignDriver', 'relaunch', 'attach', 'foreignDriver']);
 });
 
-test('within the load envelope nothing is relaunched', async () => {
+test('an exhausted readiness wait can relaunch once at low load', async () => {
   let relaunched = 0;
   const { stop, steps } = harness({
     load: () => 3,
     attach: async () => {
-      throw new TargetReadinessTimeoutError('no target');
+      if (!relaunched) throw new TargetReadinessTimeoutError('no target');
     },
     relaunch: async () => {
       relaunched++;
     },
   });
-  await assert.rejects(admit(steps, stop));
-  assert.equal(relaunched, 0);
+  assert.deepEqual(await admit(steps, stop), PROVEN);
+  assert.equal(relaunched, 1);
 });
 
-test('a failed relaunch skips the second wait and stays an environment refusal', async () => {
+test('a failed relaunch skips the next wait and retains the failure detail', async () => {
   let attempts = 0;
   const { stop, steps } = harness({
     load: () => 50,
@@ -297,7 +307,6 @@ test('a failed relaunch skips the second wait and stays an environment refusal',
   });
   await assert.rejects(admit(steps, stop), (error: Error & { code?: string }) => {
     assert.equal(error.code, 'CDP_NOT_CONNECTED');
-    assert.match(error.message, /environment refusal/);
     assert.match(error.message, /relaunch failed: simctl launch failed/);
     return true;
   });
@@ -401,14 +410,14 @@ test('the attached client must have run its bundle before the driver probe, sess
 });
 
 test('a bundle still building at the attach deadline refuses as an attach timeout, not an origin mismatch', async () => {
-  const { calls, stop, steps } = harness();
+  const { calls, stop, steps } = harness({ remainingMs: () => 20 });
   steps.bundleReady = async () => {
     calls.push('bundleReady');
     throw new TargetReadinessTimeoutError('React never became ready on the attached client');
   };
   await assert.rejects(admit(steps, stop), (error: Error & { code?: string }) => {
     assert.equal(error.code, 'CDP_NOT_CONNECTED');
-    assert.match(error.message, /React never became ready/);
+    assert.match(error.message, /deadline exceeded/);
     return true;
   });
   assert.ok(!calls.includes('prove'), calls.join());

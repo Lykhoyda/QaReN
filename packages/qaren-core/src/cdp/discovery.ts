@@ -133,6 +133,7 @@ export async function discoverAllMetroPorts(ports: number[], timeout: number): P
 }
 
 export class TargetReadinessTimeoutError extends Error {}
+export class TargetListAttemptTimeoutError extends TargetReadinessTimeoutError {}
 
 export async function fetchTargets(
   port: number,
@@ -153,7 +154,7 @@ export async function fetchTargets(
   } catch (err) {
     cancellationSignal(signal);
     const message = `Failed to list CDP targets on port ${port}: ${err instanceof Error ? err.message : err}`;
-    if (ctrl.signal.aborted) throw new TargetReadinessTimeoutError(message);
+    if (ctrl.signal.aborted) throw new TargetListAttemptTimeoutError(message);
     throw new Error(message);
   } finally {
     clearTimeout(timer);
@@ -186,10 +187,17 @@ export async function waitForExactPortTargets(
   let remaining = deadline - performance.now();
   while (remaining > 0) {
     signal?.throwIfAborted();
-    const raw = await interruptible(
-      () => fetchTargets(port, Math.min(DISCOVERY_TIMEOUT_MS * 2, remaining), signal),
-      signal,
-    );
+    let raw: HermesTarget[];
+    try {
+      raw = await interruptible(
+        () => fetchTargets(port, Math.min(DISCOVERY_TIMEOUT_MS * 2, remaining), signal),
+        signal,
+      );
+    } catch (error) {
+      signal?.throwIfAborted();
+      if (!(error instanceof TargetListAttemptTimeoutError)) throw error;
+      raw = [];
+    }
     if (!Array.isArray(raw)) {
       throw new Error(`Invalid CDP target list on port ${port}: expected an array`);
     }

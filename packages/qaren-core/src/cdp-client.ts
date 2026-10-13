@@ -1336,17 +1336,17 @@ export class CDPClient {
 
   private handleClose(code: number): void {
     // Invalidate synchronously before reconnect/reset can await or select a new world.
-    this.ws = null;
     this.invalidateHelperWorld('socket_closed');
-    // B132: if the proxy is active when the upstream closes, suspend it BEFORE
-    // the reconnect loop fires. `_suspendProxy` clears `_proxyUrl` synchronously
-    // at its start (before the first await), so by the time `reconnect()` calls
-    // `discoverAndConnect` → `connectToTarget` → `ctx.getProxyUrl()`, the URL
-    // is already null and reconnect goes direct. Fire-and-forget is fine — the
-    // multiplexer's HTTP server shutdown is bounded and doesn't gate reconnect.
+    // Suspend the proxy before reconnect so the replacement attaches directly.
     if (this._proxyUrl) {
       void this._suspendProxy();
     }
+    // The bounded attach owns retry and disposal of its closed socket.
+    if (this._attachDeadline !== undefined) {
+      resetState(this.buildResettableState());
+      return;
+    }
+    this.ws = null;
     handleCloseFn(this.buildReconnectCtx(), code);
   }
 

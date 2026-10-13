@@ -376,7 +376,7 @@ async function openSession(
           target.metroPort,
           { platform, bundleId: appId, ...(devicePin ? { deviceName: devicePin } : {}) },
           'default',
-          5,
+          1,
           undefined,
           deadline,
         );
