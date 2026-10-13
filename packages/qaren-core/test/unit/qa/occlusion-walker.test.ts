@@ -578,6 +578,20 @@ test('O5: a fill whose centre lies under the keyboard scrolls before any dispatc
   ]);
 });
 
+test('the iOS keyboard clearance scroll carries the overlap distance', async () => {
+  const kb = (y: number) => clipped(y, 'TextField', 'keyboard');
+  const f = fake([kb(700), kb(300), kb(300)], {});
+  const clearances: (number | undefined)[] = [];
+  const scroll = f.deps.scroll;
+  f.deps.scroll = (direction, context, clearance) => {
+    clearances.push(clearance);
+    return scroll(direction, context, clearance);
+  };
+  const outcome = await walkBlock(block('1. Fill "field" with "x"\n'), f.deps);
+  assert.equal(outcome.block.outcome, 'pass');
+  assert.deepEqual(clearances, [472]);
+});
+
 test('O5: a target still covered after one scroll refuses with no dispatch', async () => {
   for (const [screen, step] of [
     [(y: number) => clipped(y), '1. Tap "go"\n'],
