@@ -24,6 +24,10 @@ Refusals exit `4` and mean the run could not start or could not decide; failures
 
 ## Devices
 
+For `FRESH_INSTALL_ADMISSION_UNKNOWN` or a strict-admission `DEVICE_BUSY`, read the
+probe diagnostics in `failure.detail`; see the authoritative
+[iOS admission contract](https://github.com/Lykhoyda/rn-dev-agent/blob/develop/packages/qaren-cli/README.md#ios-admission-and-cleanup).
+
 | Code                 | What happened                                                       | What to do                                                                          |
 | -------------------- | ------------------------------------------------------------------- | ----------------------------------------------------------------------------------- |
 | `DEVICE_UNAVAILABLE` | No booted simulator, more than one, or the named one is not booted  | Boot the simulator to walk on, or shut down the ones you are not testing on        |
