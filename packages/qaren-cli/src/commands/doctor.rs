@@ -603,9 +603,7 @@ fn installed_build(exe: Option<&Path>, runtime_root: &Path, path_first: Option<&
         let mut missing = Vec::new();
         let version = read(&dir.join("VERSION")).trim().to_string();
         if version != VERSION {
-            missing.push(format!(
-                "VERSION reads {version:?}, this binary is {VERSION}"
-            ));
+            missing.push(format!("VERSION does not match this binary's version {VERSION}"));
         }
         if sha256_record(&dir).is_none() {
             missing.push(".tarball-sha256 is not a sha256".to_string());
@@ -735,8 +733,8 @@ fn config_check(file: &Path) -> (Check, Option<CheckConfig>) {
             return (
                 Check::fail(
                     "config",
-                    failure.detail.to_string(),
-                    failure.next_action.to_string(),
+                    format!("{}: {:?}", file.display(), failure.code),
+                    "fix the config using the documented .qaren/config.yaml schema",
                 ),
                 None,
             )
@@ -755,8 +753,8 @@ fn config_check(file: &Path) -> (Check, Option<CheckConfig>) {
         Err(failure) => (
             Check::fail(
                 "config",
-                failure.detail.to_string(),
-                failure.next_action.to_string(),
+                format!("{}: {:?}", file.display(), failure.code),
+                "fix the config using the documented .qaren/config.yaml schema",
             ),
             None,
         ),
@@ -1619,7 +1617,57 @@ mod tests {
     }
 
     #[test]
-    fn an_invalid_config_fails_with_its_own_wording() {
+    fn config_failures_never_print_file_values() {
+        let s = Scratch::new("config-privacy");
+        let canary = "private-config-canary";
+        for field in [
+            format!("packageManager: {canary}\n"),
+            format!("metroPort: {canary}\n"),
+            "metroPort: 80\n".to_string(),
+            format!("appId: [{canary}\n"),
+        ] {
+            s.file(
+                ".qaren/config.yaml",
+                &format!("appId: com.example\ndevClientScheme: exp+example\n{field}"),
+            );
+            let before = s.tree();
+            let mut runner = MockRunner::new();
+            script_toolchain(&mut runner, Some("v24.1.0\n"), RUNTIMES);
+            let report = run_doctor(&mut runner, &s, &s.0, None);
+            assert_eq!(row(&report, "config").status, Status::Fail);
+            assert!(row(&report, "config").fix.is_some());
+            assert_eq!(report.exit_code(), 1);
+            for out in [report.render(), report.to_json()] {
+                assert!(!out.contains(canary), "{out}");
+                assert!(!out.contains("metroPort 80"), "{out}");
+            }
+            assert_eq!(s.tree(), before);
+        }
+    }
+
+    #[test]
+    fn version_mismatch_never_prints_file_contents() {
+        let s = Scratch::new("version-privacy");
+        let exe = s.install(VERSION);
+        let canary = "private-version-canary";
+        s.file(&format!(".qaren/runtime/{VERSION}/VERSION"), canary);
+        let before = s.tree();
+        let mut runner = MockRunner::new();
+        script_toolchain(&mut runner, Some("v24.1.0\n"), RUNTIMES);
+        let report = run_doctor(&mut runner, &s, &s.0, Some(exe));
+        let check = row(&report, "installed-build");
+        assert_eq!(check.status, Status::Fail);
+        assert!(check.detail.contains(VERSION));
+        assert!(check.fix.is_some());
+        assert_eq!(report.exit_code(), 1);
+        for out in [report.render(), report.to_json()] {
+            assert!(!out.contains(canary), "{out}");
+        }
+        assert_eq!(s.tree(), before);
+    }
+
+    #[test]
+    fn an_invalid_config_reports_a_safe_failure_category() {
         let s = Scratch::new("badconfig");
         s.file(
             ".qaren/config.yaml",
@@ -1630,7 +1678,7 @@ mod tests {
         let check = row(&run_doctor(&mut runner, &s, &s.0, None), "config").clone();
         assert_eq!(check.status, Status::Fail);
         assert!(
-            check.detail.contains("metroPort 80 must be >= 1024"),
+            check.detail.contains("ScenarioInvalid"),
             "{}",
             check.detail
         );
