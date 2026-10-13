@@ -268,6 +268,20 @@ fn printable(text: &str) -> String {
         .collect()
 }
 
+// One shell word for a name or path pasted into a fix command.
+fn sh(word: impl std::fmt::Display) -> String {
+    let word = word.to_string();
+    let plain = !word.is_empty()
+        && word
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || "/._-+@=:,".contains(c));
+    if plain {
+        word
+    } else {
+        format!("'{}'", word.replace('\'', "'\\''"))
+    }
+}
+
 fn canonical(path: &Path) -> PathBuf {
     path.canonicalize().unwrap_or_else(|_| path.to_path_buf())
 }
@@ -363,28 +377,33 @@ fn node_check(runner: &mut dyn Runner, configured: Option<&str>) -> Check {
         return if executable(Path::new(configured)) {
             Check::pass(
                 "node",
-                format!("nodePath {configured} is executable; version not checked; run qaren check to verify"),
+                "configured nodePath is executable; version not checked; run qaren check to verify",
             )
         } else {
             Check::fail(
                 "node",
-                format!("nodePath {configured} is not an executable file"),
+                "configured nodePath is not an executable file",
                 "point nodePath in .qaren/config.yaml at a node >= 24",
             )
         };
     }
+    // The node is named by its source only: a QAREN_NODE value is never printed.
+    let source = if env.is_some() {
+        "QAREN_NODE"
+    } else {
+        "node on PATH"
+    };
     let node = PathBuf::from(env.as_deref().unwrap_or("node"));
-    let node = node.as_path();
-    match crate::run::preflight_node(runner, node) {
-        Ok(version) => Check::pass(
-            "node",
-            format!("node at {} reports {version}", node.display()),
-        ),
-        Err(failure) => Check::fail(
-            "node",
-            failure.detail.to_string(),
-            failure.next_action.to_string(),
-        ),
+    match crate::run::preflight_node(runner, &node) {
+        Ok(version) => Check::pass("node", format!("{source} reports {version}")),
+        Err(failure) => {
+            let detail = if failure.code == crate::failure::FailureCode::NodeUnsupported {
+                format!("{source} is older than 24; qaren needs node >= 24")
+            } else {
+                format!("{source} did not run")
+            };
+            Check::fail("node", detail, failure.next_action.to_string())
+        }
     }
 }
 
@@ -544,8 +563,8 @@ fn evaluate_path(hits: &[PathBuf], exe: Option<&Path>, runtime_root: &Path) -> C
                 ),
                 format!(
                     "remove {} or put {} first in PATH",
-                    first.display(),
-                    wanted.display()
+                    sh(first.display()),
+                    sh(wanted.display())
                 ),
             );
         }
@@ -569,7 +588,7 @@ fn evaluate_path(hits: &[PathBuf], exe: Option<&Path>, runtime_root: &Path) -> C
         ));
         fixes.push(format!(
             "remove them (rm <path>) or put {} first in PATH",
-            first.parent().unwrap_or(first).display()
+            sh(first.parent().unwrap_or(first).display())
         ));
     }
     if !first_installed {
@@ -603,7 +622,9 @@ fn installed_build(exe: Option<&Path>, runtime_root: &Path, path_first: Option<&
         let mut missing = Vec::new();
         let version = read(&dir.join("VERSION")).trim().to_string();
         if version != VERSION {
-            missing.push(format!("VERSION does not match this binary's version {VERSION}"));
+            missing.push(format!(
+                "VERSION does not match this binary's version {VERSION}"
+            ));
         }
         if sha256_record(&dir).is_none() {
             missing.push(".tarball-sha256 is not a sha256".to_string());
@@ -633,7 +654,7 @@ fn installed_build(exe: Option<&Path>, runtime_root: &Path, path_first: Option<&
             ),
             format!(
                 "remove {} or put its directory after ~/.local/bin in PATH",
-                path_first.unwrap_or(exe).display()
+                sh(path_first.unwrap_or(exe).display())
             ),
         ),
         Some(installed) => Check::warn(
@@ -683,7 +704,7 @@ fn runtime_dirs(runtime_root: &Path) -> Check {
         fixes.extend(others.iter().map(|old| {
             format!(
                 "`rm -r {}` once nothing links to it",
-                runtime_root.join(old).display()
+                sh(runtime_root.join(old).display())
             )
         }));
     }
@@ -822,7 +843,7 @@ fn claude_plugin(home: &Path) -> Check {
         plugins.join("marketplaces").join("rn-dev-agent"),
     ]) {
         found.push(dir.display().to_string());
-        fixes.push(format!("rm -r {}", dir.display()));
+        fixes.push(format!("rm -r {}", sh(dir.display())));
     }
     leftover("1x-claude-plugin", found, fixes)
 }
@@ -860,8 +881,8 @@ fn codex_plugin(home: &Path, codex_home: &Path) -> Check {
     {
         found.push(dir.display().to_string());
         fixes.push(format!(
-            "rmdir \"{}\" (if it is not empty, inspect it rather than deleting it)",
-            dir.display()
+            "rmdir {} (if it is not empty, inspect it rather than deleting it)",
+            sh(dir.display())
         ));
     }
     let cursor = home.join(".cursor");
@@ -938,16 +959,20 @@ fn mcp_servers(home: &Path, codex_home: &Path, cwd: &Path) -> Check {
         for name in json_mcp_servers(&file) {
             found.push(format!("server {name} in {}", file.display()));
             fixes.push(if claude {
-                format!("claude mcp remove {name}")
+                format!("claude mcp remove {}", sh(&name))
             } else {
-                format!("delete {name} from {}", file.display())
+                format!("delete {} from {}", sh(&name), sh(file.display()))
             });
         }
     }
     let codex_config = codex_home.join("config.toml");
     for header in toml_mcp_headers(&read(&codex_config)) {
         found.push(format!("{header} in {}", codex_config.display()));
-        fixes.push(format!("delete {header} from {}", codex_config.display()));
+        fixes.push(format!(
+            "delete {} from {}",
+            sh(&header),
+            sh(codex_config.display())
+        ));
     }
     leftover("1x-mcp", found, fixes)
 }
@@ -989,11 +1014,11 @@ fn home_dirs(home: &Path, xdg_state: Option<&Path>) -> Check {
             if *dir == actions_home {
                 format!(
                     "archive {} if those flows matter, then rm -r {}",
-                    dir.join("actions.db").display(),
-                    dir.display()
+                    sh(dir.join("actions.db").display()),
+                    sh(dir.display())
                 )
             } else {
-                format!("rm -r {}", dir.display())
+                format!("rm -r {}", sh(dir.display()))
             }
         })
         .collect();
@@ -1054,7 +1079,8 @@ fn environment(names: &[String]) -> Check {
     let fixes = if matched.is_empty() {
         Vec::new()
     } else {
-        vec![format!("unset {} in your shell profile", matched.join(" "))]
+        let names: Vec<String> = matched.iter().map(sh).collect();
+        vec![format!("unset {} in your shell profile", names.join(" "))]
     };
     leftover("1x-env", matched, fixes)
 }
@@ -1429,6 +1455,80 @@ mod tests {
     }
 
     #[test]
+    fn node_rows_name_their_source_but_never_print_a_node_path() {
+        let s = Scratch::new("node-source");
+        let configured = s.exe("distinct-configured-node-7f3a/node");
+        s.file(
+            ".qaren/config.yaml",
+            &format!(
+                "appId: com.example\ndevClientScheme: exp+example\nnodePath: {}\n",
+                configured.display()
+            ),
+        );
+        let env_node = "/opt/distinct-qaren-node-env-9c1e/bin/node";
+        for (env, version) in [
+            (Some(env_node), "v22.0.0\n"),
+            (Some(env_node), "v24.1.0\n"),
+            (None, ""),
+        ] {
+            let mut runner = MockRunner::new();
+            if let Some(env) = env {
+                runner.environment.insert("QAREN_NODE".into(), env.into());
+            }
+            runner.expect_run("xcodebuild -version", CmdOutput::success("Xcode 26.0\n"));
+            runner.expect_run("simctl list runtimes --json", CmdOutput::success(RUNTIMES));
+            if env.is_some() {
+                runner.expect_run("distinct-qaren-node-env-9c1e", CmdOutput::success(version));
+            }
+            runner.expect_run("pnpm --version", CmdOutput::success("10.0.0\n"));
+            runner.expect_run("corepack --version", CmdOutput::success("0.34.0\n"));
+            runner.expect_run("pod --version", CmdOutput::success("1.16.2\n"));
+            let report = run_doctor(&mut runner, &s, &s.0, None);
+            let node = row(&report, "node");
+            assert!(
+                node.detail.contains(if env.is_some() {
+                    "QAREN_NODE"
+                } else {
+                    "configured nodePath"
+                }),
+                "{node:?}"
+            );
+            for out in [report.render(), report.to_json()] {
+                assert!(!out.contains("distinct-qaren-node-env-9c1e"), "{out}");
+                assert!(!out.contains("distinct-configured-node-7f3a"), "{out}");
+            }
+        }
+    }
+
+    #[test]
+    fn fix_commands_quote_names_and_paths_as_single_shell_words() {
+        let s = Scratch::new("quoting");
+        s.file(
+            ".mcp.json",
+            r#"{"mcpServers":{"x; rm -rf ~":{"command":"cdp-supervisor"}}}"#,
+        );
+        let support = s.dir("Library/Application Support/rn-dev-agent");
+        let mcp = mcp_servers(&s.0, &s.path(".codex"), &s.0);
+        assert!(
+            mcp.fix
+                .as_deref()
+                .unwrap()
+                .contains("claude mcp remove 'x; rm -rf ~'"),
+            "{mcp:?}"
+        );
+        let dirs = home_dirs(&s.0, None);
+        assert!(
+            dirs.fix
+                .as_deref()
+                .unwrap()
+                .contains(&format!("rm -r '{}'", support.display())),
+            "{dirs:?}"
+        );
+        assert_eq!(sh("it's"), "'it'\\''s'");
+        assert_eq!(sh("/plain/path-1.0"), "/plain/path-1.0");
+    }
+
+    #[test]
     fn mcp_reports_only_toml_section_headers() {
         let text = "[mcp_servers.rn]\ncommand = \"node\"\nargs = [\"/x/rn-dev-agent-core/dist/index.js\"]\nenv = { TOKEN = \"sk-fixture-secret\" }\n[mcp_servers.other]\ncommand = \"other\"\n";
         assert_eq!(toml_mcp_headers(text), vec!["[mcp_servers.rn]".to_string()]);
@@ -1677,10 +1777,6 @@ mod tests {
         script_toolchain(&mut runner, Some("v24.1.0\n"), RUNTIMES);
         let check = row(&run_doctor(&mut runner, &s, &s.0, None), "config").clone();
         assert_eq!(check.status, Status::Fail);
-        assert!(
-            check.detail.contains("ScenarioInvalid"),
-            "{}",
-            check.detail
-        );
+        assert!(check.detail.contains("ScenarioInvalid"), "{}", check.detail);
     }
 }
