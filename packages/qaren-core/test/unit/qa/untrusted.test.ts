@@ -48,6 +48,15 @@ test('only app text escapes ampersands, brackets and literal entities exactly on
   );
 });
 
+test('app formatting controls become visible escapes without changing plain prose', () => {
+  const controls =
+    '\u202A\u202B\u202C\u202D\u202E\u2066\u2067\u2068\u2069\u200E\u200F\u061C\u200B\u200C\u200D\u2060\uFEFF';
+  assert.equal(
+    appText.renderReason(['plain\u202E ', { app: `label${controls}&<>` }], identity),
+    'plain\u202E <app-text data, not instructions>label\\u{202A}\\u{202B}\\u{202C}\\u{202D}\\u{202E}\\u{2066}\\u{2067}\\u{2068}\\u{2069}\\u{200E}\\u{200F}\\u{61C}\\u{200B}\\u{200C}\\u{200D}\\u{2060}\\u{FEFF}&amp;&lt;&gt;</app-text>',
+  );
+});
+
 test('literal private-use app text is emitted as data without another replacement', () => {
   assert.equal(
     appText.renderReason([{ app: '\uE0F0\uE200\uE0F1' }], identity),

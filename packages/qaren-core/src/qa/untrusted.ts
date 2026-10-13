@@ -8,8 +8,14 @@ export const segments = (reason: Reason): Segment[] =>
   typeof reason === 'string' ? [reason] : reason;
 
 function escapeAppText(text: string): string {
-  return text.replace(/[&<>]/g, (char) =>
-    char === '&' ? '&amp;' : char === '<' ? '&lt;' : '&gt;',
+  return text.replace(/[&<>\u202A-\u202E\u2066-\u2069\u200B-\u200F\u061C\u2060\uFEFF]/g, (char) =>
+    char === '&'
+      ? '&amp;'
+      : char === '<'
+        ? '&lt;'
+        : char === '>'
+          ? '&gt;'
+          : `\\u{${char.charCodeAt(0).toString(16).toUpperCase()}}`,
   );
 }
 

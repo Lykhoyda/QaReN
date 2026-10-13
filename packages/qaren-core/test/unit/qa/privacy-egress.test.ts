@@ -125,6 +125,45 @@ const strings = (value: unknown): string[] =>
         ? Object.values(value).flatMap(strings)
         : [];
 
+for (const [label, escaped] of [
+  ['Unbalanced\u202E label', 'Unbalanced\\u{202E} label'],
+  [
+    'Zero\u200Bwidth\u200C\u200D\u2060\uFEFF label',
+    'Zero\\u{200B}width\\u{200C}\\u{200D}\\u{2060}\\u{FEFF} label',
+  ],
+]) {
+  test(`failure evidence exposes formatting controls inside its app frame: ${escaped}`, async () => {
+    const f = walker(
+      [view([text('@label', label)])],
+      scriptedJudge(() => assert.fail('literal check must not call Jev')),
+    );
+    const ledger = await runPlan(parsePlan('✓ "Missing"').blocks!, f.deps);
+    assert.equal(ledger.verdict, 'FAIL');
+    assert.equal(ledger.jev.calls, 0);
+    assert.equal(ledger.steps[0].reason, '"Missing" is not satisfied on screen');
+    assert.equal(
+      ledger.failure?.seen,
+      `"Missing" is not satisfied on screen; historical context, previously on screen: ${APP_TEXT_OPEN}${escaped}${APP_TEXT_CLOSE}`,
+    );
+  });
+}
+
+test('private values containing formatting controls are masked before app escaping', async () => {
+  const value = 'account\u202Ecanary\u200B';
+  const input = element('@input', 'Name', { kind: 'input', value });
+  const f = walker(
+    [view([text('@label', `Unrelated evidence | ${value}`), input])],
+    scriptedJudge(() => assert.fail('literal check must not call Jev')),
+  );
+  const ledger = await runPlan(parsePlan('✓ "Missing"').blocks!, f.deps);
+  assert.equal(ledger.verdict, 'FAIL');
+  assert.equal(ledger.jev.calls, 0);
+  assert.equal(
+    ledger.failure?.seen,
+    `"Missing" is not satisfied on screen; historical context, previously on screen: ${APP_TEXT_OPEN}Unrelated evidence | ${MASK} | Name: ${MASK}${APP_TEXT_CLOSE}`,
+  );
+});
+
 const TOKEN = /[\p{L}\p{M}\p{N}_.@-]+/gu;
 
 function assertAbsent(sink: string, value: unknown): void {
