@@ -359,15 +359,16 @@ async function openSession(
     }));
   onClose(close);
   const devicePin = metroDevicePin(platform, target.deviceName);
+  const remainingMs = () => Math.max(0, request.walkBudgetMs - now() - 1000);
   const proof = await admit(
     {
       metroPort: target.metroPort,
       readinessMs: REACT_READY_TIMEOUT_MS,
-      remainingMs: () => Math.max(0, request.walkBudgetMs - now() - 1000),
+      remainingMs,
       attach: async (deadline) => {
         await waitForExactPortTargets(
           target.metroPort,
-          Math.max(1, Math.min(REACT_READY_TIMEOUT_MS, request.walkBudgetMs - now() - 1000)),
+          Math.max(1, Math.min(REACT_READY_TIMEOUT_MS, remainingMs())),
           REACT_READY_POLL_MS,
           stop.signal,
           devicePin,
@@ -468,11 +469,9 @@ async function openSession(
     platform === 'android'
       ? createBundleReload({
           evaluate: (expr) => cdp.evaluate(expr),
-          reinjectHelpers: (waitMs) => cdp.reinjectHelpers(waitMs),
+          reinjectHelpers: (waitMs) => cdp.reinjectHelpers(waitMs, true),
           prove: () => prove({ evaluate: (expr) => cdp.evaluate(expr) }, target),
-          deadline: () =>
-            performance.now() +
-            Math.max(1, Math.min(REACT_READY_TIMEOUT_MS, request.walkBudgetMs - now() - 1000)),
+          remainingMs,
         })
       : undefined;
   const overlays = {

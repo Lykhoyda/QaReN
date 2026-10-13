@@ -315,11 +315,15 @@ export class CDPClient {
     return bridgeWithFallbackFn(call, this._bridgeDetected);
   }
 
-  async reinjectHelpers(waitTimeout?: number): Promise<boolean> {
-    if (!this.isConnected) return false;
+  async reinjectHelpers(waitTimeout?: number, reportReadinessTimeout = false): Promise<boolean> {
+    if (!this.isConnected) {
+      if (reportReadinessTimeout)
+        throw new CDPTargetClosedError('reload inspector is disconnected');
+      return false;
+    }
     // Caller-specific React readiness stays outside the shared injection core.
     await waitForReact((expr) => this.evaluateCurrentHelperWorld(expr), waitTimeout);
-    return this.ensureCurrentHelpers('reinject_started');
+    return this.ensureCurrentHelpers('reinject_started', reportReadinessTimeout);
   }
 
   /**
@@ -527,24 +531,31 @@ export class CDPClient {
 
   private async ensureCurrentHelpers(
     cause: 'setup_started' | 'reinject_started',
+    reportReadinessTimeout = false,
   ): Promise<boolean> {
     const token = this._helperToken;
     if (!this.isHelperTokenCurrent(token) || !this.isConnected) return false;
     if (this._helpersInjected) return true;
-    if (this._helperInjectionInFlight?.token === token) {
-      return this._helperInjectionInFlight.promise;
+    let slot = this._helperInjectionInFlight;
+    if (slot?.token !== token) {
+      const next = { token, promise: Promise.resolve(false) as Promise<boolean> };
+      next.promise = this.injectAndVerifyHelpers(token, cause).finally(() => {
+        // An old world's late finally cannot clear a newer slot.
+        if (this._helperInjectionInFlight === next) this._helperInjectionInFlight = null;
+      });
+      this._helperInjectionInFlight = slot = next;
     }
-
-    const slot = {
-      token,
-      promise: Promise.resolve(false) as Promise<boolean>,
-    };
-    slot.promise = this.injectAndVerifyHelpers(token, cause).finally(() => {
-      // Identity cleanup: an old world's late finally cannot clear a newer slot.
-      if (this._helperInjectionInFlight === slot) this._helperInjectionInFlight = null;
-    });
-    this._helperInjectionInFlight = slot;
-    return slot.promise;
+    try {
+      const injected = await slot.promise;
+      if (reportReadinessTimeout && (!this.isConnected || !this.isHelperTokenCurrent(token)))
+        throw new CDPTargetClosedError('reload helper world was replaced');
+      return injected;
+    } catch (error) {
+      if (reportReadinessTimeout && (!this.isConnected || !this.isHelperTokenCurrent(token)))
+        throw new CDPTargetClosedError('reload helper world was replaced');
+      if (!reportReadinessTimeout && error instanceof CDPRequestTimeoutError) return false;
+      throw error;
+    }
   }
 
   private markHelpersUnready(
@@ -605,14 +616,14 @@ export class CDPClient {
       );
       return true;
     } catch (error) {
-      // Expected transport/context replacement failures are a bounded false;
-      // stale worlds are intentionally not allowed to log a current transition.
+      // A stale world's failure must not change current helper state.
       const unready = this.markHelpersUnready(
         token,
         cause === 'setup_started' ? 'setup_failed' : 'reinject_failed',
       );
       const readiness = this.attachReadinessError(error, 'helper injection');
       if (readiness !== error) throw readiness;
+      if (error instanceof CDPRequestTimeoutError) throw error;
       return unready;
     }
   }

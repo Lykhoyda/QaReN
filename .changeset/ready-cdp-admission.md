@@ -2,4 +2,4 @@
 'qaren': patch
 ---
 
-Retry transient CDP startup timeouts within the run's admission deadline so concurrent Android and iOS runs can wait for their own app runtime to become ready.
+Retry transient CDP startup and Android Fast Refresh reload timeouts within the remaining run budget so concurrent runs can wait for their own app runtime to become ready.

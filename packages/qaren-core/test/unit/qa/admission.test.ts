@@ -1,4 +1,4 @@
-import { interruptible } from '../../../dist/domain/cancellation.js';
+import { interruptible, withCancellation } from '../../../dist/domain/cancellation.js';
 import { createStop } from '../../../dist/qa/stop.js';
 import { TargetReadinessTimeoutError } from '../../../dist/cdp/discovery.js';
 import { test } from 'node:test';
@@ -15,6 +15,7 @@ import { runInNewContext } from 'node:vm';
 import { setImmediate as nextTurn } from 'node:timers/promises';
 import { syncBuiltinESMExports } from 'node:module';
 import { CDPProbeTimeoutError, CDPHandshakeTimeoutError } from '../../../dist/cdp/connect.js';
+import { CDPRequestTimeoutError } from '../../../dist/cdp/transport.js';
 
 const PROVEN = {
   ok: true,
@@ -531,7 +532,7 @@ test('a Fast Refresh reload is over only once the marked runtime is gone, React 
       calls.push('prove');
       return PROVEN;
     },
-    deadline: () => performance.now() + 5_000,
+    remainingMs: () => 5_000,
     pollMs: 1,
   });
   await reload.mark();
@@ -545,6 +546,136 @@ test('a Fast Refresh reload is over only once the marked runtime is gone, React 
   assert.deepEqual(calls, ['helpers after react true', 'prove']);
 });
 
+test('concurrent reloads retry slow helper and origin reads within their own admission budget', async () => {
+  const results = await Promise.allSettled(
+    ['helpers', 'proof'].map(async (slow) => {
+      const client = devClient();
+      let helpers = 0;
+      let proofs = 0;
+      const reload = createBundleReload({
+        evaluate: client.evaluate,
+        reinjectHelpers: async () => {
+          if (++helpers === 1 && slow === 'helpers')
+            throw new CDPRequestTimeoutError('the reloaded runtime has not answered yet');
+          return true;
+        },
+        prove: async () => {
+          if (++proofs === 1 && slow === 'proof')
+            throw new CDPRequestTimeoutError('the reloaded SourceCode has not answered yet');
+          return PROVEN;
+        },
+        remainingMs: () => 5_000,
+        pollMs: 1,
+      });
+      await reload.mark();
+      client.script.push('closed', 'unready', 'unready', 'ready', 'ready');
+      await reload.settled();
+      assert.ok(helpers >= 1 && proofs >= 1);
+    }),
+  );
+  assert.deepEqual(
+    results.map((result) => result.status),
+    ['fulfilled', 'fulfilled'],
+  );
+});
+
+test('concurrent reloads becoming ready after 30 seconds use the remaining run budget', async (t) => {
+  let now = 0;
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  syncBuiltinESMExports();
+  t.mock.method(performance, 'now', () => now);
+  const stop = createStop();
+  const clients = [devClient(), devClient()];
+  let proven = 0;
+  const reloads = clients.map((client) =>
+    createBundleReload({
+      evaluate: client.evaluate,
+      reinjectHelpers: async (waitMs) => {
+        assert.ok(waitMs > 0 && waitMs <= 59_000);
+        return true;
+      },
+      prove: async () => {
+        proven++;
+        return PROVEN;
+      },
+      remainingMs: () => 90_000 - now,
+    }),
+  );
+  await Promise.all(reloads.map((reload) => reload.mark()));
+  const settled = withCancellation(stop.signal, () =>
+    Promise.allSettled(reloads.map((reload) => reload.settled())),
+  );
+  t.after(async () => {
+    stop.begin();
+    await settled;
+    t.mock.timers.reset();
+    syncBuiltinESMExports();
+  });
+  await nextTurn();
+  assert.equal(proven, 0, 'a responsive old runtime is not reload proof');
+  clients.forEach((client) => client.script.push('ready'));
+  now = 31_000;
+  t.mock.timers.tick(31_000);
+  await nextTurn();
+  assert.deepEqual(
+    (await settled).map((result) => result.status),
+    ['fulfilled', 'fulfilled'],
+  );
+  assert.equal(proven, 2);
+});
+
+test('transient reload attempts cannot renew an exhausted run budget', async (t) => {
+  let now = 0;
+  t.mock.method(performance, 'now', () => now);
+  const client = devClient();
+  let helpers = 0;
+  let proven = false;
+  const reload = createBundleReload({
+    evaluate: client.evaluate,
+    reinjectHelpers: async () => {
+      helpers++;
+      now = helpers === 1 ? 200 : 1_000;
+      throw new CDPRequestTimeoutError('still not answering');
+    },
+    prove: async () => {
+      proven = true;
+      return PROVEN;
+    },
+    remainingMs: () => 1_000 - now,
+    pollMs: 1,
+  });
+  await reload.mark();
+  client.script.push('ready');
+  await assert.rejects(reload.settled(), { code: 'CDP_NOT_CONNECTED' });
+  assert.equal(helpers, 2);
+  assert.equal(proven, false);
+});
+
+test('cancellation during reload readiness prevents helper injection and origin proof', async () => {
+  const client = devClient();
+  const stop = createStop();
+  const calls: string[] = [];
+  const reload = createBundleReload({
+    evaluate: client.evaluate,
+    reinjectHelpers: async () => {
+      calls.push('helpers');
+      return true;
+    },
+    prove: async () => {
+      calls.push('proof');
+      return PROVEN;
+    },
+    remainingMs: () => 90_000,
+  });
+  await reload.mark();
+  const settled = withCancellation(stop.signal, () => reload.settled());
+  const refused = assert.rejects(settled, { code: 'RUN_CANCELLED' });
+  await nextTurn();
+  stop.begin();
+  await refused;
+  assert.deepEqual(calls, []);
+});
+
 test('a runtime that never reloads refuses as an attach timeout and is never proven', async () => {
   const client = devClient();
   let proven = false;
@@ -555,7 +686,7 @@ test('a runtime that never reloads refuses as an attach timeout and is never pro
       proven = true;
       return PROVEN;
     },
-    deadline: () => performance.now() + 20,
+    remainingMs: () => 20,
     pollMs: 1,
   });
   await reload.mark();
@@ -577,7 +708,7 @@ test('a reloaded bundle from another origin refuses with the origin proof', asyn
       code: 'METRO_ORIGIN_MISMATCH',
       message: "scriptURL 127.0.0.1:9999 is not the run's Metro port 8081",
     }),
-    deadline: () => performance.now() + 5_000,
+    remainingMs: () => 5_000,
     pollMs: 1,
   });
   await reload.mark();
@@ -590,7 +721,7 @@ test('a runtime that cannot be marked refuses before the setting that reloads it
     evaluate: async () => ({ error: 'ReferenceError' }),
     reinjectHelpers: async () => true,
     prove: async () => PROVEN,
-    deadline: () => performance.now() + 5_000,
+    remainingMs: () => 5_000,
     pollMs: 1,
   });
   await assert.rejects(reload.mark(), { code: 'CDP_NOT_CONNECTED' });
@@ -606,7 +737,7 @@ test('a reloaded bundle the walk helpers cannot reach refuses before the origin 
       proven = true;
       return PROVEN;
     },
-    deadline: () => performance.now() + 5_000,
+    remainingMs: () => 5_000,
     pollMs: 1,
   });
   await reload.mark();
@@ -623,7 +754,7 @@ for (const late of ['helpers', 'proof'] as const) {
       evaluate: client.evaluate,
       reinjectHelpers: async () => (late === 'helpers' ? never : true),
       prove: async () => (late === 'proof' ? never : PROVEN),
-      deadline: () => performance.now() + 50,
+      remainingMs: () => 50,
       pollMs: 1,
     });
     await reload.mark();

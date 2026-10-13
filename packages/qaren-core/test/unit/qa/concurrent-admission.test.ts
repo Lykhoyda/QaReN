@@ -2,13 +2,126 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { fileURLToPath } from 'node:url';
 import { waitForExactPortTargets } from '../../../dist/cdp/discovery.js';
-import { admit } from '../../../dist/qa/admission.js';
+import { admit, createBundleReload } from '../../../dist/qa/admission.js';
+import { INJECTED_HELPERS, REACT_READY_PROBE_JS } from '../../../dist/injected-helpers.js';
+import { runInNewContext } from 'node:vm';
 import { createStop } from '../../../dist/qa/stop.js';
 import { CDPClient } from '../../../dist/cdp-client.js';
 import { NO_REPLY, startFakeCDP } from '../../helpers/fake-cdp-server.js';
 import { prove, SCRIPT_URL_EXPRESSION, MODULE_NAMES_EXPRESSION } from '../../../dist/qa/prove.js';
 
 const worktree = fileURLToPath(new URL('../../../', import.meta.url));
+
+test('Android reloads recover from slow CDP reads and replacement pages on their own ports', async (t) => {
+  const lanes = await Promise.all(
+    ['helpers', 'proof', 'page', 'origin-page'].map(async (slow) => {
+      const target = {
+        id: slow,
+        title: 'com.example.app (Pixel 9)',
+        appId: 'com.example.app',
+        type: 'node',
+        deviceName: 'Pixel 9',
+        description: 'React Native Bridgeless [C++ connection]',
+      };
+      const fake = await startFakeCDP(0, {
+        targets: [target],
+      });
+      const client = new CDPClient(fake.port);
+      t.after(async () => {
+        await client.disconnect();
+        await fake.close();
+      });
+      await client.connectExact(fake.port, { platform: 'android', bundleId: 'com.example.app' });
+      let runtime: Record<string, unknown> = {};
+      let helpers = 0;
+      let proofs = 0;
+      fake.setResponse('Runtime.evaluate', (params: { expression: string }) => {
+        const expression = params.expression;
+        if (expression === INJECTED_HELPERS && ++helpers === 1) {
+          if (slow === 'helpers') return NO_REPLY;
+          if (slow === 'page') {
+            target.id = 'replacement-page';
+            fake.disconnectAll();
+            return NO_REPLY;
+          }
+        }
+        if (expression === SCRIPT_URL_EXPRESSION) {
+          if (++proofs === 1 && slow === 'proof') return NO_REPLY;
+          if (proofs === 1 && slow === 'origin-page') {
+            target.id = 'replacement-origin-page';
+            fake.disconnectAll();
+            return NO_REPLY;
+          }
+          return { result: { value: `http://127.0.0.1:${fake.port}/index.bundle` } };
+        }
+        if (expression === MODULE_NAMES_EXPRESSION)
+          return {
+            result: {
+              value: JSON.stringify({
+                count: 1,
+                names: ['test/unit/qa/concurrent-admission.test.ts'],
+              }),
+            },
+          };
+        if (expression.includes('__QAREN_BUNDLE_MARK'))
+          return { result: { value: runInNewContext(expression, runtime) } };
+        return { result: { value: true } };
+      });
+      const reload = createBundleReload({
+        evaluate: (expression) => client.evaluate(expression),
+        reinjectHelpers: (waitMs) => client.reinjectHelpers(waitMs, true),
+        prove: () =>
+          prove(
+            { evaluate: (expression) => client.evaluate(expression) },
+            {
+              metroPort: fake.port,
+              worktree,
+            },
+          ),
+        remainingMs: () => 30_000,
+        pollMs: 1,
+      });
+      await reload.mark();
+      runtime = {};
+      fake.emitEvent('Runtime.executionContextsCleared', {});
+      // A round-trip ensures the context-clear event invalidated helper evidence before reinjection.
+      await client.evaluate(REACT_READY_PROBE_JS);
+      const defaultWaiter = slow === 'helpers' ? client.reinjectHelpers(0) : Promise.resolve(false);
+      return {
+        reload,
+        client,
+        port: fake.port,
+        slow,
+        helpers: () => helpers,
+        proofs: () => proofs,
+        defaultWaiter,
+      };
+    }),
+  );
+  const results = await Promise.allSettled(lanes.map((lane) => lane.reload.settled()));
+  assert.deepEqual(
+    results.map((result) => result.status),
+    ['fulfilled', 'fulfilled', 'fulfilled', 'fulfilled'],
+  );
+  for (const lane of lanes) {
+    assert.equal(
+      await lane.defaultWaiter,
+      false,
+      'ordinary reinjection keeps its boolean contract',
+    );
+    assert.equal(
+      lane.client.connectedTarget?.id,
+      lane.slow.endsWith('page') ? `replacement-${lane.slow}` : lane.slow,
+    );
+    assert.equal(
+      new URL(lane.client.connectedTarget!.webSocketDebuggerUrl).port,
+      String(lane.port),
+    );
+    assert.ok(
+      (lane.slow === 'helpers' || lane.slow === 'page' ? lane.helpers() : lane.proofs()) >= 2,
+    );
+  }
+});
 
 for (const method of ['Network.enable', 'Log.enable', 'Profiler.enable', 'HeapProfiler.enable']) {
   test(`a page closing during ${method} returns to admission for exact-port rediscovery`, async (t) => {

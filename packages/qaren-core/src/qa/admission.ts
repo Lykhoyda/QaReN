@@ -14,6 +14,7 @@ import {
   CDPTargetClosedError,
 } from '../cdp/connect.js';
 import { REACT_READY_POLL_MS } from '../cdp/setup.js';
+import { CDPRequestTimeoutError } from '../cdp/transport.js';
 import { REACT_READY_PROBE_JS } from '../injected-helpers.js';
 import { HandlerError, describeError } from './adapt.js';
 import type { ProveOutcome } from './prove.js';
@@ -35,6 +36,16 @@ export interface AdmissionSteps {
 }
 
 type Proven = Extract<ProveOutcome, { ok: true }>;
+
+function transientReadinessFailure(error: unknown): boolean {
+  return (
+    error instanceof TargetReadinessTimeoutError ||
+    error instanceof CDPProbeTimeoutError ||
+    error instanceof CDPHandshakeTimeoutError ||
+    error instanceof CDPTargetClosedError ||
+    error instanceof CDPRequestTimeoutError
+  );
+}
 
 // iOS simulators share host loopback, so a sibling's runtime registers on the run's Metro; Android's Metro device name is a model, not the serial.
 export function metroDevicePin(
@@ -69,8 +80,7 @@ export interface BundleReloadSteps {
   reinjectHelpers(waitMs: number): Promise<boolean>;
   // The admission origin proof, read again on the reloaded bundle.
   prove(): Promise<ProveOutcome>;
-  // The admission readiness deadline, taken when the reload starts.
-  deadline(): number;
+  remainingMs(): number;
   pollMs?: number;
 }
 
@@ -111,22 +121,32 @@ export function createBundleReload(steps: BundleReloadSteps): {
         );
     },
     async settled() {
-      const deadline = steps.deadline();
+      const deadline = performance.now() + steps.remainingMs();
       try {
         await withDeadline(
           deadline,
           new TargetReadinessTimeoutError('the reload did not finish before the attach deadline'),
           async () => {
-            await replaced(deadline);
-            await awaitBundleReady(steps.evaluate, deadline, pollMs);
-            const waitMs = Math.max(1, deadline - performance.now());
-            if (!(await interruptible(() => steps.reinjectHelpers(waitMs))))
-              throw new HandlerError(
-                'HELPERS_NOT_INJECTED',
-                'the walk helpers could not be injected into the reloaded bundle',
-              );
-            const proof = await interruptible(steps.prove);
-            if (!proof.ok) throw new HandlerError(proof.code, proof.message);
+            for (;;) {
+              try {
+                await replaced(deadline);
+                await awaitBundleReady(steps.evaluate, deadline, pollMs);
+                const waitMs = Math.max(1, deadline - performance.now());
+                if (!(await interruptible(() => steps.reinjectHelpers(waitMs))))
+                  throw new HandlerError(
+                    'HELPERS_NOT_INJECTED',
+                    'the walk helpers could not be injected into the reloaded bundle',
+                  );
+                const proof = await interruptible(steps.prove);
+                if (!proof.ok) throw new HandlerError(proof.code, proof.message);
+                return;
+              } catch (error) {
+                const remaining = deadline - performance.now();
+                if (isAbort(error) || !transientReadinessFailure(error) || remaining <= 0)
+                  throw error;
+                await sleep(Math.min(pollMs, remaining));
+              }
+            }
           },
         );
       } catch (error) {
@@ -187,13 +207,8 @@ async function attach(steps: AdmissionSteps): Promise<void> {
             return;
           } catch (error) {
             if (isAbort(error)) throw error;
-            const transient =
-              error instanceof TargetReadinessTimeoutError ||
-              error instanceof CDPProbeTimeoutError ||
-              error instanceof CDPHandshakeTimeoutError ||
-              error instanceof CDPTargetClosedError;
             const remaining = Math.min(deadline - performance.now(), steps.remainingMs());
-            if (!transient || remaining <= 0) throw error;
+            if (!transientReadinessFailure(error) || remaining <= 0) throw error;
             const recoveryWaitExpired =
               (error instanceof TargetReadinessTimeoutError &&
                 !(error instanceof TargetListAttemptTimeoutError)) ||
