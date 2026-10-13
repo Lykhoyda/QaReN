@@ -890,18 +890,15 @@ a reset clears the earlier style restriction without proving native visibility.
 **Screens with a secure field.** Failure screen-text evidence becomes
 `[screen text withheld: a secure field is on screen]`, and moved-target identity
 labels become `•••`, whenever the capture contains any secure field, including
-empty or offscreen fields. This mirrors screenshot withholding and reduces
-diagnostics to the failure reason and marker. A copy of the secret shown on a
-later screen that has no secure field is not withheld. QaReN has no value to
-recognise it by; the rule keys on the field's presence only. Model-facing evidence
-is a second egress and stays as it is: `resolve.ts` sends `screen.visibleText` to
-the judge masked for known values only, so a phrase check on a screen with a
-pre-filled secure field still shows the echo to the model. Applying the same
-withholding there would turn every judged check on a login screen into `unsure`.
-That trade-off is a captain decision, not part of this slice. Literal checks
-still read the raw screen; a check whose text equals the secret evaluates that
-author-provided plan text. Values held only in app state, never placed in a secure
-field, are outside this rule.
+empty or offscreen fields. The failure reason remains available, but its appended
+screen-text context is withheld. This presence-based rule does not apply to a
+later capture without a secure field; known private values still follow the
+shared masking rules below, but an unknown secret's ordinary-text echo remains
+readable there. Model-facing evidence uses known-value masking rather than this
+screen-wide withholding, so an unknown pre-filled secret echoed as ordinary text
+can still reach the judge. Literal checks still evaluate the raw screen against
+the author-provided plan text. Values held only in app state, never placed in a
+secure field, are outside this presence-based rule.
 
 The Android runner keeps exact-fill values and reconstructable fallback
 keycodes out of device logs. Its device-tool snapshots also avoid logging
@@ -1239,7 +1236,8 @@ refuses `APP_PROCESS_UNKNOWN`; a runner built from an older checkout needs a reb
 ### Step recovery
 
 An observed React Native red box fails the current step immediately, including
-during login replay, with safely masked visible error-screen text in `failure.seen`.
+during login replay, with error-screen evidence in `failure.seen` projected through
+the [input value masking contract](#input-value-masking).
 It is checked before accepting a step or refusing incomplete semantic evidence,
 and never triggers recovery.
 
