@@ -962,10 +962,12 @@ fn toml_mcp_headers(text: &str) -> Vec<String> {
     let mut headers: Vec<String> = Vec::new();
     for line in text.lines().map(str::trim) {
         if line.starts_with('[') {
-            // Only the table name: a trailing `# ...` comment can hold private notes.
+            // Only the table name, never an unclosed line: a `# ...` comment can hold private notes.
             current = line
                 .starts_with("[mcp_servers.")
-                .then(|| table_header_end(line).map_or(line, |end| &line[..=end]));
+                .then(|| table_header_end(line))
+                .flatten()
+                .map(|end| &line[..=end]);
         } else if let Some(header) = current {
             if MCP_MARKERS.iter().any(|marker| line.contains(marker))
                 && !headers.iter().any(|seen| seen == header)
@@ -1622,6 +1624,13 @@ mod tests {
                 "[mcp_servers.plain]".to_string(),
             ]
         );
+    }
+
+    #[test]
+    fn unclosed_toml_headers_are_skipped_not_echoed() {
+        let text = "[mcp_servers.\"rn] # TOKEN=private-value\ncommand = \"cdp-supervisor\"\n\
+            [mcp_servers.x # TOKEN=private-value\ncommand = \"cdp-supervisor\"\n";
+        assert!(toml_mcp_headers(text).is_empty());
     }
 
     #[test]
