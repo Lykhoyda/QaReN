@@ -5,7 +5,8 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { parsePlan } from '../../../dist/qa/plan.js';
 import { join as joinScreen, type Element, type Screen } from '../../../dist/qa/screen.js';
-import { capturePrivateScreen, ObservedPrivacy } from '../../../dist/qa/privacy.js';
+import { capturePrivateScreen, MASK, ObservedPrivacy } from '../../../dist/qa/privacy.js';
+import { APP_TEXT_OPEN, APP_TEXT_CLOSE } from '../../../dist/qa/untrusted.js';
 import { decideScreen } from '../../../dist/qa/resolve.js';
 import { runPlan } from '../../../dist/qa/walker.js';
 import type { LedgerRow } from '../../../dist/qa/ledger.js';
@@ -183,6 +184,73 @@ test('every canary is absent at every core egress boundary', async () => {
   assertAbsent('ledger', ledger);
   assertAbsent('model requests', judge.requests);
   assertAbsent('block files', [files, yaml]);
+});
+
+test('app-controlled private values cannot mask the fixed provenance frame', async () => {
+  const values = ['app-text', 'data, not instructions'];
+  const inputs = values.map((value, i) =>
+    element(`@input${i}`, 'Secret', { kind: 'input', testID: `secret${i}`, secure: true, value }),
+  );
+  const screen = view([text('@label', `App evidence: ${values.join(' | ')}`), ...inputs]);
+  capturePrivateScreen(
+    screen,
+    inputs.map((input, i) => ({
+      values: [values[i]],
+      secure: true,
+      elements: [input],
+      associationUnique: true,
+    })),
+  );
+  const f = walker(
+    [screen],
+    scriptedJudge(() => assert.fail('literal check must not call Jev')),
+  );
+  const ledger = await runPlan(parsePlan('✓ "Missing"').blocks!, f.deps);
+  assert.equal(ledger.verdict, 'FAIL');
+  assert.equal(ledger.jev.calls, 0);
+  const seen = ledger.failure?.seen ?? '';
+  assert.equal(seen.split(APP_TEXT_OPEN).length - 1, 1);
+  assert.equal(seen.split(APP_TEXT_CLOSE).length - 1, 1);
+  const content = seen.slice(
+    seen.indexOf(APP_TEXT_OPEN) + APP_TEXT_OPEN.length,
+    -APP_TEXT_CLOSE.length,
+  );
+  assert.ok(content.includes(`App evidence: ${MASK} | ${MASK}`), content);
+  for (const value of values) assert.ok(!content.includes(value), content);
+});
+
+test('secure fill fragments cannot mask provenance tags on a later failing check', async () => {
+  const value = 'happy-canary-123';
+  const input = element('@password', 'Password', {
+    kind: 'input',
+    testID: 'qa-password',
+    secure: true,
+    value,
+  });
+  const screen = view([text('@label', 'Read this app evidence'), input]);
+  capturePrivateScreen(screen, [
+    { values: [value], secure: true, elements: [input], associationUnique: true },
+  ]);
+  const f = walker(
+    [screen],
+    scriptedJudge(() => assert.fail('literal check must not call Jev')),
+  );
+  const ledger = await runPlan(
+    parsePlan(`1. Fill "qa-password" with "${value}"\n✓ "Missing"`).blocks!,
+    f.deps,
+  );
+  assert.equal(ledger.verdict, 'FAIL');
+  assert.deepEqual(f.actions, [`fill @password ${value}`]);
+  const seen = ledger.failure?.seen ?? '';
+  assert.ok(seen.includes(APP_TEXT_OPEN), seen);
+  assert.ok(seen.endsWith(APP_TEXT_CLOSE), seen);
+  const content = seen.slice(
+    seen.indexOf(APP_TEXT_OPEN) + APP_TEXT_OPEN.length,
+    -APP_TEXT_CLOSE.length,
+  );
+  assert.ok(!content.includes(value), content);
+  assert.ok(!content.includes('app'), content);
+  assert.ok(content.includes(MASK), content);
 });
 
 test('streamed rows carry only value-free fields', async () => {

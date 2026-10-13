@@ -40,7 +40,7 @@ import {
 import { type Judge, type JevCall, JevError, unavailableJudge } from './questions.js';
 import { type LoginMarker, recover } from './recover.js';
 import { isPrivateInput, MASK, ObservedPrivacy, matchPrivate, projectPlanLine } from './privacy.js';
-import { frameAppText } from './untrusted.js';
+import { frameAppText, redactAppText } from './untrusted.js';
 import { NativeSnapshotIncomplete, PrivateInputCaptureError } from './private-input.js';
 import { AppProcessGoneError, emitCaptureDiagnostics, NativeCaptureError } from './capture.js';
 import { QaDispatchContext, QaDispatchError } from '../domain/qa-dispatch.js';
@@ -427,7 +427,9 @@ export async function walkBlock(
   };
   const identityText = (target: Element): string =>
     frameAppText(
-      `${target.kind} ${target.label === undefined ? 'unlabelled' : `"${target.label}"`}, ${target.testID === undefined ? 'no testID' : `testID "${target.testID}"`}`,
+      privacy.redact(
+        `${target.kind} ${target.label === undefined ? 'unlabelled' : `"${target.label}"`}, ${target.testID === undefined ? 'no testID' : `testID "${target.testID}"`}`,
+      ),
     );
   // After a moved refusal, the target re-identified by the step's own exact-identity rules
   // (one identity, same kind, label and testID) must hold one native frame across two captures.
@@ -645,7 +647,7 @@ export async function walkBlock(
     rows.push(timed);
     deps.row(valueFree(timed));
   };
-  const redact = (text: string): string => privacy.redact(text);
+  const redact = (text: string): string => redactAppText(text, (part) => privacy.redact(part));
   // A stored selector is written to the action file, so it must not carry a protected value.
   const stored = (selector: Selector | undefined): { selector?: Selector } => {
     const value = selector?.id ?? selector?.text;
@@ -697,7 +699,7 @@ export async function walkBlock(
       failure: {
         step: item.line,
         seen: redact(
-          `${reason}; historical context, previously on screen: ${frameAppText(privacy.screenText(screen).slice(0, 40).join(' | '))}`,
+          `${reason}; historical context, previously on screen: ${frameAppText(privacy.redact(privacy.screenText(screen).slice(0, 40).join(' | ')))}`,
         ),
         ...(screenshot ? { screenshot } : {}),
       },
@@ -2044,11 +2046,16 @@ export async function runPlan(
             ...row,
             block: display(row.block),
             text: projectPlanLine(row.text, privacy.privateSet()).text,
-            ...(row.reason !== undefined ? { reason: privacy.redact(row.reason) } : {}),
+            ...(row.reason !== undefined
+              ? { reason: redactAppText(row.reason, (part) => privacy.redact(part)) }
+              : {}),
             ...(selector && unprotected(selector.id ?? selector.text ?? '') ? { selector } : {}),
           })),
           outcome?.failure
-            ? { ...outcome.failure, seen: privacy.redact(outcome.failure.seen) }
+            ? {
+                ...outcome.failure,
+                seen: redactAppText(outcome.failure.seen, (part) => privacy.redact(part)),
+              }
             : undefined,
           calls(),
           path(),
