@@ -39,7 +39,14 @@ import {
 } from './blocks.js';
 import { type Judge, type JevCall, JevError, unavailableJudge } from './questions.js';
 import { type LoginMarker, recover } from './recover.js';
-import { isPrivateInput, MASK, ObservedPrivacy, matchPrivate, projectPlanLine } from './privacy.js';
+import {
+  concealsScreen,
+  isPrivateInput,
+  MASK,
+  ObservedPrivacy,
+  matchPrivate,
+  projectPlanLine,
+} from './privacy.js';
 import { NativeSnapshotIncomplete, PrivateInputCaptureError } from './private-input.js';
 import { AppProcessGoneError, emitCaptureDiagnostics, NativeCaptureError } from './capture.js';
 import { QaDispatchContext, QaDispatchError } from '../domain/qa-dispatch.js';
@@ -424,8 +431,8 @@ export async function walkBlock(
     const rect = elementFrame(e);
     return rect ? [rect.x, rect.y, rect.width, rect.height].join(',') : undefined;
   };
-  const identityText = (target: Element): string =>
-    `${target.kind} ${target.label === undefined ? 'unlabelled' : `"${target.label}"`}, ${target.testID === undefined ? 'no testID' : `testID "${target.testID}"`}`;
+  const identityText = (target: Element, screen: Screen): string =>
+    `${target.kind} ${target.label === undefined ? 'unlabelled' : `"${concealsScreen(screen) ? MASK : target.label}"`}, ${target.testID === undefined ? 'no testID' : `testID "${target.testID}"`}`;
   // After a moved refusal, the target re-identified by the step's own exact-identity rules
   // (one identity, same kind, label and testID) must hold one native frame across two captures.
   const settledTarget = async (
@@ -1315,7 +1322,7 @@ export async function walkBlock(
               outcome = failed(
                 item,
                 attempt,
-                `${moved.error}; the target (${identityText(moved.target)}) did not settle across ${settled.frames.length} captures (${settled.frames.join(' | ')}); it was not dispatched again`,
+                `${moved.error}; the target (${identityText(moved.target, latest)}) did not settle across ${settled.frames.length} captures (${settled.frames.join(' | ')}); it was not dispatched again`,
                 latest,
                 await shoot(item),
               );
@@ -1475,7 +1482,7 @@ export async function walkBlock(
                 outcome = failed(
                   item,
                   attempt,
-                  `${moved.error}; the retry resolved ${element ? `${identityText(element)} at ${frameKey(element) ?? 'no frame'}` : 'no element'}, not the target that settled (${identityText(moved.target)} at ${settledFrame}); it was not dispatched`,
+                  `${moved.error}; the retry resolved ${element ? `${identityText(element, before.screen)} at ${frameKey(element) ?? 'no frame'}` : 'no element'}, not the target that settled (${identityText(moved.target, before.screen)} at ${settledFrame}); it was not dispatched`,
                   before.screen,
                   await shoot(item),
                   ref,

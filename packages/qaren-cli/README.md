@@ -887,6 +887,22 @@ a reset clears the earlier style restriction without proving native visibility.
 
 ### Input value masking
 
+**Screens with a secure field.** Failure screen-text evidence becomes
+`[screen text withheld: a secure field is on screen]`, and moved-target identity
+labels become `•••`, whenever the capture contains any secure field, including
+empty or offscreen fields. This mirrors screenshot withholding and reduces
+diagnostics to the failure reason and marker. A copy of the secret shown on a
+later screen that has no secure field is not withheld. QaReN has no value to
+recognise it by; the rule keys on the field's presence only. Model-facing evidence
+is a second egress and stays as it is: `resolve.ts` sends `screen.visibleText` to
+the judge masked for known values only, so a phrase check on a screen with a
+pre-filled secure field still shows the echo to the model. Applying the same
+withholding there would turn every judged check on a login screen into `unsure`.
+That trade-off is a captain decision, not part of this slice. Literal checks
+still read the raw screen; a check whose text equals the secret evaluates that
+author-provided plan text. Values held only in app state, never placed in a secure
+field, are outside this rule.
+
 The Android runner keeps exact-fill values and reconstructable fallback
 keycodes out of device logs. Its device-tool snapshots also avoid logging
 off-screen node text while preserving the snapshot's node fields and order.

@@ -201,8 +201,7 @@ test('the projected ledger stays readable and unrelated passing blocks are saved
   const texts = ledger.steps.map((row) => row.text);
   assert.ok(texts.includes('✓ "Step 1 of 2"'), JSON.stringify(texts));
   assert.ok(texts.includes('1. Tap "qa-start"'), JSON.stringify(texts));
-  assert.match(ledger.failure?.seen ?? '', /Step 1 of 2/);
-  assert.match(ledger.failure?.seen ?? '', /Almost done/);
+  assert.ok(ledger.failure?.seen.endsWith('[screen text withheld: a secure field is on screen]'));
   assert.match(ledger.failure?.seen ?? '', /\bthe\b/);
   assert.equal(files.length, 1, JSON.stringify(ledger.blocks));
   assert.equal(yaml.length, 1);
@@ -567,4 +566,21 @@ test('final ledger withholds normalized and hashed slugs from private block titl
   const ledger = await runPlan(blocks, fixture.deps);
   assert.equal(ledger.blocks[0].key, 'account-overview');
   assert.equal(ledger.steps[0].block, 'account-overview');
+});
+
+test('an unknown prefilled secure value echoed as text never reaches the ledger', async () => {
+  const captured = view([
+    element('@password', 'Password', { kind: 'input', secure: true }),
+    text('@echo', 'Saved password: pf-s3cret-91'),
+    text('@welcome', 'Welcome'),
+  ]);
+  const f = walker(
+    [captured],
+    scriptedJudge(() => assert.fail('literal checks do not call Jev')),
+  );
+  const result = await runPlan(parsePlan('✓ "Missing"').blocks!, f.deps);
+  assert.equal(result.verdict, 'FAIL');
+  assert.equal(JSON.stringify(result).includes('pf-s3cret-91'), false);
+  assert.equal(JSON.stringify(result).includes('Welcome'), false);
+  assert.ok(result.failure?.seen.endsWith('[screen text withheld: a secure field is on screen]'));
 });

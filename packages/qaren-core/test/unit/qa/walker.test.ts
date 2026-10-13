@@ -1,7 +1,8 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { parsePlan } from '../../../dist/qa/plan.js';
-import type { Screen } from '../../../dist/qa/screen.js';
+import { join as joinScreen, type Screen } from '../../../dist/qa/screen.js';
+import { choice, scriptedJudge } from './judgment-fixtures.ts';
 import { runPlan, walkBlock } from '../../../dist/qa/walker.js';
 import type { ActResult, WalkerDeps } from '../../../dist/qa/walker.js';
 import type { LedgerRow } from '../../../dist/qa/ledger.js';
@@ -613,3 +614,124 @@ test('a value that is a prefix of a later value cannot expose the remainder', as
   const dumped = JSON.stringify(ledger);
   assert.equal(dumped.includes('SECRET'), false, dumped);
 });
+
+test('a failing literal check withholds a secure capture and preserves non-secure readability', async () => {
+  for (const secure of [false, true]) {
+    const captured = screen(['Welcome', 'Saved password: pf-s3cret-91']);
+    captured.elements.push({
+      ...screen(['Password']).elements[0],
+      ref: '@password',
+      kind: 'input',
+      secure,
+    });
+    const f = fake([captured]);
+    const result = await runPlan([block('✓ "Missing"')], f.deps);
+    assert.equal(result.verdict, 'FAIL');
+    assert.equal(
+      result.failure?.seen,
+      secure
+        ? '"Missing" is not satisfied on screen; historical context, previously on screen: [screen text withheld: a secure field is on screen]'
+        : '"Missing" is not satisfied on screen; historical context, previously on screen: Welcome | Saved password: pf-s3cret-91 | Password',
+    );
+  }
+});
+
+function movedScreen(y: number, secure: boolean): Screen {
+  const captured: Screen = {
+    ...joinScreen(
+      [
+        {
+          ref: '@app',
+          index: 0,
+          type: 'Application',
+          rect: { x: 0, y: 0, width: 400, height: 800 },
+        },
+        {
+          ref: '@win',
+          index: 1,
+          type: 'Window',
+          parentIndex: 0,
+          rect: { x: 0, y: 0, width: 400, height: 800 },
+        },
+        ...['Saved password: pf-s3cret-91', 'Other action'].map((label, i) => ({
+          ref: `@button${i}`,
+          index: 2 + i,
+          parentIndex: 1,
+          type: 'Button',
+          label,
+          identifier: `action${i}`,
+          hittable: true,
+          rect: { x: 20, y: y + i * 60, width: 300, height: 44 },
+        })),
+        ...(secure
+          ? [{ ref: '@password', index: 4, parentIndex: 1, type: 'SecureTextField', secure: true }]
+          : []),
+      ],
+      [],
+    ),
+    coverage: { native: 'complete', react: 'complete' },
+  };
+  captured.elements = captured.elements.filter((e) => e.kind === 'button' || e.secure);
+  for (const e of captured.elements)
+    if (e.secure) e.semantic = { press: 'unsupported', fill: 'supported', visibility: 'visible' };
+  return captured;
+}
+
+for (const refusal of ['unsettled', 'different retry'] as const) {
+  test(`a moved-target ${refusal} refusal conceals secure-screen identity labels`, async () => {
+    for (const secure of [false, true]) {
+      const frames = refusal === 'unsettled' ? [400, 400, 402, 404, 406, 408] : [400];
+      const f = fake(
+        frames.map((y) => movedScreen(y, secure)),
+        {
+          press: {
+            ok: false,
+            proven: false,
+            mutation: 'none',
+            error: 'TARGET_MOVED_BEFORE_DISPATCH: target moved before dispatch',
+          },
+        },
+      );
+      if (refusal === 'different retry') {
+        f.deps.judge = scriptedJudge((questions, index) =>
+          Object.fromEntries(
+            Object.entries(questions).map(([id, question]) => [
+              id,
+              question.type === 'choice'
+                ? choice(question, index === 0 ? 'e0' : 'e1')
+                : choice(question),
+            ]),
+          ),
+        );
+      }
+      const result = await walkBlock(
+        block(refusal === 'unsettled' ? '1. Tap "action0"' : '1. Tap the action button'),
+        f.deps,
+      );
+      assert.equal(result.block.outcome, 'fail');
+      const reason = result.rows.findLast((row) => row.outcome === 'fail')?.reason ?? '';
+      if (!secure) {
+        const expected =
+          refusal === 'unsettled'
+            ? 'TARGET_MOVED_BEFORE_DISPATCH: target moved before dispatch; the target (button "Saved password: pf-s3cret-91", testID "action0") did not settle across 4 captures (20,402,300,44 | 20,404,300,44 | 20,406,300,44 | 20,408,300,44); it was not dispatched again'
+            : 'TARGET_MOVED_BEFORE_DISPATCH: target moved before dispatch; the retry resolved button "Other action", testID "action1" at 20,460,300,44, not the target that settled (button "Saved password: pf-s3cret-91", testID "action0" at 20,400,300,44); it was not dispatched';
+        assert.equal(reason, expected);
+        assert.equal(
+          result.failure?.seen,
+          `${expected}; historical context, previously on screen: Saved password: pf-s3cret-91 | Other action`,
+        );
+      }
+      for (const output of [reason, result.failure?.seen ?? '']) {
+        assert.match(
+          output,
+          refusal === 'unsettled' ? /did not settle/ : /not the target that settled/,
+        );
+        assert.equal(output.includes('Saved password: pf-s3cret-91'), !secure, output);
+        if (secure) {
+          assert.match(output, /button "•••"/);
+          assert.equal(output.includes('Other action'), false, output);
+        }
+      }
+    }
+  });
+}
