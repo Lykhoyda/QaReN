@@ -23,9 +23,11 @@ qaren doctor [--json] [--config .qaren/config.yaml]
 Doctor prints the running binary's version, path, build and runtime, then one
 `PASS`, `WARN`, `FAIL` or `SKIP` row per check, each problem with its manual fix.
 It only reads files and runs version and list commands: it never writes, deletes,
-spawns a session or uses the network, and it prints paths, key names and
-environment variable names, never file contents or values. It exits 1 when any
-row fails, 0 otherwise, and 2 on a usage error. `--json` prints
+spawns a session or uses the network. In text and JSON output, Doctor never prints
+file contents, environment variable values, credentials or any other config value;
+it may name the configured iOS runtime and Android AVD. It also prints diagnostic
+paths, key names and environment variable names. It exits 1 when any row fails,
+0 otherwise, and 2 on a usage error. `--json` prints
 `{identity, checks: [{id, status, detail, fix?}], verdict}` and nothing else.
 
 `FAIL` means `qaren check` cannot run correctly on this host; `WARN` is anything
