@@ -1767,16 +1767,32 @@ mod tests {
     #[test]
     fn latest_is_the_newest_run_record() {
         let root = temp_runs("latest");
-        std::fs::create_dir_all(root.join("check-2")).unwrap();
+        let newest = "check-20261009T081500Z-000001";
+        std::fs::create_dir_all(root.join(newest).join("logs")).unwrap();
         std::fs::write(root.join("check-1/run.json"), "{}").unwrap();
         std::thread::sleep(Duration::from_millis(20));
-        std::fs::write(root.join("check-2/run.json"), "{}").unwrap();
+        std::fs::write(root.join(newest).join("run.json"), "{}").unwrap();
+        std::fs::write(root.join(newest).join("logs/events.jsonl"), "").unwrap();
         std::fs::create_dir_all(root.join("check-3")).unwrap();
         for id in ["check.latest", "check_latest", "-check"] {
             std::fs::create_dir_all(root.join(id)).unwrap();
             std::fs::write(root.join(id).join("run.json"), "{}").unwrap();
         }
-        assert_eq!(latest(&root).as_deref(), Some("check-2"));
+        assert_eq!(latest(&root).as_deref(), Some(newest));
+        for target in [Target::Latest, Target::RunId(newest.into())] {
+            let (code, out) = follow_out(
+                &root,
+                WatchArgs {
+                    target,
+                    plain: false,
+                    json: true,
+                },
+                false,
+            );
+            assert_eq!(code, 0);
+            let snapshot: Value = serde_json::from_str(&out).unwrap();
+            assert_eq!(snapshot["runId"], newest);
+        }
     }
 
     #[test]

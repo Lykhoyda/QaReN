@@ -1343,6 +1343,122 @@ fn the_receipt_names_written_blocks_and_paths_the_walk_changed_outside_them() {
 }
 
 #[test]
+fn checks_started_three_milliseconds_apart_claim_separate_runs() {
+    let (first_repo, first_app) = app_repo();
+    let runs_root = first_repo.join("runs");
+    let mut receipts = Vec::new();
+    for index in 0..2 {
+        let (repo, app) = if index == 0 {
+            (first_repo.clone(), first_app.clone())
+        } else {
+            app_repo()
+        };
+        let mut req = request(&repo, &app, 30);
+        req.runs_root = runs_root.clone();
+        let mut mock = MockRunner::new();
+        mock.sleep(std::time::Duration::from_millis(index * 3));
+        script_preflight(&mut mock, &repo);
+        script_provision(&mut mock);
+        script_drift_status(&mut mock);
+        script_host_probe(&mut mock, UDID, hosts_absent());
+        let expected_id = if index == 0 {
+            run_id()
+        } else {
+            format!("{}-000001", run_id())
+        };
+        mock.expect_spawn_piped(
+            "walk.js",
+            9000,
+            &pass_stdout().replace(&run_id(), &expected_id),
+            Some(0),
+        );
+        script_core_identity(&mut mock);
+        script_teardown(&mut mock);
+
+        let receipt = run(&mut mock, &req);
+
+        assert_eq!(receipt.result, ReceiptResult::Pass, "{:?}", receipt.failure);
+        assert_eq!(mock.remaining(), 0);
+        assert_eq!(receipt.cleanup["device_lease"], "removed");
+        receipts.push(receipt);
+    }
+    assert_ne!(receipts[0].run_id, receipts[1].run_id);
+    for receipt in receipts {
+        let record = RunRecord::load(&runs_root, &receipt.run_id).unwrap();
+        assert_eq!(record.phase, Phase::Cleaned);
+        assert_eq!(record.terminal.unwrap().verdict, "PASS");
+        assert!(Path::new(&receipt.artifacts["report"]).is_file());
+        let mut reader = qaren::exec::MockRunner::new();
+        let status = qaren::commands::status::status(&mut reader, &runs_root, &receipt.run_id);
+        assert_eq!(status.result, ReceiptResult::Cleaned);
+        let cleanup = qaren::commands::cleanup::cleanup(&mut reader, &runs_root, &receipt.run_id);
+        assert_eq!(
+            cleanup.result,
+            ReceiptResult::Cleaned,
+            "{:?}",
+            cleanup.failure
+        );
+    }
+}
+
+#[test]
+fn simultaneous_checks_on_distinct_devices_do_not_collide_at_the_same_millisecond() {
+    let root = common::temp_repo();
+    let occupied = root.join("runs").join(run_id());
+    std::fs::create_dir_all(&occupied).unwrap();
+    std::fs::write(occupied.join("canary"), "foreign evidence").unwrap();
+    let occupied_file = root.join("runs").join(format!("{}-000001", run_id()));
+    std::fs::write(&occupied_file, "foreign occupant").unwrap();
+    let barrier = std::sync::Arc::new(std::sync::Barrier::new(8));
+    let mut workers = Vec::new();
+    for index in 0..8 {
+        let (repo, app) = app_repo();
+        let udid = format!("{index:08}-51DA-4C4F-ACA1-39881C916FDD");
+        let mut req = request(&repo, &app, 30);
+        req.runs_root = root.join("runs");
+        req.lock_root = root.join("locks");
+        req.device = Some(udid.clone());
+        let mut mock = MockRunner::new();
+        script_preflight_inventory(
+            &mut mock,
+            &repo,
+            "simctl list devices booted",
+            &booted_json().replace(UDID, &udid),
+        );
+        mock.expect_run(
+            "pnpm install --frozen-lockfile",
+            CmdOutput::failed(1, "fixture stop"),
+        );
+        let barrier = barrier.clone();
+        workers.push(std::thread::spawn(move || {
+            barrier.wait();
+            let receipt = run(&mut mock, &req);
+            assert_eq!(
+                receipt.failure.as_ref().unwrap().code,
+                FailureCode::DepsInstallFailed
+            );
+            assert_eq!(receipt.cleanup["device_lease"], "removed");
+            assert_eq!(mock.remaining(), 0);
+            RunRecord::load(&req.runs_root, &receipt.run_id).unwrap();
+            receipt.run_id
+        }));
+    }
+    let ids: std::collections::BTreeSet<_> = workers
+        .into_iter()
+        .map(|worker| worker.join().unwrap())
+        .collect();
+    assert_eq!(ids.len(), 8);
+    assert_eq!(
+        std::fs::read_to_string(occupied.join("canary")).unwrap(),
+        "foreign evidence"
+    );
+    assert_eq!(
+        std::fs::read_to_string(occupied_file).unwrap(),
+        "foreign occupant"
+    );
+}
+
+#[test]
 fn check_runs_the_phases_in_order_and_ends_pass_with_a_report() {
     let (repo, app) = app_repo();
     let mut mock = MockRunner::new();
@@ -2073,6 +2189,7 @@ fn a_holder_with_unknown_liveness_is_never_cleaned_up() {
     assert_eq!(mock.remaining(), 0);
     let earlier = RunRecord::load(&req.runs_root, "check-earlier").unwrap();
     assert_eq!(earlier.phase, Phase::Walking);
+    assert!(!req.runs_root.join(run_id()).exists());
 }
 
 #[test]
@@ -4792,7 +4909,7 @@ fn pr_request(repo: &Path, app: &Path) -> RunRequest {
 
 #[test]
 fn pr_runs_the_walk_on_a_worktree_at_the_head_with_a_recording_in_order() {
-    pr_walk_result(false);
+    pr_walk_result(false, false);
 }
 
 #[test]
@@ -4893,7 +5010,7 @@ fn recording_start_failures_remain_failed_through_cleanup_and_the_viewer() {
 
 #[test]
 fn candidate_drift_during_a_pr_walk_fails_and_withholds_publication() {
-    pr_walk_result(true);
+    pr_walk_result(true, false);
 }
 
 #[test]
@@ -4955,12 +5072,25 @@ fn cancelled_pr_walks_with_or_without_source_drift_cannot_publish() {
     }
 }
 
-fn pr_walk_result(candidate_drift: bool) {
+#[test]
+fn pr_run_retries_an_occupied_timestamp_without_changing_the_existing_run() {
+    pr_walk_result(false, true);
+}
+
+fn pr_walk_result(candidate_drift: bool, collision: bool) {
     let (repo, app) = app_repo();
     if candidate_drift {
         std::fs::write(app.join("App.tsx"), "export default original;\n").unwrap();
     }
-    let wt = repo.join("runs").join(run_id()).join("wt");
+    let id = if collision {
+        let occupied = repo.join("runs").join(run_id());
+        std::fs::create_dir_all(&occupied).unwrap();
+        std::fs::write(occupied.join("canary"), "existing run").unwrap();
+        format!("{}-000001", run_id())
+    } else {
+        run_id()
+    };
+    let wt = repo.join("runs").join(&id).join("wt");
     let mut runner = PrRunner {
         inner: MockRunner::new(),
         app: app.clone(),
@@ -4974,7 +5104,12 @@ fn pr_walk_result(candidate_drift: bool) {
     script_drift_status(mock);
     script_recorder_start(mock);
     script_host_probe(mock, UDID, hosts_absent());
-    mock.expect_spawn_piped("walk.js", 9000, &pr_pass_stdout(), Some(0));
+    mock.expect_spawn_piped(
+        "walk.js",
+        9000,
+        &pr_pass_stdout().replace(&run_id(), &id),
+        Some(0),
+    );
     script_core_identity(mock);
     script_drift_status(mock);
     mock.expect_run("git", CmdOutput::success(&format!("{PR_HEAD}\n"))); // drift report
@@ -5005,7 +5140,7 @@ fn pr_walk_result(candidate_drift: bool) {
             FailureCode::CandidateDrifted
         );
         assert_eq!(receipt.ledger.as_ref().unwrap().verdict, "FAIL");
-        let terminal = RunRecord::load(&repo.join("runs"), &run_id())
+        let terminal = RunRecord::load(&repo.join("runs"), &id)
             .unwrap()
             .terminal
             .unwrap();
@@ -5015,7 +5150,7 @@ fn pr_walk_result(candidate_drift: bool) {
         let published = qaren::publish::publish(
             &mut publisher,
             &repo.join("runs"),
-            &run_id(),
+            &id,
             &qaren::redact::MachineIdentity::default(),
         );
         assert_eq!(published.result, ReceiptResult::Failed);
@@ -5068,7 +5203,7 @@ fn pr_walk_result(candidate_drift: bool) {
     );
     assert_eq!(receipt.cleanup["device_lease"], "removed");
     assert!(!wt.exists());
-    let run_dir = repo.join("runs").join(run_id());
+    let run_dir = repo.join("runs").join(&id);
     assert_eq!(
         std::fs::read_to_string(run_dir.join("blocks/tasks.yaml")).unwrap(),
         "steps: []\n"
@@ -5088,10 +5223,16 @@ fn pr_walk_result(candidate_drift: bool) {
     assert!(pr.tested_older_commit);
     assert_eq!(pr.app_rel, "test-app");
     assert_eq!(pr.blocks, ["tasks"]);
-    let record = RunRecord::load(&repo.join("runs"), &run_id()).unwrap();
+    let record = RunRecord::load(&repo.join("runs"), &id).unwrap();
     assert_eq!(record.phase, Phase::Cleaned);
     assert!(record.resources.recorder.is_none());
     assert!(record.resources.pr_worktree.is_none());
+    if collision {
+        assert_eq!(
+            std::fs::read_to_string(repo.join("runs").join(run_id()).join("canary")).unwrap(),
+            "existing run"
+        );
+    }
 }
 
 #[test]

@@ -8,7 +8,7 @@ use qaren::redact::MachineIdentity;
 use qaren::runrecord::{FinalVerification, TerminalResult};
 use std::path::{Path, PathBuf};
 
-const RUN: &str = "check-20261002T101500Z";
+const RUN: &str = "check-20261002T101500Z-000001";
 const TESTED: &str = "c0ffee00c0ffee00c0ffee00c0ffee00c0ffee00";
 const COMMIT: &str = "beef0000beef0000beef0000beef0000beef0000";
 
