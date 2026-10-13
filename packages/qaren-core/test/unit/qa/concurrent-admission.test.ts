@@ -3,7 +3,7 @@ import { test } from 'node:test';
 import WebSocket from 'ws';
 import { fileURLToPath } from 'node:url';
 import { waitForExactPortTargets } from '../../../dist/cdp/discovery.js';
-import { admit, createBundleReload } from '../../../dist/qa/admission.js';
+import { admit, awaitBundleReady, createBundleReload } from '../../../dist/qa/admission.js';
 import { INJECTED_HELPERS, REACT_READY_PROBE_JS } from '../../../dist/injected-helpers.js';
 import { runInNewContext } from 'node:vm';
 import { createStop } from '../../../dist/qa/stop.js';
@@ -405,7 +405,7 @@ test('two exact sessions admit when a native page answers beyond the five-probe 
   }
 });
 
-for (const phase of ['first probe', 'origin proof']) {
+for (const phase of ['first probe', 'bundle readiness', 'origin proof']) {
   test(`a cold socket closing before its ${phase} rediscovers its exact app within admission`, async (t) => {
     const target = {
       id: 'cold-page',
@@ -465,7 +465,13 @@ for (const phase of ['first probe', 'origin proof']) {
               undefined,
               attachDeadline,
             );
+            if (phase === 'bundle readiness') {
+              target.id = 'ready-page';
+              closeFirstSocket();
+            }
           },
+          bundleReady: (attachDeadline) =>
+            awaitBundleReady((expression) => client.evaluate(expression), attachDeadline),
           foreignDriver: async () => undefined,
           open: async () => {
             if (phase === 'origin proof') {

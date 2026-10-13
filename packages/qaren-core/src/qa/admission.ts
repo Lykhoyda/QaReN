@@ -65,7 +65,7 @@ export async function awaitBundleReady(
     try {
       if ((await interruptible(() => evaluate(REACT_READY_PROBE_JS))).value === true) return;
     } catch (error) {
-      if (isAbort(error)) throw error;
+      if (isAbort(error) || error instanceof CDPTargetClosedError) throw error;
     }
     const remaining = deadline - performance.now();
     if (remaining <= 0)

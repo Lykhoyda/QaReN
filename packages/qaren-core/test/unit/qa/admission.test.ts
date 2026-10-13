@@ -14,7 +14,11 @@ import { REACT_READY_PROBE_JS } from '../../../dist/injected-helpers.js';
 import { runInNewContext } from 'node:vm';
 import { setImmediate as nextTurn } from 'node:timers/promises';
 import { syncBuiltinESMExports } from 'node:module';
-import { CDPProbeTimeoutError, CDPHandshakeTimeoutError } from '../../../dist/cdp/connect.js';
+import {
+  CDPProbeTimeoutError,
+  CDPHandshakeTimeoutError,
+  CDPTargetClosedError,
+} from '../../../dist/cdp/connect.js';
 import { CDPRequestTimeoutError, sendWithTimeout } from '../../../dist/cdp/transport.js';
 
 const PROVEN = {
@@ -22,6 +26,20 @@ const PROVEN = {
   scriptURL: 'http://127.0.0.1:8081/index.bundle',
   appModules: 3,
 } as const;
+
+test('bundle readiness returns socket loss to admission instead of polling a dead transport', async () => {
+  await assert.rejects(
+    awaitBundleReady(
+      async () => {
+        await sendWithTimeout(null, new Map(), () => 1, 'Runtime.evaluate', {}, 100);
+        return {};
+      },
+      performance.now() + 20,
+      1,
+    ),
+    CDPTargetClosedError,
+  );
+});
 
 function harness(overrides: Partial<AdmissionSteps> = {}) {
   const calls: string[] = [];
