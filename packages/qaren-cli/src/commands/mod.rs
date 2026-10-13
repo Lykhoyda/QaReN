@@ -1,5 +1,6 @@
 pub mod cleanup;
 pub mod complete;
+pub mod doctor;
 pub mod prepare;
 pub mod prewarm;
 pub mod status;

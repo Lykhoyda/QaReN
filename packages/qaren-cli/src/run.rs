@@ -1305,7 +1305,7 @@ fn read_plan(plan_file: &Path) -> Result<String, Failure> {
     })
 }
 
-fn preflight_node(runner: &mut dyn Runner, node: &Path) -> Result<(), Failure> {
+pub(crate) fn preflight_node(runner: &mut dyn Runner, node: &Path) -> Result<String, Failure> {
     let output = runner.run(&CmdSpec::new(
         "node-version",
         &node.to_string_lossy(),
@@ -1332,7 +1332,7 @@ fn preflight_node(runner: &mut dyn Runner, node: &Path) -> Result<(), Failure> {
         .next()
         .and_then(|m| m.parse::<u64>().ok());
     match major {
-        Some(major) if major >= 24 => Ok(()),
+        Some(major) if major >= 24 => Ok(output.stdout.trim().to_string()),
         _ => Err(Failure::new(
             "preflight",
             FailureCode::NodeUnsupported,

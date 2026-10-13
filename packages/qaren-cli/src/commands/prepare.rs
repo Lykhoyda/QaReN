@@ -677,11 +677,7 @@ pub(crate) fn check_prereqs(
         }
     }
     if scenario.platform == Platform::Android && !handoff {
-        match android_home {
-            Some(home) if android::adb_path(home).is_file() => {}
-            Some(home) => missing.push(format!("adb (not at {}/platform-tools/adb)", home)),
-            None => missing.push("ANDROID_HOME env var".to_string()),
-        }
+        missing.extend(missing_android_sdk(android_home));
     }
     if missing.is_empty() {
         Ok(())
@@ -692,6 +688,14 @@ pub(crate) fn check_prereqs(
             format!("missing prerequisites: {}", missing.join(", ")),
             "install the missing tools, then re-run prepare",
         ))
+    }
+}
+
+pub(crate) fn missing_android_sdk(android_home: Option<&str>) -> Option<String> {
+    match android_home {
+        Some(home) if android::adb_path(home).is_file() => None,
+        Some(home) => Some(format!("adb (not at {}/platform-tools/adb)", home)),
+        None => Some("ANDROID_HOME env var".to_string()),
     }
 }
 

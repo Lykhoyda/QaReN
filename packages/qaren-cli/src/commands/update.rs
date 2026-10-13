@@ -1,7 +1,8 @@
 use std::path::Path;
 use std::process::{Command, Stdio};
 
-const INSTALLER: &str = "scripts/install-qaren-from-source.sh";
+pub(crate) const INSTALLER: &str = "scripts/install-qaren-from-source.sh";
+pub(crate) const PLUGIN_MANIFEST: &str = "packages/qaren-plugin/.claude-plugin/plugin.json";
 
 // Fast-forwards the checkout in `cwd`, rebuilds and reinstalls it, and reports by tarball sha.
 pub fn update(cwd: &Path, home: &Path) -> Result<String, (u8, String)> {
@@ -39,7 +40,7 @@ pub fn update(cwd: &Path, home: &Path) -> Result<String, (u8, String)> {
         ));
     }
 
-    let manifest = cwd.join("packages/qaren-plugin/.claude-plugin/plugin.json");
+    let manifest = cwd.join(PLUGIN_MANIFEST);
     let version = std::fs::read_to_string(&manifest)
         .ok()
         .and_then(|text| serde_json::from_str::<serde_json::Value>(&text).ok())

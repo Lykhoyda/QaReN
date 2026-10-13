@@ -241,6 +241,11 @@ pub trait Runner {
     fn env_var(&self, name: &str) -> Option<String> {
         std::env::var(name).ok()
     }
+    fn env_names(&self) -> Vec<String> {
+        std::env::vars_os()
+            .map(|(name, _)| name.to_string_lossy().into_owned())
+            .collect()
+    }
     fn run(&mut self, spec: &CmdSpec) -> CmdOutput {
         if let Some(reason) = self.cancellation() {
             return CmdOutput::failed(4, &reason);
@@ -1010,6 +1015,9 @@ impl Default for MockRunner {
 impl Runner for MockRunner {
     fn env_var(&self, name: &str) -> Option<String> {
         self.environment.get(name).cloned()
+    }
+    fn env_names(&self) -> Vec<String> {
+        self.environment.keys().cloned().collect()
     }
     fn adb_server_version(&self, port: u16) -> Result<u32, String> {
         self.adb_servers

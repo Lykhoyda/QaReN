@@ -3,7 +3,7 @@ title: CLI
 description: Every qaren verb, its arguments and its flags.
 ---
 
-Every verb except `watch`, `actions` and `update` prints one `qaren/1` JSON receipt on stdout and its
+Every verb except `watch`, `actions`, `update` and `doctor` prints one `qaren/1` JSON receipt on stdout and its
 narration on stderr. A usage error exits `2` with help on stderr and nothing on stdout.
 `qaren --help` prints the usage.
 
@@ -79,6 +79,19 @@ from its tracked upstream, then rebuilds and reinstalls qaren through the source
 refuses outside a checkout, with local changes, or when the pull fails, leaving your working
 tree, branch and installed qaren unchanged.
 Prints one line saying whether the build is already current, updated or newly installed.
+
+## qaren doctor
+
+```sh
+qaren doctor [--json] [--config .qaren/config.yaml]
+```
+
+Checks this host's toolchain, the installed qaren and the app's `.qaren/config.yaml`, and lists
+rn-dev-agent 1.x leftovers (plugins, MCP registrations, binaries, directories, project files and
+environment variables), each with its manual fix. It is read-only and prints paths and names, never
+file contents or environment values. Exits `1` when any row fails, `0` otherwise. `--json` prints
+one object with `identity`, `checks` and `verdict`. See
+[Doctor](https://github.com/Lykhoyda/rn-dev-agent/blob/develop/packages/qaren-cli/README.md#doctor).
 
 ## qaren --version
 
