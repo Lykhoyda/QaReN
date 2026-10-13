@@ -86,12 +86,9 @@ Prints one line saying whether the build is already current, updated or newly in
 qaren doctor [--json] [--config .qaren/config.yaml]
 ```
 
-Checks this host's toolchain, the installed qaren and the app's `.qaren/config.yaml`, and lists
-rn-dev-agent 1.x leftovers (plugins, MCP registrations, binaries, directories, project files and
-environment variables), each with its manual fix. It is read-only and prints paths and names, never
-file contents or environment values. Exits `1` when any row fails, `0` otherwise. `--json` prints
-one object with `identity`, `checks` and `verdict`. See
-[Doctor](https://github.com/Lykhoyda/rn-dev-agent/blob/develop/packages/qaren-cli/README.md#doctor).
+Diagnoses setup problems and rn-dev-agent 1.x leftovers. See
+[Doctor](https://github.com/Lykhoyda/rn-dev-agent/blob/develop/packages/qaren-cli/README.md#doctor)
+for the authoritative checks, manual fixes, privacy and output contract, and exit codes.
 
 ## qaren --version
 

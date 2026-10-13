@@ -47,8 +47,13 @@ that can conflict with a session or is hygiene; `SKIP` is not applicable.
 | `1x-binaries`, `1x-home-dirs` | The 1.x npm bins on `PATH`; `~/.rn-dev-agent/`, `~/.cache/rn-dev-agent/`, `~/Library/Caches/rn-dev-agent/`, `~/Library/Application Support/rn-dev-agent/` (or `$XDG_STATE_HOME/rn-dev-agent/`) and `~/.claude/rn-agent/` |
 | `1x-project`, `1x-env` | The app's `.rn-agent/`, rn-dev-agent template blocks in `CLAUDE.md`/`AGENTS.md`, `.rn-agent/dev-bridge.ts` in `tsconfig.json`; `RN_DEV_AGENT_*`, `RN_AGENT_*` and the other 1.x environment variables |
 
-Every 1.x row is a warning whose fix is the
-[upgrade guide](#upgrading-from-rn-dev-agent-1x-1014-to-20)'s removal command.
+Config failures report the file path and failure category; inspect the file locally
+against the [configuration schema](src/config.rs). A `VERSION` mismatch reports
+the binary's expected version without echoing the file's contents.
+
+Detected 1.x leftovers produce warnings with manual fixes. Follow the
+[upgrade guide](#upgrading-from-rn-dev-agent-1x-1014-to-20) before retiring state
+that may contain your only copy of learned actions.
 Doctor has no `--fix`: each removal deletes user data or edits host
 configuration, so it stays manual.
 
@@ -194,8 +199,9 @@ while that asset is unavailable.
 ## Upgrading from rn-dev-agent 1.x (1.0.14) to 2.0
 
 QaReN 2.0 replaces the rn-dev-agent 1.x plugin. It has no compatibility layer:
-2.0 never reads, converts or reuses 1.x plugins, configuration, caches or learned
-actions, so remove 1.x first and install 2.0 as a new product.
+2.0 never converts or reuses 1.x plugins, configuration, caches or learned
+actions; [Doctor](#doctor) only inspects them for leftovers. Remove 1.x first
+and install 2.0 as a new product.
 
 | 1.x (rn-dev-agent 1.0.14) | 2.0 (QaReN) |
 |---|---|
@@ -231,7 +237,7 @@ actions, so remove 1.x first and install 2.0 as a new product.
    If `rmdir` reports the folder is not empty, stop and inspect it rather than
    deleting it. If you registered the 1.x MCP server by hand, delete that entry
    from the host's MCP configuration as well.
-2. **Archive, then retire the 1.x state.** Nothing in 2.0 reads
+2. **Archive, then retire the 1.x state.** No 2.0 QA run uses
    `~/.cache/rn-dev-agent/`, `~/.rn-dev-agent/`, `~/.claude/rn-agent/` or an
    app's `.rn-agent/` directory, and learned actions are not converted: QaReN
    saves its own blocks as plans pass. Archive each app's `.rn-agent/actions/`
@@ -268,7 +274,7 @@ actions, so remove 1.x first and install 2.0 as a new product.
      when the release is cut, so a `develop` build still shows the pre-release
      version (for example `qaren 1.0.13`). The installed runtime needs no
      `QAREN_RUNTIME` override; see [Build](#build) for development binaries.
-   - `qaren doctor` reports every remaining 1.x item.
+   - Run [Doctor](#doctor) to check the known 1.x leftover locations.
    - In the app, follow [Set up an app](#set-up-an-app), or write configuration
      and run a plan manually as in [Check a plan](#check-a-plan); a PASS receipt with a run under
      `~/.qaren/runs/` completes the upgrade.
