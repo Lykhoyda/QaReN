@@ -402,21 +402,36 @@ export async function walkBlock(
       // Diagnostics cannot change a decision or dispatch outcome.
     }
   };
-  // Scroll momentum outlives the drag; dispatching on a moving frame taps its stale centre.
-  // Compare native frame values only: runner key order varies and React-only elements have no frame.
+  // Native frames prove rest before dispatching on a scrolled target's centre.
   const settledCapture = async (item: Exclude<Item, { kind: 'check' }>): Promise<Observation> => {
-    const geometry = (screen: Screen): string =>
-      JSON.stringify(
-        screen.elements.flatMap((e) => {
-          const frame = elementFrame(e);
-          return frame ? [[frame.x, frame.y, frame.width, frame.height]] : [];
-        }),
-      );
+    const geometry = (screen: Screen): number[][] =>
+      screen.elements.flatMap((e) => {
+        const frame = elementFrame(e);
+        return frame ? [[frame.x, frame.y, frame.width, frame.height]] : [];
+      });
     let observation = await capture(item);
     for (let readback = 0; readback < SCROLL_SETTLE_READBACKS; readback += 1) {
       usable(observation, item);
       const next = await capture(item);
-      if (geometry(next.screen) === geometry(observation.screen)) {
+      const before = geometry(observation.screen);
+      const after = geometry(next.screen);
+      if (deps.timing) {
+        const previousFrames = new Set(before.map((frame) => frame.join(',')));
+        const currentFrames = new Set(after.map((frame) => frame.join(',')));
+        const moved =
+          [...previousFrames].filter((frame) => !currentFrames.has(frame)).length +
+          [...currentFrames].filter((frame) => !previousFrames.has(frame)).length;
+        const maxDelta = observation.screen.elements.reduce((max, element) => {
+          const previous = elementFrame(element);
+          const matches = next.screen.elements.filter((candidate) =>
+            sameIdentity(candidate, element),
+          );
+          const current = matches.length === 1 ? elementFrame(matches[0]) : undefined;
+          return previous && current ? Math.max(max, Math.abs(current.y - previous.y)) : max;
+        }, 0);
+        metric('settle-readback', next, { moved, maxDelta });
+      }
+      if (JSON.stringify(after) === JSON.stringify(before)) {
         sequence.momentum = false;
         return next;
       }

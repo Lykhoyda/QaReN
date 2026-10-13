@@ -12,6 +12,7 @@ import { capturePrivateScreen } from '../../../dist/qa/privacy.js';
 import type { ActResult, WalkerDeps } from '../../../dist/qa/walker.js';
 import { checkQaNativeOutcome } from '../../../dist/runners/qa-native-policy.js';
 import type { QaDispatchContext } from '../../../dist/domain/qa-dispatch.js';
+import type { TimingEvent } from '../../../dist/qa/timing.js';
 
 const OCCLUDED: ActResult = {
   ok: false,
@@ -836,6 +837,31 @@ test('a fill after an explicit scroll refuses a frame that never settles', async
   );
   assert.equal(f.calls.filter((c) => c.startsWith('fill')).length, 0);
   assert.doesNotMatch(JSON.stringify(outcome), /ACTION_OUTCOME_UNCERTAIN/);
+});
+
+test('unsettled keyboard clearance reports the moving frames and shrinking deltas', async () => {
+  const kb = (y: number) => clipped(y, 'TextField', 'keyboard');
+  const f = fake([kb(700), kb(600), kb(400), kb(360), kb(357)], {});
+  const metrics: TimingEvent[] = [];
+  f.deps.timing = (event) => metrics.push(event);
+  const outcome = await walkBlock(block('1. Fill "field" with "200"\n'), f.deps);
+  assert.equal(outcome.block.outcome, 'fail');
+  assert.deepEqual(
+    metrics
+      .filter((event) => event.stage === 'settle-readback')
+      .map(({ moved, maxDelta }) => ({ moved, maxDelta })),
+    [
+      { moved: 2, maxDelta: 200 },
+      { moved: 2, maxDelta: 40 },
+      { moved: 2, maxDelta: 3 },
+    ],
+  );
+  assert.equal(
+    outcome.failure?.seen,
+    'SCROLL_UNSETTLED: the target stayed off screen after one scroll: its frame did not settle; historical context, previously on screen: ',
+  );
+  assert.equal(f.calls.filter((call) => call.startsWith('scroll')).length, 1);
+  assert.equal(f.calls.filter((call) => call.startsWith('fill')).length, 0);
 });
 
 test('expired post-scroll evidence requires settlement again before dispatch', async () => {
