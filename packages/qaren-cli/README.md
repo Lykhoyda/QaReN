@@ -1157,9 +1157,10 @@ another clone, another app path, a chained or dangling link, or an ancestor link
 that escapes the expected main-copy path is refused. A directory alias is accepted
 when its canonical target matches that path. `.qaren` itself and individual action files must not be
 symlinks. Reads, replay and writes use the accepted main-copy corpus, so saved
-blocks and patches are shared with the main copy. Refusals name the unsupported
-link or missing main-copy directory and recommend a real directory or the
-supported direct link. The [action store](../qaren-core/src/domain/action-store.ts)
+blocks and patches are shared with the main copy. Main-copy link refusals identify
+a missing main-copy directory when verified; otherwise they report that the direct-link
+proof could not be verified. They recommend a real directory or the supported
+direct link. The [action store](../qaren-core/src/domain/action-store.ts)
 owns these checks and detects replacement of the link or corpus during an operation.
 
 PR runs copy saved blocks to the run's `blocks/` directory with their original
