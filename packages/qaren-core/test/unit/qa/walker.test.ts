@@ -2,7 +2,8 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { parsePlan } from '../../../dist/qa/plan.js';
 import type { Screen } from '../../../dist/qa/screen.js';
-import { runPlan, walkBlock } from '../../../dist/qa/walker.js';
+import { replayBlock, runPlan, WAIT_BUDGET_MS, walkBlock } from '../../../dist/qa/walker.js';
+import { readBlock, serializeBlock } from '../../../dist/qa/blocks.js';
 import type { ActResult, WalkerDeps } from '../../../dist/qa/walker.js';
 import type { LedgerRow } from '../../../dist/qa/ledger.js';
 
@@ -86,6 +87,78 @@ function block(markdown: string) {
   assert.ok(parsed.blocks, JSON.stringify(parsed.refused));
   return parsed.blocks[0];
 }
+
+const continuation = '### Continue\nstarts on: "wizard-title-input"\n1. Tap "wizard-back-btn"';
+const startMissing =
+  'BLOCK_START_MISSING: the block starts on "wizard-title-input", which is not on screen; reach that screen before this block or re-record it';
+
+test('a missing block start fails at its declaration before any action', async () => {
+  const f = fake([screen(['Welcome'])]);
+  const outcome = await walkBlock(block(continuation), f.deps);
+  assert.equal(outcome.block.outcome, 'fail');
+  assert.equal(outcome.failure?.step, 2);
+  assert.ok(outcome.failure?.seen.startsWith(startMissing));
+  assert.deepEqual(
+    outcome.rows.map((row) => [row.line, row.outcome, row.reason]),
+    [[2, 'fail', startMissing]],
+  );
+  assert.ok(!f.calls.some((call) => call.startsWith('press')));
+});
+
+test('a block waits through a transition to its start testID, then acts', async () => {
+  const ready = screen(['Title', 'Back']);
+  ready.elements[0].testID = 'wizard-title-input';
+  ready.elements[1].testID = 'wizard-back-btn';
+  const f = fake([screen(['Welcome']), ready, ready, screen(['Tasks'])]);
+  const outcome = await walkBlock(block(continuation), f.deps);
+  assert.equal(outcome.block.outcome, 'pass');
+  assert.deepEqual(
+    outcome.rows.map((row) => [row.line, row.outcome]),
+    [
+      [2, 'pass'],
+      [3, 'pass'],
+    ],
+  );
+  assert.deepEqual(
+    f.calls.filter((call) => call.startsWith('press')),
+    ['press @e1'],
+  );
+});
+
+test('replay refuses a missing block start after one wait budget without a selector miss or re-walk', async () => {
+  const plan = block(continuation);
+  const rows: LedgerRow[] = plan.items.map((item) => ({
+    block: plan.slug,
+    line: item.line,
+    text: item.raw,
+    attempt: 1,
+    kind: 'step',
+    resolvedBy: 'exact',
+    t: 0,
+    outcome: 'pass',
+    selector: { id: item.line === 2 ? 'stored-title' : 'wizard-back-btn' },
+  }));
+  const serialized = serializeBlock(plan, rows, { appId: 'com.example.app', platform: 'ios' });
+  assert.ok('yaml' in serialized);
+  const stored = readBlock(serialized.yaml);
+  assert.ok(!('invalid' in stored));
+  const replay = replayBlock(plan, stored);
+  const f = fake([screen(['Welcome'])]);
+  let elapsed = 0;
+  f.deps.now = () => elapsed;
+  f.deps.sleep = async (ms) => {
+    elapsed += ms;
+  };
+  const outcome = await walkBlock(replay, f.deps, 0, [], undefined, undefined, { mode: 'replay' });
+  assert.ok(outcome.failure?.seen.startsWith(startMissing));
+  assert.equal(outcome.failure?.step, 2);
+  assert.equal(elapsed, WAIT_BUDGET_MS);
+  assert.deepEqual(
+    outcome.rows.map((row) => [row.line, row.outcome, row.reason]),
+    [[2, 'fail', startMissing]],
+  );
+  assert.ok(!f.calls.some((call) => call.startsWith('press')));
+});
 
 test('a changed screen after a press is done: never re-dispatched', async () => {
   const f = fake([screen(['Settings']), screen(['Profile'])]);

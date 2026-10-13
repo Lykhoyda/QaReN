@@ -68,6 +68,27 @@ function serialized(block: Block, rows: LedgerRow[], meta = ios): string {
   return result.yaml;
 }
 
+test('a saved block keeps its start screen as the first wait and matches only that plan', () => {
+  const markdown = '### Continue\nstarts on: Profile\n1. Tap "Back"';
+  const block = blockOf(markdown);
+  const yaml = serialized(block, passRows(block, { 2: { text: 'Profile' }, 3: { id: 'back' } }));
+  assert.match(
+    yaml,
+    /# starts on: Profile\n- extendedWaitUntil: \{ visible: \{ text: "Profile" \}, timeout: 15000 \}/,
+  );
+  const stored = readBlock(yaml);
+  assert.ok(!('invalid' in stored));
+  assert.equal(stored.steps[0].kind, 'wait');
+  assert.equal(stored.steps[0].raw, 'starts on: Profile');
+  assert.deepEqual(stored.steps[0].selector, { text: 'Profile' });
+  assert.ok(storedMatches(block, stored));
+  assert.ok(!storedMatches(blockOf(markdown.replace('starts on: Profile\n', '')), stored));
+  const oldBlock = blockOf(markdown.replace('starts on: Profile\n', ''));
+  const oldStored = readBlock(serialized(oldBlock, passRows(oldBlock, { 2: { id: 'back' } })));
+  assert.ok(!('invalid' in oldStored));
+  assert.ok(!storedMatches(block, oldStored));
+});
+
 test('serialization withholds protected semantic values before YAML escaping', () => {
   for (const value of ['"quoted"', 'line\nbreak', '\\escaped', '7']) {
     const block = blockOf('## QA\n\n### Confirm\n✓ "Saved"\n');
