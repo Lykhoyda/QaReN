@@ -222,10 +222,13 @@ pub fn doctor(
         android_home.as_deref(),
     ));
     checks.push(evaluate_path(&qaren_hits, exe.as_deref(), &runtime_root));
-    checks.push(installed_build(
-        exe.as_deref(),
-        &runtime_root,
-        qaren_hits.first().map(PathBuf::as_path),
+    checks.push(effective_runtime(
+        installed_build(
+            exe.as_deref(),
+            &runtime_root,
+            qaren_hits.first().map(PathBuf::as_path),
+        ),
+        &runtime,
     ));
     checks.push(runtime_dirs(&runtime_root));
     checks.push(source_checkout(runner, cwd));
@@ -668,6 +671,18 @@ fn installed_build(exe: Option<&Path>, runtime_root: &Path, path_first: Option<&
     }
 }
 
+// `check` runs the effective runtime (QAREN_RUNTIME or the installed one), so it must be complete too.
+fn effective_runtime(installed: Check, runtime: &Path) -> Check {
+    if installed.status == Status::Fail || runtime.join("qa").join("walk.js").is_file() {
+        return installed;
+    }
+    Check::fail(
+        "installed-build",
+        "the runtime named in the identity line has no qa/walk.js",
+        format!("unset QAREN_RUNTIME or point it at a complete runtime; otherwise reinstall: `{INSTALL}`"),
+    )
+}
+
 fn runtime_dirs(runtime_root: &Path) -> Check {
     let Ok(entries) = std::fs::read_dir(runtime_root) else {
         return Check::skip(
@@ -930,7 +945,10 @@ fn toml_mcp_headers(text: &str) -> Vec<String> {
     let mut headers: Vec<String> = Vec::new();
     for line in text.lines().map(str::trim) {
         if line.starts_with('[') {
-            current = line.starts_with("[mcp_servers.").then_some(line);
+            // Only the table name: a trailing `# ...` comment can hold private notes.
+            current = line
+                .starts_with("[mcp_servers.")
+                .then(|| line.find(']').map_or(line, |end| &line[..=end]));
         } else if let Some(header) = current {
             if MCP_MARKERS.iter().any(|marker| line.contains(marker))
                 && !headers.iter().any(|seen| seen == header)
@@ -1189,14 +1207,11 @@ mod tests {
         cwd: &Path,
         exe: Option<PathBuf>,
     ) -> Report {
-        doctor(
-            runner,
-            &scratch.0,
-            cwd,
-            exe,
-            PathBuf::from("/runtime"),
-            None,
-        )
+        let runtime = exe
+            .as_ref()
+            .and_then(|exe| exe.parent()?.parent())
+            .map_or(PathBuf::from("/runtime"), |dir| dir.join("runtime"));
+        doctor(runner, &scratch.0, cwd, exe, runtime, None)
     }
 
     #[test]
@@ -1572,6 +1587,29 @@ mod tests {
     }
 
     #[test]
+    fn toml_header_comments_are_never_reported() {
+        let text = "[mcp_servers.rn] # TOKEN=private-value\ncommand = \"cdp-supervisor\"\n";
+        assert_eq!(toml_mcp_headers(text), vec!["[mcp_servers.rn]".to_string()]);
+    }
+
+    #[test]
+    fn a_missing_effective_runtime_fails_even_beside_a_healthy_install() {
+        let s = Scratch::new("effective-runtime");
+        let exe = s.install(VERSION);
+        let root = s.runtime_root();
+        let healthy = installed_build(Some(&exe), &root, Some(&exe));
+        assert_eq!(healthy.status, Status::Pass);
+        let installed_runtime = exe.parent().unwrap().parent().unwrap().join("runtime");
+        assert_eq!(
+            effective_runtime(healthy.clone(), &installed_runtime).status,
+            Status::Pass
+        );
+        let missing = effective_runtime(healthy, &s.path("elsewhere/runtime"));
+        assert_eq!(missing.status, Status::Fail);
+        assert!(missing.fix.unwrap().contains("QAREN_RUNTIME"));
+    }
+
+    #[test]
     fn mcp_reports_only_toml_section_headers() {
         let text = "[mcp_servers.rn]\ncommand = \"node\"\nargs = [\"/x/rn-dev-agent-core/dist/index.js\"]\nenv = { TOKEN = \"sk-fixture-secret\" }\n[mcp_servers.other]\ncommand = \"other\"\n";
         assert_eq!(toml_mcp_headers(text), vec!["[mcp_servers.rn]".to_string()]);
@@ -1701,10 +1739,9 @@ mod tests {
         let emulator = s.exe("sdk/emulator/emulator");
         let before = s.tree();
         let mut runner = MockRunner::new();
-        runner.environment.insert(
-            "ANDROID_HOME".into(),
-            s.path("sdk").display().to_string(),
-        );
+        runner
+            .environment
+            .insert("ANDROID_HOME".into(), s.path("sdk").display().to_string());
         script_toolchain(&mut runner, Some("v24.1.0\n"), RUNTIMES);
         runner.expect_run(
             &android::list_avds_spec(&emulator).rendered(),

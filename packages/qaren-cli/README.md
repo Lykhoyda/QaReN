@@ -40,7 +40,7 @@ that can conflict with a session or is hygiene; `SKIP` is not applicable.
 | `corepack`, `cocoapods` | `corepack` and `pod` run (warnings) |
 | `android-sdk`, `android-avd` | When `android` is configured: `ANDROID_HOME`, an executable `adb` file (never run; its version is not checked), the emulator binary and the configured AVD via `emulator -list-avds` |
 | `qaren-path` | The first `qaren` on `PATH` is this binary and the installed build; later copies warn |
-| `installed-build` | The runtime under `~/.qaren/runtime/<version>/` is complete; a binary outside it that `PATH` runs instead of an install fails |
+| `installed-build` | The runtime under `~/.qaren/runtime/<version>/` and the runtime `check` would use (`QAREN_RUNTIME` when set) are complete; a binary outside it that `PATH` runs instead of an install fails |
 | `runtime-dirs` | Interrupted installs and other versions under `~/.qaren/runtime/` |
 | `source-checkout` | From an rn-dev-agent checkout: its version matches this binary |
 | `config` | `.qaren/config.yaml` (or `--config`) loads and validates |
