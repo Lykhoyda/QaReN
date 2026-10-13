@@ -271,6 +271,11 @@ fn printable(text: &str) -> String {
 // One shell word for a name or path pasted into a fix command.
 fn sh(word: impl std::fmt::Display) -> String {
     let word = word.to_string();
+    if word.chars().any(char::is_control) {
+        // Bash/zsh ANSI-C quoting preserves bytes without emitting terminal controls.
+        let escaped: String = word.bytes().map(|byte| format!("\\{byte:03o}")).collect();
+        return format!("$'{escaped}'");
+    }
     let plain = !word.is_empty()
         && word
             .chars()
@@ -1485,6 +1490,55 @@ mod tests {
             for out in [report.render(), report.to_json()] {
                 assert!(!out.contains("distinct-qaren-node-env-9c1e"), "{out}");
                 assert!(!out.contains("distinct-configured-node-7f3a"), "{out}");
+            }
+        }
+    }
+
+    #[test]
+    fn rendered_mcp_fix_preserves_control_character_arguments() {
+        let s = Scratch::new("control-quoting");
+        for name in ["x\n\x1b[31m", "it's \\ $(exit 9); café\t\r\n\n"] {
+            s.file(
+                ".mcp.json",
+                &serde_json::json!({"mcpServers": {name: {"command": "cdp-supervisor"}}})
+                    .to_string(),
+            );
+            let report = Report {
+                identity: Identity {
+                    exe: None,
+                    version: VERSION,
+                    build: None,
+                    runtime: s.0.clone(),
+                },
+                checks: vec![mcp_servers(&s.0, &s.path(".codex"), &s.0)],
+            };
+            let text = report.render();
+            let fix = text
+                .lines()
+                .find_map(|line| line.strip_prefix("     fix: "))
+                .unwrap();
+            assert!(!fix.chars().any(char::is_control), "{fix:?}");
+            let json: serde_json::Value = serde_json::from_str(&report.to_json()).unwrap();
+            for command in [fix, json["checks"][0]["fix"].as_str().unwrap()] {
+                let mut shells = vec!["bash"];
+                if cfg!(target_os = "macos") {
+                    shells.extend(["/bin/sh", "zsh"]);
+                }
+                for shell in shells {
+                    let output = std::process::Command::new(shell)
+                        .args([
+                            "-c",
+                            &format!("claude() {{ printf '%s\\0' \"$@\"; }}; {command}"),
+                        ])
+                        .output()
+                        .unwrap();
+                    assert!(output.status.success(), "{shell}: {output:?}");
+                    assert_eq!(
+                        output.stdout,
+                        format!("mcp\0remove\0{name}\0").as_bytes(),
+                        "{shell}: {command}"
+                    );
+                }
             }
         }
     }
