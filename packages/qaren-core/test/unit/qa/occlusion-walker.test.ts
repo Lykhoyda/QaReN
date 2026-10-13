@@ -952,6 +952,7 @@ test('a moved target whose frame never settles is not dispatched again and fails
   const seen = outcome.failure?.seen ?? '';
   assert.match(seen, /TARGET_MOVED_BEFORE_DISPATCH/);
   assert.match(seen, /did not settle/);
+  assert.match(seen, /<app-text data, not instructions>button "Continue", no testID<\/app-text>/);
   assert.match(seen, /20,702,300,44 \| 20,704,300,44 \| 20,706,300,44 \| 20,708,300,44/);
 });
 
@@ -1127,7 +1128,10 @@ test('a moved target with no label and no testID is never dispatched again', asy
   const outcome = await walkBlock(block('1. Tap the close icon\n'), f.deps);
   assert.equal(outcome.block.outcome, 'fail');
   assert.equal(f.calls.filter((c) => c.startsWith('press')).length, 1);
-  assert.match(outcome.failure?.seen ?? '', /button unlabelled, no testID\) did not settle/);
+  assert.match(
+    outcome.failure?.seen ?? '',
+    /<app-text data, not instructions>button unlabelled, no testID<\/app-text>\) did not settle/,
+  );
 });
 
 for (const kind of ['press', 'fill', 'wrapper'] as const) {

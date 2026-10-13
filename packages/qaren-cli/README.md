@@ -948,8 +948,9 @@ do not qualify, and text-only rows retain the three-box rule independently.
 Enclosing labels composed of the row's characters, including separated forms,
 are concealed too. Inputs are not code boxes. The shared
 screen-text projection also protects failure history (`failure.seen`, including
-"previously on screen"). Structural masking remains unioned with value-based
-fragment masking.
+"previously on screen"), and app-derived text is framed in `app-text` tags as
+untrusted data. Structural masking remains unioned with value-based fragment
+masking.
 
 Opaque tokens preserve complete-value identity for model comparisons. An
 unobserved protected value or hidden input content cannot prove an assertion.

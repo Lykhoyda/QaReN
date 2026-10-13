@@ -40,6 +40,7 @@ import {
 import { type Judge, type JevCall, JevError, unavailableJudge } from './questions.js';
 import { type LoginMarker, recover } from './recover.js';
 import { isPrivateInput, MASK, ObservedPrivacy, matchPrivate, projectPlanLine } from './privacy.js';
+import { frameAppText } from './untrusted.js';
 import { NativeSnapshotIncomplete, PrivateInputCaptureError } from './private-input.js';
 import { AppProcessGoneError, emitCaptureDiagnostics, NativeCaptureError } from './capture.js';
 import { QaDispatchContext, QaDispatchError } from '../domain/qa-dispatch.js';
@@ -425,7 +426,9 @@ export async function walkBlock(
     return rect ? [rect.x, rect.y, rect.width, rect.height].join(',') : undefined;
   };
   const identityText = (target: Element): string =>
-    `${target.kind} ${target.label === undefined ? 'unlabelled' : `"${target.label}"`}, ${target.testID === undefined ? 'no testID' : `testID "${target.testID}"`}`;
+    frameAppText(
+      `${target.kind} ${target.label === undefined ? 'unlabelled' : `"${target.label}"`}, ${target.testID === undefined ? 'no testID' : `testID "${target.testID}"`}`,
+    );
   // After a moved refusal, the target re-identified by the step's own exact-identity rules
   // (one identity, same kind, label and testID) must hold one native frame across two captures.
   const settledTarget = async (
@@ -694,7 +697,7 @@ export async function walkBlock(
       failure: {
         step: item.line,
         seen: redact(
-          `${reason}; historical context, previously on screen: ${privacy.screenText(screen).slice(0, 40).join(' | ')}`,
+          `${reason}; historical context, previously on screen: ${frameAppText(privacy.screenText(screen).slice(0, 40).join(' | '))}`,
         ),
         ...(screenshot ? { screenshot } : {}),
       },
