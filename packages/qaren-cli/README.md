@@ -538,8 +538,9 @@ agreeing consecutive frame readbacks within the existing bounded readback
 budget; otherwise `SCROLL_UNSETTLED`
 refuses without another dispatch or recovery. Keyboard-fallback focus readbacks
 use the same settlement check.
-When timing observation is enabled, these readbacks report frame changes and
-the largest vertical movement among uniquely matched targets; the
+When timing observation is enabled, `settle-readback` metrics report `moved` as
+the symmetric difference between frame sets and `maxDelta` as the largest
+vertical change among identities unique in both captures. The
 [readback implementation](../qaren-core/src/qa/walker.ts) owns these diagnostics.
 A second occlusion fails with that same off-screen explanation; wrapper fallback
 reports that nothing was typed. This refusal does not become
