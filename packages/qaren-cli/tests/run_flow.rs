@@ -345,6 +345,16 @@ fn workspace_cache_persistence_reuses_only_the_same_workspace_and_scheme() {
 
         assert_eq!(receipt.result, ReceiptResult::Pass, "{:?}", receipt.failure);
         assert_eq!(mock.remaining(), 0);
+        let position = |label: &str| mock.calls.iter().position(|c| c.label == label).unwrap();
+        assert!(position("expo-start") < position("simctl-install"));
+        assert!(position("simctl-install") < position("metro-status"));
+        assert_eq!(
+            mock.calls
+                .iter()
+                .filter(|c| c.label == "expo-start")
+                .count(),
+            1
+        );
         let plan = receipt.build.unwrap();
         assert_eq!(plan.decision == BuildDecision::Reuse, reuse);
         let StateStatus::Loaded(state) =
@@ -591,7 +601,9 @@ fn pre_spawn_build_error_retires_pending_before_releasing_ownership() {
     common::script_ios_deps(&mut mock);
     mock.expect_run("ls-files", CmdOutput::success(""));
     common::script_xcode(&mut mock);
+    common::script_ios_metro_spawn(&mut mock);
 
+    common::script_ios_metro_cleanup(&mut mock);
     let receipt = run(&mut mock, &req);
     assert_eq!(receipt.result, ReceiptResult::Failed);
     assert_eq!(receipt.failure.unwrap().code, FailureCode::BuildFailed);
@@ -607,7 +619,106 @@ fn pre_spawn_build_error_retires_pending_before_releasing_ownership() {
     assert_eq!(receipt.cleanup["device_lease"], "removed");
     assert!(mock.piped_stdin.is_empty());
     assert_eq!(mock.remaining(), 0);
-    assert_eq!(mock.calls.last().unwrap().label, "expo-run-ios");
+    assert_eq!(receipt.cleanup["metro"], "removed");
+}
+
+#[test]
+fn unproven_early_metro_refuses_to_start_a_native_build_and_retains_its_lease() {
+    for workspace in [false, true] {
+        let (repo, app) = app_repo();
+        if workspace {
+            common::write_ios_workspace(&app, "ios/Native.xcworkspace");
+            configure_workspace(&app, "ios/Native.xcworkspace", "Native");
+        }
+        let req = request(&repo, &app, 30);
+        let mut mock = MockRunner::new();
+        script_preflight(&mut mock, &repo);
+        if workspace {
+            mock.expect_run("pnpm install --frozen-lockfile", CmdOutput::success(""));
+        } else {
+            common::script_ios_deps(&mut mock);
+        }
+        mock.expect_run(
+            "ls-files",
+            CmdOutput::success(if workspace {
+                common::IOS_NATIVE_FILES
+            } else {
+                ""
+            }),
+        );
+        common::script_xcode(&mut mock);
+        mock.expect_spawn(
+            "expo start",
+            Spawned {
+                pid: 6000,
+                pgid: 6000,
+            },
+        );
+        mock.expect_run("ps", CmdOutput::failed(1, ""));
+        mock.expect_run("ps", CmdOutput::failed(1, ""));
+        mock.expect_run("lsof", free_port());
+
+        let receipt = run(&mut mock, &req);
+
+        assert_eq!(receipt.result, ReceiptResult::Failed);
+        assert_eq!(receipt.failure.unwrap().code, FailureCode::BuildFailed);
+        assert!(receipt.cleanup["metro"].starts_with("unresolved:"));
+        assert!(receipt.cleanup["device_lease"].starts_with("unresolved:"));
+        assert!(!mock.calls.iter().any(|c| matches!(
+            c.label.as_str(),
+            "expo-run-ios"
+                | "xcodebuild-ios"
+                | "simctl-install"
+                | "simctl-launch"
+                | "core-walk"
+                | "kill-group"
+        )));
+        let record = RunRecord::load(&req.runs_root, &run_id()).unwrap();
+        assert!(record.resources.metro.unwrap().identity.is_none());
+        assert!(record.resources.lease.unwrap().lock_dir.exists());
+        assert!(record.resources.build_lock.is_none());
+        assert_eq!(mock.remaining(), 0);
+    }
+}
+
+#[test]
+fn metro_exit_during_a_native_build_prevents_launch_and_cleans_up_both_stages() {
+    let (repo, app) = app_repo();
+    let req = request(&repo, &app, 30);
+    let mut mock = MockRunner::new();
+    script_preflight(&mut mock, &repo);
+    common::script_ios_deps(&mut mock);
+    mock.expect_run("ls-files", CmdOutput::success(""));
+    common::script_xcode(&mut mock);
+    common::script_ios_metro_spawn(&mut mock);
+    mock.expect_spawn_piped("expo run:ios", 5000, "", Some(0));
+    mock.expect_run("ps", CmdOutput::success(LSTART));
+    mock.expect_run("ps", CmdOutput::success("qaren-build"));
+    mock.expect_run("ps -A", CmdOutput::success("1 1 S\n"));
+    common::script_ios_app_verification(&mut mock);
+    common::script_ios_app_verification(&mut mock);
+    mock.expect_run("simctl install", CmdOutput::success(""));
+    mock.expect_run("ps", CmdOutput::failed(1, ""));
+    mock.expect_run("ps", CmdOutput::failed(1, ""));
+    mock.expect_run("lsof", free_port());
+    mock.expect_run("ps -A", CmdOutput::success("1 1 S\n"));
+
+    let receipt = run(&mut mock, &req);
+
+    assert_eq!(receipt.result, ReceiptResult::Failed);
+    assert_eq!(receipt.failure.unwrap().code, FailureCode::BuildFailed);
+    assert_eq!(receipt.cleanup["metro"], "absent");
+    assert_eq!(receipt.cleanup["device_lease"], "removed");
+    assert!(!mock
+        .calls
+        .iter()
+        .any(|c| matches!(c.label.as_str(), "simctl-launch" | "core-walk")));
+    let record = RunRecord::load(&req.runs_root, &run_id()).unwrap();
+    assert!(record.resources.metro.is_none());
+    assert!(record.resources.build_process().is_none());
+    assert!(record.resources.build_lock.is_none());
+    assert!(record.resources.lease.is_none());
+    assert_eq!(mock.remaining(), 0);
 }
 
 #[test]
@@ -619,10 +730,12 @@ fn invalid_spawned_build_group_retains_pending_and_both_locks_without_starting()
     common::script_ios_deps(&mut mock);
     mock.expect_run("ls-files", CmdOutput::success(""));
     common::script_xcode(&mut mock);
+    common::script_ios_metro_spawn(&mut mock);
     mock.expect_spawn_piped("expo run:ios", 1, "", Some(0));
     mock.expect_run("ps", CmdOutput::success(LSTART));
     mock.expect_run("ps", CmdOutput::success("qaren-build"));
 
+    common::script_ios_metro_cleanup(&mut mock);
     let receipt = run(&mut mock, &req);
 
     assert_eq!(receipt.result, ReceiptResult::Failed);
@@ -638,8 +751,13 @@ fn invalid_spawned_build_group_retains_pending_and_both_locks_without_starting()
     assert_eq!(mock.piped_stdin_text(0), "");
     assert!(!mock.calls.iter().any(|c| matches!(
         c.label.as_str(),
-        "kill-group" | "simctl-install" | "simctl-launch" | "expo-start" | "core-walk"
+        "simctl-install" | "simctl-launch" | "core-walk"
     )));
+    assert!(mock
+        .calls
+        .iter()
+        .filter(|c| c.label == "kill-group")
+        .all(|c| c.args.last().unwrap() == "-6000"));
     assert_eq!(mock.remaining(), 0);
 }
 
@@ -658,6 +776,10 @@ fn failed_spawn_retirement_save_or_interruption_retains_pending_and_both_locks()
         common::script_ios_deps(&mut mock);
         mock.expect_run("ls-files", CmdOutput::success(""));
         common::script_xcode(&mut mock);
+        common::script_ios_metro_spawn(&mut mock);
+        if !matches!(fault, BuildSpawnFault::Interrupted) {
+            common::script_ios_metro_cleanup(&mut mock);
+        }
         let outcome =
             std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| run(&mut mock, &req)));
         match fault {
@@ -678,7 +800,7 @@ fn failed_spawn_retirement_save_or_interruption_retains_pending_and_both_locks()
         assert!(record.resources.lease.unwrap().lock_dir.exists());
         assert!(mock.piped_stdin.is_empty());
         assert_eq!(mock.remaining(), 0);
-        assert_eq!(mock.calls.last().unwrap().label, "expo-run-ios");
+        assert!(mock.calls.iter().any(|c| c.label == "expo-run-ios"));
     }
 }
 
@@ -723,6 +845,7 @@ fn finite_build_failures_never_install_or_walk_and_unproven_groups_retain_both_l
             }),
         );
         common::script_xcode(&mut mock);
+        common::script_ios_metro_spawn(&mut mock);
         mock.expect_spawn_piped(
             if workspace {
                 "xcodebuild"
@@ -788,6 +911,7 @@ fn finite_build_failures_never_install_or_walk_and_unproven_groups_retain_both_l
             mock.expect_run("otool -L", CmdOutput::success("test.app/binary:\n"));
             mock.expect_run("nm", CmdOutput::success("_main\n"));
         }
+        common::script_ios_metro_cleanup(&mut mock);
         let receipt = run(&mut mock, &req);
         assert_eq!(receipt.result, ReceiptResult::Failed, "{mode}");
         assert_eq!(
@@ -798,7 +922,7 @@ fn finite_build_failures_never_install_or_walk_and_unproven_groups_retain_both_l
         assert_eq!(mock.remaining(), 0, "{mode}");
         assert!(!mock.calls.iter().any(|c| matches!(
             c.label.as_str(),
-            "simctl-install" | "simctl-launch" | "expo-start" | "core-walk"
+            "simctl-install" | "simctl-launch" | "core-walk"
         )));
         if workspace {
             assert!(!labels(&mock)
@@ -1246,6 +1370,9 @@ fn assert_subsequence(haystack: &[String], needles: &[&str]) {
 }
 
 fn assert_direct_ios_launch(mock: &MockRunner) {
+    let position = |label: &str| mock.calls.iter().position(|c| c.label == label).unwrap();
+    assert!(position("ios-app-info") < position("simctl-install"));
+    assert!(position("ios-app-platform") < position("simctl-install"));
     assert!(!mock
         .calls
         .iter()
@@ -1270,10 +1397,8 @@ fn assert_direct_ios_launch(mock: &MockRunner) {
     assert_subsequence(
         &labels(mock),
         &[
-            "ios-app-info",
-            "ios-app-platform",
-            "simctl-install",
             "expo-start",
+            "simctl-install",
             "metro-status",
             "simctl-launch",
             "metro-status",
@@ -1892,6 +2017,7 @@ fn a_cancel_during_the_build_stops_it_with_proof_and_releases_both_locks() {
     common::script_ios_deps(&mut mock);
     mock.expect_run("ls-files", CmdOutput::success(""));
     common::script_xcode(&mut mock);
+    common::script_ios_metro_spawn(&mut mock);
     mock.expect_spawn_piped("expo run:ios", 5000, "", None);
     mock.expect_run("ps", CmdOutput::success(LSTART));
     mock.expect_run("ps", CmdOutput::success("qaren-build"));
@@ -1907,6 +2033,7 @@ fn a_cancel_during_the_build_stops_it_with_proof_and_releases_both_locks() {
     mock.expect_run("ps -A", CmdOutput::success("1 1 S\n"));
     mock.cancel_after = Some(("-p 5000".into(), "received SIGINT".into()));
 
+    common::script_ios_metro_cleanup(&mut mock);
     let receipt = run(&mut mock, &req);
 
     assert_eq!(receipt.result, ReceiptResult::Refused);
@@ -3966,7 +4093,6 @@ fn fresh_install_resets_or_proves_absence_before_cached_install_under_the_same_l
         mock.expect_run("ls-files", CmdOutput::success(""));
         common::script_xcode(&mut mock);
         common::script_ios_app_verification(&mut mock);
-        mock.expect_run(&format!("simctl install {UDID}"), CmdOutput::success(""));
         mock.expect_spawn(
             "expo start",
             Spawned {
@@ -3976,6 +4102,7 @@ fn fresh_install_resets_or_proves_absence_before_cached_install_under_the_same_l
         );
         mock.expect_run("ps", CmdOutput::success(LSTART));
         mock.expect_run("ps", CmdOutput::success("node expo start"));
+        mock.expect_run(&format!("simctl install {UDID}"), CmdOutput::success(""));
         for launch in [true, false] {
             mock.expect_run("ps", CmdOutput::success(LSTART));
             mock.expect_run("ps", CmdOutput::success("S"));
@@ -6233,7 +6360,6 @@ fn every_build_decision_reports_fingerprint_completeness_and_reuse_reports_ready
 // Metro answers on the second poll, so the scripted clock advances inside reuse readiness.
 fn script_warm_launch_after_one_metro_retry(mock: &mut MockRunner) {
     common::script_ios_app_verification(mock);
-    mock.expect_run("simctl install", CmdOutput::success(""));
     mock.expect_spawn(
         "expo start",
         qaren::exec::Spawned {
@@ -6243,6 +6369,7 @@ fn script_warm_launch_after_one_metro_retry(mock: &mut MockRunner) {
     );
     mock.expect_run("ps", CmdOutput::success("Wed Aug 12 16:01:00 2026"));
     mock.expect_run("ps", CmdOutput::success("node expo start"));
+    mock.expect_run("simctl install", CmdOutput::success(""));
     for responding in [false, true] {
         mock.expect_run("ps", CmdOutput::success("Wed Aug 12 16:01:00 2026"));
         mock.expect_run("ps", CmdOutput::success("S"));

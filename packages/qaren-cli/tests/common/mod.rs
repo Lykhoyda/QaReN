@@ -249,12 +249,13 @@ pub fn script_finite_ios_build_with(mock: &mut MockRunner, command: &str) {
 }
 
 pub fn script_finite_ios_build_defaults(mock: &mut MockRunner, command: &str, defaults: CmdOutput) {
+    script_ios_metro_spawn(mock);
     mock.expect_spawn_piped(command, 5000, "", Some(0));
     mock.expect_run("ps", CmdOutput::success("Wed Aug 12 16:00:00 2026"));
     mock.expect_run("ps", CmdOutput::success("qaren-build"));
     mock.expect_run("ps -A", CmdOutput::success("1 1 S\n"));
     script_ios_app_verification(mock);
-    script_ios_install_and_launch_with(mock, defaults);
+    script_ios_install_with_running_metro(mock, defaults);
 }
 
 pub fn script_ios_install_and_launch(mock: &mut MockRunner) {
@@ -269,7 +270,18 @@ pub fn script_devmenu_defaults(mock: &mut MockRunner, result: CmdOutput) {
 
 pub fn script_ios_install_and_launch_with(mock: &mut MockRunner, defaults: CmdOutput) {
     script_ios_app_verification(mock);
+    script_ios_metro_spawn(mock);
     mock.expect_run("simctl install", CmdOutput::success(""));
+    script_ios_metro_wait_and_launch(mock, defaults);
+}
+
+pub fn script_ios_install_with_running_metro(mock: &mut MockRunner, defaults: CmdOutput) {
+    script_ios_app_verification(mock);
+    mock.expect_run("simctl install", CmdOutput::success(""));
+    script_ios_metro_wait_and_launch(mock, defaults);
+}
+
+pub fn script_ios_metro_spawn(mock: &mut MockRunner) {
     mock.expect_spawn(
         "expo start",
         qaren::exec::Spawned {
@@ -279,6 +291,25 @@ pub fn script_ios_install_and_launch_with(mock: &mut MockRunner, defaults: CmdOu
     );
     mock.expect_run("ps", CmdOutput::success("Wed Aug 12 16:01:00 2026"));
     mock.expect_run("ps", CmdOutput::success("node expo start"));
+}
+
+pub fn script_ios_metro_cleanup(mock: &mut MockRunner) {
+    mock.expect_run("ps", CmdOutput::success("Wed Aug 12 16:01:00 2026"));
+    mock.expect_run("ps", CmdOutput::success("S"));
+    mock.expect_run("lsof", CmdOutput::success("6001"));
+    mock.expect_run("ps", CmdOutput::success("6000"));
+    mock.expect_run("lstart=", CmdOutput::success("Wed Aug 12 16:01:00 2026"));
+    mock.expect_run("stat=", CmdOutput::success("S"));
+    mock.expect_run("/bin/kill", CmdOutput::success(""));
+    mock.expect_run("lstart=", CmdOutput::success("Wed Aug 12 16:01:00 2026"));
+    mock.expect_run("stat=", CmdOutput::success("S"));
+    mock.expect_run("/bin/kill", CmdOutput::success(""));
+    mock.expect_run("ps", CmdOutput::failed(1, ""));
+    mock.expect_run("lsof", CmdOutput::failed(1, ""));
+    mock.expect_run("ps -A", CmdOutput::success("1 1 S\n"));
+}
+
+pub fn script_ios_metro_wait_and_launch(mock: &mut MockRunner, defaults: CmdOutput) {
     mock.expect_run("ps", CmdOutput::success("Wed Aug 12 16:01:00 2026"));
     mock.expect_run("ps", CmdOutput::success("S"));
     mock.expect_run("lsof", CmdOutput::success("6001"));
@@ -357,7 +388,17 @@ impl std::io::Write for BuildStart {
                 ..
             })
         ));
-        assert!(record.resources.metro.is_none());
+        if matches!(self.label.as_str(), "expo-run-ios" | "xcodebuild-ios") {
+            let metro = record
+                .resources
+                .metro
+                .as_ref()
+                .expect("Metro recorded before native build starts");
+            assert_eq!(metro.spawned.pgid, 6000);
+            assert!(metro.identity.is_some());
+        } else {
+            assert!(record.resources.metro.is_none());
+        }
         let lock = record.resources.build_lock.unwrap();
         assert_eq!(
             qaren::buildplan::read_holder(&lock.lock_dir)
@@ -444,6 +485,16 @@ impl qaren::exec::Runner for IosBuildRunner {
         input: &[u8],
         interruptible: bool,
     ) -> qaren::exec::PrivateOutput {
+        if spec.label == "ios-app-info" {
+            if let Some(root) = self.symlink_build_root.take() {
+                let app = PathBuf::from(spec.args.last().unwrap());
+                let run_dir = app.parent().unwrap().parent().unwrap().parent().unwrap();
+                let source = run_dir.join(root);
+                let outside = run_dir.parent().unwrap().join("outside-build").join(root);
+                std::fs::rename(&source, &outside).unwrap();
+                std::os::unix::fs::symlink(&outside, &source).unwrap();
+            }
+        }
         self.inner.execute_private(spec, input, interruptible)
     }
     fn spawn_group_unchecked(
@@ -451,15 +502,6 @@ impl qaren::exec::Runner for IosBuildRunner {
         spec: &qaren::exec::CmdSpec,
         log: &std::path::Path,
     ) -> std::io::Result<qaren::exec::Spawned> {
-        if spec.label == "expo-start" {
-            if let Some(root) = self.symlink_build_root.take() {
-                let run_dir = log.parent().unwrap().parent().unwrap();
-                let source = run_dir.join(root);
-                let outside = run_dir.parent().unwrap().join("outside-build").join(root);
-                std::fs::rename(&source, &outside).unwrap();
-                std::os::unix::fs::symlink(&outside, &source).unwrap();
-            }
-        }
         self.inner.spawn_group_unchecked(spec, log)
     }
     fn spawn_piped_unchecked(

@@ -929,11 +929,9 @@ booting that exact iOS simulator under the lease. `--fresh-install` opts into
 removing the selected app and its data, proving absence, then installing it
 under the same lease. Both opt-ins require strict admission before mutation.
 Cleanup leaves the borrowed simulator running and keeps the installed app.
-iOS preparation proves app-local Expo generic-build support, or uses an
-explicitly configured Xcode workspace (see
-[CLI-owned iOS build routes](#cli-owned-ios-build-routes)), builds a finite
-simulator bundle, and starts the app on the selected simulator with a separate
-Metro process group. If finite-build cleanup is unknown, the build lock and
+iOS preparation follows the
+[CLI-owned iOS build routes](#cli-owned-ios-build-routes) and their startup
+ordering. If finite-build cleanup is unknown, the build lock and
 device lease remain claimed for `qaren cleanup`. The developer
 [check gate](../../scripts/gate-qaren-check.sh) forwards the boot opt-in with
 `QAREN_BOOT_DEVICE=1` alongside `QAREN_DEVICE_UDID`.
@@ -1483,9 +1481,7 @@ prepare ──► validate (scenario schema, candidate git sha, lockfile sha256)
                       USB:  exclusive claim lock usb-<serial> (refuse if held)
                             run-scoped --one-device <serial> adb server on
                             adb_server_port; device must probe `device`
-        ──► build+launch   iOS: finite generic Expo or explicit Xcode workspace build
-                             → verify simulator bundle → install on owned UDID
-                             → separate owned Metro → launch verified bundle
+        ──► build+launch   iOS: CLI-owned iOS preparation (see build routes below)
                           Android: pnpm exec expo run:android --port <port>
                              (serial pinned via ANDROID_SERIAL + the
                              one-device server; CI=1)
@@ -1528,7 +1524,9 @@ ios:
 
 For `prepare`, the same pair belongs under `build.ios_workspace` in the scenario, alongside `build.owner: cli`. Workspace paths are relative to the app root, remain under `ios/`, and must resolve through plain directories to an existing `.xcworkspace` with a plain `contents.xcworkspacedata` file. No scheme discovery, Expo upgrade or automatic fallback after a failed build occurs. An iOS section in shared `check` config does not select this route for Android.
 
-This route runs `xcrun xcodebuild` in Debug against the generic iOS Simulator destination, with certificate-free ad-hoc simulator signing (`CODE_SIGN_IDENTITY=-`, no team or provisioning profile) so entitlements such as keychain access survive, and the React Native packager launch disabled. Products and DerivedData are isolated under the run directory. The existing finite-build process group and lock remain authoritative; only a clean exit with proven group shutdown can proceed to single-bundle verification, exact-device installation, separate Metro and launch. A missing or ambiguous app, wrong bundle/platform/scheme or unsupported dev-client launcher still fails before installation. Workspace and scheme selection, and the build-settings revision, participate in the native cache fingerprint, so an earlier unsigned workspace build is not reused; see [Native-fingerprint build selection](#native-fingerprint-build-selection) for the shared store and toolchain binding used by both routes.
+Both CLI-owned iOS routes start a separate owned Metro process group after native-directory preparation and before finite compilation, letting Metro start while the build runs. Verified cached-app reuse starts Metro before installation instead, without spawning it again. Installation still requires a verified simulator bundle; launch waits for proven Metro ownership, `/status` readiness and dev-client manifest warmup. Dry-run command lists reflect this ordering. Failed iOS `prepare` attempts clean up early Metro and report the outcome in `cleanup.metro`; unresolved ownership remains recorded for [cleanup](#ios-admission-and-cleanup).
+
+The workspace route runs `xcrun xcodebuild` in Debug against the generic iOS Simulator destination, with certificate-free ad-hoc simulator signing (`CODE_SIGN_IDENTITY=-`, no team or provisioning profile) so entitlements such as keychain access survive, and the React Native packager launch disabled. Products and DerivedData are isolated under the run directory. The existing finite-build process group and lock remain authoritative; only a clean exit with proven group shutdown can proceed to single-bundle verification, exact-device installation and launch. A missing or ambiguous app, wrong bundle/platform/scheme or unsupported dev-client launcher still fails before installation. Workspace and scheme selection, and the build-settings revision, participate in the native cache fingerprint, so an earlier unsigned workspace build is not reused; see [Native-fingerprint build selection](#native-fingerprint-build-selection) for the shared store and toolchain binding used by both routes.
 
 **Native preparation remains explicit.** Supply a workspace whose native dependencies and generated inputs are ready for Xcode. QaReN retains its existing clean/incremental policy: an unproven generated native directory is regenerated through owned `expo prebuild --clean`, then the workspace is revalidated before compilation; a git-visible native tree is not regenerated. The workspace route adds no CocoaPods synchronization or codegen command of its own, and workspace existence is not proof that those inputs are current after a dependency update. A build failure is reported, not retried through another backend.
 
@@ -1710,11 +1708,12 @@ holds the cached APK, kept under this worktree's `.qaren/native-cache/artifacts/
    does `artifact from machine store <path>`. On Android, the state matches this
    worktree/platform/app, fingerprints are equal and complete, and the state's
    APK verifies, with `dev_client_scheme` configured. The
-   verified dev client is installed (`simctl install` / `adb install -r
-   -d`), Metro is spawned candidate-bound (`expo start --port`), and the
-   dev client is deep-linked onto it (package-constrained `am start` on
-   Android, with Expo's `EXDevMenuDisableAutoLaunch` extra so the dev menu
-   does not open at launch). Fresh candidate JS always comes from Metro; the evidence
+   verified dev client is installed and deep-linked onto candidate-bound Metro;
+   iOS startup ordering follows [CLI-owned iOS build routes](#cli-owned-ios-build-routes).
+   Android installs with `adb install -r -d`, then starts Metro with
+   `expo start --port` and launches with package-constrained `am start`,
+   with Expo's `EXDevMenuDisableAutoLaunch` extra so the dev menu
+   does not open at launch. Fresh candidate JS always comes from Metro; the evidence
    records which candidate built the binary and which serves JS — native
    compatibility is proven by the fingerprint, never inferred from the sha.
 2. **Incremental** — reuse is invalid (committed native inputs changed, stored
