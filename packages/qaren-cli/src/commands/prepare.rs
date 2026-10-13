@@ -75,6 +75,23 @@ impl<'a> Ctx<'a> {
         failure = ensure_running(self.runner, &failure.phase)
             .err()
             .unwrap_or(failure);
+        let metro_cleanup =
+            if self.verb == "prepare" && self.record.scenario.platform == Platform::Ios {
+                self.record.resources.metro.clone().map(|metro| {
+                    let outcome = super::cleanup::cleanup_process_group(
+                        self.runner,
+                        metro.identity.as_ref(),
+                        metro.spawned.pgid,
+                        Some(metro.port),
+                    );
+                    if outcome.clean() {
+                        self.record.resources.metro = None;
+                    }
+                    outcome.render()
+                })
+            } else {
+                None
+            };
         if self.record.resources.any_owned() {
             failure.next_action = crate::redact::OutputText::from_output(&format!(
                 "qaren cleanup {} --json",
@@ -100,7 +117,11 @@ impl<'a> Ctx<'a> {
             ));
             self.record.failure = Some(failure.clone());
         }
-        finish_receipt(self, result, Some(failure))
+        let mut receipt = finish_receipt(self, result, Some(failure));
+        if let Some(outcome) = metro_cleanup {
+            receipt.cleanup.insert("metro".into(), outcome);
+        }
+        receipt
     }
 }
 
@@ -1574,6 +1595,9 @@ pub(crate) fn run_reuse_path(ctx: &mut Ctx, plan: &BuildPlan, t: u64) -> Result<
                     "artifact changed before install".into(),
                 ));
             }
+            if ctx.record.resources.metro.is_none() {
+                spawn_metro_only(ctx)?;
+            }
             let sim = ctx
                 .record
                 .resources
@@ -1670,7 +1694,9 @@ pub(crate) fn run_reuse_path(ctx: &mut Ctx, plan: &BuildPlan, t: u64) -> Result<
     }
     let t = ctx.mark("install_cached", t);
 
-    spawn_metro_only(ctx)?;
+    if ctx.record.resources.metro.is_none() {
+        spawn_metro_only(ctx)?;
+    }
     wait_metro_responding(ctx)?;
     let t = ctx.mark("metro_ready", t);
 
@@ -2364,6 +2390,7 @@ pub(crate) fn build_and_ready(ctx: &mut Ctx) -> Result<(), Failure> {
                 deadline,
                 ctx.record.scenario.build.ios_workspace.as_ref(),
             );
+            spawn_metro_only(ctx)?;
             run_finite_build(ctx, &build)?;
             if ctx.record.scenario.build.ios_workspace.is_some() {
                 let built = ios::built_app(&ios::workspace_products(&output))
@@ -2747,6 +2774,7 @@ fn dry_run_receipt(
                 "<udid>",
                 deadlines.device_boot_seconds,
             ));
+            planned.push(metro::start_spec(&cand.project_root, port));
             planned.push(ios::build_spec(
                 &cand.project_root,
                 Path::new("<run_dir>/ios-build"),
@@ -2757,7 +2785,6 @@ fn dry_run_receipt(
                 "<udid>",
                 Path::new("<run_dir>/ios-build/<verified-app>.app"),
             ));
-            planned.push(metro::start_spec(&cand.project_root, port));
             planned.push(metro::manifest_spec(port, "ios"));
             planned.extend(ios::devmenu_defaults_specs("<udid>", &cand.app_id));
             planned.push(ios::launch_spec("<udid>", &cand.app_id, port));
@@ -2843,8 +2870,16 @@ fn dry_run_receipt(
                 )
             })
             .expect("every platform build plan contains a compilation command");
+        let preparation = if scenario.platform == Platform::Ios {
+            planned
+                .iter()
+                .position(|spec| spec.label == "expo-start")
+                .expect("iOS starts Metro before compilation")
+        } else {
+            compile
+        };
         planned.insert(
-            compile,
+            preparation,
             native_prebuild_spec(&cand.project_root, platform, deadlines.build_seconds),
         );
     }
@@ -2879,8 +2914,8 @@ fn dry_run_receipt(
         });
         match scenario.platform {
             Platform::Ios => {
-                planned.push(ios::install_app_spec("<udid>", &artifact_path));
                 planned.push(metro::start_spec(&cand.project_root, port));
+                planned.push(ios::install_app_spec("<udid>", &artifact_path));
                 planned.push(metro::manifest_spec(port, "ios"));
                 planned.extend(ios::devmenu_defaults_specs("<udid>", &cand.app_id));
                 planned.push(ios::launch_spec("<udid>", &cand.app_id, port));

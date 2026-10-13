@@ -190,6 +190,16 @@ fn ios_prepare_happy_path_produces_ready_receipt_and_record() {
     script_ios_prepare(&mut mock, &repo, CmdOutput::success(""));
     let receipt = prepare(&mut mock, &prepare_args(&scenario_path, false, None));
     assert_ios_ready(&mock, &repo, receipt);
+    let position = |label: &str| mock.calls.iter().position(|c| c.label == label).unwrap();
+    assert!(position("expo-start") < position("expo-run-ios"));
+    assert!(position("simctl-install") < position("metro-status"));
+    assert_eq!(
+        mock.calls
+            .iter()
+            .filter(|c| c.label == "expo-start")
+            .count(),
+        1
+    );
 }
 
 #[test]
@@ -322,6 +332,7 @@ fn expo_hash_drift_between_plan_and_readiness_fails_as_candidate_drift() {
         fingerprint("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"),
         fingerprint("bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"),
     );
+    common::script_ios_metro_cleanup(&mut mock);
     let receipt = prepare(&mut mock, &prepare_args(&scenario_path, false, None));
     let failure = receipt.failure.expect("drift must fail prepare");
     assert_eq!(failure.code, FailureCode::CandidateDrifted, "{failure:?}");
@@ -1416,6 +1427,7 @@ fn candidate_drift_during_build_fails_prepare() {
     // Provenance recheck: HEAD moved during the build.
     mock.expect_run("git", CmdOutput::success(&format!("{}\n", "d".repeat(40))));
 
+    common::script_ios_metro_cleanup(&mut mock);
     let receipt = prepare(&mut mock, &prepare_args(&scenario_path, false, None));
     assert_eq!(receipt.result, ReceiptResult::Failed);
     assert_eq!(
@@ -1510,6 +1522,7 @@ fn candidate_dirty_drift_during_build_fails_prepare() {
     mock.expect_run("git", CmdOutput::success(&format!("{}\n", "b".repeat(40))));
     mock.expect_run("git", CmdOutput::success(" M test-app/App.tsx\0"));
 
+    common::script_ios_metro_cleanup(&mut mock);
     let receipt = prepare(&mut mock, &prepare_args(&scenario_path, false, None));
     assert_eq!(receipt.result, ReceiptResult::Failed);
     assert_eq!(
@@ -1554,6 +1567,7 @@ fn candidate_dirty_content_drift_during_build_fails_prepare() {
     mock.expect_run("git", CmdOutput::success(&format!("{}\n", "b".repeat(40))));
     mock.expect_run("git", CmdOutput::success(" M test-app/Other.tsx\0"));
 
+    common::script_ios_metro_cleanup(&mut mock);
     let receipt = prepare(&mut mock, &prepare_args(&scenario_path, false, None));
     assert_eq!(receipt.result, ReceiptResult::Failed);
     let failure = receipt.failure.as_ref().unwrap();
@@ -1664,6 +1678,7 @@ fn untracked_file_outside_qaren_state_during_build_fails_prepare() {
     let mut mock = MockRunner::new();
     script_prepare_to_recheck(&mut mock, &repo, "", "?? .qaren/\0?? stray.txt\0");
 
+    common::script_ios_metro_cleanup(&mut mock);
     let receipt = prepare(&mut mock, &prepare_args(&scenario_path, false, None));
     assert_eq!(receipt.result, ReceiptResult::Failed);
     assert_eq!(
@@ -1681,6 +1696,7 @@ fn tracked_modification_alongside_qaren_state_during_build_fails_prepare() {
     let mut mock = MockRunner::new();
     script_prepare_to_recheck(&mut mock, &repo, "", "?? .qaren/\0 M test-app/App.tsx\0");
 
+    common::script_ios_metro_cleanup(&mut mock);
     let receipt = prepare(&mut mock, &prepare_args(&scenario_path, false, None));
     assert_eq!(receipt.result, ReceiptResult::Failed);
     assert_eq!(
@@ -1799,8 +1815,8 @@ fn ios_reuse_dry_run_lists_each_launch_step_once_in_execution_order() {
             &ios_spec.runtime,
         ),
         ios::bootstatus_spec("<udid>", scenario.deadlines.device_boot_seconds),
-        ios::install_app_spec("<udid>", &artifact),
         metro::start_spec(&project, 8791),
+        ios::install_app_spec("<udid>", &artifact),
         metro::manifest_spec(8791, "ios"),
     ];
     expected.extend(ios::devmenu_defaults_specs("<udid>", &cache.app_id));
@@ -2020,13 +2036,16 @@ fn build_process_death_fails_with_log_evidence() {
     mock.expect_run("simctl create", CmdOutput::success(&format!("{UDID}\n")));
     mock.expect_run("simctl bootstatus", CmdOutput::success(""));
     mock.build_log = Some("CommandError: xcodebuild exited with error code 65\n".into());
+    common::script_ios_metro_spawn(&mut mock);
     mock.expect_spawn_piped("expo run:ios", 5000, "", Some(65));
     mock.expect_run("ps", CmdOutput::success(LSTART));
     mock.expect_run("ps", CmdOutput::success("qaren-build"));
     mock.expect_run("ps -A", CmdOutput::success("1 1 S\n"));
 
+    common::script_ios_metro_cleanup(&mut mock);
     let receipt = prepare(&mut mock, &prepare_args(&scenario_path, false, None));
     assert_eq!(receipt.result, ReceiptResult::Failed);
+    assert_eq!(receipt.cleanup["metro"], "removed");
     let failure = receipt.failure.as_ref().unwrap();
     assert_eq!(failure.code, FailureCode::BuildFailed);
     assert!(
@@ -2044,6 +2063,10 @@ fn build_process_death_fails_with_log_evidence() {
     assert_eq!(mock.remaining(), 0, "the liveness probe must have run");
     let record = RunRecord::load(&repo, &receipt.run_id).unwrap();
     assert_eq!(record.phase, Phase::Failed);
+    assert!(
+        record.resources.metro.is_none(),
+        "failed build must stop its parallel Metro"
+    );
     assert!(
         record.resources.ios_simulator.is_some(),
         "sim must stay recorded for cleanup"
@@ -2229,6 +2252,9 @@ fn recording_a_build_retains_source_on_cache_or_evidence_publication_failure() {
         script_prepare_to_recheck(&mut mock, &repo, "", "");
         mock.expect_run("ls-files", CmdOutput::success(""));
         common::script_xcode(&mut mock);
+        if fault == "record_save" {
+            common::script_ios_metro_cleanup(&mut mock);
+        }
         let mut probing = RecordProbeRunner {
             inner: mock,
             repo: repo.clone(),
@@ -2381,6 +2407,7 @@ fn unproven_or_unpersisted_build_group_absence_retains_run_output() {
         common::script_xcode(&mut mock);
         mock.expect_run("simctl create", CmdOutput::success(UDID));
         mock.expect_run("simctl bootstatus", CmdOutput::success(""));
+        common::script_ios_metro_spawn(&mut mock);
         mock.expect_spawn_piped("expo run:ios", 5000, "", Some(0));
         mock.expect_run("ps", CmdOutput::success(LSTART));
         mock.expect_run("ps", CmdOutput::success("qaren-build"));
@@ -2392,6 +2419,7 @@ fn unproven_or_unpersisted_build_group_absence_retains_run_output() {
                 CmdOutput::success("1 1 S\n")
             },
         );
+        common::script_ios_metro_cleanup(&mut mock);
         let mut probing = RecordProbeRunner {
             inner: mock,
             repo: repo.clone(),
@@ -2635,6 +2663,7 @@ fn recording_a_build_cancelled_mid_copy_preserves_previous_cache() {
     script_prepare_to_recheck(&mut mock, &repo, "", "");
     mock.expect_run("ls-files", CmdOutput::success(""));
     common::script_xcode(&mut mock);
+    common::script_ios_metro_cleanup(&mut mock);
     let mut probing = RecordProbeRunner {
         inner: mock,
         repo: repo.clone(),
