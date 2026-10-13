@@ -183,22 +183,18 @@ function mainCopyActionsTarget(projectRoot: string, actionsDir: string): string 
     expected = join(main, appRelative, '.qaren', 'actions');
     const target = resolve(dirname(actionsDir), readlinkSync(actionsDir));
     const stat = lstatIdentityIfPresent(target);
-    if (
-      target !== expected ||
-      !stat ||
-      stat.isSymbolicLink() ||
-      !stat.isDirectory() ||
-      canonical(target) !== expected
-    )
+    if (!stat || stat.isSymbolicLink() || !stat.isDirectory() || canonical(target) !== expected)
       throw new Error();
-    return target;
+    return expected;
   } catch {
     let missingMain = false;
     try {
+      const target = resolve(dirname(actionsDir), readlinkSync(actionsDir));
       missingMain = Boolean(
         expected &&
-        resolve(dirname(actionsDir), readlinkSync(actionsDir)) === expected &&
-        !lstatIdentityIfPresent(expected),
+        basename(target) === basename(expected) &&
+        canonical(dirname(target)) === dirname(expected) &&
+        !lstatIdentityIfPresent(target),
       );
     } catch {
       /* The link may have been replaced during Git inspection. */
@@ -207,7 +203,7 @@ function mainCopyActionsTarget(projectRoot: string, actionsDir: string): string 
       actionsDir,
       missingMain
         ? 'the main copy has no actions directory yet'
-        : 'the link is not a direct link to this repository main copy at the same app-relative path',
+        : 'could not verify a direct link to this repository main copy at the same app-relative path',
     );
   }
 }

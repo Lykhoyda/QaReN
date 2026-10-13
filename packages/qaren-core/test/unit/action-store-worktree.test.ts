@@ -57,22 +57,30 @@ function repository(t: TestContext) {
 const yaml =
   'appId: com.example.app\n---\n# id: welcome\n# intent: Welcome\n# status: experimental\n- tapOn: Welcome\n';
 
-test('a linked worktree reads and creates actions in its repository main app copy', (t) => {
-  const { mainApp, linkedApp } = repository(t);
-  const mainActions = join(mainApp, '.qaren', 'actions');
-  symlinkSync(mainActions, join(linkedApp, '.qaren', 'actions'));
-  assert.equal(resolveReadableActionCorpus(linkedApp).status, 'owned-directory');
-  assert.doesNotThrow(() => assertOwnedActionCorpus(linkedApp));
-  const path = createActionTextExclusive(linkedApp, 'welcome', yaml);
-  assert.equal(path, join(mainActions, 'welcome.yaml'));
-  assert.equal(readFileSync(path, 'utf8'), yaml);
-  assert.equal(loadAction(linkedApp, 'welcome').metadata.id, 'welcome');
-  assert.equal(
-    writeBlock(linkedApp, 'saved', yaml.replace('# id: welcome', '# id: saved')),
-    'written',
-  );
-  assert.equal(loadAction(mainApp, 'saved').metadata.id, 'saved');
-});
+for (const aliased of [false, true]) {
+  test(`a linked worktree reads and creates actions in its repository main app copy (aliased=${aliased})`, (t) => {
+    const { root, mainApp, linkedApp } = repository(t);
+    const mainActions = join(mainApp, '.qaren', 'actions');
+    let target = mainActions;
+    if (aliased) {
+      const alias = join(root, 'main-alias');
+      symlinkSync(join(root, 'main'), alias);
+      target = join(alias, 'apps', 'example', '.qaren', 'actions');
+    }
+    symlinkSync(target, join(linkedApp, '.qaren', 'actions'));
+    assert.equal(resolveReadableActionCorpus(linkedApp).status, 'owned-directory');
+    assert.doesNotThrow(() => assertOwnedActionCorpus(linkedApp));
+    const path = createActionTextExclusive(linkedApp, 'welcome', yaml);
+    assert.equal(path, join(mainActions, 'welcome.yaml'));
+    assert.equal(readFileSync(path, 'utf8'), yaml);
+    assert.equal(loadAction(linkedApp, 'welcome').metadata.id, 'welcome');
+    assert.equal(
+      writeBlock(linkedApp, 'saved', yaml.replace('# id: welcome', '# id: saved')),
+      'written',
+    );
+    assert.equal(loadAction(mainApp, 'saved').metadata.id, 'saved');
+  });
+}
 
 test('ordinary real action directories remain readable and writable without Git', (t) => {
   const root = realpathSync(mkdtempSync(join(tmpdir(), 'qaren-real-actions-')));
@@ -91,6 +99,7 @@ for (const scenario of [
   'wrong-app',
   'chained',
   'dangling',
+  'dangling-alias',
 ] as const) {
   test(`read and owned/write paths refuse a ${scenario} actions link with supported setup advice`, (t) => {
     const { root, mainApp, linkedApp } = repository(t);
@@ -110,13 +119,20 @@ for (const scenario of [
       mkdirSync(real);
       rmSync(target, { recursive: true });
       symlinkSync(real, target);
-    } else rmSync(target, { recursive: true });
+    } else {
+      rmSync(target, { recursive: true });
+      if (scenario === 'dangling-alias') {
+        const alias = join(root, 'main-alias');
+        symlinkSync(join(root, 'main'), alias);
+        target = join(alias, 'apps', 'example', '.qaren', 'actions');
+      }
+    }
     symlinkSync(target, join(linkedApp, '.qaren', 'actions'));
     const corpus = resolveReadableActionCorpus(linkedApp);
     assert.equal(corpus.status, 'refused');
     if (corpus.status !== 'refused') assert.fail('must refuse');
     assert.match(corpus.reason, /symlink.*Use a real directory.*this repository main copy/);
-    if (scenario === 'dangling')
+    if (scenario === 'dangling' || scenario === 'dangling-alias')
       assert.match(corpus.reason, /main copy has no actions directory yet/);
     assert.throws(() => assertOwnedActionCorpus(linkedApp), { message: corpus.reason });
     assert.throws(() => loadAction(linkedApp, 'welcome'), { message: corpus.reason });
