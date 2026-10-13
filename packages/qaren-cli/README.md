@@ -1238,9 +1238,12 @@ of host load, with bounded polling and exact-port rediscovery between attachment
 attempts. Exhausted readiness refuses `CDP_NOT_CONNECTED`; invalid
 metadata and deterministic attachment rejections refuse immediately. Host load
 is diagnostic and does not decide whether the app is ready.
-After an exhausted readiness wait, an iOS dev client can be relaunched once if
-the remaining deadline still covers a full readiness wait. Immediately before
-relaunch it checks for a foreign driver; a conflict refuses `BUSY_FOREIGN_FLOW`
+After an exhausted target-readiness wait, or persistent runtime-probe or
+WebSocket-handshake timeouts lasting through the readiness window, an iOS dev
+client can be relaunched once if the remaining deadline still covers a full
+readiness wait. Individual target-list timeouts and inspector page closures do
+not trigger relaunch. Immediately before relaunch it checks for a foreign driver;
+a conflict refuses `BUSY_FOREIGN_FLOW`
 without relaunching. It relaunches on the exact simulator with the CLI's original
 `initialUrl` using `simctl launch --terminate-running-process`, then waits again
 within the original deadline. A failed relaunch refuses without another wait.
