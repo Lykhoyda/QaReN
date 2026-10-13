@@ -979,8 +979,7 @@ pub fn expo_fingerprint_spec(label: &str, project_root: &Path, args: &[&str]) ->
         .env("EXPO_NO_TELEMETRY", "1")
 }
 
-// The CLI's stdout carries evaluated config contents, so only private capture is used and
-// only the `hash` field is read; every failure reason is a fixed string.
+// Evaluated config stays in private capture; failure reasons contain no config or error output.
 fn expo_fingerprint(
     runner: &mut dyn Runner,
     project_root: &Path,
@@ -1017,12 +1016,27 @@ fn expo_fingerprint(
             outcome(&generated)
         ));
     }
-    serde_json::from_str::<serde_json::Value>(last_line(generated.stdout()))
-        .ok()
-        .and_then(|result| result.get("hash")?.as_str().map(str::to_string))
+    let result = serde_json::from_str::<serde_json::Value>(last_line(generated.stdout()))
+        .map_err(|_| "@expo/fingerprint output carried no hex hash".to_string())?;
+    let hash = result
+        .get("hash")
+        .and_then(serde_json::Value::as_str)
         .filter(|hash| !hash.is_empty() && hash.bytes().all(|b| b.is_ascii_hexdigit()))
-        .map(|hash| format!("expo:{hash}"))
-        .ok_or_else(|| "@expo/fingerprint output carried no hex hash".to_string())
+        .ok_or_else(|| "@expo/fingerprint output carried no hex hash".to_string())?;
+    if !result
+        .get("sources")
+        .and_then(serde_json::Value::as_array)
+        .is_some_and(|sources| {
+            sources.iter().any(|source| {
+                source["type"] == "contents"
+                    && source["id"] == "expoConfig"
+                    && source["contents"].is_string()
+            })
+        })
+    {
+        return Err("@expo/fingerprint output carried no evaluated Expo config".to_string());
+    }
+    Ok(format!("expo:{hash}"))
 }
 
 // pnpm can print its dependency check to stdout before the child's own output.

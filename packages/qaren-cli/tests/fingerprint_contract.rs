@@ -1209,6 +1209,21 @@ fn unavailable_expo_evaluation_keeps_todays_conservative_rebuild() {
     let recorded = evaluated(&root, EXPO_H, XCODE);
     let cases: Vec<(&str, Script)> = vec![
         (
+            "no evaluated Expo config",
+            Box::new(|m: &mut MockRunner| {
+                m.expect_run(
+                    "require.resolve",
+                    CmdOutput::success(common::EXPO_FINGERPRINT_CLI),
+                );
+                m.expect_run(
+                    "fingerprint:generate",
+                    CmdOutput::success(&format!(
+                        r#"{{"hash":"{EXPO_H}","sources":[{{"type":"contents","id":"expoAutolinkingConfig:ios","contents":"{UNAVAILABLE_CANARY}"}}]}}"#
+                    )),
+                );
+            }),
+        ),
+        (
             "does not resolve",
             Box::new(common::script_expo_fingerprint_unresolvable),
         ),
@@ -1325,7 +1340,9 @@ fn unavailable_toolchain_identity_forbids_reuse() {
         );
         m.expect_run(
             "fingerprint:generate",
-            CmdOutput::success(&format!(r#"{{"hash":"{EXPO_H}"}}"#)),
+            CmdOutput::success(&format!(
+                r#"{{"sources":[{{"type":"contents","id":"expoConfig","contents":"{{}}"}}],"hash":"{EXPO_H}"}}"#
+            )),
         );
         m.expect_run(
             "xcodebuild -version",
@@ -1419,7 +1436,7 @@ fn a_pnpm_dependency_check_preamble_on_stdout_is_ignored() {
         m.expect_run(
             "fingerprint:generate",
             CmdOutput::success(&format!(
-                "{PREAMBLE}{{\"sources\":[],\"hash\":\"{EXPO_H}\"}}\n"
+                "{PREAMBLE}{{\"sources\":[{{\"type\":\"contents\",\"id\":\"expoConfig\",\"contents\":\"{{}}\"}}],\"hash\":\"{EXPO_H}\"}}\n"
             )),
         );
         m.expect_run("xcodebuild -version", CmdOutput::success(XCODE));
