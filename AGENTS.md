@@ -31,7 +31,8 @@ The package cut, literal `qaren check`, Jev seam, Phase 4 blocks, and PR run/pub
 - `packages/rn-fast-runner/` (package `qaren-ios-runner`) and
   `packages/rn-android-runner/` (package `qaren-android-runner`): native
   runner sources.
-- `apps/docs-site/` (package `qaren-docs`): deliverable QaReN documentation site.
+- `apps/docs-site/` (package `qaren-docs`): deliverable documentation site;
+  its content still describes rn-dev-agent until Phase 8.
 - Engineering processes, plans, stories, audits and research live in the
   workspace [`docs/`](https://github.com/Lykhoyda/rn-dev-agent-workspace/tree/main/docs/);
   never add a top-level `docs/` tree here. Captain-approved architecture records
