@@ -9,6 +9,7 @@ import {
   detectIosExternalRunner,
   isIosExternalRunnerProcessLine,
   probeIosExternalRunnerStrict,
+  probeIosExternalRunnerAdmission,
 } from '../../../dist/runners/external-runner-detect.js';
 import { freshInstallPreflight } from '../../../dist/qa/fresh-install-preflight.js';
 
@@ -109,6 +110,72 @@ test('strict detector admits only complete, clean process scans', async () => {
   }) as unknown as typeof execFile;
   assert.equal(await probeIosExternalRunnerStrict(failing, UDID), 'unknown');
   assert.equal(await detectIosExternalRunner(failing, UDID), null);
+});
+
+test('fresh-install CLI reports why a scan is unknown without publishing process text', async () => {
+  await fixture(async (root, marker) => {
+    const result = await invoke(root, marker, args, { FAKE_PS_STDOUT: `malformed ${secret}\n` });
+    assert.equal(result.code, 4);
+    assert.deepEqual(JSON.parse(result.stdout).evidence, { reason: 'scan_row_invalid' });
+    assert.ok(!result.stdout.includes(secret));
+  });
+});
+
+test('admission evidence distinguishes scan and identity failures using reason codes and PIDs', async () => {
+  for (const [stdout, stderr, evidence] of [
+    [ordinary.trimEnd(), '', { reason: 'scan_incomplete' }],
+    [ordinary, secret, { reason: 'scan_stderr' }],
+    [`1 /bin/lo\0gin\n`, '', { reason: 'scan_corrupt' }],
+    [`${ordinary}2 /usr/bin/login\n`, '', { reason: 'scan_pid_invalid' }],
+    [
+      driver('RnFastRunnerUITests-Runner', OTHER),
+      '',
+      { reason: 'observer_unavailable', candidates: 1 },
+    ],
+  ] as const) {
+    assert.deepEqual(await probeIosExternalRunnerAdmission(fakePs(stdout, stderr), UDID), {
+      status: 'unknown',
+      evidence,
+    });
+  }
+  assert.deepEqual(
+    await probeIosExternalRunnerAdmission(
+      fakePs(driver('RnFastRunnerUITests-Runner', OTHER)),
+      UDID,
+      async () => null,
+    ),
+    { status: 'unknown', evidence: { reason: 'driver_identity_unproven', pid: 20 } },
+  );
+  assert.deepEqual(
+    await probeIosExternalRunnerAdmission(
+      fakePs(driver('RnFastRunnerUITests-Runner', OTHER)),
+      UDID,
+      async () => {
+        throw new Error(secret);
+      },
+    ),
+    { status: 'unknown', evidence: { reason: 'observer_failed', pid: 20 } },
+  );
+});
+
+test('fresh-install CLI reports failed observer acquisition without exposing its output', async () => {
+  await fixture(async (root, marker) => {
+    const observer = join(root, 'observer');
+    await writeFile(
+      observer,
+      `#!${process.execPath}\nprocess.stdout.write(${JSON.stringify(secret)});\n`,
+      { mode: 0o755 },
+    );
+    const result = await invoke(root, marker, [...args, '--process-observer', observer], {
+      FAKE_PS_STDOUT: driver('RnFastRunnerUITests-Runner', OTHER),
+    });
+    assert.equal(result.code, 4);
+    assert.deepEqual(JSON.parse(result.stdout).evidence, {
+      reason: 'observer_invalid_json',
+      pid: 20,
+    });
+    assert.ok(!result.stdout.includes(secret));
+  });
 });
 
 test('strict detector includes foreign, own and generic test drivers without changing legacy policy', async () => {
@@ -738,7 +805,10 @@ function assertResult(result: Awaited<ReturnType<typeof invoke>>, status: string
   assert.equal(result.code, status === 'clear' ? 0 : 4);
   assert.equal(result.stderr, '');
   assert.equal(result.stdout.split('\n').length, 2, 'exactly one newline-terminated object');
-  assert.deepEqual(JSON.parse(result.stdout), { v: 1, platform: 'ios', deviceId, status });
+  const { evidence, ...envelope } = JSON.parse(result.stdout);
+  assert.deepEqual(envelope, { v: 1, platform: 'ios', deviceId, status });
+  if (status === 'clear') assert.equal(evidence, undefined);
+  else if (deviceId !== '') assert.equal(typeof evidence?.reason, 'string');
   assert.ok(!result.stdout.includes(secret));
 }
 
