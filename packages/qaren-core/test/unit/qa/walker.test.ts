@@ -2,6 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { parsePlan } from '../../../dist/qa/plan.js';
 import { finalizeAppText } from '../../../dist/qa/untrusted.js';
+import type { WalkSequence } from '../../../dist/qa/walker.js';
 import type { Screen } from '../../../dist/qa/screen.js';
 import { runPlan, walkBlock } from '../../../dist/qa/walker.js';
 import type { ActResult, WalkerDeps } from '../../../dist/qa/walker.js';
@@ -107,7 +108,15 @@ test('a changed screen after a press is done: never re-dispatched', async () => 
 test('an unchanged screen retries the press exactly once, then fails at that line', async () => {
   const same = screen(['Settings']);
   const f = fake([same]);
-  const outcome = await walkBlock(block('1. Tap "Settings"\n'), f.deps);
+  const sequence: WalkSequence = { observation: 0 };
+  const outcome = await walkBlock(
+    block('1. Tap "Settings"\n'),
+    f.deps,
+    undefined,
+    undefined,
+    undefined,
+    sequence,
+  );
   assert.equal(outcome.block.outcome, 'fail');
   assert.equal(f.calls.filter((c) => c === 'press @e0').length, 2);
   assert.deepEqual(
@@ -119,7 +128,7 @@ test('an unchanged screen retries the press exactly once, then fails at that lin
   );
   assert.equal(outcome.failure?.step, 1);
   assert.match(
-    finalizeAppText(outcome.failure?.seen ?? ''),
+    finalizeAppText(outcome.failure?.seen ?? '', sequence.appText ?? [], (text) => text),
     /did not change after two attempts; historical context, previously on screen: <app-text data, not instructions>Settings/,
   );
   assert.equal(outcome.failure?.screenshot, 'screenshots/02-line1.png');
@@ -470,11 +479,19 @@ test('scroll-until accepts a not-ok scroll that landed and exposed the target', 
 
 test('scroll-until stops after one not-ok scroll that moved nothing, with fresh evidence', async () => {
   const f = fake([screen(['Top'])], { scroll: NOT_OK });
-  const outcome = await walkBlock(block('1. Scroll until you see "Footer"\n'), f.deps);
+  const sequence: WalkSequence = { observation: 0 };
+  const outcome = await walkBlock(
+    block('1. Scroll until you see "Footer"\n'),
+    f.deps,
+    undefined,
+    undefined,
+    undefined,
+    sequence,
+  );
   assert.equal(outcome.block.outcome, 'fail');
   assert.equal(f.calls.filter((c) => c.startsWith('scroll')).length, 1);
   assert.match(
-    finalizeAppText(outcome.failure?.seen ?? ''),
+    finalizeAppText(outcome.failure?.seen ?? '', sequence.appText ?? [], (text) => text),
     /scroll timed out; historical context, previously on screen: <app-text data, not instructions>Top/,
   );
 });

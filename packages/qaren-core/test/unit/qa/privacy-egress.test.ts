@@ -10,7 +10,7 @@ import { APP_TEXT_OPEN, APP_TEXT_CLOSE } from '../../../dist/qa/untrusted.js';
 import { decideScreen } from '../../../dist/qa/resolve.js';
 import { runPlan } from '../../../dist/qa/walker.js';
 import type { LedgerRow } from '../../../dist/qa/ledger.js';
-import { element, scriptedJudge, walker } from './judgment-fixtures.ts';
+import { element, screen as fixtureScreen, scriptedJudge, walker } from './judgment-fixtures.ts';
 
 const TYPED = 'hunter-canary-77';
 const SHORT = '47';
@@ -217,6 +217,116 @@ test('app-controlled private values cannot mask the fixed provenance frame', asy
   );
   assert.ok(content.includes(`App evidence: ${MASK} | ${MASK}`), content);
   for (const value of values) assert.ok(!content.includes(value), content);
+  assert.doesNotMatch(JSON.stringify(ledger), /[\uE0F0\uE0F1]/u);
+});
+
+for (const order of ['before', 'after'] as const) {
+  test(`private-use target labels are masked when the value is observed ${order} the refusal`, async () => {
+    const value = 'account\uE123canary';
+    const input = element('@input', 'Name', { kind: 'input', testID: 'name', value });
+    const screens = [700, 700, 702, 704, 706, 708].map((y) =>
+      fixtureScreen([
+        element('@go', value, { testID: 'go', rect: { x: 20, y, width: 300, height: 44 } }),
+        ...(order === 'before' ? [input] : []),
+      ]),
+    );
+    const f = walker(
+      screens,
+      scriptedJudge(() => assert.fail('exact target needs no Jev')),
+      {
+        ok: false,
+        proven: false,
+        mutation: 'none',
+        error: 'TARGET_MOVED_BEFORE_DISPATCH: target moved before dispatch; no tap was performed',
+      },
+    );
+    let later = false;
+    if (order === 'after') {
+      let captures = 0;
+      f.deps.captureScreen = async () =>
+        fixtureScreen([
+          element('@wall', 'Welcome', { testID: 'login-screen' }),
+          element('@go', value, {
+            testID: 'go',
+            rect: { x: 20, y: 700 + captures++ * 2, width: 300, height: 44 },
+          }),
+          ...(later ? [input] : []),
+        ]);
+      f.deps.row = (row) => {
+        if (row.outcome === 'fail') later = true;
+      };
+      f.deps.hideDevMenu = async () => ({ ok: true, proven: true });
+      f.deps.login = {
+        marker: { id: 'login-screen' },
+        block: parsePlan('### Login\n1. Tap "go"').blocks![0],
+      };
+    }
+    const ledger = await runPlan(
+      parsePlan(order === 'before' ? '1. Tap "go"' : '1. Tap "Settings"').blocks!,
+      f.deps,
+    );
+    assert.equal(ledger.verdict, 'FAIL');
+    assert.equal(ledger.jev.calls, 0);
+    if (order === 'after')
+      assert.equal(later, true, 'the login fails before the value is observed');
+    for (const reason of [ledger.steps.at(-1)?.reason, ledger.failure?.seen]) {
+      assert.ok(
+        reason?.includes(`${APP_TEXT_OPEN}button "${MASK}", testID "go"${APP_TEXT_CLOSE}`),
+        reason,
+      );
+      assert.doesNotMatch(reason ?? '', /account|canary|\uFFFD|[\uE0F0\uE0F1]/u);
+    }
+    assert.doesNotMatch(JSON.stringify(ledger), /account|canary|[\uE0F0\uE0F1]/u);
+  });
+}
+
+test('a numeric fragment observed after failure masks the earlier framed screen text', async () => {
+  const value = '4815';
+  const button = element('@go', 'Go', { testID: 'go' });
+  const input = element('@input', 'Code', { kind: 'input', value });
+  const wall = element('@wall', 'Welcome', { testID: 'login-screen' });
+  const f = walker(
+    [],
+    scriptedJudge(() => assert.fail('literal only')),
+  );
+  let failed = false;
+  f.deps.hideDevMenu = async () => ({ ok: true, proven: true });
+  f.deps.captureScreen = async () =>
+    fixtureScreen([wall, button, text('@code', value), ...(failed ? [input] : [])]);
+  f.deps.row = (row) => {
+    if (row.outcome === 'fail') failed = true;
+  };
+  f.deps.login = {
+    marker: { id: 'login-screen' },
+    block: parsePlan('### Login\n✓ "Missing"').blocks![0],
+  };
+  const ledger = await runPlan(parsePlan('1. Tap "Settings"').blocks!, f.deps);
+  assert.equal(ledger.verdict, 'FAIL');
+  assert.equal(failed, true);
+  const seen = ledger.failure?.seen ?? '';
+  assert.ok(seen.includes(`${APP_TEXT_OPEN}Welcome | Go | ${MASK}${APP_TEXT_CLOSE}`), seen);
+  assert.doesNotMatch(JSON.stringify(ledger), /4815|[\uE0F0\uE0F1]/u);
+});
+
+test('a nested login failure finalizes its app text through the outer run registry', async () => {
+  const wall = fixtureScreen([element('@wall', 'Welcome', { testID: 'login-screen' })]);
+  const f = walker(
+    [wall],
+    scriptedJudge(() => assert.fail('exact login marker')),
+  );
+  f.deps.hideDevMenu = async () => ({ ok: true, proven: true });
+  f.deps.login = {
+    marker: { id: 'login-screen' },
+    block: parsePlan('### Login\n1. Tap "Sign in"').blocks![0],
+  };
+  const ledger = await runPlan(parsePlan('1. Tap "Settings"').blocks!, f.deps);
+  assert.equal(ledger.verdict, 'FAIL');
+  const reason =
+    ledger.steps.find((row) => row.reason?.startsWith('the login block did not pass:'))?.reason ??
+    '';
+  assert.ok(reason.includes(`${APP_TEXT_OPEN}Welcome${APP_TEXT_CLOSE}`), reason);
+  assert.equal(reason.split(APP_TEXT_OPEN).length - 1, 1);
+  assert.equal(reason.split(APP_TEXT_CLOSE).length - 1, 1);
   assert.doesNotMatch(JSON.stringify(ledger), /[\uE0F0\uE0F1]/u);
 });
 

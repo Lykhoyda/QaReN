@@ -200,6 +200,7 @@ export interface WalkOptions {
 
 export interface WalkSequence {
   observation: number;
+  appText?: string[];
   operation?: number;
   publicationInterrupted?: boolean;
   momentum?: boolean;
@@ -228,6 +229,7 @@ export async function walkBlock(
   opts: WalkOptions = {},
   operations = new Map<number, number>(),
 ): Promise<WalkOutcome> {
+  const texts = (sequence.appText ??= []);
   const replay = opts.mode === 'replay';
   const rows: LedgerRow[] = [];
   const privateFills: number[] = [];
@@ -427,6 +429,7 @@ export async function walkBlock(
   };
   const identityText = (target: Element): string =>
     frameAppText(
+      texts,
       `${target.kind} ${target.label === undefined ? 'unlabelled' : `"${target.label}"`}, ${target.testID === undefined ? 'no testID' : `testID "${target.testID}"`}`,
     );
   // After a moved refusal, the target re-identified by the step's own exact-identity rules
@@ -697,7 +700,7 @@ export async function walkBlock(
       failure: {
         step: item.line,
         seen: redact(
-          `${reason}; historical context, previously on screen: ${frameAppText(privacy.screenText(screen).slice(0, 40).join(' | '))}`,
+          `${reason}; historical context, previously on screen: ${frameAppText(texts, privacy.screenText(screen).slice(0, 40).join(' | '))}`,
         ),
         ...(screenshot ? { screenshot } : {}),
       },
@@ -2045,14 +2048,22 @@ export async function runPlan(
             block: display(row.block),
             text: projectPlanLine(row.text, privacy.privateSet()).text,
             ...(row.reason !== undefined
-              ? { reason: finalizeAppText(privacy.redact(row.reason)) }
+              ? {
+                  reason: finalizeAppText(privacy.redact(row.reason), sequence.appText ?? [], (t) =>
+                    privacy.redact(t),
+                  ),
+                }
               : {}),
             ...(selector && unprotected(selector.id ?? selector.text ?? '') ? { selector } : {}),
           })),
           outcome?.failure
             ? {
                 ...outcome.failure,
-                seen: finalizeAppText(privacy.redact(outcome.failure.seen)),
+                seen: finalizeAppText(
+                  privacy.redact(outcome.failure.seen),
+                  sequence.appText ?? [],
+                  (t) => privacy.redact(t),
+                ),
               }
             : undefined,
           calls(),

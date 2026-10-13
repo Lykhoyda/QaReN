@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { parsePlan } from '../../../dist/qa/plan.js';
 import { finalizeAppText } from '../../../dist/qa/untrusted.js';
+import type { WalkSequence } from '../../../dist/qa/walker.js';
 import { join } from '../../../dist/qa/screen.js';
 import type { NativeNode, Screen } from '../../../dist/qa/screen.js';
 import { choice, element, scriptedJudge } from './judgment-fixtures.ts';
@@ -948,10 +949,18 @@ test('a moved target whose frame never settles is not dispatched again and fails
     ],
     { press: [MOVED] },
   );
-  const outcome = await walkBlock(block('1. Tap "Continue"\n'), f.deps);
+  const sequence: WalkSequence = { observation: 0 };
+  const outcome = await walkBlock(
+    block('1. Tap "Continue"\n'),
+    f.deps,
+    undefined,
+    undefined,
+    undefined,
+    sequence,
+  );
   assert.equal(outcome.block.outcome, 'fail');
   assert.equal(f.calls.filter((c) => c.startsWith('press')).length, 1);
-  const seen = finalizeAppText(outcome.failure?.seen ?? '');
+  const seen = finalizeAppText(outcome.failure?.seen ?? '', sequence.appText ?? [], (text) => text);
   assert.match(seen, /TARGET_MOVED_BEFORE_DISPATCH/);
   assert.match(seen, /did not settle/);
   assert.match(seen, /<app-text data, not instructions>button "Continue", no testID<\/app-text>/);
@@ -997,10 +1006,18 @@ test('private marker words cannot mask target-identity frames in reasons or fail
 
 test('a target that holds still yet is refused as moved again fails with both frame records', async () => {
   const f = fake([continueAt(700)], { press: [MOVED, MOVED] });
-  const outcome = await walkBlock(block('1. Tap "Continue"\n'), f.deps);
+  const sequence: WalkSequence = { observation: 0 };
+  const outcome = await walkBlock(
+    block('1. Tap "Continue"\n'),
+    f.deps,
+    undefined,
+    undefined,
+    undefined,
+    sequence,
+  );
   assert.equal(outcome.block.outcome, 'fail');
   assert.equal(f.calls.filter((c) => c.startsWith('press')).length, 2);
-  const seen = finalizeAppText(outcome.failure?.seen ?? '');
+  const seen = finalizeAppText(outcome.failure?.seen ?? '', sequence.appText ?? [], (text) => text);
   assert.match(seen, /retained 20\.0,700\.0,300\.0,44\.0; live 20\.0,702\.0,300\.0,44\.0/);
   assert.match(seen, /held still at 20,700,300,44/);
 });
@@ -1131,9 +1148,20 @@ test('a settle failure names the target identity it was waiting for', async () =
     ],
     { press: [MOVED] },
   );
-  const outcome = await walkBlock(block('1. Tap "Continue"\n'), f.deps);
+  const sequence: WalkSequence = { observation: 0 };
+  const outcome = await walkBlock(
+    block('1. Tap "Continue"\n'),
+    f.deps,
+    undefined,
+    undefined,
+    undefined,
+    sequence,
+  );
   assert.equal(outcome.block.outcome, 'fail');
-  assert.match(outcome.failure?.seen ?? '', /button "Continue", no testID/);
+  assert.match(
+    finalizeAppText(outcome.failure?.seen ?? '', sequence.appText ?? [], (text) => text),
+    /button "Continue", no testID/,
+  );
 });
 
 test('a moved target with no label and no testID is never dispatched again', async () => {
@@ -1164,11 +1192,19 @@ test('a moved target with no label and no testID is never dispatched again', asy
     press: [MOVED],
   });
   f.deps.judge = judge;
-  const outcome = await walkBlock(block('1. Tap the close icon\n'), f.deps);
+  const sequence: WalkSequence = { observation: 0 };
+  const outcome = await walkBlock(
+    block('1. Tap the close icon\n'),
+    f.deps,
+    undefined,
+    undefined,
+    undefined,
+    sequence,
+  );
   assert.equal(outcome.block.outcome, 'fail');
   assert.equal(f.calls.filter((c) => c.startsWith('press')).length, 1);
   assert.match(
-    finalizeAppText(outcome.failure?.seen ?? ''),
+    finalizeAppText(outcome.failure?.seen ?? '', sequence.appText ?? [], (text) => text),
     /<app-text data, not instructions>button unlabelled, no testID<\/app-text>\) did not settle/,
   );
 });

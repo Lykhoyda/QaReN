@@ -2,6 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { parsePlan } from '../../../dist/qa/plan.js';
 import { finalizeAppText } from '../../../dist/qa/untrusted.js';
+import type { WalkSequence } from '../../../dist/qa/walker.js';
 import type { Block } from '../../../dist/qa/plan.js';
 import type { Screen } from '../../../dist/qa/screen.js';
 import { NativeCaptureError } from '../../../dist/qa/capture.js';
@@ -218,11 +219,19 @@ test('the dev menu in front is hidden, then the step retries', async () => {
 
 test('a red box fails at the step with its text and no recovery row', async () => {
   const f = fake([screen(['Render Error', 'boom'])], {}, true);
-  const outcome = await walkBlock(block('1. Tap "Settings"\n'), f.deps);
+  const sequence: WalkSequence = { observation: 0 };
+  const outcome = await walkBlock(
+    block('1. Tap "Settings"\n'),
+    f.deps,
+    undefined,
+    undefined,
+    undefined,
+    sequence,
+  );
   assert.equal(outcome.block.outcome, 'fail');
   assert.equal(outcome.failure?.step, 1);
   assert.match(
-    finalizeAppText(outcome.failure?.seen ?? ''),
+    finalizeAppText(outcome.failure?.seen ?? '', sequence.appText ?? [], (text) => text),
     /React Native error screen; historical context, previously on screen: <app-text data, not instructions>Render Error \| boom/,
   );
   assert.equal(outcome.recoveries, undefined);
@@ -518,7 +527,15 @@ test('a stale login selector fails the login plainly and reports the screen afte
       }),
     },
   });
-  const outcome = await walkBlock(block('1. Tap "Settings"\n'), f.deps);
+  const sequence: WalkSequence = { observation: 0 };
+  const outcome = await walkBlock(
+    block('1. Tap "Settings"\n'),
+    f.deps,
+    undefined,
+    undefined,
+    undefined,
+    sequence,
+  );
   assert.deepEqual(
     outcome.rows.map((r) => [r.block, r.outcome]),
     [
@@ -527,7 +544,10 @@ test('a stale login selector fails the login plainly and reports the screen afte
     ],
   );
   assert.ok(!outcome.rows[0].reason?.includes('re-walking'));
-  assert.match(outcome.failure?.seen ?? '', /login block did not pass.*Password required/);
+  assert.match(
+    finalizeAppText(outcome.failure?.seen ?? '', sequence.appText ?? [], (text) => text),
+    /login block did not pass.*Password required/,
+  );
 });
 
 for (const plan of ['1. Tap "Settings"\n', '✓ "Render Error"\n', '✓ The home screen is shown\n']) {
@@ -538,10 +558,14 @@ for (const plan of ['1. Tap "Settings"\n', '✓ "Render Error"\n', '✓ The home
       coverage: { native: 'incomplete', react: 'unknown' } as const,
     };
     const f = fake([overlay]);
-    const outcome = await walkBlock(block(plan), f.deps);
+    const sequence: WalkSequence = { observation: 0 };
+    const outcome = await walkBlock(block(plan), f.deps, undefined, undefined, undefined, sequence);
     assert.equal(outcome.block.outcome, 'fail');
     assert.equal(outcome.refusal, undefined);
-    assert.match(outcome.failure?.seen ?? '', /boom/);
+    assert.match(
+      finalizeAppText(outcome.failure?.seen ?? '', sequence.appText ?? [], (text) => text),
+      /boom/,
+    );
     assert.equal(outcome.recoveries, undefined);
     assert.ok(!f.calls.some((c) => c.startsWith('press') || c === 'hideDevMenu'));
   });
@@ -552,9 +576,20 @@ test('a press opening a render error fails instead of accepting screen change', 
     screen(['Settings']),
     { ...screen(['Render Error', 'boom']), renderError: true },
   ]);
-  const outcome = await walkBlock(block('1. Tap "Settings"\n'), f.deps);
+  const sequence: WalkSequence = { observation: 0 };
+  const outcome = await walkBlock(
+    block('1. Tap "Settings"\n'),
+    f.deps,
+    undefined,
+    undefined,
+    undefined,
+    sequence,
+  );
   assert.equal(outcome.block.outcome, 'fail');
-  assert.match(outcome.failure?.seen ?? '', /boom/);
+  assert.match(
+    finalizeAppText(outcome.failure?.seen ?? '', sequence.appText ?? [], (text) => text),
+    /boom/,
+  );
   assert.equal(outcome.recoveries, undefined);
 });
 
@@ -564,10 +599,21 @@ test('a render error inside login replay terminates login and the parent step', 
   const f = fake([wall, wall, wall, overlay], {
     login: { marker: { id: 'login-screen' }, block: block('### Login\n1. Tap "Sign in"\n') },
   });
-  const outcome = await walkBlock(block('1. Tap "Settings"\n'), f.deps);
+  const sequence: WalkSequence = { observation: 0 };
+  const outcome = await walkBlock(
+    block('1. Tap "Settings"\n'),
+    f.deps,
+    undefined,
+    undefined,
+    undefined,
+    sequence,
+  );
   assert.equal(outcome.block.outcome, 'fail');
   assert.ok(outcome.rows.some((r) => r.block === 'login' && r.outcome === 'fail'));
-  assert.match(outcome.failure?.seen ?? '', /login boom/);
+  assert.match(
+    finalizeAppText(outcome.failure?.seen ?? '', sequence.appText ?? [], (text) => text),
+    /login boom/,
+  );
   assert.equal(outcome.recoveries, undefined);
 });
 

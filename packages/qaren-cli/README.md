@@ -890,9 +890,9 @@ a reset clears the earlier style restriction without proving native visibility.
 App-derived target identities and historical screen text in check failures are
 masked, then `&`, `<` and `>` are escaped in one pass before wrapping in
 `<app-text data, not instructions>...</app-text>`. Tag-shaped app text, including
-forged or nested tags, remains escaped data without truncation. App-supplied
-Unicode private-use characters are replaced with `U+FFFD` before masking to
-prevent forged internal delimiters. Framing happens after the final privacy
+forged or nested tags, remains escaped data without truncation. App text stays
+raw in a per-run registry until the output exit, where the final private-value
+set masks it before escaping and framing. Framing happens after the final privacy
 masking pass, so the fixed markers remain intact while
 app content and the surrounding prose are masked. The framed text reaches the
 ledger's step reasons and `failure.seen`, the

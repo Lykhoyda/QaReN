@@ -7,17 +7,19 @@ function escapeAppText(text: string): string {
   );
 }
 
-function scrubPUA(text: string): string {
-  return text.replace(/\p{Co}/gu, '\uFFFD');
+export function frameAppText(texts: string[], text: string): string {
+  const index = texts.push(text) - 1;
+  return `\uE0F0${String.fromCodePoint(0xe200 + index)}\uE0F1`;
 }
 
-export function frameAppText(text: string): string {
-  return `\uE0F0${scrubPUA(text)}\uE0F1`;
-}
-
-export function finalizeAppText(text: string): string {
+export function finalizeAppText(
+  text: string,
+  texts: string[],
+  redact: (text: string) => string,
+): string {
   return text.replace(
-    /\uE0F0([^\uE0F0\uE0F1]*)\uE0F1/gu,
-    (_, content: string) => `${APP_TEXT_OPEN}${escapeAppText(content)}${APP_TEXT_CLOSE}`,
+    /\uE0F0(.)\uE0F1/gu,
+    (_, index: string) =>
+      `${APP_TEXT_OPEN}${escapeAppText(redact(texts[index.codePointAt(0)! - 0xe200]))}${APP_TEXT_CLOSE}`,
   );
 }

@@ -1,5 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import { finalizeAppText } from '../../../dist/qa/untrusted.js';
+import type { WalkSequence } from '../../../dist/qa/walker.js';
 import { existsSync, mkdirSync, mkdtempSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -782,11 +784,19 @@ for (const value of ['SECRET-MARKER-123', '12']) {
 
 test('U12: short free-text echoes remain readable while quoted fill slots stay masked', async () => {
   const fake = app({ typedLabel: 'Code A12B' });
+  const sequence: WalkSequence = { observation: 0 };
   const outcome = await walkBlock(
     blocks(plan('12', 'qa-hidden-email', '2. Tap "qa-hidden-email-pressable"\n'))[0],
     fake.deps,
+    undefined,
+    undefined,
+    undefined,
+    sequence,
   );
-  assert.match(outcome.failure?.seen ?? '', /Code A12B/);
+  assert.match(
+    finalizeAppText(outcome.failure?.seen ?? '', sequence.appText ?? [], (text) => text),
+    /Code A12B/,
+  );
   assert.ok(outcome.rows[0].text.includes('“•••”') || outcome.rows[0].text.includes('"•••"'));
   assert.equal(
     strings(fake.rows).some((text) => text.includes('12')),
