@@ -957,22 +957,27 @@ fn table_header_end(line: &str) -> Option<usize> {
     None
 }
 
-fn toml_mcp_headers(text: &str) -> Vec<String> {
-    let mut current: Option<&str> = None;
-    let mut headers: Vec<String> = Vec::new();
-    for line in text.lines().map(str::trim) {
+#[derive(Debug, PartialEq)]
+enum McpHeader {
+    Named(String),
+    Malformed(usize),
+}
+
+fn toml_mcp_headers(text: &str) -> Vec<McpHeader> {
+    let mut current: Option<McpHeader> = None;
+    let mut headers: Vec<McpHeader> = Vec::new();
+    for (index, line) in text.lines().map(str::trim).enumerate() {
         if line.starts_with('[') {
-            // Only the table name, never an unclosed line: a `# ...` comment can hold private notes.
-            current = line
-                .starts_with("[mcp_servers.")
-                .then(|| table_header_end(line))
-                .flatten()
-                .map(|end| &line[..=end]);
-        } else if let Some(header) = current {
-            if MCP_MARKERS.iter().any(|marker| line.contains(marker))
-                && !headers.iter().any(|seen| seen == header)
-            {
-                headers.push(header.to_string());
+            // An unclosed header is reported by line number only: its `# ...` tail can hold private notes.
+            current = line.starts_with("[mcp_servers.").then(|| {
+                table_header_end(line).map_or(McpHeader::Malformed(index + 1), |end| {
+                    McpHeader::Named(line[..=end].to_string())
+                })
+            });
+        }
+        if MCP_MARKERS.iter().any(|marker| line.contains(marker)) {
+            if let Some(header) = current.take().filter(|header| !headers.contains(header)) {
+                headers.push(header);
             }
         }
     }
@@ -998,12 +1003,26 @@ fn mcp_servers(home: &Path, codex_home: &Path, cwd: &Path) -> Check {
     }
     let codex_config = codex_home.join("config.toml");
     for header in toml_mcp_headers(&read(&codex_config)) {
-        found.push(format!("{header} in {}", codex_config.display()));
-        fixes.push(format!(
-            "delete {} from {}",
-            sh(&header),
-            sh(codex_config.display())
-        ));
+        match header {
+            McpHeader::Named(header) => {
+                found.push(format!("{header} in {}", codex_config.display()));
+                fixes.push(format!(
+                    "delete {} from {}",
+                    sh(&header),
+                    sh(codex_config.display())
+                ));
+            }
+            McpHeader::Malformed(line) => {
+                found.push(format!(
+                    "a malformed MCP entry referencing the 1.x server at line {line} of {}",
+                    codex_config.display()
+                ));
+                fixes.push(format!(
+                    "open {} and remove the malformed MCP entry at line {line}",
+                    sh(codex_config.display())
+                ));
+            }
+        }
     }
     leftover("1x-mcp", found, fixes)
 }
@@ -1608,7 +1627,10 @@ mod tests {
     #[test]
     fn toml_header_comments_are_never_reported() {
         let text = "[mcp_servers.rn] # TOKEN=private-value\ncommand = \"cdp-supervisor\"\n";
-        assert_eq!(toml_mcp_headers(text), vec!["[mcp_servers.rn]".to_string()]);
+        assert_eq!(
+            toml_mcp_headers(text),
+            vec![McpHeader::Named("[mcp_servers.rn]".to_string())]
+        );
     }
 
     #[test]
@@ -1618,19 +1640,45 @@ mod tests {
             [mcp_servers.plain]\ncommand = \"cdp-supervisor\"\n";
         assert_eq!(
             toml_mcp_headers(text),
-            vec![
-                "[mcp_servers.\"rn]agent\"]".to_string(),
-                "[mcp_servers.'lit]x'.env]".to_string(),
-                "[mcp_servers.plain]".to_string(),
+            [
+                "[mcp_servers.\"rn]agent\"]",
+                "[mcp_servers.'lit]x'.env]",
+                "[mcp_servers.plain]"
             ]
+            .map(|header| McpHeader::Named(header.to_string()))
         );
     }
 
     #[test]
-    fn unclosed_toml_headers_are_skipped_not_echoed() {
-        let text = "[mcp_servers.\"rn] # TOKEN=private-value\ncommand = \"cdp-supervisor\"\n\
-            [mcp_servers.x # TOKEN=private-value\ncommand = \"cdp-supervisor\"\n";
-        assert!(toml_mcp_headers(text).is_empty());
+    fn unclosed_toml_headers_warn_by_line_without_echoing_them() {
+        let s = Scratch::new("unclosed-toml");
+        let config = s.file(
+            ".codex/config.toml",
+            "[mcp_servers.plain]\ncommand = \"cdp-supervisor\"\n\
+            [mcp_servers.\"rn] # TOKEN=private-value\ncommand = \"cdp-supervisor\"\n\
+            [mcp_servers.other\ncommand = \"other\"\n\
+            [mcp_servers.rn-dev-agent-core # TOKEN=private-value\n",
+        );
+        let mcp = mcp_servers(&s.0, &s.path(".codex"), &s.0);
+        assert_eq!(mcp.status, Status::Warn, "{mcp:?}");
+        let fix = mcp.fix.clone().unwrap();
+        let shown = format!("{} {fix}", mcp.detail);
+        assert!(
+            !shown.contains("TOKEN") && !shown.contains("\"rn"),
+            "{mcp:?}"
+        );
+        assert!(shown.contains("[mcp_servers.plain]"), "{mcp:?}");
+        for line in [3, 7] {
+            assert!(
+                mcp.detail.contains(&format!(
+                    "malformed MCP entry referencing the 1.x server at line {line} of {}",
+                    config.display()
+                )),
+                "{mcp:?}"
+            );
+            assert!(fix.contains(&format!("entry at line {line}")), "{mcp:?}");
+        }
+        assert!(!mcp.detail.contains("line 5"), "{mcp:?}");
     }
 
     #[test]
@@ -1653,7 +1701,10 @@ mod tests {
     #[test]
     fn mcp_reports_only_toml_section_headers() {
         let text = "[mcp_servers.rn]\ncommand = \"node\"\nargs = [\"/x/rn-dev-agent-core/dist/index.js\"]\nenv = { TOKEN = \"sk-fixture-secret\" }\n[mcp_servers.other]\ncommand = \"other\"\n";
-        assert_eq!(toml_mcp_headers(text), vec!["[mcp_servers.rn]".to_string()]);
+        assert_eq!(
+            toml_mcp_headers(text),
+            vec![McpHeader::Named("[mcp_servers.rn]".to_string())]
+        );
     }
 
     #[test]
