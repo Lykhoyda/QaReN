@@ -99,9 +99,11 @@ scenario is a strictly validated YAML file with `schema: qaren/1`.
 qaren prepare <scenario.yaml> [--json] [--dry-run]
 ```
 
-Validates the scenario and the checked-out candidate, allocates the device, builds and
-installs the app, starts Metro, and emits a `ready` receipt with the run's device and Metro
+Validates the scenario and the checked-out candidate, allocates the device, prepares the
+app and owned Metro, and emits a `ready` receipt with the run's device and Metro
 endpoint. `--dry-run` validates and prints the planned commands without allocating anything.
+See [CLI-owned iOS build routes](https://github.com/Lykhoyda/rn-dev-agent/blob/develop/packages/qaren-cli/README.md#cli-owned-ios-build-routes)
+for iOS startup ordering and failure cleanup.
 
 ### qaren prewarm
 

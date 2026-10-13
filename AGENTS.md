@@ -50,8 +50,9 @@ The package cut, literal `qaren check`, Jev seam, Phase 4 blocks, and PR run/pub
   `scripts/js-migration-baseline.txt`; do not grow that baseline casually.
 - In `packages/qaren-core` the names are final and have no alias: `QAREN_*`
   environment variables, `.qaren/` in the app repository (`.qaren/actions` is
-  the action corpus, a real directory; symlinked corpora and per-file symlinks
-  are refused by `src/domain/action-store.ts`), `~/.qaren/runtime` for the
+  the action corpus, a real directory or a Git-proven direct link to the same
+  app-relative corpus in this repository's main copy; other corpus symlinks and
+  per-file symlinks are refused by `src/domain/action-store.ts`), `~/.qaren/runtime` for the
   installed runtime, `~/.qaren/state` for per-user state, `__QAREN` for the
   injected global. Do not reintroduce an old name there or add a shim for one.
   Old names that remain on purpose: the plugin skill text (Phase 8), the GitHub slug
@@ -180,7 +181,7 @@ Jev unit tests are hermetic. `corepack yarn jev:evals` requires `TYPESAFE_API_KE
 
 For a shutdown iOS target, explicitly pass `check --boot-device --device <UUID>`; the existing lease and durable record precede strict admission, boot and exact-target readiness readback. Default selection remains booted-only, and cleanup keeps the borrowed simulator. The gate forwards this opt-in with `QAREN_BOOT_DEVICE=1` alongside `QAREN_DEVICE_UDID`.
 
-CLI-owned iOS builds require `devClientScheme`; use the default app-local Expo generic-build route or explicitly configure `ios.build` with an existing workspace and Xcode scheme for older Expo CLIs (see `packages/qaren-cli/README.md`, including native-dependency preparation limits). Both routes verify a finite simulator bundle before exact-device installation and separate managed Metro. Workspace builds bind route and selection into the native cache and retire run-local outputs only after verified publication and proven build-group shutdown; unknown cleanup retains the build lock and device lease for `qaren cleanup`.
+CLI-owned iOS builds require `devClientScheme`; use the default app-local Expo generic-build route or explicitly configure `ios.build` with an existing workspace and Xcode scheme for older Expo CLIs (see `packages/qaren-cli/README.md`, including native-dependency preparation limits). Both routes verify a finite simulator bundle before exact-device installation. Workspace builds bind route and selection into the native cache and retire run-local outputs only after verified publication and proven build-group shutdown; unknown cleanup retains the build lock and device lease for `qaren cleanup`.
 
 Every `cdp_run_action` RunRecord write goes through the proven-identity action
 write lock (`src/domain/atomic-writer.ts`); `qaren check` uses its own ledger instead. A

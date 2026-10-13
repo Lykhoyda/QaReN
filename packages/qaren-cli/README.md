@@ -929,11 +929,9 @@ booting that exact iOS simulator under the lease. `--fresh-install` opts into
 removing the selected app and its data, proving absence, then installing it
 under the same lease. Both opt-ins require strict admission before mutation.
 Cleanup leaves the borrowed simulator running and keeps the installed app.
-iOS preparation proves app-local Expo generic-build support, or uses an
-explicitly configured Xcode workspace (see
-[CLI-owned iOS build routes](#cli-owned-ios-build-routes)), builds a finite
-simulator bundle, and starts the app on the selected simulator with a separate
-Metro process group. If finite-build cleanup is unknown, the build lock and
+iOS preparation follows the
+[CLI-owned iOS build routes](#cli-owned-ios-build-routes) and their startup
+ordering. If finite-build cleanup is unknown, the build lock and
 device lease remain claimed for `qaren cleanup`. The developer
 [check gate](../../scripts/gate-qaren-check.sh) forwards the boot opt-in with
 `QAREN_BOOT_DEVICE=1` alongside `QAREN_DEVICE_UDID`.
@@ -1013,6 +1011,15 @@ the identity observer's argument limit. Budget exhaustion refuses
 instead of admitting a partial scan. The limits and classification rules are
 owned by the [strict scanner](../qaren-core/src/runners/external-runner-detect.ts)
 and [kernel observer](src/process_observation.rs).
+
+When the strict admission probe refuses with `FRESH_INSTALL_ADMISSION_UNKNOWN`
+or `DEVICE_BUSY`, it includes `probe_status`, `probe_evidence`, `exit_code` and `timed_out` in
+`failure.detail`, retained in the receipt and `run.json`. Valid probe evidence
+contains an allowlisted reason and, when available, a PID or candidate count;
+raw process arguments, paths and subprocess output are not included. Missing,
+invalid or mismatched evidence is reported as `unavailable`, `invalid_evidence`,
+`envelope_mismatch` or `invalid_response`. These diagnostics do not relax
+admission: resolve the refusal and start a new run.
 
 Runs and evidence live under `~/.qaren/runs/<run-id>/`; device leases use
 `QAREN_LOCK_ROOT` or `~/.qaren/locks`. Checks, including `qaren pr`, claim a
@@ -1135,10 +1142,25 @@ block preservation; replay identifiers also remain unchanged.
 `qaren actions list [--json]` and `qaren actions show <slug>` read the
 action corpus of the current directory. Both `.yaml` and `.yml` are supported;
 existing files retain their extension when patched. A slug with both extensions
-refuses inspection and is not overwritten by `check`. Symlinked corpora and
-action files are refused. Inspection header validity and defaults follow the
+refuses inspection and is not overwritten by `check`. These inspection commands
+refuse symlinked corpora and action files. Inspection header validity and defaults follow the
 [core header parser](../qaren-core/src/domain/reusable-action.ts); `list` skips
 invalid headers and `show` refuses them.
+
+The TypeScript action store used by saved-block reads, replay and writes normally
+uses a real `.qaren/actions` directory. A linked Git
+worktree may instead link that directory directly to an existing real
+`.qaren/actions` directory in this repository's main copy, at the same
+app-relative path. Git must prove that both copies share the same repository;
+another clone, another app path, a chained or dangling link, or an ancestor link
+that escapes the expected main-copy path is refused. A directory alias is accepted
+when its canonical target matches that path. `.qaren` itself and individual action files must not be
+symlinks. Reads, replay and writes use the accepted main-copy corpus, so saved
+blocks and patches are shared with the main copy. Main-copy link refusals identify
+a missing main-copy directory when verified; otherwise they report that the direct-link
+proof could not be verified. They recommend a real directory or the supported
+direct link. The [action store](../qaren-core/src/domain/action-store.ts)
+owns these checks and detects replacement of the link or corpus during an operation.
 
 PR runs copy saved blocks to the run's `blocks/` directory with their original
 extension and bytes. See [Test a pull request](#test-a-pull-request) for branch
@@ -1484,9 +1506,7 @@ prepare ──► validate (scenario schema, candidate git sha, lockfile sha256)
                       USB:  exclusive claim lock usb-<serial> (refuse if held)
                             run-scoped --one-device <serial> adb server on
                             adb_server_port; device must probe `device`
-        ──► build+launch   iOS: finite generic Expo or explicit Xcode workspace build
-                             → verify simulator bundle → install on owned UDID
-                             → separate owned Metro → launch verified bundle
+        ──► build+launch   iOS: CLI-owned iOS preparation (see build routes below)
                           Android: pnpm exec expo run:android --port <port>
                              (serial pinned via ANDROID_SERIAL + the
                              one-device server; CI=1)
@@ -1529,7 +1549,9 @@ ios:
 
 For `prepare`, the same pair belongs under `build.ios_workspace` in the scenario, alongside `build.owner: cli`. Workspace paths are relative to the app root, remain under `ios/`, and must resolve through plain directories to an existing `.xcworkspace` with a plain `contents.xcworkspacedata` file. No scheme discovery, Expo upgrade or automatic fallback after a failed build occurs. An iOS section in shared `check` config does not select this route for Android.
 
-This route runs `xcrun xcodebuild` in Debug against the generic iOS Simulator destination, with certificate-free ad-hoc simulator signing (`CODE_SIGN_IDENTITY=-`, no team or provisioning profile) so entitlements such as keychain access survive, and the React Native packager launch disabled. Products and DerivedData are isolated under the run directory. The existing finite-build process group and lock remain authoritative; only a clean exit with proven group shutdown can proceed to single-bundle verification, exact-device installation, separate Metro and launch. A missing or ambiguous app, wrong bundle/platform/scheme or unsupported dev-client launcher still fails before installation. Workspace and scheme selection, and the build-settings revision, participate in the native cache fingerprint, so an earlier unsigned workspace build is not reused; see [Native-fingerprint build selection](#native-fingerprint-build-selection) for the shared store and toolchain binding used by both routes.
+Both CLI-owned iOS routes start a separate owned Metro process group after native-directory preparation and before finite compilation, letting Metro start while the build runs. Verified cached-app reuse starts Metro before installation instead, without spawning it again. Installation still requires a verified simulator bundle; launch waits for proven Metro ownership, `/status` readiness and dev-client manifest warmup. Dry-run command lists reflect this ordering. Failed iOS `prepare` attempts clean up early Metro and report the outcome in `cleanup.metro`; unresolved ownership remains recorded for [cleanup](#ios-admission-and-cleanup).
+
+The workspace route runs `xcrun xcodebuild` in Debug against the generic iOS Simulator destination, with certificate-free ad-hoc simulator signing (`CODE_SIGN_IDENTITY=-`, no team or provisioning profile) so entitlements such as keychain access survive, and the React Native packager launch disabled. Products and DerivedData are isolated under the run directory. The existing finite-build process group and lock remain authoritative; only a clean exit with proven group shutdown can proceed to single-bundle verification, exact-device installation and launch. A missing or ambiguous app, wrong bundle/platform/scheme or unsupported dev-client launcher still fails before installation. Workspace and scheme selection, and the build-settings revision, participate in the native cache fingerprint, so an earlier unsigned workspace build is not reused; see [Native-fingerprint build selection](#native-fingerprint-build-selection) for the shared store and toolchain binding used by both routes.
 
 **Native preparation remains explicit.** Supply a workspace whose native dependencies and generated inputs are ready for Xcode. QaReN retains its existing clean/incremental policy: an unproven generated native directory is regenerated through owned `expo prebuild --clean`, then the workspace is revalidated before compilation; a git-visible native tree is not regenerated. The workspace route adds no CocoaPods synchronization or codegen command of its own, and workspace existence is not proof that those inputs are current after a dependency update. A build failure is reported, not retried through another backend.
 
@@ -1651,23 +1673,33 @@ On iOS the value also binds the selected Xcode (`xcodebuild -version`), so a
 build is never reused across Xcode versions, and an unavailable Xcode makes the
 fingerprint incomplete. Android binds the manifest hash alone.
 
-**Dynamic `app.config.*` (iOS).** qaren cannot trace a dynamic config itself,
-so it runs the app's own `@expo/fingerprint` (resolved through the app's `expo`
+**Expo native identity (iOS).** When the app's `package.json` declares `expo` in
+`dependencies`, `devDependencies`, `optionalDependencies` or `peerDependencies`,
+qaren runs the app's own `@expo/fingerprint` (resolved through the app's `expo`
 install, never downloaded) as `pnpm exec node <cli> fingerprint:generate
 --platform ios` from the project root, with the iOS build's environment
 transforms (`CI` removed, `EXPO_NO_TELEMETRY=1`). Expo evaluates the config,
 loads `.env` files, and hashes the evaluated config, the modules it loaded,
-autolinked native modules and config-plugin inputs. The fingerprint value then
-also binds that hash, and the receipt notes record `fingerprint_parts` (hashes only), `fingerprint_complete`
-and `expo_fingerprint_ms`.
+autolinked native modules and config-plugin inputs. QaReN accepts the output only
+when it contains a nonempty hexadecimal `hash` and a `sources` entry with
+`type: contents`, `id: expoConfig` and string `contents`. Resolution failure,
+a failed command, a 120 s command timeout or missing required output makes the
+evaluation unavailable, even if Expo exits successfully with a hash. The command
+output can contain evaluated config values and is never logged or stored.
+A successful evaluation binds the native-input manifest hash, Expo hash and Xcode identity in the
+`qaren-expo-native/2` composite. Receipt notes record `fingerprint_parts` (hashes
+only), `fingerprint_complete` and `expo_fingerprint_ms`. An unavailable evaluation
+records `expo_fingerprint_unavailable`; on a static config it falls back to the
+native-input manifest plus Xcode identity without adding incompleteness.
+
+**Dynamic `app.config.*` (iOS).** qaren cannot trace a dynamic config itself,
+so it still attempts Expo evaluation even without a declared `expo` dependency.
 A successful evaluation clears only the dynamic-config incompleteness; every
-other reason still forbids reuse. If evaluation is unavailable (the package does
-not resolve, the command fails or times out after 120 s, or its output has no
-hash) the dynamic config stays incomplete and the decision is a rebuild as
-before, with the unavailability named in the evidence. Only the `hash` field is
-read: the command output, which can contain evaluated config values, is never
-logged or stored. A config whose evaluated value changes between runs (an
-environment read, a time or random value) changes the hash and rebuilds.
+other reason still forbids reuse. If evaluation is unavailable under the rules
+above, the dynamic config stays incomplete and the decision is a rebuild as
+before, with the unavailability named in the evidence. A config whose evaluated
+value changes between runs (an environment read, a time or random value) changes
+the hash and rebuilds.
 Limits: environment read only by native build scripts (a Podfile reading `ENV`,
 for example) and the CocoaPods version are not bound; Android keeps a dynamic
 config incomplete.
@@ -1701,11 +1733,12 @@ holds the cached APK, kept under this worktree's `.qaren/native-cache/artifacts/
    does `artifact from machine store <path>`. On Android, the state matches this
    worktree/platform/app, fingerprints are equal and complete, and the state's
    APK verifies, with `dev_client_scheme` configured. The
-   verified dev client is installed (`simctl install` / `adb install -r
-   -d`), Metro is spawned candidate-bound (`expo start --port`), and the
-   dev client is deep-linked onto it (package-constrained `am start` on
-   Android, with Expo's `EXDevMenuDisableAutoLaunch` extra so the dev menu
-   does not open at launch). Fresh candidate JS always comes from Metro; the evidence
+   verified dev client is installed and deep-linked onto candidate-bound Metro;
+   iOS startup ordering follows [CLI-owned iOS build routes](#cli-owned-ios-build-routes).
+   Android installs with `adb install -r -d`, then starts Metro with
+   `expo start --port` and launches with package-constrained `am start`,
+   with Expo's `EXDevMenuDisableAutoLaunch` extra so the dev menu
+   does not open at launch. Fresh candidate JS always comes from Metro; the evidence
    records which candidate built the binary and which serves JS — native
    compatibility is proven by the fingerprint, never inferred from the sha.
 2. **Incremental** — reuse is invalid (committed native inputs changed, stored

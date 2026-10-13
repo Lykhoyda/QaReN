@@ -63,8 +63,10 @@ qaren actions show <slug>
 ```
 
 Both read the `.qaren/actions/` directory of the current directory. `.yaml` and `.yml` files
-are both read; a slug with both extensions is refused. Symlinked action directories and files
-are refused.
+are both read; a slug with both extensions is refused. These inspection commands refuse
+symlinked corpora and action files. For the TypeScript action store's supported main-copy
+link for Git worktrees, see the authoritative
+[action corpus contract](https://github.com/Lykhoyda/rn-dev-agent/blob/develop/packages/qaren-cli/README.md#saved-blocks).
 
 ## Login recovery
 

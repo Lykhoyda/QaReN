@@ -564,7 +564,6 @@ fn assert_ios_prepare_reuses_cached_client(workspace: bool) {
         CmdOutput::success("Boot status: finished\n"),
     );
     common::script_ios_app_verification(&mut mock);
-    mock.expect_run("simctl install", CmdOutput::success(""));
     mock.expect_spawn(
         "expo start",
         Spawned {
@@ -574,6 +573,7 @@ fn assert_ios_prepare_reuses_cached_client(workspace: bool) {
     );
     mock.expect_run("ps", CmdOutput::success(&format!("{LSTART}\n")));
     mock.expect_run("ps", CmdOutput::success("node expo start\n"));
+    mock.expect_run("simctl install", CmdOutput::success(""));
     // wait_metro_responding
     mock.expect_run("ps", CmdOutput::success(&format!("{LSTART}\n")));
     mock.expect_run("ps", CmdOutput::success("S\n"));
