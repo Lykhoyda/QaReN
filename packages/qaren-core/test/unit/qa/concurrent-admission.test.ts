@@ -423,11 +423,11 @@ for (const phase of ['first probe', 'origin proof']) {
     });
     const emit = WebSocket.prototype.emit;
     let sockets = 0;
-    let firstSocket: WebSocket;
+    let closeFirstSocket: () => void;
     t.mock.method(WebSocket.prototype, 'emit', function (event, ...args) {
       const emitted = emit.call(this, event, ...args);
       if (event === 'open' && ++sockets === 1) {
-        firstSocket = this;
+        closeFirstSocket = () => this.close();
         if (phase === 'first probe') {
           target.id = 'ready-page';
           this.close();
@@ -470,7 +470,7 @@ for (const phase of ['first probe', 'origin proof']) {
           open: async () => {
             if (phase === 'origin proof') {
               target.id = 'ready-page';
-              firstSocket.close();
+              closeFirstSocket();
             }
           },
           prove: () =>
