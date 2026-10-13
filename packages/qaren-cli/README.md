@@ -14,6 +14,52 @@ Start with [Set up QaReN](../../README.md#set-up-qaren) for installation and
 Claude Code plugin loading. The [`setup` skill](../qaren-plugin/skills/setup/SKILL.md)
 owns the guided onboarding procedure; [Check a plan](#check-a-plan) covers manual runs.
 
+## Doctor
+
+```sh
+qaren doctor [--json] [--config .qaren/config.yaml]
+```
+
+Doctor prints the running binary's version, path, build and runtime, then one
+`PASS`, `WARN`, `FAIL` or `SKIP` row per check, each problem with its manual fix.
+It only reads files and runs version and list commands: it never writes, deletes,
+spawns a session or uses the network. In text and JSON output, Doctor never prints
+file contents, environment variable values, credentials or any other config value;
+it may name the configured iOS runtime and Android AVD. It also prints diagnostic
+paths, key names and environment variable names. It exits 1 when any row fails,
+0 otherwise, and 2 on a usage error. `--json` prints
+`{identity, checks: [{id, status, detail, fix?}], verdict}` and nothing else.
+
+`FAIL` means `qaren check` cannot run correctly on this host; `WARN` is anything
+that can conflict with a session or is hygiene; `SKIP` is not applicable.
+
+| Row | Checks |
+|---|---|
+| `xcode`, `ios-runtime` | `xcodebuild -version`; an available iOS simulator runtime, and the configured `ios.runtime` by name or identifier |
+| `node`, `pnpm` | `QAREN_NODE` or `node` on `PATH` is 24 or newer; a configured `nodePath` is only checked to be an executable file, never run; `pnpm` runs |
+| `corepack`, `cocoapods` | `corepack` and `pod` run (warnings) |
+| `android-sdk`, `android-avd` | When `android` is configured: `ANDROID_HOME`, an executable `adb` file (never run; its version is not checked), the emulator binary and the configured AVD via `emulator -list-avds` |
+| `qaren-path` | The first `qaren` on `PATH` is this binary and the installed build; later copies warn |
+| `installed-build` | The runtime under `~/.qaren/runtime/<version>/` and the runtime `check` would use (`QAREN_RUNTIME` when set) are complete; a binary outside it that `PATH` runs instead of an install fails |
+| `runtime-dirs` | Interrupted installs and other versions under `~/.qaren/runtime/` |
+| `source-checkout` | From an rn-dev-agent checkout: its version matches this binary |
+| `config` | `.qaren/config.yaml` (or `--config`) loads and validates |
+| `1x-claude-plugin`, `1x-codex-plugin` | The rn-dev-agent 1.x plugin, marketplace and caches in Claude Code, Codex and Cursor |
+| `1x-mcp` | A hand-registered 1.x MCP server in `~/.claude.json`, `.mcp.json`, `~/.cursor/mcp.json` or `$CODEX_HOME/config.toml` |
+| `1x-binaries`, `1x-home-dirs` | The 1.x npm bins on `PATH`; `~/.rn-dev-agent/`, `~/.cache/rn-dev-agent/`, `~/Library/Caches/rn-dev-agent/`, `~/Library/Application Support/rn-dev-agent/` (or `$XDG_STATE_HOME/rn-dev-agent/`) and `~/.claude/rn-agent/` |
+| `1x-project`, `1x-env` | The app's `.rn-agent/`, rn-dev-agent template blocks in `CLAUDE.md`/`AGENTS.md`, `.rn-agent/dev-bridge.ts` in `tsconfig.json`; `RN_DEV_AGENT_*`, `RN_AGENT_*` and the other 1.x environment variables |
+
+Config failures report the file path and failure category; inspect the file locally
+against the [configuration schema](src/config.rs). A `VERSION` mismatch reports
+the binary's expected version without echoing the file's contents.
+
+Detected 1.x leftovers produce warnings with manual fixes. Follow the
+[upgrade guide](#upgrading-from-rn-dev-agent-1x-1014-to-20) before retiring state
+that may contain your only copy of learned actions.
+Doctor has no `--fix`: each removal deletes user data or edits host
+configuration, so it stays manual.
+Fix commands containing control characters use ANSI-C quoting; paste them into Bash or zsh.
+
 ## Watch a run
 
 ```sh
@@ -156,8 +202,9 @@ while that asset is unavailable.
 ## Upgrading from rn-dev-agent 1.x (1.0.14) to 2.0
 
 QaReN 2.0 replaces the rn-dev-agent 1.x plugin. It has no compatibility layer:
-2.0 never reads, converts or reuses 1.x plugins, configuration, caches or learned
-actions, so remove 1.x first and install 2.0 as a new product.
+2.0 never converts or reuses 1.x plugins, configuration, caches or learned
+actions; [Doctor](#doctor) only inspects them for leftovers. Remove 1.x first
+and install 2.0 as a new product.
 
 | 1.x (rn-dev-agent 1.0.14) | 2.0 (QaReN) |
 |---|---|
@@ -193,7 +240,7 @@ actions, so remove 1.x first and install 2.0 as a new product.
    If `rmdir` reports the folder is not empty, stop and inspect it rather than
    deleting it. If you registered the 1.x MCP server by hand, delete that entry
    from the host's MCP configuration as well.
-2. **Archive, then retire the 1.x state.** Nothing in 2.0 reads
+2. **Archive, then retire the 1.x state.** No 2.0 QA run uses
    `~/.cache/rn-dev-agent/`, `~/.rn-dev-agent/`, `~/.claude/rn-agent/` or an
    app's `.rn-agent/` directory, and learned actions are not converted: QaReN
    saves its own blocks as plans pass. Archive each app's `.rn-agent/actions/`
@@ -230,6 +277,7 @@ actions, so remove 1.x first and install 2.0 as a new product.
      when the release is cut, so a `develop` build still shows the pre-release
      version (for example `qaren 1.0.13`). The installed runtime needs no
      `QAREN_RUNTIME` override; see [Build](#build) for development binaries.
+   - Run [Doctor](#doctor) to check the known 1.x leftover locations.
    - In the app, follow [Set up an app](#set-up-an-app), or write configuration
      and run a plan manually as in [Check a plan](#check-a-plan); a PASS receipt with a run under
      `~/.qaren/runs/` completes the upgrade.

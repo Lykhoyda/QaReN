@@ -1064,12 +1064,7 @@ fn outcome(output: &crate::exec::PrivateOutput) -> String {
 
 // The installed simulator SDK ships inside Xcode, so the selected Xcode's build version identifies both.
 fn toolchain_digest(runner: &mut dyn Runner) -> Result<String, String> {
-    let version = runner.run(&CmdSpec::new(
-        "xcode-version",
-        "xcodebuild",
-        &["-version"],
-        30,
-    ));
+    let version = runner.run(&crate::adapters::ios::xcode_version_spec());
     if !version.ok() || version.stdout.trim().is_empty() {
         return Err("xcodebuild -version failed".to_string());
     }
