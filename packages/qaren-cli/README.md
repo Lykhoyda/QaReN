@@ -1650,23 +1650,33 @@ On iOS the value also binds the selected Xcode (`xcodebuild -version`), so a
 build is never reused across Xcode versions, and an unavailable Xcode makes the
 fingerprint incomplete. Android binds the manifest hash alone.
 
-**Dynamic `app.config.*` (iOS).** qaren cannot trace a dynamic config itself,
-so it runs the app's own `@expo/fingerprint` (resolved through the app's `expo`
+**Expo native identity (iOS).** When the app's `package.json` declares `expo` in
+`dependencies`, `devDependencies`, `optionalDependencies` or `peerDependencies`,
+qaren runs the app's own `@expo/fingerprint` (resolved through the app's `expo`
 install, never downloaded) as `pnpm exec node <cli> fingerprint:generate
 --platform ios` from the project root, with the iOS build's environment
 transforms (`CI` removed, `EXPO_NO_TELEMETRY=1`). Expo evaluates the config,
 loads `.env` files, and hashes the evaluated config, the modules it loaded,
-autolinked native modules and config-plugin inputs. The fingerprint value then
-also binds that hash, and the receipt notes record `fingerprint_parts` (hashes only), `fingerprint_complete`
-and `expo_fingerprint_ms`.
+autolinked native modules and config-plugin inputs. QaReN accepts the output only
+when it contains a nonempty hexadecimal `hash` and a `sources` entry with
+`type: contents`, `id: expoConfig` and string `contents`. Resolution failure,
+a failed command, a 120 s command timeout or missing required output makes the
+evaluation unavailable, even if Expo exits successfully with a hash. The command
+output can contain evaluated config values and is never logged or stored.
+A successful evaluation binds the native-input manifest hash, Expo hash and Xcode identity in the
+`qaren-expo-native/2` composite. Receipt notes record `fingerprint_parts` (hashes
+only), `fingerprint_complete` and `expo_fingerprint_ms`. An unavailable evaluation
+records `expo_fingerprint_unavailable`; on a static config it falls back to the
+native-input manifest plus Xcode identity without adding incompleteness.
+
+**Dynamic `app.config.*` (iOS).** qaren cannot trace a dynamic config itself,
+so it still attempts Expo evaluation even without a declared `expo` dependency.
 A successful evaluation clears only the dynamic-config incompleteness; every
-other reason still forbids reuse. If evaluation is unavailable (the package does
-not resolve, the command fails or times out after 120 s, or its output has no
-hash) the dynamic config stays incomplete and the decision is a rebuild as
-before, with the unavailability named in the evidence. Only the `hash` field is
-read: the command output, which can contain evaluated config values, is never
-logged or stored. A config whose evaluated value changes between runs (an
-environment read, a time or random value) changes the hash and rebuilds.
+other reason still forbids reuse. If evaluation is unavailable under the rules
+above, the dynamic config stays incomplete and the decision is a rebuild as
+before, with the unavailability named in the evidence. A config whose evaluated
+value changes between runs (an environment read, a time or random value) changes
+the hash and rebuilds.
 Limits: environment read only by native build scripts (a Podfile reading `ENV`,
 for example) and the CocoaPods version are not bound; Android keeps a dynamic
 config incomplete.

@@ -2786,6 +2786,54 @@ fn dry_run_reports_hash_only_parts_and_the_completeness_gate_without_its_reasons
 }
 
 #[test]
+fn dry_run_records_static_expo_fallback_without_forbidding_reuse() {
+    const CANARY: &str = "qaren-private-expo-failure-7f28";
+    let repo = common::temp_repo();
+    std::fs::write(
+        repo.join("test-app/package.json"),
+        r#"{"dependencies":{"expo":"56.0.23"}}"#,
+    )
+    .unwrap();
+    let scenario = write_scenario(&repo, &ios_scenario_yaml(8791));
+    let mut mock = MockRunner::new();
+    script_validation(&mut mock, &repo, IOS_TOOLS);
+    mock.expect_run(
+        "expo run:ios --help",
+        CmdOutput::success(common::IOS_BUILD_HELP),
+    );
+    mock.expect_run("lsof", free_port());
+    mock.expect_run("ls-files", CmdOutput::success("test-app/package.json\0"));
+    mock.advance_on = Some(("require.resolve".to_string(), 243));
+    mock.expect_run("require.resolve", CmdOutput::failed(1, CANARY));
+    common::script_xcode(&mut mock);
+    let receipt = prepare(&mut mock, &prepare_args(&scenario, true, None));
+    assert_eq!(receipt.result, ReceiptResult::Planned);
+    assert_eq!(mock.remaining(), 0);
+    assert_eq!(
+        receipt
+            .outcomes
+            .get("fingerprint_complete")
+            .map(String::as_str),
+        Some("true")
+    );
+    assert_eq!(
+        receipt
+            .outcomes
+            .get("expo_fingerprint_ms")
+            .map(String::as_str),
+        Some("243")
+    );
+    assert_eq!(
+        receipt
+            .outcomes
+            .get("expo_fingerprint_unavailable")
+            .map(String::as_str),
+        Some("@expo/fingerprint does not resolve through the app's expo install (exit 1)")
+    );
+    assert!(!serde_json::to_string(&receipt).unwrap().contains(CANARY));
+}
+
+#[test]
 fn dry_run_total_timing_includes_the_fingerprint_computation() {
     let repo = common::temp_repo();
     let scenario_path = write_scenario(&repo, &ios_scenario_yaml(8791));
