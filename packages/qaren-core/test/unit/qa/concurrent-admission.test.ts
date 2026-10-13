@@ -10,6 +10,63 @@ import { prove, SCRIPT_URL_EXPRESSION, MODULE_NAMES_EXPRESSION } from '../../../
 
 const worktree = fileURLToPath(new URL('../../../', import.meta.url));
 
+for (const method of ['Network.enable', 'Log.enable', 'Profiler.enable', 'HeapProfiler.enable']) {
+  test(`a page closing during ${method} returns to admission for exact-port rediscovery`, async (t) => {
+    const target = {
+      id: 'old',
+      title: 'com.example.app (iPhone)',
+      appId: 'com.example.app',
+      type: 'node',
+      deviceName: 'iPhone',
+      description: 'React Native Bridgeless [C++ connection]',
+    };
+    const fake = await startFakeCDP(0, { targets: [target] });
+    const client = new CDPClient(fake.port);
+    t.after(async () => {
+      await client.disconnect();
+      await fake.close();
+    });
+    let closes = 0;
+    fake.setResponse(method, () => {
+      if (++closes === 1) {
+        target.id = 'replacement';
+        fake.disconnectAll();
+      }
+      return {};
+    });
+    const deadline = performance.now() + 30_000;
+    await admit(
+      {
+        metroPort: fake.port,
+        readinessMs: 30_000,
+        remainingMs: () => deadline - performance.now(),
+        attach: async (attachDeadline) => {
+          await client.connectExact(
+            fake.port,
+            { platform: 'ios', bundleId: 'com.example.app', deviceName: 'iPhone' },
+            'default',
+            1,
+            undefined,
+            attachDeadline,
+          );
+        },
+        foreignDriver: async () => undefined,
+        open: async () => {},
+        prove: async () => ({
+          ok: true,
+          scriptURL: `http://127.0.0.1:${fake.port}/index.bundle`,
+          appModules: 3,
+        }),
+        close: () => client.disconnect(),
+        load: () => 3,
+      },
+      createStop(),
+    );
+    assert.equal(client.connectedTarget?.id, 'replacement');
+    assert.ok(closes >= 2, 'the replacement page must complete setup');
+  });
+}
+
 test('concurrent exact-port admission survives a slow target-list attempt at low load', async (t) => {
   const ports = [8791, 8792];
   const reads = new Map<number, number>();

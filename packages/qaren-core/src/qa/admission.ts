@@ -25,7 +25,7 @@ export interface AdmissionSteps {
   attach(deadline: number): Promise<void>;
   // Inside the attach deadline: the attached client must have run its bundle before anything reads it.
   bundleReady?(deadline: number): Promise<void>;
-  // A launch stuck on the dev-launcher gets one relaunch after its readiness wait.
+  // A stalled launch gets one relaunch after its readiness wait.
   relaunch?(): Promise<void>;
   foreignDriver(): Promise<string | undefined>;
   open(): Promise<void>;
@@ -171,7 +171,9 @@ async function refuseForeignDriver(steps: AdmissionSteps): Promise<void> {
 }
 
 async function attach(steps: AdmissionSteps): Promise<void> {
-  const deadline = performance.now() + steps.remainingMs();
+  const started = performance.now();
+  const deadline = started + steps.remainingMs();
+  const relaunchAt = started + steps.readinessMs;
   let relaunched = false;
   let relaunchFailure: string | undefined;
   try {
@@ -192,12 +194,17 @@ async function attach(steps: AdmissionSteps): Promise<void> {
               error instanceof CDPTargetClosedError;
             const remaining = Math.min(deadline - performance.now(), steps.remainingMs());
             if (!transient || remaining <= 0) throw error;
+            const recoveryWaitExpired =
+              (error instanceof TargetReadinessTimeoutError &&
+                !(error instanceof TargetListAttemptTimeoutError)) ||
+              (performance.now() >= relaunchAt &&
+                (error instanceof CDPProbeTimeoutError ||
+                  error instanceof CDPHandshakeTimeoutError));
             if (
               !relaunched &&
               steps.relaunch &&
               remaining >= steps.readinessMs &&
-              error instanceof TargetReadinessTimeoutError &&
-              !(error instanceof TargetListAttemptTimeoutError)
+              recoveryWaitExpired
             ) {
               await refuseForeignDriver(steps);
               relaunched = true;

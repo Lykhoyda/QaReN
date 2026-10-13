@@ -12,6 +12,9 @@ import {
 } from '../../../dist/qa/admission.js';
 import { REACT_READY_PROBE_JS } from '../../../dist/injected-helpers.js';
 import { runInNewContext } from 'node:vm';
+import { setImmediate as nextTurn } from 'node:timers/promises';
+import { syncBuiltinESMExports } from 'node:module';
+import { CDPProbeTimeoutError, CDPHandshakeTimeoutError } from '../../../dist/cdp/connect.js';
 
 const PROVEN = {
   ok: true,
@@ -257,6 +260,48 @@ test('handshake attempts share one deadline at low load', async () => {
   assert.equal(new Set(deadlines).size, 1, 'retry must not extend the deadline');
   assert.deepEqual(calls, ['close']);
 });
+
+for (const Timeout of [CDPProbeTimeoutError, CDPHandshakeTimeoutError]) {
+  test(`persistent ${Timeout.name} gets one iOS relaunch after its readiness window`, async (t) => {
+    let now = 10_000;
+    t.mock.timers.enable({ apis: ['setTimeout'] });
+    syncBuiltinESMExports();
+    t.mock.method(performance, 'now', () => now);
+    let relaunched = 0;
+    const deadlines: number[] = [];
+    const { stop, steps } = harness({
+      readinessMs: 1000,
+      remainingMs: () => 13_000 - now,
+      attach: async (deadline) => {
+        deadlines.push(deadline);
+        if (!relaunched) throw new Timeout('runtime remains paused');
+      },
+      relaunch: async () => {
+        relaunched++;
+      },
+    });
+    const admitted = admit(steps, stop).catch((error) => error);
+    t.after(async () => {
+      stop.begin();
+      await admitted;
+      t.mock.timers.reset();
+      syncBuiltinESMExports();
+    });
+    const advance = async (ms: number) => {
+      now += ms;
+      t.mock.timers.tick(ms);
+      await nextTurn();
+    };
+    await nextTurn();
+    await advance(500);
+    assert.equal(relaunched, 0, 'transient attempt timeouts do not relaunch immediately');
+    await advance(500);
+    assert.equal(relaunched, 1, 'exhausted readiness retains the existing relaunch recovery');
+    await advance(500);
+    assert.deepEqual(await admitted, PROVEN);
+    assert.equal(new Set(deadlines).size, 1, 'relaunch must not renew the admission deadline');
+  });
+}
 
 test('the single retry relaunches the app before waiting again', async () => {
   const order: string[] = [];

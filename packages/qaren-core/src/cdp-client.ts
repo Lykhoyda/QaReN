@@ -38,6 +38,7 @@ import {
   autoConnect as autoConnectFn,
   ConnectionSetupSupersededError,
   CDPProbeTimeoutError,
+  CDPTargetClosedError,
   discoverAndConnect as discoverAndConnectFn,
 } from './cdp/connect.js';
 import type { ConnectContext, ConnectFilters, ConnectIntent } from './cdp/connect.js';
@@ -1250,6 +1251,14 @@ export class CDPClient {
     const setupTargetId = this._connectedTarget?.id ?? null;
     let setupHelperToken: CDPClient['_helperToken'] | null = null;
     const assertSetupCurrent = (): void => {
+      if (
+        this._attachDeadline !== undefined &&
+        setupWs !== null &&
+        this.ws === setupWs &&
+        setupWs.readyState === WebSocket.CLOSED
+      ) {
+        throw new CDPTargetClosedError('CDP target closed during setup');
+      }
       const connectionIsCurrent =
         this.ws === setupWs && (this._connectedTarget?.id ?? null) === setupTargetId;
       const helpersAreCurrent =
