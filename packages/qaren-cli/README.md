@@ -1044,6 +1044,8 @@ the walk with `DEV_MENU_HIDE_UNVERIFIED` before the first step.
 ### iOS admission and cleanup
 
 Strict admission observes known automation patterns for the selected simulator.
+The host process table is streamed without a total-output byte cap, so its size
+alone does not refuse admission.
 A driver targeting it is busy; a driver can coexist only when kernel executable
 identity and exact arguments prove that it targets other simulators exclusively.
 An unscoped Maestro MCP controller can coexist when its Java executable and

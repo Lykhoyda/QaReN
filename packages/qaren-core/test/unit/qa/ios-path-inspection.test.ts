@@ -18,7 +18,7 @@ const identity = {
 };
 const ps = (command: string) =>
   (async (_bin: string, _args: string[], options: object) => {
-    assert.deepEqual(options, { timeout: 2_000, maxBuffer: 1024 * 1024, encoding: 'utf8' });
+    assert.deepEqual(options, { timeout: 2_000, encoding: 'utf8' });
     return { stdout: `20 ${command}\n`, stderr: '' };
   }) as unknown as typeof execFile;
 const program = `privacy-canary-${'x'.repeat(35_000)}`;

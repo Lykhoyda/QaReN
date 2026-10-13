@@ -23,7 +23,7 @@ function scan(kinds: Kind[], targetDriver = false): typeof execFile {
     .join('');
   assert.ok(Buffer.byteLength(stdout) < 1024 * 1024);
   return (async (_bin: string, _args: string[], options: object) => {
-    assert.deepEqual(options, { timeout: 2_000, maxBuffer: 1024 * 1024, encoding: 'utf8' });
+    assert.deepEqual(options, { timeout: 2_000, encoding: 'utf8' });
     return { stdout, stderr: '' };
   }) as unknown as typeof execFile;
 }
