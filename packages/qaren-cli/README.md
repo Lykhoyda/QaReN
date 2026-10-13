@@ -1232,9 +1232,10 @@ run's simulator name, so another booted simulator running the same app on the
 same port is not attached. Metro identifies a simulator only by name: give each
 booted simulator a distinct name, because a same-named one is refused as
 ambiguous only once both have registered.
-Transient target-list and runtime-probe timeouts retry within that same deadline,
-regardless of host load, with bounded polling and exact-port rediscovery between
-attachment attempts. Exhausted readiness refuses `CDP_NOT_CONNECTED`; invalid
+Transient target-list, WebSocket-handshake and runtime-probe timeouts, along with
+inspector page closure or replacement, retry within that same deadline regardless
+of host load, with bounded polling and exact-port rediscovery between attachment
+attempts. Exhausted readiness refuses `CDP_NOT_CONNECTED`; invalid
 metadata and deterministic attachment rejections refuse immediately. Host load
 is diagnostic and does not decide whether the app is ready.
 After an exhausted readiness wait, an iOS dev client can be relaunched once if

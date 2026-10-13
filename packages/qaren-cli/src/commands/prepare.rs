@@ -2939,7 +2939,7 @@ fn dry_run_receipt(
     receipt
 }
 
-// Mirrors the CDP leg's admission envelope (qaren-core qa/admission.ts LOAD_ENVELOPE).
+// Preparation launch retries have their own host-load envelope.
 const LOAD_ENVELOPE: f64 = 10.0;
 
 // Only a launch that timed out under host load is retried, once.
