@@ -69,6 +69,7 @@ if (!process.env.QAREN_APK_LOCK_TEST_CHILD) {
       let builds = 0;
       let failBuild = false;
       let failInstall = false;
+      let forceBuildStop = false;
       const original = childProcess.execFile;
       const execute = (() => {
         throw new Error('unexpected callback subprocess');
@@ -76,6 +77,12 @@ if (!process.env.QAREN_APK_LOCK_TEST_CHILD) {
       Object.defineProperty(execute, promisify.custom, {
         value: async (file: string, args: string[]) => {
           if (file === join(runner, 'gradlew')) {
+            if (forceBuildStop) {
+              await promisify(original)(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], {
+                timeout: 30,
+              });
+              assert.fail('fixture child did not stop');
+            }
             if (failBuild) throw new Error('fixture build failure');
             builds++;
             writeFileSync(app, bytes);
@@ -183,6 +190,26 @@ if (!process.env.QAREN_APK_LOCK_TEST_CHILD) {
         (err) => err === provisioned,
       );
       assert.deepEqual(installed.get('after-failure'), [bytes, bytes]);
+      forceBuildStop = true;
+      await assert.rejects(
+        client.startAndroidRunner('forced-build-stop', 'com.example', 0),
+        /source build failed/,
+      );
+      const { withAndroidRunnerApkLock, AndroidRunnerApkLockTimeoutError } =
+        await import('../../dist/runners/android-runner-apk-lock.js');
+      const lock = join(runner, 'app/build/.qaren-apk-lock');
+      try {
+        await assert.rejects(
+          withAndroidRunnerApkLock(lock, async () => assert.fail('forced build lost its fence'), {
+            timeoutMs: 20,
+          }),
+          AndroidRunnerApkLockTimeoutError,
+        );
+      } finally {
+        // The bounded fixture Node child has exited and has no descendants.
+        // Retire only its fence so remaining scenarios can use the runner paths.
+        rmSync(lock, { recursive: true, force: true });
+      }
     },
   );
 
@@ -301,4 +328,42 @@ if (!process.env.QAREN_APK_LOCK_TEST_CHILD) {
       );
     },
   );
+
+  const { withCancellation, RunCancelledError } = await import('../../dist/domain/cancellation.js');
+  for (const cancelledBy of ['caller', 'rebuild'] as const) {
+    test(
+      `ANT-597: ${cancelledBy} cancellation stops a waiting invalidation without deleting APKs`,
+      { timeout: 2_000 },
+      async () => {
+        const removed: string[] = [];
+        await withAndroidRunnerApkLock(join(runner, 'app/build/.qaren-apk-lock'), async () => {
+          const caller = new AbortController();
+          const rebuild = new AbortController();
+          const reason = new RunCancelledError();
+          const waiting = withCancellation(caller.signal, () =>
+            client.invalidateAndroidRunnerApks((path) => removed.push(path), rebuild.signal),
+          );
+          const rejected = assert.rejects(waiting, (err) => err === reason);
+          (cancelledBy === 'caller' ? caller : rebuild).abort(reason);
+          let timer: ReturnType<typeof setTimeout> | undefined;
+          try {
+            await Promise.race([
+              rejected,
+              new Promise<void>((_, reject) => {
+                timer = setTimeout(
+                  () => reject(new Error('invalidation ignored cancellation')),
+                  100,
+                );
+              }),
+            ]);
+          } finally {
+            clearTimeout(timer);
+            caller.abort(reason);
+            await rejected;
+          }
+          assert.deepEqual(removed, []);
+        });
+      },
+    );
+  }
 }

@@ -561,6 +561,7 @@ async function ensureAndroidRunnerInstalled(
           throw new Error(
             `rn-android-runner source build failed (gradlew assembleDebug assembleDebugAndroidTest in ${RN_ANDROID_RUNNER_DIR}). ` +
               `Ensure the Android SDK + a JDK are installed and on PATH. ${err instanceof Error ? err.message : String(err)}`,
+            { cause: err },
           );
         }
       }
@@ -608,6 +609,7 @@ async function ensureAndroidRunnerInstalled(
         throw new Error(
           `rn-android-runner APK install failed (adb install -r). Is the emulator/device online? ` +
             `${err instanceof Error ? err.message : String(err)}`,
+          { cause: err },
         );
       }
       return provenance;
@@ -1404,17 +1406,22 @@ export function _androidRunnerApkPathsForTest(): readonly string[] {
 
 export async function invalidateAndroidRunnerApks(
   rm: (path: string) => void = (p) => rmSync(p, { force: true }),
+  signal?: AbortSignal,
 ): Promise<void> {
-  await withAndroidRunnerApkLock(ANDROID_APK_LOCK, async () => {
-    for (const apk of RUNNER_APK_PATHS) {
-      throwIfCancelled();
-      try {
-        rm(apk);
-      } catch {
-        /* best-effort; the install action check re-reads existsSync */
+  await withAndroidRunnerApkLock(
+    ANDROID_APK_LOCK,
+    async () => {
+      for (const apk of RUNNER_APK_PATHS) {
+        throwIfCancelled(signal);
+        try {
+          rm(apk);
+        } catch {
+          /* best-effort; the install action check re-reads existsSync */
+        }
       }
-    }
-  });
+    },
+    { signal },
+  );
 }
 
 export interface StartAndroidRunnerOpts {
@@ -1450,7 +1457,7 @@ export async function startAndroidRunner(
             signal,
           );
           signal.throwIfAborted();
-          await withCancellation(signal, () => invalidateAndroidRunnerApks());
+          await invalidateAndroidRunnerApks(undefined, signal);
           return startAndroidRunnerAttempt(deviceId, bundleId, devicePort, {
             _forceReinstall: true,
             _rebuildSignal: signal,
@@ -1483,7 +1490,7 @@ export async function startAndroidRunner(
             signal,
           );
           signal.throwIfAborted();
-          await withCancellation(signal, () => invalidateAndroidRunnerApks());
+          await invalidateAndroidRunnerApks(undefined, signal);
           return startAndroidRunnerAttempt(deviceId, bundleId, devicePort, {
             _forceReinstall: true,
             _rebuildSignal: signal,

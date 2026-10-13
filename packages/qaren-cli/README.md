@@ -318,7 +318,7 @@ independent locks; callers sharing an installed runtime or an explicit runner
 root share its lock (see
 [runner directory resolution](../qaren-core/src/runners/runtime-paths.ts)).
 Contention waits at most 15 minutes, then refuses with `ANDROID_RUNNER_APK_LOCK_TIMEOUT`.
-A crashed or cancelled owner leaves `app/build/.qaren-apk-lock` in the Android
+A crashed, cancelled or forcibly stopped owner leaves `app/build/.qaren-apk-lock` in the Android
 runner directory fenced: waiting never steals the lock by age. Before removing
 that empty directory, prove that all provisioning callers and their Gradle/adb
 children for that runner directory have stopped.

@@ -10,6 +10,17 @@ export class AndroidRunnerApkLockTimeoutError extends Error {
   }
 }
 
+function forcedSubprocessStop(error: unknown): boolean {
+  // Provisioning preserves subprocess metadata in Error.cause. A killed or
+  // signal-terminated launcher cannot prove its descendants stopped writing.
+  for (let depth = 0; depth < 4 && error && typeof error === 'object'; depth += 1) {
+    const failure = error as { killed?: unknown; signal?: unknown; cause?: unknown };
+    if (failure.killed === true || typeof failure.signal === 'string') return true;
+    error = failure.cause;
+  }
+  return false;
+}
+
 // One worktree's APK pair is a single provisioning resource. This outputs lock
 // has no version budget and is never nested inside itself. Stale retries acquire
 // the rebuild-budget lock first, then this lock for invalidation and provisioning.
@@ -34,12 +45,16 @@ export async function withAndroidRunnerApkLock<T>(
       await sleep(Math.min(25, remaining), signal);
     }
   }
+  let interrupted = false;
   try {
     throwIfCancelled(signal);
     return await operation();
+  } catch (error) {
+    interrupted = forcedSubprocessStop(error);
+    throw error;
   } finally {
-    // Cancellation may return before Gradle's descendants have stopped. Keep
-    // the fence in that case, just as after a process crash; no timed takeover.
-    if (!signal?.aborted) rmdirSync(lockPath);
+    // Cancellation and forced stops may return before descendants stop. Keep
+    // the fence in those cases, just as after a crash; no timed takeover.
+    if (!signal?.aborted && !interrupted) rmdirSync(lockPath);
   }
 }
