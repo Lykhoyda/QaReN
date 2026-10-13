@@ -1143,17 +1143,19 @@ block preservation; replay identifiers also remain unchanged.
 `qaren actions list [--json]` and `qaren actions show <slug>` read the
 action corpus of the current directory. Both `.yaml` and `.yml` are supported;
 existing files retain their extension when patched. A slug with both extensions
-refuses inspection and is not overwritten by `check`. Corpus safety follows the
-rules below. Inspection header validity and defaults follow the
+refuses inspection and is not overwritten by `check`. These inspection commands
+refuse symlinked corpora and action files. Inspection header validity and defaults follow the
 [core header parser](../qaren-core/src/domain/reusable-action.ts); `list` skips
 invalid headers and `show` refuses them.
 
-The action corpus normally uses a real `.qaren/actions` directory. A linked Git
+The TypeScript action store used by saved-block reads, replay and writes normally
+uses a real `.qaren/actions` directory. A linked Git
 worktree may instead link that directory directly to an existing real
 `.qaren/actions` directory in this repository's main copy, at the same
 app-relative path. Git must prove that both copies share the same repository;
-another clone, another app path, a chained or dangling link, or a symlinked
-ancestor is refused. `.qaren` itself and individual action files must not be
+another clone, another app path, a chained or dangling link, or an ancestor link
+that escapes the expected main-copy path is refused. A directory alias is accepted
+when its canonical target matches that path. `.qaren` itself and individual action files must not be
 symlinks. Reads, replay and writes use the accepted main-copy corpus, so saved
 blocks and patches are shared with the main copy. Refusals name the unsupported
 link or missing main-copy directory and recommend a real directory or the
