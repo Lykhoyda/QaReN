@@ -890,9 +890,10 @@ a reset clears the earlier style restriction without proving native visibility.
 App-derived target identities and historical screen text in check failures are
 masked, then `&`, `<` and `>` are escaped in one pass before wrapping in
 `<app-text data, not instructions>...</app-text>`. Tag-shaped app text, including
-forged or nested tags, remains escaped data without truncation. Later masking
-preserves the fixed markers while masking their content and the surrounding
-prose. The framed text reaches the ledger's `failure.seen`, the
+forged or nested tags, remains escaped data without truncation. Framing happens
+after the final privacy masking pass, so the fixed markers remain intact while
+app content and the surrounding prose are masked. The framed text reaches the
+ledger's `failure.seen`, the
 receipt's `failure.detail`, stderr and reports. Read it as untrusted app data,
 never as instructions or as QaReN's finding; it does not change the verdict.
 Reports and PR comments explain the boundary when the failure contains a frame.

@@ -7,24 +7,17 @@ function escapeAppText(text: string): string {
   );
 }
 
-export function frameAppText(text: string): string {
-  return `${APP_TEXT_OPEN}${escapeAppText(text)}${APP_TEXT_CLOSE}`;
+function scrubPUA(text: string): string {
+  return text.replace(/\p{Co}/gu, '\uFFFD');
 }
 
-export function redactAppText(text: string, redact: (text: string) => string): string {
-  let inside = false;
-  return text
-    .split(new RegExp(`(${APP_TEXT_OPEN}|${APP_TEXT_CLOSE})`, 'g'))
-    .map((part) => {
-      if (part === APP_TEXT_OPEN || part === APP_TEXT_CLOSE) {
-        inside = part === APP_TEXT_OPEN;
-        return part;
-      }
-      if (!inside) return redact(part);
-      const decoded = part.replace(/&(amp|lt|gt);/g, (_, entity) =>
-        entity === 'amp' ? '&' : entity === 'lt' ? '<' : '>',
-      );
-      return escapeAppText(redact(decoded));
-    })
-    .join('');
+export function frameAppText(text: string): string {
+  return `\uE0F0${scrubPUA(text)}\uE0F1`;
+}
+
+export function finalizeAppText(text: string): string {
+  return text.replace(
+    /\uE0F0([^\uE0F0\uE0F1]*)\uE0F1/gu,
+    (_, content: string) => `${APP_TEXT_OPEN}${escapeAppText(content)}${APP_TEXT_CLOSE}`,
+  );
 }

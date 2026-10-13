@@ -1,6 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { parsePlan } from '../../../dist/qa/plan.js';
+import { finalizeAppText } from '../../../dist/qa/untrusted.js';
 import type { Block } from '../../../dist/qa/plan.js';
 import type { Screen } from '../../../dist/qa/screen.js';
 import { NativeCaptureError } from '../../../dist/qa/capture.js';
@@ -221,7 +222,7 @@ test('a red box fails at the step with its text and no recovery row', async () =
   assert.equal(outcome.block.outcome, 'fail');
   assert.equal(outcome.failure?.step, 1);
   assert.match(
-    outcome.failure?.seen ?? '',
+    finalizeAppText(outcome.failure?.seen ?? ''),
     /React Native error screen; historical context, previously on screen: <app-text data, not instructions>Render Error \| boom/,
   );
   assert.equal(outcome.recoveries, undefined);

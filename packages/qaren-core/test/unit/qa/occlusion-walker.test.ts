@@ -2,6 +2,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { parsePlan } from '../../../dist/qa/plan.js';
+import { finalizeAppText } from '../../../dist/qa/untrusted.js';
 import { join } from '../../../dist/qa/screen.js';
 import type { NativeNode, Screen } from '../../../dist/qa/screen.js';
 import { choice, element, scriptedJudge } from './judgment-fixtures.ts';
@@ -950,7 +951,7 @@ test('a moved target whose frame never settles is not dispatched again and fails
   const outcome = await walkBlock(block('1. Tap "Continue"\n'), f.deps);
   assert.equal(outcome.block.outcome, 'fail');
   assert.equal(f.calls.filter((c) => c.startsWith('press')).length, 1);
-  const seen = outcome.failure?.seen ?? '';
+  const seen = finalizeAppText(outcome.failure?.seen ?? '');
   assert.match(seen, /TARGET_MOVED_BEFORE_DISPATCH/);
   assert.match(seen, /did not settle/);
   assert.match(seen, /<app-text data, not instructions>button "Continue", no testID<\/app-text>/);
@@ -999,7 +1000,7 @@ test('a target that holds still yet is refused as moved again fails with both fr
   const outcome = await walkBlock(block('1. Tap "Continue"\n'), f.deps);
   assert.equal(outcome.block.outcome, 'fail');
   assert.equal(f.calls.filter((c) => c.startsWith('press')).length, 2);
-  const seen = outcome.failure?.seen ?? '';
+  const seen = finalizeAppText(outcome.failure?.seen ?? '');
   assert.match(seen, /retained 20\.0,700\.0,300\.0,44\.0; live 20\.0,702\.0,300\.0,44\.0/);
   assert.match(seen, /held still at 20,700,300,44/);
 });
@@ -1167,7 +1168,7 @@ test('a moved target with no label and no testID is never dispatched again', asy
   assert.equal(outcome.block.outcome, 'fail');
   assert.equal(f.calls.filter((c) => c.startsWith('press')).length, 1);
   assert.match(
-    outcome.failure?.seen ?? '',
+    finalizeAppText(outcome.failure?.seen ?? ''),
     /<app-text data, not instructions>button unlabelled, no testID<\/app-text>\) did not settle/,
   );
 });
