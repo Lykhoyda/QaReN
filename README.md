@@ -21,6 +21,9 @@ To update later, run `qaren update` from the same checkout root: it fast-forward
 the checkout (refusing when it has local changes), rebuilds and reinstalls, and
 reports whether the build is already current, updated or newly installed.
 
+Run `qaren doctor` to diagnose setup problems and rn-dev-agent 1.x leftovers;
+see [Doctor](packages/qaren-cli/README.md#doctor) for checks and output options.
+
 From your app's root, load the checkout's plugin in Claude Code:
 
 ```sh

@@ -89,6 +89,45 @@ pub fn validate_workspace(project_root: &Path, spec: &IosWorkspaceBuild) -> Resu
     Ok(())
 }
 
+pub fn xcode_version_spec() -> CmdSpec {
+    CmdSpec::new("xcode-version", "xcodebuild", &["-version"], 30)
+}
+
+pub fn list_runtimes_spec() -> CmdSpec {
+    CmdSpec::new(
+        "simctl-list-runtimes",
+        "xcrun",
+        &["simctl", "list", "runtimes", "--json"],
+        30,
+    )
+}
+
+// (name, identifier) of each available iOS runtime; `simctl create` accepts either.
+pub fn parse_available_runtimes(list_json: &str) -> Vec<(String, String)> {
+    let parsed: serde_json::Value = serde_json::from_str(list_json).unwrap_or_default();
+    let field = |runtime: &serde_json::Value, key: &str| {
+        runtime
+            .get(key)
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or_default()
+            .to_string()
+    };
+    parsed
+        .get("runtimes")
+        .and_then(serde_json::Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter(|runtime| {
+            runtime
+                .get("isAvailable")
+                .and_then(serde_json::Value::as_bool)
+                == Some(true)
+                && runtime.get("platform").and_then(serde_json::Value::as_str) == Some("iOS")
+        })
+        .map(|runtime| (field(runtime, "name"), field(runtime, "identifier")))
+        .collect()
+}
+
 pub fn sim_name(run_id: &str) -> String {
     format!("qaren-{run_id}")
 }

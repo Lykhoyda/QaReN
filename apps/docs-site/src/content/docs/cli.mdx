@@ -3,7 +3,7 @@ title: CLI
 description: Every qaren verb, its arguments and its flags.
 ---
 
-Every verb except `watch`, `actions` and `update` prints one `qaren/1` JSON receipt on stdout and its
+Every verb except `watch`, `actions`, `update` and `doctor` prints one `qaren/1` JSON receipt on stdout and its
 narration on stderr. A usage error exits `2` with help on stderr and nothing on stdout.
 `qaren --help` prints the usage.
 
@@ -80,6 +80,17 @@ refuses outside a checkout, with local changes, or when the pull fails, leaving 
 tree, branch and installed qaren unchanged.
 Prints one line saying whether the build is already current, updated or newly installed.
 
+## qaren doctor
+
+```sh
+qaren doctor [--json] [--config .qaren/config.yaml]
+```
+
+Diagnoses setup problems and rn-dev-agent 1.x leftovers. See
+[Doctor](https://github.com/Lykhoyda/rn-dev-agent/blob/develop/packages/qaren-cli/README.md#doctor)
+for the authoritative checks, manual fixes, output contract and exit codes, including
+the privacy contract's exception for configured iOS runtime and Android AVD names.
+
 ## qaren --version
 
 ```sh
@@ -99,9 +110,11 @@ scenario is a strictly validated YAML file with `schema: qaren/1`.
 qaren prepare <scenario.yaml> [--json] [--dry-run]
 ```
 
-Validates the scenario and the checked-out candidate, allocates the device, builds and
-installs the app, starts Metro, and emits a `ready` receipt with the run's device and Metro
+Validates the scenario and the checked-out candidate, allocates the device, prepares the
+app and owned Metro, and emits a `ready` receipt with the run's device and Metro
 endpoint. `--dry-run` validates and prints the planned commands without allocating anything.
+See [CLI-owned iOS build routes](https://github.com/Lykhoyda/rn-dev-agent/blob/develop/packages/qaren-cli/README.md#cli-owned-ios-build-routes)
+for iOS startup ordering and failure cleanup.
 
 ### qaren prewarm
 

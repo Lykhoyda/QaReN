@@ -14,10 +14,10 @@ pub struct NativeFingerprint {
     // Reuse requires proven inputs; dynamic configs also require Expo evaluation.
     pub complete: bool,
     pub incompleteness: Vec<String>,
-    // Hash-only evidence: rnfp, iOS toolchain, and Expo for evaluated dynamic configs.
+    // Hash-only evidence: rnfp, iOS toolchain, and evaluated Expo inputs.
     pub parts: BTreeMap<String, String>,
     pub expo_fingerprint_ms: Option<u64>,
-    // The closed-template cause when a dynamic config's Expo fingerprint could not be computed.
+    // The closed-template cause when the app's Expo fingerprint could not be computed.
     pub expo_unavailable: Option<String>,
 }
 
@@ -83,6 +83,27 @@ fn is_dynamic_config(rel: &str) -> bool {
         rel,
         "app.config.js" | "app.config.ts" | "app.config.mjs" | "app.config.cjs"
     )
+}
+
+fn uses_expo(project_root: &Path) -> bool {
+    std::fs::read_to_string(project_root.join("package.json"))
+        .ok()
+        .and_then(|text| serde_json::from_str::<serde_json::Value>(&text).ok())
+        .is_some_and(|package| {
+            [
+                "dependencies",
+                "devDependencies",
+                "optionalDependencies",
+                "peerDependencies",
+            ]
+            .iter()
+            .any(|section| {
+                package
+                    .get(section)
+                    .and_then(|deps| deps.as_object())
+                    .is_some_and(|deps| deps.contains_key("expo"))
+            })
+        })
 }
 
 #[derive(Debug, Default)]
@@ -780,16 +801,16 @@ pub fn compute(
     let mut evaluated: Option<String> = None;
     let mut expo_fingerprint_ms = None;
     let mut expo_unavailable = None;
-    if let Some(config) = &dynamic_config {
-        if platform_dir == "ios" {
-            let started = runner.monotonic_ms();
-            let expo = expo_fingerprint(runner, project_root, platform_dir);
-            expo_fingerprint_ms = Some(runner.monotonic_ms().saturating_sub(started));
-            match expo {
-                Ok(expo) => evaluated = Some(expo),
-                Err(reason) => expo_unavailable = Some(reason),
-            }
+    if platform_dir == "ios" && (dynamic_config.is_some() || uses_expo(project_root)) {
+        let started = runner.monotonic_ms();
+        let expo = expo_fingerprint(runner, project_root, platform_dir);
+        expo_fingerprint_ms = Some(runner.monotonic_ms().saturating_sub(started));
+        match expo {
+            Ok(expo) => evaluated = Some(expo),
+            Err(reason) => expo_unavailable = Some(reason),
         }
+    }
+    if let Some(config) = &dynamic_config {
         if evaluated.is_none() {
             incompleteness.push(format!(
                 "{config} is a dynamic config whose imports and ambient inputs (environment and process reads) cannot be fingerprinted"
@@ -799,9 +820,10 @@ pub fn compute(
             incompleteness.push(format!("Expo fingerprint unavailable: {reason}"));
         }
     }
-    // An unavailable Expo fingerprint already forbids reuse, so the Xcode identity is not read.
-    let toolchain =
-        (platform_dir == "ios" && expo_unavailable.is_none()).then(|| toolchain_digest(runner));
+    // Failed dynamic-config evaluation already forbids reuse; static Expo fallback still binds Xcode.
+    let toolchain = (platform_dir == "ios"
+        && (dynamic_config.is_none() || expo_unavailable.is_none()))
+    .then(|| toolchain_digest(runner));
     if let Some(Err(reason)) = &toolchain {
         incompleteness.push(format!(
             "toolchain identity unavailable ({reason}); reuse across an unknown Xcode is unprovable"
@@ -918,7 +940,7 @@ pub fn compute(
         Some(toolchain) => {
             let toolchain = toolchain.unwrap_or_else(|_| "unavailable".to_string());
             let bytes = match &evaluated {
-                Some(expo) => serde_json::to_vec(&("qaren-expo-native/1", &rnfp, expo, &toolchain)),
+                Some(expo) => serde_json::to_vec(&("qaren-expo-native/2", &rnfp, expo, &toolchain)),
                 None => serde_json::to_vec(&("qaren-native/2", &rnfp, &toolchain)),
             }
             .expect("fingerprint parts serialize to JSON");
@@ -957,8 +979,7 @@ pub fn expo_fingerprint_spec(label: &str, project_root: &Path, args: &[&str]) ->
         .env("EXPO_NO_TELEMETRY", "1")
 }
 
-// The CLI's stdout carries evaluated config contents, so only private capture is used and
-// only the `hash` field is read; every failure reason is a fixed string.
+// Evaluated config stays in private capture; failure reasons contain no config or error output.
 fn expo_fingerprint(
     runner: &mut dyn Runner,
     project_root: &Path,
@@ -995,12 +1016,27 @@ fn expo_fingerprint(
             outcome(&generated)
         ));
     }
-    serde_json::from_str::<serde_json::Value>(last_line(generated.stdout()))
-        .ok()
-        .and_then(|result| result.get("hash")?.as_str().map(str::to_string))
+    let result = serde_json::from_str::<serde_json::Value>(last_line(generated.stdout()))
+        .map_err(|_| "@expo/fingerprint output carried no hex hash".to_string())?;
+    let hash = result
+        .get("hash")
+        .and_then(serde_json::Value::as_str)
         .filter(|hash| !hash.is_empty() && hash.bytes().all(|b| b.is_ascii_hexdigit()))
-        .map(|hash| format!("expo:{hash}"))
-        .ok_or_else(|| "@expo/fingerprint output carried no hex hash".to_string())
+        .ok_or_else(|| "@expo/fingerprint output carried no hex hash".to_string())?;
+    if !result
+        .get("sources")
+        .and_then(serde_json::Value::as_array)
+        .is_some_and(|sources| {
+            sources.iter().any(|source| {
+                source["type"] == "contents"
+                    && source["id"] == "expoConfig"
+                    && source["contents"].is_string()
+            })
+        })
+    {
+        return Err("@expo/fingerprint output carried no evaluated Expo config".to_string());
+    }
+    Ok(format!("expo:{hash}"))
 }
 
 // pnpm can print its dependency check to stdout before the child's own output.
@@ -1028,12 +1064,7 @@ fn outcome(output: &crate::exec::PrivateOutput) -> String {
 
 // The installed simulator SDK ships inside Xcode, so the selected Xcode's build version identifies both.
 fn toolchain_digest(runner: &mut dyn Runner) -> Result<String, String> {
-    let version = runner.run(&CmdSpec::new(
-        "xcode-version",
-        "xcodebuild",
-        &["-version"],
-        30,
-    ));
+    let version = runner.run(&crate::adapters::ios::xcode_version_spec());
     if !version.ok() || version.stdout.trim().is_empty() {
         return Err("xcodebuild -version failed".to_string());
     }

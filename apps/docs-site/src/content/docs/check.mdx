@@ -23,9 +23,11 @@ plan preflight -> device selection -> lease + durable run record
 ```
 
 The plan is parsed first, so an unparseable plan or a missing Jev key refuses before any
-device is touched. The run then leases the device, builds and installs the app, starts its
-own Metro, walks the plan and tears down what it started. The simulator or emulator and the
+device is touched. The run then leases the device, prepares the app and its own Metro,
+walks the plan and tears down what it started. The simulator or emulator and the
 installed app stay.
+See [CLI-owned iOS build routes](https://github.com/Lykhoyda/rn-dev-agent/blob/develop/packages/qaren-cli/README.md#cli-owned-ios-build-routes)
+for iOS startup ordering.
 
 ## Choosing the device
 

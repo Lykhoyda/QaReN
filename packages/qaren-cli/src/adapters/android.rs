@@ -22,6 +22,19 @@ pub fn adb_path(android_home: &str) -> PathBuf {
     Path::new(android_home).join("platform-tools").join("adb")
 }
 
+pub fn emulator_path(android_home: &str) -> PathBuf {
+    Path::new(android_home).join("emulator").join("emulator")
+}
+
+pub fn list_avds_spec(emulator: &Path) -> CmdSpec {
+    CmdSpec::new(
+        "emulator-list-avds",
+        &emulator.to_string_lossy(),
+        &["-list-avds"],
+        20,
+    )
+}
+
 fn ssh_base(host: &str, args: &[String], label: &str, timeout_seconds: u64) -> CmdSpec {
     let mut full = vec![
         "-o".to_string(),

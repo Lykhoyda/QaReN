@@ -23,6 +23,8 @@ The plugin root is two directories above this skill's base directory. Resolve on
 
 4. Any other refusal: stop and quote the installer's message.
 
+`<qaren path> doctor` lists what is missing before setup continues.
+
 ## 2. App
 
 - `package.json` must list `expo` and `expo-dev-client`, and `pnpm-lock.yaml` must exist. Otherwise stop: "QaReN supports pnpm Expo dev-client apps."

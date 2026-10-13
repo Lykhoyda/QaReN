@@ -427,6 +427,43 @@ pub fn preflight_spec(node: &Path, runtime_dir: &Path, plan_file: &Path) -> CmdS
     )
 }
 
+#[derive(serde::Deserialize, serde::Serialize)]
+#[serde(rename_all = "snake_case")]
+enum AdmissionProbeReason {
+    InvalidDevice,
+    ScanFailed,
+    ScanTimeout,
+    ScanOutputOversize,
+    ScanUnavailable,
+    ScanIncomplete,
+    ScanStderr,
+    ScanOversize,
+    ScanCorrupt,
+    ScanRowInvalid,
+    ScanPidInvalid,
+    CandidateBudgetExceeded,
+    DeadlineExceeded,
+    DriverOnSelectedDevice,
+    ObserverUnavailable,
+    ObserverFailed,
+    ObserverTimeout,
+    ObserverStderr,
+    ObserverOutputOversize,
+    ObserverInvalidJson,
+    DriverIdentityUnproven,
+    ExecutableIdentityUnproven,
+}
+
+#[derive(serde::Deserialize, serde::Serialize)]
+#[serde(deny_unknown_fields)]
+struct AdmissionProbeEvidence {
+    reason: AdmissionProbeReason,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pid: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    candidates: Option<u32>,
+}
+
 pub fn fresh_install_admission(
     runner: &mut dyn Runner,
     node: &Path,
@@ -466,19 +503,44 @@ pub fn fresh_install_admission(
         .cwd(worktree),
     );
     let value = serde_json::from_str::<Value>(&output.stdout).ok();
-    let status = value
-        .as_ref()
-        .filter(|v| {
-            v.get("v").and_then(Value::as_u64) == Some(1)
-                && v.get("platform").and_then(Value::as_str) == Some("ios")
-                && v.get("deviceId").and_then(Value::as_str) == Some(device_id)
-        })
+    let matched = value.as_ref().filter(|v| {
+        v.get("v").and_then(Value::as_u64) == Some(1)
+            && v.get("platform").and_then(Value::as_str) == Some("ios")
+            && v.get("deviceId").and_then(Value::as_str) == Some(device_id)
+    });
+    let status = matched
         .and_then(|v| v.get("status"))
         .and_then(Value::as_str);
     if output.ok() && status == Some("clear") {
         return Ok(());
     }
     let busy = !output.timed_out && output.exit_code == Some(4) && status == Some("busy");
+    let evidence = match matched.and_then(|v| v.get("evidence")) {
+        Some(value) => serde_json::from_value::<AdmissionProbeEvidence>(value.clone())
+            .ok()
+            .filter(|e| e.pid != Some(0) && e.candidates.is_none_or(|n| n <= 1_048_576))
+            .and_then(|e| serde_json::to_string(&e).ok())
+            .unwrap_or_else(|| "invalid_evidence".into()),
+        None if matched.is_some() => "unavailable".into(),
+        None if value.is_some() => "envelope_mismatch".into(),
+        None => "invalid_response".into(),
+    };
+    let probe_status = match status {
+        Some("clear") => "clear",
+        Some("busy") => "busy",
+        Some("unknown") => "unknown",
+        _ => "invalid",
+    };
+    let detail = format!(
+        "{}; probe_status={probe_status}; probe_evidence={evidence}; exit_code={:?}; timed_out={}",
+        if busy {
+            "a foreign automation flow is active on the selected device"
+        } else {
+            "strict foreign-flow admission did not prove the selected device clear"
+        },
+        output.exit_code,
+        output.timed_out,
+    );
     Err(Failure::new(
         "fresh_install",
         if busy {
@@ -486,11 +548,7 @@ pub fn fresh_install_admission(
         } else {
             FailureCode::FreshInstallAdmissionUnknown
         },
-        if busy {
-            "a foreign automation flow is active on the selected device"
-        } else {
-            "strict foreign-flow admission did not prove the selected device clear"
-        },
+        &detail,
         "stop other automation drivers and ensure the runtime supports strict fresh-install preflight, \
          then re-run",
     ))

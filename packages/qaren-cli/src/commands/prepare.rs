@@ -75,6 +75,23 @@ impl<'a> Ctx<'a> {
         failure = ensure_running(self.runner, &failure.phase)
             .err()
             .unwrap_or(failure);
+        let metro_cleanup =
+            if self.verb == "prepare" && self.record.scenario.platform == Platform::Ios {
+                self.record.resources.metro.clone().map(|metro| {
+                    let outcome = super::cleanup::cleanup_process_group(
+                        self.runner,
+                        metro.identity.as_ref(),
+                        metro.spawned.pgid,
+                        Some(metro.port),
+                    );
+                    if outcome.clean() {
+                        self.record.resources.metro = None;
+                    }
+                    outcome.render()
+                })
+            } else {
+                None
+            };
         if self.record.resources.any_owned() {
             failure.next_action = crate::redact::OutputText::from_output(&format!(
                 "qaren cleanup {} --json",
@@ -100,7 +117,11 @@ impl<'a> Ctx<'a> {
             ));
             self.record.failure = Some(failure.clone());
         }
-        finish_receipt(self, result, Some(failure))
+        let mut receipt = finish_receipt(self, result, Some(failure));
+        if let Some(outcome) = metro_cleanup {
+            receipt.cleanup.insert("metro".into(), outcome);
+        }
+        receipt
     }
 }
 
@@ -677,11 +698,7 @@ pub(crate) fn check_prereqs(
         }
     }
     if scenario.platform == Platform::Android && !handoff {
-        match android_home {
-            Some(home) if android::adb_path(home).is_file() => {}
-            Some(home) => missing.push(format!("adb (not at {}/platform-tools/adb)", home)),
-            None => missing.push("ANDROID_HOME env var".to_string()),
-        }
+        missing.extend(missing_android_sdk(android_home));
     }
     if missing.is_empty() {
         Ok(())
@@ -692,6 +709,14 @@ pub(crate) fn check_prereqs(
             format!("missing prerequisites: {}", missing.join(", ")),
             "install the missing tools, then re-run prepare",
         ))
+    }
+}
+
+pub(crate) fn missing_android_sdk(android_home: Option<&str>) -> Option<String> {
+    match android_home {
+        Some(home) if android::adb_path(home).is_file() => None,
+        Some(home) => Some(format!("adb (not at {}/platform-tools/adb)", home)),
+        None => Some("ANDROID_HOME env var".to_string()),
     }
 }
 
@@ -1079,10 +1104,6 @@ pub(crate) fn plan_build(ctx: &mut Ctx) -> Result<BuildPlan, Failure> {
         native_dir_in_candidate: fp.native_dir_in_candidate,
     };
     ctx.notes.extend(fingerprint_notes(&fp));
-    if let Some(ms) = fp.expo_fingerprint_ms {
-        ctx.notes
-            .push(("expo_fingerprint_ms".to_string(), ms.to_string()));
-    }
     Ok(buildplan::decide(&inputs, &state, store))
 }
 
@@ -1125,18 +1146,25 @@ fn cached_artifact(
     }
 }
 
-// Hash-only parts and the completeness gate's own boolean; never the incompleteness reasons.
-fn fingerprint_notes(fp: &fingerprint::NativeFingerprint) -> [(String, String); 2] {
+// Hash-only parts and closed-template Expo outcomes; never raw config or incompleteness reasons.
+fn fingerprint_notes(fp: &fingerprint::NativeFingerprint) -> Vec<(String, String)> {
     let parts = fp
         .parts
         .iter()
         .map(|(part, hash)| format!("{part}={hash}"))
         .collect::<Vec<_>>()
         .join(" ");
-    [
+    let mut notes = vec![
         ("fingerprint_parts".to_string(), parts),
         ("fingerprint_complete".to_string(), fp.complete.to_string()),
-    ]
+    ];
+    if let Some(ms) = fp.expo_fingerprint_ms {
+        notes.push(("expo_fingerprint_ms".to_string(), ms.to_string()));
+    }
+    if let Some(reason) = &fp.expo_unavailable {
+        notes.push(("expo_fingerprint_unavailable".to_string(), reason.clone()));
+    }
+    notes
 }
 
 fn verify_artifact(artifact: &CachedArtifact) -> ArtifactStatus {
@@ -1574,6 +1602,9 @@ pub(crate) fn run_reuse_path(ctx: &mut Ctx, plan: &BuildPlan, t: u64) -> Result<
                     "artifact changed before install".into(),
                 ));
             }
+            if ctx.record.resources.metro.is_none() {
+                spawn_metro_only(ctx)?;
+            }
             let sim = ctx
                 .record
                 .resources
@@ -1670,9 +1701,12 @@ pub(crate) fn run_reuse_path(ctx: &mut Ctx, plan: &BuildPlan, t: u64) -> Result<
     }
     let t = ctx.mark("install_cached", t);
 
-    spawn_metro_only(ctx)?;
+    if ctx.record.resources.metro.is_none() {
+        spawn_metro_only(ctx)?;
+    }
     wait_metro_responding(ctx)?;
     let t = ctx.mark("metro_ready", t);
+    let deadline = ctx.runner.monotonic_ms() + ctx.record.scenario.deadlines.build_seconds * 1000;
 
     ensure_running(ctx.runner, "build")?;
     let warmed = ctx.runner.run(&metro::manifest_spec(
@@ -1685,7 +1719,7 @@ pub(crate) fn run_reuse_path(ctx: &mut Ctx, plan: &BuildPlan, t: u64) -> Result<
             "dev client manifest",
             &warmed,
             load,
-            false,
+            1,
             &ctx.record.run_id,
         ));
     }
@@ -1699,10 +1733,21 @@ pub(crate) fn run_reuse_path(ctx: &mut Ctx, plan: &BuildPlan, t: u64) -> Result<
                 .clone()
                 .expect("ios allocated");
             let defaults = ios::devmenu_defaults_specs(&sim.udid, &ctx.record.candidate.app_id);
-            let failed = defaults
-                .iter()
-                .filter(|spec| !ctx.runner.run(spec).ok())
-                .count();
+            let mut failed = 0;
+            let mut attempts = 0;
+            for spec in &defaults {
+                let output = run_launch_command(ctx, spec, deadline, &mut attempts)?;
+                if output.timed_out {
+                    return Err(launch_failure(
+                        "dev-menu defaults",
+                        &output,
+                        crate::core::host_load_1m(),
+                        attempts,
+                        &ctx.record.run_id,
+                    ));
+                }
+                failed += usize::from(!output.ok());
+            }
             if failed > 0 {
                 ctx.notes
                     .push(("dev_menu_defaults".to_string(), "unconfirmed".to_string()));
@@ -1729,26 +1774,21 @@ pub(crate) fn run_reuse_path(ctx: &mut Ctx, plan: &BuildPlan, t: u64) -> Result<
             )
         }
     };
-    let mut launched = ctx.runner.run(&launch);
-    let mut load = launched.timed_out.then(crate::core::host_load_1m).flatten();
-    let retried = retry_launch(&launched, load);
-    if retried {
-        ensure_running(ctx.runner, "build")?;
-        launched = ctx.runner.run(&launch);
-        load = launched.timed_out.then(crate::core::host_load_1m).flatten();
-    }
+    let mut attempts = 0;
+    let launched = run_launch_command(ctx, &launch, deadline, &mut attempts)?;
+    let load = launched.timed_out.then(crate::core::host_load_1m).flatten();
     if !launched.ok() {
         return Err(launch_failure(
             "dev client launch",
             &launched,
             load,
-            retried,
+            attempts,
             &ctx.record.run_id,
         ));
     }
     let t = ctx.mark("app_launch", t);
 
-    wait_ready(ctx)?;
+    wait_ready_until(ctx, deadline)?;
     ctx.mark("ready_probes", t);
     Ok(())
 }
@@ -2364,6 +2404,7 @@ pub(crate) fn build_and_ready(ctx: &mut Ctx) -> Result<(), Failure> {
                 deadline,
                 ctx.record.scenario.build.ios_workspace.as_ref(),
             );
+            spawn_metro_only(ctx)?;
             run_finite_build(ctx, &build)?;
             if ctx.record.scenario.build.ios_workspace.is_some() {
                 let built = ios::built_app(&ios::workspace_products(&output))
@@ -2515,6 +2556,10 @@ pub(crate) fn build_and_ready(ctx: &mut Ctx) -> Result<(), Failure> {
 
 pub(crate) fn wait_ready(ctx: &mut Ctx) -> Result<(), Failure> {
     let deadline = ctx.runner.monotonic_ms() + ctx.record.scenario.deadlines.build_seconds * 1000;
+    wait_ready_until(ctx, deadline)
+}
+
+fn wait_ready_until(ctx: &mut Ctx, deadline: u64) -> Result<(), Failure> {
     let metro_resource = ctx.record.resources.metro.clone().expect("metro spawned");
     let identity = metro_resource.identity.clone().expect("identity captured");
     loop {
@@ -2747,6 +2792,7 @@ fn dry_run_receipt(
                 "<udid>",
                 deadlines.device_boot_seconds,
             ));
+            planned.push(metro::start_spec(&cand.project_root, port));
             planned.push(ios::build_spec(
                 &cand.project_root,
                 Path::new("<run_dir>/ios-build"),
@@ -2757,7 +2803,6 @@ fn dry_run_receipt(
                 "<udid>",
                 Path::new("<run_dir>/ios-build/<verified-app>.app"),
             ));
-            planned.push(metro::start_spec(&cand.project_root, port));
             planned.push(metro::manifest_spec(port, "ios"));
             planned.extend(ios::devmenu_defaults_specs("<udid>", &cand.app_id));
             planned.push(ios::launch_spec("<udid>", &cand.app_id, port));
@@ -2843,8 +2888,16 @@ fn dry_run_receipt(
                 )
             })
             .expect("every platform build plan contains a compilation command");
+        let preparation = if scenario.platform == Platform::Ios {
+            planned
+                .iter()
+                .position(|spec| spec.label == "expo-start")
+                .expect("iOS starts Metro before compilation")
+        } else {
+            compile
+        };
         planned.insert(
-            compile,
+            preparation,
             native_prebuild_spec(&cand.project_root, platform, deadlines.build_seconds),
         );
     }
@@ -2879,8 +2932,8 @@ fn dry_run_receipt(
         });
         match scenario.platform {
             Platform::Ios => {
-                planned.push(ios::install_app_spec("<udid>", &artifact_path));
                 planned.push(metro::start_spec(&cand.project_root, port));
+                planned.push(ios::install_app_spec("<udid>", &artifact_path));
                 planned.push(metro::manifest_spec(port, "ios"));
                 planned.extend(ios::devmenu_defaults_specs("<udid>", &cand.app_id));
                 planned.push(ios::launch_spec("<udid>", &cand.app_id, port));
@@ -2939,12 +2992,54 @@ fn dry_run_receipt(
     receipt
 }
 
-// Preparation launch retries have their own host-load envelope.
-const LOAD_ENVELOPE: f64 = 10.0;
-
-// Only a launch that timed out under host load is retried, once.
-fn retry_launch(launched: &crate::exec::CmdOutput, load: Option<f64>) -> bool {
-    launched.timed_out && load.is_some_and(|load| load > LOAD_ENVELOPE)
+fn run_launch_command(
+    ctx: &mut Ctx,
+    spec: &CmdSpec,
+    deadline: u64,
+    attempts: &mut usize,
+) -> Result<crate::exec::CmdOutput, Failure> {
+    let mut last = None;
+    loop {
+        ensure_running(ctx.runner, "build")?;
+        let remaining_ms = deadline.saturating_sub(ctx.runner.monotonic_ms());
+        // Command limits are whole seconds; do not start a call beyond the remaining budget.
+        if remaining_ms < 1000 {
+            ctx.runner.sleep(Duration::from_millis(remaining_ms));
+            ensure_running(ctx.runner, "build")?;
+            ctx.notes
+                .push(("launch_ready_budget".into(), "spent".into()));
+            return last.ok_or_else(|| {
+                Failure::new(
+                    "build",
+                    FailureCode::ReadyDeadlineExceeded,
+                    "preparation deadline spent before dev-client launch",
+                    format!(
+                        "run qaren cleanup {} --json, then retry prepare",
+                        ctx.record.run_id
+                    ),
+                )
+            });
+        }
+        let mut bounded = spec.clone();
+        bounded.timeout_seconds = bounded.timeout_seconds.min(remaining_ms / 1000);
+        let output = ctx.runner.run(&bounded);
+        *attempts += 1;
+        let label = format!("{}_attempt_{}", spec.label, attempts);
+        ctx.timings.push((label.clone(), output.duration_ms));
+        ctx.notes.push((
+            label,
+            format!(
+                "{}; timeout_seconds={}",
+                output.summary(),
+                bounded.timeout_seconds
+            ),
+        ));
+        ensure_running(ctx.runner, "build")?;
+        if !output.timed_out {
+            return Ok(output);
+        }
+        last = Some(output);
+    }
 }
 
 // A launch timeout is the CDP leg's environmental refusal; any other launch error stays a build failure.
@@ -2952,7 +3047,7 @@ fn launch_failure(
     what: &str,
     launched: &crate::exec::CmdOutput,
     load: Option<f64>,
-    retried: bool,
+    attempts: usize,
     run_id: &str,
 ) -> Failure {
     if !launched.timed_out {
@@ -2963,19 +3058,11 @@ fn launch_failure(
             format!("run qaren cleanup {run_id} --json, then retry prepare"),
         );
     }
-    let loaded = load.is_some_and(|load| load > LOAD_ENVELOPE);
     let measured = match load {
-        Some(load) => format!(
-            "host 1-minute load {load:.1} is {} the envelope {LOAD_ENVELOPE}",
-            if loaded { "above" } else { "within" }
-        ),
+        Some(load) => format!("host 1-minute load {load:.1}"),
         None => "host load unavailable".to_string(),
     };
-    let environment = match (loaded, retried) {
-        (true, true) => "; an environment refusal after one retry",
-        (true, false) => "; an environment refusal",
-        _ => "",
-    };
+    let environment = format!("; an environment refusal after {attempts} attempts");
     Failure::new(
         "build",
         FailureCode::CoreRefused,
@@ -2983,7 +3070,7 @@ fn launch_failure(
             "{what} timed out: {} ({measured}{environment})",
             launched.summary()
         ),
-        format!("run qaren cleanup {run_id} --json, then retry when the host is less loaded"),
+        format!("run qaren cleanup {run_id} --json, then retry prepare"),
     )
 }
 
@@ -3001,52 +3088,32 @@ mod launch_tests {
     }
 
     #[test]
-    fn only_a_launch_timeout_under_load_is_retried() {
-        assert!(retry_launch(&timed_out(), Some(65.0)));
-        assert!(!retry_launch(&timed_out(), Some(3.0)));
-        assert!(!retry_launch(&timed_out(), None));
-        assert!(!retry_launch(
-            &CmdOutput::failed(1, "no such app"),
-            Some(65.0)
-        ));
-    }
-
-    #[test]
-    fn a_launch_timeout_is_an_environment_refusal_with_the_load_envelope() {
-        let loaded = launch_failure(
-            "dev client launch",
-            &timed_out(),
-            Some(256.0),
-            true,
-            "check-1",
-        );
-        assert_eq!(loaded.code, FailureCode::CoreRefused);
-        assert!(loaded.code.is_refusal());
-        let detail = loaded.detail.to_string();
-        assert!(
-            detail.contains("host 1-minute load 256.0 is above the envelope 10"),
-            "{detail}"
-        );
-        assert!(
-            detail.contains("an environment refusal after one retry"),
-            "{detail}"
-        );
-        let calm = launch_failure(
-            "dev client launch",
-            &timed_out(),
-            Some(2.0),
-            false,
-            "check-1",
-        );
-        assert_eq!(calm.code, FailureCode::CoreRefused);
-        let detail = calm.detail.to_string();
-        assert!(detail.contains("within the envelope 10"), "{detail}");
-        assert!(!detail.contains("environment refusal"), "{detail}");
+    fn a_launch_timeout_refuses_with_diagnostic_load_only() {
+        for (load, measured) in [
+            (Some(256.0), "host 1-minute load 256.0"),
+            (Some(2.0), "host 1-minute load 2.0"),
+            (None, "host load unavailable"),
+        ] {
+            let failure = launch_failure("dev client launch", &timed_out(), load, 2, "check-1");
+            assert_eq!(failure.code, FailureCode::CoreRefused);
+            assert!(failure.code.is_refusal());
+            let detail = failure.detail.to_string();
+            assert!(detail.contains(measured), "{detail}");
+            assert!(
+                detail.contains("an environment refusal after 2 attempts"),
+                "{detail}"
+            );
+            assert!(!detail.contains("envelope"), "{detail}");
+            assert_eq!(
+                failure.next_action.to_string(),
+                "run qaren cleanup check-1 --json, then retry prepare"
+            );
+        }
     }
 
     #[test]
     fn an_unanswered_manifest_is_refused_like_a_launch() {
-        let slow = launch_failure("dev client manifest", &timed_out(), Some(40.0), false, "c");
+        let slow = launch_failure("dev client manifest", &timed_out(), Some(40.0), 1, "c");
         assert_eq!(slow.code, FailureCode::CoreRefused);
         let detail = slow.detail.to_string();
         assert!(
@@ -3058,7 +3125,7 @@ mod launch_tests {
             "dev client manifest",
             &CmdOutput::failed(22, "HTTP 500"),
             None,
-            false,
+            1,
             "c",
         );
         assert_eq!(broken.code, FailureCode::BuildFailed);
@@ -3074,7 +3141,7 @@ mod launch_tests {
             "dev client launch",
             &CmdOutput::failed(1, "no such app"),
             Some(65.0),
-            false,
+            1,
             "check-1",
         );
         assert_eq!(failure.code, FailureCode::BuildFailed);
