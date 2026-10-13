@@ -15,7 +15,7 @@ import { runInNewContext } from 'node:vm';
 import { setImmediate as nextTurn } from 'node:timers/promises';
 import { syncBuiltinESMExports } from 'node:module';
 import { CDPProbeTimeoutError, CDPHandshakeTimeoutError } from '../../../dist/cdp/connect.js';
-import { CDPRequestTimeoutError } from '../../../dist/cdp/transport.js';
+import { CDPRequestTimeoutError, sendWithTimeout } from '../../../dist/cdp/transport.js';
 
 const PROVEN = {
   ok: true,
@@ -169,6 +169,53 @@ test('a failed bundle proof closes the session and refuses with its own code', a
   });
   await assert.rejects(admit(steps, stop), { code: 'METRO_ORIGIN_MISMATCH' });
   assert.deepEqual(calls.slice(-1), ['close']);
+});
+
+test('a deterministic origin proof error keeps its original classification without a retry', async () => {
+  const failure = new Error('invalid proof adapter metadata');
+  const { calls, stop, steps } = harness({
+    prove: async () => {
+      throw failure;
+    },
+  });
+  await assert.rejects(admit(steps, stop), (error) => error === failure);
+  assert.deepEqual(calls, ['attach', 'foreignDriver', 'open', 'close']);
+});
+
+test('a socket lost before origin proof reattaches without reopening the admitted device session', async () => {
+  let proofs = 0;
+  const { calls, stop, steps } = harness({
+    prove: async () => {
+      if (++proofs === 1)
+        await sendWithTimeout(null, new Map(), () => 1, 'Runtime.evaluate', {}, 100);
+      return PROVEN;
+    },
+  });
+  assert.deepEqual(await admit(steps, stop), PROVEN);
+  assert.equal(proofs, 2);
+  assert.deepEqual(calls, ['attach', 'foreignDriver', 'open', 'attach']);
+});
+
+test('repeated socket loss at origin proof cannot renew the admission deadline', async (t) => {
+  let now = 0;
+  t.mock.method(performance, 'now', () => now);
+  let proofs = 0;
+  const deadlines: number[] = [];
+  const { calls, stop, steps } = harness({
+    remainingMs: () => 1_000 - now,
+    attach: async (deadline) => {
+      deadlines.push(deadline);
+    },
+    prove: async () => {
+      now = ++proofs === 1 ? 100 : 1_000;
+      await sendWithTimeout(null, new Map(), () => 1, 'Runtime.evaluate', {}, 100);
+      return PROVEN;
+    },
+  });
+  await assert.rejects(admit(steps, stop), { code: 'CDP_NOT_CONNECTED' });
+  assert.equal(proofs, 2);
+  assert.deepEqual(deadlines, [1_000, 1_000]);
+  assert.deepEqual(calls, ['foreignDriver', 'open', 'close']);
 });
 
 test('a foreign automation driver refuses before the session opens', async () => {

@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
+import WebSocket from 'ws';
 import { fileURLToPath } from 'node:url';
 import { waitForExactPortTargets } from '../../../dist/cdp/discovery.js';
 import { admit, createBundleReload } from '../../../dist/qa/admission.js';
@@ -403,3 +404,87 @@ test('two exact sessions admit when a native page answers beyond the five-probe 
     assert.equal(lane.client.connectedTarget?.appId, appId);
   }
 });
+
+for (const phase of ['first probe', 'origin proof']) {
+  test(`a cold socket closing before its ${phase} rediscovers its exact app within admission`, async (t) => {
+    const target = {
+      id: 'cold-page',
+      title: 'com.example.app (iPhone)',
+      appId: 'com.example.app',
+      type: 'node',
+      deviceName: 'iPhone',
+      description: 'React Native Bridgeless [C++ connection]',
+    };
+    const fake = await startFakeCDP(0, { targets: [target] });
+    const client = new CDPClient(fake.port);
+    t.after(async () => {
+      await client.disconnect();
+      await fake.close();
+    });
+    const emit = WebSocket.prototype.emit;
+    let sockets = 0;
+    let firstSocket: WebSocket;
+    t.mock.method(WebSocket.prototype, 'emit', function (event, ...args) {
+      const emitted = emit.call(this, event, ...args);
+      if (event === 'open' && ++sockets === 1) {
+        firstSocket = this;
+        if (phase === 'first probe') {
+          target.id = 'ready-page';
+          this.close();
+        }
+      }
+      return emitted;
+    });
+    fake.setResponse('Runtime.evaluate', ({ expression }) => {
+      if (expression === SCRIPT_URL_EXPRESSION)
+        return { result: { value: `http://127.0.0.1:${fake.port}/index.bundle` } };
+      if (expression === MODULE_NAMES_EXPRESSION)
+        return {
+          result: {
+            value: JSON.stringify({
+              count: 1,
+              names: ['test/unit/qa/concurrent-admission.test.ts'],
+            }),
+          },
+        };
+      return { result: { value: true } };
+    });
+    const deadline = performance.now() + 90_000;
+    const proof = await client.withAttachDeadline(deadline, () =>
+      admit(
+        {
+          metroPort: fake.port,
+          readinessMs: 30_000,
+          remainingMs: () => deadline - performance.now(),
+          attach: async (attachDeadline) => {
+            await client.connectExact(
+              fake.port,
+              { platform: 'ios', bundleId: target.appId, deviceName: target.deviceName },
+              'default',
+              1,
+              undefined,
+              attachDeadline,
+            );
+          },
+          foreignDriver: async () => undefined,
+          open: async () => {
+            if (phase === 'origin proof') {
+              target.id = 'ready-page';
+              firstSocket.close();
+            }
+          },
+          prove: () =>
+            prove(
+              { evaluate: (expression) => client.evaluate(expression) },
+              { metroPort: fake.port, worktree },
+            ),
+          close: () => client.disconnect(),
+        },
+        createStop(),
+      ),
+    );
+    assert.equal(proof.ok, true);
+    assert.equal(client.connectedTarget?.id, 'ready-page');
+    assert.equal(client.connectedTarget?.appId, target.appId);
+  });
+}

@@ -12,7 +12,8 @@ import {
 import type { SelectTargetFilters } from './discovery.js';
 import { sleep } from './state.js';
 import { CDP_TIMEOUT_FAST } from './timeout-config.js';
-import { CDPRequestTimeoutError } from './transport.js';
+import { CDPRequestTimeoutError, CDPTargetClosedError } from './transport.js';
+export { CDPTargetClosedError } from './transport.js';
 import { probeReactReachable } from './setup.js';
 import type { CDPClientState, EvaluateResult, HermesTarget } from '../types.js';
 
@@ -70,8 +71,6 @@ export class CDPProbeTimeoutError extends Error {
     this.name = 'CDPProbeTimeoutError';
   }
 }
-
-export class CDPTargetClosedError extends Error {}
 
 /**
  * GH #184: run the bounded picker probe only for a status-intent connect against

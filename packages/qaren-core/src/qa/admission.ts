@@ -165,14 +165,7 @@ export async function admit(
   stop: { readonly signal: AbortSignal },
 ): Promise<Proven> {
   try {
-    return await withCancellation(stop.signal, async () => {
-      await attach(steps);
-      await refuseForeignDriver(steps);
-      await interruptible(steps.open);
-      const proof = await interruptible(steps.prove);
-      if (!proof.ok) throw new HandlerError(proof.code, proof.message);
-      return proof;
-    });
+    return await withCancellation(stop.signal, () => attach(steps));
   } catch (error) {
     await withCancellation(undefined, steps.close);
     stop.signal.throwIfAborted();
@@ -190,21 +183,32 @@ async function refuseForeignDriver(steps: AdmissionSteps): Promise<void> {
   if (foreign !== undefined) throw new HandlerError('BUSY_FOREIGN_FLOW', foreign);
 }
 
-async function attach(steps: AdmissionSteps): Promise<void> {
+async function attach(steps: AdmissionSteps): Promise<Proven> {
   const started = performance.now();
   const deadline = started + steps.remainingMs();
   const relaunchAt = started + steps.readinessMs;
   let relaunched = false;
+  let opened = false;
+  let attaching = true;
   let relaunchFailure: string | undefined;
   try {
-    await withDeadline(
+    return await withDeadline(
       deadline,
       new CDPProbeTimeoutError('CDP attach deadline exceeded'),
       async () => {
         for (;;) {
           try {
+            attaching = true;
             await attachReady(steps, deadline);
-            return;
+            attaching = false;
+            if (!opened) {
+              await refuseForeignDriver(steps);
+              await interruptible(steps.open);
+              opened = true;
+            }
+            const proof = await interruptible(steps.prove);
+            if (!proof.ok) throw new HandlerError(proof.code, proof.message);
+            return proof;
           } catch (error) {
             if (isAbort(error)) throw error;
             const remaining = Math.min(deadline - performance.now(), steps.remainingMs());
@@ -216,6 +220,7 @@ async function attach(steps: AdmissionSteps): Promise<void> {
                 (error instanceof CDPProbeTimeoutError ||
                   error instanceof CDPHandshakeTimeoutError));
             if (
+              !opened &&
               !relaunched &&
               steps.relaunch &&
               remaining >= steps.readinessMs &&
@@ -238,6 +243,7 @@ async function attach(steps: AdmissionSteps): Promise<void> {
     );
   } catch (error) {
     if (isAbort(error) || error instanceof HandlerError) throw error;
+    if (!attaching && !transientReadinessFailure(error)) throw error;
     const load = (steps.load ?? (() => loadavg()[0]))();
     throw new HandlerError(
       'CDP_NOT_CONNECTED',

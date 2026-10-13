@@ -720,15 +720,17 @@ export class CDPClient {
     const connect = () =>
       this.connectWithCurrentPolicy(port, filters, intent, targetRetries, awaitWithinBoundary);
     if (deadline === undefined) return connect();
+    return this.withAttachDeadline(deadline, () =>
+      withDeadline(deadline, new CDPProbeTimeoutError('CDP attach deadline exceeded'), connect),
+    );
+  }
+
+  async withAttachDeadline<T>(deadline: number, operation: () => Promise<T>): Promise<T> {
     // Restore rather than clear: a rejected overlapping attach must not drop the active one's deadline.
     const previous = this._attachDeadline;
     this._attachDeadline = deadline;
     try {
-      return await withDeadline(
-        deadline,
-        new CDPProbeTimeoutError('CDP attach deadline exceeded'),
-        connect,
-      );
+      return await operation();
     } finally {
       this._attachDeadline = previous;
     }
