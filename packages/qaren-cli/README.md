@@ -308,12 +308,16 @@ Package versions and the launch-supplied runner version do not prove freshness.
 Provisioning requires the Android SDK and a JDK on PATH; unchanged source uses
 Gradle's incremental build.
 
-A worktree-local outputs lock covers refresh, hash comparison and both installs;
-stale-retry APK invalidation takes the same lock. Retries acquire the existing
+An outputs lock in the resolved Android runner directory covers refresh, hash
+comparison and both installs; stale-retry APK invalidation takes the same lock.
+Retries acquire the existing
 rebuild-budget lock first, then the outputs lock, without changing the budget
 or its cleanup transitions. Instrumentation and the walk run after the outputs
-lock is released. Different worktrees have independent locks. Contention waits
-at most 15 minutes, then refuses with `ANDROID_RUNNER_APK_LOCK_TIMEOUT`.
+lock is released. Source worktrees with separate runner directories have
+independent locks; callers sharing an installed runtime or an explicit runner
+root share its lock (see
+[runner directory resolution](../qaren-core/src/runners/runtime-paths.ts)).
+Contention waits at most 15 minutes, then refuses with `ANDROID_RUNNER_APK_LOCK_TIMEOUT`.
 A crashed or cancelled owner leaves `app/build/.qaren-apk-lock` in the Android
 runner directory fenced: waiting never steals the lock by age. Before removing
 that empty directory, prove that all provisioning callers and their Gradle/adb
