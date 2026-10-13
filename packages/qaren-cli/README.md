@@ -980,7 +980,11 @@ owned by the [strict scanner](../qaren-core/src/runners/external-runner-detect.t
 and [kernel observer](src/process_observation.rs).
 
 Runs and evidence live under `~/.qaren/runs/<run-id>/`; device leases use
-`QAREN_LOCK_ROOT` or `~/.qaren/locks`. The walk writes `ledger.json` and
+`QAREN_LOCK_ROOT` or `~/.qaren/locks`. Checks, including `qaren pr`, claim a
+timestamped run directory atomically and retry with a numeric suffix when the
+name already exists, so same-second starts have separate run identities. Use the
+complete run ID printed by the receipt or watch hint for subsequent commands.
+The walk writes `ledger.json` and
 `report.md` when it reaches reporting; the receipt names available artifacts.
 Cleanup proves owned process-group and exact-simulator runner-host absence
 before releasing the lease. When the leased simulator had no runner host as the

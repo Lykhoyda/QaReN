@@ -233,14 +233,18 @@ fn run_inner(
         req.boot_device,
         req.android_home.as_deref(),
     )?;
-    let run_id = format!("check-{}", timefmt::compact_utc(started_ms));
-    let run_dir = RunRecord::run_dir(&req.runs_root, &run_id);
+    let mut run_id = format!("check-{}", timefmt::compact_utc(started_ms));
+    let mut run_dir = RunRecord::run_dir(&req.runs_root, &run_id);
+    let mut run_claim = None;
     let mut project_root = req.project_root.clone();
     let mut pr_state = None;
     if let Some(target) = &req.pr {
         let (repo_root, app_rel) = locate_worktree(runner, &req.project_root)?;
         let info = github::pr_view(runner, &target.target, &repo_root)?;
-        claim_run_dir(&run_dir)?;
+        let claim = claim_run_dir(&req.runs_root, &run_id)?;
+        run_id = claim.run_id.clone();
+        run_dir = claim.path.clone();
+        run_claim = Some(claim);
         start_events(req, &run_id, &run_dir);
         let wt = worktree::pr_worktree_path(&run_dir);
         // ponytail: until run.json exists only this process knows the worktree; a SIGKILL here
@@ -286,6 +290,12 @@ fn run_inner(
     })?;
     preflight_disk(runner, &req.runs_root)?;
 
+    if run_claim.is_none() {
+        let claim = claim_run_dir(&req.runs_root, &run_id)?;
+        run_id = claim.run_id.clone();
+        run_dir = claim.path.clone();
+        run_claim = Some(claim);
+    }
     let identity = capture_pid_identity(runner, std::process::id() as i32);
     let mut recovered = None;
     let lease = match lease::try_acquire(
@@ -320,9 +330,6 @@ fn run_inner(
     }
 
     if pr_state.is_none() {
-        if let Err(f) = claim_run_dir(&run_dir) {
-            return Err(lease::release_or_annotate(&lease, f));
-        }
         start_events(req, &run_id, &run_dir);
     }
     let mut resources = Resources::default();
@@ -372,6 +379,7 @@ fn run_inner(
     if let Err(f) = record.save(&req.runs_root) {
         return Err(lease::release_or_annotate(&lease, f));
     }
+    run_claim.as_mut().unwrap().record_owned = true;
     *unowned_worktree = None;
     let mut ctx = Ctx {
         runner,
@@ -1865,7 +1873,24 @@ fn start_events(req: &RunRequest, run_id: &str, run_dir: &Path) {
     crate::progress::watch_hint(run_id);
 }
 
-fn claim_run_dir(run_dir: &Path) -> Result<(), Failure> {
+struct RunDirClaim {
+    run_id: String,
+    path: PathBuf,
+    record_owned: bool,
+}
+
+impl Drop for RunDirClaim {
+    fn drop(&mut self) {
+        if !self.record_owned {
+            // Remove only empty directories; preserve any evidence or external changes.
+            let _ = std::fs::remove_dir(self.path.join("logs"));
+            let _ = std::fs::remove_dir(self.path.join("screenshots"));
+            let _ = std::fs::remove_dir(&self.path);
+        }
+    }
+}
+
+fn claim_run_dir(runs_root: &Path, base_id: &str) -> Result<RunDirClaim, Failure> {
     let cannot = |what: &Path, e: std::io::Error| {
         Failure::new(
             "record",
@@ -1874,22 +1899,34 @@ fn claim_run_dir(run_dir: &Path) -> Result<(), Failure> {
             "check the run directory permissions",
         )
     };
-    if let Some(parent) = run_dir.parent() {
-        std::fs::create_dir_all(parent).map_err(|e| cannot(parent, e))?;
-    }
-    // mkdir is the atomic claim on the run id.
-    std::fs::create_dir(run_dir).map_err(|e| {
-        if e.kind() == std::io::ErrorKind::AlreadyExists {
-            Failure::new(
-                "record",
-                FailureCode::RunAlreadyExists,
-                format!("{} already exists", run_dir.display()),
-                "re-run; run ids are timestamped per second",
-            )
+    std::fs::create_dir_all(runs_root).map_err(|e| cannot(runs_root, e))?;
+    for suffix in 0..u64::MAX {
+        let run_id = if suffix == 0 {
+            base_id.to_string()
         } else {
-            cannot(run_dir, e)
+            format!("{base_id}-{suffix:06}")
+        };
+        let path = RunRecord::run_dir(runs_root, &run_id);
+        match std::fs::create_dir(&path) {
+            Ok(()) => {
+                let claim = RunDirClaim {
+                    run_id,
+                    path,
+                    record_owned: false,
+                };
+                std::fs::create_dir(claim.path.join("logs")).map_err(|e| cannot(&claim.path, e))?;
+                std::fs::create_dir(claim.path.join("screenshots"))
+                    .map_err(|e| cannot(&claim.path, e))?;
+                return Ok(claim);
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(e) => return Err(cannot(&path, e)),
         }
-    })?;
-    std::fs::create_dir_all(run_dir.join("logs")).map_err(|e| cannot(run_dir, e))?;
-    std::fs::create_dir_all(run_dir.join("screenshots")).map_err(|e| cannot(run_dir, e))
+    }
+    Err(Failure::new(
+        "record",
+        FailureCode::RunAlreadyExists,
+        format!("no available run id for {base_id}"),
+        "check the run directory contents",
+    ))
 }
