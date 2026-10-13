@@ -551,9 +551,9 @@ test('Android retry cleanup preserves the attempted device before runner readine
   });
 });
 
-test('gh-418 android: invalidation deletes exactly the paths the apksExist check reads', () => {
+test('gh-418 android: invalidation deletes exactly the paths the apksExist check reads', async () => {
   const removed = [];
-  invalidateAndroidRunnerApks((p) => removed.push(p));
+  await invalidateAndroidRunnerApks((p) => removed.push(p));
   // Same source of truth (RUNNER_APK_PATHS) as androidRunnerApksExist — a
   // drift between what is deleted and what is existence-checked fails here.
   assert.deepEqual(removed, [..._androidRunnerApkPathsForTest()]);

@@ -306,7 +306,20 @@ their SHA-256 hashes with both installed packages. It reuses only a matching
 pair; a mismatch or unreadable installed identity reinstalls both expected APKs.
 Package versions and the launch-supplied runner version do not prove freshness.
 Provisioning requires the Android SDK and a JDK on PATH; unchanged source uses
-Gradle's incremental build. A runner left
+Gradle's incremental build.
+
+A worktree-local outputs lock covers refresh, hash comparison and both installs;
+stale-retry APK invalidation takes the same lock. Retries acquire the existing
+rebuild-budget lock first, then the outputs lock, without changing the budget
+or its cleanup transitions. Instrumentation and the walk run after the outputs
+lock is released. Different worktrees have independent locks. Contention waits
+at most 15 minutes, then refuses with `ANDROID_RUNNER_APK_LOCK_TIMEOUT`.
+A crashed or cancelled owner leaves `app/build/.qaren-apk-lock` in the Android
+runner directory fenced: waiting never steals the lock by age. Before removing
+that empty directory, prove that all provisioning callers and their Gradle/adb
+children for that runner directory have stopped.
+
+A runner left
 on the emulator by rn-dev-agent 1.x is
 signed differently and cannot be replaced in place: uninstall
 `dev.lykhoyda.rndevagent.androidrunner` and `dev.lykhoyda.rndevagent.androidrunner.test`

@@ -26,6 +26,7 @@ test('native startup settles cancellation and rejects buffered readiness without
   const originalExists = fs.existsSync;
   const originalReadDir = fs.readdirSync;
   const originalLstat = fs.lstatSync;
+  const originalMkdir = fs.mkdirSync;
   t.mock.method(fs, 'lstatSync', (path, options) => {
     if (
       /runner-state|session-|\/tmp\/(?:rn-(?:fast|android)-runner-state|qaren-session)\.json/.test(
@@ -40,6 +41,11 @@ test('native startup settles cancellation and rejects buffered readiness without
   const mutations: unknown[] = [];
   t.mock.method(fs, 'mkdirSync', (...args) => {
     mutations.push(['mkdir', ...args]);
+    // Provisioning coordinates real APK files through the fixture's outputs
+    // lock; keep that filesystem lifecycle real while stubbing durable state.
+    if (String(args[0]).startsWith(join(root, 'rn-android-runner/app/build'))) {
+      return Reflect.apply(originalMkdir, fs, args);
+    }
   });
   t.mock.method(fs, 'rmSync', (...args) => {
     mutations.push(['rm', ...args]);
