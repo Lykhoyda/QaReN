@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
 import {
   mkdirSync,
+  existsSync,
   mkdtempSync,
   readFileSync,
   realpathSync,
@@ -23,7 +24,10 @@ import {
   openReadableActionLoadContext,
   ownedActionPathIdentityMatches,
   resolveReadableActionCorpus,
+  writeRecordedActionTransaction,
 } from '../../dist/domain/action-store.js';
+import { atomicWriter } from '../../dist/domain/atomic-writer.js';
+import { freshRuntimeState } from '../../dist/domain/reusable-action.js';
 import { writeBlock } from '../../dist/qa/blocks.js';
 
 function repository(t: TestContext) {
@@ -56,6 +60,57 @@ function repository(t: TestContext) {
 
 const yaml =
   'appId: com.example.app\n---\n# id: welcome\n# intent: Welcome\n# status: experimental\n- tapOn: Welcome\n';
+
+test('creating an action refuses a main-copy link replaced during lock acquisition', (t) => {
+  const { mainApp, linkedApp } = repository(t);
+  const mainActions = join(mainApp, '.qaren', 'actions');
+  const link = join(linkedApp, '.qaren', 'actions');
+  symlinkSync(mainActions, link);
+  const withLock = atomicWriter.withLock;
+  t.mock.method(atomicWriter, 'withLock', (path: string, operation: () => unknown) => {
+    unlinkSync(link);
+    mkdirSync(link);
+    return withLock(path, operation);
+  });
+  assert.throws(() => createActionTextExclusive(linkedApp, 'welcome', yaml), /changed/);
+  assert.equal(existsSync(join(mainActions, 'welcome.yaml')), false);
+  assert.equal(existsSync(join(link, 'welcome.yaml')), false);
+});
+
+test('recording an action refuses a main-copy link replaced during lock acquisition', (t) => {
+  const { mainApp, linkedApp } = repository(t);
+  const mainActions = join(mainApp, '.qaren', 'actions');
+  const link = join(linkedApp, '.qaren', 'actions');
+  symlinkSync(mainActions, link);
+  const withLock = atomicWriter.withLock;
+  t.mock.method(atomicWriter, 'withLock', (path: string, operation: () => unknown) => {
+    unlinkSync(link);
+    mkdirSync(link);
+    return withLock(path, operation);
+  });
+  assert.throws(
+    () => writeRecordedActionTransaction(linkedApp, 'welcome', yaml, freshRuntimeState(), false),
+    /changed/,
+  );
+  assert.equal(existsSync(join(mainActions, 'welcome.yaml')), false);
+  assert.equal(existsSync(join(link, 'welcome.yaml')), false);
+});
+
+test('saving a block refuses a main-copy link replaced during lock acquisition', (t) => {
+  const { mainApp, linkedApp } = repository(t);
+  const mainActions = join(mainApp, '.qaren', 'actions');
+  const link = join(linkedApp, '.qaren', 'actions');
+  symlinkSync(mainActions, link);
+  const withLock = atomicWriter.withLock;
+  t.mock.method(atomicWriter, 'withLock', (path: string, operation: () => unknown) => {
+    unlinkSync(link);
+    mkdirSync(link);
+    return withLock(path, operation);
+  });
+  assert.throws(() => writeBlock(linkedApp, 'welcome', yaml), /changed/);
+  assert.equal(existsSync(join(mainActions, 'welcome.yaml')), false);
+  assert.equal(existsSync(join(link, 'welcome.yaml')), false);
+});
 
 for (const aliased of [false, true]) {
   test(`a linked worktree reads and creates actions in its repository main app copy (aliased=${aliased})`, (t) => {
@@ -91,6 +146,28 @@ test('ordinary real action directories remain readable and writable without Git'
     join(root, '.qaren', 'actions', 'welcome.yaml'),
   );
   assert.equal(loadAction(root, 'welcome').metadata.id, 'welcome');
+});
+
+test('action creation, recording and blocks initialize an absent real corpus', (t) => {
+  const root = realpathSync(mkdtempSync(join(tmpdir(), 'qaren-new-actions-')));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  assert.equal(
+    createActionTextExclusive(root, 'welcome', yaml),
+    join(root, '.qaren', 'actions', 'welcome.yaml'),
+  );
+  assert.equal(
+    writeRecordedActionTransaction(
+      root,
+      'recorded',
+      yaml.replace('# id: welcome', '# id: recorded'),
+      freshRuntimeState(),
+      false,
+    ).ok,
+    true,
+  );
+  assert.equal(writeBlock(root, 'saved', yaml.replace('# id: welcome', '# id: saved')), 'written');
+  for (const id of ['welcome', 'recorded', 'saved'])
+    assert.equal(loadAction(root, id)?.metadata.id, id);
 });
 
 for (const scenario of [

@@ -12,9 +12,7 @@ import {
 import { dirname } from 'node:path';
 import yaml from 'yaml';
 import {
-  actionPathFor,
-  assertOwnedActionCorpus,
-  captureOwnedActionPathIdentity,
+  captureOwnedActionWriteContext,
   ownedActionPathIdentityMatches,
   splitYaml,
   resolveActionPath,
@@ -340,18 +338,17 @@ export function storedFits(
 }
 
 export function writeBlock(appRoot: string, slug: string, text: string): 'written' | 'unchanged' {
-  const canonicalPath = actionPathFor(appRoot, slug);
+  const { filePath: canonicalPath, identity } = captureOwnedActionWriteContext(appRoot, slug);
+  const owned = (): void => {
+    if (!ownedActionPathIdentityMatches(identity))
+      throw new BlockWriteError(
+        'BLOCK_WRITE_REFUSED',
+        `${dirname(canonicalPath)} changed during the write`,
+      );
+  };
   return atomicWriter.withLock(canonicalPath, () => {
-    assertOwnedActionCorpus(appRoot);
+    owned();
     const path = resolveActionPath(appRoot, slug) ?? canonicalPath;
-    const identity = captureOwnedActionPathIdentity(appRoot);
-    const owned = (): void => {
-      if (!ownedActionPathIdentityMatches(identity))
-        throw new BlockWriteError(
-          'BLOCK_WRITE_REFUSED',
-          `${dirname(path)} changed during the write`,
-        );
-    };
     const existing = readOwnedFile(path);
     if (existing === text) return 'unchanged';
     const previous = existing !== null ? parseM7Header(existing) : null;

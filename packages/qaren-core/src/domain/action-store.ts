@@ -11,6 +11,7 @@ import {
   existsSync,
   fstatSync,
   lstatSync,
+  mkdirSync,
   openSync,
   closeSync,
   readFileSync,
@@ -451,6 +452,18 @@ export function ownedActionPathIdentityMatches(entries: readonly OwnedActionPath
   }
 }
 
+export function captureOwnedActionWriteContext(projectRoot: string, actionId: string) {
+  const filePath = actionPathFor(projectRoot, actionId);
+  mkdirSync(dirname(filePath), { recursive: true });
+  const identity = captureOwnedActionPathIdentity(projectRoot);
+  if (
+    !identity.some((entry) => entry.kind === 'directory' && entry.path === dirname(filePath)) ||
+    !ownedActionPathIdentityMatches(identity)
+  )
+    throw new Error(`Action ${actionId} changed before the write.`);
+  return { filePath, identity };
+}
+
 type AcceptedReadableActionCorpus = Extract<ReadableActionCorpus, { status: 'owned-directory' }>;
 
 export type ReadableActionSnapshot = NonNullable<ReturnType<typeof readableActionsSnapshot>>;
@@ -614,11 +627,11 @@ export function createActionTextExclusive(
   actionId: string,
   yamlText: string,
 ): string {
-  const yamlPath = actionPathFor(projectRoot, actionId);
+  const { filePath: yamlPath, identity } = captureOwnedActionWriteContext(projectRoot, actionId);
   const ymlPath = yamlPath.replace(/\.yaml$/, '.yml');
+  const pathIsOwned = () => ownedActionPathIdentityMatches(identity);
   return atomicWriter.withLock(yamlPath, () => {
-    const pathIdentity = captureOwnedActionPathIdentity(projectRoot);
-    const pathIsOwned = () => ownedActionPathIdentityMatches(pathIdentity);
+    if (!pathIsOwned()) throw new Error(`Action ${actionId} changed during creation.`);
     const existing = resolveActionPath(projectRoot, actionId);
     if (existing) throw new Error(`Action ${actionId} already exists at ${existing}.`);
     if (!atomicWriter.writeTextCreateExclusive(yamlPath, yamlText, pathIsOwned)) {
@@ -651,13 +664,16 @@ export function writeRecordedActionTransaction(
   state: ReusableAction['state'],
   overwrite: boolean,
 ): WriteRecordedActionResult {
-  const yamlPath = actionPathFor(projectRoot, actionId);
+  const { filePath: yamlPath, identity } = captureOwnedActionWriteContext(projectRoot, actionId);
   return atomicWriter.withLock(yamlPath, () => {
+    if (!ownedActionPathIdentityMatches(identity))
+      throw new Error(`Action ${actionId} changed during recording.`);
     const existingPath = resolveActionPath(projectRoot, actionId);
     if (existingPath && !overwrite) return { ok: false, existingPath };
     const filePath = existingPath ?? yamlPath;
     const pathIdentity = captureOwnedActionPathIdentity(projectRoot, existingPath ?? undefined);
-    const pathIsOwned = () => ownedActionPathIdentityMatches(pathIdentity);
+    const pathIsOwned = () =>
+      ownedActionPathIdentityMatches(identity) && ownedActionPathIdentityMatches(pathIdentity);
     const sidecarPath = sidecarPathFor(filePath);
     if (!existingPath && existsSync(sidecarPath)) return { ok: false, existingPath: null };
     const written = existingPath
