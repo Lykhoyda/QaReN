@@ -991,7 +991,8 @@ one. Fresh Android scenario-based
 `prepare` keeps launch and Metro under `expo run:android` and does not perform
 this warmup.
 A manifest or dev-client launch timeout refuses with `CORE_REFUSED`; the launch is retried once
-only when the measured one-minute host load exceeds the launch envelope. Other
+regardless of host load, using the existing command timeout and cancellation checks.
+Host load is diagnostic only. Other
 manifest and launch errors remain `BUILD_FAILED`. Cleanup retained resources
 before retrying.
 

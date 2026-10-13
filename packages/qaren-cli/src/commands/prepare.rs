@@ -1764,7 +1764,7 @@ pub(crate) fn run_reuse_path(ctx: &mut Ctx, plan: &BuildPlan, t: u64) -> Result<
     };
     let mut launched = ctx.runner.run(&launch);
     let mut load = launched.timed_out.then(crate::core::host_load_1m).flatten();
-    let retried = retry_launch(&launched, load);
+    let retried = retry_launch(&launched);
     if retried {
         ensure_running(ctx.runner, "build")?;
         launched = ctx.runner.run(&launch);
@@ -2981,12 +2981,8 @@ fn dry_run_receipt(
     receipt
 }
 
-// Mirrors the CDP leg's admission envelope (qaren-core qa/admission.ts LOAD_ENVELOPE).
-const LOAD_ENVELOPE: f64 = 10.0;
-
-// Only a launch that timed out under host load is retried, once.
-fn retry_launch(launched: &crate::exec::CmdOutput, load: Option<f64>) -> bool {
-    launched.timed_out && load.is_some_and(|load| load > LOAD_ENVELOPE)
+fn retry_launch(launched: &crate::exec::CmdOutput) -> bool {
+    launched.timed_out
 }
 
 // A launch timeout is the CDP leg's environmental refusal; any other launch error stays a build failure.
@@ -3005,18 +3001,14 @@ fn launch_failure(
             format!("run qaren cleanup {run_id} --json, then retry prepare"),
         );
     }
-    let loaded = load.is_some_and(|load| load > LOAD_ENVELOPE);
     let measured = match load {
-        Some(load) => format!(
-            "host 1-minute load {load:.1} is {} the envelope {LOAD_ENVELOPE}",
-            if loaded { "above" } else { "within" }
-        ),
+        Some(load) => format!("host 1-minute load {load:.1}"),
         None => "host load unavailable".to_string(),
     };
-    let environment = match (loaded, retried) {
-        (true, true) => "; an environment refusal after one retry",
-        (true, false) => "; an environment refusal",
-        _ => "",
+    let environment = if retried {
+        "; an environment refusal after one retry"
+    } else {
+        "; an environment refusal"
     };
     Failure::new(
         "build",
@@ -3025,7 +3017,7 @@ fn launch_failure(
             "{what} timed out: {} ({measured}{environment})",
             launched.summary()
         ),
-        format!("run qaren cleanup {run_id} --json, then retry when the host is less loaded"),
+        format!("run qaren cleanup {run_id} --json, then retry prepare"),
     )
 }
 
@@ -3043,47 +3035,34 @@ mod launch_tests {
     }
 
     #[test]
-    fn only_a_launch_timeout_under_load_is_retried() {
-        assert!(retry_launch(&timed_out(), Some(65.0)));
-        assert!(!retry_launch(&timed_out(), Some(3.0)));
-        assert!(!retry_launch(&timed_out(), None));
-        assert!(!retry_launch(
-            &CmdOutput::failed(1, "no such app"),
-            Some(65.0)
-        ));
+    fn a_launch_timeout_is_retried_regardless_of_host_load() {
+        assert!(retry_launch(&timed_out()));
+        assert!(!retry_launch(&CmdOutput::failed(1, "no such app")));
+        assert!(!retry_launch(&CmdOutput::success("launched")));
     }
 
     #[test]
-    fn a_launch_timeout_is_an_environment_refusal_with_the_load_envelope() {
-        let loaded = launch_failure(
-            "dev client launch",
-            &timed_out(),
-            Some(256.0),
-            true,
-            "check-1",
-        );
-        assert_eq!(loaded.code, FailureCode::CoreRefused);
-        assert!(loaded.code.is_refusal());
-        let detail = loaded.detail.to_string();
-        assert!(
-            detail.contains("host 1-minute load 256.0 is above the envelope 10"),
-            "{detail}"
-        );
-        assert!(
-            detail.contains("an environment refusal after one retry"),
-            "{detail}"
-        );
-        let calm = launch_failure(
-            "dev client launch",
-            &timed_out(),
-            Some(2.0),
-            false,
-            "check-1",
-        );
-        assert_eq!(calm.code, FailureCode::CoreRefused);
-        let detail = calm.detail.to_string();
-        assert!(detail.contains("within the envelope 10"), "{detail}");
-        assert!(!detail.contains("environment refusal"), "{detail}");
+    fn a_launch_timeout_refuses_with_diagnostic_load_only() {
+        for (load, measured) in [
+            (Some(256.0), "host 1-minute load 256.0"),
+            (Some(2.0), "host 1-minute load 2.0"),
+            (None, "host load unavailable"),
+        ] {
+            let failure = launch_failure("dev client launch", &timed_out(), load, true, "check-1");
+            assert_eq!(failure.code, FailureCode::CoreRefused);
+            assert!(failure.code.is_refusal());
+            let detail = failure.detail.to_string();
+            assert!(detail.contains(measured), "{detail}");
+            assert!(
+                detail.contains("an environment refusal after one retry"),
+                "{detail}"
+            );
+            assert!(!detail.contains("envelope"), "{detail}");
+            assert_eq!(
+                failure.next_action.to_string(),
+                "run qaren cleanup check-1 --json, then retry prepare"
+            );
+        }
     }
 
     #[test]
