@@ -523,6 +523,11 @@ above a visible keyboard. On both iOS and Android, a target whose centre is
 covered by the observed keyboard gets a scroll sized to move that centre toward
 the middle of the band above the keyboard, capped to 60% of that band's height.
 Scrolls without keyboard clearance keep the fixed amount of `0.6`.
+Successful iOS fast-runner scrolls now run the same bounded settle wait as taps
+before returning: screen-static probing with snapshot-equality fallback. Results
+include `meta.settle` and `meta.timings_ms.settle`; a timeout reports unsettled
+rather than proving the target safe. `RN_SETTLE=0` or `false` skips this wait,
+its probes and metadata, but does not disable the walker's frame guard below.
 It then requires a unique rebind to the refused target's testID and kind before
 retrying, including keyboard-fallback wrapper
 taps. A label-only target cannot rebind after scrolling; a missing or nonunique
@@ -533,6 +538,9 @@ agreeing consecutive frame readbacks within the existing bounded readback
 budget; otherwise `SCROLL_UNSETTLED`
 refuses without another dispatch or recovery. Keyboard-fallback focus readbacks
 use the same settlement check.
+When timing observation is enabled, these readbacks report frame changes and
+the largest vertical movement among uniquely matched targets; the
+[readback implementation](../qaren-core/src/qa/walker.ts) owns these diagnostics.
 A second occlusion fails with that same off-screen explanation; wrapper fallback
 reports that nothing was typed. This refusal does not become
 `ACTION_OUTCOME_UNCERTAIN`. Checks and waits gain only the keyboard rule below.
