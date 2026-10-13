@@ -5,8 +5,9 @@ import { promisify } from 'node:util';
 import { fileURLToPath } from 'node:url';
 import {
   isIosSimulatorUdid,
-  probeIosExternalRunnerStrict,
+  probeIosExternalRunnerAdmission,
   type IosStrictRunnerStatus,
+  type IosAdmissionProbeEvidence,
 } from '../runners/external-runner-detect.js';
 
 export interface FreshInstallPreflightResult {
@@ -14,6 +15,7 @@ export interface FreshInstallPreflightResult {
   platform: 'ios';
   deviceId: string;
   status: IosStrictRunnerStatus;
+  evidence?: IosAdmissionProbeEvidence;
 }
 
 async function observeProcess(
@@ -33,9 +35,22 @@ async function observeProcess(
       ],
       { timeout, maxBuffer: 32_768, encoding: 'utf8' },
     );
-    return stderr === '' ? JSON.parse(stdout) : null;
-  } catch {
-    return null;
+    if (stderr !== '') return { observationFailure: 'observer_stderr' };
+    try {
+      return JSON.parse(stdout);
+    } catch {
+      return { observationFailure: 'observer_invalid_json' };
+    }
+  } catch (error) {
+    const failure = error as NodeJS.ErrnoException & { killed?: boolean };
+    return {
+      observationFailure:
+        failure.code === 'ERR_CHILD_PROCESS_STDIO_MAXBUFFER'
+          ? 'observer_output_oversize'
+          : failure.killed || failure.code === 'ETIMEDOUT'
+            ? 'observer_timeout'
+            : 'observer_failed',
+    };
   }
 }
 
@@ -64,14 +79,14 @@ export async function freshInstallPreflight(args: string[]): Promise<FreshInstal
     v: 1,
     platform: 'ios',
     deviceId,
-    status: await probeIosExternalRunnerStrict(
+    ...(await probeIosExternalRunnerAdmission(
       undefined,
       deviceId,
       observer
         ? (pid, timeout, withArgv, inspection) =>
             observeProcess(observer, pid, timeout, withArgv, inspection)
         : undefined,
-    ),
+    )),
   };
 }
 

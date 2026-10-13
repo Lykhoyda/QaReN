@@ -1011,6 +1011,15 @@ instead of admitting a partial scan. The limits and classification rules are
 owned by the [strict scanner](../qaren-core/src/runners/external-runner-detect.ts)
 and [kernel observer](src/process_observation.rs).
 
+When the strict admission probe refuses with `FRESH_INSTALL_ADMISSION_UNKNOWN`
+or `DEVICE_BUSY`, it includes `probe_status`, `probe_evidence`, `exit_code` and `timed_out` in
+`failure.detail`, retained in the receipt and `run.json`. Valid probe evidence
+contains an allowlisted reason and, when available, a PID or candidate count;
+raw process arguments, paths and subprocess output are not included. Missing,
+invalid or mismatched evidence is reported as `unavailable`, `invalid_evidence`,
+`envelope_mismatch` or `invalid_response`. These diagnostics do not relax
+admission: resolve the refusal and start a new run.
+
 Runs and evidence live under `~/.qaren/runs/<run-id>/`; device leases use
 `QAREN_LOCK_ROOT` or `~/.qaren/locks`. Checks, including `qaren pr`, claim a
 timestamped run directory atomically and retry with a numeric suffix when the
@@ -1132,10 +1141,25 @@ block preservation; replay identifiers also remain unchanged.
 `qaren actions list [--json]` and `qaren actions show <slug>` read the
 action corpus of the current directory. Both `.yaml` and `.yml` are supported;
 existing files retain their extension when patched. A slug with both extensions
-refuses inspection and is not overwritten by `check`. Symlinked corpora and
-action files are refused. Inspection header validity and defaults follow the
+refuses inspection and is not overwritten by `check`. These inspection commands
+refuse symlinked corpora and action files. Inspection header validity and defaults follow the
 [core header parser](../qaren-core/src/domain/reusable-action.ts); `list` skips
 invalid headers and `show` refuses them.
+
+The TypeScript action store used by saved-block reads, replay and writes normally
+uses a real `.qaren/actions` directory. A linked Git
+worktree may instead link that directory directly to an existing real
+`.qaren/actions` directory in this repository's main copy, at the same
+app-relative path. Git must prove that both copies share the same repository;
+another clone, another app path, a chained or dangling link, or an ancestor link
+that escapes the expected main-copy path is refused. A directory alias is accepted
+when its canonical target matches that path. `.qaren` itself and individual action files must not be
+symlinks. Reads, replay and writes use the accepted main-copy corpus, so saved
+blocks and patches are shared with the main copy. Main-copy link refusals identify
+a missing main-copy directory when verified; otherwise they report that the direct-link
+proof could not be verified. They recommend a real directory or the supported
+direct link. The [action store](../qaren-core/src/domain/action-store.ts)
+owns these checks and detects replacement of the link or corpus during an operation.
 
 PR runs copy saved blocks to the run's `blocks/` directory with their original
 extension and bytes. See [Test a pull request](#test-a-pull-request) for branch

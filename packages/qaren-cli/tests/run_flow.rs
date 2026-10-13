@@ -1708,7 +1708,10 @@ fn check_runs_the_phases_in_order_and_ends_pass_with_a_report() {
         serde_json::from_str(mock.piped_stdin_text(1).trim()).unwrap();
     assert_eq!(request_line["payload"]["appId"], "com.rndevagent.testapp");
     assert_eq!(request_line["payload"]["target"]["deviceId"], UDID);
-    assert_eq!(request_line["payload"]["target"]["deviceName"], "qa-company-app");
+    assert_eq!(
+        request_line["payload"]["target"]["deviceName"],
+        "qa-company-app"
+    );
     assert_eq!(
         request_line["payload"]["preflightCalls"],
         probe_json()["callDetails"]
@@ -4237,12 +4240,25 @@ fn fresh_install_and_boot_device_require_valid_matching_clear_admission_with_suc
             (
                 CmdOutput {
                     exit_code: Some(4),
+                    stdout: serde_json::json!({
+                        "v": 1, "platform": "ios", "deviceId": UDID, "status": "unknown",
+                        "evidence": { "reason": "scan_row_invalid" }
+                    })
+                    .to_string(),
+                    ..Default::default()
+                },
+                FailureCode::FreshInstallAdmissionUnknown,
+            ),
+            (
+                CmdOutput {
+                    exit_code: Some(4),
                     stdout: response("busy", UDID),
                     ..Default::default()
                 },
                 FailureCode::DeviceBusy,
             ),
         ] {
+            let reported_scan_reason = output.stdout.contains("scan_row_invalid");
             let (repo, app) = app_repo();
             let mut mock = MockRunner::new();
             if boot {
@@ -4273,6 +4289,15 @@ fn fresh_install_and_boot_device_require_valid_matching_clear_admission_with_suc
             };
             let receipt = run(&mut runner, &req);
             assert_eq!(receipt.result, ReceiptResult::Refused);
+            if reported_scan_reason {
+                assert!(receipt
+                    .failure
+                    .as_ref()
+                    .unwrap()
+                    .detail
+                    .as_str()
+                    .contains("scan_row_invalid"));
+            }
             assert_eq!(receipt.failure.unwrap().code, expected);
             assert_eq!(receipt.cleanup["device_lease"], "removed");
             let expected_phases = if after_deps {
@@ -4289,6 +4314,15 @@ fn fresh_install_and_boot_device_require_valid_matching_clear_admission_with_suc
             assert_eq!(runner.mock.remaining(), 0);
             let record = RunRecord::load(&req.runs_root, &run_id()).unwrap();
             assert_eq!(record.phase, Phase::Failed);
+            if reported_scan_reason {
+                assert!(record
+                    .failure
+                    .as_ref()
+                    .unwrap()
+                    .detail
+                    .as_str()
+                    .contains("scan_row_invalid"));
+            }
             assert_eq!(record.failure.unwrap().code, expected);
         }
     }

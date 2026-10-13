@@ -49,6 +49,70 @@ fn fresh_admission_command_pins_runtime_node_device_cwd_and_deadline_without_ado
     );
 }
 
+#[test]
+fn fresh_admission_refusal_reports_only_validated_probe_evidence_and_transport_state() {
+    for (evidence, expected) in [
+        (
+            serde_json::json!({"reason": "driver_identity_unproven", "pid": 20}),
+            "driver_identity_unproven",
+        ),
+        (
+            serde_json::json!({"reason": "candidate_budget_exceeded", "candidates": 65}),
+            "candidate_budget_exceeded",
+        ),
+        (
+            serde_json::json!({"reason": "/private/diagnostic-secret"}),
+            "invalid_evidence",
+        ),
+        (
+            serde_json::json!({"reason": "scan_failed", "command": "/private/diagnostic-secret"}),
+            "invalid_evidence",
+        ),
+        (
+            serde_json::json!({"reason": "observer_failed", "pid": 0}),
+            "invalid_evidence",
+        ),
+        (
+            serde_json::json!({"reason": "observer_failed", "pid": -1}),
+            "invalid_evidence",
+        ),
+        (
+            serde_json::json!({"reason": "candidate_budget_exceeded", "candidates": 1_048_577}),
+            "invalid_evidence",
+        ),
+    ] {
+        let mut mock = MockRunner::new();
+        mock.expect_run(
+            "fresh-install-preflight.js",
+            CmdOutput {
+                exit_code: Some(4),
+                stdout: serde_json::json!({
+                    "v": 1, "platform": "ios", "deviceId": "AAAA-1111", "status": "unknown",
+                    "evidence": evidence
+                })
+                .to_string(),
+                stderr: "/private/diagnostic-secret".into(),
+                ..Default::default()
+            },
+        );
+        let failure = core::fresh_install_admission(
+            &mut mock,
+            Path::new("/node"),
+            Path::new("/runtime"),
+            Path::new("/app"),
+            "AAAA-1111",
+        )
+        .unwrap_err();
+        assert_eq!(failure.code, FailureCode::FreshInstallAdmissionUnknown);
+        let detail = failure.detail.as_str();
+        assert!(detail.contains(expected), "{detail}");
+        assert!(detail.contains("probe_status=unknown"));
+        assert!(detail.contains("exit_code=Some(4)"));
+        assert!(detail.contains("timed_out=false"));
+        assert!(!detail.contains("diagnostic-secret"));
+    }
+}
+
 fn request() -> CoreRequest {
     CoreRequest {
         run_id: RUN.to_string(),

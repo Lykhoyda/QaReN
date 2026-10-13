@@ -50,8 +50,9 @@ The package cut, literal `qaren check`, Jev seam, Phase 4 blocks, and PR run/pub
   `scripts/js-migration-baseline.txt`; do not grow that baseline casually.
 - In `packages/qaren-core` the names are final and have no alias: `QAREN_*`
   environment variables, `.qaren/` in the app repository (`.qaren/actions` is
-  the action corpus, a real directory; symlinked corpora and per-file symlinks
-  are refused by `src/domain/action-store.ts`), `~/.qaren/runtime` for the
+  the action corpus, a real directory or a Git-proven direct link to the same
+  app-relative corpus in this repository's main copy; other corpus symlinks and
+  per-file symlinks are refused by `src/domain/action-store.ts`), `~/.qaren/runtime` for the
   installed runtime, `~/.qaren/state` for per-user state, `__QAREN` for the
   injected global. Do not reintroduce an old name there or add a shim for one.
   Old names that remain on purpose: the plugin skill text (Phase 8), the GitHub slug

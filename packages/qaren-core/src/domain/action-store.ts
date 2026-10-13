@@ -11,13 +11,16 @@ import {
   existsSync,
   fstatSync,
   lstatSync,
+  mkdirSync,
   openSync,
   closeSync,
   readFileSync,
   realpathSync,
+  readlinkSync,
   statSync,
   unlinkSync,
 } from 'node:fs';
+import { execFileSync } from 'node:child_process';
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import {
   type ReusableAction,
@@ -66,6 +69,9 @@ export type ReadableActionCorpus =
       rnAgentIdentity: PathIdentity;
       actionsDir: string;
       identity: PathIdentity;
+      actionsLink?: { path: string; identity: PathIdentity };
+      actionsParent: string;
+      actionsParentIdentity: PathIdentity;
     };
 
 export interface ReadableActionOperationSnapshot {
@@ -78,6 +84,9 @@ export interface ReadableActionOperationSnapshot {
   readonly actionsDir: string;
   readonly directory: string;
   readonly directoryIdentity: Readonly<PathIdentity>;
+  readonly actionsLink?: { readonly path: string; readonly identity: Readonly<PathIdentity> };
+  readonly actionsParent: string;
+  readonly actionsParentIdentity: Readonly<PathIdentity>;
 }
 
 function identityOf(stat: { dev: bigint | number; ino: bigint | number }): PathIdentity {
@@ -135,29 +144,108 @@ function refuseReplacedActions(actionsDir: string): Error {
   return new Error(`Refusing replaced learned-action corpus symlink at ${actionsDir}.`);
 }
 
+function corpusSymlinkRefusal(path: string, cause = 'unsupported symlink'): Error {
+  return new Error(
+    `Refusing learned-action corpus symlink at ${path}: ${cause}. Use a real directory, or link .qaren/actions directly to this repository main copy's actions directory.`,
+  );
+}
+
+function mainCopyActionsTarget(projectRoot: string, actionsDir: string): string {
+  let expected: string | undefined;
+  try {
+    const env = { ...process.env };
+    for (const key of ['GIT_DIR', 'GIT_WORK_TREE', 'GIT_COMMON_DIR']) delete env[key];
+    const git = (root: string, args: string[]) =>
+      execFileSync('git', ['-C', root, ...args], {
+        encoding: 'utf8',
+        timeout: 2_000,
+        maxBuffer: 65_536,
+        stdio: ['ignore', 'pipe', 'pipe'],
+        env,
+      }).replace(/\n$/, '');
+    const gitPath = (root: string, flag: string) =>
+      realpathSync(git(root, ['rev-parse', '--path-format=absolute', flag]));
+    const worktree = gitPath(projectRoot, '--show-toplevel');
+    const common = gitPath(projectRoot, '--git-common-dir');
+    const mainRecord = git(projectRoot, ['worktree', 'list', '--porcelain', '-z']).split('\0\0')[0];
+    const mainField = mainRecord.split('\0')[0];
+    if (!mainField.startsWith('worktree ') || mainRecord.split('\0').includes('bare'))
+      throw new Error();
+    const main = realpathSync(mainField.slice('worktree '.length));
+    if (
+      main === worktree ||
+      gitPath(main, '--show-toplevel') !== main ||
+      gitPath(main, '--git-common-dir') !== common
+    )
+      throw new Error();
+    const appRelative = relative(worktree, projectRoot);
+    if (isAbsolute(appRelative) || appRelative === '..' || appRelative.startsWith(`..${sep}`))
+      throw new Error();
+    expected = join(main, appRelative, '.qaren', 'actions');
+    const target = resolve(dirname(actionsDir), readlinkSync(actionsDir));
+    const stat = lstatIdentityIfPresent(target);
+    if (!stat || stat.isSymbolicLink() || !stat.isDirectory() || canonical(target) !== expected)
+      throw new Error();
+    return expected;
+  } catch {
+    let missingMain = false;
+    try {
+      const target = resolve(dirname(actionsDir), readlinkSync(actionsDir));
+      missingMain = Boolean(
+        expected &&
+        basename(target) === basename(expected) &&
+        canonical(dirname(target)) === dirname(expected) &&
+        !lstatIdentityIfPresent(target),
+      );
+    } catch {
+      /* The link may have been replaced during Git inspection. */
+    }
+    throw corpusSymlinkRefusal(
+      actionsDir,
+      missingMain
+        ? 'the main copy has no actions directory yet'
+        : 'could not verify a direct link to this repository main copy at the same app-relative path',
+    );
+  }
+}
+
 export function resolveReadableActionCorpus(projectRoot: string): ReadableActionCorpus {
   const root = canonical(projectRoot) ?? resolve(projectRoot);
   const rootStat = lstatIdentityIfPresent(root);
   if (!rootStat || rootStat.isSymbolicLink() || !rootStat.isDirectory())
     return { status: 'absent' };
   const rnAgentDir = join(root, '.qaren');
-  const actionsDir = join(rnAgentDir, 'actions');
+  let actionsDir = join(rnAgentDir, 'actions');
   const rnAgentStat = lstatIdentityIfPresent(rnAgentDir);
   if (!rnAgentStat) return { status: 'absent' };
   const refuse = (path: string): ReadableActionCorpus => ({
     status: 'refused',
-    reason: `Refusing learned-action corpus symlink at ${path}.`,
+    reason: corpusSymlinkRefusal(path).message,
   });
   if (rnAgentStat.isSymbolicLink() || !rnAgentStat.isDirectory()) return refuse(rnAgentDir);
   const rnAgentIdentity = identityOf(rnAgentStat);
   if (!openUnfollowedDirectory(rnAgentDir, rnAgentIdentity)) return refuse(rnAgentDir);
-  const actionsStat = lstatIdentityIfPresent(actionsDir);
+  let actionsStat = lstatIdentityIfPresent(actionsDir);
   if (!directoryIdentityUnchanged(rnAgentDir, rnAgentIdentity)) return refuse(rnAgentDir);
   if (!actionsStat) return { status: 'absent' };
-  if (actionsStat.isSymbolicLink()) return refuse(actionsDir);
+  let actionsLink: { path: string; identity: PathIdentity } | undefined;
+  if (actionsStat.isSymbolicLink()) {
+    actionsLink = { path: actionsDir, identity: identityOf(actionsStat) };
+    try {
+      actionsDir = mainCopyActionsTarget(root, actionsDir);
+      actionsStat = lstatIdentityIfPresent(actionsDir);
+    } catch (error) {
+      return { status: 'refused', reason: (error as Error).message };
+    }
+    if (!actionsStat || actionsStat.isSymbolicLink()) return refuse(actionsDir);
+  }
   if (!actionsStat.isDirectory()) return { status: 'absent' };
   const identity = identityOf(actionsStat);
   if (!openUnfollowedDirectory(actionsDir, identity)) return refuse(actionsDir);
+  const actionsParent = dirname(actionsDir);
+  const parentStat = lstatIdentityIfPresent(actionsParent);
+  if (!parentStat || parentStat.isSymbolicLink() || !parentStat.isDirectory())
+    return refuse(actionsParent);
   return {
     status: 'owned-directory',
     projectRoot: root,
@@ -166,6 +254,9 @@ export function resolveReadableActionCorpus(projectRoot: string): ReadableAction
     rnAgentIdentity,
     actionsDir,
     identity,
+    actionsLink,
+    actionsParent,
+    actionsParentIdentity: identityOf(parentStat),
   };
 }
 
@@ -198,6 +289,14 @@ function captureReadableActionOperationSnapshot(
     actionsDir: corpus.actionsDir,
     directory: corpus.actionsDir,
     directoryIdentity: Object.freeze({ ...corpus.identity }),
+    actionsLink:
+      corpus.actionsLink &&
+      Object.freeze({
+        path: corpus.actionsLink.path,
+        identity: Object.freeze({ ...corpus.actionsLink.identity }),
+      }),
+    actionsParent: corpus.actionsParent,
+    actionsParentIdentity: Object.freeze({ ...corpus.actionsParentIdentity }),
   });
 }
 
@@ -209,38 +308,55 @@ export function assertReadableActionOperationUnchanged(
     directoryIdentityUnchanged(snapshot.projectRoot, snapshot.projectRootIdentity) &&
     directoryIdentityUnchanged(snapshot.rnAgentDir, snapshot.rnAgentIdentity) &&
     directoryIdentityUnchanged(snapshot.actionsDir, snapshot.directoryIdentity) &&
-    canonical(snapshot.actionsDir) === snapshot.directory;
+    directoryIdentityUnchanged(snapshot.actionsParent, snapshot.actionsParentIdentity) &&
+    canonical(snapshot.actionsParent) === snapshot.actionsParent &&
+    canonical(snapshot.actionsDir) === snapshot.directory &&
+    (!snapshot.actionsLink ||
+      linkIdentityUnchanged(
+        snapshot.actionsLink.path,
+        snapshot.actionsLink.identity,
+        snapshot.directory,
+      ));
   if (!unchanged) throw refuseReplacedActions(snapshot.actionsDir);
 }
 
-/**
- * Resolve the canonical YAML path for an action id under a project root.
- * Mirrors the .qaren/actions/ convention (D1208 single-folder doctrine,
- * supersedes D1207).
- *
- * Phase 134.3 (deepsec HIGH path-traversal): the regex check is the
- * primary defense — `actionId` flows from caller args (MCP tool params,
- * project YAML file names) and a `../etc/passwd` slug would otherwise
- * escape `.qaren/actions/`. The assertWithinDir check is a
- * defense-in-depth chokepoint that catches any future bypass of the
- * regex (e.g. a new caller that forgets to validate).
- */
+// Validate the action ID before resolving the owned corpus to prevent path traversal.
 export function actionPathFor(projectRoot: string, actionId: string): string {
   assertValidActionId(actionId, 'actionPathFor');
-  const actionsDir = join(projectRoot, '.qaren', 'actions');
-  assertOwnedActionCorpus(projectRoot);
+  const actionsDir = ownedActionsDirectory(projectRoot);
   const fileName = `${actionId}.yaml`;
   assertWithinDir(fileName, actionsDir);
   return join(actionsDir, fileName);
 }
 
 export function assertOwnedActionCorpus(projectRoot: string): void {
+  ownedActionsDirectory(projectRoot);
+}
+
+function ownedActionsDirectory(projectRoot: string): string {
   for (const path of [join(projectRoot, '.qaren'), join(projectRoot, '.qaren', 'actions')]) {
     const stat = lstatIfPresent(path);
     if (stat?.isSymbolicLink()) {
-      throw new Error(`Refusing learned-action corpus symlink at ${path}.`);
+      if (basename(path) === 'actions')
+        return mainCopyActionsTarget(canonical(projectRoot) ?? resolve(projectRoot), path);
+      throw corpusSymlinkRefusal(path);
     }
   }
+  return join(projectRoot, '.qaren', 'actions');
+}
+
+function linkIdentityUnchanged(
+  path: string,
+  expected: Readonly<PathIdentity>,
+  target: string,
+): boolean {
+  const current = lstatIdentityIfPresent(path);
+  return Boolean(
+    current?.isSymbolicLink() &&
+    String(current.dev) === expected.dev &&
+    String(current.ino) === expected.ino &&
+    canonical(path) === target,
+  );
 }
 
 export function assertReadableActionCorpus(projectRoot: string): void {
@@ -275,33 +391,57 @@ interface OwnedActionPathEntry {
   path: string;
   dev: number;
   ino: number;
-  kind: 'directory' | 'file';
+  kind: 'directory' | 'file' | 'link';
+  target?: string;
 }
 
 export function captureOwnedActionPathIdentity(
   projectRoot: string,
   filePath?: string,
 ): OwnedActionPathEntry[] {
-  const paths: Array<{ path: string; kind: OwnedActionPathEntry['kind'] }> = [
+  const actionsDir = ownedActionsDirectory(projectRoot);
+  const linked = lstatSync(join(projectRoot, '.qaren', 'actions')).isSymbolicLink();
+  const paths: Array<{ path: string; kind: OwnedActionPathEntry['kind']; target?: string }> = [
     { path: join(projectRoot, '.qaren'), kind: 'directory' },
-    { path: join(projectRoot, '.qaren', 'actions'), kind: 'directory' },
+    ...(linked
+      ? [
+          {
+            path: join(projectRoot, '.qaren', 'actions'),
+            kind: 'link' as const,
+            target: actionsDir,
+          },
+          { path: dirname(actionsDir), kind: 'directory' as const, target: dirname(actionsDir) },
+        ]
+      : []),
+    { path: actionsDir, kind: 'directory', ...(linked ? { target: actionsDir } : {}) },
   ];
   if (filePath) paths.push({ path: filePath, kind: 'file' });
-  return paths.map(({ path, kind }) => {
+  return paths.map(({ path, kind, target }) => {
     const stat = lstatSync(path);
     const valid =
-      !stat.isSymbolicLink() && (kind === 'directory' ? stat.isDirectory() : stat.isFile());
+      kind === 'link'
+        ? stat.isSymbolicLink() && canonical(path) === target
+        : !stat.isSymbolicLink() &&
+          (!target || canonical(path) === target) &&
+          (kind === 'directory' ? stat.isDirectory() : stat.isFile());
     if (!valid) throw new Error(`Refusing changed learned-action path at ${path}.`);
-    return { path, kind, dev: stat.dev, ino: stat.ino };
+    return { path, kind, target, dev: stat.dev, ino: stat.ino };
   });
 }
 
 export function ownedActionPathIdentityMatches(entries: readonly OwnedActionPathEntry[]): boolean {
   try {
     return entries.every((entry) => {
+      if (entry.kind === 'link')
+        return linkIdentityUnchanged(
+          entry.path,
+          { dev: String(entry.dev), ino: String(entry.ino) },
+          entry.target!,
+        );
       const stat = lstatSync(entry.path);
       return (
         !stat.isSymbolicLink() &&
+        (!entry.target || canonical(entry.path) === entry.target) &&
         stat.dev === entry.dev &&
         stat.ino === entry.ino &&
         (entry.kind === 'directory' ? stat.isDirectory() : stat.isFile())
@@ -310,6 +450,18 @@ export function ownedActionPathIdentityMatches(entries: readonly OwnedActionPath
   } catch {
     return false;
   }
+}
+
+export function captureOwnedActionWriteContext(projectRoot: string, actionId: string) {
+  const filePath = actionPathFor(projectRoot, actionId);
+  mkdirSync(dirname(filePath), { recursive: true });
+  const identity = captureOwnedActionPathIdentity(projectRoot);
+  if (
+    !identity.some((entry) => entry.kind === 'directory' && entry.path === dirname(filePath)) ||
+    !ownedActionPathIdentityMatches(identity)
+  )
+    throw new Error(`Action ${actionId} changed before the write.`);
+  return { filePath, identity };
 }
 
 type AcceptedReadableActionCorpus = Extract<ReadableActionCorpus, { status: 'owned-directory' }>;
@@ -475,11 +627,11 @@ export function createActionTextExclusive(
   actionId: string,
   yamlText: string,
 ): string {
-  const yamlPath = actionPathFor(projectRoot, actionId);
+  const { filePath: yamlPath, identity } = captureOwnedActionWriteContext(projectRoot, actionId);
   const ymlPath = yamlPath.replace(/\.yaml$/, '.yml');
+  const pathIsOwned = () => ownedActionPathIdentityMatches(identity);
   return atomicWriter.withLock(yamlPath, () => {
-    const pathIdentity = captureOwnedActionPathIdentity(projectRoot);
-    const pathIsOwned = () => ownedActionPathIdentityMatches(pathIdentity);
+    if (!pathIsOwned()) throw new Error(`Action ${actionId} changed during creation.`);
     const existing = resolveActionPath(projectRoot, actionId);
     if (existing) throw new Error(`Action ${actionId} already exists at ${existing}.`);
     if (!atomicWriter.writeTextCreateExclusive(yamlPath, yamlText, pathIsOwned)) {
@@ -512,13 +664,16 @@ export function writeRecordedActionTransaction(
   state: ReusableAction['state'],
   overwrite: boolean,
 ): WriteRecordedActionResult {
-  const yamlPath = actionPathFor(projectRoot, actionId);
+  const { filePath: yamlPath, identity } = captureOwnedActionWriteContext(projectRoot, actionId);
   return atomicWriter.withLock(yamlPath, () => {
+    if (!ownedActionPathIdentityMatches(identity))
+      throw new Error(`Action ${actionId} changed during recording.`);
     const existingPath = resolveActionPath(projectRoot, actionId);
     if (existingPath && !overwrite) return { ok: false, existingPath };
     const filePath = existingPath ?? yamlPath;
     const pathIdentity = captureOwnedActionPathIdentity(projectRoot, existingPath ?? undefined);
-    const pathIsOwned = () => ownedActionPathIdentityMatches(pathIdentity);
+    const pathIsOwned = () =>
+      ownedActionPathIdentityMatches(identity) && ownedActionPathIdentityMatches(pathIdentity);
     const sidecarPath = sidecarPathFor(filePath);
     if (!existingPath && existsSync(sidecarPath)) return { ok: false, existingPath: null };
     const written = existingPath

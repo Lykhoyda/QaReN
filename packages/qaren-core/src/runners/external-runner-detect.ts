@@ -416,28 +416,110 @@ export async function probeIosExternalRunnerStrict(
   udid?: string,
   observeIdentity?: ProcessIdentityObserver,
 ): Promise<IosStrictRunnerStatus> {
-  if (!udid || !isIosSimulatorUdid(udid)) return 'unknown';
+  return (await probeIosExternalRunnerAdmission(execFileImpl, udid, observeIdentity)).status;
+}
+
+export type IosAdmissionProbeReason =
+  | 'invalid_device'
+  | 'scan_failed'
+  | 'scan_timeout'
+  | 'scan_output_oversize'
+  | 'scan_unavailable'
+  | 'scan_incomplete'
+  | 'scan_stderr'
+  | 'scan_oversize'
+  | 'scan_corrupt'
+  | 'scan_row_invalid'
+  | 'scan_pid_invalid'
+  | 'candidate_budget_exceeded'
+  | 'deadline_exceeded'
+  | 'driver_on_selected_device'
+  | 'observer_unavailable'
+  | 'observer_failed'
+  | 'observer_timeout'
+  | 'observer_stderr'
+  | 'observer_output_oversize'
+  | 'observer_invalid_json'
+  | 'driver_identity_unproven'
+  | 'executable_identity_unproven';
+
+export interface IosAdmissionProbeEvidence {
+  reason: IosAdmissionProbeReason;
+  pid?: number;
+  candidates?: number;
+}
+
+export interface IosAdmissionProbeResult {
+  status: IosStrictRunnerStatus;
+  evidence?: IosAdmissionProbeEvidence;
+}
+
+export async function probeIosExternalRunnerAdmission(
+  execFileImpl: typeof execFile = execFile,
+  udid?: string,
+  observeIdentity?: ProcessIdentityObserver,
+): Promise<IosAdmissionProbeResult> {
+  const unknown = (
+    reason: IosAdmissionProbeReason,
+    pid?: number,
+    candidates?: number,
+  ): IosAdmissionProbeResult => ({
+    status: 'unknown',
+    evidence: {
+      reason,
+      ...(pid === undefined ? {} : { pid }),
+      ...(candidates === undefined ? {} : { candidates }),
+    },
+  });
+  const busy = (pid: number): IosAdmissionProbeResult => ({
+    status: 'busy',
+    evidence: { reason: 'driver_on_selected_device', pid },
+  });
+  const observationFailure = (value: unknown): IosAdmissionProbeReason | undefined => {
+    const reason = (value as { observationFailure?: unknown } | null)?.observationFailure;
+    return [
+      'observer_failed',
+      'observer_timeout',
+      'observer_stderr',
+      'observer_output_oversize',
+      'observer_invalid_json',
+    ].includes(reason as string)
+      ? (reason as IosAdmissionProbeReason)
+      : undefined;
+  };
+  const observe = async (
+    pid: number,
+    timeout: number,
+    withArgv?: boolean,
+    inspection?: 'ios-paths',
+  ) => {
+    try {
+      return await observeIdentity!(pid, timeout, withArgv, inspection);
+    } catch {
+      return { observationFailure: 'observer_failed' };
+    }
+  };
+  if (!udid || !isIosSimulatorUdid(udid)) return unknown('invalid_device');
   const scanStartedAt = Date.now();
   const deadline = performance.now() + 20_000;
   try {
     const { stdout, stderr } = await readIosProcesses(execFileImpl);
+    if (typeof stdout !== 'string' || !stdout.endsWith('\n')) return unknown('scan_incomplete');
+    if (stderr !== undefined && stderr !== '') return unknown('scan_stderr');
+    if (Buffer.byteLength(stdout) > IOS_PS_OPTIONS.maxBuffer) return unknown('scan_oversize');
     if (
-      typeof stdout !== 'string' ||
-      (stderr !== undefined && stderr !== '') ||
-      !stdout.endsWith('\n') ||
-      Buffer.byteLength(stdout) > IOS_PS_OPTIONS.maxBuffer ||
       // eslint-disable-next-line no-control-regex -- Corrupt process-table bytes must fail closed.
       /[\x00-\x08\x0b-\x1f\x7f\ufffd]/.test(stdout)
     )
-      return 'unknown';
+      return unknown('scan_corrupt');
 
     const lines = stdout.slice(0, -1).split('\n');
     const pids = new Set<number>();
     for (const line of lines) {
       const match = /^\s*([1-9]\d*)[ \t]+(\S[^\n]*)$/.exec(line);
-      if (!match) return 'unknown';
+      if (!match) return unknown('scan_row_invalid');
       const pid = Number(match[1]);
-      if (!Number.isSafeInteger(pid) || pids.has(pid)) return 'unknown';
+      if (!Number.isSafeInteger(pid) || pids.has(pid)) return unknown('scan_pid_invalid');
       pids.add(pid);
     }
     const drivers = lines.filter(
@@ -449,55 +531,66 @@ export async function probeIosExternalRunnerStrict(
         !driverLines.has(line) &&
         (isUnscopedMcpControl(line) || hasUnresolvedIosExecutablePath(line)),
     );
-    if (
-      drivers.length + unresolved.length > MAX_ADMISSION_CANDIDATES ||
-      performance.now() >= deadline
-    )
-      return 'unknown';
+    if (drivers.length + unresolved.length > MAX_ADMISSION_CANDIDATES)
+      return unknown('candidate_budget_exceeded', undefined, drivers.length + unresolved.length);
+    if (performance.now() >= deadline) return unknown('deadline_exceeded');
     const target = new RegExp(`(?:^|[^a-z0-9-])${udid}(?=$|[^a-z0-9-])`, 'i');
-    if (drivers.some((line) => target.test(line))) return 'busy';
-    if (drivers.length > 0 && !observeIdentity) return 'unknown';
+    const selectedDriver = drivers.find((line) => target.test(line));
+    if (selectedDriver) return busy(Number(/^\s*(\d+)/.exec(selectedDriver)![1]));
+    if (drivers.length > 0 && !observeIdentity)
+      return unknown('observer_unavailable', undefined, drivers.length);
     for (const line of drivers) {
       const remaining = Math.floor(deadline - performance.now());
-      if (remaining <= 0) return 'unknown';
+      if (remaining <= 0) return unknown('deadline_exceeded');
       const pid = Number(/^\s*(\d+)/.exec(line)![1]);
-      const observation = await observeIdentity!(pid, Math.min(1_000, remaining), true);
-      if (performance.now() >= deadline) return 'unknown';
+      const observation = await observe(pid, Math.min(1_000, remaining), true);
+      if (performance.now() >= deadline) return unknown('deadline_exceeded', pid);
+      const failed = observationFailure(observation);
+      if (failed) return unknown(failed, pid);
       if (identityProvesMcpControl(observation, line, scanStartedAt)) continue;
       const devices = observedDriverDevices(observation, line, scanStartedAt);
-      if (performance.now() >= deadline || !devices) return 'unknown';
-      if (devices.some((device) => device.toLowerCase() === udid.toLowerCase())) return 'busy';
+      if (performance.now() >= deadline) return unknown('deadline_exceeded', pid);
+      if (!devices) return unknown('driver_identity_unproven', pid);
+      if (devices.some((device) => device.toLowerCase() === udid.toLowerCase())) return busy(pid);
     }
-    if (performance.now() >= deadline) return 'unknown';
-    if (!unresolved.length) return 'clear';
-    if (!observeIdentity) return 'unknown';
+    if (performance.now() >= deadline) return unknown('deadline_exceeded');
+    if (!unresolved.length) return { status: 'clear' };
+    if (!observeIdentity) return unknown('observer_unavailable', undefined, unresolved.length);
     for (const line of unresolved) {
       const remaining = Math.floor(deadline - performance.now());
-      if (remaining <= 0) return 'unknown';
+      if (remaining <= 0) return unknown('deadline_exceeded');
       const pid = Number(/^\s*(\d+)/.exec(line)![1]);
       const inspectPaths =
         !isUnscopedMcpControl(line) && line.replace(/^\s*\d+\s+/, '').length > 16_384;
-      const observation = await observeIdentity(
+      const observation = await observe(
         pid,
         Math.min(1_000, remaining),
         (!inspectPaths && MAESTRO_JAVA_ENTRYPOINT_RE.test(line)) || undefined,
         inspectPaths ? 'ios-paths' : undefined,
       );
+      if (performance.now() >= deadline) return unknown('deadline_exceeded', pid);
+      const failed = observationFailure(observation);
+      if (failed) return unknown(failed, pid);
       if (
-        performance.now() >= deadline ||
         !(
           identityProvesMcpControl(observation, line, scanStartedAt) ||
           (!isUnscopedMcpControl(line) &&
             (identityRulesOutDriver(observation, line, scanStartedAt) ||
               (inspectPaths && completeInspectionRulesOutPath(observation, line, scanStartedAt))))
-        ) ||
-        performance.now() >= deadline
+        )
       )
-        return 'unknown';
+        return unknown('executable_identity_unproven', pid);
+      if (performance.now() >= deadline) return unknown('deadline_exceeded', pid);
     }
-    return 'clear';
-  } catch {
-    return 'unknown';
+    return { status: 'clear' };
+  } catch (error) {
+    const failure = error as NodeJS.ErrnoException & { killed?: boolean };
+    if (failure?.code === 'ERR_CHILD_PROCESS_STDIO_MAXBUFFER')
+      return unknown('scan_output_oversize');
+    if (failure?.killed || failure?.code === 'ETIMEDOUT') return unknown('scan_timeout');
+    if (['ENOENT', 'EACCES', 'EPERM'].includes(failure?.code ?? ''))
+      return unknown('scan_unavailable');
+    return unknown('scan_failed');
   }
 }
 
