@@ -1650,15 +1650,21 @@ On iOS the value also binds the selected Xcode (`xcodebuild -version`), so a
 build is never reused across Xcode versions, and an unavailable Xcode makes the
 fingerprint incomplete. Android binds the manifest hash alone.
 
-**Dynamic `app.config.*` (iOS).** qaren cannot trace a dynamic config itself,
-so it runs the app's own `@expo/fingerprint` (resolved through the app's `expo`
+**Expo native identity (iOS).** When the app's `package.json` declares `expo`,
+qaren runs the app's own `@expo/fingerprint` (resolved through the app's `expo`
 install, never downloaded) as `pnpm exec node <cli> fingerprint:generate
 --platform ios` from the project root, with the iOS build's environment
 transforms (`CI` removed, `EXPO_NO_TELEMETRY=1`). Expo evaluates the config,
 loads `.env` files, and hashes the evaluated config, the modules it loaded,
-autolinked native modules and config-plugin inputs. The fingerprint value then
-also binds that hash, and the receipt notes record `fingerprint_parts` (hashes only), `fingerprint_complete`
-and `expo_fingerprint_ms`.
+autolinked native modules and config-plugin inputs. A successful evaluation binds
+the native-input manifest hash, Expo hash and Xcode identity in the
+`qaren-expo-native/2` composite. Receipt notes record `fingerprint_parts` (hashes
+only), `fingerprint_complete` and `expo_fingerprint_ms`. An unavailable evaluation
+on a static config records `expo_fingerprint_unavailable` and falls back to the
+native-input manifest plus Xcode identity without adding incompleteness.
+
+**Dynamic `app.config.*` (iOS).** qaren cannot trace a dynamic config itself,
+so it still attempts Expo evaluation even without a declared `expo` dependency.
 A successful evaluation clears only the dynamic-config incompleteness; every
 other reason still forbids reuse. If evaluation is unavailable (the package does
 not resolve, the command fails or times out after 120 s, or its output has no

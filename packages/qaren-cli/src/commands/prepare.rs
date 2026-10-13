@@ -1079,10 +1079,6 @@ pub(crate) fn plan_build(ctx: &mut Ctx) -> Result<BuildPlan, Failure> {
         native_dir_in_candidate: fp.native_dir_in_candidate,
     };
     ctx.notes.extend(fingerprint_notes(&fp));
-    if let Some(ms) = fp.expo_fingerprint_ms {
-        ctx.notes
-            .push(("expo_fingerprint_ms".to_string(), ms.to_string()));
-    }
     Ok(buildplan::decide(&inputs, &state, store))
 }
 
@@ -1125,18 +1121,25 @@ fn cached_artifact(
     }
 }
 
-// Hash-only parts and the completeness gate's own boolean; never the incompleteness reasons.
-fn fingerprint_notes(fp: &fingerprint::NativeFingerprint) -> [(String, String); 2] {
+// Hash-only parts and closed-template Expo outcomes; never raw config or incompleteness reasons.
+fn fingerprint_notes(fp: &fingerprint::NativeFingerprint) -> Vec<(String, String)> {
     let parts = fp
         .parts
         .iter()
         .map(|(part, hash)| format!("{part}={hash}"))
         .collect::<Vec<_>>()
         .join(" ");
-    [
+    let mut notes = vec![
         ("fingerprint_parts".to_string(), parts),
         ("fingerprint_complete".to_string(), fp.complete.to_string()),
-    ]
+    ];
+    if let Some(ms) = fp.expo_fingerprint_ms {
+        notes.push(("expo_fingerprint_ms".to_string(), ms.to_string()));
+    }
+    if let Some(reason) = &fp.expo_unavailable {
+        notes.push(("expo_fingerprint_unavailable".to_string(), reason.clone()));
+    }
+    notes
 }
 
 fn verify_artifact(artifact: &CachedArtifact) -> ArtifactStatus {

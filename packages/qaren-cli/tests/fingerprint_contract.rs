@@ -1007,7 +1007,7 @@ fn evaluated(root: &Path, hash: &str, xcode: &str) -> NativeFingerprint {
 }
 
 #[test]
-fn static_config_never_runs_expo_and_binds_the_xcode_version() {
+fn static_config_without_expo_binds_the_xcode_version() {
     let root = plugin_project("module.exports = c => c;");
     let fp = fingerprint(&root);
     assert!(fp.complete, "{:?}", fp.incompleteness);
@@ -1027,6 +1027,81 @@ fn static_config_never_runs_expo_and_binds_the_xcode_version() {
     let other_xcode = compute(&mut runner, &root, &root, "ios").unwrap();
     assert_eq!(other_xcode.parts["rnfp"], fp.parts["rnfp"]);
     assert_ne!(other_xcode.value, fp.value);
+}
+
+#[test]
+fn static_expo_config_binds_the_evaluated_native_inputs() {
+    let root = plugin_project("module.exports = c => c;");
+    std::fs::write(
+        root.join("package.json"),
+        r#"{"dependencies":{"expo":"56.0.23"}}"#,
+    )
+    .unwrap();
+    let files = format!("{PLUGIN_FILES}package.json\0");
+    let (fp, _) = dynamic_fingerprint(&root, &files, |m| {
+        common::script_expo_fingerprint(m, EXPO_H, XCODE)
+    });
+    assert!(fp.complete, "{:?}", fp.incompleteness);
+    assert_eq!(
+        fp.parts.keys().collect::<Vec<_>>(),
+        ["expo", "rnfp", "toolchain"]
+    );
+    assert_eq!(fp.parts["expo"], format!("expo:{EXPO_H}"));
+    assert_eq!(
+        fp.value,
+        "rnfp1:f5dfeed325ed9c3a20232ae15a6fb6edc278d9288b75ef2db9e838c990dd72cf"
+    );
+    assert!(fp.expo_fingerprint_ms.is_some());
+    assert_eq!(
+        matching_build(&root, &fp, "ios").decision,
+        qaren::buildplan::BuildDecision::Reuse
+    );
+    let (changed, _) = dynamic_fingerprint(&root, &files, |m| {
+        common::script_expo_fingerprint(m, "abcdef0123456789", XCODE)
+    });
+    assert_eq!(fp.parts["rnfp"], changed.parts["rnfp"]);
+    assert_ne!(fp.value, changed.value);
+}
+
+#[test]
+fn static_expo_fallback_stays_complete_and_can_reuse_its_native_identity() {
+    for section in [
+        "dependencies",
+        "devDependencies",
+        "optionalDependencies",
+        "peerDependencies",
+    ] {
+        let root = plugin_project("module.exports = c => c;");
+        std::fs::write(
+            root.join("package.json"),
+            format!(r#"{{"{section}":{{"expo":"56.0.23"}}}}"#),
+        )
+        .unwrap();
+        let (fp, _) = dynamic_fingerprint(&root, &format!("{PLUGIN_FILES}package.json\0"), |m| {
+            common::script_expo_fingerprint_unresolvable(m);
+            common::script_xcode(m);
+        });
+        assert!(fp.complete, "{section}: {:?}", fp.incompleteness);
+        assert_eq!(fp.parts.keys().collect::<Vec<_>>(), ["rnfp", "toolchain"]);
+        assert!(fp
+            .expo_unavailable
+            .as_deref()
+            .unwrap()
+            .contains("does not resolve"));
+        assert!(fp.expo_fingerprint_ms.is_some());
+        assert_eq!(
+            matching_build(&root, &fp, "ios").decision,
+            qaren::buildplan::BuildDecision::Reuse
+        );
+        let mut runner = MockRunner::new();
+        runner.expect_run(
+            "ls-files",
+            CmdOutput::success(&format!("{PLUGIN_FILES}package.json\0")),
+        );
+        let android = compute(&mut runner, &root, &root, "android").unwrap();
+        assert_eq!(android.parts.keys().collect::<Vec<_>>(), ["rnfp"]);
+        assert_eq!(android.expo_fingerprint_ms, None);
+    }
 }
 
 #[test]
