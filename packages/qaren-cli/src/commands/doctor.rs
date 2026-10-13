@@ -457,31 +457,20 @@ fn android_checks(
         }
     };
     let adb = android::adb_path(sdk);
-    let version = runner.run(&android::client_version_spec(&adb));
-    if !version.ok() {
+    // Even `adb version` creates ~/.android on a fresh HOME.
+    if !executable(&adb) {
         return [
             Check::fail(
                 "android-sdk",
-                format!(
-                    "adb at {} did not run: {}",
-                    adb.display(),
-                    version.summary()
-                ),
+                format!("adb at {} is not executable", adb.display()),
                 "reinstall the Android SDK platform-tools",
             ),
-            Check::skip("android-avd", "needs a working adb"),
+            Check::skip("android-avd", "needs an executable adb"),
         ];
     }
     let emulator = android::emulator_path(sdk);
     let sdk_row = if emulator.is_file() {
-        Check::pass(
-            "android-sdk",
-            format!(
-                "{} at {}",
-                version.stdout.trim().lines().next().unwrap_or("adb"),
-                adb.display()
-            ),
-        )
+        Check::pass("android-sdk", format!("adb at {}", adb.display()))
     } else {
         Check::warn(
             "android-sdk",
@@ -1645,6 +1634,47 @@ mod tests {
             row(&run_doctor(&mut runner, &s, &s.0, None), "ios-runtime").status,
             Status::Pass
         );
+    }
+
+    #[test]
+    fn android_sdk_check_does_not_run_adb() {
+        let s = Scratch::new("android-read-only");
+        s.file(
+            ".qaren/config.yaml",
+            "appId: com.example\ndevClientScheme: exp+example\nandroid:\n  avd: Pixel\n",
+        );
+        s.exe("sdk/platform-tools/adb");
+        let emulator = s.exe("sdk/emulator/emulator");
+        let before = s.tree();
+        let mut runner = MockRunner::new();
+        runner.environment.insert(
+            "ANDROID_HOME".into(),
+            s.path("sdk").display().to_string(),
+        );
+        script_toolchain(&mut runner, Some("v24.1.0\n"), RUNTIMES);
+        runner.expect_run(
+            &android::list_avds_spec(&emulator).rendered(),
+            CmdOutput::success("Pixel\n"),
+        );
+        let report = run_doctor(&mut runner, &s, &s.0, None);
+        assert_eq!(row(&report, "android-sdk").status, Status::Pass);
+        assert_eq!(row(&report, "android-avd").status, Status::Pass);
+        assert_eq!(s.tree(), before);
+        assert!(!runner.calls.iter().any(|call| call.label == "adb-version"));
+
+        std::fs::set_permissions(
+            s.path("sdk/platform-tools/adb"),
+            std::fs::Permissions::from_mode(0o644),
+        )
+        .unwrap();
+        let mut runner = MockRunner::new();
+        let config = AndroidConfig {
+            avd: Some("Pixel".into()),
+        };
+        let checks = android_checks(&mut runner, Some(&config), s.path("sdk").to_str());
+        assert_eq!(checks[0].status, Status::Fail);
+        assert_eq!(checks[1].status, Status::Skip);
+        assert!(runner.calls.is_empty());
     }
 
     #[test]
