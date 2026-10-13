@@ -21,6 +21,7 @@ if (!process.env.QAREN_APK_LOCK_TEST_CHILD) {
         ['--test', fileURLToPath(import.meta.url)],
         {
           env: { HOME: home, PATH: '', CI: 'true', QAREN_APK_LOCK_TEST_CHILD: root },
+          timeout: 5 * 60_000,
         },
       );
       assert.match(result.stdout, /tests 8/);

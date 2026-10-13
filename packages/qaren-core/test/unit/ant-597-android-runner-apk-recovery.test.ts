@@ -25,6 +25,7 @@ if (!process.env.QAREN_APK_RECOVERY_TEST_CHILD) {
             QAREN_APK_RECOVERY_TEST_CHILD: root,
             QAREN_APK_RECOVERY_LOCK_MODULE: process.env.QAREN_APK_RECOVERY_LOCK_MODULE,
           },
+          timeout: 5 * 60_000,
         },
       );
       assert.match(result.stdout, /tests 9/);
