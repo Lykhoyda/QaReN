@@ -1204,6 +1204,44 @@ type Script = Box<dyn FnOnce(&mut MockRunner)>;
 const UNAVAILABLE_CANARY: &str = "CANARY-unavailable-9d2e";
 
 #[test]
+fn throwing_javascript_config_with_a_partial_expo_hash_cannot_reuse() {
+    let root = dynamic_project();
+    std::fs::remove_file(root.join("app.config.ts")).unwrap();
+    std::fs::write(
+        root.join("app.config.js"),
+        format!("throw new Error('{UNAVAILABLE_CANARY}');\n"),
+    )
+    .unwrap();
+    let (fp, runner) = dynamic_fingerprint(&root, "package.json\0app.config.js\0", |m| {
+        m.expect_run(
+            "require.resolve",
+            CmdOutput::success(common::EXPO_FINGERPRINT_CLI),
+        );
+        m.expect_run(
+            "fingerprint:generate",
+            CmdOutput::success(&format!(
+                r#"{{"hash":"{EXPO_H}","sources":[{{"type":"contents","id":"expoAutolinkingConfig:ios","contents":"{UNAVAILABLE_CANARY}"}}]}}"#
+            )),
+        );
+    });
+    assert!(!fp.complete);
+    assert!(fp
+        .incompleteness
+        .iter()
+        .any(|reason| reason.starts_with("app.config.js is a dynamic config")));
+    assert_eq!(fp.parts.keys().collect::<Vec<_>>(), ["rnfp"]);
+    assert!(fp.expo_fingerprint_ms.is_some());
+    assert_eq!(runner.private_inputs.len(), 2);
+    let plan = matching_build(&root, &fp, "ios");
+    assert_eq!(plan.decision, qaren::buildplan::BuildDecision::Clean);
+    assert!(plan.regenerate_native_dir);
+    assert!(!serde_json::to_string(&plan)
+        .unwrap()
+        .contains(UNAVAILABLE_CANARY));
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
 fn unavailable_expo_evaluation_keeps_todays_conservative_rebuild() {
     let root = dynamic_project();
     let recorded = evaluated(&root, EXPO_H, XCODE);
