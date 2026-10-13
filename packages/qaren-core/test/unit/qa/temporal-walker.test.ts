@@ -371,7 +371,10 @@ test('late host finalization refuses before judgment while remembering private v
   };
   const result = await runPlan(parsePlan('✓ The screen is ready').blocks!, f.deps);
   assert.equal(result.verdict, 'FAIL');
-  assert.match(result.failure!.seen, /SCREEN_EVIDENCE_INCOMPLETE.*historical context/);
+  assert.match(
+    result.failure!.seen,
+    /SCREEN_EVIDENCE_INCOMPLETE.*historical context, previously on screen: \[screen text withheld: a secure field is on screen\]$/,
+  );
   assert.ok(!JSON.stringify(result).includes(secret));
   assert.equal(shots, 0);
   assert.equal(f.captures(), 1);

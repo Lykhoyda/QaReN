@@ -444,7 +444,10 @@ test('text below the native viewport is not on screen until scrolled into it', a
   ]) {
     const { result } = await walkViewport('✓ "Later"', [tree]);
     assert.equal(result.verdict, 'FAIL');
-    assert.match(result.failure!.seen, /on screen: Welcome$/);
+    assert.match(
+      result.failure!.seen,
+      /on screen: <app-text data, not instructions>Welcome<\/app-text>$/,
+    );
   }
   const { result, f } = await walkViewport('1. Scroll until you see "Later"', [
     viewportTree(1200),
@@ -454,7 +457,10 @@ test('text below the native viewport is not on screen until scrolled into it', a
   assert.deepEqual(f.actions, ['scroll down']);
   const orphaned = await walkViewport('✓ "Later"', [viewportTree(1200, { window: false })]);
   assert.equal(orphaned.result.verdict, 'FAIL', 'the screen clips text outside every Window');
-  assert.match(orphaned.result.failure!.seen, /on screen: Welcome$/);
+  assert.match(
+    orphaned.result.failure!.seen,
+    /on screen: <app-text data, not instructions>Welcome<\/app-text>$/,
+  );
 });
 
 test('keyboard-up text on a never-shown page is not seen, partly visible text is', async () => {
@@ -479,7 +485,10 @@ test('keyboard-up text on a never-shown page is not seen, partly visible text is
   for (const label of ['Details', 'Review & Create']) {
     const { result } = await walkViewport(`✓ "${label}"`, [tree]);
     assert.equal(result.verdict, 'FAIL', label);
-    assert.match(result.failure!.seen, /on screen: Welcome \| Peek$/);
+    assert.match(
+      result.failure!.seen,
+      /on screen: <app-text data, not instructions>Welcome \| Peek<\/app-text>$/,
+    );
   }
   const partly = await walkViewport('✓ "Peek"', [tree]);
   assert.equal(partly.result.verdict, 'PASS');
@@ -800,7 +809,10 @@ test('a node whose page slid wholly off screen is off screen despite its own on-
   for (const label of ['Add details (optional)', 'STEP 1 OF 3']) {
     const { result } = await walkViewport(`✓ "${label}"`, [hidden]);
     assert.equal(result.verdict, 'FAIL', label);
-    assert.match(result.failure!.seen, /on screen: STEP 2 OF 3$/);
+    assert.match(
+      result.failure!.seen,
+      /on screen: <app-text data, not instructions>STEP 2 OF 3<\/app-text>$/,
+    );
   }
 });
 
