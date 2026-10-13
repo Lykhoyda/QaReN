@@ -38,7 +38,7 @@ that can conflict with a session or is hygiene; `SKIP` is not applicable.
 | `xcode`, `ios-runtime` | `xcodebuild -version`; an available iOS simulator runtime, and the configured `ios.runtime` by name or identifier |
 | `node`, `pnpm` | `QAREN_NODE` or `node` on `PATH` is 24 or newer; a configured `nodePath` is only checked to be an executable file, never run; `pnpm` runs |
 | `corepack`, `cocoapods` | `corepack` and `pod` run (warnings) |
-| `android-sdk`, `android-avd` | When `android` is configured: `ANDROID_HOME`, `adb`, the emulator binary and the configured AVD |
+| `android-sdk`, `android-avd` | When `android` is configured: `ANDROID_HOME`, an executable `adb` file (never run; its version is not checked), the emulator binary and the configured AVD via `emulator -list-avds` |
 | `qaren-path` | The first `qaren` on `PATH` is this binary and the installed build; later copies warn |
 | `installed-build` | The runtime under `~/.qaren/runtime/<version>/` is complete; a binary outside it that `PATH` runs instead of an install fails |
 | `runtime-dirs` | Interrupted installs and other versions under `~/.qaren/runtime/` |
@@ -58,6 +58,7 @@ Detected 1.x leftovers produce warnings with manual fixes. Follow the
 that may contain your only copy of learned actions.
 Doctor has no `--fix`: each removal deletes user data or edits host
 configuration, so it stays manual.
+Fix commands containing control characters use ANSI-C quoting; paste them into Bash or zsh.
 
 ## Watch a run
 
