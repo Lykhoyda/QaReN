@@ -1047,8 +1047,10 @@ do not delete locks to bypass unresolved ownership.
 Open a block that continues a journey with `starts on: <testID or text>` before its
 steps. The value is literal, with optional quotes, and becomes the block's first
 wait in the ledger and saved YAML. On a fresh walk and replay, QaReN waits up to
-15 seconds for that screen before acting; a missing start fails at that line with
-`BLOCK_START_MISSING`: reach that screen before this block or re-record it.
+15 seconds for that screen before acting; an absent start refuses at that line with
+`failure.code: BLOCK_START_MISSING` and exit code 4, without dispatching the block's
+actions: reach that screen before this block or re-record it. Uncertain visibility
+retains its screen-evidence refusal instead.
 Previously saved blocks with this declaration walk once and save the leading wait.
 
 Block IDs come from their `###` titles; a headingless block uses the plan's `#`
