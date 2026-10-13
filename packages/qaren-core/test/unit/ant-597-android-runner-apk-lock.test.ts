@@ -195,7 +195,7 @@ if (!process.env.QAREN_APK_LOCK_TEST_CHILD) {
         client.startAndroidRunner('forced-build-stop', 'com.example', 0),
         /source build failed/,
       );
-      const { withAndroidRunnerApkLock, AndroidRunnerApkLockTimeoutError } =
+      const { withAndroidRunnerApkLock, AndroidRunnerApkLockUnprovenError } =
         await import('../../dist/runners/android-runner-apk-lock.js');
       const lock = join(runner, 'app/build/.qaren-apk-lock');
       try {
@@ -203,7 +203,7 @@ if (!process.env.QAREN_APK_LOCK_TEST_CHILD) {
           withAndroidRunnerApkLock(lock, async () => assert.fail('forced build lost its fence'), {
             timeoutMs: 20,
           }),
-          AndroidRunnerApkLockTimeoutError,
+          AndroidRunnerApkLockUnprovenError,
         );
       } finally {
         // The bounded fixture Node child has exited and has no descendants.
@@ -213,8 +213,11 @@ if (!process.env.QAREN_APK_LOCK_TEST_CHILD) {
     },
   );
 
-  const { withAndroidRunnerApkLock, AndroidRunnerApkLockTimeoutError } =
-    await import('../../dist/runners/android-runner-apk-lock.js');
+  const {
+    withAndroidRunnerApkLock,
+    AndroidRunnerApkLockTimeoutError,
+    AndroidRunnerApkLockUnprovenError,
+  } = await import('../../dist/runners/android-runner-apk-lock.js');
 
   test('ANT-597: separate worktrees provision independently', { timeout: 2_000 }, async () => {
     await withAndroidRunnerApkLock(join(root, 'worktree-a/lock'), async () => {
@@ -303,7 +306,7 @@ if (!process.env.QAREN_APK_LOCK_TEST_CHILD) {
   );
 
   test(
-    'ANT-597: an aborted provisioning owner stays fenced until its children are proven stopped',
+    'ANT-597: an unscoped aborted owner refuses without signaling its peers',
     { timeout: 2_000 },
     async () => {
       const lock = join(root, 'cancel-owner/lock');
@@ -324,7 +327,7 @@ if (!process.env.QAREN_APK_LOCK_TEST_CHILD) {
         withAndroidRunnerApkLock(lock, async () => assert.fail('abandoned outputs taken over'), {
           timeoutMs: 20,
         }),
-        AndroidRunnerApkLockTimeoutError,
+        AndroidRunnerApkLockUnprovenError,
       );
     },
   );

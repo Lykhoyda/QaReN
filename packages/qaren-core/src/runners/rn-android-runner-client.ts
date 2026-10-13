@@ -435,7 +435,12 @@ export function buildAdbInstallArgs(deviceId: string | undefined, apkPath: strin
 }
 
 export function buildGradleAssembleArgs(): string[] {
-  return [':app:assembleDebug', ':app:assembleDebugAndroidTest'];
+  return [
+    ':app:assembleDebug',
+    ':app:assembleDebugAndroidTest',
+    '--no-daemon',
+    '-Pkotlin.compiler.execution.strategy=in-process',
+  ];
 }
 
 /**

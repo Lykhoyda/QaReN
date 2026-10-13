@@ -317,11 +317,25 @@ lock is released. Source worktrees with separate runner directories have
 independent locks; callers sharing an installed runtime or an explicit runner
 root share its lock (see
 [runner directory resolution](../qaren-core/src/runners/runtime-paths.ts)).
-Contention waits at most 15 minutes, then refuses with `ANDROID_RUNNER_APK_LOCK_TIMEOUT`.
-A crashed, cancelled or forcibly stopped owner leaves `app/build/.qaren-apk-lock` in the Android
-runner directory fenced: waiting never steals the lock by age. Before removing
-that empty directory, prove that all provisioning callers and their Gradle/adb
-children for that runner directory have stopped.
+The `app/build/.qaren-apk-lock` SQLite fence records the owner PID, process
+birth identity and process group, independently of the rebuild budget. A
+contender waits while that owner is proven alive, reporting its identity and
+the fence path; the existing 15-minute bound remains a hung-owner backstop
+(`ANDROID_RUNNER_APK_LOCK_TIMEOUT`). An unreadable owner, retained cleanup, or
+surviving orphan writer group refuses immediately with
+`ANDROID_RUNNER_APK_LOCK_UNPROVEN`. Both refusals identify the fence and owner
+and provide verification/recovery steps.
+
+Cancellation stops the core's own provisioning group children and proves them
+absent before releasing ownership. Provisioning uses a single-use Gradle daemon
+and in-process Kotlin compilation, so no persistent build daemon owns these
+outputs. After a crash, the next start reclaims only when the recorded owner and
+its process group are proven gone; it never takes over by age or PID alone.
+If shutdown cannot be proven, keep the fence. Verify the recorded owner and
+its group with `ps`, stop only their Gradle/adb writers, and retry. For a corrupt
+or legacy empty-directory fence, prove all provisioning callers and writers
+for this runner directory stopped before removing that fence and any SQLite
+sidecars. Separate runner directories remain independent.
 
 A runner left
 on the emulator by rn-dev-agent 1.x is
