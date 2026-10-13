@@ -519,8 +519,12 @@ screen preserved before treating the press as clearance. Ordinary covered conten
 uses the same recovery as a native occlusion refusal.
 The walker handles this refusal with one directional scroll: down from the
 lower half of the effective viewport, up from the upper half. Scroll bands stay
-above a visible keyboard. It then requires a unique rebind to the refused
-target's testID and kind before retrying, including keyboard-fallback wrapper
+above a visible keyboard. On both iOS and Android, a target whose centre is
+covered by the observed keyboard gets a scroll sized to move that centre toward
+the middle of the band above the keyboard, capped to 60% of that band's height.
+Scrolls without keyboard clearance keep the fixed amount of `0.6`.
+It then requires a unique rebind to the refused target's testID and kind before
+retrying, including keyboard-fallback wrapper
 taps. A label-only target cannot rebind after scrolling; a missing or nonunique
 identity refuses `TARGET_NOT_FOUND` with “stayed off screen after one scroll”.
 After scrolling to resolve or uncover a press or fill target, or after a scroll
