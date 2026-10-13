@@ -262,10 +262,6 @@ export function hasUnresolvedIosPathPattern(command: string): boolean {
   return false;
 }
 
-function hasUnresolvedIosPath(command: string): boolean {
-  return command.length > 16_384 || hasUnresolvedIosPathPattern(command);
-}
-
 function leadingShellWord(command: string): { word: string; rest: string } | null {
   const match = /^(?:"([^"]*)"|'([^']*)'|(\S+))(?:\s+|$)/.exec(command);
   return match
@@ -282,9 +278,9 @@ function hasUnresolvedIosShellScript(command: string): boolean {
     const next = leadingShellWord(rest);
     if (!next) return true;
     const { word } = next;
-    if (word === '--') return hasUnresolvedIosPath(next.rest);
+    if (word === '--') return hasUnresolvedIosPathPattern(next.rest);
     if (executableBasename(shell.word) === 'env' && /^(?:-|\w+=)/.test(word)) return true;
-    if (!/^[+-]/.test(word)) return hasUnresolvedIosPath(rest);
+    if (!/^[+-]/.test(word)) return hasUnresolvedIosPathPattern(rest);
     // Command strings and stdin are not script operands; never scan their contents.
     if (/^-[a-zA-Z]*[cs][a-zA-Z]*$/.test(word) || /^--command(?:=|$)/.test(word)) return false;
     rest = next.rest;
@@ -305,7 +301,7 @@ function hasUnresolvedIosShellScript(command: string): boolean {
 
 function hasUnresolvedIosExecutablePath(line: string): boolean {
   const command = line.replace(/^\s*\d+\s+/, '');
-  return hasUnresolvedIosPath(command) || hasUnresolvedIosShellScript(command);
+  return hasUnresolvedIosPathPattern(command) || hasUnresolvedIosShellScript(command);
 }
 
 export type ProcessIdentityObserver = (
@@ -355,34 +351,7 @@ function identityRulesOutDriver(value: unknown, line: string, scanStartedAt: num
     SHELL_WRAPPERS.test(name) ||
     /^(?:java|node|nodejs|python[\d.]*|ruby[\d.]*|perl[\d.]*|osascript)$/i.test(name) ||
     /UITests-?Runner$/i.test(name) ||
-    hasUnresolvedIosPath(executable)
-  );
-}
-
-function completeInspectionRulesOutPath(
-  value: unknown,
-  line: string,
-  scanStartedAt: number,
-): boolean {
-  const command = line.replace(/^\s*\d+\s+/, '');
-  const executable = observedExecutable(value, line, scanStartedAt);
-  if (
-    !executable ||
-    command.length <= 16_384 ||
-    SHELL_WRAPPERS.test(executable.slice(executable.lastIndexOf('/') + 1)) ||
-    /UITests-?Runner$/i.test(executable) ||
-    SHELL_WRAPPERS.test(executableBasename(command)) ||
-    hasUnresolvedIosPathPattern(executable) ||
-    hasUnresolvedIosPathPattern(command) ||
-    hasUnresolvedIosShellScript(command)
-  )
-    return false;
-  const inspection = (value as { iosPathInspection?: unknown }).iosPathInspection;
-  return (
-    !!inspection &&
-    typeof inspection === 'object' &&
-    (inspection as Record<string, unknown>).status === 'complete' &&
-    (inspection as Record<string, unknown>).unresolvedPath === 'absent'
+    hasUnresolvedIosPathPattern(executable)
   );
 }
 
@@ -391,7 +360,7 @@ function identityProvesMcpControl(value: unknown, line: string, scanStartedAt: n
   if (!executable || executable.slice(executable.lastIndexOf('/') + 1) !== 'java') return false;
   const argv = (value as { argv?: unknown }).argv;
   return (
-    !hasUnresolvedIosPath(executable) &&
+    !hasUnresolvedIosPathPattern(executable) &&
     Array.isArray(argv) &&
     argv.length === 5 &&
     argv.every(
@@ -475,21 +444,16 @@ export async function probeIosExternalRunnerStrict(
       const remaining = Math.floor(deadline - performance.now());
       if (remaining <= 0) return 'unknown';
       const pid = Number(/^\s*(\d+)/.exec(line)![1]);
-      const inspectPaths =
-        !isUnscopedMcpControl(line) && line.replace(/^\s*\d+\s+/, '').length > 16_384;
       const observation = await observeIdentity(
         pid,
         Math.min(1_000, remaining),
-        (!inspectPaths && MAESTRO_JAVA_ENTRYPOINT_RE.test(line)) || undefined,
-        inspectPaths ? 'ios-paths' : undefined,
+        MAESTRO_JAVA_ENTRYPOINT_RE.test(line) || undefined,
       );
       if (
         performance.now() >= deadline ||
         !(
           identityProvesMcpControl(observation, line, scanStartedAt) ||
-          (!isUnscopedMcpControl(line) &&
-            (identityRulesOutDriver(observation, line, scanStartedAt) ||
-              (inspectPaths && completeInspectionRulesOutPath(observation, line, scanStartedAt))))
+          (!isUnscopedMcpControl(line) && identityRulesOutDriver(observation, line, scanStartedAt))
         ) ||
         performance.now() >= deadline
       )

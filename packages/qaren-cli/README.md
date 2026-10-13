@@ -1002,13 +1002,14 @@ A driver targeting it is busy; a driver can coexist only when kernel executable
 identity and exact arguments prove that it targets other simulators exclusively.
 An unscoped Maestro MCP controller can coexist when its Java executable and
 exact MCP arguments are attested; its command-line spelling alone is insufficient.
-Unknown identity, scope, process-table completeness or inspection outcome refuses.
+Unknown identity or scope for an automation candidate, or an incomplete process table, refuses.
 The scan cannot exclude uncooperative automation inside an otherwise admitted
 process and is not an external coordination lease.
 
-Drivers and unresolved process identities share one candidate budget and one
-scan deadline. Oversized arguments require bounded kernel path inspection that
-returns an outcome without exporting argument content. Budget exhaustion refuses
+Drivers and unresolved automation paths share one candidate budget and one
+scan deadline. Command length alone does not make a process an automation
+candidate; complete command lines are checked for known patterns even beyond
+the identity observer's argument limit. Budget exhaustion refuses
 instead of admitting a partial scan. The limits and classification rules are
 owned by the [strict scanner](../qaren-core/src/runners/external-runner-detect.ts)
 and [kernel observer](src/process_observation.rs).

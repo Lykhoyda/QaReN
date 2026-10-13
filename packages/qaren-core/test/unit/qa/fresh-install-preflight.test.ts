@@ -659,9 +659,9 @@ test('strict executable ambiguity keeps word-only prompts clear and never attrib
   }
 });
 
-test('strict path ambiguity refuses over-budget lines rather than truncating away evidence', async () => {
+test('strict path ambiguity scans long commands without treating length alone as relevant', async () => {
   const command = `/usr/bin/agent ${'word '.repeat(4_000)}`;
-  assert.equal(await probeIosExternalRunnerStrict(fakePs(`20 ${command}\n`), UDID), 'unknown');
+  assert.equal(await probeIosExternalRunnerStrict(fakePs(`20 ${command}\n`), UDID), 'clear');
   assert.equal(
     await probeIosExternalRunnerStrict(fakePs(`20 ${command}${spacedExecutables[0]}\n`), UDID),
     'unknown',
@@ -881,7 +881,7 @@ else {
     };
     const observerMarker = join(root, 'observed');
     const env = {
-      FAKE_PS_STDOUT: `20 agent ${'word '.repeat(4000)}${secret}\n`,
+      FAKE_PS_STDOUT: `20 agent ${'word '.repeat(4000)}/tmp/WebDriverAgent ${secret}\n`,
       FAKE_OBSERVER_MARKER: observerMarker,
       FAKE_OBSERVER_OUTPUT: JSON.stringify(output),
     };
@@ -904,11 +904,7 @@ else {
       );
     }
     for (const call of (await readFile(observerMarker, 'utf8')).trim().split('\n'))
-      assert.deepEqual(JSON.parse(call), [
-        '--internal-process-observation',
-        '20',
-        '--inspect-ios-paths',
-      ]);
+      assert.deepEqual(JSON.parse(call), ['--internal-process-observation', '20']);
     const inspected = {
       ...output,
       executable: '/usr/local/bin/node',
@@ -917,10 +913,10 @@ else {
     const inspectedEnv = { ...env, FAKE_PS_STDOUT: `20 node -e ${'x'.repeat(35_000)}${secret}\n` };
     for (const [observation, status] of [
       [inspected, 'clear'],
-      [{ ...inspected, iosPathInspection: undefined }, 'unknown'],
+      [{ ...inspected, iosPathInspection: undefined }, 'clear'],
       [
         { ...inspected, iosPathInspection: { status: 'complete', unresolvedPath: 'present' } },
-        'unknown',
+        'clear',
       ],
     ] as const) {
       assertResult(
