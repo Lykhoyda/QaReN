@@ -2168,7 +2168,7 @@ const ledger = await runPlan(blocks, f.deps);
 assert.deepEqual(actions, values);
 assert.equal(ledger.verdict, 'FAIL');
 assert.equal(ledger.steps.filter(row => row.outcome === 'pass').length, 6);
-assert.match(ledger.failure.seen, /\[code\]/);
+assert.ok(ledger.failure.seen.endsWith('[screen text withheld: a secure field is on screen]'));
 assert.equal(observe().elements.filter(e => e.kind === 'text' && e.label?.length === 1).length, 8);
 process.stdout.write(JSON.stringify(ledger));
 "#])
