@@ -879,7 +879,7 @@ pub struct MockRunner {
     pub piped_killed: Vec<Arc<Mutex<bool>>>,
     pub piped_terminated: Vec<Arc<Mutex<bool>>>,
     pub private_inputs: Vec<Vec<u8>>,
-    // (command substring, reason): cancellation starts once a matching command ran.
+    // (command hint, reason): cancellation starts after a match; -p hints bind the full PID argument.
     pub cancel_after: Option<(String, String)>,
     // (clock ms, reason): cancellation starts once the scripted clock reaches the time.
     pub cancel_at_ms: Option<(u64, String)>,
@@ -1127,7 +1127,24 @@ impl Runner for MockRunner {
         let (after, reason) = self.cancel_after.as_ref()?;
         self.calls
             .iter()
-            .any(|call| call.rendered().contains(after.as_str()))
+            .any(|call| {
+                // A recorded owner probe may have a PID such as 900003 while
+                // the scripted core is 9000. Keep non-PID hints unchanged, but
+                // never turn a PID prefix into an early cancellation.
+                if let Some(pid) = after
+                    .strip_prefix("-p ")
+                    .and_then(|tail| tail.split_whitespace().next())
+                {
+                    if !call
+                        .args
+                        .windows(2)
+                        .any(|pair| pair[0] == "-p" && pair[1] == pid)
+                    {
+                        return false;
+                    }
+                }
+                call.rendered().contains(after.as_str())
+            })
             .then(|| reason.clone())
     }
 }

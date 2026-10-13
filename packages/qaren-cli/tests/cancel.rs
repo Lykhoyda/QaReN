@@ -62,3 +62,35 @@ fn the_first_signal_is_recorded_instead_of_ending_the_process() {
     assert!(cleanup.ok());
     assert_eq!(cleanup.stdout, "cleaned");
 }
+
+#[test]
+fn a_mock_pid_cancellation_trigger_matches_the_whole_pid_argument() {
+    for hint in ["-p 9000", "-p 9000 -o command="] {
+        let mut runner = qaren::exec::MockRunner::new();
+        runner.cancel_after = Some((hint.into(), "received SIGTERM".into()));
+        runner.expect_run("-p 900003", qaren::exec::CmdOutput::success("owner alive"));
+        let owner_probe = CmdSpec::new(
+            "owner-probe",
+            "/bin/ps",
+            &["-p", "900003", "-o", "command="],
+            5,
+        );
+        assert!(runner.run(&owner_probe).ok());
+        assert_eq!(
+            runner.cancellation(),
+            None,
+            "a PID prefix must not cancel prereqs"
+        );
+
+        runner.expect_run("-p 9000", qaren::exec::CmdOutput::success("core alive"));
+        let core_probe = CmdSpec::new(
+            "core-probe",
+            "/bin/ps",
+            &["-p", "9000", "-o", "command="],
+            5,
+        );
+        assert!(runner.run(&core_probe).ok());
+        assert_eq!(runner.cancellation().as_deref(), Some("received SIGTERM"));
+        assert_eq!(runner.remaining(), 0);
+    }
+}
