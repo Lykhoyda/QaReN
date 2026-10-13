@@ -306,7 +306,41 @@ their SHA-256 hashes with both installed packages. It reuses only a matching
 pair; a mismatch or unreadable installed identity reinstalls both expected APKs.
 Package versions and the launch-supplied runner version do not prove freshness.
 Provisioning requires the Android SDK and a JDK on PATH; unchanged source uses
-Gradle's incremental build. A runner left
+Gradle's incremental build.
+
+An outputs lock in the resolved Android runner directory covers refresh, hash
+comparison and both installs; stale-retry APK invalidation takes the same lock.
+Retries acquire the existing
+rebuild-budget lock first, then the outputs lock, without changing the budget
+or its cleanup transitions. Instrumentation and the walk run after the outputs
+lock is released. Source worktrees with separate runner directories have
+independent locks; callers sharing an installed runtime or an explicit runner
+root share its lock (see
+[runner directory resolution](../qaren-core/src/runners/runtime-paths.ts)).
+The `app/build/.qaren-apk-lock` SQLite fence records the owner PID, process
+birth identity and process group, independently of the rebuild budget. A
+contender waits while that owner is proven alive, reporting its identity and
+the fence path; the existing 15-minute bound remains a hung-owner backstop
+(`ANDROID_RUNNER_APK_LOCK_TIMEOUT`). An unreadable owner, retained cleanup while
+the owner remains alive, or surviving orphan writer group refuses immediately with
+`ANDROID_RUNNER_APK_LOCK_UNPROVEN`. Both refusals identify the fence and owner
+and provide verification/recovery steps.
+
+Cancellation or a forced subprocess stop triggers cleanup of the core's own
+provisioning group children; ownership is released only after they are proven
+absent. Provisioning uses a single-use Gradle daemon
+and in-process Kotlin compilation, so no persistent build daemon owns these
+outputs. After a crash, the next start reclaims only when the recorded owner and
+its process group are proven gone; it never takes over by age or PID alone.
+If shutdown cannot be proven, keep the fence. Verify the recorded owner and
+its group with `ps` and stop only their Gradle/adb writers. If cleanup retained
+the fence, the recorded owner must also exit before a retry can reclaim it;
+stopping its writers alone does not clear retained ownership. For a corrupt
+or legacy empty-directory fence, prove all provisioning callers and writers
+for this runner directory stopped before removing that fence and any SQLite
+sidecars. Separate runner directories remain independent.
+
+A runner left
 on the emulator by rn-dev-agent 1.x is
 signed differently and cannot be replaced in place: uninstall
 `dev.lykhoyda.rndevagent.androidrunner` and `dev.lykhoyda.rndevagent.androidrunner.test`

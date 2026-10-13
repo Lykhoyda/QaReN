@@ -83,6 +83,8 @@ test('buildGradleAssembleArgs: assembles both app + androidTest', () => {
   assert.deepEqual(buildGradleAssembleArgs(), [
     ':app:assembleDebug',
     ':app:assembleDebugAndroidTest',
+    '--no-daemon',
+    '-Pkotlin.compiler.execution.strategy=in-process',
   ]);
 });
 

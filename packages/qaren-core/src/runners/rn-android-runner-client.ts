@@ -29,6 +29,7 @@ import {
   type FlatNode,
 } from '../fast-runner-ref-map.js';
 import { findFreePort } from './free-port.js';
+import { withAndroidRunnerApkLock } from './android-runner-apk-lock.js';
 import { join } from 'node:path';
 import { withKeyboardGuard } from './keyboard-guard.js';
 import {
@@ -100,6 +101,7 @@ const APK_TEST = join(
   'app-debug-androidTest.apk',
 );
 const ANDROID_REBUILD_ROOT = join(RN_ANDROID_RUNNER_DIR, 'app', 'build');
+const ANDROID_APK_LOCK = join(ANDROID_REBUILD_ROOT, '.qaren-apk-lock');
 const ANDROID_REBUILD_LOCK_DATABASE = join(
   ANDROID_REBUILD_ROOT,
   '.authority-rebuild',
@@ -433,7 +435,12 @@ export function buildAdbInstallArgs(deviceId: string | undefined, apkPath: strin
 }
 
 export function buildGradleAssembleArgs(): string[] {
-  return [':app:assembleDebug', ':app:assembleDebugAndroidTest'];
+  return [
+    ':app:assembleDebug',
+    ':app:assembleDebugAndroidTest',
+    '--no-daemon',
+    '-Pkotlin.compiler.execution.strategy=in-process',
+  ];
 }
 
 /**
@@ -532,76 +539,88 @@ async function ensureAndroidRunnerInstalled(
     if (isAbort(error)) throw error;
     // adb/pm unavailable → treat as not registered; the install/adb step below surfaces the real error.
   }
-  const artifacts = resolveAndroidRunnerArtifacts({ appApk: APK_APP, testApk: APK_TEST });
-  const provenance = artifactProvenanceToState(artifacts.provenance);
-  if (artifacts.note) pendingUpgradeNote = artifacts.note;
+  return withAndroidRunnerApkLock(
+    ANDROID_APK_LOCK,
+    async () => {
+      const artifacts = resolveAndroidRunnerArtifacts({ appApk: APK_APP, testApk: APK_TEST });
+      const provenance = artifactProvenanceToState(artifacts.provenance);
+      if (artifacts.note) pendingUpgradeNote = artifacts.note;
 
-  // Gradle's incremental build establishes the expected bytes for the current
-  // shipped source, even when APKs from an earlier checkout still exist.
-  if (
-    artifacts.provenance === 'build-local' ||
-    !existsSync(artifacts.appApk) ||
-    !existsSync(artifacts.testApk)
-  ) {
-    try {
-      await execFileAsync(GRADLEW, buildGradleAssembleArgs(), {
-        cwd: RN_ANDROID_RUNNER_DIR,
-        timeout: GRADLE_BUILD_TIMEOUT_MS,
-        maxBuffer: 10 * 1024 * 1024,
-        signal: opts.signal,
-      });
-    } catch (err) {
+      // Gradle's incremental build establishes the expected bytes for the current
+      // shipped source, even when APKs from an earlier checkout still exist.
+      if (
+        artifacts.provenance === 'build-local' ||
+        !existsSync(artifacts.appApk) ||
+        !existsSync(artifacts.testApk)
+      ) {
+        try {
+          await execFileAsync(GRADLEW, buildGradleAssembleArgs(), {
+            cwd: RN_ANDROID_RUNNER_DIR,
+            timeout: GRADLE_BUILD_TIMEOUT_MS,
+            maxBuffer: 10 * 1024 * 1024,
+            signal: opts.signal,
+          });
+        } catch (err) {
+          throwIfCancelled(opts.signal);
+          if (isAbort(err)) throw err;
+          throw new Error(
+            `rn-android-runner source build failed (gradlew assembleDebug assembleDebugAndroidTest in ${RN_ANDROID_RUNNER_DIR}). ` +
+              `Ensure the Android SDK + a JDK are installed and on PATH. ${err instanceof Error ? err.message : String(err)}`,
+            { cause: err },
+          );
+        }
+      }
+
       throwIfCancelled(opts.signal);
-      if (isAbort(err)) throw err;
-      throw new Error(
-        `rn-android-runner source build failed (gradlew assembleDebug assembleDebugAndroidTest in ${RN_ANDROID_RUNNER_DIR}). ` +
-          `Ensure the Android SDK + a JDK are installed and on PATH. ${err instanceof Error ? err.message : String(err)}`,
-      );
-    }
-  }
+      const expectedBuild: AndroidRunnerBuildIdentity = {
+        appSha256: createHash('sha256').update(readFileSync(artifacts.appApk)).digest('hex'),
+        testSha256: createHash('sha256').update(readFileSync(artifacts.testApk)).digest('hex'),
+      };
+      const instrumentationRegistered =
+        !opts.forceReinstall && isInstrumentationRegistered(pmOut, INSTRUMENTATION);
+      let installedBuild: AndroidRunnerBuildIdentity | undefined;
+      if (instrumentationRegistered) {
+        const [appSha256, testSha256] = await Promise.all([
+          installedAndroidApkHash('dev.lykhoyda.rndevagent.androidrunner', deviceId, opts.signal),
+          installedAndroidApkHash(
+            'dev.lykhoyda.rndevagent.androidrunner.test',
+            deviceId,
+            opts.signal,
+          ),
+        ]);
+        if (appSha256 && testSha256) installedBuild = { appSha256, testSha256 };
+      }
+      const action = resolveAndroidInstallAction({
+        instrumentationRegistered,
+        apksExist: true,
+        expectedBuild,
+        installedBuild,
+      });
+      if (action === 'reuse') return provenance;
 
-  throwIfCancelled(opts.signal);
-  const expectedBuild: AndroidRunnerBuildIdentity = {
-    appSha256: createHash('sha256').update(readFileSync(artifacts.appApk)).digest('hex'),
-    testSha256: createHash('sha256').update(readFileSync(artifacts.testApk)).digest('hex'),
-  };
-  const instrumentationRegistered =
-    !opts.forceReinstall && isInstrumentationRegistered(pmOut, INSTRUMENTATION);
-  let installedBuild: AndroidRunnerBuildIdentity | undefined;
-  if (instrumentationRegistered) {
-    const [appSha256, testSha256] = await Promise.all([
-      installedAndroidApkHash('dev.lykhoyda.rndevagent.androidrunner', deviceId, opts.signal),
-      installedAndroidApkHash('dev.lykhoyda.rndevagent.androidrunner.test', deviceId, opts.signal),
-    ]);
-    if (appSha256 && testSha256) installedBuild = { appSha256, testSha256 };
-  }
-  const action = resolveAndroidInstallAction({
-    instrumentationRegistered,
-    apksExist: true,
-    expectedBuild,
-    installedBuild,
-  });
-  if (action === 'reuse') return provenance;
-
-  try {
-    await execFileAsync('adb', buildAdbInstallArgs(deviceId, artifacts.appApk), {
-      timeout: ADB_INSTALL_TIMEOUT_MS,
-      signal: opts.signal,
-    });
-    throwIfCancelled(opts.signal);
-    await execFileAsync('adb', buildAdbInstallArgs(deviceId, artifacts.testApk), {
-      timeout: ADB_INSTALL_TIMEOUT_MS,
-      signal: opts.signal,
-    });
-  } catch (err) {
-    throwIfCancelled(opts.signal);
-    if (isAbort(err)) throw err;
-    throw new Error(
-      `rn-android-runner APK install failed (adb install -r). Is the emulator/device online? ` +
-        `${err instanceof Error ? err.message : String(err)}`,
-    );
-  }
-  return provenance;
+      try {
+        await execFileAsync('adb', buildAdbInstallArgs(deviceId, artifacts.appApk), {
+          timeout: ADB_INSTALL_TIMEOUT_MS,
+          signal: opts.signal,
+        });
+        throwIfCancelled(opts.signal);
+        await execFileAsync('adb', buildAdbInstallArgs(deviceId, artifacts.testApk), {
+          timeout: ADB_INSTALL_TIMEOUT_MS,
+          signal: opts.signal,
+        });
+      } catch (err) {
+        throwIfCancelled(opts.signal);
+        if (isAbort(err)) throw err;
+        throw new Error(
+          `rn-android-runner APK install failed (adb install -r). Is the emulator/device online? ` +
+            `${err instanceof Error ? err.message : String(err)}`,
+          { cause: err },
+        );
+      }
+      return provenance;
+    },
+    { signal: opts.signal },
+  );
 }
 
 export function isAndroidRunnerAvailable(): boolean {
@@ -1390,17 +1409,24 @@ export function _androidRunnerApkPathsForTest(): readonly string[] {
   return RUNNER_APK_PATHS;
 }
 
-export function invalidateAndroidRunnerApks(
+export async function invalidateAndroidRunnerApks(
   rm: (path: string) => void = (p) => rmSync(p, { force: true }),
-): void {
-  for (const apk of RUNNER_APK_PATHS) {
-    throwIfCancelled();
-    try {
-      rm(apk);
-    } catch {
-      /* best-effort; the install action check re-reads existsSync */
-    }
-  }
+  signal?: AbortSignal,
+): Promise<void> {
+  await withAndroidRunnerApkLock(
+    ANDROID_APK_LOCK,
+    async () => {
+      for (const apk of RUNNER_APK_PATHS) {
+        throwIfCancelled(signal);
+        try {
+          rm(apk);
+        } catch {
+          /* best-effort; the install action check re-reads existsSync */
+        }
+      }
+    },
+    { signal },
+  );
 }
 
 export interface StartAndroidRunnerOpts {
@@ -1436,7 +1462,7 @@ export async function startAndroidRunner(
             signal,
           );
           signal.throwIfAborted();
-          invalidateAndroidRunnerApks();
+          await invalidateAndroidRunnerApks(undefined, signal);
           return startAndroidRunnerAttempt(deviceId, bundleId, devicePort, {
             _forceReinstall: true,
             _rebuildSignal: signal,
@@ -1469,7 +1495,7 @@ export async function startAndroidRunner(
             signal,
           );
           signal.throwIfAborted();
-          invalidateAndroidRunnerApks();
+          await invalidateAndroidRunnerApks(undefined, signal);
           return startAndroidRunnerAttempt(deviceId, bundleId, devicePort, {
             _forceReinstall: true,
             _rebuildSignal: signal,
