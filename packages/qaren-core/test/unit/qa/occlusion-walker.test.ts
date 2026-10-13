@@ -864,6 +864,39 @@ test('unsettled keyboard clearance reports the moving frames and shrinking delta
   assert.equal(f.calls.filter((call) => call.startsWith('fill')).length, 0);
 });
 
+test('settle movement ignores identities that were duplicated before a frame disappeared', async () => {
+  const duplicate: NativeNode = {
+    ref: '@duplicate',
+    index: 3,
+    parentIndex: 1,
+    type: 'TextField',
+    identifier: 'field',
+    hittable: true,
+    rect: { x: 20, y: 500, width: 300, height: 44 },
+  };
+  const f = fake(
+    [
+      clipped(700, 'TextField', 'keyboard'),
+      at(100, 'TextField', [duplicate]),
+      at(100, 'TextField'),
+    ],
+    {},
+  );
+  const metrics: TimingEvent[] = [];
+  f.deps.timing = (event) => metrics.push(event);
+  const outcome = await walkBlock(block('1. Fill "field" with "x"\n'), f.deps);
+  assert.equal(outcome.block.outcome, 'pass');
+  assert.deepEqual(
+    metrics
+      .filter((event) => event.stage === 'settle-readback')
+      .map(({ moved, maxDelta }) => ({ moved, maxDelta })),
+    [
+      { moved: 1, maxDelta: 0 },
+      { moved: 0, maxDelta: 0 },
+    ],
+  );
+});
+
 test('expired post-scroll evidence requires settlement again before dispatch', async () => {
   const f = fake(
     [clipped(700), clipped(400), clipped(400), ...[450, 400, 350, 300].map((y) => clipped(y))],

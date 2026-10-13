@@ -422,6 +422,10 @@ export async function walkBlock(
           [...previousFrames].filter((frame) => !currentFrames.has(frame)).length +
           [...currentFrames].filter((frame) => !previousFrames.has(frame)).length;
         const maxDelta = observation.screen.elements.reduce((max, element) => {
+          const previousMatches = observation.screen.elements.filter((candidate) =>
+            sameIdentity(candidate, element),
+          );
+          if (previousMatches.length !== 1) return max;
           const previous = elementFrame(element);
           const matches = next.screen.elements.filter((candidate) =>
             sameIdentity(candidate, element),
