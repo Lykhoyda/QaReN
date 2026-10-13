@@ -108,41 +108,20 @@ test('shared Rust/TypeScript fixtures retain the original unresolved-path predic
   }
 });
 
-test('oversized inline programs need complete content-free inspection, not interpreter shape', async () => {
+test('long unrelated inline programs admit without kernel inspection', async () => {
   let calls = 0;
   assert.equal(
     await probeIosExternalRunnerStrict(
       ps(`/usr/local/bin/node -e ${program}`),
       device,
-      async (pid, timeout, withArgv, inspection) => {
+      async () => {
         calls++;
-        assert.equal(pid, 20);
-        assert.ok(timeout > 0 && timeout <= 1_000);
-        assert.equal(withArgv, undefined);
-        assert.equal(inspection, 'ios-paths');
-        return identity;
+        return null;
       },
     ),
     'clear',
   );
-  assert.equal(calls, 1);
-  for (const iosPathInspection of [
-    undefined,
-    true,
-    {},
-    { status: 'partial', unresolvedPath: 'absent' },
-    { status: 'complete' },
-    { status: 'complete', unresolvedPath: false },
-    { status: 'complete', unresolvedPath: 'present' },
-  ]) {
-    assert.equal(
-      await probeIosExternalRunnerStrict(ps(`node -e ${program}`), device, async () => ({
-        ...identity,
-        iosPathInspection,
-      })),
-      'unknown',
-    );
-  }
+  assert.equal(calls, 0);
 });
 
 test('inspection cannot override native paths, shell ambiguity, drivers or invalid identities', async () => {
@@ -151,7 +130,6 @@ test('inspection cannot override native paths, shell ambiguity, drivers or inval
     `node -e /tmp/WebDriverAgent ${program}`,
     'node -e /tmp/WebDriverAgent',
     `/bin/sh --unknown ${program}`,
-    `/bin/bash -c ${program}`,
     `xcodebuild test ${program}`,
     `java -classpath lib maestro.cli.AppKt test ${program}`,
   ]) {
@@ -172,23 +150,27 @@ test('inspection cannot override native paths, shell ambiguity, drivers or inval
     { executable: 'node' },
   ]) {
     assert.equal(
-      await probeIosExternalRunnerStrict(ps(`node -e ${program}`), device, async () => ({
-        ...identity,
-        ...change,
-      })),
+      await probeIosExternalRunnerStrict(
+        ps(`node -e ${program}/tmp/XCTRunner`),
+        device,
+        async () => ({
+          ...identity,
+          ...change,
+        }),
+      ),
       'unknown',
     );
   }
 });
 
-test('complete inspection shares the combined 64-candidate admission budget', async () => {
+test('relevant long commands share the combined 64-candidate admission budget', async () => {
   let calls = 0;
   const scan = (async () => ({
     stdout:
       Array.from(
         { length: 64 },
         (_, i) => `${20 + i} /usr/bin/java -classpath lib maestro.cli.AppKt mcp\n`,
-      ).join('') + `84 node -e ${program}\n`,
+      ).join('') + `84 node -e ${program}/tmp/XCTRunner\n`,
   })) as unknown as typeof execFile;
   assert.equal(
     await probeIosExternalRunnerStrict(scan, device, async () => {
@@ -200,11 +182,11 @@ test('complete inspection shares the combined 64-candidate admission budget', as
   assert.equal(calls, 0);
 });
 
-test('complete inspection cannot extend the overall observation deadline', async (t) => {
+test('relevant long-command identities cannot extend the overall observation deadline', async (t) => {
   let now = 0;
   t.mock.method(performance, 'now', () => now);
   assert.equal(
-    await probeIosExternalRunnerStrict(ps(`node -e ${program}`), device, async () => {
+    await probeIosExternalRunnerStrict(ps(`agent ${program}/tmp/XCTRunner`), device, async () => {
       now = 20_000;
       return identity;
     }),
@@ -212,14 +194,14 @@ test('complete inspection cannot extend the overall observation deadline', async
   );
   now = 0;
   assert.equal(
-    await probeIosExternalRunnerStrict(ps(`node -e ${program}`), device, async () => ({
+    await probeIosExternalRunnerStrict(ps(`agent ${program}/tmp/XCTRunner`), device, async () => ({
       ...identity,
-      iosPathInspection: {
-        get status() {
+      birth: {
+        get seconds() {
           now = 20_000;
-          return 'complete';
+          return 1;
         },
-        unresolvedPath: 'absent',
+        micros: 0,
       },
     })),
     'unknown',

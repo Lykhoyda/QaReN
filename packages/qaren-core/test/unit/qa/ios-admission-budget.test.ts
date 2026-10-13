@@ -6,7 +6,7 @@ import { probeIosExternalRunnerStrict } from '../../../dist/runners/external-run
 const device = 'AAAAAAAA-1111-2222-3333-BBBBBBBBBBBB';
 const other = 'CCCCCCCC-4444-5555-6666-DDDDDDDDDDDD';
 const mcpArgv = ['/usr/bin/java', '-classpath', 'lib', 'maestro.cli.AppKt', 'mcp'];
-const program = `/usr/bin/node -e ${'x'.repeat(35_000)}`;
+const program = '/opt/bin/agent review /tmp/WebDriverAgent';
 type Kind = 'controller' | 'driver' | 'program';
 
 function scan(kinds: Kind[], targetDriver = false): typeof execFile {
@@ -38,9 +38,9 @@ function observation(kind: Kind, pid: number) {
         ? '/usr/bin/java'
         : kind === 'driver'
           ? '/usr/bin/xcodebuild'
-          : '/usr/bin/node',
+          : '/opt/bin/agent',
     ...(kind === 'program'
-      ? { iosPathInspection: { status: 'complete', unresolvedPath: 'absent' } }
+      ? {}
       : {
           argv:
             kind === 'controller'
@@ -68,7 +68,7 @@ test('all 64 combined candidates must resolve through the unchanged evidence mod
           const kind = kinds[pid - 100];
           assert.ok(timeout > 0 && timeout <= 1_000);
           assert.equal(withArgv, kind === 'program' ? undefined : true);
-          assert.equal(inspection, kind === 'program' ? 'ios-paths' : undefined);
+          assert.equal(inspection, undefined);
           observed.add(pid);
           return observation(kind, pid);
         },

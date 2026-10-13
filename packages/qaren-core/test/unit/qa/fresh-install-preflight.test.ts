@@ -98,7 +98,6 @@ test('strict detector admits only complete, clean process scans', async () => {
     '1 /bin/lo\rgin\n',
     '1 /bin/lo\ufffdgin\n',
     `${ordinary}diagnostic: ${secret}\n`,
-    `1 ${'x'.repeat(1024 * 1024)}\n`,
   ]) {
     assert.equal(await probeIosExternalRunnerStrict(fakePs(output), UDID), 'unknown');
   }
@@ -110,6 +109,36 @@ test('strict detector admits only complete, clean process scans', async () => {
   }) as unknown as typeof execFile;
   assert.equal(await probeIosExternalRunnerStrict(failing, UDID), 'unknown');
   assert.equal(await detectIosExternalRunner(failing, UDID), null);
+});
+
+test('oversized unrelated rows admit while unreadable automation candidates still refuse', async () => {
+  const command = 'x'.repeat(1024 * 1024);
+  for (const unreadable of [
+    async () => null,
+    async () => {
+      throw new Error('process exited or identity is inaccessible');
+    },
+  ]) {
+    let calls = 0;
+    const observe = async () => {
+      calls++;
+      return unreadable();
+    };
+    assert.equal(
+      await probeIosExternalRunnerStrict(fakePs(`1 ${command}\n`), UDID, observe),
+      'clear',
+    );
+    assert.equal(calls, 0);
+    assert.equal(
+      await probeIosExternalRunnerStrict(
+        fakePs(`1 /opt/bin/agent --prompt ${command} /tmp/XCTRunner\n`),
+        UDID,
+        observe,
+      ),
+      'unknown',
+    );
+    assert.equal(calls, 1);
+  }
 });
 
 test('fresh-install CLI reports why a scan is unknown without publishing process text', async () => {
@@ -743,9 +772,9 @@ test('strict executable ambiguity keeps word-only prompts clear and never attrib
   }
 });
 
-test('strict path ambiguity refuses over-budget lines rather than truncating away evidence', async () => {
+test('strict path ambiguity scans long commands without treating length alone as relevant', async () => {
   const command = `/usr/bin/agent ${'word '.repeat(4_000)}`;
-  assert.equal(await probeIosExternalRunnerStrict(fakePs(`20 ${command}\n`), UDID), 'unknown');
+  assert.equal(await probeIosExternalRunnerStrict(fakePs(`20 ${command}\n`), UDID), 'clear');
   assert.equal(
     await probeIosExternalRunnerStrict(fakePs(`20 ${command}${spacedExecutables[0]}\n`), UDID),
     'unknown',
@@ -1028,7 +1057,7 @@ else {
     };
     const observerMarker = join(root, 'observed');
     const env = {
-      FAKE_PS_STDOUT: `20 agent ${'word '.repeat(4000)}${secret}\n`,
+      FAKE_PS_STDOUT: `20 agent ${'word '.repeat(4000)}/tmp/WebDriverAgent ${secret}\n`,
       FAKE_OBSERVER_MARKER: observerMarker,
       FAKE_OBSERVER_OUTPUT: JSON.stringify(output),
     };
@@ -1051,11 +1080,7 @@ else {
       );
     }
     for (const call of (await readFile(observerMarker, 'utf8')).trim().split('\n'))
-      assert.deepEqual(JSON.parse(call), [
-        '--internal-process-observation',
-        '20',
-        '--inspect-ios-paths',
-      ]);
+      assert.deepEqual(JSON.parse(call), ['--internal-process-observation', '20']);
     const inspected = {
       ...output,
       executable: '/usr/local/bin/node',
@@ -1064,10 +1089,10 @@ else {
     const inspectedEnv = { ...env, FAKE_PS_STDOUT: `20 node -e ${'x'.repeat(35_000)}${secret}\n` };
     for (const [observation, status] of [
       [inspected, 'clear'],
-      [{ ...inspected, iosPathInspection: undefined }, 'unknown'],
+      [{ ...inspected, iosPathInspection: undefined }, 'clear'],
       [
         { ...inspected, iosPathInspection: { status: 'complete', unresolvedPath: 'present' } },
-        'unknown',
+        'clear',
       ],
     ] as const) {
       assertResult(
