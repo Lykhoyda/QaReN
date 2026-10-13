@@ -321,18 +321,21 @@ The `app/build/.qaren-apk-lock` SQLite fence records the owner PID, process
 birth identity and process group, independently of the rebuild budget. A
 contender waits while that owner is proven alive, reporting its identity and
 the fence path; the existing 15-minute bound remains a hung-owner backstop
-(`ANDROID_RUNNER_APK_LOCK_TIMEOUT`). An unreadable owner, retained cleanup, or
-surviving orphan writer group refuses immediately with
+(`ANDROID_RUNNER_APK_LOCK_TIMEOUT`). An unreadable owner, retained cleanup while
+the owner remains alive, or surviving orphan writer group refuses immediately with
 `ANDROID_RUNNER_APK_LOCK_UNPROVEN`. Both refusals identify the fence and owner
 and provide verification/recovery steps.
 
-Cancellation stops the core's own provisioning group children and proves them
-absent before releasing ownership. Provisioning uses a single-use Gradle daemon
+Cancellation or a forced subprocess stop triggers cleanup of the core's own
+provisioning group children; ownership is released only after they are proven
+absent. Provisioning uses a single-use Gradle daemon
 and in-process Kotlin compilation, so no persistent build daemon owns these
 outputs. After a crash, the next start reclaims only when the recorded owner and
 its process group are proven gone; it never takes over by age or PID alone.
 If shutdown cannot be proven, keep the fence. Verify the recorded owner and
-its group with `ps`, stop only their Gradle/adb writers, and retry. For a corrupt
+its group with `ps` and stop only their Gradle/adb writers. If cleanup retained
+the fence, the recorded owner must also exit before a retry can reclaim it;
+stopping its writers alone does not clear retained ownership. For a corrupt
 or legacy empty-directory fence, prove all provisioning callers and writers
 for this runner directory stopped before removing that fence and any SQLite
 sidecars. Separate runner directories remain independent.
