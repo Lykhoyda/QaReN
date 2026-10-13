@@ -2,7 +2,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { parsePlan } from '../../../dist/qa/plan.js';
-import { finalizeAppText } from '../../../dist/qa/untrusted.js';
+import { renderReason } from '../../../dist/qa/untrusted.js';
 import type { WalkSequence } from '../../../dist/qa/walker.js';
 import { join } from '../../../dist/qa/screen.js';
 import type { NativeNode, Screen } from '../../../dist/qa/screen.js';
@@ -36,7 +36,10 @@ for (const kind of ['press', 'fill'] as const) {
       f.deps,
     );
     assert.equal(outcome.block.outcome, 'fail');
-    assert.match(outcome.failure?.seen ?? '', /TARGET_MOVED_BEFORE_DISPATCH/);
+    assert.match(
+      renderReason(outcome.failure?.seen ?? '', (text) => text),
+      /TARGET_MOVED_BEFORE_DISPATCH/,
+    );
     assert.equal(f.calls.filter((call) => call.startsWith('scroll')).length, 0);
   });
 }
@@ -62,7 +65,10 @@ for (const kind of ['press', 'fill', 'back', 'dialog', 'scroll'] as const) {
     };
     const outcome = await walkBlock(block(steps[kind]), f.deps);
     assert.equal(outcome.block.outcome, 'fail');
-    assert.match(outcome.failure?.seen ?? '', /TARGET_MOVED_BEFORE_DISPATCH/);
+    assert.match(
+      renderReason(outcome.failure?.seen ?? '', (text) => text),
+      /TARGET_MOVED_BEFORE_DISPATCH/,
+    );
     assert.equal(
       outcome.rows.some((row) => row.outcome === 'pass'),
       false,
@@ -295,7 +301,7 @@ test('O2: occluded twice fails after one scroll, never as an uncertain outcome',
   assert.equal(f.calls.filter((c) => c.startsWith('press')).length, 2);
   assert.equal(f.calls.filter((c) => c.startsWith('scroll')).length, 1);
   assert.match(
-    outcome.failure?.seen ?? '',
+    renderReason(outcome.failure?.seen ?? '', (text) => text),
     /^FOCUS_TARGET_OCCLUDED: .*"go" stayed off screen after one scroll/,
   );
   assert.doesNotMatch(JSON.stringify(outcome), /ACTION_OUTCOME_UNCERTAIN/);
@@ -354,7 +360,10 @@ for (const kind of ['press', 'fill'] as const) {
     assert.equal(outcome.block.outcome, 'fail');
     assert.equal(f.calls.filter((call) => call.startsWith(kind)).length, 1);
     assert.equal(f.calls.filter((call) => call.startsWith('scroll')).length, 1);
-    assert.match(outcome.failure?.seen ?? '', /TARGET_NOT_FOUND/);
+    assert.match(
+      renderReason(outcome.failure?.seen ?? '', (text) => text),
+      /TARGET_NOT_FOUND/,
+    );
   });
 }
 
@@ -386,7 +395,7 @@ for (const secondOcclusion of [false, true]) {
     assert.equal(f.calls.filter((call) => call.startsWith('press')).length, 2);
     if (secondOcclusion)
       assert.match(
-        outcome.failure?.seen ?? '',
+        renderReason(outcome.failure?.seen ?? '', (text) => text),
         /stayed off screen after one scroll.*nothing was typed/,
       );
   });
@@ -489,7 +498,10 @@ for (const kind of ['press', 'fill'] as const) {
           'capture',
           'capture',
         ]);
-        assert.match(outcome.failure?.seen ?? '', /stayed off screen after one scroll/);
+        assert.match(
+          renderReason(outcome.failure?.seen ?? '', (text) => text),
+          /stayed off screen after one scroll/,
+        );
         assert.doesNotMatch(JSON.stringify(outcome), /ACTION_OUTCOME_UNCERTAIN/);
         if (semantic) assert.equal(judge.requests.length, 1);
       });
@@ -576,7 +588,10 @@ test('O5: a target still covered after one scroll refuses with no dispatch', asy
     assert.equal(outcome.block.outcome, 'fail');
     assert.equal(f.calls.filter((c) => /^(press|fill)/.test(c)).length, 0, f.calls.join());
     assert.equal(f.calls.filter((c) => c.startsWith('scroll')).length, 1);
-    assert.match(outcome.failure?.seen ?? '', /stayed off screen after one scroll/);
+    assert.match(
+      renderReason(outcome.failure?.seen ?? '', (text) => text),
+      /stayed off screen after one scroll/,
+    );
   }
 });
 
@@ -627,7 +642,10 @@ for (const kind of ['press', 'fill'] as const) {
         );
         assert.equal(outcome.block.outcome, 'fail');
         assert.equal(f.calls.filter((c) => /^(press|fill)/.test(c)).length, 0);
-        assert.match(outcome.failure?.seen ?? '', /stayed off screen after one scroll/);
+        assert.match(
+          renderReason(outcome.failure?.seen ?? '', (text) => text),
+          /stayed off screen after one scroll/,
+        );
       });
     }
   }
@@ -690,7 +708,10 @@ test('a wrapped pressable settles on equal native frames whatever key order the 
     return { ok: true, proven: false };
   };
   const outcome = await walkBlock(block('1. Fill "email" with "x"\n'), f.deps);
-  assert.doesNotMatch(outcome.failure?.seen ?? '', /SCROLL_UNSETTLED/);
+  assert.doesNotMatch(
+    renderReason(outcome.failure?.seen ?? '', (text) => text),
+    /SCROLL_UNSETTLED/,
+  );
   assert.equal(typed, 1);
   assert.equal(f.calls.filter((c) => c.startsWith('press')).length, 1);
 });
@@ -771,7 +792,10 @@ for (const kind of ['press', 'fill'] as const) {
         f.deps,
       );
       assert.equal(outcome.block.outcome, 'fail');
-      assert.match(outcome.failure?.seen ?? '', label);
+      assert.match(
+        renderReason(outcome.failure?.seen ?? '', (text) => text),
+        label,
+      );
       assert.equal(calls, 1);
       assert.equal(
         outcome.rows.some((row) => row.outcome === 'pass'),
@@ -792,7 +816,10 @@ test('a fill after an explicit scroll refuses a frame that never settles', async
   );
   const outcome = await walkBlock(block('1. Scroll down\n2. Fill "field" with "x"\n'), f.deps);
   assert.equal(outcome.block.outcome, 'fail');
-  assert.match(outcome.failure?.seen ?? '', /SCROLL_UNSETTLED/);
+  assert.match(
+    renderReason(outcome.failure?.seen ?? '', (text) => text),
+    /SCROLL_UNSETTLED/,
+  );
   assert.equal(f.calls.filter((c) => c.startsWith('fill')).length, 0);
   assert.doesNotMatch(JSON.stringify(outcome), /ACTION_OUTCOME_UNCERTAIN/);
 });
@@ -829,7 +856,10 @@ test('a second press after clearance refuses keyboard auto-scroll before dispatc
   );
   const outcome = await walkBlock(block('1. Tap "go"\n'), f.deps);
   assert.equal(outcome.block.outcome, 'fail');
-  assert.match(outcome.failure?.seen ?? '', /SCROLL_UNSETTLED/);
+  assert.match(
+    renderReason(outcome.failure?.seen ?? '', (text) => text),
+    /SCROLL_UNSETTLED/,
+  );
   assert.equal(f.calls.filter((c) => c.startsWith('press')).length, 1);
 });
 
@@ -857,7 +887,10 @@ for (const mode of ['strict', 'keyboard', 'poll'] as const) {
     };
     const outcome = await walkBlock(block('1. Fill "email" with "x"\n'), f.deps);
     assert.equal(outcome.block.outcome, 'fail');
-    assert.match(outcome.failure?.seen ?? '', /SCROLL_UNSETTLED/);
+    assert.match(
+      renderReason(outcome.failure?.seen ?? '', (text) => text),
+      /SCROLL_UNSETTLED/,
+    );
     assert.equal(f.calls.filter((c) => c.startsWith('press')).length, 1);
     assert.equal(f.calls.filter((c) => c.startsWith('fill')).length, 0);
     assert.equal(typed, 0);
@@ -887,7 +920,10 @@ test('expired strict fill after fallback focus requires settlement before refres
   f.deps.typeFocused = async () => assert.fail('strict input must not use keyboard typing');
   const outcome = await walkBlock(block('1. Fill "email" with "x"\n'), f.deps);
   assert.equal(outcome.block.outcome, 'fail');
-  assert.match(outcome.failure?.seen ?? '', /SCROLL_UNSETTLED/);
+  assert.match(
+    renderReason(outcome.failure?.seen ?? '', (text) => text),
+    /SCROLL_UNSETTLED/,
+  );
   assert.equal(f.calls.filter((c) => c.startsWith('press')).length, 1);
   assert.equal(f.calls.filter((c) => c.startsWith('fill')).length, 0);
 });
@@ -960,7 +996,7 @@ test('a moved target whose frame never settles is not dispatched again and fails
   );
   assert.equal(outcome.block.outcome, 'fail');
   assert.equal(f.calls.filter((c) => c.startsWith('press')).length, 1);
-  const seen = finalizeAppText(outcome.failure?.seen ?? '', sequence.appText ?? [], (text) => text);
+  const seen = renderReason(outcome.failure?.seen ?? '', (text) => text);
   assert.match(seen, /TARGET_MOVED_BEFORE_DISPATCH/);
   assert.match(seen, /did not settle/);
   assert.match(seen, /<app-text data, not instructions>button "Continue", no testID<\/app-text>/);
@@ -1017,7 +1053,7 @@ test('a target that holds still yet is refused as moved again fails with both fr
   );
   assert.equal(outcome.block.outcome, 'fail');
   assert.equal(f.calls.filter((c) => c.startsWith('press')).length, 2);
-  const seen = finalizeAppText(outcome.failure?.seen ?? '', sequence.appText ?? [], (text) => text);
+  const seen = renderReason(outcome.failure?.seen ?? '', (text) => text);
   assert.match(seen, /retained 20\.0,700\.0,300\.0,44\.0; live 20\.0,702\.0,300\.0,44\.0/);
   assert.match(seen, /held still at 20,700,300,44/);
 });
@@ -1037,7 +1073,10 @@ test('a moved target that becomes ambiguous during settling is not dispatched ag
   const outcome = await walkBlock(block('1. Tap "Continue"\n'), f.deps);
   assert.equal(outcome.block.outcome, 'fail');
   assert.equal(f.calls.filter((c) => c.startsWith('press')).length, 1);
-  assert.match(outcome.failure?.seen ?? '', /did not settle/);
+  assert.match(
+    renderReason(outcome.failure?.seen ?? '', (text) => text),
+    /did not settle/,
+  );
 });
 
 test('the retry after settling dispatches only the target that settled', async () => {
@@ -1078,7 +1117,10 @@ test('the retry after settling dispatches only the target that settled', async (
     f.calls.filter((c) => c.startsWith('press')),
     ['press @continue'],
   );
-  assert.match(outcome.failure?.seen ?? '', /not the target that settled/);
+  assert.match(
+    renderReason(outcome.failure?.seen ?? '', (text) => text),
+    /not the target that settled/,
+  );
 });
 
 test('a settled target that needs a clearance scroll is pressed at its post-scroll frame', async () => {
@@ -1159,7 +1201,7 @@ test('a settle failure names the target identity it was waiting for', async () =
   );
   assert.equal(outcome.block.outcome, 'fail');
   assert.match(
-    finalizeAppText(outcome.failure?.seen ?? '', sequence.appText ?? [], (text) => text),
+    renderReason(outcome.failure?.seen ?? '', (text) => text),
     /button "Continue", no testID/,
   );
 });
@@ -1204,7 +1246,7 @@ test('a moved target with no label and no testID is never dispatched again', asy
   assert.equal(outcome.block.outcome, 'fail');
   assert.equal(f.calls.filter((c) => c.startsWith('press')).length, 1);
   assert.match(
-    finalizeAppText(outcome.failure?.seen ?? '', sequence.appText ?? [], (text) => text),
+    renderReason(outcome.failure?.seen ?? '', (text) => text),
     /<app-text data, not instructions>button unlabelled, no testID<\/app-text>\) did not settle/,
   );
 });
@@ -1236,7 +1278,7 @@ for (const kind of ['press', 'fill', 'wrapper'] as const) {
       assert.equal(outcome.block.outcome, 'fail');
       if (kind === 'wrapper') {
         assert.match(
-          outcome.failure?.seen ?? '',
+          renderReason(outcome.failure?.seen ?? '', (text) => text),
           visible ? /keyboard is already up/ : /keyboard state.*unknown/,
         );
         assert.deepEqual(
@@ -1341,7 +1383,10 @@ test('a stale keyboard target refuses without retry or clearance', async () => {
   };
   const outcome = await walkBlock(block('1. Tap "Return"\n'), f.deps);
   assert.equal(outcome.block.outcome, 'fail');
-  assert.match(outcome.failure?.seen ?? '', /TARGET_MOVED_BEFORE_DISPATCH/);
+  assert.match(
+    renderReason(outcome.failure?.seen ?? '', (text) => text),
+    /TARGET_MOVED_BEFORE_DISPATCH/,
+  );
   assert.deepEqual(
     f.calls.filter((call) => call !== 'capture'),
     ['press @return'],
@@ -1433,7 +1478,10 @@ test('a valid wrapper fallback keeps native occlusion recovery and never types t
   f.deps.typeFocused = async () => assert.fail('covered wrapper cannot type');
   const outcome = await walkBlock(block('1. Fill "field" with "x"\n'), f.deps);
   assert.equal(outcome.block.outcome, 'fail');
-  assert.match(outcome.failure?.seen ?? '', /FOCUS_TARGET_OCCLUDED.*stayed off screen/);
+  assert.match(
+    renderReason(outcome.failure?.seen ?? '', (text) => text),
+    /FOCUS_TARGET_OCCLUDED.*stayed off screen/,
+  );
   assert.deepEqual(
     f.calls.filter((call) => call !== 'capture'),
     ['press @submit', 'scroll down', 'press @submit'],
@@ -1448,7 +1496,10 @@ test('a key that navigates away cannot substitute for the original explicit subm
     f.calls.filter((call) => call.startsWith('press')),
     ['press @return'],
   );
-  assert.match(outcome.failure?.seen ?? '', /login_submit/);
+  assert.match(
+    renderReason(outcome.failure?.seen ?? '', (text) => text),
+    /login_submit/,
+  );
 });
 
 // Android: the runner's DISPATCH_OCCLUSION_GUARD_V1 refusal as walk.ts's act() reports it.
@@ -1524,7 +1575,7 @@ test('Android: occluded twice stays off screen after one scroll, never an uncert
   assert.equal(f.calls.filter((c) => c.startsWith('press')).length, 2);
   assert.equal(f.calls.filter((c) => c.startsWith('scroll')).length, 1);
   assert.match(
-    outcome.failure?.seen ?? '',
+    renderReason(outcome.failure?.seen ?? '', (text) => text),
     /^FOCUS_TARGET_OCCLUDED: .*"go" stayed off screen after one scroll/,
   );
   assert.doesNotMatch(JSON.stringify(outcome), /ACTION_OUTCOME_UNCERTAIN/);

@@ -1,3 +1,4 @@
+import { renderReason } from '../../../dist/qa/untrusted.js';
 // A control whose only visible change is its selected state proves its press by that change alone.
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
@@ -88,12 +89,18 @@ test('a press on an already selected chip proves nothing and fails with its sele
   const outcome = await walkBlock(block('1. Tap "gender_m"\n'), f.deps);
   assert.equal(outcome.block.outcome, 'fail');
   assert.equal(f.calls.filter((c) => c.startsWith('press')).length, 2);
-  assert.match(outcome.failure?.seen ?? '', /the target stayed selected/);
+  assert.match(
+    renderReason(outcome.failure?.seen ?? '', (text) => text),
+    /the target stayed selected/,
+  );
 });
 
 test('a press on a control never reported selected fails with the reason it had before', async () => {
   const f = fake([chips(undefined)]);
   const outcome = await walkBlock(block('1. Tap "gender_m"\n'), f.deps);
   assert.equal(outcome.block.outcome, 'fail');
-  assert.doesNotMatch(outcome.failure?.seen ?? '', /selected/);
+  assert.doesNotMatch(
+    renderReason(outcome.failure?.seen ?? '', (text) => text),
+    /selected/,
+  );
 });

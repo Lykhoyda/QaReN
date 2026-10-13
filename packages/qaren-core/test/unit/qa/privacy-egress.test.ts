@@ -308,7 +308,7 @@ test('a numeric fragment observed after failure masks the earlier framed screen 
   assert.doesNotMatch(JSON.stringify(ledger), /4815|[\uE0F0\uE0F1]/u);
 });
 
-test('a nested login failure finalizes its app text through the outer run registry', async () => {
+test('a nested login failure renders its app segments through the outer run', async () => {
   const wall = fixtureScreen([element('@wall', 'Welcome', { testID: 'login-screen' })]);
   const f = walker(
     [wall],
@@ -826,3 +826,36 @@ test('final ledger withholds normalized and hashed slugs from private block titl
   assert.equal(ledger.blocks[0].key, 'account-overview');
   assert.equal(ledger.steps[0].block, 'account-overview');
 });
+
+for (const value of ['\uE0F0X\uE0F1', '\uE0F0\uE200\uE0F1']) {
+  test(`a failing literal private-use check stays literal without crashing: ${value}`, async () => {
+    const f = walker(
+      [view([text('@label', 'Unrelated evidence')])],
+      scriptedJudge(() => assert.fail('literal check must not call Jev')),
+    );
+    const ledger = await runPlan(parsePlan(`✓ "${value}"`).blocks!, f.deps);
+    assert.equal(ledger.verdict, 'FAIL');
+    assert.equal(ledger.jev.calls, 0);
+    assert.equal(ledger.steps[0].reason, `"${value}" is not satisfied on screen`);
+    assert.equal(
+      ledger.failure?.seen,
+      `"${value}" is not satisfied on screen; historical context, previously on screen: ${APP_TEXT_OPEN}Unrelated evidence${APP_TEXT_CLOSE}`,
+    );
+  });
+
+  test(`a private-use value cannot erase unrelated framed evidence: ${value}`, async () => {
+    const input = element('@input', 'Name', { kind: 'input', value });
+    const f = walker(
+      [view([text('@label', `Unrelated evidence | ${value}`), input])],
+      scriptedJudge(() => assert.fail('literal check must not call Jev')),
+    );
+    const ledger = await runPlan(parsePlan('✓ "Missing"').blocks!, f.deps);
+    assert.equal(ledger.verdict, 'FAIL');
+    assert.equal(ledger.jev.calls, 0);
+    assert.equal(
+      ledger.failure?.seen,
+      `"Missing" is not satisfied on screen; historical context, previously on screen: ${APP_TEXT_OPEN}Unrelated evidence | ${MASK} | Name: ${MASK}${APP_TEXT_CLOSE}`,
+    );
+    assert.ok(!JSON.stringify(ledger).includes(value));
+  });
+}

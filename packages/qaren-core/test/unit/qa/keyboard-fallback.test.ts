@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { finalizeAppText } from '../../../dist/qa/untrusted.js';
+import { renderReason } from '../../../dist/qa/untrusted.js';
 import type { WalkSequence } from '../../../dist/qa/walker.js';
 import { existsSync, mkdirSync, mkdtempSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -441,7 +441,10 @@ for (const code of ['9', '93', '938', '999', '9386', '9966']) {
       fake.deps,
     );
     assert.equal(ledger.verdict, 'FAIL');
-    assert.match(ledger.failure?.seen ?? '', /\[code\]/);
+    assert.match(
+      renderReason(ledger.failure?.seen ?? '', (text) => text),
+      /\[code\]/,
+    );
     assert.equal(
       ledger.steps.some((row) => row.reason?.startsWith('UNVERIFIED_FILL:')),
       true,
@@ -571,7 +574,10 @@ test('U14: without the focused-typing dep the strict refusal is unchanged', asyn
   const fake = app({ typeFocused: false });
   const outcome = await walkBlock(blocks(plan())[0], fake.deps);
   assert.equal(outcome.block.outcome, 'fail');
-  assert.match(outcome.failure?.seen ?? '', /^TARGET_NOT_FOUND: /);
+  assert.match(
+    renderReason(outcome.failure?.seen ?? '', (text) => text),
+    /^TARGET_NOT_FOUND: /,
+  );
   assert.deepEqual(
     steps(fake.log).filter((s) => !s.startsWith('shot')),
     [],
@@ -585,7 +591,7 @@ for (const keyboard of [true, 'absent'] as const) {
     const outcome = await walkBlock(blocks(plan())[0], fake.deps);
     assert.equal(outcome.block.outcome, 'fail');
     assert.match(
-      outcome.failure?.seen ?? '',
+      renderReason(outcome.failure?.seen ?? '', (text) => text),
       keyboard === true
         ? /^the keyboard is already up before tapping "qa-hidden-email"; nothing was typed/
         : /^the keyboard state before tapping "qa-hidden-email" is unknown; nothing was typed/,
@@ -640,7 +646,10 @@ for (const [name, after, reason] of [
     const fake = app({ focused: [after] });
     const outcome = await walkBlock(blocks(plan())[0], fake.deps);
     assert.equal(outcome.block.outcome, 'fail');
-    assert.match(outcome.failure?.seen ?? '', reason);
+    assert.match(
+      renderReason(outcome.failure?.seen ?? '', (text) => text),
+      reason,
+    );
     assert.deepEqual(steps(fake.log), ['press @wrap']);
     assert.equal(fake.typed.length, 0);
     assert.equal(
@@ -655,7 +664,10 @@ test('U7: a target replaced by another identity after the tap fails without typi
   const fake = app({ focused: [screenOf([other, submit], true)] });
   const outcome = await walkBlock(blocks(plan())[0], fake.deps);
   assert.equal(outcome.block.outcome, 'fail');
-  assert.match(outcome.failure?.seen ?? '', /the tap on "qa-hidden-email" changed the screen/);
+  assert.match(
+    renderReason(outcome.failure?.seen ?? '', (text) => text),
+    /the tap on "qa-hidden-email" changed the screen/,
+  );
   assert.deepEqual(steps(fake.log), ['press @wrap']);
 });
 
@@ -671,7 +683,10 @@ test('U11: expired post-focus evidence never taps again', async () => {
   });
   const outcome = await walkBlock(blocks(plan())[0], fake.deps);
   assert.equal(outcome.block.outcome, 'fail');
-  assert.match(outcome.failure?.seen ?? '', /^TARGET_NOT_FOUND:/);
+  assert.match(
+    renderReason(outcome.failure?.seen ?? '', (text) => text),
+    /^TARGET_NOT_FOUND:/,
+  );
   assert.deepEqual(steps(fake.log), ['press @wrap']);
   assert.equal(fake.typed.length, 0);
 });
@@ -706,7 +721,10 @@ for (const type of [
     const outcome = await walkBlock(blocks(plan())[0], fake.deps);
     assert.equal(outcome.block.outcome, 'fail');
     assert.deepEqual(steps(fake.log), ['press @wrap', 'type @wrap']);
-    assert.match(outcome.failure?.seen ?? '', /was not retried/);
+    assert.match(
+      renderReason(outcome.failure?.seen ?? '', (text) => text),
+      /was not retried/,
+    );
     assert.deepEqual(outcome.privateFills, [fake.rows[0].line]);
   });
 }
@@ -748,7 +766,10 @@ test('U11: evidence that expires before the type fails without typing or tapping
   const fake = app({ expireBeforeType: true });
   const outcome = await walkBlock(blocks(plan())[0], fake.deps);
   assert.equal(outcome.block.outcome, 'fail');
-  assert.match(outcome.failure?.seen ?? '', /^EVIDENCE_EXPIRED/);
+  assert.match(
+    renderReason(outcome.failure?.seen ?? '', (text) => text),
+    /^EVIDENCE_EXPIRED/,
+  );
   assert.deepEqual(steps(fake.log), ['press @wrap']);
   assert.equal(fake.typed.length, 0);
 });
@@ -794,7 +815,7 @@ test('U12: short free-text echoes remain readable while quoted fill slots stay m
     sequence,
   );
   assert.match(
-    finalizeAppText(outcome.failure?.seen ?? '', sequence.appText ?? [], (text) => text),
+    renderReason(outcome.failure?.seen ?? '', (text) => text),
     /Code A12B/,
   );
   assert.ok(outcome.rows[0].text.includes('“•••”') || outcome.rows[0].text.includes('"•••"'));
@@ -953,7 +974,10 @@ test('U1: non-qualifying refusals keep the strict refusal with no tap or type', 
     ],
   });
   const a = await walkBlock(blocks(plan())[0], ambiguous.deps);
-  assert.match(a.failure?.seen ?? '', /^TARGET_AMBIGUOUS: /);
+  assert.match(
+    renderReason(a.failure?.seen ?? '', (text) => text),
+    /^TARGET_AMBIGUOUS: /,
+  );
   assert.equal(ambiguous.typed.length, 0);
   const incomplete = app();
   const capture = incomplete.deps.captureScreen;
@@ -962,11 +986,17 @@ test('U1: non-qualifying refusals keep the strict refusal with no tap or type', 
     coverage: { native: 'incomplete', react: 'complete' },
   });
   const i = await walkBlock(blocks(plan())[0], incomplete.deps);
-  assert.match(i.failure?.seen ?? '', /^SCREEN_EVIDENCE_INCOMPLETE: /);
+  assert.match(
+    renderReason(i.failure?.seen ?? '', (text) => text),
+    /^SCREEN_EVIDENCE_INCOMPLETE: /,
+  );
   const process = app();
   process.deps.appProcess = {};
   const p = await walkBlock(blocks(plan())[0], process.deps);
-  assert.match(p.failure?.seen ?? '', /^APP_PROCESS_UNKNOWN: /);
+  assert.match(
+    renderReason(p.failure?.seen ?? '', (text) => text),
+    /^APP_PROCESS_UNKNOWN: /,
+  );
   for (const fake of [ambiguous, incomplete, process])
     assert.deepEqual(
       steps(fake.log).filter((s) => !s.startsWith('shot')),
@@ -1106,7 +1136,10 @@ for (const mutation of ['observed', 'possible', undefined] as const) {
     const result = await walkBlock(blocks(plan('Ada', 'name', ''))[0], fake.deps);
     assert.equal(result.block.outcome, 'fail');
     assert.equal(fills, 1);
-    assert.match(result.failure?.seen ?? '', /TEXT_ENTRY_UNVERIFIED/);
+    assert.match(
+      renderReason(result.failure?.seen ?? '', (text) => text),
+      /TEXT_ENTRY_UNVERIFIED/,
+    );
     assert.equal(
       fake.rows.some((row) => row.outcome === 'pass'),
       false,
@@ -1414,7 +1447,10 @@ for (const reactKnown of [true, false]) {
     const result = await walkBlock(blocks(plan(EMAIL, 'custom-pressable', ''))[0], fake.deps);
     if (!reactKnown) {
       assert.equal(result.block.outcome, 'fail');
-      assert.match(result.failure?.seen ?? '', /TARGET_NOT_FOUND/);
+      assert.match(
+        renderReason(result.failure?.seen ?? '', (text) => text),
+        /TARGET_NOT_FOUND/,
+      );
       assert.deepEqual(
         steps(fake.log).filter((s) => !s.startsWith('shot')),
         [],
@@ -1619,7 +1655,7 @@ for (const identity of ['qa-hidden-email', WRAP]) {
         assert.deepEqual(taps, []);
         assert.equal(fake.typed.length, 0);
         assert.match(
-          result.failure?.seen ?? '',
+          renderReason(result.failure?.seen ?? '', (text) => text),
           freshState === 'duplicate' ? /^TARGET_AMBIGUOUS:/ : /nothing was typed/,
         );
       }
@@ -1693,7 +1729,10 @@ for (const replacementHasId of [false, true]) {
     };
     const result = await walkBlock(blocks(plan(EMAIL, 'Email', ''))[0], fake.deps);
     assert.equal(result.block.outcome, 'fail');
-    assert.match(result.failure?.seen ?? '', /^NO_TEXT_INPUT_TARGET: unobservable input/);
+    assert.match(
+      renderReason(result.failure?.seen ?? '', (text) => text),
+      /^NO_TEXT_INPUT_TARGET: unobservable input/,
+    );
     assert.equal(fills, 1);
     assert.equal(captures, 1);
     assert.equal(
@@ -1708,7 +1747,10 @@ test('a label-only unresolved target keeps its strict resolution refusal', async
   const fake = app({ initial: [element('@label', 'Email', { kind: 'other' })] });
   const result = await walkBlock(blocks(plan(EMAIL, 'Email', ''))[0], fake.deps);
   assert.equal(result.block.outcome, 'fail');
-  assert.match(result.failure?.seen ?? '', /^TARGET_NOT_FOUND:/);
+  assert.match(
+    renderReason(result.failure?.seen ?? '', (text) => text),
+    /^TARGET_NOT_FOUND:/,
+  );
   assert.equal(
     fake.log.some((entry) => entry.startsWith('press')),
     false,
@@ -1874,7 +1916,10 @@ for (const refusal of ['resolution', 'native binding']) {
           fake.rows.some((row) => row.outcome === 'pass'),
           false,
         );
-        assert.match(result.failure?.seen ?? '', /^TARGET_NOT_FOUND:/);
+        assert.match(
+          renderReason(result.failure?.seen ?? '', (text) => text),
+          /^TARGET_NOT_FOUND:/,
+        );
       }
     });
   }
@@ -1909,7 +1954,10 @@ for (const evidence of ['masked', 'unavailable', 'mismatch'] as const) {
     assert.equal(fake.rows.filter((row) => row.outcome === 'retry').length, 0);
     if (evidence === 'mismatch') {
       assert.equal(result.block.outcome, 'fail');
-      assert.match(result.failure?.seen ?? '', /TEXT_ENTRY_UNVERIFIED/);
+      assert.match(
+        renderReason(result.failure?.seen ?? '', (text) => text),
+        /TEXT_ENTRY_UNVERIFIED/,
+      );
       return;
     }
     assert.equal(result.block.outcome, 'pass', JSON.stringify(result.failure));
@@ -1991,7 +2039,7 @@ for (const focus of [false, 'throw'] as const) {
     assert.deepEqual(steps(fake.log), ['press @wrap']);
     assert.deepEqual(fake.typed, []);
     assert.match(
-      outcome.failure?.seen ?? '',
+      renderReason(outcome.failure?.seen ?? '', (text) => text),
       /^the keyboard was already up and focus on "qa-hidden-email" is not proven; nothing was typed/,
     );
     assert.deepEqual(fake.notes, [FOCUS_NOTE('tap', 'not-proven')]);
@@ -2023,7 +2071,10 @@ for (const focus of [false, 'throw'] as const) {
     const fake = app({ initial: [submit], initialKeyboard: true, reactFocused: focus });
     const outcome = await walkBlock(blocks(otpPlan())[0], fake.deps);
     assert.equal(outcome.block.outcome, 'fail');
-    assert.match(outcome.failure?.seen ?? '', /^TARGET_NOT_FOUND:/);
+    assert.match(
+      renderReason(outcome.failure?.seen ?? '', (text) => text),
+      /^TARGET_NOT_FOUND:/,
+    );
     assert.deepEqual(mutations(fake.log), []);
     assert.deepEqual(fake.notes, [FOCUS_NOTE('none', 'not-proven')]);
     assert.equal(outcome.privateFills, undefined);
@@ -2146,7 +2197,10 @@ for (const shape of ['wrapper', 'none'] as const) {
     const outcome = await walkBlock(blocks(shape === 'none' ? otpPlan() : plan())[0], fake.deps);
     assert.equal(outcome.block.outcome, 'fail');
     assert.equal(fake.typed.length, 1);
-    assert.match(outcome.failure?.seen ?? '', /not retried/);
+    assert.match(
+      renderReason(outcome.failure?.seen ?? '', (text) => text),
+      /not retried/,
+    );
   });
 }
 
@@ -2185,7 +2239,10 @@ test('twin inputs are refused before any tap or typing', async () => {
   const fake = app({ initial: joined.elements, initialKeyboard: false });
   const result = await walkBlock(blocks(plan(EMAIL, 'qa-twin-same', ''))[0], fake.deps);
   assert.equal(result.block.outcome, 'fail');
-  assert.match(result.failure?.seen ?? '', /^TARGET_AMBIGUOUS:/);
+  assert.match(
+    renderReason(result.failure?.seen ?? '', (text) => text),
+    /^TARGET_AMBIGUOUS:/,
+  );
   assert.deepEqual(mutations(fake.log), []);
   assert.deepEqual(fake.typed, []);
 });
@@ -2236,7 +2293,10 @@ test('twins appearing after the fallback tap remain terminal during rebinding', 
   };
   const result = await walkBlock(blocks(plan(EMAIL, 'qa-hidden-email', ''))[0], fake.deps);
   assert.equal(result.block.outcome, 'fail');
-  assert.match(result.failure?.seen ?? '', /^TARGET_AMBIGUOUS:/);
+  assert.match(
+    renderReason(result.failure?.seen ?? '', (text) => text),
+    /^TARGET_AMBIGUOUS:/,
+  );
   assert.equal(fake.typed.length, 0);
   assert.equal(recoveries, 0);
   assert.equal(fake.log.filter((entry) => entry.startsWith('press')).length, 1);

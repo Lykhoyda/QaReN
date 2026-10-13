@@ -1,3 +1,4 @@
+import { renderReason } from '../../../dist/qa/untrusted.js';
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { parsePlan, parseStep } from '../../../dist/qa/plan.js';
@@ -267,7 +268,7 @@ async function consumers(screen: Screen, text: string, exact: 'text' | 'id' = 't
     assert.notEqual(result.verdict, 'REFUSED', JSON.stringify(result));
     return {
       verdict: result.verdict,
-      seen: 'failure' in result ? (result.failure?.seen ?? '') : '',
+      seen: 'failure' in result ? renderReason(result.failure?.seen ?? '', (text) => text) : '',
       reason: 'steps' in result ? result.steps.at(-1)?.reason : undefined,
       actions: f.actions,
     };
@@ -288,7 +289,7 @@ async function consumers(screen: Screen, text: string, exact: 'text' | 'id' = 't
     scroll: await outcome(`Scroll down until "${text}"`),
     replay: {
       failed: replay.failure !== undefined,
-      seen: replay.failure?.seen ?? '',
+      seen: renderReason(replay.failure?.seen ?? '', (text) => text),
       miss: replay.miss,
       line: block.items[0].line,
     },
@@ -329,7 +330,10 @@ test('V5: check, wait, scroll-until and replay share one rule on the same screen
     const screen = k2();
     const row = await checkRow(screen, 'Describe the issue');
     assert.equal(row.verdict, 'FAIL');
-    assert.match(row.failure?.seen ?? '', /CHECK_UNSURE/);
+    assert.match(
+      renderReason(row.failure?.seen ?? '', (text) => text),
+      /CHECK_UNSURE/,
+    );
     const c = await consumers(screen, 'Describe the issue');
     for (const consumer of [c.wait, c.scroll]) {
       assert.equal(consumer.verdict, 'FAIL');
@@ -342,7 +346,10 @@ test('V5: check, wait, scroll-until and replay share one rule on the same screen
   await t.test('fail', async () => {
     const screen = longList();
     const row = await checkRow(screen, 'Row 25');
-    assert.match(row.failure?.seen ?? '', /"Row 25" is not satisfied on screen/);
+    assert.match(
+      renderReason(row.failure?.seen ?? '', (text) => text),
+      /"Row 25" is not satisfied on screen/,
+    );
     const c = await consumers(screen, 'Row 25');
     assert.match(c.wait.seen, /"Row 25" did not appear within 15s; the screen did not change/);
     assert.match(c.scroll.seen, /did not come into view/);
@@ -364,7 +371,10 @@ test('a visible occurrence wins over the same text on an unresolved frame, for e
 test('an incomplete snapshot never turns a miss into a definite absence in any consumer', async () => {
   const partial = companyHome({ native: 'incomplete', react: 'complete' });
   const row = await checkRow(partial, 'Nowhere to be found');
-  assert.match(row.failure?.seen ?? '', /CHECK_UNSURE/);
+  assert.match(
+    renderReason(row.failure?.seen ?? '', (text) => text),
+    /CHECK_UNSURE/,
+  );
   const c = await consumers(partial, 'Nowhere to be found');
   for (const consumer of [c.wait, c.scroll]) {
     assert.equal(consumer.verdict, 'FAIL');

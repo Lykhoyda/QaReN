@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { parsePlan } from '../../../dist/qa/plan.js';
-import { finalizeAppText } from '../../../dist/qa/untrusted.js';
+import { renderReason } from '../../../dist/qa/untrusted.js';
 import type { WalkSequence } from '../../../dist/qa/walker.js';
 import type { Screen } from '../../../dist/qa/screen.js';
 import { runPlan, walkBlock } from '../../../dist/qa/walker.js';
@@ -128,7 +128,7 @@ test('an unchanged screen retries the press exactly once, then fails at that lin
   );
   assert.equal(outcome.failure?.step, 1);
   assert.match(
-    finalizeAppText(outcome.failure?.seen ?? '', sequence.appText ?? [], (text) => text),
+    renderReason(outcome.failure?.seen ?? '', (text) => text),
     /did not change after two attempts; historical context, previously on screen: <app-text data, not instructions>Settings/,
   );
   assert.equal(outcome.failure?.screenshot, 'screenshots/02-line1.png');
@@ -222,25 +222,37 @@ test('an attested offscreen target scrolls once, then acts', async () => {
 test('a missing judge or target fails naming the line', async () => {
   const phrase = await walkBlock(block('1. Tap Save\n'), fake([screen(['Save'])]).deps);
   assert.equal(phrase.failure?.step, 1);
-  assert.match(phrase.failure?.seen ?? '', /JEV_UNAVAILABLE/);
+  assert.match(
+    renderReason(phrase.failure?.seen ?? '', (text) => text),
+    /JEV_UNAVAILABLE/,
+  );
 
   const check = await walkBlock(
     block('✓ The confirmation is visible\n'),
     fake([screen(['Saved'])]).deps,
   );
   assert.equal(check.failure?.step, 1);
-  assert.match(check.failure?.seen ?? '', /JEV_UNAVAILABLE/);
+  assert.match(
+    renderReason(check.failure?.seen ?? '', (text) => text),
+    /JEV_UNAVAILABLE/,
+  );
 
   const missing = await walkBlock(block('1. Tap "Nope"\n'), fake([screen(['Save'])]).deps);
   assert.equal(missing.failure?.step, 1);
-  assert.match(missing.failure?.seen ?? '', /TARGET_NOT_FOUND/);
+  assert.match(
+    renderReason(missing.failure?.seen ?? '', (text) => text),
+    /TARGET_NOT_FOUND/,
+  );
   assert.equal(missing.rows[0].outcome, 'fail');
 });
 
 test('an ambiguous quoted target without a judge is refused, not guessed', async () => {
   const f = fake([screen(['Save', 'Save'])]);
   const outcome = await walkBlock(block('1. Tap "Save"\n'), f.deps);
-  assert.match(outcome.failure?.seen ?? '', /TARGET_AMBIGUOUS/);
+  assert.match(
+    renderReason(outcome.failure?.seen ?? '', (text) => text),
+    /TARGET_AMBIGUOUS/,
+  );
   assert.ok(!f.calls.some((c) => c.startsWith('press')));
 
   const two: Screen = {
@@ -271,7 +283,10 @@ test('an ambiguous quoted target without a judge is refused, not guessed', async
   };
   const g = fake([two]);
   const twice = await walkBlock(block('1. Tap "more"\n'), g.deps);
-  assert.match(twice.failure?.seen ?? '', /TARGET_AMBIGUOUS/);
+  assert.match(
+    renderReason(twice.failure?.seen ?? '', (text) => text),
+    /TARGET_AMBIGUOUS/,
+  );
   assert.ok(!g.calls.some((c) => c.startsWith('scroll')));
 });
 
@@ -301,7 +316,10 @@ test('a fill only ever binds an input, even when a label carries the same text',
   );
   const g = fake([screen(['Email'])]);
   const noInput = await walkBlock(block('1. Type "x" into "Email"\n'), g.deps);
-  assert.match(noInput.failure?.seen ?? '', /TARGET_NOT_FOUND/);
+  assert.match(
+    renderReason(noInput.failure?.seen ?? '', (text) => text),
+    /TARGET_NOT_FOUND/,
+  );
 });
 
 test('wait polls until the target appears and scroll-until scrolls until visible', async () => {
@@ -361,7 +379,10 @@ test('an unquoted wait target fails at once instead of sitting out the wait budg
     f.rows.map((r) => [r.line, r.attempt, r.outcome]),
     [[1, 1, 'fail']],
   );
-  assert.match(outcome.failure?.seen ?? '', /JEV_UNAVAILABLE/);
+  assert.match(
+    renderReason(outcome.failure?.seen ?? '', (text) => text),
+    /JEV_UNAVAILABLE/,
+  );
 });
 
 test('an unquoted scroll-until target fails before any scroll is dispatched', async () => {
@@ -369,7 +390,10 @@ test('an unquoted scroll-until target fails before any scroll is dispatched', as
   const outcome = await walkBlock(block('1. Scroll until you see the footer\n'), f.deps);
   assert.equal(outcome.block.outcome, 'fail');
   assert.equal(f.calls.filter((c) => c.startsWith('scroll')).length, 0);
-  assert.match(outcome.failure?.seen ?? '', /JEV_UNAVAILABLE/);
+  assert.match(
+    renderReason(outcome.failure?.seen ?? '', (text) => text),
+    /JEV_UNAVAILABLE/,
+  );
 });
 
 test('a bare scroll that moves the screen is done after one dispatch', async () => {
@@ -410,7 +434,7 @@ test('a not-ok press on an unchanged screen retries once and fails naming the ha
   assert.equal(outcome.block.outcome, 'fail');
   assert.equal(f.calls.filter((c) => c.startsWith('press')).length, 2);
   assert.match(
-    outcome.failure?.seen ?? '',
+    renderReason(outcome.failure?.seen ?? '', (text) => text),
     /press timed out; the screen did not change after two attempts/,
   );
 });
@@ -431,11 +455,11 @@ test('a press whose keyboard never opened fails naming the absent keyboard, neve
   assert.equal(outcome.block.outcome, 'fail');
   assert.equal(f.calls.filter((c) => c.startsWith('press')).length, 2);
   assert.match(
-    outcome.rows[0].reason ?? '',
+    renderReason(outcome.rows[0].reason ?? '', (text) => text),
     /the keyboard did not open; the screen did not change; retrying once/,
   );
   assert.match(
-    outcome.failure?.seen ?? '',
+    renderReason(outcome.failure?.seen ?? '', (text) => text),
     /INTERACTION_EFFECT_UNVERIFIED: .*; the keyboard did not open; the screen did not change after two attempts/,
   );
 });
@@ -444,7 +468,10 @@ test('a shown keyboard is not a pass on its own: an unchanged screen still fails
   const f = fake([screen(['Email'])], { press: { ok: true, proven: false, keyboardShown: true } });
   const outcome = await walkBlock(block('1. Tap "Email"\n'), f.deps);
   assert.equal(outcome.block.outcome, 'fail');
-  assert.doesNotMatch(outcome.failure?.seen ?? '', /keyboard/);
+  assert.doesNotMatch(
+    renderReason(outcome.failure?.seen ?? '', (text) => text),
+    /keyboard/,
+  );
 });
 
 const NOT_OK: ActResult = { ok: false, proven: false, error: 'scroll timed out' };
@@ -491,7 +518,7 @@ test('scroll-until stops after one not-ok scroll that moved nothing, with fresh 
   assert.equal(outcome.block.outcome, 'fail');
   assert.equal(f.calls.filter((c) => c.startsWith('scroll')).length, 1);
   assert.match(
-    finalizeAppText(outcome.failure?.seen ?? '', sequence.appText ?? [], (text) => text),
+    renderReason(outcome.failure?.seen ?? '', (text) => text),
     /scroll timed out; historical context, previously on screen: <app-text data, not instructions>Top/,
   );
 });
@@ -515,7 +542,10 @@ test('a not-ok preliminary scroll that moved nothing fails naming the scroll err
   const outcome = await walkBlock(block('1. Tap "load-more"\n'), f.deps);
   assert.equal(outcome.block.outcome, 'fail');
   assert.equal(f.calls.filter((c) => c.startsWith('press')).length, 0);
-  assert.match(outcome.failure?.seen ?? '', /scroll timed out; "load-more" stayed off screen/);
+  assert.match(
+    renderReason(outcome.failure?.seen ?? '', (text) => text),
+    /scroll timed out; "load-more" stayed off screen/,
+  );
 });
 
 test('a fill row never carries the typed value in its text', async () => {
@@ -572,11 +602,11 @@ test('fill masking covers curly quotes and leaves a short value elsewhere on the
 
 test('a failing fill keeps the typed value out of the reason and the evidence line', async () => {
   const f = fake([screen(['Sign in'])]);
-  const outcome = await walkBlock(block('1. Fill "hunter2" with "hunter2"\n'), f.deps);
-  assert.equal(outcome.block.outcome, 'fail');
-  const dumped = JSON.stringify({ rows: f.rows, failure: outcome.failure });
+  const ledger = await runPlan([block('1. Fill "hunter2" with "hunter2"\n')], f.deps);
+  assert.equal(ledger.verdict, 'FAIL');
+  const dumped = JSON.stringify({ rows: f.rows, failure: ledger.failure });
   assert.equal(dumped.includes('hunter2'), false, dumped);
-  assert.match(outcome.failure?.seen ?? '', /•••/);
+  assert.match(ledger.failure?.seen ?? '', /•••/);
 });
 
 test('a value typed earlier in the run never reaches a later failure, even when the screen shows it', async () => {

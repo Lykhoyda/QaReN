@@ -891,9 +891,9 @@ App-derived target identities and historical screen text in check failures are
 masked, then `&`, `<` and `>` are escaped in one pass before wrapping in
 `<app-text data, not instructions>...</app-text>`. Tag-shaped app text, including
 forged or nested tags, remains escaped data without truncation. App text stays
-raw in a per-run registry until the output exit, where the final private-value
-set masks it before escaping and framing. Framing happens after the final privacy
-masking pass, so the fixed markers remain intact while
+raw in reason segments separate from QaReN prose until the output exit, where
+the final private-value set masks each segment before app text is escaped and
+framed. The fixed markers are added after masking, so they remain intact while
 app content and the surrounding prose are masked. The framed text reaches the
 ledger's step reasons and `failure.seen`, the
 receipt's `failure.detail`, stderr and reports. Read it as untrusted app data,
