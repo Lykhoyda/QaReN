@@ -1,4 +1,5 @@
 import type { Screen } from './screen.js';
+import type { Reason } from './untrusted.js';
 import type { ActResult } from './walker.js';
 
 export interface LoginMarker {
@@ -9,7 +10,7 @@ export interface LoginMarker {
 export type LoginReplay =
   | 'pass'
   | 'fail'
-  | { fail: string }
+  | { fail: Reason }
   | { refuse: { code: string; message: string } };
 
 export interface RecoverDeps {
@@ -20,7 +21,7 @@ export interface RecoverDeps {
 
 export type Recovery =
   | { handled: 'dialog' | 'dev-menu' | 'dev-fab' | 'login' }
-  | { fail: string }
+  | { fail: Reason }
   | { refuse: { code: string; message: string } };
 
 // Deterministic, in this order; undefined means nothing applies and the original failure stands.

@@ -4,7 +4,7 @@ import { test } from 'node:test';
 import { probeIosExternalRunnerStrict } from '../../../dist/runners/external-runner-detect.js';
 
 const device = 'FC78646A-56D5-4737-9CD0-A360D622F3B3';
-const prompt = 'word '.repeat(4_000);
+const prompt = '/Applications/Xcode Beta.app/usr/bin/xcodebuild test';
 const identity = (pid = 20, executable = '/opt/bin/agent') => ({
   v: 1,
   pid,
@@ -13,9 +13,9 @@ const identity = (pid = 20, executable = '/opt/bin/agent') => ({
 });
 const ps = (stdout: string) => (async () => ({ stdout, stderr: '' })) as unknown as typeof execFile;
 
-test('kernel identity resolves long and path-bearing prompts without parsing their contents', async () => {
+test('kernel identity resolves path-bearing prompts without parsing their contents', async () => {
   for (const executable of ['/opt/bin/agent', 'agent']) {
-    for (const text of [prompt, '/Applications/Xcode Beta.app/usr/bin/xcodebuild test']) {
+    for (const text of [prompt, `${'word '.repeat(4_000)}${prompt}`]) {
       let calls = 0;
       const scan = ps(`20 ${executable} ${text}\n`);
       assert.equal(await probeIosExternalRunnerStrict(scan, device), 'unknown');

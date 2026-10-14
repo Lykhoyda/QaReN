@@ -39,7 +39,16 @@ import {
 } from './blocks.js';
 import { type Judge, type JevCall, JevError, unavailableJudge } from './questions.js';
 import { type LoginMarker, recover } from './recover.js';
-import { isPrivateInput, MASK, ObservedPrivacy, matchPrivate, projectPlanLine } from './privacy.js';
+import {
+  concealsScreen,
+  isPrivateInput,
+  MASK,
+  SCREEN_TEXT_WITHHELD,
+  ObservedPrivacy,
+  matchPrivate,
+  projectPlanLine,
+} from './privacy.js';
+import { renderReason, segments, type Reason } from './untrusted.js';
 import { NativeSnapshotIncomplete, PrivateInputCaptureError } from './private-input.js';
 import { AppProcessGoneError, emitCaptureDiagnostics, NativeCaptureError } from './capture.js';
 import { QaDispatchContext, QaDispatchError } from '../domain/qa-dispatch.js';
@@ -178,10 +187,13 @@ export const KEYBOARD_READY_MS = 1_500;
 export const KEYBOARD_READY_CAPTURES = 3;
 export const SCROLL_SETTLE_READBACKS = 3;
 
+type WalkRow = Omit<LedgerRow, 'reason'> & { reason?: Reason };
+type WalkFailure = Omit<LedgerFailure, 'seen'> & { seen: Reason };
+
 export interface WalkOutcome {
   block: BlockResult;
-  rows: LedgerRow[];
-  failure?: LedgerFailure;
+  rows: WalkRow[];
+  failure?: WalkFailure;
   refusal?: { code: string; message: string };
   // Replay only: the line whose stored selector failed before mutation authorization.
   miss?: number;
@@ -228,7 +240,7 @@ export async function walkBlock(
   operations = new Map<number, number>(),
 ): Promise<WalkOutcome> {
   const replay = opts.mode === 'replay';
-  const rows: LedgerRow[] = [];
+  const rows: WalkRow[] = [];
   const privateFills: number[] = [];
   for (const item of block.items)
     if (item.kind === 'fill' && !typed.includes(item.text)) typed.push(item.text);
@@ -628,7 +640,7 @@ export async function walkBlock(
     }
     return operationId;
   };
-  const emit = (row: LedgerRow): void => {
+  const emit = (row: WalkRow): void => {
     row = { ...row, operationId: operationFor(row.line) };
     let timing: RowTiming | undefined;
     try {
@@ -672,7 +684,7 @@ export async function walkBlock(
   const failed = (
     item: Item,
     attempt: number,
-    reason: string,
+    reason: Reason,
     screen: Screen,
     screenshot: string | undefined,
     ref?: string,
@@ -683,7 +695,7 @@ export async function walkBlock(
       ...(ref ? { ref } : {}),
       ...(screenshot ? { screenshot } : {}),
       outcome: miss ? 'retry' : 'fail',
-      reason: redact(miss ? `${reason}; re-walking from this line` : reason),
+      reason: miss ? [...segments(reason), '; re-walking from this line'] : reason,
     });
     return {
       block: { key: block.slug, outcome: 'fail', source: 'discovered' },
@@ -693,9 +705,14 @@ export async function walkBlock(
       ...(recoveries ? { recoveries } : {}),
       failure: {
         step: item.line,
-        seen: redact(
-          `${reason}; historical context, previously on screen: ${privacy.screenText(screen).slice(0, 40).join(' | ')}`,
-        ),
+        seen: [
+          ...segments(reason),
+          '; historical context, previously on screen: ',
+          {
+            app: privacy.screenText(screen).slice(0, 40).join(' | '),
+            ...(concealsScreen(screen) ? { withheld: SCREEN_TEXT_WITHHELD } : {}),
+          },
+        ],
         ...(screenshot ? { screenshot } : {}),
       },
     };
@@ -1039,7 +1056,8 @@ export async function walkBlock(
     separateRowOperations(nested.rows);
     rows.push(...nested.rows);
     if (nested.refusal) return { refuse: nested.refusal };
-    if (nested.failure) return { fail: `the login block did not pass: ${nested.failure.seen}` };
+    if (nested.failure)
+      return { fail: ['the login block did not pass: ', ...segments(nested.failure.seen)] };
     if (!sequence.planPassed) {
       privacy.startWindow();
       sequence.window = { fromMs: deps.now(), typed: typed.length };
@@ -1333,7 +1351,14 @@ export async function walkBlock(
               outcome = failed(
                 item,
                 attempt,
-                `${moved.error}; the target (${identityText(moved.target)}) did not settle across ${settled.frames.length} captures (${settled.frames.join(' | ')}); it was not dispatched again`,
+                [
+                  `${moved.error}; the target (`,
+                  {
+                    app: identityText(moved.target),
+                    ...(concealsScreen(latest) ? { withheld: MASK } : {}),
+                  },
+                  `) did not settle across ${settled.frames.length} captures (${settled.frames.join(' | ')}); it was not dispatched again`,
+                ],
                 latest,
                 await shoot(item),
               );
@@ -1493,7 +1518,24 @@ export async function walkBlock(
                 outcome = failed(
                   item,
                   attempt,
-                  `${moved.error}; the retry resolved ${element ? `${identityText(element)} at ${frameKey(element) ?? 'no frame'}` : 'no element'}, not the target that settled (${identityText(moved.target)} at ${settledFrame}); it was not dispatched`,
+                  [
+                    `${moved.error}; the retry resolved `,
+                    ...(element
+                      ? [
+                          {
+                            app: identityText(element),
+                            ...(concealsScreen(before.screen) ? { withheld: MASK } : {}),
+                          },
+                          ` at ${frameKey(element) ?? 'no frame'}`,
+                        ]
+                      : ['no element']),
+                    ', not the target that settled (',
+                    {
+                      app: identityText(moved.target),
+                      ...(concealsScreen(before.screen) ? { withheld: MASK } : {}),
+                    },
+                    ` at ${settledFrame}); it was not dispatched`,
+                  ],
                   before.screen,
                   await shoot(item),
                   ref,
@@ -1869,7 +1911,7 @@ class RenderError extends Error {
 }
 
 // The streamed row channel cannot be retracted, so it carries no text, reason, selector or app identifier.
-function valueFree(row: LedgerRow): LedgerRow {
+function valueFree(row: Omit<LedgerRow, 'reason'>): LedgerRow {
   const { operationId, line, attempt, kind, resolvedBy, t, outcome, screenshot, timing } = row;
   return {
     block: '',
@@ -1989,7 +2031,7 @@ export async function runPlan(
   return measureTiming(deps.timing, deps.now, 'walk', async () => {
     const walking = withRowTiming(deps);
     const results: BlockResult[] = [];
-    const steps: LedgerRow[] = [];
+    const steps: WalkRow[] = [];
     const written: string[] = [];
     let patchedAt: number | undefined;
     const typed = blocks.flatMap((b) =>
@@ -2056,15 +2098,20 @@ export async function runPlan(
       const ledger: WalkResult = {
         ...buildLedger(
           results.map((result) => ({ ...result, key: display(result.key) })),
-          steps.map(({ selector, ...row }) => ({
+          steps.map(({ selector, reason, ...row }) => ({
             ...row,
             block: display(row.block),
             text: projectPlanLine(row.text, privacy.privateSet()).text,
-            ...(row.reason !== undefined ? { reason: privacy.redact(row.reason) } : {}),
+            ...(reason !== undefined
+              ? { reason: renderReason(reason, (text) => privacy.redact(text)) }
+              : {}),
             ...(selector && unprotected(selector.id ?? selector.text ?? '') ? { selector } : {}),
           })),
           outcome?.failure
-            ? { ...outcome.failure, seen: privacy.redact(outcome.failure.seen) }
+            ? {
+                ...outcome.failure,
+                seen: renderReason(outcome.failure.seen, (text) => privacy.redact(text)),
+              }
             : undefined,
           calls(),
           path(),
@@ -2096,7 +2143,7 @@ export async function runPlan(
         : result;
     const save = (
       block: Block,
-      rows: LedgerRow[],
+      rows: WalkRow[],
       source: BlockResult['source'],
       store: BlockStore,
       privateFills: number[] = [],
@@ -2109,7 +2156,7 @@ export async function runPlan(
     };
     const write = (
       block: Block,
-      rows: LedgerRow[],
+      rows: WalkRow[],
       source: BlockResult['source'],
       store: BlockStore,
       privateFills: number[],

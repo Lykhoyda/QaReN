@@ -2,6 +2,11 @@ import type { Element, EvidenceStatus, NativeNode, Screen } from './screen.js';
 import { ancestorsOf, elementFrame } from './screen.js';
 
 export const MASK = '•••';
+export const SCREEN_TEXT_WITHHELD = '[screen text withheld: a secure field is on screen]';
+
+export function concealsScreen(screen: Screen): boolean {
+  return screen.elements.some((element) => element.secure);
+}
 
 interface InputPrivacy {
   values: string[];
@@ -784,6 +789,7 @@ export class ObservedPrivacy {
   }
 
   screenText(screen: Screen): string[] {
+    if (concealsScreen(screen)) return [SCREEN_TEXT_WITHHELD];
     const rows = this.codeRows.get(screen) ?? [];
     const first = new Set(rows.map((row) => row[0]));
     const represented = new Set<string>();

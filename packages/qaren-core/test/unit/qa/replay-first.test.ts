@@ -1,3 +1,4 @@
+import { renderReason } from '../../../dist/qa/untrusted.js';
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
@@ -351,7 +352,10 @@ test('the iOS process guard: a changed or missing identifier fails the step; not
     assert.equal(result.publicationInterrupted, expected !== 'PASS', label);
     if (expected === 'PASS') continue;
     assert.equal(result.failure?.step, blocks(literal)[0].items[0].line, label);
-    assert.match(result.failure?.seen ?? '', /APP_PROCESS_CHANGED: the app restarted or crashed/);
+    assert.match(
+      renderReason(result.failure?.seen ?? '', (text) => text),
+      /APP_PROCESS_CHANGED: the app restarted or crashed/,
+    );
     assert.deepEqual(fake.actions, ['press @skip'], label);
     assert.equal(shots, 0);
     assert.equal(result.failure?.screenshot, undefined);
@@ -407,7 +411,10 @@ test('a capture that finds the app process gone fails APP_PROCESS_CHANGED and wr
   fake.deps.appProcess = {};
   const result = ledger(await runPlan(blocks(literal), fake.deps, [], store(dir)));
   assert.equal(result.verdict, 'FAIL');
-  assert.match(result.failure?.seen ?? '', /APP_PROCESS_CHANGED/);
+  assert.match(
+    renderReason(result.failure?.seen ?? '', (text) => text),
+    /APP_PROCESS_CHANGED/,
+  );
   assert.equal(result.publicationInterrupted, true);
   assert.equal(existsSync(actionFile(dir)), false);
   assert.equal(shots, 0);
@@ -434,7 +441,10 @@ test('a process change on an error screen still records its concealed inputs bef
   fake.deps.appProcess = {};
   const result = ledger(await runPlan(blocks(literal), fake.deps, [], store(root())));
   assert.equal(result.verdict, 'FAIL');
-  assert.match(result.failure?.seen ?? '', /APP_PROCESS_CHANGED/);
+  assert.match(
+    renderReason(result.failure?.seen ?? '', (text) => text),
+    /APP_PROCESS_CHANGED/,
+  );
   assert.equal(result.publicationInterrupted, true);
   assert.doesNotMatch(JSON.stringify(result), /hunter2/);
 });
@@ -615,7 +625,10 @@ for (const kind of ['wait', 'scroll', 'press', 'fill'] as const) {
         mode: 'replay',
       });
       assert.equal(result.miss, undefined);
-      assert.match(result.failure?.seen ?? '', /TARGET_AMBIGUOUS/);
+      assert.match(
+        renderReason(result.failure?.seen ?? '', (text) => text),
+        /TARGET_AMBIGUOUS/,
+      );
       assert.deepEqual(fake.actions, []);
     });
   }
@@ -657,7 +670,11 @@ for (const occurrences of [1, 2]) {
       mode: 'replay',
     });
     assert.equal(result.miss, undefined);
-    if (occurrences === 2) assert.match(result.failure?.seen ?? '', /TARGET_AMBIGUOUS/);
+    if (occurrences === 2)
+      assert.match(
+        renderReason(result.failure?.seen ?? '', (text) => text),
+        /TARGET_AMBIGUOUS/,
+      );
     assert.equal(!!result.failure, occurrences === 2);
     assert.deepEqual(fake.actions, []);
   });
@@ -712,7 +729,11 @@ for (const verb of [
       assert.equal(dispatched, phase === 'before' ? 0 : 1);
       assert.equal(result.miss, phase === 'before' ? item.line : undefined);
       assert.equal(!!result.failure, phase !== 'success');
-      if (phase === 'after') assert.match(result.failure!.seen, /ACTION_OUTCOME_UNCERTAIN/);
+      if (phase === 'after')
+        assert.match(
+          renderReason(result.failure!.seen, (text) => text),
+          /ACTION_OUTCOME_UNCERTAIN/,
+        );
     });
   }
 }
@@ -869,7 +890,10 @@ test('a duplicate stored id terminates replay without rediscovering its unique l
     };
     const result = await runPlan(blocks(literalLabel), fake.deps, [], store(dir));
     assert.equal(result.verdict, 'FAIL');
-    assert.match(result.failure?.seen ?? '', /TARGET_AMBIGUOUS/);
+    assert.match(
+      renderReason(result.failure?.seen ?? '', (text) => text),
+      /TARGET_AMBIGUOUS/,
+    );
     assert.deepEqual(fake.actions, ['press @skip']);
     assert.equal(fake.judge.calls.length, 0);
     assert.deepEqual(result.blocksWritten, []);

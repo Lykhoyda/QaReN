@@ -74,7 +74,7 @@ function fakePs(stdout: string, stderr = ''): typeof execFile {
   return (async (bin: string, argv: string[], opts: object) => {
     assert.equal(bin, 'ps');
     assert.deepEqual(argv, ['axww', '-o', 'pid=,command=']);
-    assert.deepEqual(opts, { timeout: 2_000, maxBuffer: 1024 * 1024, encoding: 'utf8' });
+    assert.deepEqual(opts, { timeout: 2_000, encoding: 'utf8' });
     return { stdout, stderr };
   }) as unknown as typeof execFile;
 }
@@ -98,7 +98,6 @@ test('strict detector admits only complete, clean process scans', async () => {
     '1 /bin/lo\rgin\n',
     '1 /bin/lo\ufffdgin\n',
     `${ordinary}diagnostic: ${secret}\n`,
-    `1 ${'x'.repeat(1024 * 1024)}\n`,
   ]) {
     assert.equal(await probeIosExternalRunnerStrict(fakePs(output), UDID), 'unknown');
   }
@@ -112,12 +111,59 @@ test('strict detector admits only complete, clean process scans', async () => {
   assert.equal(await detectIosExternalRunner(failing, UDID), null);
 });
 
+test('oversized unrelated rows admit while unreadable automation candidates still refuse', async () => {
+  const command = 'x'.repeat(1024 * 1024);
+  for (const unreadable of [
+    async () => null,
+    async () => {
+      throw new Error('process exited or identity is inaccessible');
+    },
+  ]) {
+    let calls = 0;
+    const observe = async () => {
+      calls++;
+      return unreadable();
+    };
+    assert.equal(
+      await probeIosExternalRunnerStrict(fakePs(`1 ${command}\n`), UDID, observe),
+      'clear',
+    );
+    assert.equal(calls, 0);
+    assert.equal(
+      await probeIosExternalRunnerStrict(
+        fakePs(`1 /opt/bin/agent --prompt ${command} /tmp/XCTRunner\n`),
+        UDID,
+        observe,
+      ),
+      'unknown',
+    );
+    assert.equal(calls, 1);
+  }
+});
+
 test('fresh-install CLI reports why a scan is unknown without publishing process text', async () => {
   await fixture(async (root, marker) => {
     const result = await invoke(root, marker, args, { FAKE_PS_STDOUT: `malformed ${secret}\n` });
     assert.equal(result.code, 4);
     assert.deepEqual(JSON.parse(result.stdout).evidence, { reason: 'scan_row_invalid' });
     assert.ok(!result.stdout.includes(secret));
+  });
+});
+
+test('streamed admission preserves timeout, unavailable and failed scan evidence', async () => {
+  await fixture(async (root, marker) => {
+    for (const [env, reason] of [
+      [{ FAKE_PS_MODE: 'timeout' }, 'scan_timeout'],
+      [{ FAKE_PS_EXIT: '1', FAKE_PS_STDERR: secret }, 'scan_failed'],
+    ] as const) {
+      const result = await invoke(root, marker, args, env);
+      assertResult(result, 'unknown');
+      assert.deepEqual(JSON.parse(result.stdout).evidence, { reason });
+    }
+    await rm(join(root, 'ps'));
+    const result = await invoke(root, marker);
+    assertResult(result, 'unknown');
+    assert.deepEqual(JSON.parse(result.stdout).evidence, { reason: 'scan_unavailable' });
   });
 });
 
@@ -726,9 +772,9 @@ test('strict executable ambiguity keeps word-only prompts clear and never attrib
   }
 });
 
-test('strict path ambiguity refuses over-budget lines rather than truncating away evidence', async () => {
+test('strict path ambiguity scans long commands without treating length alone as relevant', async () => {
   const command = `/usr/bin/agent ${'word '.repeat(4_000)}`;
-  assert.equal(await probeIosExternalRunnerStrict(fakePs(`20 ${command}\n`), UDID), 'unknown');
+  assert.equal(await probeIosExternalRunnerStrict(fakePs(`20 ${command}\n`), UDID), 'clear');
   assert.equal(
     await probeIosExternalRunnerStrict(fakePs(`20 ${command}${spacedExecutables[0]}\n`), UDID),
     'unknown',
@@ -757,6 +803,14 @@ async function fixture(run: (root: string, marker: string) => Promise<void>) {
 const fs = require('node:fs');
 fs.appendFileSync(process.env.FAKE_PS_MARKER, JSON.stringify(process.argv.slice(2)) + '\\n');
 if (process.env.FAKE_PS_MODE === 'timeout') setInterval(() => {}, 1000);
+else if (process.env.FAKE_PS_MODE === 'large-table') {
+  const command = '/usr/bin/agent --prompt ' + 'ordinary '.repeat(128);
+  const rows = Array.from({ length: 4000 }, (_, i) => (i + 100) + ' ' + command + '\\n').join('');
+  if (Buffer.byteLength(rows) <= 4 * 1024 * 1024) throw new Error('fixture must exceed 4 MB');
+  process.stdout.write(rows + (process.env.FAKE_PS_TAIL || ''));
+  process.stderr.write(process.env.FAKE_PS_STDERR || '');
+  process.exitCode = Number(process.env.FAKE_PS_EXIT || 0);
+}
 else {
   process.stdout.write(process.env.FAKE_PS_MODE === 'overflow' ? 'x'.repeat(2 * 1024 * 1024) : (process.env.FAKE_PS_STDOUT || ''));
   process.stderr.write(process.env.FAKE_PS_STDERR || '');
@@ -811,6 +865,58 @@ function assertResult(result: Awaited<ReturnType<typeof invoke>>, status: string
   else if (deviceId !== '') assert.equal(typeof evidence?.reason, 'string');
   assert.ok(!result.stdout.includes(secret));
 }
+
+test('ANT-599: actual admission CLI admits a complete process table over 4 MB', async () => {
+  await fixture(async (root, marker) => {
+    const result = await invoke(root, marker, args, { FAKE_PS_MODE: 'large-table' });
+    assert.equal(JSON.parse(result.stdout).status, 'clear');
+    assertResult(result, 'clear');
+  });
+});
+
+test('ANT-599: oversized scans retain late conflicts and fail closed on incomplete evidence', async () => {
+  await fixture(async (root, marker) => {
+    for (const [env, status] of [
+      [{ FAKE_PS_TAIL: driver('XCTRunner') }, 'busy'],
+      [{ FAKE_PS_TAIL: driver('XCTRunner', OTHER) }, 'unknown'],
+      [{ FAKE_PS_TAIL: `${driver('XCTRunner')}malformed\n` }, 'unknown'],
+      [{ FAKE_PS_TAIL: '100 /usr/bin/login\n' }, 'unknown'],
+      [{ FAKE_PS_TAIL: '5000 /usr/bin/lo\ufffdgin\n' }, 'unknown'],
+      [{ FAKE_PS_TAIL: `${driver('XCTRunner')}5000 /usr/bin/login` }, 'unknown'],
+      [{ FAKE_PS_TAIL: driver('XCTRunner'), FAKE_PS_STDERR: secret }, 'unknown'],
+      [{ FAKE_PS_EXIT: '1' }, 'unknown'],
+    ] as const) {
+      assertResult(
+        await invoke(root, marker, args, { FAKE_PS_MODE: 'large-table', ...env }),
+        status,
+      );
+    }
+  });
+});
+
+test('ANT-599: the sibling warning probe sees a driver after an oversized process table', async () => {
+  await fixture(async (root, marker) => {
+    const moduleUrl = new URL('../../../dist/runners/external-runner-detect.js', import.meta.url)
+      .href;
+    const result = await invoke(
+      root,
+      marker,
+      [],
+      { FAKE_PS_MODE: 'large-table', FAKE_PS_TAIL: driver('WebDriverAgentRunner-Runner') },
+      [
+        '--input-type=module',
+        '--eval',
+        `const { detectIosExternalRunner } = await import(${JSON.stringify(moduleUrl)});
+process.stdout.write(JSON.stringify(await detectIosExternalRunner(undefined, ${JSON.stringify(UDID)})));`,
+      ],
+    );
+    assert.equal(result.code, 0);
+    assert.equal(result.stderr, '');
+    const warning = JSON.parse(result.stdout);
+    assert.equal(warning.code, 'IOS_XCUITEST_COMPETITOR');
+    assert.deepEqual(warning.processLines, [driver('WebDriverAgentRunner-Runner').trim()]);
+  });
+});
 
 test('real CLI runs only the fake PATH ps and agrees on exit/status without leaking diagnostics', async () => {
   await fixture(async (root, marker) => {
@@ -951,7 +1057,7 @@ else {
     };
     const observerMarker = join(root, 'observed');
     const env = {
-      FAKE_PS_STDOUT: `20 agent ${'word '.repeat(4000)}${secret}\n`,
+      FAKE_PS_STDOUT: `20 agent ${'word '.repeat(4000)}/tmp/WebDriverAgent ${secret}\n`,
       FAKE_OBSERVER_MARKER: observerMarker,
       FAKE_OBSERVER_OUTPUT: JSON.stringify(output),
     };
@@ -974,11 +1080,7 @@ else {
       );
     }
     for (const call of (await readFile(observerMarker, 'utf8')).trim().split('\n'))
-      assert.deepEqual(JSON.parse(call), [
-        '--internal-process-observation',
-        '20',
-        '--inspect-ios-paths',
-      ]);
+      assert.deepEqual(JSON.parse(call), ['--internal-process-observation', '20']);
     const inspected = {
       ...output,
       executable: '/usr/local/bin/node',
@@ -987,10 +1089,10 @@ else {
     const inspectedEnv = { ...env, FAKE_PS_STDOUT: `20 node -e ${'x'.repeat(35_000)}${secret}\n` };
     for (const [observation, status] of [
       [inspected, 'clear'],
-      [{ ...inspected, iosPathInspection: undefined }, 'unknown'],
+      [{ ...inspected, iosPathInspection: undefined }, 'clear'],
       [
         { ...inspected, iosPathInspection: { status: 'complete', unresolvedPath: 'present' } },
-        'unknown',
+        'clear',
       ],
     ] as const) {
       assertResult(

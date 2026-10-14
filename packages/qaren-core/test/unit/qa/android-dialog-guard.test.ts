@@ -1,3 +1,4 @@
+import { renderReason } from '../../../dist/qa/untrusted.js';
 // Android system dialogs are refused before any driver runs; iOS keeps its proven dialog handler.
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
@@ -67,7 +68,7 @@ test('android_dialog_step_refuses_before_any_driver', async () => {
   const outcome = await walkBlock(block(), f.deps);
   assert.equal(outcome.block.outcome, 'fail');
   assert.match(
-    outcome.failure?.seen ?? '',
+    renderReason(outcome.failure?.seen ?? '', (text) => text),
     /^TARGET_UNSUPPORTED: Android system dialogs arrive in S5b/,
   );
   assert.deepEqual(f.handled, []);
