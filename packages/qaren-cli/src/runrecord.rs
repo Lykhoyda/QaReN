@@ -232,6 +232,7 @@ pub struct UsbDeviceResource {
 #[serde(rename_all = "snake_case")]
 pub enum RecorderKind {
     IosSimulator,
+    AndroidEmulator,
 }
 
 // Persisted before the spawn: a None pid means the spawn outcome is unproven.
