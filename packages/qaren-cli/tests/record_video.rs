@@ -194,6 +194,7 @@ fn stop_sends_sigint_and_waits_for_exit() {
             started_at: LSTART.into(),
             command: qaren::redact::OutputText::from_output("xcrun"),
         }),
+        pulled_sha256: None,
         kind: RecorderKind::IosSimulator,
         device: "U".into(),
         output: PathBuf::from("raw.mov"),
@@ -229,6 +230,7 @@ fn a_recorder_with_an_unproven_spawn_is_unresolved() {
     record.resources.recorder = Some(RecorderResource {
         pid: None,
         birth: None,
+        pulled_sha256: None,
         kind: RecorderKind::IosSimulator,
         device: "U".into(),
         output: PathBuf::from("raw.mov"),
@@ -293,6 +295,7 @@ fn pr_run_record() -> (PathBuf, RunRecord, PathBuf) {
             started_at: LSTART.into(),
             command: qaren::redact::OutputText::from_output("xcrun"),
         }),
+        pulled_sha256: None,
         kind: RecorderKind::IosSimulator,
         device: "U".into(),
         output: PathBuf::from("raw.mov"),
@@ -677,7 +680,22 @@ fn android_walking_record() -> (PathBuf, RunRecord) {
         api_level: 37,
         abi: "x86_64".into(),
     });
+    let media = RunRecord::run_dir(&root, &record.run_id).join("media");
+    std::fs::create_dir_all(&media).unwrap();
+    // Bytes supplied by the scripted successful pull; no completion evidence exists yet.
+    std::fs::write(media.join("raw.mp4"), "complete recording").unwrap();
     record.resources.device_borrowed = true;
+    record.resources.lease = Some(
+        qaren::lease::acquire(
+            &mut MockRunner::new(),
+            &root.join("locks"),
+            qaren::scenario::Platform::Android,
+            "emulator-5600",
+            &record.run_id,
+            None,
+        )
+        .unwrap(),
+    );
     record.save(&root).unwrap();
     (root, record)
 }
@@ -687,6 +705,7 @@ fn android_recording_record() -> (PathBuf, RunRecord) {
     record.resources.recorder = Some(RecorderResource {
         pid: Some(7100),
         birth: Some(common::identity(7100, LSTART)),
+        pulled_sha256: None,
         kind: RecorderKind::AndroidEmulator,
         device: "emulator-5600".into(),
         output: PathBuf::from(format!("/data/local/tmp/qaren-{}.mp4", record.run_id)),
@@ -700,6 +719,11 @@ fn android_stop_records_kill_fallback_and_proves_absence_before_pulling() {
     let (root, mut record) = android_recording_record();
     let mut mock = MockRunner::new();
     mock.advance_on = Some(("shell pgrep -f".into(), 30_000));
+    mock.adb_servers.push((5155, 41));
+    mock.expect_run(
+        "adb version",
+        CmdOutput::success("Android Debug Bridge version 1.0.41"),
+    );
     mock.expect_run("shell pkill -INT -f", CmdOutput::success(""));
     mock.expect_run("shell pgrep -f", CmdOutput::success("42\n"));
     mock.expect_run("shell pkill -KILL -f", CmdOutput::success(""));
@@ -726,6 +750,11 @@ fn android_stop_keeps_device_media_and_resource_when_pull_fails_then_recovers() 
     let (root, mut record) = android_recording_record();
     let device_path = record.resources.recorder.as_ref().unwrap().output.clone();
     let mut mock = MockRunner::new();
+    mock.adb_servers.push((5155, 41));
+    mock.expect_run(
+        "adb version",
+        CmdOutput::success("Android Debug Bridge version 1.0.41"),
+    );
     mock.expect_run("shell pkill -INT -f", CmdOutput::success(""));
     mock.expect_run("shell pgrep -f", CmdOutput::failed(1, ""));
     mock.expect_run("ps -A", CmdOutput::success("1 1 S\n"));
@@ -748,6 +777,11 @@ fn android_stop_keeps_device_media_and_resource_when_pull_fails_then_recovers() 
 
     let mut recovered = RunRecord::load(&root, &record.run_id).unwrap();
     let mut retry = MockRunner::new();
+    retry.adb_servers.push((5155, 41));
+    retry.expect_run(
+        "adb version",
+        CmdOutput::success("Android Debug Bridge version 1.0.41"),
+    );
     retry.expect_run("shell pkill -INT -f", CmdOutput::failed(1, ""));
     retry.expect_run("shell pgrep -f", CmdOutput::failed(1, ""));
     retry.expect_run("ps -A", CmdOutput::success("1 1 S\n"));
@@ -762,7 +796,7 @@ fn android_stop_keeps_device_media_and_resource_when_pull_fails_then_recovers() 
         .resources
         .recorder
         .is_none());
-    assert!(retry.calls[3]
+    assert!(retry.calls[4]
         .args
         .last()
         .unwrap()
@@ -771,7 +805,7 @@ fn android_stop_keeps_device_media_and_resource_when_pull_fails_then_recovers() 
         .calls
         .iter()
         .chain(&retry.calls)
-        .filter(|call| call.program.ends_with("/adb"))
+        .filter(|call| call.program.ends_with("/adb") && call.label != "adb-version")
     {
         assert_eq!(&call.args[..2], &["-s", "emulator-5600"]);
         assert!(call
@@ -785,6 +819,11 @@ fn android_stop_keeps_device_media_and_resource_when_pull_fails_then_recovers() 
 fn android_stop_retires_only_after_device_rm_succeeds() {
     let (root, mut record) = android_recording_record();
     let mut mock = MockRunner::new();
+    mock.adb_servers.push((5155, 41));
+    mock.expect_run(
+        "adb version",
+        CmdOutput::success("Android Debug Bridge version 1.0.41"),
+    );
     mock.expect_run("shell pkill -INT -f", CmdOutput::success(""));
     mock.expect_run("shell pgrep -f", CmdOutput::failed(1, ""));
     mock.expect_run("ps -A", CmdOutput::success("1 1 S\n"));
@@ -817,6 +856,11 @@ fn android_start_without_a_path_pgrep_hit_is_unavailable_and_stops() {
     mock.expect_run("ps", CmdOutput::success(LSTART));
     mock.expect_run("ps", CmdOutput::success("adb shell screenrecord"));
     mock.expect_run("shell pgrep -f", CmdOutput::failed(1, ""));
+    mock.adb_servers.push((5155, 41));
+    mock.expect_run(
+        "adb version",
+        CmdOutput::success("Android Debug Bridge version 1.0.41"),
+    );
     mock.expect_run("shell pkill -INT -f", CmdOutput::failed(1, ""));
     mock.expect_run("shell pgrep -f", CmdOutput::failed(1, ""));
     mock.expect_run("ps -A", CmdOutput::success("1 1 S\n"));
@@ -845,6 +889,11 @@ fn android_stop_refuses_unknown_device_state_and_failed_signals_without_pull_or_
         let (root, mut record) = android_recording_record();
         let mut mock = MockRunner::new();
         mock.advance_on = Some(("shell pgrep -f".into(), 30_000));
+        mock.adb_servers.push((5155, 41));
+        mock.expect_run(
+            "adb version",
+            CmdOutput::success("Android Debug Bridge version 1.0.41"),
+        );
         mock.expect_run(
             "shell pkill -INT -f",
             if failure == "INT" {
@@ -900,4 +949,59 @@ fn android_stop_refuses_unknown_device_state_and_failed_signals_without_pull_or_
         );
         assert_eq!(mock.remaining(), 0, "{failure}");
     }
+}
+
+#[test]
+fn android_stop_keeps_device_media_until_successful_pull_evidence_is_persisted() {
+    let (root, mut record) = android_recording_record();
+    let run_dir = RunRecord::run_dir(&root, &record.run_id);
+    let failed_save = run_dir.join(format!(".run.json.tmp.{}", std::process::id()));
+    std::fs::create_dir(&failed_save).unwrap();
+    let mut mock = MockRunner::new();
+    mock.adb_servers.push((5155, 41));
+    mock.expect_run(
+        "adb version",
+        CmdOutput::success("Android Debug Bridge version 1.0.41"),
+    );
+    mock.expect_run("shell pkill -INT", CmdOutput::success(""));
+    mock.expect_run("shell pgrep", CmdOutput::failed(1, ""));
+    mock.expect_run("ps -A", CmdOutput::success("1 1 S\n"));
+    mock.expect_run("pull", CmdOutput::success(""));
+    let outcome = record::stop(&mut mock, &mut record, &root);
+    assert!(
+        matches!(outcome, Outcome::Unresolved(reason) if reason.contains("pull evidence was not persisted"))
+    );
+    assert!(!mock.calls.iter().any(|c| c.label == "adb-rm"));
+    assert!(record
+        .resources
+        .recorder
+        .as_ref()
+        .unwrap()
+        .pulled_sha256
+        .is_none());
+    assert!(RunRecord::load(&root, &record.run_id)
+        .unwrap()
+        .resources
+        .recorder
+        .unwrap()
+        .pulled_sha256
+        .is_none());
+    assert_eq!(mock.remaining(), 0);
+    std::fs::remove_dir(failed_save).unwrap();
+
+    // The local bytes alone cannot stand in for the failed evidence save.
+    mock.expect_run(
+        "adb version",
+        CmdOutput::success("Android Debug Bridge version 1.0.41"),
+    );
+    mock.expect_run("shell pkill -INT", CmdOutput::failed(1, ""));
+    mock.expect_run("shell pgrep", CmdOutput::failed(1, ""));
+    mock.expect_run("ps -A", CmdOutput::success("1 1 S\n"));
+    mock.expect_run("pull", CmdOutput::success(""));
+    mock.expect_run("shell rm", CmdOutput::success(""));
+    assert_eq!(
+        record::stop(&mut mock, &mut record, &root),
+        Outcome::Removed
+    );
+    assert_eq!(mock.remaining(), 0);
 }

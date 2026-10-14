@@ -166,6 +166,7 @@ pub fn start(
     record.resources.recorder = Some(RecorderResource {
         pid: None,
         birth: None,
+        pulled_sha256: None,
         kind: RecorderKind::IosSimulator,
         device: udid.to_string(),
         output: raw,
@@ -253,6 +254,7 @@ fn start_android(
     record.resources.recorder = Some(RecorderResource {
         pid: None,
         birth: None,
+        pulled_sha256: None,
         kind: RecorderKind::AndroidEmulator,
         device: serial.into(),
         output: output.clone(),
@@ -317,11 +319,17 @@ fn stop_android(
     runs_root: &Path,
     recorder: &RecorderResource,
 ) -> Outcome {
+    if !record.holds_device_lease() {
+        return Outcome::Refused("the device lease is not held by this run".into());
+    }
     let Some((adb, serial, port)) = record.resources.adb_endpoint() else {
         return Outcome::Unresolved("recorder adb endpoint is missing".into());
     };
     if serial != recorder.device {
         return Outcome::Unresolved("recorder device differs from the run's adb endpoint".into());
+    }
+    if let Err(reason) = android::borrowed_server_compatible(runner, &adb, port) {
+        return Outcome::Unresolved(reason);
     }
     let interrupted = runner.run(&android::device_pkill_spec(
         &adb,
@@ -368,20 +376,38 @@ fn stop_android(
     if std::fs::create_dir_all(raw.parent().unwrap()).is_err() {
         return Outcome::Unresolved("recorder media directory unavailable".into());
     }
-    if !runner
-        .run(&android::pull_spec(
-            &adb,
-            port,
-            &serial,
-            &recorder.output,
-            &raw,
-        ))
-        .ok()
-    {
-        return Outcome::Unresolved(format!(
-            "pull failed; media kept on device at {}",
-            recorder.output.display()
-        ));
+    let pulled = recorder
+        .pulled_sha256
+        .as_ref()
+        .is_some_and(|expected| capture_sha256(&raw).is_ok_and(|actual| actual == *expected));
+    if !pulled {
+        if !runner
+            .run(&android::pull_spec(
+                &adb,
+                port,
+                &serial,
+                &recorder.output,
+                &raw,
+            ))
+            .ok()
+        {
+            return Outcome::Unresolved(format!(
+                "pull failed; media kept on device at {}",
+                recorder.output.display()
+            ));
+        }
+        let Ok(digest) = capture_sha256(&raw) else {
+            return Outcome::Unresolved(
+                "pulled recorder media is unreadable; media kept on device".into(),
+            );
+        };
+        record.resources.recorder.as_mut().unwrap().pulled_sha256 = Some(digest);
+        if record.save(runs_root).is_err() {
+            record.resources.recorder = Some(recorder.clone());
+            return Outcome::Unresolved(
+                "recorder pull evidence was not persisted; media kept on device".into(),
+            );
+        }
     }
     if !runner
         .run(&android::rm_spec(&adb, port, &serial, &recorder.output))
@@ -392,12 +418,30 @@ fn stop_android(
             recorder.output.display()
         ));
     }
-    record.resources.recorder = None;
+    let resource = record.resources.recorder.take();
     if record.save(runs_root).is_err() {
-        record.resources.recorder = Some(recorder.clone());
+        record.resources.recorder = resource;
         return Outcome::Unresolved("recorder retirement was not persisted".into());
     }
     Outcome::Removed
+}
+
+// Stream unbounded recordings rather than loading the entire video into memory.
+fn capture_sha256(raw: &Path) -> std::io::Result<String> {
+    use sha2::{Digest, Sha256};
+    use std::io::Read;
+    let mut file = std::fs::File::open(raw)?;
+    let mut digest = Sha256::new();
+    let mut buffer = [0u8; 64 * 1024];
+    loop {
+        let read = file.read(&mut buffer)?;
+        if read == 0 {
+            break;
+        }
+        digest.update(&buffer[..read]);
+    }
+    file.sync_all()?;
+    Ok(format!("{:x}", digest.finalize()))
 }
 
 fn wait_android_gone(

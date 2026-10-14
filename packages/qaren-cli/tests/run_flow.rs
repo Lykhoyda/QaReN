@@ -4932,6 +4932,9 @@ impl Runner for PrRunner {
     fn execute(&mut self, spec: &CmdSpec, interruptible: bool) -> CmdOutput {
         let output = self.inner.execute(spec, interruptible);
         match spec.label.as_str() {
+            "adb-pull" if output.ok() => {
+                std::fs::write(spec.args.last().unwrap(), "complete recording").unwrap()
+            }
             "git-worktree-add" => self.materialize(Path::new(&spec.args[3])),
             "git-worktree-remove" => std::fs::remove_dir_all(&spec.args[3]).unwrap(),
             _ => {}
@@ -6649,6 +6652,10 @@ fn android_pr_video_flow(api: u16) {
     script_drift_status(mock);
     script_pr_provenance_recheck(mock);
     if api >= 34 {
+        mock.expect_run(
+            "adb version",
+            CmdOutput::success("Android Debug Bridge version 1.0.41"),
+        );
         mock.expect_run("shell pkill -INT -f", CmdOutput::success(""));
         mock.expect_run("shell pgrep -f", CmdOutput::failed(1, ""));
         mock.expect_run("ps -A", CmdOutput::success("1 1 S\n"));

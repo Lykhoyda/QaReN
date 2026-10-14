@@ -242,6 +242,9 @@ pub struct RecorderResource {
     pub pid: Option<i32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub birth: Option<PidIdentity>,
+    // Set only after adb pull succeeds; binds recovery to the complete local bytes.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pulled_sha256: Option<String>,
     pub kind: RecorderKind,
     pub device: String,
     pub output: PathBuf,
@@ -528,6 +531,13 @@ pub fn validate_run_id(run_id: &str) -> Result<(), Failure> {
 }
 
 impl RunRecord {
+    pub(crate) fn holds_device_lease(&self) -> bool {
+        self.resources.lease.as_ref().is_some_and(|lease| {
+            crate::buildplan::read_holder(&lease.lock_dir)
+                .is_some_and(|h| h.holder == lease.holder && h.run_id == self.run_id)
+        })
+    }
+
     pub fn run_dir(runs_root: &Path, run_id: &str) -> PathBuf {
         runs_root.join(run_id)
     }
