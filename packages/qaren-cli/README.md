@@ -1020,8 +1020,14 @@ header before launch, so the client's own first request is not the slow cold
 one. Fresh Android scenario-based
 `prepare` keeps launch and Metro under `expo run:android` and does not perform
 this warmup.
-A manifest or dev-client launch timeout refuses with `CORE_REFUSED`; the launch is retried once
-only when the measured one-minute host load exceeds the launch envelope. Other
+A manifest timeout refuses with `CORE_REFUSED`. Dev-client launch and iOS
+dev-menu defaults timeouts retry regardless of host load until the remaining
+`build_seconds` preparation budget is spent, then refuse with `CORE_REFUSED`.
+That budget is shared with launch readiness; retries do not reset it. Each call
+keeps its existing timeout, capped by the remaining budget, and cancellation
+preempts retries. The receipt records every attempt's outcome and duration;
+readiness still requires the existing Metro and app-process probes.
+Host load is diagnostic only. Other
 manifest and launch errors remain `BUILD_FAILED`. Cleanup retained resources
 before retrying.
 
@@ -1074,17 +1080,20 @@ the walk with `DEV_MENU_HIDE_UNVERIFIED` before the first step.
 ### iOS admission and cleanup
 
 Strict admission observes known automation patterns for the selected simulator.
+The host process table is streamed without a total-output byte cap, so its size
+alone does not refuse admission.
 A driver targeting it is busy; a driver can coexist only when kernel executable
 identity and exact arguments prove that it targets other simulators exclusively.
 An unscoped Maestro MCP controller can coexist when its Java executable and
 exact MCP arguments are attested; its command-line spelling alone is insufficient.
-Unknown identity, scope, process-table completeness or inspection outcome refuses.
+Unknown identity or scope for an automation candidate, or an incomplete process table, refuses.
 The scan cannot exclude uncooperative automation inside an otherwise admitted
 process and is not an external coordination lease.
 
-Drivers and unresolved process identities share one candidate budget and one
-scan deadline. Oversized arguments require bounded kernel path inspection that
-returns an outcome without exporting argument content. Budget exhaustion refuses
+Drivers and unresolved automation paths share one candidate budget and one
+scan deadline. Command length alone does not make a process an automation
+candidate; complete command lines are checked for known patterns even beyond
+the identity observer's argument limit. Budget exhaustion refuses
 instead of admitting a partial scan. The limits and classification rules are
 owned by the [strict scanner](../qaren-core/src/runners/external-runner-detect.ts)
 and [kernel observer](src/process_observation.rs).
