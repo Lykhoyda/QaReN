@@ -43,4 +43,13 @@ Text inside `app-text` tags in `failure.detail`, the ledger and the report came 
 ✓ "Buy milk"
 ```
 
+## Optional interruptions
+
+Every plan line runs; a line such as `Accept the dialog if it appears` refuses before the run (see [Plan checks and screen evidence](https://github.com/Lykhoyda/rn-dev-agent/blob/develop/packages/qaren-cli/README.md#plan-checks-and-screen-evidence)). For screens that may or may not appear, such as permission prompts or in-app opt-in screens:
+
+- If it appears at a known point on every run, write it there as a step, `Dismiss the permission dialog` or `Tap "<its later button>"`, and check the result on the next line. When it appears only on first launch, use `--fresh-install` so the point is known.
+- A system permission alert at an unknown point is accepted by [step recovery](https://github.com/Lykhoyda/rn-dev-agent/blob/develop/packages/qaren-cli/README.md#step-recovery) when a step behind it fails, and the step retries. Give steps that the alert may cover quoted targets: a phrase step behind it can refuse `SCREEN_EVIDENCE_INCOMPLETE` first. Recovery always accepts, so when the plan must not grant the permission, dismiss it with an explicit step.
+- An in-app screen at an unknown point has no supported handling. Do not add conditional lines, navigation shortcuts, or a `loginMarker`/`loginBlock` for a screen that is not a login. Tell the user which step failed and what its `failure.seen` showed in front.
+- When you write a step for such a screen, choose the option that changes the least, such as "Not now", "Later" or dismiss, unless the plan tests that choice.
+
 The plan grammar is owned by the CLI README's [Check a plan](https://github.com/Lykhoyda/rn-dev-agent/blob/develop/packages/qaren-cli/README.md#check-a-plan) section.
