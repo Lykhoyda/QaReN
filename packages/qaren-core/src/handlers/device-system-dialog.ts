@@ -49,6 +49,7 @@ const DISMISS_LABELS_ANDROID = ['Deny', 'DENY', 'Cancel', 'CANCEL', 'No', 'Not n
 
 export interface SystemDialogArgs {
   qaContext?: QaDispatchContext;
+  note?(line: string): void;
   label?: string;
   platform?: 'ios' | 'android';
   timeoutMs?: number;
@@ -134,9 +135,20 @@ function isRect(value: unknown): value is { x: number; y: number; width: number;
 export async function tapSystemDialogViaRunner(
   labels: string[],
   qaContext?: QaDispatchContext,
+  note?: (line: string) => void,
 ): Promise<RunnerDialogOutcome | null> {
+  const failed = (
+    stage: 'session' | 'snapshot-failed' | 'empty-capture' | 'root-not-alert' | 'recovered-tier',
+  ) => {
+    try {
+      note?.(`system-dialog-stage=${stage}`);
+    } catch {
+      /* Diagnostics cannot change dialog authority. */
+    }
+  };
   qaContext?.check();
   if (!iosSessionActiveFn()) {
+    failed('session');
     qaContext?.invalidate();
     return null;
   }
@@ -144,16 +156,24 @@ export async function tapSystemDialogViaRunner(
   try {
     snap = await fetchSnapshotNodesFn(false, qaContext);
   } catch {
+    failed('snapshot-failed');
     qaContext?.invalidate();
     return null;
   }
   if (!snap.ok) {
+    failed(snap.reason === 'empty-capture' ? 'empty-capture' : 'snapshot-failed');
     qaContext?.invalidate();
     return null;
   }
   const root = snap.nodes[0];
-  if (qaContext && (!root?.type || snap.recoveredTier)) qaContext.invalidate();
-  if (!root || root.type !== 'Alert') return null;
+  if (qaContext && (!root?.type || snap.recoveredTier)) {
+    failed(!root?.type ? 'root-not-alert' : 'recovered-tier');
+    qaContext.invalidate();
+  }
+  if (!root || root.type !== 'Alert') {
+    failed('root-not-alert');
+    return null;
+  }
   const buttons = snap.nodes.slice(1);
   for (const label of labels) {
     // Exact label only: the chosen label is always one of these known constants, never app or user text.
@@ -329,7 +349,7 @@ async function handleSystemDialog(
   const defaults = platform === 'ios' ? iosDefaults : androidDefaults;
   const labels = pickLabels(args.label, defaults);
   if (platform === 'ios') {
-    const runner = await tapSystemDialogViaRunner(labels, args.qaContext);
+    const runner = await tapSystemDialogViaRunner(labels, args.qaContext, args.note);
     if (runner?.tapped) {
       return okResult(
         {

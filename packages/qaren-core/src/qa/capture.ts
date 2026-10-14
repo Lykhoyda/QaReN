@@ -1,3 +1,4 @@
+import { systemModalDiagnostic } from '../domain/system-modal-diagnostic.js';
 import type { ToolResult } from '../utils.js';
 import { foregroundSurfaceFromSnapshot } from '../handlers/expo-dev-menu.js';
 import { isRecord } from './questions.js';
@@ -46,6 +47,7 @@ export interface NativeObservation {
   normalizationDroppedNodes?: unknown;
   surface?: string;
   snapshotVerdict?: unknown;
+  systemModal?: unknown;
 }
 
 export function postAdmissionSnapshots<A>(
@@ -290,6 +292,8 @@ function preparationSampleCount(value: unknown): number | undefined {
 function presenceDiagnostics(value: unknown): string[] {
   if (!isRecord(value)) return [];
   const causes: string[] = [];
+  const modal = systemModalDiagnostic(value.systemModal);
+  if (modal) causes.push(`presence-system-modal=${JSON.stringify(modal)}`);
   const { failure, deadline, phaseMs } = value;
   const samples = preparationSampleCount(value.preparationSamples);
   if (samples !== undefined) causes.push(`presence-preparation-samples=${samples}`);
@@ -456,6 +460,14 @@ async function capture(deps: CaptureDeps): Promise<Screen> {
     throw error;
   }
   if (deps.timing) observeNativeTiming(native.presenceCapture, deps.timing, now());
+  if (deps.warn) {
+    try {
+      for (const cause of presenceDiagnostics({ systemModal: native.systemModal }))
+        deps.warn(cause);
+    } catch {
+      /* Diagnostics cannot change capture admission. */
+    }
+  }
   if (deps.warn && isRecord(native.presenceCapture)) {
     try {
       for (const cause of presenceDiagnostics(native.presenceCapture.diagnostics)) {

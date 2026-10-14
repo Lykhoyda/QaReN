@@ -1,5 +1,6 @@
 import type { Target } from './plan.js';
-import { ancestorsOf, type Screen } from './screen.js';
+import { ancestorsOf, hostAssociationIdentity, type Element, type Screen } from './screen.js';
+import type { HostAssociationDiagnostic } from './host-association.js';
 import { literalEvidence } from './evidence.js';
 import type { Reason } from './untrusted.js';
 import type { ActResult } from './walker.js';
@@ -20,6 +21,7 @@ export interface RecoverDeps {
   hideDevMenu(): Promise<ActResult>;
   replayLogin?(): Promise<LoginReplay>;
   dismiss?(label: string): Promise<LoginReplay>;
+  interruptionDiagnostic?(record: InterruptionDiagnostic): void;
 }
 
 export type Recovery =
@@ -49,7 +51,7 @@ export async function recover(
       : { fail: `the dev menu in front could not be hidden: ${hidden.error ?? 'not dispatched'}` };
   }
   if (screen.front === 'app' && deps.dismiss) {
-    const candidate = dismissCandidate(screen, planTargets);
+    const candidate = dismissCandidate(screen, planTargets, deps.interruptionDiagnostic);
     if (candidate && 'refuse' in candidate) return candidate;
     if (candidate) {
       const dismissed = await deps.dismiss(candidate.label);
@@ -75,39 +77,84 @@ const DECLINE_LABELS = new Set([
   'Cancel',
 ]);
 
+export interface InterruptionDiagnostic {
+  veto: 'front' | 'coverage' | 'current-target' | 'later-target' | 'no-candidate';
+  targetIndex?: number;
+  exactDeclineCount: number;
+  elements: Array<{
+    index: number;
+    failed:
+      | 'offscreen'
+      | 'not-hittable'
+      | 'disabled'
+      | 'press-not-supported'
+      | 'not-visible'
+      | 'secure'
+      | 'target-ancestor';
+    association?: HostAssociationDiagnostic['identity'];
+  }>;
+}
+
 export function dismissCandidate(
   screen: Screen,
   planTargets: readonly Target[],
+  diagnostic?: (record: InterruptionDiagnostic) => void,
 ): { label: string } | { refuse: { code: string; message: string } } | undefined {
+  const rejected = (
+    veto: InterruptionDiagnostic['veto'],
+    targetIndex?: number,
+    elements: InterruptionDiagnostic['elements'] = [],
+  ) => {
+    try {
+      diagnostic?.({
+        veto,
+        ...(targetIndex === undefined ? {} : { targetIndex }),
+        exactDeclineCount: screen.elements.filter(
+          (e) => e.label !== undefined && DECLINE_LABELS.has(e.label),
+        ).length,
+        elements,
+      });
+    } catch {
+      /* Diagnostics cannot change recovery. */
+    }
+    return undefined;
+  };
+  if (screen.front !== 'app') return rejected('front');
   if (
-    screen.front !== 'app' ||
     (screen.captureCoverage?.native ?? screen.coverage?.native) !== 'complete' ||
-    screen.coverage?.react !== 'complete' ||
-    !planTargets.length ||
-    planTargets.some(
-      (target) =>
-        target.quoted === undefined ||
-        literalEvidence(screen, target.quoted, 'contains').verdict !== 'fail' ||
-        screen.elements.some((e) => !e.offscreen && e.testID === target.quoted),
-    )
+    screen.coverage?.react !== 'complete'
   )
-    return;
-  const candidates = screen.elements.filter(
-    (e) =>
-      e.label !== undefined &&
-      DECLINE_LABELS.has(e.label) &&
-      !e.offscreen &&
-      e.hittable &&
-      !e.disabled &&
-      e.semantic?.disabled !== true &&
-      e.semantic?.press === 'supported' &&
-      e.semantic.visibility === 'visible' &&
-      !e.secure &&
-      !ancestorsOf(e).some((ancestor) =>
+    return rejected('coverage');
+  if (!planTargets.length) return rejected('current-target', 0);
+  const targetIndex = planTargets.findIndex(
+    (target) =>
+      target.quoted === undefined ||
+      literalEvidence(screen, target.quoted, 'contains').verdict !== 'fail' ||
+      screen.elements.some((e) => !e.offscreen && e.testID === target.quoted),
+  );
+  if (targetIndex !== -1)
+    return rejected(targetIndex === 0 ? 'current-target' : 'later-target', targetIndex);
+  const failedPredicate = (
+    e: Element,
+  ): InterruptionDiagnostic['elements'][number]['failed'] | undefined => {
+    if (e.offscreen) return 'offscreen';
+    if (!e.hittable) return 'not-hittable';
+    if (e.disabled || e.semantic?.disabled === true) return 'disabled';
+    if (e.semantic?.press !== 'supported') return 'press-not-supported';
+    if (e.semantic.visibility !== 'visible') return 'not-visible';
+    if (e.secure) return 'secure';
+    if (
+      ancestorsOf(e).some((ancestor) =>
         planTargets.some(
           (target) => ancestor.testID === target.quoted || ancestor.label === target.quoted,
         ),
-      ),
+      )
+    )
+      return 'target-ancestor';
+    return undefined;
+  };
+  const candidates = screen.elements.filter(
+    (e) => e.label !== undefined && DECLINE_LABELS.has(e.label) && failedPredicate(e) === undefined,
   );
   if (candidates.length > 1)
     return {
@@ -116,7 +163,17 @@ export function dismissCandidate(
         message: 'several decline controls are visible; nothing was tapped',
       },
     };
-  return candidates.length === 1 ? { label: candidates[0].label! } : undefined;
+  if (candidates.length === 1) return { label: candidates[0].label! };
+  return rejected(
+    'no-candidate',
+    undefined,
+    screen.elements.flatMap((e, index) => {
+      if (e.label === undefined || !DECLINE_LABELS.has(e.label)) return [];
+      const failed = failedPredicate(e)!;
+      const association = failed === 'press-not-supported' ? hostAssociationIdentity(e) : undefined;
+      return [{ index, failed, ...(association ? { association } : {}) }];
+    }),
+  );
 }
 
 function loginWall(screen: Screen, marker: LoginMarker): boolean {

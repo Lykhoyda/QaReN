@@ -1324,6 +1324,18 @@ raw captures still refuse. For Android dialog limits, see [Check a plan](#check-
 An action reporting `tapped: false`
 or `executed: false` establishes no action proof and cannot count as a recovery.
 
+`logs/core.log` includes value-free diagnostics for failed interruption admission:
+`interruption-rejected` reports the front, coverage or indexed target veto, the
+exact-decline-label element count and each element's first failed predicate;
+press capability failures include the existing host association identity when
+available. `presence-system-modal` reports an unrecognized SpringBoard modal's
+app state, alert/sheet counts and structural geometry and descendant counts.
+`system-dialog-stage` names the first local dialog context failure. These records
+contain only counts, indices, booleans and fixed enums, omit labels, identifiers,
+refs and app text, and never authorize a tap or change capture admission.
+Successful selection, recognized modals and proven dialog taps emit none of
+these failure records.
+
 Dev-overlay recovery must re-prove clearance before retrying the step. A failed
 clearance or a non-executing hide with no overlay to clear fails the step.
 

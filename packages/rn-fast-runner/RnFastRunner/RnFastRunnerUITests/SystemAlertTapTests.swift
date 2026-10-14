@@ -29,3 +29,31 @@ final class SystemAlertTapTests: XCTestCase {
     XCTAssertFalse(SystemAlertTap.closed(tapped: tapped, observed: .unreadable))
   }
 }
+
+final class SystemModalDiagnosticTests: XCTestCase {
+  func testUnrecognisedModalEmitsOnlyStructuralFacts() throws {
+    let record = SystemModalDiagnostic.make(
+      recognized: false, appState: .runningForeground, alertCount: 1, sheetCount: 0,
+      modals: [.init(exists: true, frameEmpty: false, centerInViewport: true,
+        springboardFrameEmpty: false, descendantTypes: [.init(type: 9, count: 2)],
+        hittableDescendantCount: 0)]
+    )
+    let encoded = try XCTUnwrap(record).encodedForTest()
+    XCTAssertEqual(encoded["appState"] as? String, "runningForeground")
+    XCTAssertEqual(encoded["alertCount"] as? Int, 1)
+    XCTAssertEqual(Set(encoded.keys), Set(["appState", "alertCount", "sheetCount", "modals"]))
+  }
+
+  func testRecognisedOrAbsentModalEmitsNothing() {
+    XCTAssertNil(SystemModalDiagnostic.make(recognized: true, appState: .runningForeground,
+      alertCount: 1, sheetCount: 0, modals: []))
+    XCTAssertNil(SystemModalDiagnostic.make(recognized: false, appState: .runningForeground,
+      alertCount: 0, sheetCount: 0, modals: []))
+  }
+}
+
+private extension SystemModalDiagnostic {
+  func encodedForTest() throws -> [String: Any] {
+    try XCTUnwrap(JSONSerialization.jsonObject(with: JSONEncoder().encode(self)) as? [String: Any])
+  }
+}

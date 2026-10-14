@@ -1111,6 +1111,15 @@ export async function walkBlock(
       fresh.screen,
       {
         hideDevMenu: deps.hideDevMenu,
+        interruptionDiagnostic: (record) => {
+          try {
+            deps.note?.(
+              `interruption-rejected=${JSON.stringify({ line: item.line, observation: fresh.id, ...record })}`,
+            );
+          } catch {
+            /* Diagnostics cannot change recovery. */
+          }
+        },
         dialog: () =>
           mutate(item, fresh, (context) =>
             deps.dialog(item.kind === 'dialog' ? item.action : 'dismiss', context),
@@ -1163,7 +1172,15 @@ export async function walkBlock(
               captureScreen: async (options) => {
                 const screen = await deps.captureScreen({ ...options, platformPresence: true });
                 if (!dispatched) {
-                  const candidate = dismissCandidate(screen, planTargets);
+                  const candidate = dismissCandidate(screen, planTargets, (record) => {
+                    try {
+                      deps.note?.(
+                        `interruption-rejected=${JSON.stringify({ line: item.line, ...record })}`,
+                      );
+                    } catch {
+                      /* Diagnostics cannot change recovery. */
+                    }
+                  });
                   if (!candidate || 'refuse' in candidate || candidate.label !== label)
                     throw new ResolutionError({
                       refuse: 'INTERRUPTION_CHANGED',

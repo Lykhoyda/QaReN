@@ -343,3 +343,26 @@ test('saved-block replay excludes completed blocks from the later-target guard',
     }
   }
 });
+
+test('a declined recovery logs one value-free rejection while preserving the original failure', async () => {
+  const control = element('@private', 'Skip');
+  control.semantic!.press = 'unknown';
+  const f = app(screen([control]));
+  const logs: string[] = [];
+  f.deps.note = (line) => logs.push(line);
+  const result = await runPlan(plan(), f.deps);
+  assert.equal(result.verdict, 'FAIL');
+  assert.deepEqual(f.actions, []);
+  const records = logs.filter((line) => line.startsWith('interruption-rejected='));
+  assert.equal(records.length, 1);
+  const record = JSON.parse(records[0].slice('interruption-rejected='.length));
+  assert.equal(record.line, 1);
+  assert.equal(typeof record.observation, 'number');
+  assert.deepEqual(record.elements, [{ index: 0, failed: 'press-not-supported' }]);
+  assert.doesNotMatch(records[0], /Skip|Settings|private|@/);
+  const successful = app(promo());
+  successful.deps.note = (line) => logs.push(line);
+  logs.length = 0;
+  assert.equal((await runPlan(plan(), successful.deps)).verdict, 'PASS');
+  assert.equal(logs.filter((line) => line.startsWith('interruption-rejected=')).length, 0);
+});
