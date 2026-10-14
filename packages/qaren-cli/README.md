@@ -733,10 +733,11 @@ A phrase check judges at most 30 contributions. A plain native container with no
 label, value or placeholder of its own and no press or fill evidence of its own is
 not a contribution, even when unassociated React hosts leave press or fill unknown
 screen-wide; that screen-wide gap still keeps a rejected claim uncertain.
-Known limit: React host association is unavailable while more than one native
-window is captured, as with the software keyboard up, so phrase press and fill
-targets on such screens may refuse when their capability or target association
-cannot be proven.
+React host association uses the candidate's uniquely established native Window
+ancestry and that window's origin, including captures with other app or keyboard
+windows. Unique identity, type, frame, presence and ancestor proofs still apply;
+missing or ambiguous window membership refuses association. Typography compares
+title and body evidence only within the same window.
 Phrase waits capture fresh screen and presence evidence on every poll, even when the
 screen appears unchanged; prior observations do not establish current presence.
 
