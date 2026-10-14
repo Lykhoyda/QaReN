@@ -808,11 +808,55 @@ test('non-input numeric and opaque object values coexist with an input without c
 test('host and fiber bounds refuse instead of truncating the capture', () => {
   const { maxHosts } = PRIVATE_INPUT_LIMITS;
   assert.equal(withChildren(maxHosts - 2, {}, 'RCTView').api.beginQaCapture().state, 'ready');
-  assert.equal(withChildren(maxHosts - 1, {}, 'RCTView').api.beginQaCapture().state, 'refused');
+  assert.deepEqual(
+    plain(withChildren(maxHosts - 1, {}, 'RCTView').api.beginQaCapture().diagnostic),
+    {
+      cause: 'host-evidence-incomplete',
+      scanned: maxHosts,
+      budget: 2000,
+      roots: 1,
+      hosts: maxHosts,
+      interactive: 0,
+    },
+  );
+  const wide = setup({}, 'RCTView');
+  let previous = null;
+  for (let i = 0; i < 2100; i++) {
+    const child = buildFiber({ name: 'Row' }, wide.fiber);
+    child.tag = 0;
+    if (previous) previous.sibling = child;
+    else wide.fiber.child = child;
+    previous = child;
+  }
+  assert.deepEqual(plain(wide.api.beginQaCapture().diagnostic), {
+    cause: 'truncated',
+    scanned: 2000,
+    budget: 2000,
+    roots: 1,
+    hosts: 1,
+    interactive: 0,
+  });
   const { api, fiber } = setup({ value: '' });
   assert.equal(api.beginQaCapture().state, 'ready');
   fiber.child = fiber;
   assert.equal(api.beginQaCapture().state, 'refused');
+});
+
+test('producer refusals without a scanned tree still name one fixed cause', () => {
+  const empty = setup();
+  empty.sandbox.__REACT_DEVTOOLS_GLOBAL_HOOK__.getFiberRoots = () => new Set();
+  assert.deepEqual(plain(empty.api.beginQaCapture().diagnostic), {
+    cause: 'verdict-reasons:no-renderer',
+  });
+  const throwing = setup();
+  Object.defineProperty(throwing.fiber, 'memoizedProps', {
+    get() {
+      throw new Error('private-secret');
+    },
+  });
+  const reply = throwing.api.beginQaCapture();
+  assert.deepEqual(plain(reply.diagnostic), { cause: 'producer-error' });
+  assert.doesNotMatch(JSON.stringify(reply), /private-secret/);
 });
 
 async function tick() {
@@ -871,6 +915,14 @@ test('in-place value prop mutation and root replacement refuse after typography'
       v: 1,
       id: begin.id,
       state: 'refused',
+      diagnostic: {
+        cause: 'tree-changed',
+        scanned: 1,
+        budget: 2000,
+        roots: 1,
+        hosts: 1,
+        interactive: 0,
+      },
     });
   }
 });
@@ -919,6 +971,14 @@ test('producer deadline and abandonment expiry clear slots and reject late compl
     v: 1,
     id: first.id,
     state: 'refused',
+    diagnostic: {
+      cause: 'producer-deadline',
+      scanned: 1,
+      budget: 2000,
+      roots: 1,
+      hosts: 1,
+      interactive: 0,
+    },
   });
   assert.equal(time.timers.size, 0);
   const next = fixture.api.beginQaCapture(true);
@@ -1133,6 +1193,14 @@ test('revalidation never invokes a newly installed private getter or exposes its
     v: 1,
     id: begin.id,
     state: 'refused',
+    diagnostic: {
+      cause: 'tree-changed',
+      scanned: 1,
+      budget: 2000,
+      roots: 1,
+      hosts: 1,
+      interactive: 0,
+    },
   });
   assert.equal(calls, 0);
 });

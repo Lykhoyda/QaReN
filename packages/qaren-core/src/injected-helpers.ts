@@ -3,7 +3,7 @@ import { TYPOGRAPHY_TEXT_LIMITS } from './qa/host-typography.js';
 import { INPUT_HOST_TYPES } from './qa/input-host-types.js';
 
 // Bump when the injected surface changes so warm runtimes replace stale helpers.
-export const HELPERS_VERSION = 92;
+export const HELPERS_VERSION = 93;
 
 export const INJECTED_HELPERS = `
 (function() {
@@ -572,14 +572,32 @@ export const INJECTED_HELPERS = `
     if (qaCaptureSlot === slot) qaCaptureSlot = null;
   }
 
+  // A refusal carries only a fixed cause code and the producer's integer counters.
+  function refuseQaCapture(slot, cause) {
+    var source = slot.capture && slot.capture.diagnostic;
+    var diagnostic = { cause: cause || (source && source.cause) || 'producer-refused' };
+    var counters = ['scanned', 'budget', 'roots', 'hosts', 'interactive'];
+    for (var ci = 0; source && ci < counters.length; ci++) {
+      if (typeof source[counters[ci]] === 'number') diagnostic[counters[ci]] = source[counters[ci]];
+    }
+    slot.state = 'refused';
+    slot.diagnostic = diagnostic;
+  }
+
   function readQaCapture(id) {
     var safeId = typeof id === 'string' && /^[a-f0-9]{1,32}$/.test(id) ? id : '0';
     var reply = { v: 1, id: safeId, state: 'refused' };
     var slot = qaCaptureSlot;
     if (!slot || slot.id !== safeId) return reply;
-    if (Date.now() >= slot.expires) { releaseQaCapture(slot); return reply; }
+    if (Date.now() >= slot.expires) {
+      refuseQaCapture(slot, 'producer-deadline');
+      reply.diagnostic = slot.diagnostic;
+      releaseQaCapture(slot);
+      return reply;
+    }
     reply.state = slot.state;
     if (slot.state === 'ready') reply.tree = slot.tree;
+    if (slot.state === 'refused' && slot.diagnostic) reply.diagnostic = slot.diagnostic;
     if (slot.state !== 'pending') releaseQaCapture(slot);
     return reply;
   }
@@ -596,6 +614,7 @@ export const INJECTED_HELPERS = `
       if (qaCaptureSlot !== slot || !slot.capture) return;
       slot.state = slot.capture.accepted && typeof tree === 'string' && Date.now() < slot.capture.deadline ? 'ready' : 'refused';
       if (slot.state === 'ready') slot.tree = tree;
+      else refuseQaCapture(slot, slot.capture.accepted && Date.now() >= slot.capture.deadline ? 'producer-deadline' : null);
       slot.capture.release();
       slot.capture = null;
     }
@@ -611,17 +630,18 @@ export const INJECTED_HELPERS = `
       if (tree && typeof tree.then === 'function') tree.then(completed, function() { completed(null); });
       else completed(tree);
       if (!inputs.complete) {
-        slot.state = 'refused';
+        if (slot.state !== 'refused') refuseQaCapture(slot, null);
         releaseQaCapture(slot);
       }
     } catch (_) {
       inputs.complete = false;
-      slot.state = 'refused';
+      refuseQaCapture(slot, 'producer-error');
       releaseQaCapture(slot);
     }
     if (slot.state === 'refused') { inputs.complete = false; releaseQaCapture(slot); }
     var reply = { v: 1, id: slot.id, state: slot.state };
     if (slot.state === 'ready') { reply.tree = slot.tree; releaseQaCapture(slot); }
+    if (slot.state === 'refused' && slot.diagnostic) reply.diagnostic = slot.diagnostic;
     return reply;
   }
 
@@ -1000,15 +1020,26 @@ export const INJECTED_HELPERS = `
       return true;
     }
 
-    function finish(out, roots) {
+    function finish(out, roots, budget) {
+      var verdictCause = out.verdict.complete ? null : 'verdict-reasons:' + (out.verdict.reasons.join(',') || 'incomplete');
+      capture.diagnostic = {
+        cause: out.truncated ? 'truncated' : verdictCause || (out.hostEvidence.complete ? null : 'host-evidence-incomplete'),
+        scanned: out.totalNodes,
+        budget: budget,
+        roots: roots.length,
+        hosts: out.hostEvidence.hosts.length,
+        interactive: out.interactive.length
+      };
       evidence.complete = evidence.complete && out.hostEvidence.complete;
       if (privateInputs) {
         var coverage = rootScanCoverage(capture);
         rendererCoverage = JSON.stringify(coverage.registeredRendererIds);
         evidence.complete = evidence.complete && coverage.reasons.length === 0;
+        if (!capture.diagnostic.cause && coverage.reasons.length) capture.diagnostic.cause = 'verdict-reasons:' + coverage.reasons.join(',');
         privateInputs.complete = evidence.complete;
         if (!measureTypography) {
           capture.accepted = privateInputs.complete && unchanged(roots);
+          if (privateInputs.complete && !capture.accepted) capture.diagnostic.cause = Date.now() >= deadline ? 'producer-deadline' : 'tree-changed';
           privateInputs.complete = capture.accepted;
           return capture.accepted ? evidenceJson(out) : null;
         }
@@ -1041,6 +1072,7 @@ export const INJECTED_HELPERS = `
           roots = [];
           tasks = [];
           if (privateInputs) capture.accepted = privateInputs.complete && stable && !timedOut && Date.now() < deadline;
+          if (privateInputs && privateInputs.complete && !capture.accepted) capture.diagnostic.cause = timedOut || Date.now() >= deadline ? 'producer-deadline' : 'tree-changed';
           if (!stable) {
             evidence.complete = false;
             for (var ni = 0; ni < evidence.nodes.length; ni++) {
@@ -1108,6 +1140,7 @@ export const INJECTED_HELPERS = `
       ? createTypographyCapture(Date.now()) : null);
     function earlyTree(out) {
       if (!typography) return JSON.stringify(out);
+      if (out.verdict) typography.diagnostic = { cause: 'verdict-reasons:' + (out.verdict.reasons.join(',') || 'incomplete') };
       out.hostEvidence.typography = typography.evidence;
       typography.evidence.complete = false;
       typography.evidence.durationMs = Math.max(0, Date.now() - typography.start);
@@ -1553,7 +1586,7 @@ export const INJECTED_HELPERS = `
         hostEvidence.complete = hostEvidence.complete && iRoots.length > 0 && iOut.verdict.complete;
         iOut.hostEvidence = hostEvidence;
       }
-      return typography ? typography.finish(iOut, iRoots) : evidenceJson(iOut);
+      return typography ? typography.finish(iOut, iRoots, iBudget) : evidenceJson(iOut);
     }
 
     // For filtered queries: BFS to find matches, then build compact subtrees.

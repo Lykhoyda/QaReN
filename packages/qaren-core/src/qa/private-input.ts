@@ -28,6 +28,55 @@ export class NativeSnapshotIncomplete extends PrivateInputCaptureError {
   }
 }
 
+const VERDICT_REASON =
+  'no-renderer|renderer-error|root-enumeration-incomplete|renderers-unscanned|scan-budget-exhausted|output-truncated|unscanned-renderers|renderer-errors|dropped-subtrees|collapsed-child-lists|incomplete|unrecognized';
+const REACT_CAUSE = new RegExp(
+  `^(deadline|evaluate-error|completion-shape|tree-shape|tree-too-large|interactive-cap|truncated|host-evidence-incomplete|entry-shape|producer-deadline|producer-error|producer-refused|tree-changed|verdict-reasons:(${VERDICT_REASON})(,(${VERDICT_REASON}))*)$`,
+);
+const REACT_COUNTERS = ['scanned', 'budget', 'roots', 'hosts', 'interactive', 'ms'] as const;
+export type ReactCaptureCounters = Partial<Record<(typeof REACT_COUNTERS)[number], number>>;
+
+export function isReactCaptureCause(value: unknown): value is string {
+  return typeof value === 'string' && value.length <= 256 && REACT_CAUSE.test(value);
+}
+
+function reactCounters(counters: Readonly<Record<string, unknown>>): ReactCaptureCounters {
+  const known: ReactCaptureCounters = {};
+  for (const key of REACT_COUNTERS) {
+    const count = counters[key];
+    if (typeof count === 'number' && Number.isSafeInteger(count) && count >= 0) known[key] = count;
+  }
+  return known;
+}
+
+function reactDetail(reason: string, counters: ReactCaptureCounters): string {
+  const parts = [`cause=${reason}`];
+  if (counters.scanned !== undefined)
+    parts.push(
+      `scanned=${counters.scanned}${counters.budget === undefined ? '' : `/${counters.budget}`}`,
+    );
+  for (const key of ['roots', 'hosts', 'interactive', 'ms'] as const)
+    if (counters[key] !== undefined) parts.push(`${key}=${counters[key]}`);
+  return parts.join('; ');
+}
+
+// Built only from a fixed cause code and integer counters, so it carries no screen content.
+export class ReactCaptureIncomplete extends PrivateInputCaptureError {
+  readonly reason: string;
+  readonly counters: ReactCaptureCounters;
+  readonly detail: string;
+
+  constructor(reason: string, counters: Readonly<Record<string, unknown>> = {}) {
+    const known = isReactCaptureCause(reason) ? reason : 'completion-shape';
+    const counted = reactCounters(counters);
+    const detail = reactDetail(known, counted);
+    super(`The React capture was incomplete (${detail}).`);
+    this.reason = known;
+    this.counters = counted;
+    this.detail = detail;
+  }
+}
+
 // The native snapshot is the privacy boundary: every readable input or secure value it shows is private.
 export function applyNativePrivateInputs(screen: Screen, nodes: readonly NativeNode[]): Screen {
   const byRef = new Map(nodes.map((node) => [node.ref, node]));

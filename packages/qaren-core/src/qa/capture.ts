@@ -17,6 +17,7 @@ import {
   applyNativePrivateInputs,
   NativeSnapshotIncomplete,
   PrivateInputCaptureError,
+  ReactCaptureIncomplete,
 } from './private-input.js';
 
 export class NativeCaptureError extends Error {
@@ -474,9 +475,10 @@ async function capture(deps: CaptureDeps): Promise<Screen> {
   let react: ReactObservation = {};
   try {
     react = await measureTiming(deps.timing, now, 'react-private', () => deps.react());
-  } catch {
+  } catch (error) {
     // The native snapshot carries privacy, so a missing digest only loses semantics.
-    deps.warn?.('interactive digest unavailable; React coverage is unknown');
+    const detail = error instanceof ReactCaptureIncomplete ? ` (${error.detail})` : '';
+    deps.warn?.(`interactive digest unavailable${detail}; React coverage is unknown`);
   }
   const joinedAt = deps.timing ? now() : 0;
   observeTiming(deps.timing, { stage: 'join-private', edge: 'start', outcome: 'ok', at: joinedAt });
