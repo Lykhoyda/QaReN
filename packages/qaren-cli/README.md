@@ -871,6 +871,19 @@ transport failure degrades React coverage to unknown without retrying capture.
 Operations requiring complete React evidence still refuse when that coverage is
 unavailable. Capture deadlines, budgets and item deadlines remain unchanged.
 
+When the React capture adapter classifies a failure, the `interactive digest
+unavailable` warning includes a fixed `cause` code and available nonnegative integer
+counters: scanned fibers (with the scan budget when available), roots, hosts,
+interactive entries and elapsed milliseconds (`ms`). These distinguish capture
+limits, deadlines, renderer coverage, malformed evidence and CDP evaluation
+failures; they exclude app text, labels, identifiers and raw errors. Unclassified
+failures retain the generic warning. The
+[React capture adapter](../qaren-core/src/qa/react-capture.ts) owns classification;
+[ReactCaptureIncomplete](../qaren-core/src/qa/private-input.ts) owns the allowed
+codes, counters and warning detail format. This diagnostic identifies the capture
+failure category; it does not establish the underlying app or host cause or change
+refusal and privacy behavior.
+
 React-only elements expose no label, placeholder or value strings in the screen
 projection. The React walk excludes provably inactive screen routes and native
 hosts with `display: none` before collecting their semantic or descendant text
