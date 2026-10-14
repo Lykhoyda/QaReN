@@ -39,7 +39,15 @@ import {
 } from './blocks.js';
 import { type Judge, type JevCall, JevError, unavailableJudge } from './questions.js';
 import { type LoginMarker, recover } from './recover.js';
-import { isPrivateInput, MASK, ObservedPrivacy, matchPrivate, projectPlanLine } from './privacy.js';
+import {
+  concealsScreen,
+  isPrivateInput,
+  MASK,
+  SCREEN_TEXT_WITHHELD,
+  ObservedPrivacy,
+  matchPrivate,
+  projectPlanLine,
+} from './privacy.js';
 import { renderReason, segments, type Reason } from './untrusted.js';
 import { NativeSnapshotIncomplete, PrivateInputCaptureError } from './private-input.js';
 import { AppProcessGoneError, emitCaptureDiagnostics, NativeCaptureError } from './capture.js';
@@ -700,7 +708,10 @@ export async function walkBlock(
         seen: [
           ...segments(reason),
           '; historical context, previously on screen: ',
-          { app: privacy.screenText(screen).slice(0, 40).join(' | ') },
+          {
+            app: privacy.screenText(screen).slice(0, 40).join(' | '),
+            ...(concealsScreen(screen) ? { withheld: SCREEN_TEXT_WITHHELD } : {}),
+          },
         ],
         ...(screenshot ? { screenshot } : {}),
       },
@@ -1324,7 +1335,10 @@ export async function walkBlock(
                 attempt,
                 [
                   `${moved.error}; the target (`,
-                  { app: identityText(moved.target) },
+                  {
+                    app: identityText(moved.target),
+                    ...(concealsScreen(latest) ? { withheld: MASK } : {}),
+                  },
                   `) did not settle across ${settled.frames.length} captures (${settled.frames.join(' | ')}); it was not dispatched again`,
                 ],
                 latest,
@@ -1489,10 +1503,19 @@ export async function walkBlock(
                   [
                     `${moved.error}; the retry resolved `,
                     ...(element
-                      ? [{ app: identityText(element) }, ` at ${frameKey(element) ?? 'no frame'}`]
+                      ? [
+                          {
+                            app: identityText(element),
+                            ...(concealsScreen(before.screen) ? { withheld: MASK } : {}),
+                          },
+                          ` at ${frameKey(element) ?? 'no frame'}`,
+                        ]
                       : ['no element']),
                     ', not the target that settled (',
-                    { app: identityText(moved.target) },
+                    {
+                      app: identityText(moved.target),
+                      ...(concealsScreen(before.screen) ? { withheld: MASK } : {}),
+                    },
                     ` at ${settledFrame}); it was not dispatched`,
                   ],
                   before.screen,

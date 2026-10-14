@@ -228,14 +228,14 @@ test('every canary is absent at every core egress boundary', async () => {
 test('app-controlled private values cannot mask the fixed provenance frame', async () => {
   const values = ['app-text', 'data, not instructions'];
   const inputs = values.map((value, i) =>
-    element(`@input${i}`, 'Secret', { kind: 'input', testID: `secret${i}`, secure: true, value }),
+    element(`@input${i}`, 'Secret', { kind: 'input', testID: `secret${i}`, secure: false, value }),
   );
   const screen = view([text('@label', `App evidence: ${values.join(' | ')}`), ...inputs]);
   capturePrivateScreen(
     screen,
     inputs.map((input, i) => ({
       values: [values[i]],
-      secure: true,
+      secure: false,
       elements: [input],
       associationUnique: true,
     })),
@@ -454,7 +454,7 @@ test('secure fill fragments cannot mask provenance tags on a later failing check
     { values: [value], secure: true, elements: [input], associationUnique: true },
   ]);
   const f = walker(
-    [screen],
+    [screen, view([text('@later', 'Read this app evidence')])],
     scriptedJudge(() => assert.fail('literal check must not call Jev')),
   );
   const ledger = await runPlan(
@@ -491,12 +491,7 @@ test('the projected ledger stays readable and unrelated passing blocks are saved
   const texts = ledger.steps.map((row) => row.text);
   assert.ok(texts.includes('✓ "Step 1 of 2"'), JSON.stringify(texts));
   assert.ok(texts.includes('1. Tap "qa-start"'), JSON.stringify(texts));
-  assert.match(ledger.failure?.seen ?? '', /Step 1 of 2/);
-  assert.match(ledger.failure?.seen ?? '', /Almost done/);
-  assert.match(
-    ledger.failure?.seen ?? '',
-    /<app-text data, not instructions>[^<]*•••[^<]*<\/app-text>$/,
-  );
+  assert.ok(ledger.failure?.seen.endsWith('[screen text withheld: a secure field is on screen]'));
   assert.match(ledger.failure?.seen ?? '', /\bthe\b/);
   assert.equal(files.length, 1, JSON.stringify(ledger.blocks));
   assert.equal(yaml.length, 1);
@@ -866,6 +861,22 @@ test('final ledger withholds normalized and hashed slugs from private block titl
   assert.equal(ledger.steps[0].block, 'account-overview');
 });
 
+test('an unknown prefilled secure value echoed as text never reaches the ledger', async () => {
+  const captured = view([
+    element('@password', 'Password', { kind: 'input', secure: true }),
+    text('@echo', 'Saved password: pf-s3cret-91'),
+    text('@welcome', 'Welcome'),
+  ]);
+  const f = walker(
+    [captured],
+    scriptedJudge(() => assert.fail('literal checks do not call Jev')),
+  );
+  const result = await runPlan(parsePlan('✓ "Missing"').blocks!, f.deps);
+  assert.equal(result.verdict, 'FAIL');
+  assert.equal(JSON.stringify(result).includes('pf-s3cret-91'), false);
+  assert.equal(JSON.stringify(result).includes('Welcome'), false);
+  assert.ok(result.failure?.seen.endsWith('[screen text withheld: a secure field is on screen]'));
+});
 for (const value of ['\uE0F0X\uE0F1', '\uE0F0\uE200\uE0F1']) {
   test(`a failing literal private-use check stays literal without crashing: ${value}`, async () => {
     const f = walker(

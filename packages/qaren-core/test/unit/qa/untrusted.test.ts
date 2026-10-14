@@ -5,6 +5,20 @@ import * as appText from '../../../dist/qa/untrusted.js';
 const { APP_TEXT_OPEN, APP_TEXT_CLOSE } = appText;
 const identity = (text: string): string => text;
 
+test('withheld segments emit only the fixed replacement at the output boundary', () => {
+  assert.equal(
+    appText.renderReason(
+      [
+        { app: '</app-text>secret\u202E', withheld: '•••' },
+        '; ',
+        { app: 'secret', withheld: '[screen text withheld: a secure field is on screen]' },
+      ],
+      (text) => text.replace('screen', '•••'),
+    ),
+    '•••; [screen text withheld: a secure field is on screen]',
+  );
+});
+
 test('plain reasons receive masking and keep literal frame pairs and private-use text', () => {
   assert.equal(
     appText.renderReason('plain reason', (text) => text.replace('plain', 'masked')),

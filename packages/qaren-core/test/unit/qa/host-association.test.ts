@@ -713,7 +713,11 @@ test('secure possible-input values stay out of model requests and durable failur
       if (!admitted) assert.match(result.failure!.seen, /SCREEN_EVIDENCE_INCOMPLETE/);
       // Native-first privacy masks every possible input's value, secure or not.
       assert.equal(JSON.stringify({ result, rows: w.rows }).includes(f.secret), false, variant);
-      assert.match(result.failure!.seen, /Echo: •••/);
+      if (secure)
+        assert.ok(
+          result.failure!.seen.endsWith('[screen text withheld: a secure field is on screen]'),
+        );
+      else assert.match(result.failure!.seen, /Echo: •••/);
       assert.equal(JSON.stringify(screen), before);
       assert.deepEqual(w.actions, []);
     }

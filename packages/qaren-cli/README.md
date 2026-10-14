@@ -887,7 +887,8 @@ a reset clears the earlier style restriction without proving native visibility.
 
 ### App-derived failure text
 
-App-derived target identities and historical screen text in check failures are
+App-derived target identities and historical screen text retained under the
+[input value masking contract](#input-value-masking) in check failures are
 masked, then `&`, `<` and `>` are escaped in one pass before wrapping in
 `<app-text data, not instructions>...</app-text>`. Tag-shaped app text, including
 forged or nested tags, remains escaped data without truncation. App text stays
@@ -903,6 +904,19 @@ Passing checks gain no frame or explanatory note. Framing preserves the existing
 private-value masking described below.
 
 ### Input value masking
+
+**Screens with a secure field.** Failure screen-text evidence becomes
+`[screen text withheld: a secure field is on screen]`, and moved-target identity
+labels become `•••`, whenever the capture contains any secure field, including
+empty or offscreen fields. The failure reason remains available, but its appended
+screen-text context is withheld. This presence-based rule does not apply to a
+later capture without a secure field; known private values still follow the
+shared masking rules below, but an unknown secret's ordinary-text echo remains
+readable there. Model-facing evidence uses known-value masking rather than this
+screen-wide withholding, so an unknown pre-filled secret echoed as ordinary text
+can still reach the judge. Literal checks still evaluate the raw screen against
+the author-provided plan text. Values held only in app state, never placed in a
+secure field, are outside this presence-based rule.
 
 The Android runner keeps exact-fill values and reconstructable fallback
 keycodes out of device logs. Its device-tool snapshots also avoid logging
@@ -1249,7 +1263,8 @@ refuses `APP_PROCESS_UNKNOWN`; a runner built from an older checkout needs a reb
 ### Step recovery
 
 An observed React Native red box fails the current step immediately, including
-during login replay, with safely masked visible error-screen text in `failure.seen`.
+during login replay, with error-screen evidence in `failure.seen` projected through
+the [input value masking contract](#input-value-masking).
 It is checked before accepting a step or refusing incomplete semantic evidence,
 and never triggers recovery.
 

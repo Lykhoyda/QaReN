@@ -240,7 +240,11 @@ test('iOS QA acquisition masks native values and derived labels without public v
           JSON.stringify({ result, rows: f.rows, prompts: judge.requests }).includes(secret),
           false,
         );
-        assert.match(result.failure!.seen, /Welcome •••/);
+        if (type === 'SecureTextField')
+          assert.ok(
+            result.failure!.seen.endsWith('[screen text withheld: a secure field is on screen]'),
+          );
+        else assert.match(result.failure!.seen, /Welcome •••/);
         assert.equal(shots, 0);
         assert.strictEqual(getCachedSnapshot('ios'), cached);
         assert.equal(Object.hasOwn(getCachedMetadata('@e2')!, 'value'), false);

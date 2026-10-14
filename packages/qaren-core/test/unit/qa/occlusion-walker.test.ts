@@ -1004,40 +1004,52 @@ test('a moved target whose frame never settles is not dispatched again and fails
 });
 
 test('private marker words cannot mask target-identity frames in reasons or failure history', async () => {
-  const screenAt = (y: number): Screen => {
-    const screen = continueAt(y);
-    const values = ['app-text', 'data, not instructions'];
-    const inputs = values.map((value, i) =>
-      element(`@secret${i}`, 'Secret', {
-        kind: 'input',
-        testID: `secret${i}`,
-        secure: true,
-        value,
-      }),
-    );
-    screen.elements.push(...inputs);
-    capturePrivateScreen(
-      screen,
-      inputs.map((input, i) => ({
-        values: [values[i]],
-        secure: true,
-        elements: [input],
-        associationUnique: true,
-      })),
-    );
-    return screen;
-  };
-  const f = fake([700, 700, 702, 704, 706, 708].map(screenAt), { press: [MOVED] });
-  const ledger = await runPlan([block('1. Tap "Continue"\n')], f.deps);
-  assert.equal(ledger.verdict, 'FAIL');
-  assert.match(
-    ledger.steps.find((row) => row.outcome === 'fail')?.reason ?? '',
-    /<app-text data, not instructions>button "Continue", no testID<\/app-text>/,
-  );
-  assert.match(
-    ledger.failure?.seen ?? '',
-    /historical context, previously on screen: <app-text data, not instructions>.*<\/app-text>$/,
-  );
+  for (const secure of [false, true]) {
+    const screenAt = (y: number): Screen => {
+      const screen = continueAt(y);
+      const values = ['app-text', 'data, not instructions'];
+      const inputs = values.map((value, i) =>
+        element(`@secret${i}`, 'Secret', {
+          kind: 'input',
+          testID: `secret${i}`,
+          secure,
+          value,
+        }),
+      );
+      screen.elements.push(...inputs);
+      capturePrivateScreen(
+        screen,
+        inputs.map((input, i) => ({
+          values: [values[i]],
+          secure,
+          elements: [input],
+          associationUnique: true,
+        })),
+      );
+      return screen;
+    };
+    const f = fake([700, 700, 702, 704, 706, 708].map(screenAt), { press: [MOVED] });
+    const ledger = await runPlan([block('1. Tap "Continue"\n')], f.deps);
+    assert.equal(ledger.verdict, 'FAIL');
+    if (secure) {
+      assert.match(
+        ledger.steps.find((row) => row.outcome === 'fail')?.reason ?? '',
+        /the target \(•••\)/,
+      );
+      assert.ok(
+        ledger.failure?.seen.endsWith('[screen text withheld: a secure field is on screen]'),
+      );
+    } else {
+      assert.match(
+        ledger.steps.find((row) => row.outcome === 'fail')?.reason ?? '',
+        /<app-text data, not instructions>button "Continue", no testID<\/app-text>/,
+      );
+      assert.match(
+        ledger.failure?.seen ?? '',
+        /historical context, previously on screen: <app-text data, not instructions>.*<\/app-text>$/,
+      );
+    }
+  }
 });
 
 test('a target that holds still yet is refused as moved again fails with both frame records', async () => {

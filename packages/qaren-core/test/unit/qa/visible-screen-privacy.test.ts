@@ -5,9 +5,9 @@ import type { ReactObservation } from '../../../dist/qa/capture.js';
 import { parsePlan } from '../../../dist/qa/plan.js';
 import { runPlan } from '../../../dist/qa/walker.js';
 import { outsideViewport } from '../../../dist/qa/native-presence.js';
-import { ObservedPrivacy } from '../../../dist/qa/privacy.js';
+import { concealsScreen, ObservedPrivacy } from '../../../dist/qa/privacy.js';
 import type { NativeNode } from '../../../dist/qa/screen.js';
-import { scriptedJudge, walker } from './judgment-fixtures.ts';
+import { element, screen, scriptedJudge, walker } from './judgment-fixtures.ts';
 import { attested, nativeCapture } from './platform-presence-fixtures.ts';
 
 type Extra = Partial<NativeNode> & { ref: string; type: string };
@@ -272,7 +272,7 @@ test('a readable secure value and its echo are masked in every output', async ()
   const result = await runPlan(parsePlan(`✓ "Nothing like this"`).blocks!, f.deps);
   assert.equal(result.verdict, 'FAIL');
   assert.equal(shots(), 0);
-  assert.match(result.failure!.seen, /Your password is •••/);
+  assert.ok(result.failure!.seen.endsWith('[screen text withheld: a secure field is on screen]'));
   const all = outputs(result, judge, f.rows);
   assert.equal(all.includes(secret), false, all);
 });
@@ -318,8 +318,7 @@ test('open and secure field values equal to their placeholders are masked', asyn
     },
   ]);
   const result = await runPlan(parsePlan('✓ "Nothing like this"').blocks!, f.deps);
-  assert.match(result.failure!.seen, /••• results/);
-  assert.match(result.failure!.seen, /••• sent/);
+  assert.ok(result.failure!.seen.endsWith('[screen text withheld: a secure field is on screen]'));
   assert.equal(shots(), 0);
   const all = outputs(result, judge, f.rows);
   assert.equal(all.includes('Search'), false, all);
@@ -878,4 +877,25 @@ test('a React placeholder never joins a native node with a different identifier'
   const title = observed.elements.find((e) => e.ref === '@title')!;
   assert.equal(title.testID, 'wizard-title-input');
   assert.equal(title.placeholder, undefined);
+});
+
+test('secure captures withhold all screen text, including offscreen and empty fields', () => {
+  const privacy = new ObservedPrivacy([]);
+  const texts = ['Welcome', 'Saved password: pf-s3cret-91'];
+  const plain = screen(texts.map((label, i) => element(`@text${i}`, label, { kind: 'text' })));
+  plain.elements.push(element('@email', 'Email', { kind: 'input' }));
+  assert.equal(concealsScreen(plain), false);
+  assert.deepEqual(privacy.screenText(plain), [...texts, 'Email']);
+  for (const offscreen of [false, true]) {
+    const captured = screen(
+      [
+        ...plain.elements,
+        element('@password', 'Password', { kind: 'input', secure: true, offscreen }),
+      ],
+      texts,
+    );
+    assert.deepEqual(privacy.screenText(captured), [
+      '[screen text withheld: a secure field is on screen]',
+    ]);
+  }
 });
