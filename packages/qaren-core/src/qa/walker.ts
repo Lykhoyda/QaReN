@@ -2108,7 +2108,6 @@ const exact = (selector: Selector): Target =>
     ? { quoted: selector.id, phrase: selector.id, exact: 'id' }
     : { quoted: selector.text!, phrase: selector.text!, exact: 'text' };
 
-// Replay is the same walk over the stored identities, so a literal line never reaches Jev.
 export function replayBlock(block: Block, stored: StoredBlock): Block {
   return {
     ...block,
