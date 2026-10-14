@@ -50,7 +50,12 @@ import {
 } from './privacy.js';
 import { renderReason, segments, type Reason } from './untrusted.js';
 import { NativeSnapshotIncomplete, PrivateInputCaptureError } from './private-input.js';
-import { AppProcessGoneError, emitCaptureDiagnostics, NativeCaptureError } from './capture.js';
+import {
+  AppProcessGoneError,
+  emitCaptureDiagnostics,
+  emitQuotedTargetDiagnostic,
+  NativeCaptureError,
+} from './capture.js';
 import { QaDispatchContext, QaDispatchError } from '../domain/qa-dispatch.js';
 import {
   admitObservation,
@@ -690,6 +695,8 @@ export async function walkBlock(
     ref?: string,
     miss = false,
   ): WalkOutcome => {
+    const quoted = item.kind === 'check' ? undefined : stepTarget(item)?.quoted;
+    if (quoted !== undefined) emitQuotedTargetDiagnostic(screen, quoted, item.line);
     emit({
       ...base(item, attempt),
       ...(ref ? { ref } : {}),
