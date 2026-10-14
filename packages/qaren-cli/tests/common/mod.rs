@@ -326,6 +326,7 @@ pub fn script_ios_metro_wait_and_launch(mock: &mut MockRunner, defaults: CmdOutp
 #[derive(Default)]
 pub struct IosBuildRunner {
     pub inner: MockRunner,
+    pub timeouts: std::collections::VecDeque<(String, u64)>,
     pub omit_app: bool,
     pub ambiguous_app: bool,
     pub workspace_mutation: Option<WorkspaceMutation>,
@@ -477,6 +478,22 @@ impl qaren::exec::Runner for IosBuildRunner {
         self.inner.adb_server_version(port)
     }
     fn execute(&mut self, spec: &qaren::exec::CmdSpec, interruptible: bool) -> CmdOutput {
+        if self
+            .timeouts
+            .front()
+            .is_some_and(|(label, _)| label == &spec.label)
+        {
+            let (_, duration_ms) = self.timeouts.pop_front().unwrap();
+            assert!(duration_ms <= spec.timeout_seconds * 1000);
+            self.inner.calls.push(spec.clone());
+            self.inner
+                .sleep(std::time::Duration::from_millis(duration_ms));
+            return CmdOutput {
+                timed_out: true,
+                duration_ms,
+                ..Default::default()
+            };
+        }
         self.inner.execute(spec, interruptible)
     }
     fn execute_private(

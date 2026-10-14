@@ -990,8 +990,14 @@ header before launch, so the client's own first request is not the slow cold
 one. Fresh Android scenario-based
 `prepare` keeps launch and Metro under `expo run:android` and does not perform
 this warmup.
-A manifest or dev-client launch timeout refuses with `CORE_REFUSED`; the launch is retried once
-only when the measured one-minute host load exceeds the launch envelope. Other
+A manifest timeout refuses with `CORE_REFUSED`. Dev-client launch and iOS
+dev-menu defaults timeouts retry regardless of host load until the remaining
+`build_seconds` preparation budget is spent, then refuse with `CORE_REFUSED`.
+That budget is shared with launch readiness; retries do not reset it. Each call
+keeps its existing timeout, capped by the remaining budget, and cancellation
+preempts retries. The receipt records every attempt's outcome and duration;
+readiness still requires the existing Metro and app-process probes.
+Host load is diagnostic only. Other
 manifest and launch errors remain `BUILD_FAILED`. Cleanup retained resources
 before retrying.
 
