@@ -10,9 +10,9 @@ Knowledge-only investigation. No product code was changed. Heads examined:
 
 Third-party sources were read from the SDK 55 release tarballs: `@expo/cli@55.0.36`,
 `expo-updates@55.0.33`, `@expo/fingerprint@0.16.8`, `@expo/config-plugins@55.0.11`,
-`expo-dev-launcher@55.0.41`. Those are the `sdk-55` dist-tags on 2026-10-14; the PR 994
-transcript names `@expo/cli` 55.0.34 and `expo-updates` 55.0.26, and the files cited
-here are unchanged in shape between those patch releases.
+`expo-dev-launcher@55.0.41`. Those are the `sdk-55` dist-tags on 2026-10-14. The PR 994
+transcript names `@expo/cli` 55.0.34 and `expo-updates` 55.0.26; those earlier patch
+releases were not diffed against the versions cited here.
 
 ## 1. The two heads do not share the code the issue describes
 
@@ -34,8 +34,9 @@ the Darwin seatbelt and the Node descendant fence) exists only on `main`:
   `RN_DEV_AGENT_*` (`:769-777`).
 
 `develop` removed all of it in `b832ecb` (#1071, "cut to qaren-cli, qaren-core and
-qaren-plugin"). There is no `METRO_START_UNAVAILABLE`, no spawn gate and no seatbelt anywhere
-under `packages/qaren-*` (grep over `packages/` on `develop`, `dist/` excluded). Metro on
+qaren-plugin"). There is no `METRO_START_UNAVAILABLE`, no spawn gate and no `sandbox-exec`
+or seatbelt profile anywhere under `packages/qaren-cli/src` or `packages/qaren-core/src`
+(grep on `develop`, `dist/` excluded), so nothing wraps Metro there. Metro on
 `develop` is started by the Rust CLI as a plain `pnpm exec expo start --port <port>` with the
 parent environment inherited (`packages/qaren-cli/src/adapters/metro.rs:6-16`;
 `packages/qaren-cli/src/exec.rs:461-478` only applies the spec's `env`/`env_remove`). Readiness
@@ -43,7 +44,9 @@ is `/status` through `curl --max-time 5` (`metro.rs:55-67`, `:159-162`) under th
 `build_seconds` budget, default 2400 s (`packages/qaren-cli/src/scenario.rs:249-251`,
 `packages/qaren-cli/src/commands/prepare.rs:1532-1578`). After readiness, `develop` requests the
 dev-client manifest once itself, with a 60 s cap, before launching the app
-(`metro.rs:18-35`, `prepare.rs:1704-1725`, added by `767b53d` on 2026-10-05). A manifest
+(`metro.rs:18-35`; `prepare.rs:1704-1725` inside `run_reuse_path`, which the fresh iOS build
+route also enters at `prepare.rs:2439`; `packages/qaren-cli/README.md:1019-1032`; added by
+`767b53d` on 2026-10-05). A manifest
 timeout there is reported as `CORE_REFUSED: dev client manifest timed out ... (host 1-minute
 load N.N; an environment refusal after 1 attempts)` (`prepare.rs:3046-3075`).
 
@@ -71,14 +74,15 @@ below treats them separately because no single candidate explains both.
   `runServer`, i.e. listens, at `build/src/start/server/metro/instantiateMetro.js:331`) runs
   at `build/src/start/server/metro/MetroBundlerDevServer.js:876-879`, and the manifest
   middleware is created and prepended only afterwards (`:885-895`).
-- `@expo/cli` touches runtime-version resolution in exactly four files
-  (`start/server/middleware/ExpoGoManifestHandlerMiddleware.js`,
-  `start/server/middleware/resolveRuntimeVersionWithExpoUpdatesAsync.js`,
-  `utils/expoUpdatesCli.js`, `utils/build-cache-providers/index.js`). None is on the start
-  path. The only start-server consumer is the manifest handler, which calls
-  `resolveRuntimeVersionWithExpoUpdatesAsync` per request
-  (`ExpoGoManifestHandlerMiddleware.js:132-135`; the request entry at
-  `ManifestMiddleware.js:301-310` has no memoisation).
+- `@expo/cli` spawns the runtime-version resolver in one place: the manifest handler, per
+  request (`ExpoGoManifestHandlerMiddleware.js:132-135` through
+  `resolveRuntimeVersionWithExpoUpdatesAsync.js` and `utils/expoUpdatesCli.js`; the request
+  entry at `ManifestMiddleware.js:301-310` has no memoisation). The other two start-server
+  readers of the runtime version, the manifest handler's own fallback
+  (`ExpoGoManifestHandlerMiddleware.js:141`) and `InterstitialPageMiddleware.js:90`, go
+  through config-plugins and return the sentinel described below. The only other
+  fingerprint consumer in the package is `utils/build-cache-providers/index.js`, on the
+  `expo run` path. Nothing runs before the server listens.
 - That function spawns `expo-updates/bin/cli.js runtimeversion:resolve --platform <p>` with
   the parent's whole environment and no timeout
   (`resolveRuntimeVersionWithExpoUpdatesAsync.js:14-26`, `utils/expoUpdatesCli.js:91-105`).
@@ -95,8 +99,9 @@ below treats them separately because no single candidate explains both.
   as `METRO_START_UNAVAILABLE`.
 - At tag `v1.0.4` the `manifest-utility` lane already existed
   (`package-integration.ts:1644` at `8d8b89db`) and PR #994's second commit established that
-  the Darwin profile was not enforced on 1.0.4 at all (the platform code-signing leaf was
-  rejected until `6d6dc39`, shipped in 1.0.5, so enforcement degraded to `reported-v1`). The
+  the Darwin profile was not enforced on 1.0.4 on the reporter's host class (Darwin 25: the
+  renamed platform code-signing leaf was rejected until `6d6dc39`, shipped in 1.0.5, so
+  enforcement degraded to `reported-v1`). The
   issue body's "the spawn gate denies the `git` child" therefore had no mechanism on the build
   it was reported against, and comment 1 on the same thread confirms 1.0.4 served the
   fingerprint manifest, slowly.
@@ -194,10 +199,13 @@ in either head sets it; `develop` computes its own build identity through the
 `utils/expoUpdatesCli.js:102-105`, the `expo-updates` child both run with
 `HOME=<runtime>/metro-home` (`managed-metro.ts:2239`, `:2270`; the fence strips only
 `NODE_OPTIONS` and `RN_DEV_AGENT_*`, `package-integration.ts:769-777`). But there is no
-fingerprint cache for that HOME to defeat (rank 1), and the only HOME consumer in the CLI is
-the `.expo/state.json` anonymous scope key
-(`@expo/cli@55.0.36/build/src/api/user/UserSettings.js:124-139`), which is exactly the one
-file comment 1 observed there. `develop` inherits the real HOME (`metro.rs:6-16`), so the
+fingerprint cache for that HOME to defeat (rank 1). A grep for `homedir` and
+`getExpoHomeDirectory` over `@expo/cli@55.0.36/build/src` finds seven files; none is a
+fingerprint cache, and only two sit on the manifest path: the `.expo/state.json` anonymous
+scope key (`api/user/UserSettings.js:124-139`), which is exactly the one file comment 1
+observed in the private HOME, and the `.expo/codesigning` directory read only when the
+client expects a signed manifest (`utils/codesigning.js:119`). The rest are the REST client
+cache, device tooling and the Expo Go download. `develop` inherits the real HOME (`metro.rs:6-16`), so the
 candidate does not exist on the head the question is about. One side effect is worth a
 sentence as a **hypothesis**: a user-level git config that the repo needs (for example a
 `safe.directory` entry) is invisible under the private HOME, which flips `vcs.ts` to the
@@ -224,20 +232,25 @@ second terminal before triggering the build so the 20-90 s window on `main` is n
 Find the port:
 
 ```bash
-# main: metroPort from the session
-#   rn_session action=status   -> bindings.metroPort
+# main: the metroPort field of `rn_session action=status`
+#   (packages/rn-dev-agent-core/src/session/public-status.ts:168)
 # develop: the run record (packages/qaren-cli/src/runrecord.rs:145-151, :535)
 PORT=$(jq -r '.resources.metro.port' ~/.qaren/runs/<run-id>/run.json)
+# without jq:
+PORT=$(grep -o '"metro":{"port":[0-9]*' ~/.qaren/runs/<run-id>/run.json | grep -o '[0-9]*$')
 ```
 
-Probe loop (works on both heads):
+Probe loop (works on both heads; `ps` rather than `pgrep -a`, which prints no command line
+on Darwin):
 
 ```bash
 while :; do
   printf '%s ' "$(date +%T)"
   curl -s --max-time 2 "http://127.0.0.1:$PORT/status" || printf 'no-status'
   printf ' | '
-  pgrep -af 'expo-updates/bin/cli.js runtimeversion:resolve|ExpoConfigLoader|expo-modules-autolinking|git (rev-parse|check-ignore)' | cut -c1-120 | tr '\n' ';'
+  ps -axo pid=,command= \
+    | grep -E 'expo-updates/bin/cli.js runtimeversion:resolve|ExpoConfigLoader|expo-modules-autolinking|git (rev-parse|check-ignore)' \
+    | grep -v grep | cut -c1-120 | tr '\n' ';'
   echo
   sleep 1
 done | tee ~/989-probe.txt
