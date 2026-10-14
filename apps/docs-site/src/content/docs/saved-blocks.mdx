@@ -22,15 +22,15 @@ separate compile contract for saved actions.
 ## Replay, then walk
 
 On the next run, a block whose plan lines, platform and app are unchanged is replayed by its
-stored identities. Quoted targets and literal checks make no Jev calls on replay; phrase checks
-still ask Jev.
+stored identities. For Jev requirements, including the optional interruption safety veto,
+see the [plan readiness contract](https://github.com/Lykhoyda/rn-dev-agent/blob/develop/packages/qaren-cli/README.md#plan-checks-and-screen-evidence).
 
 | Situation                                                        | Outcome                                                         |
 | ---------------------------------------------------------------- | --------------------------------------------------------------- |
 | A stored identity resolves                                       | The step replays                                                |
 | A stored identity no longer resolves, before the step changed the app | The block is walked again from that line; earlier steps stay done |
 | A stored identity is ambiguous                                   | `TARGET_AMBIGUOUS`, without walking again                        |
-| A check fails                                                    | FAIL; the block is never walked again or rewritten               |
+| A check fails after any eligible recovery                        | FAIL; the block is never walked again or rewritten               |
 
 When a re-walked block passes, only the commands from the re-walked line on are rewritten,
 and every `✓` comment stays byte-identical. A failing block is never saved; blocks that passed
@@ -70,13 +70,10 @@ link for Git worktrees, see the authoritative
 
 ## Login recovery
 
-When an action shows no success evidence after its one retry, a step's target does not resolve,
-or a phrase check is still unsure after its re-ask, qaren tries one deterministic recovery and
-then runs the step once more from a fresh capture. In order, it:
-
-1. accepts a recognized system dialog in front;
-2. clears a developer menu or floating developer button in front;
-3. replays the login block, when the login marker is on screen.
+For recovery triggers, ordering, default permission decline, optional app interruptions,
+and terminal failures, see the authoritative
+[step recovery contract](https://github.com/Lykhoyda/rn-dev-agent/blob/develop/packages/qaren-cli/README.md#step-recovery).
+Login recovery uses a saved sign-in block when its configured marker is visible.
 
 Configure the login block in `.qaren/config.yaml`:
 
