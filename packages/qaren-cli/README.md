@@ -1325,12 +1325,13 @@ An action reporting `tapped: false`
 or `executed: false` establishes no action proof and cannot count as a recovery.
 
 `logs/core.log` includes value-free diagnostics for failed interruption admission:
-`interruption-rejected` reports the front, coverage or indexed target veto, the
-exact-decline-label element count and each element's first failed predicate;
-press capability failures include the existing host association identity when
-available. `presence-system-modal` reports an unrecognized SpringBoard modal's
+`interruption-rejected` reports a front, coverage, indexed target or no-candidate
+veto and the exact-decline-label element count. A no-candidate veto also reports
+each decline-labelled element's first failed predicate; press capability failures
+include the existing host association identity when available.
+`presence-system-modal` reports an unrecognized SpringBoard modal's
 app state, alert/sheet counts and structural geometry and descendant counts.
-`system-dialog-stage` names the first local dialog context failure. These records
+`system-dialog-stage` reports local dialog context failures. These records
 contain only counts, indices, booleans and fixed enums, omit labels, identifiers,
 refs and app text, and never authorize a tap or change capture admission.
 Successful selection, recognized modals and proven dialog taps emit none of
