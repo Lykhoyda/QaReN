@@ -128,6 +128,8 @@ final class Harness {
   let currentSnapshotGeneration = 7
   var now = 1000.0
   let springboard = XCUIApplication(XCUIElementSnapshot())
+  func blockingSystemAlertSnapshot() -> DataPayload? { nil }
+  func withSystemModalDiagnostic(_ payload: DataPayload, app: XCUIApplication) -> DataPayload { payload }
   func presenceUptimeMs() -> Double { now }
   func sleepFor(_ seconds: Double) { now += seconds * 1000 }
   private struct SnapshotTraversalContext {

@@ -98,6 +98,8 @@ final class Harness {
   var nextClockTime: Double?
   var observationMs = 0.0
   let springboard = XCUIApplication([])
+  func blockingSystemAlertSnapshot() -> DataPayload? { nil }
+  func withSystemModalDiagnostic(_ payload: DataPayload, app: XCUIApplication) -> DataPayload { payload }
   func presenceUptimeMs() -> Double {
     if let next = nextClockTime { nextClockTime = nil; return next }
     return now
