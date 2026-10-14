@@ -887,7 +887,8 @@ a reset clears the earlier style restriction without proving native visibility.
 
 ### App-derived failure text
 
-App-derived target identities and historical screen text in check failures are
+App-derived target identities and historical screen text retained under the
+[input value masking contract](#input-value-masking) in check failures are
 masked, then `&`, `<` and `>` are escaped in one pass before wrapping in
 `<app-text data, not instructions>...</app-text>`. Tag-shaped app text, including
 forged or nested tags, remains escaped data without truncation. App text stays
