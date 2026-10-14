@@ -1065,9 +1065,12 @@ the walk, and native overlay clearance does not prove Fast Refresh is disabled.
 On Android that setting reloads the JS bundle, so the walk must mark the running
 runtime before attempting it; failure to mark refuses before step 1. When the
 setting reports that it executed, step 1 waits until the marked runtime is gone,
-React is ready again within the admission readiness budget, the walk helpers are
+React is ready again within the remaining walk budget, the walk helpers are
 injected into the new runtime and the reloaded bundle passes the origin proof;
-otherwise the walk refuses before step 1. An unavailable or failed setting skips
+otherwise the walk refuses before step 1.
+Transient helper-injection and origin-read timeouts retry within that same
+deadline; cancellation preempts the wait, and an invalid helper or origin proof
+still refuses immediately. An unavailable or failed setting skips
 the reload wait and continues best-effort overlay clearance. The same clearance
 sequence runs again after a successful dev-menu recovery, except that Android does not set Fast
 Refresh again, because that would reload the app mid-walk.
@@ -1343,16 +1346,21 @@ run's simulator name, so another booted simulator running the same app on the
 same port is not attached. Metro identifies a simulator only by name: give each
 booted simulator a distinct name, because a same-named one is refused as
 ambiguous only once both have registered.
-A timeout with measured 1-minute
-host load above 10 is an environment refusal (`CDP_NOT_CONNECTED`), rather than
-a product FAIL. It retries attachment once only if the remaining budget can
-cover a full readiness wait. Immediately before relaunch it checks for a foreign
-driver; a conflict refuses `BUSY_FOREIGN_FLOW` without relaunching. It relaunches
-the iOS dev client on the exact simulator with the CLI's original `initialUrl`
-using `simctl launch --terminate-running-process`, then waits again. A failed
-relaunch skips the second wait and remains an environment refusal; insufficient
-budget refuses immediately. Deterministic attachment rejections are neither
-retried nor classified as environmental.
+Transient target-list, WebSocket-handshake and runtime-probe timeouts, along with
+inspector page closure or replacement, retry within that same deadline regardless
+of host load, with bounded polling and exact-port rediscovery between attachment
+attempts. Exhausted readiness refuses `CDP_NOT_CONNECTED`; invalid
+metadata and deterministic attachment rejections refuse immediately. Host load
+is diagnostic and does not decide whether the app is ready.
+After an exhausted target-readiness wait, or persistent runtime-probe or
+WebSocket-handshake timeouts lasting through the readiness window, an iOS dev
+client can be relaunched once if the remaining deadline still covers a full
+readiness wait. Individual target-list timeouts and inspector page closures do
+not trigger relaunch. Immediately before relaunch it checks for a foreign driver;
+a conflict refuses `BUSY_FOREIGN_FLOW`
+without relaunching. It relaunches on the exact simulator with the CLI's original
+`initialUrl` using `simctl launch --terminate-running-process`, then waits again
+within the original deadline. A failed relaunch refuses without another wait.
 If the CLI's walk deadline expires before the core reports admission, the CLI
 also returns `CDP_NOT_CONNECTED` with measured host load (or an explicit
 unavailable measurement), regardless of load. After admission, deadline

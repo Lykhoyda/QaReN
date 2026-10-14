@@ -359,66 +359,69 @@ async function openSession(
     }));
   onClose(close);
   const devicePin = metroDevicePin(platform, target.deviceName);
-  const proof = await admit(
-    {
-      metroPort: target.metroPort,
-      readinessMs: REACT_READY_TIMEOUT_MS,
-      remainingMs: () => Math.max(0, request.walkBudgetMs - now() - 1000),
-      attach: async (deadline) => {
-        await waitForExactPortTargets(
-          target.metroPort,
-          Math.max(1, Math.min(REACT_READY_TIMEOUT_MS, request.walkBudgetMs - now() - 1000)),
-          REACT_READY_POLL_MS,
-          stop.signal,
-          devicePin,
-        );
-        await cdp.connectExact(
-          target.metroPort,
-          { platform, bundleId: appId, ...(devicePin ? { deviceName: devicePin } : {}) },
-          'default',
-          5,
-          undefined,
-          deadline,
-        );
+  const remainingMs = () => Math.max(0, request.walkBudgetMs - now() - 1000);
+  const proof = await cdp.withAttachDeadline(performance.now() + remainingMs(), () =>
+    admit(
+      {
+        metroPort: target.metroPort,
+        readinessMs: REACT_READY_TIMEOUT_MS,
+        remainingMs,
+        attach: async (deadline) => {
+          await waitForExactPortTargets(
+            target.metroPort,
+            Math.max(1, Math.min(REACT_READY_TIMEOUT_MS, remainingMs())),
+            REACT_READY_POLL_MS,
+            stop.signal,
+            devicePin,
+          );
+          await cdp.connectExact(
+            target.metroPort,
+            { platform, bundleId: appId, ...(devicePin ? { deviceName: devicePin } : {}) },
+            'default',
+            1,
+            undefined,
+            deadline,
+          );
+        },
+        bundleReady: (deadline) => awaitBundleReady((expr) => cdp.evaluate(expr), deadline),
+        // Same launch the CLI made: terminate, then open the dev client on its Metro.
+        ...(platform === 'ios'
+          ? {
+              relaunch: () =>
+                relaunchIosDevClient(
+                  appId,
+                  target.deviceId,
+                  `${target.metroUrlForDevice}/?disableOnboarding=1`,
+                ),
+            }
+          : {}),
+        // The lease coordinates qaren processes only; a foreign Maestro, XCUITest or UIAutomator driver is a probe.
+        foreignDriver: async () => {
+          if (platform === 'android')
+            return interruptible(() => androidForeignDriverMessage(target.deviceId));
+          if (platform !== 'ios') return undefined;
+          const foreign = await interruptible(() => foreignFlowGate.check(target.deviceId));
+          return foreign.active
+            ? (foreign.warning?.message ?? 'another automation driver holds the device')
+            : undefined;
+        },
+        open: async () => {
+          deviceOpen = true;
+          await adapt(snapshot)({
+            action: 'open',
+            appId,
+            deviceId: target.deviceId,
+            platform,
+            attachOnly: false,
+            sessionName: `qaren-${request.runId}`,
+          });
+        },
+        // Opening the session may have relaunched the app: prove the bundle the walk will see.
+        prove: () => prove({ evaluate: (expr) => cdp.evaluate(expr) }, target),
+        close,
       },
-      bundleReady: (deadline) => awaitBundleReady((expr) => cdp.evaluate(expr), deadline),
-      // Same launch the CLI made: terminate, then open the dev client on its Metro.
-      ...(platform === 'ios'
-        ? {
-            relaunch: () =>
-              relaunchIosDevClient(
-                appId,
-                target.deviceId,
-                `${target.metroUrlForDevice}/?disableOnboarding=1`,
-              ),
-          }
-        : {}),
-      // The lease coordinates qaren processes only; a foreign Maestro, XCUITest or UIAutomator driver is a probe.
-      foreignDriver: async () => {
-        if (platform === 'android')
-          return interruptible(() => androidForeignDriverMessage(target.deviceId));
-        if (platform !== 'ios') return undefined;
-        const foreign = await interruptible(() => foreignFlowGate.check(target.deviceId));
-        return foreign.active
-          ? (foreign.warning?.message ?? 'another automation driver holds the device')
-          : undefined;
-      },
-      open: async () => {
-        deviceOpen = true;
-        await adapt(snapshot)({
-          action: 'open',
-          appId,
-          deviceId: target.deviceId,
-          platform,
-          attachOnly: false,
-          sessionName: `qaren-${request.runId}`,
-        });
-      },
-      // Opening the session may have relaunched the app: prove the bundle the walk will see.
-      prove: () => prove({ evaluate: (expr) => cdp.evaluate(expr) }, target),
-      close,
-    },
-    stop,
+      stop,
+    ),
   );
   const admittedSnapshots = postAdmissionSnapshots(snapshot, appId);
   cancellationSignal();
@@ -468,11 +471,9 @@ async function openSession(
     platform === 'android'
       ? createBundleReload({
           evaluate: (expr) => cdp.evaluate(expr),
-          reinjectHelpers: (waitMs) => cdp.reinjectHelpers(waitMs),
+          reinjectHelpers: (waitMs) => cdp.reinjectHelpers(waitMs, true),
           prove: () => prove({ evaluate: (expr) => cdp.evaluate(expr) }, target),
-          deadline: () =>
-            performance.now() +
-            Math.max(1, Math.min(REACT_READY_TIMEOUT_MS, request.walkBudgetMs - now() - 1000)),
+          remainingMs,
         })
       : undefined;
   const overlays = {

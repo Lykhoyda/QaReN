@@ -143,7 +143,7 @@ test('cancelling a later block never flushes an earlier saved action', async () 
   }
 });
 
-test('the attach deadline interrupts a stalled connect and keeps loaded refusal attribution', async () => {
+test('the attach deadline interrupts a stalled connect and records the host load', async () => {
   const stop = createStop();
   const calls: string[] = [];
   const pending = admit(
@@ -172,7 +172,7 @@ test('the attach deadline interrupts a stalled connect and keeps loaded refusal 
     },
     stop,
   );
-  await assert.rejects(pending, /host 1-minute load 42.0.*environment refusal/);
+  await assert.rejects(pending, /CDP attach deadline exceeded.*host 1-minute load 42.0/);
   await setImmediate();
   assert.deepEqual(calls, ['attach', 'cleanup']);
 });
