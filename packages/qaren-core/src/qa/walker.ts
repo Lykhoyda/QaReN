@@ -7,6 +7,7 @@ import {
   screenSignature,
   elementFrame,
   isNativeInput,
+  describe,
 } from './screen.js';
 import {
   type Resolution,
@@ -37,8 +38,15 @@ import {
   storedFits,
   writeBlock,
 } from './blocks.js';
-import { type Judge, type JevCall, JevError, unavailableJudge } from './questions.js';
-import { type LoginMarker, recover } from './recover.js';
+import {
+  type Judge,
+  type JevCall,
+  JevError,
+  unavailableJudge,
+  INTERRUPTION_QUESTION,
+  checkVerdict,
+} from './questions.js';
+import { type LoginMarker, dismissCandidate, recover } from './recover.js';
 import {
   concealsScreen,
   isPrivateInput,
@@ -98,6 +106,7 @@ export interface ActResult {
 
 export interface WalkerDeps {
   judge?: Judge;
+  interruptionVeto?: boolean;
   publicationInterrupted?(): boolean;
   captureScreen(options?: { platformPresence?: boolean; timing?: TimingObserver }): Promise<Screen>;
   press(ref: string, context: QaDispatchContext): Promise<ActResult>;
@@ -207,7 +216,16 @@ export interface WalkOptions {
   mode?: 'walk' | 'replay';
   recover?: boolean;
   login?: boolean;
+  singleAttempt?: boolean;
+  laterTargets?: readonly Target[];
 }
+
+const recoveryTarget = (item: Item): Target | undefined =>
+  item.kind === 'check'
+    ? item.literal
+      ? { quoted: item.text, phrase: item.text }
+      : undefined
+    : stepTarget(item);
 
 export interface WalkSequence {
   observation: number;
@@ -285,6 +303,7 @@ export async function walkBlock(
   const capture = async (
     step?: Exclude<Item, { kind: 'check' }>,
     assertion = false,
+    recovery = false,
   ): Promise<Observation> => {
     assertActive();
     cached = undefined;
@@ -350,7 +369,12 @@ export async function walkBlock(
           refuse: 'SCREEN_EVIDENCE_INCOMPLETE',
           reason: 'NATIVE_ACQUISITION_UNUSABLE',
         });
-      if (platformPresence && latest.coverage?.native !== 'complete')
+      if (platformPresence && latest.front === 'dialog' && !recovery)
+        throw new ResolutionError({
+          refuse: 'SYSTEM_DIALOG_INTERRUPTED',
+          reason: 'a system dialog is in front of the step target',
+        });
+      if (platformPresence && latest.front !== 'dialog' && latest.coverage?.native !== 'complete')
         throw new ResolutionError({
           refuse: 'SCREEN_EVIDENCE_INCOMPLETE',
           reason: 'NATIVE_PRESENCE_UNUSABLE',
@@ -1073,15 +1097,123 @@ export async function walkBlock(
     if (opts.recover === false || !deps.hideDevMenu || recovered.has(item)) return undefined;
     recovered.add(item);
     loginReplayed = false;
-    const fresh = await capture();
+    const fresh = await capture(undefined, true, true);
+    const planTargets = [
+      recoveryTarget(item) ?? { phrase: '' },
+      ...block.items.slice(block.items.indexOf(item) + 1).flatMap((remaining) => {
+        const target = recoveryTarget(remaining);
+        return target?.quoted !== undefined ? [target] : [];
+      }),
+      ...(opts.laterTargets ?? []),
+    ];
+    let interruptionShot: string | undefined;
     const result = await recover(
       fresh.screen,
       {
         hideDevMenu: deps.hideDevMenu,
-        dialog: () => mutate(item, fresh, (context) => deps.dialog('accept', context)),
+        dialog: () =>
+          mutate(item, fresh, (context) =>
+            deps.dialog(item.kind === 'dialog' ? item.action : 'dismiss', context),
+          ),
         ...(deps.login ? { replayLogin } : {}),
+        dismiss: async (label) => {
+          if (deps.interruptionVeto) {
+            const mask = privacy.maskForModel(privacy.modelValues(), [
+              item.raw,
+              ...fresh.screen.visibleText,
+            ]);
+            const answers = await judge.ask(
+              {
+                step: mask.apply(item.raw),
+                elements: fresh.screen.elements.map((e) => mask.describeElement(e, describe)),
+              },
+              { interruption: INTERRUPTION_QUESTION },
+              'walk',
+              observationDeadline(fresh.timing),
+            );
+            if (checkVerdict(INTERRUPTION_QUESTION, answers.interruption) !== 'pass')
+              return {
+                refuse: {
+                  code: 'INTERRUPTION_VETOED',
+                  message: 'the app interruption dismissal was vetoed; nothing was tapped',
+                },
+              };
+          }
+          interruptionShot = await shoot(item);
+          const support: Block = {
+            slug: '@interruption',
+            title: 'Dismiss interruption',
+            planHash: '',
+            items: [
+              {
+                kind: 'press',
+                target: { quoted: label, phrase: label, exact: 'text' },
+                line: item.line,
+                raw: `Tap "${label}"`,
+                source: 'grammar',
+              },
+            ],
+          };
+          let taken = 0;
+          let dispatched = false;
+          const nested = await walkBlock(
+            support,
+            {
+              ...deps,
+              captureScreen: async (options) => {
+                const screen = await deps.captureScreen({ ...options, platformPresence: true });
+                if (!dispatched) {
+                  const candidate = dismissCandidate(screen, planTargets);
+                  if (!candidate || 'refuse' in candidate || candidate.label !== label)
+                    throw new ResolutionError({
+                      refuse: 'INTERRUPTION_CHANGED',
+                      reason:
+                        'the interruption or plan targets changed before dispatch; nothing was tapped',
+                    });
+                }
+                return screen;
+              },
+              press: async (ref, context) => {
+                if (dispatched)
+                  throw new ResolutionError({
+                    refuse: 'INTERRUPTION_NOT_DISPATCHED',
+                    reason: 'the decline control was already attempted; it was not retried',
+                  });
+                dispatched = true;
+                const result = await deps.press(ref, context);
+                if (!result.ok || result.executed === false)
+                  throw new ResolutionError({
+                    refuse: 'INTERRUPTION_NOT_DISPATCHED',
+                    reason:
+                      'the decline control was not dispatched successfully; it was not retried',
+                  });
+                return result;
+              },
+              screenshot: (name) => {
+                taken += 1;
+                return deps.screenshot(name);
+              },
+            },
+            shots,
+            typed,
+            privacy,
+            sequence,
+            { recover: false, singleAttempt: true },
+          );
+          shots += taken;
+          separateRowOperations(nested.rows);
+          rows.push(...nested.rows);
+          if (nested.refusal) return { refuse: nested.refusal };
+          if (nested.failure) return { fail: nested.failure.seen };
+          const after = (await capture()).screen;
+          return literalEvidence(after, label, 'equals').verdict === 'fail' &&
+            !after.elements.some((e) => !e.offscreen && e.label === label)
+            ? 'pass'
+            : 'fail';
+        },
       },
       deps.login?.marker,
+      planTargets,
     );
     if (!result) return undefined;
     if ('handled' in result) {
@@ -1091,7 +1223,10 @@ export async function walkBlock(
       emit({
         ...base(item, attempt),
         outcome: 'retry',
-        reason: redact(`${reason}; recovered: ${result.handled}; retrying the step once`),
+        ...(interruptionShot ? { screenshot: interruptionShot } : {}),
+        reason: redact(
+          `${reason}; recovered: ${result.label ? `dismissed an app screen with ${result.label}` : result.handled}; retrying the step once`,
+        ),
       });
       return 'retry';
     }
@@ -1170,7 +1305,7 @@ export async function walkBlock(
             decision.check === 'unsure'
               ? 'CHECK_UNSURE: the expectation remained uncertain after a fresh-screen re-ask'
               : `"${item.text}" is not satisfied on screen`;
-          if (decision.check === 'unsure') {
+          if (decision.check === 'unsure' || decision.check === 'fail') {
             const recovering = await recovery(item, 1, reason);
             if (recovering === 'retry') continue attempts;
             if (recovering) return recovering;
@@ -1321,7 +1456,7 @@ export async function walkBlock(
           (scrolled || sequence.momentum || fillIdentity !== undefined)
             ? settledCapture(item)
             : capture(item);
-        const maxAttempts = recovered.has(item) ? 1 : 2;
+        const maxAttempts = recovered.has(item) || opts.singleAttempt ? 1 : 2;
         for (let attempt = 1; attempt <= maxAttempts && !outcome; attempt += 1) {
           currentAttempt = attempt;
           const settling = (item.kind === 'press' || item.kind === 'fill') && sequence.momentum;
@@ -2046,7 +2181,17 @@ export async function runPlan(
         typed,
         privacy,
         sequence,
-        opts,
+        {
+          ...opts,
+          laterTargets: blocks
+            .slice(blocks.findIndex((planned) => planned.slug === block.slug) + 1)
+            .flatMap((later) =>
+              later.items.flatMap((item) => {
+                const target = recoveryTarget(item);
+                return target?.quoted !== undefined ? [target] : [];
+              }),
+            ),
+        },
         operations,
       );
       recoveries += outcome.recoveries ?? 0;

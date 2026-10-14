@@ -515,6 +515,7 @@ async function openSession(
 
   const deps: WalkerDeps = {
     judge: createJev({ now, timing }),
+    interruptionVeto: !!process.env.TYPESAFE_API_KEY,
     timing,
     publicationInterrupted: admittedSnapshots.interrupted,
     captureScreen: (options) =>

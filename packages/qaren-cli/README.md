@@ -661,8 +661,9 @@ scroll-until targets, phrase checks and unrecognised verbs require
 `TYPESAFE_API_KEY`. They run the fixed Jev readiness probe even when another
 line is unparseable; a missing or rejected key refuses `JEV_UNREACHABLE` before
 device selection or leasing. Plans with only quoted targets and literal checks
-make no Jev calls and need no key; recognised back, dialog and fixed-scroll
-steps also stay model-free.
+need no key; recognised back, dialog and fixed-scroll steps also stay model-free.
+When a key is available, [app-interruption recovery](#step-recovery) may ask Jev
+for a safety veto even in a plan with only quoted targets.
 
 Dialog steps require one unconditional accept or dismiss action, such as
 `Accept the permission dialog` or `Dismiss the alert`. Conditions, negation and
@@ -1272,12 +1273,14 @@ It is checked before accepting a step or refusing incomplete semantic evidence,
 and never triggers recovery.
 
 An action without success evidence after its one retry, a step target that
-does not resolve, or a phrase check still unsure after its re-ask
+does not resolve, a definite failed check, or a phrase check still unsure after its re-ask
 gets at most one deterministic recovery, then the step runs once more from a fresh
 capture. The order is owned by [`recover.ts`](../qaren-core/src/qa/recover.ts): a
-recognized system dialog in front is accepted; a dev menu or floating button in
-front is cleared through the shared [overlay clearance mechanism](#check-a-plan);
-and when `loginMarker`
+recognized system dialog in front is declined by default (an explicit
+`Allow the permission prompt` or `Accept the dialog` step still accepts); a dev
+menu or floating button in front is cleared through the shared
+[overlay clearance mechanism](#check-a-plan); an eligible app interruption is
+declined as described below; and when `loginMarker`
 (`{ id: <testID> }` or `{ text: <label> }`) is on screen, the
 saved block `loginBlock` (`.qaren/actions/<loginBlock>.yaml`, saved for this app and
 platform) replays by its stored identities. The two keys are set together, with
@@ -1296,10 +1299,28 @@ phrase actions retain presence capture through readback and retries.
 See the [recovery regressions](../qaren-core/test/unit/qa/walker-recover.test.ts)
 and [freshness regressions](../qaren-core/test/unit/qa/temporal-walker.test.ts).
 
-Recovery requires admitted screen evidence. iOS phrase steps behind a system or
-permission alert can refuse `SCREEN_EVIDENCE_INCOMPLETE` before recovery because
-platform presence excludes that system surface; phrase-step dialog recovery is
-best-effort. For Android dialog limits, see [Check a plan](#check-a-plan).
+App interruptions need no app-specific configuration. Recovery requires the
+current quoted target (or literal check) and every later quoted plan target,
+including later blocks, to be absent from a fresh capture. Exactly one visible,
+enabled control must have one of these exact English labels: `Close`, `Not now`,
+`Not Now`, `Maybe later`, `Later`, `Skip`, `No thanks`, `Dismiss`, `Cancel`.
+Zero candidates leave the original failure in place; several refuse
+`INTERRUPTION_AMBIGUOUS` without tapping. A visible plan target, uncertain absence,
+or a control inside the target prevents dismissal. Phrase-only targets cannot
+establish this deterministic absence guard.
+
+With `TYPESAFE_API_KEY`, Jev may veto a selected control when the screen may be
+related to the step or its purpose is uncertain. It never chooses a control,
+breaks a tie, or authorizes a tap. Without the key, recovery uses only the
+deterministic guards. Recovery rechecks those guards before one exact press,
+proves the label gone in a fresh capture, and retries the original step once.
+The ledger records `recovered: dismissed an app screen with <label>` and a
+privacy-eligible screenshot; this support action is not added to the saved block.
+
+Recovery requires admitted screen evidence. iOS phrase steps behind a recognized
+system or permission alert reach dialog recovery when the raw native capture is
+complete, even though platform presence excludes the system surface. Incomplete
+raw captures still refuse. For Android dialog limits, see [Check a plan](#check-a-plan).
 An action reporting `tapped: false`
 or `executed: false` establishes no action proof and cannot count as a recovery.
 

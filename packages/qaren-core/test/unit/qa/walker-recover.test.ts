@@ -115,7 +115,7 @@ test('an unchanged screen with a dialog in front recovers once and the retry pas
   assert.equal(ledger.llmTurns, 0);
   assert.deepEqual(
     f.calls.filter((c) => !c.startsWith('capture')),
-    ['press @e0', 'press @e0', 'dialog accept', 'press @e0'],
+    ['press @e0', 'press @e0', 'dialog dismiss', 'press @e0'],
   );
   const recovered = ledger.steps.find((r) => r.reason?.includes('recovered: dialog'));
   assert.equal(recovered?.outcome, 'retry');
@@ -173,7 +173,7 @@ test('a second failure of the same item fails without a second recovery', async 
   const ledger = await runPlan([block('1. Tap "Settings"\n')], f.deps);
   assert.equal(ledger.verdict, 'FAIL');
   assert.equal(ledger.recoveries, 1);
-  assert.equal(f.calls.filter((c) => c === 'dialog accept').length, 1);
+  assert.equal(f.calls.filter((c) => c === 'dialog dismiss').length, 1);
   assert.match(ledger.failure?.seen ?? '', /did not change after recovery/);
   assert.equal(f.calls.filter((c) => c.startsWith('press')).length, 3);
   assert.deepEqual(
@@ -261,7 +261,7 @@ test('a capture error or a Jev error never recovers', async () => {
   );
   assert.ok(!incomplete.calls.includes('hideDevMenu'));
 
-  const jev = fake([screen(['Settings'], 'dialog')]);
+  const jev = fake([screen(['Settings'])]);
   const phrase = await walkBlock(block('1. Tap the settings button\n'), jev.deps);
   assert.match(
     renderReason(phrase.failure?.seen ?? '', (text) => text),
