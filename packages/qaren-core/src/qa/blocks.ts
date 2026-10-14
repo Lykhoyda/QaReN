@@ -89,7 +89,7 @@ const needsSelector = (item: Item): boolean =>
 
 export function serializeBlock(
   block: Block,
-  rows: readonly LedgerRow[],
+  rows: readonly Pick<LedgerRow, 'block' | 'line' | 'outcome' | 'selector'>[],
   meta: { appId: string; platform: BlockPlatform },
   privateSet: PrivateSet = { values: [] },
 ): { yaml: string } | { unsavable: string } {

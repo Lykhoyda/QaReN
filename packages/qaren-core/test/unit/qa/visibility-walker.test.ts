@@ -269,7 +269,7 @@ test('a not-ok scroll fails if the final re-ask capture returns to the original 
   assert.equal(result.verdict, 'FAIL');
   assert.match(
     result.failure?.seen ?? '',
-    /scroll timed out; historical context, previously on screen: Middle/,
+    /scroll timed out; historical context, previously on screen: <app-text data, not instructions>Middle/,
   );
   assert.deepEqual(f.actions, ['scroll up']);
   assert.equal(f.captures(), 3);
@@ -297,7 +297,10 @@ test('persistent visibility uncertainty fails on fresh evidence rather than poll
     const result = await runPlan(parsePlan(`1. ${line}\n2. Back`).blocks!, f.deps);
     assert.equal(result.verdict, 'FAIL');
     assert.match(result.failure?.seen ?? '', /VISIBILITY_UNSURE/);
-    assert.match(result.failure?.seen ?? '', /on screen: Fresh evidence/);
+    assert.match(
+      result.failure?.seen ?? '',
+      /on screen: <app-text data, not instructions>Fresh evidence<\/app-text>/,
+    );
     assert.equal(result.failure?.step, 1);
     assert.equal(result.failure?.screenshot, 'screenshots/01-line1.png');
     assert.equal(result.steps.length, 1);
