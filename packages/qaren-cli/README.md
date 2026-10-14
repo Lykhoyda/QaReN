@@ -1300,11 +1300,13 @@ phrase actions retain presence capture through readback and retries.
 See the [recovery regressions](../qaren-core/test/unit/qa/walker-recover.test.ts)
 and [freshness regressions](../qaren-core/test/unit/qa/temporal-walker.test.ts).
 
-App interruptions need no app-specific configuration. Recovery requires the
-current quoted target (or literal check) and every later quoted plan target,
-including later blocks, to be absent from a fresh capture. Exactly one visible,
-enabled control must have one of these exact English labels: `Close`, `Not now`,
-`Not Now`, `Maybe later`, `Later`, `Skip`, `No thanks`, `Dismiss`, `Cancel`.
+App interruptions need no app-specific configuration. Recovery requires complete
+native capture and React coverage, with the current quoted target (or literal
+check) and every later quoted plan target, including later blocks, absent from
+a fresh capture. Exactly one eligible control must be visible, hittable, enabled,
+non-secure and have proven press support, with one of these exact English labels:
+`Close`, `Not now`, `Not Now`, `Maybe later`, `Later`, `Skip`, `No thanks`,
+`Dismiss`, `Cancel`.
 Zero candidates leave the original failure in place; several refuse
 `INTERRUPTION_AMBIGUOUS` without tapping. A visible plan target, uncertain absence,
 or a control inside the target prevents dismissal. Phrase-only targets cannot
