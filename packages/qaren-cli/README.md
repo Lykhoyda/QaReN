@@ -622,9 +622,8 @@ submit. This detects a retained-prefix concatenation after typing; it does not
 repair the native replacement mechanism or cover unreadable values.
 A stable, nonempty read-back holding a
 strictly shorter, in-order part of the text is ambiguous: keystrokes dropped under
-host load and a field that strips characters or limits length look alike. Because
-the retype replaces the whole field with the same text, it is safe either way, so
-the field is cleared and retyped once within the same step budget. A match then
+host load and a field that strips characters or limits length look alike. QaReN
+requests one clear-and-retype with the same text within the same step budget. A match then
 verifies the fill. A second loss of a different length points to dropped
 keystrokes and fails with `TEXT_ENTRY_UNVERIFIED` naming only the typed and held
 lengths. The same loss twice points to the field's own transformation and stays
