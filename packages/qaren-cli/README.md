@@ -612,10 +612,15 @@ on a keyboard-up path types nothing; failure of the pre-dispatch read returns
 `NO_TEXT_INPUT_TARGET` with no mutation. An unknown keyboard state still refuses.
 Each walker focus decision logs one value-free `fallback-focus` line.
 
-QaReN then replaces the focused field's content: the runner selects the whole
-field and types the plan text in one synthesized sequence. When the input is a
+QaReN then requests replacement of the focused field's content: the runner synthesizes
+select-all and types the plan text in one sequence. When the input is a
 controlled React field, its value is then read back locally and compared, never
-logged: an exact match verifies the fill. A stable, nonempty read-back holding a
+logged: an exact match verifies the fill. A stable controlled read-back exactly equal
+to the prior nonempty value followed by the requested text fails with
+`TEXT_ENTRY_UNVERIFIED` and an observed mutation, without retrying or continuing to
+submit. This detects a retained-prefix concatenation after typing; it does not
+repair the native replacement mechanism or cover unreadable values.
+A stable, nonempty read-back holding a
 strictly shorter, in-order part of the text is ambiguous: keystrokes dropped under
 host load and a field that strips characters or limits length look alike. Because
 the retype replaces the whole field with the same text, it is safe either way, so

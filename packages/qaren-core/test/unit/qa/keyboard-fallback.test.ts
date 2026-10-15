@@ -1218,6 +1218,124 @@ for (const strict of [false, true]) {
   });
 }
 
+for (const route of ['transition', 'keyboard-up', 'no-target'] as const) {
+  for (const readback of ['retained-prefix', 'exact', 'unreadable'] as const) {
+    test(`controlled replacement ${readback} stops or continues truthfully through ${route} fallback`, async () => {
+      const { performFocusedFill, extractMutationDisposition } =
+        await import('../../../dist/handlers/device-interact.js');
+      const { _setActiveSessionForTest, _setRunAgentDeviceForTest, markSnapshotDirty } =
+        await import('../../../dist/agent-device-wrapper.js');
+      const { updateRefMapFromFlat, clearRefMap } =
+        await import('../../../dist/fast-runner-ref-map.js');
+      const { okResult } = await import('../../../dist/utils.js');
+      const before = 'synthetic-prefill';
+      const text = 'synthetic-replacement';
+      const fake = app({
+        ...(route === 'no-target' ? { initial: [submit] } : {}),
+        initialKeyboard: route !== 'transition',
+        reactFocused: true,
+      });
+      const type = fake.deps.typeFocused!;
+      let dispatches = 0;
+      const native = [{ ref: '@wrap', identifier: WRAP, type: 'Other' }];
+      const client = {
+        isConnected: true,
+        evaluate: async () => ({
+          value: JSON.stringify({
+            value:
+              dispatches === 0
+                ? before
+                : readback === 'exact'
+                  ? text
+                  : readback === 'retained-prefix'
+                    ? before + text
+                    : null,
+            controlled: dispatches === 0 || readback !== 'unreadable',
+            focused: true,
+          }),
+        }),
+      } as never;
+      _setActiveSessionForTest({ platform: 'ios', deviceId: 'TEST-DEVICE', appId: 'com.test' });
+      clearRefMap();
+      markSnapshotDirty();
+      updateRefMapFromFlat(native as never, { snapshotGeneration: 7, keyboardVisible: true });
+      _setRunAgentDeviceForTest(async (args) => {
+        if (args[0] !== 'fill') return okResult({ nodes: native });
+        dispatches += 1;
+        assert.ok(args.includes('--clear-first'));
+        return okResult({ typed: true });
+      });
+      fake.deps.typeFocused = async (ref, value, testID, context, requireFocused) => {
+        await type(ref, value, testID, context, requireFocused);
+        const result = await performFocusedFill(
+          {
+            ref,
+            text: value,
+            testID,
+            focused: true,
+            vetoUnfocused: true,
+            requireFocused,
+            skipFinalValidation: true,
+            clearFirst: true,
+            qaContext: context,
+          },
+          client,
+        );
+        const env = JSON.parse(result.content[0].text);
+        return env.ok
+          ? { ok: true, proven: env.meta?.verify === 'exact' }
+          : {
+              ok: false,
+              proven: false,
+              mutation: extractMutationDisposition(result),
+              error: `${env.code}: ${env.error}`,
+            };
+      };
+      try {
+        const dir = mkdtempSync(join(tmpdir(), 'qaren-retained-prefix-'));
+        const ledger = await runPlan(
+          blocks(route === 'no-target' ? otpPlan(text) : plan(text)),
+          fake.deps,
+          [],
+          { appRoot: dir, platform: 'ios', appId: 'com.test' },
+        );
+        assert.equal(ledger.verdict, readback === 'retained-prefix' ? 'FAIL' : 'PASS');
+        assert.equal(dispatches, 1);
+        assert.equal(fake.typed.length, 1);
+        assert.equal(fake.log.includes('press @submit'), readback !== 'retained-prefix');
+        if (readback !== 'retained-prefix') assert.equal(ledger.blocks[0].saved, false);
+        assert.deepEqual(ledger.blocksWritten, []);
+        assert.equal(ledger.videoPublication, 'withheld-fill');
+        assert.ok(!fake.log.some((line) => line.startsWith('shot')));
+        assert.equal(fake.rows[0].screenshot, undefined);
+        assert.equal(fake.rows[0].selector, undefined);
+        assert.equal(
+          ledger.steps[0].reason?.startsWith('UNVERIFIED_FILL:') ?? false,
+          readback === 'unreadable',
+          JSON.stringify(ledger.steps),
+        );
+        if (readback === 'retained-prefix') {
+          assert.equal(fake.rows[0].outcome, 'fail');
+          assert.match(
+            renderReason(ledger.failure?.seen ?? '', (value) => value),
+            /not retried/,
+          );
+          assert.equal(fake.state(), 'typed');
+        }
+        assert.ok(
+          !strings({ ledger, rows: fake.rows, questions: fake.questions, notes: fake.notes }).some(
+            (value) => value.includes(before) || value.includes(text),
+          ),
+        );
+      } finally {
+        _setRunAgentDeviceForTest(null);
+        _setActiveSessionForTest(null);
+        clearRefMap();
+      }
+    });
+  }
+}
+
 test('a normalizing controlled fallback continues as unverified', async () => {
   const { performFocusedFill } = await import('../../../dist/handlers/device-interact.js');
   const { _setActiveSessionForTest, _setRunAgentDeviceForTest } =
