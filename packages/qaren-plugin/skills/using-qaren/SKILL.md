@@ -23,13 +23,14 @@ Text inside `app-text` tags in `failure.detail`, the ledger and the report came 
 
 ## Write a plan
 
-1. Read every screen on the path in source for `testID`s and visible labels, including conditional screens the flow can insert, such as form validators, required fields, profile-completion and verification screens. Plan a step for each one.
+1. Read the feature's screens in source for `testID`s and visible labels.
 2. Write one `###` block per user journey under `## QA`: numbered user actions such as `Tap "…"`, `Fill "…" with "…"`, `Wait for "…" to appear`, scroll and back, with `✓ "…"` checks of what the user should then see.
 3. Quote every action target, preferring `testID`s over labels. For `✓` checks, choose visible text according to [Plan checks and screen evidence](https://github.com/Lykhoyda/rn-dev-agent/blob/develop/packages/qaren-cli/README.md#plan-checks-and-screen-evidence).
-4. Take every `Fill` value as a literal from the user or the project's documented test-data source. If one is missing, ask the user before running; never invent or guess a value.
-5. Use unquoted phrase steps only when `TYPESAFE_API_KEY` is set; without it they refuse.
-6. Follow the user's path only: no deep links or navigation shortcuts.
-7. Save it as `.qaren/plans/<feature>.md`.
+4. Read in source every conditional screen the flow can insert on the path, such as form validators, required fields, profile-completion and verification screens, and plan a step for each one.
+5. Take every `Fill` value as a literal from the user or the project's documented test-data source. If one is missing, ask the user before running; never invent or guess a value.
+6. Use unquoted phrase steps only when `TYPESAFE_API_KEY` is set; without it they refuse.
+7. Follow the user's path only: no deep links or navigation shortcuts.
+8. Save it as `.qaren/plans/<feature>.md`.
 
 ```markdown
 ## QA
