@@ -1644,20 +1644,28 @@ export async function performFocusedFill(
       verifiedOracle: 'react-tree',
       textEntryRoute,
     });
+  const retainedPrefixFailure = (
+    verification: Awaited<ReturnType<typeof readBack>>,
+    dispatchBefore: string | null,
+  ) => {
+    if (
+      args.clearFirst &&
+      verification.verdict === 'mismatch' &&
+      [initialBefore, dispatchBefore].some(
+        (value) => value !== null && value !== '' && verification.observed === value + args.text,
+      )
+    ) {
+      return fillFailure(
+        'TEXT_ENTRY_UNVERIFIED',
+        'device_fill requested replacement but the focused field retained its prior value before the typed text; not retrying.',
+        { mutation: 'observed', pathsTried },
+      );
+    }
+  };
   const verification = await readBack();
   if (verification.verdict === 'exact') return verified();
-  if (
-    args.clearFirst &&
-    initialBefore !== '' &&
-    verification.verdict === 'mismatch' &&
-    verification.observed === initialBefore + args.text
-  ) {
-    return fillFailure(
-      'TEXT_ENTRY_UNVERIFIED',
-      'device_fill requested replacement but the focused field retained its prior value before the typed text; not retrying.',
-      { mutation: 'observed', pathsTried },
-    );
-  }
+  const retained = retainedPrefixFailure(verification, initialBefore);
+  if (retained) return retained;
   const caseNormalized =
     verification.verdict === 'mismatch' && caseOnly(verification.observed, expected)
       ? { caseNormalizedChars: [...expected].length }
@@ -1689,6 +1697,7 @@ export async function performFocusedFill(
     focusedProof,
     settle: { enabled: false },
   });
+  const retypeBefore = beforeFocused ? before : null;
   if (retyped.isError) {
     return extractMutationDisposition(retyped) === 'none'
       ? lost(first, '; the retype was refused')
@@ -1699,6 +1708,8 @@ export async function performFocusedFill(
   }
   const second = await readBack();
   if (second.verdict === 'exact') return verified();
+  const retainedAfterRetype = retainedPrefixFailure(second, retypeBefore);
+  if (retainedAfterRetype) return retainedAfterRetype;
   const held = droppedLength(second.observed, expected);
   if (held === undefined) return unverified();
   // The same loss twice is the field's own stripping or maxLength: unverified, with the lengths disclosed.

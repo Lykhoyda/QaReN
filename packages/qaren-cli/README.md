@@ -620,6 +620,8 @@ to the prior nonempty value followed by the requested text fails with
 `TEXT_ENTRY_UNVERIFIED` and an observed mutation, without retrying or continuing to
 submit. This detects a retained-prefix concatenation after typing; it does not
 repair the native replacement mechanism or cover unreadable values.
+The same check runs after the bounded retype below, comparing against the preserved
+initial value and the retype's fresh controlled, focused value before dispatch.
 A stable, nonempty read-back holding a
 strictly shorter, in-order part of the text is ambiguous: keystrokes dropped under
 host load and a field that strips characters or limits length look alike. QaReN

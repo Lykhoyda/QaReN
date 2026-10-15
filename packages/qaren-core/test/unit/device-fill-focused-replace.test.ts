@@ -22,7 +22,7 @@ type Read = { value: string | null; focused: boolean } | null;
 async function run(
   before: Read,
   options: {
-    after?: Read;
+    after?: Read | Read[];
     mutation?: 'none' | 'possible';
     requireFocused?: boolean;
     clearFirst?: boolean;
@@ -45,7 +45,13 @@ async function run(
   const client = {
     isConnected: true,
     evaluate: async () => {
-      const read = dispatched.length > 0 && 'after' in options ? options.after : before;
+      const after = options.after;
+      const read =
+        dispatched.length > 0 && 'after' in options
+          ? Array.isArray(after)
+            ? after[Math.min(dispatched.length - 1, after.length - 1)]
+            : after
+          : before;
       return read
         ? {
             value: JSON.stringify({
@@ -100,6 +106,63 @@ test('a stable retained-prefix concatenation fails observed without another disp
   assert.deepEqual(dispatched, [REPLACE]);
   assert.doesNotMatch(JSON.stringify(env), /decoy@example\.test|real@example\.test/);
 });
+
+test('a shorter first readback then initial retained prefix fails after the existing retype', async () => {
+  const { env, dispatched } = await run(
+    { value: 'decoy@example.test', focused: true },
+    {
+      after: [
+        { value: 'real@example', focused: true },
+        { value: 'decoy@example.testreal@example.test', focused: true },
+      ],
+    },
+  );
+  assert.equal(env.ok, false);
+  assert.equal(env.code, 'TEXT_ENTRY_UNVERIFIED');
+  assert.equal(env.meta.mutation, 'observed');
+  assert.deepEqual(dispatched, [REPLACE, REPLACE]);
+  assert.doesNotMatch(JSON.stringify(env), /decoy@example\.test|real@example/);
+});
+
+test('a shorter first readback then retype-dispatch retained prefix fails without a third mutation', async () => {
+  const { env, dispatched } = await run(
+    { value: 'decoy@example.test', focused: true },
+    {
+      after: [
+        { value: 'real@example', focused: true },
+        { value: 'real@examplereal@example.test', focused: true },
+      ],
+    },
+  );
+  assert.equal(env.ok, false);
+  assert.equal(env.code, 'TEXT_ENTRY_UNVERIFIED');
+  assert.equal(env.meta.mutation, 'observed');
+  assert.deepEqual(dispatched, [REPLACE, REPLACE]);
+  assert.doesNotMatch(JSON.stringify(env), /decoy@example\.test|real@example/);
+});
+
+for (const [name, value, verified] of [
+  ['exact', 'real@example.test', true],
+  ['same shorter', 'real@example', false],
+  ['unrelated longer', 'other@example.testreal@example.test', false],
+  ['unreadable', null, false],
+] as const) {
+  test(`a shorter first readback then ${name} preserves its policy after two dispatches`, async () => {
+    const { env, dispatched } = await run(
+      { value: 'decoy@example.test', focused: true },
+      {
+        after: [
+          { value: 'real@example', focused: true },
+          { value, focused: true },
+        ],
+      },
+    );
+    assert.equal(env.ok, true);
+    assert.equal(env.meta?.verify === 'exact', verified);
+    if (!verified) assert.equal(env.data.verified, false);
+    assert.deepEqual(dispatched, [REPLACE, REPLACE]);
+  });
+}
 
 for (const before of ['decoy@example.test', '', 'real@example.test']) {
   test(`an exact replacement readback verifies from ${before === '' ? 'empty' : before.startsWith('decoy') ? 'prefilled' : 'already-equal'} contents`, async () => {

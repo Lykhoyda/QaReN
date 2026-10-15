@@ -1219,7 +1219,17 @@ for (const strict of [false, true]) {
 }
 
 for (const route of ['transition', 'keyboard-up', 'no-target'] as const) {
-  for (const readback of ['retained-prefix', 'exact', 'unreadable'] as const) {
+  for (const readback of [
+    'retained-prefix',
+    'exact',
+    'unreadable',
+    'retype-initial-prefix',
+    'retype-dispatch-prefix',
+    'retype-exact',
+    'retype-same-shorter',
+    'retype-other-longer',
+    'retype-unreadable',
+  ] as const) {
     test(`controlled replacement ${readback} stops or continues truthfully through ${route} fallback`, async () => {
       const { performFocusedFill, extractMutationDisposition } =
         await import('../../../dist/handlers/device-interact.js');
@@ -1230,6 +1240,24 @@ for (const route of ['transition', 'keyboard-up', 'no-target'] as const) {
       const { okResult } = await import('../../../dist/utils.js');
       const before = 'synthetic-prefill';
       const text = 'synthetic-replacement';
+      const shorter = 'synthetic';
+      const retype = readback.startsWith('retype-');
+      const fails =
+        readback === 'retained-prefix' ||
+        readback === 'retype-initial-prefix' ||
+        readback === 'retype-dispatch-prefix';
+      const unverified = !fails && readback !== 'exact' && readback !== 'retype-exact';
+      const finalValue = {
+        'retained-prefix': before + text,
+        exact: text,
+        unreadable: null,
+        'retype-initial-prefix': before + text,
+        'retype-dispatch-prefix': shorter + text,
+        'retype-exact': text,
+        'retype-same-shorter': shorter,
+        'retype-other-longer': 'unrelated' + text,
+        'retype-unreadable': null,
+      }[readback];
       const fake = app({
         ...(route === 'no-target' ? { initial: [submit] } : {}),
         initialKeyboard: route !== 'transition',
@@ -1242,15 +1270,8 @@ for (const route of ['transition', 'keyboard-up', 'no-target'] as const) {
         isConnected: true,
         evaluate: async () => ({
           value: JSON.stringify({
-            value:
-              dispatches === 0
-                ? before
-                : readback === 'exact'
-                  ? text
-                  : readback === 'retained-prefix'
-                    ? before + text
-                    : null,
-            controlled: dispatches === 0 || readback !== 'unreadable',
+            value: dispatches === 0 ? before : retype && dispatches === 1 ? shorter : finalValue,
+            controlled: dispatches === 0 || (retype && dispatches === 1) || finalValue !== null,
             focused: true,
           }),
         }),
@@ -1299,11 +1320,11 @@ for (const route of ['transition', 'keyboard-up', 'no-target'] as const) {
           [],
           { appRoot: dir, platform: 'ios', appId: 'com.test' },
         );
-        assert.equal(ledger.verdict, readback === 'retained-prefix' ? 'FAIL' : 'PASS');
-        assert.equal(dispatches, 1);
+        assert.equal(ledger.verdict, fails ? 'FAIL' : 'PASS');
+        assert.equal(dispatches, retype ? 2 : 1);
         assert.equal(fake.typed.length, 1);
-        assert.equal(fake.log.includes('press @submit'), readback !== 'retained-prefix');
-        if (readback !== 'retained-prefix') assert.equal(ledger.blocks[0].saved, false);
+        assert.equal(fake.log.includes('press @submit'), !fails);
+        if (!fails) assert.equal(ledger.blocks[0].saved, false);
         assert.deepEqual(ledger.blocksWritten, []);
         assert.equal(ledger.videoPublication, 'withheld-fill');
         assert.ok(!fake.log.some((line) => line.startsWith('shot')));
@@ -1311,10 +1332,10 @@ for (const route of ['transition', 'keyboard-up', 'no-target'] as const) {
         assert.equal(fake.rows[0].selector, undefined);
         assert.equal(
           ledger.steps[0].reason?.startsWith('UNVERIFIED_FILL:') ?? false,
-          readback === 'unreadable',
+          unverified,
           JSON.stringify(ledger.steps),
         );
-        if (readback === 'retained-prefix') {
+        if (fails) {
           assert.equal(fake.rows[0].outcome, 'fail');
           assert.match(
             renderReason(ledger.failure?.seen ?? '', (value) => value),
