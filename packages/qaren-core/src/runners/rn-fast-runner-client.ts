@@ -1,3 +1,9 @@
+import {
+  diagnosticField,
+  diagnosticKind,
+  normalizedSnapshotDiagnostics,
+  snapshotInventory,
+} from '../qa/snapshot-diagnostics.js';
 import { DEVICE_LEASE_REQUIRED, leaseFromEnvironment } from './lease-env.js';
 import { QaDispatchError, type QaDispatchContext } from '../domain/qa-dispatch.js';
 import { measureTiming, observeTiming, type TimingContext } from '../qa/timing.js';
@@ -2118,12 +2124,28 @@ function isNonNegativeSafeInteger(value: unknown): value is number {
 function mapRunnerNodesToFlat(
   nodes: RunnerSnapshotNode[],
   privateValues = false,
+  inventory?: ReturnType<typeof snapshotInventory>,
 ): (FlatNode & { value?: string })[] {
   const out: (FlatNode & { value?: string })[] = [];
   const nativeIndices = new Set<number>();
   let synthCounter = 0;
   for (const n of nodes) {
-    if (!n.rect) continue;
+    const kind = inventory ? diagnosticKind(diagnosticField(n, 'type')) : 0;
+    if (inventory) {
+      inventory.emittedCount++;
+      inventory.emittedByKind[kind]++;
+    }
+    if (!n.rect) {
+      if (inventory) {
+        inventory.missingRectCount++;
+        inventory.missingRectByKind[kind]++;
+      }
+      continue;
+    }
+    if (inventory) {
+      inventory.normalizedCount++;
+      inventory.normalizedByKind[kind]++;
+    }
     const refId = n.index !== undefined ? `e${n.index}` : `e${synthCounter++}`;
     const flat: FlatNode & { value?: string } = {
       ref: `@${refId}`,
@@ -2642,6 +2664,7 @@ export async function runIOS(args: RunIOSArgs): Promise<ToolResult> {
   ) {
     const data = (resp.data ?? {}) as {
       nodes?: RunnerSnapshotNode[];
+      snapshotDiagnostics?: unknown;
       tree?: unknown;
       presenceCapture?: unknown;
       truncated?: boolean;
@@ -2659,7 +2682,8 @@ export async function runIOS(args: RunIOSArgs): Promise<ToolResult> {
       dirtySnapshotPlatforms.add('ios');
     }
     if (Array.isArray(data.nodes)) {
-      const flat = mapRunnerNodesToFlat(data.nodes);
+      const inventory = qaReadOnly ? snapshotInventory() : undefined;
+      const flat = mapRunnerNodesToFlat(data.nodes, false, inventory);
       const outcome: RefMapUpdateOutcome = missingRefFreshness
         ? { applied: false, reason: 'snapshot-ref-freshness-unknown' }
         : updateRefMapFromFlat(flat, {
@@ -2674,6 +2698,14 @@ export async function runIOS(args: RunIOSArgs): Promise<ToolResult> {
       return okResult(
         {
           nodes: qaReadOnly ? mapRunnerNodesToFlat(data.nodes, true) : flat,
+          ...(inventory
+            ? {
+                snapshotDiagnostics: normalizedSnapshotDiagnostics(
+                  diagnosticField(data, 'snapshotDiagnostics'),
+                  inventory,
+                ),
+              }
+            : {}),
           ...(Object.hasOwn(data, 'presenceCapture')
             ? { presenceCapture: data.presenceCapture }
             : {}),
@@ -2705,8 +2737,10 @@ export async function runIOS(args: RunIOSArgs): Promise<ToolResult> {
           }
         : {}),
     };
+    const fallbackData = { ...data };
+    delete fallbackData.snapshotDiagnostics;
     return okResult(
-      resp.data ?? {},
+      fallbackData,
       Object.keys(fallbackMeta).length ? { meta: fallbackMeta } : undefined,
     );
   }

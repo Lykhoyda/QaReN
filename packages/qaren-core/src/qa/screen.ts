@@ -1,3 +1,9 @@
+import {
+  diagnosticField,
+  diagnosticKind,
+  diagnosticRect,
+  emptyKindCounts,
+} from './snapshot-diagnostics.js';
 import { isRecord } from './questions.js';
 import {
   captureInputPrivacy,
@@ -430,6 +436,25 @@ function diagnosticHostKind(
     default:
       return 'unknown';
   }
+}
+
+const projectionCounts = new WeakMap<
+  Screen['elements'],
+  {
+    joinedByKind: number[];
+    duplicateByKind: number[];
+    offscreenCount: number;
+    unresolvedCount: number;
+    disabledCount: number;
+    hittableCount: number;
+    enabledKnownCount: number;
+    hittableKnownCount: number;
+    rectKnownCount: number;
+  }
+>();
+
+export function joinedSnapshotDiagnostics(screen: Screen) {
+  return projectionCounts.get(screen.elements) ?? null;
 }
 
 export function join(
@@ -969,7 +994,7 @@ export function join(
       labelAncestors.set(elements[only], [...labelAncestorsOf(elements[only]), control]);
     }
   });
-  return {
+  const screen: Screen = {
     elements: elements.filter((_, i) => !duplicates.has(i)),
     visibleText,
     ...(keyboardFrame ? { keyboardFrame, uncoveredText, uncoveredLabelText } : {}),
@@ -983,6 +1008,35 @@ export function join(
     ...(reactHostEvidence ? { reactHostEvidence } : {}),
     ...(pressEvidenceGap ? { pressEvidenceGap } : {}),
   };
+  const counts = {
+    joinedByKind: emptyKindCounts(),
+    duplicateByKind: emptyKindCounts(),
+    offscreenCount: 0,
+    unresolvedCount: 0,
+    disabledCount: 0,
+    hittableCount: 0,
+    enabledKnownCount: 0,
+    hittableKnownCount: 0,
+    rectKnownCount: 0,
+  };
+  nodes.forEach((node, i) => {
+    const kind = diagnosticKind(diagnosticField(node, 'type'));
+    if (duplicates.has(i)) {
+      counts.duplicateByKind[kind]++;
+      return;
+    }
+    counts.joinedByKind[kind]++;
+    const element = elements[i];
+    if (element.offscreen) counts.offscreenCount++;
+    if (element.visibilityEvidence === 'unresolved') counts.unresolvedCount++;
+    if (element.disabled) counts.disabledCount++;
+    if (element.hittable) counts.hittableCount++;
+    if (typeof diagnosticField(node, 'enabled') === 'boolean') counts.enabledKnownCount++;
+    if (typeof diagnosticField(node, 'hittable') === 'boolean') counts.hittableKnownCount++;
+    if (diagnosticRect(diagnosticField(node, 'rect'))) counts.rectKnownCount++;
+  });
+  projectionCounts.set(screen.elements, counts);
+  return screen;
 }
 
 export function isNativeInput(element: Element): boolean {

@@ -99,7 +99,11 @@ export interface ActResult {
 export interface WalkerDeps {
   judge?: Judge;
   publicationInterrupted?(): boolean;
-  captureScreen(options?: { platformPresence?: boolean; timing?: TimingObserver }): Promise<Screen>;
+  captureScreen(options?: {
+    observation?: number;
+    platformPresence?: boolean;
+    timing?: TimingObserver;
+  }): Promise<Screen>;
   press(ref: string, context: QaDispatchContext): Promise<ActResult>;
   fill(ref: string, text: string, context: QaDispatchContext): Promise<ActResult>;
   // iOS only: type, proven only by a matching React read-back; testID identifies the pre-dispatch focus veto.
@@ -308,13 +312,11 @@ export async function walkBlock(
     let admitted = false;
     try {
       try {
-        latest = await deps.captureScreen(
-          deps.timing
-            ? { ...(platformPresence ? { platformPresence: true } : {}), timing: timingObserver }
-            : platformPresence
-              ? { platformPresence: true }
-              : undefined,
-        );
+        latest = await deps.captureScreen({
+          observation: id,
+          ...(platformPresence ? { platformPresence: true } : {}),
+          ...(timingObserver ? { timing: timingObserver } : {}),
+        });
       } catch (error) {
         if (isAbort(error)) throw error;
         if (error instanceof AppProcessGoneError) throw processChanged();

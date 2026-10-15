@@ -863,6 +863,8 @@ test('the real producer refusal reaches the warning as a value-free cause with c
     });
     const warnings: string[] = [];
     await captureScreen({
+      observation: 23,
+      platformPresence: typography,
       native: async () => nativeEcho(false),
       react: () => captureQaReact(producer.client, typography),
       warn: (message) => warnings.push(message),
@@ -870,8 +872,9 @@ test('the real producer refusal reaches the warning as a value-free cause with c
     assert.equal(warnings.length, 1);
     assert.match(
       warnings[0],
-      /^interactive digest unavailable \(cause=host-evidence-incomplete; scanned=1\/5000; roots=1; hosts=1; interactive=0; queued=0; pruned=0; ms=\d+\); React coverage is unknown$/,
+      /^interactive digest unavailable \(cause=host-evidence-incomplete; scanned=1\/5000; roots=1; hosts=1; interactive=0; queued=0; pruned=0; ms=\d+\); React coverage is unknown; observation=23 mode=(ordinary|platform-presence)$/,
     );
+    assert.ok(warnings[0].endsWith(`mode=${typography ? 'platform-presence' : 'ordinary'}`));
     assert.equal(warnings[0].includes(sentinel), false);
   }
 });
