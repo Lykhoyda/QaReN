@@ -1433,3 +1433,32 @@ test('real entering-text producer in a separate measured stats container preserv
     assert.equal(screen.elements[6].label, '42 visits');
   }
 });
+
+test('heading comparison never combines associated title and body from different windows', async () => {
+  const f = fixture();
+  delete f.hostEvidence.hosts[0].testID;
+  f.hostEvidence.hosts[1].testID = 'title';
+  f.hostEvidence.hosts[3].testID = 'body';
+  f.native.nodes[3].identifier = 'title';
+  const body = structuredClone(f.native.nodes[4]);
+  f.native.nodes[4] = {
+    ...structuredClone(f.native.nodes[1]),
+    ref: '@e4',
+    index: 4,
+    presence: { ...f.native.nodes[1].presence, nodeIndex: 4 },
+  };
+  f.native.nodes.push({
+    ...body,
+    ref: '@e5',
+    index: 5,
+    identifier: 'body',
+    parentIndex: 4,
+    depth: 2,
+    presence: { ...body.presence, nodeIndex: 5 },
+  });
+  f.native.snapshotVerdict.nodeCount = 6;
+  const screen = await f.capture();
+  assert.equal(screen.elements[3].semantic?.visibility, 'visible');
+  assert.equal(screen.elements[5].semantic?.visibility, 'visible');
+  assert.equal(screen.elements[3].semantic?.heading, undefined);
+});

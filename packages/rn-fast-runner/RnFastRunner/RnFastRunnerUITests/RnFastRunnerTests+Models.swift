@@ -175,6 +175,7 @@ struct DataPayload: Codable {
   var tappedLabel: String? = nil
   var tappedRect: SnapshotRect? = nil
   var alertClosed: Bool? = nil
+  var systemModal: SystemModalDiagnostic? = nil
 
   init(
     message: String? = nil,
@@ -320,6 +321,34 @@ struct SnapshotNode: Codable {
   // Only true is sent: the selected trait, e.g. React Native accessibilityState.selected.
   var selected: Bool? = nil
   var presence: PlatformPresenceObservation? = nil
+}
+
+struct SystemModalDiagnostic: Codable {
+  enum AppState: String, Codable {
+    case unknown, notRunning, runningBackgroundSuspended, runningBackground, runningForeground
+  }
+  struct DescendantType: Codable {
+    let type: UInt
+    let count: Int
+  }
+  struct Modal: Codable {
+    let exists: Bool
+    let frameEmpty: Bool
+    let centerInViewport: Bool
+    let springboardFrameEmpty: Bool
+    let descendantTypes: [DescendantType]
+    let hittableDescendantCount: Int
+  }
+  let appState: AppState
+  let alertCount: Int
+  let sheetCount: Int
+  let modals: [Modal]
+
+  static func make(recognized: Bool, appState: AppState, alertCount: Int, sheetCount: Int,
+    modals: [Modal]) -> SystemModalDiagnostic? {
+    guard !recognized, alertCount + sheetCount > 0 else { return nil }
+    return .init(appState: appState, alertCount: alertCount, sheetCount: sheetCount, modals: modals)
+  }
 }
 
 struct PlatformPresenceCapture: Codable {

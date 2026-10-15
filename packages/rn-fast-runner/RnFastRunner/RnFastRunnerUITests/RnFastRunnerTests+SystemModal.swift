@@ -1,6 +1,43 @@
 import XCTest
 
 extension RnFastRunnerTests {
+  func withSystemModalDiagnostic(_ payload: DataPayload, app: XCUIApplication) -> DataPayload {
+    #if os(macOS)
+      return payload
+    #else
+    var result = payload
+    _ = RunnerObjCExceptionCatcher.catchException({
+      let alerts = self.springboard.alerts.allElementsBoundByIndex
+      let sheets = self.springboard.sheets.allElementsBoundByIndex
+      guard !alerts.isEmpty || !sheets.isEmpty else { return }
+      let viewport = self.springboard.frame
+      let modals: [SystemModalDiagnostic.Modal] = (alerts + sheets).prefix(32).map { modal in
+        let frame = modal.frame
+        let descendants = modal.descendants(matching: .any).allElementsBoundByIndex
+        let counts = Dictionary(grouping: descendants, by: { $0.elementType.rawValue })
+        return .init(
+          exists: modal.exists, frameEmpty: frame.isNull || frame.isEmpty,
+          centerInViewport: viewport.contains(CGPoint(x: frame.midX, y: frame.midY)),
+          springboardFrameEmpty: viewport.isNull || viewport.isEmpty,
+          descendantTypes: counts.keys.sorted().map { .init(type: $0, count: counts[$0]!.count) },
+          hittableDescendantCount: descendants.filter { $0.isHittable }.count
+        )
+      }
+      let state: SystemModalDiagnostic.AppState
+      switch app.state {
+      case .notRunning: state = .notRunning
+      case .runningBackgroundSuspended: state = .runningBackgroundSuspended
+      case .runningBackground: state = .runningBackground
+      case .runningForeground: state = .runningForeground
+      default: state = .unknown
+      }
+      result.systemModal = SystemModalDiagnostic.make(recognized: false, appState: state,
+        alertCount: alerts.count, sheetCount: sheets.count, modals: modals)
+    })
+    return result
+    #endif
+  }
+
   // MARK: - Blocking System Modal Snapshot
 
   func blockingSystemAlertSnapshot() -> DataPayload? {

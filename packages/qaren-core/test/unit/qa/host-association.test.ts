@@ -8,6 +8,7 @@ import { inputValues, isPossibleInput, ObservedPrivacy } from '../../../dist/qa/
 import { runPlan } from '../../../dist/qa/walker.js';
 import { join, semanticActionView, visibilityView } from '../../../dist/qa/screen.js';
 import { associateHosts } from '../../../dist/qa/host-association.js';
+import { dismissCandidate } from '../../../dist/qa/recover.js';
 import type { DigestEntry, ReactHostEvidence } from '../../../dist/qa/screen.js';
 import { nativeCapture } from './platform-presence-fixtures.ts';
 import { buildFiber, createSandbox } from '../helpers/inject-harness.js';
@@ -69,6 +70,48 @@ function fixture() {
     });
   return { native, hostEvidence, interactive, capture };
 }
+
+function twoWindowFixture() {
+  const f = fixture();
+  f.native.nodes[2].label = 'Skip';
+  f.native.nodes.push({
+    ...structuredClone(f.native.nodes[1]),
+    index: 3,
+    ref: '@e3',
+    presence: { ...f.native.nodes[1].presence, nodeIndex: 3 },
+  });
+  f.native.snapshotVerdict.nodeCount = f.native.nodes.length;
+  return f;
+}
+
+test('a role-less decline in its proven window survives a second window and recovers once', async () => {
+  const f = twoWindowFixture();
+  const screen = await f.capture();
+  assert.equal(screen.elements[2].semantic?.press, 'supported');
+  assert.equal(screen.elements[2].kind, 'other');
+  assert.equal(screen.reactHostEvidence!.hosts[0].role, null);
+  assert.deepEqual(dismissCandidate(screen, [{ quoted: 'Destination', phrase: 'Destination' }]), {
+    label: 'Skip',
+  });
+  const w = walker(
+    [],
+    scriptedJudge(() => assert.fail('literal recovery is model-free')),
+  );
+  w.deps.captureScreen = f.capture;
+  let taps = 0;
+  w.deps.press = async (ref, context) => {
+    assert.equal(ref, '@e2');
+    context.authorize();
+    taps++;
+    f.native.nodes[2].label = 'Destination';
+    return { ok: true, executed: true, proven: true };
+  };
+  w.deps.hideDevMenu = async () => assert.fail('no developer overlay');
+  const result = await runPlan(parsePlan('✓ "Destination"').blocks!, w.deps);
+  assert.equal(result.verdict, 'PASS');
+  assert.equal(result.recoveries, 1);
+  assert.equal(taps, 1);
+});
 
 test('measured exact host identity admits positive press without inventing a native role', async () => {
   const screen = await fixture().capture();
@@ -308,13 +351,24 @@ const unproven: Array<[string, (f: ReturnType<typeof fixture>) => void]> = [
     },
   ],
   [
-    'second window',
+    'nested window ownership',
     (f) => {
-      f.native.nodes.push({
+      const control = f.native.nodes[2];
+      f.native.nodes[2] = {
         ...structuredClone(f.native.nodes[1]),
+        index: 2,
+        ref: '@e2',
+        parentIndex: 1,
+        depth: 2,
+        presence: { ...f.native.nodes[1].presence, nodeIndex: 2 },
+      };
+      f.native.nodes.push({
+        ...control,
         index: 3,
         ref: '@e3',
-        presence: { ...f.native.nodes[1].presence, nodeIndex: 3 },
+        parentIndex: 2,
+        depth: 3,
+        presence: { ...control.presence, nodeIndex: 3 },
       });
       f.native.snapshotVerdict.nodeCount++;
     },
@@ -1201,4 +1255,126 @@ test('a React scroll view identified on its native container view anchors its de
     undefined,
     'an identified Other stands for a scroll view only when a native ScrollView sits directly under it',
   );
+});
+
+for (const mode of [
+  'outside-window',
+  'duplicate-id',
+  'invalid-window-frame',
+  'unknown-presence',
+  'frame-mismatch',
+] as const) {
+  test(`two-window role-less decline remains ineligible with ${mode}`, async () => {
+    const f = twoWindowFixture();
+    if (mode === 'outside-window') {
+      f.native.nodes[2].parentIndex = 0;
+      f.native.nodes[2].depth = 1;
+    } else if (mode === 'duplicate-id') {
+      f.native.nodes.push({
+        ...structuredClone(f.native.nodes[2]),
+        index: 4,
+        ref: '@e4',
+        parentIndex: 3,
+        presence: { ...f.native.nodes[2].presence, nodeIndex: 4 },
+      });
+      f.native.snapshotVerdict.nodeCount++;
+    } else if (mode === 'invalid-window-frame') {
+      f.native.nodes[1].rect.width = 0;
+      f.native.nodes[1].presence.status = 'unknown';
+      delete f.native.nodes[1].presence.observedUptimeMs;
+    } else if (mode === 'unknown-presence') {
+      f.native.nodes[2].presence.status = 'unknown';
+      delete f.native.nodes[2].presence.observedUptimeMs;
+    } else f.native.nodes[2].rect.x++;
+    const screen = await f.capture();
+    assert.equal(screen.elements[2].semantic?.press, 'unknown');
+    assert.equal(
+      dismissCandidate(screen, [{ quoted: 'Destination', phrase: 'Destination' }]),
+      undefined,
+    );
+    const w = walker(
+      [],
+      scriptedJudge(() => assert.fail('unknown proof cannot reach Jev')),
+    );
+    w.deps.captureScreen = f.capture;
+    w.deps.press = async () => assert.fail('unproven decline cannot be pressed');
+    w.deps.hideDevMenu = async () => assert.fail('no developer overlay');
+    const result = await runPlan(parsePlan('✓ "Destination"').blocks!, w.deps);
+    assert.equal(result.verdict, 'FAIL');
+    assert.equal(result.recoveries, 0);
+  });
+}
+
+test('window translation uses the candidate ancestor, even when it is the second window', async () => {
+  const f = twoWindowFixture();
+  const control = f.native.nodes[2];
+  const window = f.native.nodes[3];
+  f.native.nodes[2] = {
+    ...window,
+    ref: '@e2',
+    index: 2,
+    rect: { x: 80, y: 100, width: 300, height: 600 },
+    presence: { ...window.presence, nodeIndex: 2 },
+  };
+  f.native.nodes[3] = {
+    ...control,
+    ref: '@e3',
+    index: 3,
+    parentIndex: 2,
+    rect: { x: 90, y: 120, width: 100, height: 40 },
+    presence: { ...control.presence, nodeIndex: 3 },
+  };
+  const screen = await f.capture();
+  assert.equal(screen.elements[3].semantic?.press, 'supported');
+  assert.deepEqual(dismissCandidate(screen, [{ quoted: 'Destination', phrase: 'Destination' }]), {
+    label: 'Skip',
+  });
+  f.native.nodes[3].rect = { x: 30, y: 60, width: 100, height: 40 };
+  assert.equal(
+    (await f.capture()).elements[3].semantic?.press,
+    'unknown',
+    'first-window geometry is not proof for the second window',
+  );
+});
+
+test('an explicit native Close button keeps its press proof in a two-window capture', async () => {
+  const f = twoWindowFixture();
+  f.native.nodes[2].type = 'Button';
+  f.native.nodes[2].label = 'Close';
+  const screen = await f.capture();
+  assert.equal(screen.elements[2].semantic?.press, 'supported');
+  assert.equal(screen.elements[2].kind, 'button');
+  assert.deepEqual(dismissCandidate(screen, [{ quoted: 'Destination', phrase: 'Destination' }]), {
+    label: 'Close',
+  });
+});
+
+test('declared presses reuse proven-window association for either locator without recovery', async () => {
+  for (const step of [
+    'Tap id "save" || label "Skip"',
+    'Tap id "missing" || label "Skip"',
+    'Tap label "Skip" || id "save"',
+    'Tap label "Missing" || id "save"',
+  ]) {
+    const f = twoWindowFixture();
+    const w = walker(
+      [],
+      scriptedJudge(() => assert.fail('declared targeting is model-free')),
+    );
+    w.deps.captureScreen = f.capture;
+    let taps = 0;
+    w.deps.press = async (ref, context) => {
+      assert.equal(ref, '@e2');
+      context.authorize();
+      taps++;
+      return { ok: true, executed: true, proven: true };
+    };
+    w.deps.hideDevMenu = async () => assert.fail('declared targeting cannot recover');
+    const result = await runPlan(parsePlan('1. ' + step).blocks!, w.deps);
+    assert.equal(result.verdict, 'PASS', step);
+    assert.equal(result.recoveries, 0);
+    assert.equal(taps, 1);
+    assert.equal(result.steps[0].targeting?.dispatchCount, 1);
+    assert.equal(result.steps[0].targeting?.preSelectionAuthorizations, 0);
+  }
 });

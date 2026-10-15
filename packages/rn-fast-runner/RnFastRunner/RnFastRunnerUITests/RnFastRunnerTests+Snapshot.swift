@@ -42,12 +42,12 @@ extension RnFastRunnerTests {
     }
 
     guard let context = makeSnapshotTraversalContext(app: app, options: options) else {
-      return DataPayload(
+      return withSystemModalDiagnostic(DataPayload(
         nodes: [],
         truncated: false,
         keyboardVisible: isKeyboardVisible(app: app),
         snapshotGeneration: currentSnapshotGeneration
-      )
+      ), app: app)
     }
 
     var cachedDescendantElements: [XCUIElement]?
@@ -156,12 +156,12 @@ extension RnFastRunnerTests {
 
     }
 
-    return DataPayload(
+    return withSystemModalDiagnostic(DataPayload(
       nodes: nodes,
       truncated: truncated,
       keyboardVisible: isKeyboardVisible(app: app),
       snapshotGeneration: currentSnapshotGeneration
-    )
+    ), app: app)
   }
 
   func snapshotRaw(app: XCUIApplication, options: SnapshotOptions) -> DataPayload {
@@ -170,12 +170,12 @@ extension RnFastRunnerTests {
     }
 
     guard let context = makeSnapshotTraversalContext(app: app, options: options) else {
-      return DataPayload(
+      return withSystemModalDiagnostic(DataPayload(
         nodes: [],
         truncated: false,
         keyboardVisible: isKeyboardVisible(app: app),
         snapshotGeneration: currentSnapshotGeneration
-      )
+      ), app: app)
     }
 
     var nodes: [SnapshotNode] = []
@@ -218,12 +218,12 @@ extension RnFastRunnerTests {
     }
 
     walk(context.rootSnapshot, depth: 0, parentIndex: nil)
-    return DataPayload(
+    return withSystemModalDiagnostic(DataPayload(
       nodes: nodes,
       truncated: truncated,
       keyboardVisible: isKeyboardVisible(app: app),
       snapshotGeneration: currentSnapshotGeneration
-    )
+    ), app: app)
   }
 
   private struct PresenceDescriptor: Equatable {
@@ -536,7 +536,7 @@ extension RnFastRunnerTests {
         nodes[index].presence?.observedUptimeMs = nil
       }
     }
-    return makePlatformPresencePayload(
+    var payload = makePlatformPresencePayload(
       nodes: nodes, truncated: truncated,
       capture: PlatformPresenceCapture(
         version: 2, source: "xcui-live", captureId: captureId, appId: appId,
@@ -545,6 +545,10 @@ extension RnFastRunnerTests {
         diagnostics: timing.diagnostics(complete: complete)
       )
     )
+    if !complete, blockingSystemAlertSnapshot() == nil {
+      payload = withSystemModalDiagnostic(payload, app: app)
+    }
+    return payload
   }
 
   private func presenceEnumerationIsUnchanged(

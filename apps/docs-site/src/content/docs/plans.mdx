@@ -73,12 +73,14 @@ keyboard, React-only text and images do not count.
 Any other check is a **phrase** check, such as `✓ The tasks screen shows the task count`.
 Jev judges it against the captured screen.
 
-A failing check fails the plan. A literal check that still cannot be decided after a fresh
-capture ends `CHECK_UNSURE`.
+A failing check can enter [step recovery](https://github.com/Lykhoyda/rn-dev-agent/blob/develop/packages/qaren-cli/README.md#step-recovery)
+before failing the plan. A literal check that still cannot be decided after a fresh
+capture ends `CHECK_UNSURE` if recovery cannot resolve it.
 
 ## When the plan needs `TYPESAFE_API_KEY`
 
-For key requirements, readiness probing and syntax-refusal precedence, follow
+For key requirements, readiness probing, syntax-refusal precedence and the optional Jev safety
+veto during interruption recovery, follow
 [Plan checks and screen evidence](https://github.com/Lykhoyda/rn-dev-agent/blob/develop/packages/qaren-cli/README.md#plan-checks-and-screen-evidence).
 
 ## Refusals before the walk
