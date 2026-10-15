@@ -874,6 +874,17 @@ renderer roots, including a single-root screen. Existing capture and item
 deadlines, host-evidence and interactive-node limits still apply; incomplete
 evidence is refused.
 
+On composite components, the digest omits non-string `title`,
+`accessibilityLabel` and `placeholder` props without coercing or serializing them;
+rendered host text remains available as evidence, and string display props retain
+their digest meaning. Native Expo image hosts with verified image-source metadata
+and no input semantics also omit non-string image placeholders. Other non-string
+host display props, opaque identities or roles, and getter-backed props still
+refuse capture. The
+[composite/input regressions](../qaren-core/test/unit/qa/private-input-producer.test.ts)
+and [image-placeholder regressions](../qaren-core/test/unit/qa/image-placeholder-producer.test.ts)
+cover these boundaries and warm-helper replacement.
+
 When the React capture adapter classifies a failure, the `interactive digest
 unavailable` warning includes a fixed `cause` code and available nonnegative integer
 counters: scanned fibers (with the scan budget when available), roots, hosts,

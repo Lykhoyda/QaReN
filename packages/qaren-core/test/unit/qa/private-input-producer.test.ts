@@ -34,6 +34,157 @@ function assertNoInputs(reply: Record<string, unknown>, ...secrets: string[]) {
   for (const secret of secrets) assert.equal(JSON.stringify(reply).includes(secret), false, secret);
 }
 
+function compositeDigest(props: Record<string, unknown>) {
+  const fixture = setup(
+    { testID: 'continue', accessibilityRole: 'button', onPress() {} },
+    'RCTView',
+  );
+  const wrapper = buildFiber({ name: 'Card', props: { onPress() {}, ...props } });
+  wrapper.tag = 0;
+  wrapper.child = fixture.fiber;
+  fixture.fiber.return = wrapper;
+  fixture.root.current = wrapper;
+  return fixture;
+}
+
+const digestElement = {
+  $$typeof: Symbol.for('react.transitional.element'),
+  type: 'Text',
+  props: { children: 'element-canary' },
+};
+for (const key of ['title', 'accessibilityLabel', 'placeholder']) {
+  for (const [variant, value] of Object.entries({
+    element: digestElement,
+    number: 42,
+    array: [digestElement],
+    boolean: false,
+    null: null,
+    undefined,
+  })) {
+    test(`composite non-string ${key} (${variant}) does not refuse ordinary host capture`, async () => {
+      for (const typography of [false, true]) {
+        const fixture = compositeDigest({ [key]: value });
+        const begin = fixture.api.beginQaCapture(typography);
+        await tick();
+        const result = begin.state === 'pending' ? fixture.api.readQaCapture(begin.id) : begin;
+        assert.equal(result.state, 'ready', `${key}: ${typeof value}, typography=${typography}`);
+        assertNoInputs(result, 'element-canary');
+        const tree = JSON.parse(result.tree);
+        assert.equal(tree.verdict.complete, true);
+        assert.equal(tree.hostEvidence.complete, true);
+        assert.equal(tree.hostEvidence.hosts[0].testID, 'continue');
+        const entry = tree.interactive[0];
+        assert.equal(entry.text, undefined);
+        assert.equal(entry.label, undefined);
+        assert.equal(entry.placeholder, undefined);
+      }
+    });
+  }
+}
+
+test('opaque host strings and composite identities or roles still refuse', () => {
+  const opaque = {
+    toString() {
+      assert.fail('opaque props must not be coerced');
+    },
+  };
+  for (const key of [
+    'role',
+    'accessibilityRole',
+    'testID',
+    'nativeID',
+    'title',
+    'accessibilityLabel',
+    'placeholder',
+  ]) {
+    const result = setup({ [key]: opaque }, 'RCTView').api.beginQaCapture();
+    assert.equal(result.state, 'refused', key);
+  }
+  for (const key of ['role', 'accessibilityRole', 'testID', 'nativeID']) {
+    assert.equal(compositeDigest({ [key]: opaque }).api.beginQaCapture().state, 'refused', key);
+  }
+});
+
+test('composite display and predicate getters and input value getters refuse unread', () => {
+  let reads = 0;
+  for (const key of [
+    'title',
+    'accessibilityLabel',
+    'placeholder',
+    'editable',
+    'readOnly',
+    'aria-readonly',
+    'value',
+  ]) {
+    const fixture = compositeDigest({});
+    const props =
+      key === 'value' ? fixture.fiber.memoizedProps : fixture.root.current.memoizedProps;
+    if (key === 'value') fixture.fiber.type = 'RCTTextInput';
+    Object.defineProperty(props, key, {
+      get() {
+        reads++;
+        throw new Error('getter-canary');
+      },
+    });
+    const result = fixture.api.beginQaCapture();
+    assert.equal(result.state, 'refused', key);
+    assertNoInputs(result, 'getter-canary');
+  }
+  assert.equal(reads, 0);
+});
+
+test('ignored composite objects are never coerced and rendered host text reaches the adapter', async () => {
+  const opaque = {
+    toString() {
+      assert.fail('display props must not be coerced');
+    },
+    toJSON() {
+      assert.fail('display props must not be serialized');
+    },
+  };
+  for (const typography of [false, true]) {
+    const fixture = compositeDigest({
+      title: opaque,
+      accessibilityLabel: opaque,
+      placeholder: opaque,
+    });
+    fixture.fiber.child = buildFiber(
+      { hostType: 'RCTText', children: [{ text: 'Continue' }] },
+      fixture.fiber,
+    );
+    fixture.fiber.child.tag = 5;
+    fixture.fiber.child.child.tag = 6;
+    const observation = await captureQaReact(
+      {
+        async withPrivateHelperWorld(run) {
+          return run(async (expression) => vm.runInContext(expression, fixture.sandbox));
+        },
+      },
+      typography,
+    );
+    assert.equal(observation.hostEvidence?.complete, true);
+    assert.ok(
+      observation.interactive?.some(
+        (entry) => entry.testID === 'continue' && entry.text === 'Continue',
+      ),
+    );
+  }
+});
+
+test('composite string display props retain their digest meaning', () => {
+  const fixture = compositeDigest({
+    title: 'Continue',
+    accessibilityLabel: 'Next step',
+    placeholder: 'Hint',
+  });
+  const result = fixture.api.beginQaCapture();
+  assert.equal(result.state, 'ready');
+  const entry = JSON.parse(result.tree).interactive[0];
+  assert.equal(entry.text, 'Continue');
+  assert.equal(entry.label, 'Next step');
+  assert.equal(entry.placeholder, 'Hint');
+});
+
 const inputCanary = 'native-input-echo-canary';
 
 function inputPipeline(props: Record<string, unknown>, typography: boolean, hostType: string) {
@@ -573,17 +724,19 @@ test('private captures retain fixed refusals for data-named error overlays', () 
   }
 });
 
-test('current helper replaces a warm 89 helper and reinjection preserves the private API', () => {
-  const { sandbox } = setup({ value: '' });
-  sandbox.__QAREN = { __v: 89 };
-  vm.runInContext(INJECTED_HELPERS, sandbox);
-  const upgraded = sandbox.__QAREN;
-  assert.equal(upgraded.__v, HELPERS_VERSION);
-  assert.equal(typeof upgraded.beginQaCapture, 'function');
-  assert.equal(typeof upgraded.readQaCapture, 'function');
-  vm.runInContext(INJECTED_HELPERS, sandbox);
-  assert.equal(sandbox.__QAREN, upgraded);
-});
+for (const previousVersion of [89, 93, 94]) {
+  test(`current helper replaces a warm ${previousVersion} helper and reinjection preserves the private API`, () => {
+    const { sandbox } = setup({ value: '' });
+    sandbox.__QAREN = { __v: previousVersion };
+    vm.runInContext(INJECTED_HELPERS, sandbox);
+    const upgraded = sandbox.__QAREN;
+    assert.equal(upgraded.__v, HELPERS_VERSION);
+    assert.equal(typeof upgraded.beginQaCapture, 'function');
+    assert.equal(typeof upgraded.readQaCapture, 'function');
+    vm.runInContext(INJECTED_HELPERS, sandbox);
+    assert.equal(sandbox.__QAREN, upgraded);
+  });
+}
 
 test('private begin over an anonymous disabled input exposes no input channel and consumes once', () => {
   const { api, sandbox } = setup({
