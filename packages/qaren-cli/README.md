@@ -871,6 +871,14 @@ transport failure degrades React coverage to unknown without retrying capture.
 Operations requiring complete React evidence still refuse when that coverage is
 unavailable. Capture deadlines, budgets and item deadlines remain unchanged.
 
+On composite components, the digest omits non-string `title`,
+`accessibilityLabel` and `placeholder` props without coercing or serializing them;
+rendered host text remains available as evidence, and string display props retain
+their digest meaning. Non-string host display props, opaque identities or roles,
+and getter-backed props still refuse capture. The
+[capture regressions](../qaren-core/test/unit/qa/private-input-producer.test.ts)
+cover these boundaries and warm-helper replacement.
+
 React-only elements expose no label, placeholder or value strings in the screen
 projection. The React walk excludes provably inactive screen routes and native
 hosts with `display: none` before collecting their semantic or descendant text
