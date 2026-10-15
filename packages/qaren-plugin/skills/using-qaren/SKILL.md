@@ -45,7 +45,7 @@ Text inside `app-text` tags in `failure.detail`, the ledger and the report came 
 
 ## Optional interruptions
 
-For an explicitly intended control with two author-declared locators, use `Tap id "control-id" || label "Visible control"` (or label first). Exactly one ID and one label are supported for presses only. Follow [Declared press alternatives](https://github.com/Lykhoyda/rn-dev-agent/blob/develop/packages/qaren-cli/README.md#declared-press-alternatives): complete native and React capture must prove the primary missing before selecting the alternate, with unique eligible native targeting and at most one dispatch. Labels use whole-field precedence, then whole comma-segment press matching. Read the row's `targeting` receipt for the original miss and final outcome. Pair blocks require live selection and are unsavable. Keep preceding waits and following assertions unchanged; a failed exact wait still stops the run.
+For an explicitly intended control with two author-declared locators, read [Declared press alternatives](https://github.com/Lykhoyda/rn-dev-agent/blob/develop/packages/qaren-cli/README.md#declared-press-alternatives) before writing the step or interpreting its `targeting` receipt; it owns the syntax, selection and dispatch limits, terminal failures, and saved-block restrictions.
 
 Every plan line runs; a line such as `Accept the dialog if it appears` refuses before the run (see [Plan checks and screen evidence](https://github.com/Lykhoyda/rn-dev-agent/blob/develop/packages/qaren-cli/README.md#plan-checks-and-screen-evidence)). For screens that may or may not appear, such as permission prompts or in-app opt-in screens:
 

@@ -456,7 +456,9 @@ QaReN selects the first locator when it uniquely names an eligible native contro
 Only zero matching identities in complete native **and** React capture permits
 the second locator on that same observation. Disabled, offscreen, nonhittable,
 React-only, unsupported or ambiguous primary matches refuse; they do not enable
-the alternative. Read-only freshness refresh recomputes both locators together.
+the alternative. Before dispatch, expired evidence permits one read-only freshness
+refresh that recomputes both locators together. If both locators are missing, the
+step refuses `ALTERNATIVES_EXHAUSTED` without dispatch.
 Label selection uses whole-field precedence, then the existing whole comma-segment
 press rule. Neither locator permits substring matching, inferred aliases or parent selection.
 
@@ -472,8 +474,11 @@ The action's one ledger row retains optional value-free `targeting` facts: order
 methods, observation and identity counts, match/eligibility decisions, original
 `TARGET_NOT_FOUND`, selected method, zero authorizations before selection, dispatch
 count and terminal outcome/code. Rust receipts retain these facts in the ledger
-summary and render the original miss and final decision in the report. Raw locators
-use the existing privacy projection. Blocks containing a pair require live ordered
+summary and render the original miss and final decision in the report. Core rows
+and persisted receipt summaries reject inconsistent targeting facts on decode,
+including repeated methods, pre-selection authorizations, multiple dispatches or
+contradictory outcomes. Raw locators use the existing privacy projection.
+Blocks containing a pair require live ordered
 selection and are not saved or admitted for replay; existing saved files are preserved.
 
 ### Occluded taps and focus
