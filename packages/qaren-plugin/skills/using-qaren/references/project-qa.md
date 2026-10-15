@@ -187,6 +187,9 @@ Use the existing private task report, not new receipt fields or a state service:
 - Identity/inputs: exact app commit/tree and relevant dirty-state fingerprint,
   verified runtime path/version/source when available, platform/assigned target,
   full private-plan digest and neutral reference, block slug/hash; label unknowns.
+  Describe an inspection attempt, failure or diagnostic only after observing its
+  actual result at the named root; if it was not attempted, say so without
+  inventing a reason, and keep any required check outstanding.
   Apply the guide-access procedure above when collecting identities: omit guide
   contents and known targets/copies from incidental fingerprints and cite their
   retained admitted provenance separately; a required fresh guide observation
