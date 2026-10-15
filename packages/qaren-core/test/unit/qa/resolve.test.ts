@@ -29,6 +29,52 @@ const save = screen([element('@save', 'Save'), element('@draft', 'Save draft')])
 const target = step('Tap the Save button');
 const check = { kind: 'check' as const, text: 'The profile was saved', literal: false };
 
+test('declared support refusals retain both guard operands on their observation', () => {
+  const pair = {
+    target: { quoted: 'primary', phrase: 'primary', exact: 'id' as const },
+    alternative: { quoted: 'Visible control', phrase: 'Visible control', exact: 'text' as const },
+  };
+  for (const pressEvidenceGap of [false, true]) {
+    for (const press of ['supported', 'unsupported', 'unknown', undefined] as const) {
+      const observed = screen([
+        element('@primary', 'Primary', {
+          testID: 'primary',
+          semantic:
+            press === undefined
+              ? undefined
+              : {
+                  press,
+                  fill: 'unsupported',
+                  visibility: 'visible',
+                },
+        }),
+        element('@alternate', 'Visible control'),
+      ]);
+      if (pressEvidenceGap) observed.pressEvidenceGap = 'private-gap-canary';
+      const prepared = prepareDeclaredPress(pair, observed, 10);
+      if (!pressEvidenceGap && press === 'supported') {
+        assert.ok('ref' in prepared.resolution);
+        assert.equal(prepared.targeting.evaluated[0].pressSupport, undefined);
+        continue;
+      }
+      assert.ok('refuse' in prepared.resolution);
+      assert.equal(prepared.resolution.refuse, 'TARGET_UNSUPPORTED');
+      assert.deepEqual(prepared.targeting.evaluated, [
+        {
+          method: 'id',
+          observation: 10,
+          count: 1,
+          match: 'id',
+          outcome: 'ineligible',
+          pressSupport: { pressEvidenceGap, semanticPress: press ?? 'absent' },
+        },
+      ]);
+      assert.equal(prepared.targeting.dispatchCount, 0);
+      assert.equal(prepared.targeting.originalMissing, undefined);
+    }
+  }
+});
+
 test('declared resolution counts the complete domain and never evades a present primary', () => {
   const target = { quoted: 'primary', phrase: 'primary', exact: 'id' as const };
   const alternative = {

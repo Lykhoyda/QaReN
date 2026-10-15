@@ -9,7 +9,7 @@ import { capturePrivateScreen, MASK, ObservedPrivacy } from '../../../dist/qa/pr
 import { APP_TEXT_OPEN, APP_TEXT_CLOSE } from '../../../dist/qa/untrusted.js';
 import { decideScreen } from '../../../dist/qa/resolve.js';
 import { runPlan } from '../../../dist/qa/walker.js';
-import type { LedgerRow } from '../../../dist/qa/ledger.js';
+import { projectTargeting, type LedgerRow } from '../../../dist/qa/ledger.js';
 import { element, screen as fixtureScreen, scriptedJudge, walker } from './judgment-fixtures.ts';
 
 const TYPED = 'hunter-canary-77';
@@ -20,6 +20,66 @@ const PREFILLED = '654321';
 const GROUPED = '1234567890';
 const ECHOED = 'echo-canary-x';
 const LONG = [TYPED, SECURE, PREFILLED, ECHOED, '1234 5678 90'];
+
+test('declared support refusal diagnostics survive private ledger projection without app facts', async () => {
+  const primary = 'private-support-id-canary';
+  const label = 'private-support-label-canary';
+  const gap = 'private-support-gap-canary';
+  for (const pressEvidenceGap of [false, true]) {
+    for (const press of ['supported', 'unsupported', 'unknown', undefined] as const) {
+      if (!pressEvidenceGap && press === 'supported') continue;
+      const observed = fixtureScreen([
+        element('@private-input', 'Input', { kind: 'input', value: primary }),
+        element('@private-label', 'Label input', { kind: 'input', value: label }),
+        element('@private-primary', label, {
+          testID: primary,
+          semantic:
+            press === undefined
+              ? undefined
+              : {
+                  press,
+                  fill: 'unsupported',
+                  visibility: 'visible',
+                },
+        }),
+      ]);
+      if (pressEvidenceGap) observed.pressEvidenceGap = gap;
+      const f = walker(
+        [observed],
+        scriptedJudge(() => assert.fail('no refusal Jev')),
+      );
+      const result = await runPlan(
+        parsePlan(`1. Tap id "${primary}" || label "${label}"`).blocks!,
+        f.deps,
+      );
+      assert.equal(result.verdict, 'FAIL');
+      assert.deepEqual(f.actions, []);
+      const row = result.steps[0];
+      assert.equal(row.operationId, 1);
+      assert.equal(row.targeting?.code, 'TARGET_UNSUPPORTED');
+      assert.equal(row.targeting?.evaluated.length, 1);
+      assert.ok(row.targeting.evaluated[0].observation > 0);
+      assert.deepEqual(row.targeting.evaluated[0].pressSupport, {
+        pressEvidenceGap,
+        semanticPress: press ?? 'absent',
+      });
+      assert.deepEqual(f.rows[0].targeting, row.targeting);
+      const serialized = JSON.stringify({ result, rows: f.rows });
+      for (const value of [primary, label, gap, '@private-primary']) {
+        assert.ok(!serialized.includes(value), value);
+      }
+      const injected = structuredClone(row.targeting);
+      Object.assign(injected.evaluated[0].pressSupport!, {
+        id: primary,
+        label,
+        value: gap,
+        ref: '@private-primary',
+        rect: { x: 1, y: 2 },
+      });
+      assert.deepEqual(projectTargeting(injected), row.targeting);
+    }
+  }
+});
 
 test('declared alternatives keep protected operands out of streamed and durable targeting facts', async () => {
   for (const found of [true, false]) {

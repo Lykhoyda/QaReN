@@ -90,6 +90,119 @@ fn declared_targeting_survives_row_and_receipt_summary_round_trip() {
 }
 
 #[test]
+fn typescript_declared_support_refusals_round_trip_value_free_receipts() {
+    let output = std::process::Command::new("node")
+        .current_dir(std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../qaren-core"))
+        .args(["--input-type=module", "--eval", r#"
+import assert from 'node:assert/strict';
+import { parsePlan } from './dist/qa/plan.js';
+import { runPlan } from './dist/qa/walker.js';
+import { element, screen, scriptedJudge, walker } from './test/unit/qa/judgment-fixtures.ts';
+const primary = 'private-support-id-canary', label = 'private-support-label-canary';
+const ledgers = [];
+for (const pressEvidenceGap of [false, true]) {
+  for (const press of ['supported', 'unsupported', 'unknown', undefined]) {
+    if (!pressEvidenceGap && press === 'supported') continue;
+    const observed = screen([
+      element('@input', 'Input', {kind: 'input', value: primary}),
+      element('@label-input', 'Label input', {kind: 'input', value: label}),
+      element('@private-primary', label, {testID: primary, semantic: press === undefined
+        ? undefined : {press, fill: 'unsupported', visibility: 'visible'}}),
+    ]);
+    if (pressEvidenceGap) observed.pressEvidenceGap = 'private-support-gap-canary';
+    const f = walker([observed], scriptedJudge(() => assert.fail('no refusal Jev')));
+    const ledger = await runPlan(parsePlan('1. Tap id "' + primary + '" || label "' + label + '"').blocks, f.deps);
+    assert.equal(ledger.verdict, 'FAIL');
+    assert.deepEqual(f.actions, []);
+    ledgers.push(ledger);
+  }
+}
+process.stdout.write(JSON.stringify(ledgers));
+"#])
+        .output().expect("node on PATH is required for the core receipt contract");
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let values: Vec<serde_json::Value> = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(values.len(), 7);
+    for value in values {
+        let ledger: qaren::core::Ledger = serde_json::from_value(value.clone()).unwrap();
+        let expected = &value["steps"][0]["targeting"];
+        let mut receipt = Receipt::new(
+            "check",
+            "support-refusal",
+            ReceiptResult::Fail,
+            "walk",
+            "2026-10-15T00:00:00Z".into(),
+        );
+        receipt.ledger = Some(qaren::report::summarize(&ledger));
+        let encoded =
+            serde_json::to_value(serde_json::from_str::<Receipt>(&receipt.to_json()).unwrap())
+                .unwrap();
+        assert_eq!(&encoded["ledger"]["targeting"][0]["fact"], expected);
+        assert_eq!(encoded["ledger"]["targeting"][0]["operationId"], 1);
+        let report = qaren::report::render(&qaren::report::ReportInput {
+            run_id: "support-refusal",
+            platform: "ios",
+            app_id: "com.example.app",
+            device: "synthetic",
+            ledger: &ledger,
+        });
+        for private in [
+            "private-support-id-canary",
+            "private-support-label-canary",
+            "private-support-gap-canary",
+            "@private-primary",
+        ] {
+            assert!(!receipt.to_json().contains(private));
+            assert!(!report.contains(private));
+        }
+        let mut legacy_row = value["steps"][0].clone();
+        legacy_row["targeting"]["evaluated"][0]
+            .as_object_mut()
+            .unwrap()
+            .remove("pressSupport");
+        assert!(serde_json::from_value::<qaren::core::Row>(legacy_row).is_ok());
+        let mut selected_row = value["steps"][0].clone();
+        selected_row["outcome"] = serde_json::json!("pass");
+        let selected_fact = &mut selected_row["targeting"];
+        selected_fact["evaluated"][0]["outcome"] = serde_json::json!("selected");
+        selected_fact["selected"] = serde_json::json!("id");
+        selected_fact["dispatchAttempted"] = serde_json::json!(true);
+        selected_fact["dispatchCount"] = serde_json::json!(1);
+        selected_fact["outcome"] = serde_json::json!("passed");
+        selected_fact["code"] = serde_json::json!("ACTION_ACCEPTED");
+        assert!(serde_json::from_value::<qaren::core::Row>(selected_row.clone()).is_err());
+        selected_row["targeting"]["evaluated"][0]
+            .as_object_mut()
+            .unwrap()
+            .remove("pressSupport");
+        assert!(serde_json::from_value::<qaren::core::Row>(selected_row).is_ok());
+        for invalid in [
+            serde_json::json!({"pressEvidenceGap": false, "semanticPress": "supported"}),
+            serde_json::json!({"pressEvidenceGap": "private", "semanticPress": "unknown"}),
+            serde_json::json!({"pressEvidenceGap": true, "semanticPress": "private"}),
+            serde_json::json!({"pressEvidenceGap": true, "semanticPress": "unknown", "label": "private"}),
+            serde_json::json!({"pressEvidenceGap": true}),
+            serde_json::json!({"semanticPress": "absent"}),
+        ] {
+            let mut bad_receipt = encoded.clone();
+            bad_receipt["ledger"]["targeting"][0]["fact"]["evaluated"][0]["pressSupport"] =
+                invalid.clone();
+            assert!(
+                serde_json::from_value::<Receipt>(bad_receipt).is_err(),
+                "{invalid}"
+            );
+            let mut bad_row = value["steps"][0].clone();
+            bad_row["targeting"]["evaluated"][0]["pressSupport"] = invalid;
+            assert!(serde_json::from_value::<qaren::core::Row>(bad_row).is_err());
+        }
+    }
+}
+
+#[test]
 fn typescript_declared_targeting_round_trips_private_success_and_exhaustion_receipts() {
     let output = std::process::Command::new("node")
         .current_dir(std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../qaren-core"))

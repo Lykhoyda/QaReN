@@ -228,8 +228,13 @@ export function prepareDeclaredPress(
       return refuse('ALTERNATIVES_EXHAUSTED');
     }
     const { element, tag } = identities[0];
-    if (screen.pressEvidenceGap || element.semantic?.press !== 'supported')
+    if (screen.pressEvidenceGap || element.semantic?.press !== 'supported') {
+      evaluation.pressSupport = {
+        pressEvidenceGap: Boolean(screen.pressEvidenceGap),
+        semanticPress: element.semantic?.press ?? 'absent',
+      };
       return refuse('TARGET_UNSUPPORTED');
+    }
     if (
       tag === 'react-only' ||
       element.disabled ||

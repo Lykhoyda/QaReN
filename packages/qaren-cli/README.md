@@ -477,7 +477,11 @@ count and terminal outcome/code. Rust receipts retain these facts in the ledger
 summary and render the original miss and final decision in the report. Core rows
 and persisted receipt summaries reject inconsistent targeting facts on decode,
 including repeated methods, pre-selection authorizations, multiple dispatches or
-contradictory outcomes. Raw locators use the existing privacy projection.
+contradictory outcomes. A supported-press refusal adds value-free `pressSupport`
+facts to that observation's evaluation: `pressEvidenceGap` is a boolean and
+`semanticPress` is `supported`, `unsupported`, `unknown` or `absent`.
+Both guard values are retained even when both fail; these diagnostics cannot
+relax the refusal. Raw locators use the existing privacy projection.
 Blocks containing a pair require live ordered
 selection and are not saved or admitted for replay; existing saved files are preserved.
 

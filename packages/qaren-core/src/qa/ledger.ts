@@ -31,6 +31,10 @@ export interface TargetEvaluation {
   count: number;
   match: 'id' | 'label' | 'segment' | 'none';
   outcome: 'missing' | 'ambiguous' | 'ineligible' | 'selected';
+  pressSupport?: {
+    pressEvidenceGap: boolean;
+    semanticPress: 'supported' | 'unsupported' | 'unknown' | 'absent';
+  };
 }
 
 export interface Targeting {
@@ -51,13 +55,23 @@ export function projectTargeting(fact: Targeting): Targeting {
     methods: [fact.methods[0], fact.methods[1]],
     binding: 'author-declared',
     preSelectionAuthorizations: 0,
-    evaluated: fact.evaluated.map(({ method, observation, count, match, outcome }) => ({
-      method,
-      observation,
-      count,
-      match,
-      outcome,
-    })),
+    evaluated: fact.evaluated.map(
+      ({ method, observation, count, match, outcome, pressSupport }) => ({
+        method,
+        observation,
+        count,
+        match,
+        outcome,
+        ...(pressSupport
+          ? {
+              pressSupport: {
+                pressEvidenceGap: pressSupport.pressEvidenceGap,
+                semanticPress: pressSupport.semanticPress,
+              },
+            }
+          : {}),
+      }),
+    ),
     ...(fact.originalMissing ? { originalMissing: fact.originalMissing } : {}),
     ...(fact.selected ? { selected: fact.selected } : {}),
     dispatchAttempted: fact.dispatchAttempted,

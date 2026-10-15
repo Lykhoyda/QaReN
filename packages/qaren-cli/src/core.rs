@@ -283,6 +283,22 @@ pub enum TargetBinding {
     AuthorDeclared,
 }
 
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "lowercase")]
+pub enum SemanticPress {
+    Supported,
+    Unsupported,
+    Unknown,
+    Absent,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct PressSupport {
+    pub press_evidence_gap: bool,
+    pub semantic_press: SemanticPress,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct TargetEvaluation {
@@ -291,6 +307,8 @@ pub struct TargetEvaluation {
     pub count: u32,
     pub r#match: TargetMatch,
     pub outcome: TargetDecision,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub press_support: Option<PressSupport>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -328,7 +346,13 @@ impl Targeting {
             && self.original_missing == missed.then_some(TargetCode::TargetNotFound)
             && (self.evaluated.len() < 2 || missed)
             && self.evaluated.iter().enumerate().all(|(i, e)| {
-                e.method == self.methods[i]
+                e.press_support.as_ref().is_none_or(|support| {
+                    e.outcome == D::Ineligible
+                        && self.outcome == O::Refused
+                        && self.code == TargetCode::TargetUnsupported
+                        && (support.press_evidence_gap
+                            || support.semantic_press != SemanticPress::Supported)
+                }) && e.method == self.methods[i]
                     && e.observation > 0
                     && e.observation <= 9_007_199_254_740_991
                     && first.is_some_and(|f| f.observation == e.observation)
