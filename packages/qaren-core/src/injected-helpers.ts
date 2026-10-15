@@ -1480,7 +1480,7 @@ export const INJECTED_HELPERS = `
         return isHostFiber(fiber) && resolvedDisplay(routeRead(props, 'style'), 0) === 'none';
       }
       var iRoots = findAllRootFibers(typography);
-      var iBudget = Math.min(5000, 2000 * Math.max(1, iRoots.length));
+      var iBudget = privateCapture ? 5000 : Math.min(5000, 2000 * Math.max(1, iRoots.length));
       var iQueue = [];
       for (var iri = 0; iri < iRoots.length; iri++) iQueue.push({ fiber: iRoots[iri].fiber, forwarded: null, parentFiber: null, parentHostIndex: null, textOwnerHostIndex: null, rootIndex: iri });
       var iSeen = new WeakSet();
