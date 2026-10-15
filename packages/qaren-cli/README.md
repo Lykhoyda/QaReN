@@ -878,7 +878,8 @@ their digest meaning. Native Expo image hosts with verified image-source metadat
 and no input semantics also omit non-string image placeholders. Other non-string
 host display props, opaque identities or roles, and getter-backed props still
 refuse capture. The
-[capture regressions](../qaren-core/test/unit/qa/private-input-producer.test.ts)
+[composite/input regressions](../qaren-core/test/unit/qa/private-input-producer.test.ts)
+and [image-placeholder regressions](../qaren-core/test/unit/qa/image-placeholder-producer.test.ts)
 cover these boundaries and warm-helper replacement.
 
 React-only elements expose no label, placeholder or value strings in the screen
