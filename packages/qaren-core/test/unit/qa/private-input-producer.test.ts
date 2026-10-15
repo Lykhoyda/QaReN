@@ -724,17 +724,19 @@ test('private captures retain fixed refusals for data-named error overlays', () 
   }
 });
 
-test('current helper replaces a warm 89 helper and reinjection preserves the private API', () => {
-  const { sandbox } = setup({ value: '' });
-  sandbox.__QAREN = { __v: 89 };
-  vm.runInContext(INJECTED_HELPERS, sandbox);
-  const upgraded = sandbox.__QAREN;
-  assert.equal(upgraded.__v, HELPERS_VERSION);
-  assert.equal(typeof upgraded.beginQaCapture, 'function');
-  assert.equal(typeof upgraded.readQaCapture, 'function');
-  vm.runInContext(INJECTED_HELPERS, sandbox);
-  assert.equal(sandbox.__QAREN, upgraded);
-});
+for (const previousVersion of [89, HELPERS_VERSION - 1]) {
+  test(`current helper replaces a warm ${previousVersion} helper and reinjection preserves the private API`, () => {
+    const { sandbox } = setup({ value: '' });
+    sandbox.__QAREN = { __v: previousVersion };
+    vm.runInContext(INJECTED_HELPERS, sandbox);
+    const upgraded = sandbox.__QAREN;
+    assert.equal(upgraded.__v, HELPERS_VERSION);
+    assert.equal(typeof upgraded.beginQaCapture, 'function');
+    assert.equal(typeof upgraded.readQaCapture, 'function');
+    vm.runInContext(INJECTED_HELPERS, sandbox);
+    assert.equal(sandbox.__QAREN, upgraded);
+  });
+}
 
 test('private begin over an anonymous disabled input exposes no input channel and consumes once', () => {
   const { api, sandbox } = setup({
