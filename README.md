@@ -31,9 +31,8 @@ claude --plugin-dir /absolute/path/to/rn-dev-agent/packages/qaren-plugin
 ```
 
 Then run `/qaren:setup`. The [setup skill](packages/qaren-plugin/skills/setup/SKILL.md)
-owns app requirements and onboarding; follow its shared
-[Project QA workflow](packages/qaren-plugin/skills/using-qaren/references/project-qa.md)
-for optional app guidance, ready routes and acceptance coverage. The
+owns app requirements and onboarding: it writes `.qaren/config.yaml` and a smoke
+plan, selects a simulator and runs the first check. The
 [using-qaren skill](packages/qaren-plugin/skills/using-qaren/SKILL.md) writes
 subsequent feature plans. These replace `rn-setup` and `using-rn-dev-agent`
 without aliases. For manual runs, see [Check a plan](packages/qaren-cli/README.md#check-a-plan).
