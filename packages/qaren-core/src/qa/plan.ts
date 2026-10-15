@@ -11,7 +11,7 @@ export interface Target {
 }
 
 export type Step =
-  | { kind: 'press'; target: Target }
+  | { kind: 'press'; target: Target; alternative?: Target }
   | { kind: 'fill'; target: Target; text: string }
   | { kind: 'scroll'; direction: 'down' | 'up'; until?: Target }
   | { kind: 'wait'; target: Target }
@@ -75,6 +75,29 @@ const PRESS =
 
 type Grammar = Step | { refuse: string } | null;
 
+const ALTERNATIVE_REFUSAL =
+  'declared alternatives require a press with one quoted id and one quoted label separated by ||';
+const outsideQuotes = (text: string): string => text.replace(/"[^"]*"|“[^”]*”/g, '');
+const reservedAlternative = (text: string): boolean => outsideQuotes(text).includes('|');
+
+function parseAlternatives(rest: string): Grammar {
+  const match =
+    /^(id|label)\s+(?:"([^"]+)"|“([^”]+)”)\s*\|\|\s*(id|label)\s+(?:"([^"]+)"|“([^”]+)”)$/i.exec(
+      rest,
+    );
+  if (!match || match[1].toLowerCase() === match[4].toLowerCase())
+    return { refuse: ALTERNATIVE_REFUSAL };
+  const target = (method: string, value: string): Target => ({
+    quoted: value,
+    phrase: value,
+    exact: method.toLowerCase() === 'id' ? 'id' : 'text',
+  });
+  const first = match[2] ?? match[3];
+  const second = match[5] ?? match[6];
+  if (!first.trim() || !second.trim()) return { refuse: ALTERNATIVE_REFUSAL };
+  return { kind: 'press', target: target(match[1], first), alternative: target(match[4], second) };
+}
+
 function parseFill(rest: string): Grammar {
   const withForm = FILL_WITH.exec(rest);
   if (withForm) {
@@ -95,6 +118,12 @@ function parseFill(rest: string): Grammar {
 }
 
 export function parseStep(rest: string): Grammar {
+  const declaredPress = PRESS.exec(rest);
+  if (
+    reservedAlternative(rest) ||
+    (declaredPress && /^(?:id|label)\s+["“]/i.test(declaredPress[1]))
+  )
+    return declaredPress ? parseAlternatives(declaredPress[1]) : { refuse: ALTERNATIVE_REFUSAL };
   if (BACK.test(rest)) return { kind: 'back' };
   const dialog = DIALOG.exec(rest);
   if (dialog) return explicitDialog(rest);
@@ -179,7 +208,8 @@ export function parsePlan(markdown: string): ParsedPlan {
 export function planNeedsJev(markdown: string): boolean {
   const pending: RefusedLine[] = [];
   const items: (Step | Check)[] = [];
-  scanPlan(markdown, new Map(), pending, undefined, items);
+  const parsed = scanPlan(markdown, new Map(), pending, undefined, items);
+  if (parsed.refused?.some((entry) => entry.reason === ALTERNATIVE_REFUSAL)) return false;
   return (
     pending.length > 0 ||
     items.some((item) => {
@@ -293,6 +323,10 @@ function scanPlan(
     }
     const block = current ?? open(title, line, text);
     if (check) {
+      if (reservedAlternative(check[1])) {
+        refused.push({ line, text, reason: ALTERNATIVE_REFUSAL });
+        continue;
+      }
       const match = /^(?:"([^"]+)"|“([^”]+)”)$/.exec(check[1].trim());
       const quoted = match ? (match[1] ?? match[2]) : undefined;
       block.items.push({
@@ -428,6 +462,7 @@ export async function parsePlanWithJev(markdown: string, judge: Judge): Promise<
   const pending: RefusedLine[] = [];
   const fillValues: string[] = [];
   const parsed = scanPlan(markdown, new Map(), pending, fillValues);
+  if (parsed.refused?.some((entry) => entry.reason === ALTERNATIVE_REFUSAL)) return parsed;
   if (!pending.length) return parsed;
   const quotedValues = pending.flatMap(({ text }) =>
     [...text.matchAll(/"([^"]+)"|“([^”]+)”/g)].map((span) => span[1] ?? span[2]),

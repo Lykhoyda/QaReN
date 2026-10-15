@@ -25,6 +25,8 @@ import {
   scrollUntilDirection,
   targetEvidence,
   visibleSelector,
+  declaredTargeting,
+  prepareDeclaredPress,
 } from './resolve.js';
 import { literalEvidence } from './evidence.js';
 import { exactIdentities, focusIdentityOf } from './identity.js';
@@ -72,6 +74,8 @@ import {
   type LedgerRow,
   type Selector,
   type StepStart,
+  type Targeting,
+  projectTargeting,
   buildLedger,
   screenshotName,
 } from './ledger.js';
@@ -252,6 +256,7 @@ export async function walkBlock(
   let mutationStarted = false;
   let latestObservation = 0;
   let recoveries = 0;
+  let targeting: Targeting | undefined;
   const recovered = new Set<Item>();
   const metric = (
     stage: TimingEvent['stage'],
@@ -565,12 +570,14 @@ export async function walkBlock(
     observation: Observation,
     send: (context: QaDispatchContext) => Promise<ActResult>,
     deadline = Infinity,
+    singleDispatch = false,
   ): Promise<ActResult> => {
     const preparedAt = deps.timing ? deps.now() : 0;
     metric('mutation', observation, { edge: 'start' });
     let completed = false;
     const context = new (class extends QaDispatchContext {
       override authorize(): void {
+        if (singleDispatch && this.authorizations > 0) this.refuse('ACTION_OUTCOME_UNCERTAIN');
         super.authorize();
         mutationStarted = true;
         diagnostic(item, observation, 'dispatch', 'ACCEPTED', this.authorizations);
@@ -642,6 +649,7 @@ export async function walkBlock(
   };
   const emit = (row: WalkRow): void => {
     row = { ...row, operationId: operationFor(row.line) };
+    if (targeting) row.targeting = projectTargeting(targeting);
     let timing: RowTiming | undefined;
     try {
       timing = deps.rowTiming?.(row.t);
@@ -1108,6 +1116,7 @@ export async function walkBlock(
   items: for (const item of block.items) {
     if (opts.fromLine !== undefined && item.line < opts.fromLine) continue;
     mutationStarted = false;
+    targeting = undefined;
     attempts: for (;;) {
       line = item.line;
       deps.start?.({
@@ -1304,6 +1313,75 @@ export async function walkBlock(
           }
           const reason = `"${item.until.phrase}" did not come into view after ${SCROLL_ATTEMPTS} scrolls`;
           return failed(item, Math.max(attempts, 1), reason, observation.screen, shot);
+        }
+
+        if (item.kind === 'press' && item.alternative) {
+          const declared = { target: item.target, alternative: item.alternative };
+          targeting = declaredTargeting(declared);
+          let before = sequence.momentum ? await settledCapture(item) : await capture(item);
+          let freshness = 1;
+          for (;;) {
+            try {
+              usable(before, item);
+              const prepared = prepareDeclaredPress(declared, before.screen, before.id);
+              targeting = prepared.targeting;
+              if (!('ref' in prepared.resolution)) throw new ResolutionError(prepared.resolution);
+              const { ref } = prepared.resolution;
+              const act = await mutate(
+                item,
+                before,
+                (context) => {
+                  targeting!.dispatchAttempted = true;
+                  targeting!.dispatchCount = 1;
+                  return deps.press(ref, context);
+                },
+                Infinity,
+                true,
+              );
+              const after = await capture(item);
+              usable(after, item);
+              metric('readback', after);
+              const changed = screenSignature(after.screen) !== screenSignature(before.screen);
+              if (
+                !act.ok ||
+                act.mutation === 'none' ||
+                act.mutation === 'possible' ||
+                (!act.proven && !changed)
+              )
+                throw new QaDispatchError('ACTION_OUTCOME_UNCERTAIN');
+              targeting.outcome = 'passed';
+              targeting.code = 'ACTION_ACCEPTED';
+              const shot = await shoot(item);
+              emit({
+                ...base(item, 1),
+                ref,
+                ...stored(exactSelector(prepared.target!)),
+                ...(shot ? { screenshot: shot } : {}),
+                outcome: 'pass',
+              });
+              continue items;
+            } catch (error) {
+              if (isAbort(error)) throw error;
+              if (
+                error instanceof EvidenceExpired &&
+                !targeting.dispatchAttempted &&
+                freshness-- > 0
+              ) {
+                metric('refresh', before);
+                targeting = declaredTargeting(declared);
+                before = await capture(item);
+                continue;
+              }
+              if (targeting.dispatchAttempted) {
+                targeting.outcome = 'uncertain';
+                targeting.code = 'ACTION_OUTCOME_UNCERTAIN';
+                throw error instanceof QaDispatchError || error instanceof ResolutionError
+                  ? error
+                  : new QaDispatchError('ACTION_OUTCOME_UNCERTAIN');
+              }
+              throw error;
+            }
+          }
         }
 
         // press · fill · back · dialog: snapshot → resolve → act → read-back → snapshot → diff rule
@@ -1790,7 +1868,30 @@ export async function walkBlock(
       } catch (caught) {
         if (isAbort(caught)) throw caught;
         let error = caught;
+        if (targeting && !targeting.dispatchAttempted) {
+          if (error instanceof EvidenceExpired) targeting.code = 'EVIDENCE_EXPIRED';
+          else if (error instanceof QaDispatchError) targeting.code = error.code;
+          else if (
+            error instanceof ResolutionError &&
+            (error.code === 'APP_PROCESS_CHANGED' || error.code === 'APP_PROCESS_UNKNOWN')
+          )
+            targeting.code = error.code;
+          else if (!(error instanceof ResolutionError)) targeting.code = 'CAPTURE_FAILED';
+          if (
+            !(error instanceof ResolutionError) &&
+            !(error instanceof QaDispatchError) &&
+            !(error instanceof EvidenceExpired) &&
+            !(error instanceof NativeCaptureError) &&
+            !(error instanceof PrivateInputCaptureError) &&
+            !(error instanceof RenderError)
+          )
+            error = new ResolutionError({
+              refuse: 'CAPTURE_FAILED',
+              reason: 'declared press capture failed',
+            });
+        }
         if (
+          !targeting &&
           error instanceof ResolutionError &&
           !UNRECOVERABLE.has(error.code) &&
           !deps.cancelled?.()
@@ -1907,6 +2008,7 @@ function valueFree(row: Omit<LedgerRow, 'reason'>): LedgerRow {
     outcome,
     ...(screenshot ? { screenshot } : {}),
     ...(timing ? { timing } : {}),
+    ...(row.targeting ? { targeting: projectTargeting(row.targeting) } : {}),
   };
 }
 

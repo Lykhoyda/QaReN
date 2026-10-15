@@ -167,18 +167,16 @@ export function exactIdentities(
   const quoted = target.quoted;
   if (quoted === undefined) return [];
   const exact = screen.elements.filter((e) => named(e, quoted, kind, target.exact));
-  // A merged label (`Item 2, Status 2`) names a press target by one whole segment, as literal checks read it.
+  // Whole-label matches take precedence over whole comma segments.
   const matched =
     exact.length || kind !== 'press' || target.exact === 'id'
       ? exact
-      : actionView({
-          elements: screen.elements.filter(
-            (e) =>
-              e.kind !== 'text' &&
-              !!e.label?.includes(',') &&
-              e.label.split(',').some((segment) => segment.trim() === quoted),
-          ),
-        });
+      : screen.elements.filter(
+          (e) =>
+            e.kind !== 'text' &&
+            !!e.label?.includes(',') &&
+            e.label.split(',').some((segment) => segment.trim() === quoted),
+        );
   const controls = matched.filter((e) => {
     const echo = echoControl(e, purpose);
     return (

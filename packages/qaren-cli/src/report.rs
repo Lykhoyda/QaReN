@@ -29,6 +29,16 @@ pub struct LedgerSummary {
     pub unverified_fills: Vec<UnverifiedFill>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub dialogs: Vec<DialogEvidence>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub targeting: Vec<TargetingEvidence>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct TargetingEvidence {
+    pub line: u64,
+    pub operation_id: u64,
+    pub fact: crate::core::Targeting,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -66,6 +76,17 @@ pub fn summarize(ledger: &Ledger) -> LedgerSummary {
         escapes: ledger.escapes,
         recoveries: ledger.recoveries,
         failed_step: ledger.failure.as_ref().map(|f| f.step),
+        targeting: ledger
+            .steps
+            .iter()
+            .filter_map(|row| {
+                row.targeting.as_ref().map(|fact| TargetingEvidence {
+                    line: row.line,
+                    operation_id: row.operation_id,
+                    fact: fact.clone(),
+                })
+            })
+            .collect(),
         unverified_fills: ledger
             .steps
             .iter()
@@ -176,7 +197,15 @@ fn row_line_with(row: &Row, prose: &dyn Fn(&str) -> String) -> String {
         .fill_detail()
         .map(|detail| format!("; {detail}"))
         .unwrap_or_default();
-    format!("- {mark} line {}{text}{retry}{reason}{kept}\n", row.line)
+    let targeting = row
+        .targeting
+        .as_ref()
+        .map(|fact| format!("; {}", fact.detail()))
+        .unwrap_or_default();
+    format!(
+        "- {mark} line {}{text}{retry}{reason}{kept}{targeting}\n",
+        row.line
+    )
 }
 
 pub fn render(input: &ReportInput<'_>) -> String {

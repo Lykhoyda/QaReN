@@ -743,6 +743,28 @@ test('a segment shared by two merged labels stays ambiguous', () => {
   );
 });
 
+test('segment ambiguity counts disabled and offscreen carriers before eligibility', () => {
+  for (const extra of [
+    { enabled: false, hittable: false },
+    { hittable: false, rect: { x: 0, y: 2000, width: 402, height: 80 } },
+  ]) {
+    const nodes = mergedRows([2]);
+    nodes.push({
+      ...nodes[nodes.length - 1],
+      ref: '@twin',
+      index: nodes.length,
+      identifier: 'different-card',
+      label: 'Item 2, other status',
+      ...extra,
+    });
+    const resolved = prepareTarget(tap('Item 2'), join(nodes, digest([2])));
+    assert.ok(
+      'refuse' in resolved && resolved.refuse === 'TARGET_AMBIGUOUS',
+      JSON.stringify(resolved),
+    );
+  }
+});
+
 test('containers inheriting the first control label collapse into it on the F10 shape', () => {
   const resolved = prepareTarget(tap('Act'), join(mergedRows([1, 2]), digest([1, 2])));
   assert.ok('ref' in resolved, JSON.stringify(resolved));

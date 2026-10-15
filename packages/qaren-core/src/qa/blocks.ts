@@ -93,6 +93,8 @@ export function serializeBlock(
   meta: { appId: string; platform: BlockPlatform },
   privateSet: PrivateSet = { values: [] },
 ): { yaml: string } | { unsavable: string } {
+  if (block.items.some((item) => item.kind === 'press' && item.alternative))
+    return { unsavable: 'declared alternatives require live ordered selection' };
   const protectedContent = (texts: string[]): boolean =>
     texts.some((text) => matchPrivate(text, privateSet, 'persisted').hit);
   const withheld = { unsavable: 'contains a protected plan-typed value' };

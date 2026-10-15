@@ -12,6 +12,123 @@ import {
 } from '../../../dist/qa/timing.js';
 import { choice, element, screen, scriptedJudge, walker } from './judgment-fixtures.ts';
 
+test('a declared pair refresh discards the old miss and resolves both methods on the new observation', async () => {
+  let now = 0;
+  let expired = false;
+  const alternate = screen([element('@alternate', 'Alternate')]);
+  const fresh = screen([
+    element('@primary', 'Primary', { testID: 'primary' }),
+    element('@alternate', 'Alternate'),
+  ]);
+  const f = walker(
+    [alternate, fresh],
+    scriptedJudge(() => assert.fail('no pair Jev')),
+  );
+  f.deps.now = () => now;
+  f.deps.timing = (event) => {
+    if (event.stage === 'mutation' && event.edge === 'start' && !expired) {
+      expired = true;
+      now += 10_000;
+    }
+  };
+  const result = await runPlan(
+    parsePlan('1. Tap id "primary" || label "Alternate"').blocks!,
+    f.deps,
+  );
+  assert.equal(result.verdict, 'PASS');
+  assert.deepEqual(f.actions, ['press @primary']);
+  assert.equal(result.steps[0].targeting?.originalMissing, undefined);
+  assert.deepEqual(result.steps[0].targeting?.evaluated, [
+    { method: 'id', observation: 2, count: 1, match: 'id', outcome: 'selected' },
+  ]);
+});
+
+test('declared pairs stop after one dispatch entry even when no authorization landed', async () => {
+  let now = 0;
+  let preparations = 0;
+  const f = walker(
+    [screen([element('@alternate', 'Alternate')])],
+    scriptedJudge(() => assert.fail('no pair Jev')),
+  );
+  f.deps.now = () => now;
+  f.deps.press = async (_ref, context) => {
+    preparations++;
+    now += 10_000;
+    try {
+      context.authorize();
+    } catch {
+      return { ok: true, proven: true };
+    }
+    assert.fail('expired preparation must not send');
+  };
+  const result = await runPlan(
+    parsePlan('1. Tap id "missing" || label "Alternate"').blocks!,
+    f.deps,
+  );
+  assert.equal(result.verdict, 'FAIL');
+  assert.equal(preparations, 1);
+  assert.equal(result.steps[0].targeting?.dispatchCount, 1);
+  assert.equal(result.steps[0].targeting?.outcome, 'uncertain');
+});
+
+test('declared pairs retain the existing one-refresh allowance and reject a stale process before dispatch', async () => {
+  for (const staleProcess of [false, true]) {
+    let now = 0;
+    const observed = { ...screen([element('@alternate', 'Alternate')]), appProcessIdentifier: 11 };
+    const f = walker(
+      [observed],
+      scriptedJudge(() => assert.fail('no pair Jev')),
+    );
+    f.deps.now = () => now;
+    if (staleProcess) f.deps.appProcess = { expected: 12 };
+    else
+      f.deps.timing = (event) => {
+        if (event.stage === 'mutation' && event.edge === 'start') now += 10_000;
+      };
+    const result = await runPlan(
+      parsePlan('1. Tap id "missing" || label "Alternate"').blocks!,
+      f.deps,
+    );
+    assert.equal(result.verdict, 'FAIL');
+    assert.deepEqual(f.actions, []);
+    assert.equal(f.captures(), staleProcess ? 1 : 2);
+    assert.equal(result.steps[0].targeting?.dispatchCount, 0);
+    assert.equal(
+      result.steps[0].targeting?.code,
+      staleProcess ? 'APP_PROCESS_CHANGED' : 'EVIDENCE_EXPIRED',
+    );
+  }
+});
+
+test('declared pairs retain process guards and cancellation without another press', async () => {
+  for (const cancel of [false, true]) {
+    let cancelled = false;
+    const before = { ...screen([element('@alternate', 'Alternate')]), appProcessIdentifier: 11 };
+    const after = { ...before, appProcessIdentifier: 12 };
+    const f = walker(
+      [before, after],
+      scriptedJudge(() => assert.fail('no pair Jev')),
+    );
+    f.deps.appProcess = { expected: 11 };
+    f.deps.cancelled = () => cancelled;
+    let presses = 0;
+    f.deps.press = async (_ref, context) => {
+      context.authorize();
+      presses++;
+      cancelled = cancel;
+      return { ok: true, proven: true };
+    };
+    const result = await runPlan(
+      parsePlan('1. Tap id "missing" || label "Alternate"').blocks!,
+      f.deps,
+    );
+    assert.equal(result.verdict, 'FAIL');
+    assert.equal(presses, 1);
+    assert.match(result.failure!.seen, cancel ? /RUN_CANCELLED/ : /APP_PROCESS_CHANGED/);
+    assert.equal(result.steps[0].targeting?.outcome, 'uncertain');
+  }
+});
+
 test('a late target judgment refreshes once and never dispatches its stale reference', async () => {
   let now = 0;
   const judge = scriptedJudge((questions, index) => {

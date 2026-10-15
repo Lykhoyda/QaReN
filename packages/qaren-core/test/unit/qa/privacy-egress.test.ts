@@ -21,6 +21,37 @@ const GROUPED = '1234567890';
 const ECHOED = 'echo-canary-x';
 const LONG = [TYPED, SECURE, PREFILLED, ECHOED, '1234 5678 90'];
 
+test('declared alternatives keep protected operands out of streamed and durable targeting facts', async () => {
+  for (const found of [true, false]) {
+    const primary = 'private-primary-canary';
+    const label = 'private-label-canary';
+    const observed = fixtureScreen([
+      element('@private1', 'First field', { kind: 'input', value: primary }),
+      element('@private2', 'Second field', { kind: 'input', value: label }),
+      ...(found ? [element('@alternate', label)] : []),
+    ]);
+    const f = walker(
+      [observed],
+      scriptedJudge(() => assert.fail('no pair Jev')),
+    );
+    const result = await runPlan(
+      parsePlan(`1. Tap id "${primary}" || label "${label}"`).blocks!,
+      f.deps,
+    );
+    assert.equal(result.verdict, found ? 'PASS' : 'FAIL');
+    const serialized = JSON.stringify({ result, rows: f.rows });
+    assert.ok(!serialized.includes(primary));
+    assert.ok(!serialized.includes(label));
+    assert.ok(result.steps[0].text.includes(MASK));
+    assert.equal(
+      result.steps[0].targeting?.code,
+      found ? 'ACTION_ACCEPTED' : 'ALTERNATIVES_EXHAUSTED',
+    );
+    assert.deepEqual(f.rows[0].targeting, result.steps[0].targeting);
+    assert.equal(result.steps[0].selector, undefined);
+  }
+});
+
 const PLAN = `## QA
 
 ### Check the account

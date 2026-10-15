@@ -215,6 +215,202 @@ pub struct Row {
     pub case_normalized: Option<CaseNormalized>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub dialog: Option<DialogTap>,
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "read_targeting"
+    )]
+    pub targeting: Option<Targeting>,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "lowercase")]
+pub enum TargetMethod {
+    Id,
+    Label,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "lowercase")]
+pub enum TargetMatch {
+    Id,
+    Label,
+    Segment,
+    None,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "lowercase")]
+pub enum TargetDecision {
+    Missing,
+    Ambiguous,
+    Ineligible,
+    Selected,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "lowercase")]
+pub enum TargetOutcome {
+    Passed,
+    Exhausted,
+    Refused,
+    Uncertain,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
+pub enum TargetCode {
+    ActionAccepted,
+    TargetNotFound,
+    TargetAmbiguous,
+    TargetIneligible,
+    TargetUnsupported,
+    AlternativesExhausted,
+    ScreenEvidenceIncomplete,
+    EvidenceExpired,
+    RunCancelled,
+    AppProcessChanged,
+    AppProcessUnknown,
+    ActionOutcomeUncertain,
+    ActionContextChanged,
+    TargetMovedBeforeDispatch,
+    CaptureFailed,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq)]
+pub enum TargetBinding {
+    #[serde(rename = "author-declared")]
+    AuthorDeclared,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct TargetEvaluation {
+    pub method: TargetMethod,
+    pub observation: u64,
+    pub count: u32,
+    pub r#match: TargetMatch,
+    pub outcome: TargetDecision,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct Targeting {
+    pub methods: [TargetMethod; 2],
+    pub binding: TargetBinding,
+    pub pre_selection_authorizations: u8,
+    pub evaluated: Vec<TargetEvaluation>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub original_missing: Option<TargetCode>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub selected: Option<TargetMethod>,
+    pub dispatch_attempted: bool,
+    pub dispatch_count: u8,
+    pub outcome: TargetOutcome,
+    pub code: TargetCode,
+}
+
+impl Targeting {
+    pub fn valid(&self) -> bool {
+        use TargetDecision as D;
+        use TargetOutcome as O;
+        let first = self.evaluated.first();
+        let last = self.evaluated.last();
+        let missed = first.is_some_and(|e| e.outcome == D::Missing);
+        let selected = last.filter(|e| e.outcome == D::Selected).map(|e| e.method);
+        self.methods[0] != self.methods[1]
+            && self.pre_selection_authorizations == 0
+            && self.evaluated.len() <= 2
+            && self.dispatch_count <= 1
+            && self.dispatch_attempted == (self.dispatch_count == 1)
+            && (!self.dispatch_attempted || selected.is_some())
+            && self.selected == selected
+            && self.original_missing == missed.then_some(TargetCode::TargetNotFound)
+            && (self.evaluated.len() < 2 || missed)
+            && self.evaluated.iter().enumerate().all(|(i, e)| {
+                e.method == self.methods[i]
+                    && e.observation > 0
+                    && e.observation <= 9_007_199_254_740_991
+                    && first.is_some_and(|f| f.observation == e.observation)
+                    && match e.outcome {
+                        D::Missing => e.count == 0 && e.r#match == TargetMatch::None,
+                        D::Ambiguous => e.count > 1 && e.r#match != TargetMatch::None,
+                        D::Ineligible | D::Selected => {
+                            e.count == 1 && e.r#match != TargetMatch::None
+                        }
+                    }
+                    && match e.method {
+                        TargetMethod::Id => {
+                            matches!(e.r#match, TargetMatch::Id | TargetMatch::None)
+                        }
+                        TargetMethod::Label => matches!(
+                            e.r#match,
+                            TargetMatch::Label | TargetMatch::Segment | TargetMatch::None
+                        ),
+                    }
+            })
+            && match self.outcome {
+                O::Passed => self.code == TargetCode::ActionAccepted && self.dispatch_attempted,
+                O::Uncertain => {
+                    self.code == TargetCode::ActionOutcomeUncertain && self.dispatch_attempted
+                }
+                O::Exhausted => {
+                    self.code == TargetCode::AlternativesExhausted
+                        && !self.dispatch_attempted
+                        && self.evaluated.len() == 2
+                        && last.is_some_and(|e| e.outcome == D::Missing)
+                }
+                O::Refused => {
+                    !self.dispatch_attempted
+                        && match self.code {
+                            TargetCode::TargetAmbiguous => {
+                                last.is_some_and(|e| e.outcome == D::Ambiguous)
+                            }
+                            TargetCode::TargetIneligible | TargetCode::TargetUnsupported => {
+                                last.is_some_and(|e| e.outcome == D::Ineligible)
+                                    || self.evaluated.is_empty()
+                            }
+                            TargetCode::ScreenEvidenceIncomplete
+                            | TargetCode::EvidenceExpired
+                            | TargetCode::RunCancelled
+                            | TargetCode::AppProcessChanged
+                            | TargetCode::AppProcessUnknown
+                            | TargetCode::ActionContextChanged
+                            | TargetCode::TargetMovedBeforeDispatch
+                            | TargetCode::CaptureFailed => true,
+                            _ => false,
+                        }
+                }
+            }
+    }
+
+    pub fn detail(&self) -> String {
+        let missing = if self.original_missing.is_some() {
+            "primary TARGET_NOT_FOUND; "
+        } else {
+            ""
+        };
+        let selected = self.selected.map_or("none", |method| match method {
+            TargetMethod::Id => "id",
+            TargetMethod::Label => "label",
+        });
+        format!(
+            "{missing}declared target {selected}; proof {:?}; dispatches {}; {:?} ({:?})",
+            self.evaluated, self.dispatch_count, self.outcome, self.code
+        )
+    }
+}
+
+fn read_targeting<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> Result<Option<Targeting>, D::Error> {
+    let fact = Option::<Targeting>::deserialize(deserializer)?;
+    if fact.as_ref().is_some_and(|fact| !fact.valid()) {
+        return Err(serde::de::Error::custom(
+            "inconsistent declared targeting facts",
+        ));
+    }
+    Ok(fact)
 }
 
 fn is_zero(value: &u64) -> bool {
@@ -228,6 +424,21 @@ pub struct CaseNormalized {
 }
 
 impl Row {
+    fn valid_targeting(&self) -> bool {
+        self.targeting.as_ref().is_none_or(|fact| {
+            fact.valid()
+                && self.operation_id > 0
+                && self.kind == "step"
+                && self.resolved_by == "exact"
+                && self.attempt == 1
+                && if fact.outcome == TargetOutcome::Passed {
+                    self.outcome == "pass"
+                } else {
+                    self.outcome == "fail"
+                }
+        })
+    }
+
     // The value-free count line for an unverified fill, rendered from numbers the masking never saw.
     pub fn fill_detail(&self) -> Option<String> {
         self.kept.as_ref().and_then(KeptCounts::detail).or_else(|| {
@@ -753,6 +964,10 @@ impl Inbox {
                     return false;
                 }
                 match serde_json::from_value::<Row>(payload.clone()) {
+                    Ok(row) if !row.valid_targeting() => {
+                        self.violation = Some("row has inconsistent targeting outcome".into());
+                        false
+                    }
                     Ok(mut row) => {
                         row.redact_evidence();
                         crate::progress::row(&row);
@@ -1058,11 +1273,17 @@ fn interpret(
         };
     }
     match serde_json::from_value::<Ledger>(result) {
-        Ok(ledger) if !valid_ledger_path(&ledger.path) || !valid_blocks(&ledger.blocks) => missing(
-            &inbox.rows,
-            "result line has an invalid ledger path or block".to_string(),
-            FailureCode::CoreResultMissing,
-        ),
+        Ok(ledger)
+            if !valid_ledger_path(&ledger.path)
+                || !valid_blocks(&ledger.blocks)
+                || ledger.steps.iter().any(|row| !row.valid_targeting()) =>
+        {
+            missing(
+                &inbox.rows,
+                "result line has an invalid ledger path or block".to_string(),
+                FailureCode::CoreResultMissing,
+            )
+        }
         Ok(mut ledger) => {
             ledger.redact_evidence();
             let verdict = if verdict == "PASS" {
@@ -1126,6 +1347,7 @@ fn refusal_ledger(result: &Value, rows: &[Row], seen: &str) -> Result<Ledger, St
             !matches!(row.kind.as_str(), "step" | "check")
                 || !matches!(row.resolved_by.as_str(), "exact" | "jev")
                 || !matches!(row.outcome.as_str(), "pass" | "fail" | "retry")
+                || !row.valid_targeting()
         })
     {
         return Err("invalid ledger steps".into());

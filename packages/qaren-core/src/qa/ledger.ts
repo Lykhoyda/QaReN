@@ -7,6 +7,66 @@ export interface Selector {
 
 export type LedgerPath = 'walk' | 'replay' | `replay→walk@${number}`;
 
+export type TargetMethod = 'id' | 'label';
+export type TargetingCode =
+  | 'ACTION_ACCEPTED'
+  | 'TARGET_NOT_FOUND'
+  | 'TARGET_AMBIGUOUS'
+  | 'TARGET_INELIGIBLE'
+  | 'TARGET_UNSUPPORTED'
+  | 'ALTERNATIVES_EXHAUSTED'
+  | 'SCREEN_EVIDENCE_INCOMPLETE'
+  | 'EVIDENCE_EXPIRED'
+  | 'RUN_CANCELLED'
+  | 'APP_PROCESS_CHANGED'
+  | 'APP_PROCESS_UNKNOWN'
+  | 'ACTION_OUTCOME_UNCERTAIN'
+  | 'ACTION_CONTEXT_CHANGED'
+  | 'TARGET_MOVED_BEFORE_DISPATCH'
+  | 'CAPTURE_FAILED';
+
+export interface TargetEvaluation {
+  method: TargetMethod;
+  observation: number;
+  count: number;
+  match: 'id' | 'label' | 'segment' | 'none';
+  outcome: 'missing' | 'ambiguous' | 'ineligible' | 'selected';
+}
+
+export interface Targeting {
+  methods: [TargetMethod, TargetMethod];
+  binding: 'author-declared';
+  preSelectionAuthorizations: 0;
+  evaluated: TargetEvaluation[];
+  originalMissing?: 'TARGET_NOT_FOUND';
+  selected?: TargetMethod;
+  dispatchAttempted: boolean;
+  dispatchCount: 0 | 1;
+  outcome: 'passed' | 'exhausted' | 'refused' | 'uncertain';
+  code: TargetingCode;
+}
+
+export function projectTargeting(fact: Targeting): Targeting {
+  return {
+    methods: [fact.methods[0], fact.methods[1]],
+    binding: 'author-declared',
+    preSelectionAuthorizations: 0,
+    evaluated: fact.evaluated.map(({ method, observation, count, match, outcome }) => ({
+      method,
+      observation,
+      count,
+      match,
+      outcome,
+    })),
+    ...(fact.originalMissing ? { originalMissing: fact.originalMissing } : {}),
+    ...(fact.selected ? { selected: fact.selected } : {}),
+    dispatchAttempted: fact.dispatchAttempted,
+    dispatchCount: fact.dispatchCount,
+    outcome: fact.outcome,
+    code: fact.code,
+  };
+}
+
 export interface LedgerRow {
   block: string;
   operationId?: number;
@@ -22,6 +82,7 @@ export interface LedgerRow {
   reason?: string;
   timing?: RowTiming;
   selector?: Selector;
+  targeting?: Targeting;
   // Typed and held character counts of an unverified fill, kept out of the masked reason.
   kept?: { typed: number; observed: number[] };
   // Characters typed into a field that changed only their letter case.

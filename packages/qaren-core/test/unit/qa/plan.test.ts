@@ -10,6 +10,34 @@ import {
 } from '../../../dist/qa/plan.js';
 import { ACTION_ID_MAX_LEN, isValidActionId } from '../../../dist/domain/path-safety.js';
 
+test('declared press alternatives preserve typed order through prepared plans', () => {
+  for (const [first, second] of [
+    ['id', 'label'],
+    ['label', 'id'],
+  ]) {
+    const markdown = `1. Tap ${first} "First || literal" || ${second} "Second"`;
+    const parsed = parsePlan(markdown);
+    assert.ok(parsed.blocks);
+    const item = parsed.blocks[0].items[0];
+    assert.deepEqual(item, {
+      kind: 'press',
+      target: {
+        quoted: 'First || literal',
+        phrase: 'First || literal',
+        exact: first === 'id' ? 'id' : 'text',
+      },
+      alternative: { quoted: 'Second', phrase: 'Second', exact: second === 'id' ? 'id' : 'text' },
+      raw: markdown,
+      line: 1,
+      source: 'grammar',
+    });
+    assert.deepEqual(
+      readPreparedPlan(markdown, preparePlan(markdown, parsed.blocks)),
+      parsed.blocks,
+    );
+  }
+});
+
 test('generated IDs preserve valid slugs and bound overflowing headings deterministically', () => {
   for (const title of [
     '  Hello, World!  ',

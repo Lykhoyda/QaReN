@@ -432,15 +432,49 @@ native tap eligibility to a wrapper. A container without a testID that encloses
 (by tree or frame) exactly one same-label action candidate, such as the
 full-screen element iOS can label like the first control, is that control's
 echo. When nothing matches exactly, a quoted press target equal to one whole
-comma-separated segment of exactly one actionable element's merged label (for
-example `Item 2` in `Item 2, Status 2`) names that element; two such elements
-refuse as ambiguous. A label-only native row keeps its accessibility-label
+comma-separated segment of exactly one element's merged label (for
+example `Item 2` in `Item 2, Status 2`) names that element; two such identities
+refuse as ambiguous before eligibility, including disabled or offscreen twins. A label-only native row keeps its accessibility-label
 evidence even when its React role re-kinds it. Separate controls in distinct
 subtrees with the same label still refuse as ambiguous. The
 [label-echo tests](../qaren-core/test/unit/qa/label-echo.test.ts) cover these cases.
 The refusal lists
 each candidate without its label or value: kind, testID or `no-id`, and the
 rounded frame.
+
+### Declared press alternatives
+
+An author may declare one ID and one label for the same intended control, in either order:
+
+```markdown
+1. Tap id "save-control" || label "Save"
+2. Wait for "Saved" to appear
+✓ "Saved"
+```
+
+QaReN selects the first locator when it uniquely names an eligible native control.
+Only zero matching identities in complete native **and** React capture permits
+the second locator on that same observation. Disabled, offscreen, nonhittable,
+React-only, unsupported or ambiguous primary matches refuse; they do not enable
+the alternative. Read-only freshness refresh recomputes both locators together.
+Label selection uses whole-field precedence, then the existing whole comma-segment
+press rule. Neither locator permits substring matching, inferred aliases or parent selection.
+
+The pair enters dispatch at most once. A thrown, failed or uncertain dispatch,
+lost readback or unchanged unproven result is terminal, with no scroll, recovery
+or second press. Existing waits and assertions keep their predicates and remain
+terminal when they fail; an action alternative cannot bypass an earlier failed wait.
+The pair syntax is press-only, consumes the complete line and permits exactly two
+distinct methods with nonempty quoted values. Other forms refuse before model parsing.
+An operator inside quotes is literal data.
+
+The action's one ledger row retains optional value-free `targeting` facts: ordered
+methods, observation and identity counts, match/eligibility decisions, original
+`TARGET_NOT_FOUND`, selected method, zero authorizations before selection, dispatch
+count and terminal outcome/code. Rust receipts retain these facts in the ledger
+summary and render the original miss and final decision in the report. Raw locators
+use the existing privacy projection. Blocks containing a pair require live ordered
+selection and are not saved or admitted for replay; existing saved files are preserved.
 
 ### Occluded taps and focus
 

@@ -13,6 +13,55 @@ import { preflightPlan } from '../../../dist/qa/preflight.js';
 import { JevError } from '../../../dist/qa/questions.js';
 import { choice, scriptedJudge } from './judgment-fixtures.ts';
 
+test('reserved malformed alternatives refuse before any Jev request', async () => {
+  for (const line of [
+    '1. Tap id "a" || id "b"',
+    '1. Tap label "a" || label "b"',
+    '1. Tap id "a" || label "b" || id "c"',
+    '1. Tap id a || label "b"',
+    '1. Tap id "" || label "b"',
+    '1. Tap id " " || label "b"',
+    '1. Tap id "a" | label "b"',
+    '1. Tap id "a" or label "b"',
+    '1. Tap id "a" && label "b"',
+    '1. Tap id "a" || label "b" then tap "c"',
+    '1. Wait for id "a" || label "b"',
+    '1. Fill id "a" || label "b" with "value"',
+    '1. Scroll until id "a" || label "b"',
+    '1. Back || label "b"',
+    '1. Visit id "a" || label "b"',
+    '✓ id "a" || label "b"',
+  ]) {
+    const judge = scriptedJudge(() => {
+      throw new Error('grammar refusals must not ask Jev');
+    });
+    const markdown = `${line}\n2. Visit the account`;
+    assert.equal(planNeedsJev(markdown), false, line);
+    assert.ok((await parsePlanWithJev(markdown, judge)).refused, line);
+    const result = await preflightPlan(markdown, judge);
+    assert.equal(result.ok, false, line);
+    if (!result.ok) assert.equal(result.code, 'PLAN_UNPARSEABLE', line);
+    assert.equal(judge.calls.length, 0, line);
+  }
+});
+
+test('quoted operator data and declared pairs need no model and reject prepared-plan tampering', async () => {
+  const judge = scriptedJudge(() => {
+    throw new Error('literal plan must not ask Jev');
+  });
+  for (const markdown of ['1. Tap "a || b"\n✓ "a || b"', '1. Tap label “a || b” || id “x”']) {
+    const result = await preflightPlan(markdown, judge);
+    assert.ok(result.ok);
+    assert.equal(result.jevRequired, false);
+    assert.ok(readPreparedPlan(markdown, result.prepared));
+    const tampered = structuredClone(result.prepared);
+    const item = tampered.blocks[0].items[0];
+    if (item.kind === 'press') item.target.quoted = 'different';
+    assert.equal(readPreparedPlan(markdown, tampered), undefined);
+  }
+  assert.equal(judge.calls.length, 0);
+});
+
 test('fallback lines are classified together once and retain line numbers and whole phrases', async () => {
   const judge = scriptedJudge((questions) =>
     Object.fromEntries(Object.entries(questions).map(([id, q]) => [id, choice(q, 'press')])),

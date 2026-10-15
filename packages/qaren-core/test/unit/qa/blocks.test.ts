@@ -54,6 +54,21 @@ function passRows(block: Block, selectors: Record<number, Selector>): LedgerRow[
 }
 
 const ios = { appId: 'com.example.app', platform: 'ios' as const };
+
+test('declared pair blocks require live selection and cannot match a stored selector', () => {
+  const ordinary = blockOf('1. Tap "Save"');
+  const pair = blockOf('1. Tap id "save" || label "Save"');
+  const text = serialized(ordinary, passRows(ordinary, { 1: { text: 'Save' } }));
+  const stale = readBlock(text);
+  assert.ok(!('invalid' in stale));
+  assert.deepEqual(serializeBlock(pair, passRows(pair, { 1: { text: 'Save' } }), ios), {
+    unsavable: 'declared alternatives require live ordered selection',
+  });
+  assert.equal(
+    storedFits(pair, { ...stale, header: { ...stale.header, planHash: pair.planHash } }, text, ios),
+    false,
+  );
+});
 const literalSelectors: Record<number, Selector> = {
   9: { id: 'onboarding-skip' },
   10: { id: 'onboarding-done' },

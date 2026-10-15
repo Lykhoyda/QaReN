@@ -7,12 +7,15 @@ import {
   decideScreen,
   judgeCheck,
   prepareTarget,
+  prepareDeclaredPress,
   resolveTarget,
   targetVisible,
   visibleSelector,
 } from '../../../dist/qa/resolve.js';
 import { join as joinScreen } from '../../../dist/qa/screen.js';
-import type { NativeNode, Screen } from '../../../dist/qa/screen.js';
+import type { NativeNode, ReactHostEvidence, Screen } from '../../../dist/qa/screen.js';
+import type { NativePresence } from '../../../dist/qa/native-presence.js';
+import { associateHosts } from '../../../dist/qa/host-association.js';
 import { JevError, confidentChoice } from '../../../dist/qa/questions.js';
 import { runPlan } from '../../../dist/qa/walker.js';
 import { choice, element, screen, scriptedJudge, walker } from './judgment-fixtures.ts';
@@ -25,6 +28,246 @@ function step(line: string) {
 const save = screen([element('@save', 'Save'), element('@draft', 'Save draft')]);
 const target = step('Tap the Save button');
 const check = { kind: 'check' as const, text: 'The profile was saved', literal: false };
+
+test('declared resolution counts the complete domain and never evades a present primary', () => {
+  const target = { quoted: 'primary', phrase: 'primary', exact: 'id' as const };
+  const alternative = {
+    quoted: 'Visible control',
+    phrase: 'Visible control',
+    exact: 'text' as const,
+  };
+  const alternate = element('@alternate', 'Visible control');
+  for (const extra of [
+    { disabled: true },
+    { offscreen: true },
+    { hittable: false },
+    { ref: 'react:primary', offscreen: true, hittable: false },
+    {
+      semantic: {
+        press: 'unknown' as const,
+        fill: 'unsupported' as const,
+        visibility: 'unknown' as const,
+      },
+    },
+    { visibilityEvidence: 'unresolved' as const },
+  ]) {
+    const primary = element('@primary', 'Primary', { testID: 'primary', ...extra });
+    const observed = screen([primary, alternate]);
+    const resolved = prepareDeclaredPress({ target, alternative }, observed, 9);
+    assert.ok('refuse' in resolved.resolution, JSON.stringify(extra));
+    assert.equal(resolved.targeting.evaluated.length, 1);
+    assert.equal(resolved.targeting.evaluated[0].count, 1);
+    assert.equal(resolved.targeting.originalMissing, undefined);
+    const ambiguous = prepareDeclaredPress(
+      { target, alternative },
+      screen([element('@eligible', 'Primary', { testID: 'primary' }), primary, alternate]),
+      10,
+    );
+    assert.ok(
+      'refuse' in ambiguous.resolution && ambiguous.resolution.refuse === 'TARGET_AMBIGUOUS',
+    );
+    assert.equal(ambiguous.targeting.evaluated[0].count, 2);
+  }
+  const primary = element('@primary', 'Primary', { testID: 'primary' });
+  const selected = prepareDeclaredPress({ target, alternative }, screen([primary, alternate]), 11);
+  assert.ok('ref' in selected.resolution && selected.resolution.ref === '@primary');
+  assert.equal(selected.targeting.evaluated.length, 1);
+  assert.equal(selected.targeting.selected, 'id');
+});
+
+test('declared alternatives require complete native and React acquisition', () => {
+  const pair = step('Tap id "primary" || label "Visible control"');
+  for (const native of ['complete', 'incomplete', 'unknown'] as const) {
+    for (const react of ['complete', 'incomplete', 'unknown'] as const) {
+      const observed = screen([element('@alternate', 'Visible control')]);
+      observed.captureCoverage = { native, react };
+      const resolved = prepareTarget(pair, observed);
+      assert.equal('ref' in resolved, native === 'complete' && react === 'complete');
+    }
+  }
+  const observed = screen([element('@alternate', 'Visible control')]);
+  delete observed.coverage;
+  const resolved = prepareTarget(pair, observed);
+  assert.ok('refuse' in resolved && resolved.refuse === 'SCREEN_EVIDENCE_INCOMPLETE');
+});
+
+test('declared label matches keep full-field precedence and reject substring and segment twins', () => {
+  const pair = step('Tap id "missing" || label "Card"');
+  for (const label of ['Cardinal', 'A Card', 'Cards, Status', 'Card-like']) {
+    const resolved = prepareTarget(pair, screen([element('@lookalike', label)]));
+    assert.ok('refuse' in resolved && resolved.refuse === 'ALTERNATIVES_EXHAUSTED');
+  }
+  const card = element('@card', 'Card, Status');
+  assert.ok('ref' in prepareTarget(pair, screen([card])));
+  for (const extra of [
+    { disabled: true },
+    { offscreen: true },
+    { hittable: false },
+    { ref: 'react:twin' },
+  ]) {
+    const twin = element('@twin', 'Card, Other', extra);
+    const resolved = prepareTarget(pair, screen([card, twin]));
+    assert.ok('refuse' in resolved && resolved.refuse === 'TARGET_AMBIGUOUS');
+  }
+  const disabledExact = element('@exact', 'Card', { disabled: true });
+  const resolved = prepareTarget(pair, screen([disabledExact, card]));
+  assert.ok('refuse' in resolved && resolved.refuse === 'TARGET_INELIGIBLE');
+});
+
+test('declared alternatives refuse a clipped or keyboard-covered native carrier without scrolling', async () => {
+  for (const keyboard of [false, true]) {
+    const rect = { x: 20, y: keyboard ? 700 : 900, width: 300, height: 44 };
+    const nodes: NativeNode[] = [
+      {
+        ref: '@app',
+        index: 0,
+        type: 'Application',
+        rect: { x: 0, y: 0, width: 400, height: 800 },
+      },
+      {
+        ref: '@win',
+        index: 1,
+        parentIndex: 0,
+        type: 'Window',
+        rect: { x: 0, y: 0, width: 400, height: 800 },
+      },
+      {
+        ref: '@alternate',
+        index: 2,
+        parentIndex: 1,
+        type: 'Button',
+        identifier: 'alternate',
+        label: 'Alternate',
+        hittable: true,
+        rect,
+      },
+      ...(keyboard
+        ? [
+            {
+              ref: '@keyboard',
+              index: 3,
+              parentIndex: 1,
+              type: 'Keyboard',
+              rect: { x: 0, y: 600, width: 400, height: 200 },
+            },
+          ]
+        : []),
+    ];
+    const hostEvidence: ReactHostEvidence = {
+      complete: true,
+      hosts: [
+        {
+          testID: 'alternate',
+          role: 'button',
+          roleSource: 'role',
+          capabilities: { press: true, fill: false },
+        },
+      ],
+      typography: {
+        version: 1,
+        complete: true,
+        durationMs: 1,
+        coordinateSpace: 'window-points',
+        nodes: [
+          {
+            hostIndex: 0,
+            parentHostIndex: null,
+            rootIndex: 0,
+            hostType: 'RCTView',
+            rect,
+            text: { kind: 'none' },
+          },
+        ],
+      },
+    };
+    const presence: NativePresence = {
+      source: 'xcui-live',
+      nodes: nodes.map((_, index) =>
+        index === 2
+          ? keyboard
+            ? { status: 'observed', labelSource: 'direct' }
+            : { status: 'unknown', labelSource: 'direct', unknownReason: 'clipped' }
+          : { status: 'unknown', labelSource: 'none' },
+      ),
+    };
+    const observed = joinScreen(
+      nodes,
+      [{ role: 'button', testID: 'alternate', capabilities: { press: true, fill: false } }],
+      'app',
+      { native: 'complete', react: 'complete' },
+      hostEvidence,
+      presence,
+    );
+    observed.captureCoverage = { native: 'complete', react: 'complete' };
+    assert.equal(associateHosts(nodes, hostEvidence, presence).get(0)?.nativeIndex, 2);
+    assert.equal(observed.pressEvidenceGap, undefined);
+    assert.equal(
+      observed.elements.find((e) => e.testID === 'alternate')?.semantic?.press,
+      'supported',
+    );
+    const resolved = prepareTarget(step('Tap id "missing" || label "Alternate"'), observed);
+    assert.ok(
+      'refuse' in resolved && resolved.refuse === 'TARGET_INELIGIBLE',
+      JSON.stringify(resolved),
+    );
+    const judge = scriptedJudge(() => assert.fail('geometry refusal must not ask Jev'));
+    const f = walker([observed], judge);
+    const result = await runPlan(
+      parsePlan('1. Tap id "missing" || label "Alternate"').blocks!,
+      f.deps,
+    );
+    assert.equal(result.verdict, 'FAIL');
+    assert.deepEqual(f.actions, []);
+    assert.equal(result.recoveries, 0);
+    assert.equal(judge.calls.length, 0);
+    assert.equal(result.steps.length, 1);
+    assert.equal(result.steps[0].attempt, 1);
+    const fact = result.steps[0].targeting!;
+    assert.deepEqual(
+      fact.evaluated.map((e) => e.count),
+      [0, 1],
+    );
+    assert.equal(fact.originalMissing, 'TARGET_NOT_FOUND');
+    assert.equal(fact.selected, undefined);
+    assert.equal(fact.preSelectionAuthorizations, 0);
+    assert.equal(fact.dispatchAttempted, false);
+    assert.equal(fact.dispatchCount, 0);
+    assert.equal(fact.code, 'TARGET_INELIGIBLE');
+  }
+});
+
+test('declared alternatives retain the missing-host evidence refusal before geometry', () => {
+  const observed = joinScreen(
+    [
+      { ref: '@app', index: 0, type: 'Application', rect: { x: 0, y: 0, width: 400, height: 800 } },
+      {
+        ref: '@win',
+        index: 1,
+        parentIndex: 0,
+        type: 'Window',
+        rect: { x: 0, y: 0, width: 400, height: 800 },
+      },
+      {
+        ref: '@alternate',
+        index: 2,
+        parentIndex: 1,
+        type: 'Button',
+        identifier: 'alternate',
+        label: 'Alternate',
+        hittable: true,
+        rect: { x: 20, y: 100, width: 300, height: 44 },
+      },
+    ],
+    [{ role: 'button', testID: 'alternate', capabilities: { press: true, fill: false } }],
+    'app',
+    { native: 'complete', react: 'complete' },
+  );
+  observed.captureCoverage = { native: 'complete', react: 'complete' };
+  assert.equal(observed.pressEvidenceGap, 'React host evidence missing');
+  assert.equal(observed.elements[2].semantic?.press, 'supported');
+  const resolved = prepareTarget(step('Tap id "missing" || label "Alternate"'), observed);
+  assert.ok('refuse' in resolved && resolved.refuse === 'TARGET_UNSUPPORTED');
+});
 
 for (const type of ['StaticText', 'Button']) {
   test(`text waits save and replay only uncovered ${type} identities`, () => {

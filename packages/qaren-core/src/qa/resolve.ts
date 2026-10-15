@@ -1,5 +1,5 @@
 import type { Check, Step, Target } from './plan.js';
-import type { Selector } from './ledger.js';
+import type { Selector, Targeting, TargetMethod } from './ledger.js';
 import { hostPath } from './host-association.js';
 import {
   type Element,
@@ -86,6 +86,8 @@ export function stepTarget(step: Step): Target | undefined {
 }
 
 export function prepareTarget(step: Step, screen: Screen): Resolution | TargetQuestion {
+  if (step.kind === 'press' && step.alternative)
+    return prepareDeclaredPress({ ...step, alternative: step.alternative }, screen, 0).resolution;
   const target = stepTarget(step);
   if (!target) return { refuse: 'NO_TARGET', reason: 'this step has no target to resolve' };
   const visibility = step.kind === 'wait' || step.kind === 'scroll';
@@ -162,6 +164,89 @@ export function prepareTarget(step: Step, screen: Screen): Resolution | TargetQu
       criteria,
     },
   };
+}
+
+export function declaredTargeting(step: { target: Target; alternative: Target }): Targeting {
+  const method = (target: Target): TargetMethod => (target.exact === 'id' ? 'id' : 'label');
+  return {
+    methods: [method(step.target), method(step.alternative)],
+    binding: 'author-declared',
+    preSelectionAuthorizations: 0,
+    evaluated: [],
+    dispatchAttempted: false,
+    dispatchCount: 0,
+    outcome: 'refused',
+    code: 'SCREEN_EVIDENCE_INCOMPLETE',
+  };
+}
+
+export function prepareDeclaredPress(
+  step: { target: Target; alternative: Target },
+  screen: Screen,
+  observation: number,
+): {
+  targeting: Targeting;
+  target?: Target;
+  resolution: Exclude<Resolution, { scroll: 'up' | 'down' }>;
+} {
+  const targeting = declaredTargeting(step);
+  const refuse = (code: Targeting['code']) => {
+    targeting.code = code;
+    return {
+      targeting,
+      resolution: { refuse: code, reason: 'declared press target was not safely resolved' },
+    };
+  };
+  const coverage = screen.captureCoverage ?? screen.coverage;
+  if (coverage?.native !== 'complete' || coverage.react !== 'complete')
+    return refuse('SCREEN_EVIDENCE_INCOMPLETE');
+  for (const [index, target] of [step.target, step.alternative].entries()) {
+    if (!target.quoted || !target.exact) return refuse('TARGET_UNSUPPORTED');
+    const identities = exactIdentities(screen, target, 'press');
+    const evaluation: Targeting['evaluated'][number] = {
+      method: targeting.methods[index],
+      observation,
+      count: identities.length,
+      match: !identities.length
+        ? 'none'
+        : target.exact === 'id'
+          ? 'id'
+          : screen.elements.some((e) => e.label === target.quoted)
+            ? 'label'
+            : 'segment',
+      outcome:
+        identities.length === 0 ? 'missing' : identities.length > 1 ? 'ambiguous' : 'ineligible',
+    };
+    targeting.evaluated.push(evaluation);
+    if (identities.length > 1) return refuse('TARGET_AMBIGUOUS');
+    if (!identities.length) {
+      if (index === 0) {
+        targeting.originalMissing = 'TARGET_NOT_FOUND';
+        continue;
+      }
+      targeting.outcome = 'exhausted';
+      return refuse('ALTERNATIVES_EXHAUSTED');
+    }
+    const { element, tag } = identities[0];
+    if (screen.pressEvidenceGap || element.semantic?.press !== 'supported')
+      return refuse('TARGET_UNSUPPORTED');
+    if (
+      tag === 'react-only' ||
+      element.disabled ||
+      element.semantic?.disabled ||
+      element.offscreen ||
+      !element.hittable ||
+      (element.visibilityEvidence !== undefined && element.visibilityEvidence !== 'visible') ||
+      (element.visibilityEvidence ?? element.semantic.visibility) !== 'visible' ||
+      centreCovered(element, screen)
+    )
+      return refuse('TARGET_INELIGIBLE');
+    evaluation.outcome = 'selected';
+    targeting.selected = evaluation.method;
+    targeting.code = 'ACTION_OUTCOME_UNCERTAIN';
+    return { targeting, target, resolution: { ref: element.ref, element } };
+  }
+  return refuse('ALTERNATIVES_EXHAUSTED');
 }
 
 function hostOutside(screen: Screen, inner?: string, outer?: string): boolean {

@@ -1033,6 +1033,36 @@ fn run_result(result: &serde_json::Value, exit: i32) -> core::CoreOutcome {
 }
 
 #[test]
+fn declared_targeting_cannot_contradict_the_action_row_or_claim_an_extra_attempt() {
+    let mut result = block_ledger("walk", "discovered");
+    result["steps"][0]["operationId"] = serde_json::json!(1);
+    result["steps"][0]["targeting"] = serde_json::json!({
+        "methods": ["id", "label"], "binding": "author-declared", "preSelectionAuthorizations": 0,
+        "evaluated": [{"method": "id", "observation": 1, "count": 1, "match": "id", "outcome": "selected"}],
+        "selected": "id", "dispatchAttempted": true, "dispatchCount": 1,
+        "outcome": "passed", "code": "ACTION_ACCEPTED"
+    });
+    assert_eq!(run_result(&result, 0).verdict, Verdict::Pass);
+    for (field, value) in [
+        ("outcome", serde_json::json!("fail")),
+        ("outcome", serde_json::json!("retry")),
+        ("kind", serde_json::json!("check")),
+        ("resolvedBy", serde_json::json!("jev")),
+        ("attempt", serde_json::json!(2)),
+        ("operationId", serde_json::json!(0)),
+    ] {
+        let mut malformed = result.clone();
+        malformed["steps"][0][field] = value;
+        let outcome = run_result(&malformed, 0);
+        assert_eq!(outcome.verdict, Verdict::Fail, "{field}");
+        assert_eq!(
+            outcome.failure.unwrap().code,
+            FailureCode::CoreResultMissing
+        );
+    }
+}
+
+#[test]
 fn the_request_names_the_app_root_and_replay_ledgers_are_typed() {
     let repo = common::temp_repo();
     let mut mock = MockRunner::new();

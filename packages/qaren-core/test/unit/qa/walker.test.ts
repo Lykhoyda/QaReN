@@ -90,6 +90,202 @@ function block(markdown: string) {
   return parsed.blocks[0];
 }
 
+test('a declared alternative retains the primary miss on one action and evaluates the following assertion', async () => {
+  const f = fake([screen(['Visible control']), screen(['Done'])], {
+    press: { ok: true, proven: true },
+  });
+  const judge = scriptedJudge(() => {
+    throw new Error('declared selection must not ask Jev');
+  });
+  f.deps.judge = judge;
+  const ledger = await runPlan(
+    [block('1. Tap id "missing" || label "Visible control"\n✓ "Done"')],
+    f.deps,
+  );
+  assert.equal(ledger.verdict, 'PASS');
+  assert.equal(f.calls.filter((c) => c.startsWith('press')).length, 1);
+  assert.equal(judge.calls.length, 0);
+  assert.equal(ledger.steps.length, 2);
+  assert.equal(ledger.steps[0].resolvedBy, 'exact');
+  assert.deepEqual(ledger.steps[0].selector, { text: 'Visible control' });
+  assert.deepEqual(ledger.steps[0].targeting, {
+    methods: ['id', 'label'],
+    binding: 'author-declared',
+    preSelectionAuthorizations: 0,
+    evaluated: [
+      { method: 'id', observation: 1, count: 0, match: 'none', outcome: 'missing' },
+      { method: 'label', observation: 1, count: 1, match: 'label', outcome: 'selected' },
+    ],
+    originalMissing: 'TARGET_NOT_FOUND',
+    selected: 'label',
+    dispatchAttempted: true,
+    dispatchCount: 1,
+    outcome: 'passed',
+    code: 'ACTION_ACCEPTED',
+  });
+  assert.deepEqual(f.rows[0].targeting, ledger.steps[0].targeting);
+});
+
+test('declared presses never repeat an earlier successful action or bypass the primary', async () => {
+  const primary = screen(['Primary', 'Alternate']);
+  primary.elements[0].testID = 'primary';
+  const f = fake([screen(['Start']), primary, primary, screen(['Done'])], {
+    press: { ok: true, proven: true },
+  });
+  const ledger = await runPlan(
+    [block('1. Tap "Start"\n2. Tap id "primary" || label "Alternate"\n✓ "Done"')],
+    f.deps,
+  );
+  assert.equal(ledger.verdict, 'PASS');
+  assert.deepEqual(
+    f.calls.filter((c) => c.startsWith('press')),
+    ['press @e0', 'press @e0'],
+  );
+  assert.deepEqual(
+    ledger.steps.map((r) => [r.line, r.attempt, r.outcome]),
+    [
+      [1, 1, 'pass'],
+      [2, 1, 'pass'],
+      [3, 1, 'pass'],
+    ],
+  );
+  assert.equal(ledger.steps[1].targeting?.evaluated.length, 1);
+  assert.equal(ledger.steps[1].targeting?.selected, 'id');
+});
+
+test('label-first declarations fall back only to the explicitly declared exact ID', async () => {
+  const observed = screen(['Different native label']);
+  observed.elements[0].testID = 'exact-id';
+  const f = fake([observed], { press: { ok: true, proven: true } });
+  const ledger = await runPlan([block('1. Tap label "Absent label" || id "exact-id"')], f.deps);
+  assert.equal(ledger.verdict, 'PASS');
+  assert.deepEqual(ledger.steps[0].selector, { id: 'exact-id' });
+  assert.deepEqual(ledger.steps[0].targeting?.methods, ['label', 'id']);
+  assert.equal(ledger.steps[0].targeting?.selected, 'id');
+  assert.equal(ledger.steps[0].targeting?.originalMissing, 'TARGET_NOT_FOUND');
+});
+
+test('declared presses do not retry, scroll, recover or accept a failed dispatch after visible change', async () => {
+  for (const act of [
+    { ok: true, proven: false },
+    { ok: false, proven: false, mutation: 'possible' as const },
+    { ok: false, proven: true },
+    { ok: false, proven: false, mutation: 'none' as const, error: 'TARGET_MOVED_BEFORE_DISPATCH' },
+    { ok: true, proven: true, mutation: 'possible' as const },
+    {
+      ok: false,
+      proven: false,
+      mutation: 'none' as const,
+      error: 'FOCUS_TARGET_OCCLUDED: covered',
+    },
+  ]) {
+    for (const changed of [false, true]) {
+      if (act.ok && changed && act.mutation !== 'possible') continue;
+      const f = fake([screen(['Alternate']), screen([changed ? 'Done' : 'Alternate'])], {
+        press: act,
+      });
+      const judge = scriptedJudge(() => {
+        throw new Error('pair recovery must not ask Jev');
+      });
+      f.deps.judge = judge;
+      const ledger = await runPlan([block('1. Tap id "missing" || label "Alternate"')], f.deps);
+      assert.equal(ledger.verdict, 'FAIL');
+      assert.equal(ledger.steps.length, 1);
+      assert.equal(ledger.steps[0].targeting?.outcome, 'uncertain');
+      assert.equal(ledger.steps[0].targeting?.dispatchCount, 1);
+      assert.deepEqual(
+        f.calls.filter((c) => /^(press|scroll|back)/.test(c)),
+        ['press @e0'],
+      );
+      assert.equal(judge.calls.length, 0);
+    }
+  }
+});
+
+test('declared missing, ambiguous, ineligible and incomplete targets dispatch nothing', async () => {
+  const pair = block('1. Tap id "primary" || label "Alternate"');
+  for (const state of [
+    'absent',
+    'disabled',
+    'offscreen',
+    'nonhittable',
+    'react-only',
+    'ambiguous',
+    'unknown-react',
+    'unknown-native',
+  ]) {
+    const observed = screen(state === 'absent' ? ['Unrelated'] : ['Alternate']);
+    if (state === 'disabled') observed.elements[0].disabled = true;
+    if (state === 'offscreen') observed.elements[0].offscreen = true;
+    if (state === 'nonhittable') observed.elements[0].hittable = false;
+    if (state === 'react-only') observed.elements[0].ref = 'react:alternate';
+    if (state === 'ambiguous')
+      observed.elements.push({ ...observed.elements[0], ref: '@twin', disabled: true });
+    if (state === 'unknown-react') observed.coverage!.react = 'unknown';
+    if (state === 'unknown-native') observed.coverage!.native = 'unknown';
+    const f = fake([observed]);
+    f.deps.judge = scriptedJudge(() => assert.fail('no pair recovery'));
+    const ledger = await runPlan([pair], f.deps);
+    assert.equal(ledger.verdict, 'FAIL', state);
+    assert.deepEqual(
+      f.calls.filter((c) => /^(press|scroll|back)/.test(c)),
+      [],
+      state,
+    );
+    assert.equal(ledger.steps[0].targeting?.dispatchCount, 0, state);
+    assert.equal(ledger.steps[0].targeting?.selected, undefined, state);
+  }
+});
+
+test('declared presses retain one dispatch on throw, lost readback and duplicate authorization', async () => {
+  for (const failure of ['throw', 'readback', 'second-authorization']) {
+    const f = fake([screen(['Alternate'])]);
+    let presses = 0;
+    let sends = 0;
+    f.deps.press = async (_ref, context) => {
+      presses++;
+      context.authorize();
+      sends++;
+      if (failure === 'throw') throw new Error('unknown driver outcome');
+      if (failure === 'readback')
+        f.deps.captureScreen = async () => {
+          throw new Error('lost readback');
+        };
+      if (failure === 'second-authorization') {
+        context.authorize();
+        sends++;
+      }
+      return { ok: true, proven: true };
+    };
+    const ledger = await runPlan([block('1. Tap id "missing" || label "Alternate"')], f.deps);
+    assert.equal(ledger.verdict, 'FAIL');
+    assert.equal(presses, 1);
+    assert.equal(sends, 1);
+    assert.equal(ledger.steps[0].targeting?.code, 'ACTION_OUTCOME_UNCERTAIN');
+  }
+});
+
+test('declared alternatives leave preceding waits and following assertions terminal', async () => {
+  const f = fake([screen(['Card, Detail'])], { press: { ok: true, proven: true } });
+  const ledger = await runPlan(
+    [block('1. Wait for "Card"\n2. Tap id "missing" || label "Card"')],
+    f.deps,
+  );
+  assert.equal(ledger.verdict, 'FAIL');
+  assert.equal(ledger.steps.length, 1);
+  assert.equal(ledger.steps[0].line, 1);
+  assert.equal(f.calls.filter((c) => c.startsWith('press')).length, 0);
+  const after = fake([screen(['Card, Detail'])], { press: { ok: true, proven: true } });
+  const failedCheck = await runPlan(
+    [block('1. Tap id "missing" || label "Card"\n✓ "Unchanged expectation"')],
+    after.deps,
+  );
+  assert.equal(failedCheck.verdict, 'FAIL');
+  assert.equal(failedCheck.steps[0].outcome, 'pass');
+  assert.equal(failedCheck.steps[1].outcome, 'fail');
+  assert.equal(after.calls.filter((c) => c.startsWith('press')).length, 1);
+});
+
 test('a changed screen after a press is done: never re-dispatched', async () => {
   const f = fake([screen(['Settings']), screen(['Profile'])]);
   const outcome = await walkBlock(block('1. Tap "Settings"\n✓ "Profile"\n'), f.deps);

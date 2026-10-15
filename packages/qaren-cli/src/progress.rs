@@ -211,6 +211,7 @@ mod tests {
             kept: None,
             case_normalized: None,
             dialog: None,
+            targeting: None,
         }
     }
 

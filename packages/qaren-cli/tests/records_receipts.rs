@@ -5,6 +5,132 @@ use qaren::receipt::{Receipt, ReceiptResult, RECEIPT_SCHEMA};
 use qaren::runrecord::{validate_run_id, Phase, RunRecord, RUN_SCHEMA};
 
 #[test]
+fn declared_targeting_survives_row_and_receipt_summary_round_trip() {
+    let fact = serde_json::json!({
+        "methods": ["id", "label"], "binding": "author-declared", "preSelectionAuthorizations": 0,
+        "evaluated": [
+            {"method": "id", "observation": 7, "count": 0, "match": "none", "outcome": "missing"},
+            {"method": "label", "observation": 7, "count": 1, "match": "segment", "outcome": "selected"}
+        ],
+        "originalMissing": "TARGET_NOT_FOUND", "selected": "label",
+        "dispatchAttempted": true, "dispatchCount": 1, "outcome": "passed", "code": "ACTION_ACCEPTED"
+    });
+    let row = serde_json::json!({"block": "a", "operationId": 3, "line": 2, "attempt": 1,
+        "kind": "step", "resolvedBy": "exact", "t": 1, "outcome": "pass", "targeting": fact});
+    let decoded: qaren::core::Row = serde_json::from_value(row.clone()).unwrap();
+    assert_eq!(serde_json::to_value(decoded).unwrap()["targeting"], fact);
+    let ledger: qaren::core::Ledger = serde_json::from_value(serde_json::json!({
+        "verdict": "PASS", "path": "walk", "blocks": [], "steps": [row],
+        "jev": {"calls": 0, "medianMs": 0}, "llmTurns": 0, "escapes": 0, "recoveries": 0
+    }))
+    .unwrap();
+    let summary = qaren::report::summarize(&ledger);
+    let serialized = serde_json::to_value(summary).unwrap();
+    assert_eq!(serialized["targeting"][0]["fact"], fact);
+    assert_eq!(serialized["targeting"][0]["operationId"], 3);
+    assert_eq!(serialized["steps"], 1);
+    let round_trip: qaren::report::LedgerSummary =
+        serde_json::from_value(serialized.clone()).unwrap();
+    assert_eq!(serde_json::to_value(round_trip).unwrap(), serialized);
+}
+
+#[test]
+fn typescript_declared_targeting_round_trips_private_success_and_exhaustion_receipts() {
+    let output = std::process::Command::new("node")
+        .current_dir(std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../qaren-core"))
+        .args(["--input-type=module", "--eval", r#"
+import assert from 'node:assert/strict';
+import { parsePlan } from './dist/qa/plan.js';
+import { runPlan } from './dist/qa/walker.js';
+import { element, screen, scriptedJudge, walker } from './test/unit/qa/judgment-fixtures.ts';
+const ledgers = [];
+for (const found of [true, false]) {
+  const primary = 'private-primary-canary', label = 'private-label-canary';
+  const observed = screen([
+    element('@field1', 'First field', {kind: 'input', value: primary}),
+    element('@field2', 'Second field', {kind: 'input', value: label}),
+    ...(found ? [element('@alternate', label)] : []),
+  ]);
+  const f = walker([observed], scriptedJudge(() => assert.fail('no pair Jev')));
+  const ledger = await runPlan(parsePlan(`1. Tap id "${primary}" || label "${label}"`).blocks, f.deps);
+  assert.equal(ledger.verdict, found ? 'PASS' : 'FAIL');
+  assert.equal(f.actions.length, Number(found));
+  const serialized = JSON.stringify({ledger, rows: f.rows});
+  assert.ok(!serialized.includes(primary) && !serialized.includes(label));
+  ledgers.push(ledger);
+}
+process.stdout.write(JSON.stringify(ledgers));
+"#])
+        .output().expect("node on PATH is required for the core receipt contract");
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let values: Vec<serde_json::Value> = serde_json::from_slice(&output.stdout).unwrap();
+    for value in values {
+        let ledger: qaren::core::Ledger = serde_json::from_value(value.clone()).unwrap();
+        let expected = &value["steps"][0]["targeting"];
+        let result = if ledger.verdict == "PASS" {
+            ReceiptResult::Pass
+        } else {
+            ReceiptResult::Fail
+        };
+        let mut receipt = Receipt::new(
+            "check",
+            "target-pair",
+            result,
+            "walk",
+            "2026-10-15T00:00:00Z".into(),
+        );
+        receipt.ledger = Some(qaren::report::summarize(&ledger));
+        let decoded: Receipt = serde_json::from_str(&receipt.to_json()).unwrap();
+        let encoded = serde_json::to_value(decoded).unwrap();
+        assert_eq!(&encoded["ledger"]["targeting"][0]["fact"], expected);
+        assert_eq!(encoded["ledger"]["steps"], 1);
+        let report = qaren::report::render(&qaren::report::ReportInput {
+            run_id: "target-pair",
+            platform: "ios",
+            app_id: "com.example.app",
+            device: "synthetic",
+            ledger: &ledger,
+        });
+        assert!(report.contains("TARGET_NOT_FOUND"));
+        assert!(
+            !report.contains("private-primary-canary") && !report.contains("private-label-canary")
+        );
+        for (pointer, invalid) in [
+            ("/methods", serde_json::json!(["id", "id"])),
+            ("/methods", serde_json::json!(["id", "label", "id"])),
+            ("/methods/1", serde_json::json!("semantic")),
+            ("/evaluated/0/count", serde_json::json!(-1)),
+            ("/evaluated/0/count", serde_json::json!(4_294_967_296_u64)),
+            ("/evaluated/0/count", serde_json::json!(1)),
+            ("/evaluated/1/observation", serde_json::json!(0)),
+            ("/evaluated/1/observation", serde_json::json!(99)),
+            ("/preSelectionAuthorizations", serde_json::json!(1)),
+            ("/dispatchCount", serde_json::json!(2)),
+            ("/selected", serde_json::json!("id")),
+            ("/originalMissing", serde_json::json!("TARGET_AMBIGUOUS")),
+            ("/code", serde_json::json!("raw private reason")),
+            ("/binding", serde_json::json!("inferred")),
+        ] {
+            let mut invalid_ledger = value.clone();
+            let fact = &mut invalid_ledger["steps"][0]["targeting"];
+            if let Some(slot) = fact.pointer_mut(pointer) {
+                *slot = invalid;
+            } else {
+                fact[pointer.strip_prefix('/').unwrap()] = invalid;
+            }
+            assert!(
+                serde_json::from_value::<qaren::core::Ledger>(invalid_ledger).is_err(),
+                "{pointer}"
+            );
+        }
+    }
+}
+
+#[test]
 fn build_spawn_requires_pending_and_rejects_replacement_or_invalid_identity() {
     use qaren::runrecord::{BuildProcess, Resources};
     let mut resources = Resources::default();

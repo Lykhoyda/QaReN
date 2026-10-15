@@ -109,6 +109,42 @@ function seedStoredAction(dir: string, block: Block, rows: LedgerRow[]): void {
   writeBlock(dir, block.slug, serialized.yaml);
 }
 
+test('declared pairs ignore stale saved selectors and never overwrite the saved action', async () => {
+  const dir = root();
+  const markdown = '### Choose\n1. Tap id "missing" || label "Alternate"';
+  const ordinary = blocks('### Choose\n1. Tap "Alternate"')[0];
+  const pair = blocks(markdown)[0];
+  const serialized = serializeBlock(
+    ordinary,
+    [{ block: ordinary.slug, line: 2, outcome: 'pass', selector: { text: 'Alternate' } }],
+    store(dir),
+  );
+  assert.ok('yaml' in serialized);
+  const stale = serialized.yaml
+    .replace(ordinary.planHash, pair.planHash)
+    .replace('1. Tap "Alternate"', '1. Tap id "missing" || label "Alternate"');
+  writeBlock(dir, pair.slug, stale);
+  const fake = walker(
+    [screen([element('@alternate', 'Alternate')])],
+    scriptedJudge(() => assert.fail('no pair Jev')),
+  );
+  const result = await runPlan([pair], fake.deps, [], store(dir));
+  assert.equal(result.verdict, 'PASS');
+  assert.equal(result.path, 'walk');
+  assert.deepEqual(result.blocks, [
+    {
+      key: pair.slug,
+      outcome: 'pass',
+      source: 'discovered',
+      saved: false,
+      unsavable: 'declared alternatives require live ordered selection',
+    },
+  ]);
+  assert.deepEqual(result.blocksWritten, []);
+  assert.deepEqual(fake.actions, ['press @alternate']);
+  assert.equal(readFileSync(join(dir, '.qaren', 'actions', `${pair.slug}.yaml`), 'utf8'), stale);
+});
+
 test('first run walks, passes and writes the block', async () => {
   const dir = root();
   const { result } = await run(literal, dir);
