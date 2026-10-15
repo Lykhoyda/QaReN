@@ -818,13 +818,14 @@ plus up to ten in-app nodes the visibility rules excluded, each with its rule
 excludes labels, identifiers, values and other nodes' sizes. The same line carries
 its observation ordinal and `ordinary`/`platform-presence` mode, the native
 acquisition attestation, producer viewport provenance, and emitted, normalized,
-missing-rect, joined and duplicate kind counts. The ten kind bins are TextField,
-SecureTextField, TextView, SearchField, ScrollView, Table, CollectionView, Cell,
-StaticText and Other, in that order. Joined counts describe native survivors;
-projection flags are independent counts, and known-boolean/rect counts describe
-source collectedness rather than defaulted element flags. Only sample arrays
-shrink to retain the 2 KB bound. A producer viewport may differ from every
-normalized Window; older runners and raw/presence/alert routes leave it missing.
+missing-rect, joined and duplicate kind counts. The
+[snapshot diagnostic implementation](../qaren-core/src/qa/snapshot-diagnostics.ts)
+owns the kind-bin order and metadata validation. Joined counts describe native
+survivors; projection flags are independent counts, and known-boolean/rect counts describe
+source collectedness rather than defaulted element flags. Window lists and
+symptom/exclusion samples shrink to retain the 2 KB bound; counts stay whole.
+A producer viewport may differ from every normalized Window; older runners and
+raw/presence/alert routes leave it missing.
 Missing/invalid viewport status and null inventory groups are distinct from a
 collected zero. React-refusal warnings keep their existing fixed cause/counters
 and add the same observation/mode. Generic failures remain generic. These private
