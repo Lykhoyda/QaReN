@@ -774,6 +774,111 @@ function withChildren(count: number, props: Record<string, unknown>, hostType = 
   return fixture;
 }
 
+function wrappedTail(count: number, props: Record<string, unknown> = {}) {
+  const fixture = setup({}, 'RCTView');
+  let previous = null;
+  for (let i = 0; i <= count; i++) {
+    const child = buildFiber(
+      i === count
+        ? { hostType: 'RCTTextInput', props: { testID: 'tail', onChangeText() {}, ...props } }
+        : { name: 'Wrapper' },
+      fixture.fiber,
+    );
+    child.tag = i === count ? 5 : 0;
+    child.stateNode =
+      i === count
+        ? { measureInWindow: (done: (...rect: number[]) => void) => done(0, 0, 100, 30) }
+        : null;
+    if (previous) previous.sibling = child;
+    else fixture.fiber.child = child;
+    previous = child;
+  }
+  return { ...fixture, tail: previous! };
+}
+
+test('strict QaReN capture completes a single-root tree beyond 2000 fibers without exposing input values', async () => {
+  for (const typography of [false, true]) {
+    const fixture = wrappedTail(2998, { value: 'large-tree-input-canary' });
+    const legacy = JSON.parse(
+      fixture.api.getTree({ interactiveOnly: true, semanticEvidence: true }),
+    );
+    assert.equal(legacy.totalNodes, 2000);
+    assert.equal(legacy.truncated, true);
+    const begin = fixture.api.beginQaCapture(typography);
+    await tick();
+    const result = begin.state === 'pending' ? fixture.api.readQaCapture(begin.id) : begin;
+    assertNoInputs(begin, 'large-tree-input-canary');
+    assertNoInputs(result, 'large-tree-input-canary');
+    assert.equal(result.state, 'ready');
+    const tree = JSON.parse(result.tree);
+    assert.equal(tree.totalNodes, 3000);
+    assert.equal(tree.verdict.complete, true);
+    assert.equal(tree.truncated, undefined);
+    assert.equal(tree.hostEvidence.complete, true);
+    assert.equal(tree.hostEvidence.hosts.length, 2);
+    assert.equal(tree.interactive[0].testID, 'tail');
+    if (typography) assert.equal(tree.hostEvidence.typography.complete, true);
+  }
+});
+
+test('strict QaReN capture accepts at the existing 5000-fiber ceiling and refuses above it', async () => {
+  for (const typography of [false, true]) {
+    const fixture = wrappedTail(4998);
+    const begin = fixture.api.beginQaCapture(typography);
+    await tick();
+    const result = begin.state === 'pending' ? fixture.api.readQaCapture(begin.id) : begin;
+    assert.equal(result.state, 'ready');
+    const tree = JSON.parse(result.tree);
+    assert.equal(tree.totalNodes, 5000);
+    assert.equal(tree.verdict.complete, true);
+    assert.equal(tree.interactive[0].testID, 'tail');
+    assert.equal(wrappedTail(4999).api.beginQaCapture(typography).state, 'refused');
+  }
+});
+
+test('unreadable input props beyond 2000 fibers still refuse without invoking getters', () => {
+  let calls = 0;
+  for (const typography of [false, true]) {
+    const fixture = wrappedTail(2998);
+    Object.defineProperty(fixture.tail.memoizedProps, 'value', {
+      get() {
+        calls++;
+        throw new Error('large-tree-getter-canary');
+      },
+    });
+    const result = fixture.api.beginQaCapture(typography);
+    assert.equal(result.state, 'refused');
+    assertNoInputs(result, 'large-tree-getter-canary');
+  }
+  assert.equal(calls, 0);
+});
+
+test('the larger strict capture retains the 200-interactive-node limit', () => {
+  const fixture = withChildren(201, { onPress() {} }, 'RCTView');
+  assert.equal(fixture.api.beginQaCapture().state, 'refused');
+});
+
+test('a larger strict capture still refuses measurement completion at its original deadline', async () => {
+  const fixture = wrappedTail(2998, { value: 'large-tree-deadline-canary' });
+  let complete: (...rect: number[]) => void = () => assert.fail('measurement not started');
+  fixture.tail.stateNode = {
+    measureInWindow(done: typeof complete) {
+      complete = done;
+    },
+  };
+  const time = clock({ ...fixture, complete: () => complete(0, 0, 100, 30) });
+  const begin = fixture.api.beginQaCapture(true);
+  assert.equal(begin.state, 'pending');
+  time.advance(1000);
+  complete(0, 0, 100, 30);
+  await tick();
+  const result = fixture.api.readQaCapture(begin.id);
+  assert.equal(result.state, 'refused');
+  assertNoInputs(begin, 'large-tree-deadline-canary');
+  assertNoInputs(result, 'large-tree-deadline-canary');
+  assert.equal(time.timers.size, 0);
+});
+
 test('non-input numeric and opaque object values coexist with an input without coercion', async () => {
   let coercions = 0;
   const opaque = {

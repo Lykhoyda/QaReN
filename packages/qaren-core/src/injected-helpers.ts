@@ -3,7 +3,7 @@ import { TYPOGRAPHY_TEXT_LIMITS } from './qa/host-typography.js';
 import { INPUT_HOST_TYPES } from './qa/input-host-types.js';
 
 // Bump when the injected surface changes so warm runtimes replace stale helpers.
-export const HELPERS_VERSION = 92;
+export const HELPERS_VERSION = 93;
 
 export const INJECTED_HELPERS = `
 (function() {
@@ -1438,7 +1438,7 @@ export const INJECTED_HELPERS = `
         return isHostFiber(fiber) && resolvedDisplay(routeRead(props, 'style'), 0) === 'none';
       }
       var iRoots = findAllRootFibers(typography);
-      var iBudget = Math.min(5000, 2000 * Math.max(1, iRoots.length));
+      var iBudget = privateCapture ? 5000 : Math.min(5000, 2000 * Math.max(1, iRoots.length));
       var iQueue = [];
       for (var iri = 0; iri < iRoots.length; iri++) iQueue.push({ fiber: iRoots[iri].fiber, forwarded: null, parentFiber: null, parentHostIndex: null, textOwnerHostIndex: null, rootIndex: iri });
       var iSeen = new WeakSet();
