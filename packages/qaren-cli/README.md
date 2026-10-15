@@ -538,7 +538,8 @@ See the [occlusion regressions](../qaren-core/test/unit/qa/occlusion-walker.test
 
 Fills use strict native value verification first. A strict fill replaces the
 field's content: the bound input is cleared before typing, and verification
-expects exactly the plan text. Keyboard fallback typing also replaces: see below.
+expects exactly the plan text. For keyboard fallback's replacement request and
+read-back policy, see below.
 Rebinding an input without a testID requires its original label and native type;
 the same frame alone cannot substitute a different input.
 Only a stable exact read-back
