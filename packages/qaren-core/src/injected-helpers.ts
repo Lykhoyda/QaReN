@@ -3,7 +3,7 @@ import { TYPOGRAPHY_TEXT_LIMITS } from './qa/host-typography.js';
 import { INPUT_HOST_TYPES } from './qa/input-host-types.js';
 
 // Bump when the injected surface changes so warm runtimes replace stale helpers.
-export const HELPERS_VERSION = 92;
+export const HELPERS_VERSION = 93;
 
 export const INJECTED_HELPERS = `
 (function() {
@@ -1315,7 +1315,10 @@ export const INJECTED_HELPERS = `
         for (var i = 0; i < keys.length; i++) {
           try {
             var value = qaData(props, keys[i]);
-            if (['role', 'accessibilityRole', 'testID', 'nativeID', 'title', 'accessibilityLabel', 'placeholder'].indexOf(keys[i]) !== -1 && value != null && typeof value !== 'string') throw new Error('Opaque digest string');
+            if (['role', 'accessibilityRole', 'testID', 'nativeID', 'title', 'accessibilityLabel', 'placeholder'].indexOf(keys[i]) !== -1 && value != null && typeof value !== 'string') {
+              if (!isHostFiber(fiber) && ['title', 'accessibilityLabel', 'placeholder'].indexOf(keys[i]) !== -1) continue;
+              throw new Error('Opaque digest string');
+            }
             if (keys[i] === 'accessibilityState' && value && typeof value === 'object') value = { disabled: qaData(value, 'disabled', true) };
             safe[keys[i]] = value;
           } catch (_) { typography.evidence.complete = false; }
