@@ -32,6 +32,61 @@ fn declared_targeting_survives_row_and_receipt_summary_round_trip() {
     let round_trip: qaren::report::LedgerSummary =
         serde_json::from_value(serialized.clone()).unwrap();
     assert_eq!(serde_json::to_value(round_trip).unwrap(), serialized);
+
+    let mut receipt = Receipt::new(
+        "check",
+        "target-pair",
+        ReceiptResult::Pass,
+        "walk",
+        "2026-10-15T00:00:00Z".into(),
+    );
+    receipt.ledger = Some(serde_json::from_value(serialized).unwrap());
+    let success = serde_json::to_value(receipt).unwrap();
+    let mut exhausted = success.clone();
+    exhausted["result"] = serde_json::json!("fail");
+    exhausted["ledger"]["verdict"] = serde_json::json!("FAIL");
+    let fact = &mut exhausted["ledger"]["targeting"][0]["fact"];
+    fact.as_object_mut().unwrap().remove("selected");
+    fact["evaluated"][1]["count"] = serde_json::json!(0);
+    fact["evaluated"][1]["match"] = serde_json::json!("none");
+    fact["evaluated"][1]["outcome"] = serde_json::json!("missing");
+    fact["dispatchAttempted"] = serde_json::json!(false);
+    fact["dispatchCount"] = serde_json::json!(0);
+    fact["outcome"] = serde_json::json!("exhausted");
+    fact["code"] = serde_json::json!("ALTERNATIVES_EXHAUSTED");
+    for value in [success, exhausted] {
+        let decoded: Receipt = serde_json::from_value(value.clone()).unwrap();
+        assert_eq!(serde_json::to_value(decoded).unwrap(), value);
+        let passed = value["result"] == "pass";
+        for (pointer, invalid) in [
+            ("/dispatchCount", serde_json::json!(2)),
+            ("/methods", serde_json::json!(["id", "id"])),
+            ("/preSelectionAuthorizations", serde_json::json!(1)),
+            ("/evaluated/1/count", serde_json::json!(2)),
+            (
+                "/outcome",
+                serde_json::json!(if passed { "exhausted" } else { "passed" }),
+            ),
+            (
+                "/code",
+                serde_json::json!(if passed {
+                    "ALTERNATIVES_EXHAUSTED"
+                } else {
+                    "ACTION_ACCEPTED"
+                }),
+            ),
+        ] {
+            let mut invalid_receipt = value.clone();
+            let fact = &mut invalid_receipt["ledger"]["targeting"][0]["fact"];
+            *fact.pointer_mut(pointer).unwrap() = invalid;
+            let targeting: qaren::core::Targeting = serde_json::from_value(fact.clone()).unwrap();
+            assert!(!targeting.valid(), "invalid fixture at {pointer}");
+            assert!(
+                serde_json::from_value::<Receipt>(invalid_receipt).is_err(),
+                "receipt accepted invalid targeting at {pointer}"
+            );
+        }
+    }
 }
 
 #[test]

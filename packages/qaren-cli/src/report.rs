@@ -38,7 +38,20 @@ pub struct LedgerSummary {
 pub struct TargetingEvidence {
     pub line: u64,
     pub operation_id: u64,
+    #[serde(deserialize_with = "read_targeting_fact")]
     pub fact: crate::core::Targeting,
+}
+
+fn read_targeting_fact<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> Result<crate::core::Targeting, D::Error> {
+    let fact = crate::core::Targeting::deserialize(deserializer)?;
+    if !fact.valid() {
+        return Err(serde::de::Error::custom(
+            "inconsistent declared targeting facts",
+        ));
+    }
+    Ok(fact)
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
