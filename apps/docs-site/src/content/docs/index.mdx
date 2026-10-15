@@ -48,7 +48,8 @@ qaren check --plan-file plan.md --json
 ```
 
 The receipt says `pass` or `fail`, names the run, and gives the next action when something
-went wrong. A passing block is saved under `.qaren/actions/` and replayed on the next run.
+went wrong. For block persistence and replay eligibility, see the
+[saved-block contract](https://github.com/Lykhoyda/rn-dev-agent/blob/develop/packages/qaren-cli/README.md#saved-blocks).
 
 - [Write a plan](plans/): the plan grammar and what a check reads.
 - [Check a plan](check/): devices, flags, the receipt and exit codes.
