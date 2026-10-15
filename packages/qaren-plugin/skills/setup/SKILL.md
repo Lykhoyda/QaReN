@@ -5,7 +5,7 @@ description: "Set up QaReN in this app: install the qaren CLI onto PATH, write .
 
 # Set up QaReN
 
-Run these steps in order from the selected app root. Before any setup effects, **read** [Project QA workflow](../using-qaren/references/project-qa.md), resolving that path from this skill's directory. Complete its metadata-only guide admission and observe that result before reading or hashing optional `.qaren/QA.md` in a later tool call; then apply its ready-route, coverage and evidence steps. Use already assigned routine setup authority; resolve only genuine missing facts, scope or custody boundaries. When a step stops, report the affected work and the fix; continue independent authorized coverage.
+Run these steps in order from the selected app root. Before any setup effects, **read** [Project QA workflow](../using-qaren/references/project-qa.md), resolving that path from this skill's directory. Perform initial and refresh guide admissions in their own metadata-only tool calls, with no file-content reads or hashes of any file batched into them. Observe each admission result before any later content/hash call for optional `.qaren/QA.md`, then apply its ready-route, coverage and evidence steps. Use already assigned routine setup authority; resolve only genuine missing facts, scope or custody boundaries. When a step stops, report the affected work and the fix; continue independent authorized coverage.
 
 QaReN 2.0 needs an Apple silicon Mac with Xcode, Node 24 or newer, pnpm, and an Expo app that uses `expo-dev-client`. This setup prepares an iOS simulator; for a booted Android emulator, see the CLI README's [Check a plan](https://github.com/Lykhoyda/rn-dev-agent/blob/develop/packages/qaren-cli/README.md#check-a-plan).
 
