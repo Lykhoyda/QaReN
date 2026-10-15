@@ -874,9 +874,11 @@ unavailable. Capture deadlines, budgets and item deadlines remain unchanged.
 When the React capture adapter classifies a failure, the `interactive digest
 unavailable` warning includes a fixed `cause` code and available nonnegative integer
 counters: scanned fibers (with the scan budget when available), roots, hosts,
-interactive entries, the walk's queued frontier, fibers it skipped as inactive
-routes or hidden hosts (`pruned`) and elapsed milliseconds (`ms`). Queued and pruned counts are lower bounds observed
-by the bounded walk, not tree totals. These distinguish capture limits, the
+interactive entries, the walk's queued frontier (`queued`), fibers it skipped at
+inactive routes or hosts with `display: none` (`pruned`) and elapsed milliseconds
+(`ms`). Pruned counts exclude the skipped fibers' unvisited descendants. Queued
+and pruned counts are lower bounds observed by the bounded walk, not tree totals.
+These distinguish capture limits, the
 typography sites that leave evidence incomplete, deadlines, renderer coverage,
 malformed evidence and CDP evaluation failures; they exclude app text, labels,
 identifiers and raw errors. Unclassified
