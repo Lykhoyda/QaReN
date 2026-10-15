@@ -724,7 +724,7 @@ test('private captures retain fixed refusals for data-named error overlays', () 
   }
 });
 
-for (const previousVersion of [89, HELPERS_VERSION - 1]) {
+for (const previousVersion of [89, 93, 94]) {
   test(`current helper replaces a warm ${previousVersion} helper and reinjection preserves the private API`, () => {
     const { sandbox } = setup({ value: '' });
     sandbox.__QAREN = { __v: previousVersion };
