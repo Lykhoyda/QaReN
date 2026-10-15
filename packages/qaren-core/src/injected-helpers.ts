@@ -3,7 +3,7 @@ import { TYPOGRAPHY_TEXT_LIMITS } from './qa/host-typography.js';
 import { INPUT_HOST_TYPES } from './qa/input-host-types.js';
 
 // Bump when the injected surface changes so warm runtimes replace stale helpers.
-export const HELPERS_VERSION = 95;
+export const HELPERS_VERSION = 96;
 
 export const INJECTED_HELPERS = `
 (function() {
@@ -559,6 +559,29 @@ export const INJECTED_HELPERS = `
     return name || (typeof type === 'string' ? type : null);
   }
 
+  function imageSourcePlaceholderFacts(fiber, props) {
+    if (qaHostType(fiber) !== 'ViewManagerAdapter_ExpoImage') return null;
+    var state = qaData(fiber, 'stateNode');
+    var canonical = qaData(state, 'canonical');
+    var config = qaData(canonical || state, 'viewConfig');
+    if (qaData(config, 'uiViewClassName') !== 'ViewManagerAdapter_ExpoImage') return null;
+    var attributes = qaData(config, 'validAttributes');
+    var source = qaData(attributes, 'source');
+    var placeholder = qaData(attributes, 'placeholder');
+    var sourceProcess = source === true ? true : qaData(source, 'process');
+    var placeholderProcess = placeholder === true ? true : qaData(placeholder, 'process');
+    if (sourceProcess !== true && typeof sourceProcess !== 'function') return null;
+    if (placeholderProcess !== true && typeof placeholderProcess !== 'function') return null;
+    var roles = ['role', 'accessibilityRole'];
+    for (var ri = 0; ri < roles.length; ri++) {
+      var role = qaData(props, roles[ri]);
+      if (role != null && (typeof role !== 'string' || ['textinput', 'textbox', 'search', 'searchbox'].indexOf(role.toLowerCase()) !== -1)) return null;
+    }
+    var inputProps = ['onChangeText', 'onChange', 'onEndEditing', 'onKeyPress', 'onSubmitEditing', 'editable', 'readOnly', 'aria-readonly'];
+    for (var pi = 0; pi < inputProps.length; pi++) if (qaData(props, inputProps[pi]) != null) return null;
+    return [config, attributes, source, placeholder, sourceProcess, placeholderProcess];
+  }
+
   var qaCaptureSlot = null;
   var qaCaptureCounter = 0;
 
@@ -651,6 +674,10 @@ export const INJECTED_HELPERS = `
       var values = [];
       for (var ki = 0; ki < keys.length; ki++) values.push(qaData(props, keys[ki]));
       values.push(qaData(qaData(props, 'accessibilityState'), 'disabled', true));
+      var placeholder = qaData(props, 'placeholder');
+      if (isHostFiber(fiber) && placeholder != null && typeof placeholder !== 'string') {
+        values = values.concat(imageSourcePlaceholderFacts(fiber, props) || [null]);
+      }
       return values;
     }
 
@@ -1317,6 +1344,7 @@ export const INJECTED_HELPERS = `
             var value = qaData(props, keys[i]);
             if (['role', 'accessibilityRole', 'testID', 'nativeID', 'title', 'accessibilityLabel', 'placeholder'].indexOf(keys[i]) !== -1 && value != null && typeof value !== 'string') {
               if (!isHostFiber(fiber) && ['title', 'accessibilityLabel', 'placeholder'].indexOf(keys[i]) !== -1) continue;
+              if (keys[i] === 'placeholder' && isHostFiber(fiber) && imageSourcePlaceholderFacts(fiber, props)) continue;
               throw new Error('Opaque digest string');
             }
             if (keys[i] === 'accessibilityState' && value && typeof value === 'object') value = { disabled: qaData(value, 'disabled', true) };
