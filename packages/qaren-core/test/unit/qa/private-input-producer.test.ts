@@ -813,7 +813,7 @@ test('host and fiber bounds refuse instead of truncating the capture', () => {
     {
       cause: 'host-evidence-incomplete',
       scanned: maxHosts,
-      budget: 2000,
+      budget: 5000,
       roots: 1,
       hosts: maxHosts,
       interactive: 0,
@@ -823,7 +823,7 @@ test('host and fiber bounds refuse instead of truncating the capture', () => {
   );
   const wide = setup({}, 'RCTView');
   let previous = null;
-  for (let i = 0; i < 2100; i++) {
+  for (let i = 0; i < 5100; i++) {
     const child = buildFiber({ name: 'Row' }, wide.fiber);
     child.tag = 0;
     if (previous) previous.sibling = child;
@@ -832,8 +832,8 @@ test('host and fiber bounds refuse instead of truncating the capture', () => {
   }
   assert.deepEqual(plain(wide.api.beginQaCapture().diagnostic), {
     cause: 'truncated',
-    scanned: 2000,
-    budget: 2000,
+    scanned: 5000,
+    budget: 5000,
     roots: 1,
     hosts: 1,
     interactive: 0,
@@ -906,7 +906,7 @@ test('typography-incomplete refusals name the first fixed site without app strin
   assert.deepEqual(refusal(overlay.api), {
     cause: 'overlay-scan-cap',
     scanned: 2,
-    budget: 2000,
+    budget: 5000,
     roots: 1,
     hosts: 1,
     interactive: 0,
@@ -918,7 +918,7 @@ test('typography-incomplete refusals name the first fixed site without app strin
   assert.deepEqual(refusal(opaque.api), {
     cause: 'digest-prop-opaque',
     scanned: 1,
-    budget: 2000,
+    budget: 5000,
     roots: 1,
     hosts: 1,
     interactive: 0,
@@ -937,7 +937,7 @@ test('typography-incomplete refusals name the first fixed site without app strin
   assert.deepEqual(refusal(wide.api), {
     cause: 'digest-visit-cap',
     scanned: 2602,
-    budget: 4000,
+    budget: 5000,
     roots: 2,
     hosts: 2,
     interactive: 1,
@@ -969,7 +969,7 @@ test('truncation reports the queued frontier and inactive fibers pruned by the w
   assert.deepEqual(refusal(capped.api), {
     cause: 'truncated',
     scanned: 201,
-    budget: 2000,
+    budget: 5000,
     roots: 1,
     hosts: 201,
     interactive: 200,
@@ -980,7 +980,7 @@ test('truncation reports the queued frontier and inactive fibers pruned by the w
   const pruning = setup({}, 'RCTView');
   const inactive = composite('RNSScreen', { activityState: 0 });
   link(inactive, [composite('Row', { accessibilityLabel: leak })]);
-  link(pruning.fiber, [inactive, ...Array.from({ length: 2100 }, () => composite('Row'))]);
+  link(pruning.fiber, [inactive, ...Array.from({ length: 5100 }, () => composite('Row'))]);
   const pruned = refusal(pruning.api);
   assert.equal(pruned.cause, 'truncated');
   assert.equal(pruned.pruned, 1);
@@ -1046,7 +1046,7 @@ test('in-place value prop mutation and root replacement refuse after typography'
       diagnostic: {
         cause: 'tree-changed',
         scanned: 1,
-        budget: 2000,
+        budget: 5000,
         roots: 1,
         hosts: 1,
         interactive: 0,
@@ -1104,7 +1104,7 @@ test('producer deadline and abandonment expiry clear slots and reject late compl
     diagnostic: {
       cause: 'producer-deadline',
       scanned: 1,
-      budget: 2000,
+      budget: 5000,
       roots: 1,
       hosts: 1,
       interactive: 0,
@@ -1328,7 +1328,7 @@ test('revalidation never invokes a newly installed private getter or exposes its
     diagnostic: {
       cause: 'tree-changed',
       scanned: 1,
-      budget: 2000,
+      budget: 5000,
       roots: 1,
       hosts: 1,
       interactive: 0,

@@ -870,7 +870,7 @@ test('the real producer refusal reaches the warning as a value-free cause with c
     assert.equal(warnings.length, 1);
     assert.match(
       warnings[0],
-      /^interactive digest unavailable \(cause=host-evidence-incomplete; scanned=1\/2000; roots=1; hosts=1; interactive=0; queued=0; pruned=0; ms=\d+\); React coverage is unknown$/,
+      /^interactive digest unavailable \(cause=host-evidence-incomplete; scanned=1\/5000; roots=1; hosts=1; interactive=0; queued=0; pruned=0; ms=\d+\); React coverage is unknown$/,
     );
     assert.equal(warnings[0].includes(sentinel), false);
   }
