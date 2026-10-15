@@ -453,6 +453,8 @@ An author may declare one ID and one label for the same intended control, in eit
 ```
 
 QaReN selects the first locator when it uniquely names an eligible native control.
+Declared presses request the existing full capture of React typography and validated
+native presence before requiring host association. Missing prerequisites still refuse.
 Only zero matching identities in complete native **and** React capture permits
 the second locator on that same observation. Disabled, offscreen, nonhittable,
 React-only, unsupported or ambiguous primary matches refuse; they do not enable

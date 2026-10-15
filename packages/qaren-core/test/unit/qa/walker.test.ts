@@ -90,6 +90,147 @@ function block(markdown: string) {
   return parsed.blocks[0];
 }
 
+function associationScreen(typography: boolean, presence: boolean): Screen {
+  const rect = { x: 20, y: 100, width: 100, height: 40 };
+  return joinScreen(
+    [
+      { ref: '@app', type: 'Application', rect: { x: 0, y: 0, width: 400, height: 800 } },
+      {
+        ref: '@window',
+        type: 'Window',
+        parentIndex: 0,
+        rect: { x: 0, y: 0, width: 400, height: 800 },
+      },
+      {
+        ref: '@control',
+        type: 'Button',
+        parentIndex: 1,
+        identifier: 'control',
+        label: 'Control',
+        hittable: true,
+        rect,
+      },
+    ],
+    [],
+    'app',
+    { native: 'complete', react: 'complete' },
+    {
+      complete: true,
+      hosts: [
+        {
+          testID: 'control',
+          role: 'button',
+          roleSource: 'role',
+          capabilities: { press: true, fill: false },
+        },
+      ],
+      ...(typography
+        ? {
+            typography: {
+              version: 1,
+              complete: true,
+              durationMs: 1,
+              coordinateSpace: 'window-points',
+              nodes: [
+                {
+                  hostIndex: 0,
+                  parentHostIndex: null,
+                  rootIndex: 0,
+                  hostType: 'RCTView',
+                  rect,
+                  text: { kind: 'none' },
+                },
+              ],
+            },
+          }
+        : {}),
+    },
+    presence
+      ? {
+          source: 'xcui-live',
+          nodes: Array.from({ length: 3 }, () => ({ status: 'observed', labelSource: 'direct' })),
+        }
+      : undefined,
+  );
+}
+
+test('declared literal presses acquire both association prerequisites before either locator dispatches', async () => {
+  const reduced = associationScreen(false, false);
+  assert.equal(reduced.elements.find((e) => e.testID === 'control')?.semantic?.press, 'supported');
+  assert.ok(reduced.pressEvidenceGap);
+  assert.equal(associationScreen(true, true).pressEvidenceGap, undefined);
+  for (const step of [
+    'Tap id "control" || label "Control"',
+    'Tap id "missing" || label "Control"',
+    'Tap label "Control" || id "control"',
+    'Tap label "Missing" || id "control"',
+  ]) {
+    const f = fake([reduced]);
+    let latest = reduced;
+    const modes: boolean[] = [];
+    let authorizations = 0;
+    let presses = 0;
+    f.deps.judge = scriptedJudge(() => assert.fail('declared capture must not ask Jev'));
+    f.deps.captureScreen = async (options) => {
+      const full = options?.platformPresence === true;
+      modes.push(full);
+      latest = associationScreen(full, full);
+      return latest;
+    };
+    f.deps.press = async (ref, context) => {
+      assert.equal(modes.at(-1), true);
+      assert.equal(latest.pressEvidenceGap, undefined);
+      assert.equal(ref, '@control');
+      context.authorize();
+      authorizations++;
+      presses++;
+      return { ok: true, proven: true };
+    };
+    const ledger = await runPlan([block('1. ' + step)], f.deps);
+    assert.equal(ledger.verdict, 'PASS', step);
+    assert.equal(authorizations, 1);
+    assert.equal(presses, 1);
+    assert.equal(ledger.steps[0].targeting?.preSelectionAuthorizations, 0);
+    assert.equal(ledger.steps[0].targeting?.dispatchCount, 1);
+    assert.equal(ledger.recoveries, 0);
+  }
+});
+
+test('declared full-capture requests still refuse either missing association prerequisite', async () => {
+  for (const [typography, presence] of [
+    [false, true],
+    [true, false],
+    [false, false],
+  ]) {
+    const observed = associationScreen(typography, presence);
+    const f = fake([observed]);
+    let fullRequests = 0;
+    f.deps.now = () => 0;
+    f.deps.timing = () => {};
+    f.deps.judge = scriptedJudge(() => assert.fail('a missing prerequisite must not ask Jev'));
+    f.deps.captureScreen = async (options) => {
+      if (options?.platformPresence === true) fullRequests++;
+      return observed;
+    };
+    const ledger = await runPlan([block('1. Tap id "control" || label "Control"')], f.deps);
+    assert.equal(ledger.verdict, 'FAIL');
+    assert.ok(fullRequests > 0);
+    assert.equal(
+      f.calls.some((call) => /^(press|scroll|back) /.test(call)),
+      false,
+    );
+    assert.equal(ledger.steps.length, 1);
+    const fact = ledger.steps[0].targeting!;
+    assert.equal(fact.code, 'TARGET_UNSUPPORTED');
+    assert.equal(fact.evaluated.length, 1);
+    assert.equal(fact.preSelectionAuthorizations, 0);
+    assert.equal(fact.dispatchCount, 0);
+    assert.equal(fact.evaluated[0].pressSupport?.gap?.typographyComplete, typography);
+    assert.equal(fact.evaluated[0].pressSupport?.gap?.nativePresenceAvailable, presence);
+    assert.equal(ledger.recoveries, 0);
+  }
+});
+
 test('a declared alternative retains the primary miss on one action and evaluates the following assertion', async () => {
   const f = fake([screen(['Visible control']), screen(['Done'])], {
     press: { ok: true, proven: true },

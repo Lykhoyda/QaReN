@@ -295,7 +295,10 @@ export async function walkBlock(
     cached = undefined;
     const target =
       step && ('target' in step ? step.target : step.kind === 'scroll' ? step.until : undefined);
-    const platformPresence = assertion || (!!target && target.quoted === undefined);
+    const platformPresence =
+      assertion ||
+      (step?.kind === 'press' && step.alternative !== undefined) ||
+      (!!target && target.quoted === undefined);
     const startedAt = deps.now();
     const id = ++sequence.observation;
     latestObservation = id;
