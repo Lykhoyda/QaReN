@@ -7,7 +7,14 @@ import type {
   Question,
   Questions,
 } from '../../../dist/qa/questions.js';
-import type { Element, Screen } from '../../../dist/qa/screen.js';
+import {
+  join as joinScreen,
+  type Element,
+  type Screen,
+  type NativeNode,
+  type ReactHostEvidence,
+} from '../../../dist/qa/screen.js';
+import type { NativePresence } from '../../../dist/qa/native-presence.js';
 import type { ActResult, WalkerDeps } from '../../../dist/qa/walker.js';
 import type { LedgerRow } from '../../../dist/qa/ledger.js';
 
@@ -132,4 +139,67 @@ export function walker(
     },
   };
   return { deps, actions, rows, captures: () => captures };
+}
+
+export function joinedGapScreen(
+  category: 'missing-host-evidence' | 'incomplete-host-evidence' | 'unassociated-hosts',
+  presence: boolean | 'unknown' = true,
+  typographyComplete = true,
+): Screen {
+  const nodes: NativeNode[] = [
+    { ref: '@app', type: 'Application', rect: { x: 0, y: 0, width: 400, height: 800 } },
+    {
+      ref: '@window',
+      type: 'Window',
+      parentIndex: 0,
+      rect: { x: 0, y: 0, width: 400, height: 800 },
+    },
+    {
+      ref: '@private-target',
+      type: 'Button',
+      parentIndex: 1,
+      identifier: 'private-gap-primary',
+      label: 'private-gap-label',
+      hittable: true,
+      rect: { x: 20, y: 100, width: 100, height: 40 },
+    },
+    { ref: '@id-input', type: 'TextField', parentIndex: 1, value: 'private-gap-primary' },
+    { ref: '@label-input', type: 'TextField', parentIndex: 1, value: 'private-gap-label' },
+  ];
+  const evidence: ReactHostEvidence | undefined =
+    category === 'missing-host-evidence'
+      ? undefined
+      : {
+          complete: category !== 'incomplete-host-evidence',
+          hosts: Array.from({ length: 10 }, (_, i) => ({
+            testID: 'private-unassociated-host-' + i,
+            role: 'button',
+            roleSource: 'role',
+            capabilities: { press: true, fill: false },
+          })),
+          typography: {
+            version: 1,
+            complete: typographyComplete,
+            durationMs: 1,
+            coordinateSpace: 'window-points',
+            nodes: Array.from({ length: 10 }, (_, i) => ({
+              hostIndex: i,
+              parentHostIndex: null,
+              rootIndex: 0,
+              hostType: 'RCTView',
+              rect: { x: 20, y: 100, width: 100, height: 40 },
+              text: { kind: 'none' },
+            })),
+          },
+        };
+  const native: NativePresence | 'unknown' | undefined =
+    presence === true
+      ? {
+          source: 'xcui-live',
+          nodes: nodes.map(() => ({ status: 'observed', labelSource: 'direct' })),
+        }
+      : presence === 'unknown'
+        ? 'unknown'
+        : undefined;
+  return joinScreen(nodes, [], 'app', { native: 'complete', react: 'complete' }, evidence, native);
 }

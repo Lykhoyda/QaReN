@@ -147,6 +147,7 @@ const joinedDiagnosticFacts = new WeakMap<
     pressGapCount: number;
     fillGapCount: number;
     gapHosts?: GapHostDiagnostics;
+    pressGap?: PressGapDiagnostic;
   }
 >();
 
@@ -411,6 +412,84 @@ interface GapHostDiagnostics {
   }>;
 }
 
+export interface PressGapDiagnostic {
+  category: 'missing-host-evidence' | 'incomplete-host-evidence' | 'unassociated-hosts';
+  hostEvidencePresent: boolean;
+  hostEvidenceComplete: boolean;
+  typographyComplete: boolean;
+  nativePresenceAvailable: boolean;
+  pressGapCount: number;
+  gapHosts?: {
+    total: number;
+    truncated: boolean;
+    rows: Array<
+      Pick<
+        GapHostDiagnostics['rows'][number],
+        'hostOrdinal' | 'hostKind' | 'capabilities' | 'pressGap'
+      > & {
+        association?: Pick<
+          HostAssociationDiagnostic,
+          | 'identity'
+          | 'nativeIdentityCandidateCount'
+          | 'compatibleCount'
+          | 'sameFrameCount'
+          | 'inputContainmentCount'
+          | 'presenceProofCount'
+          | 'ancestorPath'
+          | 'collisions'
+        >;
+      }
+    >;
+  };
+}
+
+export function projectPressGap(fact: PressGapDiagnostic): PressGapDiagnostic {
+  return {
+    category: fact.category,
+    hostEvidencePresent: fact.hostEvidencePresent,
+    hostEvidenceComplete: fact.hostEvidenceComplete,
+    typographyComplete: fact.typographyComplete,
+    nativePresenceAvailable: fact.nativePresenceAvailable,
+    pressGapCount: fact.pressGapCount,
+    ...(fact.gapHosts
+      ? {
+          gapHosts: {
+            total: fact.gapHosts.total,
+            truncated: fact.gapHosts.truncated,
+            rows: fact.gapHosts.rows
+              .slice(0, 8)
+              .map(({ hostOrdinal, hostKind, capabilities, pressGap, association }) => ({
+                hostOrdinal,
+                hostKind,
+                capabilities: { press: capabilities.press, fill: capabilities.fill },
+                pressGap,
+                ...(association
+                  ? {
+                      association: {
+                        identity: association.identity,
+                        nativeIdentityCandidateCount: association.nativeIdentityCandidateCount,
+                        compatibleCount: association.compatibleCount,
+                        sameFrameCount: association.sameFrameCount,
+                        ...(association.inputContainmentCount === undefined
+                          ? {}
+                          : { inputContainmentCount: association.inputContainmentCount }),
+                        presenceProofCount: association.presenceProofCount,
+                        ancestorPath: association.ancestorPath,
+                        collisions: association.collisions,
+                      },
+                    }
+                  : {}),
+              })),
+          },
+        }
+      : {}),
+  };
+}
+
+export function pressGapOf(element: Element): PressGapDiagnostic | undefined {
+  return joinedDiagnosticFacts.get(element)?.pressGap;
+}
+
 function diagnosticHostKind(
   type: string | null | undefined,
 ): GapHostDiagnostics['rows'][number]['hostKind'] {
@@ -592,7 +671,27 @@ export function join(
   } catch {
     // Diagnostic dependencies cannot change host accounting.
   }
-  const diagnosticFacts = { ...gapCounts, ...(gapHosts ? { gapHosts } : {}) };
+  const pressGap = pressEvidenceGap
+    ? projectPressGap({
+        category:
+          reactHostEvidence === undefined
+            ? 'missing-host-evidence'
+            : !reactHostEvidence.complete
+              ? 'incomplete-host-evidence'
+              : 'unassociated-hosts',
+        hostEvidencePresent: reactHostEvidence !== undefined,
+        hostEvidenceComplete: reactHostEvidence?.complete === true,
+        typographyComplete: reactHostEvidence?.typography?.complete === true,
+        nativePresenceAvailable: presence !== undefined,
+        pressGapCount: gapCounts.pressGapCount,
+        ...(reactHostEvidence?.complete && gapHosts ? { gapHosts } : {}),
+      })
+    : undefined;
+  const diagnosticFacts = {
+    ...gapCounts,
+    ...(gapHosts ? { gapHosts } : {}),
+    ...(pressGap ? { pressGap } : {}),
+  };
   let width = 0;
   let height = 0;
   for (const n of nodes) {

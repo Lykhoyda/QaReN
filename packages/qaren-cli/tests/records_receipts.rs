@@ -97,7 +97,7 @@ fn typescript_declared_support_refusals_round_trip_value_free_receipts() {
 import assert from 'node:assert/strict';
 import { parsePlan } from './dist/qa/plan.js';
 import { runPlan } from './dist/qa/walker.js';
-import { element, screen, scriptedJudge, walker } from './test/unit/qa/judgment-fixtures.ts';
+import { element, screen, scriptedJudge, walker, joinedGapScreen } from './test/unit/qa/judgment-fixtures.ts';
 const primary = 'private-support-id-canary', label = 'private-support-label-canary';
 const ledgers = [];
 for (const pressEvidenceGap of [false, true]) {
@@ -117,6 +117,17 @@ for (const pressEvidenceGap of [false, true]) {
     ledgers.push(ledger);
   }
 }
+for (const category of ['missing-host-evidence', 'incomplete-host-evidence', 'unassociated-hosts']) {
+  for (const presence of [true, false, 'unknown']) {
+    for (const typographyComplete of [true, false]) {
+    const f = walker([joinedGapScreen(category, presence, typographyComplete)], scriptedJudge(() => assert.fail('no gap Jev')));
+    const ledger = await runPlan(parsePlan('1. Tap id "private-gap-primary" || label "private-gap-label"').blocks, f.deps);
+    assert.equal(ledger.verdict, 'FAIL');
+    assert.deepEqual(f.actions, []);
+    ledgers.push(ledger);
+    }
+  }
+}
 process.stdout.write(JSON.stringify(ledgers));
 "#])
         .output().expect("node on PATH is required for the core receipt contract");
@@ -126,7 +137,7 @@ process.stdout.write(JSON.stringify(ledgers));
         String::from_utf8_lossy(&output.stderr)
     );
     let values: Vec<serde_json::Value> = serde_json::from_slice(&output.stdout).unwrap();
-    assert_eq!(values.len(), 7);
+    assert_eq!(values.len(), 25);
     for value in values {
         let ledger: qaren::core::Ledger = serde_json::from_value(value.clone()).unwrap();
         let expected = &value["steps"][0]["targeting"];
@@ -155,9 +166,100 @@ process.stdout.write(JSON.stringify(ledgers));
             "private-support-label-canary",
             "private-support-gap-canary",
             "@private-primary",
+            "private-gap-primary",
+            "private-gap-label",
+            "private-unassociated-host-",
         ] {
             assert!(!receipt.to_json().contains(private));
             assert!(!report.contains(private));
+        }
+        let gap = &expected["evaluated"][0]["pressSupport"]["gap"];
+        if !gap.is_null() {
+            let mut mutations = vec![
+                ("/category", serde_json::json!("private-category")),
+                (
+                    "/category",
+                    serde_json::json!(if gap["category"] == "missing-host-evidence" {
+                        "unassociated-hosts"
+                    } else {
+                        "missing-host-evidence"
+                    }),
+                ),
+                (
+                    "/hostEvidencePresent",
+                    serde_json::json!(!gap["hostEvidencePresent"].as_bool().unwrap()),
+                ),
+                (
+                    "/hostEvidenceComplete",
+                    serde_json::json!(!gap["hostEvidenceComplete"].as_bool().unwrap()),
+                ),
+                (
+                    "/typographyComplete",
+                    serde_json::json!("private-typography"),
+                ),
+                (
+                    "/nativePresenceAvailable",
+                    serde_json::json!("private-presence"),
+                ),
+                ("/pressGapCount", serde_json::json!(-1)),
+                ("/pressGapCount", serde_json::json!(4_294_967_296_u64)),
+            ];
+            if let Some(rows) = gap["gapHosts"]["rows"].as_array() {
+                let mut too_many = rows.clone();
+                too_many.push(rows[0].clone());
+                let mut private_association = rows[0]["association"].clone();
+                private_association["frameMismatch"] = serde_json::json!({"delta": {"x": 987654}});
+                mutations.extend([
+                    ("/gapHosts/rows", serde_json::json!(too_many)),
+                    ("/gapHosts/total", serde_json::json!(0)),
+                    ("/gapHosts/truncated", serde_json::json!(false)),
+                    ("/gapHosts/rows/1/hostOrdinal", serde_json::json!(0)),
+                    (
+                        "/gapHosts/rows/0/hostKind",
+                        serde_json::json!("private-kind"),
+                    ),
+                    (
+                        "/gapHosts/rows/0/capabilities",
+                        serde_json::json!({"press": true, "fill": false, "label": "private"}),
+                    ),
+                    ("/gapHosts/rows/0/association", private_association),
+                    (
+                        "/gapHosts/rows/0/association/identity",
+                        serde_json::json!("private-reason"),
+                    ),
+                    (
+                        "/gapHosts/rows/0/association/nativeIdentityCandidateCount",
+                        serde_json::json!(-1),
+                    ),
+                    (
+                        "/gapHosts/rows/0/association/ancestorPath",
+                        serde_json::json!("private-path"),
+                    ),
+                ]);
+            }
+            for (pointer, invalid) in mutations {
+                let mut bad_row = value["steps"][0].clone();
+                *bad_row["targeting"]["evaluated"][0]["pressSupport"]["gap"]
+                    .pointer_mut(pointer)
+                    .unwrap() = invalid.clone();
+                assert!(
+                    serde_json::from_value::<qaren::core::Row>(bad_row).is_err(),
+                    "{pointer}: {invalid}"
+                );
+                let mut bad_receipt = encoded.clone();
+                *bad_receipt["ledger"]["targeting"][0]["fact"]["evaluated"][0]["pressSupport"]
+                    ["gap"]
+                    .pointer_mut(pointer)
+                    .unwrap() = invalid;
+                assert!(
+                    serde_json::from_value::<Receipt>(bad_receipt).is_err(),
+                    "{pointer}"
+                );
+            }
+            let mut contradictory = value["steps"][0].clone();
+            contradictory["targeting"]["evaluated"][0]["pressSupport"]["pressEvidenceGap"] =
+                serde_json::json!(false);
+            assert!(serde_json::from_value::<qaren::core::Row>(contradictory).is_err());
         }
         let mut legacy_row = value["steps"][0].clone();
         legacy_row["targeting"]["evaluated"][0]

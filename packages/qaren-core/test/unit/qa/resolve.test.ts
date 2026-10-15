@@ -18,7 +18,14 @@ import type { NativePresence } from '../../../dist/qa/native-presence.js';
 import { associateHosts } from '../../../dist/qa/host-association.js';
 import { JevError, confidentChoice } from '../../../dist/qa/questions.js';
 import { runPlan } from '../../../dist/qa/walker.js';
-import { choice, element, screen, scriptedJudge, walker } from './judgment-fixtures.ts';
+import {
+  choice,
+  element,
+  screen,
+  scriptedJudge,
+  walker,
+  joinedGapScreen,
+} from './judgment-fixtures.ts';
 
 function step(line: string) {
   const parsed = parseStep(line);
@@ -28,6 +35,75 @@ function step(line: string) {
 const save = screen([element('@save', 'Save'), element('@draft', 'Save draft')]);
 const target = step('Tap the Save button');
 const check = { kind: 'check' as const, text: 'The profile was saved', literal: false };
+
+test('declared support refusals classify the same joined observation without exposing host values', () => {
+  const pair = {
+    target: { quoted: 'private-gap-primary', phrase: 'private-gap-primary', exact: 'id' as const },
+    alternative: {
+      quoted: 'private-gap-label',
+      phrase: 'private-gap-label',
+      exact: 'text' as const,
+    },
+  };
+  for (const category of [
+    'missing-host-evidence',
+    'incomplete-host-evidence',
+    'unassociated-hosts',
+  ] as const) {
+    for (const presence of [true, false, 'unknown'] as const) {
+      for (const typographyComplete of [true, false]) {
+        const observed = joinedGapScreen(category, presence, typographyComplete);
+        const prepared = prepareDeclaredPress(pair, observed, 10);
+        assert.ok('refuse' in prepared.resolution);
+        assert.equal(prepared.resolution.refuse, 'TARGET_UNSUPPORTED');
+        const support = prepared.targeting.evaluated[0].pressSupport!;
+        assert.equal(support.pressEvidenceGap, true);
+        assert.equal(support.semanticPress, 'supported');
+        assert.deepEqual(support.gap, {
+          category,
+          hostEvidencePresent: category !== 'missing-host-evidence',
+          hostEvidenceComplete: category === 'unassociated-hosts',
+          typographyComplete: category !== 'missing-host-evidence' && typographyComplete,
+          nativePresenceAvailable: presence === true,
+          pressGapCount: category === 'missing-host-evidence' ? 0 : 10,
+          ...(category === 'unassociated-hosts'
+            ? {
+                gapHosts: {
+                  total: 10,
+                  truncated: true,
+                  rows: Array.from({ length: 8 }, (_, hostOrdinal) => ({
+                    hostOrdinal,
+                    hostKind: 'view',
+                    capabilities: { press: true, fill: false },
+                    pressGap: true,
+                    association: {
+                      identity:
+                        presence === true && typographyComplete
+                          ? 'native-id-count'
+                          : 'evidence-unavailable',
+                      nativeIdentityCandidateCount:
+                        presence === true && typographyComplete ? 0 : null,
+                      compatibleCount: null,
+                      sameFrameCount: null,
+                      presenceProofCount: null,
+                      ancestorPath:
+                        presence === true && typographyComplete
+                          ? 'self-anchor-missing'
+                          : 'not-evaluated',
+                      collisions: null,
+                    },
+                  })),
+                },
+              }
+            : {}),
+        });
+        assert.equal(prepared.targeting.evaluated[0].observation, 10);
+        assert.equal(prepared.targeting.evaluated.length, 1);
+        assert.equal(prepared.targeting.dispatchCount, 0);
+      }
+    }
+  }
+});
 
 test('declared support refusals retain both guard operands on their observation', () => {
   const pair = {

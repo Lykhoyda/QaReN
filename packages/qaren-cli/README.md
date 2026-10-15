@@ -481,7 +481,15 @@ contradictory outcomes. A supported-press refusal adds value-free `pressSupport`
 facts to that observation's evaluation: `pressEvidenceGap` is a boolean and
 `semanticPress` is `supported`, `unsupported`, `unknown` or `absent`.
 Both guard values are retained even when both fail; these diagnostics cannot
-relax the refusal. Raw locators use the existing privacy projection.
+relax the refusal. When the joined observation has a global gap, `pressSupport.gap`
+also records a fixed category (`missing-host-evidence`, `incomplete-host-evidence`
+or `unassociated-hosts`), host-evidence presence/completeness, typography
+completeness, validated native-presence availability and `pressGapCount`.
+Unassociated-host diagnostics reuse the existing combined press/fill gap list,
+with its total, truncation flag and at most eight rows; only host ordinals, kind,
+capability/gap flags and fixed association reasons/counts are retained. No raw
+host IDs, labels, values, rectangles, refs or frame deltas enter these facts.
+Older receipts may omit this diagnostic. Raw locators use the existing privacy projection.
 Blocks containing a pair require live ordered
 selection and are not saved or admitted for replay; existing saved files are preserved.
 

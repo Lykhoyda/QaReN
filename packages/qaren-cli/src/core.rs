@@ -292,11 +292,148 @@ pub enum SemanticPress {
     Absent,
 }
 
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "kebab-case")]
+pub enum PressGapCategory {
+    MissingHostEvidence,
+    IncompleteHostEvidence,
+    UnassociatedHosts,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "kebab-case")]
+pub enum GapHostKind {
+    View,
+    Text,
+    VirtualText,
+    ScrollView,
+    Input,
+    Unknown,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "kebab-case")]
+pub enum GapAssociationIdentity {
+    EvidenceUnavailable,
+    WindowCount,
+    WindowFrame,
+    Inline,
+    NoTestId,
+    HostIdAmbiguous,
+    NativeIdCount,
+    OutsideWindow,
+    IncompatibleType,
+    FrameMismatch,
+    Matched,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "kebab-case")]
+pub enum GapAncestorPath {
+    NotEvaluated,
+    Valid,
+    SelfAnchorMissing,
+    AncestorStructureMissing,
+    AncestorPathMismatch,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct GapAssociation {
+    pub identity: GapAssociationIdentity,
+    pub native_identity_candidate_count: Option<u32>,
+    pub compatible_count: Option<u32>,
+    pub same_frame_count: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub input_containment_count: Option<u32>,
+    pub presence_proof_count: Option<u32>,
+    pub ancestor_path: GapAncestorPath,
+    pub collisions: Option<u32>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct GapCapabilities {
+    pub press: bool,
+    pub fill: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct PressGapHost {
+    pub host_ordinal: u32,
+    pub host_kind: GapHostKind,
+    pub capabilities: GapCapabilities,
+    pub press_gap: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub association: Option<GapAssociation>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct PressGapHosts {
+    pub total: u32,
+    pub truncated: bool,
+    pub rows: Vec<PressGapHost>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct PressGapDiagnostic {
+    pub category: PressGapCategory,
+    pub host_evidence_present: bool,
+    pub host_evidence_complete: bool,
+    pub typography_complete: bool,
+    pub native_presence_available: bool,
+    pub press_gap_count: u32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub gap_hosts: Option<PressGapHosts>,
+}
+
+impl PressGapDiagnostic {
+    fn valid(&self) -> bool {
+        let category_valid = match self.category {
+            PressGapCategory::MissingHostEvidence => {
+                !self.host_evidence_present
+                    && !self.host_evidence_complete
+                    && !self.typography_complete
+                    && self.press_gap_count == 0
+                    && self.gap_hosts.is_none()
+            }
+            PressGapCategory::IncompleteHostEvidence => {
+                self.host_evidence_present
+                    && !self.host_evidence_complete
+                    && self.gap_hosts.is_none()
+            }
+            PressGapCategory::UnassociatedHosts => {
+                self.host_evidence_present
+                    && self.host_evidence_complete
+                    && self.press_gap_count > 0
+            }
+        };
+        category_valid
+            && self.gap_hosts.as_ref().is_none_or(|hosts| {
+                self.category == PressGapCategory::UnassociatedHosts
+                    && hosts.total >= self.press_gap_count
+                    && hosts.rows.len() == hosts.total.min(8) as usize
+                    && hosts.truncated == (hosts.total > 8)
+                    && hosts
+                        .rows
+                        .windows(2)
+                        .all(|pair| pair[0].host_ordinal < pair[1].host_ordinal)
+                    && hosts.rows.iter().filter(|host| host.press_gap).count()
+                        <= self.press_gap_count as usize
+            })
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct PressSupport {
     pub press_evidence_gap: bool,
     pub semantic_press: SemanticPress,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub gap: Option<PressGapDiagnostic>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -347,7 +484,11 @@ impl Targeting {
             && (self.evaluated.len() < 2 || missed)
             && self.evaluated.iter().enumerate().all(|(i, e)| {
                 e.press_support.as_ref().is_none_or(|support| {
-                    e.outcome == D::Ineligible
+                    support
+                        .gap
+                        .as_ref()
+                        .is_none_or(|gap| support.press_evidence_gap && gap.valid())
+                        && e.outcome == D::Ineligible
                         && self.outcome == O::Refused
                         && self.code == TargetCode::TargetUnsupported
                         && (support.press_evidence_gap

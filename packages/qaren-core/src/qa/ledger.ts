@@ -1,3 +1,5 @@
+import { projectPressGap, type PressGapDiagnostic } from './screen.js';
+
 export type RowOutcome = 'pass' | 'fail' | 'retry';
 
 export interface Selector {
@@ -34,6 +36,7 @@ export interface TargetEvaluation {
   pressSupport?: {
     pressEvidenceGap: boolean;
     semanticPress: 'supported' | 'unsupported' | 'unknown' | 'absent';
+    gap?: PressGapDiagnostic;
   };
 }
 
@@ -67,6 +70,7 @@ export function projectTargeting(fact: Targeting): Targeting {
               pressSupport: {
                 pressEvidenceGap: pressSupport.pressEvidenceGap,
                 semanticPress: pressSupport.semanticPress,
+                ...(pressSupport.gap ? { gap: projectPressGap(pressSupport.gap) } : {}),
               },
             }
           : {}),

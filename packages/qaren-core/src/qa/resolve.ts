@@ -13,6 +13,7 @@ import {
   elementFrame,
   elementViewport,
   forwardedInputOf,
+  pressGapOf,
   semanticActionView,
   semanticDisabled,
   visibilityView,
@@ -229,9 +230,11 @@ export function prepareDeclaredPress(
     }
     const { element, tag } = identities[0];
     if (screen.pressEvidenceGap || element.semantic?.press !== 'supported') {
+      const gap = pressGapOf(element);
       evaluation.pressSupport = {
         pressEvidenceGap: Boolean(screen.pressEvidenceGap),
         semanticPress: element.semantic?.press ?? 'absent',
+        ...(gap ? { gap } : {}),
       };
       return refuse('TARGET_UNSUPPORTED');
     }

@@ -10,7 +10,13 @@ import { APP_TEXT_OPEN, APP_TEXT_CLOSE } from '../../../dist/qa/untrusted.js';
 import { decideScreen } from '../../../dist/qa/resolve.js';
 import { runPlan } from '../../../dist/qa/walker.js';
 import { projectTargeting, type LedgerRow } from '../../../dist/qa/ledger.js';
-import { element, screen as fixtureScreen, scriptedJudge, walker } from './judgment-fixtures.ts';
+import {
+  element,
+  screen as fixtureScreen,
+  scriptedJudge,
+  walker,
+  joinedGapScreen,
+} from './judgment-fixtures.ts';
 
 const TYPED = 'hunter-canary-77';
 const SHORT = '47';
@@ -20,6 +26,65 @@ const PREFILLED = '654321';
 const GROUPED = '1234567890';
 const ECHOED = 'echo-canary-x';
 const LONG = [TYPED, SECURE, PREFILLED, ECHOED, '1234 5678 90'];
+
+test('declared gap categories survive private receipts while host diagnostics stay value-free and bounded', async () => {
+  for (const category of [
+    'missing-host-evidence',
+    'incomplete-host-evidence',
+    'unassociated-hosts',
+  ] as const) {
+    const f = walker(
+      [joinedGapScreen(category)],
+      scriptedJudge(() => assert.fail('no gap Jev')),
+    );
+    const result = await runPlan(
+      parsePlan('1. Tap id "private-gap-primary" || label "private-gap-label"').blocks!,
+      f.deps,
+    );
+    assert.equal(result.verdict, 'FAIL');
+    assert.deepEqual(f.actions, []);
+    assert.equal(result.steps[0].operationId, 1);
+    const fact = result.steps[0].targeting!;
+    assert.equal(fact.code, 'TARGET_UNSUPPORTED');
+    assert.equal(fact.evaluated.length, 1);
+    assert.ok(fact.evaluated[0].observation > 0);
+    const gap = fact.evaluated[0].pressSupport!.gap!;
+    assert.equal(gap.category, category);
+    assert.equal(gap.nativePresenceAvailable, true);
+    assert.equal(gap.pressGapCount, category === 'missing-host-evidence' ? 0 : 10);
+    assert.deepEqual(f.rows[0].targeting, fact);
+    const serialized = JSON.stringify({ result, rows: f.rows });
+    for (const privateValue of [
+      'private-gap-primary',
+      'private-gap-label',
+      'private-unassociated-host-',
+      '@private-target',
+    ]) {
+      assert.ok(!serialized.includes(privateValue), privateValue);
+    }
+    const injected = structuredClone(fact);
+    const injectedGap = injected.evaluated[0].pressSupport!.gap!;
+    Object.assign(injectedGap, { label: 'private-label', ref: 'private-ref', rect: { x: 987654 } });
+    if (injectedGap.gapHosts) {
+      const host = injectedGap.gapHosts.rows[0];
+      Object.assign(host, {
+        testID: 'private-host',
+        rect: { x: 987654 },
+        roleCategory: 'private-role',
+      });
+      Object.assign(host.capabilities, { label: 'private-capability' });
+      Object.assign(host.association!, {
+        frameMismatch: { delta: { x: 987654 } },
+        rawID: 'private-id',
+      });
+      injectedGap.gapHosts.rows.push(structuredClone(host));
+      assert.equal(gap.gapHosts!.total, 10);
+      assert.equal(gap.gapHosts!.truncated, true);
+      assert.equal(gap.gapHosts!.rows.length, 8);
+    }
+    assert.deepEqual(projectTargeting(injected), fact);
+  }
+});
 
 test('declared support refusal diagnostics survive private ledger projection without app facts', async () => {
   const primary = 'private-support-id-canary';
