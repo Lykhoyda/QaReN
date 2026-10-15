@@ -7,7 +7,7 @@ description: "Entry point for QaReN: QA a React Native app on the simulator with
 
 QaReN walks a Markdown QA plan on the iOS simulator, or a booted Android emulator with `--platform android`, like a user would and returns a PASS, FAIL or REFUSED receipt with the run's evidence under `~/.qaren/runs/<run-id>/`. Run every command from the selected app root.
 
-Before planning or effects, **read and perform** [Project QA workflow](references/project-qa.md), resolving the path from this skill's directory. Read the assignment and complete optional app-root `.qaren/QA.md`; refresh before every plan/replan and immediately before each `check`/`pr`. Apply the shared ready-route, safe replay, criteria coverage and private evidence steps on every route below, including resumed runs and PR QA.
+Before planning or effects, **read** [Project QA workflow](references/project-qa.md), resolving the path from this skill's directory. Complete its metadata-only guide admission and observe that result before reading or hashing optional app-root `.qaren/QA.md` in a later tool call. Repeat admission on refresh before every plan/replan and immediately before each `check`/`pr`. Apply the shared ready-route, safe replay, criteria coverage and private evidence steps on every route below, including resumed runs and PR QA.
 
 | The user wants to | Do |
 |---|---|
