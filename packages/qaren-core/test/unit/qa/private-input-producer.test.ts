@@ -817,6 +817,8 @@ test('host and fiber bounds refuse instead of truncating the capture', () => {
       roots: 1,
       hosts: maxHosts,
       interactive: 0,
+      queued: 0,
+      pruned: 0,
     },
   );
   const wide = setup({}, 'RCTView');
@@ -835,6 +837,8 @@ test('host and fiber bounds refuse instead of truncating the capture', () => {
     roots: 1,
     hosts: 1,
     interactive: 0,
+    queued: 0,
+    pruned: 0,
   });
   const { api, fiber } = setup({ value: '' });
   assert.equal(api.beginQaCapture().state, 'ready');
@@ -857,6 +861,130 @@ test('producer refusals without a scanned tree still name one fixed cause', () =
   const reply = throwing.api.beginQaCapture();
   assert.deepEqual(plain(reply.diagnostic), { cause: 'producer-error' });
   assert.doesNotMatch(JSON.stringify(reply), /private-secret/);
+});
+
+function link<T extends object>(parent: T, children: object[]): T {
+  let previous: Record<string, unknown> | null = null;
+  for (const child of children as Array<Record<string, unknown>>) {
+    child.return = parent;
+    if (previous) previous.sibling = child;
+    else Reflect.set(parent, 'child', child);
+    previous = child;
+  }
+  return parent;
+}
+
+function composite(name: string, props: Record<string, unknown> = {}) {
+  const fiber = buildFiber({ name, props });
+  fiber.tag = 0;
+  return fiber;
+}
+
+function host(props: Record<string, unknown> = {}, hostType = 'RCTView') {
+  const fiber = buildFiber({ hostType, props });
+  fiber.tag = 5;
+  return fiber;
+}
+
+const leak = 'private-secret-label';
+
+function refusal(api: { beginQaCapture: (typography?: boolean) => Record<string, unknown> }) {
+  const reply = api.beginQaCapture();
+  assert.equal(reply.state, 'refused');
+  assert.doesNotMatch(JSON.stringify(reply), new RegExp(leak));
+  return plain(reply.diagnostic) as Record<string, unknown>;
+}
+
+test('typography-incomplete refusals name the first fixed site without app strings', () => {
+  const overlay = setup({}, 'RCTView');
+  const hidden = composite('Screen', { activityState: 0 });
+  link(overlay.fiber, [hidden]);
+  link(
+    hidden,
+    Array.from({ length: 5100 }, () => composite('Row', { accessibilityLabel: leak })),
+  );
+  assert.deepEqual(refusal(overlay.api), {
+    cause: 'overlay-scan-cap',
+    scanned: 2,
+    budget: 2000,
+    roots: 1,
+    hosts: 1,
+    interactive: 0,
+    queued: 0,
+    pruned: 1,
+  });
+
+  const opaque = setup({ title: { text: leak } }, 'RCTView');
+  assert.deepEqual(refusal(opaque.api), {
+    cause: 'digest-prop-opaque',
+    scanned: 1,
+    budget: 2000,
+    roots: 1,
+    hosts: 1,
+    interactive: 0,
+    queued: 0,
+    pruned: 0,
+  });
+
+  const wide = setup({ onPress() {} }, 'RCTView');
+  link(
+    wide.fiber,
+    Array.from({ length: 2600 }, () => composite('Row', { accessibilityLabel: leak })),
+  );
+  const second = { current: host() };
+  wide.sandbox.__REACT_DEVTOOLS_GLOBAL_HOOK__.getFiberRoots = (id: number) =>
+    id === 1 ? new Set([wide.root, second]) : new Set();
+  assert.deepEqual(refusal(wide.api), {
+    cause: 'digest-visit-cap',
+    scanned: 2602,
+    budget: 4000,
+    roots: 2,
+    hosts: 2,
+    interactive: 1,
+    queued: 0,
+    pruned: 0,
+  });
+
+  const late = setup({}, 'RCTView');
+  link(late.fiber, [host({ onPress() {}, accessibilityLabel: leak })]);
+  // The clock reaches the deadline only inside the digest text walk.
+  late.sandbox.Date = {
+    now: () => (new Error().stack?.includes('collectText') ? 2000 : 100),
+  };
+  assert.equal(refusal(late.api).cause, 'typography-deadline');
+
+  const healthy = setup({}, 'RCTView');
+  link(healthy.fiber, [host({ onPress() {}, accessibilityLabel: 'Save' })]);
+  const accepted = healthy.api.beginQaCapture();
+  assert.equal(accepted.state, 'ready');
+  assert.equal('diagnostic' in accepted, false);
+});
+
+test('truncation reports the queued frontier and inactive fibers pruned by the walk', () => {
+  const capped = setup({}, 'RCTView');
+  link(
+    capped.fiber,
+    Array.from({ length: 250 }, () => host({ onPress() {} })),
+  );
+  assert.deepEqual(refusal(capped.api), {
+    cause: 'truncated',
+    scanned: 201,
+    budget: 2000,
+    roots: 1,
+    hosts: 201,
+    interactive: 200,
+    queued: 50,
+    pruned: 0,
+  });
+
+  const pruning = setup({}, 'RCTView');
+  const inactive = composite('RNSScreen', { activityState: 0 });
+  link(inactive, [composite('Row', { accessibilityLabel: leak })]);
+  link(pruning.fiber, [inactive, ...Array.from({ length: 2100 }, () => composite('Row'))]);
+  const pruned = refusal(pruning.api);
+  assert.equal(pruned.cause, 'truncated');
+  assert.equal(pruned.pruned, 1);
+  assert.equal(pruned.scanned, pruned.budget);
 });
 
 async function tick() {
@@ -922,6 +1050,8 @@ test('in-place value prop mutation and root replacement refuse after typography'
         roots: 1,
         hosts: 1,
         interactive: 0,
+        queued: 0,
+        pruned: 0,
       },
     });
   }
@@ -978,6 +1108,8 @@ test('producer deadline and abandonment expiry clear slots and reject late compl
       roots: 1,
       hosts: 1,
       interactive: 0,
+      queued: 0,
+      pruned: 0,
     },
   });
   assert.equal(time.timers.size, 0);
@@ -1200,6 +1332,8 @@ test('revalidation never invokes a newly installed private getter or exposes its
       roots: 1,
       hosts: 1,
       interactive: 0,
+      queued: 0,
+      pruned: 0,
     },
   });
   assert.equal(calls, 0);

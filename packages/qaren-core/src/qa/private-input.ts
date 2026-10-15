@@ -31,9 +31,18 @@ export class NativeSnapshotIncomplete extends PrivateInputCaptureError {
 const VERDICT_REASON =
   'no-renderer|renderer-error|root-enumeration-incomplete|renderers-unscanned|scan-budget-exhausted|output-truncated|unscanned-renderers|renderer-errors|dropped-subtrees|collapsed-child-lists|incomplete|unrecognized';
 const REACT_CAUSE = new RegExp(
-  `^(deadline|evaluate-error|completion-shape|tree-shape|tree-too-large|interactive-cap|truncated|host-evidence-incomplete|entry-shape|producer-deadline|producer-error|producer-refused|tree-changed|verdict-reasons:(${VERDICT_REASON})(,(${VERDICT_REASON}))*)$`,
+  `^(deadline|evaluate-error|completion-shape|tree-shape|tree-too-large|interactive-cap|truncated|host-evidence-incomplete|entry-shape|producer-deadline|producer-error|producer-refused|tree-changed|overlay-scan-cap|digest-prop-opaque|digest-visit-cap|typography-deadline|typography-incomplete|verdict-reasons:(${VERDICT_REASON})(,(${VERDICT_REASON}))*)$`,
 );
-const REACT_COUNTERS = ['scanned', 'budget', 'roots', 'hosts', 'interactive', 'ms'] as const;
+const REACT_COUNTERS = [
+  'scanned',
+  'budget',
+  'roots',
+  'hosts',
+  'interactive',
+  'queued',
+  'pruned',
+  'ms',
+] as const;
 export type ReactCaptureCounters = Partial<Record<(typeof REACT_COUNTERS)[number], number>>;
 
 export function isReactCaptureCause(value: unknown): value is string {
@@ -55,7 +64,7 @@ function reactDetail(reason: string, counters: ReactCaptureCounters): string {
     parts.push(
       `scanned=${counters.scanned}${counters.budget === undefined ? '' : `/${counters.budget}`}`,
     );
-  for (const key of ['roots', 'hosts', 'interactive', 'ms'] as const)
+  for (const key of ['roots', 'hosts', 'interactive', 'queued', 'pruned', 'ms'] as const)
     if (counters[key] !== undefined) parts.push(`${key}=${counters[key]}`);
   return parts.join('; ');
 }

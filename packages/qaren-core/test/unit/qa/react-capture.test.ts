@@ -237,7 +237,7 @@ function mockClient(responses: unknown[]) {
 }
 
 const DETAIL =
-  /^cause=[a-z][a-z:,-]*(; scanned=\d+(\/\d+)?)?(; roots=\d+)?(; hosts=\d+)?(; interactive=\d+)?; ms=\d+$/;
+  /^cause=[a-z][a-z:,-]*(; scanned=\d+(\/\d+)?)?(; roots=\d+)?(; hosts=\d+)?(; interactive=\d+)?(; queued=\d+)?(; pruned=\d+)?; ms=\d+$/;
 
 function sanitized(error: unknown): boolean {
   assert.ok(error instanceof ReactCaptureIncomplete);
@@ -767,6 +767,8 @@ test('a producer refusal forwards its fixed cause and counters, and anything els
     roots: 3,
     hosts: 812,
     interactive: 143,
+    queued: 7,
+    pruned: 4,
   };
   const refused = { v: 1, id, state: 'refused' };
   await assert.rejects(
@@ -777,8 +779,22 @@ test('a producer refusal forwards its fixed cause and counters, and anything els
       roots: 3,
       hosts: 812,
       interactive: 143,
+      queued: 7,
+      pruned: 4,
     }),
   );
+  for (const cause of [
+    'overlay-scan-cap',
+    'digest-prop-opaque',
+    'digest-visit-cap',
+    'typography-deadline',
+    'typography-incomplete',
+  ]) {
+    await assert.rejects(
+      captureQaReact(mockClient([{ ...refused, diagnostic: { cause, scanned: 1624 } }]).client),
+      classified(cause, { scanned: 1624 }),
+    );
+  }
   await assert.rejects(
     captureQaReact(
       mockClient([start(), { ...refused, diagnostic: { cause: 'tree-changed' } }]).client,
@@ -789,7 +805,14 @@ test('a producer refusal forwards its fixed cause and counters, and anything els
     captureQaReact(
       mockClient([{ ...refused, diagnostic: { ...diagnostic, hosts: sentinel } }]).client,
     ),
-    classified('truncated', { scanned: 5000, budget: 5000, roots: 3, interactive: 143 }),
+    classified('truncated', {
+      scanned: 5000,
+      budget: 5000,
+      roots: 3,
+      interactive: 143,
+      queued: 7,
+      pruned: 4,
+    }),
   );
   for (const hostile of [
     { ...refused, diagnostic: { cause: sentinel } },
@@ -847,7 +870,7 @@ test('the real producer refusal reaches the warning as a value-free cause with c
     assert.equal(warnings.length, 1);
     assert.match(
       warnings[0],
-      /^interactive digest unavailable \(cause=host-evidence-incomplete; scanned=1\/2000; roots=1; hosts=1; interactive=0; ms=\d+\); React coverage is unknown$/,
+      /^interactive digest unavailable \(cause=host-evidence-incomplete; scanned=1\/2000; roots=1; hosts=1; interactive=0; queued=0; pruned=0; ms=\d+\); React coverage is unknown$/,
     );
     assert.equal(warnings[0].includes(sentinel), false);
   }

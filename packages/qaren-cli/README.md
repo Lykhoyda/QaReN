@@ -874,9 +874,12 @@ unavailable. Capture deadlines, budgets and item deadlines remain unchanged.
 When the React capture adapter classifies a failure, the `interactive digest
 unavailable` warning includes a fixed `cause` code and available nonnegative integer
 counters: scanned fibers (with the scan budget when available), roots, hosts,
-interactive entries and elapsed milliseconds (`ms`). These distinguish capture
-limits, deadlines, renderer coverage, malformed evidence and CDP evaluation
-failures; they exclude app text, labels, identifiers and raw errors. Unclassified
+interactive entries, the walk's queued frontier, fibers it skipped as inactive
+routes or hidden hosts (`pruned`) and elapsed milliseconds (`ms`). Queued and pruned counts are lower bounds observed
+by the bounded walk, not tree totals. These distinguish capture limits, the
+typography sites that leave evidence incomplete, deadlines, renderer coverage,
+malformed evidence and CDP evaluation failures; they exclude app text, labels,
+identifiers and raw errors. Unclassified
 failures retain the generic warning. The
 [React capture adapter](../qaren-core/src/qa/react-capture.ts) owns classification;
 [ReactCaptureIncomplete](../qaren-core/src/qa/private-input.ts) owns the allowed

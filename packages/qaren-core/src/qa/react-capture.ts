@@ -5,7 +5,16 @@ import { isReactCaptureCause, ReactCaptureIncomplete } from './private-input.js'
 import { validateReactHostEvidence } from './screen.js';
 import type { DigestEntry } from './screen.js';
 
-const PRODUCER_DIAGNOSTIC = ['cause', 'scanned', 'budget', 'roots', 'hosts', 'interactive'];
+const PRODUCER_DIAGNOSTIC = [
+  'cause',
+  'scanned',
+  'budget',
+  'roots',
+  'hosts',
+  'interactive',
+  'queued',
+  'pruned',
+];
 const VERDICT_REASONS = [
   'no-renderer',
   'renderer-error',

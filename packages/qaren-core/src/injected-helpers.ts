@@ -3,7 +3,7 @@ import { TYPOGRAPHY_TEXT_LIMITS } from './qa/host-typography.js';
 import { INPUT_HOST_TYPES } from './qa/input-host-types.js';
 
 // Bump when the injected surface changes so warm runtimes replace stale helpers.
-export const HELPERS_VERSION = 93;
+export const HELPERS_VERSION = 94;
 
 export const INJECTED_HELPERS = `
 (function() {
@@ -576,7 +576,7 @@ export const INJECTED_HELPERS = `
   function refuseQaCapture(slot, cause) {
     var source = slot.capture && slot.capture.diagnostic;
     var diagnostic = { cause: cause || (source && source.cause) || 'producer-refused' };
-    var counters = ['scanned', 'budget', 'roots', 'hosts', 'interactive'];
+    var counters = ['scanned', 'budget', 'roots', 'hosts', 'interactive', 'queued', 'pruned'];
     for (var ci = 0; source && ci < counters.length; ci++) {
       if (typeof source[counters[ci]] === 'number') diagnostic[counters[ci]] = source[counters[ci]];
     }
@@ -1020,15 +1020,18 @@ export const INJECTED_HELPERS = `
       return true;
     }
 
-    function finish(out, roots, budget) {
+    function finish(out, roots, budget, queued, pruned) {
       var verdictCause = out.verdict.complete ? null : 'verdict-reasons:' + (out.verdict.reasons.join(',') || 'incomplete');
+      var typographyCause = evidence.complete ? null : capture.incompleteCause || 'typography-incomplete';
       capture.diagnostic = {
-        cause: out.truncated ? 'truncated' : verdictCause || (out.hostEvidence.complete ? null : 'host-evidence-incomplete'),
+        cause: out.truncated ? 'truncated' : verdictCause || (out.hostEvidence.complete ? null : 'host-evidence-incomplete') || typographyCause,
         scanned: out.totalNodes,
         budget: budget,
         roots: roots.length,
         hosts: out.hostEvidence.hosts.length,
-        interactive: out.interactive.length
+        interactive: out.interactive.length,
+        queued: queued,
+        pruned: pruned
       };
       evidence.complete = evidence.complete && out.hostEvidence.complete;
       if (privateInputs) {
@@ -1192,20 +1195,26 @@ export const INJECTED_HELPERS = `
     var visited = new WeakSet();
     var totalNodes = 0;
 
+    // Records the first fixed site that left typography evidence incomplete.
+    function typographyIncomplete(cause) {
+      typography.evidence.complete = false;
+      if (!typography.incompleteCause) typography.incompleteCause = cause;
+    }
+
     var typographyOverlayVisits = 0;
     function hasErrorOverlay(fiber, depth) {
       if (typography) {
         var pending = [fiber];
         var overlaySeen = new WeakSet();
         while (pending.length) {
-          if (++typographyOverlayVisits > 5000 || Date.now() >= typography.deadline) { typography.evidence.complete = false; return false; }
+          if (++typographyOverlayVisits > 5000 || Date.now() >= typography.deadline) { typographyIncomplete(typographyOverlayVisits > 5000 ? 'overlay-scan-cap' : 'typography-deadline'); return false; }
           var node = pending.pop();
           if (!node || overlaySeen.has(node)) continue;
           overlaySeen.add(node);
           typography.prepare(node);
           var nodeName = getName(node);
           if (nodeName === 'LogBox' || nodeName === 'ErrorWindow' || nodeName === 'RedBox') return true;
-          if (pending.length >= 5000) { typography.evidence.complete = false; return false; }
+          if (pending.length >= 5000) { typographyIncomplete('overlay-scan-cap'); return false; }
           if (node.child) pending.push(node.child);
           if (node.sibling) pending.push(node.sibling);
         }
@@ -1351,7 +1360,7 @@ export const INJECTED_HELPERS = `
             if (['role', 'accessibilityRole', 'testID', 'nativeID', 'title', 'accessibilityLabel', 'placeholder'].indexOf(keys[i]) !== -1 && value != null && typeof value !== 'string') throw new Error('Opaque digest string');
             if (keys[i] === 'accessibilityState' && value && typeof value === 'object') value = { disabled: qaData(value, 'disabled', true) };
             safe[keys[i]] = value;
-          } catch (_) { typography.evidence.complete = false; }
+          } catch (_) { typographyIncomplete('digest-prop-opaque'); }
         }
         return safe;
       }
@@ -1386,7 +1395,7 @@ export const INJECTED_HELPERS = `
       // nodes (they each get their own entry).
       var collectText = function(fiber, depth, acc) {
         if (!fiber || depth > 8 || acc.s.length >= 120 || inactiveRoute(fiber)) return;
-        if (typography && (++typographyDigestVisits > 5000 || Date.now() >= typography.deadline)) { typography.evidence.complete = false; return; }
+        if (typography && (++typographyDigestVisits > 5000 || Date.now() >= typography.deadline)) { typographyIncomplete(typographyDigestVisits > 5000 ? 'digest-visit-cap' : 'typography-deadline'); return; }
         if (fiber.tag === 6 && typeof fiber.memoizedProps === 'string') {
           var t = fiber.memoizedProps.trim();
           if (t) acc.s += (acc.s ? ' ' : '') + t;
@@ -1394,7 +1403,7 @@ export const INJECTED_HELPERS = `
         }
         var c = fiber.child;
         while (c && acc.s.length < 120) {
-          if (typography && (++typographyDigestVisits > 5000 || Date.now() >= typography.deadline)) { typography.evidence.complete = false; break; }
+          if (typography && (++typographyDigestVisits > 5000 || Date.now() >= typography.deadline)) { typographyIncomplete(typographyDigestVisits > 5000 ? 'digest-visit-cap' : 'typography-deadline'); break; }
           if (!isInteractiveFiber(c)) collectText(c, depth + 1, acc);
           c = c.sibling;
         }
@@ -1479,13 +1488,14 @@ export const INJECTED_HELPERS = `
       var iStart = Date.now();
       var iEnqueued = iQueue.length;
       var iEnqueueTruncated = false;
+      var iPruned = 0;
       while (iQueue.length > 0 && iScanned < iBudget && (Date.now() - iStart) < 3000 && (!typography || Date.now() < typography.deadline) && salient.length < 200) {
         var iframe = iQueue.shift();
         var ifiber = iframe.fiber;
         if (!ifiber || iSeen.has(ifiber)) continue;
         iSeen.add(ifiber);
         iScanned++;
-        if (inactiveRoute(ifiber)) continue;
+        if (inactiveRoute(ifiber)) { iPruned++; continue; }
         if (typography) typography.prepare(ifiber);
         var hostIndex = collectHostEvidence(ifiber);
         var typographyRecord = typography ? typography.observe(ifiber, iframe, hostIndex) : null;
@@ -1586,7 +1596,7 @@ export const INJECTED_HELPERS = `
         hostEvidence.complete = hostEvidence.complete && iRoots.length > 0 && iOut.verdict.complete;
         iOut.hostEvidence = hostEvidence;
       }
-      return typography ? typography.finish(iOut, iRoots, iBudget) : evidenceJson(iOut);
+      return typography ? typography.finish(iOut, iRoots, iBudget, iQueue.length, iPruned) : evidenceJson(iOut);
     }
 
     // For filtered queries: BFS to find matches, then build compact subtrees.
