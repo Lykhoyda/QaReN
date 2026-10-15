@@ -44,6 +44,7 @@ The ledger's `path` is `walk`, `replay` or `replay→walk@<line>`, and each bloc
 A block that passed is left unsaved, and `blocks_not_saved` gives the reason without naming
 any value, when:
 
+- it contains [declared press alternatives](https://github.com/Lykhoyda/rn-dev-agent/blob/develop/packages/qaren-cli/README.md#declared-press-alternatives), whose live-only contract also excludes replay;
 - a step had neither a `testID` nor a label to store;
 - it has a phrase wait;
 - it fills a secure or private input;
@@ -69,6 +70,10 @@ link for Git worktrees, see the authoritative
 [action corpus contract](https://github.com/Lykhoyda/rn-dev-agent/blob/develop/packages/qaren-cli/README.md#saved-blocks).
 
 ## Login recovery
+
+For declared press alternatives, the terminal-failure rules in the
+[alternatives contract](https://github.com/Lykhoyda/rn-dev-agent/blob/develop/packages/qaren-cli/README.md#declared-press-alternatives)
+take precedence over the recovery rules below.
 
 When an action shows no success evidence after its one retry, a step's target does not resolve,
 or a phrase check is still unsure after its re-ask, qaren tries one deterministic recovery and

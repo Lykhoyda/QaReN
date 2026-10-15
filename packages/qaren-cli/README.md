@@ -1178,6 +1178,9 @@ do not delete locks to bypass unresolved ownership.
 
 ### Saved blocks
 
+For blocks containing a declared locator pair, follow the live-only restrictions
+in [Declared press alternatives](#declared-press-alternatives).
+
 Block IDs come from their `###` titles; a headingless block uses the plan's `#`
 title, or `plan` when absent. The [parser's `slugify`](../qaren-core/src/qa/plan.ts)
 lowercases the title, replaces runs outside `a-z` and `0-9` with hyphens, trims
@@ -1307,6 +1310,9 @@ refuses `APP_PROCESS_UNKNOWN`; a runner built from an older checkout needs a reb
 (`RN_RUNNER_BUILD=local`).
 
 ### Step recovery
+
+For declared locator pairs, the terminal-failure rules in
+[Declared press alternatives](#declared-press-alternatives) take precedence.
 
 An observed React Native red box fails the current step immediately, including
 during login replay, with error-screen evidence in `failure.seen` projected through

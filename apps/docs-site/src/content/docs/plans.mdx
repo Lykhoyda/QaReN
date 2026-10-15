@@ -58,6 +58,9 @@ A **quoted** target, such as `Tap "tab-tasks"`, resolves locally against the lab
 test IDs on screen. Two or more distinct matches refuse with `TARGET_AMBIGUOUS`; that
 refusal is never retried or re-walked.
 
+For two locators naming the same control, follow the authoritative
+[declared press alternatives contract](https://github.com/Lykhoyda/rn-dev-agent/blob/develop/packages/qaren-cli/README.md#declared-press-alternatives).
+
 A **phrase** target, such as `Tap the tasks tab`, has no quotes. Jev, QaReN's screen
 judge, picks the element.
 
