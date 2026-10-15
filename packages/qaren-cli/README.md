@@ -869,7 +869,10 @@ label, identifier and origin match; deduplication compares those fields separate
 The React digest adds semantics: a deadline, malformed-payload, validation or
 transport failure degrades React coverage to unknown without retrying capture.
 Operations requiring complete React evidence still refuse when that coverage is
-unavailable. Capture deadlines, budgets and item deadlines remain unchanged.
+unavailable. Strict private React capture can scan up to 5,000 fibers across
+renderer roots, including a single-root screen. Existing capture and item
+deadlines, host-evidence and interactive-node limits still apply; incomplete
+evidence is refused.
 
 React-only elements expose no label, placeholder or value strings in the screen
 projection. The React walk excludes provably inactive screen routes and native
