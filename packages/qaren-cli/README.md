@@ -495,6 +495,9 @@ selection and are not saved or admitted for replay; existing saved files are pre
 
 ### Occluded taps and focus
 
+For declared locator pairs, the dispatch and recovery limits in
+[Declared press alternatives](#declared-press-alternatives) take precedence.
+
 Before an iOS tap or exact fill, the runner resolves the retained target by
 native type and identifier (or label when unidentified) in the same snapshot
 generation. A unique live match whose frame no longer approximately matches
@@ -709,9 +712,11 @@ A check is literal only when its entire payload is one quoted string:
 `✓ The heading shows "Welcome" and no error is visible`, makes the whole
 expectation a phrase check. Phrase press, fill and wait targets, phrase
 scroll-until targets, phrase checks and unrecognised verbs require
-`TYPESAFE_API_KEY`. They run the fixed Jev readiness probe even when another
-line is unparseable; a missing or rejected key refuses `JEV_UNREACHABLE` before
-device selection or leasing. Plans with only quoted targets and literal checks
+`TYPESAFE_API_KEY`. Except for malformed syntax covered by
+[Declared press alternatives](#declared-press-alternatives), they run the fixed
+Jev readiness probe even when another line is unparseable; a missing or rejected
+key refuses `JEV_UNREACHABLE` before device selection or leasing.
+Plans with only quoted targets and literal checks
 make no Jev calls and need no key; recognised back, dialog and fixed-scroll
 steps also stay model-free.
 
@@ -828,7 +833,8 @@ proven hidden. A docked full-width keyboard covers from its frame's top to the
 screen bottom, because its chrome paints below the frame XCUI reports. The
 keyboard's own keys and the chrome in its window stay visible. Overlays are not
 occlusion evidence: see [Limitations](#limitations-recorded-not-papered-over).
-Quoted and phrase target resolution scrolls up when the target is wholly above
+Outside the [declared-pair restrictions](#declared-press-alternatives),
+quoted and phrase target resolution scrolls up when the target is wholly above
 its effective trusted clipping viewport, and down otherwise; without a known
 clip, the boundary remains screen y=0. Quoted scroll-until targets use that
 viewport when exactly one offscreen identity matches; otherwise they retain

@@ -78,12 +78,8 @@ capture ends `CHECK_UNSURE`.
 
 ## When the plan needs `TYPESAFE_API_KEY`
 
-Phrase targets, phrase checks and lines with no verb the grammar knows need Jev, so they
-need `TYPESAFE_API_KEY`. A plan with any of them runs a Jev readiness probe first; a
-missing or rejected key refuses `JEV_UNREACHABLE` before a device is selected.
-
-A plan with only quoted targets and literal checks makes no Jev calls and needs no key.
-Back, dialog and plain scroll steps never call Jev.
+For key requirements, readiness probing and syntax-refusal precedence, follow
+[Plan checks and screen evidence](https://github.com/Lykhoyda/rn-dev-agent/blob/develop/packages/qaren-cli/README.md#plan-checks-and-screen-evidence).
 
 ## Refusals before the walk
 
