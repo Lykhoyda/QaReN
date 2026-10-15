@@ -1,6 +1,6 @@
 ---
 title: Getting started
-description: Install qaren and the QaReN plugin, run /qaren:setup and reach a first passing check.
+description: Install qaren and the QaReN plugin, run /qaren:setup and establish the route to the usable main screen.
 ---
 
 import { Steps } from '@astrojs/starlight/components';
@@ -75,17 +75,26 @@ recover an interrupted install.
 
 ## What `/qaren:setup` does
 
-Setup runs six steps from the app's root directory. When a step stops, it gives the one
-reason and the fix.
+Before setup effects, the skill reads the assignment and optional app-root
+`.qaren/QA.md` through the shared [Project QA workflow](https://github.com/Lykhoyda/rn-dev-agent/blob/develop/packages/qaren-plugin/skills/using-qaren/references/project-qa.md).
+The guide can hold owner-reviewed environment, private procedure references and
+coverage instructions; credentials stay outside it. An absent guide does not
+block setup. Bare CLI commands do not load it automatically.
+
+Setup runs six steps from the selected app package root. It uses already assigned
+routine setup authority and resolves genuine missing facts or custody boundaries.
+When a step stops, it names the affected work and fix while independent coverage
+continues.
 
 1. **CLI.** It finds the `qaren` binary the plugin verifies. Until a release is published
    it accepts the `qaren` on `PATH` when that binary lives under `~/.qaren/runtime/` and
    its version matches the plugin's. Otherwise it gives you the source install line above
    and offers to run it for you.
 2. **App.** It checks that `package.json` lists `expo` and `expo-dev-client` and that
-   `pnpm-lock.yaml` exists. It asks before running `pnpm install`. It reads the bundle
-   identifier and the app's `slug` from `pnpm exec expo config`; when that fails, it asks
-   you for both values rather than guessing.
+   `pnpm-lock.yaml` exists. It runs `pnpm install` when dependencies are absent and
+   installation is within assigned setup authority; otherwise it asks. It reads
+   the bundle identifier and app's `slug` from `pnpm exec expo config`; if that
+   fails, it uses established assignment facts or resolves only missing values.
 3. **Config.** It writes `.qaren/config.yaml`:
 
    ```yaml
@@ -94,27 +103,38 @@ reason and the fix.
    ```
 
    `exp+<slug>` is the scheme `expo-dev-client` generates. When the app's config turns that
-   scheme off, setup asks you for the scheme the app registers instead. An existing config
-   is shown next to the detected values and changed only with your consent. See [Configuration](../configuration/) for every key.
+   scheme off, setup uses an established registered scheme or resolves that missing
+   value. An existing config
+   is compared privately with the detected values and preserved; mismatches need
+   resolution, and edits need explicit authority. See [Configuration](../configuration/) for every key.
 4. **Device.** It reads the simulator inventory and never boots, shuts down or erases a
-   simulator itself. With one booted simulator it passes no device flag. With none, it
-   picks the newest available iPhone and passes `--boot-device --device <udid>`, so
-   `qaren` boots it under its device lease. With several, it asks you which one.
-5. **Smoke plan.** It reads the app's launch path in source, picks a text shown on the
-   first screen, and writes `.qaren/plans/smoke.md`. This plan needs no
-   `TYPESAFE_API_KEY`.
+   simulator itself. It honors an assigned target first. Otherwise, with one booted
+   simulator it passes no device flag. With none, it picks the newest available iPhone and passes `--boot-device --device <udid>`, so
+   `qaren` boots it under its device lease. With several and no assigned target, it
+   resolves which one to use.
+5. **Smoke and ready-route plans.** It reads the app's launch path in source,
+   picks a text shown on the first screen, and writes `.qaren/plans/smoke.md`. This plan needs no
+   `TYPESAFE_API_KEY`. It also discovers an observable usable main state and the
+   real UI route there, including authorized login, onboarding, custom flows and
+   loading/animation pages. Existing authenticated state and compatible full plans
+   are reused; private login values stay in owner-private plans.
 6. **Run.** It starts the first `qaren check` detached, because a cold native build can
    take longer than the host's command limit, and follows the run until it ends. Within a
    minute the progress log names the run, and you can watch it in your own terminal with
    `qaren watch <run-id>`. It then reports the receipt's `result`, `run_id` and
    `next_action`.
 
-On `pass`, QaReN is set up. If the receipt's `next_action` is a `qaren cleanup` command,
-teardown was incomplete and setup offers to run it.
+A first-screen `pass` proves admission. Setup continues to the observable ready
+state and inspects actual saved/not-saved outcomes. A route is called reusable
+only after clean replay from a safely obtainable equivalent start and a passing
+ready check. Private or unsafe-to-repeat routes can remain recipes with replay
+unverified. Smoke, readiness and reuse are reported separately; any already
+assigned feature QA continues through every criterion or its explicit evidence
+gap. Cleanup follows existing ownership and assigned authority.
 
 ## First check
 
-Setup writes the smoke plan in this shape, with the text it picked from your first screen:
+Setup writes the admission smoke plan in this shape, with the text it picked from your first screen:
 
 ```md title=".qaren/plans/smoke.md"
 ## QA
@@ -140,4 +160,6 @@ Follow it from a second terminal:
 qaren watch --latest
 ```
 
-Next, [write a plan](../plans/) for a feature, or ask the `using-qaren` skill to write one.
+This command checks only the first screen. The skills continue with the ready
+route and assigned feature coverage; a smoke pass alone is not feature acceptance.
+For another feature, [write a plan](../plans/) or ask `using-qaren` to write one.

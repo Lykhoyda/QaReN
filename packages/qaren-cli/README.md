@@ -345,6 +345,32 @@ app and running emulator: `--remove-app` on a borrowed emulator refuses
 probes the emulator only through the borrowed adb server, rechecking compatibility
 before device probes and reporting them as inconclusive if that check fails.
 
+### Project QA guidance
+
+The `setup` and `using-qaren` skills explicitly read one optional human-maintained
+`<app-root>/.qaren/QA.md` before planning/effects and refresh it before each run.
+They discover the observable route to the app's usable main state, inspect
+eligible saved blocks, prove replay when safely possible, and carry assigned
+feature criteria beyond smoke. See the shared [Project QA workflow](../qaren-plugin/skills/using-qaren/references/project-qa.md)
+for loading, authority, coverage and private evidence rules, including a generic
+owner-authored outline. Absence of a guide does not block routine assigned QA.
+
+Select the assigned app package root, including in monorepos; an external config
+or plan path does not change the guide root. Private procedure references are
+resolved by the authorized owner into ordinary literal-filled plans at private
+absolute `--plan-file` paths. The guide filename is not automatically ignored;
+keep credentials outside it and verify private-file exclusions. Private input
+may correctly prevent block saving. A saved block is distinct from a recipe and
+requires safe clean replay proof before being called reusable. Paired
+`loginBlock`/`loginMarker` remain recovery for an existing compatible block,
+not unconditional setup or a credential provider.
+
+This is a skills workflow. Bare `qaren check`/`qaren pr` do not automatically load
+this Markdown, enforce its instructions or record a guidance digest in receipts.
+It adds no configuration keys, credential interpolation or protected-input
+persistence. The agent records guidance digests and coverage in its existing
+private task report; runtime privacy, authority and publication gates still apply.
+
 ### Android runner provisioning
 
 The Android runner uses the runtime's shipped source; no published runner APK
