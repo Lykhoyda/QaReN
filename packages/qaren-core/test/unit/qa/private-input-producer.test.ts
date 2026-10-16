@@ -949,7 +949,9 @@ function wrappedTail(count: number, props: Record<string, unknown> = {}) {
   return { ...fixture, tail: previous! };
 }
 
-test('strict QaReN capture completes a single-root tree beyond 2000 fibers without exposing input values', async () => {
+test('strict QaReN capture completes a single-root tree beyond 2000 fibers without exposing input values', async (t) => {
+  // Exercise the fiber bound independently of host load; deadline tests keep their own clock.
+  t.mock.timers.enable({ apis: ['Date'], now: 1000 });
   for (const typography of [false, true]) {
     const fixture = wrappedTail(2998, { value: 'large-tree-input-canary' });
     const legacy = JSON.parse(
@@ -974,7 +976,8 @@ test('strict QaReN capture completes a single-root tree beyond 2000 fibers witho
   }
 });
 
-test('strict QaReN capture accepts at the existing 5000-fiber ceiling and refuses above it', async () => {
+test('strict QaReN capture accepts at the existing 5000-fiber ceiling and refuses above it', async (t) => {
+  t.mock.timers.enable({ apis: ['Date'], now: 1000 });
   for (const typography of [false, true]) {
     const fixture = wrappedTail(4998);
     const begin = fixture.api.beginQaCapture(typography);
@@ -1217,7 +1220,8 @@ test('typography-incomplete refusals name the first fixed site without app strin
   assert.equal('diagnostic' in accepted, false);
 });
 
-test('truncation reports the queued frontier and inactive fibers pruned by the walk', () => {
+test('truncation reports the queued frontier and inactive fibers pruned by the walk', (t) => {
+  t.mock.timers.enable({ apis: ['Date'], now: 1000 });
   const capped = setup({}, 'RCTView');
   link(
     capped.fiber,

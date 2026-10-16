@@ -904,10 +904,16 @@ failure category; it does not establish the underlying app or host cause or chan
 refusal and privacy behavior.
 
 React-only elements expose no label, placeholder or value strings in the screen
-projection. The React walk excludes provably inactive screen routes and native
+projection. The React digest excludes provably inactive screen routes and native
 hosts with `display: none` before collecting their semantic or descendant text
-evidence. Validated React Native frozen descriptors remain readable; arbitrary
-getters are not invoked, and an unreadable inactivity flag does not prune a subtree.
+evidence. Strict capture's error-overlay pre-scan applies the same rule to skip
+their descendants, so retained, natively detached tabs do not exhaust its
+5,000-visit cap with hidden content. It still checks for LogBox and RedBox at the
+app root or in separate renderer roots; visible error overlays refuse capture.
+Active routes and routes whose inactivity cannot be proven remain scanned under
+the existing limits. Validated React Native frozen descriptors remain readable;
+arbitrary getters are not invoked, and an unreadable inactivity flag does not
+prune a subtree.
 Unreadable display overrides or styles beyond the array or nesting scan budgets
 resolve as unknown and do not establish `display: none`; later readable overrides
 within the budgets still determine display.

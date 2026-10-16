@@ -1252,7 +1252,7 @@ export const INJECTED_HELPERS = `
       }
       return styleRead(style, 'display');
     }
-    // A provably inactive route is off the visible screen; skipping it only loses digest semantics.
+    // Only proven off-screen content can be pruned from the digest and typography overlay scan.
     function inactiveRoute(fiber) {
       var props = routeRead(fiber, 'memoizedProps');
       if (!props || typeof props !== 'object') return false;
@@ -1297,11 +1297,7 @@ export const INJECTED_HELPERS = `
       return false;
     }
 
-    // B143 A1 (Gemini, conf 85): check for RedBox/LogBox across ALL renderers,
-    // not just the first. A user-code Error Boundary on the main renderer
-    // would otherwise be silently missed while the filter path happily walks
-    // past it. Performance is negligible — each root's hasErrorOverlay walk
-    // is already depth-capped at 15.
+    // Error overlays can occupy a separate renderer root, so every root must be checked.
     var overlayRoots = findAllRootFibers(typography);
     var overlayFound = false;
     for (var oi = 0; oi < overlayRoots.length && !overlayFound; oi++) {
