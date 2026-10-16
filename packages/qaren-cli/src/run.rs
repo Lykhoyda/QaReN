@@ -2148,12 +2148,24 @@ fn preflight_inputs(
                 "rewrite the named lines with the verb grammar (Tap \"X\", Type \"t\" into \"X\", Scroll down, Wait for \"X\", Go back, Accept the dialog, ✓ \"text\")",
             ))
         }
-        (Some(4), Some("CORE_REFUSED")) => Err(Failure::new(
-            "preflight",
-            FailureCode::CoreRefused,
-            "runtime inputs are invalid",
-            "supply bounded owner-resolved runtime inputs",
-        )),
+        (Some(4), Some("CORE_REFUSED")) => Err(
+            if value.get("message").and_then(Value::as_str) == Some("runtime input privacy refused")
+            {
+                Failure::new(
+                    "preflight",
+                    FailureCode::CoreRefused,
+                    "runtime input privacy refused: a value appears in the plan, the login block or the app id",
+                    "remove the value from the plan and the login block, or use a value the app id does not contain, then re-run",
+                )
+            } else {
+                Failure::new(
+                    "preflight",
+                    FailureCode::CoreRefused,
+                    "runtime inputs are invalid",
+                    "supply bounded owner-resolved runtime inputs",
+                )
+            },
+        ),
         _ => Err(unavailable()),
     }
 }

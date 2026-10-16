@@ -632,10 +632,10 @@ async function main(): Promise<void> {
       const result = await parseInputPreflight(value, createJev());
       process.stdout.write(`${JSON.stringify(result)}\n`);
       return exitAfterDrain((result as { ok?: boolean }).ok ? 0 : 4);
-    } catch {
-      process.stdout.write(
-        `${JSON.stringify({ ok: false, code: 'CORE_REFUSED', message: 'runtime input preflight refused' })}\n`,
-      );
+    } catch (error) {
+      const message =
+        error instanceof InputPrivacyRefusal ? error.message : 'runtime input preflight refused';
+      process.stdout.write(`${JSON.stringify({ ok: false, code: 'CORE_REFUSED', message })}\n`);
       return exitAfterDrain(4);
     }
   }

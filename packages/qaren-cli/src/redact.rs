@@ -699,6 +699,7 @@ impl InputValues {
                         .all(|b| b.is_ascii_alphanumeric() || b"+.-".contains(&b))
             });
             if value.len() > 4096
+                || value.trim().chars().count() < 3
                 || total > 65536
                 || value.bytes().any(|b| b < 32 || b == 127)
                 || scheme

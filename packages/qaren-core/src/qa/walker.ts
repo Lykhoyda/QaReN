@@ -662,7 +662,7 @@ export async function walkBlock(
     const value = selector?.id ?? selector?.text;
     return selector &&
       value !== undefined &&
-      !matchPrivate(value, privacy.privateSet(), 'persisted').hit
+      !matchPrivate(value, privacy.privateSet('persisted'), 'persisted').hit
       ? { selector }
       : {};
   };
@@ -2092,7 +2092,7 @@ export async function runPlan(
       return privateTitle || matchPrivate(slug, values, 'identifier').hit ? MASK : slug;
     };
     const unprotected = (value: string): boolean =>
-      !matchPrivate(value, privacy.privateSet(), 'persisted').hit;
+      !matchPrivate(value, privacy.privateSet('persisted'), 'persisted').hit;
     const finish = (outcome?: WalkOutcome): WalkResult => {
       throwIfInputPrivacyRefused();
       if (!deps.cancelled?.()) {
@@ -2167,7 +2167,7 @@ export async function runPlan(
     ): BlockResult => {
       const result = withPrivateFills({ key: block.slug, outcome: 'pass', source }, privateFills);
       if (result.saved === false) return result;
-      const serialized = serializeBlock(block, rows, store, privacy.privateSet());
+      const serialized = serializeBlock(block, rows, store, privacy.privateSet('persisted'));
       if ('unsavable' in serialized)
         return { ...result, saved: false, unsavable: serialized.unsavable };
       try {

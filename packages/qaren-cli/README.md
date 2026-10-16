@@ -928,9 +928,10 @@ Planned fill values are classified before progress streams. Streamed rows contai
 only value-free progress metadata and eligible screenshot paths; plan text,
 reasons, selectors and block names appear only in the final projected ledger.
 CLI progress shows the line, outcome, resolver and attempt without plan text.
-Runtime input values are protected from preflight, including values shorter than
-three characters and their JSON-escaped forms; fragment masking applies before
-dispatch. The length thresholds and dispatch timing below describe literal fills
+Runtime input values are at least three characters after trimming; they are protected
+from preflight in their raw, trimmed, NFC, NFD and JSON-escaped forms, fragment masking
+of them applies to output before dispatch, and hash and saved-block decisions use only
+the whole value. The length thresholds and dispatch timing below describe literal fills
 and observed values.
 The shared [privacy matcher](../qaren-core/src/qa/privacy.ts) protects complete values of
 three or more characters after trimming, using case-sensitive substring matches
@@ -1114,8 +1115,11 @@ file, reference or secret store.
 - With any input namespace present, subprocess logs hold one withheld marker, preflight and
   core output excerpts are withheld, and native runner output tails are not retained. A run
   that requires inputs skips recording and screenshots.
-- Snapshot hashes refuse `CORE_REFUSED` before any hashing when an identifier, type or label,
-  raw or JSON-escaped, contains an input value; plan hashes do the same for plan text.
+- Snapshot hashes refuse `CORE_REFUSED` before any hashing when an identifier, type or label
+  contains the whole value in its raw, trimmed, NFC, NFD or JSON-escaped form, or a numeric
+  value's complete digit sequence with only separators between; partial echoes do not
+  refuse. Plan hashes do the same for plan text. The refusal detail starts
+  `runtime input privacy refused` and never names the value.
   Accepted operands and digests are unchanged. Repository and host provenance hashes, such
   as the lockfile, dirty-file, config and session-path hashes, keep their exact bytes. The
   settle engine no longer uses the iOS screenshot-equality tier; it settles on the Android

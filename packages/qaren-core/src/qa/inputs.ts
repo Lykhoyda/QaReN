@@ -1,6 +1,6 @@
 import { AsyncLocalStorage } from 'node:async_hooks';
 import { inspect } from 'node:util';
-import { ObservedPrivacy } from './privacy.js';
+import { ObservedPrivacy, SHORT } from './privacy.js';
 
 export const validInputName = (name: unknown): name is string =>
   typeof name === 'string' && /^[A-Z][A-Z0-9_]{0,31}$/.test(name);
@@ -39,6 +39,7 @@ export class RunInputs {
       bytes += size;
       if (
         !size ||
+        [...text.trim()].length < SHORT ||
         size > 4096 ||
         bytes > 65536 ||
         // eslint-disable-next-line no-control-regex -- Runtime inputs are single-line printable text.

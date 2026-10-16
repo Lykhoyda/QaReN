@@ -9,6 +9,9 @@ import { ObservedPrivacy, MASK } from '../../../dist/qa/privacy.js';
 import { collectInputNames, parsePlan, preparePlan } from '../../../dist/qa/plan.js';
 import { requiredInputs, parseInputPreflight } from '../../../dist/qa/input-preflight.js';
 import { readPrivateLine, parsePrivateRequest } from '../../../dist/qa/wire.js';
+import { InputPrivacyRefusal } from '../../../dist/qa/inputs.js';
+import { spawnSync } from 'node:child_process';
+import { fileURLToPath } from 'node:url';
 import { serializeBlock, readBlock, storedFits } from '../../../dist/qa/blocks.js';
 import { scriptedJudge } from './judgment-fixtures.ts';
 
@@ -54,6 +57,10 @@ test('private context validates its exact bounded set without exposing values', 
     { SLOT_A: '${REF}' },
     { SLOT_A: '$(command)' },
     { SLOT_A: '{{value}}' },
+    { SLOT_A: 'z' },
+    { SLOT_A: '42' },
+    { SLOT_A: '   ' },
+    { SLOT_A: ' ab ' },
   ]) {
     assert.throws(() => new RunInputs(value, ['SLOT_A']), /^Error: runtime inputs are invalid$/);
   }
@@ -64,7 +71,6 @@ test('private context validates its exact bounded set without exposing values', 
   assert.equal(inspect(inputs), '[runtime inputs]');
   assert.throws(() => JSON.stringify(inputs), /runtime inputs cannot be serialized/);
   assert.equal(inputs.textFor({ input: 'SLOT_A' }), privateValue);
-  assert.equal(new RunInputs({ SLOT_A: '   ' }, ['SLOT_A']).textFor({ input: 'SLOT_A' }), '   ');
   assert.throws(
     () => inputs.textFor({ input: 'SLOT_A', text: 'literal' }),
     /runtime inputs are invalid/,
@@ -77,7 +83,7 @@ test('private context validates its exact bounded set without exposing values', 
 });
 
 test('input provenance masks short, numeric, escaped and normalized echoes before typing', () => {
-  for (const value of ['x', '42', 'abcd', 'abcde', 'quote"slash\\tail', 'caf\u00e9-value']) {
+  for (const value of ['abc', '420', 'abcd', 'abcde', 'quote"slash\\tail', 'caf\u00e9-value']) {
     const privacy = new ObservedPrivacy();
     const inputs = new RunInputs({ SLOT_A: value }, ['SLOT_A'], privacy);
     assert.equal(privacy.canScreenshot(), false);
@@ -178,4 +184,89 @@ test('private stdin rejects an oversized stream before retaining it', async () =
     () => parsePrivateRequest('{"v":1,"payload":{"inputs":{"SLOT_A":"private-value"}}}'),
     (error: Error) => !error.message.includes('private-value'),
   );
+});
+
+const email = 'qa-user+tag@example.com';
+const loginPlan = (extra = '') =>
+  [
+    '# Login',
+    '1. Wait for "INTRO"',
+    '2. Fill "EmailOtpFormContent_email" with input USERNAME',
+    '3. Tap "submit_email_form"',
+    '4. Wait for "Enter the 4-digit code"',
+    '5. Fill "LoginFormContent_token" with input OTP',
+    extra,
+  ].join('\n');
+const preflight = (plan: string) => ({
+  v: 1,
+  phase: 'plan-preflight',
+  plan,
+  platform: 'ios',
+  appId: 'com.example.app',
+  inputProtocol: 1,
+  inputs: { OTP: '4821', USERNAME: email },
+});
+
+test('whole-value preflight admits ordinary credentials and refuses whole echoes', async () => {
+  const admitted = (await parseInputPreflight(preflight(loginPlan()), scriptedJudge([]))) as {
+    ok: boolean;
+  };
+  assert.equal(admitted.ok, true);
+  for (const echo of [`6. Wait for "${email}"`, '6. Wait for "4 8 2 1"']) {
+    await assert.rejects(
+      parseInputPreflight(preflight(loginPlan(echo)), scriptedJudge([])),
+      (error) => {
+        assert.ok(error instanceof InputPrivacyRefusal);
+        assert.equal(error.message, 'runtime input privacy refused');
+        assert.ok(!String(error).includes(email) && !String(error).includes('4821'));
+        return true;
+      },
+    );
+  }
+});
+
+test('persisted decisions match slot values whole while output masking keeps fragments', () => {
+  const privacy = new ObservedPrivacy();
+  privacy.classifyInputs([email, '4821']);
+  privacy.didFill('4821');
+  const plan = '# Enter the 4-digit code\n1. Fill "LoginFormContent_token" with input OTP\n';
+  const block = parsePlan(plan).blocks![0];
+  const rows = [
+    {
+      block: block.slug,
+      line: 2,
+      outcome: 'pass',
+      selector: { id: 'LoginFormContent_token' },
+    },
+  ];
+  const store = { appId: 'com.example.app', platform: 'ios' };
+  const saved = serializeBlock(block, rows, store, privacy.privateSet('persisted'));
+  assert.ok('yaml' in saved);
+  assert.ok(!saved.yaml.includes(email) && !saved.yaml.includes('4821'));
+  const leaked = parsePlan(
+    `# Signed in as ${email}\n1. Fill "LoginFormContent_token" with input OTP\n`,
+  ).blocks![0];
+  assert.ok(
+    'unsavable' in
+      serializeBlock(
+        leaked,
+        [{ ...rows[0], block: leaked.slug }],
+        store,
+        privacy.privateSet('persisted'),
+      ),
+  );
+  assert.ok(privacy.redact('code 48 and 21').includes(MASK));
+});
+
+test('the preflight child reports a privacy refusal distinctly from an invalid request', () => {
+  const walk = fileURLToPath(new URL('../../../dist/qa/walk.js', import.meta.url));
+  const run = (input: string) =>
+    spawnSync(process.execPath, [walk, '--preflight-stdin'], { input });
+  const refused = run(`${JSON.stringify(preflight(loginPlan(`6. Wait for "${email}"`)))}\n`);
+  assert.equal(refused.status, 4);
+  assert.equal(JSON.parse(refused.stdout.toString()).message, 'runtime input privacy refused');
+  assert.ok(!refused.stdout.toString().includes(email));
+  const malformed = run('{"v":1}\n');
+  assert.equal(malformed.status, 4);
+  assert.equal(JSON.parse(malformed.stdout.toString()).message, 'runtime input preflight refused');
 });

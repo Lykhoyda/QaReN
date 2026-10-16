@@ -204,7 +204,7 @@ export interface PrivateSet {
 export type Policy = 'model' | 'durable' | 'identifier' | 'persisted';
 
 const WORD = '\\p{L}\\p{M}\\p{N}_';
-const SHORT = 3;
+export const SHORT = 3;
 const escape = (value: string): string => value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 const chars = (text: string): number => [...text].length;
 const whole = (pattern: string): string => `(?<![${WORD}])${pattern}(?![${WORD}])`;
@@ -669,7 +669,6 @@ export class ObservedPrivacy {
             .flatMap((form) => [form, JSON.stringify(form).slice(1, -1)])
             .map((text) => ({ text, provenance: 'input' as const })),
         ),
-        fragments: [...this.inputValues],
       },
       'persisted',
     ).hit;
@@ -783,16 +782,20 @@ export class ObservedPrivacy {
     return !this.sensitiveInWindow;
   }
 
-  privateSet(): PrivateSet {
+  privateSet(policy: Policy = 'durable'): PrivateSet {
     const tagged = (values: Iterable<string>, provenance: Provenance): PrivateValue[] =>
       [...new Set(values)].filter(Boolean).map((text) => ({ text, provenance }));
+    // Persisted decisions match slot values whole; fragments only over-mask output.
+    const fragmentable = (value: string): boolean =>
+      policy !== 'persisted' || !this.inputValues.has(value);
     return {
       fragments: [
-        ...this.inputValues,
+        ...[...this.inputValues].filter(fragmentable),
         ...[...this.filledValues].filter(
           (value) =>
-            /^\d{3,}$/u.test(value.replace(new RegExp(DIGIT_GAP, 'gu'), '')) ||
-            this.secret.has(value),
+            fragmentable(value) &&
+            (/^\d{3,}$/u.test(value.replace(new RegExp(DIGIT_GAP, 'gu'), '')) ||
+              this.secret.has(value)),
         ),
       ],
       values: [

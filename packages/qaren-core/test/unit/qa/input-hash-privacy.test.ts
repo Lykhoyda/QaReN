@@ -29,8 +29,6 @@ const node = {
 
 test('runner mapping refuses every private batch before crypto and invalidates refs', async (t) => {
   const values = [
-    'z',
-    '42',
     'SentinelValue',
     'left"right',
     'left\\right',
@@ -156,5 +154,50 @@ test('privacy abort crosses settle and baseline catches without returning action
       ),
       InputPrivacyRefusal,
     );
+  }
+});
+
+test('whole-value guard refuses whole echoes and accepts partial ones', (t) => {
+  const email = 'qa-user+tag@example.com';
+  const original = crypto.createHash;
+  let calls = 0;
+  t.mock.method(crypto, 'createHash', (...args: Parameters<typeof crypto.createHash>) => {
+    calls++;
+    return original(...args);
+  });
+  syncBuiltinESMExports();
+  try {
+    const ordinary = new RunInputs({ OTP: '4821', USERNAME: email }, ['OTP', 'USERNAME']);
+    withInputs(ordinary, () =>
+      hashSnapshotNodes([
+        { ...node, label: 'Email' },
+        { ...node, index: 1, identifier: 'com.example.app', type: 'Button', label: 'Code' },
+      ]),
+    );
+    assert.equal(calls, 1);
+    for (const [values, label] of [
+      [{ OTP: '4821', USERNAME: email }, `Signed in as ${email}`],
+      [{ OTP: '4821', USERNAME: email }, 'Code: 4 8 2 1'],
+      [{ OTP: '4821', USERNAME: 'caf\u00e9-secret' }, 'user cafe\u0301-secret here'],
+      [{ OTP: '4821', USERNAME: 'left"right' }, 'x left\\"right y'],
+    ] as const) {
+      calls = 0;
+      const inputs = new RunInputs(values, Object.keys(values));
+      assert.throws(
+        () => withInputs(inputs, () => hashSnapshotNodes([node, { ...node, index: 1, label }])),
+        InputPrivacyRefusal,
+      );
+      assert.equal(calls, 0);
+    }
+    for (const [values, label] of [
+      [{ USERNAME: email }, 'q\u2022\u2022\u2022@example.com'],
+      [{ CARD: '4111222233334444' }, 'card \u2022\u2022\u2022\u2022 4444'],
+    ] as const) {
+      const inputs = new RunInputs(values, Object.keys(values));
+      withInputs(inputs, () => hashSnapshotNodes([{ ...node, label }]));
+    }
+  } finally {
+    t.mock.restoreAll();
+    syncBuiltinESMExports();
   }
 });

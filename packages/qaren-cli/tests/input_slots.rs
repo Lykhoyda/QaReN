@@ -45,12 +45,15 @@ fn admission_preserves_exact_values_and_refuses_missing_before_invalid() {
         "\n",
         "\t",
         "\u{7f}",
+        "z",
+        "42",
+        "   ",
+        " ab ",
     ] {
         let input = owner(&[("QAREN_INPUT_PASSWORD", value)]);
-        assert_eq!(
-            input.admit(&["PASSWORD".into()]).err().unwrap().code,
-            FailureCode::CoreRefused
-        );
+        let invalid = input.admit(&["PASSWORD".into()]).err().unwrap();
+        assert_eq!(invalid.code, FailureCode::CoreRefused);
+        assert_eq!(invalid.detail, "runtime inputs are invalid");
         let error = input
             .admit(&["PASSWORD".into(), "USERNAME".into()])
             .err()
@@ -58,6 +61,9 @@ fn admission_preserves_exact_values_and_refuses_missing_before_invalid() {
         assert_eq!(error.code, FailureCode::PlanInputMissing);
         assert!(!error.detail.contains(value));
     }
+    assert!(owner(&[("QAREN_INPUT_PASSWORD", "4821")])
+        .admit(&["PASSWORD".into()])
+        .is_ok());
     use std::os::unix::ffi::OsStringExt;
     let inputs = InputValues::from_entries([(
         OsString::from("QAREN_INPUT_PASSWORD"),
@@ -179,8 +185,7 @@ fn durable_json_redacts_input_keys_and_nested_values_under_protocol_keys() {
             assert_eq!(actual[key]["[REDACTED_INPUT]"], "[REDACTED_INPUT]", "{key}");
             assert_eq!(actual["array"][key][0], "[REDACTED_INPUT]", "{key}");
             assert_eq!(
-                actual["array"][key][1]["[REDACTED_INPUT]"],
-                "[REDACTED_INPUT]",
+                actual["array"][key][1]["[REDACTED_INPUT]"], "[REDACTED_INPUT]",
                 "{key}"
             );
             assert_eq!(actual["scalar"][key], secret, "{key}");
@@ -366,6 +371,80 @@ fn a_pr_head_login_block_cannot_request_inputs_the_owner_never_declared() {
                 String::from_utf8_lossy(runner.private_inputs.last().unwrap()).into_owned();
             assert!(preflight.contains("declared-synthetic"));
             assert!(!preflight.contains("undeclared-synthetic"));
+        }
+    }
+}
+
+#[test]
+fn privacy_preflight_refusal_is_distinct_from_invalid_inputs() {
+    for (message, privacy) in [
+        ("runtime input privacy refused", true),
+        ("runtime input preflight refused", false),
+    ] {
+        let repo = common::temp_repo();
+        let app = repo.join("test-app");
+        std::fs::create_dir_all(app.join(".qaren")).unwrap();
+        std::fs::write(
+            app.join(".qaren/config.yaml"),
+            "appId: com.test\nmetroPort: 8791\ndevClientScheme: test\n",
+        )
+        .unwrap();
+        std::fs::write(
+            app.join("plan.md"),
+            "1. Fill \"password\" with input PASSWORD\n",
+        )
+        .unwrap();
+        let mut runner = MockRunner::new();
+        runner.expect_run("node --version", CmdOutput::success("v24.14.0\n"));
+        runner.expect_run(
+            "--preflight-stdin",
+            CmdOutput::success(r#"{"ok":true,"inputProtocol":1,"requiredInputs":["PASSWORD"]}"#),
+        );
+        runner.expect_run(
+            "--preflight-stdin",
+            CmdOutput {
+                exit_code: Some(4),
+                stdout: serde_json::json!({"ok":false,"code":"CORE_REFUSED","message":message})
+                    .to_string(),
+                ..Default::default()
+            },
+        );
+        let req = RunRequest {
+            project_root: app.clone(),
+            config_path: app.join(".qaren/config.yaml"),
+            plan_file: app.join("plan.md"),
+            platform: Platform::Ios,
+            device: None,
+            boot_device: false,
+            fresh_install: false,
+            runtime_dir: "/runtime".into(),
+            node: Some("node".into()),
+            lock_root: repo.join("locks"),
+            runs_root: repo.join("runs"),
+            native_cache_root: repo.join("native"),
+            android_home: None,
+            budgets: Budgets {
+                walk_seconds: 30,
+                step_seconds: 30,
+            },
+            pr: None,
+        };
+        let inputs = owner(&[("QAREN_INPUT_PASSWORD", "admitted-synthetic")]);
+        let receipt = with_input_scope(inputs, || qaren::run::run(&mut runner, &req));
+        let failure = receipt.failure.as_ref().unwrap();
+        assert_eq!(receipt.result, ReceiptResult::Refused);
+        assert_eq!(receipt.run_id, "none");
+        assert_eq!(failure.code, FailureCode::CoreRefused);
+        assert_eq!(runner.remaining(), 0);
+        assert!(!receipt.to_json().contains("admitted-synthetic"));
+        if privacy {
+            assert!(failure.detail.starts_with("runtime input privacy refused"));
+            assert_eq!(
+                failure.next_action,
+                "remove the value from the plan and the login block, or use a value the app id does not contain, then re-run"
+            );
+        } else {
+            assert_eq!(failure.detail, "runtime inputs are invalid");
         }
     }
 }
