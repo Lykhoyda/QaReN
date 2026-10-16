@@ -298,14 +298,14 @@ test('a fill preposition is only stripped as a whole word', () => {
 });
 
 test('named input grammar is declarative and malformed reserved forms never become literals', () => {
-  for (const name of ['A', 'PASSWORD', 'A' + '_'.repeat(31)]) {
-    const parsed = parseStep(`Fill "password-field" with input ${name}`);
+  for (const name of ['A', 'SLOT_A', 'A' + '_'.repeat(31)]) {
+    const parsed = parseStep(`Fill "slot-field" with input ${name}`);
     assert.deepEqual(parsed, {
       kind: 'fill',
-      target: { quoted: 'password-field', phrase: 'password-field' },
+      target: { quoted: 'slot-field', phrase: 'slot-field' },
       input: name,
     });
-    const source = `# Sign in\n1. Fill "password-field" with input ${name}`;
+    const source = `# Sign in\n1. Fill "slot-field" with input ${name}`;
     const plan = parsePlan(source);
     assert.ok(plan.blocks);
     const prepared = preparePlan(source, plan.blocks);
@@ -314,10 +314,10 @@ test('named input grammar is declarative and malformed reserved forms never beco
     extra.blocks[0].items[0].text = 'invented';
     assert.equal(readPreparedPlan(source, extra), undefined);
   }
-  for (const name of ['', 'password', '_PASS', 'A'.repeat(33), 'PASS extra', '${PASS}']) {
-    assert.ok('refuse' in parseStep(`Fill "password-field" with input ${name}`));
+  for (const name of ['', 'slot_a', '_PASS', 'A'.repeat(33), 'PASS extra', '${PASS}']) {
+    assert.ok('refuse' in parseStep(`Fill "slot-field" with input ${name}`));
   }
-  assert.equal(parseStep('Fill "password-field" with "input PASSWORD"').text, 'input PASSWORD');
+  assert.equal(parseStep('Fill "slot-field" with "input SLOT_A"').text, 'input SLOT_A');
   assert.equal(
     parseStep('Fill "note" with "remember with input BAR"').text,
     'remember with input BAR',

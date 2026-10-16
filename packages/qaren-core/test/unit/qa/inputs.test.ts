@@ -12,7 +12,7 @@ import { readPrivateLine, parsePrivateRequest } from '../../../dist/qa/wire.js';
 import { serializeBlock, readBlock, storedFits } from '../../../dist/qa/blocks.js';
 import { scriptedJudge } from './judgment-fixtures.ts';
 
-const source = '# Login\n1. Fill "password-field" with input PASSWORD\n';
+const source = '# Login\n1. Fill "slot-field" with input SLOT_A\n';
 
 test('inventory honors active QA/comments and does not hash even overflowing headings', (t) => {
   const original = crypto.createHash;
@@ -24,9 +24,9 @@ test('inventory honors active QA/comments and does not hash even overflowing hea
   syncBuiltinESMExports();
   try {
     const result = collectInputNames(
-      `1. Fill "outside" with input OUTSIDE\n## QA\n### ${'a'.repeat(200)}\n<!--\n1. Fill "hidden" with input HIDDEN\n-->\n1. Fill "password-field" with input PASSWORD\n2. Fill "name-field" with input USERNAME\n## Other\n1. Fill "outside" with input OTHER`,
+      `1. Fill "outside" with input OUTSIDE\n## QA\n### ${'a'.repeat(200)}\n<!--\n1. Fill "hidden" with input HIDDEN\n-->\n1. Fill "slot-field" with input SLOT_A\n2. Fill "name-field" with input USERNAME\n## Other\n1. Fill "outside" with input OTHER`,
     );
-    assert.deepEqual(result.names, ['PASSWORD', 'USERNAME']);
+    assert.deepEqual(result.names, ['SLOT_A', 'USERNAME']);
     assert.deepEqual(result.refused, []);
     assert.equal(hashes, 0);
   } finally {
@@ -40,36 +40,33 @@ test('private context validates its exact bounded set without exposing values', 
     null,
     [],
     {},
-    { PASSWORD: '' },
-    { PASSWORD: 42 },
-    { PASSWORD: 'okay', EXTRA: 'no' },
-    { PASSWORD: { text: 'nested' } },
-    { PASSWORD: 'x'.repeat(4097) },
-    { PASSWORD: '\n' },
-    { PASSWORD: '\t' },
-    { PASSWORD: '\u007f' },
-    { PASSWORD: '\ud800' },
-    { PASSWORD: 'op://vault/item' },
-    { PASSWORD: 'arn:resource' },
-    { PASSWORD: '${REF}' },
-    { PASSWORD: '$(command)' },
-    { PASSWORD: '{{value}}' },
+    { SLOT_A: '' },
+    { SLOT_A: 42 },
+    { SLOT_A: 'okay', EXTRA: 'no' },
+    { SLOT_A: { text: 'nested' } },
+    { SLOT_A: 'x'.repeat(4097) },
+    { SLOT_A: '\n' },
+    { SLOT_A: '\t' },
+    { SLOT_A: '\u007f' },
+    { SLOT_A: '\ud800' },
+    { SLOT_A: 'op://vault/item' },
+    { SLOT_A: 'arn:resource' },
+    { SLOT_A: '${REF}' },
+    { SLOT_A: '$(command)' },
+    { SLOT_A: '{{value}}' },
   ]) {
-    assert.throws(() => new RunInputs(value, ['PASSWORD']), /^Error: runtime inputs are invalid$/);
+    assert.throws(() => new RunInputs(value, ['SLOT_A']), /^Error: runtime inputs are invalid$/);
   }
   const privateValue = 'quoted"slash\\sentinel';
-  const inputs = new RunInputs({ PASSWORD: privateValue }, ['PASSWORD']);
+  const inputs = new RunInputs({ SLOT_A: privateValue }, ['SLOT_A']);
   assert.deepEqual(Object.keys(inputs), []);
   assert.deepEqual(Object.values(inputs), []);
   assert.equal(inspect(inputs), '[runtime inputs]');
   assert.throws(() => JSON.stringify(inputs), /runtime inputs cannot be serialized/);
-  assert.equal(inputs.textFor({ input: 'PASSWORD' }), privateValue);
-  assert.equal(
-    new RunInputs({ PASSWORD: '   ' }, ['PASSWORD']).textFor({ input: 'PASSWORD' }),
-    '   ',
-  );
+  assert.equal(inputs.textFor({ input: 'SLOT_A' }), privateValue);
+  assert.equal(new RunInputs({ SLOT_A: '   ' }, ['SLOT_A']).textFor({ input: 'SLOT_A' }), '   ');
   assert.throws(
-    () => inputs.textFor({ input: 'PASSWORD', text: 'literal' }),
+    () => inputs.textFor({ input: 'SLOT_A', text: 'literal' }),
     /runtime inputs are invalid/,
   );
   assert.throws(() => inputs.textFor({ input: 'MISSING' }), /runtime inputs are invalid/);
@@ -82,7 +79,7 @@ test('private context validates its exact bounded set without exposing values', 
 test('input provenance masks short, numeric, escaped and normalized echoes before typing', () => {
   for (const value of ['x', '42', 'abcd', 'abcde', 'quote"slash\\tail', 'caf\u00e9-value']) {
     const privacy = new ObservedPrivacy();
-    const inputs = new RunInputs({ PASSWORD: value }, ['PASSWORD'], privacy);
+    const inputs = new RunInputs({ SLOT_A: value }, ['SLOT_A'], privacy);
     assert.equal(privacy.canScreenshot(), false);
     for (const echo of [
       value,
@@ -94,7 +91,7 @@ test('input provenance masks short, numeric, escaped and normalized echoes befor
       assert.ok(!inputs.redact(`prefix${echo}suffix`).includes(echo));
     }
   }
-  const numbers = new RunInputs({ PASSWORD: '123456' }, ['PASSWORD']);
+  const numbers = new RunInputs({ SLOT_A: '123456' }, ['SLOT_A']);
   assert.equal(numbers.redact('12-34 56'), MASK);
 });
 
@@ -103,13 +100,13 @@ test('canonical slot blocks depend only on authored names and retain strict deco
   const outputs: string[] = [];
   for (const value of ['first-private-value', 'second-private-value']) {
     const privacy = new ObservedPrivacy();
-    const inputs = new RunInputs({ PASSWORD: value }, ['PASSWORD'], privacy);
+    const inputs = new RunInputs({ SLOT_A: value }, ['SLOT_A'], privacy);
     withInputs(inputs, () => {
       const block = parsePlan(source).blocks![0];
       hashes.push(preparePlan(source, [block]).hash);
       const saved = serializeBlock(
         block,
-        [{ block: block.slug, line: 2, outcome: 'pass', selector: { id: 'password-field' } }],
+        [{ block: block.slug, line: 2, outcome: 'pass', selector: { id: 'slot-field' } }],
         { appId: 'com.test', platform: 'ios' },
         privacy.privateSet(),
       );
@@ -117,21 +114,21 @@ test('canonical slot blocks depend only on authored names and retain strict deco
       outputs.push(saved.yaml);
       const stored = readBlock(saved.yaml);
       assert.ok(!('invalid' in stored));
-      assert.equal(stored.steps[0].input, 'PASSWORD');
+      assert.equal(stored.steps[0].input, 'SLOT_A');
       assert.equal(
         storedFits(block, stored, saved.yaml, { appId: 'com.test', platform: 'ios' }),
         true,
       );
       assert.deepEqual(requiredInputs('1. Tap "ready"', { slug: 'login', content: saved.yaml }), [
-        'PASSWORD',
+        'SLOT_A',
       ]);
       for (const replacement of [
-        '{ input: "password" }',
-        '{ input: "PASSWORD", text: "extra" }',
-        '{ input: [PASSWORD] }',
+        '{ input: "slot_a" }',
+        '{ input: "SLOT_A", text: "extra" }',
+        '{ input: [SLOT_A] }',
         '{ input: "OTHER" }',
       ]) {
-        assert.ok('invalid' in readBlock(saved.yaml.replace('{ input: "PASSWORD" }', replacement)));
+        assert.ok('invalid' in readBlock(saved.yaml.replace('{ input: "SLOT_A" }', replacement)));
       }
       assert.ok(!saved.yaml.includes(value));
     });
@@ -140,8 +137,8 @@ test('canonical slot blocks depend only on authored names and retain strict deco
   assert.equal(outputs[0], outputs[1]);
   assert.notEqual(
     preparePlan(
-      source.replaceAll('PASSWORD', 'USERNAME'),
-      parsePlan(source.replaceAll('PASSWORD', 'USERNAME')).blocks!,
+      source.replaceAll('SLOT_A', 'SLOT_B'),
+      parsePlan(source.replaceAll('SLOT_A', 'SLOT_B')).blocks!,
     ).hash,
     hashes[0],
   );
@@ -153,7 +150,7 @@ test('private inventory never calls a model and admission requires matching inpu
     { v: 1, phase: 'input-inventory', plan: source, platform: 'ios', appId: 'com.test' },
     judge,
   );
-  assert.deepEqual(inventory, { ok: true, inputProtocol: 1, requiredInputs: ['PASSWORD'] });
+  assert.deepEqual(inventory, { ok: true, inputProtocol: 1, requiredInputs: ['SLOT_A'] });
   assert.equal(judge.calls.length, 0);
   await assert.rejects(
     parseInputPreflight(
@@ -178,7 +175,7 @@ test('private stdin rejects an oversized stream before retaining it', async () =
     /private request exceeds limit/,
   );
   assert.throws(
-    () => parsePrivateRequest('{"v":1,"payload":{"inputs":{"PASSWORD":"private-value"}}}'),
+    () => parsePrivateRequest('{"v":1,"payload":{"inputs":{"SLOT_A":"private-value"}}}'),
     (error: Error) => !error.message.includes('private-value'),
   );
 });
