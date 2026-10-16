@@ -4,8 +4,9 @@ import {
   withCancellation,
   sleep,
 } from '../domain/cancellation.js';
-import { readFileSync } from 'node:fs';
+import { readFileSync, realpathSync } from 'node:fs';
 import { join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { parseArgs } from 'node:util';
 import { CDPClient } from '../cdp-client.js';
 import { waitForExactPortTargets } from '../cdp/discovery.js';
@@ -56,7 +57,13 @@ import { summarizeJev } from './ledger.js';
 import { redactApiKey } from '../util/redact.js';
 import { createStop, watchOwnerPipe, watchParent } from './stop.js';
 import { prove } from './prove.js';
-import { admit, awaitBundleReady, createBundleReload, metroDevicePin } from './admission.js';
+import {
+  admit,
+  awaitBundleReady,
+  createBundleReload,
+  logAdmissionRefusal,
+  metroDevicePin,
+} from './admission.js';
 import { type ActResult, type WalkerDeps, loginBlock, runPlan } from './walker.js';
 import { loadBlock, readBlock } from './blocks.js';
 import {
@@ -72,6 +79,10 @@ import {
 const log = (message: string): void => {
   process.stderr.write(`qaren-core: ${redactApiKey(message)}\n`);
 };
+
+export function scrollArgs(direction: Parameters<WalkerDeps['scroll']>[0], clearance?: number) {
+  return { direction, amount: 0.6, ...(clearance !== undefined ? { distance: clearance } : {}) };
+}
 
 // stdout is a pipe: wait for it to drain before the process exits.
 function exitAfterDrain(code: number): Promise<never> {
@@ -359,66 +370,76 @@ async function openSession(
     }));
   onClose(close);
   const devicePin = metroDevicePin(platform, target.deviceName);
-  const proof = await admit(
-    {
-      metroPort: target.metroPort,
-      readinessMs: REACT_READY_TIMEOUT_MS,
-      remainingMs: () => Math.max(0, request.walkBudgetMs - now() - 1000),
-      attach: async (deadline) => {
-        await waitForExactPortTargets(
-          target.metroPort,
-          Math.max(1, Math.min(REACT_READY_TIMEOUT_MS, request.walkBudgetMs - now() - 1000)),
-          REACT_READY_POLL_MS,
-          stop.signal,
-          devicePin,
-        );
-        await cdp.connectExact(
-          target.metroPort,
-          { platform, bundleId: appId, ...(devicePin ? { deviceName: devicePin } : {}) },
-          'default',
-          5,
-          undefined,
-          deadline,
-        );
+  const remainingMs = () => Math.max(0, request.walkBudgetMs - now() - 1000);
+  let attachStage: 'wait_targets' | 'connect_exact' | undefined;
+  const logRefusal = (error: unknown): never => {
+    logAdmissionRefusal(error, attachStage, log);
+    throw error;
+  };
+  const proof = await cdp.withAttachDeadline(performance.now() + remainingMs(), () =>
+    admit(
+      {
+        metroPort: target.metroPort,
+        readinessMs: REACT_READY_TIMEOUT_MS,
+        remainingMs,
+        attach: async (deadline) => {
+          attachStage = 'wait_targets';
+          await waitForExactPortTargets(
+            target.metroPort,
+            Math.max(1, Math.min(REACT_READY_TIMEOUT_MS, remainingMs())),
+            REACT_READY_POLL_MS,
+            stop.signal,
+            devicePin,
+          );
+          attachStage = 'connect_exact';
+          await cdp.connectExact(
+            target.metroPort,
+            { platform, bundleId: appId, ...(devicePin ? { deviceName: devicePin } : {}) },
+            'default',
+            1,
+            undefined,
+            deadline,
+          );
+        },
+        bundleReady: (deadline) => awaitBundleReady((expr) => cdp.evaluate(expr), deadline),
+        // Same launch the CLI made: terminate, then open the dev client on its Metro.
+        ...(platform === 'ios'
+          ? {
+              relaunch: () =>
+                relaunchIosDevClient(
+                  appId,
+                  target.deviceId,
+                  `${target.metroUrlForDevice}/?disableOnboarding=1`,
+                ),
+            }
+          : {}),
+        // The lease coordinates qaren processes only; a foreign Maestro, XCUITest or UIAutomator driver is a probe.
+        foreignDriver: async () => {
+          if (platform === 'android')
+            return interruptible(() => androidForeignDriverMessage(target.deviceId));
+          if (platform !== 'ios') return undefined;
+          const foreign = await interruptible(() => foreignFlowGate.check(target.deviceId));
+          return foreign.active
+            ? (foreign.warning?.message ?? 'another automation driver holds the device')
+            : undefined;
+        },
+        open: async () => {
+          deviceOpen = true;
+          await adapt(snapshot)({
+            action: 'open',
+            appId,
+            deviceId: target.deviceId,
+            platform,
+            attachOnly: false,
+            sessionName: `qaren-${request.runId}`,
+          });
+        },
+        // Opening the session may have relaunched the app: prove the bundle the walk will see.
+        prove: () => prove({ evaluate: (expr) => cdp.evaluate(expr) }, target),
+        close,
       },
-      bundleReady: (deadline) => awaitBundleReady((expr) => cdp.evaluate(expr), deadline),
-      // Same launch the CLI made: terminate, then open the dev client on its Metro.
-      ...(platform === 'ios'
-        ? {
-            relaunch: () =>
-              relaunchIosDevClient(
-                appId,
-                target.deviceId,
-                `${target.metroUrlForDevice}/?disableOnboarding=1`,
-              ),
-          }
-        : {}),
-      // The lease coordinates qaren processes only; a foreign Maestro, XCUITest or UIAutomator driver is a probe.
-      foreignDriver: async () => {
-        if (platform === 'android')
-          return interruptible(() => androidForeignDriverMessage(target.deviceId));
-        if (platform !== 'ios') return undefined;
-        const foreign = await interruptible(() => foreignFlowGate.check(target.deviceId));
-        return foreign.active
-          ? (foreign.warning?.message ?? 'another automation driver holds the device')
-          : undefined;
-      },
-      open: async () => {
-        deviceOpen = true;
-        await adapt(snapshot)({
-          action: 'open',
-          appId,
-          deviceId: target.deviceId,
-          platform,
-          attachOnly: false,
-          sessionName: `qaren-${request.runId}`,
-        });
-      },
-      // Opening the session may have relaunched the app: prove the bundle the walk will see.
-      prove: () => prove({ evaluate: (expr) => cdp.evaluate(expr) }, target),
-      close,
-    },
-    stop,
+      stop,
+    ).catch(logRefusal),
   );
   const admittedSnapshots = postAdmissionSnapshots(snapshot, appId);
   cancellationSignal();
@@ -468,11 +489,9 @@ async function openSession(
     platform === 'android'
       ? createBundleReload({
           evaluate: (expr) => cdp.evaluate(expr),
-          reinjectHelpers: (waitMs) => cdp.reinjectHelpers(waitMs),
+          reinjectHelpers: (waitMs) => cdp.reinjectHelpers(waitMs, true),
           prove: () => prove({ evaluate: (expr) => cdp.evaluate(expr) }, target),
-          deadline: () =>
-            performance.now() +
-            Math.max(1, Math.min(REACT_READY_TIMEOUT_MS, request.walkBudgetMs - now() - 1000)),
+          remainingMs,
         })
       : undefined;
   const overlays = {
@@ -539,18 +558,8 @@ async function openSession(
       ),
     press: (ref, qaContext) => act(() => press({ ref, qaContext }), false),
     fill: (ref, text, qaContext) => act(() => fill({ ref, text, qaContext }), true),
-    // Android sizes a keyboard clearance scroll from the overlap; iOS keeps its fixed swipe.
     scroll: (direction, qaContext, clearance) =>
-      act(
-        () =>
-          scroll({
-            direction,
-            amount: 0.6,
-            ...(platform === 'android' && clearance !== undefined ? { distance: clearance } : {}),
-            qaContext,
-          }),
-        false,
-      ),
+      act(() => scroll({ ...scrollArgs(direction, clearance), qaContext }), false),
     back: (qaContext) => act(() => back({ qaContext }), false),
     dialog: (action, qaContext) =>
       act(
@@ -736,7 +745,12 @@ async function main(): Promise<void> {
   }
 }
 
-main().catch((error) => {
-  log(`fatal before the wire was established: ${describeError(error).message}`);
-  process.exit(1);
-});
+if (
+  process.argv[1] &&
+  realpathSync(process.argv[1]) === realpathSync(fileURLToPath(import.meta.url))
+) {
+  main().catch((error) => {
+    log(`fatal before the wire was established: ${describeError(error).message}`);
+    process.exit(1);
+  });
+}

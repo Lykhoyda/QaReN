@@ -1581,6 +1581,7 @@ pub(crate) fn run_reuse_path(ctx: &mut Ctx, plan: &BuildPlan, t: u64) -> Result<
     ensure_running(ctx.runner, "build")?;
     let artifact = plan.artifact.clone().expect("reuse carries an artifact");
     let metro_port = qaren_metro_port(&ctx.record.scenario);
+    let deadline = ctx.runner.monotonic_ms() + ctx.record.scenario.deadlines.build_seconds * 1000;
     match ctx.record.scenario.platform {
         Platform::Ios => {
             let verified = ios::verify_app(
@@ -1594,12 +1595,15 @@ pub(crate) fn run_reuse_path(ctx: &mut Ctx, plan: &BuildPlan, t: u64) -> Result<
                     .as_deref()
                     .expect("scheme validated"),
             )
-            .map_err(|reason| artifact_install_failure(&ctx.record.run_id, &artifact, reason))?;
+            .map_err(|reason| {
+                artifact_install_failure(&ctx.record.run_id, &artifact, reason, false)
+            })?;
             if verified.sha256 != artifact.sha256 || verified.kind != artifact.kind {
                 return Err(artifact_install_failure(
                     &ctx.record.run_id,
                     &artifact,
                     "artifact changed before install".into(),
+                    false,
                 ));
             }
             if ctx.record.resources.metro.is_none() {
@@ -1611,17 +1615,7 @@ pub(crate) fn run_reuse_path(ctx: &mut Ctx, plan: &BuildPlan, t: u64) -> Result<
                 .ios_simulator
                 .clone()
                 .expect("ios allocated");
-            ensure_running(ctx.runner, "build")?;
-            let installed = ctx
-                .runner
-                .run(&ios::install_app_spec(&sim.udid, &artifact.path));
-            if !installed.ok() {
-                return Err(artifact_install_failure(
-                    &ctx.record.run_id,
-                    &artifact,
-                    installed.summary(),
-                ));
-            }
+            install_cached_ios_app(ctx, &sim.udid, &artifact, deadline)?;
         }
         Platform::Android => {
             let (adb, serial, server_port) =
@@ -1638,6 +1632,7 @@ pub(crate) fn run_reuse_path(ctx: &mut Ctx, plan: &BuildPlan, t: u64) -> Result<
                     &ctx.record.run_id,
                     &artifact,
                     installed.summary(),
+                    installed.timed_out,
                 ));
             }
             ctx.record.resources.app_install = Some(AppInstallResource {
@@ -1706,7 +1701,6 @@ pub(crate) fn run_reuse_path(ctx: &mut Ctx, plan: &BuildPlan, t: u64) -> Result<
     }
     wait_metro_responding(ctx)?;
     let t = ctx.mark("metro_ready", t);
-    let deadline = ctx.runner.monotonic_ms() + ctx.record.scenario.deadlines.build_seconds * 1000;
 
     ensure_running(ctx.runner, "build")?;
     let warmed = ctx.runner.run(&metro::manifest_spec(
@@ -1793,7 +1787,66 @@ pub(crate) fn run_reuse_path(ctx: &mut Ctx, plan: &BuildPlan, t: u64) -> Result<
     Ok(())
 }
 
-fn artifact_install_failure(run_id: &str, artifact: &CachedArtifact, summary: String) -> Failure {
+// Let the owned install use the remaining preparation budget before checking its receipt.
+fn install_cached_ios_app(
+    ctx: &mut Ctx,
+    udid: &str,
+    artifact: &CachedArtifact,
+    deadline: u64,
+) -> Result<(), Failure> {
+    let mut spec = ios::install_app_spec(udid, &artifact.path);
+    spec.timeout_seconds = deadline.saturating_sub(ctx.runner.monotonic_ms()) / 1000;
+    let mut attempts = 0;
+    let mut last = None;
+    while let Some(installed) = run_budgeted_attempt(ctx, &spec, deadline, &mut attempts)? {
+        if !installed.timed_out {
+            if installed.ok() {
+                return Ok(());
+            }
+            return Err(artifact_install_failure(
+                &ctx.record.run_id,
+                artifact,
+                installed.summary(),
+                false,
+            ));
+        }
+        if installed_bundle_matches(ctx, udid, artifact) {
+            ctx.notes
+                .push(("install_proof".into(), "container-hash".into()));
+            return Ok(());
+        }
+        last = Some(installed);
+    }
+    let summary = match last {
+        Some(output) => format!(
+            "last of {attempts} attempts {}; preparation budget spent",
+            output.summary()
+        ),
+        None => "preparation budget spent before install".into(),
+    };
+    Err(artifact_install_failure(
+        &ctx.record.run_id,
+        artifact,
+        summary,
+        true,
+    ))
+}
+
+fn installed_bundle_matches(ctx: &mut Ctx, udid: &str, artifact: &CachedArtifact) -> bool {
+    let container = ctx
+        .runner
+        .run(&ios::app_container_spec(udid, &ctx.record.candidate.app_id));
+    container.ok()
+        && crate::buildplan::hash_artifact(Path::new(container.stdout.trim()))
+            .is_ok_and(|sha256| sha256 == artifact.sha256)
+}
+
+fn artifact_install_failure(
+    run_id: &str,
+    artifact: &CachedArtifact,
+    summary: String,
+    timed_out: bool,
+) -> Failure {
     Failure::new(
         "build",
         FailureCode::ArtifactInstallFailed,
@@ -1802,6 +1855,10 @@ fn artifact_install_failure(run_id: &str, artifact: &CachedArtifact, summary: St
             artifact.path.display()
         ),
         match artifact.kind {
+            // A rebuild re-enters this same install, so a timeout keeps the artifact.
+            _ if timed_out => format!(
+                "the install did not finish in time; keep the cached artifact, qaren cleanup {run_id} --json and re-run prepare"
+            ),
             ArtifactKind::AppBundle => format!(
                 "delete the machine store entry {} to force a rebuild, then qaren cleanup {run_id} --json and re-run prepare",
                 artifact.path.parent().and_then(Path::parent).unwrap_or(&artifact.path).display()
@@ -2999,47 +3056,58 @@ fn run_launch_command(
     attempts: &mut usize,
 ) -> Result<crate::exec::CmdOutput, Failure> {
     let mut last = None;
-    loop {
-        ensure_running(ctx.runner, "build")?;
-        let remaining_ms = deadline.saturating_sub(ctx.runner.monotonic_ms());
-        // Command limits are whole seconds; do not start a call beyond the remaining budget.
-        if remaining_ms < 1000 {
-            ctx.runner.sleep(Duration::from_millis(remaining_ms));
-            ensure_running(ctx.runner, "build")?;
-            ctx.notes
-                .push(("launch_ready_budget".into(), "spent".into()));
-            return last.ok_or_else(|| {
-                Failure::new(
-                    "build",
-                    FailureCode::ReadyDeadlineExceeded,
-                    "preparation deadline spent before dev-client launch",
-                    format!(
-                        "run qaren cleanup {} --json, then retry prepare",
-                        ctx.record.run_id
-                    ),
-                )
-            });
-        }
-        let mut bounded = spec.clone();
-        bounded.timeout_seconds = bounded.timeout_seconds.min(remaining_ms / 1000);
-        let output = ctx.runner.run(&bounded);
-        *attempts += 1;
-        let label = format!("{}_attempt_{}", spec.label, attempts);
-        ctx.timings.push((label.clone(), output.duration_ms));
-        ctx.notes.push((
-            label,
-            format!(
-                "{}; timeout_seconds={}",
-                output.summary(),
-                bounded.timeout_seconds
-            ),
-        ));
-        ensure_running(ctx.runner, "build")?;
+    while let Some(output) = run_budgeted_attempt(ctx, spec, deadline, attempts)? {
         if !output.timed_out {
             return Ok(output);
         }
         last = Some(output);
     }
+    last.ok_or_else(|| {
+        Failure::new(
+            "build",
+            FailureCode::ReadyDeadlineExceeded,
+            "preparation deadline spent before dev-client launch",
+            format!(
+                "run qaren cleanup {} --json, then retry prepare",
+                ctx.record.run_id
+            ),
+        )
+    })
+}
+
+// None once the shared preparation budget is spent; each attempt is recorded in the receipt.
+fn run_budgeted_attempt(
+    ctx: &mut Ctx,
+    spec: &CmdSpec,
+    deadline: u64,
+    attempts: &mut usize,
+) -> Result<Option<crate::exec::CmdOutput>, Failure> {
+    ensure_running(ctx.runner, "build")?;
+    let remaining_ms = deadline.saturating_sub(ctx.runner.monotonic_ms());
+    // Command limits are whole seconds; do not start a call beyond the remaining budget.
+    if remaining_ms < 1000 {
+        ctx.runner.sleep(Duration::from_millis(remaining_ms));
+        ensure_running(ctx.runner, "build")?;
+        ctx.notes
+            .push(("launch_ready_budget".into(), "spent".into()));
+        return Ok(None);
+    }
+    let mut bounded = spec.clone();
+    bounded.timeout_seconds = bounded.timeout_seconds.min(remaining_ms / 1000);
+    let output = ctx.runner.run(&bounded);
+    *attempts += 1;
+    let label = format!("{}_attempt_{}", spec.label, attempts);
+    ctx.timings.push((label.clone(), output.duration_ms));
+    ctx.notes.push((
+        label,
+        format!(
+            "{}; timeout_seconds={}",
+            output.summary(),
+            bounded.timeout_seconds
+        ),
+    ));
+    ensure_running(ctx.runner, "build")?;
+    Ok(Some(output))
 }
 
 // A launch timeout is the CDP leg's environmental refusal; any other launch error stays a build failure.
@@ -3078,6 +3146,21 @@ fn launch_failure(
 mod launch_tests {
     use super::*;
     use crate::exec::CmdOutput;
+
+    #[test]
+    fn only_a_timed_out_install_keeps_the_cached_artifact() {
+        let artifact = CachedArtifact {
+            path: PathBuf::from("/store/ios/fp/build/testapp.app"),
+            sha256: "a".repeat(64),
+            kind: ArtifactKind::AppBundle,
+        };
+        let timed_out = artifact_install_failure("check-1", &artifact, "timed out".into(), true);
+        assert_eq!(timed_out.code, FailureCode::ArtifactInstallFailed);
+        assert!(!timed_out.next_action.contains("rebuild"));
+        assert!(timed_out.next_action.contains("re-run"));
+        let failed = artifact_install_failure("check-1", &artifact, "exit=1".into(), false);
+        assert!(failed.next_action.contains("force a rebuild"));
+    }
 
     fn timed_out() -> CmdOutput {
         CmdOutput {

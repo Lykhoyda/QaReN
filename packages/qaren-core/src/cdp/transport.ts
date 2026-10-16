@@ -14,6 +14,8 @@ export class CDPProtocolError extends Error {
 
 export class CDPRequestTimeoutError extends Error {}
 
+export class CDPTargetClosedError extends Error {}
+
 export function sendWithTimeout(
   ws: WebSocket | null,
   pending: Map<number, PendingCall>,
@@ -24,7 +26,7 @@ export function sendWithTimeout(
   onDispatched?: () => void,
 ): Promise<unknown> {
   if (!ws || ws.readyState !== WebSocket.OPEN) {
-    return Promise.reject(new Error('WebSocket not connected'));
+    return Promise.reject(new CDPTargetClosedError('WebSocket not connected'));
   }
 
   return interruptible(
@@ -56,7 +58,7 @@ export function sendWithTimeout(
         pending.set(id, { resolve: settled(resolve), reject: settled(reject), timer });
         try {
           if (!ws || ws.readyState !== WebSocket.OPEN) {
-            throw new Error('WebSocket closed between check and send');
+            throw new CDPTargetClosedError('WebSocket closed between check and send');
           }
           ws.send(JSON.stringify({ id, method, params }));
           onDispatched?.();
