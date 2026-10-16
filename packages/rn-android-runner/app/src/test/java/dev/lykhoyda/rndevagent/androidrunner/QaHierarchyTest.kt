@@ -235,6 +235,24 @@ class QaHierarchyTest {
         assertTrue(out.nodes.all { it.packageName.isNotEmpty() })
     }
 
+    @Test fun aHeadingNodeKeepsItsHeadingFactAndOtherNodesDoNot() {
+        val tree = node(
+            "android.widget.FrameLayout",
+            children = listOf(
+                node("android.view.View", text = "Section title", heading = true),
+                node("android.widget.TextView", text = "Body"),
+            ),
+        )
+        val out = QaHierarchy.assemble(listOf(appWindow(tree)), app, display)
+        val (frame, title, body) = out.nodes.drop(2)
+
+        assertEquals("Section title", title.label)
+        assertTrue(title.heading)
+        assertFalse(body.heading)
+        assertFalse(frame.heading)
+        assertFalse(out.nodes[0].heading)
+    }
+
     private fun appWindow(
         root: RawNode?,
         id: Int = 1,
@@ -254,6 +272,7 @@ class QaHierarchyTest {
         selected: Boolean = false,
         password: Boolean = false,
         enabled: Boolean = true,
+        heading: Boolean = false,
     ) = RawNode(
         className = className,
         text = text,
@@ -266,6 +285,7 @@ class QaHierarchyTest {
         selected = selected,
         checked = false,
         password = password,
+        heading = heading,
         children = children,
     )
 }
