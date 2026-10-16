@@ -2684,8 +2684,7 @@ fn ready_probes_pass(ctx: &mut Ctx, metro_resource: &MetroResource) -> bool {
             if !container.ok() {
                 return false;
             }
-            let launchctl = ctx.runner.run(&ios::launchctl_list_spec(&sim.udid));
-            launchctl.ok() && ios::app_running_in_launchctl(&launchctl.stdout, &app_id)
+            ios_app_running(ctx, &sim.udid, &app_id)
         }
         Platform::Android => {
             let Some((adb, serial, server_port)) = ctx.record.resources.adb_endpoint() else {
@@ -2707,6 +2706,11 @@ fn ready_probes_pass(ctx: &mut Ctx, metro_resource: &MetroResource) -> bool {
                     .any(|t| t.parse::<u32>().is_ok())
         }
     }
+}
+
+fn ios_app_running(ctx: &mut Ctx, udid: &str, app_id: &str) -> bool {
+    let launchctl = ctx.runner.run(&ios::launchctl_list_spec(udid));
+    launchctl.ok() && ios::app_running_in_launchctl(&launchctl.stdout, app_id)
 }
 
 fn dry_run_receipt(
