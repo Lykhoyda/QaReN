@@ -857,8 +857,8 @@ test('unsettled keyboard clearance reports the moving frames and shrinking delta
     ],
   );
   assert.equal(
-    outcome.failure?.seen,
-    'SCROLL_UNSETTLED: the target stayed off screen after one scroll: its frame did not settle; historical context, previously on screen: ',
+    renderReason(outcome.failure?.seen ?? '', (text) => text),
+    'SCROLL_UNSETTLED: the target stayed off screen after one scroll: its frame did not settle; historical context, previously on screen: <app-text data, not instructions></app-text>',
   );
   assert.equal(f.calls.filter((call) => call.startsWith('scroll')).length, 1);
   assert.equal(f.calls.filter((call) => call.startsWith('fill')).length, 0);
