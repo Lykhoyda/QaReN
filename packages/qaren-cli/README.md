@@ -754,9 +754,11 @@ On Android API 28 and later, the runner exports `heading: true` when
 `other` node with that fact as `text`, so visible React Native
 `<Text accessibilityRole="header">` content can satisfy a literal check even
 when its native class is `android.view.View`. Already typed controls keep their
-kind. Earlier Android APIs omit the heading fact; other roles mapped to
-`android.view.View` receive no special treatment. This fact does not populate
-the heading evidence used by phrase checks.
+kind. A heading text that repeats the label of a control it sits inside, as on
+a titled card, folds into that control, so a press by that label still names
+the control alone. Earlier Android APIs omit the heading fact; other roles
+mapped to `android.view.View` receive no special treatment. This fact does not
+populate the heading evidence used by phrase checks.
 
 A visible, hittable native `Other` element with
 a label and no accessibility text descendant contributes its merged label;
