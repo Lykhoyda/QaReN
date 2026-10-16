@@ -493,7 +493,12 @@ capability/gap flags and fixed association reasons/counts are retained. No raw
 host IDs, labels, values, rectangles, refs or frame deltas enter these facts.
 An optional `ancestry` aggregate describes only that same retained row population:
 fixed path and first-missing availability counts, counted first-failure qualifications,
-and shared-ancestor equality states. Absent, unknown and explicit-null candidate-count
+and shared-ancestor equality states. Incompatible-type qualifications may include bounded
+paired finite host/native operands from the same rejected witness, with the existing
+direct-child scroll bit only when applicable. Uncollected, unknown and inconsistent
+bindings carry no operands; groups count retained evaluations, not distinct hosts.
+The exact compatibility predicate is unchanged, and even a disconfirming allowed pair
+is retained privately for diagnosis. Absent, unknown and explicit-null candidate-count
 facts remain distinct; omitted rows and older receipts do not acquire inferred facts.
 Transient ancestor indices never leave the join. The aggregate is retained only in
 private structured ledger/receipt JSON and excluded from Debug, Markdown reports,

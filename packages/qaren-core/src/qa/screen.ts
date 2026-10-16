@@ -20,7 +20,17 @@ import {
 import type { NativePresence, NativePresenceNode } from './native-presence.js';
 import { associateHeadings, validateHostTypography } from './host-typography.js';
 import type { HeadingEvidence, HostTypography } from './host-typography.js';
-import { associateHosts, hostPath, type HostAssociationDiagnostic } from './host-association.js';
+import {
+  associateHosts,
+  hostPath,
+  finiteHostTypes,
+  finiteNativeTypes,
+  unavailableTypeOperands,
+  type HostAssociationDiagnostic,
+  type HostTypeOperand,
+  type NativeTypeOperand,
+  type DirectChildScrollView,
+} from './host-association.js';
 
 export type Kind = 'button' | 'input' | 'switch' | 'link' | 'cell' | 'text' | 'image' | 'other';
 export type EvidenceStatus = 'supported' | 'unsupported' | 'unknown';
@@ -416,8 +426,27 @@ interface GapHostDiagnostics {
     rectStatus: 'positive' | 'zero' | 'unknown';
     pressGap: boolean;
     fillGap: boolean;
-    association?: HostAssociationDiagnostic;
+    association?: Omit<HostAssociationDiagnostic, 'incompatibleType'>;
   }>;
+}
+
+function legacyAssociation(
+  value: HostAssociationDiagnostic | undefined,
+): GapHostDiagnostics['rows'][number]['association'] {
+  if (!value) return undefined;
+  return {
+    identity: value.identity,
+    nativeIdentityCandidateCount: value.nativeIdentityCandidateCount,
+    compatibleCount: value.compatibleCount,
+    sameFrameCount: value.sameFrameCount,
+    ...(value.inputContainmentCount === undefined
+      ? {}
+      : { inputContainmentCount: value.inputContainmentCount }),
+    presenceProofCount: value.presenceProofCount,
+    ancestorPath: value.ancestorPath,
+    collisions: value.collisions,
+    ...(value.frameMismatch === undefined ? {} : { frameMismatch: value.frameMismatch }),
+  };
 }
 
 const ancestryReasons = [
@@ -439,7 +468,164 @@ const ancestryNativeCounts = [
   'not-applicable',
 ] as const;
 
+type TypeOperandGroup =
+  | {
+      binding: 'same-witness';
+      hostType: HostTypeOperand;
+      nativeType: NativeTypeOperand;
+      directChildScrollView: DirectChildScrollView;
+      count: number;
+    }
+  | { binding: 'not-collected' | 'unknown' | 'inconsistent'; count: number };
+type TypeOperandSample =
+  | Omit<Extract<TypeOperandGroup, { binding: 'same-witness' }>, 'count'>
+  | { binding: 'not-collected' | 'unknown' | 'inconsistent' };
+const typeBindings = ['same-witness', 'not-collected', 'unknown', 'inconsistent'] as const;
+const hostTypeCodes = [...finiteHostTypes, ...unavailableTypeOperands];
+const nativeTypeCodes = [...finiteNativeTypes, ...unavailableTypeOperands];
+const scrollTypeCodes = [false, true, 'unknown', 'not-collected', 'not-applicable'] as const;
+const unreadableTypeField = Symbol();
+
+function typeField(value: unknown, key: PropertyKey): unknown {
+  try {
+    if (!isRecord(value) && !Array.isArray(value)) return unreadableTypeField;
+    const descriptor = Object.getOwnPropertyDescriptor(value, key);
+    return descriptor === undefined
+      ? undefined
+      : 'value' in descriptor
+        ? descriptor.value
+        : unreadableTypeField;
+  } catch {
+    return unreadableTypeField;
+  }
+}
+
+function scrollApplicability(host: HostTypeOperand, native: NativeTypeOperand) {
+  if (
+    (host !== 'unknown' && host !== 'RCTScrollView' && host !== 'ScrollView') ||
+    (native !== 'unknown' && native !== 'Other')
+  )
+    return 'not-applicable';
+  return host === 'unknown' || native === 'unknown' ? 'unknown' : 'applicable';
+}
+
+function compareTypeOperands(a: TypeOperandSample, b: TypeOperandSample): number {
+  const binding = typeBindings.indexOf(a.binding) - typeBindings.indexOf(b.binding);
+  if (binding || a.binding !== 'same-witness' || b.binding !== 'same-witness') return binding;
+  return (
+    hostTypeCodes.indexOf(a.hostType) - hostTypeCodes.indexOf(b.hostType) ||
+    nativeTypeCodes.indexOf(a.nativeType) - nativeTypeCodes.indexOf(b.nativeType) ||
+    scrollTypeCodes.indexOf(a.directChildScrollView) -
+      scrollTypeCodes.indexOf(b.directChildScrollView)
+  );
+}
+
+function boundTypeOperands(record: unknown, witness: number): TypeOperandSample {
+  try {
+    const sample = typeField(record, 'incompatibleType');
+    if (sample === undefined) return { binding: 'not-collected' };
+    if (!isRecord(sample)) return { binding: 'unknown' };
+    const index = typeField(sample, 'hostIndex');
+    if (typeof index !== 'number' || !Number.isSafeInteger(index) || index < 0)
+      return { binding: 'unknown' };
+    if (index !== witness) return { binding: 'inconsistent' };
+    const nativeCount = typeField(record, 'nativeIdentityCandidateCount');
+    const compatibleCount = typeField(record, 'compatibleCount');
+    if (nativeCount !== 1 || compatibleCount !== 0)
+      return {
+        binding:
+          nativeCount === undefined ||
+          nativeCount === null ||
+          compatibleCount === undefined ||
+          compatibleCount === null ||
+          nativeCount === unreadableTypeField ||
+          compatibleCount === unreadableTypeField
+            ? 'unknown'
+            : 'inconsistent',
+      };
+    const host = typeField(sample, 'hostType'),
+      native = typeField(sample, 'nativeType');
+    const hostType = hostTypeCodes.find((code) => code === host);
+    const nativeType = nativeTypeCodes.find((code) => code === native);
+    if (!hostType || !nativeType) return { binding: 'unknown' };
+    const bit = typeField(sample, 'directChildScrollView');
+    const applicability = scrollApplicability(hostType, nativeType);
+    const directChildScrollView =
+      applicability === 'not-applicable'
+        ? 'not-applicable'
+        : applicability === 'unknown'
+          ? 'unknown'
+          : typeof bit === 'boolean'
+            ? bit
+            : bit === undefined || bit === 'not-collected'
+              ? 'not-collected'
+              : 'unknown';
+    return { binding: 'same-witness', hostType, nativeType, directChildScrollView };
+  } catch {
+    return { binding: 'unknown' };
+  }
+}
+
+function projectTypeOperands(
+  value: unknown,
+  count: number,
+  allSame: unknown,
+): TypeOperandGroup[] | undefined {
+  try {
+    if (value === undefined || value === null || !Array.isArray(value)) return undefined;
+    const length = typeField(value, 'length');
+    if (typeof length !== 'number' || length < 1 || length > count) return undefined;
+    const groups: TypeOperandGroup[] = [];
+    for (let i = 0; i < length; i++) {
+      const raw = typeField(value, String(i));
+      const bindingValue = typeField(raw, 'binding');
+      const binding = typeBindings.find((code) => code === bindingValue);
+      const n = typeField(raw, 'count');
+      if (!binding || !ancestryCount(n) || n === 0) return undefined;
+      let group: TypeOperandGroup;
+      if (binding === 'same-witness') {
+        const host = typeField(raw, 'hostType'),
+          native = typeField(raw, 'nativeType');
+        const hostType = hostTypeCodes.find((code) => code === host);
+        const nativeType = nativeTypeCodes.find((code) => code === native);
+        const bit = typeField(raw, 'directChildScrollView');
+        const directChildScrollView = scrollTypeCodes.find((code) => code === bit);
+        if (!hostType || !nativeType || directChildScrollView === undefined) return undefined;
+        const applicability = scrollApplicability(hostType, nativeType);
+        if (
+          applicability === 'not-applicable'
+            ? directChildScrollView !== 'not-applicable'
+            : applicability === 'unknown'
+              ? directChildScrollView !== 'unknown'
+              : directChildScrollView === 'not-applicable'
+        )
+          return undefined;
+        group = { binding, hostType, nativeType, directChildScrollView, count: n };
+      } else {
+        if (
+          ['hostType', 'nativeType', 'directChildScrollView'].some(
+            (key) => typeField(raw, key) !== undefined,
+          )
+        )
+          return undefined;
+        group = { binding, count: n };
+      }
+      if (groups.length && compareTypeOperands(groups.at(-1)!, group) >= 0) return undefined;
+      groups.push(group);
+    }
+    if (
+      groups.reduce((sum, group) => sum + group.count, 0) !== count ||
+      (allSame === true && groups.filter((group) => group.binding === 'same-witness').length > 1)
+    )
+      return undefined;
+    return groups;
+  } catch {
+    return undefined;
+  }
+}
+
 type AncestryQualification = {
+  typeOperands?: TypeOperandGroup[];
   reason: (typeof ancestryReasons)[number];
   nativeCandidates: (typeof ancestryNativeCounts)[number];
   count: number;
@@ -586,6 +772,7 @@ function summarizeAncestry(
     let shared: number | undefined;
     let different = false;
     const qualifications: AncestryQualification[] = [];
+    const typeSamples: Array<{ witness: number; sample: TypeOperandSample }> = [];
     for (const row of rows) {
       if (row.association?.ancestorPath !== 'ancestor-structure-missing') continue;
       let witness: number | undefined | 'unknown';
@@ -612,7 +799,10 @@ function summarizeAncestry(
         if (firstMissing.known === 1) shared = witness;
         else if (shared !== witness) different = true;
         try {
-          qualification = ancestryQualification(diagnostics.get(witness));
+          const record = diagnostics.get(witness);
+          qualification = ancestryQualification(record);
+          if (qualification.reason === 'incompatible-type')
+            typeSamples.push({ witness, sample: boundTypeOperands(record, witness) });
         } catch {
           qualification = { reason: 'unknown', nativeCandidates: 'unknown' };
         }
@@ -624,6 +814,31 @@ function summarizeAncestry(
       );
       if (group) group.count++;
       else qualifications.push({ ...qualification, count: 1 });
+    }
+    for (const entry of typeSamples) {
+      if (
+        typeSamples.some(
+          (other) =>
+            other.witness === entry.witness &&
+            (other.sample.binding === 'inconsistent' ||
+              (entry.sample.binding === 'same-witness' &&
+                other.sample.binding === 'same-witness' &&
+                compareTypeOperands(entry.sample, other.sample) !== 0)),
+        )
+      ) {
+        for (const other of typeSamples)
+          if (other.witness === entry.witness) other.sample = { binding: 'inconsistent' };
+      }
+    }
+    const incompatible = qualifications.find((group) => group.reason === 'incompatible-type');
+    if (incompatible) {
+      const groups: TypeOperandGroup[] = [];
+      for (const { sample } of typeSamples) {
+        const group = groups.find((group) => compareTypeOperands(group, sample) === 0);
+        if (group) group.count++;
+        else groups.push({ ...sample, count: 1 });
+      }
+      incompatible.typeOperands = groups.sort(compareTypeOperands);
     }
     qualifications.sort(
       (a, b) =>
@@ -758,7 +973,16 @@ function projectAncestry(
       )
         return undefined;
       previous = rank;
-      qualifications.push({ reason, nativeCandidates, count: group.count });
+      const typeOperands =
+        reason === 'incompatible-type'
+          ? projectTypeOperands(typeField(group, 'typeOperands'), group.count, value.allSame)
+          : undefined;
+      qualifications.push({
+        reason,
+        nativeCandidates,
+        count: group.count,
+        ...(typeOperands ? { typeOperands } : {}),
+      });
     }
     const countReason = (reason: AncestryQualification['reason']) =>
       qualifications
@@ -1061,7 +1285,7 @@ export function join(
                 : 'zero',
             pressGap: pressGaps.has(hostOrdinal),
             fillGap: fillGaps.has(hostOrdinal),
-            association: associationDiagnostics.get(hostOrdinal),
+            association: legacyAssociation(associationDiagnostics.get(hostOrdinal)),
           };
         }),
       };

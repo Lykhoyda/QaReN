@@ -401,9 +401,218 @@ pub enum AncestryNativeCandidates {
     NotApplicable,
 }
 
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord)]
+pub enum HostTypeOperand {
+    #[serde(rename = "TextInput")]
+    TextInput,
+    #[serde(rename = "RCTTextInput")]
+    RCTTextInput,
+    #[serde(rename = "RCTSinglelineTextInputView")]
+    RCTSinglelineTextInputView,
+    #[serde(rename = "RCTMultilineTextInputView")]
+    RCTMultilineTextInputView,
+    #[serde(rename = "AndroidTextInput")]
+    AndroidTextInput,
+    #[serde(rename = "RCTText")]
+    RCTText,
+    #[serde(rename = "Text")]
+    Text,
+    #[serde(rename = "RCTView")]
+    RCTView,
+    #[serde(rename = "View")]
+    View,
+    #[serde(rename = "RCTScrollView")]
+    RCTScrollView,
+    #[serde(rename = "ScrollView")]
+    ScrollView,
+    #[serde(rename = "RCTVirtualText")]
+    RCTVirtualText,
+    #[serde(rename = "null")]
+    Null,
+    #[serde(rename = "absent")]
+    Absent,
+    #[serde(rename = "unrecognized")]
+    Unrecognized,
+    #[serde(rename = "unknown")]
+    Unknown,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord)]
+pub enum NativeTypeOperand {
+    #[serde(rename = "Application")]
+    Application,
+    #[serde(rename = "Window")]
+    Window,
+    #[serde(rename = "Button")]
+    Button,
+    #[serde(rename = "Cell")]
+    Cell,
+    #[serde(rename = "StaticText")]
+    StaticText,
+    #[serde(rename = "TextField")]
+    TextField,
+    #[serde(rename = "TextView")]
+    TextView,
+    #[serde(rename = "SecureTextField")]
+    SecureTextField,
+    #[serde(rename = "Switch")]
+    Switch,
+    #[serde(rename = "Slider")]
+    Slider,
+    #[serde(rename = "Link")]
+    Link,
+    #[serde(rename = "Image")]
+    Image,
+    #[serde(rename = "NavigationBar")]
+    NavigationBar,
+    #[serde(rename = "TabBar")]
+    TabBar,
+    #[serde(rename = "CollectionView")]
+    CollectionView,
+    #[serde(rename = "Table")]
+    Table,
+    #[serde(rename = "ScrollView")]
+    ScrollView,
+    #[serde(rename = "SearchField")]
+    SearchField,
+    #[serde(rename = "Toolbar")]
+    Toolbar,
+    #[serde(rename = "SegmentedControl")]
+    SegmentedControl,
+    #[serde(rename = "Stepper")]
+    Stepper,
+    #[serde(rename = "Picker")]
+    Picker,
+    #[serde(rename = "CheckBox")]
+    CheckBox,
+    #[serde(rename = "MenuItem")]
+    MenuItem,
+    #[serde(rename = "Other")]
+    Other,
+    #[serde(rename = "Keyboard")]
+    Keyboard,
+    #[serde(rename = "Key")]
+    Key,
+    #[serde(rename = "null")]
+    Null,
+    #[serde(rename = "absent")]
+    Absent,
+    #[serde(rename = "unrecognized")]
+    Unrecognized,
+    #[serde(rename = "unknown")]
+    Unknown,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord)]
+#[serde(rename_all = "kebab-case")]
+pub enum ScrollOperandStatus {
+    Unknown,
+    NotCollected,
+    NotApplicable,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord)]
+#[serde(untagged)]
+pub enum ScrollOperand {
+    Known(bool),
+    Status(ScrollOperandStatus),
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord)]
+#[serde(tag = "binding", rename_all = "kebab-case", deny_unknown_fields)]
+pub enum TypeOperandGroup {
+    SameWitness {
+        #[serde(rename = "hostType")]
+        host_type: HostTypeOperand,
+        #[serde(rename = "nativeType")]
+        native_type: NativeTypeOperand,
+        #[serde(rename = "directChildScrollView")]
+        direct_child_scroll_view: ScrollOperand,
+        count: u8,
+    },
+    NotCollected {
+        count: u8,
+    },
+    Unknown {
+        count: u8,
+    },
+    Inconsistent {
+        count: u8,
+    },
+}
+
+impl TypeOperandGroup {
+    fn count(&self) -> u8 {
+        match self {
+            Self::SameWitness { count, .. }
+            | Self::NotCollected { count }
+            | Self::Unknown { count }
+            | Self::Inconsistent { count } => *count,
+        }
+    }
+
+    fn key(
+        &self,
+    ) -> (
+        u8,
+        Option<(HostTypeOperand, NativeTypeOperand, ScrollOperand)>,
+    ) {
+        match self {
+            Self::SameWitness {
+                host_type,
+                native_type,
+                direct_child_scroll_view,
+                ..
+            } => (
+                0,
+                Some((*host_type, *native_type, *direct_child_scroll_view)),
+            ),
+            Self::NotCollected { .. } => (1, None),
+            Self::Unknown { .. } => (2, None),
+            Self::Inconsistent { .. } => (3, None),
+        }
+    }
+
+    fn valid(&self) -> bool {
+        if self.count() == 0 || self.count() > 8 {
+            return false;
+        }
+        let Self::SameWitness {
+            host_type,
+            native_type,
+            direct_child_scroll_view,
+            ..
+        } = self
+        else {
+            return true;
+        };
+        let not_applicable = (*host_type != HostTypeOperand::Unknown
+            && !matches!(
+                host_type,
+                HostTypeOperand::RCTScrollView | HostTypeOperand::ScrollView
+            ))
+            || (*native_type != NativeTypeOperand::Unknown
+                && *native_type != NativeTypeOperand::Other);
+        if not_applicable {
+            *direct_child_scroll_view == ScrollOperand::Status(ScrollOperandStatus::NotApplicable)
+        } else if *host_type == HostTypeOperand::Unknown
+            || *native_type == NativeTypeOperand::Unknown
+        {
+            *direct_child_scroll_view == ScrollOperand::Status(ScrollOperandStatus::Unknown)
+        } else {
+            !matches!(
+                direct_child_scroll_view,
+                ScrollOperand::Status(ScrollOperandStatus::NotApplicable)
+            )
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct AncestryQualification {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub type_operands: Option<Vec<TypeOperandGroup>>,
     pub reason: AncestryReason,
     pub native_candidates: AncestryNativeCandidates,
     pub count: u8,
@@ -519,7 +728,28 @@ impl AncestryGapSummary {
                 != u16::from(paths.structure_missing)
             || self.qualifications.len() > rows.len()
             || self.qualifications.iter().any(|group| {
-                group.count == 0
+                group.type_operands.as_ref().is_some_and(|operands| {
+                    group.reason != R::IncompatibleType
+                        || operands.is_empty()
+                        || operands.len() > usize::from(group.count)
+                        || operands.iter().any(|operand| !operand.valid())
+                        || operands
+                            .iter()
+                            .map(|operand| u16::from(operand.count()))
+                            .sum::<u16>()
+                            != u16::from(group.count)
+                        || !operands
+                            .windows(2)
+                            .all(|pair| pair[0].key() < pair[1].key())
+                        || (self.all_same == Same::Known(true)
+                            && operands
+                                .iter()
+                                .filter(|operand| {
+                                    matches!(operand, TypeOperandGroup::SameWitness { .. })
+                                })
+                                .count()
+                                > 1)
+                }) || group.count == 0
                     || group.count > 8
                     || match group.reason {
                         R::Absent => group.native_candidates != N::Absent,

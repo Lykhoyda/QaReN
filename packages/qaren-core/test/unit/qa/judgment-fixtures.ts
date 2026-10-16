@@ -145,7 +145,15 @@ export function joinedGapScreen(
   category: 'missing-host-evidence' | 'incomplete-host-evidence' | 'unassociated-hosts',
   presence: boolean | 'unknown' = true,
   typographyComplete = true,
-  ancestry?: 'shared' | 'distinct' | 'retained' | 'other' | 'ambiguous',
+  ancestry?:
+    | 'shared'
+    | 'distinct'
+    | 'retained'
+    | 'other'
+    | 'ambiguous'
+    | 'incompatible'
+    | 'incompatible-distinct'
+    | 'incompatible-same',
 ): Screen {
   const nodes: NativeNode[] = [
     { ref: '@app', type: 'Application', rect: { x: 0, y: 0, width: 400, height: 800 } },
@@ -194,8 +202,9 @@ export function joinedGapScreen(
           },
         };
   if (ancestry && evidence) {
-    const paired = ancestry !== 'shared';
-    const ambiguous = ancestry !== 'shared' && ancestry !== 'distinct';
+    const paired = ancestry !== 'shared' && ancestry !== 'incompatible';
+    const incompatible = ancestry.startsWith('incompatible');
+    const ambiguous = ancestry !== 'shared' && ancestry !== 'distinct' && !incompatible;
     const parentCount = paired ? 2 : 1;
     const parents = Array.from({ length: parentCount }, (_, i) => ({
       testID: 'private-ancestor-canary-' + (ambiguous ? 0 : i),
@@ -213,7 +222,9 @@ export function joinedGapScreen(
           ? null
           : ancestry === 'other'
             ? 1
-            : ancestry === 'distinct'
+            : ancestry === 'distinct' ||
+                ancestry === 'incompatible-distinct' ||
+                ancestry === 'incompatible-same'
               ? (hostIndex - parentCount) % 2
               : 0,
       rootIndex: 0,
@@ -221,6 +232,19 @@ export function joinedGapScreen(
       rect: { x: 20, y: 100, width: 100, height: 40 },
       text: { kind: 'none' },
     }));
+    if (incompatible) {
+      for (let i = 0; i < parentCount; i++) {
+        evidence.typography!.nodes[i].hostType =
+          i === 1 && ancestry === 'incompatible-distinct' ? 'RCTVirtualText' : 'RCTText';
+        nodes.push({
+          ref: '@private-ancestor-' + i,
+          type: 'Other',
+          parentIndex: 1,
+          identifier: parents[i].testID,
+          rect: { x: 20, y: 100, width: 100, height: 40 },
+        });
+      }
+    }
     for (const child of children)
       nodes.push({
         ref: '@private-child-' + nodes.length,

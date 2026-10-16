@@ -780,6 +780,19 @@ for (const mode of [
         reason: mode === 'zero' || mode === 'multiple' ? 'native-id-count' : mode,
         nativeCandidates: mode === 'zero' || mode === 'multiple' ? mode : 'not-applicable',
         count: 2,
+        ...(mode === 'incompatible-type'
+          ? {
+              typeOperands: [
+                {
+                  binding: 'same-witness',
+                  hostType: 'RCTText',
+                  nativeType: 'Other',
+                  directChildScrollView: 'not-applicable',
+                  count: 2,
+                },
+              ],
+            }
+          : {}),
       },
     ]);
     assert.equal(summary.allSame, true);
@@ -1051,7 +1064,20 @@ test('qualification groups have finite-code order rather than retained-row or an
   const summary = ancestryOf(f);
   assert.deepEqual(summary.qualifications, [
     { reason: 'native-id-count', nativeCandidates: 'zero', count: 1 },
-    { reason: 'incompatible-type', nativeCandidates: 'not-applicable', count: 1 },
+    {
+      reason: 'incompatible-type',
+      nativeCandidates: 'not-applicable',
+      count: 1,
+      typeOperands: [
+        {
+          binding: 'same-witness',
+          hostType: 'RCTText',
+          nativeType: 'Other',
+          directChildScrollView: 'not-applicable',
+          count: 1,
+        },
+      ],
+    },
   ]);
   assert.equal(summary.allSame, false);
   assert.equal(summary.sameAsRetainedAmbiguous, 'not-applicable');
@@ -1097,4 +1123,331 @@ test('missing diagnostic witnesses leave eligibility, refusal, captures and all 
     results.push(result);
   }
   assert.deepEqual(results[0], results[1]);
+});
+
+function incompatibleAncestryFixture() {
+  const f = ancestryFixture();
+  delete f.evidence.hosts[4].testID;
+  f.evidence.typography!.nodes[0].hostType = 'RCTText';
+  addNative(f, 0);
+  return f;
+}
+
+test('same rejected ancestor retains consumed type pairs privately without leaking its transient sample', () => {
+  const f = incompatibleAncestryFixture();
+  const screen = f.screen();
+  const summary = pressGapOf(screen.elements[3])!.ancestry!;
+  assert.equal(summary.allSame, true);
+  assert.deepEqual(summary.qualifications, [
+    {
+      reason: 'incompatible-type',
+      nativeCandidates: 'not-applicable',
+      count: 2,
+      typeOperands: [
+        {
+          binding: 'same-witness',
+          hostType: 'RCTText',
+          nativeType: 'Other',
+          directChildScrollView: 'not-applicable',
+          count: 2,
+        },
+      ],
+    },
+  ]);
+  const publicView = JSON.stringify(visibilityView(screen, true));
+  assert.doesNotMatch(
+    publicView,
+    /incompatibleType|typeOperands|hostIndex|hostType|nativeType|directChildScrollView/,
+  );
+  assert.doesNotMatch(
+    JSON.stringify(screen),
+    /incompatibleType|typeOperands|directChildScrollView/,
+  );
+});
+
+test('operand binding unavailable states and repeated-witness contradictions suppress unproved values', () => {
+  for (const mode of [
+    'absent',
+    'null',
+    'accessor',
+    'operand-accessor',
+    'wrong-index',
+    'native-absent',
+    'compatible-null',
+    'conflict',
+    'revoked',
+    'allowed-pair',
+  ] as const) {
+    const f = incompatibleAncestryFixture();
+    const baseline = f.screen();
+    const get = Map.prototype.get;
+    let reads = 0,
+      samples = 0;
+    let observed: ReturnType<typeof f.screen>;
+    try {
+      Map.prototype.get = function (key) {
+        const value = get.call(this, key);
+        if (
+          key !== 0 ||
+          !value ||
+          typeof value !== 'object' ||
+          value.identity !== 'incompatible-type' ||
+          value.ancestorPath !== 'self-anchor-missing'
+        )
+          return value;
+        const changed = { ...value, incompatibleType: { ...value.incompatibleType } };
+        samples++;
+        if (mode === 'absent') delete changed.incompatibleType;
+        if (mode === 'null') changed.incompatibleType = null;
+        if (mode === 'accessor')
+          Object.defineProperty(changed, 'incompatibleType', {
+            get() {
+              reads++;
+              throw Error('PRIVATE-sample-getter');
+            },
+          });
+        if (mode === 'operand-accessor')
+          Object.defineProperty(changed.incompatibleType, 'hostType', {
+            get() {
+              reads++;
+              throw Error('PRIVATE-operand-getter');
+            },
+          });
+        if (mode === 'wrong-index') changed.incompatibleType.hostIndex = 1;
+        if (mode === 'native-absent') delete changed.nativeIdentityCandidateCount;
+        if (mode === 'compatible-null') changed.compatibleCount = null;
+        if (mode === 'conflict')
+          changed.incompatibleType.hostType = samples % 2 ? 'RCTText' : 'Text';
+        if (mode === 'allowed-pair') changed.incompatibleType.hostType = 'RCTView';
+        if (mode === 'revoked') {
+          const p = Proxy.revocable({}, {});
+          p.revoke();
+          changed.incompatibleType = p.proxy;
+        }
+        return changed;
+      };
+      observed = f.screen();
+    } finally {
+      Map.prototype.get = get;
+    }
+    assert.deepEqual(observed!, baseline, mode);
+    if (mode !== 'native-absent' && mode !== 'compatible-null')
+      assert.deepEqual(visibilityView(observed!, true), visibilityView(baseline, true), mode);
+    const summary = pressGapOf(observed!.elements[3])!.ancestry!;
+    assert.equal(summary.allSame, true);
+    const group = summary.qualifications[0];
+    assert.equal(group.reason, 'incompatible-type');
+    if (mode === 'allowed-pair')
+      assert.deepEqual(group.typeOperands, [
+        {
+          binding: 'same-witness',
+          hostType: 'RCTView',
+          nativeType: 'Other',
+          directChildScrollView: 'not-applicable',
+          count: 2,
+        },
+      ]);
+    else
+      assert.deepEqual(
+        group.typeOperands,
+        [
+          {
+            binding:
+              mode === 'absent'
+                ? 'not-collected'
+                : mode === 'wrong-index' || mode === 'conflict'
+                  ? 'inconsistent'
+                  : 'unknown',
+            count: 2,
+          },
+        ],
+        mode,
+      );
+    assert.equal(reads, 0);
+    assert.doesNotMatch(JSON.stringify(summary), /PRIVATE-|Index|Ordinal|"frame"|"rect"/);
+  }
+});
+
+test('distinct rejected witnesses coalesce only whole tuples in finite order and preserve the eight-row population', () => {
+  for (const samePair of [true, false]) {
+    const f = incompatibleAncestryFixture();
+    f.evidence.hosts[4].testID = 'PRIVATE-other-ancestor';
+    f.evidence.typography!.nodes[4].hostType = samePair ? 'RCTText' : 'RCTVirtualText';
+    f.evidence.typography!.nodes[1].parentHostIndex = 4;
+    addNative(f, 4);
+    const summary = ancestryOf(f);
+    assert.equal(summary.allSame, false);
+    assert.deepEqual(
+      summary.qualifications[0].typeOperands,
+      samePair
+        ? [
+            {
+              binding: 'same-witness',
+              hostType: 'RCTText',
+              nativeType: 'Other',
+              directChildScrollView: 'not-applicable',
+              count: 2,
+            },
+          ]
+        : [
+            {
+              binding: 'same-witness',
+              hostType: 'RCTText',
+              nativeType: 'Other',
+              directChildScrollView: 'not-applicable',
+              count: 1,
+            },
+            {
+              binding: 'same-witness',
+              hostType: 'RCTVirtualText',
+              nativeType: 'Other',
+              directChildScrollView: 'not-applicable',
+              count: 1,
+            },
+          ],
+    );
+  }
+  const f = incompatibleAncestryFixture();
+  for (let i = 0; i < 10; i++) {
+    const hostIndex = f.evidence.hosts.length;
+    f.evidence.hosts.push({
+      testID: 'PRIVATE-type-child-' + i,
+      role: null,
+      roleSource: 'none',
+      capabilities: i % 2 ? { fill: true } : { press: true },
+    });
+    f.evidence.typography!.nodes.push({
+      hostIndex,
+      parentHostIndex: 0,
+      rootIndex: 0,
+      hostType: 'RCTView',
+      rect: frame,
+      text: { kind: 'none' },
+    });
+    addNative(f, hostIndex);
+  }
+  const gap = pressGapOf(f.screen().elements[3])!;
+  assert.equal(gap.gapHosts!.total, 13);
+  assert.equal(gap.gapHosts!.truncated, true);
+  assert.equal(gap.ancestry!.retained, 8);
+  assert.deepEqual(gap.ancestry!.qualifications[0].typeOperands, [
+    {
+      binding: 'same-witness',
+      hostType: 'RCTText',
+      nativeType: 'Other',
+      directChildScrollView: 'not-applicable',
+      count: 7,
+    },
+  ]);
+  for (const host of f.evidence.typography!.nodes.slice(11)) {
+    host.hostType = 'PRIVATE-omitted';
+    host.parentHostIndex = 4;
+  }
+  assert.deepEqual(ancestryOf(f), gap.ancestry);
+});
+
+test('type rejection records no later predicates and a one-operand counterfactual advances only to existing frame rejection', () => {
+  const f = incompatibleAncestryFixture();
+  f.nodes.at(-1)!.rect = { ...frame, x: frame.x + 1 };
+  const before = ancestryOf(f);
+  assert.equal(before.qualifications[0].reason, 'incompatible-type');
+  const diagnostics = new Map<number, HostAssociationDiagnostic>();
+  associateHosts(f.nodes, f.evidence, f.presence, diagnostics);
+  assert.equal(diagnostics.get(0)!.sameFrameCount, null);
+  assert.equal(diagnostics.get(0)!.frameMismatch, undefined);
+  f.evidence.typography!.nodes[0].hostType = 'RCTView';
+  const after = ancestryOf(f);
+  assert.deepEqual(after.qualifications, [
+    { reason: 'frame-mismatch', nativeCandidates: 'not-applicable', count: 2 },
+  ]);
+  diagnostics.clear();
+  associateHosts(f.nodes, f.evidence, f.presence, diagnostics);
+  assert.equal(diagnostics.get(0)!.incompatibleType, undefined);
+});
+
+test('type samples stay out of actual assertion requests and timing while declared refusal facts remain stable', async () => {
+  await witness(incompatibleAncestryFixture());
+  const f = incompatibleAncestryFixture();
+  const baseline = f.screen();
+  const get = Map.prototype.get;
+  let without: ReturnType<typeof f.screen>;
+  try {
+    Map.prototype.get = function (key) {
+      const value = get.call(this, key);
+      if (!value || typeof value !== 'object' || !('incompatibleType' in value)) return value;
+      const changed = { ...value };
+      delete changed.incompatibleType;
+      return changed;
+    };
+    without = f.screen();
+  } finally {
+    Map.prototype.get = get;
+  }
+  const results = [];
+  for (const screen of [baseline, without!]) {
+    const judge = scriptedJudge(() => assert.fail('no Jev'));
+    const w = walker([screen], judge);
+    const events: unknown[] = [];
+    w.deps.diagnostic = (event) => events.push(event);
+    w.deps.timing = (event) => events.push(event);
+    const result = await runPlan(
+      parsePlan('1. Tap id "PRIVATE-associated-id" || label "Unavailable"').blocks!,
+      w.deps,
+    );
+    assert.equal(result.verdict, 'FAIL');
+    assert.equal(w.captures(), 1);
+    assert.equal(result.recoveries, 0);
+    assert.equal(judge.calls.length, 0);
+    assert.deepEqual(w.actions, []);
+    assert.equal(result.steps[0].targeting!.dispatchCount, 0);
+    assert.equal(result.steps[0].targeting!.evaluated.length, 1);
+    assert.doesNotMatch(
+      JSON.stringify(events),
+      /incompatibleType|typeOperands|hostType|nativeType|directChildScrollView/,
+    );
+    const qualification =
+      result.steps[0].targeting!.evaluated[0].pressSupport!.gap!.ancestry!.qualifications[0];
+    delete qualification.typeOperands;
+    results.push(result);
+  }
+  assert.deepEqual(results[0], results[1]);
+});
+
+test('conditional scroll diagnostic preserves false, missing and invalid collection separately', () => {
+  for (const mode of ['false', 'missing', 'invalid'] as const) {
+    const f = incompatibleAncestryFixture();
+    f.evidence.typography!.nodes[0].hostType = 'RCTScrollView';
+    const get = Map.prototype.get;
+    let summary: ReturnType<typeof ancestryOf>;
+    try {
+      Map.prototype.get = function (key) {
+        const value = get.call(this, key);
+        if (
+          key !== 0 ||
+          !value ||
+          typeof value !== 'object' ||
+          value.ancestorPath !== 'self-anchor-missing' ||
+          !value.incompatibleType
+        )
+          return value;
+        const changed = { ...value, incompatibleType: { ...value.incompatibleType } };
+        if (mode === 'missing') delete changed.incompatibleType.directChildScrollView;
+        if (mode === 'invalid') changed.incompatibleType.directChildScrollView = 'PRIVATE-invalid';
+        return changed;
+      };
+      summary = ancestryOf(f);
+    } finally {
+      Map.prototype.get = get;
+    }
+    assert.deepEqual(summary!.qualifications[0].typeOperands, [
+      {
+        binding: 'same-witness',
+        hostType: 'RCTScrollView',
+        nativeType: 'Other',
+        directChildScrollView:
+          mode === 'false' ? false : mode === 'missing' ? 'not-collected' : 'unknown',
+        count: 2,
+      },
+    ]);
+  }
 });

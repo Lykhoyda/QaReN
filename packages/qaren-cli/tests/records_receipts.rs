@@ -128,7 +128,7 @@ for (const category of ['missing-host-evidence', 'incomplete-host-evidence', 'un
     }
   }
 }
-for (const mode of ['shared', 'distinct', 'retained', 'other', 'ambiguous']) {
+for (const mode of ['shared', 'distinct', 'retained', 'other', 'ambiguous', 'incompatible', 'incompatible-distinct', 'incompatible-same']) {
   const f = walker([joinedGapScreen('unassociated-hosts', true, true, mode)], scriptedJudge(() => assert.fail('no ancestry Jev')));
   const ledger = await runPlan(parsePlan('1. Tap id "private-gap-primary" || label "private-gap-label"').blocks, f.deps);
   assert.equal(ledger.verdict, 'FAIL');
@@ -160,6 +160,38 @@ for (const mode of ['witness-absent', 'witness-unknown', 'diagnostic-absent', 'd
   assert.deepEqual(f.actions, []);
   ledgers.push(ledger);
 }
+for (const mode of ['not-collected', 'unknown', 'inconsistent', 'null-operand', 'absent-operand', 'custom-operand', 'scroll-false', 'scroll-not-collected', 'scroll-unknown', 'allowed-pair', 'allowed-scroll', 'unknown-applicability']) {
+  const get = Map.prototype.get;
+  let observed;
+  try {
+    Map.prototype.get = function(key) {
+      const value = get.call(this, key);
+      if (key !== 0 || !value || typeof value !== 'object' || value.identity !== 'incompatible-type' || value.ancestorPath !== 'self-anchor-missing') return value;
+      const changed = {...value, incompatibleType: {...value.incompatibleType}};
+      if (mode === 'not-collected') delete changed.incompatibleType;
+      if (mode === 'unknown') changed.incompatibleType = null;
+      if (mode === 'inconsistent') changed.incompatibleType.hostIndex = 999;
+      if (mode === 'null-operand') changed.incompatibleType.hostType = 'null';
+      if (mode === 'absent-operand') changed.incompatibleType.hostType = 'absent';
+      if (mode === 'custom-operand') changed.incompatibleType.nativeType = 'unrecognized';
+      if (mode.startsWith('scroll-') || mode === 'allowed-scroll') {
+        changed.incompatibleType.hostType = 'RCTScrollView';
+        if (mode === 'scroll-not-collected') delete changed.incompatibleType.directChildScrollView;
+        else changed.incompatibleType.directChildScrollView = mode === 'scroll-false' ? false : mode === 'allowed-scroll' ? true : 'private-invalid-bit';
+      }
+      if (mode === 'allowed-pair') changed.incompatibleType.hostType = 'RCTView';
+      if (mode === 'unknown-applicability') { changed.incompatibleType.hostType = 'unknown'; changed.incompatibleType.directChildScrollView = 'unknown'; }
+      return changed;
+    };
+    observed = joinedGapScreen('unassociated-hosts', true, true, 'incompatible');
+  } finally { Map.prototype.get = get; }
+  const f = walker([observed], scriptedJudge(() => assert.fail('no type diagnostic Jev')));
+  const ledger = await runPlan(parsePlan('1. Tap id "private-gap-primary" || label "private-gap-label"').blocks, f.deps);
+  assert.equal(ledger.verdict, 'FAIL');
+  assert.deepEqual(f.actions, []);
+  assert.equal(ledger.steps[0].targeting.evaluated[0].pressSupport.gap.ancestry.qualifications[0].typeOperands.length, 1);
+  ledgers.push(ledger);
+}
 process.stdout.write(JSON.stringify(ledgers));
 "#])
         .output().expect("node on PATH is required for the core receipt contract");
@@ -169,7 +201,7 @@ process.stdout.write(JSON.stringify(ledgers));
         String::from_utf8_lossy(&output.stderr)
     );
     let values: Vec<serde_json::Value> = serde_json::from_slice(&output.stdout).unwrap();
-    assert_eq!(values.len(), 40);
+    assert_eq!(values.len(), 55);
     for value in values {
         let ledger: qaren::core::Ledger = serde_json::from_value(value.clone()).unwrap();
         let expected = &value["steps"][0]["targeting"];
@@ -437,6 +469,106 @@ process.stdout.write(JSON.stringify(ledgers));
             if gap["gapHosts"]["rows"][0]["association"].is_null() {
                 mutations
                     .retain(|(pointer, _)| !pointer.starts_with("/gapHosts/rows/0/association"));
+            }
+            if let Some(operands) = gap
+                .pointer("/ancestry/qualifications/0/typeOperands")
+                .and_then(|v| v.as_array())
+            {
+                if operands.len() > 1 {
+                    let mut reversed = operands.clone();
+                    reversed.reverse();
+                    mutations.push((
+                        "/ancestry/qualifications/0/typeOperands",
+                        serde_json::json!(reversed),
+                    ));
+                    let mut contradicts_shared = gap["ancestry"].clone();
+                    contradicts_shared["allSame"] = serde_json::json!(true);
+                    contradicts_shared["sameAsRetainedAmbiguous"] = serde_json::json!("absent");
+                    mutations.push(("/ancestry", contradicts_shared));
+                }
+                let tuple = &operands[0];
+                let mut cases = vec![serde_json::json!([]), serde_json::json!([tuple, tuple])];
+                for (field, invalid) in [
+                    ("binding", serde_json::json!("private-binding")),
+                    ("count", serde_json::json!(0)),
+                    ("count", serde_json::json!(9)),
+                    ("count", serde_json::json!(-1)),
+                    ("count", serde_json::json!(0.5)),
+                    ("hostIndex", serde_json::json!(987654)),
+                    ("rawType", serde_json::json!("private-class")),
+                ] {
+                    let mut bad = tuple.clone();
+                    bad[field] = invalid;
+                    cases.push(serde_json::json!([bad]));
+                }
+                if tuple["binding"] == "same-witness" {
+                    for (field, invalid) in [
+                        ("hostType", serde_json::json!("private-host")),
+                        ("hostType", serde_json::Value::Null),
+                        ("nativeType", serde_json::json!("Element(123)")),
+                        ("nativeType", serde_json::Value::Null),
+                        ("directChildScrollView", serde_json::Value::Null),
+                        ("directChildScrollView", serde_json::json!("false")),
+                        (
+                            "directChildScrollView",
+                            if tuple["directChildScrollView"] == "not-applicable" {
+                                serde_json::json!(false)
+                            } else {
+                                serde_json::json!("not-applicable")
+                            },
+                        ),
+                    ] {
+                        let mut bad = tuple.clone();
+                        bad[field] = invalid;
+                        cases.push(serde_json::json!([bad]));
+                    }
+                    let mut unavailable = tuple.clone();
+                    unavailable["binding"] = serde_json::json!("unknown");
+                    cases.push(serde_json::json!([unavailable]));
+                } else {
+                    let mut payload = tuple.clone();
+                    payload["hostType"] = serde_json::json!("RCTText");
+                    cases.push(serde_json::json!([payload]));
+                }
+                for invalid in cases {
+                    mutations.push(("/ancestry/qualifications/0/typeOperands", invalid));
+                }
+                for optional in [None, Some(serde_json::Value::Null)] {
+                    let mut old = value["steps"][0].clone();
+                    let qualification = old["targeting"]["evaluated"][0]["pressSupport"]["gap"]
+                        ["ancestry"]["qualifications"][0]
+                        .as_object_mut()
+                        .unwrap();
+                    if let Some(null) = &optional {
+                        qualification.insert("typeOperands".into(), null.clone());
+                    } else {
+                        qualification.remove("typeOperands");
+                    }
+                    let decoded: qaren::core::Row = serde_json::from_value(old).unwrap();
+                    assert!(
+                        serde_json::to_value(decoded).unwrap()["targeting"]["evaluated"][0]
+                            ["pressSupport"]["gap"]["ancestry"]["qualifications"][0]
+                            .get("typeOperands")
+                            .is_none()
+                    );
+                    let mut old_receipt = encoded.clone();
+                    let qualification = old_receipt["ledger"]["targeting"][0]["fact"]["evaluated"]
+                        [0]["pressSupport"]["gap"]["ancestry"]["qualifications"][0]
+                        .as_object_mut()
+                        .unwrap();
+                    if let Some(null) = optional {
+                        qualification.insert("typeOperands".into(), null);
+                    } else {
+                        qualification.remove("typeOperands");
+                    }
+                    let decoded: Receipt = serde_json::from_value(old_receipt).unwrap();
+                    let normalized: serde_json::Value =
+                        serde_json::from_str(&decoded.to_json()).unwrap();
+                    assert!(normalized["ledger"]["targeting"][0]["fact"]["evaluated"][0]
+                        ["pressSupport"]["gap"]["ancestry"]["qualifications"][0]
+                        .get("typeOperands")
+                        .is_none());
+                }
             }
             for (pointer, invalid) in mutations {
                 let mut bad_row = value["steps"][0].clone();

@@ -1203,3 +1203,134 @@ test('malformed legacy association members cannot make ancestry projection non-i
   assert.deepEqual(projectTargeting(once), once);
   assert.equal(once.evaluated[0].pressSupport!.gap!.ancestry, undefined);
 });
+
+test('private type tuples project data-only fields, preserve old ancestry on malformed extensions and remain idempotent', async () => {
+  const f = walker(
+    [joinedGapScreen('unassociated-hosts', true, true, 'incompatible')],
+    scriptedJudge(() => assert.fail('no Jev')),
+  );
+  const result = await runPlan(
+    parsePlan('1. Tap id "private-gap-primary" || label "private-gap-label"').blocks!,
+    f.deps,
+  );
+  const fact = result.steps[0].targeting!;
+  const summary = fact.evaluated[0].pressSupport!.gap!.ancestry!;
+  assert.deepEqual(summary.qualifications[0].typeOperands, [
+    {
+      binding: 'same-witness',
+      hostType: 'RCTText',
+      nativeType: 'Other',
+      directChildScrollView: 'not-applicable',
+      count: 8,
+    },
+  ]);
+  const legacy = structuredClone(fact);
+  delete legacy.evaluated[0].pressSupport!.gap!.ancestry!.qualifications[0].typeOperands;
+  const project = (value: unknown) => {
+    const changed = structuredClone(fact);
+    Object.assign(changed.evaluated[0].pressSupport!.gap!.ancestry!.qualifications[0], {
+      typeOperands: value,
+    });
+    return projectTargeting(changed);
+  };
+  const tuple = {
+    binding: 'same-witness',
+    hostType: 'RCTText',
+    nativeType: 'Other',
+    directChildScrollView: 'not-applicable',
+    count: 8,
+  };
+  const privateTuple = {
+    ...tuple,
+    hostIndex: 987654,
+    rawType: 'private-custom-class',
+    toJSON: () => assert.fail('toJSON'),
+    valueOf: () => assert.fail('valueOf'),
+    toString: () => assert.fail('toString'),
+  };
+  assert.deepEqual(project([privateTuple]), fact);
+  assert.deepEqual(projectTargeting(fact), fact);
+  for (const value of [
+    undefined,
+    null,
+    [],
+    [tuple, tuple],
+    [{ ...tuple, count: 9 }],
+    [{ ...tuple, count: NaN }],
+    [{ ...tuple, count: -1 }],
+    [{ ...tuple, count: 0.5 }],
+    [{ ...tuple, count: 7 }],
+    [{ ...tuple, hostType: 'private-custom' }],
+    [{ ...tuple, nativeType: null }],
+    [{ ...tuple, directChildScrollView: 'false' }],
+    [{ ...tuple, directChildScrollView: false }],
+    [{ binding: 'unknown', hostType: 'RCTText', count: 8 }],
+    [{ binding: 'inconsistent', count: 0 }],
+  ]) {
+    const once = project(value);
+    assert.deepEqual(once, legacy);
+    assert.deepEqual(projectTargeting(once), once);
+  }
+  let reads = 0;
+  const accessor = { ...tuple };
+  Object.defineProperty(accessor, 'hostType', {
+    get() {
+      reads++;
+      throw Error('private-getter');
+    },
+  });
+  const array = [tuple];
+  Object.defineProperty(array, '0', {
+    get() {
+      reads++;
+      throw Error('private-array-getter');
+    },
+  });
+  for (const value of [[accessor], array]) assert.deepEqual(project(value), legacy);
+  const changed = structuredClone(fact);
+  Object.defineProperty(
+    changed.evaluated[0].pressSupport!.gap!.ancestry!.qualifications[0],
+    'typeOperands',
+    {
+      get() {
+        reads++;
+        throw Error('private-extension-getter');
+      },
+    },
+  );
+  assert.deepEqual(projectTargeting(changed), legacy);
+  const revoked = Proxy.revocable([], {});
+  revoked.revoke();
+  assert.deepEqual(project(revoked.proxy), legacy);
+  assert.equal(reads, 0);
+  for (const typeOperands of [
+    [
+      {
+        binding: 'same-witness',
+        hostType: 'RCTView',
+        nativeType: 'Other',
+        directChildScrollView: 'not-applicable',
+        count: 8,
+      },
+    ],
+    [
+      {
+        binding: 'same-witness',
+        hostType: 'RCTScrollView',
+        nativeType: 'Other',
+        directChildScrollView: true,
+        count: 8,
+      },
+    ],
+    [{ binding: 'not-collected', count: 8 }],
+    [{ binding: 'unknown', count: 8 }],
+    [{ binding: 'inconsistent', count: 8 }],
+  ]) {
+    const projected = project(typeOperands);
+    assert.deepEqual(
+      projected.evaluated[0].pressSupport!.gap!.ancestry!.qualifications[0].typeOperands,
+      typeOperands,
+    );
+    assert.deepEqual(projectTargeting(projected), projected);
+  }
+});

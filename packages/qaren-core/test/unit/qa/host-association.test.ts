@@ -1378,3 +1378,366 @@ test('declared presses reuse proven-window association for either locator withou
     assert.equal(result.steps[0].targeting?.preSelectionAuthorizations, 0);
   }
 });
+
+test('diagnostics preserve the exact compatibility table across finite and unavailable operands', () => {
+  const hosts: unknown[] = [
+    'TextInput',
+    'RCTTextInput',
+    'RCTSinglelineTextInputView',
+    'RCTMultilineTextInputView',
+    'AndroidTextInput',
+    'RCTText',
+    'Text',
+    'RCTView',
+    'View',
+    'RCTScrollView',
+    'ScrollView',
+    'RCTVirtualText',
+    null,
+    undefined,
+    'private-custom-host',
+    17,
+  ];
+  const natives: unknown[] = [
+    'Application',
+    'Window',
+    'Button',
+    'Cell',
+    'StaticText',
+    'TextField',
+    'TextView',
+    'SecureTextField',
+    'Switch',
+    'Slider',
+    'Link',
+    'Image',
+    'NavigationBar',
+    'TabBar',
+    'CollectionView',
+    'Table',
+    'ScrollView',
+    'SearchField',
+    'Toolbar',
+    'SegmentedControl',
+    'Stepper',
+    'Picker',
+    'CheckBox',
+    'MenuItem',
+    'Other',
+    'Keyboard',
+    'Key',
+    null,
+    undefined,
+    'private-custom-native',
+    '',
+  ];
+  const allowed = new Map<unknown, unknown[]>([
+    ['TextInput', ['TextField', 'SecureTextField', 'TextView']],
+    ['RCTTextInput', ['TextField', 'SecureTextField', 'TextView']],
+    ['AndroidTextInput', ['TextField', 'SecureTextField', 'TextView']],
+    ['RCTSinglelineTextInputView', ['TextField', 'SecureTextField']],
+    ['RCTMultilineTextInputView', ['TextView']],
+    ['RCTText', ['StaticText']],
+    ['Text', ['StaticText']],
+    ['RCTView', ['Other', 'Button', 'Cell']],
+    ['View', ['Other', 'Button', 'Cell']],
+    ['RCTScrollView', ['ScrollView']],
+    ['ScrollView', ['ScrollView']],
+  ]);
+  for (const host of hosts)
+    for (const native of natives)
+      for (const scroll of [false, true]) {
+        const frame = { x: 10, y: 10, width: 50, height: 20 };
+        const nodes = [
+          { ref: '@app', type: 'Application' },
+          {
+            ref: '@window',
+            type: 'Window',
+            parentIndex: 0,
+            rect: { x: 0, y: 0, width: 400, height: 800 },
+          },
+          { ref: '@target', type: native, identifier: 'target', parentIndex: 1, rect: frame },
+          ...(scroll ? [{ ref: '@scroll', type: 'ScrollView', parentIndex: 2, rect: frame }] : []),
+        ];
+        const evidence = {
+          complete: true,
+          hosts: [
+            { testID: 'target', role: null, roleSource: 'none', capabilities: { press: true } },
+          ],
+          typography: {
+            version: 1,
+            complete: true,
+            durationMs: 1,
+            coordinateSpace: 'window-points',
+            nodes: [
+              {
+                hostIndex: 0,
+                parentHostIndex: null,
+                rootIndex: 0,
+                hostType: host,
+                rect: frame,
+                text: { kind: 'none' },
+              },
+            ],
+          },
+        };
+        const presence = {
+          source: 'xcui-live',
+          nodes: nodes.map(() => ({ status: 'observed', labelSource: 'none' })),
+        };
+        const expected =
+          (allowed.get(host) ?? []).includes(native) ||
+          (['RCTScrollView', 'ScrollView'].includes(String(host)) && native === 'Other' && scroll);
+        const baseline = associateHosts(nodes as never, evidence as never, presence as never);
+        const diagnostics = new Map();
+        const observed = associateHosts(
+          nodes as never,
+          evidence as never,
+          presence as never,
+          diagnostics,
+        );
+        assert.equal(observed.has(0), expected, JSON.stringify([host, native, scroll]));
+        assert.deepEqual(observed, baseline);
+        const diagnostic = diagnostics.get(0);
+        if (expected || native === 'Window') assert.equal(diagnostic.incompatibleType, undefined);
+        else {
+          assert.equal(diagnostic.identity, 'incompatible-type');
+          assert.equal(diagnostic.compatibleCount, 0);
+          assert.equal(diagnostic.sameFrameCount, null);
+          const sample = diagnostic.incompatibleType;
+          const code = (v: unknown, known: unknown[]) =>
+            v === null
+              ? 'null'
+              : v === undefined
+                ? 'absent'
+                : typeof v !== 'string'
+                  ? 'unknown'
+                  : known.includes(v) && !v.startsWith('private-') && v !== ''
+                    ? v
+                    : 'unrecognized';
+          assert.equal(sample.hostType, code(host, hosts));
+          assert.equal(sample.nativeType, code(native, natives));
+          assert.equal(
+            sample.directChildScrollView,
+            host === 17 && native === 'Other'
+              ? 'unknown'
+              : ['RCTScrollView', 'ScrollView'].includes(String(host)) && native === 'Other'
+                ? scroll
+                : 'not-applicable',
+          );
+          assert.doesNotMatch(JSON.stringify(sample), /private-custom/);
+        }
+      }
+});
+
+test('diagnostics do not repeat actual operand getters or the eager direct-child scan', () => {
+  for (const hostType of ['RCTText', 'RCTView', 'RCTScrollView']) {
+    const execute = (record: boolean) => {
+      const frame = { x: 10, y: 10, width: 50, height: 20 };
+      let hostReads = 0,
+        nativeReads = 0,
+        scans = 0;
+      const nodes = [
+        { ref: '@app', type: 'Application' },
+        {
+          ref: '@window',
+          type: 'Window',
+          parentIndex: 0,
+          rect: { x: 0, y: 0, width: 400, height: 800 },
+        },
+        { ref: '@target', type: 'Other', identifier: 'target', parentIndex: 1, rect: frame },
+      ];
+      Object.defineProperty(nodes[2], 'type', {
+        get() {
+          nativeReads++;
+          return 'Other';
+        },
+      });
+      const host = {
+        hostIndex: 0,
+        parentHostIndex: null,
+        rootIndex: 0,
+        hostType,
+        rect: frame,
+        text: { kind: 'none' as const },
+      };
+      Object.defineProperty(host, 'hostType', {
+        get() {
+          hostReads++;
+          return hostType;
+        },
+      });
+      const some = nodes.some;
+      nodes.some = function (...args) {
+        scans++;
+        return some.apply(this, args);
+      };
+      const evidence: ReactHostEvidence = {
+        complete: true,
+        hosts: [
+          { testID: 'target', role: null, roleSource: 'none', capabilities: { press: true } },
+        ],
+        typography: {
+          version: 1,
+          complete: true,
+          durationMs: 1,
+          coordinateSpace: 'window-points',
+          nodes: [host],
+        },
+      };
+      const presence = {
+        source: 'xcui-live' as const,
+        nodes: nodes.map(() => ({ status: 'observed' as const, labelSource: 'none' as const })),
+      };
+      const diagnostics = record ? new Map() : undefined;
+      const result = associateHosts(nodes, evidence, presence, diagnostics);
+      return { result, hostReads, nativeReads, scans };
+    };
+    assert.deepEqual(execute(true), execute(false));
+    assert.equal(execute(false).scans, 1);
+  }
+});
+
+test('scroll compatibility uses only the existing exact direct-child ScrollView bit', () => {
+  for (const mode of [
+    'direct',
+    'deeper',
+    'sibling',
+    'other-parent',
+    'lookalike',
+    'native-scroll',
+  ] as const) {
+    const frame = { x: 10, y: 10, width: 50, height: 20 };
+    const nodes = [
+      { ref: '@app', type: 'Application' },
+      {
+        ref: '@window',
+        type: 'Window',
+        parentIndex: 0,
+        rect: { x: 0, y: 0, width: 400, height: 800 },
+      },
+      {
+        ref: '@target',
+        type: mode === 'native-scroll' ? 'ScrollView' : 'Other',
+        identifier: 'target',
+        parentIndex: 1,
+        rect: frame,
+      },
+      { ref: '@container', type: 'Other', parentIndex: 2, rect: frame },
+      {
+        ref: '@scroll',
+        type: mode === 'lookalike' ? 'PrivateScrollView' : 'ScrollView',
+        parentIndex:
+          mode === 'direct' || mode === 'lookalike'
+            ? 2
+            : mode === 'deeper'
+              ? 3
+              : mode === 'sibling'
+                ? 1
+                : 0,
+        rect: frame,
+      },
+    ];
+    const evidence: ReactHostEvidence = {
+      complete: true,
+      hosts: [{ testID: 'target', role: null, roleSource: 'none', capabilities: { press: true } }],
+      typography: {
+        version: 1,
+        complete: true,
+        durationMs: 1,
+        coordinateSpace: 'window-points',
+        nodes: [
+          {
+            hostIndex: 0,
+            parentHostIndex: null,
+            rootIndex: 0,
+            hostType: 'RCTScrollView',
+            rect: frame,
+            text: { kind: 'none' },
+          },
+        ],
+      },
+    };
+    const presence = {
+      source: 'xcui-live' as const,
+      nodes: nodes.map(() => ({ status: 'observed' as const, labelSource: 'none' as const })),
+    };
+    const diagnostics = new Map();
+    const result = associateHosts(nodes, evidence, presence, diagnostics);
+    assert.equal(result.has(0), mode === 'direct' || mode === 'native-scroll', mode);
+    if (!result.has(0))
+      assert.equal(diagnostics.get(0).incompatibleType.directChildScrollView, false);
+    else assert.equal(diagnostics.get(0).incompatibleType, undefined);
+  }
+});
+
+test('nonstring compatibility operands are classified without coercion or property inspection', () => {
+  let reads = 0;
+  const operand = {
+    toJSON() {
+      reads++;
+      throw Error('private-toJSON');
+    },
+    toString() {
+      reads++;
+      throw Error('private-toString');
+    },
+    valueOf() {
+      reads++;
+      throw Error('private-valueOf');
+    },
+  };
+  for (const hostValue of [operand, null, undefined, 'private-custom-host']) {
+    const frame = { x: 10, y: 10, width: 50, height: 20 };
+    const nodes = [
+      { ref: '@app', type: 'Application' },
+      {
+        ref: '@window',
+        type: 'Window',
+        parentIndex: 0,
+        rect: { x: 0, y: 0, width: 400, height: 800 },
+      },
+      { ref: '@target', type: 'Other', identifier: 'target', parentIndex: 1, rect: frame },
+    ];
+    const evidence = {
+      complete: true,
+      hosts: [{ testID: 'target', role: null, roleSource: 'none', capabilities: { press: true } }],
+      typography: {
+        version: 1,
+        complete: true,
+        durationMs: 1,
+        coordinateSpace: 'window-points',
+        nodes: [
+          {
+            hostIndex: 0,
+            parentHostIndex: null,
+            rootIndex: 0,
+            hostType: hostValue,
+            rect: frame,
+            text: { kind: 'none' },
+          },
+        ],
+      },
+    };
+    const presence = {
+      source: 'xcui-live',
+      nodes: nodes.map(() => ({ status: 'observed', labelSource: 'none' })),
+    };
+    const diagnostics = new Map();
+    assert.equal(
+      associateHosts(nodes as never, evidence as never, presence as never, diagnostics).size,
+      0,
+    );
+    assert.equal(
+      diagnostics.get(0).incompatibleType.hostType,
+      hostValue === operand
+        ? 'unknown'
+        : hostValue === null
+          ? 'null'
+          : hostValue === undefined
+            ? 'absent'
+            : 'unrecognized',
+    );
+  }
+  assert.equal(reads, 0);
+});

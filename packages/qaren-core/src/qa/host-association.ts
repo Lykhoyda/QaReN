@@ -7,7 +7,72 @@ import type { HostTypography } from './host-typography.js';
 type Rect = NonNullable<NativeNode['rect']>;
 export type HostAssociation = { nativeIndex: number; anchorIndex: number };
 
+export const finiteHostTypes = [
+  'TextInput',
+  'RCTTextInput',
+  'RCTSinglelineTextInputView',
+  'RCTMultilineTextInputView',
+  'AndroidTextInput',
+  'RCTText',
+  'Text',
+  'RCTView',
+  'View',
+  'RCTScrollView',
+  'ScrollView',
+  'RCTVirtualText',
+] as const;
+export const finiteNativeTypes = [
+  'Application',
+  'Window',
+  'Button',
+  'Cell',
+  'StaticText',
+  'TextField',
+  'TextView',
+  'SecureTextField',
+  'Switch',
+  'Slider',
+  'Link',
+  'Image',
+  'NavigationBar',
+  'TabBar',
+  'CollectionView',
+  'Table',
+  'ScrollView',
+  'SearchField',
+  'Toolbar',
+  'SegmentedControl',
+  'Stepper',
+  'Picker',
+  'CheckBox',
+  'MenuItem',
+  'Other',
+  'Keyboard',
+  'Key',
+] as const;
+export const unavailableTypeOperands = ['null', 'absent', 'unrecognized', 'unknown'] as const;
+type UnavailableTypeOperand = (typeof unavailableTypeOperands)[number];
+export type HostTypeOperand = (typeof finiteHostTypes)[number] | UnavailableTypeOperand;
+export type NativeTypeOperand = (typeof finiteNativeTypes)[number] | UnavailableTypeOperand;
+export type DirectChildScrollView = boolean | 'unknown' | 'not-collected' | 'not-applicable';
+
+function finiteType<T extends string>(
+  value: unknown,
+  codes: readonly T[],
+): T | UnavailableTypeOperand {
+  if (value === null) return 'null';
+  if (value === undefined) return 'absent';
+  if (typeof value !== 'string') return 'unknown';
+  return codes.find((code) => code === value) ?? 'unrecognized';
+}
+
 export interface HostAssociationDiagnostic {
+  incompatibleType?: {
+    hostIndex: number;
+    hostType: HostTypeOperand;
+    nativeType: NativeTypeOperand;
+    directChildScrollView: DirectChildScrollView;
+  };
   identity:
     | 'evidence-unavailable'
     | 'window-count'
@@ -275,14 +340,40 @@ export function associateHosts(
       note(host.hostIndex, { identity: 'window-frame' });
       continue;
     }
-    const compatibleType = compatible(
-      host.hostType,
-      nodes[nativeIndex].type,
-      nodes.some((n) => n.parentIndex === nativeIndex && n.type === 'ScrollView'),
+    const hostType = host.hostType;
+    const nativeType = nodes[nativeIndex].type;
+    const scrollsBeneath = nodes.some(
+      (n) => n.parentIndex === nativeIndex && n.type === 'ScrollView',
     );
+    const compatibleType = compatible(hostType, nativeType, scrollsBeneath);
+    let incompatibleType: HostAssociationDiagnostic['incompatibleType'];
+    if (!compatibleType && diagnostics) {
+      try {
+        const hostOperand = finiteType(hostType, finiteHostTypes);
+        const nativeOperand = finiteType(nativeType, finiteNativeTypes);
+        const notApplicable =
+          (hostOperand !== 'unknown' &&
+            hostOperand !== 'RCTScrollView' &&
+            hostOperand !== 'ScrollView') ||
+          (nativeOperand !== 'unknown' && nativeOperand !== 'Other');
+        incompatibleType = {
+          hostIndex: host.hostIndex,
+          hostType: hostOperand,
+          nativeType: nativeOperand,
+          directChildScrollView: notApplicable
+            ? 'not-applicable'
+            : hostOperand === 'unknown' || nativeOperand === 'unknown'
+              ? 'unknown'
+              : scrollsBeneath,
+        };
+      } catch {
+        // Operand diagnostics cannot prevent the existing failure note.
+      }
+    }
     note(host.hostIndex, {
       identity: 'incompatible-type',
       compatibleCount: Number(compatibleType),
+      ...(incompatibleType ? { incompatibleType } : {}),
     });
     if (!compatibleType) continue;
     const matchingFrame = sameFrame(host.rect, nodes[nativeIndex].rect, window);
