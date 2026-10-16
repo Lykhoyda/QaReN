@@ -631,7 +631,8 @@ value also stays unverified. A later plan check still decides whether the value
 is acceptable. The receipt's `ledger.unverified_fills` lists each passing fill
 left unverified with its line and value-free reason, plus `kept` and a `detail`
 such as `field kept 10 of 13 chars on 2 attempts` when counts exist; the report
-line shows the same detail. The list is omitted when empty. A runner
+line shows the same detail. Fill character counts are omitted when the run requires
+runtime inputs. The list is omitted when empty. A runner
 must advertise `FILL_EVIDENCE_V1` on both iOS and Android. Session startup routes
 a missing capability through the bounded source-rebuild path instead of
 accepting the released artifact; see [prebuilt runner selection](../../README.md#prebuilt-runners)
@@ -645,8 +646,8 @@ allowing later plan steps to continue; it does not establish the field's final
 value. Apart from that one retype, failed keyboard typing is not retried. Before the fallback tap or
 no-target typing dispatch, the value is protected under the
 [shared masking rules](#input-value-masking), and screenshots are withheld for the rest
-of the walk. The block remains unsaved,
-including when the tap leads back to strict verification. Eligibility is owned
+of the walk. For block persistence after fallback, see [Saved blocks](#saved-blocks).
+Eligibility is owned
 by the [resolver](../qaren-core/src/qa/resolve.ts), exact identity counting by
 the [shared identity model](../qaren-core/src/qa/identity.ts), and both are
 covered by the [fallback tests](../qaren-core/test/unit/qa/keyboard-fallback.test.ts).
@@ -927,6 +928,10 @@ Planned fill values are classified before progress streams. Streamed rows contai
 only value-free progress metadata and eligible screenshot paths; plan text,
 reasons, selectors and block names appear only in the final projected ledger.
 CLI progress shows the line, outcome, resolver and attempt without plan text.
+Runtime input values are protected from preflight, including values shorter than
+three characters and their JSON-escaped forms; fragment masking applies before
+dispatch. The length thresholds and dispatch timing below describe literal fills
+and observed values.
 The shared [privacy matcher](../qaren-core/src/qa/privacy.ts) protects complete values of
 three or more characters after trimming, using case-sensitive substring matches
 for raw and trimmed NFC/NFD forms. Values containing at least three digits after
@@ -1198,12 +1203,14 @@ line and later ones are rewritten, and every `✓` comment stays byte-identical.
 is never re-walked or rewritten. Timeout recovery remains deferred (see
 [Step recovery](#step-recovery)); app-process changes stay terminal. A failing block is never saved;
 blocks that passed earlier in the run remain saved. A step without a `testID`
-or label, a phrase wait, a fill into a secure or private input, or an attempt at
+or label, a phrase wait, or a literal fill into a secure or private input or through
 [keyboard fallback](#fill-verification-and-keyboard-fallback) leaves the block
-unsaved and the ledger says why without naming any value. Planned fill literals
+unsaved and the ledger says why without naming any value. A [runtime input](#runtime-inputs)
+fill can be saved in those private or fallback paths when it has a stored selector;
+the remaining persistence checks still apply. Planned fill literals
 also undergo the [shared masking rules](#input-value-masking), so a protected
 literal withholds a newly discovered or patched block even for an ordinary input.
-A previously saved block replayed against a now-private
+A previously saved block with a literal fill replayed against a now-private
 input also reports withholding without rewriting or deleting the existing action.
 Discovered or patched block writes are deferred until the walk finishes. Values
 preclassified from the plan or protected by private observations or keyboard

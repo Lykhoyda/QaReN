@@ -70,7 +70,8 @@ password manager's CLI; qaren does not read `.env` files or resolve references.
 - Every input the plan or the configured login block names must be set and non-empty, even
   when login recovery never happens. Otherwise the run refuses `PLAN_INPUT_MISSING`, naming
   every missing input, before a device is selected.
-- A value is one line of printable text, at most 4096 bytes and 64 KiB across all inputs.
+- At most 64 distinct inputs may be required. A value is one line of printable text,
+  at most 4096 bytes and 64 KiB across all required inputs.
   Whitespace is kept exactly. A value that looks like an unresolved reference, starting with
   a scheme such as `op://` or `vault:` or containing `${`, `$(` or `{{`, refuses
   `CORE_REFUSED`.
@@ -79,8 +80,9 @@ password manager's CLI; qaren does not read `.env` files or resolve references.
   and withholds the logs of the processes it starts.
 - If the app shows an input value in a label or identifier, the run refuses `CORE_REFUSED`
   rather than hash it.
-- `QAREN_INPUT_*` variables the plan does not name are ignored and removed from every
-  process qaren starts.
+- `QAREN_INPUT_*` variables required by neither the plan nor the compatible configured
+  login block are not used for fills. The whole namespace is removed from every
+  process qaren starts; its presence still withholds subprocess logs.
 - `Fill "note" with "input PASSWORD"` types the quoted text.
 
 A qaren runtime without input support refuses a plan that names inputs.

@@ -46,8 +46,7 @@ any value, when:
 
 - a step had neither a `testID` nor a label to store;
 - it has a phrase wait;
-- it fills a secure or private input with quoted text;
-- a fill fell back to the keyboard;
+- a fill meets the [private-input or keyboard-fallback persistence restrictions](https://github.com/Lykhoyda/rn-dev-agent/blob/develop/packages/qaren-cli/README.md#saved-blocks);
 - a protected value from the plan or the run appears in the block, which reports
   `contains a protected plan-typed value`;
 - a quoted wait or scroll target has no unique `testID` or unique visible text.
