@@ -4,8 +4,9 @@ import {
   withCancellation,
   sleep,
 } from '../domain/cancellation.js';
-import { readFileSync } from 'node:fs';
+import { readFileSync, realpathSync } from 'node:fs';
 import { join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { parseArgs } from 'node:util';
 import { CDPClient } from '../cdp-client.js';
 import { waitForExactPortTargets } from '../cdp/discovery.js';
@@ -78,6 +79,10 @@ import {
 const log = (message: string): void => {
   process.stderr.write(`qaren-core: ${redactApiKey(message)}\n`);
 };
+
+export function scrollArgs(direction: Parameters<WalkerDeps['scroll']>[0], clearance?: number) {
+  return { direction, amount: 0.6, ...(clearance !== undefined ? { distance: clearance } : {}) };
+}
 
 // stdout is a pipe: wait for it to drain before the process exits.
 function exitAfterDrain(code: number): Promise<never> {
@@ -553,18 +558,8 @@ async function openSession(
       ),
     press: (ref, qaContext) => act(() => press({ ref, qaContext }), false),
     fill: (ref, text, qaContext) => act(() => fill({ ref, text, qaContext }), true),
-    // Android sizes a keyboard clearance scroll from the overlap; iOS keeps its fixed swipe.
     scroll: (direction, qaContext, clearance) =>
-      act(
-        () =>
-          scroll({
-            direction,
-            amount: 0.6,
-            ...(platform === 'android' && clearance !== undefined ? { distance: clearance } : {}),
-            qaContext,
-          }),
-        false,
-      ),
+      act(() => scroll({ ...scrollArgs(direction, clearance), qaContext }), false),
     back: (qaContext) => act(() => back({ qaContext }), false),
     dialog: (action, qaContext) =>
       act(
@@ -750,7 +745,12 @@ async function main(): Promise<void> {
   }
 }
 
-main().catch((error) => {
-  log(`fatal before the wire was established: ${describeError(error).message}`);
-  process.exit(1);
-});
+if (
+  process.argv[1] &&
+  realpathSync(process.argv[1]) === realpathSync(fileURLToPath(import.meta.url))
+) {
+  main().catch((error) => {
+    log(`fatal before the wire was established: ${describeError(error).message}`);
+    process.exit(1);
+  });
+}

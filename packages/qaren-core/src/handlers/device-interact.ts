@@ -14,7 +14,9 @@ import {
   isSnapshotCacheValid,
   markSnapshotDirty,
   IME_KEY_FLAG,
+  settleAfterMutation,
 } from '../agent-device-wrapper.js';
+import { buildIosProbes } from '../lifecycle/settle.js';
 import {
   isFastRunnerAvailable,
   fastSwipe,
@@ -2170,13 +2172,7 @@ interface ScrollArgs {
 
 export function createDeviceScrollHandler(): (args: ScrollArgs) => Promise<ToolResult> {
   return withQaSession(async (args) => {
-    // B106 fix: Route iOS scroll through fast-runner's direct HID synthesis
-    // when available. The agent-device daemon path uses XCTest's high-level
-    // gesture API which calls `waitForIdle` after the drag — this hangs
-    // indefinitely on screens driven by Reanimated `useAnimatedScrollHandler`
-    // because the UI thread is never "idle" between scroll events. Fast-runner
-    // uses `RunnerDaemonProxy.synthesize(eventRecord)` which is raw HID event
-    // injection and returns as soon as events are delivered.
+    // The fast path bypasses XCTest quiescence on animated scroll views.
     const amount = Math.min(Math.max(args.amount ?? 0.5, 0), 1);
     const { x1, y1, x2, y2 } = computeScrollFromDirection(
       args.direction,
@@ -2189,26 +2185,31 @@ export function createDeviceScrollHandler(): (args: ScrollArgs) => Promise<ToolR
     if (!args.qaContext) adoptPersistedFastRunnerState(getActiveSession()?.deviceId);
     if ((!args.qaContext || getActiveSession()?.platform === 'ios') && isFastRunnerAvailable()) {
       try {
+        const bundleId = getActiveSession()?.appId ?? resolveBundleId('ios') ?? undefined;
         const resp = await fastSwipe(
           x1,
           y1,
           x2,
           y2,
           DEFAULT_SWIPE_DURATION_MS,
-          getActiveSession()?.appId ?? resolveBundleId('ios') ?? undefined,
+          bundleId,
           args.qaContext,
           getActiveSession()?.deviceId,
         );
         if (resp.ok) {
-          return okResult({
-            direction: args.direction,
-            amount: args.amount ?? 0.5,
-            method: 'fast-runner',
-            x1,
-            y1,
-            x2,
-            y2,
-          });
+          return settleAfterMutation(
+            okResult({
+              direction: args.direction,
+              amount: args.amount ?? 0.5,
+              method: 'fast-runner',
+              x1,
+              y1,
+              x2,
+              y2,
+            }),
+            { platform: 'ios', verb: 'scroll', appId: bundleId, qaContext: args.qaContext },
+            { probes: () => buildIosProbes(bundleId, args.qaContext) },
+          );
         }
         args.qaContext?.refuse('ACTION_OUTCOME_UNCERTAIN');
       } catch {
