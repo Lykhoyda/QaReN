@@ -122,6 +122,20 @@ export function cacheDirFor(
   return join(home, '.qaren', 'runtime', 'runners', version, platform);
 }
 
+// Where xcodebuild writes XCTest result bundles for either runner root chosen by resolveIosRunnerArtifacts.
+export function iosRunnerResultBundleDirs(
+  version: string | null,
+  localDerivedDataPath: string,
+): string[] {
+  const dirs = [join(localDerivedDataPath, 'Logs', 'Test')];
+  if (version) {
+    dirs.push(
+      join(cacheDirFor(homedir(), process.platform, version, 'ios'), 'products', 'Logs', 'Test'),
+    );
+  }
+  return dirs;
+}
+
 export function formatArtifactSize(bytes: number): string {
   return `~${Math.max(1, Math.round(bytes / 1_000_000))} MB`;
 }

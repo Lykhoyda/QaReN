@@ -425,11 +425,15 @@ it is never recovered, retried or re-walked,
 including for stored replay selectors and for a handler that finds twins at dispatch. A text element
 that is the sole text descendant of matching labelled ancestors links to the
 nearest action candidate: enabled and either hittable or offscreen for scrolling.
+On Android, this also applies when an ancestor has other text descendants but
+exactly one same-label heading re-kinded from `other` to `text` by the
+[native heading fact](#plan-checks-and-screen-evidence), as on a titled card.
 When that candidate is among the matches, the text and other same-label ancestors
 collapse into it, including layout and press-capable but non-hittable wrappers.
 This applies to quoted presses and stored text-selector replay; it does not grant
-native tap eligibility to a wrapper. A container without a testID that encloses
-(by tree or frame) exactly one same-label action candidate, such as the
+native tap eligibility to a wrapper. A differently labelled heading stays distinct,
+and a heading's own unique testID still names that heading. A container without a
+testID that encloses (by tree or frame) exactly one same-label action candidate, such as the
 full-screen element iOS can label like the first control, is that control's
 echo. When nothing matches exactly, a quoted press target equal to one whole
 comma-separated segment of exactly one actionable element's merged label (for
@@ -763,12 +767,32 @@ container echoes, non-content wrappers, images and system scroll-bar labels
 contribute no literal evidence. A supplied frame must have positive width and
 height to contribute literal evidence; a missing frame alone does not exclude
 otherwise eligible text. This rule does not change action eligibility.
+
+On Android API 28 and later, the runner exports `heading: true` when
+`AccessibilityNodeInfo.isHeading()` is true. The screen join treats an otherwise
+`other` node with that fact as `text`, so visible React Native
+`<Text accessibilityRole="header">` content can satisfy a literal check even
+when its native class is `android.view.View`. Already typed controls keep their
+kind. For presses by a repeated heading label, see the
+[target-resolution rules](#check-a-plan). Earlier Android APIs omit the heading
+fact; other roles mapped to `android.view.View` receive no special treatment. This fact does not
+populate the heading evidence used by phrase checks.
+
 A visible, hittable native `Other` element with
 a label and no accessibility text descendant contributes its merged label;
 this also admits an icon-only control's explicit label. A literal check passing
 through that contribution records `matched an accessibility label` in the ledger.
 Quoted waits and scroll-until targets also accept a unique visible testID as
 identity evidence, independently of literal text.
+
+When a literal check fails and a node's label contains the plan's literal, the
+failure can explain why that node did not count: `not-visible` means it was
+reported not visible to the user or was outside the viewport;
+`not-literal-kind` means its kind was `other`. If several nodes match, the
+explanation prefers hidden literal text, then a visible `other` node, then a
+hidden `other` node. The explanation repeats only the plan's literal, never
+the rest of the node's label. An absent match or uncertain literal evidence
+adds no near-miss explanation.
 
 The [native geometry model](../qaren-core/src/qa/native-presence.ts) clips nodes
 on both axes against the Application screen and trusted Window, ScrollView,
@@ -1210,6 +1234,13 @@ present or unknown host after that, retains the lease. A dead lease
 holder is reclaimed only through that run's cleanup; a live or unprovable holder
 refuses `DEVICE_BUSY`. Recover a retained run with `qaren cleanup <run-id>`;
 do not delete locks to bypass unresolved ownership.
+
+The iOS runner's XCTest result bundles under `Logs/Test` in both its local
+DerivedData and current-version prebuilt cache are removed after successful
+runner stop or reap and before a new runner launch, because XCTest's own
+activity log records the text of fields it queries, including typed values.
+`Build/Products` is preserved for warm launches. If the core is hard-killed,
+bundles can remain on disk until the next runner launch performs this cleanup.
 
 ### Saved blocks
 
