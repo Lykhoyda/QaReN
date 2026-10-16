@@ -106,14 +106,22 @@ export function buildIosAppRunningArgs(deviceId: string): string[] {
   return ['simctl', 'spawn', deviceId, 'launchctl', 'list'];
 }
 
+// launchctl list rows are "PID Status Label"; a loaded-but-dead job shows "-" as PID.
+export function iosAppJobRunning(launchctlList: string, bundleId: string): boolean {
+  const label = `UIKitApplication:${bundleId}[`;
+  return launchctlList.split('\n').some((line) => {
+    const [pid, , job] = line.trim().split(/\s+/);
+    return /^\d+$/.test(pid ?? '') && job?.startsWith(label) === true;
+  });
+}
+
 async function defaultIOSProbe(bundleId: string, deviceId: string): Promise<boolean> {
   try {
     const { stdout } = await execFile('xcrun', buildIosAppRunningArgs(deviceId), {
       timeout: 5000,
       encoding: 'utf8',
     });
-    // launchctl list outputs lines like "<pid>  <status>  UIKitApplication:<bundleId>[...]"
-    return stdout.includes(`UIKitApplication:${bundleId}`);
+    return iosAppJobRunning(stdout, bundleId);
   } catch (error) {
     if (isAbort(error)) throw error;
     return false;
