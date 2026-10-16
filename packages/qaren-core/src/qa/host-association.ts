@@ -192,6 +192,7 @@ export function associateHosts(
   evidence: ReactHostEvidence | undefined,
   presence: NativePresence | undefined,
   diagnostics?: Map<number, HostAssociationDiagnostic>,
+  firstMissingAncestors?: Map<number, number>,
 ): Map<number, HostAssociation> {
   const associations = new Map<number, HostAssociation>();
   const note = (index: number, facts: Partial<HostAssociationDiagnostic>) => {
@@ -333,6 +334,13 @@ export function associateHosts(
       contains(nodes[ancestor].rect!, nodes[child].rect!)
     );
   };
+  const missingAncestor = (host: number, ancestor: number) => {
+    try {
+      firstMissingAncestors?.set(host, ancestor);
+    } catch {
+      // Diagnostic witnesses cannot change association.
+    }
+  };
   const anchoredPath = (i: number): boolean => {
     const named = paths[i].filter((p) => !inline(p) && !!evidence.hosts[p].testID);
     let reason: HostAssociationDiagnostic['ancestorPath'] = 'valid';
@@ -340,11 +348,13 @@ export function associateHosts(
       const nativeIndex = (p === i ? anchors : structural).get(p);
       if (nativeIndex === undefined) {
         reason = p === i ? 'self-anchor-missing' : 'ancestor-structure-missing';
+        if (p !== i) missingAncestor(i, p);
         return false;
       }
       if (n + 1 === named.length) return true;
       const ancestor = structural.get(named[n + 1]);
       if (ancestor === undefined) {
+        missingAncestor(i, named[n + 1]);
         reason = 'ancestor-structure-missing';
         return false;
       }

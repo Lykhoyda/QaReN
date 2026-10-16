@@ -52,6 +52,13 @@ test('declared gap categories survive private receipts while host diagnostics st
     assert.equal(gap.category, category);
     assert.equal(gap.nativePresenceAvailable, true);
     assert.equal(gap.pressGapCount, category === 'missing-host-evidence' ? 0 : 10);
+    if (category === 'unassociated-hosts') {
+      assert.equal(gap.ancestry!.retained, 8);
+      assert.equal(gap.ancestry!.paths.structureMissing, 0);
+      assert.deepEqual(gap.ancestry!.firstMissing, { known: 0, absent: 0, unknown: 0 });
+      assert.equal(gap.ancestry!.allSame, 'not-applicable');
+      assert.equal(gap.ancestry!.sameAsRetainedAmbiguous, 'not-applicable');
+    } else assert.equal(gap.ancestry, undefined);
     assert.deepEqual(f.rows[0].targeting, fact);
     const serialized = JSON.stringify({ result, rows: f.rows });
     for (const privateValue of [
@@ -65,6 +72,15 @@ test('declared gap categories survive private receipts while host diagnostics st
     const injected = structuredClone(fact);
     const injectedGap = injected.evaluated[0].pressSupport!.gap!;
     Object.assign(injectedGap, { label: 'private-label', ref: 'private-ref', rect: { x: 987654 } });
+    if (injectedGap.ancestry) {
+      Object.assign(injectedGap.ancestry, {
+        firstMissingIndex: 987654,
+        label: 'private-ancestor-canary',
+      });
+      Object.assign(injectedGap.ancestry.paths, { topology: 'private-topology-canary' });
+      Object.assign(injectedGap.ancestry.firstMissing, { hostOrdinal: 987654 });
+      Object.assign(injectedGap.ancestry.retainedAmbiguous, { hash: 'private-hash-canary' });
+    }
     if (injectedGap.gapHosts) {
       const host = injectedGap.gapHosts.rows[0];
       Object.assign(host, {
@@ -1065,3 +1081,125 @@ for (const value of ['\uE0F0X\uE0F1', '\uE0F0\uE200\uE0F1']) {
     assert.ok(!JSON.stringify(ledger).includes(value));
   });
 }
+
+test('ancestry groups round-trip only finite private facts and drop malformed aggregates without altering targeting', async () => {
+  for (const mode of ['shared', 'distinct', 'retained', 'other', 'ambiguous'] as const) {
+    const observed = joinedGapScreen('unassociated-hosts', true, true, mode);
+    for (const step of [
+      'id "private-gap-primary" || label "private-gap-label"',
+      'label "private-gap-label" || id "private-gap-primary"',
+    ]) {
+      const f = walker(
+        [observed],
+        scriptedJudge(() => assert.fail('no diagnostic Jev')),
+      );
+      const events: unknown[] = [];
+      f.deps.diagnostic = (event) => events.push(event);
+      f.deps.timing = (event) => events.push(event);
+      const result = await runPlan(parsePlan('1. Tap ' + step).blocks!, f.deps);
+      assert.equal(result.verdict, 'FAIL');
+      assert.deepEqual(f.actions, []);
+      assert.equal(f.captures(), 1);
+      assert.equal(result.recoveries, 0);
+      const fact = result.steps[0].targeting!;
+      assert.equal(fact.evaluated.length, 1);
+      assert.equal(fact.dispatchCount, 0);
+      const summary = fact.evaluated[0].pressSupport!.gap!.ancestry!;
+      assert.equal(summary.retained, 8);
+      assert.equal(
+        summary.firstMissing.known,
+        mode === 'shared' || mode === 'distinct' ? 8 : mode === 'ambiguous' ? 6 : 7,
+      );
+      assert.equal(summary.qualifications.length, 1);
+      assert.deepEqual(f.rows[0].targeting, fact);
+      assert.deepEqual(projectTargeting(projectTargeting(fact)), fact);
+      assert.doesNotMatch(
+        JSON.stringify(summary),
+        /private-|Index|Ordinal|testID|nativeID|rect|frame|hash|ref"/,
+      );
+      assert.doesNotMatch(
+        JSON.stringify({ events, observed }),
+        /ancestry|firstMissing|qualifications|allSame/,
+      );
+      const injected = structuredClone(fact);
+      const extra = injected.evaluated[0].pressSupport!.gap!.ancestry!;
+      Object.assign(extra, { ancestorIndex: 987654, label: 'private-ancestor-value' });
+      Object.assign(extra.qualifications[0], {
+        hostOrdinal: 987654,
+        hash: 'private-linkable-token',
+        frame: { x: 987654 },
+      });
+      assert.deepEqual(projectTargeting(injected), fact);
+      for (const mutate of [
+        (s: typeof summary) => {
+          s.retained = 9;
+        },
+        (s: typeof summary) => {
+          s.paths.structureMissing++;
+        },
+        (s: typeof summary) => {
+          s.firstMissing.known--;
+        },
+        (s: typeof summary) => {
+          s.qualifications[0].count = 0;
+        },
+        (s: typeof summary) => {
+          s.qualifications.push(structuredClone(s.qualifications[0]));
+        },
+        (s: typeof summary) => {
+          Object.assign(s.qualifications[0], { reason: 'private-reason' });
+        },
+        (s: typeof summary) => {
+          Object.assign(s.qualifications[0], { nativeCandidates: 'one' });
+        },
+        (s: typeof summary) => {
+          Object.assign(s.qualifications[0], { count: 0.5 });
+        },
+        (s: typeof summary) => {
+          Object.assign(s.paths, { absent: null });
+        },
+        (s: typeof summary) => {
+          s.allSame = 'not-applicable';
+        },
+        (s: typeof summary) => {
+          s.sameAsRetainedAmbiguous = 'not-applicable';
+          if (mode === 'distinct') s.sameAsRetainedAmbiguous = true;
+        },
+        (s: typeof summary) => {
+          s.retainedAmbiguous.count++;
+        },
+      ]) {
+        const malformed = structuredClone(fact);
+        mutate(malformed.evaluated[0].pressSupport!.gap!.ancestry!);
+        const projected = projectTargeting(malformed);
+        assert.equal(projected.evaluated[0].pressSupport!.gap!.ancestry, undefined);
+        const expected = structuredClone(fact);
+        delete expected.evaluated[0].pressSupport!.gap!.ancestry;
+        assert.deepEqual(projected, expected);
+      }
+    }
+  }
+});
+
+test('malformed legacy association members cannot make ancestry projection non-idempotent', async () => {
+  const f = walker(
+    [joinedGapScreen('unassociated-hosts', true, true, 'retained')],
+    scriptedJudge(() => assert.fail('no Jev')),
+  );
+  const result = await runPlan(
+    parsePlan('1. Tap id "private-gap-primary" || label "private-gap-label"').blocks!,
+    f.deps,
+  );
+  const fact = structuredClone(result.steps[0].targeting!);
+  const gap = fact.evaluated[0].pressSupport!.gap!;
+  Object.assign(gap.gapHosts!.rows[0], { association: null });
+  const summary = gap.ancestry!;
+  summary.paths.selfAnchorMissing--;
+  summary.paths.unknown++;
+  summary.retainedAmbiguous.count--;
+  summary.retainedAmbiguous.unknown++;
+  summary.sameAsRetainedAmbiguous = 'unknown';
+  const once = projectTargeting(fact);
+  assert.deepEqual(projectTargeting(once), once);
+  assert.equal(once.evaluated[0].pressSupport!.gap!.ancestry, undefined);
+});

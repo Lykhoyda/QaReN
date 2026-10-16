@@ -68,6 +68,22 @@ test('declared support refusals classify the same joined observation without exp
           pressGapCount: category === 'missing-host-evidence' ? 0 : 10,
           ...(category === 'unassociated-hosts'
             ? {
+                ancestry: {
+                  retained: 8,
+                  paths: {
+                    structureMissing: 0,
+                    selfAnchorMissing: presence === true && typographyComplete ? 8 : 0,
+                    other: 0,
+                    notEvaluated: presence === true && typographyComplete ? 0 : 8,
+                    absent: 0,
+                    unknown: 0,
+                  },
+                  firstMissing: { known: 0, absent: 0, unknown: 0 },
+                  qualifications: [],
+                  allSame: 'not-applicable',
+                  retainedAmbiguous: { count: 0, absent: 0, unknown: 0 },
+                  sameAsRetainedAmbiguous: 'not-applicable',
+                },
                 gapHosts: {
                   total: 10,
                   truncated: true,

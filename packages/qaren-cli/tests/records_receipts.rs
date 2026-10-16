@@ -128,6 +128,38 @@ for (const category of ['missing-host-evidence', 'incomplete-host-evidence', 'un
     }
   }
 }
+for (const mode of ['shared', 'distinct', 'retained', 'other', 'ambiguous']) {
+  const f = walker([joinedGapScreen('unassociated-hosts', true, true, mode)], scriptedJudge(() => assert.fail('no ancestry Jev')));
+  const ledger = await runPlan(parsePlan('1. Tap id "private-gap-primary" || label "private-gap-label"').blocks, f.deps);
+  assert.equal(ledger.verdict, 'FAIL');
+  assert.deepEqual(f.actions, []);
+  ledgers.push(ledger);
+}
+for (const mode of ['witness-absent', 'witness-unknown', 'diagnostic-absent', 'diagnostic-throw', 'candidate-absent', 'candidate-null', 'candidate-one', 'candidate-invalid', 'retained-record-absent', 'distinct-diagnostic-throw']) {
+  const get = Map.prototype.get;
+  let observed;
+  try {
+    Map.prototype.get = function(key) {
+      const value = get.call(this, key);
+      if (typeof key === 'number' && key > 0 && value === 0 && mode.startsWith('witness-')) return mode === 'witness-absent' ? undefined : NaN;
+      if (key !== 0 || !value || typeof value !== 'object' || !('identity' in value)) return value;
+      if (mode === 'diagnostic-absent' || mode === 'retained-record-absent') return undefined;
+      if (mode === 'diagnostic-throw' || mode === 'distinct-diagnostic-throw') throw new Error('private-diagnostic-error');
+      const changed = {...value};
+      if (mode === 'candidate-absent') delete changed.nativeIdentityCandidateCount;
+      if (mode === 'candidate-null') changed.nativeIdentityCandidateCount = null;
+      if (mode === 'candidate-one') changed.nativeIdentityCandidateCount = 1;
+      if (mode === 'candidate-invalid') changed.nativeIdentityCandidateCount = -1;
+      return changed;
+    };
+    observed = joinedGapScreen('unassociated-hosts', true, true, mode === 'retained-record-absent' ? 'retained' : mode === 'distinct-diagnostic-throw' ? 'distinct' : 'shared');
+  } finally { Map.prototype.get = get; }
+  const f = walker([observed], scriptedJudge(() => assert.fail('no availability Jev')));
+  const ledger = await runPlan(parsePlan('1. Tap id "private-gap-primary" || label "private-gap-label"').blocks, f.deps);
+  assert.equal(ledger.verdict, 'FAIL');
+  assert.deepEqual(f.actions, []);
+  ledgers.push(ledger);
+}
 process.stdout.write(JSON.stringify(ledgers));
 "#])
         .output().expect("node on PATH is required for the core receipt contract");
@@ -137,7 +169,7 @@ process.stdout.write(JSON.stringify(ledgers));
         String::from_utf8_lossy(&output.stderr)
     );
     let values: Vec<serde_json::Value> = serde_json::from_slice(&output.stdout).unwrap();
-    assert_eq!(values.len(), 25);
+    assert_eq!(values.len(), 40);
     for value in values {
         let ledger: qaren::core::Ledger = serde_json::from_value(value.clone()).unwrap();
         let expected = &value["steps"][0]["targeting"];
@@ -169,9 +201,96 @@ process.stdout.write(JSON.stringify(ledgers));
             "private-gap-primary",
             "private-gap-label",
             "private-unassociated-host-",
+            "private-ancestor-canary-",
+            "@private-child-",
+            "private-diagnostic-error",
         ] {
             assert!(!receipt.to_json().contains(private));
             assert!(!report.contains(private));
+        }
+        let mut without_ancestry = value.clone();
+        if let Some(gap) = without_ancestry["steps"][0]["targeting"]["evaluated"][0]["pressSupport"]
+            ["gap"]
+            .as_object_mut()
+        {
+            gap.remove("ancestry");
+        }
+        let baseline: qaren::core::Ledger = serde_json::from_value(without_ancestry).unwrap();
+        let mut legacy_receipt = encoded.clone();
+        if let Some(gap) = legacy_receipt["ledger"]["targeting"][0]["fact"]["evaluated"][0]
+            ["pressSupport"]["gap"]
+            .as_object_mut()
+        {
+            gap.remove("ancestry");
+        }
+        assert!(serde_json::from_value::<Receipt>(legacy_receipt).is_ok());
+        let public_outputs = |ledger: &qaren::core::Ledger| {
+            let input = qaren::report::ReportInput {
+                run_id: "support-refusal",
+                platform: "ios",
+                app_id: "com.example.app",
+                device: "synthetic",
+                ledger,
+            };
+            let dir = common::temp_repo();
+            let progress_path = dir.join("progress.txt");
+            let mut progress = qaren::progress::Progress::new(
+                false,
+                Box::new(std::fs::File::create(&progress_path).unwrap()),
+            );
+            progress.row(&ledger.steps[0], std::time::Instant::now());
+            progress.close();
+            drop(progress);
+            let progress_text = std::fs::read_to_string(&progress_path).unwrap();
+            let event_path = dir.join("events.jsonl");
+            let mut events = qaren::events::Events::start(None).unwrap();
+            events.attach(&event_path);
+            events.row(&ledger.steps[0]);
+            let mut event_receipt = Receipt::new(
+                "check",
+                "support-refusal",
+                ReceiptResult::Fail,
+                "walk",
+                "now".into(),
+            );
+            event_receipt.ledger = Some(qaren::report::summarize(ledger));
+            events.end(&event_receipt, 1);
+            events.finish();
+            let event_payloads: Vec<serde_json::Value> = std::fs::read_to_string(&event_path)
+                .unwrap()
+                .lines()
+                .map(|line| {
+                    let envelope: serde_json::Value = serde_json::from_str(line).unwrap();
+                    serde_json::json!({"event": envelope["event"], "payload": envelope["payload"]})
+                })
+                .collect();
+            std::fs::remove_dir_all(dir).unwrap();
+            vec![
+                progress_text,
+                serde_json::to_string(&event_payloads).unwrap(),
+                format!("{:?}", ledger.steps[0].targeting),
+                ledger.steps[0].targeting.as_ref().unwrap().detail(),
+                qaren::report::render(&input),
+                qaren::report::render_pr_comment(
+                    &input,
+                    None,
+                    &qaren::report::PrRun {
+                        tested_sha: "abcdef1234567",
+                        tested_older_commit: false,
+                        video: &qaren::record::VideoStatus::Available,
+                        screenshot: None,
+                        plan_sha256: "plan-hash",
+                        video_publication: &qaren::record::VideoPublication::Eligible,
+                    },
+                    &qaren::redact::MachineIdentity::default(),
+                ),
+            ]
+        };
+        assert_eq!(public_outputs(&ledger), public_outputs(&baseline));
+        for text in public_outputs(&ledger) {
+            assert!(!text.contains("ancestry"));
+            assert!(!text.contains("firstMissing"));
+            assert!(!text.contains("qualifications"));
         }
         let gap = &expected["evaluated"][0]["pressSupport"]["gap"];
         if !gap.is_null() {
@@ -236,6 +355,88 @@ process.stdout.write(JSON.stringify(ledgers));
                         serde_json::json!("private-path"),
                     ),
                 ]);
+            }
+            if let Some(summary) = gap.get("ancestry").filter(|value| value.is_object()) {
+                let mut extra = summary.clone();
+                extra["ancestorIndex"] = serde_json::json!(987654);
+                let mut private_paths = summary["paths"].clone();
+                private_paths["topology"] = serde_json::json!("private-topology");
+                let mut private_first = summary["firstMissing"].clone();
+                private_first["hostOrdinal"] = serde_json::json!(987654);
+                let mut private_ambiguous = summary["retainedAmbiguous"].clone();
+                private_ambiguous["hash"] = serde_json::json!("private-linkable-token");
+                mutations.extend([
+                    ("/ancestry", extra),
+                    ("/ancestry/retained", serde_json::json!(9)),
+                    ("/ancestry/paths", private_paths),
+                    ("/ancestry/paths/structureMissing", serde_json::json!(9)),
+                    ("/ancestry/paths/unknown", serde_json::json!(0.5)),
+                    ("/ancestry/firstMissing", private_first),
+                    ("/ancestry/firstMissing/known", serde_json::json!(9)),
+                    ("/ancestry/retainedAmbiguous", private_ambiguous),
+                    ("/ancestry/retainedAmbiguous/count", serde_json::json!(9)),
+                    ("/ancestry/allSame", serde_json::json!("private-equality")),
+                    (
+                        "/ancestry/sameAsRetainedAmbiguous",
+                        serde_json::json!("private-equality"),
+                    ),
+                ]);
+                let missing = summary["paths"]["structureMissing"].as_u64().unwrap();
+                mutations.push((
+                    "/ancestry/allSame",
+                    if missing == 0 {
+                        serde_json::json!(true)
+                    } else {
+                        serde_json::json!("not-applicable")
+                    },
+                ));
+                if let Some(group) = summary["qualifications"]
+                    .as_array()
+                    .and_then(|groups| groups.first())
+                {
+                    let mut private_group = group.clone();
+                    private_group["hostOrdinal"] = serde_json::json!(987654);
+                    mutations.extend([
+                        ("/ancestry/qualifications/0", private_group),
+                        (
+                            "/ancestry/qualifications/0/reason",
+                            serde_json::json!("private-qualification"),
+                        ),
+                        (
+                            "/ancestry/qualifications/0/nativeCandidates",
+                            serde_json::json!("one"),
+                        ),
+                        (
+                            "/ancestry/qualifications/0/nativeCandidates",
+                            serde_json::json!(1),
+                        ),
+                        (
+                            "/ancestry/qualifications/0/nativeCandidates",
+                            serde_json::json!(null),
+                        ),
+                        ("/ancestry/qualifications/0/count", serde_json::json!(0)),
+                        ("/ancestry/qualifications/0/count", serde_json::json!(9)),
+                    ]);
+                    if missing > 1 {
+                        let mut unordered = summary.clone();
+                        unordered["firstMissing"] =
+                            serde_json::json!({"known": missing, "absent": 0, "unknown": 0});
+                        unordered["allSame"] = serde_json::json!(false);
+                        unordered["sameAsRetainedAmbiguous"] = serde_json::json!("not-applicable");
+                        unordered["qualifications"] = serde_json::json!([
+                            {"reason":"native-id-count","nativeCandidates":"multiple","count":missing - 1},
+                            {"reason":"native-id-count","nativeCandidates":"zero","count":1}
+                        ]);
+                        mutations.push(("/ancestry", unordered.clone()));
+                        unordered["qualifications"][1]["nativeCandidates"] =
+                            serde_json::json!("multiple");
+                        mutations.push(("/ancestry", unordered));
+                    }
+                }
+            }
+            if gap["gapHosts"]["rows"][0]["association"].is_null() {
+                mutations
+                    .retain(|(pointer, _)| !pointer.starts_with("/gapHosts/rows/0/association"));
             }
             for (pointer, invalid) in mutations {
                 let mut bad_row = value["steps"][0].clone();

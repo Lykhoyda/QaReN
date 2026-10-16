@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import {
   join,
+  pressGapOf,
   semanticActionView,
   validateReactHostEvidence,
   visibilityView,
@@ -581,4 +582,519 @@ test('gap-host dependencies remain private when a pending heading wait is batche
     assert.doesNotMatch(JSON.stringify(result), /gapHosts|diagnostic/);
     assert.equal(judge.requests.length, 1);
   }
+});
+
+function ancestryFixture() {
+  const f = fixture();
+  const hosts = f.evidence.typography!.nodes;
+  hosts[0].hostType = hosts[1].hostType = 'RCTView';
+  hosts[1].parentHostIndex = 0;
+  f.evidence.hosts[4].testID = f.evidence.hosts[0].testID;
+  addNative(f, 1);
+  const hostIndex = f.evidence.hosts.length;
+  f.evidence.hosts.push({
+    testID: 'PRIVATE-second-child',
+    role: null,
+    roleSource: 'none',
+    capabilities: { fill: true },
+  });
+  hosts.push({
+    hostIndex,
+    parentHostIndex: 0,
+    rootIndex: 0,
+    hostType: 'RCTView',
+    rect: frame,
+    text: { kind: 'none' },
+  });
+  addNative(f, hostIndex);
+  return f;
+}
+
+test('private ancestry summary counts retained evaluations sharing the actual rejected ancestor', () => {
+  const f = ancestryFixture();
+  const screen = f.screen();
+  const gap = pressGapOf(screen.elements[3])!;
+  assert.deepEqual(gap.ancestry, {
+    retained: 3,
+    paths: {
+      structureMissing: 2,
+      selfAnchorMissing: 1,
+      other: 0,
+      notEvaluated: 0,
+      absent: 0,
+      unknown: 0,
+    },
+    firstMissing: { known: 2, absent: 0, unknown: 0 },
+    qualifications: [{ reason: 'host-id-ambiguous', nativeCandidates: 'not-applicable', count: 2 }],
+    allSame: true,
+    retainedAmbiguous: { count: 1, absent: 0, unknown: 0 },
+    sameAsRetainedAmbiguous: true,
+  });
+  assert.equal(gap.gapHosts!.rows.length, 3);
+  assert.equal(
+    gap.gapHosts!.rows[2].capabilities.press,
+    false,
+    'fill-only rows stay in the denominator',
+  );
+  assert.doesNotMatch(
+    JSON.stringify(gap.ancestry),
+    /PRIVATE-|Ordinal|Index|testID|nativeID|rect|frame|hash/,
+  );
+  assert.doesNotMatch(JSON.stringify(screen), /ancestry|firstMissing/);
+  assert.doesNotMatch(JSON.stringify(visibilityView(screen, true)), /ancestry|firstMissing/);
+});
+
+function ancestryOf(f: ReturnType<typeof fixture>) {
+  return pressGapOf(f.screen().elements[3])!.ancestry!;
+}
+
+test('ancestor equality distinguishes another rejected host, distinct hosts and ambiguous retained membership', () => {
+  for (const mode of [
+    'shared',
+    'other',
+    'distinct',
+    'several-ambiguous',
+    'no-ambiguous',
+  ] as const) {
+    const f = ancestryFixture();
+    if (mode === 'other') f.evidence.typography!.nodes[1].parentHostIndex = 4;
+    if (mode === 'other' || mode === 'distinct')
+      f.evidence.typography!.nodes[5].parentHostIndex = 4;
+    if (mode === 'several-ambiguous') f.evidence.hosts[4].capabilities = { press: true };
+    if (mode === 'no-ambiguous') f.evidence.hosts[0].hidden = true;
+    const summary = ancestryOf(f);
+    assert.equal(summary.firstMissing.known, 2);
+    assert.deepEqual(summary.qualifications, [
+      { reason: 'host-id-ambiguous', nativeCandidates: 'not-applicable', count: 2 },
+    ]);
+    assert.equal(summary.allSame, mode !== 'distinct');
+    assert.equal(
+      summary.sameAsRetainedAmbiguous,
+      mode === 'distinct'
+        ? 'not-applicable'
+        : mode === 'several-ambiguous'
+          ? 'ambiguous'
+          : mode === 'no-ambiguous'
+            ? 'absent'
+            : mode === 'shared',
+    );
+    assert.equal(
+      summary.retainedAmbiguous.count,
+      mode === 'several-ambiguous' ? 2 : mode === 'no-ambiguous' ? 0 : 1,
+    );
+  }
+});
+
+test('witnesses record only the actual first failed lookup and survive a throwing optional recorder', () => {
+  const f = ancestryFixture();
+  const read = () => {
+    const traces = new Map<number, HostAssociationDiagnostic>();
+    const witnesses = new Map<number, number>();
+    const baseline = associateHosts(f.nodes, f.evidence, f.presence);
+    assert.deepEqual(associateHosts(f.nodes, f.evidence, f.presence, traces, witnesses), baseline);
+    return { traces, witnesses, baseline };
+  };
+  let result = read();
+  assert.equal(result.witnesses.get(1), 0, 'named child fails the next structural lookup');
+  assert.equal(result.witnesses.has(0), false, 'self-anchor failure never records an ancestor');
+  delete f.evidence.hosts[5].testID;
+  result = read();
+  assert.equal(result.witnesses.get(5), 0, 'anonymous child fails its first named ancestor lookup');
+  f.evidence.hosts[5].testID = f.evidence.hosts[1].testID;
+  result = read();
+  assert.equal(result.traces.get(5)!.ancestorPath, 'self-anchor-missing');
+  assert.equal(result.witnesses.has(5), false, 'self failure hides later missing structure');
+  f.evidence.hosts[5].testID = 'PRIVATE-second-child';
+  f.evidence.typography!.nodes[5].parentHostIndex = 1;
+  const remote = { ...frame, x: 250, y: 300 };
+  f.evidence.typography!.nodes[5].rect = remote;
+  f.nodes.at(-1)!.rect = remote;
+  result = read();
+  assert.equal(result.traces.get(5)!.ancestorPath, 'ancestor-path-mismatch');
+  assert.equal(result.witnesses.has(5), false, 'path mismatch hides a farther missing ancestor');
+  let writes = 0;
+  const broken = new Map<number, number>();
+  broken.set = () => {
+    writes++;
+    throw new Error('PRIVATE-witness-error');
+  };
+  assert.deepEqual(
+    associateHosts(f.nodes, f.evidence, f.presence, new Map(), broken),
+    result.baseline,
+  );
+  assert.ok(writes > 0);
+  assert.equal(broken.size, 0);
+});
+
+for (const mode of [
+  'host-id-ambiguous',
+  'zero',
+  'multiple',
+  'outside-window',
+  'window-frame',
+  'incompatible-type',
+  'frame-mismatch',
+] as const) {
+  test('ancestor qualification reuses short-circuit evidence: ' + mode, () => {
+    const f = ancestryFixture();
+    if (mode !== 'host-id-ambiguous') delete f.evidence.hosts[4].testID;
+    const ancestor = f.evidence.typography!.nodes[0];
+    if (mode === 'zero' || mode === 'outside-window' || mode === 'window-frame')
+      ancestor.hostType = 'PRIVATE-unknown-host';
+    if (mode === 'incompatible-type') ancestor.hostType = 'RCTText';
+    if (mode === 'window-frame') {
+      f.nodes.splice(2, 0, {
+        ref: 'PRIVATE-second-window',
+        type: 'Window',
+        parentIndex: 0,
+        rect: { x: 0, y: 0, width: 400, height: 800 },
+      });
+      f.presence.nodes.splice(2, 0, { status: 'observed', labelSource: 'none' });
+      for (const node of f.nodes.slice(3))
+        if (node.parentIndex !== undefined && node.parentIndex >= 2) node.parentIndex++;
+      for (const node of f.nodes)
+        if (
+          ['PRIVATE-associated-id', 'PRIVATE-input-1', 'PRIVATE-second-child'].includes(
+            node.identifier ?? '',
+          )
+        )
+          node.parentIndex = 2;
+      f.nodes[1].rect!.width = 0;
+    }
+    if (mode !== 'host-id-ambiguous' && mode !== 'zero') {
+      addNative(
+        f,
+        0,
+        mode === 'outside-window'
+          ? { parentIndex: 0 }
+          : mode === 'frame-mismatch' || mode === 'incompatible-type'
+            ? { rect: { ...frame, x: frame.x + 1 } }
+            : {},
+      );
+      if (mode === 'multiple') addNative(f, 0);
+    }
+    const summary = ancestryOf(f);
+    assert.equal(summary.paths.structureMissing, 2);
+    assert.deepEqual(summary.qualifications, [
+      {
+        reason: mode === 'zero' || mode === 'multiple' ? 'native-id-count' : mode,
+        nativeCandidates: mode === 'zero' || mode === 'multiple' ? mode : 'not-applicable',
+        count: 2,
+      },
+    ]);
+    assert.equal(summary.allSame, true);
+  });
+}
+
+test('the aggregate keeps the exact thirteen-gap union and ignores five omitted qualifications', () => {
+  const f = ancestryFixture();
+  for (let i = 0; i < 10; i++) {
+    const hostIndex = f.evidence.hosts.length;
+    f.evidence.hosts.push({
+      testID: 'PRIVATE-extra-child-' + i,
+      role: null,
+      roleSource: 'none',
+      capabilities: i % 2 ? { fill: true } : { press: true },
+    });
+    f.evidence.typography!.nodes.push({
+      hostIndex,
+      parentHostIndex: 0,
+      rootIndex: 0,
+      hostType: 'RCTView',
+      rect: frame,
+      text: { kind: 'none' },
+    });
+    if (i < 5) addNative(f, hostIndex);
+  }
+  const gap = pressGapOf(f.screen().elements[3])!;
+  assert.equal(gap.gapHosts!.total, 13);
+  assert.equal(gap.gapHosts!.truncated, true);
+  assert.equal(gap.gapHosts!.rows.length, 8);
+  assert.deepEqual(gap.ancestry, {
+    retained: 8,
+    paths: {
+      structureMissing: 7,
+      selfAnchorMissing: 1,
+      other: 0,
+      notEvaluated: 0,
+      absent: 0,
+      unknown: 0,
+    },
+    firstMissing: { known: 7, absent: 0, unknown: 0 },
+    qualifications: [{ reason: 'host-id-ambiguous', nativeCandidates: 'not-applicable', count: 7 }],
+    allSame: true,
+    retainedAmbiguous: { count: 1, absent: 0, unknown: 0 },
+    sameAsRetainedAmbiguous: true,
+  });
+  for (const host of f.evidence.typography!.nodes.slice(11)) {
+    host.hostType = 'PRIVATE-omitted-host';
+    host.parentHostIndex = 4;
+    addNative(f, host.hostIndex);
+  }
+  assert.deepEqual(ancestryOf(f), gap.ancestry);
+});
+
+test('partial failing diagnostic notes cannot turn stale successful predicate counts into failed qualifications', () => {
+  const f = ancestryFixture();
+  delete f.evidence.hosts[4].testID;
+  addNative(f, 0, { rect: { ...frame, x: frame.x + 1 } });
+  const baseline = associateHosts(f.nodes, f.evidence, f.presence);
+  const set = Map.prototype.set;
+  try {
+    Map.prototype.set = function (key, value) {
+      if (
+        key === 0 &&
+        value &&
+        typeof value === 'object' &&
+        'identity' in value &&
+        value.identity === 'frame-mismatch'
+      )
+        throw new Error('PRIVATE-partial-note-error');
+      return set.call(this, key, value);
+    };
+    const summary = ancestryOf(f);
+    assert.equal(summary.firstMissing.known, 2);
+    assert.deepEqual(summary.qualifications, [
+      { reason: 'unknown', nativeCandidates: 'unknown', count: 2 },
+    ]);
+    assert.deepEqual(associateHosts(f.nodes, f.evidence, f.presence), baseline);
+    assert.doesNotMatch(JSON.stringify(summary), /PRIVATE-/);
+  } finally {
+    Map.prototype.set = set;
+  }
+});
+
+test('private ancestry facts stay out of Jev, visibility diagnostics and timing events', async () => {
+  const diagnostic = await witness(ancestryFixture());
+  assert.doesNotMatch(JSON.stringify(diagnostic), /ancestry|firstMissing|qualifications|allSame/);
+});
+
+test('unavailable witness reads preserve absent versus unknown without changing the joined screen', () => {
+  for (const mode of [
+    'absent',
+    'throw',
+    'negative',
+    'fraction',
+    'self',
+    'outside',
+    'nan',
+  ] as const) {
+    const f = ancestryFixture();
+    const baseline = f.screen();
+    const get = Map.prototype.get;
+    let observed: ReturnType<typeof f.screen>;
+    try {
+      Map.prototype.get = function (key) {
+        const value = get.call(this, key);
+        if ((key === 1 || key === 5) && value === 0) {
+          if (mode === 'absent') return undefined;
+          if (mode === 'throw') throw new Error('PRIVATE-witness-read-error');
+          return mode === 'negative'
+            ? -1
+            : mode === 'fraction'
+              ? 0.5
+              : mode === 'self'
+                ? key
+                : mode === 'outside'
+                  ? 10000
+                  : NaN;
+        }
+        return value;
+      };
+      observed = f.screen();
+    } finally {
+      Map.prototype.get = get;
+    }
+    assert.deepEqual(observed!, baseline);
+    const summary = pressGapOf(observed!.elements[3])!.ancestry!;
+    assert.deepEqual(summary.firstMissing, {
+      known: 0,
+      absent: mode === 'absent' ? 2 : 0,
+      unknown: mode === 'absent' ? 0 : 2,
+    });
+    assert.deepEqual(summary.qualifications, [
+      {
+        reason: mode === 'absent' ? 'absent' : 'unknown',
+        nativeCandidates: mode === 'absent' ? 'absent' : 'unknown',
+        count: 2,
+      },
+    ]);
+    assert.equal(summary.allSame, 'unknown');
+    assert.equal(summary.sameAsRetainedAmbiguous, 'unknown');
+  }
+});
+
+test('ancestor diagnostics preserve absent and null candidate counts and refuse inconsistent first-failure claims', () => {
+  for (const mode of [
+    'absent-record',
+    'throw-record',
+    'absent-count',
+    'null-count',
+    'negative-count',
+    'fraction-count',
+    'one-count',
+    'compatible-one',
+    'successful-frame',
+  ] as const) {
+    const f = ancestryFixture();
+    delete f.evidence.hosts[4].testID;
+    if (mode === 'throw-record') f.evidence.hosts[0].hidden = true;
+    if (mode === 'compatible-one') {
+      f.evidence.typography!.nodes[0].hostType = 'RCTText';
+      addNative(f, 0);
+    }
+    if (mode === 'successful-frame') addNative(f, 0, { rect: { ...frame, x: frame.x + 1 } });
+    const baseline = f.screen();
+    const get = Map.prototype.get;
+    let observed: ReturnType<typeof f.screen>;
+    try {
+      Map.prototype.get = function (key) {
+        const value = get.call(this, key);
+        if (key !== 0 || !value || typeof value !== 'object' || !('identity' in value))
+          return value;
+        if (mode === 'absent-record') return undefined;
+        if (mode === 'throw-record') throw new Error('PRIVATE-diagnostic-read-error');
+        const changed = { ...value };
+        if (mode === 'absent-count') delete changed.nativeIdentityCandidateCount;
+        if (mode === 'null-count') changed.nativeIdentityCandidateCount = null;
+        if (mode === 'negative-count') changed.nativeIdentityCandidateCount = -1;
+        if (mode === 'fraction-count') changed.nativeIdentityCandidateCount = 0.5;
+        if (mode === 'one-count') changed.nativeIdentityCandidateCount = 1;
+        if (mode === 'compatible-one' && changed.identity === 'incompatible-type')
+          changed.compatibleCount = 1;
+        if (mode === 'successful-frame' && changed.identity === 'frame-mismatch')
+          changed.sameFrameCount = 1;
+        return changed;
+      };
+      observed = f.screen();
+    } finally {
+      Map.prototype.get = get;
+    }
+    assert.deepEqual(observed!, baseline);
+    const summary = pressGapOf(observed!.elements[3])!.ancestry!;
+    assert.equal(summary.firstMissing.known, 2);
+    const reason =
+      mode === 'absent-record'
+        ? 'absent'
+        : ['throw-record', 'one-count', 'compatible-one', 'successful-frame'].includes(mode)
+          ? 'unknown'
+          : 'native-id-count';
+    const nativeCandidates =
+      mode === 'absent-record' || mode === 'absent-count'
+        ? 'absent'
+        : mode === 'null-count'
+          ? 'null'
+          : 'unknown';
+    assert.deepEqual(summary.qualifications, [{ reason, nativeCandidates, count: 2 }]);
+    assert.doesNotMatch(JSON.stringify(summary), /PRIVATE-|NaN|Infinity/);
+  }
+});
+
+test('one retained missing path has a displayed denominator of one without vacuous equality', () => {
+  const f = ancestryFixture();
+  f.evidence.hosts[5].hidden = true;
+  const summary = ancestryOf(f);
+  assert.equal(summary.retained, 2);
+  assert.equal(summary.paths.structureMissing, 1);
+  assert.equal(summary.firstMissing.known, 1);
+  assert.equal(summary.qualifications[0].count, 1);
+  assert.equal(summary.allSame, true);
+  assert.equal(summary.sameAsRetainedAmbiguous, true);
+});
+
+test('anonymous text ownership re-evaluation does not count repeated missing-ancestor witnesses as extra rows', () => {
+  const f = ancestryFixture();
+  const hostIndex = f.evidence.hosts.length;
+  f.evidence.hosts.push({ role: null, roleSource: 'none', capabilities: {} });
+  f.evidence.typography!.nodes.push({
+    hostIndex,
+    parentHostIndex: 3,
+    rootIndex: 0,
+    hostType: 'RCTText',
+    rect: frame,
+    text: { kind: 'block', content: 'PRIVATE-anonymous-canary' },
+  });
+  f.nodes.push({
+    ref: 'PRIVATE-anonymous-text',
+    type: 'StaticText',
+    parentIndex: 3,
+    label: 'PRIVATE-anonymous-canary',
+    rect: frame,
+  });
+  f.presence.nodes.push({ status: 'observed', labelSource: 'direct' });
+  const set = Map.prototype.set;
+  let writes = 0;
+  let summary: ReturnType<typeof ancestryOf>;
+  try {
+    Map.prototype.set = function (key, value) {
+      if (key === 1 && value === 0) writes++;
+      return set.call(this, key, value);
+    };
+    summary = ancestryOf(f);
+  } finally {
+    Map.prototype.set = set;
+  }
+  assert.ok(writes > 1, 'the real ownership check revisited the same missing-ancestor branch');
+  assert.equal(summary!.retained, 3);
+  assert.equal(summary!.firstMissing.known, 2);
+  assert.equal(summary!.qualifications[0].count, 2);
+  assert.equal(summary!.allSame, true);
+  assert.doesNotMatch(JSON.stringify(summary!), /PRIVATE-/);
+});
+
+test('qualification groups have finite-code order rather than retained-row or ancestor order', () => {
+  const f = ancestryFixture();
+  f.evidence.hosts[4].testID = 'PRIVATE-second-parent';
+  f.evidence.typography!.nodes[0].hostType = 'RCTText';
+  f.evidence.typography!.nodes[5].parentHostIndex = 4;
+  addNative(f, 0);
+  const summary = ancestryOf(f);
+  assert.deepEqual(summary.qualifications, [
+    { reason: 'native-id-count', nativeCandidates: 'zero', count: 1 },
+    { reason: 'incompatible-type', nativeCandidates: 'not-applicable', count: 1 },
+  ]);
+  assert.equal(summary.allSame, false);
+  assert.equal(summary.sameAsRetainedAmbiguous, 'not-applicable');
+});
+
+test('missing diagnostic witnesses leave eligibility, refusal, captures and all non-ancestry ledger facts unchanged', async () => {
+  const f = ancestryFixture();
+  const baseline = f.screen();
+  const get = Map.prototype.get;
+  let observed: ReturnType<typeof f.screen>;
+  try {
+    Map.prototype.get = function (key) {
+      const value = get.call(this, key);
+      if ((key === 1 || key === 5) && value === 0) throw new Error('PRIVATE-unavailable-witness');
+      return value;
+    };
+    observed = f.screen();
+  } finally {
+    Map.prototype.get = get;
+  }
+  assert.deepEqual(observed!, baseline);
+  assert.deepEqual(semanticActionView(observed!, 'press'), semanticActionView(baseline, 'press'));
+  assert.deepEqual(visibilityView(observed!, true), visibilityView(baseline, true));
+  const results = [];
+  for (const screen of [baseline, observed!]) {
+    const judge = scriptedJudge(() => assert.fail('diagnostics cannot ask Jev'));
+    const w = walker([screen], judge);
+    const result = await runPlan(
+      parsePlan('1. Tap id "PRIVATE-associated-id" || label "Unavailable"').blocks!,
+      w.deps,
+    );
+    assert.equal(result.verdict, 'FAIL');
+    assert.deepEqual(w.actions, []);
+    assert.equal(w.captures(), 1);
+    assert.equal(result.recoveries, 0);
+    assert.equal(judge.calls.length, 0);
+    assert.equal(result.steps[0].targeting!.evaluated.length, 1);
+    assert.equal(result.steps[0].targeting!.dispatchCount, 0);
+    assert.equal(result.steps[0].targeting!.code, 'TARGET_UNSUPPORTED');
+    const gap = result.steps[0].targeting!.evaluated[0].pressSupport!.gap!;
+    assert.equal(gap.ancestry!.allSame, screen === baseline ? true : 'unknown');
+    delete gap.ancestry;
+    results.push(result);
+  }
+  assert.deepEqual(results[0], results[1]);
 });

@@ -491,7 +491,15 @@ Unassociated-host diagnostics reuse the existing combined press/fill gap list,
 with its total, truncation flag and at most eight rows; only host ordinals, kind,
 capability/gap flags and fixed association reasons/counts are retained. No raw
 host IDs, labels, values, rectangles, refs or frame deltas enter these facts.
-Older receipts may omit this diagnostic. Raw locators use the existing privacy projection.
+An optional `ancestry` aggregate describes only that same retained row population:
+fixed path and first-missing availability counts, counted first-failure qualifications,
+and shared-ancestor equality states. Absent, unknown and explicit-null candidate-count
+facts remain distinct; omitted rows and older receipts do not acquire inferred facts.
+Transient ancestor indices never leave the join. The aggregate is retained only in
+private structured ledger/receipt JSON and excluded from Debug, Markdown reports,
+PR comments, events, progress, Screen JSON, Jev and saved blocks; existing ordinal
+rows and report text remain unchanged. Older receipts may omit this diagnostic.
+Raw locators use the existing privacy projection.
 Blocks containing a pair require live ordered
 selection and are not saved or admitted for replay; existing saved files are preserved.
 

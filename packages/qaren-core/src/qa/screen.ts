@@ -420,7 +420,249 @@ interface GapHostDiagnostics {
   }>;
 }
 
+const ancestryReasons = [
+  'host-id-ambiguous',
+  'native-id-count',
+  'outside-window',
+  'window-frame',
+  'incompatible-type',
+  'frame-mismatch',
+  'absent',
+  'unknown',
+] as const;
+const ancestryNativeCounts = [
+  'zero',
+  'multiple',
+  'null',
+  'absent',
+  'unknown',
+  'not-applicable',
+] as const;
+
+type AncestryQualification = {
+  reason: (typeof ancestryReasons)[number];
+  nativeCandidates: (typeof ancestryNativeCounts)[number];
+  count: number;
+};
+
+export interface AncestryGapSummary {
+  retained: number;
+  paths: {
+    structureMissing: number;
+    selfAnchorMissing: number;
+    other: number;
+    notEvaluated: number;
+    absent: number;
+    unknown: number;
+  };
+  firstMissing: { known: number; absent: number; unknown: number };
+  qualifications: AncestryQualification[];
+  allSame: boolean | 'unknown' | 'not-applicable';
+  retainedAmbiguous: { count: number; absent: number; unknown: number };
+  sameAsRetainedAmbiguous: boolean | 'unknown' | 'not-applicable' | 'absent' | 'ambiguous';
+}
+
+function ancestryMembership(rows: readonly { hostOrdinal: number; association?: unknown }[]) {
+  const paths = {
+    structureMissing: 0,
+    selfAnchorMissing: 0,
+    other: 0,
+    notEvaluated: 0,
+    absent: 0,
+    unknown: 0,
+  };
+  const retainedAmbiguous = { count: 0, absent: 0, unknown: 0 };
+  let ambiguousHost: number | undefined;
+  const identities: HostAssociationDiagnostic['identity'][] = [
+    'evidence-unavailable',
+    'window-count',
+    'window-frame',
+    'inline',
+    'no-test-id',
+    'host-id-ambiguous',
+    'native-id-count',
+    'outside-window',
+    'incompatible-type',
+    'frame-mismatch',
+    'matched',
+  ];
+  for (const row of rows) {
+    const association = row.association;
+    const record = isRecord(association) ? association : undefined;
+    const path = record?.ancestorPath;
+    if (association === undefined || (record && !Object.hasOwn(record, 'ancestorPath')))
+      paths.absent++;
+    else
+      switch (path) {
+        case 'ancestor-structure-missing':
+          paths.structureMissing++;
+          break;
+        case 'self-anchor-missing':
+          paths.selfAnchorMissing++;
+          break;
+        case 'valid':
+        case 'ancestor-path-mismatch':
+          paths.other++;
+          break;
+        case 'not-evaluated':
+          paths.notEvaluated++;
+          break;
+        default:
+          paths.unknown++;
+      }
+    const identity = record?.identity;
+    if (association === undefined || (record && !Object.hasOwn(record, 'identity')))
+      retainedAmbiguous.absent++;
+    else if (identity === 'host-id-ambiguous') {
+      retainedAmbiguous.count++;
+      ambiguousHost = retainedAmbiguous.count === 1 ? row.hostOrdinal : undefined;
+    } else if (!identities.some((code) => code === identity)) retainedAmbiguous.unknown++;
+  }
+  return { paths, retainedAmbiguous, ambiguousHost };
+}
+
+function ancestryQualification(value: unknown): Omit<AncestryQualification, 'count'> {
+  const absent = { reason: 'absent', nativeCandidates: 'absent' } as const;
+  const unknown = { reason: 'unknown', nativeCandidates: 'unknown' } as const;
+  if (value === undefined) return absent;
+  if (!isRecord(value)) return unknown;
+  if (!Object.hasOwn(value, 'identity')) return absent;
+  const reason = ancestryReasons.find((code) => code === value.identity);
+  if (!reason || reason === 'absent' || reason === 'unknown') return unknown;
+  const native = value.nativeIdentityCandidateCount;
+  const compatible = value.compatibleCount;
+  const frame = value.sameFrameCount;
+  const input = value.inputContainmentCount;
+  const measured = (count: unknown) => count !== null && count !== undefined;
+  const later = [value.presenceProofCount, value.collisions];
+  if (later.some(measured)) return unknown;
+  if (reason === 'host-id-ambiguous')
+    return [native, compatible, frame, input].some(measured)
+      ? unknown
+      : { reason, nativeCandidates: 'not-applicable' };
+  if (reason === 'native-id-count') {
+    if (native === 1 || [compatible, frame, input].some(measured)) return unknown;
+    const nativeCandidates =
+      native === undefined
+        ? 'absent'
+        : native === null
+          ? 'null'
+          : typeof native !== 'number' || !Number.isSafeInteger(native) || native < 0
+            ? 'unknown'
+            : native === 0
+              ? 'zero'
+              : 'multiple';
+    return { reason, nativeCandidates };
+  }
+  if (measured(native) && native !== 1) return unknown;
+  if (reason === 'outside-window' || reason === 'window-frame')
+    return [compatible, frame, input].some(measured)
+      ? unknown
+      : { reason, nativeCandidates: 'not-applicable' };
+  if (reason === 'incompatible-type')
+    return (measured(compatible) && compatible !== 0) || [frame, input].some(measured)
+      ? unknown
+      : { reason, nativeCandidates: 'not-applicable' };
+  if (
+    (measured(compatible) && compatible !== 1) ||
+    input === 1 ||
+    (frame !== 0 && input !== 0) ||
+    (measured(frame) && frame !== 0 && frame !== 1) ||
+    (measured(input) && input !== 0)
+  )
+    return unknown;
+  return { reason, nativeCandidates: 'not-applicable' };
+}
+
+function summarizeAncestry(
+  rows: GapHostDiagnostics['rows'],
+  witnesses: Map<number, number>,
+  diagnostics: Map<number, HostAssociationDiagnostic>,
+  hostCount: number,
+): AncestryGapSummary | undefined {
+  try {
+    const { paths, retainedAmbiguous, ambiguousHost } = ancestryMembership(rows);
+    const firstMissing = { known: 0, absent: 0, unknown: 0 };
+    let shared: number | undefined;
+    let different = false;
+    const qualifications: AncestryQualification[] = [];
+    for (const row of rows) {
+      if (row.association?.ancestorPath !== 'ancestor-structure-missing') continue;
+      let witness: number | undefined | 'unknown';
+      try {
+        witness = witnesses.get(row.hostOrdinal);
+      } catch {
+        witness = 'unknown';
+      }
+      let qualification: Omit<AncestryQualification, 'count'>;
+      if (witness === undefined) {
+        firstMissing.absent++;
+        qualification = { reason: 'absent', nativeCandidates: 'absent' };
+      } else if (
+        witness === 'unknown' ||
+        !Number.isSafeInteger(witness) ||
+        witness < 0 ||
+        witness >= hostCount ||
+        witness === row.hostOrdinal
+      ) {
+        firstMissing.unknown++;
+        qualification = { reason: 'unknown', nativeCandidates: 'unknown' };
+      } else {
+        firstMissing.known++;
+        if (firstMissing.known === 1) shared = witness;
+        else if (shared !== witness) different = true;
+        try {
+          qualification = ancestryQualification(diagnostics.get(witness));
+        } catch {
+          qualification = { reason: 'unknown', nativeCandidates: 'unknown' };
+        }
+      }
+      const group = qualifications.find(
+        (group) =>
+          group.reason === qualification.reason &&
+          group.nativeCandidates === qualification.nativeCandidates,
+      );
+      if (group) group.count++;
+      else qualifications.push({ ...qualification, count: 1 });
+    }
+    qualifications.sort(
+      (a, b) =>
+        ancestryReasons.indexOf(a.reason) - ancestryReasons.indexOf(b.reason) ||
+        ancestryNativeCounts.indexOf(a.nativeCandidates) -
+          ancestryNativeCounts.indexOf(b.nativeCandidates),
+    );
+    const allSame =
+      paths.structureMissing === 0
+        ? 'not-applicable'
+        : firstMissing.absent || firstMissing.unknown
+          ? 'unknown'
+          : !different;
+    const sameAsRetainedAmbiguous =
+      allSame === 'not-applicable' || allSame === false
+        ? 'not-applicable'
+        : allSame === 'unknown' || retainedAmbiguous.absent || retainedAmbiguous.unknown
+          ? 'unknown'
+          : retainedAmbiguous.count === 0
+            ? 'absent'
+            : retainedAmbiguous.count > 1
+              ? 'ambiguous'
+              : shared === ambiguousHost;
+    return {
+      retained: rows.length,
+      paths,
+      firstMissing,
+      qualifications,
+      allSame,
+      retainedAmbiguous,
+      sameAsRetainedAmbiguous,
+    };
+  } catch {
+    return undefined;
+  }
+}
+
 export interface PressGapDiagnostic {
+  ancestry?: AncestryGapSummary;
   category: 'missing-host-evidence' | 'incomplete-host-evidence' | 'unassociated-hosts';
   hostEvidencePresent: boolean;
   hostEvidenceComplete: boolean;
@@ -451,7 +693,177 @@ export interface PressGapDiagnostic {
   };
 }
 
+function ancestryCount(value: unknown): value is number {
+  return typeof value === 'number' && Number.isSafeInteger(value) && value >= 0 && value <= 8;
+}
+
+function projectAncestry(
+  value: unknown,
+  rows: NonNullable<PressGapDiagnostic['gapHosts']>['rows'],
+): AncestryGapSummary | undefined {
+  try {
+    if (!isRecord(value) || !ancestryCount(value.retained) || value.retained !== rows.length)
+      return undefined;
+    const paths = value.paths,
+      first = value.firstMissing,
+      ambiguous = value.retainedAmbiguous;
+    if (
+      !isRecord(paths) ||
+      !ancestryCount(paths.structureMissing) ||
+      !ancestryCount(paths.selfAnchorMissing) ||
+      !ancestryCount(paths.other) ||
+      !ancestryCount(paths.notEvaluated) ||
+      !ancestryCount(paths.absent) ||
+      !ancestryCount(paths.unknown) ||
+      !isRecord(first) ||
+      !ancestryCount(first.known) ||
+      !ancestryCount(first.absent) ||
+      !ancestryCount(first.unknown) ||
+      !isRecord(ambiguous) ||
+      !ancestryCount(ambiguous.count) ||
+      !ancestryCount(ambiguous.absent) ||
+      !ancestryCount(ambiguous.unknown) ||
+      !Array.isArray(value.qualifications) ||
+      value.qualifications.length > value.retained
+    )
+      return undefined;
+    const memberships = ancestryMembership(rows);
+    if (
+      !Object.entries(memberships.paths).every(([key, count]) => paths[key] === count) ||
+      !Object.entries(memberships.retainedAmbiguous).every(
+        ([key, count]) => ambiguous[key] === count,
+      ) ||
+      first.known + first.absent + first.unknown !== paths.structureMissing
+    )
+      return undefined;
+    const qualifications: AncestryQualification[] = [];
+    let previous = -1;
+    for (const group of value.qualifications) {
+      if (!isRecord(group) || !ancestryCount(group.count) || group.count === 0) return undefined;
+      const reason = ancestryReasons.find((code) => code === group.reason);
+      const nativeCandidates = ancestryNativeCounts.find((code) => code === group.nativeCandidates);
+      if (!reason || !nativeCandidates) return undefined;
+      const rank =
+        ancestryReasons.indexOf(reason) * ancestryNativeCounts.length +
+        ancestryNativeCounts.indexOf(nativeCandidates);
+      if (
+        rank <= previous ||
+        (reason === 'absent'
+          ? nativeCandidates !== 'absent'
+          : reason === 'unknown'
+            ? nativeCandidates !== 'unknown'
+            : reason === 'native-id-count'
+              ? nativeCandidates === 'not-applicable'
+              : nativeCandidates !== 'not-applicable')
+      )
+        return undefined;
+      previous = rank;
+      qualifications.push({ reason, nativeCandidates, count: group.count });
+    }
+    const countReason = (reason: AncestryQualification['reason']) =>
+      qualifications
+        .filter((group) => group.reason === reason)
+        .reduce((sum, group) => sum + group.count, 0);
+    if (
+      qualifications.reduce((sum, group) => sum + group.count, 0) !== paths.structureMissing ||
+      countReason('absent') < first.absent ||
+      countReason('unknown') < first.unknown
+    )
+      return undefined;
+    const allSame = value.allSame,
+      equality = value.sameAsRetainedAmbiguous;
+    if (typeof allSame !== 'boolean' && allSame !== 'unknown' && allSame !== 'not-applicable')
+      return undefined;
+    if (
+      typeof equality !== 'boolean' &&
+      equality !== 'unknown' &&
+      equality !== 'not-applicable' &&
+      equality !== 'absent' &&
+      equality !== 'ambiguous'
+    )
+      return undefined;
+    if (paths.structureMissing === 0) {
+      if (allSame !== 'not-applicable' || equality !== 'not-applicable') return undefined;
+    } else if (first.absent || first.unknown) {
+      if (allSame !== 'unknown' || equality !== 'unknown') return undefined;
+    } else {
+      if (typeof allSame !== 'boolean' || (paths.structureMissing === 1 && !allSame))
+        return undefined;
+      const expected = !allSame
+        ? 'not-applicable'
+        : ambiguous.absent || ambiguous.unknown
+          ? 'unknown'
+          : ambiguous.count === 0
+            ? 'absent'
+            : ambiguous.count > 1
+              ? 'ambiguous'
+              : undefined;
+      if (expected === undefined ? typeof equality !== 'boolean' : equality !== expected)
+        return undefined;
+    }
+    return {
+      retained: value.retained,
+      paths: {
+        structureMissing: paths.structureMissing,
+        selfAnchorMissing: paths.selfAnchorMissing,
+        other: paths.other,
+        notEvaluated: paths.notEvaluated,
+        absent: paths.absent,
+        unknown: paths.unknown,
+      },
+      firstMissing: { known: first.known, absent: first.absent, unknown: first.unknown },
+      qualifications,
+      allSame,
+      retainedAmbiguous: {
+        count: ambiguous.count,
+        absent: ambiguous.absent,
+        unknown: ambiguous.unknown,
+      },
+      sameAsRetainedAmbiguous: equality,
+    };
+  } catch {
+    return undefined;
+  }
+}
+
 export function projectPressGap(fact: PressGapDiagnostic): PressGapDiagnostic {
+  const gapHosts = fact.gapHosts
+    ? {
+        total: fact.gapHosts.total,
+        truncated: fact.gapHosts.truncated,
+        rows: fact.gapHosts.rows
+          .slice(0, 8)
+          .map(({ hostOrdinal, hostKind, capabilities, pressGap, association }) => ({
+            hostOrdinal,
+            hostKind,
+            capabilities: { press: capabilities.press, fill: capabilities.fill },
+            pressGap,
+            ...(association
+              ? {
+                  association: {
+                    identity: association.identity,
+                    nativeIdentityCandidateCount: association.nativeIdentityCandidateCount,
+                    compatibleCount: association.compatibleCount,
+                    sameFrameCount: association.sameFrameCount,
+                    ...(association.inputContainmentCount === undefined
+                      ? {}
+                      : { inputContainmentCount: association.inputContainmentCount }),
+                    presenceProofCount: association.presenceProofCount,
+                    ancestorPath: association.ancestorPath,
+                    collisions: association.collisions,
+                  },
+                }
+              : {}),
+          })),
+      }
+    : undefined;
+  let ancestry: AncestryGapSummary | undefined;
+  try {
+    if (fact.category === 'unassociated-hosts' && gapHosts)
+      ancestry = projectAncestry(fact.ancestry, gapHosts.rows);
+  } catch {
+    // A diagnostic projection cannot change refusal.
+  }
   return {
     category: fact.category,
     hostEvidencePresent: fact.hostEvidencePresent,
@@ -459,38 +871,8 @@ export function projectPressGap(fact: PressGapDiagnostic): PressGapDiagnostic {
     typographyComplete: fact.typographyComplete,
     nativePresenceAvailable: fact.nativePresenceAvailable,
     pressGapCount: fact.pressGapCount,
-    ...(fact.gapHosts
-      ? {
-          gapHosts: {
-            total: fact.gapHosts.total,
-            truncated: fact.gapHosts.truncated,
-            rows: fact.gapHosts.rows
-              .slice(0, 8)
-              .map(({ hostOrdinal, hostKind, capabilities, pressGap, association }) => ({
-                hostOrdinal,
-                hostKind,
-                capabilities: { press: capabilities.press, fill: capabilities.fill },
-                pressGap,
-                ...(association
-                  ? {
-                      association: {
-                        identity: association.identity,
-                        nativeIdentityCandidateCount: association.nativeIdentityCandidateCount,
-                        compatibleCount: association.compatibleCount,
-                        sameFrameCount: association.sameFrameCount,
-                        ...(association.inputContainmentCount === undefined
-                          ? {}
-                          : { inputContainmentCount: association.inputContainmentCount }),
-                        presenceProofCount: association.presenceProofCount,
-                        ancestorPath: association.ancestorPath,
-                        collisions: association.collisions,
-                      },
-                    }
-                  : {}),
-              })),
-          },
-        }
-      : {}),
+    ...(gapHosts ? { gapHosts } : {}),
+    ...(ancestry ? { ancestry } : {}),
   };
 }
 
@@ -591,7 +973,14 @@ export function join(
   const contradicted = frameContradictions(nodes);
   const chrome = scrollChromeNodes(nodes, presence);
   const associationDiagnostics = new Map<number, HostAssociationDiagnostic>();
-  const associations = associateHosts(nodes, reactHostEvidence, presence, associationDiagnostics);
+  const firstMissingAncestors = new Map<number, number>();
+  const associations = associateHosts(
+    nodes,
+    reactHostEvidence,
+    presence,
+    associationDiagnostics,
+    firstMissingAncestors,
+  );
   const associatedHosts = new Map(
     [...associations].map(([hostIndex, { nativeIndex }]) => [
       nativeIndex,
@@ -692,7 +1081,17 @@ export function join(
         typographyComplete: reactHostEvidence?.typography?.complete === true,
         nativePresenceAvailable: presence !== undefined,
         pressGapCount: gapCounts.pressGapCount,
-        ...(reactHostEvidence?.complete && gapHosts ? { gapHosts } : {}),
+        ...(reactHostEvidence?.complete && gapHosts
+          ? {
+              gapHosts,
+              ancestry: summarizeAncestry(
+                gapHosts.rows,
+                firstMissingAncestors,
+                associationDiagnostics,
+                reactHostEvidence.hosts.length,
+              ),
+            }
+          : {}),
       })
     : undefined;
   const diagnosticFacts = {

@@ -377,7 +377,212 @@ pub struct PressGapHosts {
     pub rows: Vec<PressGapHost>,
 }
 
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord)]
+#[serde(rename_all = "kebab-case")]
+pub enum AncestryReason {
+    HostIdAmbiguous,
+    NativeIdCount,
+    OutsideWindow,
+    WindowFrame,
+    IncompatibleType,
+    FrameMismatch,
+    Absent,
+    Unknown,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord)]
+#[serde(rename_all = "kebab-case")]
+pub enum AncestryNativeCandidates {
+    Zero,
+    Multiple,
+    Null,
+    Absent,
+    Unknown,
+    NotApplicable,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct AncestryQualification {
+    pub reason: AncestryReason,
+    pub native_candidates: AncestryNativeCandidates,
+    pub count: u8,
+}
+
+#[derive(Debug, Default, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct AncestryPaths {
+    pub structure_missing: u8,
+    pub self_anchor_missing: u8,
+    pub other: u8,
+    pub not_evaluated: u8,
+    pub absent: u8,
+    pub unknown: u8,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct AncestryFirstMissing {
+    pub known: u8,
+    pub absent: u8,
+    pub unknown: u8,
+}
+
+#[derive(Debug, Default, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct AncestryAmbiguous {
+    pub count: u8,
+    pub absent: u8,
+    pub unknown: u8,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "kebab-case")]
+pub enum AncestryAllSameStatus {
+    Unknown,
+    NotApplicable,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq)]
+#[serde(untagged)]
+pub enum AncestryAllSame {
+    Known(bool),
+    Status(AncestryAllSameStatus),
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "kebab-case")]
+pub enum AncestryEqualityStatus {
+    Unknown,
+    NotApplicable,
+    Absent,
+    Ambiguous,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq)]
+#[serde(untagged)]
+pub enum AncestryEquality {
+    Known(bool),
+    Status(AncestryEqualityStatus),
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct AncestryGapSummary {
+    pub retained: u8,
+    pub paths: AncestryPaths,
+    pub first_missing: AncestryFirstMissing,
+    pub qualifications: Vec<AncestryQualification>,
+    pub all_same: AncestryAllSame,
+    pub retained_ambiguous: AncestryAmbiguous,
+    pub same_as_retained_ambiguous: AncestryEquality,
+}
+
+impl AncestryGapSummary {
+    fn valid(&self, rows: &[PressGapHost]) -> bool {
+        use AncestryAllSame as Same;
+        use AncestryAllSameStatus as S;
+        use AncestryEquality as Equal;
+        use AncestryEqualityStatus as E;
+        use AncestryNativeCandidates as N;
+        use AncestryReason as R;
+        if rows.len() > 8 || usize::from(self.retained) != rows.len() {
+            return false;
+        }
+        let mut paths = AncestryPaths::default();
+        let mut ambiguous = AncestryAmbiguous::default();
+        for row in rows {
+            if let Some(association) = &row.association {
+                match association.ancestor_path {
+                    GapAncestorPath::AncestorStructureMissing => paths.structure_missing += 1,
+                    GapAncestorPath::SelfAnchorMissing => paths.self_anchor_missing += 1,
+                    GapAncestorPath::Valid | GapAncestorPath::AncestorPathMismatch => {
+                        paths.other += 1
+                    }
+                    GapAncestorPath::NotEvaluated => paths.not_evaluated += 1,
+                }
+                if association.identity == GapAssociationIdentity::HostIdAmbiguous {
+                    ambiguous.count += 1;
+                }
+            } else {
+                paths.absent += 1;
+                ambiguous.absent += 1;
+            }
+        }
+        let first = &self.first_missing;
+        if self.paths != paths
+            || self.retained_ambiguous != ambiguous
+            || [first.known, first.absent, first.unknown]
+                .iter()
+                .any(|n| *n > 8)
+            || u16::from(first.known) + u16::from(first.absent) + u16::from(first.unknown)
+                != u16::from(paths.structure_missing)
+            || self.qualifications.len() > rows.len()
+            || self.qualifications.iter().any(|group| {
+                group.count == 0
+                    || group.count > 8
+                    || match group.reason {
+                        R::Absent => group.native_candidates != N::Absent,
+                        R::Unknown => group.native_candidates != N::Unknown,
+                        R::NativeIdCount => group.native_candidates == N::NotApplicable,
+                        _ => group.native_candidates != N::NotApplicable,
+                    }
+            })
+            || !self.qualifications.windows(2).all(|pair| {
+                (pair[0].reason, pair[0].native_candidates)
+                    < (pair[1].reason, pair[1].native_candidates)
+            })
+            || self
+                .qualifications
+                .iter()
+                .map(|group| u16::from(group.count))
+                .sum::<u16>()
+                != u16::from(paths.structure_missing)
+        {
+            return false;
+        }
+        let count = |reason| {
+            self.qualifications
+                .iter()
+                .filter(|group| group.reason == reason)
+                .map(|group| u16::from(group.count))
+                .sum::<u16>()
+        };
+        if count(R::Absent) < u16::from(first.absent)
+            || count(R::Unknown) < u16::from(first.unknown)
+        {
+            return false;
+        }
+        if paths.structure_missing == 0 {
+            return self.all_same == Same::Status(S::NotApplicable)
+                && self.same_as_retained_ambiguous == Equal::Status(E::NotApplicable);
+        }
+        if first.absent > 0 || first.unknown > 0 {
+            return self.all_same == Same::Status(S::Unknown)
+                && self.same_as_retained_ambiguous == Equal::Status(E::Unknown);
+        }
+        match self.all_same {
+            Same::Known(false) => {
+                paths.structure_missing > 1
+                    && self.same_as_retained_ambiguous == Equal::Status(E::NotApplicable)
+            }
+            Same::Known(true) => {
+                if ambiguous.absent > 0 || ambiguous.unknown > 0 {
+                    self.same_as_retained_ambiguous == Equal::Status(E::Unknown)
+                } else if ambiguous.count == 0 {
+                    self.same_as_retained_ambiguous == Equal::Status(E::Absent)
+                } else if ambiguous.count > 1 {
+                    self.same_as_retained_ambiguous == Equal::Status(E::Ambiguous)
+                } else {
+                    matches!(self.same_as_retained_ambiguous, Equal::Known(_))
+                }
+            }
+            Same::Status(_) => false,
+        }
+    }
+}
+
+#[derive(Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct PressGapDiagnostic {
     pub category: PressGapCategory,
@@ -388,6 +593,22 @@ pub struct PressGapDiagnostic {
     pub press_gap_count: u32,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub gap_hosts: Option<PressGapHosts>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ancestry: Option<AncestryGapSummary>,
+}
+
+impl std::fmt::Debug for PressGapDiagnostic {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("PressGapDiagnostic")
+            .field("category", &self.category)
+            .field("host_evidence_present", &self.host_evidence_present)
+            .field("host_evidence_complete", &self.host_evidence_complete)
+            .field("typography_complete", &self.typography_complete)
+            .field("native_presence_available", &self.native_presence_available)
+            .field("press_gap_count", &self.press_gap_count)
+            .field("gap_hosts", &self.gap_hosts)
+            .finish()
+    }
 }
 
 impl PressGapDiagnostic {
@@ -423,6 +644,11 @@ impl PressGapDiagnostic {
                         .all(|pair| pair[0].host_ordinal < pair[1].host_ordinal)
                     && hosts.rows.iter().filter(|host| host.press_gap).count()
                         <= self.press_gap_count as usize
+            })
+            && self.ancestry.as_ref().is_none_or(|summary| {
+                self.gap_hosts
+                    .as_ref()
+                    .is_some_and(|hosts| summary.valid(&hosts.rows))
             })
     }
 }

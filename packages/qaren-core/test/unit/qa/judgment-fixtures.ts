@@ -145,6 +145,7 @@ export function joinedGapScreen(
   category: 'missing-host-evidence' | 'incomplete-host-evidence' | 'unassociated-hosts',
   presence: boolean | 'unknown' = true,
   typographyComplete = true,
+  ancestry?: 'shared' | 'distinct' | 'retained' | 'other' | 'ambiguous',
 ): Screen {
   const nodes: NativeNode[] = [
     { ref: '@app', type: 'Application', rect: { x: 0, y: 0, width: 400, height: 800 } },
@@ -192,6 +193,43 @@ export function joinedGapScreen(
             })),
           },
         };
+  if (ancestry && evidence) {
+    const paired = ancestry !== 'shared';
+    const ambiguous = ancestry !== 'shared' && ancestry !== 'distinct';
+    const parentCount = paired ? 2 : 1;
+    const parents = Array.from({ length: parentCount }, (_, i) => ({
+      testID: 'private-ancestor-canary-' + (ambiguous ? 0 : i),
+      hidden: !ambiguous || (i === 1 && ancestry !== 'ambiguous'),
+      role: null,
+      roleSource: 'none',
+      capabilities: { press: ambiguous && (i === 0 || ancestry === 'ambiguous'), fill: false },
+    }));
+    const children = evidence.hosts;
+    evidence.hosts = [...parents, ...children];
+    evidence.typography!.nodes = evidence.hosts.map((_, hostIndex) => ({
+      hostIndex,
+      parentHostIndex:
+        hostIndex < parentCount
+          ? null
+          : ancestry === 'other'
+            ? 1
+            : ancestry === 'distinct'
+              ? (hostIndex - parentCount) % 2
+              : 0,
+      rootIndex: 0,
+      hostType: 'RCTView',
+      rect: { x: 20, y: 100, width: 100, height: 40 },
+      text: { kind: 'none' },
+    }));
+    for (const child of children)
+      nodes.push({
+        ref: '@private-child-' + nodes.length,
+        type: 'Other',
+        parentIndex: 1,
+        identifier: child.testID,
+        rect: { x: 20, y: 100, width: 100, height: 40 },
+      });
+  }
   const native: NativePresence | 'unknown' | undefined =
     presence === true
       ? {
