@@ -1161,9 +1161,12 @@ holder is reclaimed only through that run's cleanup; a live or unprovable holder
 refuses `DEVICE_BUSY`. Recover a retained run with `qaren cleanup <run-id>`;
 do not delete locks to bypass unresolved ownership.
 
-The iOS runner's XCTest result bundles under its DerivedData `Logs/Test` are
-removed when the runner stops and before it starts, because XCTest's own
+The iOS runner's XCTest result bundles under `Logs/Test` in both its local
+DerivedData and current-version prebuilt cache are removed after successful
+runner stop or reap and before a new runner launch, because XCTest's own
 activity log records the text of fields it queries, including typed values.
+`Build/Products` is preserved for warm launches. If the core is hard-killed,
+bundles can remain on disk until the next runner launch performs this cleanup.
 
 ### Saved blocks
 
