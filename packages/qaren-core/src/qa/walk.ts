@@ -60,7 +60,7 @@ import {
   admit,
   awaitBundleReady,
   createBundleReload,
-  formatAdmissionRefusal,
+  logAdmissionRefusal,
   metroDevicePin,
 } from './admission.js';
 import { type ActResult, type WalkerDeps, loginBlock, runPlan } from './walker.js';
@@ -368,13 +368,7 @@ async function openSession(
   const remainingMs = () => Math.max(0, request.walkBudgetMs - now() - 1000);
   let attachStage: 'wait_targets' | 'connect_exact' | undefined;
   const logRefusal = (error: unknown): never => {
-    if (error instanceof HandlerError && error.meta) {
-      try {
-        log(`admission-refusal=${formatAdmissionRefusal(error.meta, attachStage)}`);
-      } catch {
-        // Diagnostics cannot change the refusal.
-      }
-    }
+    logAdmissionRefusal(error, attachStage, log);
     throw error;
   };
   const proof = await cdp.withAttachDeadline(performance.now() + remainingMs(), () =>

@@ -8,10 +8,12 @@ import {
   awaitBundleReady,
   createBundleReload,
   formatAdmissionRefusal,
+  logAdmissionRefusal,
   metroDevicePin,
   type AdmissionSteps,
 } from '../../../dist/qa/admission.js';
 import { REACT_READY_PROBE_JS } from '../../../dist/injected-helpers.js';
+import { HandlerError } from '../../../dist/qa/adapt.js';
 import { runInNewContext } from 'node:vm';
 import { setImmediate as nextTurn } from 'node:timers/promises';
 import { syncBuiltinESMExports } from 'node:module';
@@ -1126,4 +1128,35 @@ test('the admission refusal line never copies a value outside its allowlist', ()
     formatAdmissionRefusal(undefined),
     JSON.stringify(JSON.parse(formatAdmissionRefusal({}))),
   );
+});
+
+test('a refused admission writes exactly one value-free refusal line, and other errors write none', async () => {
+  const { stop, steps } = harness({
+    attach: async () => {
+      throw new TargetSelectionError(
+        'PLATFORM_TARGET_NOT_FOUND',
+        'PLATFORM_TARGET_NOT_FOUND: device="PRIVATE-phone"',
+        [],
+        SUMMARY,
+      );
+    },
+  });
+  const refusal = await refusalOf(admit(steps, stop));
+  const lines: string[] = [];
+  logAdmissionRefusal(refusal, 'connect_exact', (line) => lines.push(line));
+  assert.equal(lines.length, 1);
+  assert.match(lines[0]!, /^admission-refusal=\{/);
+  const record = JSON.parse(lines[0]!.slice('admission-refusal='.length));
+  assert.equal(record.inner, 'target_selection_platform_not_found');
+  assert.equal(record.attachStage, 'connect_exact');
+  assert.ok(!lines[0]!.includes('PRIVATE'));
+
+  logAdmissionRefusal(new Error('no target'), 'connect_exact', (line) => lines.push(line));
+  logAdmissionRefusal(new HandlerError('METRO_ORIGIN_MISMATCH', 'x'), undefined, (line) =>
+    lines.push(line),
+  );
+  assert.equal(lines.length, 1);
+  logAdmissionRefusal(refusal, undefined, () => {
+    throw new Error('stderr closed');
+  });
 });

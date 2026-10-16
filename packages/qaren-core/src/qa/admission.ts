@@ -166,6 +166,19 @@ export function formatAdmissionRefusal(
   return JSON.stringify(record);
 }
 
+export function logAdmissionRefusal(
+  error: unknown,
+  attachStage: 'wait_targets' | 'connect_exact' | undefined,
+  log: (message: string) => void,
+): void {
+  if (!(error instanceof HandlerError && error.meta)) return;
+  try {
+    log(`admission-refusal=${formatAdmissionRefusal(error.meta, attachStage)}`);
+  } catch {
+    // Diagnostics cannot change the refusal.
+  }
+}
+
 function transientReadinessFailure(error: unknown): boolean {
   return (
     error instanceof TargetReadinessTimeoutError ||
