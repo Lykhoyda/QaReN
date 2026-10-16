@@ -10,6 +10,7 @@ import {
   walker as fixtureWalker,
 } from './judgment-fixtures.ts';
 import { RunInputs, withInputs } from '../../../dist/qa/inputs.js';
+import { MASK, ObservedPrivacy } from '../../../dist/qa/privacy.js';
 import { renderReason } from '../../../dist/qa/untrusted.js';
 import type { WalkSequence } from '../../../dist/qa/walker.js';
 import { runPlan, walkBlock } from '../../../dist/qa/walker.js';
@@ -850,4 +851,17 @@ test('a slot fill registers its dispatched identifier before the fill runs', asy
     await withInputs(inputs, () => walkBlock(block, f.deps));
     assert.deepEqual(events, [`echo ${expected}`, 'fill']);
   }
+});
+
+test('ledger block names hide input values whole, not their fragments', async () => {
+  const value = 'qa-synth-1234@example.test';
+  const f = fake([screen(['A']), screen(['B']), screen(['C'])]);
+  f.deps.privacy = new ObservedPrivacy();
+  f.deps.privacy.classifyInputs([value]);
+  const parsed = parsePlan(`### Example settings\n1. Tap "A"\n### ${value}\n1. Tap "B"\n`);
+  const ledger = await runPlan(parsed.blocks!, f.deps);
+  assert.deepEqual(
+    ledger.blocks.map((b) => b.key),
+    ['example-settings', MASK],
+  );
 });

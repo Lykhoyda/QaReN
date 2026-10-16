@@ -2087,7 +2087,7 @@ export async function runPlan(
     const pending: { index: number; write: () => BlockResult }[] = [];
     // The slug stays the operational file name (blocksWritten); a display copy that hits is withheld whole.
     const display = (slug: string): string => {
-      const values = privacy.privateSet();
+      const values = privacy.privateSet('persisted');
       const origins = deps.login?.block ? [...blocks, deps.login.block] : blocks;
       const privateTitle = origins.some(
         (block) => block.slug === slug && matchPrivate(block.title, values, 'identifier').hit,
