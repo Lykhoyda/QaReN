@@ -498,7 +498,7 @@ export function targetEvidence(target: Target, screen: Screen): LiteralVerdict {
         refuse: matches.length > 1 ? 'TARGET_AMBIGUOUS' : 'REPLAY_SELECTOR',
         reason: `${matches.length} identities match the stored id "${target.quoted}"`,
       });
-    return !matches[0].offscreen ? 'pass' : 'fail';
+    return !matches[0].offscreen && !centreCovered(matches[0], screen) ? 'pass' : 'fail';
   }
   if (!target.exact) {
     const ids = exactIdentities(
@@ -506,7 +506,8 @@ export function targetEvidence(target: Target, screen: Screen): LiteralVerdict {
       { quoted: target.quoted, phrase: target.quoted, exact: 'id' },
       'wait',
     );
-    if (ids.length === 1 && !ids[0].element.offscreen) return 'pass';
+    if (ids.length === 1 && !ids[0].element.offscreen && !centreCovered(ids[0].element, screen))
+      return 'pass';
   }
   const text = literalEvidence(screen, target.quoted, 'equals').verdict;
   if (target.exact === 'text') {
