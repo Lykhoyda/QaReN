@@ -69,7 +69,18 @@ export async function waitForSettle(opts: WaitForSettleOpts): Promise<SettleOutc
       // false immediately when the frontmost package differs (e.g. after a back
       // that left the app). Benign: nothing of ours left to settle.
       await probes.sleep(WINDOW_GATE_SETTLED_SLEEP_MS);
-      const change = await postSettleChange(probes, initialSnapshotHash);
+      let change = await postSettleChange(probes, initialSnapshotHash);
+      // A busy JS thread can commit the effect after the 100ms gate: before
+      // reporting "no change", wait once more for a window update inside the
+      // remaining budget (the runner clamps the probe to 0..2000ms).
+      const reprobeMs = Math.min(remaining(), 2000);
+      if (change.hierarchyChanged === false && reprobeMs > 0) {
+        const lateUpdate = await safeProbe(() => probes.isWindowUpdating!(reprobeMs));
+        if (lateUpdate === true) {
+          const late = await postSettleChange(probes, initialSnapshotHash);
+          if (late.hierarchyChanged !== undefined) change = late;
+        }
+      }
       return { settled: true, method: 'window-gate', ms: elapsed(), ...change };
     }
     // updating or probe failure → pay for snapshot polling below
@@ -115,7 +126,7 @@ async function safeProbe<T>(fn: () => Promise<T>): Promise<T | null> {
   }
 }
 
-// The window gate needs one snapshot when the caller requests change detection.
+// Only callers with a baseline pay for a hierarchy comparison; the Android gate owns late re-probes.
 async function postSettleChange(
   probes: SettleProbes,
   initialSnapshotHash: string | undefined,

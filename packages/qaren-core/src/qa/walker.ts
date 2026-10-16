@@ -404,21 +404,40 @@ export async function walkBlock(
       // Diagnostics cannot change a decision or dispatch outcome.
     }
   };
-  // Scroll momentum outlives the drag; dispatching on a moving frame taps its stale centre.
-  // Compare native frame values only: runner key order varies and React-only elements have no frame.
+  // Native frames prove rest before dispatching on a scrolled target's centre.
   const settledCapture = async (item: Exclude<Item, { kind: 'check' }>): Promise<Observation> => {
-    const geometry = (screen: Screen): string =>
-      JSON.stringify(
-        screen.elements.flatMap((e) => {
-          const frame = elementFrame(e);
-          return frame ? [[frame.x, frame.y, frame.width, frame.height]] : [];
-        }),
-      );
+    const geometry = (screen: Screen): number[][] =>
+      screen.elements.flatMap((e) => {
+        const frame = elementFrame(e);
+        return frame ? [[frame.x, frame.y, frame.width, frame.height]] : [];
+      });
     let observation = await capture(item);
     for (let readback = 0; readback < SCROLL_SETTLE_READBACKS; readback += 1) {
       usable(observation, item);
       const next = await capture(item);
-      if (geometry(next.screen) === geometry(observation.screen)) {
+      const before = geometry(observation.screen);
+      const after = geometry(next.screen);
+      if (deps.timing) {
+        const previousFrames = new Set(before.map((frame) => frame.join(',')));
+        const currentFrames = new Set(after.map((frame) => frame.join(',')));
+        const moved =
+          [...previousFrames].filter((frame) => !currentFrames.has(frame)).length +
+          [...currentFrames].filter((frame) => !previousFrames.has(frame)).length;
+        const maxDelta = observation.screen.elements.reduce((max, element) => {
+          const previousMatches = observation.screen.elements.filter((candidate) =>
+            sameIdentity(candidate, element),
+          );
+          if (previousMatches.length !== 1) return max;
+          const previous = elementFrame(element);
+          const matches = next.screen.elements.filter((candidate) =>
+            sameIdentity(candidate, element),
+          );
+          const current = matches.length === 1 ? elementFrame(matches[0]) : undefined;
+          return previous && current ? Math.max(max, Math.abs(current.y - previous.y)) : max;
+        }, 0);
+        metric('settle-readback', next, { moved, maxDelta });
+      }
+      if (JSON.stringify(after) === JSON.stringify(before)) {
         sequence.momentum = false;
         return next;
       }
@@ -871,24 +890,34 @@ export async function walkBlock(
       quoted,
       target.element.testID ?? target.element.label,
     );
-    if (item.input === undefined) privateFills.push(item.line);
-    let tap: ActResult;
-    try {
-      tap = await mutate(item, before, (context) => deps.press(target.element.ref, context));
-    } catch (error) {
-      if (isAbort(error)) throw error;
-      if (error instanceof EvidenceExpired)
-        return nothingTyped(`the evidence expired before tapping "${quoted}"`, before.screen);
-      throw error;
-    }
-    if (!tap.ok && tap.mutation === 'none' && tap.error?.startsWith('FOCUS_TARGET_OCCLUDED:')) {
+    if (item.input === undefined && !privateFills.includes(item.line)) privateFills.push(item.line);
+    let tap: ActResult | undefined;
+    if (!centreCovered(target.element, before.screen))
+      try {
+        tap = await mutate(item, before, (context) => deps.press(target.element.ref, context));
+      } catch (error) {
+        if (isAbort(error)) throw error;
+        if (error instanceof EvidenceExpired)
+          return nothingTyped(`the evidence expired before tapping "${quoted}"`, before.screen);
+        throw error;
+      }
+    if (
+      !tap ||
+      (!tap.ok && tap.mutation === 'none' && tap.error?.startsWith('FOCUS_TARGET_OCCLUDED:'))
+    ) {
       if (scrolled)
         return nothingTyped(
-          `${tap.error}; "${quoted}" stayed off screen after one scroll`,
+          tap
+            ? `${tap.error}; "${quoted}" stayed off screen after one scroll`
+            : `"${quoted}" stayed off screen after one scroll: its centre is past the visible area or under the keyboard`,
           before.screen,
         );
       const scroll = await mutate(item, before, (context) =>
-        deps.scroll(clearanceScroll(target.element), context),
+        deps.scroll(
+          clearanceScroll(target.element),
+          context,
+          keyboardClearance(target.element, before.screen),
+        ),
       );
       const afterScroll = await settledCapture(item);
       usable(afterScroll, item);

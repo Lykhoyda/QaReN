@@ -509,8 +509,9 @@ a multi-gesture command reports mutation `possible` because earlier gestures
 may already have run. Take a fresh snapshot of the alert and explicitly tap
 the intended button.
 
-Before dispatch, the walker also treats a press or fill target whose centre lies
-outside its trusted clipping viewport or covered by an observed keyboard frame
+Before dispatch, the walker also treats a press or fill target, including a
+keyboard-fallback wrapper before its tap, whose centre lies outside its trusted
+clipping viewport or covered by an observed keyboard frame
 (unless the keyboard is proven hidden) as covered. Keyboard-owned targets use
 the existing explicit tap path and remain subject to trusted clipping and native
 identity guards. An explicit key press performs its normal action, not guaranteed
@@ -519,8 +520,17 @@ screen preserved before treating the press as clearance. Ordinary covered conten
 uses the same recovery as a native occlusion refusal.
 The walker handles this refusal with one directional scroll: down from the
 lower half of the effective viewport, up from the upper half. Scroll bands stay
-above a visible keyboard. It then requires a unique rebind to the refused
-target's testID and kind before retrying, including keyboard-fallback wrapper
+above a visible keyboard. On both iOS and Android, a target whose centre is
+covered by the observed keyboard gets a scroll sized to move that centre toward
+the middle of the band above the keyboard, capped to 60% of that band's height.
+Scrolls without keyboard clearance keep the fixed amount of `0.6`.
+Successful iOS fast-runner scrolls now run the same bounded settle wait as taps
+before returning, using snapshot equality. Results
+include `meta.settle` and `meta.timings_ms.settle`; a timeout reports unsettled
+rather than proving the target safe. `RN_SETTLE=0` or `false` skips this wait,
+its probes and metadata, but does not disable the walker's frame guard below.
+It then requires a unique rebind to the refused target's testID and kind before
+retrying, including keyboard-fallback wrapper
 taps. A label-only target cannot rebind after scrolling; a missing or nonunique
 identity refuses `TARGET_NOT_FOUND` with “stayed off screen after one scroll”.
 After scrolling to resolve or uncover a press or fill target, or after a scroll
@@ -529,6 +539,10 @@ agreeing consecutive frame readbacks within the existing bounded readback
 budget; otherwise `SCROLL_UNSETTLED`
 refuses without another dispatch or recovery. Keyboard-fallback focus readbacks
 use the same settlement check.
+When timing observation is enabled, `settle-readback` metrics report `moved` as
+the symmetric difference between frame sets and `maxDelta` as the largest
+vertical change among identities unique in both captures. The
+[readback implementation](../qaren-core/src/qa/walker.ts) owns these diagnostics.
 A second occlusion fails with that same off-screen explanation; wrapper fallback
 reports that nothing was typed. This refusal does not become
 `ACTION_OUTCOME_UNCERTAIN`. Checks and waits gain only the keyboard rule below.
@@ -781,8 +795,14 @@ occlusion evidence: see [Limitations](#limitations-recorded-not-papered-over).
 Quoted and phrase target resolution scrolls up when the target is wholly above
 its effective trusted clipping viewport, and down otherwise; without a known
 clip, the boundary remains screen y=0. Quoted scroll-until targets use that
-viewport when exactly one offscreen identity matches; otherwise they retain
-the requested direction.
+viewport when exactly one offscreen identity matches. A target wholly above
+the viewport scrolls up; one wholly below scrolls down. When its frame overlaps
+the viewport but it is reported not visible, as with an Android heading under
+the status bar, scrolling instead moves toward revealing it: up when its centre
+is above the viewport's midpoint, down when at or below it, regardless of the
+requested direction. With no single matching identity, an already visible
+target or no known viewport, the requested direction is retained. See the
+[scroll-until direction regressions](../qaren-core/test/unit/qa/scroll-until-direction.test.ts).
 
 Waits poll unresolved text as not yet present and end with `VISIBILITY_UNSURE`
 when the final evidence remains unsure. A quoted wait with at least two definite
@@ -1034,6 +1054,14 @@ That budget is shared with launch readiness; retries do not reset it. Each call
 keeps its existing timeout, capped by the remaining budget, and cancellation
 preempts retries. The receipt records every attempt's outcome and duration;
 readiness still requires the existing Metro and app-process probes.
+The cached iOS dev-client install shares that budget, which starts before the
+install. The owned `simctl install` gets the remaining preparation time instead
+of a fixed 120-second limit. After a timeout, the installed app container is
+accepted when its content hash equals the cached artifact's (`install_proof`);
+otherwise the install is re-issued only if preparation time remains. A definite
+install error fails immediately; an unproven install with a spent budget fails
+with `ARTIFACT_INSTALL_FAILED`. For a timeout, keep the cached artifact, clean up
+the run and retry as directed by `next_action`.
 Host load is diagnostic only. Other
 manifest and launch errors remain `BUILD_FAILED`. Cleanup retained resources
 before retrying.
