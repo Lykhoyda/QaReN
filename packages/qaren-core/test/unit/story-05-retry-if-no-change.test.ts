@@ -78,6 +78,32 @@ test('uncertain Android effect fails after one possible dispatch and never re-ac
   assert.equal(envelope.meta.tapRetried, undefined);
 });
 
+test('Android tap drawn after the window gate is verified by the re-probe, not reported unverified', async () => {
+  let gateCalls = 0;
+  let hashCalls = 0;
+  const result = await settleWithRetryIfNoChange(
+    okResult({ tapped: true }),
+    async () => okResult({ tapped: true }),
+    { ...androidContext, initialSnapshotHash: 'pre-tap' },
+    policy,
+    {
+      enabled: () => true,
+      capabilities: () => ['WINDOW_UPDATE'],
+      probes: () => ({
+        isWindowUpdating: async () => gateCalls++ > 0,
+        snapshotHash: async () => (hashCalls++ === 0 ? 'pre-tap' : 'tab-switched'),
+        sleep: async () => {},
+        now: () => 0,
+      }),
+    },
+  );
+
+  assert.equal(result.isError, undefined);
+  assert.equal(parse(result).ok, true);
+  assert.equal(parse(result).meta.settle.hierarchyChanged, true);
+  assert.equal(gateCalls, 2);
+});
+
 test('unavailable Android effect probe fails after one possible dispatch without replay', async () => {
   let redispatches = 0;
   const result = await settleWithRetryIfNoChange(
