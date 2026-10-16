@@ -748,12 +748,31 @@ container echoes, non-content wrappers, images and system scroll-bar labels
 contribute no literal evidence. A supplied frame must have positive width and
 height to contribute literal evidence; a missing frame alone does not exclude
 otherwise eligible text. This rule does not change action eligibility.
+
+On Android API 28 and later, the runner exports `heading: true` when
+`AccessibilityNodeInfo.isHeading()` is true. The screen join treats an otherwise
+`other` node with that fact as `text`, so visible React Native
+`<Text accessibilityRole="header">` content can satisfy a literal check even
+when its native class is `android.view.View`. Already typed controls keep their
+kind. Earlier Android APIs omit the heading fact; other roles mapped to
+`android.view.View` receive no special treatment. This fact does not populate
+the heading evidence used by phrase checks.
+
 A visible, hittable native `Other` element with
 a label and no accessibility text descendant contributes its merged label;
 this also admits an icon-only control's explicit label. A literal check passing
 through that contribution records `matched an accessibility label` in the ledger.
 Quoted waits and scroll-until targets also accept a unique visible testID as
 identity evidence, independently of literal text.
+
+When a literal check fails and a node's label contains the plan's literal, the
+failure can explain why that node did not count: `not-visible` means it was
+reported not visible to the user or was outside the viewport;
+`not-literal-kind` means its kind was `other`. If several nodes match, the
+explanation prefers hidden literal text, then a visible `other` node, then a
+hidden `other` node. The explanation repeats only the plan's literal, never
+the rest of the node's label. An absent match or uncertain literal evidence
+adds no near-miss explanation.
 
 The [native geometry model](../qaren-core/src/qa/native-presence.ts) clips nodes
 on both axes against the Application screen and trusted Window, ScrollView,
