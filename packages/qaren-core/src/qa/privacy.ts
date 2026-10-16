@@ -189,7 +189,7 @@ export function redactEvidence(
   return privacy.redact(text);
 }
 
-export type Provenance = 'typed' | 'observed' | 'concealed' | 'secret' | 'code';
+export type Provenance = 'typed' | 'observed' | 'concealed' | 'secret' | 'code' | 'input';
 
 export interface PrivateValue {
   text: string;
@@ -233,8 +233,17 @@ export function matchPrivate(
   const rules = set.values
     .flatMap((value) => {
       const length = chars(value.text.trim());
-      if (length < SHORT && value.provenance !== 'secret' && value.provenance !== 'code') return [];
-      const patterns = forms(value.text).map((form) =>
+      if (
+        length < SHORT &&
+        value.provenance !== 'secret' &&
+        value.provenance !== 'code' &&
+        value.provenance !== 'input'
+      )
+        return [];
+      const candidates = forms(value.text).flatMap((form) =>
+        value.provenance === 'input' ? [form, JSON.stringify(form).slice(1, -1)] : [form],
+      );
+      const patterns = [...new Set(candidates)].map((form) =>
         value.provenance === 'code' || (value.provenance === 'secret' && length === 1)
           ? whole(escape(form))
           : escape(form),
@@ -622,6 +631,7 @@ export function formatSensitivePixels(
 }
 
 export class ObservedPrivacy {
+  private readonly inputValues = new Set<string>();
   private readonly observed = new Set<string>();
   private readonly concealed = new Set<string>();
   private readonly secret = new Set<string>();
@@ -643,6 +653,26 @@ export class ObservedPrivacy {
   // Plan values known before the walk (fills, a configured login block) are typed before anything streams.
   classify(values: readonly string[]): void {
     this.preclassified.push(...values.filter(Boolean));
+  }
+
+  classifyInputs(values: readonly string[]): void {
+    values.filter(Boolean).forEach((value) => this.inputValues.add(value));
+    if (this.inputValues.size) this.mark();
+  }
+
+  assertInputHashSafe(text: string): boolean {
+    return !matchPrivate(
+      text,
+      {
+        values: [...this.inputValues].flatMap((value) =>
+          forms(value)
+            .flatMap((form) => [form, JSON.stringify(form).slice(1, -1)])
+            .map((text) => ({ text, provenance: 'input' as const })),
+        ),
+        fragments: [...this.inputValues],
+      },
+      'persisted',
+    ).hit;
   }
 
   observe(screen: Screen): void {
@@ -757,12 +787,16 @@ export class ObservedPrivacy {
     const tagged = (values: Iterable<string>, provenance: Provenance): PrivateValue[] =>
       [...new Set(values)].filter(Boolean).map((text) => ({ text, provenance }));
     return {
-      fragments: [...this.filledValues].filter(
-        (value) =>
-          /^\d{3,}$/u.test(value.replace(new RegExp(DIGIT_GAP, 'gu'), '')) ||
-          this.secret.has(value),
-      ),
+      fragments: [
+        ...this.inputValues,
+        ...[...this.filledValues].filter(
+          (value) =>
+            /^\d{3,}$/u.test(value.replace(new RegExp(DIGIT_GAP, 'gu'), '')) ||
+            this.secret.has(value),
+        ),
+      ],
       values: [
+        ...tagged(this.inputValues, 'input'),
         ...tagged(this.provenCodes, 'code'),
         ...tagged(this.secret, 'secret'),
         ...tagged(this.concealed, 'concealed'),
@@ -773,7 +807,7 @@ export class ObservedPrivacy {
   }
 
   modelValues(): string[] {
-    return [...this.typed, ...this.preclassified, ...this.observed];
+    return [...this.inputValues, ...this.typed, ...this.preclassified, ...this.observed];
   }
 
   maskForModel(values: readonly string[], source: readonly string[]): ModelMask {

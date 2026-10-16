@@ -14,6 +14,7 @@ Refusals exit `4` and mean the run could not start or could not decide; failures
 | Code                       | What happened                                                    | What to do                                                                                  |
 | -------------------------- | ---------------------------------------------------------------- | ------------------------------------------------------------------------------------------- |
 | `PLAN_UNPARSEABLE`         | A plan line has no step or check the grammar knows               | Fix each listed line; see [Write a plan](../plans/)                              |
+| `PLAN_INPUT_MISSING`       | A runtime input is unset or empty, or a PR login block names an undeclared one | Set each listed `QAREN_INPUT_<NAME>`; see [Runtime inputs](../plans/#runtime-inputs)       |
 | `JEV_UNREACHABLE`          | The plan needs Jev and the readiness probe did not succeed       | Set a valid `TYPESAFE_API_KEY`, or quote every target and `✓` line                          |
 | `JEV_AUTH_FAILED`          | Jev rejected the key                                             | Check `TYPESAFE_API_KEY`                                                                    |
 | `SCENARIO_UNREADABLE`      | `.qaren/config.yaml` cannot be read                              | Create it with at least `appId`                                                             |

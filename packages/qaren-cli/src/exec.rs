@@ -129,6 +129,9 @@ impl CmdOutput {
     }
 
     pub fn summary(&self) -> String {
+        if crate::redact::private_output_mode() {
+            return "[private output withheld]".into();
+        }
         if self.timed_out {
             return format!("timed out after {}ms", self.duration_ms);
         }
@@ -480,6 +483,7 @@ impl Runner for RealRunner {
             if let Some(reason) = self.cancellation() {
                 return Err(std::io::Error::new(std::io::ErrorKind::Interrupted, reason));
             }
+            crate::redact::scrub_input_env(&mut cmd);
             let child = cmd.spawn()?;
             let pid = child.id() as i32;
             self.logs.push(drain);
@@ -548,6 +552,7 @@ impl Runner for RealRunner {
             if let Some(reason) = self.cancellation() {
                 return Err(std::io::Error::new(std::io::ErrorKind::Interrupted, reason));
             }
+            crate::redact::scrub_input_env(&mut cmd);
             let mut child = cmd.spawn()?;
             let stdin = child.stdin.take().expect("stdin is piped");
             let stdout = child.stdout.take().expect("stdout is piped");
@@ -667,6 +672,7 @@ fn run_captured(
     if let Some(reason) = cancellation() {
         return Err(std::io::Error::new(std::io::ErrorKind::Interrupted, reason));
     }
+    crate::redact::scrub_input_env(&mut cmd);
     let mut child = cmd.spawn()?;
     drop(cmd);
     let mut out = Vec::new();
@@ -736,11 +742,12 @@ fn run_captured(
 // The child is its own group leader, so -pid addresses the whole group.
 fn kill_group_and_reap(child: &mut std::process::Child) {
     let pid = child.id() as i32;
-    let _ = Command::new("/bin/kill")
-        .args(["-9", "--", &format!("-{pid}")])
+    let mut kill = Command::new("/bin/kill");
+    kill.args(["-9", "--", &format!("-{pid}")])
         .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .status();
+        .stderr(Stdio::null());
+    crate::redact::scrub_input_env(&mut kill);
+    let _ = kill.status();
     let _ = child.kill();
     let reap_deadline = Instant::now() + Duration::from_secs(5);
     while Instant::now() < reap_deadline {

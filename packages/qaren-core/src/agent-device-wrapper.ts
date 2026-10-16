@@ -1,3 +1,5 @@
+import { throwIfInputPrivacyRefused } from './qa/inputs.js';
+import { throwIfCancelled } from './domain/cancellation.js';
 import { unlinkSync, rmSync } from 'node:fs';
 import { QaDispatchError, type QaDispatchContext } from './domain/qa-dispatch.js';
 import type { TimingContext } from './qa/timing.js';
@@ -1539,6 +1541,8 @@ export async function settleAfterMutationWithOutcome(
     };
   } catch {
     invalidateLastSnapshotHash();
+    throwIfInputPrivacyRefused();
+    throwIfCancelled();
     return { result, outcome: null };
   }
 }
@@ -1667,6 +1671,8 @@ export async function establishInteractionBaseline(
         : settle.buildAndroidProbes(ctx.appId, ctx.qaContext);
     return (await probes.snapshotHash()) ?? undefined;
   } catch {
+    throwIfInputPrivacyRefused();
+    throwIfCancelled();
     return undefined;
   }
 }

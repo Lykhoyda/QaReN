@@ -1,3 +1,4 @@
+import { fillText } from './inputs.js';
 import type { Check, Step, Target } from './plan.js';
 import type { Selector } from './ledger.js';
 import { hostPath } from './host-association.js';
@@ -877,7 +878,7 @@ export async function resolveTarget(step: Step, screen: Screen, judge: Judge): P
     judge,
     undefined,
     { ...step, line: 0 },
-    step.kind === 'fill' ? [step.text] : [],
+    step.kind === 'fill' ? [fillText(step)] : [],
   );
   return decision.target ?? { refuse: 'NO_TARGET', reason: 'this step has no target to resolve' };
 }

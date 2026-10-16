@@ -1,3 +1,4 @@
+import { currentInputs, InputPrivacyRefusal } from './inputs.js';
 import type { ToolResult } from '../utils.js';
 
 export class HandlerError extends Error {
@@ -67,6 +68,14 @@ export function fillEvidence(
 }
 
 export function describeError(error: unknown): { code: string; message: string } {
+  if (error instanceof InputPrivacyRefusal) return { code: 'CORE_REFUSED', message: error.message };
+  const described = describeRawError(error);
+  return currentInputs()?.hasInputs
+    ? { code: described.code, message: '[private output withheld]' }
+    : described;
+}
+
+function describeRawError(error: unknown): { code: string; message: string } {
   if (error instanceof HandlerError) return { code: error.code, message: error.message };
   const message = error instanceof Error ? error.message : String(error);
   const prefixed = /^([A-Z][A-Z0-9_]+):\s*(.*)$/s.exec(message);

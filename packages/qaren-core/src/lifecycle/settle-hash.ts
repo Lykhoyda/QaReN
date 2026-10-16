@@ -1,24 +1,12 @@
+import { assertInputHashSafe } from '../qa/inputs.js';
 import { createHash } from 'node:crypto';
 import type { FlatNode } from '../fast-runner-ref-map.js';
 
-// 4px quantization absorbs sub-pixel animation jitter that strict equality
-// (Maestro's hierarchy compare) would treat as motion. The synthetic @eN ref
-// is excluded — it is an enumeration index, not identity. hittable is also
-// excluded (#519 review): it is derived from enabled + rect + viewport, and
-// its center-vs-viewport-edge comparison is unquantized — hashing it lets
-// sub-bucket jitter at the screen edge flip the hash every poll, defeating
-// the quantization. `checked` is included because Android Switch state can
-// change without moving or relabeling the node; omitting it made a proven
-// toggle look like a swallowed tap. Value/focus remain unavailable on every
-// runner, so the snapshot-eq fallback can still miss changes limited to those
-// fields; primary pixel/window probes cover current runner artifacts.
+// Quantize geometry without changing identity, label, enabled or checked operands.
 const BOUNDS_QUANTUM_PX = 4;
 
 export function normalizeNodeForHash(node: FlatNode): string {
   const q = (v: number): number => Math.round(v / BOUNDS_QUANTUM_PX);
-  // JSON-encoded tuple: labels/identifiers are app-controlled strings that may
-  // contain any bytes — JSON escaping makes the per-node encoding unambiguous,
-  // and the newline separator below cannot collide with escaped content.
   return JSON.stringify([
     node.identifier ?? '',
     node.type,
@@ -33,9 +21,16 @@ export function normalizeNodeForHash(node: FlatNode): string {
 }
 
 export function hashSnapshotNodes(nodes: FlatNode[]): string {
-  const h = createHash('sha256');
+  // Guard observation/input operands; repository and host provenance hashes retain their exact bytes.
   for (const node of nodes) {
-    h.update(normalizeNodeForHash(node));
+    for (const text of [node.identifier, node.type, node.label])
+      if (typeof text === 'string') assertInputHashSafe(text);
+  }
+  const tuples = nodes.map(normalizeNodeForHash);
+  tuples.forEach(assertInputHashSafe);
+  const h = createHash('sha256');
+  for (const tuple of tuples) {
+    h.update(tuple);
     h.update('\n');
   }
   return h.digest('hex');

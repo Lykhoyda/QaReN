@@ -1,3 +1,7 @@
+import { RunInputs, withInputs } from './inputs.js';
+import { ObservedPrivacy } from './privacy.js';
+import { collectInputNames } from './plan.js';
+import { readBlock } from './blocks.js';
 import { isAbsolute } from 'node:path';
 import { StringDecoder } from 'node:string_decoder';
 import type { Ledger, LedgerRow, StepStart, WalkResult } from './ledger.js';
@@ -50,10 +54,11 @@ export interface WireRequest {
   target: WireTarget;
   loginBlock?: string;
   loginMarker?: LoginMarker;
+  loginSnapshot?: { slug: string; content: string | null };
 }
 
 // Exactly one of id or text, never empty.
-function validMarker(value: unknown): boolean {
+export function validMarker(value: unknown): boolean {
   if (!isRecord(value)) return false;
   const keys = Object.keys(value);
   return (
@@ -176,7 +181,7 @@ export function parseEnvelope(line: string): Envelope | null {
   return e as unknown as Envelope;
 }
 
-export function parseRequest(line: string): WireRequest {
+export function parsePublicRequest(line: string): WireRequest {
   const envelope = parseEnvelope(line);
   if (!envelope) throw new WireError('the first stdin line is not a v1 wire envelope');
   if (envelope.type !== 'request')
@@ -213,20 +218,106 @@ export function parseRequest(line: string): WireRequest {
     (p.loginMarker !== undefined && !validMarker(p.loginMarker));
   if (bad) throw new WireError('the request payload is missing required fields');
   if (p.runId !== envelope.runId) throw new WireError('the request payload names another run');
-  return p as WireRequest;
+  const {
+    inputs: _inputs,
+    inputProtocol: _protocol,
+    ...publicRequest
+  } = p as Partial<WireRequest> & { inputs?: unknown; inputProtocol?: unknown };
+  const keys = [
+    'runId',
+    't0',
+    'walkBudgetMs',
+    'plan',
+    'prepared',
+    'preflightCalls',
+    'platform',
+    'appId',
+    'appRoot',
+    'runDir',
+    'lease',
+    'target',
+    'loginBlock',
+    'loginMarker',
+    'loginSnapshot',
+  ];
+  return Object.fromEntries(
+    Object.entries(publicRequest).filter(([key]) => keys.includes(key)),
+  ) as unknown as WireRequest;
 }
 
-export async function readRequest(input: AsyncIterable<Buffer | string>): Promise<WireRequest> {
+export const PRIVATE_REQUEST_MAX_BYTES = 16 * 1024 * 1024;
+
+export async function readPrivateLine(input: AsyncIterable<Buffer | string>): Promise<string> {
   const decoder = new StringDecoder('utf8');
   let buffered = '';
+  let bytes = 0;
   for await (const chunk of input) {
+    bytes += Buffer.byteLength(chunk);
+    if (bytes > PRIVATE_REQUEST_MAX_BYTES) throw new WireError('private request exceeds limit');
     buffered += typeof chunk === 'string' ? chunk : decoder.write(chunk);
     const newline = buffered.indexOf('\n');
-    if (newline >= 0) return parseRequest(buffered.slice(0, newline).trim());
+    if (newline >= 0) return buffered.slice(0, newline).trim();
   }
   const line = (buffered + decoder.end()).trim();
   if (!line) throw new WireError('stdin closed before a request arrived');
-  return parseRequest(line);
+  return line;
+}
+
+export function parsePrivateRequest(line: string): {
+  request: WireRequest;
+  inputs: RunInputs;
+  privacy: ObservedPrivacy;
+} {
+  const request = parsePublicRequest(line);
+  const payload = parseEnvelope(line)!.payload;
+  if (!isRecord(payload)) throw new WireError('runtime inputs are invalid');
+  if (request.loginSnapshot !== undefined) {
+    const snap = request.loginSnapshot;
+    if (
+      !isRecord(snap) ||
+      Object.keys(snap).sort().join(',') !== 'content,slug' ||
+      snap.slug !== request.loginBlock ||
+      !request.loginMarker ||
+      !validMarker(request.loginMarker) ||
+      (snap.content !== null && typeof snap.content !== 'string')
+    )
+      throw new WireError('runtime inputs are invalid');
+  }
+  const names = collectInputNames(request.plan).names;
+  if (request.loginSnapshot?.content) {
+    const stored = readBlock(request.loginSnapshot.content);
+    if (
+      'invalid' in stored ||
+      stored.header.appId !== request.appId ||
+      stored.header.platform !== request.platform
+    )
+      throw new WireError('runtime inputs are invalid');
+    for (const step of stored.steps) if (step.input !== undefined) names.push(step.input);
+  }
+  if (
+    (names.length || payload.inputs !== undefined || payload.inputProtocol !== undefined) &&
+    payload.inputProtocol !== 1
+  )
+    throw new WireError('runtime inputs are invalid');
+  if (request.loginBlock && names.length && !request.loginSnapshot)
+    throw new WireError('runtime inputs are invalid');
+  const privacy = new ObservedPrivacy();
+  const inputs = new RunInputs(payload.inputs ?? {}, names, privacy);
+  withInputs(inputs, () => {
+    for (const text of [request.runId, request.appId, request.lease, request.loginBlock ?? ''])
+      inputs.assertHashSafe(text);
+  });
+  return { request, inputs, privacy };
+}
+
+export function parseRequest(line: string): WireRequest {
+  return parsePrivateRequest(line).request;
+}
+export async function readRequest(input: AsyncIterable<Buffer | string>): Promise<WireRequest> {
+  return parseRequest(await readPrivateLine(input));
+}
+export async function readPrivateRequest(input: AsyncIterable<Buffer | string>) {
+  return parsePrivateRequest(await readPrivateLine(input));
 }
 
 export interface WireWriter {

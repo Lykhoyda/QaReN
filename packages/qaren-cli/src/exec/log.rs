@@ -8,6 +8,7 @@ use std::time::{Duration, Instant};
 
 pub const HELPER_ARG: &str = "--internal-redact-log";
 // The helper also drains the child's stderr from fd 3 into the same log.
+pub const WITHHOLD_ARG: &str = "--private-output-withheld";
 pub const PAIRED_ARG: &str = "--stderr-fd3";
 const DRAIN_TIMEOUT: Duration = Duration::from_secs(5);
 const MAX_LINE: usize = 64 * 1024;
@@ -83,6 +84,10 @@ impl LogDrain {
                 });
             }
         }
+        if crate::redact::private_output_mode() {
+            command.arg(WITHHOLD_ARG);
+        }
+        crate::redact::scrub_input_env(&mut command);
         let child = command.spawn()?;
         let error = second.map(|(stderr_input, stderr_output)| {
             drop(stderr_input);
@@ -228,6 +233,10 @@ pub fn run_helper(paired: bool) -> io::Result<()> {
         file,
         withheld: false,
     };
+    if std::env::args().any(|arg| arg == WITHHOLD_ARG) {
+        log.withheld = true;
+        log.file.write_all(b"[private output withheld]\n")?;
+    }
     let mut buf = [0; 8192];
     let mut checkpoint = false;
     loop {

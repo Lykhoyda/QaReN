@@ -1,3 +1,4 @@
+import { fillText, currentInputs, throwIfInputPrivacyRefused } from './inputs.js';
 import { isAbort, cancellationSignal } from '../domain/cancellation.js';
 import type { Block, Item, Target } from './plan.js';
 import {
@@ -97,6 +98,7 @@ export interface ActResult {
 }
 
 export interface WalkerDeps {
+  privacy?: ObservedPrivacy;
   judge?: Judge;
   publicationInterrupted?(): boolean;
   captureScreen(options?: { platformPresence?: boolean; timing?: TimingObserver }): Promise<Screen>;
@@ -243,7 +245,7 @@ export async function walkBlock(
   const rows: WalkRow[] = [];
   const privateFills: number[] = [];
   for (const item of block.items)
-    if (item.kind === 'fill' && !typed.includes(item.text)) typed.push(item.text);
+    if (item.kind === 'fill' && !typed.includes(fillText(item))) typed.push(fillText(item));
   const judge = deps.judge ?? unavailableJudge;
   let resolvedBy: LedgerRow['resolvedBy'] = 'exact';
   let cached: { item: Item; observation: Observation; decision: ScreenDecision } | undefined;
@@ -584,7 +586,7 @@ export async function walkBlock(
     })(observationDeadline(observation.timing, deadline), deps.now, deps.cancelled);
     try {
       context.check();
-      if (item.kind === 'fill') privacy.didFill(item.text);
+      if (item.kind === 'fill') privacy.didFill(fillText(item));
       // A scroll step's momentum outlives the step and its block; the next targeted dispatch settles first.
       if (item.kind === 'scroll') sequence.momentum = true;
       const result = await send(context);
@@ -827,7 +829,7 @@ export async function walkBlock(
         ? '; the field changed only the letter case'
         : '';
   const keptCounts = (entry: ActResult) =>
-    entry.proven
+    entry.proven || currentInputs()?.hasInputs
       ? {}
       : entry.kept
         ? { kept: { typed: entry.kept.typed, observed: [...entry.kept.observed] } }
@@ -864,12 +866,12 @@ export async function walkBlock(
         before.screen,
       );
     privacy.concealFallback(
-      item.text,
+      fillText(item),
       false,
       quoted,
       target.element.testID ?? target.element.label,
     );
-    privateFills.push(item.line);
+    if (item.input === undefined) privateFills.push(item.line);
     let tap: ActResult;
     try {
       tap = await mutate(item, before, (context) => deps.press(target.element.ref, context));
@@ -943,7 +945,13 @@ export async function walkBlock(
     let entry: ActResult;
     try {
       entry = await mutate(item, after, (context) =>
-        deps.typeFocused!(again.element.ref, item.text, again.oracleTestID, context, proofMode),
+        deps.typeFocused!(
+          again.element.ref,
+          fillText(item),
+          again.oracleTestID,
+          context,
+          proofMode,
+        ),
       );
     } catch (error) {
       if (isAbort(error)) throw error;
@@ -996,12 +1004,12 @@ export async function walkBlock(
     )
       return;
     if (!(await focusProven('none', quoted))) return;
-    privacy.concealFallback(item.text, false, quoted);
-    privateFills.push(item.line);
+    privacy.concealFallback(fillText(item), false, quoted);
+    if (item.input === undefined) privateFills.push(item.line);
     let entry: ActResult;
     try {
       entry = await mutate(item, before, (context) =>
-        deps.typeFocused!(quoted, item.text, quoted, context, true),
+        deps.typeFocused!(quoted, fillText(item), quoted, context, true),
       );
     } catch (error) {
       if (isAbort(error)) throw error;
@@ -1118,7 +1126,7 @@ export async function walkBlock(
       });
       let currentAttempt = 1;
       resolvedBy = item.source === 'jev' && !replay ? 'jev' : 'exact';
-      if (item.kind === 'fill' && item.text && !typed.includes(item.text)) typed.push(item.text);
+      if (item.kind === 'fill' && !typed.includes(fillText(item))) typed.push(fillText(item));
       if (item.kind === 'dialog' && deps.dialogUnsupported) {
         const refused = new ResolutionError({
           refuse: 'TARGET_UNSUPPORTED',
@@ -1546,14 +1554,19 @@ export async function walkBlock(
                 continue;
               }
               if (item.kind === 'fill' && element && isPrivateInput(element)) {
-                privacy.concealFallback(item.text, element.secure, element.testID ?? element.label);
-                if (!privateFills.includes(item.line)) privateFills.push(item.line);
+                privacy.concealFallback(
+                  fillText(item),
+                  element.secure,
+                  element.testID ?? element.label,
+                );
+                if (item.input === undefined && !privateFills.includes(item.line))
+                  privateFills.push(item.line);
               }
               act = await mutate(item, before, (context) =>
                 item.kind === 'press'
                   ? deps.press(ref!, context)
                   : item.kind === 'fill'
-                    ? deps.fill(ref!, item.text, context)
+                    ? deps.fill(ref!, fillText(item), context)
                     : item.kind === 'scroll'
                       ? deps.scroll(item.direction, context)
                       : item.kind === 'back'
@@ -1698,7 +1711,9 @@ export async function walkBlock(
                     reason: redact(
                       'UNVERIFIED_FILL: the field changed only the letter case, so the fill was not verified',
                     ),
-                    caseNormalized: { chars: [...item.text].length },
+                    ...(!currentInputs()?.hasInputs
+                      ? { caseNormalized: { chars: [...fillText(item)].length } }
+                      : {}),
                   }
                 : unverified
                   ? {
@@ -1979,7 +1994,12 @@ export function loginBlock(slug: string, stored: StoredBlock): Block {
       case 'wait':
         return { kind: step.kind, target: exact(step.selector!), ...at };
       case 'fill':
-        return { kind: 'fill', target: exact(step.selector!), text: step.text!, ...at };
+        return {
+          kind: 'fill',
+          target: exact(step.selector!),
+          ...(step.input !== undefined ? { input: step.input } : { text: step.text! }),
+          ...at,
+        };
       case 'scroll':
         return {
           kind: 'scroll',
@@ -2016,16 +2036,18 @@ export async function runPlan(
     const written: string[] = [];
     let patchedAt: number | undefined;
     const typed = blocks.flatMap((b) =>
-      b.items.flatMap((i) => (i.kind === 'fill' ? [i.text] : [])),
+      b.items.flatMap((i) => (i.kind === 'fill' ? [fillText(i)] : [])),
     );
     const planTyped = typed.length;
-    const privacy = new ObservedPrivacy(typed);
+    const privacy = deps.privacy ?? new ObservedPrivacy(typed);
+    privacy.classify(typed);
     privacy.classify(
-      deps.login?.block?.items.flatMap((i) => (i.kind === 'fill' ? [i.text] : [])) ?? [],
+      deps.login?.block?.items.flatMap((i) => (i.kind === 'fill' ? [fillText(i)] : [])) ?? [],
     );
     let recoveries = 0;
     // A login replay before any plan pass opens the publishable window.
     const videoPublication = (): NonNullable<WalkResult['videoPublication']> =>
+      currentInputs()?.hasInputs ||
       blocks.some((block) => block.items.some((item) => item.kind === 'fill')) ||
       typed.length > (sequence.window?.typed ?? planTyped)
         ? 'withheld-fill'
@@ -2072,6 +2094,7 @@ export async function runPlan(
     const unprotected = (value: string): boolean =>
       !matchPrivate(value, privacy.privateSet(), 'persisted').hit;
     const finish = (outcome?: WalkOutcome): WalkResult => {
+      throwIfInputPrivacyRefused();
       if (!deps.cancelled?.()) {
         cancellationSignal();
         for (const { index, write } of pending.splice(0)) results[index] = write();

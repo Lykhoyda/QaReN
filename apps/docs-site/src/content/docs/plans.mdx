@@ -49,8 +49,41 @@ The block ID is the heading in lowercase, with every run of characters outside `
 | Back     | back, go back, navigate back, press back, tap back button               | `Go back`                            |
 | Dialog   | accept, allow, dismiss, deny, decline, cancel with dialog, prompt, alert or permission | `Accept the permission dialog` |
 
-A fill always needs its text in quotes. A dialog step needs exactly one unconditional
+A fill needs its text in quotes, or a [runtime input](#runtime-inputs). A dialog step needs exactly one unconditional
 action: `Accept the dialog if it appears` and `Do not dismiss the alert` refuse.
+
+## Runtime inputs
+
+A fill can take its value from the environment instead of the plan, so a login block with
+staging credentials can be saved and replayed:
+
+```md
+1. Fill "staging-user" with input USERNAME
+2. Fill "staging-password" with input PASSWORD
+```
+
+The name is 1–32 characters of `A-Z`, `0-9` and `_`, starting with a letter. qaren reads
+the value of `QAREN_INPUT_<NAME>` once when the run starts, here `QAREN_INPUT_USERNAME` and
+`QAREN_INPUT_PASSWORD`. Resolve the value before you run qaren, for example with your
+password manager's CLI; qaren does not read `.env` files or resolve references.
+
+- Every input the plan or the configured login block names must be set and non-empty, even
+  when login recovery never happens. Otherwise the run refuses `PLAN_INPUT_MISSING`, naming
+  every missing input, before a device is selected.
+- A value is one line of printable text, at most 4096 bytes and 64 KiB across all inputs.
+  Whitespace is kept exactly. A value that looks like an unresolved reference, starting with
+  a scheme such as `op://` or `vault:` or containing `${`, `$(` or `{{`, refuses
+  `CORE_REFUSED`.
+- The value is masked in every output and never written to a file, log, saved block or
+  report, sent to Jev or hashed. A run with inputs takes no screenshots, records no video
+  and withholds the logs of the processes it starts.
+- If the app shows an input value in a label or identifier, the run refuses `CORE_REFUSED`
+  rather than hash it.
+- `QAREN_INPUT_*` variables the plan does not name are ignored and removed from every
+  process qaren starts.
+- `Fill "note" with "input PASSWORD"` types the quoted text.
+
+A qaren runtime without input support refuses a plan that names inputs.
 
 ## Quoted and phrase targets
 

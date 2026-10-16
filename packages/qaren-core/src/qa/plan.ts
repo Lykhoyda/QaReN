@@ -1,3 +1,4 @@
+import { assertInputHashSafe, validInputName } from './inputs.js';
 import { createHash } from 'node:crypto';
 import { isDeepStrictEqual } from 'node:util';
 import { ACTION_ID_MAX_LEN } from '../domain/path-safety.js';
@@ -10,9 +11,14 @@ export interface Target {
   exact?: 'id' | 'text';
 }
 
+export type Fill = { kind: 'fill'; target: Target } & (
+  | { text: string; input?: never }
+  | { input: string; text?: never }
+);
+
 export type Step =
   | { kind: 'press'; target: Target }
-  | { kind: 'fill'; target: Target; text: string }
+  | Fill
   | { kind: 'scroll'; direction: 'down' | 'up'; until?: Target }
   | { kind: 'wait'; target: Target }
   | { kind: 'back' }
@@ -76,6 +82,12 @@ const PRESS =
 type Grammar = Step | { refuse: string } | null;
 
 function parseFill(rest: string): Grammar {
+  const slot = /^(.*?)\s+with\s+input(?:\s+([^"“”]*))?$/i.exec(rest);
+  if (slot) {
+    if (!slot[1].trim() || !validInputName(slot[2]))
+      return { refuse: 'fill needs a target and a valid input name' };
+    return { kind: 'fill', target: targetFrom(slot[1]), input: slot[2] };
+  }
   const withForm = FILL_WITH.exec(rest);
   if (withForm) {
     const text = firstQuoted(withForm[2]);
@@ -124,14 +136,18 @@ export function normalizedSlug(title: string): string {
 }
 
 export function slugify(title: string): string {
+  assertInputHashSafe(title);
   const slug = normalizedSlug(title);
+  assertInputHashSafe(slug);
   if (slug.length <= ACTION_ID_MAX_LEN) return slug;
   const suffix = createHash('sha256').update(slug).digest('hex').slice(0, 16);
   return `${slug.slice(0, ACTION_ID_MAX_LEN - suffix.length - 1)}-${suffix}`;
 }
 
 export function planHash(items: Item[]): string {
+  items.forEach((item) => assertInputHashSafe(item.raw));
   const normalized = items.map((item) => item.raw.replace(/\s+/g, ' ').trim()).join('\n');
+  assertInputHashSafe(normalized);
   return createHash('sha256').update(normalized).digest('hex');
 }
 
@@ -174,6 +190,22 @@ const isSectionHeading = (text: string): boolean => /^##\s+/.test(text) && !text
 
 export function parsePlan(markdown: string): ParsedPlan {
   return scanPlan(markdown, new Map());
+}
+
+export function collectInputNames(markdown: string): { names: string[]; refused: RefusedLine[] } {
+  const items: (Step | Check)[] = [];
+  const pending: RefusedLine[] = [];
+  const parsed = scanPlan(markdown, new Map(), pending, undefined, items, true);
+  return {
+    names: [
+      ...new Set(
+        items.flatMap((item) =>
+          item.kind === 'fill' && item.input !== undefined ? [item.input] : [],
+        ),
+      ),
+    ].sort(),
+    refused: (parsed.refused ?? []).filter((entry) => !pending.some((p) => p.line === entry.line)),
+  };
 }
 
 export function planNeedsJev(markdown: string): boolean {
@@ -222,6 +254,7 @@ function scanPlan(
   pending?: RefusedLine[],
   fillValues?: string[],
   encountered?: (Step | Check)[],
+  inventory = false,
 ): ParsedPlan {
   const visible = visibleLines(markdown.split(/\r?\n/));
   let start = 0;
@@ -242,7 +275,7 @@ function scanPlan(
   const fullSlugs = new Set<string>();
   const open = (heading: string, line: number, text: string): Block => {
     const fullSlug = normalizedSlug(heading);
-    const slug = slugify(heading);
+    const slug = inventory ? fullSlug : slugify(heading);
     if (fullSlugs.has(fullSlug)) {
       refused.push({ line, text, reason: `another block is already named "${slug}"` });
     } else if (blocks.some((b) => b.slug === slug)) {
@@ -318,7 +351,7 @@ function scanPlan(
     } else if ('refuse' in step) {
       refused.push({ line, text, reason: step.refuse });
     } else {
-      if (step.kind === 'fill') fillValues?.push(step.text);
+      if (step.kind === 'fill' && step.text !== undefined) fillValues?.push(step.text);
       block.items.push({ ...step, line, raw: text, source: fallback ? 'jev' : 'grammar' });
     }
   }
@@ -326,18 +359,22 @@ function scanPlan(
   encountered?.push(...blocks.flatMap((block) => block.items));
   if (refused.length > 0)
     return {
-      refused: projectRefusals(
-        refused,
-        blocks.flatMap((block) =>
-          block.items.flatMap((item) => (item.kind === 'fill' ? [item.text] : [])),
-        ),
-        blocks.map((block) => block.title),
-      ),
+      refused: inventory
+        ? refused
+        : projectRefusals(
+            refused,
+            blocks.flatMap((block) =>
+              block.items.flatMap((item) =>
+                item.kind === 'fill' && item.text !== undefined ? [item.text] : [],
+              ),
+            ),
+            blocks.map((block) => block.title),
+          ),
     };
   const filled = blocks.filter((b) => b.items.length > 0);
   if (filled.length === 0)
     return { refused: [{ line: 0, text: '', reason: 'the plan has no steps' }] };
-  for (const block of filled) block.planHash = planHash(block.items);
+  if (!inventory) for (const block of filled) block.planHash = planHash(block.items);
   return { blocks: filled };
 }
 
@@ -471,7 +508,9 @@ export async function parsePlanWithJev(markdown: string, judge: Judge): Promise<
       ),
       [
         ...fillValues,
-        ...[...resolved.values()].flatMap((item) => (item.kind === 'fill' ? [item.text] : [])),
+        ...[...resolved.values()].flatMap((item) =>
+          item.kind === 'fill' && item.text !== undefined ? [item.text] : [],
+        ),
       ],
     ),
   };
@@ -487,6 +526,7 @@ export interface PreparedPlan {
 }
 
 export function preparePlan(markdown: string, blocks: Block[]): PreparedPlan {
+  assertInputHashSafe(markdown);
   return { hash: createHash('sha256').update(markdown).digest('hex'), blocks };
 }
 

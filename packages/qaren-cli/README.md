@@ -1081,6 +1081,41 @@ briefly re-reading while overlays settle. An unconfirmed floating-button hide
 or failure to obtain complete clearance evidence within those reads refuses
 the walk with `DEV_MENU_HIDE_UNVERIFIED` before the first step.
 
+### Runtime inputs
+
+`Fill "staging-password" with input PASSWORD` types the value of `QAREN_INPUT_PASSWORD`;
+see the [plan guide](../../apps/docs-site/src/content/docs/plans.mdx) for the grammar and
+value bounds. The owner resolves the value before running qaren; qaren reads no `.env`
+file, reference or secret store.
+
+- `main` captures the `QAREN_INPUT_` namespace once into the
+  [invocation-scoped redaction owner](src/redact.rs). Every child spawned by the CLI has the
+  namespace removed after its spec's environment is applied, including names the spec sets.
+- Before device selection, `check` and `pr` run `walk.js --preflight-stdin` twice: an
+  inventory of the names required by the plan and the configured login block, then the plan
+  preflight with only those values on private stdin. Missing or empty names refuse
+  `PLAN_INPUT_MISSING` with run id `none`; invalid values and runtime mismatches refuse
+  `CORE_REFUSED`. Neither phase writes a run directory, lease or log.
+- `pr` fetches and verifies the head before inventory, then reads the configured login block
+  at that commit with `git ls-tree` and `git show`. A symlinked or non-regular corpus path
+  refuses before allocation; after worktree creation the owned block must match those bytes.
+  Inputs that block names must also appear in the inventory of the plan and the invoking
+  checkout's login block; any other name refuses `PLAN_INPUT_MISSING`.
+  `check` re-reads its owned login block before device selection, and the core rechecks it
+  before the session opens.
+- The core receives the values only inside its stdin request. The walker types them, saves
+  slot fills as `inputText: { input: "PASSWORD" }` and replays saved and login blocks with
+  the same values. Private literal fills stay unsavable.
+- With any input namespace present, subprocess logs hold one withheld marker, preflight and
+  core output excerpts are withheld, and native runner output tails are not retained. A run
+  that requires inputs skips recording and screenshots.
+- Snapshot hashes refuse `CORE_REFUSED` before any hashing when an identifier, type or label,
+  raw or JSON-escaped, contains an input value; plan hashes do the same for plan text.
+  Accepted operands and digests are unchanged. Repository and host provenance hashes, such
+  as the lockfile, dirty-file, config and session-path hashes, keep their exact bytes. The
+  settle engine no longer uses the iOS screenshot-equality tier; it settles on the Android
+  window gate or snapshot equality.
+
 ### iOS admission and cleanup
 
 Strict admission observes known automation patterns for the selected simulator.

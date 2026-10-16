@@ -1,3 +1,5 @@
+import { throwIfInputPrivacyRefused } from './qa/inputs.js';
+import { throwIfCancelled } from './domain/cancellation.js';
 import { exactIdentities } from './qa/identity.js';
 import { join } from './qa/screen.js';
 import { hashSnapshotNodes } from './lifecycle/settle-hash.js';
@@ -397,7 +399,7 @@ export function updateRefMapFromFlat(
   // dereferences node.rect.* unconditionally, and a malformed entry must not
   // throw mid-update. For real runner data the filtered subset equals the full
   // array (both mappers pre-filter !rect), so comparability with the settle
-  // probes is preserved. Fail-open on hash error (matches settle.ts).
+  // probes is preserved. Privacy cancellation invalidates every rejected ref.
   try {
     lastSnapshotHash = hashSnapshotNodes(hashed);
     lastPackageSnapshotHashes.clear();
@@ -414,6 +416,13 @@ export function updateRefMapFromFlat(
   } catch {
     lastSnapshotHash = null;
     lastPackageSnapshotHashes.clear();
+    try {
+      throwIfInputPrivacyRefused();
+      throwIfCancelled();
+    } catch (error) {
+      clearRefMap();
+      throw error;
+    }
   }
   lastUpdated = Date.now();
   return { applied: true };

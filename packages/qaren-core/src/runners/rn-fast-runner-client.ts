@@ -1,3 +1,4 @@
+import { currentInputs } from '../qa/inputs.js';
 import { DEVICE_LEASE_REQUIRED, leaseFromEnvironment } from './lease-env.js';
 import { QaDispatchError, type QaDispatchContext } from '../domain/qa-dispatch.js';
 import { measureTiming, observeTiming, type TimingContext } from '../qa/timing.js';
@@ -227,10 +228,16 @@ export interface RunnerPostMortem {
 let lastRunnerPostMortem: RunnerPostMortem | null = null;
 
 function appendRunnerOutput(stream: 'stdout' | 'stderr', chunk: string): void {
+  if (currentInputs()?.hasInputs) {
+    runnerOutputTail = '[private output withheld]';
+    return;
+  }
   runnerOutputTail = `${runnerOutputTail}${stream}: ${chunk}`.slice(-8_000);
 }
 
 export function getRunnerPostMortem(): RunnerPostMortem {
+  if (currentInputs()?.hasInputs)
+    return { available: false, provenance: runnerProcess ? 'spawned' : 'adopted' };
   return (
     lastRunnerPostMortem ?? {
       available: false,

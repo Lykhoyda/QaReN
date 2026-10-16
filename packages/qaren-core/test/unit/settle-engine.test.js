@@ -70,24 +70,27 @@ test('android: capability absent → snapshot-eq only (legacy degrade)', async (
   assert.equal(out.method, 'snapshot-eq');
 });
 
-test('ios: static on second probe → screen-static', async () => {
+test('ios: SCREEN_STATIC never probes pixels and still requires equal snapshots', async () => {
   const clock = fakeClock();
+  let pixelCalls = 0;
   const out = await waitForSettle({
     platform: 'ios',
     capabilities: ['SCREEN_STATIC'],
     probes: {
-      isScreenStatic: seq([false, true]),
-      snapshotHash: async () => {
-        throw new Error('must not reach snapshot tier');
+      isScreenStatic: async () => {
+        pixelCalls++;
+        return true;
       },
+      snapshotHash: seq(['first', 'second', 'second']),
       sleep: clock.sleep,
       now: clock.now,
     },
   });
   assert.deepEqual(
     { settled: out.settled, method: out.method },
-    { settled: true, method: 'screen-static' },
+    { settled: true, method: 'snapshot-eq' },
   );
+  assert.equal(pixelCalls, 0);
 });
 
 test('ios: never static → snapshot-eq tier settles (perpetual animation, stable hierarchy)', async () => {

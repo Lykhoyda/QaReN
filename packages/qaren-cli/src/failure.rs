@@ -50,6 +50,7 @@ pub enum FailureCode {
     AppPresenceUnknown,
     AppResetFailed,
     PlanUnparseable,
+    PlanInputMissing,
     NodeUnsupported,
     DiskBudgetExceeded,
     PlatformUnsupported,
@@ -87,6 +88,7 @@ impl FailureCode {
                 | FailureCode::IosBuildCapabilityUnavailable
                 | FailureCode::FreshInstallAdmissionUnknown
                 | FailureCode::AppPresenceUnknown
+                | FailureCode::PlanInputMissing
                 | FailureCode::PlanUnparseable
                 | FailureCode::NodeUnsupported
                 | FailureCode::DiskBudgetExceeded

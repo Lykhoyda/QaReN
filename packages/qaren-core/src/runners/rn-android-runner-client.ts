@@ -1,3 +1,4 @@
+import { currentInputs } from '../qa/inputs.js';
 /*
  * Copyright (c) 2026 Anton Lykhoyda
  * SPDX-License-Identifier: MIT
@@ -1648,7 +1649,9 @@ async function startAndroidRunnerAttempt(
     // its ~64KB buffer and wedge the child.
     let diag = '';
     const capture = (chunk: Buffer) => {
-      diag = (diag + chunk.toString('utf-8')).slice(-4_000);
+      diag = currentInputs()?.hasInputs
+        ? '[private output withheld]'
+        : (diag + chunk.toString('utf-8')).slice(-4_000);
     };
     child.stdout?.on('data', capture);
     child.stderr?.on('data', capture);

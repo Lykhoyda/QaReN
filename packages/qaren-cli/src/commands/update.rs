@@ -59,7 +59,9 @@ pub fn update(cwd: &Path, home: &Path) -> Result<String, (u8, String)> {
     };
     let before = read_sha();
 
-    let installed = Command::new("bash")
+    let mut installer = Command::new("bash");
+    crate::redact::scrub_input_env(&mut installer);
+    let installed = installer
         .arg(INSTALLER)
         .current_dir(cwd)
         .stdin(Stdio::null())
@@ -100,7 +102,9 @@ pub fn update(cwd: &Path, home: &Path) -> Result<String, (u8, String)> {
 }
 
 fn git(cwd: &Path, args: &[&str]) -> Result<std::process::Output, (u8, String)> {
-    Command::new("git")
+    let mut command = Command::new("git");
+    crate::redact::scrub_input_env(&mut command);
+    command
         .args(args)
         .current_dir(cwd)
         .stdin(Stdio::null())

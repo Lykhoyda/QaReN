@@ -392,6 +392,7 @@ function compileCommand(
       );
     }
     case 'inputText':
+      if (isObject(arg) && 'input' in arg) refuse('named inputs require qaren check or pr');
       return step(
         { op: name, text: resolve(arg, 'inputText') },
         'native',

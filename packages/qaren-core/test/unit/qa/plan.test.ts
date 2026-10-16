@@ -296,3 +296,31 @@ test('a fill preposition is only stripped as a whole word', () => {
     text: 'hello',
   });
 });
+
+test('named input grammar is declarative and malformed reserved forms never become literals', () => {
+  for (const name of ['A', 'PASSWORD', 'A' + '_'.repeat(31)]) {
+    const parsed = parseStep(`Fill "password-field" with input ${name}`);
+    assert.deepEqual(parsed, {
+      kind: 'fill',
+      target: { quoted: 'password-field', phrase: 'password-field' },
+      input: name,
+    });
+    const source = `# Sign in\n1. Fill "password-field" with input ${name}`;
+    const plan = parsePlan(source);
+    assert.ok(plan.blocks);
+    const prepared = preparePlan(source, plan.blocks);
+    assert.deepEqual(readPreparedPlan(source, prepared), plan.blocks);
+    const extra = structuredClone(prepared);
+    extra.blocks[0].items[0].text = 'invented';
+    assert.equal(readPreparedPlan(source, extra), undefined);
+  }
+  for (const name of ['', 'password', '_PASS', 'A'.repeat(33), 'PASS extra', '${PASS}']) {
+    assert.ok('refuse' in parseStep(`Fill "password-field" with input ${name}`));
+  }
+  assert.equal(parseStep('Fill "password-field" with "input PASSWORD"').text, 'input PASSWORD');
+  assert.equal(
+    parseStep('Fill "note" with "remember with input BAR"').text,
+    'remember with input BAR',
+  );
+  assert.equal(parseStep('Type "with input BAR" into "note"').text, 'with input BAR');
+});
