@@ -56,7 +56,13 @@ import { summarizeJev } from './ledger.js';
 import { redactApiKey } from '../util/redact.js';
 import { createStop, watchOwnerPipe, watchParent } from './stop.js';
 import { prove } from './prove.js';
-import { admit, awaitBundleReady, createBundleReload, metroDevicePin } from './admission.js';
+import {
+  admit,
+  awaitBundleReady,
+  createBundleReload,
+  formatAdmissionRefusal,
+  metroDevicePin,
+} from './admission.js';
 import { type ActResult, type WalkerDeps, loginBlock, runPlan } from './walker.js';
 import { loadBlock, readBlock } from './blocks.js';
 import {
@@ -360,6 +366,17 @@ async function openSession(
   onClose(close);
   const devicePin = metroDevicePin(platform, target.deviceName);
   const remainingMs = () => Math.max(0, request.walkBudgetMs - now() - 1000);
+  let attachStage: 'wait_targets' | 'connect_exact' | undefined;
+  const logRefusal = (error: unknown): never => {
+    if (error instanceof HandlerError && error.meta) {
+      try {
+        log(`admission-refusal=${formatAdmissionRefusal(error.meta, attachStage)}`);
+      } catch {
+        // Diagnostics cannot change the refusal.
+      }
+    }
+    throw error;
+  };
   const proof = await cdp.withAttachDeadline(performance.now() + remainingMs(), () =>
     admit(
       {
@@ -367,6 +384,7 @@ async function openSession(
         readinessMs: REACT_READY_TIMEOUT_MS,
         remainingMs,
         attach: async (deadline) => {
+          attachStage = 'wait_targets';
           await waitForExactPortTargets(
             target.metroPort,
             Math.max(1, Math.min(REACT_READY_TIMEOUT_MS, remainingMs())),
@@ -374,6 +392,7 @@ async function openSession(
             stop.signal,
             devicePin,
           );
+          attachStage = 'connect_exact';
           await cdp.connectExact(
             target.metroPort,
             { platform, bundleId: appId, ...(devicePin ? { deviceName: devicePin } : {}) },
@@ -421,7 +440,7 @@ async function openSession(
         close,
       },
       stop,
-    ),
+    ).catch(logRefusal),
   );
   const admittedSnapshots = postAdmissionSnapshots(snapshot, appId);
   cancellationSignal();
