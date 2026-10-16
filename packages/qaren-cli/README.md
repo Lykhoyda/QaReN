@@ -509,8 +509,9 @@ a multi-gesture command reports mutation `possible` because earlier gestures
 may already have run. Take a fresh snapshot of the alert and explicitly tap
 the intended button.
 
-Before dispatch, the walker also treats a press or fill target whose centre lies
-outside its trusted clipping viewport or covered by an observed keyboard frame
+Before dispatch, the walker also treats a press or fill target, including a
+keyboard-fallback wrapper before its tap, whose centre lies outside its trusted
+clipping viewport or covered by an observed keyboard frame
 (unless the keyboard is proven hidden) as covered. Keyboard-owned targets use
 the existing explicit tap path and remain subject to trusted clipping and native
 identity guards. An explicit key press performs its normal action, not guaranteed

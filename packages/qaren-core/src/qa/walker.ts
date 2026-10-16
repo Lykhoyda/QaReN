@@ -888,24 +888,34 @@ export async function walkBlock(
       quoted,
       target.element.testID ?? target.element.label,
     );
-    privateFills.push(item.line);
-    let tap: ActResult;
-    try {
-      tap = await mutate(item, before, (context) => deps.press(target.element.ref, context));
-    } catch (error) {
-      if (isAbort(error)) throw error;
-      if (error instanceof EvidenceExpired)
-        return nothingTyped(`the evidence expired before tapping "${quoted}"`, before.screen);
-      throw error;
-    }
-    if (!tap.ok && tap.mutation === 'none' && tap.error?.startsWith('FOCUS_TARGET_OCCLUDED:')) {
+    if (!privateFills.includes(item.line)) privateFills.push(item.line);
+    let tap: ActResult | undefined;
+    if (!centreCovered(target.element, before.screen))
+      try {
+        tap = await mutate(item, before, (context) => deps.press(target.element.ref, context));
+      } catch (error) {
+        if (isAbort(error)) throw error;
+        if (error instanceof EvidenceExpired)
+          return nothingTyped(`the evidence expired before tapping "${quoted}"`, before.screen);
+        throw error;
+      }
+    if (
+      !tap ||
+      (!tap.ok && tap.mutation === 'none' && tap.error?.startsWith('FOCUS_TARGET_OCCLUDED:'))
+    ) {
       if (scrolled)
         return nothingTyped(
-          `${tap.error}; "${quoted}" stayed off screen after one scroll`,
+          tap
+            ? `${tap.error}; "${quoted}" stayed off screen after one scroll`
+            : `"${quoted}" stayed off screen after one scroll: its centre is past the visible area or under the keyboard`,
           before.screen,
         );
       const scroll = await mutate(item, before, (context) =>
-        deps.scroll(clearanceScroll(target.element), context),
+        deps.scroll(
+          clearanceScroll(target.element),
+          context,
+          keyboardClearance(target.element, before.screen),
+        ),
       );
       const afterScroll = await settledCapture(item);
       usable(afterScroll, item);

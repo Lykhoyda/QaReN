@@ -417,6 +417,62 @@ test('keyboard fallback never taps a replacement wrapper after clearance', async
   assert.equal(f.calls.filter((call) => call.startsWith('press')).length, 1);
 });
 
+function keyboardWrapperAt(y: number): Screen {
+  const screen = clipped(y, 'Button', 'keyboard');
+  targetOf(screen, '@target')!.testID = 'email-pressable';
+  screen.keyboardVisible = true;
+  screen.coverage = { native: 'complete', react: 'incomplete' };
+  return screen;
+}
+
+for (const [name, screens, calls, clearances, typed] of [
+  [
+    'clears with one overlap-sized scroll before its tap',
+    [700, 300],
+    ['scroll down', 'press @target'],
+    [472],
+    1,
+  ],
+  ['is tapped without a scroll when uncovered', [300], ['press @target'], [], 1],
+  [
+    'refuses without a tap when still covered after one scroll',
+    [700, 650],
+    ['scroll down'],
+    [472],
+    0,
+  ],
+] as const) {
+  test(`a keyboard-covered fallback wrapper ${name}`, async () => {
+    const f = fake(screens.map(keyboardWrapperAt), {});
+    const seen: (number | undefined)[] = [];
+    const scroll = f.deps.scroll;
+    f.deps.scroll = (direction, context, clearance) => {
+      seen.push(clearance);
+      return scroll(direction, context, clearance);
+    };
+    f.deps.reactFocused = async () => true;
+    let count = 0;
+    f.deps.typeFocused = async () => {
+      count += 1;
+      return { ok: true, proven: false };
+    };
+    const outcome = await walkBlock(block('1. Fill "email" with "x"\n'), f.deps);
+    assert.equal(outcome.block.outcome, typed ? 'pass' : 'fail');
+    assert.deepEqual(
+      f.calls.filter((call) => call !== 'capture'),
+      calls,
+    );
+    assert.deepEqual(seen, clearances);
+    assert.equal(count, typed);
+    assert.deepEqual(outcome.privateFills, [1]);
+    if (!typed)
+      assert.match(
+        renderReason(outcome.failure?.seen ?? '', (text) => text),
+        /stayed off screen after one scroll.*nothing was typed/,
+      );
+  });
+}
+
 test('a semantic target stays pinned after occlusion without another model choice', async () => {
   const first = at(700);
   const twin = at(300);
@@ -1550,7 +1606,7 @@ for (const sent of [false, true]) {
   });
 }
 
-test('a valid wrapper fallback keeps native occlusion recovery and never types through coverage', async () => {
+test('a keyboard-covered wrapper fallback never taps or types through coverage', async () => {
   const screen = explicitKeyboard(false, (nodes) =>
     nodes.map((node) =>
       node.ref === '@submit' ? { ...node, identifier: 'field-pressable' } : node,
@@ -1558,18 +1614,18 @@ test('a valid wrapper fallback keeps native occlusion recovery and never types t
   );
   screen.keyboardVisible = true;
   screen.coverage = { native: 'complete', react: 'incomplete' };
-  const f = fake([screen], { press: [OCCLUDED, OCCLUDED] });
+  const f = fake([screen], {});
   f.deps.reactFocused = async () => false;
   f.deps.typeFocused = async () => assert.fail('covered wrapper cannot type');
   const outcome = await walkBlock(block('1. Fill "field" with "x"\n'), f.deps);
   assert.equal(outcome.block.outcome, 'fail');
   assert.match(
     renderReason(outcome.failure?.seen ?? '', (text) => text),
-    /FOCUS_TARGET_OCCLUDED.*stayed off screen/,
+    /stayed off screen after one scroll: its centre is past the visible area or under the keyboard/,
   );
   assert.deepEqual(
     f.calls.filter((call) => call !== 'capture'),
-    ['press @submit', 'scroll down', 'press @submit'],
+    ['scroll down'],
   );
 });
 
