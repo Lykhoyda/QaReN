@@ -337,8 +337,13 @@ for (const Timeout of [CDPProbeTimeoutError, CDPHandshakeTimeoutError]) {
     syncBuiltinESMExports();
     t.mock.method(performance, 'now', () => now);
     let relaunched = 0;
+    let probes = 0;
     const deadlines: number[] = [];
     const { stop, steps } = harness({
+      appAlive: async () => {
+        probes++;
+        return true;
+      },
       readinessMs: 1000,
       remainingMs: () => 13_000 - now,
       attach: async (deadline) => {
@@ -366,6 +371,11 @@ for (const Timeout of [CDPProbeTimeoutError, CDPHandshakeTimeoutError]) {
     assert.equal(relaunched, 0, 'transient attempt timeouts do not relaunch immediately');
     await advance(500);
     assert.equal(relaunched, 1, 'exhausted readiness retains the existing relaunch recovery');
+    assert.equal(
+      probes,
+      0,
+      'a listed target that stays silent is relaunched without a liveness probe',
+    );
     await advance(500);
     assert.deepEqual(await admitted, PROVEN);
     assert.equal(new Set(deadlines).size, 1, 'relaunch must not renew the admission deadline');
@@ -478,6 +488,135 @@ test('cancellation during the retry driver probe prevents relaunch', async () =>
   };
   await assert.rejects(admit(steps, stop), { code: 'RUN_CANCELLED' });
   assert.deepEqual(calls, ['foreignDriver', 'close']);
+});
+
+test('a live app skips the one relaunch and admission keeps waiting', async () => {
+  const order: string[] = [];
+  let attempts = 0;
+  const { stop, steps } = harness({
+    attach: async () => {
+      order.push('attach');
+      if (++attempts < 3) throw new TargetReadinessTimeoutError('bundle still building');
+    },
+    foreignDriver: async () => {
+      order.push('foreignDriver');
+      return undefined;
+    },
+    appAlive: async () => {
+      order.push('appAlive');
+      return true;
+    },
+    relaunch: async () => {
+      order.push('relaunch');
+    },
+  });
+  assert.deepEqual(await admit(steps, stop), PROVEN);
+  assert.deepEqual(order, [
+    'attach',
+    'foreignDriver',
+    'appAlive',
+    'attach',
+    'attach',
+    'foreignDriver',
+  ]);
+});
+
+test('a skipped relaunch is recorded value-free with zero relaunches', async () => {
+  let remaining = 90_000;
+  const { stop, steps } = harness({
+    remainingMs: () => remaining,
+    attach: async () => {
+      throw new TargetReadinessTimeoutError('bundle still building');
+    },
+    appAlive: async () => {
+      remaining = 0;
+      return true;
+    },
+    relaunch: async () => assert.fail('a live app must not be relaunched'),
+  });
+  const error = await refusalOf(admit(steps, stop));
+  const { rest } = budget(error.meta!);
+  assert.deepEqual(rest, {
+    attempt: 2,
+    lastStarted: 'attach',
+    lastCompleted: 'retry_wait',
+    inner: 'target_readiness_timeout',
+    relaunches: 0,
+    relaunchFailed: false,
+    liveness: 'alive',
+  });
+});
+
+test('a dead app gets the one relaunch as before', async () => {
+  const order: string[] = [];
+  let relaunched = 0;
+  const { stop, steps } = harness({
+    attach: async () => {
+      order.push('attach');
+      if (!relaunched) throw new TargetReadinessTimeoutError('no target');
+    },
+    foreignDriver: async () => {
+      order.push('foreignDriver');
+      return undefined;
+    },
+    appAlive: async () => {
+      order.push('appAlive');
+      return false;
+    },
+    relaunch: async () => {
+      order.push('relaunch');
+      relaunched++;
+    },
+  });
+  assert.deepEqual(await admit(steps, stop), PROVEN);
+  assert.equal(relaunched, 1);
+  assert.deepEqual(order, [
+    'attach',
+    'foreignDriver',
+    'appAlive',
+    'relaunch',
+    'attach',
+    'foreignDriver',
+  ]);
+});
+
+test('a failing liveness probe relaunches and records the failure without its detail', async () => {
+  let remaining = 90_000;
+  const { stop, steps } = harness({
+    remainingMs: () => remaining,
+    attach: async () => {
+      throw new TargetReadinessTimeoutError('no target');
+    },
+    appAlive: async () => {
+      throw new Error('launchctl PRIVATE-udid failed');
+    },
+    relaunch: async () => {
+      remaining = 0;
+    },
+  });
+  const error = await refusalOf(admit(steps, stop));
+  assert.equal(error.code, 'CDP_NOT_CONNECTED');
+  const { rest } = budget(error.meta!);
+  assert.deepEqual(rest, {
+    attempt: 2,
+    lastStarted: 'attach',
+    lastCompleted: 'retry_wait',
+    inner: 'target_readiness_timeout',
+    relaunches: 1,
+    relaunchFailed: false,
+    liveness: 'probe_failed',
+  });
+  assert.doesNotMatch(JSON.stringify(error.meta) + error.message, /PRIVATE/);
+});
+
+test('a target that registers in time never probes the app', async () => {
+  const { calls, stop, steps } = harness();
+  steps.appAlive = async () => {
+    calls.push('appAlive');
+    return true;
+  };
+  assert.deepEqual(await admit(steps, stop), PROVEN);
+  assert.deepEqual(calls, ['attach', 'foreignDriver', 'open', 'prove']);
 });
 
 test('a first launch waits on React readiness while Metro still builds the bundle', async () => {
@@ -918,6 +1057,7 @@ test('a platform selection refusal keeps the public refusal and records its clas
     inner: 'target_selection_platform_not_found',
     relaunches: 0,
     relaunchFailed: false,
+    liveness: 'not_probed',
     inference: SUMMARY,
   });
   assert.ok(remainingMs > 0);
@@ -950,6 +1090,7 @@ test('a deadline during origin proof after one transient attach records the stal
     inner: 'cdp_probe_timeout',
     relaunches: 0,
     relaunchFailed: false,
+    liveness: 'not_probed',
   });
   assert.equal(remainingMs, 0);
 });
@@ -993,6 +1134,7 @@ test('a relaunch followed by a deterministic failure records one relaunch and tw
     inner: 'untyped',
     relaunches: 1,
     relaunchFailed: false,
+    liveness: 'not_probed',
   });
 });
 
@@ -1014,6 +1156,7 @@ test('a failed relaunch records the relaunch boundary and failure without its de
     inner: 'target_readiness_timeout',
     relaunches: 1,
     relaunchFailed: true,
+    liveness: 'not_probed',
   });
   assert.doesNotMatch(JSON.stringify(error.meta), /simctl/);
 });
@@ -1055,6 +1198,7 @@ test('the admission refusal line round-trips allowlisted facts', () => {
     inner: 'target_selection_platform_not_found',
     relaunches: 0,
     relaunchFailed: false,
+    liveness: 'alive',
     elapsedMs: 45_513,
     remainingMs: 254_487,
     budgetMs: 300_000,
@@ -1079,6 +1223,7 @@ test('the admission refusal line never copies a value outside its allowlist', ()
     inner: 'http://private.example/bundle',
     relaunches: -1,
     relaunchFailed: 'com.private.app',
+    liveness: 'PRIVATE-udid',
     elapsedMs: 1e300,
     remainingMs: 1.5,
     budgetMs: 'PRIVATE-udid',
@@ -1109,6 +1254,7 @@ test('the admission refusal line never copies a value outside its allowlist', ()
   assert.equal(record.attachStage, undefined);
   assert.equal(record.relaunches, 'unknown');
   assert.equal(record.relaunchFailed, 'unknown');
+  assert.equal(record.liveness, 'unknown');
   assert.equal(record.elapsedMs, 'unknown');
   assert.equal(record.remainingMs, 'unknown');
   assert.equal(record.inference.readers.androidPackages, 'unknown');
