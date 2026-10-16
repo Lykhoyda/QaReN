@@ -1028,6 +1028,11 @@ That budget is shared with launch readiness; retries do not reset it. Each call
 keeps its existing timeout, capped by the remaining budget, and cancellation
 preempts retries. The receipt records every attempt's outcome and duration;
 readiness still requires the existing Metro and app-process probes.
+The cached iOS dev-client install shares that budget, which starts before the
+install: after each timed-out `simctl install` the installed app container is
+accepted when its content hash equals the cached artifact's (`install_proof`),
+otherwise the install is re-issued. Only another install error or a spent
+budget fails with `ARTIFACT_INSTALL_FAILED`, and a timeout keeps the cache.
 Host load is diagnostic only. Other
 manifest and launch errors remain `BUILD_FAILED`. Cleanup retained resources
 before retrying.
