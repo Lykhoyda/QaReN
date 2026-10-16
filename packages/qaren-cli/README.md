@@ -425,11 +425,15 @@ it is never recovered, retried or re-walked,
 including for stored replay selectors and for a handler that finds twins at dispatch. A text element
 that is the sole text descendant of matching labelled ancestors links to the
 nearest action candidate: enabled and either hittable or offscreen for scrolling.
+On Android, this also applies when an ancestor has other text descendants but
+exactly one same-label heading re-kinded from `other` to `text` by the
+[native heading fact](#plan-checks-and-screen-evidence), as on a titled card.
 When that candidate is among the matches, the text and other same-label ancestors
 collapse into it, including layout and press-capable but non-hittable wrappers.
 This applies to quoted presses and stored text-selector replay; it does not grant
-native tap eligibility to a wrapper. A container without a testID that encloses
-(by tree or frame) exactly one same-label action candidate, such as the
+native tap eligibility to a wrapper. A differently labelled heading stays distinct,
+and a heading's own unique testID still names that heading. A container without a
+testID that encloses (by tree or frame) exactly one same-label action candidate, such as the
 full-screen element iOS can label like the first control, is that control's
 echo. When nothing matches exactly, a quoted press target equal to one whole
 comma-separated segment of exactly one actionable element's merged label (for
@@ -754,10 +758,9 @@ On Android API 28 and later, the runner exports `heading: true` when
 `other` node with that fact as `text`, so visible React Native
 `<Text accessibilityRole="header">` content can satisfy a literal check even
 when its native class is `android.view.View`. Already typed controls keep their
-kind. A heading text that repeats the label of a control it sits inside, as on
-a titled card, folds into that control, so a press by that label still names
-the control alone. Earlier Android APIs omit the heading fact; other roles
-mapped to `android.view.View` receive no special treatment. This fact does not
+kind. For presses by a repeated heading label, see the
+[target-resolution rules](#check-a-plan). Earlier Android APIs omit the heading
+fact; other roles mapped to `android.view.View` receive no special treatment. This fact does not
 populate the heading evidence used by phrase checks.
 
 A visible, hittable native `Other` element with
