@@ -3,7 +3,7 @@ import { TYPOGRAPHY_TEXT_LIMITS } from './qa/host-typography.js';
 import { INPUT_HOST_TYPES } from './qa/input-host-types.js';
 
 // Bump when the injected surface changes so warm runtimes replace stale helpers.
-export const HELPERS_VERSION = 96;
+export const HELPERS_VERSION = 97;
 
 export const INJECTED_HELPERS = `
 (function() {
@@ -1228,6 +1228,45 @@ export const INJECTED_HELPERS = `
       if (!typography.incompleteCause) typography.incompleteCause = cause;
     }
 
+    // A failed safe read never skips: it only means this fiber is walked as before.
+    function routeRead(object, key) {
+      try { return qaData(object, key, true); } catch (e) { return undefined; }
+    }
+    var UNKNOWN_DISPLAY = {};
+    var MISSING_DISPLAY = {};
+    function styleRead(object, key) {
+      try { return key in object ? qaData(object, key, true) : MISSING_DISPLAY; } catch (e) { return UNKNOWN_DISPLAY; }
+    }
+    function resolvedDisplay(style, depth) {
+      if (style === UNKNOWN_DISPLAY) return UNKNOWN_DISPLAY;
+      if (style === MISSING_DISPLAY || !style || typeof style !== 'object') return MISSING_DISPLAY;
+      if (depth > 16) return UNKNOWN_DISPLAY;
+      if (Array.isArray(style)) {
+        var shown = MISSING_DISPLAY;
+        for (var di = 0; di < style.length; di++) {
+          if (di >= 64) return UNKNOWN_DISPLAY;
+          var part = resolvedDisplay(styleRead(style, String(di)), depth + 1);
+          if (part !== MISSING_DISPLAY) shown = part;
+        }
+        return shown;
+      }
+      return styleRead(style, 'display');
+    }
+    // A provably inactive route is off the visible screen; skipping it only loses digest semantics.
+    function inactiveRoute(fiber) {
+      var props = routeRead(fiber, 'memoizedProps');
+      if (!props || typeof props !== 'object') return false;
+      var inactive = routeRead(props, 'activityState') === 0;
+      var invisible = routeRead(props, 'visible') === false;
+      if (inactive || invisible) {
+        var routeName = getName(fiber) || '';
+        var routeBase = routeName.slice(routeName.lastIndexOf('.') + 1);
+        if (inactive && (routeBase === 'Screen' || routeBase === 'InnerScreen' || routeBase === 'RNSScreen')) return true;
+        if (invisible && (routeBase === 'MaybeScreen' || routeBase === 'ScreenContainer')) return true;
+      }
+      return isHostFiber(fiber) && resolvedDisplay(routeRead(props, 'style'), 0) === 'none';
+    }
+
     var typographyOverlayVisits = 0;
     function hasErrorOverlay(fiber, depth) {
       if (typography) {
@@ -1242,7 +1281,7 @@ export const INJECTED_HELPERS = `
           var nodeName = getName(node);
           if (nodeName === 'LogBox' || nodeName === 'ErrorWindow' || nodeName === 'RedBox') return true;
           if (pending.length >= 5000) { typographyIncomplete('overlay-scan-cap'); return false; }
-          if (node.child) pending.push(node.child);
+          if (node.child && !inactiveRoute(node)) pending.push(node.child);
           if (node.sibling) pending.push(node.sibling);
         }
         return false;
@@ -1471,44 +1510,6 @@ export const INJECTED_HELPERS = `
         hostEvidence.hosts.push(host);
         if (hostEvidence.hosts.length === ${PRIVATE_INPUT_LIMITS.maxHosts}) hostEvidence.complete = false;
         return hostEvidence.hosts.length - 1;
-      }
-      // A failed safe read never skips: it only means this fiber is walked as before.
-      function routeRead(object, key) {
-        try { return qaData(object, key, true); } catch (e) { return undefined; }
-      }
-      var UNKNOWN_DISPLAY = {};
-      var MISSING_DISPLAY = {};
-      function styleRead(object, key) {
-        try { return key in object ? qaData(object, key, true) : MISSING_DISPLAY; } catch (e) { return UNKNOWN_DISPLAY; }
-      }
-      function resolvedDisplay(style, depth) {
-        if (style === UNKNOWN_DISPLAY) return UNKNOWN_DISPLAY;
-        if (style === MISSING_DISPLAY || !style || typeof style !== 'object') return MISSING_DISPLAY;
-        if (depth > 16) return UNKNOWN_DISPLAY;
-        if (Array.isArray(style)) {
-          var shown = MISSING_DISPLAY;
-          for (var di = 0; di < style.length; di++) {
-            if (di >= 64) return UNKNOWN_DISPLAY;
-            var part = resolvedDisplay(styleRead(style, String(di)), depth + 1);
-            if (part !== MISSING_DISPLAY) shown = part;
-          }
-          return shown;
-        }
-        return styleRead(style, 'display');
-      }
-      // A provably inactive route is off the visible screen; skipping it only loses digest semantics.
-      function inactiveRoute(fiber) {
-        var props = routeRead(fiber, 'memoizedProps');
-        if (!props || typeof props !== 'object') return false;
-        var inactive = routeRead(props, 'activityState') === 0;
-        var invisible = routeRead(props, 'visible') === false;
-        if (inactive || invisible) {
-          var routeName = getName(fiber) || '';
-          var routeBase = routeName.slice(routeName.lastIndexOf('.') + 1);
-          if (inactive && (routeBase === 'Screen' || routeBase === 'InnerScreen' || routeBase === 'RNSScreen')) return true;
-          if (invisible && (routeBase === 'MaybeScreen' || routeBase === 'ScreenContainer')) return true;
-        }
-        return isHostFiber(fiber) && resolvedDisplay(routeRead(props, 'style'), 0) === 'none';
       }
       var iRoots = findAllRootFibers(typography);
       var iBudget = privateCapture ? 5000 : Math.min(5000, 2000 * Math.max(1, iRoots.length));

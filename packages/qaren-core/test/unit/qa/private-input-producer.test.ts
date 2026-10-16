@@ -1155,21 +1155,20 @@ function refusal(api: { beginQaCapture: (typography?: boolean) => Record<string,
 
 test('typography-incomplete refusals name the first fixed site without app strings', () => {
   const overlay = setup({}, 'RCTView');
-  const hidden = composite('Screen', { activityState: 0 });
-  link(overlay.fiber, [hidden]);
-  link(
-    hidden,
-    Array.from({ length: 5100 }, () => composite('Row', { accessibilityLabel: leak })),
-  );
+  // The overlay walk follows the root fiber's siblings; the digest walks only its children.
+  link(composite('Shell'), [
+    overlay.fiber,
+    ...Array.from({ length: 5100 }, () => composite('Row', { accessibilityLabel: leak })),
+  ]);
   assert.deepEqual(refusal(overlay.api), {
     cause: 'overlay-scan-cap',
-    scanned: 2,
+    scanned: 1,
     budget: 5000,
     roots: 1,
     hosts: 1,
     interactive: 0,
     queued: 0,
-    pruned: 1,
+    pruned: 0,
   });
 
   const opaque = setup({ title: { text: leak } }, 'RCTView');
