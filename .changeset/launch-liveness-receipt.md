@@ -2,4 +2,4 @@
 "qaren": patch
 ---
 
-Check the iOS dev-client process before the admission relaunch and before a timed-out launch retry, so a live app is never terminated without a receipt.
+Preserve a live iOS dev client during missing-target admission waits and accept its app-job receipt after a timed-out launch instead of retrying the launch.
