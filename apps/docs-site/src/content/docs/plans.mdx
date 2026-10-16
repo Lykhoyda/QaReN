@@ -82,7 +82,7 @@ password manager's CLI; qaren does not read `.env` files or resolve references.
 - Input echoes can refuse `CORE_REFUSED` under the CLI guide's
   [runtime-input hash protections](https://github.com/Lykhoyda/rn-dev-agent/blob/develop/packages/qaren-cli/README.md#runtime-inputs),
   which match whole values rather than partial echoes. The same protections apply to the
-  plan, configured login block and app id. A value that cannot be used (shorter than
+  plan, configured login block and app id. The field a step fills may display the value; that field's own text is hashed as a constant marker so the run continues. If the app shows the value anywhere else, in another label or an identifier, or the plan, the login block or the app id contains it, the run refuses `CORE_REFUSED` with `runtime input privacy refused`. A value that cannot be used (shorter than
   three characters after trimming, too long, or a reference) refuses
   `CORE_REFUSED` with `runtime inputs are invalid`.
 - `QAREN_INPUT_*` variables required by neither the plan nor the compatible configured

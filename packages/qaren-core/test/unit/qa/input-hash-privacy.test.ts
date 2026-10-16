@@ -201,3 +201,101 @@ test('whole-value guard refuses whole echoes and accepts partial ones', (t) => {
     syncBuiltinESMExports();
   }
 });
+
+test("the filled field's own echo hashes as a constant", (t) => {
+  const email = 'qa-synth-1234@example.test';
+  const original = crypto.createHash;
+  let calls = 0;
+  t.mock.method(crypto, 'createHash', (...args: Parameters<typeof crypto.createHash>) => {
+    calls++;
+    return original(...args);
+  });
+  syncBuiltinESMExports();
+  try {
+    const field = (label: string, over: Record<string, unknown> = {}) => [
+      node,
+      {
+        ...node,
+        index: 1,
+        type: 'android.widget.EditText',
+        identifier: 'login_email',
+        label,
+        ...over,
+      },
+    ];
+    const hashWith = (values: Record<string, string>, label: string, over = {}, bind = true) => {
+      const inputs = new RunInputs(values, Object.keys(values));
+      if (bind) inputs.expectEcho('login_email');
+      return withInputs(inputs, () => hashSnapshotNodes(field(label, over)));
+    };
+    calls = 0;
+    const first = hashWith({ EMAIL: email, OTP: '482913' }, email);
+    const second = hashWith(
+      { EMAIL: 'other-user@example.test', OTP: '482913' },
+      'other-user@example.test',
+    );
+    assert.equal(calls, 2);
+    assert.equal(first, second);
+    assert.notEqual(first, hashWith({ EMAIL: email, OTP: '482913' }, 'Email'));
+    const nfc = 'caf\u00e9-synth-user';
+    assert.equal(hashWith({ EMAIL: nfc }, nfc.normalize('NFD')), first);
+    const quoted = 'left"right-synth';
+    assert.equal(hashWith({ EMAIL: quoted }, JSON.stringify(quoted).slice(1, -1)), first);
+    assert.equal(hashWith({ EMAIL: email, OTP: '482913' }, '4 8 2 9 1 3'), first);
+    for (const [label, over, bind] of [
+      [email, { identifier: 'welcome_label', type: 'android.widget.TextView' }, true],
+      ['Email', { identifier: email }, true],
+      [email, { identifier: undefined }, true],
+      [email, {}, false],
+    ] as const) {
+      calls = 0;
+      assert.throws(() => hashWith({ EMAIL: email }, label, over, bind), InputPrivacyRefusal);
+      assert.equal(calls, 0);
+    }
+    const secure = { type: 'SecureTextField', identifier: 'login_password' };
+    const dots = '\u2022'.repeat(8);
+    assert.equal(
+      hashWith({ EMAIL: email }, dots, secure),
+      hashWith({ EMAIL: email }, dots, secure, false),
+    );
+  } finally {
+    t.mock.restoreAll();
+    syncBuiltinESMExports();
+  }
+});
+
+test('a registered fill target lets the runner snapshot hash and keep its refs', async () => {
+  const digests: string[] = [];
+  for (const value of ['qa-synth-1234@example.test', 'other-user@example.test']) {
+    clearRefMap();
+    _setFastRunnerStateForTest({
+      schemaVersion: 1,
+      pid: process.pid,
+      port: 22090,
+      deviceId: 'TEST-UDID',
+      bundleId: 'com.test',
+      startedAt: '',
+      protocolVersion: 1,
+    });
+    _setFetchForTest(
+      async () =>
+        new Response(
+          JSON.stringify({
+            ok: true,
+            v: 1,
+            data: { nodes: [node, { ...node, index: 1, identifier: 'login_email', label: value }] },
+          }),
+        ),
+    );
+    const inputs = new RunInputs({ EMAIL: value }, ['EMAIL']);
+    inputs.expectEcho('login_email');
+    await withInputs(inputs, () => runIOS({ command: 'snapshot', bundleId: 'com.test' }));
+    const digest = getLastSnapshotHash();
+    assert.equal(typeof digest, 'string');
+    assert.equal(hasRefMap(), true);
+    digests.push(digest!);
+  }
+  assert.equal(digests[0], digests[1]);
+  _setFetchForTest(globalThis.fetch);
+  _setFastRunnerStateForTest(null);
+});

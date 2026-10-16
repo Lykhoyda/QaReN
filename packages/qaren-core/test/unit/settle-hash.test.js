@@ -1,6 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { hashSnapshotNodes } from '../../dist/lifecycle/settle-hash.js';
+import { RunInputs, withInputs } from '../../dist/qa/inputs.js';
 
 const node = (over = {}) => ({
   ref: '@e0',
@@ -78,4 +79,15 @@ test('node added/removed changes the hash', () => {
 
 test('empty list hashes deterministically', () => {
   assert.equal(hashSnapshotNodes([]), hashSnapshotNodes([]));
+});
+
+test('a registered field label echo does not change the digest between two values', () => {
+  const digest = (value) => {
+    const inputs = new RunInputs({ EMAIL: value }, ['EMAIL']);
+    inputs.expectEcho('login_email');
+    return withInputs(inputs, () =>
+      hashSnapshotNodes([node(), node({ identifier: 'login_email', label: value })]),
+    );
+  };
+  assert.equal(digest('qa-synth-1234@example.test'), digest('other-user@example.test'));
 });

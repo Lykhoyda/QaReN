@@ -270,3 +270,26 @@ test('the preflight child reports a privacy refusal distinctly from an invalid r
   assert.equal(malformed.status, 4);
   assert.equal(JSON.parse(malformed.stdout.toString()).message, 'runtime input preflight refused');
 });
+
+test('a filled field slot block stays name-only and value-independent', () => {
+  const plan = '# Login\n1. Fill "login_email" with input QA_EMAIL\n';
+  const outputs = ['qa-synth-1234@example.test', 'other-user@example.test'].map((value) => {
+    const privacy = new ObservedPrivacy();
+    privacy.classifyInputs([value]);
+    privacy.didFill(value);
+    const block = parsePlan(plan).blocks![0];
+    const saved = serializeBlock(
+      block,
+      [{ block: block.slug, line: 2, outcome: 'pass', selector: { id: 'login_email' } }],
+      { appId: 'com.test', platform: 'ios' },
+      privacy.privateSet('persisted'),
+    );
+    assert.ok('yaml' in saved);
+    assert.ok(!saved.yaml.includes(value));
+    const stored = readBlock(saved.yaml);
+    assert.ok(!('invalid' in stored));
+    assert.equal(stored.steps[0].input, 'QA_EMAIL');
+    return [saved.yaml, preparePlan(plan, [block]).hash];
+  });
+  assert.deepEqual(outputs[0], outputs[1]);
+});

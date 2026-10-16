@@ -1119,7 +1119,7 @@ file, reference or secret store.
   contains the whole value in its raw, trimmed, NFC, NFD or JSON-escaped form, or a numeric
   value's complete digit sequence with only separators between; partial echoes do not
   refuse. Plan hashes do the same for plan text. The refusal detail starts
-  `runtime input privacy refused` and never names the value.
+  `runtime input privacy refused` and never names the value. The field a step fills may display the value; that field's own text is hashed as a constant marker so the run continues. If the app shows the value anywhere else, in another label or an identifier, or the plan, the login block or the app id contains it, the run refuses `CORE_REFUSED` with `runtime input privacy refused`.
   Accepted operands and digests are unchanged. Repository and host provenance hashes, such
   as the lockfile, dirty-file, config and session-path hashes, keep their exact bytes. The
   settle engine no longer uses the iOS screenshot-equality tier; it settles on the Android

@@ -943,6 +943,7 @@ export async function walkBlock(
         after.screen,
       );
     let entry: ActResult;
+    currentInputs()?.expectEcho(again.element.testID ?? again.oracleTestID);
     try {
       entry = await mutate(item, after, (context) =>
         deps.typeFocused!(
@@ -1007,6 +1008,7 @@ export async function walkBlock(
     privacy.concealFallback(fillText(item), false, quoted);
     if (item.input === undefined) privateFills.push(item.line);
     let entry: ActResult;
+    currentInputs()?.expectEcho(quoted);
     try {
       entry = await mutate(item, before, (context) =>
         deps.typeFocused!(quoted, fillText(item), quoted, context, true),
@@ -1562,6 +1564,7 @@ export async function walkBlock(
                 if (item.input === undefined && !privateFills.includes(item.line))
                   privateFills.push(item.line);
               }
+              if (item.kind === 'fill') currentInputs()?.expectEcho(element?.testID);
               act = await mutate(item, before, (context) =>
                 item.kind === 'press'
                   ? deps.press(ref!, context)

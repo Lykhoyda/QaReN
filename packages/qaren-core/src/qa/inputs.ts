@@ -13,8 +13,11 @@ export class InputPrivacyRefusal extends Error {
   }
 }
 
+export const INPUT_ECHO_MARKER = '[runtime input]';
+
 export class RunInputs {
   #values: ReadonlyMap<string, string>;
+  #filled = new Set<string>();
   #privacy: ObservedPrivacy;
   #refuse?: (reason: InputPrivacyRefusal) => void;
   #terminal?: InputPrivacyRefusal;
@@ -83,6 +86,18 @@ export class RunInputs {
     this.#refuse?.(this.#terminal);
     throw this.#terminal;
   }
+  expectEcho(identifier: string | undefined): void {
+    if (identifier) this.#filled.add(identifier);
+  }
+  // The field QaReN typed into shows the value by design; its label hashes as a constant.
+  maskFilledEcho<T extends { identifier?: string; label?: string }>(node: T): T {
+    return node.identifier !== undefined &&
+      node.label !== undefined &&
+      this.#filled.has(node.identifier) &&
+      !this.#privacy.assertInputHashSafe(node.label)
+      ? { ...node, label: INPUT_ECHO_MARKER }
+      : node;
+  }
   toJSON(): never {
     throw new Error('runtime inputs cannot be serialized');
   }
@@ -95,6 +110,8 @@ const scope = new AsyncLocalStorage<RunInputs>();
 export const withInputs = <T>(inputs: RunInputs, operation: () => T): T =>
   scope.run(inputs, operation);
 export const currentInputs = (): RunInputs | undefined => scope.getStore();
+export const maskFilledEcho = <T extends { identifier?: string; label?: string }>(node: T): T =>
+  scope.getStore()?.maskFilledEcho(node) ?? node;
 export function assertInputHashSafe(text: string): void {
   scope.getStore()?.assertHashSafe(text);
 }

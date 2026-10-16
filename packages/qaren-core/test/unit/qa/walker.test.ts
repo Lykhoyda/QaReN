@@ -2,7 +2,14 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { parsePlan } from '../../../dist/qa/plan.js';
 import { join as joinScreen, type Screen } from '../../../dist/qa/screen.js';
-import { choice, scriptedJudge } from './judgment-fixtures.ts';
+import {
+  choice,
+  scriptedJudge,
+  element as fixtureElement,
+  screen as fixtureScreen,
+  walker as fixtureWalker,
+} from './judgment-fixtures.ts';
+import { RunInputs, withInputs } from '../../../dist/qa/inputs.js';
 import { renderReason } from '../../../dist/qa/untrusted.js';
 import type { WalkSequence } from '../../../dist/qa/walker.js';
 import { runPlan, walkBlock } from '../../../dist/qa/walker.js';
@@ -816,3 +823,31 @@ for (const refusal of ['unsettled', 'different retry'] as const) {
     }
   });
 }
+
+test('a slot fill registers its dispatched identifier before the fill runs', async () => {
+  for (const [testID, target, expected] of [
+    ['login_email', 'login_email', 'login_email'],
+    [undefined, 'Email', undefined],
+  ] as const) {
+    const field = fixtureElement('@e1', 'Email', {
+      kind: 'input',
+      ...(testID ? { testID } : {}),
+    });
+    const f = fixtureWalker([fixtureScreen([field])], scriptedJudge([]));
+    const events: string[] = [];
+    const fill = f.deps.fill;
+    f.deps.fill = async (...args) => {
+      events.push('fill');
+      return fill(...args);
+    };
+    const inputs = new RunInputs({ QA_EMAIL: 'qa-synth-1234@example.test' }, ['QA_EMAIL']);
+    const register = inputs.expectEcho?.bind(inputs);
+    inputs.expectEcho = (identifier?: string) => {
+      events.push(`echo ${identifier}`);
+      register?.(identifier);
+    };
+    const block = parsePlan(`# Login\n1. Fill "${target}" with input QA_EMAIL\n`).blocks![0];
+    await withInputs(inputs, () => walkBlock(block, f.deps));
+    assert.deepEqual(events, [`echo ${expected}`, 'fill']);
+  }
+});

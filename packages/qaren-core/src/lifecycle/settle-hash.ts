@@ -1,4 +1,4 @@
-import { assertInputHashSafe } from '../qa/inputs.js';
+import { assertInputHashSafe, maskFilledEcho } from '../qa/inputs.js';
 import { createHash } from 'node:crypto';
 import type { FlatNode } from '../fast-runner-ref-map.js';
 
@@ -22,11 +22,12 @@ export function normalizeNodeForHash(node: FlatNode): string {
 
 export function hashSnapshotNodes(nodes: FlatNode[]): string {
   // Guard observation/input operands; repository and host provenance hashes retain their exact bytes.
-  for (const node of nodes) {
+  const projected = nodes.map(maskFilledEcho);
+  for (const node of projected) {
     for (const text of [node.identifier, node.type, node.label])
       if (typeof text === 'string') assertInputHashSafe(text);
   }
-  const tuples = nodes.map(normalizeNodeForHash);
+  const tuples = projected.map(normalizeNodeForHash);
   tuples.forEach(assertInputHashSafe);
   const h = createHash('sha256');
   for (const tuple of tuples) {
