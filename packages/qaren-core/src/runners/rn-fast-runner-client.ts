@@ -1003,7 +1003,6 @@ export async function awaitChildExit(child: ChildProcess | null, graceMs = 5000)
 export async function stopFastRunner(deviceId?: string, signal?: AbortSignal): Promise<void> {
   adoptPersistedFastRunnerState(deviceId);
   await reapStaleFastRunner({ signal });
-  removeRunnerResultBundles();
 }
 
 // Mirrors RN_FAST_RUNNER_APP_BUNDLE_ID in RnFastRunner.xcodeproj.
@@ -1535,11 +1534,17 @@ export async function reapStaleFastRunner(deps: ReapDeps = {}): Promise<void> {
   const getState = deps.getState ?? (() => runnerState);
   const sendSignal = deps.sendSignal ?? ((pid, sig) => process.kill(pid, sig));
   const sleep = deps.sleep ?? cancellableSleep;
-  const clearState = deps.clearState ?? clearStateFileIfMatches;
+  const clearState = (expected: StateSnapshot): void => {
+    (deps.clearState ?? clearStateFileIfMatches)(expected);
+    removeRunnerResultBundles();
+  };
   const graceMs = deps.graceMs ?? 500;
 
   const state = getState();
-  if (!state) return;
+  if (!state) {
+    removeRunnerResultBundles();
+    return;
+  }
   const expectedBirth =
     typeof state.processBirth === 'string' ? { pid: state.pid, token: state.processBirth } : null;
   if (!expectedBirth) {
