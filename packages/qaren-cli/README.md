@@ -1222,7 +1222,9 @@ fallback anywhere in the same run are checked under those rules.
 A matching block title, header field, raw comment, fill
 literal, literal assertion or stored selector withholds the block rather than
 rewriting its bytes, including matches to filled-secret fragments under the
-[shared masking rules](#input-value-masking). Structural plan numbering is
+[shared masking rules](#input-value-masking). Runtime input values match whole for
+these persistence decisions; partial echoes alone do not withhold a block, while
+output masking still covers fragments. Structural plan numbering is
 excluded from matching. The final serialized YAML check matches complete
 protected values; generated command syntax does not enable fragment withholding.
 The value-free reason is
@@ -1282,6 +1284,8 @@ refuses inspection and is not overwritten by `check`. These inspection commands
 refuse symlinked corpora and action files. Inspection header validity and defaults follow the
 [core header parser](../qaren-core/src/domain/reusable-action.ts); `list` skips
 invalid headers and `show` refuses them.
+Both commands mask values from the invocation's `QAREN_INPUT_` namespace in stdout,
+including values not required by a plan.
 
 The TypeScript action store used by saved-block reads, replay and writes normally
 uses a real `.qaren/actions` directory. A linked Git
