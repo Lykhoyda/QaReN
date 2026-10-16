@@ -1115,12 +1115,18 @@ file, reference or secret store.
 - With any input namespace present, subprocess logs hold one withheld marker, preflight and
   core output excerpts are withheld, and native runner output tails are not retained. A run
   that requires inputs skips recording and screenshots.
-- Snapshot hashes refuse `CORE_REFUSED` before any hashing when an identifier, type or label
-  contains the whole value in its raw, trimmed, NFC, NFD or JSON-escaped form, or a numeric
+- Before a fill dispatch, the walker registers the target's identifier when available.
+  Snapshot hashing replaces a registered target's label with a constant marker when it
+  contains a whole runtime input value. The value never enters the hash; different values
+  produce the same marker. Labels without a registered identifier, and all identifiers
+  and types, remain subject to the guard below.
+- Snapshot hashes refuse `CORE_REFUSED` before any hashing when an identifier, type or
+  unmasked label contains the whole value in its raw, trimmed, NFC, NFD or JSON-escaped form, or a numeric
   value's complete digit sequence with only separators between; partial echoes do not
   refuse. Plan hashes do the same for plan text. The refusal detail starts
-  `runtime input privacy refused` and never names the value. The field a step fills may display the value; that field's own text is hashed as a constant marker so the run continues. If the app shows the value anywhere else, in another label or an identifier, or the plan, the login block or the app id contains it, the run refuses `CORE_REFUSED` with `runtime input privacy refused`.
-  Accepted operands and digests are unchanged. Repository and host provenance hashes, such
+  `runtime input privacy refused` and never names the value. The same guard applies to
+  the configured login block and app id. Apart from the registered-label projection,
+  accepted operands and digests are unchanged. Repository and host provenance hashes, such
   as the lockfile, dirty-file, config and session-path hashes, keep their exact bytes. The
   settle engine no longer uses the iOS screenshot-equality tier; it settles on the Android
   window gate or snapshot equality.
