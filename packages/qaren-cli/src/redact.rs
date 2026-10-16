@@ -82,26 +82,31 @@ pub fn durable_json<T: serde::Serialize>(value: &T) -> serde_json::Result<String
             serde_json::Value::String(s) => *s = redact_inputs(s),
             serde_json::Value::Array(items) => items.iter_mut().for_each(inputs),
             serde_json::Value::Object(map) => {
-                for (key, value) in map {
-                    if ![
-                        "verdict",
-                        "result",
-                        "code",
-                        "schema",
-                        "phase",
-                        "kind",
-                        "source",
-                        "path",
-                        "resolvedBy",
-                        "outcome",
-                        "videoPublication",
-                        "method",
-                    ]
-                    .contains(&key.as_str())
-                    {
-                        inputs(value);
-                    }
-                }
+                *map = std::mem::take(map)
+                    .into_iter()
+                    .map(|(key, mut value)| {
+                        if !value.is_string()
+                            || ![
+                                "verdict",
+                                "result",
+                                "code",
+                                "schema",
+                                "phase",
+                                "kind",
+                                "source",
+                                "path",
+                                "resolvedBy",
+                                "outcome",
+                                "videoPublication",
+                                "method",
+                            ]
+                            .contains(&key.as_str())
+                        {
+                            inputs(&mut value);
+                        }
+                        (redact_inputs(&key), value)
+                    })
+                    .collect();
             }
             _ => {}
         }

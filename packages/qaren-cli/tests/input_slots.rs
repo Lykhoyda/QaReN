@@ -152,6 +152,43 @@ fn missing_check_and_pr_inputs_refuse_before_device_run_claim_or_worktree_alloca
 }
 
 #[test]
+fn durable_json_redacts_input_keys_and_nested_values_under_protocol_keys() {
+    let secret = "synthetic-credential";
+    with_input_scope(owner(&[("QAREN_INPUT_PASSWORD", secret)]), || {
+        for key in [
+            "verdict",
+            "result",
+            "code",
+            "schema",
+            "phase",
+            "kind",
+            "source",
+            "path",
+            "resolvedBy",
+            "outcome",
+            "videoPublication",
+            "method",
+        ] {
+            let value = serde_json::json!({
+                key: {secret: secret},
+                "array": {key: [secret, {secret: secret}]},
+                "scalar": {key: secret},
+            });
+            let text = qaren::redact::durable_json(&value).unwrap();
+            let actual: serde_json::Value = serde_json::from_str(&text).unwrap();
+            assert_eq!(actual[key]["[REDACTED_INPUT]"], "[REDACTED_INPUT]", "{key}");
+            assert_eq!(actual["array"][key][0], "[REDACTED_INPUT]", "{key}");
+            assert_eq!(
+                actual["array"][key][1]["[REDACTED_INPUT]"],
+                "[REDACTED_INPUT]",
+                "{key}"
+            );
+            assert_eq!(actual["scalar"][key], secret, "{key}");
+        }
+    });
+}
+
+#[test]
 fn input_scope_redacts_scalars_and_restores_the_previous_owner() {
     let secret = "quote\"back\\sentinel";
     let inputs = owner(&[("QAREN_INPUT_PASSWORD", secret)]);
