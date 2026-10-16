@@ -1958,6 +1958,17 @@ function scrollBand(): { width: number; height: number } {
     : screen;
 }
 
+type Band = { x?: number; y?: number; width: number; height: number };
+
+// A caller-named band only narrows the keyboard-safe band, so the drag lands on the scrolled view.
+function dragBand(within?: Band): Band {
+  const band = scrollBand();
+  if (!within) return band;
+  const top = Math.max(within.y ?? 0, 0);
+  const bottom = Math.min((within.y ?? 0) + within.height, band.height);
+  return bottom > top ? { x: within.x, y: top, width: within.width, height: bottom - top } : band;
+}
+
 // Scroll direction → finger gesture is INVERTED vs swipe ("scroll down" = content
 // moves up = finger moves up) and scaled by `amount` (0..1). Centred half-spans
 // keep the gesture inside the viewport.
@@ -1965,11 +1976,11 @@ function scrollBand(): { width: number; height: number } {
 function computeScrollFromDirection(
   direction: 'up' | 'down' | 'left' | 'right',
   amount: number,
-  screen: { width: number; height: number },
+  screen: Band,
   distance?: number,
 ): { x1: number; y1: number; x2: number; y2: number } {
-  const cx = Math.round(screen.width / 2);
-  const cy = Math.round(screen.height / 2);
+  const cx = Math.round((screen.x ?? 0) + screen.width / 2);
+  const cy = Math.round((screen.y ?? 0) + screen.height / 2);
   const dy =
     distance !== undefined && Number.isFinite(distance) && distance > 0
       ? Math.round(Math.min(distance, screen.height * CLEARANCE_BAND_FRACTION))
@@ -1998,9 +2009,10 @@ export function buildDirectionalScrollCliArgs(
   amount?: number,
   durationMs?: number,
   distance?: number,
+  within?: Band,
 ): string[] {
   const clamped = Math.min(Math.max(amount ?? 0.5, 0), 1);
-  const coords = computeScrollFromDirection(direction, clamped, scrollBand(), distance);
+  const coords = computeScrollFromDirection(direction, clamped, dragBand(within), distance);
   const duration = durationMs ?? DEFAULT_SWIPE_DURATION_MS;
   return [
     'scroll',
@@ -2168,6 +2180,8 @@ interface ScrollArgs {
   amount?: number;
   // Pixels to move the content, for a keyboard clearance scroll.
   distance?: number;
+  // The visible part of the scrolled view; the drag starts inside it.
+  within?: Band;
 }
 
 export function createDeviceScrollHandler(): (args: ScrollArgs) => Promise<ToolResult> {
@@ -2177,7 +2191,7 @@ export function createDeviceScrollHandler(): (args: ScrollArgs) => Promise<ToolR
     const { x1, y1, x2, y2 } = computeScrollFromDirection(
       args.direction,
       amount,
-      scrollBand(),
+      dragBand(args.within),
       args.distance,
     );
     // GH #383: adopt persisted per-device state so a respawned worker sees a
@@ -2220,7 +2234,13 @@ export function createDeviceScrollHandler(): (args: ScrollArgs) => Promise<ToolR
     // builders throw on the raw direction form, so this previously crashed on
     // Android (always) and on the iOS fast-runner fallback.
     return runNative(
-      buildDirectionalScrollCliArgs(args.direction, args.amount, undefined, args.distance),
+      buildDirectionalScrollCliArgs(
+        args.direction,
+        args.amount,
+        undefined,
+        args.distance,
+        args.within,
+      ),
       { qaContext: args.qaContext },
     );
   });

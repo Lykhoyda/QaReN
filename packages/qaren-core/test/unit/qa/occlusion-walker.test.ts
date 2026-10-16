@@ -681,6 +681,83 @@ test('O6: a keyboard-cleared fill waits for the scroll to stop before dispatchin
   ]);
 });
 
+// A list stretched under the keyboard: its clip centre (550) lies below the keyboard top (500).
+function stretched(y: number): Screen {
+  return covered(
+    join(
+      [
+        ...root(),
+        {
+          ref: '@scroll',
+          index: 2,
+          parentIndex: 1,
+          type: 'ScrollView',
+          rect: { x: 0, y: 300, width: 400, height: 500 },
+        },
+        {
+          ref: '@target',
+          index: 3,
+          parentIndex: 2,
+          type: 'Button',
+          identifier: 'go',
+          label: 'Go',
+          hittable: true,
+          rect: { x: 20, y, width: 300, height: 44 },
+        },
+        {
+          ref: '@keyboard',
+          index: 4,
+          parentIndex: 1,
+          type: 'Keyboard',
+          hittable: true,
+          rect: { x: 0, y: 500, width: 400, height: 300 },
+        },
+      ],
+      [],
+    ),
+  );
+}
+
+function recordingScrolls(f: ReturnType<typeof fake>) {
+  const bands: unknown[] = [];
+  const scroll = f.deps.scroll;
+  f.deps.scroll = (direction, context, clearance, within) => {
+    bands.push(within);
+    return scroll(direction, context, clearance, within);
+  };
+  return bands;
+}
+
+test('a keyboard-covered row of a list stretched under the keyboard is lifted inside its visible band', async () => {
+  const f = fake([stretched(505), stretched(400), stretched(400), done()], {});
+  const bands = recordingScrolls(f);
+  const outcome = await walkBlock(block('1. Tap "go"\n'), f.deps);
+  assert.equal(outcome.block.outcome, 'pass');
+  assert.deepEqual(f.calls, [
+    'capture',
+    'scroll down',
+    'capture',
+    'capture',
+    'press @target',
+    'capture',
+  ]);
+  assert.deepEqual(bands, [{ x: 0, y: 300, width: 400, height: 200 }]);
+});
+
+test('a stretched-list row still covered after its clearance scroll refuses with one scroll and no press', async () => {
+  const f = fake([stretched(505), stretched(505)], {});
+  const outcome = await walkBlock(block('1. Tap "go"\n'), f.deps);
+  assert.equal(outcome.block.outcome, 'fail');
+  assert.deepEqual(
+    f.calls.filter((call) => call !== 'capture'),
+    ['scroll down'],
+  );
+  assert.match(
+    renderReason(outcome.failure?.seen ?? '', (text) => text),
+    /stayed off screen after one scroll/,
+  );
+});
+
 for (const kind of ['press', 'fill'] as const) {
   for (const axis of ['x', 'y'] as const) {
     for (const start of [80, 700]) {

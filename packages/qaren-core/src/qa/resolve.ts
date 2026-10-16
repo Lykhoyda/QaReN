@@ -4,6 +4,7 @@ import { hostPath } from './host-association.js';
 import {
   type Element,
   type Screen,
+  type NativeNode,
   type AssertionEvidence,
   type VisibilityBlockerDiagnostic,
   actionView,
@@ -331,12 +332,21 @@ export function keyboardClearance(element: Element, screen: Screen): number | un
   return centre >= keyboard.y ? centre - keyboard.y / 2 : undefined;
 }
 
-// An occluded target scrolls toward the screen centre: down from the lower half, up from the upper.
-export function clearanceScroll(element: Element): 'up' | 'down' {
-  const frame = elementFrame(element);
+// The part of a target's clip a finger can touch: above a visible keyboard.
+export function clearanceBand(element: Element, screen: Screen): NativeNode['rect'] {
   const viewport = elementViewport(element);
-  if (!frame || !viewport) return 'down';
-  return frame.y + frame.height / 2 >= viewport.y + viewport.height / 2 ? 'down' : 'up';
+  if (!viewport) return undefined;
+  const keyboard = screen.keyboardVisible !== false ? screen.keyboardFrame : undefined;
+  const bottom = Math.min(viewport.y + viewport.height, keyboard?.y ?? Infinity);
+  return bottom > viewport.y ? { ...viewport, height: bottom - viewport.y } : undefined;
+}
+
+// An occluded target scrolls toward the centre of the visible part of its clip.
+export function clearanceScroll(element: Element, screen: Screen): 'up' | 'down' {
+  const frame = elementFrame(element);
+  const band = clearanceBand(element, screen);
+  if (!frame || !band) return 'down';
+  return frame.y + frame.height / 2 >= band.y + band.height / 2 ? 'down' : 'up';
 }
 
 export function scrollUntilDirection(
