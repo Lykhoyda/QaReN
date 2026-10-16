@@ -794,8 +794,14 @@ occlusion evidence: see [Limitations](#limitations-recorded-not-papered-over).
 Quoted and phrase target resolution scrolls up when the target is wholly above
 its effective trusted clipping viewport, and down otherwise; without a known
 clip, the boundary remains screen y=0. Quoted scroll-until targets use that
-viewport when exactly one offscreen identity matches; otherwise they retain
-the requested direction.
+viewport when exactly one offscreen identity matches. A target wholly above
+the viewport scrolls up; one wholly below scrolls down. When its frame overlaps
+the viewport but it is reported not visible, as with an Android heading under
+the status bar, scrolling instead moves toward revealing it: up when its centre
+is above the viewport's midpoint, down when at or below it, regardless of the
+requested direction. With no single matching identity, an already visible
+target or no known viewport, the requested direction is retained. See the
+[scroll-until direction regressions](../qaren-core/test/unit/qa/scroll-until-direction.test.ts).
 
 Waits poll unresolved text as not yet present and end with `VISIBILITY_UNSURE`
 when the final evidence remains unsure. A quoted wait with at least two definite
