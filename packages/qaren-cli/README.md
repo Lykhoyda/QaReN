@@ -1048,6 +1048,10 @@ That budget is shared with launch readiness; retries do not reset it. Each call
 keeps its existing timeout, capped by the remaining budget, and cancellation
 preempts retries. The receipt records every attempt's outcome and duration;
 readiness still requires the existing Metro and app-process probes.
+After a timed-out iOS launch the app-process probe is taken before any retry; a
+present `launchctl` job is accepted as the launch (`launch_proof`) and readiness
+follows, so a launcher that outlives its bound never terminates an app that is
+already up.
 The cached iOS dev-client install shares that budget, which starts before the
 install. The owned `simctl install` gets the remaining preparation time instead
 of a fixed 120-second limit. After a timeout, the installed app container is
@@ -1384,7 +1388,10 @@ After an exhausted target-readiness wait, or persistent runtime-probe or
 WebSocket-handshake timeouts lasting through the readiness window, an iOS dev
 client can be relaunched once if the remaining deadline still covers a full
 readiness wait. Individual target-list timeouts and inspector page closures do
-not trigger relaunch. Immediately before relaunch it checks for a foreign driver;
+not trigger relaunch. Before a relaunch for a missing target, the dev client's
+process on the exact simulator is checked (`simctl spawn <udid> launchctl list`);
+a live process skips the relaunch and admission keeps waiting within the same
+deadline, and the refusal record notes `liveness`. Immediately before relaunch it checks for a foreign driver;
 a conflict refuses `BUSY_FOREIGN_FLOW`
 without relaunching. It relaunches on the exact simulator with the CLI's original
 `initialUrl` using `simctl launch --terminate-running-process`, then waits again
