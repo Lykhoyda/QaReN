@@ -348,6 +348,7 @@ class CommandDispatcher(
             selected = node.isSelected,
             checked = node.isChecked,
             password = node.isPassword,
+            heading = Build.VERSION.SDK_INT >= Build.VERSION_CODES.P && node.isHeading,
             children = children,
         )
     } catch (e: RuntimeException) {
@@ -405,6 +406,7 @@ class CommandDispatcher(
             .put("selected", node.selected)
             .put("visibleToUser", node.visibleToUser)
         if (node.secure) json.put("secure", true)
+        if (node.heading) json.put("heading", true)
         return json
     }
 

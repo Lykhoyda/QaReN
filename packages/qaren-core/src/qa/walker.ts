@@ -26,7 +26,7 @@ import {
   targetEvidence,
   visibleSelector,
 } from './resolve.js';
-import { literalEvidence } from './evidence.js';
+import { literalEvidence, type LiteralNearMiss } from './evidence.js';
 import { exactIdentities, focusIdentityOf } from './identity.js';
 import {
   type BlockPlatform,
@@ -227,6 +227,14 @@ const UNRECOVERABLE = new Set([
   'APP_PROCESS_CHANGED',
   'APP_PROCESS_UNKNOWN',
 ]);
+
+// Fixed text only: a literal failure repeats the plan's own literal and no app text.
+const NEAR_MISS: Record<LiteralNearMiss, string> = {
+  'not-visible':
+    ' (not-visible: a node with this text exists but is reported not visible or is outside the viewport)',
+  'not-literal-kind':
+    ' (not-literal-kind: a node with this text exists but is not counted as literal text)',
+};
 
 // Retry a mutation once only when read-back failed and the screen provably did not move.
 export async function walkBlock(
@@ -1166,10 +1174,14 @@ export async function walkBlock(
             });
             continue items;
           }
+          const nearMiss =
+            item.literal && decision.check === 'fail'
+              ? literalEvidence(before.screen, item.text, 'contains').nearMiss
+              : undefined;
           const reason =
             decision.check === 'unsure'
               ? 'CHECK_UNSURE: the expectation remained uncertain after a fresh-screen re-ask'
-              : `"${item.text}" is not satisfied on screen`;
+              : `"${item.text}" is not satisfied on screen${nearMiss ? NEAR_MISS[nearMiss] : ''}`;
           if (decision.check === 'unsure') {
             const recovering = await recovery(item, 1, reason);
             if (recovering === 'retry') continue attempts;

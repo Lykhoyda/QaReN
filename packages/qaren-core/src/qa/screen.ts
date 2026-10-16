@@ -164,6 +164,8 @@ export interface NativeNode {
   selected?: boolean;
   // Android only: a scrolled-out node keeps an empty clipped rect inside the viewport.
   visibleToUser?: boolean;
+  // Android only: the accessibility heading fact; header-role text is exposed as android.view.View.
+  heading?: boolean;
   secure?: boolean;
   value?: string;
   rect?: { x: number; y: number; width: number; height: number };
@@ -627,6 +629,7 @@ export function join(
       }
     }
     let kind = kindOf(n.type);
+    if (kind === 'other' && n.heading === true) kind = 'text';
     const nativeKind = kind;
     const nodeValue = nativeValue(n);
     const host = associatedHosts.get(nodeIndex);
