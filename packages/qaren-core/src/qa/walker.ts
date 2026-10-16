@@ -51,7 +51,11 @@ import {
 import { renderReason, segments, type Reason } from './untrusted.js';
 import { NativeSnapshotIncomplete, PrivateInputCaptureError } from './private-input.js';
 import { AppProcessGoneError, emitCaptureDiagnostics, NativeCaptureError } from './capture.js';
-import { QaDispatchContext, QaDispatchError } from '../domain/qa-dispatch.js';
+import {
+  QaDispatchContext,
+  QaDispatchError,
+  type QaDispatchDiagnostic,
+} from '../domain/qa-dispatch.js';
 import {
   admitObservation,
   observationDeadline,
@@ -164,6 +168,7 @@ export interface WalkerTimingDiagnostic {
   authorizations?: number;
   observation?: number;
   visibilityBlocker?: VisibilityBlockerDiagnostic;
+  refusalDiagnostic?: QaDispatchDiagnostic;
 }
 
 interface Observation {
@@ -386,6 +391,7 @@ export async function walkBlock(
     code: WalkerTimingDiagnostic['code'],
     authorizations?: number,
     visibilityBlocker?: VisibilityBlockerDiagnostic,
+    refusalDiagnostic?: QaDispatchDiagnostic,
   ): void => {
     try {
       const at = deps.now();
@@ -398,6 +404,7 @@ export async function walkBlock(
         observationAgeMs: at - observation.timing.startedAt,
         ...(authorizations === undefined ? {} : { authorizations }),
         ...(visibilityBlocker ? { observation: observation.id, visibilityBlocker } : {}),
+        ...(refusalDiagnostic ? { refusalDiagnostic } : {}),
       });
     } catch (error) {
       if (isAbort(error)) throw error;
@@ -611,6 +618,8 @@ export async function walkBlock(
               ? 'ITEM_DEADLINE_EXCEEDED'
               : refusal.code,
           context.authorizations,
+          undefined,
+          context.refusalDiagnostic,
         );
         if (refusal.code === 'EVIDENCE_EXPIRED' && context.authorizations === 0)
           throw new EvidenceExpired(itemExpired);

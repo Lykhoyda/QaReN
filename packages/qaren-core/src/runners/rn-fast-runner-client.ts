@@ -80,6 +80,7 @@ import {
   isAmbiguousTransportFailure,
   isMutatingCommand,
   parseStatusProbeReply,
+  type ProbeState,
 } from './transport-recovery.js';
 import {
   probeProcessBirth,
@@ -1867,6 +1868,7 @@ async function postCommandWithRecovery(
   qaContext?: QaDispatchContext,
   qaTiming?: TimingContext,
   focusedProof?: () => Promise<boolean>,
+  qaRecovery?: { probeState?: ProbeState },
 ): Promise<{ resp: RunnerResponse; recovery?: TransportRecovery }> {
   if (runnerPoisoned && body.command !== 'status') {
     throw new Error(
@@ -1898,10 +1900,9 @@ async function postCommandWithRecovery(
     if (err instanceof QaDispatchError) throw err;
     const message = err instanceof Error ? err.message : String(err);
     if (!isAmbiguousTransportFailure(message)) throw err;
-    const decision = decideRecovery(
-      await probeCommandStatus(state.port, commandId, qaTiming),
-      body.command,
-    );
+    const probe = await probeCommandStatus(state.port, commandId, qaTiming);
+    if (qaRecovery) qaRecovery.probeState = probe?.state;
+    const decision = decideRecovery(probe, body.command);
     if (decision.action === 'return-recovered') {
       return {
         resp: decision.response as RunnerResponse,
@@ -2535,6 +2536,27 @@ export async function runIOS(args: RunIOSArgs): Promise<ToolResult> {
 
   let resp: RunnerResponse;
   let recovery: TransportRecovery | undefined;
+  const qaRecovery: { probeState?: ProbeState } = {};
+  const diagnoseRefusal = <T>(stage: 'dispatch-error' | 'native-response', operation: () => T): T =>
+    args.qaContext
+      ? args.qaContext.diagnoseRefusal(
+          () => ({
+            stage,
+            mutating: isMutatingCommand(args.command),
+            ...(stage === 'native-response'
+              ? {
+                  responseOk: resp?.ok,
+                  nativeCode: resp?.error?.code,
+                  nativeReason: resp?.error?.reason,
+                  nativeMutation: resp?.error?.mutation,
+                }
+              : {}),
+            probeState: qaRecovery.probeState,
+            recovery: recovery?.outcome,
+          }),
+          operation,
+        )
+      : operation();
   let commandAuthorityBefore = captureFastRunnerCommandAuthority();
   try {
     if (presenceRunner) {
@@ -2551,6 +2573,7 @@ export async function runIOS(args: RunIOSArgs): Promise<ToolResult> {
         args.qaContext,
         args.qaTiming,
         args.command === 'type' && args.focused ? args._focusedProof : undefined,
+        args.qaContext ? qaRecovery : undefined,
       ));
     }
   } catch (err) {
@@ -2564,7 +2587,7 @@ export async function runIOS(args: RunIOSArgs): Promise<ToolResult> {
     }
     const mapped = mapRunnerDispatchError(err);
     if (mapped) {
-      args.qaContext?.invalidate();
+      diagnoseRefusal('dispatch-error', () => args.qaContext?.invalidate());
       return mapped;
     }
     const m = err instanceof Error ? err.message : String(err);
@@ -2572,14 +2595,14 @@ export async function runIOS(args: RunIOSArgs): Promise<ToolResult> {
       const result = await (args.command === 'type'
         ? containTypeTimeout(args, commandAuthorityBefore)
         : containRunnerTimeout(args.command, m, commandAuthorityBefore));
-      args.qaContext?.refuse('ACTION_OUTCOME_UNCERTAIN');
+      diagnoseRefusal('dispatch-error', () => args.qaContext?.refuse('ACTION_OUTCOME_UNCERTAIN'));
       return result;
     }
-    args.qaContext?.refuse('ACTION_OUTCOME_UNCERTAIN');
+    diagnoseRefusal('dispatch-error', () => args.qaContext?.refuse('ACTION_OUTCOME_UNCERTAIN'));
     throw err;
   }
   if (!presenceRequested && !resp.ok && resp.error?.code === 'KEYBOARD_RELAYOUT_REQUIRED') {
-    args.qaContext?.refuse('ACTION_OUTCOME_UNCERTAIN');
+    diagnoseRefusal('native-response', () => args.qaContext?.refuse('ACTION_OUTCOME_UNCERTAIN'));
     if (!(await refreshTargetAfterKeyboard())) {
       return refreshFailure.result ?? staleAfterKeyboardDismissal(args._targetRef);
     }
@@ -2607,12 +2630,14 @@ export async function runIOS(args: RunIOSArgs): Promise<ToolResult> {
   }
   const recoveryMeta = recovery ? { transportRecovery: recovery } : {};
   if (resp.error?.reason !== 'focus-proof-refused')
-    checkQaNativeOutcome(
-      args.qaContext,
-      resp.error?.code,
-      resp.data,
-      resp.error?.reason,
-      resp.error?.mutation,
+    diagnoseRefusal('native-response', () =>
+      checkQaNativeOutcome(
+        args.qaContext,
+        resp.error?.code,
+        resp.data,
+        resp.error?.reason,
+        resp.error?.mutation,
+      ),
     );
   const announce = resp.ok ? takeQuiescenceAnnouncement() : null;
   if (!resp.ok) {
@@ -2625,7 +2650,7 @@ export async function runIOS(args: RunIOSArgs): Promise<ToolResult> {
       const result = await (args.command === 'type'
         ? containTypeTimeout(args, commandAuthorityBefore)
         : containRunnerTimeout(args.command, message, commandAuthorityBefore));
-      args.qaContext?.refuse('ACTION_OUTCOME_UNCERTAIN');
+      diagnoseRefusal('native-response', () => args.qaContext?.refuse('ACTION_OUTCOME_UNCERTAIN'));
       return result;
     }
     if (
@@ -2634,7 +2659,7 @@ export async function runIOS(args: RunIOSArgs): Promise<ToolResult> {
       message.includes('main thread execution timed out')
     ) {
       const result = await containTypeTimeout(args, commandAuthorityBefore);
-      args.qaContext?.refuse('ACTION_OUTCOME_UNCERTAIN');
+      diagnoseRefusal('native-response', () => args.qaContext?.refuse('ACTION_OUTCOME_UNCERTAIN'));
       return result;
     }
     const mutation = resp.error?.mutation;

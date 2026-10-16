@@ -5,12 +5,75 @@ import { runPlan } from '../../../dist/qa/walker.js';
 import type { WalkerTimingDiagnostic } from '../../../dist/qa/walker.js';
 import { JevError } from '../../../dist/qa/questions.js';
 import { capturePrivateScreen } from '../../../dist/qa/privacy.js';
+import { checkQaNativeOutcome } from '../../../dist/runners/qa-native-policy.js';
 import {
   admitObservation,
   observationDeadline,
   observationUsable,
 } from '../../../dist/qa/timing.js';
 import { choice, element, screen, scriptedJudge, walker } from './judgment-fixtures.ts';
+
+test('private first-refusal diagnostics preserve verdict, captures and no replay even with a failing sink', async () => {
+  for (const attested of [false, true]) {
+    for (const throwSink of [false, true]) {
+      const f = walker(
+        [screen([element('@one', 'Save')])],
+        scriptedJudge(() => ({})),
+      );
+      const events: WalkerTimingDiagnostic[] = [];
+      let sends = 0;
+      let shots = 0;
+      f.deps.screenshot = async () => {
+        shots++;
+        return 'PRIVATE-shot';
+      };
+      f.deps.diagnostic = (event) => {
+        events.push(event);
+        if (throwSink) throw Error('PRIVATE-sink');
+      };
+      f.deps.press = async (_ref, context) => {
+        context.authorize();
+        sends++;
+        const code = attested ? 'STALE_REF' : 'ACTION_CONTEXT_CHANGED';
+        context.diagnoseRefusal(
+          () => ({
+            stage: 'native-response',
+            mutating: true,
+            responseOk: false,
+            nativeCode: code,
+            nativeMutation: attested ? 'none' : 'PRIVATE-unknown',
+            message: 'PRIVATE-message',
+          }),
+          () => checkQaNativeOutcome(context, code, {}, undefined, attested ? 'none' : undefined),
+        );
+        return { ok: true, proven: true };
+      };
+      const result = await runPlan(parsePlan('1. Tap "Save"').blocks!, f.deps);
+      assert.equal(result.verdict, 'FAIL');
+      assert.match(
+        result.failure!.seen,
+        attested ? /TARGET_MOVED_BEFORE_DISPATCH/ : /ACTION_OUTCOME_UNCERTAIN/,
+      );
+      assert.equal(sends, 1);
+      assert.equal(f.captures(), 1);
+      assert.equal(shots, 0);
+      const interrupted = events.find((event) => event.code === 'ACTION_INTERRUPTED');
+      assert.equal(
+        interrupted?.refusalDiagnostic?.nativeCode,
+        attested ? 'STALE_REF' : 'ACTION_CONTEXT_CHANGED',
+      );
+      assert.equal(interrupted?.refusalDiagnostic?.nativeMutation, attested ? 'none' : null);
+      assert.equal(
+        events.some((event) => event.code === 'COMPLETED'),
+        false,
+      );
+      assert.equal(events.filter((event) => event.refusalDiagnostic).length, 1);
+      assert.ok(!JSON.stringify(events).includes('PRIVATE-'));
+      assert.ok(!JSON.stringify(result).includes('refusalDiagnostic'));
+      assert.ok(!JSON.stringify(result).includes('nativeCode'));
+    }
+  }
+});
 
 test('a late target judgment refreshes once and never dispatches its stale reference', async () => {
   let now = 0;
