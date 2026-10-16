@@ -16,6 +16,48 @@ fn owner(entries: &[(&str, &str)]) -> Arc<InputValues> {
 }
 
 #[test]
+fn saved_action_stdout_masks_runtime_inputs() {
+    let secret = "private-synthetic-value";
+    let repo = std::env::current_dir()
+        .unwrap()
+        .join(format!(".input-slot-actions-test-{}", std::process::id()));
+    let corpus = repo.join(".qaren/actions");
+    std::fs::create_dir_all(&corpus).unwrap();
+    std::fs::write(
+        corpus.join("sign-in.yaml"),
+        format!("# id: sign-in\n# intent: Sign in\n# status: {secret}\n# platform: ios\n"),
+    )
+    .unwrap();
+    let outputs: Vec<_> = [
+        vec!["actions", "list", "--json"],
+        vec!["actions", "list"],
+        vec!["actions", "show", "sign-in"],
+    ]
+    .iter()
+    .map(|args| {
+        std::process::Command::new(env!("CARGO_BIN_EXE_qaren"))
+            .args(args)
+            .current_dir(&repo)
+            .env_clear()
+            .env("QAREN_INPUT_UNUSED", secret)
+            .output()
+            .unwrap()
+    })
+    .collect();
+    std::fs::remove_dir_all(&repo).unwrap();
+    for output in &outputs {
+        assert!(output.status.success(), "{:?}", output);
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        assert!(!stdout.contains(secret), "{stdout}");
+        assert!(stdout.contains("[REDACTED_INPUT]"), "{stdout}");
+        assert!(stdout.contains("sign-in"), "{stdout}");
+    }
+    let json: serde_json::Value = serde_json::from_slice(&outputs[0].stdout).unwrap();
+    assert_eq!(json[0]["status"], "[REDACTED_INPUT]");
+    assert_eq!(json[0]["platform"], "ios");
+}
+
+#[test]
 fn admission_preserves_exact_values_and_refuses_missing_before_invalid() {
     let inputs = owner(&[
         ("QAREN_INPUT_PASSWORD", "  exact whitespace  "),

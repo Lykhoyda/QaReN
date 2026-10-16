@@ -143,7 +143,7 @@ fn actions(args: &[String], json: bool) -> ExitCode {
     };
     match result {
         Ok(text) => {
-            print!("{text}");
+            print!("{}", qaren::redact::redact_inputs(&text));
             ExitCode::from(0)
         }
         Err(detail) => {
