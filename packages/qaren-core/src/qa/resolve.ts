@@ -346,7 +346,17 @@ export function scrollUntilDirection(
 ): 'up' | 'down' {
   const matches = exactIdentities(screen, target, 'scroll');
   const element = matches.length === 1 ? matches[0].element : undefined;
-  return element?.offscreen && elementViewport(element) ? scrollTo(element).scroll : direction;
+  const viewport = element && elementViewport(element);
+  if (!element?.offscreen || !viewport) return direction;
+  // A target inside its viewport yet reported not visible is covered there; scroll it toward the centre.
+  const frame = elementFrame(element);
+  const inside =
+    frame !== undefined &&
+    frame.x < viewport.x + viewport.width &&
+    viewport.x < frame.x + frame.width &&
+    frame.y < viewport.y + viewport.height &&
+    viewport.y < frame.y + frame.height;
+  return inside ? clearanceScroll(element) : scrollTo(element).scroll;
 }
 
 export function decideTarget(prepared: TargetQuestion, answer: Answer | undefined): Resolution {
