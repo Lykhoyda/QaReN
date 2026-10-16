@@ -396,7 +396,8 @@ async function attach(steps: AdmissionSteps): Promise<Proven> {
                   error instanceof CDPHandshakeTimeoutError));
             if (
               !opened &&
-              !relaunchDecided &&
+              !relaunched &&
+              (!noTarget || !relaunchDecided) &&
               steps.relaunch &&
               remaining >= steps.readinessMs &&
               recoveryWaitExpired
@@ -406,7 +407,7 @@ async function attach(steps: AdmissionSteps): Promise<Proven> {
               lastCompleted = 'foreign_driver';
               relaunchDecided = true;
               if (noTarget) liveness = await probeLiveness(steps);
-              if (liveness !== 'alive') {
+              if (!noTarget || liveness !== 'alive') {
                 relaunched = true;
                 try {
                   lastStarted = 'relaunch';

@@ -331,6 +331,46 @@ test('handshake attempts share one deadline at low load', async () => {
 });
 
 for (const Timeout of [CDPProbeTimeoutError, CDPHandshakeTimeoutError]) {
+  test(`a live no-target wait preserves subsequent ${Timeout.name} recovery`, async (t) => {
+    let now = 10_000;
+    t.mock.timers.enable({ apis: ['setTimeout'] });
+    syncBuiltinESMExports();
+    t.mock.method(performance, 'now', () => now);
+    let attempts = 0;
+    let relaunched = 0;
+    const { stop, steps } = harness({
+      readinessMs: 1000,
+      remainingMs: () => 13_000 - now,
+      appAlive: async () => true,
+      attach: async () => {
+        if (++attempts === 1) throw new TargetReadinessTimeoutError('bundle still building');
+        if (!relaunched) throw new Timeout('registered runtime remains paused');
+      },
+      relaunch: async () => {
+        relaunched++;
+      },
+    });
+    const admitted = admit(steps, stop).catch((error) => error);
+    t.after(async () => {
+      stop.begin();
+      await admitted;
+      t.mock.timers.reset();
+      syncBuiltinESMExports();
+    });
+    const advance = async (ms: number) => {
+      now += ms;
+      t.mock.timers.tick(ms);
+      await nextTurn();
+    };
+    await nextTurn();
+    assert.equal(relaunched, 0, 'the live app survives the no-target wait');
+    await advance(500);
+    await advance(500);
+    assert.equal(relaunched, 1, 'persistent target timeouts retain their recovery');
+    await advance(500);
+    assert.deepEqual(await admitted, PROVEN);
+  });
+
   test(`persistent ${Timeout.name} gets one iOS relaunch after its readiness window`, async (t) => {
     let now = 10_000;
     t.mock.timers.enable({ apis: ['setTimeout'] });
