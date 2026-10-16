@@ -10,6 +10,7 @@ import {
 } from './screen.js';
 import {
   type Resolution,
+  type CentreCoverageDiagnostic,
   type ScreenDecision,
   CHECK,
   ResolutionError,
@@ -161,6 +162,7 @@ export interface WalkerTimingDiagnostic {
     | 'RUN_CANCELLED'
     | 'ACTION_OUTCOME_UNCERTAIN'
     | 'TARGET_MOVED_BEFORE_DISPATCH'
+    | 'CENTRE_COVERED'
     | 'SCREEN_EVIDENCE_INCOMPLETE';
   at: number;
   acquisitionMs: number;
@@ -169,6 +171,12 @@ export interface WalkerTimingDiagnostic {
   observation?: number;
   visibilityBlocker?: VisibilityBlockerDiagnostic;
   refusalDiagnostic?: QaDispatchDiagnostic;
+  clearanceDiagnostic?: {
+    predicate: Readonly<CentreCoverageDiagnostic> | null;
+    scrollOrigin: 'offscreen-resolution' | 'centre-covered' | 'native-occlusion' | null;
+    requestedDirection: 'up' | 'down' | null;
+    targetCentreChanged: boolean | null;
+  };
 }
 
 interface Observation {
@@ -392,6 +400,7 @@ export async function walkBlock(
     authorizations?: number,
     visibilityBlocker?: VisibilityBlockerDiagnostic,
     refusalDiagnostic?: QaDispatchDiagnostic,
+    clearanceDiagnostic?: WalkerTimingDiagnostic['clearanceDiagnostic'],
   ): void => {
     try {
       const at = deps.now();
@@ -403,8 +412,10 @@ export async function walkBlock(
         acquisitionMs: observation.timing.completedAt - observation.timing.startedAt,
         observationAgeMs: at - observation.timing.startedAt,
         ...(authorizations === undefined ? {} : { authorizations }),
-        ...(visibilityBlocker ? { observation: observation.id, visibilityBlocker } : {}),
+        ...(visibilityBlocker || clearanceDiagnostic ? { observation: observation.id } : {}),
+        ...(visibilityBlocker ? { visibilityBlocker } : {}),
         ...(refusalDiagnostic ? { refusalDiagnostic } : {}),
+        ...(clearanceDiagnostic ? { clearanceDiagnostic } : {}),
       });
     } catch (error) {
       if (isAbort(error)) throw error;
@@ -1324,6 +1335,10 @@ export async function walkBlock(
         let typedUnverified = false;
         let again = false;
         let scrolled = false;
+        let scrollOrigin: NonNullable<
+          WalkerTimingDiagnostic['clearanceDiagnostic']
+        >['scrollOrigin'] = null;
+        let scrollDirection: 'up' | 'down' | null = null;
         let refusedIdentity: Element | undefined;
         let moved: { target: Element; error: string } | undefined;
         let settledFrame: string | undefined;
@@ -1468,6 +1483,8 @@ export async function walkBlock(
                   }
                   const distance = clearance;
                   clearance = undefined;
+                  scrollOrigin ??= 'offscreen-resolution';
+                  scrollDirection = resolution.scroll;
                   const result = await mutate(item, before, (context) =>
                     deps.scroll(resolution.scroll, context, distance),
                   );
@@ -1535,10 +1552,13 @@ export async function walkBlock(
                 );
                 break;
               }
+              let centreDiagnostic: Readonly<CentreCoverageDiagnostic> | null = null;
               if (
                 (item.kind === 'press' || item.kind === 'fill') &&
                 element !== undefined &&
-                centreCovered(element, before.screen)
+                centreCovered(element, before.screen, (facts) => {
+                  centreDiagnostic = facts;
+                })
               ) {
                 if (scrolled) {
                   outcome = failed(
@@ -1549,10 +1569,39 @@ export async function walkBlock(
                     await shoot(item),
                     ref,
                   );
+                  const originalFrame = refusedIdentity && elementFrame(refusedIdentity);
+                  const currentFrame = elementFrame(element);
+                  const centres =
+                    originalFrame && currentFrame
+                      ? [
+                          originalFrame.x + originalFrame.width / 2,
+                          originalFrame.y + originalFrame.height / 2,
+                          currentFrame.x + currentFrame.width / 2,
+                          currentFrame.y + currentFrame.height / 2,
+                        ]
+                      : undefined;
+                  diagnostic(
+                    item,
+                    before,
+                    'decision',
+                    'CENTRE_COVERED',
+                    undefined,
+                    undefined,
+                    undefined,
+                    {
+                      predicate: centreDiagnostic,
+                      scrollOrigin,
+                      requestedDirection: scrollDirection,
+                      targetCentreChanged: centres?.every(Number.isFinite)
+                        ? centres[0] !== centres[2] || centres[1] !== centres[3]
+                        : null,
+                    },
+                  );
                   break;
                 }
                 refusedIdentity = element;
                 occluded = clearanceScroll(element);
+                scrollOrigin = 'centre-covered';
                 clearance = keyboardClearance(element, before.screen);
                 continue;
               }
@@ -1602,6 +1651,7 @@ export async function walkBlock(
                 }
                 refusedIdentity = element;
                 occluded = clearanceScroll(element);
+                scrollOrigin = 'native-occlusion';
                 continue;
               }
               if (
