@@ -531,7 +531,7 @@ refuses without another dispatch or recovery. Keyboard-fallback focus readbacks
 use the same settlement check.
 A second occlusion fails with that same off-screen explanation; wrapper fallback
 reports that nothing was typed. This refusal does not become
-`ACTION_OUTCOME_UNCERTAIN`. For checks and waits, see [Plan checks and screen evidence](#plan-checks-and-screen-evidence).
+`ACTION_OUTCOME_UNCERTAIN`. Checks and waits gain only the keyboard rule below.
 See the [occlusion regressions](../qaren-core/test/unit/qa/occlusion-walker.test.ts).
 
 ### Fill verification and keyboard fallback
@@ -753,14 +753,7 @@ a label and no accessibility text descendant contributes its merged label;
 this also admits an icon-only control's explicit label. A literal check passing
 through that contribution records `matched an accessibility label` in the ledger.
 Quoted waits and scroll-until targets also accept a unique visible testID as
-identity evidence, independently of literal text. When geometry is available,
-its centre must be inside its trusted clipping viewport and outside a captured
-keyboard unless the keyboard is proven hidden; keyboard-owned targets remain
-exempt from keyboard coverage.
-`Wait for "<testID>" to appear` keeps polling while that centre is covered and
-cannot pass on that identity until clearance is observed. Saved ID waits use
-the same rule. Plans that relied on a covered identity need an earlier clearance
-step or a wait for independently visible text.
+identity evidence, independently of literal text.
 
 The [native geometry model](../qaren-core/src/qa/native-presence.ts) clips nodes
 on both axes against the Application screen and trusted Window, ScrollView,
