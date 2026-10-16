@@ -40,10 +40,8 @@ export const SETTLE_DEFAULT_BUDGET_MS = 6000;
 // the slow-command timeout class. Non-finite/negative input falls back to the
 // default rather than disabling or unbounding the wait.
 export const SETTLE_MAX_BUDGET_MS = 30_000;
-// Maestro parity: SCREEN_SETTLE_TIMEOUT_MS=3000 (IOSDriver.kt:487-504); hierarchy
-// polling bounded 10×200ms (ScreenshotUtils.kt:38-74). Window-gate probe is 100ms
-// (not Maestro's 500) so the static-screen path stays inside the spec's ≤150ms
-// acceptance budget: 100ms probe + 50ms post-sleep.
+// Keep the initial window gate cheap for already-visible effects and callers
+// without a baseline; the conditional late-render wait belongs in the gate below.
 const SCREEN_STATIC_TIER_MS = 3000;
 const SCREEN_STATIC_POLL_INTERVAL_MS = 200;
 const WINDOW_GATE_TIMEOUT_MS = 100;
@@ -143,9 +141,9 @@ async function safeProbe<T>(fn: () => Promise<T>): Promise<T | null> {
   }
 }
 
-// Story 05 (#386): the fast tiers (window-gate / screen-static) never take a
-// snapshot, so a caller that wants change detection pays exactly one hash
-// probe post-settle. Callers that omit initialSnapshotHash pay nothing.
+// Idle/static probes alone cannot establish an interaction's effect. Only
+// callers with a baseline pay for a separate hierarchy comparison; the Android
+// gate above owns whether a late update warrants another comparison.
 async function postSettleChange(
   probes: SettleProbes,
   initialSnapshotHash: string | undefined,
