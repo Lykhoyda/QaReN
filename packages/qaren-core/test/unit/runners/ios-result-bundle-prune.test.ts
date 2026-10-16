@@ -45,7 +45,12 @@ test('direct reap removes result bundles after stopping an adopted process', (t)
   const root = mkdtempSync(join(process.cwd(), '.test-ios-reap-'));
   t.after(() => rmSync(root, { recursive: true, force: true }));
   mkdirSync(join(root, 'runners', 'rn-fast-runner'), { recursive: true });
-  execFileSync(process.execPath, ['--input-type=module', '-e', `
+  execFileSync(
+    process.execPath,
+    [
+      '--input-type=module',
+      '-e',
+      `
     import assert from 'node:assert/strict';
     import { spawn } from 'node:child_process';
     import { once } from 'node:events';
@@ -99,16 +104,19 @@ test('direct reap removes result bundles after stopping an adopted process', (t)
       if (child.exitCode === null && child.signalCode === null) child.kill('SIGKILL');
       await exited;
     }
-  `], {
-    env: {
-      ...process.env,
-      HOME: root,
-      XDG_STATE_HOME: join(root, 'state'),
-      QAREN_NATIVE_RUNNER_ROOT: join(root, 'runners'),
+  `,
+    ],
+    {
+      env: {
+        ...process.env,
+        HOME: root,
+        XDG_STATE_HOME: join(root, 'state'),
+        QAREN_NATIVE_RUNNER_ROOT: join(root, 'runners'),
+      },
+      timeout: 15_000,
+      stdio: 'pipe',
     },
-    timeout: 15_000,
-    stdio: 'pipe',
-  });
+  );
 });
 
 test('the runner launch passes no -resultBundlePath', () => {
