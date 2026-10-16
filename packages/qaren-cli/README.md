@@ -1355,6 +1355,17 @@ clearance or a non-executing hide with no overlay to clear fails the step.
 
 ### Walk timing
 
+Private `timing` events in `logs/core.log` may include `refusalDiagnostic` when
+an instrumented iOS dispatch boundary records the context's first refusal. This
+bounded, value-free record retains allowlisted refusal, native-response and
+transport-recovery facts; missing or unrecognized facts are `null`. It excludes
+native messages, target identifiers and input values. The
+[dispatch context](../qaren-core/src/domain/qa-dispatch.ts) owns the field layout
+and allowlists. Later refusals cannot replace the first record, and a refusal
+outside these boundaries may have no record. These facts do not establish
+no-mutation proof, authorize another send or change retries, deadlines or outcomes;
+diagnostic collection and sink failures preserve the refusal.
+
 `ledger.json` adds a `timing` object to each walked attempt row, in milliseconds.
 `captureMs`, `resolveMs` (decision), `actMs`, `postCaptureMs` and `otherMs`
 partition `total`, the elapsed window between consecutive row timestamps
