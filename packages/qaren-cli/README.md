@@ -1389,7 +1389,8 @@ attempts. Exhausted readiness refuses `CDP_NOT_CONNECTED`; invalid
 metadata and deterministic attachment rejections refuse immediately. Host load
 is diagnostic and does not decide whether the app is ready.
 After an exhausted target-readiness wait, or persistent runtime-probe or
-WebSocket-handshake timeouts lasting through the readiness window, an iOS dev
+WebSocket-handshake timeouts lasting a full readiness window from the first such
+timeout (never before the original readiness window ends), an iOS dev
 client can be relaunched once if the remaining deadline still covers a full
 readiness wait. Individual target-list timeouts and inspector page closures do
 not trigger relaunch. Before a relaunch for a missing target, admission uses the
@@ -1397,7 +1398,8 @@ not trigger relaunch. Before a relaunch for a missing target, admission uses the
 relaunch, logs `relaunch skipped: app-alive`, and keeps waiting within the same
 deadline; an absent job or failed probe permits recovery as before. Skipping
 does not consume the one relaunch for persistent runtime-probe or
-WebSocket-handshake timeouts. The refusal record includes value-free `liveness`
+WebSocket-handshake timeouts, and a target that registers late gets the same
+readiness window before a stalled handshake triggers the one relaunch. The refusal record includes value-free `liveness`
 and the number of relaunches actually attempted. Before the liveness check or
 relaunch, admission checks for a foreign driver;
 a conflict refuses `BUSY_FOREIGN_FLOW`

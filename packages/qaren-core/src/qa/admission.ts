@@ -343,6 +343,8 @@ async function attach(steps: AdmissionSteps): Promise<Proven> {
   const relaunchAt = started + steps.readinessMs;
   let relaunched = false;
   let relaunchDecided = false;
+  // first probe/handshake timeout against a registered target; it gets a full readiness window before a relaunch
+  let stallSeenAt: number | undefined;
   let liveness: AdmissionLiveness = 'not_probed';
   let opened = false;
   let attaching = true;
@@ -389,11 +391,14 @@ async function attach(steps: AdmissionSteps): Promise<Proven> {
             const noTarget =
               error instanceof TargetReadinessTimeoutError &&
               !(error instanceof TargetListAttemptTimeoutError);
+            const probeStall =
+              error instanceof CDPProbeTimeoutError || error instanceof CDPHandshakeTimeoutError;
+            if (probeStall && stallSeenAt === undefined) stallSeenAt = performance.now();
             const recoveryWaitExpired =
               noTarget ||
-              (performance.now() >= relaunchAt &&
-                (error instanceof CDPProbeTimeoutError ||
-                  error instanceof CDPHandshakeTimeoutError));
+              (probeStall &&
+                stallSeenAt !== undefined &&
+                performance.now() >= Math.max(relaunchAt, stallSeenAt + steps.readinessMs));
             if (
               !opened &&
               !relaunched &&

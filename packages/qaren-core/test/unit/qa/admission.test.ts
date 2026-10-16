@@ -366,6 +366,8 @@ for (const Timeout of [CDPProbeTimeoutError, CDPHandshakeTimeoutError]) {
     assert.equal(relaunched, 0, 'the live app survives the no-target wait');
     await advance(500);
     await advance(500);
+    assert.equal(relaunched, 0, 'a stall first seen after the skip gets its own readiness window');
+    await advance(500);
     assert.equal(relaunched, 1, 'persistent target timeouts retain their recovery');
     await advance(500);
     assert.deepEqual(await admitted, PROVEN);
@@ -421,6 +423,126 @@ for (const Timeout of [CDPProbeTimeoutError, CDPHandshakeTimeoutError]) {
     assert.equal(new Set(deadlines).size, 1, 'relaunch must not renew the admission deadline');
   });
 }
+
+// Each attach call settles at its scripted time on the mock clock; times are ms since admission started.
+function scriptedAttach(
+  t: { mock: any; after: (fn: () => Promise<void>) => void },
+  {
+    budgetMs,
+    script,
+  }: { budgetMs: number; script: (call: number) => { at: number; error?: Error } },
+) {
+  let now = 0;
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  syncBuiltinESMExports();
+  t.mock.method(performance, 'now', () => now);
+  let calls = 0;
+  const relaunchedAt: number[] = [];
+  const { stop, steps } = harness({
+    remainingMs: () => budgetMs - now,
+    appAlive: async () => true,
+    attach: async () => {
+      const { at, error } = script(++calls);
+      if (at > now) await new Promise((resolve) => setTimeout(resolve, at - now));
+      if (error) throw error;
+    },
+    relaunch: async () => {
+      relaunchedAt.push(now);
+    },
+  });
+  let settled = false;
+  const admitted = admit(steps, stop).then(
+    (proof) => ((settled = true), proof),
+    (error) => ((settled = true), error),
+  );
+  t.after(async () => {
+    stop.begin();
+    await admitted;
+    t.mock.timers.reset();
+    syncBuiltinESMExports();
+  });
+  return {
+    relaunchedAt,
+    async run() {
+      await nextTurn();
+      while (!settled && now < budgetMs + 1000) {
+        now += 500;
+        t.mock.timers.tick(500);
+        await nextTurn();
+      }
+      return admitted;
+    },
+  };
+}
+
+const probeStall = () => new CDPProbeTimeoutError('runtime probe timed out');
+const noTargetYet = () => new TargetReadinessTimeoutError('no target yet');
+
+test('a live app whose target registers after the skip is not relaunched while it starts', async (t) => {
+  const { relaunchedAt, run } = scriptedAttach(t, {
+    budgetMs: 120_000,
+    script: (call) =>
+      [
+        { at: 30_000, error: noTargetYet() },
+        { at: 46_000, error: probeStall() },
+        { at: 53_000, error: probeStall() },
+        { at: 58_000 },
+      ][call - 1],
+  });
+  assert.deepEqual(await run(), PROVEN);
+  assert.deepEqual(relaunchedAt, []);
+});
+
+test('a target that stalls after the skip is relaunched once a full readiness window after its first stall', async (t) => {
+  const { relaunchedAt, run } = scriptedAttach(t, {
+    budgetMs: 120_000,
+    script: (call) => {
+      if (call === 1) return { at: 30_000, error: noTargetYet() };
+      if (relaunchedAt.length) return { at: 0 };
+      return { at: 39_000 + 7_000 * (call - 1), error: probeStall() };
+    },
+  });
+  assert.deepEqual(await run(), PROVEN);
+  assert.deepEqual(relaunchedAt, [81_000]);
+});
+
+test('a target that registers just before the readiness window ends gets its own window', async (t) => {
+  const { relaunchedAt, run } = scriptedAttach(t, {
+    budgetMs: 120_000,
+    script: (call) =>
+      [{ at: 31_000, error: probeStall() }, { at: 38_000, error: probeStall() }, { at: 45_000 }][
+        call - 1
+      ],
+  });
+  assert.deepEqual(await run(), PROVEN);
+  assert.deepEqual(relaunchedAt, []);
+});
+
+test('an early persistent stall is relaunched a full readiness window after it is first seen', async (t) => {
+  const { relaunchedAt, run } = scriptedAttach(t, {
+    budgetMs: 120_000,
+    script: (call) =>
+      call > 1 && relaunchedAt.length
+        ? { at: 0 }
+        : { at: 6_000 + 1_500 * (call - 1), error: probeStall() },
+  });
+  assert.deepEqual(await run(), PROVEN);
+  assert.deepEqual(relaunchedAt, [36_000]);
+});
+
+test('a stall window that ends without a full readiness wait left refuses without relaunching', async (t) => {
+  const { relaunchedAt, run } = scriptedAttach(t, {
+    budgetMs: 50_000,
+    script: (call) => ({
+      at: call === 1 ? 6_000 : 6_000 + 1_500 * (call - 1),
+      error: probeStall(),
+    }),
+  });
+  const error = await run();
+  assert.equal(error.code, 'CDP_NOT_CONNECTED');
+  assert.equal(error.meta.relaunches, 0);
+  assert.deepEqual(relaunchedAt, []);
+});
 
 test('the single retry relaunches the app before waiting again', async () => {
   const order: string[] = [];
