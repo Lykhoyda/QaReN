@@ -266,6 +266,42 @@ fn ios_prepare_proceeds_after_two_devmenu_timeouts_with_each_attempt_in_the_rece
 }
 
 #[test]
+fn ios_install_over_120_seconds_completes_within_the_preparation_budget() {
+    let repo = common::temp_repo();
+    let scenario = write_scenario(
+        &repo,
+        &format!(
+            "{}deadlines:\n  build_seconds: 150\n",
+            ios_scenario_yaml(8791)
+        ),
+    );
+    let mut mock = MockRunner::new();
+    script_ios_prepare_install(&mut mock, &repo, CmdOutput::success(""), |m| {
+        m.expect_run(
+            "simctl install",
+            CmdOutput {
+                duration_ms: 130_000,
+                ..CmdOutput::success("")
+            },
+        );
+    });
+    mock.advance_on = Some(("simctl install".into(), 130_000));
+
+    let receipt = prepare(&mut mock, &prepare_args(&scenario, false, None));
+
+    assert_eq!(receipt.result, ReceiptResult::Ready, "{}", receipt.to_json());
+    assert_eq!(receipt.timings_ms["simctl-install_attempt_1"], 130_000);
+    let installs: Vec<_> = mock
+        .calls
+        .iter()
+        .filter(|call| call.label == "simctl-install")
+        .collect();
+    assert_eq!(installs.len(), 1);
+    assert_eq!(installs[0].timeout_seconds, 150);
+    assert_eq!(mock.remaining(), 0);
+}
+
+#[test]
 fn ios_install_timeout_proven_by_the_installed_bundle_is_not_reissued() {
     let repo = common::temp_repo();
     let scenario = write_scenario(&repo, &ios_scenario_yaml(8791));
@@ -343,34 +379,27 @@ fn ios_install_timeouts_fail_once_the_shared_budget_is_spent() {
     );
     let mut mock = MockRunner::new();
     script_ios_prepare_before_install(&mut mock, &repo);
-    for _ in 0..2 {
-        mock.expect_run(
-            "simctl get_app_container",
-            CmdOutput::failed(2, "No such file or directory"),
-        );
-    }
+    mock.expect_run(
+        "simctl get_app_container",
+        CmdOutput::failed(2, "No such file or directory"),
+    );
     common::script_ios_metro_cleanup(&mut mock);
-    mock.timeouts = [
-        ("simctl-install".into(), 120_000),
-        ("simctl-install".into(), 30_000),
-    ]
-    .into();
+    mock.timeouts = [("simctl-install".into(), 150_000)].into();
 
     let receipt = prepare(&mut mock, &prepare_args(&scenario, false, None));
 
     let failure = receipt.failure.as_ref().expect("budget spent must fail");
     assert_eq!(failure.code, FailureCode::ArtifactInstallFailed);
-    assert!(failure.detail.contains("2 attempts"), "{failure:?}");
+    assert!(failure.detail.contains("1 attempts"), "{failure:?}");
     assert_eq!(receipt.outcomes["launch_ready_budget"], "spent");
-    assert_eq!(receipt.timings_ms["simctl-install_attempt_1"], 120_000);
-    assert_eq!(receipt.timings_ms["simctl-install_attempt_2"], 30_000);
+    assert_eq!(receipt.timings_ms["simctl-install_attempt_1"], 150_000);
     let installs: Vec<_> = mock
         .calls
         .iter()
         .filter(|call| call.label == "simctl-install")
         .collect();
-    assert_eq!(installs.len(), 2);
-    assert_eq!(installs[1].timeout_seconds, 30);
+    assert_eq!(installs.len(), 1);
+    assert_eq!(installs[0].timeout_seconds, 150);
     assert!(mock.timeouts.is_empty());
     assert_eq!(mock.remaining(), 0);
 }

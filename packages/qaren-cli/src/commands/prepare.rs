@@ -1787,14 +1787,15 @@ pub(crate) fn run_reuse_path(ctx: &mut Ctx, plan: &BuildPlan, t: u64) -> Result<
     Ok(())
 }
 
-// A timed-out install is retried within the preparation budget, so the receipt proves each attempt.
+// Let the owned install use the remaining preparation budget before checking its receipt.
 fn install_cached_ios_app(
     ctx: &mut Ctx,
     udid: &str,
     artifact: &CachedArtifact,
     deadline: u64,
 ) -> Result<(), Failure> {
-    let spec = ios::install_app_spec(udid, &artifact.path);
+    let mut spec = ios::install_app_spec(udid, &artifact.path);
+    spec.timeout_seconds = deadline.saturating_sub(ctx.runner.monotonic_ms()) / 1000;
     let mut attempts = 0;
     let mut last = None;
     while let Some(installed) = run_budgeted_attempt(ctx, &spec, deadline, &mut attempts)? {
