@@ -76,9 +76,13 @@ password manager's CLI; qaren does not read `.env` files or resolve references.
   Whitespace is kept exactly. A value that looks like an unresolved reference, starting with
   a scheme such as `op://` or `vault:` or containing `${`, `$(` or `{{`, refuses
   `CORE_REFUSED`. Invalid values refuse with `runtime inputs are invalid`.
-- The value is masked in every output and never written to a file, log, saved block or
-  report, sent to Jev or hashed. A run with inputs takes no screenshots, records no video
-  and withholds the logs of the processes it starts.
+- The value is masked in every output and never written by qaren to a file, log, saved
+  block or report, sent to Jev or hashed. A run with inputs takes no screenshots, records
+  no video and withholds the logs of the processes it starts.
+- The iOS simulator's own system log may record text the app displays, including a filled
+  field's value, as it does for every XCTest-driven run; erase a dedicated QA simulator
+  (`xcrun simctl erase <udid>`) when that matters. The runner's XCTest result bundles are
+  removed after every runner session.
 - Input echoes can refuse `CORE_REFUSED` under the CLI guide's
   [runtime-input hash protections](https://github.com/Lykhoyda/rn-dev-agent/blob/develop/packages/qaren-cli/README.md#runtime-inputs),
   which also define the constant-label exception for registered fill targets. The field a

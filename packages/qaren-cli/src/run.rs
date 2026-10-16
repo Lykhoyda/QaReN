@@ -673,6 +673,13 @@ fn run_inner(
     } else {
         events::stage("recording", StageState::Skipped, None, None);
     }
+    if req.platform == Platform::Ios && resolved_inputs.has_inputs() {
+        ctx.notes.push((
+            "platform_log".to_string(),
+            "the simulator system log may record displayed field text; see Runtime inputs"
+                .to_string(),
+        ));
+    }
     if let Err(f) = ensure_running(ctx.runner, "walk") {
         return Ok(finish_failed(ctx, f));
     }

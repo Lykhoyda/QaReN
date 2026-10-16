@@ -2775,8 +2775,18 @@ fn script_borrow(mock: &mut MockRunner, devices: &str, serial: &str) {
 
 // Node, plan preflight, the borrow, candidate, prereqs, disk and self identity, then the Metro port after the lease.
 fn script_android_preflight(mock: &mut MockRunner, repo: &Path, devices: &str, serial: &str) {
+    script_android_preflight_requiring(mock, repo, devices, serial, &[]);
+}
+
+fn script_android_preflight_requiring(
+    mock: &mut MockRunner,
+    repo: &Path,
+    devices: &str,
+    serial: &str,
+    required: &[&str],
+) {
     mock.expect_run("node --version", CmdOutput::success("v26.8.1\n"));
-    script_plan(mock, repo);
+    script_plan_requiring(mock, repo, required);
     script_borrow(mock, devices, serial);
     mock.expect_run("git", CmdOutput::success(&format!("{}\n", repo.display())));
     mock.expect_run("git", CmdOutput::success(&format!("{}\n", repo.display())));
@@ -2965,6 +2975,27 @@ fn android_check_prebuilds_an_absent_android_dir_before_gradle() {
             .any(|s| s.starts_with("install_launch_ready skipped")),
         "{trail:?}"
     );
+}
+
+#[test]
+fn only_ios_runs_with_runtime_inputs_disclose_the_simulator_log() {
+    let (repo, app) = app_repo();
+    let req = android_request(&repo, &app);
+    let mut mock = android_mock();
+    script_android_preflight_requiring(&mut mock, &repo, ONE_EMULATOR, EMULATOR, &["PASSWORD"]);
+    mock.expect_run("pnpm install --frozen-lockfile", CmdOutput::success(""));
+    mock.expect_run("ls-files", CmdOutput::success(""));
+    mock.expect_run("check-ignore -q android/", CmdOutput::success(""));
+    script_android_finite_build(&mut mock, PREBUILD, 5000, 0);
+    script_android_finite_build(&mut mock, GRADLE, 5001, 0);
+    script_android_launch_walk_teardown(&mut mock);
+    let inputs = std::sync::Arc::new(qaren::redact::InputValues::from_entries([(
+        "QAREN_INPUT_PASSWORD".into(),
+        "android-synthetic".into(),
+    )]));
+    let receipt = qaren::redact::with_input_scope(inputs, || run_with_events(&mut mock, &req)).0;
+    assert_eq!(receipt.result, ReceiptResult::Pass, "{:?}", receipt.failure);
+    assert!(!receipt.outcomes.contains_key("platform_log"));
 }
 
 #[test]
@@ -5158,6 +5189,10 @@ fn a_pr_run_with_runtime_inputs_never_starts_the_recorder_and_keeps_values_priva
     assert!(!labels(&runner.inner).iter().any(|l| l.contains("record")));
     assert!(receipt.outcomes["video"].starts_with("unavailable("));
     assert_eq!(
+        receipt.outcomes["platform_log"],
+        "the simulator system log may record displayed field text; see Runtime inputs"
+    );
+    assert_eq!(
         events
             .iter()
             .filter(|e| e["event"] == "stage" && e["payload"]["name"] == "recording")
@@ -5489,6 +5524,7 @@ fn pr_walk_result(candidate_drift: bool, collision: bool) {
     assert_eq!(core.cwd.as_deref(), Some(wt.join("test-app").as_path()));
     assert_eq!(receipt.tested_older_commit.as_deref(), Some(PR_HEAD));
     assert_eq!(receipt.outcomes["video"], "unavailable(ffmpeg)");
+    assert!(!receipt.outcomes.contains_key("platform_log"));
     assert_eq!(receipt.cleanup["recorder"], "removed");
     assert_eq!(
         receipt.cleanup["pr_worktree"],
