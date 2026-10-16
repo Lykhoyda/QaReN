@@ -1337,6 +1337,8 @@ The [row timing implementation](../qaren-core/src/qa/row-timing.ts) owns
 aggregation; [CLI decoding](src/core.rs) and [report rendering](src/report.rs)
 own consumption.
 
+### CDP admission
+
 Launch admission shares the remaining walk deadline across target readiness,
 WebSocket handshakes, probes and retry sleeps. The connect-time dev-build check
 and helper injection wait for the runtime's answer until that deadline rather
@@ -1368,6 +1370,23 @@ expiry remains `WALK_DEADLINE_EXCEEDED`.
 The refusal carries the measured load; the
 [admission implementation](../qaren-core/src/qa/admission.ts) owns attachment
 retry policy; the [CLI core boundary](src/core.rs) owns deadline classification.
+
+When the core wraps an admission error as `CDP_NOT_CONNECTED`, it attempts one
+`admission-refusal=<JSON>` line in `~/.qaren/runs/<run-id>/logs/core.log`.
+The value-free record identifies the last started and completed admission
+boundaries, the typed inner error class, attempt and relaunch counts, relaunch
+failure, and elapsed, remaining and total budget milliseconds. During attachment,
+`attachStage` distinguishes waiting for targets from connecting to the exact
+target. A target-selection refusal also includes platform-inference reader
+outcomes and evidence for at most eight candidates, with a total candidate count.
+These are allowlisted categories, counts and booleans, never device names,
+bundle IDs, URLs, target IDs or error text. The
+[formatter](../qaren-core/src/qa/admission.ts) owns the field layout.
+Inference is absent for other errors; a deadline record identifies the last
+boundary reached, not necessarily the underlying cause. Cancellations, refusals
+with their own codes, and CLI deadline expiry without a core refusal record do
+not produce this line. Recording failures do not change refusal codes, exit
+behavior, retry policy or deadlines.
 
 ### Candidate provenance
 
