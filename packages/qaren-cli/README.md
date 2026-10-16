@@ -1366,6 +1366,19 @@ outside these boundaries may have no record. These facts do not establish
 no-mutation proof, authorize another send or change retries, deadlines or outcomes;
 diagnostic collection and sink failures preserve the refusal.
 
+When a press or fill target's centre remains covered after the one-scroll
+allowance, a private `timing` event with code `CENTRE_COVERED` includes the
+observation ordinal and `clearanceDiagnostic`. It records the viewport or keyboard
+predicate branch, boolean coverage facts, the scroll's origin and requested
+direction, and whether the target centre changed. Unread or unavailable facts
+remain `null`; target text, identifiers and coordinates are excluded. The
+[walker](../qaren-core/src/qa/walker.ts) owns the event layout; the
+[centre predicate](../qaren-core/src/qa/resolve.ts) owns its coverage facts.
+The event preserves the existing failed step and grants no further scroll or
+target dispatch; sink failures leave the outcome unchanged. It stays out of the
+public result and ledger, as covered by the
+[occlusion regressions](../qaren-core/test/unit/qa/occlusion-walker.test.ts).
+
 `ledger.json` adds a `timing` object to each walked attempt row, in milliseconds.
 `captureMs`, `resolveMs` (decision), `actMs`, `postCaptureMs` and `otherMs`
 partition `total`, the elapsed window between consecutive row timestamps
