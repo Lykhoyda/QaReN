@@ -87,8 +87,7 @@ export function stepTarget(step: Step): Target | undefined {
       : step.target;
 }
 
-// A stored id names the element that was tapped; the runner can tap only native elements, so
-// React-only twins (retained inactive routes, detached hosts) do not make a unique native match ambiguous.
+// Stored IDs name native targets; React-only twins cannot receive the runner's tap.
 function replayIdentities(identities: Identity[], target: Target, kind: Step['kind']): Identity[] {
   if (target.exact !== 'id' || kind === 'fill') return identities;
   const native = identities.filter(({ tag }) => tag !== 'react-only');

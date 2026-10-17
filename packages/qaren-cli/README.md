@@ -421,8 +421,8 @@ ID remains a twin, and each ambiguity candidate is listed as native or
 React-only and, where proven, as a wrapper of an input, as covered by the
 [forwarding-proof tests](../qaren-core/test/unit/qa/identity.test.ts). A merged composite
 input keeps its placeholder for quoted fill resolution. The refusal is terminal:
-it is never recovered, retried or re-walked,
-including for stored replay selectors and for a handler that finds twins at dispatch. A text element
+it is never recovered, retried or re-walked, including when a handler finds twins
+at dispatch. Stored-selector resolution follows the [saved-block contract](#saved-blocks). A text element
 that is the sole text descendant of matching labelled ancestors links to the
 nearest action candidate: enabled and either hittable or offscreen for scrolling.
 On Android, this also applies when an ancestor has other text descendants but
