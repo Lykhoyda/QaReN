@@ -63,6 +63,11 @@ object QaHierarchy {
         val heading: Boolean,
         // A null child vanished or could not be read; it is counted as dropped.
         val children: List<RawNode?>,
+        val editable: Boolean = false,
+        // AccessibilityNodeInfo.drawingOrder among its siblings, read on API 24 and later.
+        val drawingOrder: Int? = null,
+        // The live node the presence pass refreshes and re-reads; opaque to the pure rules.
+        val handle: Any? = null,
     )
 
     data class RawWindow(
@@ -90,6 +95,12 @@ object QaHierarchy {
         val secure: Boolean,
         val visibleToUser: Boolean,
         val heading: Boolean,
+        // Presence facts: never emitted as node fields.
+        val editable: Boolean = false,
+        val hasText: Boolean = false,
+        val drawingOrder: Int? = null,
+        val windowId: Int? = null,
+        val source: RawNode? = null,
     )
 
     sealed interface Front {
@@ -183,16 +194,16 @@ object QaHierarchy {
             is Front.App -> {
                 out.synthetic("Application", display, null, appPackage)
                 front.windows.forEach { window ->
-                    val index = out.synthetic("Window", window.bounds, 0, window.packageName.orEmpty())
-                    if (index != null) out.tree(window.root, index)
+                    val index = out.synthetic("Window", window.bounds, 0, window.packageName.orEmpty(), window.id)
+                    if (index != null) out.tree(window.root, index, window.id)
                 }
             }
             is Front.Alert -> {
-                out.synthetic("Alert", front.window.bounds, null, front.window.packageName.orEmpty())
-                out.tree(front.window.root, 0)
+                out.synthetic("Alert", front.window.bounds, null, front.window.packageName.orEmpty(), front.window.id)
+                out.tree(front.window.root, 0, front.window.id)
             }
         }
-        front.keyboard?.let { out.synthetic("Keyboard", it.bounds, 0, it.packageName.orEmpty()) }
+        front.keyboard?.let { out.synthetic("Keyboard", it.bounds, 0, it.packageName.orEmpty(), it.id) }
         return Assembled(
             nodes = out.nodes,
             droppedNodes = out.dropped,
@@ -207,7 +218,7 @@ object QaHierarchy {
         var dropped = 0
         var truncated = false
 
-        fun synthetic(type: String, bounds: Bounds, parent: Int?, packageName: String): Int? =
+        fun synthetic(type: String, bounds: Bounds, parent: Int?, packageName: String, windowId: Int? = null): Int? =
             add(
                 parent,
                 QaNode(
@@ -226,10 +237,11 @@ object QaHierarchy {
                     secure = false,
                     visibleToUser = true,
                     heading = false,
+                    windowId = windowId,
                 ),
             )
 
-        fun tree(root: RawNode?, parent: Int) {
+        fun tree(root: RawNode?, parent: Int, windowId: Int) {
             val pending = ArrayDeque<Pair<RawNode?, Int>>()
             pending.addLast(root to parent)
             while (pending.isNotEmpty() && !truncated) {
@@ -238,12 +250,12 @@ object QaHierarchy {
                     dropped += 1
                     continue
                 }
-                val bounds = raw.bounds?.let { if (it.isInverted && !raw.visibleToUser) it.collapsed() else it }
-                val kept = if (bounds == null || bounds.isInverted) {
+                val node = node(raw)
+                val kept = if (node == null) {
                     dropped += 1
                     parentIndex
                 } else {
-                    add(parentIndex, copy(raw, bounds)) ?: return
+                    add(parentIndex, node.copy(windowId = windowId)) ?: return
                 }
                 for (child in raw.children.asReversed()) pending.addLast(child to kept)
             }
@@ -264,26 +276,33 @@ object QaHierarchy {
             )
             return index
         }
+    }
 
-        private fun copy(raw: RawNode, bounds: Bounds): QaNode {
-            val desc = raw.contentDescription.orEmpty()
-            return QaNode(
-                index = 0,
-                depth = 0,
-                parentIndex = null,
-                type = raw.className.orEmpty(),
-                label = raw.text.orEmpty().ifBlank { desc },
-                identifier = normalizeIdentifier(raw.viewIdResourceName.orEmpty()).ifBlank { desc },
-                packageName = raw.packageName.orEmpty(),
-                rect = bounds,
-                enabled = raw.enabled,
-                hittable = HittableSemantics.fromSnapshotNode(raw.enabled, raw.visibleToUser),
-                checked = raw.checked,
-                selected = raw.selected,
-                secure = raw.password,
-                visibleToUser = raw.visibleToUser,
-                heading = raw.heading,
-            )
-        }
+    /** One raw node's QA fields, or null when its bounds cannot be kept (counted as dropped). */
+    fun node(raw: RawNode): QaNode? {
+        val bounds = raw.bounds?.let { if (it.isInverted && !raw.visibleToUser) it.collapsed() else it }
+        if (bounds == null || bounds.isInverted) return null
+        val desc = raw.contentDescription.orEmpty()
+        return QaNode(
+            index = 0,
+            depth = 0,
+            parentIndex = null,
+            type = raw.className.orEmpty(),
+            label = raw.text.orEmpty().ifBlank { desc },
+            identifier = normalizeIdentifier(raw.viewIdResourceName.orEmpty()).ifBlank { desc },
+            packageName = raw.packageName.orEmpty(),
+            rect = bounds,
+            enabled = raw.enabled,
+            hittable = HittableSemantics.fromSnapshotNode(raw.enabled, raw.visibleToUser),
+            checked = raw.checked,
+            selected = raw.selected,
+            secure = raw.password,
+            visibleToUser = raw.visibleToUser,
+            heading = raw.heading,
+            editable = raw.editable,
+            hasText = !raw.text.isNullOrBlank(),
+            drawingOrder = raw.drawingOrder,
+            source = raw,
+        )
     }
 }

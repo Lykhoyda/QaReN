@@ -186,6 +186,41 @@ class QaHierarchyInstrumentedTest {
     }
 
     @Test
+    fun aPresenceCaptureObservesTheClearButtonAndExplainsTheCoveredAndScrolledOutOnes() {
+        val data = dispatcher.dispatch(
+            JSONObject()
+                .put("command", "snapshot")
+                .put("appBundleId", testPackage)
+                .put("qaReadOnly", true)
+                .put("platformPresence", true)
+                .put("presenceBudgetMs", 20_000),
+        ).getJSONObject("data")
+        val capture = data.getJSONObject("presenceCapture")
+        assertTrue(capture.toString(), capture.getBoolean("complete"))
+        assertEquals("android-a11y-live", capture.getString("source"))
+        assertEquals("app-windows", capture.getString("enumeration"))
+        assertEquals(data.getInt("snapshotGeneration"), capture.getInt("generation"))
+        assertEquals(20_000, capture.getInt("appliedBudgetMs"))
+        assertEquals(
+            instrumentation.targetContext.resources.displayMetrics.density.toDouble(),
+            capture.getDouble("pointScale"),
+            0.0,
+        )
+        assertTrue(capture.getLong("endedUptimeMs") - capture.getLong("startedUptimeMs") < 20_000)
+
+        val clear = node(data, QaHierarchyFixtureActivity.CLEAR_IDENTIFIER).getJSONObject("presence")
+        assertEquals(clear.toString(), "observed", clear.getString("status"))
+        assertEquals(capture.getString("captureId"), clear.getString("captureId"))
+        assertEquals(data.getInt("snapshotGeneration"), clear.getInt("generation"))
+        val covered = node(data, QaHierarchyFixtureActivity.COVERED_IDENTIFIER).getJSONObject("presence")
+        assertEquals(covered.toString(), "not-hittable", covered.getString("unknownReason"))
+        val scrolled = node(data, QaHierarchyFixtureActivity.SCROLLED_OUT_IDENTIFIER).getJSONObject("presence")
+        assertEquals(scrolled.toString(), "clipped", scrolled.getString("unknownReason"))
+        val nodes = data.getJSONArray("nodes")
+        for (i in 0 until nodes.length()) assertEquals(i, nodes.getJSONObject(i).getJSONObject("presence").getInt("nodeIndex"))
+    }
+
+    @Test
     fun aDeviceToolSnapshotKeepsTheWindowDumpShape() {
         val data = dispatcher.dispatch(
             JSONObject().put("command", "snapshot").put("appBundleId", testPackage),

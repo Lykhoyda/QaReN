@@ -6,10 +6,20 @@ import { parsePlan } from '../../../dist/qa/plan.js';
 import { decideScreen } from '../../../dist/qa/resolve.js';
 import { inputValues, isPossibleInput, ObservedPrivacy } from '../../../dist/qa/privacy.js';
 import { runPlan } from '../../../dist/qa/walker.js';
-import { join, semanticActionView, visibilityView } from '../../../dist/qa/screen.js';
+import {
+  join,
+  semanticActionView,
+  validateReactHostEvidence,
+  visibilityView,
+} from '../../../dist/qa/screen.js';
+import { validateNativePresence } from '../../../dist/qa/native-presence.js';
 import { associateHosts } from '../../../dist/qa/host-association.js';
 import type { DigestEntry, ReactHostEvidence } from '../../../dist/qa/screen.js';
-import { nativeCapture } from './platform-presence-fixtures.ts';
+import {
+  ANDROID_SCALE,
+  androidPresenceCapture,
+  nativeCapture,
+} from './platform-presence-fixtures.ts';
 import { buildFiber, createSandbox } from '../helpers/inject-harness.js';
 import { choice, scriptedJudge, walker } from './judgment-fixtures.ts';
 
@@ -1201,4 +1211,98 @@ test('a React scroll view identified on its native container view anchors its de
     undefined,
     'an identified Other stands for a scroll view only when a native ScrollView sits directly under it',
   );
+});
+
+// Android: React frames are density-scaled points from an origin the capture calibrates from its testID anchors.
+function androidAssociation(mutate?: (fixture: ReturnType<typeof androidPresenceCapture>) => void) {
+  const fixture = androidPresenceCapture();
+  mutate?.(fixture);
+  const nodes = fixture.data.nodes.map((node) => ({ ...node, ref: `@e${node.index}` }));
+  const presence = validateNativePresence(
+    fixture.data.presenceCapture,
+    nodes,
+    4,
+    'com.test',
+    20_000,
+  );
+  assert.ok(presence);
+  const evidence = validateReactHostEvidence(fixture.hostEvidence);
+  assert.ok(evidence);
+  const diagnostics = new Map();
+  const associations = associateHosts(nodes, evidence, presence, diagnostics);
+  return {
+    native: (host: number) => associations.get(host)?.nativeIndex,
+    identity: (host: number) => diagnostics.get(host)?.identity,
+  };
+}
+
+test("Android hosts associate through the density and the anchors' common origin, within 2 px and not 3", () => {
+  const exact = androidAssociation();
+  assert.deepEqual(
+    [0, 1, 2].map(exact.native),
+    [2, 3, 4],
+    'a constant +136 px origin is calibrated',
+  );
+  for (const [residual, text] of [
+    [2, 4],
+    [-2, 4],
+    [3, undefined],
+  ] as const) {
+    const shifted = androidAssociation((f) => {
+      f.data.nodes[4].rect = { ...f.data.nodes[4].rect, x: f.data.nodes[4].rect.x + residual };
+    });
+    assert.equal(shifted.native(1), 3);
+    assert.equal(shifted.native(2), text, `text residual ${residual} px`);
+  }
+});
+
+test('an Android capture with one anchor has no calibrated origin and associates nothing', () => {
+  const single = androidAssociation((f) => {
+    delete (f.hostEvidence.hosts[0] as { testID?: string }).testID;
+  });
+  assert.deepEqual([0, 1, 2].map(single.native), [undefined, undefined, undefined]);
+  assert.equal(single.identity(1), 'origin-unknown');
+});
+
+test('Android anchors that disagree on the origin by more than the tolerance associate nothing', () => {
+  const disagreeing = androidAssociation((f) => {
+    const root = f.hostEvidence.typography.nodes[0].rect!;
+    f.hostEvidence.typography.nodes[0].rect = { ...root, y: root.y + 3 / ANDROID_SCALE };
+  });
+  assert.deepEqual([0, 1, 2].map(disagreeing.native), [undefined, undefined, undefined]);
+  assert.equal(disagreeing.identity(1), 'origin-unknown');
+});
+
+function withModal(children: boolean) {
+  return (f: ReturnType<typeof androidPresenceCapture>) => {
+    f.hostEvidence.hosts.push({ role: null, roleSource: 'none', capabilities: {} });
+    f.hostEvidence.typography.nodes.push({
+      hostIndex: 3,
+      parentHostIndex: 0,
+      rootIndex: 0,
+      hostType: 'RCTModalHostView',
+      rect: { x: 0, y: 0, width: 1080 / ANDROID_SCALE, height: 2400 / ANDROID_SCALE },
+      text: { kind: 'none' },
+    } as (typeof f.hostEvidence.typography.nodes)[number]);
+    if (!children) return;
+    f.hostEvidence.hosts.push({ role: null, roleSource: 'none', capabilities: {} });
+    f.hostEvidence.typography.nodes.push({
+      hostIndex: 4,
+      parentHostIndex: 3,
+      rootIndex: 0,
+      hostType: 'RCTView',
+      text: { kind: 'none' },
+    } as (typeof f.hostEvidence.typography.nodes)[number]);
+  };
+}
+
+test('a mounted React Native Modal with content is a second window Android does not list', () => {
+  const modal = androidAssociation(withModal(true));
+  assert.deepEqual([0, 1, 2].map(modal.native), [undefined, undefined, undefined]);
+  assert.equal(modal.identity(1), 'window-count');
+});
+
+test('an empty Modal host does not stop Android association', () => {
+  const empty = androidAssociation(withModal(false));
+  assert.deepEqual([0, 1, 2].map(empty.native), [2, 3, 4]);
 });

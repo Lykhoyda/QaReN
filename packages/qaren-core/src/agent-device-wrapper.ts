@@ -861,7 +861,9 @@ export function buildRunAndroidArgs(
     }
 
     case 'snapshot':
-      return { command: 'snapshot', interactiveOnly: !cliArgs.includes('--full'), ...withBundle };
+      return cliArgs.includes('--platform-presence')
+        ? { command: 'snapshot', platformPresence: true, ...withBundle }
+        : { command: 'snapshot', interactiveOnly: !cliArgs.includes('--full'), ...withBundle };
 
     case 'back':
       return { command: 'back', ...withBundle };
@@ -2116,6 +2118,7 @@ export async function runNative(
     let android = buildRunAndroidArgs(cliArgs, appId);
     android.qaContext = opts.qaContext;
     android.qaReadOnly = opts.qaReadOnly;
+    if (android.platformPresence) android.presenceBudgetMs = opts.presenceBudgetMs;
     if ((android.command === 'type' || android.command === 'verifyInput') && opts.exactTarget) {
       const decorated = decorateExactTargetAndroid(android, opts.exactTarget);
       if (decorated) {

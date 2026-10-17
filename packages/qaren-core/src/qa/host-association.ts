@@ -1,4 +1,9 @@
-import { duplicateNodes, offscreenNodes } from './native-presence.js';
+import {
+  clippingViewport,
+  duplicateNodes,
+  offscreenNodes,
+  outsideViewport,
+} from './native-presence.js';
 import { INPUT_HOST_TYPES } from './input-host-types.js';
 import type { NativePresence } from './native-presence.js';
 import type { NativeNode, ReactHostEvidence } from './screen.js';
@@ -7,11 +12,26 @@ import type { HostTypography } from './host-typography.js';
 type Rect = NonNullable<NativeNode['rect']>;
 export type HostAssociation = { nativeIndex: number; anchorIndex: number };
 
+// React frame → native frame: native = host × scale + origin, each edge within tolerance.
+// iOS is (1, the window's origin, 0), the exact rule; Android calibrates its origin per capture.
+interface FrameTransform {
+  scale: number;
+  x: number;
+  y: number;
+  tolerance: number;
+}
+
+// Android accessibility bounds against React's measured points, both in the probe's terms.
+export const ANDROID_FRAME_TOLERANCE_PX = 2;
+const ANDROID_TEXT = 'android.widget.TextView';
+const MODAL_HOST_TYPES = new Set(['Modal', 'RCTModalHostView']);
+
 export interface HostAssociationDiagnostic {
   identity:
     | 'evidence-unavailable'
     | 'window-count'
     | 'window-frame'
+    | 'origin-unknown'
     | 'inline'
     | 'no-test-id'
     | 'host-id-ambiguous'
@@ -67,7 +87,23 @@ function compatible(
   host: string | null,
   native: string | undefined,
   scrollsBeneath = false,
+  android = false,
 ): boolean {
+  if (android) {
+    if (INPUT_HOST_TYPES.includes(host ?? '')) return native === 'android.widget.EditText';
+    if (host === 'RCTText' || host === 'Text') return native === ANDROID_TEXT;
+    if (host === 'RCTView' || host === 'View')
+      return (
+        native === 'android.view.ViewGroup' ||
+        native === 'android.view.View' ||
+        native === 'android.widget.Button'
+      );
+    if (host === 'RCTScrollView' || host === 'ScrollView')
+      return (
+        native === 'android.widget.ScrollView' || native === 'android.widget.HorizontalScrollView'
+      );
+    return false;
+  }
   if (host === 'RCTSinglelineTextInputView')
     return native === 'TextField' || native === 'SecureTextField';
   if (host === 'RCTMultilineTextInputView') return native === 'TextView';
@@ -82,27 +118,109 @@ function compatible(
   return false;
 }
 
-function sameFrame(host: Rect | undefined, native: Rect | undefined, window: Rect): boolean {
+function near(a: number, b: number, tolerance: number): boolean {
+  return Math.abs(a - b) <= tolerance;
+}
+
+function sameFrame(
+  host: Rect | undefined,
+  native: Rect | undefined,
+  { scale, x, y, tolerance }: FrameTransform,
+): boolean {
   return (
     !!host &&
     !!native &&
-    host.x + window.x === native.x &&
-    host.y + window.y === native.y &&
-    host.width === native.width &&
-    host.height === native.height
+    near(host.x * scale + x, native.x, tolerance) &&
+    near(host.y * scale + y, native.y, tolerance) &&
+    near(host.width * scale, native.width, tolerance) &&
+    near(host.height * scale, native.height, tolerance)
+  );
+}
+
+// The origin React measures from, out of identified hosts whose unclipped native frames agree on it.
+function calibratedOrigin(
+  snapshot: HostTypography,
+  evidence: ReactHostEvidence,
+  nodes: NativeNode[],
+  scale: number,
+  tolerance: number,
+): { x: number; y: number } | undefined {
+  const finiteRect = (rect: Rect | undefined): rect is Rect =>
+    !!rect && [rect.x, rect.y, rect.width, rect.height].every(Number.isFinite);
+  const candidates: Array<{ x: number; y: number }> = [];
+  for (const host of snapshot.nodes) {
+    const id = evidence.hosts[host.hostIndex].testID;
+    if (!id || evidence.hosts.filter((h) => h.testID === id).length !== 1) continue;
+    const matches = nodes.filter((node) => node.identifier === id);
+    const native = matches[0]?.rect;
+    if (matches.length !== 1 || !finiteRect(host.rect) || !finiteRect(native)) continue;
+    // A frame the viewport clips has moved its own edge; it cannot speak for the origin.
+    if (
+      native.width <= 0 ||
+      native.height <= 0 ||
+      !near(host.rect.width * scale, native.width, tolerance) ||
+      !near(host.rect.height * scale, native.height, tolerance)
+    )
+      continue;
+    candidates.push({ x: native.x - host.rect.x * scale, y: native.y - host.rect.y * scale });
+  }
+  if (candidates.length < 2) return undefined;
+  // Agreeing anchors lie within the tolerance of each other, so each also lies within it of the median.
+  const axis = (values: number[]) => {
+    const sorted = [...values].sort((a, b) => a - b);
+    const mid = sorted.length >> 1;
+    return sorted[sorted.length - 1] - sorted[0] <= tolerance
+      ? sorted.length % 2
+        ? sorted[mid]
+        : (sorted[mid - 1] + sorted[mid]) / 2
+      : undefined;
+  };
+  const x = axis(candidates.map((c) => c.x));
+  const y = axis(candidates.map((c) => c.y));
+  return x === undefined || y === undefined ? undefined : { x, y };
+}
+
+// Android reports the visible part of a frame: cut by its clip, or, wholly clipped, an empty rect at its
+// own top below the clip or at the clip's top above it.
+function clippedFrame(
+  host: Rect | undefined,
+  native: Rect | undefined,
+  t: FrameTransform,
+  clip: Rect | undefined,
+): boolean {
+  if (!host || !native || !clip) return false;
+  const frame = {
+    x: host.x * t.scale + t.x,
+    y: host.y * t.scale + t.y,
+    width: host.width * t.scale,
+    height: host.height * t.scale,
+  };
+  if (!near(frame.x, native.x, t.tolerance) || !near(frame.width, native.width, t.tolerance))
+    return false;
+  if (native.height === 0) {
+    if (frame.y >= clip.y + clip.height) return near(native.y, frame.y, t.tolerance);
+    if (frame.y + frame.height <= clip.y) return near(native.y, clip.y, t.tolerance);
+    return false;
+  }
+  const top = Math.max(frame.y, clip.y);
+  const bottom = Math.min(frame.y + frame.height, clip.y + clip.height);
+  return (
+    bottom > top &&
+    near(native.y, top, t.tolerance) &&
+    near(native.y + native.height, bottom, t.tolerance)
   );
 }
 
 function frameMismatchDiagnostic(
   host: Rect | undefined,
   native: NativeNode,
-  window: Rect,
+  transform: FrameTransform,
 ): NonNullable<HostAssociationDiagnostic['frameMismatch']> {
   const rectFinite = (rect: Rect | undefined) =>
     !!rect && [rect.x, rect.y, rect.width, rect.height].every(Number.isFinite);
   const delta = (a: number | undefined, b: number | undefined, offset: number | undefined) => {
     if (![a, b, offset].every(Number.isFinite)) return null;
-    const difference = a! - (b! + offset!);
+    const difference = a! - (b! * transform.scale + offset!);
     return Number.isFinite(difference) ? difference : null;
   };
   const type = native.type;
@@ -111,11 +229,11 @@ function frameMismatchDiagnostic(
       type === 'TextField' || type === 'SecureTextField' || type === 'TextView' ? type : 'other',
     hostFinite: rectFinite(host),
     nativeFinite: rectFinite(native.rect),
-    windowOriginFinite: Number.isFinite(window.x) && Number.isFinite(window.y),
-    // Native minus host, with the same window-origin translation as the strict comparison.
+    windowOriginFinite: Number.isFinite(transform.x) && Number.isFinite(transform.y),
+    // Native minus host, through the same transform as the comparison.
     delta: {
-      x: delta(native.rect?.x, host?.x, window.x),
-      y: delta(native.rect?.y, host?.y, window.y),
+      x: delta(native.rect?.x, host?.x, transform.x),
+      y: delta(native.rect?.y, host?.y, transform.y),
       width: delta(native.rect?.width, host?.width, 0),
       height: delta(native.rect?.height, host?.height, 0),
     },
@@ -135,10 +253,16 @@ function containsInputFrame(
   host: Rect | undefined,
   native: Rect | undefined,
   window: Rect,
+  { scale, x, y, tolerance }: FrameTransform,
 ): boolean {
   try {
     if (!host || !native) return false;
-    const outer = { ...host, x: host.x + window.x, y: host.y + window.y };
+    const outer = {
+      x: host.x * scale + x - tolerance,
+      y: host.y * scale + y - tolerance,
+      width: host.width * scale + 2 * tolerance,
+      height: host.height * scale + 2 * tolerance,
+    };
     return (
       [host, outer, native, window].every(
         (r) =>
@@ -218,6 +342,26 @@ export function associateHosts(
     window.height <= 0
   )
     return unavailable('window-frame');
+  const android = presence.source === 'android-a11y-live';
+  // Android lists only a React Native Modal's own window, so the second window shows only in React.
+  if (
+    android &&
+    snapshot.nodes.some(
+      (host) =>
+        MODAL_HOST_TYPES.has(host.hostType ?? '') &&
+        snapshot.nodes.some((child) => child.parentHostIndex === host.hostIndex),
+    )
+  )
+    return unavailable('window-count');
+  let transform: FrameTransform = { scale: 1, x: window.x, y: window.y, tolerance: 0 };
+  if (android) {
+    const scale = presence.pointScale!;
+    const origin = calibratedOrigin(snapshot, evidence, nodes, scale, ANDROID_FRAME_TOLERANCE_PX);
+    if (!origin) return unavailable('origin-unknown');
+    transform = { scale, ...origin, tolerance: ANDROID_FRAME_TOLERANCE_PX };
+  }
+  const text = android ? ANDROID_TEXT : 'StaticText';
+  const viewport = android ? outsideViewport(nodes) : undefined;
   const paths = snapshot.nodes.map((node) => hostPath(snapshot, node.hostIndex)!);
   const nativePaths = nodes.map((_, i) => nativePath(nodes, i));
   const inWindow = (i: number) =>
@@ -246,7 +390,8 @@ export function associateHosts(
     }
     const inputHost =
       host.hostType === 'RCTSinglelineTextInputView' ||
-      host.hostType === 'RCTMultilineTextInputView';
+      host.hostType === 'RCTMultilineTextInputView' ||
+      (android && host.hostType === 'AndroidTextInput');
     const matches = nodes.flatMap((node, i) =>
       node.identifier === id && (inputHost || !duplicates.has(i)) ? [i] : [],
     );
@@ -264,17 +409,26 @@ export function associateHosts(
       host.hostType,
       nodes[nativeIndex].type,
       nodes.some((n) => n.parentIndex === nativeIndex && n.type === 'ScrollView'),
+      android,
     );
     note(host.hostIndex, {
       identity: 'incompatible-type',
       compatibleCount: Number(compatibleType),
     });
     if (!compatibleType) continue;
-    const matchingFrame = sameFrame(host.rect, nodes[nativeIndex].rect, window);
+    const matchingFrame =
+      sameFrame(host.rect, nodes[nativeIndex].rect, transform) ||
+      (viewport !== undefined &&
+        clippedFrame(
+          host.rect,
+          nodes[nativeIndex].rect,
+          transform,
+          clippingViewport(viewport, nativeIndex),
+        ));
     // Native input accessibility frames can be inset from their React host's outer frame.
     const matchingGeometry = inputHost
       ? !evidence.hosts[host.hostIndex].hidden &&
-        containsInputFrame(host.rect, nodes[nativeIndex].rect, window)
+        containsInputFrame(host.rect, nodes[nativeIndex].rect, window, transform)
       : matchingFrame;
     note(host.hostIndex, {
       identity: 'frame-mismatch',
@@ -285,7 +439,7 @@ export function associateHosts(
       if (diagnostics) {
         try {
           note(host.hostIndex, {
-            frameMismatch: frameMismatchDiagnostic(host.rect, nodes[nativeIndex], window),
+            frameMismatch: frameMismatchDiagnostic(host.rect, nodes[nativeIndex], transform),
           });
         } catch {
           // Frame diagnostics cannot change association decisions.
@@ -353,7 +507,7 @@ export function associateHosts(
       host.text.kind !== 'block' ||
       !host.text.content.trim() ||
       !host.rect ||
-      !compatible(host.hostType, 'StaticText')
+      !compatible(host.hostType, text, false, android)
     )
       continue;
     // The nearest identified ancestor scopes the search, even without measured presence.
@@ -376,9 +530,9 @@ export function associateHosts(
       i !== anchorIndex &&
       !duplicates.has(i) &&
       nativePaths[i].includes(anchorIndex) &&
-      node.type === 'StaticText' &&
+      node.type === text &&
       node.label === content &&
-      sameFrame(host.rect, node.rect, window)
+      sameFrame(host.rect, node.rect, transform)
         ? [i]
         : [],
     );
@@ -395,7 +549,7 @@ export function associateHosts(
         return false;
       return (
         possibleTextOwner(h, content) &&
-        (!h.rect || sameFrame(h.rect, nodes[matches[0]].rect, window))
+        (!h.rect || sameFrame(h.rect, nodes[matches[0]].rect, transform))
       );
     });
     if (owners.length !== 1) continue;

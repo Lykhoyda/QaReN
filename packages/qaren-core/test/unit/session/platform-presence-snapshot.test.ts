@@ -341,7 +341,7 @@ test('presence without a session refuses without looking for or starting a runne
   assert.equal(requests, 0);
 });
 
-test('presence argv is iOS-only and the generic snapshot remains interactive', () => {
+test('presence argv reaches both native runners and the generic snapshot remains interactive', () => {
   assert.deepEqual(buildRunIOSArgs(['snapshot', '--platform-presence'], 'com.test'), {
     command: 'snapshot',
     bundleId: 'com.test',
@@ -353,6 +353,11 @@ test('presence argv is iOS-only and the generic snapshot remains interactive', (
     interactiveOnly: true,
   });
   assert.deepEqual(buildRunAndroidArgs(['snapshot', '--platform-presence'], 'com.test'), {
+    command: 'snapshot',
+    bundleId: 'com.test',
+    platformPresence: true,
+  });
+  assert.deepEqual(buildRunAndroidArgs(['snapshot', '-i'], 'com.test'), {
     command: 'snapshot',
     bundleId: 'com.test',
     interactiveOnly: true,

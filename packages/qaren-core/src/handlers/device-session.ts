@@ -635,7 +635,7 @@ export function createDeviceSnapshotHandler(
       if (args.qaContext) args.qaContext.invalidate();
       if (args.qaReadOnly) throw new QaDispatchError('ACTION_CONTEXT_CHANGED');
       const session = getActiveSession();
-      if (args.platformPresence === true && session?.platform === 'ios') {
+      if (args.platformPresence === true && presencePlatform(session?.platform)) {
         return failResult(
           'Platform presence observed the runner UI; no recovery attempted.',
           'RN_FAST_RUNNER_DOWN',
@@ -799,6 +799,11 @@ export async function reacquireIosTargetApp(
   }
 }
 
+// Both native runners capture platform presence for QA reads.
+function presencePlatform(platform: string | undefined): boolean {
+  return platform === 'ios' || platform === 'android';
+}
+
 async function rawSnapshot(
   platformPresence?: boolean,
   qaContext?: QaDispatchContext,
@@ -807,7 +812,7 @@ async function rawSnapshot(
   qaTiming?: TimingContext,
 ): Promise<ToolResult> {
   return runNative(
-    platformPresence === true && getActiveSession()?.platform === 'ios'
+    platformPresence === true && presencePlatform(getActiveSession()?.platform)
       ? ['snapshot', '--platform-presence']
       : ['snapshot', '-i'],
     { qaContext, qaReadOnly, presenceBudgetMs, qaTiming },
@@ -848,7 +853,7 @@ function cacheSnapshotIfPossible(result: ToolResult, platformPresence = false): 
     const platform = getActiveSession()?.platform;
     if (
       platformPresence &&
-      platform === 'ios' &&
+      presencePlatform(platform) &&
       (envelope.meta?.snapshotVerdict?.state !== 'ok' ||
         envelope.meta.snapshotVerdict.refMapUpdated !== true)
     ) {

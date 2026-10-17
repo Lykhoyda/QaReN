@@ -791,3 +791,61 @@ test('native offscreen target frames choose up above the viewport and down other
     }
   }
 });
+
+test('an Android control clipped to an empty rect scrolls toward its side of the viewport, never throws', async () => {
+  for (const [y, expected] of [
+    [0, 'up'],
+    [2691, 'down'],
+  ] as const) {
+    const observed = joinScreen(
+      [
+        { ref: '@e0', type: 'Application', rect: { x: 0, y: 0, width: 1080, height: 2400 } },
+        {
+          ref: '@e1',
+          type: 'Window',
+          parentIndex: 0,
+          rect: { x: 0, y: 0, width: 1080, height: 2400 },
+        },
+        {
+          ref: '@e2',
+          type: 'android.widget.ScrollView',
+          identifier: 'home-welcome',
+          parentIndex: 1,
+          rect: { x: 0, y: 0, width: 1080, height: 2208 },
+        },
+        {
+          ref: '@e3',
+          type: 'android.widget.Button',
+          identifier: 'save',
+          label: 'Save',
+          parentIndex: 2,
+          hittable: false,
+          visibleToUser: false,
+          rect: { x: 37, y, width: 1006, height: 0 },
+        },
+      ],
+      [],
+      'app',
+      { native: 'complete', react: 'complete' },
+      { complete: true, hosts: [] },
+      {
+        source: 'android-a11y-live',
+        pointScale: 2.625,
+        nodes: [
+          { status: 'unknown', labelSource: 'none' },
+          { status: 'unknown', labelSource: 'none' },
+          { status: 'observed', labelSource: 'none' },
+          { status: 'unknown', labelSource: 'direct', unknownReason: 'clipped' },
+        ],
+      },
+    );
+    assert.equal(observed.elements[3].semantic?.visibility, 'offscreen');
+    const judge = scriptedJudge((q) =>
+      Object.fromEntries(Object.entries(q).map(([key, question]) => [key, choice(question)])),
+    );
+    for (const target of [{ phrase: 'the Save button' }, { phrase: 'Save', quoted: 'Save' }])
+      assert.deepEqual(await resolveTarget({ kind: 'press', target }, observed, judge), {
+        scroll: expected,
+      });
+  }
+});
