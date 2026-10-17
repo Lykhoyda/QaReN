@@ -449,3 +449,201 @@ test('inferPlatforms: falls back to package-list when deviceName absent', () => 
   });
   assert.equal(targets[0].platform, 'ios');
 });
+
+// ── Value-free inference evidence carried on a selection refusal ──
+
+import { discoverExactPort } from '../../dist/cdp/discovery.js';
+
+function countingReaders(values) {
+  const calls = { readAndroid: 0, readIOS: 0, readIOSDeviceNames: 0, readAndroidDeviceModels: 0 };
+  const readers = Object.fromEntries(
+    Object.keys(calls).map((key) => [
+      key,
+      () => {
+        calls[key]++;
+        return values[key] ?? null;
+      },
+    ]),
+  );
+  return { calls, readers };
+}
+
+const evidenceOf = (summary) =>
+  summary.targets.map(({ name, identity, packages, confidence }) => ({
+    name,
+    identity,
+    packages,
+    confidence,
+  }));
+
+test('inference summary: every reader null leaves a tokenless target defaulted and says so', () => {
+  const targets = [{ id: '1', description: 'com.private.app', deviceName: 'Office Phone' }];
+  const { calls, readers } = countingReaders({});
+  const summary = inferPlatforms(targets, readers);
+  assert.equal(targets[0].platform, 'ios');
+  assert.equal(targets[0].platformInference, 'defaulted');
+  assert.deepEqual(summary.readers, {
+    androidPackages: 'null',
+    iosPackages: 'null',
+    iosDeviceNames: 'null',
+    androidDeviceModels: 'null',
+  });
+  assert.deepEqual(summary.targets, [
+    {
+      token: 'none',
+      name: 'neither',
+      identity: 'present',
+      packages: 'neither',
+      confidence: 'defaulted',
+    },
+  ]);
+  assert.deepEqual(calls, {
+    readAndroid: 1,
+    readIOS: 1,
+    readIOSDeviceNames: 1,
+    readAndroidDeviceModels: 1,
+  });
+});
+
+test('inference summary: a null lazy reader is re-read per tokenless target, a nonempty one once', () => {
+  const targets = [
+    { id: '1', description: 'com.app', deviceName: 'Office Phone' },
+    { id: '2', description: 'com.app', deviceName: 'Desk Phone' },
+  ];
+  const { calls, readers } = countingReaders({
+    readAndroid: new Set(),
+    readIOS: new Set(),
+    readIOSDeviceNames: new Set(['lab device']),
+  });
+  const summary = inferPlatforms(targets, readers);
+  assert.equal(calls.readIOSDeviceNames, 1);
+  assert.equal(calls.readAndroidDeviceModels, 2);
+  assert.deepEqual(summary.readers, {
+    androidPackages: 'empty',
+    iosPackages: 'empty',
+    iosDeviceNames: 'nonempty',
+    androidDeviceModels: 'null',
+  });
+});
+
+test('inference summary: a one-sided inventory name proves the platform before packages', () => {
+  const targets = [{ id: '1', description: 'com.app', deviceName: 'Office Phone' }];
+  const { readers } = countingReaders({ readIOSDeviceNames: new Set(['office phone']) });
+  const summary = inferPlatforms(targets, readers);
+  assert.equal(targets[0].platformInference, 'probed');
+  assert.deepEqual(evidenceOf(summary), [
+    { name: 'ios_only', identity: 'not_reached', packages: 'not_reached', confidence: 'probed' },
+  ]);
+});
+
+test('inference summary: a name in both inventories falls through to the package branch', () => {
+  const targets = [{ id: '1', description: 'com.dual.app', deviceName: 'Pixel Lab' }];
+  const { readers } = countingReaders({
+    readAndroid: new Set(['com.dual.app']),
+    readIOS: new Set(['com.dual.app']),
+    readIOSDeviceNames: new Set(['pixel lab']),
+    readAndroidDeviceModels: new Set(['pixel lab']),
+  });
+  const summary = inferPlatforms(targets, readers);
+  assert.equal(targets[0].platformInference, 'probed', 'pixel is an Android name token');
+  const tokenless = [{ id: '2', description: 'com.dual.app', deviceName: 'Lab Unit' }];
+  const both = countingReaders({
+    readAndroid: new Set(['com.dual.app']),
+    readIOS: new Set(['com.dual.app']),
+    readIOSDeviceNames: new Set(['lab unit']),
+    readAndroidDeviceModels: new Set(['lab unit']),
+  });
+  assert.equal(summary.targets[0].token, 'android');
+  assert.deepEqual(evidenceOf(inferPlatforms(tokenless, both.readers)), [
+    { name: 'both', identity: 'present', packages: 'both', confidence: 'ambiguous' },
+  ]);
+  assert.equal(tokenless[0].ambiguousPlatform, true);
+});
+
+test('inference summary: a conflicting bundle identity is missing, and absent names are absent', () => {
+  const targets = [{ id: '1', appId: 'com.first.app', description: 'com.second.app' }];
+  const { calls, readers } = countingReaders({ readAndroid: new Set(['com.first.app']) });
+  const summary = inferPlatforms(targets, readers);
+  assert.equal(targets[0].platformInference, 'defaulted');
+  assert.deepEqual(evidenceOf(summary), [
+    { name: 'absent', identity: 'missing', packages: 'not_reached', confidence: 'defaulted' },
+  ]);
+  assert.equal(calls.readIOSDeviceNames, 0);
+  assert.equal(summary.readers.iosDeviceNames, 'not_consumed');
+});
+
+test('inference summary: name tokens never consume the lazy device readers', () => {
+  const targets = [
+    { id: '1', description: 'com.app', deviceName: 'iPhone 17 Pro' },
+    { id: '2', description: 'com.app', deviceName: 'sdk_gphone64_arm64 - 16 - API 36' },
+  ];
+  const { calls, readers } = countingReaders({});
+  const summary = inferPlatforms(targets, readers);
+  assert.deepEqual(
+    summary.targets.map((entry) => [entry.token, entry.name]),
+    [
+      ['ios', 'not_reached'],
+      ['android', 'not_reached'],
+    ],
+  );
+  assert.equal(summary.readers.iosDeviceNames, 'not_consumed');
+  assert.equal(summary.readers.androidDeviceModels, 'not_consumed');
+  assert.equal(calls.readIOSDeviceNames + calls.readAndroidDeviceModels, 0);
+});
+
+test('inference summary carries no target ids, titles, app ids, device names or URLs', () => {
+  const targets = [
+    {
+      id: 'PRIVATE-target-1',
+      title: 'com.private.app (Private Phone)',
+      appId: 'com.private.app',
+      description: 'com.private.app',
+      deviceName: 'Private Phone',
+      webSocketDebuggerUrl: 'ws://127.0.0.1:8081/inspector/debug?device=PRIVATE',
+    },
+  ];
+  const { readers } = countingReaders({ readIOS: new Set(['com.private.app']) });
+  const text = JSON.stringify(inferPlatforms(targets, readers));
+  for (const sentinel of ['PRIVATE', 'private', 'ws:', '8081']) assert.ok(!text.includes(sentinel));
+});
+
+test('exact-port selection refusal carries index-aligned device and bundle matches', async () => {
+  const port = 8342;
+  const target = (id, deviceName, appId) => ({
+    id,
+    title: `${appId} (${deviceName})`,
+    description: 'React Native Bridgeless [C++ connection]',
+    appId,
+    type: 'node',
+    deviceName,
+    webSocketDebuggerUrl: `ws://127.0.0.1:${port}/inspector/debug?device=${id}&page=1`,
+  });
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async () => ({
+    json: async () => [
+      target('a-1', 'iPhone 17 Pro', 'com.example.app'),
+      target('b-1', 'iPhone 16', 'com.other.app'),
+    ],
+  });
+  try {
+    const result = await discoverExactPort(port, {
+      platform: 'android',
+      bundleId: 'com.example.app',
+      deviceName: 'iPhone 17 Pro',
+    });
+    assert.equal(result.errorCode, 'PLATFORM_TARGET_NOT_FOUND');
+    assert.deepEqual(
+      result.inference.targets.map(({ token, deviceMatch, bundleMatch }) => ({
+        token,
+        deviceMatch,
+        bundleMatch,
+      })),
+      [
+        { token: 'ios', deviceMatch: true, bundleMatch: true },
+        { token: 'ios', deviceMatch: false, bundleMatch: false },
+      ],
+    );
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});

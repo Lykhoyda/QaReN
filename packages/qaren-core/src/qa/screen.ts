@@ -170,6 +170,8 @@ export interface NativeNode {
   selected?: boolean;
   // Android only: a scrolled-out node keeps an empty clipped rect inside the viewport.
   visibleToUser?: boolean;
+  // Android only: the accessibility heading fact; header-role text is exposed as android.view.View.
+  heading?: boolean;
   secure?: boolean;
   value?: string;
   rect?: { x: number; y: number; width: number; height: number };
@@ -297,6 +299,11 @@ export function kindOf(type: string | undefined): Kind {
     if (leaf.endsWith(suffix)) return kind;
   }
   return 'other';
+}
+
+// Android header-role text arrives as an untyped View carrying the heading fact.
+function headingText(n: NativeNode): boolean {
+  return n.heading === true && kindOf(n.type) === 'other';
 }
 
 function kindOfRole(role: string): Kind {
@@ -652,6 +659,7 @@ export function join(
       }
     }
     let kind = kindOf(n.type);
+    if (headingText(n)) kind = 'text';
     const nativeKind = kind;
     const nodeValue = nativeValue(n);
     const host = associatedHosts.get(nodeIndex);
@@ -981,16 +989,22 @@ export function join(
     for (let p = n.parentIndex; p !== undefined && p >= 0 && p < i; p = nodes[p].parentIndex)
       textDescendants.set(p, [...(textDescendants.get(p) ?? []), i]);
   });
-  textDescendants.forEach(([only, ...more], p) => {
+  textDescendants.forEach((texts, p) => {
     const control = elements[p];
+    // A header-role text repeating its control's label beside other text, as on a titled card, also echoes it.
+    const [only, ...more] =
+      texts.length === 1
+        ? texts
+        : texts.filter((i) => headingText(nodes[i]) && elements[i].label === control.label);
     if (
+      only !== undefined &&
       !more.length &&
       control.label !== undefined &&
       control.kind !== 'text' &&
       control.kind !== 'input' &&
       elements[only].label === control.label
     ) {
-      soleLabelTexts.set(control, elements[only]);
+      if (texts.length === 1) soleLabelTexts.set(control, elements[only]);
       labelAncestors.set(elements[only], [...labelAncestorsOf(elements[only]), control]);
     }
   });

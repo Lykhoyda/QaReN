@@ -51,6 +51,8 @@ object QaHierarchy {
         val selected: Boolean,
         val checked: Boolean,
         val password: Boolean,
+        // AccessibilityNodeInfo.isHeading, read on API 28 and later; false below.
+        val heading: Boolean,
         // A null child vanished or could not be read; it is counted as dropped.
         val children: List<RawNode?>,
     )
@@ -79,6 +81,7 @@ object QaHierarchy {
         val selected: Boolean,
         val secure: Boolean,
         val visibleToUser: Boolean,
+        val heading: Boolean,
     )
 
     sealed interface Front {
@@ -171,6 +174,7 @@ object QaHierarchy {
                     selected = false,
                     secure = false,
                     visibleToUser = true,
+                    heading = false,
                 ),
             )
 
@@ -227,6 +231,7 @@ object QaHierarchy {
                 selected = raw.selected,
                 secure = raw.password,
                 visibleToUser = raw.visibleToUser,
+                heading = raw.heading,
             )
         }
     }

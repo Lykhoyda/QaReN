@@ -549,17 +549,32 @@ fn run_inner(
     let mut video = None;
     // Taken before the spawn, so the trim offset can only cut later than the true admission frame.
     let recording_from = ctx.runner.now_epoch_ms();
-    if pr_state.is_some() && req.platform == Platform::Android {
-        events::stage("recording", StageState::Skipped, None, None);
-        video = Some(VideoStatus::Unavailable(
-            "Android recording arrives in a later slice".to_string(),
-        ));
-    } else if pr_state.is_some() {
-        events::stage("recording", StageState::Running, None, None);
-        if let Err(status) = record::start(ctx.runner, &mut ctx.record, &ctx.runs_root, &device.id)
+    if pr_state.is_some() {
+        if device
+            .android
+            .as_ref()
+            .is_some_and(|emulator| emulator.api_level < 34)
         {
-            events::stage("recording", StageState::Failed, None, None);
-            video = Some(status);
+            events::stage("recording", StageState::Skipped, None, None);
+            video = Some(VideoStatus::Unavailable(
+                "Android API <34 stops screen recording at 180 s".into(),
+            ));
+        } else {
+            events::stage("recording", StageState::Running, None, None);
+            let adb = ctx.record.resources.adb_path.clone();
+            let target = match &device.android {
+                Some(emulator) => record::RecordTarget::Android {
+                    adb: adb.as_deref().expect("borrowed emulator adb path"),
+                    port: emulator.server_port,
+                    serial: &emulator.serial,
+                },
+                None => record::RecordTarget::Ios(&device.id),
+            };
+            if let Err(status) = record::start(ctx.runner, &mut ctx.record, &ctx.runs_root, target)
+            {
+                events::stage("recording", StageState::Failed, None, None);
+                video = Some(status);
+            }
         }
     } else {
         events::stage("recording", StageState::Skipped, None, None);
@@ -804,13 +819,17 @@ fn run_inner(
     let mut tested_older_commit = None;
     let mut published_video = None;
     if let Some(pr) = &pr_state {
+        let raw = record::raw_capture(&run_dir.join("media"));
         let video = video.unwrap_or_else(|| record::finalize(ctx.runner, &run_dir));
         ctx.notes.push(("video".to_string(), video.to_string()));
         if video == VideoStatus::Available {
             if let Some(bytes) = reclaim_raw_capture(&run_dir) {
                 ctx.notes.push((
                     "reclaimed".to_string(),
-                    format!("media/raw.mov: {bytes} bytes"),
+                    format!(
+                        "media/{}: {bytes} bytes",
+                        raw.file_name().unwrap().to_string_lossy()
+                    ),
                 ));
             }
         }
@@ -940,7 +959,7 @@ fn run_inner(
 
 // The raw capture in this run's own directory is redundant once a playable video.mp4 replaces it.
 fn reclaim_raw_capture(run_dir: &Path) -> Option<u64> {
-    let raw = run_dir.join("media").join("raw.mov");
+    let raw = record::raw_capture(&run_dir.join("media"));
     let meta = std::fs::symlink_metadata(&raw)
         .ok()
         .filter(|m| m.is_file())?;

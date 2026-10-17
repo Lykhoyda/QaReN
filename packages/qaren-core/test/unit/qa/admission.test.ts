@@ -1,16 +1,19 @@
 import { interruptible, withCancellation } from '../../../dist/domain/cancellation.js';
 import { createStop } from '../../../dist/qa/stop.js';
-import { TargetReadinessTimeoutError } from '../../../dist/cdp/discovery.js';
+import { TargetReadinessTimeoutError, TargetSelectionError } from '../../../dist/cdp/discovery.js';
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
   admit,
   awaitBundleReady,
   createBundleReload,
+  formatAdmissionRefusal,
+  logAdmissionRefusal,
   metroDevicePin,
   type AdmissionSteps,
 } from '../../../dist/qa/admission.js';
 import { REACT_READY_PROBE_JS } from '../../../dist/injected-helpers.js';
+import { HandlerError } from '../../../dist/qa/adapt.js';
 import { runInNewContext } from 'node:vm';
 import { setImmediate as nextTurn } from 'node:timers/promises';
 import { syncBuiltinESMExports } from 'node:module';
@@ -831,4 +834,329 @@ for (const late of ['helpers', 'proof'] as const) {
 test("an iOS attach is pinned to the run's simulator; Android's Metro device name is a model, so it is not", () => {
   assert.equal(metroDevicePin('ios', 'qa-pr1080-testapp-r2'), 'qa-pr1080-testapp-r2');
   assert.equal(metroDevicePin('android', 'emulator-5574'), undefined);
+});
+
+type Refusal = Error & { code?: string; meta?: Record<string, unknown> };
+
+const SUMMARY = {
+  readers: {
+    androidPackages: 'null',
+    iosPackages: 'nonempty',
+    iosDeviceNames: 'null',
+    androidDeviceModels: 'null',
+  },
+  targets: [
+    {
+      token: 'none',
+      name: 'neither',
+      identity: 'present',
+      packages: 'neither',
+      confidence: 'defaulted',
+      deviceMatch: true,
+      bundleMatch: true,
+    },
+  ],
+} as const;
+
+async function refusalOf(admitted: Promise<unknown>): Promise<Refusal> {
+  const error = await admitted.then(
+    () => assert.fail('admission was expected to refuse'),
+    (error: Refusal) => error,
+  );
+  return error;
+}
+
+function budget(meta: Record<string, unknown>) {
+  const { elapsedMs, remainingMs, budgetMs, ...rest } = meta;
+  for (const value of [elapsedMs, remainingMs, budgetMs])
+    assert.ok(Number.isSafeInteger(value) && (value as number) >= 0, `budget field ${value}`);
+  return { rest, remainingMs: remainingMs as number };
+}
+
+function mockClock(t: { mock: any; after: (fn: () => Promise<void>) => void }) {
+  let now = 0;
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  syncBuiltinESMExports();
+  t.mock.method(performance, 'now', () => now);
+  return {
+    async advance(ms: number) {
+      now += ms;
+      t.mock.timers.tick(ms);
+      await nextTurn();
+    },
+    cleanup(stop: { begin(): void }, admitted: Promise<unknown>) {
+      t.after(async () => {
+        stop.begin();
+        await admitted.catch(() => undefined);
+        t.mock.timers.reset();
+        syncBuiltinESMExports();
+      });
+    },
+  };
+}
+
+test('a platform selection refusal keeps the public refusal and records its class and inference', async () => {
+  const { calls, stop, steps } = harness({
+    attach: async () => {
+      throw new TargetSelectionError(
+        'PLATFORM_TARGET_NOT_FOUND',
+        'PLATFORM_TARGET_NOT_FOUND: x',
+        [],
+        SUMMARY,
+      );
+    },
+  });
+  const error = await refusalOf(admit(steps, stop));
+  assert.equal(error.code, 'CDP_NOT_CONNECTED');
+  assert.match(error.message, /Metro 8081/);
+  assert.match(error.message, /1-minute load/);
+  const { rest, remainingMs } = budget(error.meta!);
+  assert.deepEqual(rest, {
+    attempt: 1,
+    lastStarted: 'attach',
+    lastCompleted: 'none',
+    inner: 'target_selection_platform_not_found',
+    relaunches: 0,
+    relaunchFailed: false,
+    inference: SUMMARY,
+  });
+  assert.ok(remainingMs > 0);
+  assert.deepEqual(calls, ['close']);
+});
+
+test('a deadline during origin proof after one transient attach records the stalled boundary', async (t) => {
+  const clock = mockClock(t);
+  let attempts = 0;
+  const { stop, steps } = harness({
+    remainingMs: () => 1_000,
+    attach: async () => {
+      if (++attempts === 1) throw new TargetReadinessTimeoutError('no target yet');
+    },
+    prove: () => interruptible(() => new Promise<never>(() => undefined)),
+  });
+  const admitted = refusalOf(admit(steps, stop));
+  clock.cleanup(stop, admitted);
+  await nextTurn();
+  await clock.advance(500);
+  await clock.advance(500);
+  const error = await admitted;
+  assert.equal(error.code, 'CDP_NOT_CONNECTED');
+  assert.match(error.message, /CDP attach deadline exceeded/);
+  const { rest, remainingMs } = budget(error.meta!);
+  assert.deepEqual(rest, {
+    attempt: 2,
+    lastStarted: 'prove',
+    lastCompleted: 'open',
+    inner: 'cdp_probe_timeout',
+    relaunches: 0,
+    relaunchFailed: false,
+  });
+  assert.equal(remainingMs, 0);
+});
+
+test('a deadline during the retry pause records the pause, not the attach', async (t) => {
+  const clock = mockClock(t);
+  const { stop, steps } = harness({
+    remainingMs: () => 700,
+    attach: async () => {
+      throw new CDPHandshakeTimeoutError('handshake timed out');
+    },
+  });
+  const admitted = refusalOf(admit(steps, stop));
+  clock.cleanup(stop, admitted);
+  await nextTurn();
+  await clock.advance(500);
+  await clock.advance(200);
+  const error = await admitted;
+  const { rest, remainingMs } = budget(error.meta!);
+  assert.equal(rest.lastStarted, 'retry_wait');
+  assert.equal(rest.inner, 'cdp_probe_timeout');
+  assert.equal(rest.attempt, 2);
+  assert.equal(remainingMs, 0);
+});
+
+test('a relaunch followed by a deterministic failure records one relaunch and two attempts', async () => {
+  let attempts = 0;
+  const { stop, steps } = harness({
+    attach: async () => {
+      if (++attempts === 1) throw new TargetReadinessTimeoutError('stuck on the launcher');
+      throw new Error('no target');
+    },
+    relaunch: async () => undefined,
+  });
+  const error = await refusalOf(admit(steps, stop));
+  const { rest } = budget(error.meta!);
+  assert.deepEqual(rest, {
+    attempt: 2,
+    lastStarted: 'attach',
+    lastCompleted: 'retry_wait',
+    inner: 'untyped',
+    relaunches: 1,
+    relaunchFailed: false,
+  });
+});
+
+test('a failed relaunch records the relaunch boundary and failure without its detail', async () => {
+  const { stop, steps } = harness({
+    attach: async () => {
+      throw new TargetReadinessTimeoutError('stuck on the launcher');
+    },
+    relaunch: async () => {
+      throw new Error('simctl launch failed');
+    },
+  });
+  const error = await refusalOf(admit(steps, stop));
+  const { rest } = budget(error.meta!);
+  assert.deepEqual(rest, {
+    attempt: 1,
+    lastStarted: 'relaunch',
+    lastCompleted: 'foreign_driver',
+    inner: 'target_readiness_timeout',
+    relaunches: 1,
+    relaunchFailed: true,
+  });
+  assert.doesNotMatch(JSON.stringify(error.meta), /simctl/);
+});
+
+test('refusals with their own code carry no admission record', async () => {
+  const mismatch = harness({
+    prove: async () => ({ ok: false, code: 'METRO_ORIGIN_MISMATCH', message: 'foreign bundle' }),
+  });
+  const refused = await refusalOf(admit(mismatch.steps, mismatch.stop));
+  assert.equal(refused.code, 'METRO_ORIGIN_MISMATCH');
+  assert.equal(refused.meta, undefined);
+
+  const cancelled = harness();
+  cancelled.stop.begin();
+  const stopped = await refusalOf(admit(cancelled.steps, cancelled.stop));
+  assert.equal(stopped.code, 'RUN_CANCELLED');
+  assert.equal(stopped.meta, undefined);
+});
+
+test('the deterministic attach refusal message is unchanged', async () => {
+  const { stop, steps } = harness({
+    load: () => 3,
+    attach: async () => {
+      throw new Error('no target');
+    },
+  });
+  const error = await refusalOf(admit(steps, stop));
+  assert.equal(
+    error.message,
+    'cannot attach to the dev client through Metro 8081: no target (host 1-minute load 3.0)',
+  );
+});
+
+test('the admission refusal line round-trips allowlisted facts', () => {
+  const facts = {
+    attempt: 1,
+    lastStarted: 'attach',
+    lastCompleted: 'none',
+    inner: 'target_selection_platform_not_found',
+    relaunches: 0,
+    relaunchFailed: false,
+    elapsedMs: 45_513,
+    remainingMs: 254_487,
+    budgetMs: 300_000,
+    inference: SUMMARY,
+  };
+  assert.deepEqual(JSON.parse(formatAdmissionRefusal(facts, 'connect_exact')), {
+    ...facts,
+    attachStage: 'connect_exact',
+    inference: { ...SUMMARY, targetsTotal: 1 },
+  });
+  const later = JSON.parse(
+    formatAdmissionRefusal({ ...facts, lastStarted: 'prove' }, 'wait_targets'),
+  );
+  assert.equal(later.attachStage, undefined);
+});
+
+test('the admission refusal line never copies a value outside its allowlist', () => {
+  const hostile = {
+    attempt: Number.NaN,
+    lastStarted: 'PRIVATE-udid',
+    lastCompleted: { nested: 'com.private.app' },
+    inner: 'http://private.example/bundle',
+    relaunches: -1,
+    relaunchFailed: 'com.private.app',
+    elapsedMs: 1e300,
+    remainingMs: 1.5,
+    budgetMs: 'PRIVATE-udid',
+    deviceName: 'PRIVATE-udid',
+    inference: {
+      readers: {
+        androidPackages: 'com.private.app',
+        iosPackages: 'nonempty',
+        extra: 'PRIVATE-udid',
+      },
+      targets: Array.from({ length: 9 }, () => ({
+        token: 'PRIVATE-udid',
+        name: 'com.private.app',
+        identity: 'present',
+        packages: { url: 'http://private.example' },
+        confidence: 'probed',
+        deviceMatch: 'PRIVATE-udid',
+        appId: 'com.private.app',
+      })),
+    },
+  };
+  const line = formatAdmissionRefusal(hostile, 'connect_exact');
+  for (const sentinel of ['PRIVATE', 'private', 'http'])
+    assert.ok(!line.includes(sentinel), `${sentinel} leaked: ${line}`);
+  const record = JSON.parse(line);
+  assert.equal(record.attempt, 'unknown');
+  assert.equal(record.lastStarted, 'unknown');
+  assert.equal(record.attachStage, undefined);
+  assert.equal(record.relaunches, 'unknown');
+  assert.equal(record.relaunchFailed, 'unknown');
+  assert.equal(record.elapsedMs, 'unknown');
+  assert.equal(record.remainingMs, 'unknown');
+  assert.equal(record.inference.readers.androidPackages, 'unknown');
+  assert.equal(record.inference.readers.iosDeviceNames, 'unknown');
+  assert.equal(record.inference.readers.extra, undefined);
+  assert.equal(record.inference.targetsTotal, 9);
+  assert.equal(record.inference.targets.length, 8);
+  assert.deepEqual(record.inference.targets[0], {
+    token: 'unknown',
+    name: 'unknown',
+    identity: 'present',
+    packages: 'unknown',
+    confidence: 'probed',
+    deviceMatch: 'unknown',
+  });
+  assert.equal(
+    formatAdmissionRefusal(undefined),
+    JSON.stringify(JSON.parse(formatAdmissionRefusal({}))),
+  );
+});
+
+test('a refused admission writes exactly one value-free refusal line, and other errors write none', async () => {
+  const { stop, steps } = harness({
+    attach: async () => {
+      throw new TargetSelectionError(
+        'PLATFORM_TARGET_NOT_FOUND',
+        'PLATFORM_TARGET_NOT_FOUND: device="PRIVATE-phone"',
+        [],
+        SUMMARY,
+      );
+    },
+  });
+  const refusal = await refusalOf(admit(steps, stop));
+  const lines: string[] = [];
+  logAdmissionRefusal(refusal, 'connect_exact', (line) => lines.push(line));
+  assert.equal(lines.length, 1);
+  assert.match(lines[0]!, /^admission-refusal=\{/);
+  const record = JSON.parse(lines[0]!.slice('admission-refusal='.length));
+  assert.equal(record.inner, 'target_selection_platform_not_found');
+  assert.equal(record.attachStage, 'connect_exact');
+  assert.ok(!lines[0]!.includes('PRIVATE'));
+
+  logAdmissionRefusal(new Error('no target'), 'connect_exact', (line) => lines.push(line));
+  logAdmissionRefusal(new HandlerError('METRO_ORIGIN_MISMATCH', 'x'), undefined, (line) =>
+    lines.push(line),
+  );
+  assert.equal(lines.length, 1);
+  logAdmissionRefusal(refusal, undefined, () => {
+    throw new Error('stderr closed');
+  });
 });

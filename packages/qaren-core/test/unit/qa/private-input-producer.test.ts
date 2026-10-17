@@ -949,7 +949,9 @@ function wrappedTail(count: number, props: Record<string, unknown> = {}) {
   return { ...fixture, tail: previous! };
 }
 
-test('strict QaReN capture completes a single-root tree beyond 2000 fibers without exposing input values', async () => {
+test('strict QaReN capture completes a single-root tree beyond 2000 fibers without exposing input values', async (t) => {
+  // Exercise the fiber bound independently of host load; deadline tests keep their own clock.
+  t.mock.timers.enable({ apis: ['Date'], now: 1000 });
   for (const typography of [false, true]) {
     const fixture = wrappedTail(2998, { value: 'large-tree-input-canary' });
     const legacy = JSON.parse(
@@ -974,7 +976,8 @@ test('strict QaReN capture completes a single-root tree beyond 2000 fibers witho
   }
 });
 
-test('strict QaReN capture accepts at the existing 5000-fiber ceiling and refuses above it', async () => {
+test('strict QaReN capture accepts at the existing 5000-fiber ceiling and refuses above it', async (t) => {
+  t.mock.timers.enable({ apis: ['Date'], now: 1000 });
   for (const typography of [false, true]) {
     const fixture = wrappedTail(4998);
     const begin = fixture.api.beginQaCapture(typography);
@@ -1155,21 +1158,20 @@ function refusal(api: { beginQaCapture: (typography?: boolean) => Record<string,
 
 test('typography-incomplete refusals name the first fixed site without app strings', () => {
   const overlay = setup({}, 'RCTView');
-  const hidden = composite('Screen', { activityState: 0 });
-  link(overlay.fiber, [hidden]);
-  link(
-    hidden,
-    Array.from({ length: 5100 }, () => composite('Row', { accessibilityLabel: leak })),
-  );
+  // The overlay walk follows the root fiber's siblings; the digest walks only its children.
+  link(composite('Shell'), [
+    overlay.fiber,
+    ...Array.from({ length: 5100 }, () => composite('Row', { accessibilityLabel: leak })),
+  ]);
   assert.deepEqual(refusal(overlay.api), {
     cause: 'overlay-scan-cap',
-    scanned: 2,
+    scanned: 1,
     budget: 5000,
     roots: 1,
     hosts: 1,
     interactive: 0,
     queued: 0,
-    pruned: 1,
+    pruned: 0,
   });
 
   const opaque = setup({ title: { text: leak } }, 'RCTView');
@@ -1218,7 +1220,8 @@ test('typography-incomplete refusals name the first fixed site without app strin
   assert.equal('diagnostic' in accepted, false);
 });
 
-test('truncation reports the queued frontier and inactive fibers pruned by the walk', () => {
+test('truncation reports the queued frontier and inactive fibers pruned by the walk', (t) => {
+  t.mock.timers.enable({ apis: ['Date'], now: 1000 });
   const capped = setup({}, 'RCTView');
   link(
     capped.fiber,

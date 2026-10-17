@@ -60,3 +60,24 @@ test('a clearance swipe longer than the band keeps clear of the band edges', () 
   assert.ok(y1 <= KEYBOARD.rect.y * 0.8 + 1 && y2 >= KEYBOARD.rect.y * 0.2 - 1, `${y1} ${y2}`);
   assert.ok(y1 - y2 >= KEYBOARD.rect.y * 0.6 - 2, `${y1 - y2}`);
 });
+
+test('a clearance scroll inside a named band starts and ends inside that band above the keyboard', () => {
+  clearRefMap();
+  updateRefMapFromFlat([WINDOW, KEYBOARD] as never, {
+    snapshotGeneration: 1,
+    keyboardVisible: true,
+  });
+  try {
+    const [, x1, y1, , y2] = buildDirectionalScrollCliArgs('down', 0.6, undefined, undefined, {
+      x: 0,
+      y: 300,
+      width: 390,
+      height: 500,
+    }).map(Number);
+    assert.equal(x1, 195);
+    for (const y of [y1, y2]) assert.ok(y >= 300 && y < KEYBOARD.rect.y, `${y}`);
+    assert.ok(y1 > y2, `${y1} ${y2}`);
+  } finally {
+    clearRefMap();
+  }
+});

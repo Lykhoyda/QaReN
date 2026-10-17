@@ -3,6 +3,7 @@ import type { Block, Item, Target } from './plan.js';
 import {
   type Element,
   type Screen,
+  type NativeNode,
   type VisibilityBlockerDiagnostic,
   screenSignature,
   elementFrame,
@@ -17,6 +18,7 @@ import {
   decideScreen,
   elementSelector,
   centreCovered,
+  clearanceBand,
   clearanceScroll,
   keyboardClearance,
   keyboardFallbackTarget,
@@ -27,7 +29,7 @@ import {
   targetEvidence,
   visibleSelector,
 } from './resolve.js';
-import { literalEvidence } from './evidence.js';
+import { literalEvidence, type LiteralNearMiss } from './evidence.js';
 import { exactIdentities, focusIdentityOf } from './identity.js';
 import {
   type BlockPlatform,
@@ -124,10 +126,12 @@ export interface WalkerDeps {
   // A value-free diagnostic line for the run log.
   note?(line: string): void;
   // clearance: pixels a keyboard-covered target's centre must travel; an adapter may size the swipe from it.
+  // within: the visible part of the target's clip; an adapter starts the drag inside it.
   scroll(
     direction: 'down' | 'up',
     context: QaDispatchContext,
     clearance?: number,
+    within?: NativeNode['rect'],
   ): Promise<ActResult>;
   back(context: QaDispatchContext): Promise<ActResult>;
   dialog(action: 'accept' | 'dismiss', context: QaDispatchContext): Promise<ActResult>;
@@ -244,6 +248,14 @@ const UNRECOVERABLE = new Set([
   'APP_PROCESS_CHANGED',
   'APP_PROCESS_UNKNOWN',
 ]);
+
+// Fixed text only: a literal failure repeats the plan's own literal and no app text.
+const NEAR_MISS: Record<LiteralNearMiss, string> = {
+  'not-visible':
+    ' (not-visible: a node with this text exists but is reported not visible or is outside the viewport)',
+  'not-literal-kind':
+    ' (not-literal-kind: a node with this text exists but is not counted as literal text)',
+};
 
 // Retry a mutation once only when read-back failed and the screen provably did not move.
 export async function walkBlock(
@@ -422,21 +434,40 @@ export async function walkBlock(
       // Diagnostics cannot change a decision or dispatch outcome.
     }
   };
-  // Scroll momentum outlives the drag; dispatching on a moving frame taps its stale centre.
-  // Compare native frame values only: runner key order varies and React-only elements have no frame.
+  // Native frames prove rest before dispatching on a scrolled target's centre.
   const settledCapture = async (item: Exclude<Item, { kind: 'check' }>): Promise<Observation> => {
-    const geometry = (screen: Screen): string =>
-      JSON.stringify(
-        screen.elements.flatMap((e) => {
-          const frame = elementFrame(e);
-          return frame ? [[frame.x, frame.y, frame.width, frame.height]] : [];
-        }),
-      );
+    const geometry = (screen: Screen): number[][] =>
+      screen.elements.flatMap((e) => {
+        const frame = elementFrame(e);
+        return frame ? [[frame.x, frame.y, frame.width, frame.height]] : [];
+      });
     let observation = await capture(item);
     for (let readback = 0; readback < SCROLL_SETTLE_READBACKS; readback += 1) {
       usable(observation, item);
       const next = await capture(item);
-      if (geometry(next.screen) === geometry(observation.screen)) {
+      const before = geometry(observation.screen);
+      const after = geometry(next.screen);
+      if (deps.timing) {
+        const previousFrames = new Set(before.map((frame) => frame.join(',')));
+        const currentFrames = new Set(after.map((frame) => frame.join(',')));
+        const moved =
+          [...previousFrames].filter((frame) => !currentFrames.has(frame)).length +
+          [...currentFrames].filter((frame) => !previousFrames.has(frame)).length;
+        const maxDelta = observation.screen.elements.reduce((max, element) => {
+          const previousMatches = observation.screen.elements.filter((candidate) =>
+            sameIdentity(candidate, element),
+          );
+          if (previousMatches.length !== 1) return max;
+          const previous = elementFrame(element);
+          const matches = next.screen.elements.filter((candidate) =>
+            sameIdentity(candidate, element),
+          );
+          const current = matches.length === 1 ? elementFrame(matches[0]) : undefined;
+          return previous && current ? Math.max(max, Math.abs(current.y - previous.y)) : max;
+        }, 0);
+        metric('settle-readback', next, { moved, maxDelta });
+      }
+      if (JSON.stringify(after) === JSON.stringify(before)) {
         sequence.momentum = false;
         return next;
       }
@@ -891,24 +922,35 @@ export async function walkBlock(
       quoted,
       target.element.testID ?? target.element.label,
     );
-    privateFills.push(item.line);
-    let tap: ActResult;
-    try {
-      tap = await mutate(item, before, (context) => deps.press(target.element.ref, context));
-    } catch (error) {
-      if (isAbort(error)) throw error;
-      if (error instanceof EvidenceExpired)
-        return nothingTyped(`the evidence expired before tapping "${quoted}"`, before.screen);
-      throw error;
-    }
-    if (!tap.ok && tap.mutation === 'none' && tap.error?.startsWith('FOCUS_TARGET_OCCLUDED:')) {
+    if (!privateFills.includes(item.line)) privateFills.push(item.line);
+    let tap: ActResult | undefined;
+    if (!centreCovered(target.element, before.screen))
+      try {
+        tap = await mutate(item, before, (context) => deps.press(target.element.ref, context));
+      } catch (error) {
+        if (isAbort(error)) throw error;
+        if (error instanceof EvidenceExpired)
+          return nothingTyped(`the evidence expired before tapping "${quoted}"`, before.screen);
+        throw error;
+      }
+    if (
+      !tap ||
+      (!tap.ok && tap.mutation === 'none' && tap.error?.startsWith('FOCUS_TARGET_OCCLUDED:'))
+    ) {
       if (scrolled)
         return nothingTyped(
-          `${tap.error}; "${quoted}" stayed off screen after one scroll`,
+          tap
+            ? `${tap.error}; "${quoted}" stayed off screen after one scroll`
+            : `"${quoted}" stayed off screen after one scroll: its centre is past the visible area or under the keyboard`,
           before.screen,
         );
       const scroll = await mutate(item, before, (context) =>
-        deps.scroll(clearanceScroll(target.element), context),
+        deps.scroll(
+          clearanceScroll(target.element, before.screen),
+          context,
+          keyboardClearance(target.element, before.screen),
+          clearanceBand(target.element, before.screen),
+        ),
       );
       const afterScroll = await settledCapture(item);
       usable(afterScroll, item);
@@ -1188,10 +1230,14 @@ export async function walkBlock(
             });
             continue items;
           }
+          const nearMiss =
+            item.literal && decision.check === 'fail'
+              ? literalEvidence(before.screen, item.text, 'contains').nearMiss
+              : undefined;
           const reason =
             decision.check === 'unsure'
               ? 'CHECK_UNSURE: the expectation remained uncertain after a fresh-screen re-ask'
-              : `"${item.text}" is not satisfied on screen`;
+              : `"${item.text}" is not satisfied on screen${nearMiss ? NEAR_MISS[nearMiss] : ''}`;
           if (decision.check === 'unsure') {
             const recovering = await recovery(item, 1, reason);
             if (recovering === 'retry') continue attempts;
@@ -1384,6 +1430,7 @@ export async function walkBlock(
           let freshness = attempt === 1 ? 1 : 0;
           let occluded: 'up' | 'down' | undefined;
           let clearance: number | undefined;
+          let within: NativeNode['rect'];
           let scrollNeedsReadback = false;
           let scrollError: string | undefined;
           let act: ActResult;
@@ -1482,11 +1529,13 @@ export async function walkBlock(
                     break;
                   }
                   const distance = clearance;
+                  const band = within;
                   clearance = undefined;
+                  within = undefined;
                   scrollOrigin ??= 'offscreen-resolution';
                   scrollDirection = resolution.scroll;
                   const result = await mutate(item, before, (context) =>
-                    deps.scroll(resolution.scroll, context, distance),
+                    deps.scroll(resolution.scroll, context, distance, band),
                   );
                   scrolled = true;
                   scrollNeedsReadback = !result.ok && !result.proven;
@@ -1600,9 +1649,10 @@ export async function walkBlock(
                   break;
                 }
                 refusedIdentity = element;
-                occluded = clearanceScroll(element);
+                occluded = clearanceScroll(element, before.screen);
                 scrollOrigin = 'centre-covered';
                 clearance = keyboardClearance(element, before.screen);
+                within = clearanceBand(element, before.screen);
                 continue;
               }
               if (item.kind === 'fill' && element && isPrivateInput(element)) {
@@ -1650,7 +1700,8 @@ export async function walkBlock(
                   break;
                 }
                 refusedIdentity = element;
-                occluded = clearanceScroll(element);
+                occluded = clearanceScroll(element, before.screen);
+                within = clearanceBand(element, before.screen);
                 scrollOrigin = 'native-occlusion';
                 continue;
               }

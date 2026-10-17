@@ -14,7 +14,9 @@ import {
   isSnapshotCacheValid,
   markSnapshotDirty,
   IME_KEY_FLAG,
+  settleAfterMutation,
 } from '../agent-device-wrapper.js';
+import { buildIosProbes } from '../lifecycle/settle.js';
 import {
   isFastRunnerAvailable,
   fastSwipe,
@@ -1956,6 +1958,17 @@ function scrollBand(): { width: number; height: number } {
     : screen;
 }
 
+type Band = { x?: number; y?: number; width: number; height: number };
+
+// A caller-named band only narrows the keyboard-safe band, so the drag lands on the scrolled view.
+function dragBand(within?: Band): Band {
+  const band = scrollBand();
+  if (!within) return band;
+  const top = Math.max(within.y ?? 0, 0);
+  const bottom = Math.min((within.y ?? 0) + within.height, band.height);
+  return bottom > top ? { x: within.x, y: top, width: within.width, height: bottom - top } : band;
+}
+
 // Scroll direction → finger gesture is INVERTED vs swipe ("scroll down" = content
 // moves up = finger moves up) and scaled by `amount` (0..1). Centred half-spans
 // keep the gesture inside the viewport.
@@ -1963,11 +1976,11 @@ function scrollBand(): { width: number; height: number } {
 function computeScrollFromDirection(
   direction: 'up' | 'down' | 'left' | 'right',
   amount: number,
-  screen: { width: number; height: number },
+  screen: Band,
   distance?: number,
 ): { x1: number; y1: number; x2: number; y2: number } {
-  const cx = Math.round(screen.width / 2);
-  const cy = Math.round(screen.height / 2);
+  const cx = Math.round((screen.x ?? 0) + screen.width / 2);
+  const cy = Math.round((screen.y ?? 0) + screen.height / 2);
   const dy =
     distance !== undefined && Number.isFinite(distance) && distance > 0
       ? Math.round(Math.min(distance, screen.height * CLEARANCE_BAND_FRACTION))
@@ -1996,9 +2009,10 @@ export function buildDirectionalScrollCliArgs(
   amount?: number,
   durationMs?: number,
   distance?: number,
+  within?: Band,
 ): string[] {
   const clamped = Math.min(Math.max(amount ?? 0.5, 0), 1);
-  const coords = computeScrollFromDirection(direction, clamped, scrollBand(), distance);
+  const coords = computeScrollFromDirection(direction, clamped, dragBand(within), distance);
   const duration = durationMs ?? DEFAULT_SWIPE_DURATION_MS;
   return [
     'scroll',
@@ -2166,22 +2180,18 @@ interface ScrollArgs {
   amount?: number;
   // Pixels to move the content, for a keyboard clearance scroll.
   distance?: number;
+  // The visible part of the scrolled view; the drag starts inside it.
+  within?: Band;
 }
 
 export function createDeviceScrollHandler(): (args: ScrollArgs) => Promise<ToolResult> {
   return withQaSession(async (args) => {
-    // B106 fix: Route iOS scroll through fast-runner's direct HID synthesis
-    // when available. The agent-device daemon path uses XCTest's high-level
-    // gesture API which calls `waitForIdle` after the drag — this hangs
-    // indefinitely on screens driven by Reanimated `useAnimatedScrollHandler`
-    // because the UI thread is never "idle" between scroll events. Fast-runner
-    // uses `RunnerDaemonProxy.synthesize(eventRecord)` which is raw HID event
-    // injection and returns as soon as events are delivered.
+    // The fast path bypasses XCTest quiescence on animated scroll views.
     const amount = Math.min(Math.max(args.amount ?? 0.5, 0), 1);
     const { x1, y1, x2, y2 } = computeScrollFromDirection(
       args.direction,
       amount,
-      scrollBand(),
+      dragBand(args.within),
       args.distance,
     );
     // GH #383: adopt persisted per-device state so a respawned worker sees a
@@ -2189,26 +2199,31 @@ export function createDeviceScrollHandler(): (args: ScrollArgs) => Promise<ToolR
     if (!args.qaContext) adoptPersistedFastRunnerState(getActiveSession()?.deviceId);
     if ((!args.qaContext || getActiveSession()?.platform === 'ios') && isFastRunnerAvailable()) {
       try {
+        const bundleId = getActiveSession()?.appId ?? resolveBundleId('ios') ?? undefined;
         const resp = await fastSwipe(
           x1,
           y1,
           x2,
           y2,
           DEFAULT_SWIPE_DURATION_MS,
-          getActiveSession()?.appId ?? resolveBundleId('ios') ?? undefined,
+          bundleId,
           args.qaContext,
           getActiveSession()?.deviceId,
         );
         if (resp.ok) {
-          return okResult({
-            direction: args.direction,
-            amount: args.amount ?? 0.5,
-            method: 'fast-runner',
-            x1,
-            y1,
-            x2,
-            y2,
-          });
+          return settleAfterMutation(
+            okResult({
+              direction: args.direction,
+              amount: args.amount ?? 0.5,
+              method: 'fast-runner',
+              x1,
+              y1,
+              x2,
+              y2,
+            }),
+            { platform: 'ios', verb: 'scroll', appId: bundleId, qaContext: args.qaContext },
+            { probes: () => buildIosProbes(bundleId, args.qaContext) },
+          );
         }
         args.qaContext?.refuse('ACTION_OUTCOME_UNCERTAIN');
       } catch {
@@ -2219,7 +2234,13 @@ export function createDeviceScrollHandler(): (args: ScrollArgs) => Promise<ToolR
     // builders throw on the raw direction form, so this previously crashed on
     // Android (always) and on the iOS fast-runner fallback.
     return runNative(
-      buildDirectionalScrollCliArgs(args.direction, args.amount, undefined, args.distance),
+      buildDirectionalScrollCliArgs(
+        args.direction,
+        args.amount,
+        undefined,
+        args.distance,
+        args.within,
+      ),
       { qaContext: args.qaContext },
     );
   });

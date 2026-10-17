@@ -1,6 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { parsePlan } from '../../../dist/qa/plan.js';
+import { join as joinScreen } from '../../../dist/qa/screen.js';
 import type { Element, Screen, Visibility } from '../../../dist/qa/screen.js';
 import { CHECK } from '../../../dist/qa/questions.js';
 import { PHRASE_WAIT_BUDGET_MS } from '../../../dist/qa/timing.js';
@@ -693,4 +694,54 @@ test('a literal wait over an unchanged screen still fails as absent when its las
     new RegExp(`^"Absent sentinel" did not appear within ${WAIT_BUDGET_MS / 1000}s`),
   );
   assert.doesNotMatch(result.failure?.seen ?? '', /VISIBILITY_UNSURE/);
+});
+
+test('a quoted id wait does not pass while the keyboard covers the element centre', async () => {
+  const field = (y: number, keyboard: boolean, keyboardVisible?: boolean): Screen => {
+    const nodes = [
+      { ref: '@window', type: 'Window', rect: { x: 0, y: 0, width: 390, height: 844 } },
+      {
+        ref: '@field',
+        type: 'TextField',
+        label: 'Field 7',
+        identifier: 'qa-field-7',
+        rect: { x: 16, y, width: 200, height: 40 },
+        parentIndex: 0,
+      },
+      ...(keyboard
+        ? [
+            {
+              ref: '@keyboard',
+              type: 'Keyboard',
+              label: '',
+              rect: { x: 0, y: 500, width: 390, height: 344 },
+              parentIndex: 0,
+            },
+          ]
+        : []),
+    ].map((n, index) => ({ ...n, index }));
+    const joined = joinScreen(nodes, [], 'app', { native: 'complete', react: 'complete' });
+    return keyboardVisible === undefined ? joined : { ...joined, keyboardVisible };
+  };
+  const wait = async (screens: Screen[]) => {
+    const f = walker(
+      screens,
+      scriptedJudge(() => assert.fail('quoted id wait is model-free')),
+    );
+    const result = await runPlan(parsePlan('1. Wait for "qa-field-7" to appear').blocks!, f.deps);
+    return { result, captures: f.captures() };
+  };
+  for (const keyboardVisible of [undefined, true]) {
+    const covered = await wait([field(650, true, keyboardVisible)]);
+    assert.equal(covered.result.verdict, 'FAIL');
+    assert.match(covered.result.failure?.seen ?? '', /"qa-field-7" did not appear/);
+  }
+  const cleared = await wait([field(650, true), field(300, true)]);
+  assert.equal(cleared.result.verdict, 'PASS');
+  assert.equal(cleared.captures, 2);
+  for (const shown of [field(300, true), field(650, true, false), field(650, false)]) {
+    const found = await wait([shown]);
+    assert.equal(found.result.verdict, 'PASS');
+    assert.equal(found.captures, 1);
+  }
 });

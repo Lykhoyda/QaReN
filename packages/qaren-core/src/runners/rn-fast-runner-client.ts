@@ -70,6 +70,7 @@ import type { QuiescenceStatus } from './quiescence.js';
 import { buildRunnerQuiescenceEnv } from './quiescence.js';
 import {
   artifactProvenanceToState,
+  iosRunnerResultBundleDirs,
   markPrebuiltRunnerStale,
   resolveIosRunnerArtifacts,
 } from './runner-artifacts.js';
@@ -482,6 +483,13 @@ export function derivedDataPathForRunner(): string {
   return join(FAST_RUNNER_PROJECT, 'build', 'DerivedData');
 }
 
+// XCTest's own session log records the text of fields it queries, typed values included.
+export function removeRunnerResultBundles(
+  dirs = iosRunnerResultBundleDirs(getPluginVersion(), derivedDataPathForRunner()),
+): void {
+  for (const dir of dirs) rmSync(dir, { recursive: true, force: true });
+}
+
 // GH #418 (review amendment): DerivedData is plugin-checkout-scoped while the
 // device lock is UDID-scoped, so two projects sharing this checkout could race
 // invalidate-vs-build. mkdir is atomic — it is the mutex. Fail-open on fs
@@ -817,6 +825,8 @@ export async function startFastRunner(
   const launch = plan[plan.length - 1];
   const runnerTestFaultEnv = runnerTestFaultForwarded ? {} : buildRunnerTestFaultEnv(process.env);
 
+  // shortcut: a hard-killed core leaves its bundle until the next launch here; move to CLI cleanup if that gap matters
+  removeRunnerResultBundles();
   const signal = cancellationSignal();
   return new Promise((resolve, reject) => {
     const child = spawn('xcodebuild', launch.args, {
@@ -1531,11 +1541,17 @@ export async function reapStaleFastRunner(deps: ReapDeps = {}): Promise<void> {
   const getState = deps.getState ?? (() => runnerState);
   const sendSignal = deps.sendSignal ?? ((pid, sig) => process.kill(pid, sig));
   const sleep = deps.sleep ?? cancellableSleep;
-  const clearState = deps.clearState ?? clearStateFileIfMatches;
+  const clearState = (expected: StateSnapshot): void => {
+    (deps.clearState ?? clearStateFileIfMatches)(expected);
+    removeRunnerResultBundles();
+  };
   const graceMs = deps.graceMs ?? 500;
 
   const state = getState();
-  if (!state) return;
+  if (!state) {
+    removeRunnerResultBundles();
+    return;
+  }
   const expectedBirth =
     typeof state.processBirth === 'string' ? { pid: state.pid, token: state.processBirth } : null;
   if (!expectedBirth) {
