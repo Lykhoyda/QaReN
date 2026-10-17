@@ -704,9 +704,14 @@ enabled button whose text equals the chosen label, in the front window above the
 app when the permission controller or `android` owns it; another app's window
 never matches. The step passes only when the runner reports that label tapped,
 that window gone and the app in front again, and it never falls back to
-Maestro. No such dialog refuses `NO_SYSTEM_DIALOG` and two matching buttons
-refuse `TARGET_AMBIGUOUS`, both before tapping. A button that is not exposed to
-accessibility is never tapped by coordinates.
+Maestro. No such dialog, or no enabled text match in the runner, refuses
+`NO_SYSTEM_DIALOG`; two or more matching buttons refuse `TARGET_AMBIGUOUS`,
+all before tapping. A button that is not exposed to accessibility is never
+tapped by coordinates. Dismiss steps recognize both `Don't allow` and
+`Don’t allow`. The Android `systemAlertTap` command requires
+`SYSTEM_ALERT_TAP_V1`; the client refuses `RUNNER_COMMANDS_STALE` before
+dispatch if the active runner lacks it. Reopen the device session to rebuild
+before retrying.
 
 Android QA reads take one live traversal of the accessibility windows instead
 of the window dump that device tools keep: an `Application` root with the
@@ -740,18 +745,22 @@ button by exact label, so `Allow` never matches `Allow Once`, and the runner
 taps that button element itself. It never taps a coordinate through the app or
 activates the app first. The step passes only when the runner reports that exact
 label tapped and the alert absent from a successful read of every system alert
-and sheet. A completed tap it cannot prove fails with `DIALOG_TAP_UNPROVEN`, and
-a tap that raised in the runner fails `ACTION_OUTCOME_UNCERTAIN`; neither is
-retried, even if the screen changed. A runner refusal before tapping
+and sheet. A runner refusal before tapping
 (`SYSTEM_ALERT_BUTTON_NOT_FOUND`, `SYSTEM_ALERT_BUTTON_AMBIGUOUS`,
 `SYSTEM_ALERT_CHANGED`) keeps its code. A runner without `SYSTEM_ALERT_TAP_V1`
-refuses `RN_FAST_RUNNER_STALE` without tapping. The proven label and frame land on
-the ledger row as `dialog`, in the receipt's `ledger.dialogs`, and in a
-value-free `dialog-tap` run-log line. The button lists are English. A localized
-alert fails `DIALOG_BUTTON_NOT_FOUND` rather than guessing. The permission
-outcome itself is the app's to show: assert it with the plan's next step.
+refuses `RN_FAST_RUNNER_STALE` without tapping.
 In-app alerts that are not SpringBoard-owned still use a text tap and need a
 screen change to pass.
+
+On both platforms, a completed system-dialog tap without a matching
+`tappedLabel`, a valid `tappedRect` and `alertClosed: true` fails with
+`DIALOG_TAP_UNPROVEN`; an uncertain dispatch fails `ACTION_OUTCOME_UNCERTAIN`.
+Neither is retried, even if the screen changed. The proven label and frame land
+on the ledger row as `dialog`, in the receipt's `ledger.dialogs`, and in a
+value-free `dialog-tap` run-log line. The button lists are English; a snapshot
+with no recognized label fails `DIALOG_BUTTON_NOT_FOUND` rather than guessing,
+including localized labels. The permission outcome itself is the app's to show:
+assert it with the plan's next step.
 
 Unparseable lines refuse before allocation; unresolved screen targets refuse during the walk.
 Native platform presence establishes observed presence, not complete visual exposure
