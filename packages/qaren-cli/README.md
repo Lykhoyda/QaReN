@@ -529,8 +529,8 @@ sticky overlays. A touchable, non-text element at least half the clip's width,
 outside the target's own scroll content, that crosses the band's bottom edge
 ends the band at its top (a sticky footer); one across the band's top edge
 starts the band below it (a sticky header). A target at
-or below that band's centre scrolls down; one above it scrolls up. Without a
-keyboard, or when the clip is entirely above it, direction selection is unchanged.
+or below that band's centre scrolls down; one above it scrolls up. Sticky overlays
+can narrow the band even without a keyboard or when the clip is entirely above it.
 The walker passes that band to the shared scroll handler so the drag starts
 inside it, narrowing the existing keyboard-safe band. Callers passing no band
 keep their existing drag origins. On both iOS and Android, a target whose centre
@@ -837,9 +837,8 @@ clip, the boundary remains screen y=0. Quoted scroll-until targets use that
 viewport when exactly one offscreen identity matches. A target wholly above
 the viewport scrolls up; one wholly below scrolls down. When its frame overlaps
 the viewport but it is reported not visible, as with an Android heading under
-the status bar, scrolling instead moves toward revealing it: up when its centre
-is above the viewport's midpoint, down when at or below it, regardless of the
-requested direction. With no single matching identity, an already visible
+the status bar, scrolling uses the clearance direction described above, regardless
+of the requested direction. With no single matching identity, an already visible
 target or no known viewport, the requested direction is retained. See the
 [scroll-until direction regressions](../qaren-core/test/unit/qa/scroll-until-direction.test.ts).
 
