@@ -36,6 +36,7 @@ export const TIMING_STAGES = [
   'replay',
   'expiry',
   'readback',
+  'settle-readback',
   'overflow',
 ] as const;
 export type TimingStage = (typeof TIMING_STAGES)[number];
@@ -54,6 +55,8 @@ export interface TimingEvent {
   presence?: number;
   budgetMs?: number;
   appliedBudgetMs?: number;
+  moved?: number;
+  maxDelta?: number;
 }
 export type TimingObserver = (event: TimingEvent) => void;
 export interface TimingContext {
@@ -88,6 +91,8 @@ export function cleanTimingEvent(value: unknown): TimingEvent | undefined {
     'presence',
     'budgetMs',
     'appliedBudgetMs',
+    'moved',
+    'maxDelta',
   ] as const) {
     const number = input[key];
     if (number === undefined && key !== 'at') continue;

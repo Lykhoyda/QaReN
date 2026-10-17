@@ -397,6 +397,32 @@ function identityRulesOutDriver(value: unknown, line: string, scanStartedAt: num
   );
 }
 
+function isDirectXcodeTest(value: unknown, executable: string, line: string): boolean {
+  const argv = (value as { argv?: unknown }).argv;
+  if (
+    !Array.isArray(argv) ||
+    argv.length < 4 ||
+    argv.length % 2 !== 0 ||
+    !argv.every(
+      (arg) =>
+        typeof arg === 'string' &&
+        arg.length > 0 &&
+        // eslint-disable-next-line no-control-regex -- Attested arguments must be complete text fields.
+        !/[\x00-\x1f\x7f\ufffd]/.test(arg),
+    ) ||
+    Buffer.byteLength(argv.join('\0')) + 1 > 8_192 ||
+    argv[0] !== executable ||
+    (argv[1] !== 'test' && argv[1] !== 'test-without-building') ||
+    line.replace(/^\s*\d+\s+/, '') !== argv.join(' ')
+  )
+    return false;
+  for (let i = 2; i < argv.length; i += 2) {
+    if (argv[i] !== '-destination' || !argv[i + 1].startsWith('id=')) return false;
+    if (!isIosSimulatorUdid(argv[i + 1].slice(3))) return false;
+  }
+  return true;
+}
+
 function identityProvesMcpControl(value: unknown, line: string, scanStartedAt: number): boolean {
   const executable = observedExecutable(value, line, scanStartedAt);
   if (!executable || executable.slice(executable.lastIndexOf('/') + 1) !== 'java') return false;
@@ -568,7 +594,9 @@ export async function probeIosExternalRunnerAdmission(
     if (!unresolved.length) return { status: 'clear' };
     if (!observeIdentity) return unknown('observer_unavailable', undefined, unresolved.length);
     for (const line of unresolved) {
-      const remaining = Math.floor(deadline - performance.now());
+      const candidateStartedAt = performance.now();
+      const candidateDeadline = Math.min(deadline, candidateStartedAt + 1_000);
+      const remaining = Math.floor(deadline - candidateStartedAt);
       if (remaining <= 0) return unknown('deadline_exceeded');
       const pid = Number(/^\s*(\d+)/.exec(line)![1]);
       const observation = await observe(
@@ -579,6 +607,33 @@ export async function probeIosExternalRunnerAdmission(
       if (performance.now() >= deadline) return unknown('deadline_exceeded', pid);
       const failed = observationFailure(observation);
       if (failed) return unknown(failed, pid);
+      const executable = observedExecutable(observation, line, scanStartedAt);
+      if (executable?.slice(executable.lastIndexOf('/') + 1) === 'xcodebuild') {
+        if (SIMULATOR_CONTAINER.test(executable))
+          return unknown('executable_identity_unproven', pid);
+        const argvRemaining = Math.floor(candidateDeadline - performance.now());
+        if (argvRemaining <= 0) return unknown('observer_timeout', pid);
+        const exact = await observe(pid, argvRemaining, true);
+        if (performance.now() >= deadline) return unknown('deadline_exceeded', pid);
+        const exactFailure = observationFailure(exact);
+        if (exactFailure) return unknown(exactFailure, pid);
+        if (performance.now() >= candidateDeadline) return unknown('observer_timeout', pid);
+        if (observedExecutable(exact, line, scanStartedAt) !== executable)
+          return unknown('executable_identity_unproven', pid);
+        const birth = (observation as { birth: Record<string, unknown> }).birth;
+        const exactBirth = (exact as { birth: Record<string, unknown> }).birth;
+        if (
+          birth.seconds !== exactBirth.seconds ||
+          birth.micros !== exactBirth.micros ||
+          !isDirectXcodeTest(exact, executable, line)
+        )
+          return unknown('executable_identity_unproven', pid);
+        const devices = observedDriverDevices(exact, line, scanStartedAt);
+        if (performance.now() >= deadline) return unknown('deadline_exceeded', pid);
+        if (!devices) return unknown('executable_identity_unproven', pid);
+        if (devices.some((device) => device.toLowerCase() === udid.toLowerCase())) return busy(pid);
+        continue;
+      }
       if (
         !(
           identityProvesMcpControl(observation, line, scanStartedAt) ||
