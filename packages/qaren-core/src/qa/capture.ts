@@ -10,7 +10,12 @@ import {
   validateReactHostEvidence,
 } from './screen.js';
 import type { DigestEntry, NativeNode, ReactHostEvidence, Screen } from './screen.js';
-import { outsideViewport, validateNativePresence, viewportDiagnostic } from './native-presence.js';
+import {
+  clippingViewport,
+  outsideViewport,
+  validateNativePresence,
+  viewportDiagnostic,
+} from './native-presence.js';
 import { sensitivePixelsReasons } from './privacy.js';
 import {
   CAPTURE_BUDGET_MS,
@@ -118,11 +123,20 @@ export interface CaptureDeps {
 }
 
 const captureDiagnostics = new WeakMap<Screen, () => void>();
+const quotedTargetDiagnostics = new WeakMap<Screen, (quoted: string, line: number) => void>();
 
 export function emitCaptureDiagnostics(screen: Screen): void {
   const emit = captureDiagnostics.get(screen);
   captureDiagnostics.delete(screen);
   emit?.();
+}
+
+export function emitQuotedTargetDiagnostic(screen: Screen, quoted: string, line: number): void {
+  try {
+    quotedTargetDiagnostics.get(screen)?.(quoted, line);
+  } catch {
+    // Diagnostics cannot change the failed step's outcome.
+  }
 }
 
 type Coverage = NonNullable<Screen['coverage']>;
@@ -600,6 +614,46 @@ async function capture(deps: CaptureDeps): Promise<Screen> {
       screen.appProcessIdentifier = native.appProcessIdentifier as number;
     if (typeof native.keyboardVisible === 'boolean')
       screen.keyboardVisible = native.keyboardVisible;
+    if (deps.warn) {
+      const warn = deps.warn;
+      quotedTargetDiagnostics.set(screen, (quoted, line) => {
+        const outside = outsideViewport(nodes);
+        const depth = (node: NativeNode) =>
+          typeof node.depth === 'number' && Number.isSafeInteger(node.depth) && node.depth >= 0
+            ? node.depth
+            : null;
+        const matches = nodes.flatMap((node, index) => {
+          if (node.identifier !== quoted && node.label !== quoted) return [];
+          const rect = node.rect;
+          const frame =
+            rect && [rect.x, rect.y, rect.width, rect.height].every(Number.isFinite)
+              ? { x: rect.x, y: rect.y, width: rect.width, height: rect.height }
+              : null;
+          return [
+            {
+              index,
+              identifier: node.identifier === quoted,
+              label: node.label === quoted,
+              frame,
+              depth: depth(node),
+              hittable: typeof node.hittable === 'boolean' ? node.hittable : null,
+              insideTrustedViewport:
+                frame && clippingViewport(outside, index) ? !outside.has(index) : null,
+            },
+          ];
+        });
+        warn(
+          `quoted-target=${JSON.stringify({
+            line,
+            matches,
+            deepestCapturedDepth: nodes.reduce<number | null>((deepest, node) => {
+              const d = depth(node);
+              return d === null ? deepest : Math.max(deepest ?? 0, d);
+            }, null),
+          })}`,
+        );
+      });
+    }
     if (deps.warn && captureCoverage.native === 'complete' && withinBudget) {
       const warn = deps.warn;
       captureDiagnostics.set(screen, () => {
