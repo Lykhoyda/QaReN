@@ -802,8 +802,10 @@ adds no near-miss explanation.
 The [native geometry model](../qaren-core/src/qa/native-presence.ts) clips nodes
 on both axes against the Application screen and trusted Window, ScrollView,
 Table and CollectionView ancestors. On Android, scroll containers are recognised
-by class-name suffix (ScrollView, ListView, RecyclerView, GridView, ViewPager),
-so a row scrolled out of its list is offscreen as on iOS. Missing or invalid
+by class-name suffix, for example ScrollView, ListView or RecyclerView;
+`isScrollContainerType` in that model owns the complete matching rules.
+Their rectangles contribute to the effective clipping viewport, so a row scrolled
+out of its list is offscreen as on iOS. Missing or invalid
 rectangles skip only that clip; Application and Window rectangles must have
 positive size.
 Missing Window ancestry does not create uncertainty when the Application clip
@@ -869,6 +871,8 @@ counts and capped symptom samples with Window ancestry and origins, and the coun
 plus up to ten in-app nodes the visibility rules excluded, each with its rule
 (`anc`, `scroll` or `window`) and the deciding ancestor's type and rectangle; it
 excludes labels, identifiers, values and other nodes' sizes.
+Android scroll ancestors are identified by index, with their types still recorded
+as `Other` in this value-free diagnostic.
 The [diagnostic implementation](../qaren-core/src/qa/native-presence.ts)
 owns its field layout.
 
