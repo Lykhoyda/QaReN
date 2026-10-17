@@ -1,9 +1,77 @@
+import type { ToolErrorCode } from '../types.js';
+
 export type QaDispatchRefusal =
   | 'EVIDENCE_EXPIRED'
   | 'RUN_CANCELLED'
   | 'ACTION_CONTEXT_CHANGED'
   | 'ACTION_OUTCOME_UNCERTAIN'
   | 'TARGET_MOVED_BEFORE_DISPATCH';
+
+const NATIVE_CODES = [
+  'ACTION_CONTEXT_CHANGED',
+  'KEYBOARD_TARGET_STALE',
+  'STALE_REF',
+  'NO_TEXT_INPUT_TARGET',
+  'TEXT_TARGET_FOCUS_FAILED',
+  'OUTSIDE_APP_WINDOW',
+  'RUNNER_OWNERSHIP_MISMATCH',
+  'INTERACTION_NOT_ACTUATED',
+  'KEYBOARD_RELAYOUT_REQUIRED',
+  'RUNNER_TIMEOUT',
+  'RUNNER_PROTOCOL_MISMATCH',
+] as const satisfies readonly (ToolErrorCode | QaDispatchRefusal | 'KEYBOARD_RELAYOUT_REQUIRED')[];
+const NATIVE_REASONS = [
+  'app-window-unavailable',
+  'exact-target-unresolved',
+  'exact-target-point-unavailable',
+  'exact-target-missing',
+  'exact-target-ambiguous',
+  'exact-target-not-clickable',
+  'exact-target-not-hittable',
+  'coordinate-out-of-bounds',
+  'focus-proof-refused',
+] as const;
+
+function allowed<T extends string>(value: unknown, values: readonly T[]): T | null {
+  return values.find((candidate) => candidate === value) ?? null;
+}
+
+function fact(facts: unknown, key: string): unknown {
+  try {
+    if (!facts || typeof facts !== 'object' || Array.isArray(facts)) return undefined;
+    return Object.getOwnPropertyDescriptor(facts, key)?.value;
+  } catch {
+    return undefined;
+  }
+}
+
+function refusalDiagnostic(refusal: QaDispatchRefusal, facts: unknown) {
+  const mutating = fact(facts, 'mutating');
+  const responseOk = fact(facts, 'responseOk');
+  return Object.freeze({
+    refusal: allowed(refusal, [
+      'EVIDENCE_EXPIRED',
+      'RUN_CANCELLED',
+      'ACTION_CONTEXT_CHANGED',
+      'ACTION_OUTCOME_UNCERTAIN',
+      'TARGET_MOVED_BEFORE_DISPATCH',
+    ] as const),
+    stage: allowed(fact(facts, 'stage'), ['dispatch-error', 'native-response'] as const),
+    mutating: typeof mutating === 'boolean' ? mutating : null,
+    responseOk: typeof responseOk === 'boolean' ? responseOk : null,
+    nativeCode: allowed(fact(facts, 'nativeCode'), NATIVE_CODES),
+    nativeReason: allowed(fact(facts, 'nativeReason'), NATIVE_REASONS),
+    nativeMutation: allowed(fact(facts, 'nativeMutation'), [
+      'none',
+      'observed',
+      'possible',
+    ] as const),
+    probeState: allowed(fact(facts, 'probeState'), ['completed', 'failed', 'unknown'] as const),
+    recovery: allowed(fact(facts, 'recovery'), ['recovered', 'recovered-error', 'resent'] as const),
+  });
+}
+
+export type QaDispatchDiagnostic = ReturnType<typeof refusalDiagnostic>;
 
 export class QaDispatchError extends Error {
   constructor(readonly code: QaDispatchRefusal) {
@@ -16,6 +84,7 @@ export class QaDispatchContext {
   private failure?: QaDispatchError;
   private sends = 0;
   private attested = false;
+  private diagnostic?: QaDispatchDiagnostic;
 
   constructor(
     readonly deadline: number,
@@ -29,6 +98,28 @@ export class QaDispatchContext {
 
   get refusal(): QaDispatchError | undefined {
     return this.failure;
+  }
+
+  get refusalDiagnostic(): QaDispatchDiagnostic | undefined {
+    return this.diagnostic;
+  }
+
+  diagnoseRefusal<T>(facts: () => unknown, operation: () => T): T {
+    const earlier = this.failure;
+    try {
+      return operation();
+    } catch (error) {
+      if (!earlier && !this.diagnostic && this.failure && error === this.failure) {
+        let observed: unknown;
+        try {
+          observed = facts();
+        } catch {
+          /* Diagnostics cannot replace the refusal. */
+        }
+        this.diagnostic = refusalDiagnostic(this.failure.code, observed);
+      }
+      throw error;
+    }
   }
 
   // The runner attested that the only authorized send changed nothing before refusing it.

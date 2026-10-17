@@ -304,22 +304,67 @@ function scrollTo(element: Element): { scroll: 'up' | 'down' } {
   };
 }
 
+export interface CentreCoverageDiagnostic {
+  framePresent: boolean;
+  viewportPresent: boolean | null;
+  viewportOutside: boolean | null;
+  keyboardVisible: boolean | null;
+  keyboardFramePresent: boolean | null;
+  keyboardCoverage: boolean | null;
+  centreInsideKeyboard: boolean | null;
+  branch: 'viewport' | 'keyboard' | 'none';
+}
+
 // Keyboard-owned targets bypass keyboard coverage, never the trusted viewport clip.
-export function centreCovered(element: Element, screen: Screen): boolean {
+export function centreCovered(
+  element: Element,
+  screen: Screen,
+  observe?: (diagnostic: Readonly<CentreCoverageDiagnostic>) => void,
+): boolean {
   const frame = elementFrame(element);
-  if (!frame) return false;
+  const facts: CentreCoverageDiagnostic = {
+    framePresent: frame !== undefined,
+    viewportPresent: null,
+    viewportOutside: null,
+    keyboardVisible: null,
+    keyboardFramePresent: null,
+    keyboardCoverage: null,
+    centreInsideKeyboard: null,
+    branch: 'none',
+  };
+  const result = (branch: CentreCoverageDiagnostic['branch']): boolean => {
+    facts.branch = branch;
+    try {
+      observe?.(Object.freeze(facts));
+    } catch {
+      // A passive observer cannot change the predicate.
+    }
+    return branch !== 'none';
+  };
+  if (!frame) return result('none');
   const x = frame.x + frame.width / 2;
   const y = frame.y + frame.height / 2;
   const inside = (rect: { x: number; y: number; width: number; height: number }) =>
     x >= rect.x && x < rect.x + rect.width && y >= rect.y && y < rect.y + rect.height;
   const viewport = elementViewport(element);
-  return (
-    (viewport !== undefined && !inside(viewport)) ||
-    (screen.keyboardVisible !== false &&
-      screen.keyboardFrame !== undefined &&
-      keyboardCoversElement(element) &&
-      inside(screen.keyboardFrame))
-  );
+  facts.viewportPresent = viewport !== undefined;
+  if (viewport !== undefined) {
+    const outside = !inside(viewport);
+    facts.viewportOutside = outside;
+    if (outside) return result('viewport');
+  }
+  const visible = screen.keyboardVisible;
+  facts.keyboardVisible = typeof visible === 'boolean' ? visible : null;
+  if (visible === false) return result('none');
+  const keyboardFramePresent = screen.keyboardFrame !== undefined;
+  facts.keyboardFramePresent = keyboardFramePresent;
+  if (!keyboardFramePresent) return result('none');
+  const keyboardCoverage = keyboardCoversElement(element);
+  facts.keyboardCoverage = keyboardCoverage;
+  if (!keyboardCoverage) return result('none');
+  const centreInsideKeyboard = inside(screen.keyboardFrame!);
+  facts.centreInsideKeyboard = centreInsideKeyboard;
+  return result(centreInsideKeyboard ? 'keyboard' : 'none');
 }
 
 // Pixels a keyboard-covered centre travels to the middle of the band above the keyboard.

@@ -462,3 +462,200 @@ test('excluded lists at most ten entries while the count stays whole within 2 KB
   assert.equal(raw.includes(SECRET), false);
   assert.ok(Buffer.byteLength(raw, 'utf8') <= 2048, `${Buffer.byteLength(raw, 'utf8')} bytes`);
 });
+
+test('the admitted diagnostic correlates the actual producer viewport and native join boundaries', async () => {
+  const nodes = tree([
+    { type: 'Application', rect: screenRect },
+    { type: 'Window', parent: 0, rect: screenRect },
+    { type: 'TextField', parent: 1, rect: title(820) },
+    { type: 'StaticText', parent: 1, rect: title(16) },
+  ]);
+  nodes[2].enabled = false;
+  nodes[2].hittable = false;
+  const lines: string[] = [];
+  const observation = {
+    ...attested(nodes),
+    snapshotDiagnostics: {
+      viewportStatus: 'collected',
+      viewportSource: 'first-nonempty-window',
+      viewport: [-20, 30, 100, 200],
+      emittedCount: 5,
+      normalizedCount: 4,
+      missingRectCount: 1,
+      emittedByKind: [1, 0, 0, 1, 0, 0, 0, 0, 1, 2],
+      normalizedByKind: [1, 0, 0, 0, 0, 0, 0, 0, 1, 2],
+      missingRectByKind: [0, 0, 0, 1, 0, 0, 0, 0, 0, 0],
+      label: SECRET,
+    },
+  };
+  const run = (warn?: (line: string) => void) =>
+    captureScreen({
+      observation: 17,
+      platformPresence: false,
+      native: async () => observation,
+      react: async () => ({ interactive: [] }),
+      warn,
+    });
+  const logged = await run((line) => lines.push(line));
+  assert.deepEqual(lines, [], 'no emission before admission');
+  emitCaptureDiagnostics(logged);
+  const facts = parse(lines[0]);
+  assert.equal(facts.observation, 17);
+  assert.equal(facts.mode, 'ordinary');
+  assert.equal(facts.native.acquisition, 'returned');
+  assert.equal(facts.native.coverage, 'complete');
+  assert.equal(facts.native.truncated, false);
+  assert.equal(facts.native.normalizationDroppedNodes, 0);
+  assert.deepEqual(facts.snapshot.viewport, [-20, 30, 100, 200]);
+  assert.deepEqual(facts.snapshot.emittedByKind, [1, 0, 0, 1, 0, 0, 0, 0, 1, 2]);
+  assert.deepEqual(facts.projection.joinedByKind, [1, 0, 0, 0, 0, 0, 0, 0, 1, 2]);
+  assert.deepEqual(facts.projection.duplicateByKind, [0, 0, 0, 0, 0, 0, 0, 0, 0, 0]);
+  assert.equal(facts.projection.offscreenCount, 1);
+  assert.equal(facts.projection.disabledCount, 1);
+  assert.equal(facts.projection.enabledKnownCount, 1);
+  assert.equal(facts.projection.hittableKnownCount, 1);
+  assert.equal(facts.projection.rectKnownCount, 4);
+  assert.equal(JSON.stringify(lines).includes(SECRET), false);
+  assert.deepEqual(logged, await run());
+  assert.doesNotThrow(() => JSON.stringify(logged));
+  assert.equal(JSON.stringify(logged).includes('joinedByKind'), false);
+});
+
+test('missing and malformed private diagnostics stay unknown without invoking getters or coercions', async () => {
+  let reads = 0;
+  const trap = () => {
+    reads++;
+    throw new Error(SECRET);
+  };
+  const malformed = {
+    v: 1,
+    viewportSource: 'app',
+    get viewport() {
+      return trap();
+    },
+    get emittedCount() {
+      return trap();
+    },
+    toJSON: trap,
+    toString: trap,
+  };
+  for (const [snapshotDiagnostics, status] of [
+    [undefined, 'missing'],
+    [null, 'invalid'],
+    [malformed, 'invalid'],
+    [{ viewportStatus: 'collected', viewportSource: SECRET, viewport: [0, 0, 1, 1] }, 'invalid'],
+  ] as const) {
+    const lines: string[] = [];
+    const screen = await captureScreen({
+      observation: 5,
+      platformPresence: true,
+      native: async () => ({ ...nativeCapture(), snapshotDiagnostics }),
+      react: async () => ({ interactive: [] }),
+      warn: (line) => lines.push(line),
+    });
+    emitCaptureDiagnostics(screen);
+    const facts = parse(lines[0]);
+    assert.equal(facts.snapshot.viewportStatus, status);
+    assert.equal(facts.snapshot.viewportSource, null);
+    assert.equal(facts.snapshot.viewport, null);
+    assert.equal(facts.snapshot.emittedCount, null);
+    assert.equal(facts.snapshot.emittedByKind, null);
+    assert.equal(facts.mode, 'platform-presence');
+    assert.equal(JSON.stringify(lines).includes(SECRET), false);
+  }
+  assert.equal(reads, 0);
+});
+
+test('correlated counts stay whole within the existing byte bound as geometry samples shrink', async () => {
+  const nodes = tree([
+    { type: 'Application', rect: screenRect },
+    ...Array.from({ length: 300 }, (_, i) => ({
+      type: 'StaticText',
+      parent: 0,
+      rect: title(1000 + i * 400),
+    })),
+  ]);
+  const lines: string[] = [];
+  const screen = await captureScreen({
+    observation: 9000,
+    native: async () => attested(nodes),
+    react: async () => ({}),
+    warn: (line) => lines.push(line),
+  });
+  emitCaptureDiagnostics(screen);
+  const facts = parse(lines[0]);
+  assert.equal(facts.outsideApp, 300);
+  assert.equal(facts.projection.joinedByKind[8], 300);
+  assert.equal(facts.projection.offscreenCount, 300);
+  assert.ok(Buffer.byteLength(lines[0], 'utf8') <= 2048);
+});
+
+test('slow or throwing sinks preserve the deadline result when React refuses generically', async () => {
+  for (const elapsed of [21999, 22001]) {
+    const run = async (logging: boolean) => {
+      let clock = 0;
+      const screen = await captureScreen({
+        observation: 4,
+        now: () => clock,
+        native: async () => nativeCapture(),
+        react: async () => {
+          clock = elapsed;
+          throw new Error(SECRET);
+        },
+        ...(logging
+          ? {
+              warn: (line: string) => {
+                assert.equal(line.includes(SECRET), false);
+                clock += 100;
+                throw new Error(SECRET);
+              },
+            }
+          : {}),
+      });
+      emitCaptureDiagnostics(screen);
+      return screen;
+    };
+    assert.deepEqual(await run(true), await run(false));
+  }
+});
+
+test('native duplicate removals and source collectedness do not become eligibility rules', async () => {
+  const nodes = tree([
+    { type: 'Application', rect: screenRect },
+    { type: 'StaticText', parent: 0, rect: title(16) },
+    { type: 'StaticText', parent: 1, rect: title(16) },
+  ]);
+  delete nodes[2].identifier;
+  const lines: string[] = [];
+  const screen = await captureScreen({
+    native: async () => attested(nodes),
+    react: async () => ({}),
+    warn: (line) => lines.push(line),
+  });
+  emitCaptureDiagnostics(screen);
+  const facts = parse(lines[0]);
+  assert.deepEqual(facts.projection.joinedByKind, [0, 0, 0, 0, 0, 0, 0, 0, 1, 1]);
+  assert.deepEqual(facts.projection.duplicateByKind, [0, 0, 0, 0, 0, 0, 0, 0, 1, 0]);
+  assert.equal(facts.projection.enabledKnownCount, 0);
+  assert.equal(facts.projection.hittableKnownCount, 0);
+  assert.equal(facts.projection.rectKnownCount, 2);
+  assert.equal(screen.elements.length, 2);
+  assert.equal(screen.elements[1].disabled, false);
+  assert.equal(screen.elements[1].offscreen, false);
+});
+
+test('an incomplete verdict leaves projection diagnostics uncollected', async () => {
+  const native = nativeCapture();
+  const lines: string[] = [];
+  const screen = await captureScreen({
+    native: async () => ({
+      ...native,
+      snapshotVerdict: { ...native.snapshotVerdict, reasons: Array(300).fill('empty-capture') },
+    }),
+    react: async () => ({}),
+    warn: (line) => lines.push(line),
+  });
+  emitCaptureDiagnostics(screen);
+  assert.deepEqual(lines, []);
+  assert.equal(screen.captureCoverage?.native, 'incomplete');
+});
