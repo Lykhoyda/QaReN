@@ -10,8 +10,8 @@ import {
   _resetTapSystemAlertForTest,
   _setRunMaestroInlineForTest,
   _resetRunMaestroInlineForTest,
-  _setIosSessionActiveForTest,
-  _resetIosSessionActiveForTest,
+  _setDialogRunnerForTest,
+  _resetDialogRunnerForTest,
 } from '../../../dist/handlers/device-system-dialog.js';
 import { runMaestroInline } from '../../../dist/maestro-invoke.js';
 import { spawnManagedProcessGroup } from '../../../dist/lifecycle/managed-automation.js';
@@ -22,11 +22,11 @@ afterEach(() => {
   _resetFetchSnapshotNodesForTest();
   _resetTapSystemAlertForTest();
   _resetRunMaestroInlineForTest();
-  _resetIosSessionActiveForTest();
+  _resetDialogRunnerForTest();
 });
 
 function dialog() {
-  _setIosSessionActiveForTest(true);
+  _setDialogRunnerForTest('ios');
   _setFetchSnapshotNodesForTest(async (_allowCache, context) => {
     assert.ok(context, 'QA snapshot must carry the operation context');
     return {
@@ -168,7 +168,7 @@ test('actual inline spawn consumes authorization even if spawn throws', async ()
 });
 
 function permissionPrompt() {
-  _setIosSessionActiveForTest(true);
+  _setDialogRunnerForTest('ios');
   _setFetchSnapshotNodesForTest(async () => ({
     ok: true,
     nodes: [
@@ -256,7 +256,7 @@ test('a runner refusal before tapping keeps its code and probes no other label',
 });
 
 test('a button matching a known label only by identifier is never tapped, so recorded labels stay constants', async () => {
-  _setIosSessionActiveForTest(true);
+  _setDialogRunnerForTest('ios');
   _setFetchSnapshotNodesForTest(async () => ({
     ok: true,
     nodes: [
@@ -273,4 +273,122 @@ test('a button matching a known label only by identifier is never tapped, so rec
   const env = JSON.parse(result.content[0].text);
   assert.equal(env.data.tapped, false);
   assert.equal(env.meta?.code, 'DIALOG_BUTTON_NOT_FOUND', JSON.stringify(env));
+});
+
+// Android: the runner taps one labelled button in a system dialog window above the app.
+function androidPermissionPrompt(dismissLabel: string, maestro: string[]) {
+  _setDialogRunnerForTest('android');
+  _setFetchSnapshotNodesForTest(async () => ({
+    ok: true,
+    nodes: [
+      { ref: '@e0', type: 'Alert', label: '' },
+      {
+        ref: '@e1',
+        type: 'android.widget.TextView',
+        label: 'Allow Test App to send you notifications?',
+      },
+      { ref: '@e2', type: 'android.widget.Button', label: 'Allow' },
+      { ref: '@e3', type: 'android.widget.Button', label: dismissLabel },
+    ],
+    provenance: { source: 'fresh', originAuthority: 'not-proven' },
+  }));
+  _setRunMaestroInlineForTest(async () => {
+    maestro.push('tapOn');
+    return { passed: true, output: '', flowFile: '' };
+  });
+}
+
+for (const alertClosed of [true, false]) {
+  test(`an Android QA session's dialog step passes only with alertClosed (${alertClosed})`, async () => {
+    const maestro: string[] = [];
+    androidPermissionPrompt('Don’t allow', maestro);
+    const tapped: string[] = [];
+    _setTapSystemAlertForTest(async (label, context) => {
+      context!.authorize();
+      tapped.push(label);
+      return okResult({ tappedLabel: label, tappedRect: RECT, alertClosed });
+    });
+    const result = await createDeviceDismissSystemDialogHandler()({
+      platform: 'android',
+      qaContext: new QaDispatchContext(10, () => 1),
+    });
+    const env = JSON.parse(result.content[0].text);
+    assert.deepEqual(maestro, [], 'an Android QA dialog step never falls back to Maestro');
+    assert.deepEqual(tapped, ['Don’t allow']);
+    if (alertClosed) {
+      assert.equal(env.ok, true, JSON.stringify(env));
+      assert.equal(env.meta?.verify, 'exact');
+      assert.equal(env.data.tappedLabel, 'Don’t allow');
+      assert.deepEqual(env.data.tappedRect, RECT);
+      assert.equal(env.data.via, 'rn-android-runner');
+    } else {
+      assert.equal(env.ok, false);
+      assert.equal(env.code, 'DIALOG_TAP_UNPROVEN');
+      assert.equal(env.meta?.mutation, 'observed');
+    }
+  });
+}
+
+test('the Android dismiss labels include the ASCII apostrophe spelling', async () => {
+  const maestro: string[] = [];
+  androidPermissionPrompt("Don't allow", maestro);
+  const tapped: string[] = [];
+  _setTapSystemAlertForTest(async (label, context) => {
+    context!.authorize();
+    tapped.push(label);
+    return okResult({ tappedLabel: label, tappedRect: RECT, alertClosed: true });
+  });
+  const result = await createDeviceDismissSystemDialogHandler()({
+    platform: 'android',
+    qaContext: new QaDispatchContext(10, () => 1),
+  });
+  assert.equal(JSON.parse(result.content[0].text).ok, true);
+  assert.deepEqual(tapped, ["Don't allow"]);
+  assert.deepEqual(maestro, []);
+});
+
+test('an Android QA dialog step with no system dialog in front taps nothing and never runs Maestro', async () => {
+  const maestro: string[] = [];
+  _setDialogRunnerForTest('android');
+  _setFetchSnapshotNodesForTest(async () => ({
+    ok: true,
+    nodes: [
+      { ref: '@e0', type: 'Application', label: '' },
+      { ref: '@e1', type: 'android.widget.Button', label: 'Allow' },
+    ],
+    provenance: { source: 'fresh', originAuthority: 'not-proven' },
+  }));
+  _setRunMaestroInlineForTest(async () => {
+    maestro.push('tapOn');
+    return { passed: true, output: '', flowFile: '' };
+  });
+  _setTapSystemAlertForTest(async () => assert.fail('no system dialog, no tap'));
+  const context = new QaDispatchContext(10, () => 1);
+  const result = await createDeviceAcceptSystemDialogHandler()({
+    platform: 'android',
+    qaContext: context,
+  });
+  const env = JSON.parse(result.content[0].text);
+  assert.equal(env.ok, false);
+  assert.equal(env.code, 'NO_SYSTEM_DIALOG');
+  assert.equal(env.meta?.mutation, 'none');
+  assert.deepEqual(maestro, []);
+  assert.equal(context.authorizations, 0);
+});
+
+test('an Android plugin call outside a session keeps the Maestro dialog path', async () => {
+  const maestro: string[] = [];
+  _setDialogRunnerForTest(null);
+  _setFetchSnapshotNodesForTest(async () => assert.fail('no session, no runner snapshot'));
+  _setTapSystemAlertForTest(async () => assert.fail('no session, no runner tap'));
+  _setRunMaestroInlineForTest(async () => {
+    maestro.push('tapOn');
+    return { passed: true, output: '', flowFile: '' };
+  });
+  const result = await createDeviceDismissSystemDialogHandler()({ platform: 'android' });
+  const env = JSON.parse(result.content[0].text);
+  assert.equal(env.ok, true);
+  assert.equal(env.data.tapped, true);
+  assert.deepEqual(maestro, ['tapOn']);
+  assert.match(env.data.selector, /Don't allow/);
 });

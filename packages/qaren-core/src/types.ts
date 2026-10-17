@@ -407,6 +407,8 @@ export type ToolErrorCode =
   | 'SYSTEM_ALERT_BUTTON_AMBIGUOUS'
   | 'SYSTEM_ALERT_CHANGED'
   | 'SYSTEM_ALERT_TAP_FAILED'
+  // Android: no system dialog window is in front of the app, so nothing was tapped.
+  | 'NO_SYSTEM_DIALOG'
   | 'DIALOG_TAP_UNPROVEN'
   // GH #383: runner speaks an incompatible wire protocol even after the
   // reap-and-reinstall path ran — stale prebuilt artifacts need a rebuild.
