@@ -57,6 +57,7 @@ export const REQUIRED_ANDROID_FEATURES = [
   'FILL_EVIDENCE_V1',
   // Android's narrower occlusion guard, not the iOS accessibility hit test.
   'DISPATCH_OCCLUSION_GUARD_V1',
+  'SYSTEM_ALERT_TAP_V1',
 ] as const;
 
 export const REQUIRED_ANDROID_COMMANDS = [
@@ -72,6 +73,7 @@ export const REQUIRED_ANDROID_COMMANDS = [
   'back',
   'dismissKeyboard',
   'status',
+  'systemAlertTap',
 ] as const satisfies readonly RunAndroidArgs['command'][];
 
 export function classifyRunnerCompatibility(

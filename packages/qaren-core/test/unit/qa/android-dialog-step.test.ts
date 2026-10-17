@@ -1,5 +1,4 @@
-import { renderReason } from '../../../dist/qa/untrusted.js';
-// Android system dialogs are refused before any driver runs; iOS keeps its proven dialog handler.
+// A dialog step on either platform reaches the proven dialog handler; no platform guard refuses it first.
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { parsePlan } from '../../../dist/qa/plan.js';
@@ -23,14 +22,11 @@ function screen(): Screen {
   return { ...join(nodes, []), coverage: { native: 'complete', react: 'complete' } };
 }
 
-function fake(platform: 'ios' | 'android') {
+function fake() {
   const handled: string[] = [];
   const driver: string[] = [];
   let clock = 0;
   const deps: WalkerDeps = {
-    ...(platform === 'android'
-      ? { dialogUnsupported: 'Android system dialogs arrive in S5b' }
-      : {}),
     captureScreen: async () => {
       driver.push('capture');
       return screen();
@@ -63,20 +59,8 @@ function fake(platform: 'ios' | 'android') {
 
 const block = () => parsePlan('1. Dismiss the system dialog\n').blocks![0];
 
-test('android_dialog_step_refuses_before_any_driver', async () => {
-  const f = fake('android');
-  const outcome = await walkBlock(block(), f.deps);
-  assert.equal(outcome.block.outcome, 'fail');
-  assert.match(
-    renderReason(outcome.failure?.seen ?? '', (text) => text),
-    /^TARGET_UNSUPPORTED: Android system dialogs arrive in S5b/,
-  );
-  assert.deepEqual(f.handled, []);
-  assert.deepEqual(f.driver, []);
-});
-
-test('an iOS dialog step still reaches its handler', async () => {
-  const f = fake('ios');
+test('a dialog step reaches its handler and passes on the proven tap', async () => {
+  const f = fake();
   const outcome = await walkBlock(block(), f.deps);
   assert.equal(outcome.block.outcome, 'pass', outcome.failure?.seen);
   assert.deepEqual(f.handled, ['dismiss']);

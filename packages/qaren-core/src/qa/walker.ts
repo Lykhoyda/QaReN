@@ -140,8 +140,6 @@ export interface WalkerDeps {
   ): Promise<ActResult>;
   back(context: QaDispatchContext): Promise<ActResult>;
   dialog(action: 'accept' | 'dismiss', context: QaDispatchContext): Promise<ActResult>;
-  // Set where dialog steps have no proven driver: such a step refuses before any capture.
-  dialogUnsupported?: string;
   screenshot(name: string): Promise<string | undefined>;
   now(): number;
   sleep(ms: number): Promise<void>;
@@ -204,6 +202,16 @@ const unresolvedText = (quoted: string) =>
   new ResolutionError({
     refuse: 'VISIBILITY_UNSURE',
     reason: `"${quoted}" stayed unresolved: matching text has no trusted frame or the native snapshot is incomplete`,
+  });
+
+// Under a system dialog nothing of the app can be scrolled, left or reached; a scroll or back there would go to whatever answers it.
+const dialogInFront = (phrase?: string) =>
+  new ResolutionError({
+    refuse: 'TARGET_NOT_FOUND',
+    reason:
+      phrase === undefined
+        ? 'a system dialog is in front of the app; nothing behind it can be scrolled, left or reached until the dialog is answered'
+        : `"${phrase}" is behind a system dialog; nothing of the app can be scrolled to or reached until the dialog is answered`,
   });
 
 export const WAIT_BUDGET_MS = 15_000;
@@ -1145,6 +1153,8 @@ export async function walkBlock(
     recovered.add(item);
     loginReplayed = false;
     const fresh = await capture();
+    const next = block.items[block.items.indexOf(item) + 1];
+    if (fresh.screen.front === 'dialog' && next?.kind === 'dialog') return undefined;
     const result = await recover(
       fresh.screen,
       {
@@ -1190,13 +1200,6 @@ export async function walkBlock(
       let currentAttempt = 1;
       resolvedBy = item.source === 'jev' && !replay ? 'jev' : 'exact';
       if (item.kind === 'fill' && item.text && !typed.includes(item.text)) typed.push(item.text);
-      if (item.kind === 'dialog' && deps.dialogUnsupported) {
-        const refused = new ResolutionError({
-          refuse: 'TARGET_UNSUPPORTED',
-          reason: deps.dialogUnsupported,
-        });
-        return failed(item, currentAttempt, refused.message, latest, undefined);
-      }
       try {
         if (item.kind === 'check') {
           const next = block.items[block.items.indexOf(item) + 1];
@@ -1347,6 +1350,7 @@ export async function walkBlock(
           while (!found && attempts < SCROLL_ATTEMPTS && deps.now() < deadline) {
             const beforeSignature = screenSignature(observation.screen);
             let act: ActResult;
+            if (observation.screen.front === 'dialog') throw dialogInFront(item.until.phrase);
             try {
               act = await mutate(
                 item,
@@ -1449,6 +1453,24 @@ export async function walkBlock(
             before = held?.observation ?? (await captureBeforeDispatch());
           }
           cached = undefined;
+          const next = block.items[block.items.indexOf(item) + 1];
+          if (
+            attempt > 1 &&
+            item.kind !== 'dialog' &&
+            before.screen.front === 'dialog' &&
+            next?.kind === 'dialog'
+          ) {
+            const shot = await shoot(item);
+            emit({
+              ...base(item, attempt),
+              ...(shot ? { screenshot: shot } : {}),
+              outcome: 'pass',
+              reason: redact(
+                'the previous attempt took effect after its readback: a system dialog is in front, and the next step owns it',
+              ),
+            });
+            continue items;
+          }
           let ref: string | undefined;
           let element: Element | undefined;
           let initial = held?.decision;
@@ -1559,6 +1581,7 @@ export async function walkBlock(
                   within = undefined;
                   scrollOrigin ??= 'offscreen-resolution';
                   scrollDirection = resolution.scroll;
+                  if (before.screen.front === 'dialog') throw dialogInFront(item.target.phrase);
                   const result = await mutate(item, before, (context) =>
                     deps.scroll(resolution.scroll, context, distance, band),
                   );
@@ -1684,6 +1707,11 @@ export async function walkBlock(
                 privacy.concealFallback(item.text, element.secure, element.testID ?? element.label);
                 if (!privateFills.includes(item.line)) privateFills.push(item.line);
               }
+              if (
+                (item.kind === 'scroll' || item.kind === 'back') &&
+                before.screen.front === 'dialog'
+              )
+                throw dialogInFront();
               act = await mutate(item, before, (context) =>
                 item.kind === 'press'
                   ? deps.press(ref!, context)
@@ -1702,6 +1730,21 @@ export async function walkBlock(
                   act.error ?? 'TARGET_AMBIGUOUS',
                   before.screen,
                   undefined,
+                  ref,
+                );
+                break;
+              }
+              if (
+                !act.ok &&
+                act.mutation === 'none' &&
+                act.error?.startsWith('OUTSIDE_APP_WINDOW:')
+              ) {
+                outcome = failed(
+                  item,
+                  attempt,
+                  `${act.error}; a system dialog button is tapped only by a dialog step`,
+                  before.screen,
+                  await shoot(item),
                   ref,
                 );
                 break;
