@@ -29,7 +29,7 @@ import {
   readReactInputValue,
 } from '../handlers/device-interact.js';
 import { captureQaScreenshot } from './screenshot.js';
-import { createDeviceSnapshotHandler } from '../handlers/device-session.js';
+import { createDeviceSnapshotHandler, isAppRunning } from '../handlers/device-session.js';
 import { relaunchIosDevClient } from '../handlers/app-lifecycle.js';
 import {
   createDeviceAcceptSystemDialogHandler,
@@ -429,6 +429,11 @@ async function openSession(
                   target.deviceId,
                   `${target.metroUrlForDevice}/?disableOnboarding=1`,
                 ),
+              appAlive: async () => {
+                const alive = await isAppRunning('ios', appId, undefined, target.deviceId);
+                if (alive) log('relaunch skipped: app-alive');
+                return alive;
+              },
             }
           : {}),
         // The lease coordinates qaren processes only; a foreign Maestro, XCUITest or UIAutomator driver is a probe.

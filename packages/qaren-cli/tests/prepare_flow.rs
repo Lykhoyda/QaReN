@@ -207,7 +207,11 @@ fn ios_prepare_proceeds_after_two_launch_timeouts_with_each_attempt_in_the_recei
     let repo = common::temp_repo();
     let scenario = write_scenario(&repo, &ios_scenario_yaml(8791));
     let mut mock = MockRunner::new();
-    script_ios_prepare(&mut mock, &repo, CmdOutput::success(""));
+    script_ios_prepare_launch(&mut mock, &repo, |m| {
+        m.expect_run("launchctl list", CmdOutput::success(""));
+        m.expect_run("launchctl list", CmdOutput::success(""));
+        common::script_ios_launch(m);
+    });
     mock.timeouts = [
         ("simctl-launch".into(), 60_000),
         ("simctl-launch".into(), 60_000),
@@ -229,6 +233,99 @@ fn ios_prepare_proceeds_after_two_launch_timeouts_with_each_attempt_in_the_recei
         .calls
         .iter()
         .any(|call| call.label == "simctl-launchctl"));
+    assert!(!receipt.outcomes.contains_key("launch_proof"));
+    assert_eq!(mock.remaining(), 0);
+}
+
+#[test]
+fn ios_launch_timeout_with_the_app_job_present_is_accepted_as_the_launch() {
+    let repo = common::temp_repo();
+    let scenario = write_scenario(&repo, &ios_scenario_yaml(8791));
+    let mut mock = MockRunner::new();
+    script_ios_prepare_launch(&mut mock, &repo, |m| {
+        m.expect_run(
+            "launchctl list",
+            CmdOutput::success("512\t0\tUIKitApplication:com.rndevagent.testapp[abc]"),
+        );
+    });
+    mock.timeouts = [("simctl-launch".into(), 60_000)].into();
+
+    let receipt = prepare(&mut mock, &prepare_args(&scenario, false, None));
+
+    assert_eq!(
+        receipt.result,
+        ReceiptResult::Ready,
+        "{}",
+        receipt.to_json()
+    );
+    assert_eq!(receipt.timings_ms["simctl-launch_attempt_1"], 60_000);
+    assert!(receipt.outcomes["simctl-launch_attempt_1"].contains("timed out"));
+    assert!(!receipt.timings_ms.contains_key("simctl-launch_attempt_2"));
+    assert_eq!(receipt.outcomes["launch_proof"], "launchctl-job");
+    let count = |label: &str| mock.calls.iter().filter(|c| c.label == label).count();
+    assert_eq!(count("simctl-launch"), 1);
+    assert_eq!(count("simctl-launchctl"), 2, "receipt, then readiness");
+    assert_eq!(mock.remaining(), 0);
+}
+
+#[test]
+fn ios_launch_timeout_without_the_app_job_is_retried() {
+    let repo = common::temp_repo();
+    let scenario = write_scenario(&repo, &ios_scenario_yaml(8791));
+    let mut mock = MockRunner::new();
+    script_ios_prepare_launch(&mut mock, &repo, |m| {
+        m.expect_run(
+            "launchctl list",
+            CmdOutput::success("-\t0\tUIKitApplication:com.rndevagent.testapp[abc]"),
+        );
+        common::script_ios_launch(m);
+    });
+    mock.timeouts = [("simctl-launch".into(), 60_000)].into();
+
+    let receipt = prepare(&mut mock, &prepare_args(&scenario, false, None));
+
+    assert_eq!(
+        receipt.result,
+        ReceiptResult::Ready,
+        "{}",
+        receipt.to_json()
+    );
+    assert_eq!(receipt.timings_ms["simctl-launch_attempt_2"], 0);
+    assert_eq!(
+        mock.calls
+            .iter()
+            .filter(|c| c.label == "simctl-launch")
+            .count(),
+        2
+    );
+    assert!(!receipt.outcomes.contains_key("launch_proof"));
+    assert_eq!(mock.remaining(), 0);
+}
+
+#[test]
+fn ios_launch_error_stays_a_build_failure_without_a_receipt() {
+    let repo = common::temp_repo();
+    let scenario = write_scenario(&repo, &ios_scenario_yaml(8791));
+    let mut mock = MockRunner::new();
+    script_ios_prepare_before_devmenu(&mut mock, &repo);
+    common::script_devmenu_defaults(&mut mock, CmdOutput::success(""));
+    mock.expect_run(
+        "simctl launch --terminate-running-process",
+        CmdOutput::failed(1, "no such app"),
+    );
+    common::script_ios_metro_cleanup(&mut mock);
+
+    let receipt = prepare(&mut mock, &prepare_args(&scenario, false, None));
+
+    assert_eq!(
+        receipt.failure.as_ref().unwrap().code,
+        FailureCode::BuildFailed,
+        "{}",
+        receipt.to_json()
+    );
+    let count = |label: &str| mock.calls.iter().filter(|c| c.label == label).count();
+    assert_eq!(count("simctl-launch"), 1);
+    assert_eq!(count("simctl-launchctl"), 0);
     assert_eq!(mock.remaining(), 0);
 }
 
@@ -564,6 +661,9 @@ fn ios_prepare_retries_timeouts_until_the_shared_budget_is_spent() {
         script_ios_prepare_before_devmenu(&mut mock, &repo);
         if label == "simctl-launch" {
             common::script_devmenu_defaults(&mut mock, CmdOutput::success(""));
+            for _ in 0..3 {
+                mock.expect_run("launchctl list", CmdOutput::success(""));
+            }
         }
         let durations: Vec<u64> = if label == "simctl-launch" {
             vec![60_000, 60_000, 10_000]
@@ -609,10 +709,10 @@ fn ios_prepare_retries_timeouts_until_the_shared_budget_is_spent() {
         );
         assert!(mock.timeouts.is_empty());
         assert_eq!(mock.remaining(), 0);
-        assert!(!mock
-            .calls
-            .iter()
-            .any(|spec| spec.label == "simctl-launchctl"));
+        let count = |want: &str| mock.calls.iter().filter(|c| c.label == want).count();
+        assert_eq!(count("simctl-app-container"), 0, "readiness never ran");
+        let receipts = if label == "simctl-launch" { 3 } else { 0 };
+        assert_eq!(count("simctl-launchctl"), receipts);
     }
 }
 
@@ -726,7 +826,35 @@ fn script_ios_prepare_install(
         m.expect_run("ls-files", CmdOutput::success(""));
         common::script_xcode(m);
     };
-    script_ios_prepare_fingerprints(mock, repo, defaults, empty, empty, install);
+    script_ios_prepare_fingerprints(
+        mock,
+        repo,
+        defaults,
+        empty,
+        empty,
+        install,
+        common::script_ios_launch,
+    );
+}
+
+fn script_ios_prepare_launch(
+    mock: &mut MockRunner,
+    repo: &std::path::Path,
+    launch: impl FnOnce(&mut qaren::exec::MockRunner),
+) {
+    let empty = |m: &mut MockRunner| {
+        m.expect_run("ls-files", CmdOutput::success(""));
+        common::script_xcode(m);
+    };
+    script_ios_prepare_fingerprints(
+        mock,
+        repo,
+        CmdOutput::success(""),
+        empty,
+        empty,
+        |m| m.expect_run("simctl install", CmdOutput::success("")),
+        launch,
+    );
 }
 
 fn script_ios_prepare_fingerprints(
@@ -736,6 +864,7 @@ fn script_ios_prepare_fingerprints(
     plan: impl FnOnce(&mut MockRunner),
     recheck: impl FnOnce(&mut MockRunner),
     install: impl FnOnce(&mut qaren::exec::MockRunner),
+    launch: impl FnOnce(&mut qaren::exec::MockRunner),
 ) {
     script_validation(mock, repo, IOS_TOOLS);
     mock.expect_run("lsof", free_port());
@@ -748,7 +877,7 @@ fn script_ios_prepare_fingerprints(
         "simctl bootstatus",
         CmdOutput::success("Boot status: finished\n"),
     );
-    common::script_finite_ios_build_install(mock, "expo run:ios", defaults, install);
+    common::script_finite_ios_build_launch(mock, "expo run:ios", defaults, install, launch);
     mock.expect_run("ps", CmdOutput::success(&format!("{LSTART}\n"))); // liveness probe
     mock.expect_run("ps", CmdOutput::success("S\n")); // not a zombie
     mock.expect_run("lsof", CmdOutput::success("6001\n"));
@@ -792,6 +921,7 @@ fn expo_hash_drift_between_plan_and_readiness_fails_as_candidate_drift() {
         fingerprint("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"),
         fingerprint("bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"),
         |m| m.expect_run("simctl install", CmdOutput::success("")),
+        common::script_ios_launch,
     );
     common::script_ios_metro_cleanup(&mut mock);
     let receipt = prepare(&mut mock, &prepare_args(&scenario_path, false, None));

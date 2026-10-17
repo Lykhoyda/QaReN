@@ -4,6 +4,7 @@ import assert from 'node:assert/strict';
 import {
   buildIosAppRunningArgs,
   createDeviceSnapshotHandler,
+  iosAppJobRunning,
   isAppRunning,
 } from '../../dist/handlers/device-session.js';
 
@@ -21,6 +22,14 @@ test('GH-588: iOS liveness command targets the exact UDID and never booted', () 
   const args = buildIosAppRunningArgs(EXACT);
   assert.deepEqual(args, ['simctl', 'spawn', EXACT, 'launchctl', 'list']);
   assert.equal(args.includes('booted'), false);
+});
+
+test('GH-588: the iOS job row needs a numeric PID and the exact bundle label', () => {
+  const row = (pid: string, id: string) => `${pid}\t0\tUIKitApplication:${id}[0x1a2b][512]`;
+  assert.equal(iosAppJobRunning(row('512', APP_ID), APP_ID), true);
+  assert.equal(iosAppJobRunning(row('-', APP_ID), APP_ID), false);
+  assert.equal(iosAppJobRunning(row('512', `${APP_ID}.sibling`), APP_ID), false);
+  assert.equal(iosAppJobRunning('', APP_ID), false);
 });
 
 test('GH-588: multi-simulator liveness accepts only the supplied running UDID', async () => {
