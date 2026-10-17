@@ -3523,19 +3523,227 @@ fn android_check_refuses_a_remote_adb_socket() {
     assert!(!req.lock_root.exists());
 }
 
+fn script_android_admission(mock: &mut MockRunner, status: &str) {
+    mock.expect_run(
+        &format!("fresh-install-preflight.js --platform android --device {EMULATOR}"),
+        CmdOutput {
+            exit_code: Some(if status == "clear" { 0 } else { 4 }),
+            stdout: serde_json::json!({
+                "v": 1, "platform": "android", "deviceId": EMULATOR, "status": status
+            })
+            .to_string(),
+            ..Default::default()
+        },
+    );
+}
+
+const APP_PACKAGE_LISTED: &str = "package:com.rndevagent.testapp\n";
+
+fn android_package_list(mock: &mut MockRunner, stdout: &str) {
+    mock.expect_run(
+        "shell pm list packages com.rndevagent.testapp",
+        CmdOutput::success(stdout),
+    );
+}
+
 #[test]
-fn android_check_refuses_fresh_install_before_preflight() {
+fn android_fresh_install_with_clear_admission_uninstalls_and_proves_absence() {
     let (repo, app) = app_repo();
+    seed_cached_apk(&repo, &app);
     let mut req = android_request(&repo, &app);
     req.fresh_install = true;
     let mut mock = android_mock();
-    let receipt = run(&mut mock, &req);
-    assert_eq!(
-        receipt.failure.unwrap().code,
-        FailureCode::PlatformUnsupported
+    script_android_preflight(&mut mock, &repo, ONE_EMULATOR, EMULATOR);
+    script_android_admission(&mut mock, "clear");
+    android_package_list(&mut mock, APP_PACKAGE_LISTED);
+    mock.expect_run(
+        "uninstall com.rndevagent.testapp",
+        CmdOutput::success("Success\n"),
     );
-    assert!(mock.calls.is_empty());
-    assert!(!req.lock_root.exists());
+    android_package_list(&mut mock, "");
+    mock.expect_run("pnpm install --frozen-lockfile", CmdOutput::success(""));
+    mock.expect_run("ls-files", CmdOutput::success(""));
+    script_android_launch_walk_teardown(&mut mock);
+
+    let receipt = run(&mut mock, &req);
+
+    assert_eq!(receipt.result, ReceiptResult::Pass, "{:?}", receipt.failure);
+    assert_eq!(receipt.outcomes["fresh_install"], "proven_absent");
+    assert_eq!(mock.remaining(), 0);
+    let admission = mock
+        .calls
+        .iter()
+        .find(|c| c.label == "fresh-install-admission")
+        .unwrap();
+    assert!(!admission.args.iter().any(|a| a == "--process-observer"));
+    for (key, value) in [
+        ("ANDROID_SERIAL", EMULATOR),
+        ("ADB_SERVER_SOCKET", "tcp:127.0.0.1:5037"),
+    ] {
+        assert!(
+            admission
+                .env
+                .contains(&(key.to_string(), value.to_string())),
+            "{key}"
+        );
+    }
+    let adb = adb_calls(&mock);
+    let position = |needle: &str| adb.iter().position(|c| c.contains(needle)).unwrap();
+    assert_eq!(
+        adb[position("uninstall")],
+        format!("-s {EMULATOR} uninstall com.rndevagent.testapp")
+    );
+    assert!(position("uninstall") < position("install -r -d"));
+    let labels = labels(&mock);
+    let at = |label: &str| labels.iter().position(|l| l == label).unwrap();
+    assert!(at("fresh-install-admission") < at("adb-pm-list-packages"));
+    let record = RunRecord::load(&req.runs_root, &run_id()).unwrap();
+    let evidence = record.resources.fresh_install.as_ref().unwrap();
+    assert_eq!(
+        (evidence.device_id.as_str(), evidence.app_id.as_str()),
+        (EMULATOR, "com.rndevagent.testapp")
+    );
+}
+
+#[test]
+fn android_fresh_install_skips_uninstall_when_the_app_is_proven_absent() {
+    let (repo, app) = app_repo();
+    seed_cached_apk(&repo, &app);
+    let mut req = android_request(&repo, &app);
+    req.fresh_install = true;
+    let mut mock = android_mock();
+    script_android_preflight(&mut mock, &repo, ONE_EMULATOR, EMULATOR);
+    script_android_admission(&mut mock, "clear");
+    android_package_list(&mut mock, "package:com.rndevagent.testapp.other\n");
+    mock.expect_run("pnpm install --frozen-lockfile", CmdOutput::success(""));
+    mock.expect_run("ls-files", CmdOutput::success(""));
+    script_android_launch_walk_teardown(&mut mock);
+
+    let receipt = run(&mut mock, &req);
+
+    assert_eq!(receipt.result, ReceiptResult::Pass, "{:?}", receipt.failure);
+    assert_eq!(receipt.outcomes["fresh_install"], "proven_absent");
+    assert_eq!(mock.remaining(), 0);
+    assert!(!labels(&mock).iter().any(|l| l == "adb-uninstall"));
+}
+
+#[test]
+fn android_fresh_install_refuses_busy_or_unknown_admission_before_any_uninstall() {
+    for (status, code) in [
+        ("busy", FailureCode::DeviceBusy),
+        ("unknown", FailureCode::FreshInstallAdmissionUnknown),
+    ] {
+        let (repo, app) = app_repo();
+        let mut req = android_request(&repo, &app);
+        req.fresh_install = true;
+        let mut mock = android_mock();
+        script_android_preflight(&mut mock, &repo, ONE_EMULATOR, EMULATOR);
+        script_android_admission(&mut mock, status);
+
+        let receipt = run(&mut mock, &req);
+
+        assert_eq!(receipt.result, ReceiptResult::Refused, "{status}");
+        let failure = receipt.failure.unwrap();
+        assert_eq!(
+            (failure.phase.as_str(), failure.code),
+            ("fresh_install", code)
+        );
+        assert_eq!(receipt.cleanup["device_lease"], "removed", "{status}");
+        assert_eq!(mock.remaining(), 0, "{status}");
+        assert!(
+            !adb_calls(&mock)
+                .iter()
+                .any(|c| c.contains("pm list packages") || c.contains("uninstall")),
+            "{status}"
+        );
+        let record = RunRecord::load(&req.runs_root, &run_id()).unwrap();
+        assert!(record.resources.fresh_install.is_none(), "{status}");
+        assert!(record.resources.lease.is_none(), "{status}");
+    }
+}
+
+#[test]
+fn android_fresh_install_failures_use_the_ios_reset_codes() {
+    let failed_list = CmdOutput::failed(1, "error: device offline");
+    let cases: [(&str, Vec<(&str, CmdOutput)>, FailureCode); 4] = [
+        (
+            "unreadable inventory",
+            vec![("shell pm list packages", failed_list.clone())],
+            FailureCode::AppPresenceUnknown,
+        ),
+        (
+            "uninstall failed",
+            vec![
+                (
+                    "shell pm list packages",
+                    CmdOutput::success(APP_PACKAGE_LISTED),
+                ),
+                (
+                    "uninstall com.rndevagent.testapp",
+                    CmdOutput::success("Failure [DELETE_FAILED_INTERNAL_ERROR]\n"),
+                ),
+            ],
+            FailureCode::AppResetFailed,
+        ),
+        (
+            "still installed",
+            vec![
+                (
+                    "shell pm list packages",
+                    CmdOutput::success(APP_PACKAGE_LISTED),
+                ),
+                (
+                    "uninstall com.rndevagent.testapp",
+                    CmdOutput::success("Success\n"),
+                ),
+                (
+                    "shell pm list packages",
+                    CmdOutput::success(APP_PACKAGE_LISTED),
+                ),
+            ],
+            FailureCode::AppResetFailed,
+        ),
+        (
+            "absence unreadable",
+            vec![
+                (
+                    "shell pm list packages",
+                    CmdOutput::success(APP_PACKAGE_LISTED),
+                ),
+                (
+                    "uninstall com.rndevagent.testapp",
+                    CmdOutput::success("Success\n"),
+                ),
+                ("shell pm list packages", failed_list.clone()),
+            ],
+            FailureCode::AppPresenceUnknown,
+        ),
+    ];
+    for (case, script, code) in cases {
+        let (repo, app) = app_repo();
+        let mut req = android_request(&repo, &app);
+        req.fresh_install = true;
+        let mut mock = android_mock();
+        script_android_preflight(&mut mock, &repo, ONE_EMULATOR, EMULATOR);
+        script_android_admission(&mut mock, "clear");
+        for (hint, output) in script {
+            mock.expect_run(hint, output);
+        }
+
+        let receipt = run(&mut mock, &req);
+
+        let failure = receipt.failure.unwrap();
+        assert_eq!(
+            (failure.phase.as_str(), failure.code),
+            ("fresh_install", code),
+            "{case}"
+        );
+        assert_eq!(receipt.cleanup["device_lease"], "removed", "{case}");
+        assert_eq!(mock.remaining(), 0, "{case}");
+        assert!(!labels(&mock).iter().any(|l| l == "pnpm-install"), "{case}");
+        let record = RunRecord::load(&req.runs_root, &run_id()).unwrap();
+        assert!(record.resources.fresh_install.is_none(), "{case}");
+    }
 }
 
 #[test]
