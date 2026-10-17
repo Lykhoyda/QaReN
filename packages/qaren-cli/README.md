@@ -524,15 +524,20 @@ screen preserved before treating the press as clearance. Ordinary covered conten
 uses the same recovery as a native occlusion refusal.
 The walker handles this refusal with one directional scroll toward the centre
 of the target's visible clip band: its trusted clipping viewport cut off at the
-top of an observed keyboard unless the keyboard is proven hidden. A target at
+top of an observed keyboard unless the keyboard is proven hidden, and between
+sticky overlays. A touchable, non-text element at least half the clip's width,
+outside the target's own scroll content, that crosses the band's bottom edge
+ends the band at its top (a sticky footer); one across the band's top edge
+starts the band below it (a sticky header). A target at
 or below that band's centre scrolls down; one above it scrolls up. Without a
 keyboard, or when the clip is entirely above it, direction selection is unchanged.
 The walker passes that band to the shared scroll handler so the drag starts
 inside it, narrowing the existing keyboard-safe band. Callers passing no band
 keep their existing drag origins. On both iOS and Android, a target whose centre
 is covered by the observed keyboard gets a scroll sized to move that centre
-toward the middle of the screen area above the keyboard, capped to 60% of the
-narrowed drag band's height.
+toward the middle of that band, and the drag may span the whole band, one pixel
+inside each edge. A clearance scroll without a band keeps the cap of 60% of the
+screen area above the keyboard.
 Scrolls without keyboard clearance keep the fixed amount of `0.6`.
 Successful iOS fast-runner scrolls now run the same bounded settle wait as taps
 before returning: screen-static probing with snapshot-equality fallback. Results

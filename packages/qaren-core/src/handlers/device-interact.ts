@@ -1972,7 +1972,8 @@ function dragBand(within?: Band): Band {
 // Scroll direction → finger gesture is INVERTED vs swipe ("scroll down" = content
 // moves up = finger moves up) and scaled by `amount` (0..1). Centred half-spans
 // keep the gesture inside the viewport.
-// A vertical clearance distance replaces the amount, capped inside the band.
+// A vertical clearance distance replaces the amount: a caller band is precise, so the drag may
+// span it a pixel inside each edge; the window fallback keeps its cap.
 function computeScrollFromDirection(
   direction: 'up' | 'down' | 'left' | 'right',
   amount: number,
@@ -1983,7 +1984,14 @@ function computeScrollFromDirection(
   const cy = Math.round((screen.y ?? 0) + screen.height / 2);
   const dy =
     distance !== undefined && Number.isFinite(distance) && distance > 0
-      ? Math.round(Math.min(distance, screen.height * CLEARANCE_BAND_FRACTION))
+      ? Math.round(
+          Math.min(
+            distance,
+            screen.x !== undefined || screen.y !== undefined
+              ? screen.height - 2
+              : screen.height * CLEARANCE_BAND_FRACTION,
+          ),
+        )
       : Math.round(screen.height * SWIPE_FRACTION * amount);
   const dx = Math.round(screen.width * SWIPE_FRACTION * amount);
   switch (direction) {
