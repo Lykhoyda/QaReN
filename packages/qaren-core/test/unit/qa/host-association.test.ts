@@ -1202,3 +1202,79 @@ test('a React scroll view identified on its native container view anchors its de
     'an identified Other stands for a scroll view only when a native ScrollView sits directly under it',
   );
 });
+
+function safeAreaAssociation(platform: 'ios' | 'android', rootHostType: string) {
+  const frame = { x: 0, y: 0, width: 400, height: 800 };
+  const saveRect = { x: 10, y: 100, width: 100, height: 40 };
+  const [window, root, save] =
+    platform === 'ios'
+      ? ['Window', 'Other', 'Button']
+      : ['Window', 'android.view.ViewGroup', 'android.widget.Button'];
+  const nodes = [
+    { ref: '@e0', index: 0, depth: 0, type: 'Application', rect: frame },
+    { ref: '@e1', index: 1, parentIndex: 0, depth: 1, type: window, rect: frame },
+    { ref: '@e2', index: 2, parentIndex: 1, depth: 2, type: root, identifier: 'base', rect: frame },
+    {
+      ref: '@e3',
+      index: 3,
+      parentIndex: 2,
+      depth: 3,
+      type: save,
+      identifier: 'save',
+      rect: saveRect,
+    },
+  ];
+  const presence = {
+    source: 'xcui-live' as const,
+    nodes: nodes.map((_, i) => ({
+      status: i >= 2 ? ('observed' as const) : ('unknown' as const),
+      labelSource: 'none' as const,
+    })),
+  };
+  const host = (
+    hostIndex: number,
+    parentHostIndex: number | null,
+    hostType: string,
+    rect: typeof frame,
+  ) => ({
+    hostIndex,
+    parentHostIndex,
+    rootIndex: 0,
+    hostType,
+    rect,
+    text: { kind: 'none' as const },
+  });
+  const evidence: ReactHostEvidence = {
+    complete: true,
+    hosts: [
+      { testID: 'base', role: null, roleSource: 'none', capabilities: {} },
+      { testID: 'save', role: null, roleSource: 'none', capabilities: { press: true } },
+    ],
+    typography: {
+      version: 1,
+      complete: true,
+      durationMs: 10,
+      coordinateSpace: 'window-points',
+      nodes: [host(0, null, rootHostType, frame), host(1, 0, 'RCTView', saveRect)],
+    },
+  };
+  return associateHosts(nodes, evidence, presence);
+}
+
+test('iOS: a host beneath an identified react-native-safe-area-context root associates', () => {
+  for (const root of ['RNCSafeAreaView', 'RNCSafeAreaProvider']) {
+    const associations = safeAreaAssociation('ios', root);
+    assert.deepEqual(associations.get(0), { nativeIndex: 2, anchorIndex: 2 }, root);
+    assert.deepEqual(associations.get(1), { nativeIndex: 3, anchorIndex: 3 }, root);
+  }
+});
+
+// Android presence is not captured on develop, so this pair is reachable once the Android capture path lands.
+test('Android: an identified react-native-safe-area-context host associates with its ViewGroup', () => {
+  for (const root of ['RNCSafeAreaView', 'RNCSafeAreaProvider'])
+    assert.deepEqual(
+      safeAreaAssociation('android', root).get(0),
+      { nativeIndex: 2, anchorIndex: 2 },
+      root,
+    );
+});
