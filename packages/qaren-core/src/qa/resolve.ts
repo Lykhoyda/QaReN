@@ -45,6 +45,7 @@ import {
   privateCheckSubjects,
 } from './privacy.js';
 import { literalEvidence, literalTextProjection, type LiteralVerdict } from './evidence.js';
+import { clip } from './native-presence.js';
 
 export { ACT, CHECK } from './questions.js';
 export const MAX_CANDIDATES = 30;
@@ -386,16 +387,13 @@ export function scrollUntilBand(target: Target, screen: Screen): NativeNode['rec
     screen.keyboardVisible !== false && screen.keyboardFrame ? screen.keyboardFrame.y : Infinity;
   let best: NativeNode['rect'];
   for (const element of screen.elements) {
-    if (
-      element.offscreen ||
-      !isScrollContainer(element) ||
-      horizontalOnlyContainer(scrollContainerType(element))
-    )
+    if (!isScrollContainer(element) || horizontalOnlyContainer(scrollContainerType(element)))
       continue;
-    const rect = elementFrame(element);
-    if (!rect) continue;
+    const frame = elementFrame(element);
+    if (!frame) continue;
+    const rect = clip(frame, elementViewport(element));
     const height = Math.min(rect.y + rect.height, keyboardTop) - rect.y;
-    if (height <= 0) continue;
+    if (rect.width <= 0 || height <= 0) continue;
     // Element order is the runner's traversal: later windows are frontmost, children follow parents.
     best = { ...rect, height };
   }

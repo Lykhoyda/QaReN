@@ -203,13 +203,17 @@ test('a later container below the screen does not displace the visible sheet lis
   const screen = androidSheet([offscreen]);
   const band = scrollUntilBand(option20, screen);
   clearRefMap();
-  updateRefMapFromFlat(
-    [{ ref: '@window', type: 'Window', rect: SCREEN }] as never,
-    { snapshotGeneration: 1, keyboardVisible: false },
-  );
+  updateRefMapFromFlat([{ ref: '@window', type: 'Window', rect: SCREEN }] as never, {
+    snapshotGeneration: 1,
+    keyboardVisible: false,
+  });
   try {
     const [, x, y1, , y2] = buildDirectionalScrollCliArgs(
-      'down', 0.6, undefined, undefined, band,
+      'down',
+      0.6,
+      undefined,
+      undefined,
+      band,
     ).map(Number);
     assert.ok(x >= LIST.x && x < LIST.x + LIST.width, `swipe x=${x} misses list`);
     for (const y of [y1, y2]) {
@@ -219,4 +223,33 @@ test('a later container below the screen does not displace the visible sheet lis
   } finally {
     clearRefMap();
   }
+});
+
+test('(m) a list running past the screen bottom drags inside its on-screen part', () => {
+  const tall = join(
+    [
+      { ref: '@app', index: 0, type: 'Application', rect: SCREEN },
+      { ref: '@win', index: 1, parentIndex: 0, type: 'Window', rect: SCREEN },
+      {
+        ref: '@list',
+        index: 2,
+        parentIndex: 1,
+        type: 'android.widget.ScrollView',
+        rect: { x: 64, y: 1270, width: 460, height: 1400 },
+      },
+    ],
+    [],
+  );
+  assert.deepEqual(scrollUntilBand(option20, tall), { x: 64, y: 1270, width: 460, height: 1154 });
+});
+
+test('(n) a later container wholly beside the screen does not displace the sheet list', () => {
+  const beside: NativeNode = {
+    ref: '@beside',
+    index: 7,
+    parentIndex: 2,
+    type: 'android.widget.ScrollView',
+    rect: { x: 1200, y: 1300, width: 400, height: 400 },
+  };
+  assert.deepEqual(scrollUntilBand(option20, androidSheet([beside])), LIST);
 });
