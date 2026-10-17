@@ -970,6 +970,173 @@ test('a keyboard-covered row of a list stretched under the keyboard is lifted in
   assert.deepEqual(bands, [{ x: 0, y: 300, width: 400, height: 200 }]);
 });
 
+// An Android keyboard form: a ScrollView list from 300 under the keyboard (1400) and a sticky Submit footer sibling 1150-1400.
+function stickyForm(y: number): Screen {
+  const rect = { x: 0, y: 0, width: 1080, height: 2400 };
+  return covered(
+    join(
+      [
+        { ref: '@app', index: 0, type: 'Application', rect },
+        { ref: '@win', index: 1, parentIndex: 0, type: 'Window', rect },
+        {
+          ref: '@root',
+          index: 2,
+          parentIndex: 1,
+          type: 'android.view.ViewGroup',
+          hittable: true,
+          rect,
+        },
+        {
+          ref: '@scroll',
+          index: 3,
+          parentIndex: 2,
+          type: 'android.widget.ScrollView',
+          hittable: true,
+          rect: { x: 0, y: 300, width: 1080, height: 2100 },
+        },
+        {
+          ref: '@content',
+          index: 4,
+          parentIndex: 3,
+          type: 'android.view.ViewGroup',
+          hittable: true,
+          rect: { x: 0, y: 300, width: 1080, height: 1700 },
+        },
+        {
+          ref: '@target',
+          index: 5,
+          parentIndex: 4,
+          type: 'android.widget.EditText',
+          identifier: 'qa-kb-input-7',
+          hittable: true,
+          rect: { x: 40, y, width: 1000, height: 80 },
+        },
+        {
+          ref: '@footer',
+          index: 6,
+          parentIndex: 2,
+          type: 'android.view.ViewGroup',
+          hittable: true,
+          rect: { x: 0, y: 1150, width: 1080, height: 250 },
+        },
+        {
+          ref: '@keyboard',
+          index: 7,
+          parentIndex: 1,
+          type: 'Keyboard',
+          hittable: true,
+          rect: { x: 0, y: 1400, width: 1080, height: 1000 },
+        },
+      ],
+      [],
+    ),
+  );
+}
+
+test('an Android field under the keyboard clears above a sticky footer in one scroll', async () => {
+  const f = fake([stickyForm(1860), stickyForm(1012), stickyForm(1012)], {});
+  const seen: unknown[] = [];
+  const scroll = f.deps.scroll;
+  f.deps.scroll = (direction, context, clearance, within) => {
+    seen.push({ clearance, within });
+    return scroll(direction, context, clearance, within);
+  };
+  const outcome = await walkBlock(block('1. Fill "qa-kb-input-7" with "x"\n'), f.deps);
+  assert.equal(outcome.block.outcome, 'pass');
+  assert.deepEqual(f.calls.slice(0, 5), [
+    'capture',
+    'scroll down',
+    'capture',
+    'capture',
+    'fill @target',
+  ]);
+  assert.deepEqual(seen, [{ clearance: 1175, within: { x: 0, y: 300, width: 1080, height: 850 } }]);
+});
+
+// An iOS keyboard form: a ScrollView list down to the keyboard top (538) and a sticky footer sibling 432-538.
+function iosFooterForm(centre: number): Screen {
+  const rect = { x: 0, y: 0, width: 402, height: 874 };
+  return covered(
+    join(
+      [
+        { ref: '@app', index: 0, type: 'Application', rect },
+        { ref: '@win', index: 1, parentIndex: 0, type: 'Window', rect },
+        { ref: '@root', index: 2, parentIndex: 1, type: 'Other', rect },
+        {
+          ref: '@scroll',
+          index: 3,
+          parentIndex: 2,
+          type: 'ScrollView',
+          rect: { x: 0, y: 0, width: 402, height: 538 },
+        },
+        {
+          ref: '@content',
+          index: 4,
+          parentIndex: 3,
+          type: 'Other',
+          rect: { x: 0, y: 0, width: 402, height: 1400 },
+        },
+        {
+          ref: '@target',
+          index: 5,
+          parentIndex: 4,
+          type: 'TextField',
+          identifier: 'qa-kb-input-8',
+          hittable: true,
+          rect: { x: 20, y: centre - 22, width: 362, height: 44 },
+        },
+        {
+          ref: '@footer',
+          index: 6,
+          parentIndex: 2,
+          type: 'Other',
+          identifier: 'qa-kb-footer',
+          hittable: true,
+          rect: { x: 0, y: 432, width: 402, height: 106 },
+        },
+        { ref: '@kw', index: 7, parentIndex: 0, type: 'Window', rect },
+        {
+          ref: '@keyboard',
+          index: 8,
+          parentIndex: 7,
+          type: 'Keyboard',
+          rect: { x: 0, y: 538, width: 402, height: 336 },
+        },
+      ],
+      [],
+    ),
+  );
+}
+
+test('an iOS field parked under a sticky footer clears with one banded scroll before the fill', async () => {
+  const f = fake([iosFooterForm(480), iosFooterForm(216), iosFooterForm(216)], {});
+  const seen: unknown[] = [];
+  const scroll = f.deps.scroll;
+  f.deps.scroll = (direction, context, clearance, within) => {
+    seen.push({ direction, clearance, within });
+    return scroll(direction, context, clearance, within);
+  };
+  const outcome = await walkBlock(block('1. Fill "qa-kb-input-8" with "x"\n'), f.deps);
+  assert.equal(outcome.block.outcome, 'pass');
+  assert.deepEqual(
+    f.calls.filter((call) => call !== 'capture'),
+    ['scroll down', 'fill @target'],
+  );
+  assert.deepEqual(seen, [
+    { direction: 'down', clearance: 264, within: { x: 0, y: 0, width: 402, height: 432 } },
+  ]);
+});
+
+test('an iOS field inside the band above a sticky footer fills without a scroll', async () => {
+  const f = fake([iosFooterForm(392)], {});
+  const outcome = await walkBlock(block('1. Fill "qa-kb-input-8" with "x"\n'), f.deps);
+  assert.equal(outcome.block.outcome, 'pass');
+  assert.deepEqual(
+    f.calls.filter((call) => call !== 'capture'),
+    ['fill @target'],
+  );
+});
+
 test('a stretched-list row still covered after its clearance scroll refuses with one scroll and no press', async () => {
   const f = fake([stretched(505), stretched(505)], {});
   const outcome = await walkBlock(block('1. Tap "go"\n'), f.deps);

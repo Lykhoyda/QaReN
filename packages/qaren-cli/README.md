@@ -518,7 +518,10 @@ the intended button.
 Before dispatch, the walker also treats a press or fill target, including a
 keyboard-fallback wrapper before its tap, whose centre lies outside its trusted
 clipping viewport or covered by an observed keyboard frame
-(unless the keyboard is proven hidden) as covered. Keyboard-owned targets use
+(unless the keyboard is proven hidden) as covered. Inside that viewport and above
+the keyboard top, a centre past an edge of the visible clip band described below
+is covered too: a field whose centre sits under a sticky footer or header inside
+its list is cleared with one scroll, the same as under the keyboard. Keyboard-owned targets use
 the existing explicit tap path and remain subject to trusted clipping and native
 identity guards. An explicit key press performs its normal action, not guaranteed
 keyboard dismissal; QA must freshly prove the keyboard hidden and the intended
@@ -526,16 +529,21 @@ screen preserved before treating the press as clearance. Ordinary covered conten
 uses the same recovery as a native occlusion refusal.
 The walker handles this refusal with one directional scroll toward the centre
 of the target's visible clip band: its trusted clipping viewport cut off at the
-top of an observed keyboard unless the keyboard is proven hidden. A target at
-or below that band's centre scrolls down; one above it scrolls up. Without a
-keyboard, or when the clip is entirely above it, direction selection is unchanged.
+top of an observed keyboard unless the keyboard is proven hidden, and between
+sticky overlays. A touchable, non-text element at least half the clip's width,
+outside the target's own scroll content, that crosses the band's bottom edge
+ends the band at its top (a sticky footer); one across the band's top edge
+starts the band below it (a sticky header). A target at
+or below that band's centre scrolls down; one above it scrolls up. Sticky overlays
+can narrow the band even without a keyboard or when the clip is entirely above it.
 The walker passes that band to the shared scroll handler so the drag starts
 inside it, narrowing the existing keyboard-safe band. Callers passing no band
-keep their existing drag origins. On both iOS and Android, a target whose centre
-is covered by the observed keyboard gets a scroll sized to move that centre
-toward the middle of the screen area above the keyboard, capped to 60% of the
-narrowed drag band's height.
-Scrolls without keyboard clearance keep the fixed amount of `0.6`.
+use the existing keyboard-safe band. On both iOS and Android, a target whose centre
+is covered by the observed keyboard or a sticky overlay gets a scroll sized to move that centre
+toward the middle of that band, and the drag may span the band with both endpoints
+at least one pixel inside its edges after rounding. A clearance scroll without
+a band keeps the cap of 60% of the screen area above the keyboard.
+Scrolls without a clearance distance keep the fixed amount of `0.6`.
 Successful iOS fast-runner scrolls now run the same bounded settle wait as taps
 before returning: screen-static probing with snapshot-equality fallback. Results
 include `meta.settle` and `meta.timings_ms.settle`; a timeout reports unsettled
@@ -810,8 +818,13 @@ adds no near-miss explanation.
 
 The [native geometry model](../qaren-core/src/qa/native-presence.ts) clips nodes
 on both axes against the Application screen and trusted Window, ScrollView,
-Table and CollectionView ancestors. Missing or invalid rectangles skip only
-that clip; Application and Window rectangles must have positive size.
+Table and CollectionView ancestors. On Android, scroll containers are recognised
+by class-name suffix, for example ScrollView, ListView or RecyclerView;
+`isScrollContainerType` in that model owns the complete matching rules.
+Their rectangles contribute to the effective clipping viewport, so a row scrolled
+out of its list is offscreen as on iOS. Missing or invalid
+rectangles skip only that clip; Application and Window rectangles must have
+positive size.
 Missing Window ancestry does not create uncertainty when the Application clip
 is valid, including with the keyboard up. Partly overlapping nodes remain eligible.
 A wholly offscreen ancestor with an independently on-screen descendant has
@@ -836,9 +849,8 @@ clip, the boundary remains screen y=0. Quoted scroll-until targets use that
 viewport when exactly one offscreen identity matches. A target wholly above
 the viewport scrolls up; one wholly below scrolls down. When its frame overlaps
 the viewport but it is reported not visible, as with an Android heading under
-the status bar, scrolling instead moves toward revealing it: up when its centre
-is above the viewport's midpoint, down when at or below it, regardless of the
-requested direction. With no single matching identity, an already visible
+the status bar, scrolling uses the clearance direction described above, regardless
+of the requested direction. With no single matching identity, an already visible
 target or no known viewport, the requested direction is retained. See the
 [scroll-until direction regressions](../qaren-core/test/unit/qa/scroll-until-direction.test.ts).
 
@@ -874,7 +886,9 @@ Each admitted complete native capture within the capture budget writes one value
 counts and capped symptom samples with Window ancestry and origins, and the count
 plus up to ten in-app nodes the visibility rules excluded, each with its rule
 (`anc`, `scroll` or `window`) and the deciding ancestor's type and rectangle; it
-excludes labels, identifiers, values and other nodes' sizes. The same line carries
+excludes labels, identifiers, values and other nodes' sizes.
+Android scroll ancestors are identified by index, with their types still recorded
+as `Other` in this value-free diagnostic. The same line carries
 its observation ordinal and `ordinary`/`platform-presence` mode, the native
 acquisition attestation, producer viewport provenance, and emitted, normalized,
 missing-rect, joined and duplicate kind counts. The
@@ -1481,8 +1495,8 @@ diagnostic collection and sink failures preserve the refusal.
 
 When a press or fill target's centre remains covered after the one-scroll
 allowance, a private `timing` event with code `CENTRE_COVERED` includes the
-observation ordinal and `clearanceDiagnostic`. It records the viewport or keyboard
-predicate branch, boolean coverage facts, the scroll's origin and requested
+observation ordinal and `clearanceDiagnostic`. It records the viewport, keyboard or
+overlay predicate branch, boolean coverage facts, the scroll's origin and requested
 direction, and whether the target centre changed. Unread or unavailable facts
 remain `null`; target text, identifiers and coordinates are excluded. The
 [walker](../qaren-core/src/qa/walker.ts) owns the event layout; the

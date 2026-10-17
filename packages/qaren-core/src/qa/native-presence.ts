@@ -278,6 +278,26 @@ export function clippingViewport(offscreen: Set<number>, index: number): Rect | 
   return viewports.get(offscreen)?.get(index);
 }
 
+// iOS exact names; Android accessibility class leaves by suffix, as kindOf does for kinds.
+const IOS_SCROLL_CONTAINERS = new Set(['ScrollView', 'Table', 'CollectionView']);
+const ANDROID_SCROLL_CONTAINER_SUFFIXES = [
+  'RecyclerView',
+  'ListView',
+  'GridView',
+  'ExpandableListView',
+  'HorizontalScrollView',
+  'NestedScrollView',
+  'ScrollView',
+  'ViewPager2',
+  'ViewPager',
+];
+export function isScrollContainerType(type: string | undefined): boolean {
+  if (!type) return false;
+  if (IOS_SCROLL_CONTAINERS.has(type)) return true;
+  const leaf = type.slice(type.lastIndexOf('.') + 1);
+  return ANDROID_SCROLL_CONTAINER_SUFFIXES.some((suffix) => leaf.endsWith(suffix));
+}
+
 function outsideTrustedViewport(nodes: NativeNode[], contradicted: Set<number>): Set<number> {
   const offscreen = new Set<number>();
   const decided = new Map<number, Exclusion>();
@@ -314,7 +334,7 @@ function outsideTrustedViewport(nodes: NativeNode[], contradicted: Set<number>):
       if (
         !contradicted.has(parent) &&
         validRect(ancestor?.rect) &&
-        ['ScrollView', 'Table', 'CollectionView'].includes(ancestor.type ?? '')
+        isScrollContainerType(ancestor.type)
       ) {
         visible = clip(ancestor.rect, visible);
         if (!decider && !within(node.rect, ancestor.rect))
@@ -456,8 +476,7 @@ export function viewportDiagnostic(
           break;
         }
       }
-      if (s < 0 && ['ScrollView', 'Table', 'CollectionView'].includes(ancestor?.type ?? ''))
-        s = parent;
+      if (s < 0 && isScrollContainerType(ancestor?.type)) s = parent;
       parent = ancestor?.parentIndex;
     }
     const type = DIAGNOSTIC_TYPES.has(node.type ?? '') ? node.type! : 'Other';

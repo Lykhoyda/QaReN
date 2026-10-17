@@ -9,6 +9,7 @@ import {
   type VisibilityBlockerDiagnostic,
   actionView,
   isNativeInput,
+  ancestorsOf,
   keyboardCoversElement,
   describe,
   elementFrame,
@@ -324,10 +325,10 @@ export interface CentreCoverageDiagnostic {
   keyboardFramePresent: boolean | null;
   keyboardCoverage: boolean | null;
   centreInsideKeyboard: boolean | null;
-  branch: 'viewport' | 'keyboard' | 'none';
+  branch: 'viewport' | 'keyboard' | 'overlay' | 'none';
 }
 
-// Keyboard-owned targets bypass keyboard coverage, never the trusted viewport clip.
+// Keyboard-owned targets bypass keyboard and overlay coverage, never the trusted viewport clip.
 export function centreCovered(
   element: Element,
   screen: Screen,
@@ -367,35 +368,69 @@ export function centreCovered(
   }
   const visible = screen.keyboardVisible;
   facts.keyboardVisible = typeof visible === 'boolean' ? visible : null;
-  if (visible === false) return result('none');
-  const keyboardFramePresent = screen.keyboardFrame !== undefined;
-  facts.keyboardFramePresent = keyboardFramePresent;
-  if (!keyboardFramePresent) return result('none');
-  const keyboardCoverage = keyboardCoversElement(element);
-  facts.keyboardCoverage = keyboardCoverage;
-  if (!keyboardCoverage) return result('none');
-  const centreInsideKeyboard = inside(screen.keyboardFrame!);
-  facts.centreInsideKeyboard = centreInsideKeyboard;
-  return result(centreInsideKeyboard ? 'keyboard' : 'none');
+  if (visible !== false) {
+    const keyboardFramePresent = screen.keyboardFrame !== undefined;
+    facts.keyboardFramePresent = keyboardFramePresent;
+    if (keyboardFramePresent) {
+      const keyboardCoverage = keyboardCoversElement(element);
+      facts.keyboardCoverage = keyboardCoverage;
+      if (keyboardCoverage) {
+        const centreInsideKeyboard = inside(screen.keyboardFrame!);
+        facts.centreInsideKeyboard = centreInsideKeyboard;
+        if (centreInsideKeyboard) return result('keyboard');
+      }
+    }
+  }
+  // A centre under a sticky overlay inside the clip is as untouchable as one under the keyboard;
+  // at or below the keyboard top the keyboard clause alone decides.
+  const band = viewport && clearanceBand(element, screen);
+  const keyboardTop = visible !== false ? screen.keyboardFrame?.y : undefined;
+  return result(
+    band &&
+      (y < band.y || (y >= band.y + band.height && (keyboardTop === undefined || y < keyboardTop)))
+      ? 'overlay'
+      : 'none',
+  );
 }
 
-// Pixels a keyboard-covered centre travels to the middle of the band above the keyboard.
+// Pixels an untouchable centre travels to the middle of the band a finger can touch.
 export function keyboardClearance(element: Element, screen: Screen): number | undefined {
   const frame = elementFrame(element);
-  const keyboard = screen.keyboardFrame;
-  if (!frame || !keyboard || screen.keyboardVisible === false || !keyboardCoversElement(element))
-    return undefined;
+  const band = clearanceBand(element, screen);
+  if (!frame || !band) return undefined;
   const centre = frame.y + frame.height / 2;
-  return centre >= keyboard.y ? centre - keyboard.y / 2 : undefined;
+  const target = band.y + band.height / 2;
+  const distance = Math.abs(centre - target);
+  return distance > 0 && (centre < band.y || centre >= band.y + band.height) ? distance : undefined;
 }
 
-// The part of a target's clip a finger can touch: above a visible keyboard.
+const sameRect = (a: NativeNode['rect'], b: NativeNode['rect']): boolean =>
+  !!a && !!b && a.x === b.x && a.y === b.y && a.width === b.width && a.height === b.height;
+
+// The part of a target's clip a finger can touch: above a visible keyboard, between sticky overlays.
 export function clearanceBand(element: Element, screen: Screen): NativeNode['rect'] {
   const viewport = elementViewport(element);
   if (!viewport) return undefined;
   const keyboard = screen.keyboardVisible !== false ? screen.keyboardFrame : undefined;
-  const bottom = Math.min(viewport.y + viewport.height, keyboard?.y ?? Infinity);
-  return bottom > viewport.y ? { ...viewport, height: bottom - viewport.y } : undefined;
+  let top = viewport.y;
+  let bottom = Math.min(viewport.y + viewport.height, keyboard?.y ?? Infinity);
+  const lineage = new Set<Element>([element, ...ancestorsOf(element)]);
+  for (const other of screen.elements) {
+    // An overlay is a touchable non-text element outside the target's own lineage whose frame straddles a band edge.
+    if (lineage.has(other) || other.kind === 'text' || other.offscreen || !other.hittable) continue;
+    if (
+      ancestorsOf(other).some(
+        (a) => lineage.has(a) && a !== element && sameRect(elementViewport(a), viewport),
+      )
+    )
+      continue;
+    const rect = elementFrame(other);
+    if (!rect || rect.width < viewport.width / 2) continue;
+    if (rect.y < bottom && rect.y + rect.height >= bottom && rect.y > top) bottom = rect.y;
+    if (rect.y <= top && rect.y + rect.height > top && rect.y + rect.height < bottom)
+      top = rect.y + rect.height;
+  }
+  return bottom > top ? { ...viewport, y: top, height: bottom - top } : undefined;
 }
 
 // An occluded target scrolls toward the centre of the visible part of its clip.
