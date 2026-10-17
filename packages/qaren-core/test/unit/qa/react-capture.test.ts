@@ -7,7 +7,10 @@ import { createComponentTreeHandler } from '../../../dist/handlers/component-tre
 import { buildFiber, createSandbox } from '../helpers/inject-harness.js';
 import { captureQaReact } from '../../../dist/qa/react-capture.js';
 import { captureScreen } from '../../../dist/qa/capture.js';
-import { PrivateInputCaptureError } from '../../../dist/qa/private-input.js';
+import {
+  PrivateInputCaptureError,
+  ReactCaptureIncomplete,
+} from '../../../dist/qa/private-input.js';
 import { inputValues } from '../../../dist/qa/privacy.js';
 import type { NativeNode } from '../../../dist/qa/screen.js';
 import { attested, nativeCapture } from './platform-presence-fixtures.ts';
@@ -233,10 +236,14 @@ function mockClient(responses: unknown[]) {
   return { client, calls, operations: () => operations };
 }
 
+const DETAIL =
+  /^cause=[a-z][a-z:,-]*(; scanned=\d+(\/\d+)?)?(; roots=\d+)?(; hosts=\d+)?(; interactive=\d+)?(; queued=\d+)?(; pruned=\d+)?; ms=\d+$/;
+
 function sanitized(error: unknown): boolean {
-  assert.ok(error instanceof PrivateInputCaptureError);
+  assert.ok(error instanceof ReactCaptureIncomplete);
   assert.equal(error.code, 'PRIVATE_INPUT_CAPTURE_UNKNOWN');
-  assert.equal(error.message, new PrivateInputCaptureError().message);
+  assert.match(error.detail, DETAIL);
+  assert.equal(error.message, new ReactCaptureIncomplete(error.reason, error.counters).message);
   assert.equal(error.cause, undefined);
   assert.equal(inspect(error).includes(sentinel), false);
   return true;
@@ -662,5 +669,209 @@ test('only the fixed render-error refusal maps to a render error; other refusal 
       PrivateInputCaptureError,
       JSON.stringify(reply),
     );
+  }
+});
+
+function classified(reason: string, counters: Record<string, number> = {}) {
+  return (error: unknown): boolean => {
+    sanitized(error);
+    assert.ok(error instanceof ReactCaptureIncomplete);
+    assert.equal(error.reason, reason);
+    const { ms, ...rest } = error.counters;
+    assert.ok(Number.isSafeInteger(ms));
+    assert.deepEqual(rest, counters);
+    for (const text of [error.message, error.detail, inspect(error)])
+      assert.equal(text.includes(sentinel), false);
+    return true;
+  };
+}
+
+function readyWith(tree: unknown) {
+  return [{ ...ready(), tree: typeof tree === 'string' ? tree : JSON.stringify(tree) }];
+}
+
+const treeCounters = { scanned: 40, roots: 2, hosts: 1, interactive: 1 };
+function countedTree(patch: Record<string, unknown>) {
+  const tree = publicTree();
+  return {
+    ...tree,
+    totalNodes: 40,
+    rootsSeeded: 2,
+    ...patch,
+    verdict: { ...tree.verdict, scannedNodes: 40, rootsSeeded: 2, ...(patch.verdict as object) },
+  };
+}
+
+test('each consumer refusal site carries one fixed cause and integer counters', async () => {
+  const entry = { role: 'button', label: sentinel };
+  const cases: Array<[string, unknown[], string, Record<string, number>]> = [
+    ['start wire', [{ ...start(), extra: sentinel }], 'completion-shape', {}],
+    ['non-string tree', [{ ...ready(), tree: 7 }], 'completion-shape', {}],
+    ['oversized tree', readyWith(`"${sentinel}${'x'.repeat(1000000)}"`), 'tree-too-large', {}],
+    ['producer size marker', readyWith({ __agent_truncated: true }), 'tree-too-large', {}],
+    ['unparseable tree', readyWith(`{${sentinel}`), 'tree-shape', {}],
+    ['missing interactive', readyWith({ label: sentinel }), 'tree-shape', {}],
+    [
+      'interactive cap',
+      readyWith(countedTree({ interactive: Array.from({ length: 201 }, () => entry) })),
+      'interactive-cap',
+      { ...treeCounters, interactive: 201 },
+    ],
+    ['truncated', readyWith(countedTree({ truncated: true })), 'truncated', treeCounters],
+    [
+      'verdict reasons',
+      readyWith(
+        countedTree({
+          verdict: { state: 'degraded', reasons: ['scan-budget-exhausted', sentinel] },
+        }),
+      ),
+      'verdict-reasons:scan-budget-exhausted,unrecognized',
+      treeCounters,
+    ],
+    [
+      'verdict counts',
+      readyWith(countedTree({ verdict: { droppedSubtrees: 2, unscannedRendererIds: [3] } })),
+      'verdict-reasons:unscanned-renderers,dropped-subtrees',
+      treeCounters,
+    ],
+    [
+      'verdict state',
+      readyWith(countedTree({ verdict: { complete: false } })),
+      'verdict-reasons:incomplete',
+      treeCounters,
+    ],
+    [
+      'host evidence',
+      readyWith(countedTree({ hostEvidence: { ...publicTree().hostEvidence, complete: false } })),
+      'host-evidence-incomplete',
+      treeCounters,
+    ],
+    [
+      'entry shape',
+      readyWith(countedTree({ interactive: [{ role: 'textinput', value: sentinel }] })),
+      'entry-shape',
+      treeCounters,
+    ],
+  ];
+  for (const [name, responses, reason, counters] of cases) {
+    const mock = mockClient(responses);
+    await assert.rejects(captureQaReact(mock.client), classified(reason, counters), name);
+  }
+});
+
+test('a producer refusal forwards its fixed cause and counters, and anything else fails closed', async () => {
+  const diagnostic = {
+    cause: 'truncated',
+    scanned: 5000,
+    budget: 5000,
+    roots: 3,
+    hosts: 812,
+    interactive: 143,
+    queued: 7,
+    pruned: 4,
+  };
+  const refused = { v: 1, id, state: 'refused' };
+  await assert.rejects(
+    captureQaReact(mockClient([{ ...refused, diagnostic }]).client),
+    classified('truncated', {
+      scanned: 5000,
+      budget: 5000,
+      roots: 3,
+      hosts: 812,
+      interactive: 143,
+      queued: 7,
+      pruned: 4,
+    }),
+  );
+  for (const cause of [
+    'overlay-scan-cap',
+    'digest-prop-opaque',
+    'digest-visit-cap',
+    'typography-deadline',
+    'typography-incomplete',
+  ]) {
+    await assert.rejects(
+      captureQaReact(mockClient([{ ...refused, diagnostic: { cause, scanned: 1624 } }]).client),
+      classified(cause, { scanned: 1624 }),
+    );
+  }
+  await assert.rejects(
+    captureQaReact(
+      mockClient([start(), { ...refused, diagnostic: { cause: 'tree-changed' } }]).client,
+    ),
+    classified('tree-changed'),
+  );
+  await assert.rejects(
+    captureQaReact(
+      mockClient([{ ...refused, diagnostic: { ...diagnostic, hosts: sentinel } }]).client,
+    ),
+    classified('truncated', {
+      scanned: 5000,
+      budget: 5000,
+      roots: 3,
+      interactive: 143,
+      queued: 7,
+      pruned: 4,
+    }),
+  );
+  for (const hostile of [
+    { ...refused, diagnostic: { cause: sentinel } },
+    { ...refused, diagnostic: { cause: 'truncated', label: sentinel } },
+    { ...refused, diagnostic: { cause: `verdict-reasons:${sentinel}` } },
+    { ...refused, reason: 'render-error', diagnostic },
+    { ...ready(), diagnostic },
+    { ...start(), diagnostic },
+  ]) {
+    await assert.rejects(
+      captureQaReact(mockClient([hostile]).client),
+      classified('completion-shape'),
+      JSON.stringify(hostile),
+    );
+  }
+});
+
+test('deadline, transport and helper-world failures are told apart', async () => {
+  const pending: Pick<CDPClient, 'withPrivateHelperWorld'> = {
+    withPrivateHelperWorld: () => new Promise(() => {}),
+  };
+  await assert.rejects(captureQaReact(pending), classified('deadline'));
+  const broken: Pick<CDPClient, 'withPrivateHelperWorld'> = {
+    async withPrivateHelperWorld() {
+      throw new Error(`Private helper world unavailable ${sentinel}`);
+    },
+  };
+  await assert.rejects(captureQaReact(broken), classified('evaluate-error'));
+  // The real helper world rewraps operation errors, so the classified refusal must survive it.
+  const rewrapping: Pick<CDPClient, 'withPrivateHelperWorld'> = {
+    async withPrivateHelperWorld(operation) {
+      try {
+        return await operation(async () => ({ ...ready(), tree: `{${sentinel}` }));
+      } catch {
+        throw new Error('Private helper world unavailable');
+      }
+    },
+  };
+  await assert.rejects(captureQaReact(rewrapping), classified('tree-shape'));
+});
+
+test('the real producer refusal reaches the warning as a value-free cause with counters', async () => {
+  for (const typography of [false, true]) {
+    const producer = realProducer({
+      testID: sentinel,
+      accessibilityRole: sentinel,
+      value: sentinel,
+    });
+    const warnings: string[] = [];
+    await captureScreen({
+      native: async () => nativeEcho(false),
+      react: () => captureQaReact(producer.client, typography),
+      warn: (message) => warnings.push(message),
+    });
+    assert.equal(warnings.length, 1);
+    assert.match(
+      warnings[0],
+      /^interactive digest unavailable \(cause=host-evidence-incomplete; scanned=1\/5000; roots=1; hosts=1; interactive=0; queued=0; pruned=0; ms=\d+\); React coverage is unknown$/,
+    );
+    assert.equal(warnings[0].includes(sentinel), false);
   }
 });

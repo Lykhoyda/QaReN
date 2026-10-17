@@ -81,3 +81,32 @@ test('a clearance scroll inside a named band starts and ends inside that band ab
     clearRefMap();
   }
 });
+
+// An Android form: the walker's band is the list above its sticky footer (y 300-1150).
+test('a clearance distance inside a named band spans the whole band, a pixel inside each edge', () => {
+  clearRefMap();
+  updateRefMapFromFlat(
+    [
+      { ...WINDOW, rect: { x: 0, y: 0, width: 1080, height: 2400 } },
+      { ...KEYBOARD, rect: { x: 0, y: 1400, width: 1080, height: 1000 } },
+    ] as never,
+    { snapshotGeneration: 1, keyboardVisible: true },
+  );
+  try {
+    const [, , y1, , y2] = buildDirectionalScrollCliArgs('down', 0.6, undefined, 1175, {
+      x: 0,
+      y: 300,
+      width: 1080,
+      height: 850,
+    }).map(Number);
+    assert.ok(Math.abs(y1 - 1149) <= 1 && Math.abs(y2 - 301) <= 1, `${y1} ${y2}`);
+    assert.ok(y1 - y2 >= 800, `${y1 - y2}`);
+  } finally {
+    clearRefMap();
+  }
+});
+
+test('a clearance distance without a named band keeps the window cap', () => {
+  const [y1, y2] = clearanceSwipe(5000);
+  assert.ok(Math.abs(y1 - y2 - Math.round(KEYBOARD.rect.y * 0.6)) <= 1, `${y1 - y2}`);
+});
