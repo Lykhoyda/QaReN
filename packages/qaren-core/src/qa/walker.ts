@@ -1059,6 +1059,7 @@ async function walkBlockScoped(
     emit({
       ...base(item, attempt),
       ref: again.element.ref,
+      ...stored({ id: again.oracleTestID }),
       outcome: 'pass',
       ...keptCounts(entry),
       ...(entry.proven
@@ -1120,6 +1121,7 @@ async function walkBlockScoped(
     await capture(item);
     emit({
       ...base(item, attempt),
+      ...stored({ id: quoted }),
       outcome: 'pass',
       ...keptCounts(entry),
       ...(entry.proven ? {} : { reason: redact(focusedReason(quoted) + keptNote(entry)) }),
@@ -1507,8 +1509,11 @@ async function walkBlockScoped(
                 occluded = undefined;
                 let resolution: Exclude<Resolution, { refuse: string }>;
                 if ('refuse' in decided) {
+                  // A stored testID can name a field only React lists, or none: both reach the walk's fallbacks.
+                  const unresolved =
+                    decided.refuse === 'TARGET_NOT_FOUND' || decided.refuse === 'REPLAY_SELECTOR';
                   const fallback =
-                    decided.refuse === 'TARGET_NOT_FOUND' &&
+                    unresolved &&
                     item.kind === 'fill' &&
                     deps.typeFocused &&
                     !fellBack &&
@@ -1518,9 +1523,9 @@ async function walkBlockScoped(
                   if (
                     !fallback &&
                     item.kind === 'fill' &&
-                    decided.refuse === 'TARGET_NOT_FOUND' &&
+                    unresolved &&
                     item.target.quoted !== undefined &&
-                    !item.target.exact &&
+                    item.target.exact !== 'text' &&
                     before.screen.keyboardVisible === true &&
                     deps.typeFocused &&
                     deps.reactFocused &&

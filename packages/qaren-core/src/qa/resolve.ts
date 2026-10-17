@@ -198,7 +198,8 @@ export function keyboardFallbackTarget(
   step: Step,
   screen: Screen,
 ): { element: Element; oracleTestID: string } | undefined {
-  if (step.kind !== 'fill' || step.target.quoted === undefined || step.target.exact) return;
+  if (step.kind !== 'fill' || step.target.quoted === undefined || step.target.exact === 'text')
+    return;
   const quoted = step.target.quoted;
   const ids = new Set([quoted, withoutPressable(quoted), quoted + PRESSABLE_SUFFIX]);
   const observable = screen.elements.some(
@@ -207,7 +208,7 @@ export function keyboardFallbackTarget(
       [e.testID, e.label, e.placeholder].some((name) => name !== undefined && ids.has(name)),
   );
   if (observable) return;
-  const named = exactIdentities(screen, step.target, 'press');
+  const named = exactIdentities(screen, { quoted, phrase: step.target.phrase }, 'press');
   // A wrapper echoing its hidden field's name is that React-only field unless React places the field elsewhere.
   const identities = named.filter(
     (identity) =>
