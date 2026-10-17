@@ -1,6 +1,12 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { validateNativePresence } from '../../../dist/qa/native-presence.js';
+import {
+  clippingViewport,
+  outsideViewport,
+  validateNativePresence,
+  viewportDiagnostic,
+} from '../../../dist/qa/native-presence.js';
+import type { NativeNode } from '../../../dist/qa/screen.js';
 
 import { nativeCapture } from './platform-presence-fixtures.ts';
 
@@ -144,4 +150,95 @@ test('unknown reasons are allowlisted diagnostics, not visibility evidence', () 
     assert.deepEqual(valid.nodes[0], { status: 'unknown', labelSource: 'direct' });
     assert.doesNotMatch(JSON.stringify(valid), /PRIVATE-/);
   }
+});
+
+type Spec = { type: string; parent?: number; rect: NonNullable<NativeNode['rect']> };
+
+function tree(specs: Spec[]): NativeNode[] {
+  return specs.map((spec, index) => ({
+    ref: `@e${index}`,
+    index,
+    type: spec.type,
+    ...(spec.parent === undefined ? {} : { parentIndex: spec.parent }),
+    rect: spec.rect,
+  }));
+}
+
+const androidScreen = { x: 0, y: 0, width: 1080, height: 2424 };
+const list = { x: 64, y: 1270, width: 460, height: 504 };
+const rowBelowList = { x: 64, y: 1800, width: 460, height: 64 };
+const rowInList = { x: 64, y: 1300, width: 460, height: 64 };
+
+// Application, app Window, a container, then one row under it.
+function androidList(container: string, row: Spec['rect']): NativeNode[] {
+  return tree([
+    { type: 'Application', rect: androidScreen },
+    { type: 'Window', parent: 0, rect: androidScreen },
+    { type: container, parent: 1, rect: list },
+    { type: 'android.widget.TextView', parent: 2, rect: row },
+  ]);
+}
+
+const exclusionOf = (nodes: NativeNode[], offscreen: Set<number>, index: number) => {
+  const line = JSON.parse(
+    viewportDiagnostic(nodes, offscreen).slice('viewport-diagnostic '.length),
+  );
+  return line.excluded.find((entry: unknown[]) => entry[0] === index);
+};
+
+// The row lies wholly below the list, inside the window.
+function assertScrollClipped(container: string) {
+  const nodes = androidList(container, rowBelowList);
+  const offscreen = outsideViewport(nodes);
+  assert.deepEqual([...offscreen], [3], container);
+  assert.deepEqual(clippingViewport(offscreen, 3), list, container);
+  assert.deepEqual(
+    exclusionOf(nodes, offscreen, 3),
+    [3, 'Other', 'scroll', 2, 'Other', 64, 1270, 460, 504],
+    container,
+  );
+}
+
+test('an Android row scrolled out of its ScrollView is offscreen, clipped to the ScrollView', () => {
+  assertScrollClipped('android.widget.ScrollView');
+});
+
+test('Android list, recycler, nested-scroll and pager containers clip their rows', () => {
+  for (const container of [
+    'androidx.recyclerview.widget.RecyclerView',
+    'androidx.core.widget.NestedScrollView',
+    'android.widget.ListView',
+    'androidx.viewpager2.widget.ViewPager2',
+  ])
+    assertScrollClipped(container);
+});
+
+test('an Android row under a plain view group keeps the window as its clip', () => {
+  const nodes = androidList('android.view.ViewGroup', rowBelowList);
+  const offscreen = outsideViewport(nodes);
+  assert.deepEqual([...offscreen], []);
+  assert.deepEqual(clippingViewport(offscreen, 3), androidScreen);
+});
+
+test('an Android row inside its scroll container stays on screen', () => {
+  const nodes = androidList('androidx.recyclerview.widget.RecyclerView', rowInList);
+  assert.deepEqual([...outsideViewport(nodes)], []);
+});
+
+test('iOS scroll containers still clip by exact type and other types do not', () => {
+  const ios = (container: string) =>
+    tree([
+      { type: 'Application', rect: androidScreen },
+      { type: 'Window', parent: 0, rect: androidScreen },
+      { type: container, parent: 1, rect: list },
+      { type: 'StaticText', parent: 2, rect: rowBelowList },
+    ]);
+  for (const container of ['ScrollView', 'Table', 'CollectionView']) {
+    const offscreen = outsideViewport(ios(container));
+    assert.deepEqual([...offscreen], [3], container);
+    assert.deepEqual(clippingViewport(offscreen, 3), list, container);
+  }
+  const offscreen = outsideViewport(ios('Other'));
+  assert.deepEqual([...offscreen], []);
+  assert.deepEqual(clippingViewport(offscreen, 3), androidScreen);
 });

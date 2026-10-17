@@ -180,6 +180,22 @@ test('a scroll-clipped symptom node names its clip ancestor and the raw Window',
   assert.deepEqual(line.windows, [[1, 0, 0, 1206, 874]]);
 });
 
+test('an Android scroll container names the clip ancestor of a symptom node', () => {
+  const nodes = tree([
+    { type: 'Application', rect: screenRect },
+    { type: 'Window', parent: 0, rect: { x: 0, y: 0, width: 1206, height: 874 } },
+    {
+      type: 'android.widget.ScrollView',
+      parent: 1,
+      rect: { x: 0, y: 0, width: 1206, height: 874 },
+    },
+    { type: 'android.widget.TextView', parent: 2, rect: title(820) },
+  ]);
+  const line = unclipped(nodes);
+  assert.equal(line.scrollClipped, 1);
+  assert.deepEqual(line.sample, [[3, 'Other', 1, 1, 1, 2, 820, 120]]);
+});
+
 test('unknown geometry stays unknown and rectless nodes are counted', () => {
   const nodes = tree([
     { type: 'Window', rect: screenRect },

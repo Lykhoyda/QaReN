@@ -801,8 +801,11 @@ adds no near-miss explanation.
 
 The [native geometry model](../qaren-core/src/qa/native-presence.ts) clips nodes
 on both axes against the Application screen and trusted Window, ScrollView,
-Table and CollectionView ancestors. Missing or invalid rectangles skip only
-that clip; Application and Window rectangles must have positive size.
+Table and CollectionView ancestors. On Android, scroll containers are recognised
+by class-name suffix (ScrollView, ListView, RecyclerView, GridView, ViewPager),
+so a row scrolled out of its list is offscreen as on iOS. Missing or invalid
+rectangles skip only that clip; Application and Window rectangles must have
+positive size.
 Missing Window ancestry does not create uncertainty when the Application clip
 is valid, including with the keyboard up. Partly overlapping nodes remain eligible.
 A wholly offscreen ancestor with an independently on-screen descendant has
