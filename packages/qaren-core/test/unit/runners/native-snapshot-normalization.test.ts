@@ -6,6 +6,18 @@ import {
   _setRunnerStateForTest,
   runIOS,
 } from '../../../dist/runners/rn-fast-runner-client.js';
+import {
+  _setAndroidRunnerStateForTest,
+  _setFetchForTest as _setAndroidFetchForTest,
+  runAndroid,
+} from '../../../dist/runners/rn-android-runner-client.js';
+import {
+  REQUIRED_ANDROID_COMMANDS,
+  REQUIRED_ANDROID_FEATURES,
+  RUNNER_PROTOCOL_VERSION,
+  getPluginVersion,
+} from '../../../dist/runners/protocol.js';
+import { QA_READ_ONLY_CAPABILITY } from '../../../dist/runners/qa-native-policy.js';
 import { parseEnvelope } from '../../helpers/result-helpers.js';
 
 test('runIOS snapshot preserves evidenced native hierarchy and coverage without changing refs or exposing values', async (t) => {
@@ -225,4 +237,74 @@ test('runIOS snapshot keeps the selected state a selection-only control reports'
   const nodes = (envelope.data as { nodes: { label?: string; selected?: boolean }[] }).nodes;
   assert.equal(nodes.find((n) => n.label === 'Male')?.selected, true);
   assert.equal(Object.hasOwn(nodes.find((n) => n.label === 'Female')!, 'selected'), false);
+});
+
+test('runAndroid QA snapshot keeps a reported heading and adds none where the runner reports none', async (t) => {
+  clearRefMap();
+  _setAndroidRunnerStateForTest({
+    hostPort: 22089,
+    devicePort: 22089,
+    pid: process.pid,
+    deviceId: 'test-emulator',
+    bundleId: 'com.test',
+    startedAt: 'now',
+  });
+  t.after(() => {
+    _setAndroidFetchForTest(globalThis.fetch);
+    _setAndroidRunnerStateForTest(null);
+    clearRefMap();
+  });
+  const rect = { x: 0, y: 0, width: 1080, height: 200 };
+  _setAndroidFetchForTest(async (url) => {
+    if (String(url).endsWith('/health'))
+      return Response.json({
+        ok: true,
+        protocolVersion: RUNNER_PROTOCOL_VERSION,
+        runnerVersion: getPluginVersion(),
+        commands: REQUIRED_ANDROID_COMMANDS,
+        capabilities: [...REQUIRED_ANDROID_FEATURES, QA_READ_ONLY_CAPABILITY],
+      });
+    return Response.json({
+      ok: true,
+      data: {
+        nodes: [
+          { index: 0, depth: 0, type: 'Application', rect },
+          {
+            index: 1,
+            depth: 1,
+            parentIndex: 0,
+            type: 'android.view.View',
+            label: 'Section title',
+            visibleToUser: true,
+            heading: true,
+            rect,
+          },
+          {
+            index: 2,
+            depth: 1,
+            parentIndex: 0,
+            type: 'android.widget.TextView',
+            label: 'Body',
+            visibleToUser: true,
+            rect,
+          },
+        ],
+        truncated: false,
+        normalizationDroppedNodes: 0,
+        snapshotGeneration: 1,
+        keyboardVisible: false,
+      },
+    });
+  });
+  const envelope = parseEnvelope(
+    await runAndroid({
+      command: 'snapshot',
+      deviceId: 'test-emulator',
+      bundleId: 'com.test',
+      qaReadOnly: true,
+    }),
+  );
+  const nodes = (envelope.data as { nodes: { label?: string; heading?: boolean }[] }).nodes;
+  assert.equal(nodes.find((n) => n.label === 'Section title')?.heading, true);
+  assert.equal(Object.hasOwn(nodes.find((n) => n.label === 'Body')!, 'heading'), false);
 });

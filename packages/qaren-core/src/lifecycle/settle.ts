@@ -40,10 +40,8 @@ export const SETTLE_DEFAULT_BUDGET_MS = 6000;
 // the slow-command timeout class. Non-finite/negative input falls back to the
 // default rather than disabling or unbounding the wait.
 export const SETTLE_MAX_BUDGET_MS = 30_000;
-// Maestro parity: SCREEN_SETTLE_TIMEOUT_MS=3000 (IOSDriver.kt:487-504); hierarchy
-// polling bounded 10×200ms (ScreenshotUtils.kt:38-74). Window-gate probe is 100ms
-// (not Maestro's 500) so the static-screen path stays inside the spec's ≤150ms
-// acceptance budget: 100ms probe + 50ms post-sleep.
+// Keep the initial window gate cheap for already-visible effects and callers
+// without a baseline; the conditional late-render wait belongs in the gate below.
 const SCREEN_STATIC_TIER_MS = 3000;
 const SCREEN_STATIC_POLL_INTERVAL_MS = 200;
 const WINDOW_GATE_TIMEOUT_MS = 100;
@@ -74,7 +72,18 @@ export async function waitForSettle(opts: WaitForSettleOpts): Promise<SettleOutc
       // false immediately when the frontmost package differs (e.g. after a back
       // that left the app). Benign: nothing of ours left to settle.
       await probes.sleep(WINDOW_GATE_SETTLED_SLEEP_MS);
-      const change = await postSettleChange(probes, initialSnapshotHash);
+      let change = await postSettleChange(probes, initialSnapshotHash);
+      // A busy JS thread can commit the effect after the 100ms gate: before
+      // reporting "no change", wait once more for a window update inside the
+      // remaining budget (the runner clamps the probe to 0..2000ms).
+      const reprobeMs = Math.min(remaining(), 2000);
+      if (change.hierarchyChanged === false && reprobeMs > 0) {
+        const lateUpdate = await safeProbe(() => probes.isWindowUpdating!(reprobeMs));
+        if (lateUpdate === true) {
+          const late = await postSettleChange(probes, initialSnapshotHash);
+          if (late.hierarchyChanged !== undefined) change = late;
+        }
+      }
       return { settled: true, method: 'window-gate', ms: elapsed(), ...change };
     }
     // updating or probe failure → pay for snapshot polling below
@@ -132,9 +141,9 @@ async function safeProbe<T>(fn: () => Promise<T>): Promise<T | null> {
   }
 }
 
-// Story 05 (#386): the fast tiers (window-gate / screen-static) never take a
-// snapshot, so a caller that wants change detection pays exactly one hash
-// probe post-settle. Callers that omit initialSnapshotHash pay nothing.
+// Idle/static probes alone cannot establish an interaction's effect. Only
+// callers with a baseline pay for a separate hierarchy comparison; the Android
+// gate above owns whether a late update warrants another comparison.
 async function postSettleChange(
   probes: SettleProbes,
   initialSnapshotHash: string | undefined,

@@ -249,13 +249,26 @@ pub fn script_finite_ios_build_with(mock: &mut MockRunner, command: &str) {
 }
 
 pub fn script_finite_ios_build_defaults(mock: &mut MockRunner, command: &str, defaults: CmdOutput) {
+    script_finite_ios_build_install(mock, command, defaults, |m| {
+        m.expect_run("simctl install", CmdOutput::success(""))
+    });
+}
+
+pub fn script_finite_ios_build_install(
+    mock: &mut MockRunner,
+    command: &str,
+    defaults: CmdOutput,
+    install: impl FnOnce(&mut MockRunner),
+) {
     script_ios_metro_spawn(mock);
     mock.expect_spawn_piped(command, 5000, "", Some(0));
     mock.expect_run("ps", CmdOutput::success("Wed Aug 12 16:00:00 2026"));
     mock.expect_run("ps", CmdOutput::success("qaren-build"));
     mock.expect_run("ps -A", CmdOutput::success("1 1 S\n"));
     script_ios_app_verification(mock);
-    script_ios_install_with_running_metro(mock, defaults);
+    script_ios_app_verification(mock);
+    install(mock);
+    script_ios_metro_wait_and_launch(mock, defaults);
 }
 
 pub fn script_ios_install_and_launch(mock: &mut MockRunner) {
@@ -271,12 +284,6 @@ pub fn script_devmenu_defaults(mock: &mut MockRunner, result: CmdOutput) {
 pub fn script_ios_install_and_launch_with(mock: &mut MockRunner, defaults: CmdOutput) {
     script_ios_app_verification(mock);
     script_ios_metro_spawn(mock);
-    mock.expect_run("simctl install", CmdOutput::success(""));
-    script_ios_metro_wait_and_launch(mock, defaults);
-}
-
-pub fn script_ios_install_with_running_metro(mock: &mut MockRunner, defaults: CmdOutput) {
-    script_ios_app_verification(mock);
     mock.expect_run("simctl install", CmdOutput::success(""));
     script_ios_metro_wait_and_launch(mock, defaults);
 }
@@ -333,6 +340,8 @@ pub struct IosBuildRunner {
     pub build_log: Option<String>,
     pub build_spawn_fault: Option<BuildSpawnFault>,
     pub symlink_build_root: Option<&'static str>,
+    // Answers the next app-container probe with the last installed bundle path.
+    pub container_is_installed_app: bool,
 }
 
 #[derive(Clone)]
@@ -493,6 +502,19 @@ impl qaren::exec::Runner for IosBuildRunner {
                 duration_ms,
                 ..Default::default()
             };
+        }
+        if self.container_is_installed_app && spec.label == "simctl-app-container" {
+            self.container_is_installed_app = false;
+            let installed = self
+                .inner
+                .calls
+                .iter()
+                .rev()
+                .find(|call| call.label == "simctl-install")
+                .map(|call| call.args[3].clone())
+                .expect("an install precedes the container probe");
+            self.inner.calls.push(spec.clone());
+            return CmdOutput::success(&format!("{installed}\n"));
         }
         self.inner.execute(spec, interruptible)
     }

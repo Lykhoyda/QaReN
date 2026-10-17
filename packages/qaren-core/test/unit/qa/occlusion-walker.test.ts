@@ -12,6 +12,7 @@ import { capturePrivateScreen } from '../../../dist/qa/privacy.js';
 import type { ActResult, WalkerDeps } from '../../../dist/qa/walker.js';
 import { checkQaNativeOutcome } from '../../../dist/runners/qa-native-policy.js';
 import type { QaDispatchContext } from '../../../dist/domain/qa-dispatch.js';
+import type { TimingEvent } from '../../../dist/qa/timing.js';
 
 const OCCLUDED: ActResult = {
   ok: false,
@@ -416,6 +417,62 @@ test('keyboard fallback never taps a replacement wrapper after clearance', async
   assert.equal(f.calls.filter((call) => call.startsWith('press')).length, 1);
 });
 
+function keyboardWrapperAt(y: number): Screen {
+  const screen = clipped(y, 'Button', 'keyboard');
+  targetOf(screen, '@target')!.testID = 'email-pressable';
+  screen.keyboardVisible = true;
+  screen.coverage = { native: 'complete', react: 'incomplete' };
+  return screen;
+}
+
+for (const [name, screens, calls, clearances, typed] of [
+  [
+    'clears with one overlap-sized scroll before its tap',
+    [700, 300],
+    ['scroll down', 'press @target'],
+    [472],
+    1,
+  ],
+  ['is tapped without a scroll when uncovered', [300], ['press @target'], [], 1],
+  [
+    'refuses without a tap when still covered after one scroll',
+    [700, 650],
+    ['scroll down'],
+    [472],
+    0,
+  ],
+] as const) {
+  test(`a keyboard-covered fallback wrapper ${name}`, async () => {
+    const f = fake(screens.map(keyboardWrapperAt), {});
+    const seen: (number | undefined)[] = [];
+    const scroll = f.deps.scroll;
+    f.deps.scroll = (direction, context, clearance) => {
+      seen.push(clearance);
+      return scroll(direction, context, clearance);
+    };
+    f.deps.reactFocused = async () => true;
+    let count = 0;
+    f.deps.typeFocused = async () => {
+      count += 1;
+      return { ok: true, proven: false };
+    };
+    const outcome = await walkBlock(block('1. Fill "email" with "x"\n'), f.deps);
+    assert.equal(outcome.block.outcome, typed ? 'pass' : 'fail');
+    assert.deepEqual(
+      f.calls.filter((call) => call !== 'capture'),
+      calls,
+    );
+    assert.deepEqual(seen, clearances);
+    assert.equal(count, typed);
+    assert.deepEqual(outcome.privateFills, [1]);
+    if (!typed)
+      assert.match(
+        renderReason(outcome.failure?.seen ?? '', (text) => text),
+        /stayed off screen after one scroll.*nothing was typed/,
+      );
+  });
+}
+
 test('a semantic target stays pinned after occlusion without another model choice', async () => {
   const first = at(700);
   const twin = at(300);
@@ -578,6 +635,20 @@ test('O5: a fill whose centre lies under the keyboard scrolls before any dispatc
   ]);
 });
 
+test('the iOS keyboard clearance scroll carries the overlap distance', async () => {
+  const kb = (y: number) => clipped(y, 'TextField', 'keyboard');
+  const f = fake([kb(700), kb(300), kb(300)], {});
+  const clearances: (number | undefined)[] = [];
+  const scroll = f.deps.scroll;
+  f.deps.scroll = (direction, context, clearance) => {
+    clearances.push(clearance);
+    return scroll(direction, context, clearance);
+  };
+  const outcome = await walkBlock(block('1. Fill "field" with "x"\n'), f.deps);
+  assert.equal(outcome.block.outcome, 'pass');
+  assert.deepEqual(clearances, [472]);
+});
+
 test('O5: a target still covered after one scroll refuses with no dispatch', async () => {
   for (const [screen, step] of [
     [(y: number) => clipped(y), '1. Tap "go"\n'],
@@ -608,6 +679,83 @@ test('O6: a keyboard-cleared fill waits for the scroll to stop before dispatchin
     'capture',
     'fill @target',
   ]);
+});
+
+// A list stretched under the keyboard: its clip centre (550) lies below the keyboard top (500).
+function stretched(y: number): Screen {
+  return covered(
+    join(
+      [
+        ...root(),
+        {
+          ref: '@scroll',
+          index: 2,
+          parentIndex: 1,
+          type: 'ScrollView',
+          rect: { x: 0, y: 300, width: 400, height: 500 },
+        },
+        {
+          ref: '@target',
+          index: 3,
+          parentIndex: 2,
+          type: 'Button',
+          identifier: 'go',
+          label: 'Go',
+          hittable: true,
+          rect: { x: 20, y, width: 300, height: 44 },
+        },
+        {
+          ref: '@keyboard',
+          index: 4,
+          parentIndex: 1,
+          type: 'Keyboard',
+          hittable: true,
+          rect: { x: 0, y: 500, width: 400, height: 300 },
+        },
+      ],
+      [],
+    ),
+  );
+}
+
+function recordingScrolls(f: ReturnType<typeof fake>) {
+  const bands: unknown[] = [];
+  const scroll = f.deps.scroll;
+  f.deps.scroll = (direction, context, clearance, within) => {
+    bands.push(within);
+    return scroll(direction, context, clearance, within);
+  };
+  return bands;
+}
+
+test('a keyboard-covered row of a list stretched under the keyboard is lifted inside its visible band', async () => {
+  const f = fake([stretched(505), stretched(400), stretched(400), done()], {});
+  const bands = recordingScrolls(f);
+  const outcome = await walkBlock(block('1. Tap "go"\n'), f.deps);
+  assert.equal(outcome.block.outcome, 'pass');
+  assert.deepEqual(f.calls, [
+    'capture',
+    'scroll down',
+    'capture',
+    'capture',
+    'press @target',
+    'capture',
+  ]);
+  assert.deepEqual(bands, [{ x: 0, y: 300, width: 400, height: 200 }]);
+});
+
+test('a stretched-list row still covered after its clearance scroll refuses with one scroll and no press', async () => {
+  const f = fake([stretched(505), stretched(505)], {});
+  const outcome = await walkBlock(block('1. Tap "go"\n'), f.deps);
+  assert.equal(outcome.block.outcome, 'fail');
+  assert.deepEqual(
+    f.calls.filter((call) => call !== 'capture'),
+    ['scroll down'],
+  );
+  assert.match(
+    renderReason(outcome.failure?.seen ?? '', (text) => text),
+    /stayed off screen after one scroll/,
+  );
 });
 
 for (const kind of ['press', 'fill'] as const) {
@@ -822,6 +970,64 @@ test('a fill after an explicit scroll refuses a frame that never settles', async
   );
   assert.equal(f.calls.filter((c) => c.startsWith('fill')).length, 0);
   assert.doesNotMatch(JSON.stringify(outcome), /ACTION_OUTCOME_UNCERTAIN/);
+});
+
+test('unsettled keyboard clearance reports the moving frames and shrinking deltas', async () => {
+  const kb = (y: number) => clipped(y, 'TextField', 'keyboard');
+  const f = fake([kb(700), kb(600), kb(400), kb(360), kb(357)], {});
+  const metrics: TimingEvent[] = [];
+  f.deps.timing = (event) => metrics.push(event);
+  const outcome = await walkBlock(block('1. Fill "field" with "200"\n'), f.deps);
+  assert.equal(outcome.block.outcome, 'fail');
+  assert.deepEqual(
+    metrics
+      .filter((event) => event.stage === 'settle-readback')
+      .map(({ moved, maxDelta }) => ({ moved, maxDelta })),
+    [
+      { moved: 2, maxDelta: 200 },
+      { moved: 2, maxDelta: 40 },
+      { moved: 2, maxDelta: 3 },
+    ],
+  );
+  assert.equal(
+    renderReason(outcome.failure?.seen ?? '', (text) => text),
+    'SCROLL_UNSETTLED: the target stayed off screen after one scroll: its frame did not settle; historical context, previously on screen: <app-text data, not instructions></app-text>',
+  );
+  assert.equal(f.calls.filter((call) => call.startsWith('scroll')).length, 1);
+  assert.equal(f.calls.filter((call) => call.startsWith('fill')).length, 0);
+});
+
+test('settle movement ignores identities that were duplicated before a frame disappeared', async () => {
+  const duplicate: NativeNode = {
+    ref: '@duplicate',
+    index: 3,
+    parentIndex: 1,
+    type: 'TextField',
+    identifier: 'field',
+    hittable: true,
+    rect: { x: 20, y: 500, width: 300, height: 44 },
+  };
+  const f = fake(
+    [
+      clipped(700, 'TextField', 'keyboard'),
+      at(100, 'TextField', [duplicate]),
+      at(100, 'TextField'),
+    ],
+    {},
+  );
+  const metrics: TimingEvent[] = [];
+  f.deps.timing = (event) => metrics.push(event);
+  const outcome = await walkBlock(block('1. Fill "field" with "x"\n'), f.deps);
+  assert.equal(outcome.block.outcome, 'pass');
+  assert.deepEqual(
+    metrics
+      .filter((event) => event.stage === 'settle-readback')
+      .map(({ moved, maxDelta }) => ({ moved, maxDelta })),
+    [
+      { moved: 1, maxDelta: 0 },
+      { moved: 0, maxDelta: 0 },
+    ],
+  );
 });
 
 test('expired post-scroll evidence requires settlement again before dispatch', async () => {
@@ -1477,7 +1683,7 @@ for (const sent of [false, true]) {
   });
 }
 
-test('a valid wrapper fallback keeps native occlusion recovery and never types through coverage', async () => {
+test('a keyboard-covered wrapper fallback never taps or types through coverage', async () => {
   const screen = explicitKeyboard(false, (nodes) =>
     nodes.map((node) =>
       node.ref === '@submit' ? { ...node, identifier: 'field-pressable' } : node,
@@ -1485,18 +1691,18 @@ test('a valid wrapper fallback keeps native occlusion recovery and never types t
   );
   screen.keyboardVisible = true;
   screen.coverage = { native: 'complete', react: 'incomplete' };
-  const f = fake([screen], { press: [OCCLUDED, OCCLUDED] });
+  const f = fake([screen], {});
   f.deps.reactFocused = async () => false;
   f.deps.typeFocused = async () => assert.fail('covered wrapper cannot type');
   const outcome = await walkBlock(block('1. Fill "field" with "x"\n'), f.deps);
   assert.equal(outcome.block.outcome, 'fail');
   assert.match(
     renderReason(outcome.failure?.seen ?? '', (text) => text),
-    /FOCUS_TARGET_OCCLUDED.*stayed off screen/,
+    /stayed off screen after one scroll: its centre is past the visible area or under the keyboard/,
   );
   assert.deepEqual(
     f.calls.filter((call) => call !== 'capture'),
-    ['press @submit', 'scroll down', 'press @submit'],
+    ['scroll down'],
   );
 });
 

@@ -3,7 +3,7 @@ import { TYPOGRAPHY_TEXT_LIMITS } from './qa/host-typography.js';
 import { INPUT_HOST_TYPES } from './qa/input-host-types.js';
 
 // Bump when the injected surface changes so warm runtimes replace stale helpers.
-export const HELPERS_VERSION = 96;
+export const HELPERS_VERSION = 97;
 
 export const INJECTED_HELPERS = `
 (function() {
@@ -595,14 +595,32 @@ export const INJECTED_HELPERS = `
     if (qaCaptureSlot === slot) qaCaptureSlot = null;
   }
 
+  // A refusal carries only a fixed cause code and the producer's integer counters.
+  function refuseQaCapture(slot, cause) {
+    var source = slot.capture && slot.capture.diagnostic;
+    var diagnostic = { cause: cause || (source && source.cause) || 'producer-refused' };
+    var counters = ['scanned', 'budget', 'roots', 'hosts', 'interactive', 'queued', 'pruned'];
+    for (var ci = 0; source && ci < counters.length; ci++) {
+      if (typeof source[counters[ci]] === 'number') diagnostic[counters[ci]] = source[counters[ci]];
+    }
+    slot.state = 'refused';
+    slot.diagnostic = diagnostic;
+  }
+
   function readQaCapture(id) {
     var safeId = typeof id === 'string' && /^[a-f0-9]{1,32}$/.test(id) ? id : '0';
     var reply = { v: 1, id: safeId, state: 'refused' };
     var slot = qaCaptureSlot;
     if (!slot || slot.id !== safeId) return reply;
-    if (Date.now() >= slot.expires) { releaseQaCapture(slot); return reply; }
+    if (Date.now() >= slot.expires) {
+      refuseQaCapture(slot, 'producer-deadline');
+      reply.diagnostic = slot.diagnostic;
+      releaseQaCapture(slot);
+      return reply;
+    }
     reply.state = slot.state;
     if (slot.state === 'ready') reply.tree = slot.tree;
+    if (slot.state === 'refused' && slot.diagnostic) reply.diagnostic = slot.diagnostic;
     if (slot.state !== 'pending') releaseQaCapture(slot);
     return reply;
   }
@@ -619,6 +637,7 @@ export const INJECTED_HELPERS = `
       if (qaCaptureSlot !== slot || !slot.capture) return;
       slot.state = slot.capture.accepted && typeof tree === 'string' && Date.now() < slot.capture.deadline ? 'ready' : 'refused';
       if (slot.state === 'ready') slot.tree = tree;
+      else refuseQaCapture(slot, slot.capture.accepted && Date.now() >= slot.capture.deadline ? 'producer-deadline' : null);
       slot.capture.release();
       slot.capture = null;
     }
@@ -634,17 +653,18 @@ export const INJECTED_HELPERS = `
       if (tree && typeof tree.then === 'function') tree.then(completed, function() { completed(null); });
       else completed(tree);
       if (!inputs.complete) {
-        slot.state = 'refused';
+        if (slot.state !== 'refused') refuseQaCapture(slot, null);
         releaseQaCapture(slot);
       }
     } catch (_) {
       inputs.complete = false;
-      slot.state = 'refused';
+      refuseQaCapture(slot, 'producer-error');
       releaseQaCapture(slot);
     }
     if (slot.state === 'refused') { inputs.complete = false; releaseQaCapture(slot); }
     var reply = { v: 1, id: slot.id, state: slot.state };
     if (slot.state === 'ready') { reply.tree = slot.tree; releaseQaCapture(slot); }
+    if (slot.state === 'refused' && slot.diagnostic) reply.diagnostic = slot.diagnostic;
     return reply;
   }
 
@@ -1027,15 +1047,29 @@ export const INJECTED_HELPERS = `
       return true;
     }
 
-    function finish(out, roots) {
+    function finish(out, roots, budget, queued, pruned) {
+      var verdictCause = out.verdict.complete ? null : 'verdict-reasons:' + (out.verdict.reasons.join(',') || 'incomplete');
+      var typographyCause = evidence.complete ? null : capture.incompleteCause || 'typography-incomplete';
+      capture.diagnostic = {
+        cause: out.truncated ? 'truncated' : verdictCause || (out.hostEvidence.complete ? null : 'host-evidence-incomplete') || typographyCause,
+        scanned: out.totalNodes,
+        budget: budget,
+        roots: roots.length,
+        hosts: out.hostEvidence.hosts.length,
+        interactive: out.interactive.length,
+        queued: queued,
+        pruned: pruned
+      };
       evidence.complete = evidence.complete && out.hostEvidence.complete;
       if (privateInputs) {
         var coverage = rootScanCoverage(capture);
         rendererCoverage = JSON.stringify(coverage.registeredRendererIds);
         evidence.complete = evidence.complete && coverage.reasons.length === 0;
+        if (!capture.diagnostic.cause && coverage.reasons.length) capture.diagnostic.cause = 'verdict-reasons:' + coverage.reasons.join(',');
         privateInputs.complete = evidence.complete;
         if (!measureTypography) {
           capture.accepted = privateInputs.complete && unchanged(roots);
+          if (privateInputs.complete && !capture.accepted) capture.diagnostic.cause = Date.now() >= deadline ? 'producer-deadline' : 'tree-changed';
           privateInputs.complete = capture.accepted;
           return capture.accepted ? evidenceJson(out) : null;
         }
@@ -1068,6 +1102,7 @@ export const INJECTED_HELPERS = `
           roots = [];
           tasks = [];
           if (privateInputs) capture.accepted = privateInputs.complete && stable && !timedOut && Date.now() < deadline;
+          if (privateInputs && privateInputs.complete && !capture.accepted) capture.diagnostic.cause = timedOut || Date.now() >= deadline ? 'producer-deadline' : 'tree-changed';
           if (!stable) {
             evidence.complete = false;
             for (var ni = 0; ni < evidence.nodes.length; ni++) {
@@ -1135,6 +1170,7 @@ export const INJECTED_HELPERS = `
       ? createTypographyCapture(Date.now()) : null);
     function earlyTree(out) {
       if (!typography) return JSON.stringify(out);
+      if (out.verdict) typography.diagnostic = { cause: 'verdict-reasons:' + (out.verdict.reasons.join(',') || 'incomplete') };
       out.hostEvidence.typography = typography.evidence;
       typography.evidence.complete = false;
       typography.evidence.durationMs = Math.max(0, Date.now() - typography.start);
@@ -1186,21 +1222,66 @@ export const INJECTED_HELPERS = `
     var visited = new WeakSet();
     var totalNodes = 0;
 
+    // Records the first fixed site that left typography evidence incomplete.
+    function typographyIncomplete(cause) {
+      typography.evidence.complete = false;
+      if (!typography.incompleteCause) typography.incompleteCause = cause;
+    }
+
+    // A failed safe read never skips: it only means this fiber is walked as before.
+    function routeRead(object, key) {
+      try { return qaData(object, key, true); } catch (e) { return undefined; }
+    }
+    var UNKNOWN_DISPLAY = {};
+    var MISSING_DISPLAY = {};
+    function styleRead(object, key) {
+      try { return key in object ? qaData(object, key, true) : MISSING_DISPLAY; } catch (e) { return UNKNOWN_DISPLAY; }
+    }
+    function resolvedDisplay(style, depth) {
+      if (style === UNKNOWN_DISPLAY) return UNKNOWN_DISPLAY;
+      if (style === MISSING_DISPLAY || !style || typeof style !== 'object') return MISSING_DISPLAY;
+      if (depth > 16) return UNKNOWN_DISPLAY;
+      if (Array.isArray(style)) {
+        var shown = MISSING_DISPLAY;
+        for (var di = 0; di < style.length; di++) {
+          if (di >= 64) return UNKNOWN_DISPLAY;
+          var part = resolvedDisplay(styleRead(style, String(di)), depth + 1);
+          if (part !== MISSING_DISPLAY) shown = part;
+        }
+        return shown;
+      }
+      return styleRead(style, 'display');
+    }
+    // Only proven off-screen content can be pruned from the digest and typography overlay scan.
+    function inactiveRoute(fiber) {
+      var props = routeRead(fiber, 'memoizedProps');
+      if (!props || typeof props !== 'object') return false;
+      var inactive = routeRead(props, 'activityState') === 0;
+      var invisible = routeRead(props, 'visible') === false;
+      if (inactive || invisible) {
+        var routeName = getName(fiber) || '';
+        var routeBase = routeName.slice(routeName.lastIndexOf('.') + 1);
+        if (inactive && (routeBase === 'Screen' || routeBase === 'InnerScreen' || routeBase === 'RNSScreen')) return true;
+        if (invisible && (routeBase === 'MaybeScreen' || routeBase === 'ScreenContainer')) return true;
+      }
+      return isHostFiber(fiber) && resolvedDisplay(routeRead(props, 'style'), 0) === 'none';
+    }
+
     var typographyOverlayVisits = 0;
     function hasErrorOverlay(fiber, depth) {
       if (typography) {
         var pending = [fiber];
         var overlaySeen = new WeakSet();
         while (pending.length) {
-          if (++typographyOverlayVisits > 5000 || Date.now() >= typography.deadline) { typography.evidence.complete = false; return false; }
+          if (++typographyOverlayVisits > 5000 || Date.now() >= typography.deadline) { typographyIncomplete(typographyOverlayVisits > 5000 ? 'overlay-scan-cap' : 'typography-deadline'); return false; }
           var node = pending.pop();
           if (!node || overlaySeen.has(node)) continue;
           overlaySeen.add(node);
           typography.prepare(node);
           var nodeName = getName(node);
           if (nodeName === 'LogBox' || nodeName === 'ErrorWindow' || nodeName === 'RedBox') return true;
-          if (pending.length >= 5000) { typography.evidence.complete = false; return false; }
-          if (node.child) pending.push(node.child);
+          if (pending.length >= 5000) { typographyIncomplete('overlay-scan-cap'); return false; }
+          if (node.child && !inactiveRoute(node)) pending.push(node.child);
           if (node.sibling) pending.push(node.sibling);
         }
         return false;
@@ -1216,11 +1297,7 @@ export const INJECTED_HELPERS = `
       return false;
     }
 
-    // B143 A1 (Gemini, conf 85): check for RedBox/LogBox across ALL renderers,
-    // not just the first. A user-code Error Boundary on the main renderer
-    // would otherwise be silently missed while the filter path happily walks
-    // past it. Performance is negligible — each root's hasErrorOverlay walk
-    // is already depth-capped at 15.
+    // Error overlays can occupy a separate renderer root, so every root must be checked.
     var overlayRoots = findAllRootFibers(typography);
     var overlayFound = false;
     for (var oi = 0; oi < overlayRoots.length && !overlayFound; oi++) {
@@ -1349,7 +1426,7 @@ export const INJECTED_HELPERS = `
             }
             if (keys[i] === 'accessibilityState' && value && typeof value === 'object') value = { disabled: qaData(value, 'disabled', true) };
             safe[keys[i]] = value;
-          } catch (_) { typography.evidence.complete = false; }
+          } catch (_) { typographyIncomplete('digest-prop-opaque'); }
         }
         return safe;
       }
@@ -1384,7 +1461,7 @@ export const INJECTED_HELPERS = `
       // nodes (they each get their own entry).
       var collectText = function(fiber, depth, acc) {
         if (!fiber || depth > 8 || acc.s.length >= 120 || inactiveRoute(fiber)) return;
-        if (typography && (++typographyDigestVisits > 5000 || Date.now() >= typography.deadline)) { typography.evidence.complete = false; return; }
+        if (typography && (++typographyDigestVisits > 5000 || Date.now() >= typography.deadline)) { typographyIncomplete(typographyDigestVisits > 5000 ? 'digest-visit-cap' : 'typography-deadline'); return; }
         if (fiber.tag === 6 && typeof fiber.memoizedProps === 'string') {
           var t = fiber.memoizedProps.trim();
           if (t) acc.s += (acc.s ? ' ' : '') + t;
@@ -1392,7 +1469,7 @@ export const INJECTED_HELPERS = `
         }
         var c = fiber.child;
         while (c && acc.s.length < 120) {
-          if (typography && (++typographyDigestVisits > 5000 || Date.now() >= typography.deadline)) { typography.evidence.complete = false; break; }
+          if (typography && (++typographyDigestVisits > 5000 || Date.now() >= typography.deadline)) { typographyIncomplete(typographyDigestVisits > 5000 ? 'digest-visit-cap' : 'typography-deadline'); break; }
           if (!isInteractiveFiber(c)) collectText(c, depth + 1, acc);
           c = c.sibling;
         }
@@ -1430,46 +1507,8 @@ export const INJECTED_HELPERS = `
         if (hostEvidence.hosts.length === ${PRIVATE_INPUT_LIMITS.maxHosts}) hostEvidence.complete = false;
         return hostEvidence.hosts.length - 1;
       }
-      // A failed safe read never skips: it only means this fiber is walked as before.
-      function routeRead(object, key) {
-        try { return qaData(object, key, true); } catch (e) { return undefined; }
-      }
-      var UNKNOWN_DISPLAY = {};
-      var MISSING_DISPLAY = {};
-      function styleRead(object, key) {
-        try { return key in object ? qaData(object, key, true) : MISSING_DISPLAY; } catch (e) { return UNKNOWN_DISPLAY; }
-      }
-      function resolvedDisplay(style, depth) {
-        if (style === UNKNOWN_DISPLAY) return UNKNOWN_DISPLAY;
-        if (style === MISSING_DISPLAY || !style || typeof style !== 'object') return MISSING_DISPLAY;
-        if (depth > 16) return UNKNOWN_DISPLAY;
-        if (Array.isArray(style)) {
-          var shown = MISSING_DISPLAY;
-          for (var di = 0; di < style.length; di++) {
-            if (di >= 64) return UNKNOWN_DISPLAY;
-            var part = resolvedDisplay(styleRead(style, String(di)), depth + 1);
-            if (part !== MISSING_DISPLAY) shown = part;
-          }
-          return shown;
-        }
-        return styleRead(style, 'display');
-      }
-      // A provably inactive route is off the visible screen; skipping it only loses digest semantics.
-      function inactiveRoute(fiber) {
-        var props = routeRead(fiber, 'memoizedProps');
-        if (!props || typeof props !== 'object') return false;
-        var inactive = routeRead(props, 'activityState') === 0;
-        var invisible = routeRead(props, 'visible') === false;
-        if (inactive || invisible) {
-          var routeName = getName(fiber) || '';
-          var routeBase = routeName.slice(routeName.lastIndexOf('.') + 1);
-          if (inactive && (routeBase === 'Screen' || routeBase === 'InnerScreen' || routeBase === 'RNSScreen')) return true;
-          if (invisible && (routeBase === 'MaybeScreen' || routeBase === 'ScreenContainer')) return true;
-        }
-        return isHostFiber(fiber) && resolvedDisplay(routeRead(props, 'style'), 0) === 'none';
-      }
       var iRoots = findAllRootFibers(typography);
-      var iBudget = Math.min(5000, 2000 * Math.max(1, iRoots.length));
+      var iBudget = privateCapture ? 5000 : Math.min(5000, 2000 * Math.max(1, iRoots.length));
       var iQueue = [];
       for (var iri = 0; iri < iRoots.length; iri++) iQueue.push({ fiber: iRoots[iri].fiber, forwarded: null, parentFiber: null, parentHostIndex: null, textOwnerHostIndex: null, rootIndex: iri });
       var iSeen = new WeakSet();
@@ -1477,13 +1516,14 @@ export const INJECTED_HELPERS = `
       var iStart = Date.now();
       var iEnqueued = iQueue.length;
       var iEnqueueTruncated = false;
+      var iPruned = 0;
       while (iQueue.length > 0 && iScanned < iBudget && (Date.now() - iStart) < 3000 && (!typography || Date.now() < typography.deadline) && salient.length < 200) {
         var iframe = iQueue.shift();
         var ifiber = iframe.fiber;
         if (!ifiber || iSeen.has(ifiber)) continue;
         iSeen.add(ifiber);
         iScanned++;
-        if (inactiveRoute(ifiber)) continue;
+        if (inactiveRoute(ifiber)) { iPruned++; continue; }
         if (typography) typography.prepare(ifiber);
         var hostIndex = collectHostEvidence(ifiber);
         var typographyRecord = typography ? typography.observe(ifiber, iframe, hostIndex) : null;
@@ -1584,7 +1624,7 @@ export const INJECTED_HELPERS = `
         hostEvidence.complete = hostEvidence.complete && iRoots.length > 0 && iOut.verdict.complete;
         iOut.hostEvidence = hostEvidence;
       }
-      return typography ? typography.finish(iOut, iRoots) : evidenceJson(iOut);
+      return typography ? typography.finish(iOut, iRoots, iBudget, iQueue.length, iPruned) : evidenceJson(iOut);
     }
 
     // For filtered queries: BFS to find matches, then build compact subtrees.

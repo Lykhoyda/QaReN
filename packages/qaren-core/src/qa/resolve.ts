@@ -4,6 +4,7 @@ import { hostPath } from './host-association.js';
 import {
   type Element,
   type Screen,
+  type NativeNode,
   type AssertionEvidence,
   type VisibilityBlockerDiagnostic,
   actionView,
@@ -331,12 +332,21 @@ export function keyboardClearance(element: Element, screen: Screen): number | un
   return centre >= keyboard.y ? centre - keyboard.y / 2 : undefined;
 }
 
-// An occluded target scrolls toward the screen centre: down from the lower half, up from the upper.
-export function clearanceScroll(element: Element): 'up' | 'down' {
-  const frame = elementFrame(element);
+// The part of a target's clip a finger can touch: above a visible keyboard.
+export function clearanceBand(element: Element, screen: Screen): NativeNode['rect'] {
   const viewport = elementViewport(element);
-  if (!frame || !viewport) return 'down';
-  return frame.y + frame.height / 2 >= viewport.y + viewport.height / 2 ? 'down' : 'up';
+  if (!viewport) return undefined;
+  const keyboard = screen.keyboardVisible !== false ? screen.keyboardFrame : undefined;
+  const bottom = Math.min(viewport.y + viewport.height, keyboard?.y ?? Infinity);
+  return bottom > viewport.y ? { ...viewport, height: bottom - viewport.y } : undefined;
+}
+
+// An occluded target scrolls toward the centre of the visible part of its clip.
+export function clearanceScroll(element: Element, screen: Screen): 'up' | 'down' {
+  const frame = elementFrame(element);
+  const band = clearanceBand(element, screen);
+  if (!frame || !band) return 'down';
+  return frame.y + frame.height / 2 >= band.y + band.height / 2 ? 'down' : 'up';
 }
 
 export function scrollUntilDirection(
@@ -346,7 +356,17 @@ export function scrollUntilDirection(
 ): 'up' | 'down' {
   const matches = exactIdentities(screen, target, 'scroll');
   const element = matches.length === 1 ? matches[0].element : undefined;
-  return element?.offscreen && elementViewport(element) ? scrollTo(element).scroll : direction;
+  const viewport = element && elementViewport(element);
+  if (!element?.offscreen || !viewport) return direction;
+  // A target inside its viewport yet reported not visible is covered there; scroll it toward the centre.
+  const frame = elementFrame(element);
+  const inside =
+    frame !== undefined &&
+    frame.x < viewport.x + viewport.width &&
+    viewport.x < frame.x + frame.width &&
+    frame.y < viewport.y + viewport.height &&
+    viewport.y < frame.y + frame.height;
+  return inside ? clearanceScroll(element, screen) : scrollTo(element).scroll;
 }
 
 export function decideTarget(prepared: TargetQuestion, answer: Answer | undefined): Resolution {
@@ -498,7 +518,7 @@ export function targetEvidence(target: Target, screen: Screen): LiteralVerdict {
         refuse: matches.length > 1 ? 'TARGET_AMBIGUOUS' : 'REPLAY_SELECTOR',
         reason: `${matches.length} identities match the stored id "${target.quoted}"`,
       });
-    return !matches[0].offscreen ? 'pass' : 'fail';
+    return !matches[0].offscreen && !centreCovered(matches[0], screen) ? 'pass' : 'fail';
   }
   if (!target.exact) {
     const ids = exactIdentities(
@@ -506,7 +526,8 @@ export function targetEvidence(target: Target, screen: Screen): LiteralVerdict {
       { quoted: target.quoted, phrase: target.quoted, exact: 'id' },
       'wait',
     );
-    if (ids.length === 1 && !ids[0].element.offscreen) return 'pass';
+    if (ids.length === 1 && !ids[0].element.offscreen && !centreCovered(ids[0].element, screen))
+      return 'pass';
   }
   const text = literalEvidence(screen, target.quoted, 'equals').verdict;
   if (target.exact === 'text') {

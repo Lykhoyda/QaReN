@@ -4,8 +4,9 @@ import {
   withCancellation,
   sleep,
 } from '../domain/cancellation.js';
-import { readFileSync } from 'node:fs';
+import { readFileSync, realpathSync } from 'node:fs';
 import { join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { parseArgs } from 'node:util';
 import { CDPClient } from '../cdp-client.js';
 import { waitForExactPortTargets } from '../cdp/discovery.js';
@@ -56,7 +57,13 @@ import { summarizeJev } from './ledger.js';
 import { redactApiKey } from '../util/redact.js';
 import { createStop, watchOwnerPipe, watchParent } from './stop.js';
 import { prove } from './prove.js';
-import { admit, awaitBundleReady, createBundleReload, metroDevicePin } from './admission.js';
+import {
+  admit,
+  awaitBundleReady,
+  createBundleReload,
+  logAdmissionRefusal,
+  metroDevicePin,
+} from './admission.js';
 import { type ActResult, type WalkerDeps, loginBlock, runPlan } from './walker.js';
 import { loadBlock, readBlock } from './blocks.js';
 import {
@@ -72,6 +79,19 @@ import {
 const log = (message: string): void => {
   process.stderr.write(`qaren-core: ${redactApiKey(message)}\n`);
 };
+
+export function scrollArgs(
+  direction: Parameters<WalkerDeps['scroll']>[0],
+  clearance?: number,
+  within?: Parameters<WalkerDeps['scroll']>[3],
+) {
+  return {
+    direction,
+    amount: 0.6,
+    ...(clearance !== undefined ? { distance: clearance } : {}),
+    ...(within ? { within } : {}),
+  };
+}
 
 // stdout is a pipe: wait for it to drain before the process exits.
 function exitAfterDrain(code: number): Promise<never> {
@@ -360,6 +380,11 @@ async function openSession(
   onClose(close);
   const devicePin = metroDevicePin(platform, target.deviceName);
   const remainingMs = () => Math.max(0, request.walkBudgetMs - now() - 1000);
+  let attachStage: 'wait_targets' | 'connect_exact' | undefined;
+  const logRefusal = (error: unknown): never => {
+    logAdmissionRefusal(error, attachStage, log);
+    throw error;
+  };
   const proof = await cdp.withAttachDeadline(performance.now() + remainingMs(), () =>
     admit(
       {
@@ -367,6 +392,7 @@ async function openSession(
         readinessMs: REACT_READY_TIMEOUT_MS,
         remainingMs,
         attach: async (deadline) => {
+          attachStage = 'wait_targets';
           await waitForExactPortTargets(
             target.metroPort,
             Math.max(1, Math.min(REACT_READY_TIMEOUT_MS, remainingMs())),
@@ -374,6 +400,7 @@ async function openSession(
             stop.signal,
             devicePin,
           );
+          attachStage = 'connect_exact';
           await cdp.connectExact(
             target.metroPort,
             { platform, bundleId: appId, ...(devicePin ? { deviceName: devicePin } : {}) },
@@ -421,7 +448,7 @@ async function openSession(
         close,
       },
       stop,
-    ),
+    ).catch(logRefusal),
   );
   const admittedSnapshots = postAdmissionSnapshots(snapshot, appId);
   cancellationSignal();
@@ -540,18 +567,8 @@ async function openSession(
       ),
     press: (ref, qaContext) => act(() => press({ ref, qaContext }), false),
     fill: (ref, text, qaContext) => act(() => fill({ ref, text, qaContext }), true),
-    // Android sizes a keyboard clearance scroll from the overlap; iOS keeps its fixed swipe.
-    scroll: (direction, qaContext, clearance) =>
-      act(
-        () =>
-          scroll({
-            direction,
-            amount: 0.6,
-            ...(platform === 'android' && clearance !== undefined ? { distance: clearance } : {}),
-            qaContext,
-          }),
-        false,
-      ),
+    scroll: (direction, qaContext, clearance, within) =>
+      act(() => scroll({ ...scrollArgs(direction, clearance, within), qaContext }), false),
     back: (qaContext) => act(() => back({ qaContext }), false),
     dialog: (action, qaContext) =>
       act(
@@ -737,7 +754,12 @@ async function main(): Promise<void> {
   }
 }
 
-main().catch((error) => {
-  log(`fatal before the wire was established: ${describeError(error).message}`);
-  process.exit(1);
-});
+if (
+  process.argv[1] &&
+  realpathSync(process.argv[1]) === realpathSync(fileURLToPath(import.meta.url))
+) {
+  main().catch((error) => {
+    log(`fatal before the wire was established: ${describeError(error).message}`);
+    process.exit(1);
+  });
+}
