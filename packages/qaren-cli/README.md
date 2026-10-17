@@ -1194,11 +1194,19 @@ one. Fresh Android scenario-based
 this warmup.
 A manifest timeout refuses with `CORE_REFUSED`. Dev-client launch and iOS
 dev-menu defaults timeouts retry regardless of host load until the remaining
-`build_seconds` preparation budget is spent, then refuse with `CORE_REFUSED`.
+`build_seconds` preparation budget is spent, then refuse with `CORE_REFUSED`,
+unless the timed-out iOS launch is proven by the app-job receipt below.
 That budget is shared with launch readiness; retries do not reset it. Each call
 keeps its existing timeout, capped by the remaining budget, and cancellation
 preempts retries. The receipt records every attempt's outcome and duration;
 readiness still requires the existing Metro and app-process probes.
+After a timed-out iOS launch the app-process probe is taken before any retry; a
+live app job is accepted as the launch (`launch_proof: launchctl-job`) and
+readiness follows without another launch. Liveness requires a numeric PID in a
+`simctl spawn <udid> launchctl list` row on the exact simulator whose label
+starts with `UIKitApplication:<bundle>[`; PID-less jobs and sibling bundle IDs
+do not qualify. An absent job or failed probe leaves the existing retry policy
+in effect.
 The cached iOS dev-client install shares that budget, which starts before the
 install. The owned `simctl install` gets the remaining preparation time instead
 of a fixed 120-second limit. After a timeout, the installed app container is
@@ -1570,10 +1578,19 @@ attempts. Exhausted readiness refuses `CDP_NOT_CONNECTED`; invalid
 metadata and deterministic attachment rejections refuse immediately. Host load
 is diagnostic and does not decide whether the app is ready.
 After an exhausted target-readiness wait, or persistent runtime-probe or
-WebSocket-handshake timeouts lasting through the readiness window, an iOS dev
+WebSocket-handshake timeouts lasting a full readiness window from the first such
+timeout (never before the original readiness window ends), an iOS dev
 client can be relaunched once if the remaining deadline still covers a full
 readiness wait. Individual target-list timeouts and inspector page closures do
-not trigger relaunch. Immediately before relaunch it checks for a foreign driver;
+not trigger relaunch. Before a relaunch for a missing target, admission uses the
+[iOS app-job liveness rule](#check-a-plan). A live app skips that no-target
+relaunch, logs `relaunch skipped: app-alive`, and keeps waiting within the same
+deadline; an absent job or failed probe permits recovery as before. Skipping
+does not consume the one relaunch for persistent runtime-probe or
+WebSocket-handshake timeouts, and a target that registers late gets the same
+readiness window before a stalled handshake triggers the one relaunch. The refusal record includes value-free `liveness`
+and the number of relaunches actually attempted. Before the liveness check or
+relaunch, admission checks for a foreign driver;
 a conflict refuses `BUSY_FOREIGN_FLOW`
 without relaunching. It relaunches on the exact simulator with the CLI's original
 `initialUrl` using `simctl launch --terminate-running-process`, then waits again

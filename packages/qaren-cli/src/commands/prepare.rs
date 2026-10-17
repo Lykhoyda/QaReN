@@ -1730,7 +1730,8 @@ pub(crate) fn run_reuse_path(ctx: &mut Ctx, plan: &BuildPlan, t: u64) -> Result<
             let mut failed = 0;
             let mut attempts = 0;
             for spec in &defaults {
-                let output = run_launch_command(ctx, spec, deadline, &mut attempts)?;
+                let output =
+                    run_launch_command(ctx, spec, deadline, &mut attempts, &mut |_| false)?;
                 if output.timed_out {
                     return Err(launch_failure(
                         "dev-menu defaults",
@@ -1769,9 +1770,24 @@ pub(crate) fn run_reuse_path(ctx: &mut Ctx, plan: &BuildPlan, t: u64) -> Result<
         }
     };
     let mut attempts = 0;
-    let launched = run_launch_command(ctx, &launch, deadline, &mut attempts)?;
+    let mut proven = false;
+    let ios_udid = matches!(ctx.record.scenario.platform, Platform::Ios).then(|| {
+        ctx.record
+            .resources
+            .ios_simulator
+            .clone()
+            .expect("ios allocated")
+            .udid
+    });
+    let app_id = ctx.record.candidate.app_id.clone();
+    let launched = run_launch_command(ctx, &launch, deadline, &mut attempts, &mut |ctx| {
+        proven = ios_udid
+            .as_deref()
+            .is_some_and(|udid| ios_app_running(ctx, udid, &app_id));
+        proven
+    })?;
     let load = launched.timed_out.then(crate::core::host_load_1m).flatten();
-    if !launched.ok() {
+    if !launched.ok() && !proven {
         return Err(launch_failure(
             "dev client launch",
             &launched,
@@ -2692,8 +2708,7 @@ fn ready_probes_pass(ctx: &mut Ctx, metro_resource: &MetroResource) -> bool {
             if !container.ok() {
                 return false;
             }
-            let launchctl = ctx.runner.run(&ios::launchctl_list_spec(&sim.udid));
-            launchctl.ok() && ios::app_running_in_launchctl(&launchctl.stdout, &app_id)
+            ios_app_running(ctx, &sim.udid, &app_id)
         }
         Platform::Android => {
             let Some((adb, serial, server_port)) = ctx.record.resources.adb_endpoint() else {
@@ -2715,6 +2730,11 @@ fn ready_probes_pass(ctx: &mut Ctx, metro_resource: &MetroResource) -> bool {
                     .any(|t| t.parse::<u32>().is_ok())
         }
     }
+}
+
+fn ios_app_running(ctx: &mut Ctx, udid: &str, app_id: &str) -> bool {
+    let launchctl = ctx.runner.run(&ios::launchctl_list_spec(udid));
+    launchctl.ok() && ios::app_running_in_launchctl(&launchctl.stdout, app_id)
 }
 
 fn dry_run_receipt(
@@ -3062,10 +3082,16 @@ fn run_launch_command(
     spec: &CmdSpec,
     deadline: u64,
     attempts: &mut usize,
+    receipt: &mut dyn FnMut(&mut Ctx) -> bool,
 ) -> Result<crate::exec::CmdOutput, Failure> {
     let mut last = None;
     while let Some(output) = run_budgeted_attempt(ctx, spec, deadline, attempts)? {
-        if !output.timed_out {
+        // A launcher that outlives its bound may have started the app; never terminate it without this receipt.
+        if !output.timed_out || receipt(ctx) {
+            if output.timed_out {
+                ctx.notes
+                    .push(("launch_proof".into(), "launchctl-job".into()));
+            }
             return Ok(output);
         }
         last = Some(output);
