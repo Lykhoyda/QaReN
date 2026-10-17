@@ -522,11 +522,17 @@ identity guards. An explicit key press performs its normal action, not guarantee
 keyboard dismissal; QA must freshly prove the keyboard hidden and the intended
 screen preserved before treating the press as clearance. Ordinary covered content
 uses the same recovery as a native occlusion refusal.
-The walker handles this refusal with one directional scroll: down from the
-lower half of the effective viewport, up from the upper half. Scroll bands stay
-above a visible keyboard. On both iOS and Android, a target whose centre is
-covered by the observed keyboard gets a scroll sized to move that centre toward
-the middle of the band above the keyboard, capped to 60% of that band's height.
+The walker handles this refusal with one directional scroll toward the centre
+of the target's visible clip band: its trusted clipping viewport cut off at the
+top of an observed keyboard unless the keyboard is proven hidden. A target at
+or below that band's centre scrolls down; one above it scrolls up. Without a
+keyboard, or when the clip is entirely above it, direction selection is unchanged.
+The walker passes that band to the shared scroll handler so the drag starts
+inside it, narrowing the existing keyboard-safe band. Callers passing no band
+keep their existing drag origins. On both iOS and Android, a target whose centre
+is covered by the observed keyboard gets a scroll sized to move that centre
+toward the middle of the screen area above the keyboard, capped to 60% of the
+narrowed drag band's height.
 Scrolls without keyboard clearance keep the fixed amount of `0.6`.
 Successful iOS fast-runner scrolls now run the same bounded settle wait as taps
 before returning: screen-static probing with snapshot-equality fallback. Results

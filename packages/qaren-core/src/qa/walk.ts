@@ -80,8 +80,17 @@ const log = (message: string): void => {
   process.stderr.write(`qaren-core: ${redactApiKey(message)}\n`);
 };
 
-export function scrollArgs(direction: Parameters<WalkerDeps['scroll']>[0], clearance?: number) {
-  return { direction, amount: 0.6, ...(clearance !== undefined ? { distance: clearance } : {}) };
+export function scrollArgs(
+  direction: Parameters<WalkerDeps['scroll']>[0],
+  clearance?: number,
+  within?: Parameters<WalkerDeps['scroll']>[3],
+) {
+  return {
+    direction,
+    amount: 0.6,
+    ...(clearance !== undefined ? { distance: clearance } : {}),
+    ...(within ? { within } : {}),
+  };
 }
 
 // stdout is a pipe: wait for it to drain before the process exits.
@@ -558,8 +567,8 @@ async function openSession(
       ),
     press: (ref, qaContext) => act(() => press({ ref, qaContext }), false),
     fill: (ref, text, qaContext) => act(() => fill({ ref, text, qaContext }), true),
-    scroll: (direction, qaContext, clearance) =>
-      act(() => scroll({ ...scrollArgs(direction, clearance), qaContext }), false),
+    scroll: (direction, qaContext, clearance, within) =>
+      act(() => scroll({ ...scrollArgs(direction, clearance, within), qaContext }), false),
     back: (qaContext) => act(() => back({ qaContext }), false),
     dialog: (action, qaContext) =>
       act(

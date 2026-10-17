@@ -3,6 +3,7 @@ import type { Block, Item, Target } from './plan.js';
 import {
   type Element,
   type Screen,
+  type NativeNode,
   type VisibilityBlockerDiagnostic,
   screenSignature,
   elementFrame,
@@ -16,6 +17,7 @@ import {
   decideScreen,
   elementSelector,
   centreCovered,
+  clearanceBand,
   clearanceScroll,
   keyboardClearance,
   keyboardFallbackTarget,
@@ -115,10 +117,12 @@ export interface WalkerDeps {
   // A value-free diagnostic line for the run log.
   note?(line: string): void;
   // clearance: pixels a keyboard-covered target's centre must travel; an adapter may size the swipe from it.
+  // within: the visible part of the target's clip; an adapter starts the drag inside it.
   scroll(
     direction: 'down' | 'up',
     context: QaDispatchContext,
     clearance?: number,
+    within?: NativeNode['rect'],
   ): Promise<ActResult>;
   back(context: QaDispatchContext): Promise<ActResult>;
   dialog(action: 'accept' | 'dismiss', context: QaDispatchContext): Promise<ActResult>;
@@ -920,9 +924,10 @@ export async function walkBlock(
         );
       const scroll = await mutate(item, before, (context) =>
         deps.scroll(
-          clearanceScroll(target.element),
+          clearanceScroll(target.element, before.screen),
           context,
           keyboardClearance(target.element, before.screen),
+          clearanceBand(target.element, before.screen),
         ),
       );
       const afterScroll = await settledCapture(item);
@@ -1399,6 +1404,7 @@ export async function walkBlock(
           let freshness = attempt === 1 ? 1 : 0;
           let occluded: 'up' | 'down' | undefined;
           let clearance: number | undefined;
+          let within: NativeNode['rect'];
           let scrollNeedsReadback = false;
           let scrollError: string | undefined;
           let act: ActResult;
@@ -1497,9 +1503,11 @@ export async function walkBlock(
                     break;
                   }
                   const distance = clearance;
+                  const band = within;
                   clearance = undefined;
+                  within = undefined;
                   const result = await mutate(item, before, (context) =>
-                    deps.scroll(resolution.scroll, context, distance),
+                    deps.scroll(resolution.scroll, context, distance, band),
                   );
                   scrolled = true;
                   scrollNeedsReadback = !result.ok && !result.proven;
@@ -1582,8 +1590,9 @@ export async function walkBlock(
                   break;
                 }
                 refusedIdentity = element;
-                occluded = clearanceScroll(element);
+                occluded = clearanceScroll(element, before.screen);
                 clearance = keyboardClearance(element, before.screen);
+                within = clearanceBand(element, before.screen);
                 continue;
               }
               if (item.kind === 'fill' && element && isPrivateInput(element)) {
@@ -1631,7 +1640,8 @@ export async function walkBlock(
                   break;
                 }
                 refusedIdentity = element;
-                occluded = clearanceScroll(element);
+                occluded = clearanceScroll(element, before.screen);
+                within = clearanceBand(element, before.screen);
                 continue;
               }
               if (
