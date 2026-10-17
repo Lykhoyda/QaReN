@@ -1266,7 +1266,10 @@ presence status and label source must agree too. Excluded labels cannot supply a
 fallback witness. Discovery keeps preferring a unique testID for an eligible
 text match. An ambiguous text target without a unique testID
 can satisfy discovery but leaves the block unsaved; replay follows the
-ambiguity refusal above.
+ambiguity refusal above. A stored testID on a replayed press, wait or scroll resolves
+to its one native element even when a React-only element shares that testID, and
+still refuses when two native elements share it; a stored-testID fill keeps
+counting React-only inputs.
 
 Replay requires the canonical block format emitted by
 [`serializeBlock`](../qaren-core/src/qa/blocks.ts); edited or incompatible files

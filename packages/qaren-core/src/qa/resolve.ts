@@ -27,6 +27,7 @@ import {
   confidentChoice,
 } from './questions.js';
 import {
+  type Identity,
   PRESSABLE_SUFFIX,
   exactIdentities,
   focusIdentityOf,
@@ -86,6 +87,14 @@ export function stepTarget(step: Step): Target | undefined {
       : step.target;
 }
 
+// A stored id names the element that was tapped; the runner can tap only native elements, so
+// React-only twins (retained inactive routes, detached hosts) do not make a unique native match ambiguous.
+function replayIdentities(identities: Identity[], target: Target, kind: Step['kind']): Identity[] {
+  if (target.exact !== 'id' || kind === 'fill') return identities;
+  const native = identities.filter(({ tag }) => tag !== 'react-only');
+  return native.length >= 1 ? native : identities;
+}
+
 export function prepareTarget(step: Step, screen: Screen): Resolution | TargetQuestion {
   const target = stepTarget(step);
   if (!target) return { refuse: 'NO_TARGET', reason: 'this step has no target to resolve' };
@@ -111,7 +120,11 @@ export function prepareTarget(step: Step, screen: Screen): Resolution | TargetQu
       : { elements: visibility ? screen.elements : actionView(screen) };
   if ('refuse' in projected) return projected;
   if (target.quoted !== undefined) {
-    const identities = exactIdentities(screen, target, step.kind);
+    const identities = replayIdentities(
+      exactIdentities(screen, target, step.kind),
+      target,
+      step.kind,
+    );
     if (identities.length > 1)
       return {
         refuse: 'TARGET_AMBIGUOUS',
@@ -512,7 +525,9 @@ function textIdentities(quoted: string, screen: Screen): number {
 export function targetEvidence(target: Target, screen: Screen): LiteralVerdict {
   if (target.quoted === undefined) return 'fail';
   if (target.exact === 'id') {
-    const matches = exactIdentities(screen, target, 'wait').map(({ element }) => element);
+    const matches = replayIdentities(exactIdentities(screen, target, 'wait'), target, 'wait').map(
+      ({ element }) => element,
+    );
     if (matches.length !== 1)
       throw new ResolutionError({
         refuse: matches.length > 1 ? 'TARGET_AMBIGUOUS' : 'REPLAY_SELECTOR',
