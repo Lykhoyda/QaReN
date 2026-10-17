@@ -778,7 +778,8 @@ screen change to pass.
 On both platforms, a completed system-dialog tap without a matching
 `tappedLabel`, a valid `tappedRect` and `alertClosed: true` fails with
 `DIALOG_TAP_UNPROVEN`; an uncertain dispatch fails `ACTION_OUTCOME_UNCERTAIN`.
-Neither is retried, even if the screen changed. The proven label and frame land
+Neither is retried, even if the screen changed. A system-dialog step passes
+only on the runner's proof of the tap and of the alert closing. The proven label and frame land
 on the ledger row as `dialog`, in the receipt's `ledger.dialogs`, and in a
 value-free `dialog-tap` run-log line. The button lists are English; a snapshot
 with no recognized label fails `DIALOG_BUTTON_NOT_FOUND` rather than guessing,
