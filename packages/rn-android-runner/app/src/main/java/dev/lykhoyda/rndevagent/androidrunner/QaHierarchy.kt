@@ -20,6 +20,13 @@ object QaHierarchy {
     const val MAX_NODES = 600
     const val SYSTEM_UI_PACKAGE = "com.android.systemui"
 
+    // The packages whose front window is a system dialog: the permission controllers and the framework.
+    val SYSTEM_DIALOG_OWNERS = setOf(
+        "com.google.android.permissioncontroller",
+        "com.android.permissioncontroller",
+        "android",
+    )
+
     data class Bounds(val left: Int, val top: Int, val right: Int, val bottom: Int) {
         val isEmpty: Boolean get() = right <= left || bottom <= top
         val isInverted: Boolean get() = right < left || bottom < top
@@ -91,6 +98,12 @@ object QaHierarchy {
         data class Alert(val window: RawWindow, override val keyboard: RawWindow?) : Front
     }
 
+    sealed interface DialogMatch {
+        // The button's child-index path from its window's root, so the live node is re-read before the tap.
+        data class Button(val windowId: Int, val path: List<Int>, val label: String) : DialogMatch
+        data class Refused(val code: String, val message: String) : DialogMatch
+    }
+
     data class Assembled(
         val nodes: List<QaNode>,
         val droppedNodes: Int,
@@ -123,6 +136,36 @@ object QaHierarchy {
             .maxByOrNull { it.layer }
         return if (foreign != null) Front.Alert(foreign, keyboard) else Front.App(appWindows, keyboard)
     }
+
+    /**
+     * The one enabled node whose text equals a requested label, in a front alert window owned by one of
+     * [owners]. A label exposed only as a content description is no match: it is never tapped by coordinates.
+     */
+    fun dialogMatch(front: Front?, labels: List<String>, owners: Set<String>): DialogMatch {
+        val alert = front as? Front.Alert
+        if (alert == null || alert.window.packageName !in owners) {
+            return DialogMatch.Refused("NO_SYSTEM_DIALOG", "no system dialog is in front of the app")
+        }
+        val found = mutableListOf<Pair<List<Int>, String>>()
+        val pending = ArrayDeque<Pair<RawNode?, List<Int>>>()
+        pending.addLast(alert.window.root to emptyList())
+        while (pending.isNotEmpty()) {
+            val (raw, path) = pending.removeLast()
+            if (raw == null) continue
+            val text = raw.text
+            if (raw.enabled && text != null && text in labels) found.add(path to text)
+            raw.children.forEachIndexed { index, child -> pending.addLast(child to path + index) }
+        }
+        return when (found.size) {
+            0 -> DialogMatch.Refused("NO_SYSTEM_DIALOG", "the system dialog has no enabled button with a requested label")
+            1 -> DialogMatch.Button(alert.window.id, found[0].first, found[0].second)
+            else -> DialogMatch.Refused("TARGET_AMBIGUOUS", "the system dialog has ${found.size} buttons with a requested label")
+        }
+    }
+
+    /** The tapped alert is closed once the app is in front again and that alert window is gone. */
+    fun closed(before: Front.Alert, after: List<RawWindow>, appPackage: String): Boolean =
+        front(after, appPackage) is Front.App && after.none { it.id == before.window.id }
 
     fun assemble(windows: List<RawWindow>, appPackage: String, display: Bounds): Assembled {
         val front = front(windows, appPackage)

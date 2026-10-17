@@ -253,6 +253,95 @@ class QaHierarchyTest {
         assertFalse(out.nodes[0].heading)
     }
 
+    private val permissions = "com.google.android.permissioncontroller"
+
+    private fun permissionDialog(vararg buttons: RawNode, id: Int = 5, owner: String = permissions) = RawWindow(
+        id,
+        WindowKind.APPLICATION,
+        12,
+        owner,
+        Bounds(80, 900, 1000, 1500),
+        node(
+            "android.widget.LinearLayout",
+            packageName = owner,
+            children = listOf(node("android.widget.TextView", text = "Allow Test App to send you notifications?", packageName = owner)) +
+                buttons.toList(),
+        ),
+    )
+
+    private fun button(text: String?, desc: String? = null, enabled: Boolean = true) =
+        node("android.widget.Button", text = text, desc = desc, packageName = permissions, enabled = enabled)
+
+    private fun dialogFront(vararg windows: RawWindow) =
+        QaHierarchy.front(listOf(appWindow(node("A"))) + windows.toList(), app)
+
+    private fun refusal(match: QaHierarchy.DialogMatch): String? = (match as? QaHierarchy.DialogMatch.Refused)?.code
+
+    @Test fun oneEnabledButtonWithARequestedLabelInAnOwnedDialogIsTheMatch() {
+        val front = dialogFront(permissionDialog(button("Allow"), button("Don\u2019t allow")))
+        val match = QaHierarchy.dialogMatch(front, listOf("Don\u2019t allow"), QaHierarchy.SYSTEM_DIALOG_OWNERS)
+
+        assertEquals(QaHierarchy.DialogMatch.Button(5, listOf(2), "Don\u2019t allow"), match)
+    }
+
+    @Test fun aDuplicateLabelIsRefusedAsAmbiguous() {
+        val front = dialogFront(permissionDialog(button("Allow"), button("Allow")))
+        val match = QaHierarchy.dialogMatch(front, listOf("Allow"), QaHierarchy.SYSTEM_DIALOG_OWNERS)
+
+        assertEquals("TARGET_AMBIGUOUS", refusal(match))
+    }
+
+    @Test fun anotherAppsDialogIsNeverASystemDialogEvenWithAnOk() {
+        val front = dialogFront(permissionDialog(button("OK"), owner = "com.example.other"))
+        val match = QaHierarchy.dialogMatch(front, listOf("OK"), QaHierarchy.SYSTEM_DIALOG_OWNERS)
+
+        assertEquals("NO_SYSTEM_DIALOG", refusal(match))
+    }
+
+    @Test fun theAppInFrontGivesNoDialog() {
+        val front = QaHierarchy.front(listOf(appWindow(node("A", children = listOf(node("Allow", text = "Allow"))))), app)
+        val match = QaHierarchy.dialogMatch(front, listOf("Allow"), QaHierarchy.SYSTEM_DIALOG_OWNERS)
+
+        assertTrue(front is QaHierarchy.Front.App)
+        assertEquals("NO_SYSTEM_DIALOG", refusal(match))
+        assertEquals("NO_SYSTEM_DIALOG", refusal(QaHierarchy.dialogMatch(null, listOf("Allow"), QaHierarchy.SYSTEM_DIALOG_OWNERS)))
+    }
+
+    @Test fun aDisabledButtonOrOneNamedOnlyByItsDescriptionIsNoMatch() {
+        val front = dialogFront(permissionDialog(button("Allow", enabled = false), button(null, desc = "Allow")))
+        val match = QaHierarchy.dialogMatch(front, listOf("Allow"), QaHierarchy.SYSTEM_DIALOG_OWNERS)
+
+        assertEquals("NO_SYSTEM_DIALOG", refusal(match))
+    }
+
+    @Test fun theAlertIsClosedWhenTheAppIsInFrontAndItsWindowIsGone() {
+        val before = dialogFront(permissionDialog(button("Allow"))) as QaHierarchy.Front.Alert
+
+        assertTrue(QaHierarchy.closed(before, listOf(appWindow(node("A"))), app))
+    }
+
+    @Test fun aDifferentAlertWindowAfterTheTapIsNotClosed() {
+        val before = dialogFront(permissionDialog(button("Allow"))) as QaHierarchy.Front.Alert
+        val after = listOf(appWindow(node("A")), permissionDialog(button("Allow"), id = 9))
+
+        assertFalse(QaHierarchy.closed(before, after, app))
+    }
+
+    @Test fun aTapWithNoClosureIsNotClosed() {
+        val dialog = permissionDialog(button("Allow"))
+        val before = dialogFront(dialog) as QaHierarchy.Front.Alert
+
+        assertFalse(QaHierarchy.closed(before, listOf(appWindow(node("A")), dialog), app))
+    }
+
+    @Test fun theAlertWindowStillListedBehindTheAppIsNotClosed() {
+        val before = dialogFront(permissionDialog(button("Allow"))) as QaHierarchy.Front.Alert
+        val after = listOf(appWindow(node("A"), layer = 20), permissionDialog(button("Allow")))
+
+        assertFalse(QaHierarchy.closed(before, after, app))
+        assertFalse(QaHierarchy.closed(before, emptyList(), app))
+    }
+
     private fun appWindow(
         root: RawNode?,
         id: Int = 1,

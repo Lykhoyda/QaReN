@@ -699,8 +699,14 @@ Dialog steps require one unconditional accept or dismiss action, such as
 `Accept the permission dialog` or `Dismiss the alert`. Conditions, negation and
 multiple actions, such as `Accept the dialog if it appears` or
 `Do not dismiss the alert`, refuse before allocation; Jev cannot override this restriction.
-On Android, dialog steps and dialog recovery refuse `TARGET_UNSUPPORTED`
-before calling a driver in this release.
+On Android, a dialog step or dialog recovery has the runner tap exactly one
+enabled button whose text equals the chosen label, in the front window above the
+app when the permission controller or `android` owns it; another app's window
+never matches. The step passes only when the runner reports that label tapped,
+that window gone and the app in front again, and it never falls back to
+Maestro. No such dialog refuses `NO_SYSTEM_DIALOG` and two matching buttons
+refuse `TARGET_AMBIGUOUS`, both before tapping. A button that is not exposed to
+accessibility is never tapped by coordinates.
 
 Android QA reads take one live traversal of the accessibility windows instead
 of the window dump that device tools keep: an `Application` root with the

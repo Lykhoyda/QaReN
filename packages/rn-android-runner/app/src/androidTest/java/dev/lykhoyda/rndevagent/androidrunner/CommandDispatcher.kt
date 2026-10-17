@@ -82,7 +82,7 @@ class CommandDispatcher(
         val SUPPORTED_COMMANDS = listOf(
             "snapshot", "tap", "press", "type", "fill", "verifyInput", "drag", "swipe",
             "scroll", "screenshot", "back", "dismissKeyboard", "keyboard", "longPress",
-            "pinch", "findText", "isWindowUpdating", "status",
+            "pinch", "findText", "isWindowUpdating", "status", "systemAlertTap",
         )
 
         // GH #378: cold-start-only relaunch wait. The windows-based fast-path below
@@ -93,6 +93,9 @@ class CommandDispatcher(
         // (snapshot/type) get 35s client-side — a tighter cap would regress
         // cold-launch success without helping the stall the windows check already ends.
         const val FOREGROUND_READY_TIMEOUT_MS = 10_000L
+
+        // Within the client's 10s command budget: the dialog animates out and the app's window returns.
+        const val SYSTEM_ALERT_CLOSE_TIMEOUT_MS = 3_000L
 
         // GH #581: actual Android input class spellings — fully qualified only
         // (RN TextInput reports android.widget.EditText; bare names never match).
@@ -164,6 +167,7 @@ class CommandDispatcher(
             }
             "longPress" -> longPress(cmd)
             "pinch" -> pinch(cmd)
+            "systemAlertTap" -> systemAlertTap(cmd, appPackage)
             // GH #444: optString defaults missing text to "" and By.textContains("")
             // matches an arbitrary node — refuse malformed requests instead.
             "findText" -> {
@@ -550,6 +554,56 @@ class CommandDispatcher(
         val kbMs = SystemClock.uptimeMillis() - kbStart
         return JSONObject().put("x", x).put("y", y).put("tapped", device.click(x, y))
             .put("keyboardGuard", kb).put("keyboardGuardMs", kbMs)
+    }
+
+    // SYSTEM_ALERT_TAP_V1: one labelled button of a system dialog above the app, by accessibility action only.
+    private fun systemAlertTap(cmd: JSONObject, appPackage: String?): JSONObject {
+        val refuse = { code: String, message: String ->
+            TypedRunnerException(code, "$code: $message; nothing was tapped", MutationDisposition.NONE)
+        }
+        val requested = cmd.optJSONArray("labels")
+        val labels = (0 until (requested?.length() ?: 0)).map { requested!!.opt(it) as? String ?: "" }
+        if (appPackage == null || labels.isEmpty() || labels.any { it.isEmpty() }) {
+            throw refuse("INVALID_ARGUMENT", "systemAlertTap requires appBundleId and non-empty labels")
+        }
+        val live = instrumentation.uiAutomation.windows.map { info ->
+            val root = info.root
+            rawWindow(info, root?.packageName?.toString()) to root
+        }
+        val front = QaHierarchy.front(live.map { it.first }, appPackage)
+        val alertRoot = (front as? QaHierarchy.Front.Alert)?.let { alert -> live.first { it.first.id == alert.window.id }.second }
+        val copied = when (front) {
+            is QaHierarchy.Front.Alert ->
+                front.copy(window = front.window.copy(root = alertRoot?.let { copyNode(it, CopyBudget(QaHierarchy.MAX_NODES + 1)) }))
+            else -> front
+        }
+        val button = when (val match = QaHierarchy.dialogMatch(copied, labels, QaHierarchy.SYSTEM_DIALOG_OWNERS)) {
+            is QaHierarchy.DialogMatch.Refused -> throw refuse(match.code, match.message)
+            is QaHierarchy.DialogMatch.Button -> match
+        }
+        val target = button.path.fold(alertRoot) { node, index -> node?.getChild(index) }
+        if (target == null || !target.isEnabled || target.text?.toString() != button.label) {
+            throw refuse("SYSTEM_ALERT_CHANGED", "the system dialog or its button changed before the tap")
+        }
+        val rect = Rect().also { target.getBoundsInScreen(it) }
+        if (!target.performAction(AccessibilityNodeInfo.ACTION_CLICK)) {
+            throw refuse("SYSTEM_ALERT_TAP_FAILED", "the system dialog button rejected ACTION_CLICK")
+        }
+        // Only an alert window yields a match.
+        val alert = copied as QaHierarchy.Front.Alert
+        val deadline = SystemClock.uptimeMillis() + SYSTEM_ALERT_CLOSE_TIMEOUT_MS
+        var closed = QaHierarchy.closed(alert, liveWindows(), appPackage)
+        while (!closed && SystemClock.uptimeMillis() < deadline) {
+            SystemClock.sleep(100)
+            closed = QaHierarchy.closed(alert, liveWindows(), appPackage)
+        }
+        return JSONObject()
+            .put("tappedLabel", button.label)
+            .put(
+                "tappedRect",
+                JSONObject().put("x", rect.left).put("y", rect.top).put("width", rect.width()).put("height", rect.height()),
+            )
+            .put("alertClosed", closed)
     }
 
     private fun requestedPoint(cmd: JSONObject): Point? {

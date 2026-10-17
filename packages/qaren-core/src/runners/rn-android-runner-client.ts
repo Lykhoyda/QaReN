@@ -158,7 +158,8 @@ export interface RunAndroidArgs {
     | 'screenshot'
     | 'back'
     | 'status'
-    | 'isWindowUpdating';
+    | 'isWindowUpdating'
+    | 'systemAlertTap';
   bundleId?: string;
   deviceId?: string;
   x?: number;
@@ -168,6 +169,8 @@ export interface RunAndroidArgs {
   x2?: number;
   y2?: number;
   text?: string;
+  /** systemAlertTap: the runner taps the one dialog button whose text equals one of these. */
+  labels?: string[];
   /** Exact-fill descriptor resolved afresh by the runner within one command. */
   exactIdentifier?: string;
   exactType?: string;
@@ -2128,6 +2131,15 @@ export async function runAndroid(args: RunAndroidArgs): Promise<ToolResult> {
     );
   }
 
+  // An older runner has no proven system dialog tap.
+  if (args.command === 'systemAlertTap' && !lastKnownCapabilities.includes('SYSTEM_ALERT_TAP_V1')) {
+    return failResult(
+      'RUNNER_COMMANDS_STALE: the active Android runner cannot tap a system dialog button by its label; reopen the device session to rebuild before retrying.',
+      'RUNNER_COMMANDS_STALE',
+      { missingFeatures: ['SYSTEM_ALERT_TAP_V1'], dispatched: false, mutation: 'none' },
+    );
+  }
+
   const body: Record<string, unknown> = { command: args.command };
   if (qaReadOnly) body.qaReadOnly = true;
   if (args.bundleId) body.appBundleId = args.bundleId;
@@ -2138,6 +2150,7 @@ export async function runAndroid(args: RunAndroidArgs): Promise<ToolResult> {
   if (args.x2 !== undefined) body.x2 = args.x2;
   if (args.y2 !== undefined) body.y2 = args.y2;
   if (args.text !== undefined) body.text = args.text;
+  if (args.labels !== undefined) body.labels = args.labels;
   if (args.exactIdentifier !== undefined) body.exactIdentifier = args.exactIdentifier;
   if (args.exactType !== undefined) body.exactType = args.exactType;
   if (args.exact !== undefined) body.exact = args.exact;
