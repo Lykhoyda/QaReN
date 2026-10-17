@@ -1168,12 +1168,17 @@ device lease remain claimed for `qaren cleanup`. The developer
 `QAREN_BOOT_DEVICE=1` alongside `QAREN_DEVICE_UDID`.
 
 iOS preparation, borrowed-emulator builds and cached Android preparation
-request the dev-client manifest from Metro once with the `expo-platform`
-header before launch, so the client's own first request is not the slow cold
-one. Fresh Android scenario-based
+request the dev-client manifest from Metro with the `expo-platform` header
+before launch until one answer arrives inside the dev client's own 10-second
+request timeout, so the client's first request does not time out to its
+launcher. Each request is recorded; slower answers and request timeouts are
+repeated, and a manifest that never answers that fast within the remaining
+`build_seconds` budget refuses with `CORE_REFUSED` and the measured times.
+The 10 seconds only gates the launch; it never shortens a request or ends a
+wait. Fresh Android scenario-based
 `prepare` keeps launch and Metro under `expo run:android` and does not perform
 this warmup.
-A manifest timeout refuses with `CORE_REFUSED`. Dev-client launch and iOS
+Dev-client launch and iOS
 dev-menu defaults timeouts retry regardless of host load until the remaining
 `build_seconds` preparation budget is spent, then refuse with `CORE_REFUSED`,
 unless the timed-out iOS launch is proven by the app-job receipt below.

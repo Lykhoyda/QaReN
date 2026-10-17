@@ -1702,22 +1702,34 @@ pub(crate) fn run_reuse_path(ctx: &mut Ctx, plan: &BuildPlan, t: u64) -> Result<
     wait_metro_responding(ctx)?;
     let t = ctx.mark("metro_ready", t);
 
-    ensure_running(ctx.runner, "build")?;
-    let warmed = ctx.runner.run(&metro::manifest_spec(
-        metro_port,
-        platform_dir(ctx.record.scenario.platform),
-    ));
-    if !warmed.ok() {
-        let load = warmed.timed_out.then(crate::core::host_load_1m).flatten();
-        return Err(launch_failure(
-            "dev client manifest",
-            &warmed,
-            load,
-            1,
-            &ctx.record.run_id,
-        ));
+    let manifest = metro::manifest_spec(metro_port, platform_dir(ctx.record.scenario.platform));
+    let mut attempts = 0;
+    let mut slow = None;
+    loop {
+        let Some(warmed) = run_budgeted_attempt(ctx, &manifest, deadline, &mut attempts)? else {
+            let slow = slow.ok_or_else(|| launch_deadline_spent(&ctx.record.run_id))?;
+            return Err(launch_failure(
+                "dev client manifest",
+                &slow,
+                crate::core::host_load_1m(),
+                attempts,
+                &ctx.record.run_id,
+            ));
+        };
+        if warmed.ok() && warmed.duration_ms < DEV_CLIENT_REQUEST_TIMEOUT_MS {
+            break;
+        }
+        if !warmed.ok() && !warmed.timed_out {
+            return Err(launch_failure(
+                "dev client manifest",
+                &warmed,
+                None,
+                attempts,
+                &ctx.record.run_id,
+            ));
+        }
+        slow = Some(warmed);
     }
-    ensure_running(ctx.runner, "build")?;
     let launch = match ctx.record.scenario.platform {
         Platform::Ios => {
             let sim = ctx
@@ -3096,17 +3108,16 @@ fn run_launch_command(
         }
         last = Some(output);
     }
-    last.ok_or_else(|| {
-        Failure::new(
-            "build",
-            FailureCode::ReadyDeadlineExceeded,
-            "preparation deadline spent before dev-client launch",
-            format!(
-                "run qaren cleanup {} --json, then retry prepare",
-                ctx.record.run_id
-            ),
-        )
-    })
+    last.ok_or_else(|| launch_deadline_spent(&ctx.record.run_id))
+}
+
+fn launch_deadline_spent(run_id: &str) -> Failure {
+    Failure::new(
+        "build",
+        FailureCode::ReadyDeadlineExceeded,
+        "preparation deadline spent before dev-client launch",
+        format!("run qaren cleanup {run_id} --json, then retry prepare"),
+    )
 }
 
 // None once the shared preparation budget is spent; each attempt is recorded in the receipt.
@@ -3144,7 +3155,10 @@ fn run_budgeted_attempt(
     Ok(Some(output))
 }
 
-// A launch timeout is the CDP leg's environmental refusal; any other launch error stays a build failure.
+// expo-dev-launcher abandons its first manifest fetch after EXDevLauncherDefaultRequestTimeout (10 s); launch only once Metro answers inside it.
+const DEV_CLIENT_REQUEST_TIMEOUT_MS: u64 = 10_000;
+
+// A launch timeout or a too-slow answer is the CDP leg's environmental refusal; any other launch error stays a build failure.
 fn launch_failure(
     what: &str,
     launched: &crate::exec::CmdOutput,
@@ -3152,7 +3166,7 @@ fn launch_failure(
     attempts: usize,
     run_id: &str,
 ) -> Failure {
-    if !launched.timed_out {
+    if !launched.ok() && !launched.timed_out {
         return Failure::new(
             "build",
             FailureCode::BuildFailed,
@@ -3164,6 +3178,18 @@ fn launch_failure(
         Some(load) => format!("host 1-minute load {load:.1}"),
         None => "host load unavailable".to_string(),
     };
+    if launched.ok() {
+        return Failure::new(
+            "build",
+            FailureCode::CoreRefused,
+            format!(
+                "{what} never answered inside the dev client's {}s request timeout: last {}ms after {attempts} attempts ({measured}); an environment refusal",
+                DEV_CLIENT_REQUEST_TIMEOUT_MS / 1000,
+                launched.duration_ms
+            ),
+            format!("run qaren cleanup {run_id} --json, then retry prepare"),
+        );
+    }
     let environment = format!("; an environment refusal after {attempts} attempts");
     Failure::new(
         "build",
@@ -3250,6 +3276,20 @@ mod launch_tests {
             .detail
             .to_string()
             .starts_with("dev client manifest failed"));
+        let late = CmdOutput {
+            duration_ms: 11_573,
+            ..CmdOutput::success("")
+        };
+        let late = launch_failure("dev client manifest", &late, Some(40.0), 3, "c");
+        assert_eq!(late.code, FailureCode::CoreRefused);
+        let detail = late.detail.to_string();
+        assert!(
+            detail.starts_with("dev client manifest never answered inside"),
+            "{detail}"
+        );
+        assert!(detail.contains("last 11573ms after 3 attempts"), "{detail}");
+        assert!(detail.contains("host 1-minute load 40.0"), "{detail}");
+        assert!(detail.contains("an environment refusal"), "{detail}");
     }
 
     #[test]
