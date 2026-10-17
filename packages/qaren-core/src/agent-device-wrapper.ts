@@ -2106,10 +2106,7 @@ export async function runNative(
     const { runAndroid, consumePendingAndroidUpgradeNote } =
       await import('./runners/rn-android-runner-client.js');
     const outsideApp = androidOutsideAppWindowRefusal(cliArgs, appId);
-    if (outsideApp) {
-      opts.qaContext?.invalidate();
-      return outsideAppWindowFailResult(outsideApp);
-    }
+    if (outsideApp) return outsideAppWindowFailResult(outsideApp);
     let android = buildRunAndroidArgs(cliArgs, appId);
     android.qaContext = opts.qaContext;
     android.qaReadOnly = opts.qaReadOnly;
