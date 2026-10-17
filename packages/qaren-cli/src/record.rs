@@ -1,3 +1,4 @@
+use crate::adapters::android;
 use crate::commands::cleanup::{cleanup_process_group, Outcome};
 use crate::exec::{CmdSpec, Runner};
 use crate::runrecord::{
@@ -88,6 +89,15 @@ fn media_dir(run_dir: &Path) -> PathBuf {
     run_dir.join("media")
 }
 
+pub(crate) fn raw_capture(media: &Path) -> PathBuf {
+    let mp4 = media.join("raw.mp4");
+    if mp4.exists() {
+        mp4
+    } else {
+        media.join("raw.mov")
+    }
+}
+
 pub fn video_path(run_dir: &Path) -> PathBuf {
     media_dir(run_dir).join("video.mp4")
 }
@@ -123,13 +133,28 @@ fn record_spec(udid: &str, raw: &Path) -> CmdSpec {
     )
 }
 
+pub enum RecordTarget<'a> {
+    Ios(&'a str),
+    Android {
+        adb: &'a Path,
+        port: u16,
+        serial: &'a str,
+    },
+}
+
 // ⑧: persisted before the spawn; any failure leaves the run going without video.
 pub fn start(
     runner: &mut dyn Runner,
     record: &mut RunRecord,
     runs_root: &Path,
-    udid: &str,
+    target: RecordTarget<'_>,
 ) -> Result<(), VideoStatus> {
+    let udid = match target {
+        RecordTarget::Ios(udid) => udid,
+        RecordTarget::Android { adb, port, serial } => {
+            return start_android(runner, record, runs_root, adb, port, serial)
+        }
+    };
     if let Some(reason) = runner.cancellation() {
         return Err(VideoStatus::Unavailable(reason));
     }
@@ -141,6 +166,7 @@ pub fn start(
     record.resources.recorder = Some(RecorderResource {
         pid: None,
         birth: None,
+        pulled_sha256: None,
         kind: RecorderKind::IosSimulator,
         device: udid.to_string(),
         output: raw,
@@ -204,6 +230,242 @@ pub fn start(
     )))
 }
 
+fn start_android(
+    runner: &mut dyn Runner,
+    record: &mut RunRecord,
+    runs_root: &Path,
+    adb: &Path,
+    port: u16,
+    serial: &str,
+) -> Result<(), VideoStatus> {
+    let unavailable = |why: &str| VideoStatus::Unavailable(why.to_string());
+    if let Some(reason) = runner.cancellation() {
+        return Err(unavailable(&reason));
+    }
+    let run_dir = RunRecord::run_dir(runs_root, &record.run_id);
+    std::fs::create_dir_all(media_dir(&run_dir)).map_err(|_| unavailable("media directory"))?;
+    let output = PathBuf::from(format!("/data/local/tmp/qaren-{}.mp4", record.run_id));
+    if !runner
+        .run(&android::rm_spec(adb, port, serial, &output))
+        .ok()
+    {
+        return Err(unavailable("could not clear recorder device file"));
+    }
+    record.resources.recorder = Some(RecorderResource {
+        pid: None,
+        birth: None,
+        pulled_sha256: None,
+        kind: RecorderKind::AndroidEmulator,
+        device: serial.into(),
+        output: output.clone(),
+    });
+    if record.save(runs_root).is_err() {
+        record.resources.recorder = None;
+        return Err(unavailable("run record not persisted"));
+    }
+    let spawned = match runner.spawn_group(
+        &android::screenrecord_spec(adb, port, serial, &output),
+        &segment_log(&run_dir),
+    ) {
+        Ok(spawned) => spawned,
+        Err(_) => {
+            let resource = record.resources.recorder.take();
+            if record.save(runs_root).is_err() {
+                record.resources.recorder = resource;
+            }
+            return Err(unavailable("recorder did not spawn"));
+        }
+    };
+    let birth = capture_pid_identity(runner, spawned.pid);
+    let proven = birth.is_some();
+    if let Some(recorder) = record.resources.recorder.as_mut() {
+        recorder.pid = Some(spawned.pid);
+        recorder.birth = birth;
+    }
+    if !proven || record.save(runs_root).is_err() {
+        let outcome = stop(runner, record, runs_root);
+        return Err(unavailable(&format!(
+            "recorder identity was not persisted (stop: {})",
+            outcome.render()
+        )));
+    }
+    let deadline = now_ms(runner) + START_WAIT_MS;
+    loop {
+        if let Some(reason) = runner.cancellation() {
+            stop(runner, record, runs_root);
+            return Err(unavailable(&reason));
+        }
+        if runner
+            .run(&android::device_pgrep_spec(adb, port, serial, &output))
+            .ok()
+        {
+            return Ok(());
+        }
+        if now_ms(runner) >= deadline {
+            break;
+        }
+        runner.sleep(Duration::from_millis(POLL_MS));
+    }
+    let outcome = stop(runner, record, runs_root);
+    Err(unavailable(&format!(
+        "recorder did not start (stop: {})",
+        outcome.render()
+    )))
+}
+
+fn stop_android(
+    runner: &mut dyn Runner,
+    record: &mut RunRecord,
+    runs_root: &Path,
+    recorder: &RecorderResource,
+) -> Outcome {
+    if !record.holds_device_lease() {
+        return Outcome::Refused("the device lease is not held by this run".into());
+    }
+    let Some((adb, serial, port)) = record.resources.adb_endpoint() else {
+        return Outcome::Unresolved("recorder adb endpoint is missing".into());
+    };
+    if serial != recorder.device {
+        return Outcome::Unresolved("recorder device differs from the run's adb endpoint".into());
+    }
+    if let Err(reason) = android::borrowed_server_compatible(runner, &adb, port) {
+        return Outcome::Unresolved(reason);
+    }
+    let interrupted = runner.run(&android::device_pkill_spec(
+        &adb,
+        port,
+        &serial,
+        "INT",
+        &recorder.output,
+    ));
+    if interrupted.timed_out || !matches!(interrupted.exit_code, Some(0 | 1)) {
+        return Outcome::Unresolved("recorder INT failed".into());
+    }
+    let gone = match wait_android_gone(runner, &adb, port, &serial, &recorder.output) {
+        Ok(gone) => gone,
+        Err(reason) => return Outcome::Unresolved(reason),
+    };
+    if !gone {
+        record.push_history(crate::timefmt::iso8601_utc(runner.now_epoch_ms()), "Android recorder exceeded INT stop budget; KILL fallback required (media finalized abnormally)");
+        if record.save(runs_root).is_err() {
+            return Outcome::Unresolved("recorder KILL fallback was not persisted".into());
+        }
+        let killed = runner.run(&android::device_pkill_spec(
+            &adb,
+            port,
+            &serial,
+            "KILL",
+            &recorder.output,
+        ));
+        if killed.timed_out || !matches!(killed.exit_code, Some(0 | 1)) {
+            return Outcome::Unresolved("recorder KILL failed".into());
+        }
+        match wait_android_gone(runner, &adb, port, &serial, &recorder.output) {
+            Ok(true) => {}
+            Ok(false) => return Outcome::Unresolved("device recorder remains after KILL".into()),
+            Err(reason) => return Outcome::Unresolved(reason),
+        }
+    }
+    if let Some(pid) = recorder.pid {
+        let outcome = cleanup_process_group(runner, recorder.birth.as_ref(), pid, None);
+        if !outcome.clean() {
+            return outcome;
+        }
+    }
+    let raw = media_dir(&RunRecord::run_dir(runs_root, &record.run_id)).join("raw.mp4");
+    if std::fs::create_dir_all(raw.parent().unwrap()).is_err() {
+        return Outcome::Unresolved("recorder media directory unavailable".into());
+    }
+    let pulled = recorder
+        .pulled_sha256
+        .as_ref()
+        .is_some_and(|expected| capture_sha256(&raw).is_ok_and(|actual| actual == *expected));
+    if !pulled {
+        if !runner
+            .run(&android::pull_spec(
+                &adb,
+                port,
+                &serial,
+                &recorder.output,
+                &raw,
+            ))
+            .ok()
+        {
+            return Outcome::Unresolved(format!(
+                "pull failed; media kept on device at {}",
+                recorder.output.display()
+            ));
+        }
+        let Ok(digest) = capture_sha256(&raw) else {
+            return Outcome::Unresolved(
+                "pulled recorder media is unreadable; media kept on device".into(),
+            );
+        };
+        record.resources.recorder.as_mut().unwrap().pulled_sha256 = Some(digest);
+        if record.save(runs_root).is_err() {
+            record.resources.recorder = Some(recorder.clone());
+            return Outcome::Unresolved(
+                "recorder pull evidence was not persisted; media kept on device".into(),
+            );
+        }
+    }
+    if !runner
+        .run(&android::rm_spec(&adb, port, &serial, &recorder.output))
+        .ok()
+    {
+        return Outcome::Unresolved(format!(
+            "device rm failed; media kept on device at {}",
+            recorder.output.display()
+        ));
+    }
+    let resource = record.resources.recorder.take();
+    if record.save(runs_root).is_err() {
+        record.resources.recorder = resource;
+        return Outcome::Unresolved("recorder retirement was not persisted".into());
+    }
+    Outcome::Removed
+}
+
+// Stream unbounded recordings rather than loading the entire video into memory.
+fn capture_sha256(raw: &Path) -> std::io::Result<String> {
+    use sha2::{Digest, Sha256};
+    use std::io::Read;
+    let mut file = std::fs::File::open(raw)?;
+    let mut digest = Sha256::new();
+    let mut buffer = [0u8; 64 * 1024];
+    loop {
+        let read = file.read(&mut buffer)?;
+        if read == 0 {
+            break;
+        }
+        digest.update(&buffer[..read]);
+    }
+    file.sync_all()?;
+    Ok(format!("{:x}", digest.finalize()))
+}
+
+fn wait_android_gone(
+    runner: &mut dyn Runner,
+    adb: &Path,
+    port: u16,
+    serial: &str,
+    output: &Path,
+) -> Result<bool, String> {
+    let deadline = now_ms(runner) + STOP_WAIT_MS;
+    loop {
+        let probe = runner.run(&android::device_pgrep_spec(adb, port, serial, output));
+        match (probe.timed_out, probe.exit_code) {
+            (false, Some(1)) => return Ok(true),
+            (false, Some(0)) => {}
+            _ => return Err("recorder stop pgrep failed; device state unknown".into()),
+        }
+        if now_ms(runner) >= deadline {
+            return Ok(false);
+        }
+        runner.sleep(Duration::from_millis(POLL_MS));
+    }
+}
+
 fn wait_gone(runner: &mut dyn Runner, birth: &crate::runrecord::PidIdentity, budget_ms: u64) {
     let deadline = now_ms(runner) + budget_ms;
     loop {
@@ -227,6 +489,9 @@ pub fn stop(runner: &mut dyn Runner, record: &mut RunRecord, runs_root: &Path) -
     let Some(recorder) = record.resources.recorder.clone() else {
         return Outcome::Absent;
     };
+    if recorder.kind == RecorderKind::AndroidEmulator {
+        return stop_android(runner, record, runs_root, &recorder);
+    }
     let Some(pid) = recorder.pid else {
         return Outcome::Unresolved("recorder spawn identity is unproven".into());
     };
@@ -324,7 +589,7 @@ pub fn finalize(runner: &mut dyn Runner, run_dir: &Path) -> VideoStatus {
     }
     let media = media_dir(run_dir);
     let video = video_path(run_dir);
-    let raw = media.join("raw.mov");
+    let raw = raw_capture(&media);
     if size_of(&raw) == 0 {
         return unavailable("no capture was written");
     }
@@ -427,6 +692,30 @@ mod tests {
             finalize(&mut mock, &run_dir),
             VideoStatus::Unavailable(r) if r.contains("ffprobe")
         ));
+    }
+
+    #[test]
+    fn finalize_accepts_android_raw_mp4() {
+        let run_dir = temp_run_dir();
+        let raw = run_dir.join("media/raw.mp4");
+        std::fs::write(&raw, "android recording").unwrap();
+        let mut runner = SizedEncodes {
+            mock: MockRunner::new(),
+            sizes: vec![10],
+        };
+        runner
+            .mock
+            .expect_run("which ffmpeg", CmdOutput::success("/opt/ffmpeg"));
+        runner.mock.expect_run("ffmpeg", CmdOutput::success(""));
+        runner
+            .mock
+            .expect_run("ffprobe", CmdOutput::success("240.0"));
+        assert_eq!(finalize(&mut runner, &run_dir), VideoStatus::Available);
+        assert!(runner.mock.calls[1]
+            .args
+            .contains(&raw.to_string_lossy().into_owned()));
+        assert_eq!(runner.mock.remaining(), 0);
+        std::fs::remove_dir_all(run_dir).unwrap();
     }
 
     #[test]

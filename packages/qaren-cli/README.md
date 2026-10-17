@@ -931,13 +931,51 @@ label, identifier and origin match; deduplication compares those fields separate
 The React digest adds semantics: a deadline, malformed-payload, validation or
 transport failure degrades React coverage to unknown without retrying capture.
 Operations requiring complete React evidence still refuse when that coverage is
-unavailable. Capture deadlines, budgets and item deadlines remain unchanged.
+unavailable. Strict private React capture can scan up to 5,000 fibers across
+renderer roots, including a single-root screen. Existing capture and item
+deadlines, host-evidence and interactive-node limits still apply; incomplete
+evidence is refused.
+
+On composite components, the digest omits non-string `title`,
+`accessibilityLabel` and `placeholder` props without coercing or serializing them;
+rendered host text remains available as evidence, and string display props retain
+their digest meaning. Native Expo image hosts with verified image-source metadata
+and no input semantics also omit non-string image placeholders. Other non-string
+host display props, opaque identities or roles, and getter-backed props still
+refuse capture. The
+[composite/input regressions](../qaren-core/test/unit/qa/private-input-producer.test.ts)
+and [image-placeholder regressions](../qaren-core/test/unit/qa/image-placeholder-producer.test.ts)
+cover these boundaries and warm-helper replacement.
+
+When the React capture adapter classifies a failure, the `interactive digest
+unavailable` warning includes a fixed `cause` code and available nonnegative integer
+counters: scanned fibers (with the scan budget when available), roots, hosts,
+interactive entries, the walk's queued frontier (`queued`), fibers it skipped at
+inactive routes or hosts with `display: none` (`pruned`) and elapsed milliseconds
+(`ms`). Pruned counts exclude the skipped fibers' unvisited descendants. Queued
+and pruned counts are lower bounds observed by the bounded walk, not tree totals.
+These distinguish capture limits, the
+typography sites that leave evidence incomplete, deadlines, renderer coverage,
+malformed evidence and CDP evaluation failures; they exclude app text, labels,
+identifiers and raw errors. Unclassified
+failures retain the generic warning. The
+[React capture adapter](../qaren-core/src/qa/react-capture.ts) owns classification;
+[ReactCaptureIncomplete](../qaren-core/src/qa/private-input.ts) owns the allowed
+codes, counters and warning detail format. This diagnostic identifies the capture
+failure category; it does not establish the underlying app or host cause or change
+refusal and privacy behavior.
 
 React-only elements expose no label, placeholder or value strings in the screen
-projection. The React walk excludes provably inactive screen routes and native
+projection. The React digest excludes provably inactive screen routes and native
 hosts with `display: none` before collecting their semantic or descendant text
-evidence. Validated React Native frozen descriptors remain readable; arbitrary
-getters are not invoked, and an unreadable inactivity flag does not prune a subtree.
+evidence. Strict capture's error-overlay pre-scan applies the same rule to skip
+their descendants, so retained, natively detached tabs do not exhaust its
+5,000-visit cap with hidden content. It still checks for LogBox and RedBox at the
+app root or in separate renderer roots; visible error overlays refuse capture.
+Active routes and routes whose inactivity cannot be proven remain scanned under
+the existing limits. Validated React Native frozen descriptors remain readable;
+arbitrary getters are not invoked, and an unreadable inactivity flag does not
+prune a subtree.
 Unreadable display overrides or styles beyond the array or nesting scan budgets
 resolve as unknown and do not establish `display: none`; later readable overrides
 within the budgets still determine display.
@@ -1469,6 +1507,7 @@ against an unchanged candidate to obtain attributable evidence.
 
 ```sh
 qaren pr <number|url> --plan-file plan.md --device <simulator-UUID> --json
+qaren pr <number|url> --platform android --plan-file plan.md --device emulator-5554 --json
 qaren publish <run-id> --json
 ```
 
@@ -1499,17 +1538,25 @@ request head under `~/.qaren/runs/<run-id>/wt`. It refuses unless origin's
 `pull/<n>/head` is the head GitHub reports and the worktree is clean at that
 commit, both before the lease and again before the walk. Fetch verification uses
 a per-run local ref rather than shared `FETCH_HEAD`, so concurrent PR runs
-verify their own fetched commits. On iOS the simulator
-screen is recorded from just before the walk to just after it and encoded to
-`media/video.mp4` (H.264, 30 fps); without `ffmpeg`, or when a capture cannot
-start, the run continues and the receipt's `video` outcome says why. The local
-recording stays complete; `qaren publish` uploads only
+verify their own fetched commits.
+
+On iOS the simulator screen is recorded from just before the walk to just after
+it. On Android, `pr` [borrows a booted emulator like `check`](#check-a-plan).
+API 34 or newer records one continuous MP4 with `screenrecord --time-limit 0`,
+including walks longer than 180 seconds. API 33 and older still run the walk,
+but skip recording with the explicit video-unavailable reason that Android
+API <34 stops screen recording at 180 seconds.
+
+Both platforms encode the capture to `media/video.mp4` (H.264, 30 fps), using
+`ffmpeg` and checking playable duration with `ffprobe`. If these tools are
+unavailable, capture cannot start, or finalization fails, the walk can still
+complete and the receipt's `video` outcome says why. The local recording stays
+complete; `qaren publish` uploads only
 `media/video-published.mp4`, trimmed under the [video publication contract](#video-publication).
 Blocks the walk saved are copied to `blocks/` before the
 worktree is removed. If the pull
 request moved during the run, the receipt names the tested commit in
-`tested_older_commit`. On Android, `pr` borrows an emulator like `check`; its
-video is unavailable in this release.
+`tested_older_commit`.
 
 Normal teardown and dead-owner recovery remove the PR worktree only after
 cleanup proves the recorded build, core, Metro, recorder and runner-host
@@ -1520,14 +1567,30 @@ after reaping owned children; a free port or dead launcher alone is insufficient
 Present or unknown group evidence retains Metro ownership and any applicable lease.
 Successful PR worktree removal reports measured reclaimed bytes, or explicitly
 reports that the byte count is unknown, including dead-owner recovery. Once a
-playable local video replaces `media/raw.mov`, the raw capture is retired and
-its reclaimed size is reported; failed finalization retains it.
+playable local video replaces the raw capture (`media/raw.mov` on iOS or
+`media/raw.mp4` on Android), the raw capture is retired and its reclaimed size
+is reported; failed finalization retains it.
 
 An unproven recorder shutdown retains recorder ownership and the device lease,
 including when recording startup fails. Teardown retries an unresolved stop;
 the receipt's `cleanup.recorder` reports that final outcome. If shutdown remains
-unresolved, recover with `qaren cleanup <run-id>` as described under
-[iOS admission and cleanup](#ios-admission-and-cleanup).
+unresolved, recover with `qaren cleanup <run-id>`; iOS follows the
+[iOS admission and cleanup contract](#ios-admission-and-cleanup).
+
+Android recorder cleanup requires the run's device lease, its recorded emulator
+endpoint and a compatible borrowed adb server. It signals only the device
+recorder matching the per-run output path, first with INT, then with KILL if
+needed; a KILL fallback is recorded as abnormal media finalization. Cleanup
+must prove device-recorder absence and host adb process-group shutdown before
+pulling the media. Unknown device state retains the resource and lease.
+
+The Android capture stays at `/data/local/tmp/qaren-<run-id>.mp4` until a
+successful pull to the run's `media/raw.mp4` has durable SHA-256 evidence.
+A failed pull preserves the device file and recorder resource for
+`qaren cleanup <run-id>` to retry. Recovery reuses a completed pull only when
+the local bytes match its persisted digest, then retries device-file removal
+and recorder retirement. Cleanup recovers the raw media; it does not encode a
+video or upgrade the original publication verdict.
 
 `qaren publish` posts one comment: the structured PASS/FAIL/REFUSED verdict and refusal code, the
 tested commit, an eligible available video, the plan with ✓/✗ per walked line,
