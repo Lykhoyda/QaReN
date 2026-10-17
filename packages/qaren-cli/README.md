@@ -860,6 +860,8 @@ Waits poll unresolved text as not yet present and end with `VISIBILITY_UNSURE`
 when the final evidence remains unsure. A quoted wait with at least two definite
 absence observations sharing one screen signature fails at its deadline with
 “did not appear”; it does not report expired evidence for that stable absence.
+Either unmet ending first gets one [step recovery](#step-recovery), so a quoted wait
+behind a blocking screen or system dialog runs once more with its full budget.
 Scroll-until-text uses the same visibility verdict
 within its scroll and time budgets. Literal checks re-ask from a fresh capture
 and use `CHECK_UNSURE` if uncertainty remains. This is distinct from acquisition
@@ -1475,11 +1477,12 @@ It is checked before accepting a step or refusing incomplete semantic evidence,
 and never triggers recovery.
 
 An action without success evidence after its one retry, a step target that
-does not resolve, a definite failed check, or a phrase check still unsure after its re-ask
-gets at most one deterministic recovery, then the step runs once more from a fresh
+does not resolve, a definite failed check, an unmet quoted wait, or a phrase check still
+unsure after its re-ask gets at most one deterministic recovery, then the step runs once more from a fresh
 capture. The order is owned by [`recover.ts`](../qaren-core/src/qa/recover.ts): a
 recognized system dialog in front is declined by default (an explicit
-`Allow the permission prompt` or `Accept the dialog` step still accepts); a dev
+`Allow the permission prompt` or `Accept the dialog` step still accepts, and a
+dialog is left to the plan when its next step is a dialog step); a dev
 menu or floating button in front is cleared through the shared
 [overlay clearance mechanism](#check-a-plan); an eligible app interruption is
 declined as described below; and when `loginMarker`

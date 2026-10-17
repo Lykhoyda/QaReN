@@ -203,9 +203,11 @@ interface Observation {
   timing: ObservationTiming;
 }
 
+const ITEM_DEADLINE_EXCEEDED = 'VISIBILITY_UNSURE: ITEM_DEADLINE_EXCEEDED';
+
 class EvidenceExpired extends Error {
   constructor(readonly itemExpired = false) {
-    super(itemExpired ? 'VISIBILITY_UNSURE: ITEM_DEADLINE_EXCEEDED' : 'EVIDENCE_EXPIRED');
+    super(itemExpired ? ITEM_DEADLINE_EXCEEDED : 'EVIDENCE_EXPIRED');
   }
 }
 
@@ -1169,6 +1171,9 @@ export async function walkBlock(
     recovered.add(item);
     loginReplayed = false;
     const fresh = await capture(undefined, true, true);
+    // A system alert the plan's next step answers is the author's, not recovery's.
+    const next = block.items[block.items.indexOf(item) + 1];
+    if (fresh.screen.front === 'dialog' && next?.kind === 'dialog') return undefined;
     const planTargets = [
       recoveryTarget(item) ?? { phrase: '' },
       ...block.items.slice(block.items.indexOf(item) + 1).flatMap((remaining) => {
@@ -1441,14 +1446,14 @@ export async function walkBlock(
           if (!found) {
             if (unsure) throw unresolvedText(item.target.quoted!);
             // Repeated literal absence on one unchanged screen is an observed result, not uncertainty.
-            if (absent >= 2 && absentScreens.size === 1)
-              return failed(
-                item,
-                1,
-                `"${item.target.quoted}" did not appear within ${budget / 1000}s; the screen did not change across ${absent} observations`,
-                observation.screen,
-                await shoot(item),
-              );
+            const unchanged = absent >= 2 && absentScreens.size === 1;
+            const reason = unchanged
+              ? `"${item.target.quoted}" did not appear within ${budget / 1000}s; the screen did not change across ${absent} observations`
+              : ITEM_DEADLINE_EXCEEDED;
+            const recovering = await recovery(item, 1, reason);
+            if (recovering === 'retry') continue attempts;
+            if (recovering) return recovering;
+            if (unchanged) return failed(item, 1, reason, observation.screen, await shoot(item));
             usable(observation, item, deadline);
             throw new EvidenceExpired(true);
           }

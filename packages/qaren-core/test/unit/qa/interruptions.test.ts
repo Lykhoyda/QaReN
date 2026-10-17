@@ -366,3 +366,144 @@ test('a declined recovery logs one value-free rejection while preserving the ori
   assert.equal((await runPlan(plan(), successful.deps)).verdict, 'PASS');
   assert.equal(logs.filter((line) => line.startsWith('interruption-rejected=')).length, 0);
 });
+
+const waitPlan = (extra = '') => parsePlan(`1. Wait for "Settings" to appear\n${extra}`).blocks!;
+const alert = (): Screen => ({
+  ...screen([element('@allow', 'Allow')]),
+  front: 'dialog',
+  coverage: { native: 'incomplete', react: 'complete' },
+  captureCoverage: { native: 'complete', react: 'complete' },
+});
+function ticking(f: ReturnType<typeof app>) {
+  let clock = 0;
+  f.deps.now = () => clock;
+  f.deps.sleep = async (ms) => {
+    clock += ms;
+  };
+  const rows: Parameters<WalkerDeps['row']>[0][] = [];
+  f.deps.row = (row) => rows.push(row);
+  return rows;
+}
+// A pop-up whose hero changes on every capture until its decline is pressed.
+function changingPopup(f: ReturnType<typeof app>, skip = element('@close', 'Skip')) {
+  let frame = 0;
+  let dismissed = false;
+  const press = f.deps.press;
+  f.deps.press = async (ref, context) => {
+    dismissed = true;
+    return press(ref, context);
+  };
+  f.deps.captureScreen = async () =>
+    dismissed ? home() : screen([element('@hero', `Hero ${frame++}`), skip]);
+}
+
+test('a quoted wait behind an unchanged optional pop-up declines it once and retries the wait', async () => {
+  const f = app(screen([element('@close', 'Skip')]));
+  const rows = ticking(f);
+  const result = await runPlan(waitPlan(), f.deps);
+  assert.equal(result.verdict, 'PASS', result.failure?.seen);
+  assert.deepEqual(f.actions, ['press @close']);
+  assert.equal(result.recoveries, 1);
+  const retry = rows.find((row) => row.outcome === 'retry');
+  assert.match(
+    result.steps.find((row) => row.outcome === 'retry')?.reason ?? '',
+    /^"Settings" did not appear within 15s; the screen did not change across \d+ observations; recovered: dismissed an app screen with Skip/,
+  );
+  assert.deepEqual(
+    rows.filter((row) => row.operationId === retry?.operationId).map((row) => row.outcome),
+    ['retry', 'pass'],
+  );
+});
+
+test('a quoted wait behind a changing optional pop-up declines it once and retries the wait', async () => {
+  const f = app(home());
+  changingPopup(f);
+  ticking(f);
+  const result = await runPlan(waitPlan(), f.deps);
+  assert.equal(result.verdict, 'PASS', result.failure?.seen);
+  assert.deepEqual(f.actions, ['press @close']);
+  assert.equal(result.recoveries, 1);
+  assert.match(
+    result.steps.find((row) => row.outcome === 'retry')?.reason ?? '',
+    /^VISIBILITY_UNSURE: ITEM_DEADLINE_EXCEEDED; recovered: dismissed an app screen with Skip/,
+  );
+});
+
+test('a quoted wait behind a system alert declines it by default and retries the wait', async () => {
+  const f = app(alert());
+  ticking(f);
+  const result = await runPlan(waitPlan(), f.deps);
+  assert.equal(result.verdict, 'PASS', result.failure?.seen);
+  assert.deepEqual(f.actions, ['dialog dismiss']);
+  assert.equal(result.recoveries, 1);
+  assert.match(
+    result.steps.find((row) => row.outcome === 'retry')?.reason ?? '',
+    /^"Settings" did not appear within 15s; the screen did not change across \d+ observations; recovered: dialog/,
+  );
+});
+
+test('a system alert is left to the plan when its next step is a dialog step', async () => {
+  const f = app(alert());
+  ticking(f);
+  const result = await runPlan(waitPlan('2. Dismiss the permission dialog'), f.deps);
+  assert.equal(result.verdict, 'FAIL');
+  assert.equal(result.failure?.step, 1);
+  assert.match(result.failure?.seen ?? '', /^"Settings" did not appear within 15s/);
+  assert.deepEqual(f.actions, []);
+  assert.equal(result.recoveries, 0);
+});
+
+test('a quoted wait with no pop-up passes without recovery', async () => {
+  const f = app(home());
+  const rows = ticking(f);
+  const result = await runPlan(waitPlan(), f.deps);
+  assert.equal(result.verdict, 'PASS');
+  assert.equal(result.recoveries, 0);
+  assert.deepEqual(f.actions, []);
+  assert.deepEqual(
+    rows.map((row) => [row.line, row.outcome]),
+    [[1, 'pass']],
+  );
+});
+
+test('a quoted wait whose recovery finds nothing keeps its original failure on both unmet exits', async () => {
+  for (const changing of [false, true]) {
+    const skip = element('@close', 'Skip', { disabled: true });
+    const f = app(screen([skip]));
+    if (changing) changingPopup(f, skip);
+    ticking(f);
+    const logs: string[] = [];
+    f.deps.note = (line) => logs.push(line);
+    const result = await runPlan(waitPlan(), f.deps);
+    assert.equal(result.verdict, 'FAIL');
+    assert.deepEqual(f.actions, []);
+    assert.equal(result.recoveries, 0);
+    assert.match(
+      result.failure?.seen ?? '',
+      changing
+        ? /VISIBILITY_UNSURE: ITEM_DEADLINE_EXCEEDED/
+        : /^"Settings" did not appear within 15s/,
+    );
+    const records = logs.filter((line) => line.startsWith('interruption-rejected='));
+    assert.equal(records.length, 1);
+    assert.equal(
+      JSON.parse(records[0].slice('interruption-rejected='.length)).veto,
+      'no-candidate',
+    );
+  }
+});
+
+test('a quoted wait that fails again after one decline does not recover a second time', async () => {
+  const f = app(screen([element('@close', 'Skip')]));
+  f.deps.press = async (ref) => {
+    f.actions.push(`press ${ref}`);
+    f.show(screen([element('@done', 'Done')]));
+    return { ok: true, proven: false, executed: true };
+  };
+  ticking(f);
+  const result = await runPlan(waitPlan(), f.deps);
+  assert.equal(result.verdict, 'FAIL');
+  assert.deepEqual(f.actions, ['press @close']);
+  assert.equal(result.recoveries, 1);
+  assert.match(result.failure?.seen ?? '', /^"Settings" did not appear within 15s/);
+});
