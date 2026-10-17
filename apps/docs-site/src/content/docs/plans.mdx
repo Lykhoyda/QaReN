@@ -34,6 +34,11 @@ A plan is a Markdown file. `qaren check` and `qaren pr` take it with `--plan-fil
 - A block with no steps, two blocks with the same title, or two titles that produce the
   same block ID refuse the plan.
 
+Open a block that continues a journey with `starts on: <testID or text>` before its
+steps. The value is a literal testID or visible text, with optional quotes. The start
+line alone does not count as a block's steps. For start waits, refusals and replay,
+see the authoritative [saved-block contract](https://github.com/Lykhoyda/rn-dev-agent/blob/develop/packages/qaren-cli/README.md#saved-blocks).
+
 The block ID is the heading in lowercase, with every run of characters outside `a-z` and
 `0-9` replaced by a hyphen. It names the [saved block](../saved-blocks/) file.
 

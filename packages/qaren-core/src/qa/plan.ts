@@ -14,7 +14,7 @@ export type Step =
   | { kind: 'press'; target: Target }
   | { kind: 'fill'; target: Target; text: string }
   | { kind: 'scroll'; direction: 'down' | 'up'; until?: Target }
-  | { kind: 'wait'; target: Target }
+  | { kind: 'wait'; target: Target; precondition?: true }
   | { kind: 'back' }
   | { kind: 'dialog'; action: 'accept' | 'dismiss' };
 
@@ -29,7 +29,6 @@ export type Item = (Step | Check) & { line: number; raw: string; source: 'gramma
 export interface Block {
   slug: string;
   title: string;
-  startsOn?: string;
   items: Item[];
   planHash: string;
 }
@@ -258,7 +257,11 @@ function scanPlan(
     return current;
   };
   const closeDeclared = (): void => {
-    if (current && declaredAt !== null && current.items.length === 0) {
+    if (
+      current &&
+      declaredAt !== null &&
+      current.items.every((item) => item.kind === 'wait' && item.precondition)
+    ) {
       refused.push({
         line: declaredAt,
         text: `### ${current.title}`,
@@ -282,7 +285,21 @@ function scanPlan(
     if (text.startsWith('#')) continue;
     const startsOn = STARTS_ON.exec(text);
     if (startsOn) {
-      (current ?? open(title, line, text)).startsOn = startsOn[1].trim();
+      const block = current ?? open(title, line, text);
+      if (block.items.some((item) => item.kind !== 'wait' || !item.precondition)) {
+        refused.push({ line, text, reason: "starts on must come before the block's steps" });
+        continue;
+      }
+      const value = startsOn[1].trim();
+      const quoted = /^(?:"([^"]+)"|“([^”]+)”)$/.exec(value);
+      block.items.push({
+        kind: 'wait',
+        target: targetFrom(`"${quoted ? (quoted[1] ?? quoted[2]) : value}"`),
+        precondition: true,
+        line,
+        raw: text,
+        source: 'grammar',
+      });
       continue;
     }
     const check = CHECK.exec(text);
@@ -334,7 +351,9 @@ function scanPlan(
         blocks.map((block) => block.title),
       ),
     };
-  const filled = blocks.filter((b) => b.items.length > 0);
+  const filled = blocks.filter((b) =>
+    b.items.some((item) => item.kind !== 'wait' || !item.precondition),
+  );
   if (filled.length === 0)
     return { refused: [{ line: 0, text: '', reason: 'the plan has no steps' }] };
   for (const block of filled) block.planHash = planHash(block.items);
