@@ -4,7 +4,9 @@ import { isAbsolute } from 'node:path';
 import { promisify } from 'node:util';
 import { fileURLToPath } from 'node:url';
 import {
+  isAndroidEmulatorSerial,
   isIosSimulatorUdid,
+  probeAndroidExternalRunnerAdmission,
   probeIosExternalRunnerAdmission,
   type IosStrictRunnerStatus,
   type IosAdmissionProbeEvidence,
@@ -12,7 +14,7 @@ import {
 
 export interface FreshInstallPreflightResult {
   v: 1;
-  platform: 'ios';
+  platform: 'ios' | 'android';
   deviceId: string;
   status: IosStrictRunnerStatus;
   evidence?: IosAdmissionProbeEvidence;
@@ -70,6 +72,15 @@ export async function freshInstallPreflight(args: string[]): Promise<FreshInstal
     options.set(key, args[i + 1]);
   }
   const deviceId = options.get('--device');
+  if (
+    options.get('--platform') === 'android' &&
+    deviceId &&
+    isAndroidEmulatorSerial(deviceId) &&
+    !options.has('--process-observer')
+  ) {
+    const { status } = await probeAndroidExternalRunnerAdmission(deviceId);
+    return { v: 1, platform: 'android', deviceId, status };
+  }
   if (options.get('--platform') !== 'ios' || !deviceId || !isIosSimulatorUdid(deviceId)) {
     return invalid;
   }

@@ -763,3 +763,123 @@ test('literal text under a visible keyboard is not on screen', () => {
 test('a keyboard reported hidden keeps literal text visible', () => {
   assert.equal(check(keyboardForm(false), 'Field 8'), 'pass');
 });
+
+// Android: React Native exposes header-role text as android.view.View and reports the heading fact.
+const display = { x: 0, y: 0, width: 1080, height: 2400 };
+function androidScreen(leaf: Partial<NativeNode>): Screen {
+  return join(
+    [
+      { ref: '@e0', index: 0, type: 'Application', rect: display, enabled: true },
+      { ref: '@e1', index: 1, parentIndex: 0, type: 'Window', rect: display, enabled: true },
+      {
+        ref: '@e2',
+        index: 2,
+        parentIndex: 1,
+        type: 'android.widget.TextView',
+        label: 'Focused tab: one',
+        rect: { x: 16, y: 200, width: 600, height: 60 },
+        enabled: true,
+        visibleToUser: true,
+      },
+      {
+        ref: '@e3',
+        index: 3,
+        parentIndex: 1,
+        type: 'android.view.View',
+        label: 'Capture list one',
+        identifier: 'qa-capture-heading-one',
+        rect: { x: 16, y: 300, width: 600, height: 80 },
+        enabled: true,
+        visibleToUser: true,
+        ...leaf,
+      },
+    ],
+    [],
+    'app',
+    complete,
+  );
+}
+
+test('an Android heading reported by the runner is literal text', async () => {
+  const screen = androidScreen({ heading: true });
+  assert.equal(screen.elements[3].kind, 'text');
+  assert.ok(screen.visibleText.includes('Capture list one'));
+  assert.deepEqual(literalEvidence(screen, 'Capture list one', 'contains'), { verdict: 'pass' });
+  const row = await checkRow(screen, 'Capture list one');
+  assert.equal(row.verdict, 'PASS');
+  assert.equal(row.steps[0].reason, undefined);
+});
+
+test('an Android View without the heading fact stays out of literal text and names the near miss', async () => {
+  const screen = androidScreen({});
+  assert.equal(screen.elements[3].kind, 'other');
+  assert.equal(screen.visibleText.includes('Capture list one'), false);
+  assert.deepEqual(literalEvidence(screen, 'Capture list one', 'contains'), {
+    verdict: 'fail',
+    nearMiss: 'not-literal-kind',
+  });
+  const row = await checkRow(screen, 'Capture list one');
+  assert.equal(row.verdict, 'FAIL');
+  assert.equal(
+    row.steps[0].reason,
+    '"Capture list one" is not satisfied on screen (not-literal-kind: a node with this text exists but is not counted as literal text)',
+  );
+});
+
+test('a heading fact never re-kinds a typed node', () => {
+  const screen = androidScreen({ type: 'android.widget.Button', heading: true });
+  assert.equal(screen.elements[3].kind, 'button');
+});
+
+test('a literal on a node not visible to the user names the near miss', async () => {
+  const hidden = { type: 'android.widget.TextView', visibleToUser: false };
+  const screen = androidScreen(hidden);
+  assert.deepEqual(literalEvidence(screen, 'list one', 'contains'), {
+    verdict: 'fail',
+    nearMiss: 'not-visible',
+  });
+  const row = await checkRow(screen, 'list one');
+  assert.equal(
+    row.steps[0].reason,
+    '"list one" is not satisfied on screen (not-visible: a node with this text exists but is reported not visible or is outside the viewport)',
+  );
+  const below = androidScreen({
+    type: 'android.widget.TextView',
+    rect: { x: 16, y: 2600, width: 600, height: 80 },
+  });
+  assert.equal(literalEvidence(below, 'Capture list one', 'contains').nearMiss, 'not-visible');
+});
+
+test('the near miss names the fact that kept a node out, whatever the tree order', () => {
+  const nodes = (hidden: 'text' | 'view'): NativeNode[] => [
+    { ref: '@e0', index: 0, type: 'Application', rect: display, label: 'Card one' },
+    { ref: '@e1', index: 1, parentIndex: 0, type: 'Window', rect: display },
+    {
+      ref: '@e2',
+      index: 2,
+      parentIndex: 1,
+      type: hidden === 'text' ? 'android.widget.TextView' : 'android.view.View',
+      label: 'Card one',
+      rect: { x: 16, y: 300, width: 600, height: 80 },
+      visibleToUser: false,
+    },
+  ];
+  const text = join(nodes('text'), [], 'app', complete);
+  assert.equal(literalEvidence(text, 'Card one', 'contains').nearMiss, 'not-visible');
+  const view = join(nodes('view'), [], 'app', complete);
+  assert.equal(literalEvidence(view, 'Card one', 'contains').nearMiss, 'not-literal-kind');
+  const [root, ...rest] = nodes('view');
+  const onlyHidden = join([{ ...root, label: undefined }, ...rest], [], 'app', complete);
+  assert.equal(literalEvidence(onlyHidden, 'Card one', 'contains').nearMiss, 'not-visible');
+});
+
+test('a plain miss or an unsure literal carries no near miss', async () => {
+  const screen = androidScreen({ heading: true });
+  assert.deepEqual(literalEvidence(screen, 'Capture list two', 'contains'), { verdict: 'fail' });
+  const row = await checkRow(screen, 'Capture list two');
+  assert.equal(row.steps[0].reason, '"Capture list two" is not satisfied on screen');
+  const partial = { ...androidScreen({}), coverage: { native: 'incomplete', react: 'complete' } };
+  assert.deepEqual(literalEvidence(partial as Screen, 'Capture list one', 'contains'), {
+    verdict: 'unsure',
+  });
+});

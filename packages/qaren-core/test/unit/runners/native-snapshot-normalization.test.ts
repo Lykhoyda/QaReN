@@ -6,6 +6,20 @@ import {
   _setRunnerStateForTest,
   runIOS,
 } from '../../../dist/runners/rn-fast-runner-client.js';
+import {
+  _setAndroidRunnerStateForTest,
+  _setFetchForTest as _setAndroidFetchForTest,
+  runAndroid,
+} from '../../../dist/runners/rn-android-runner-client.js';
+import {
+  REQUIRED_ANDROID_COMMANDS,
+  REQUIRED_ANDROID_FEATURES,
+  REQUIRED_IOS_COMMANDS,
+  REQUIRED_IOS_FEATURES,
+  RUNNER_PROTOCOL_VERSION,
+  getPluginVersion,
+} from '../../../dist/runners/protocol.js';
+import { QA_READ_ONLY_CAPABILITY } from '../../../dist/runners/qa-native-policy.js';
 import { parseEnvelope } from '../../helpers/result-helpers.js';
 
 test('runIOS snapshot preserves evidenced native hierarchy and coverage without changing refs or exposing values', async (t) => {
@@ -225,4 +239,148 @@ test('runIOS snapshot keeps the selected state a selection-only control reports'
   const nodes = (envelope.data as { nodes: { label?: string; selected?: boolean }[] }).nodes;
   assert.equal(nodes.find((n) => n.label === 'Male')?.selected, true);
   assert.equal(Object.hasOwn(nodes.find((n) => n.label === 'Female')!, 'selected'), false);
+});
+
+test('runAndroid QA snapshot keeps a reported heading and adds none where the runner reports none', async (t) => {
+  clearRefMap();
+  _setAndroidRunnerStateForTest({
+    hostPort: 22089,
+    devicePort: 22089,
+    pid: process.pid,
+    deviceId: 'test-emulator',
+    bundleId: 'com.test',
+    startedAt: 'now',
+  });
+  t.after(() => {
+    _setAndroidFetchForTest(globalThis.fetch);
+    _setAndroidRunnerStateForTest(null);
+    clearRefMap();
+  });
+  const rect = { x: 0, y: 0, width: 1080, height: 200 };
+  _setAndroidFetchForTest(async (url) => {
+    if (String(url).endsWith('/health'))
+      return Response.json({
+        ok: true,
+        protocolVersion: RUNNER_PROTOCOL_VERSION,
+        runnerVersion: getPluginVersion(),
+        commands: REQUIRED_ANDROID_COMMANDS,
+        capabilities: [...REQUIRED_ANDROID_FEATURES, QA_READ_ONLY_CAPABILITY],
+      });
+    return Response.json({
+      ok: true,
+      data: {
+        nodes: [
+          { index: 0, depth: 0, type: 'Application', rect },
+          {
+            index: 1,
+            depth: 1,
+            parentIndex: 0,
+            type: 'android.view.View',
+            label: 'Section title',
+            visibleToUser: true,
+            heading: true,
+            rect,
+          },
+          {
+            index: 2,
+            depth: 1,
+            parentIndex: 0,
+            type: 'android.widget.TextView',
+            label: 'Body',
+            visibleToUser: true,
+            rect,
+          },
+        ],
+        truncated: false,
+        normalizationDroppedNodes: 0,
+        snapshotGeneration: 1,
+        keyboardVisible: false,
+      },
+    });
+  });
+  const envelope = parseEnvelope(
+    await runAndroid({
+      command: 'snapshot',
+      deviceId: 'test-emulator',
+      bundleId: 'com.test',
+      qaReadOnly: true,
+    }),
+  );
+  const nodes = (envelope.data as { nodes: { label?: string; heading?: boolean }[] }).nodes;
+  assert.equal(nodes.find((n) => n.label === 'Section title')?.heading, true);
+  assert.equal(Object.hasOwn(nodes.find((n) => n.label === 'Body')!, 'heading'), false);
+});
+
+test('QA snapshots retain emitted, normalized and dropped kinds without publishing producer diagnostics', async (t) => {
+  clearRefMap();
+  _setRunnerStateForTest({
+    port: 22088,
+    pid: process.pid,
+    deviceId: 'sim',
+    bundleId: 'com.test',
+    startedAt: 'now',
+  });
+  t.after(() => {
+    _setFetchForTest(globalThis.fetch);
+    _setRunnerStateForTest(null);
+    clearRefMap();
+  });
+  const rect = { x: 0, y: 0, width: 100, height: 40 };
+  let snapshotDiagnostics: unknown = {
+    v: 1,
+    viewportSource: 'app',
+    viewport: [-1.2, 2.6, 100, 200],
+    label: 'SECRET-DIAGNOSTIC',
+  };
+  const data = () => ({
+    nodes: [
+      { index: 0, type: 'TextField', rect, enabled: false, hittable: false },
+      { index: 1, type: 'SearchField' },
+      { index: 2, type: 'SECRET-CUSTOM-TYPE', rect },
+    ],
+    snapshotDiagnostics,
+  });
+  let requests = 0;
+  _setFetchForTest(async (url) => {
+    if (String(url).endsWith('/health'))
+      return Response.json({
+        ok: true,
+        protocolVersion: 2,
+        commands: REQUIRED_IOS_COMMANDS,
+        capabilities: [...REQUIRED_IOS_FEATURES, 'QA_READ_ONLY_V1'],
+      });
+    requests++;
+    return Response.json({ ok: true, data: data() });
+  });
+  const qa = parseEnvelope(await runIOS({ command: 'snapshot', qaReadOnly: true }));
+  assert.equal(requests, 1);
+  assert.deepEqual(qa.data.snapshotDiagnostics, {
+    viewportStatus: 'collected',
+    viewportSource: 'app',
+    viewport: [-1, 3, 100, 200],
+    emittedCount: 3,
+    normalizedCount: 2,
+    missingRectCount: 1,
+    emittedByKind: [1, 0, 0, 1, 0, 0, 0, 0, 0, 1],
+    normalizedByKind: [1, 0, 0, 0, 0, 0, 0, 0, 0, 1],
+    missingRectByKind: [0, 0, 0, 1, 0, 0, 0, 0, 0, 0],
+  });
+  assert.equal(JSON.stringify(qa.data.snapshotDiagnostics).includes('SECRET'), false);
+  const ordinary = parseEnvelope(await runIOS({ command: 'snapshot' }));
+  assert.equal(Object.hasOwn(ordinary.data, 'snapshotDiagnostics'), false);
+  assert.deepEqual(
+    ordinary.data.nodes.map((n: { ref: string }) => n.ref),
+    ['@e0', '@e2'],
+  );
+  for (const [input, status] of [
+    [undefined, 'missing'],
+    [null, 'invalid'],
+    [{ v: 1, viewportSource: 'unbounded', viewport: null }, 'collected'],
+    [{ v: 1, viewportSource: 'app', viewport: null }, 'invalid'],
+  ] as const) {
+    snapshotDiagnostics = input;
+    const result = parseEnvelope(await runIOS({ command: 'snapshot', qaReadOnly: true }));
+    assert.equal(result.data.snapshotDiagnostics.viewportStatus, status);
+    assert.equal(result.data.snapshotDiagnostics.emittedCount, 3);
+  }
 });

@@ -1,6 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { EventEmitter } from 'node:events';
+import { TargetSelectionError } from '../../dist/cdp/discovery.js';
 import {
   ConnectionSetupSupersededError,
   connectWebSocket,
@@ -74,6 +75,31 @@ test('discoverAndConnect: throws with selectionWarning when discover returns [] 
     state.setStateCalls.includes('disconnected'),
     'setState("disconnected") must be called before throw',
   );
+});
+
+test('discoverAndConnect: a selection refusal carries the discovery inference on its typed error', async () => {
+  const { state, ctx } = createMockContext();
+  const inference = { readers: {}, targets: [] };
+  const candidate = { id: 'a-1' };
+  const mockDiscover = async () => ({
+    port: 8081,
+    targets: [],
+    warning: 'PLATFORM_TARGET_NOT_FOUND: requested platform cannot be proven',
+    errorCode: 'PLATFORM_TARGET_NOT_FOUND',
+    candidates: [candidate],
+    inference,
+  });
+  await assert.rejects(
+    () => discoverAndConnect(ctx, undefined, undefined, mockDiscover),
+    (error) => {
+      assert.ok(error instanceof TargetSelectionError);
+      assert.equal(error.code, 'PLATFORM_TARGET_NOT_FOUND');
+      assert.equal(error.inference, inference);
+      assert.deepEqual(error.candidates, [candidate]);
+      return true;
+    },
+  );
+  assert.equal(state.currentState, 'disconnected');
 });
 
 test('discoverAndConnect: throws with default message when discover returns [] without warning (B111/D643/G9)', async () => {

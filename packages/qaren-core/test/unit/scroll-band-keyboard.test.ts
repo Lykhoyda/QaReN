@@ -60,3 +60,87 @@ test('a clearance swipe longer than the band keeps clear of the band edges', () 
   assert.ok(y1 <= KEYBOARD.rect.y * 0.8 + 1 && y2 >= KEYBOARD.rect.y * 0.2 - 1, `${y1} ${y2}`);
   assert.ok(y1 - y2 >= KEYBOARD.rect.y * 0.6 - 2, `${y1 - y2}`);
 });
+
+test('a clearance scroll inside a named band starts and ends inside that band above the keyboard', () => {
+  clearRefMap();
+  updateRefMapFromFlat([WINDOW, KEYBOARD] as never, {
+    snapshotGeneration: 1,
+    keyboardVisible: true,
+  });
+  try {
+    const [, x1, y1, , y2] = buildDirectionalScrollCliArgs('down', 0.6, undefined, undefined, {
+      x: 0,
+      y: 300,
+      width: 390,
+      height: 500,
+    }).map(Number);
+    assert.equal(x1, 195);
+    for (const y of [y1, y2]) assert.ok(y >= 300 && y < KEYBOARD.rect.y, `${y}`);
+    assert.ok(y1 > y2, `${y1} ${y2}`);
+  } finally {
+    clearRefMap();
+  }
+});
+
+// An Android form: the walker's band is the list above its sticky footer (y 300-1150).
+test('a clearance distance inside a named band spans the whole band, a pixel inside each edge', () => {
+  clearRefMap();
+  updateRefMapFromFlat(
+    [
+      { ...WINDOW, rect: { x: 0, y: 0, width: 1080, height: 2400 } },
+      { ...KEYBOARD, rect: { x: 0, y: 1400, width: 1080, height: 1000 } },
+    ] as never,
+    { snapshotGeneration: 1, keyboardVisible: true },
+  );
+  try {
+    const [, , y1, , y2] = buildDirectionalScrollCliArgs('down', 0.6, undefined, 1175, {
+      x: 0,
+      y: 300,
+      width: 1080,
+      height: 850,
+    }).map(Number);
+    assert.ok(Math.abs(y1 - 1149) <= 1 && Math.abs(y2 - 301) <= 1, `${y1} ${y2}`);
+    assert.ok(y1 - y2 >= 800, `${y1 - y2}`);
+  } finally {
+    clearRefMap();
+  }
+});
+
+test('a clearance distance without a named band keeps the window cap', () => {
+  const [y1, y2] = clearanceSwipe(5000);
+  assert.ok(Math.abs(y1 - y2 - Math.round(KEYBOARD.rect.y * 0.6)) <= 1, `${y1 - y2}`);
+});
+
+// The keyboard form's band ends at its sticky footer's first row; a drag starting there lands on the footer.
+function bandDragYs(direction: 'up' | 'down', band: { y: number; height: number }): number[] {
+  clearRefMap();
+  updateRefMapFromFlat(
+    [
+      { ...WINDOW, rect: { x: 0, y: 0, width: 1080, height: 2400 } },
+      { ...KEYBOARD, rect: { x: 0, y: 1517, width: 1080, height: 883 } },
+    ] as never,
+    { snapshotGeneration: 1, keyboardVisible: true },
+  );
+  try {
+    const [, , y1, , y2] = buildDirectionalScrollCliArgs(direction, 0.6, undefined, 1290, {
+      x: 0,
+      width: 1080,
+      ...band,
+    }).map(Number);
+    return [y1, y2];
+  } finally {
+    clearRefMap();
+  }
+}
+
+for (const height of [1045, 1044]) {
+  test(`a full-band clearance drag over a ${height}px band starts and ends strictly inside it`, () => {
+    const band = { y: 283, height };
+    for (const direction of ['down', 'up'] as const) {
+      const ys = bandDragYs(direction, band);
+      assert.ok(Math.max(...ys) <= band.y + height - 1, `${direction} ${ys}`);
+      assert.ok(Math.min(...ys) >= band.y + 1, `${direction} ${ys}`);
+      assert.ok(Math.abs(ys[0] - ys[1]) >= height - 3, `${direction} ${ys}`);
+    }
+  });
+}

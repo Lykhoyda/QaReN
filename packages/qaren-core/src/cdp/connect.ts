@@ -201,11 +201,17 @@ export async function discoverAndConnect(
     warning: selectionWarning,
     errorCode,
     candidates,
+    inference,
   } = result;
   ctx.setPort(metroPort);
   if (errorCode) {
     ctx.setState('disconnected');
-    throw new TargetSelectionError(errorCode, selectionWarning ?? errorCode, candidates ?? []);
+    throw new TargetSelectionError(
+      errorCode,
+      selectionWarning ?? errorCode,
+      candidates ?? [],
+      inference,
+    );
   }
 
   // B111 (D643/G9): selectTarget hard-fails (returns []) on explicit filter

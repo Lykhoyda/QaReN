@@ -5,12 +5,159 @@ import { runPlan } from '../../../dist/qa/walker.js';
 import type { WalkerTimingDiagnostic } from '../../../dist/qa/walker.js';
 import { JevError } from '../../../dist/qa/questions.js';
 import { capturePrivateScreen } from '../../../dist/qa/privacy.js';
+import { checkQaNativeOutcome } from '../../../dist/runners/qa-native-policy.js';
+import { join } from '../../../dist/qa/screen.js';
 import {
   admitObservation,
   observationDeadline,
   observationUsable,
 } from '../../../dist/qa/timing.js';
 import { choice, element, screen, scriptedJudge, walker } from './judgment-fixtures.ts';
+
+test('terminal clearance telemetry preserves public rows, screenshots and one-send behavior under sink failure or delay', async () => {
+  let baseline: string | undefined;
+  const joined = (y: number) => ({
+    ...join(
+      [
+        {
+          ref: '@app',
+          index: 0,
+          type: 'Application',
+          rect: { x: 0, y: 0, width: 400, height: 800 },
+        },
+        {
+          ref: '@list',
+          index: 1,
+          parentIndex: 0,
+          type: 'ScrollView',
+          rect: { x: 0, y: 0, width: 400, height: 720 },
+        },
+        {
+          ref: '@PRIVATE-target',
+          index: 2,
+          parentIndex: 1,
+          type: 'Button',
+          identifier: 'go',
+          label: 'PRIVATE-app-label',
+          hittable: true,
+          rect: { x: 20, y, width: 300, height: 44 },
+        },
+      ],
+      [],
+    ),
+    coverage: { native: 'complete' as const, react: 'complete' as const },
+  });
+  for (const sink of ['absent', 'record', 'throw', 'delay']) {
+    const judge = scriptedJudge(() => ({}));
+    const f = walker([joined(710), joined(710), joined(710)], judge);
+    let now = 0;
+    let sends = 0;
+    let shots = 0;
+    const events: WalkerTimingDiagnostic[] = [];
+    f.deps.now = () => now;
+    f.deps.scroll = async (direction, context) => {
+      context.authorize();
+      sends++;
+      f.actions.push(`scroll ${direction}`);
+      return { ok: true, proven: false };
+    };
+    f.deps.screenshot = async (name) => {
+      shots++;
+      return name;
+    };
+    if (sink !== 'absent')
+      f.deps.diagnostic = (event) => {
+        events.push(event);
+        if (event.code === 'CENTRE_COVERED') {
+          if (sink === 'throw') throw Error('PRIVATE-sink');
+          if (sink === 'delay') now += 20_000;
+        }
+      };
+    const result = await runPlan(parsePlan('1. Tap "go"').blocks!, f.deps);
+    assert.equal(result.verdict, 'FAIL');
+    assert.match(result.failure!.seen, /stayed off screen after one scroll: its centre/);
+    assert.equal(sends, 1);
+    assert.equal(f.captures(), 3);
+    assert.equal(shots, 1);
+    assert.deepEqual(f.actions, ['scroll down']);
+    assert.equal(judge.requests.length, 0);
+    const publicOutput = JSON.stringify({ result, rows: f.rows });
+    baseline ??= publicOutput;
+    assert.equal(publicOutput, baseline);
+    assert.ok(!publicOutput.includes('clearanceDiagnostic'));
+    assert.ok(!JSON.stringify(events).includes('PRIVATE-'));
+    if (sink !== 'absent') {
+      assert.equal(events.filter((event) => event.code === 'CENTRE_COVERED').length, 1);
+      assert.equal(
+        events.find((event) => event.code === 'CENTRE_COVERED')?.clearanceDiagnostic
+          ?.targetCentreChanged,
+        false,
+      );
+    }
+  }
+});
+
+test('private first-refusal diagnostics preserve verdict, captures and no replay even with a failing sink', async () => {
+  for (const attested of [false, true]) {
+    for (const throwSink of [false, true]) {
+      const f = walker(
+        [screen([element('@one', 'Save')])],
+        scriptedJudge(() => ({})),
+      );
+      const events: WalkerTimingDiagnostic[] = [];
+      let sends = 0;
+      let shots = 0;
+      f.deps.screenshot = async () => {
+        shots++;
+        return 'PRIVATE-shot';
+      };
+      f.deps.diagnostic = (event) => {
+        events.push(event);
+        if (throwSink) throw Error('PRIVATE-sink');
+      };
+      f.deps.press = async (_ref, context) => {
+        context.authorize();
+        sends++;
+        const code = attested ? 'STALE_REF' : 'ACTION_CONTEXT_CHANGED';
+        context.diagnoseRefusal(
+          () => ({
+            stage: 'native-response',
+            mutating: true,
+            responseOk: false,
+            nativeCode: code,
+            nativeMutation: attested ? 'none' : 'PRIVATE-unknown',
+            message: 'PRIVATE-message',
+          }),
+          () => checkQaNativeOutcome(context, code, {}, undefined, attested ? 'none' : undefined),
+        );
+        return { ok: true, proven: true };
+      };
+      const result = await runPlan(parsePlan('1. Tap "Save"').blocks!, f.deps);
+      assert.equal(result.verdict, 'FAIL');
+      assert.match(
+        result.failure!.seen,
+        attested ? /TARGET_MOVED_BEFORE_DISPATCH/ : /ACTION_OUTCOME_UNCERTAIN/,
+      );
+      assert.equal(sends, 1);
+      assert.equal(f.captures(), 1);
+      assert.equal(shots, 0);
+      const interrupted = events.find((event) => event.code === 'ACTION_INTERRUPTED');
+      assert.equal(
+        interrupted?.refusalDiagnostic?.nativeCode,
+        attested ? 'STALE_REF' : 'ACTION_CONTEXT_CHANGED',
+      );
+      assert.equal(interrupted?.refusalDiagnostic?.nativeMutation, attested ? 'none' : null);
+      assert.equal(
+        events.some((event) => event.code === 'COMPLETED'),
+        false,
+      );
+      assert.equal(events.filter((event) => event.refusalDiagnostic).length, 1);
+      assert.ok(!JSON.stringify(events).includes('PRIVATE-'));
+      assert.ok(!JSON.stringify(result).includes('refusalDiagnostic'));
+      assert.ok(!JSON.stringify(result).includes('nativeCode'));
+    }
+  }
+});
 
 test('a late target judgment refreshes once and never dispatches its stale reference', async () => {
   let now = 0;

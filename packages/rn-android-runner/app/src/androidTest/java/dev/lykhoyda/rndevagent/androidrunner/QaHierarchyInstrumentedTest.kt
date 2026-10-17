@@ -174,6 +174,7 @@ class QaHierarchyInstrumentedTest {
             assertTrue(n.toString(), parent < i)
             assertEquals(n.toString(), nodes.getJSONObject(parent).getInt("depth") + 1, n.getInt("depth"))
             assertTrue(n.has("visibleToUser") && n.has("selected"))
+            assertTrue(n.toString(), !n.has("heading") || n.getBoolean("heading"))
         }
         val covered = node(first, QaHierarchyFixtureActivity.COVERED_IDENTIFIER)
         val ancestors = generateSequence(covered.getInt("parentIndex")) { p ->
