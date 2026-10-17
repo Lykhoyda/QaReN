@@ -81,6 +81,7 @@ fn admit(runner: &mut dyn Runner, device: &str) -> Result<(), String> {
         &checkout().join("packages/qaren-core/dist"),
         checkout(),
         device,
+        None,
     )
     .map_err(|_| "strict device admission did not prove the simulator clear".into())
 }

@@ -8,6 +8,19 @@ export interface AndroidExternalRunnerWarning {
   processLines: string[];
 }
 
+const ANDROID_ADVISORY_DRIVER = /uiautomator|agent-device|AgentDevice/i;
+// A destructive reset also refuses Maestro's driver app and any other instrumentation.
+const ANDROID_STRICT_DRIVER = /uiautomator|agent-device|AgentDevice|maestro|instrument/i;
+const ANDROID_PS_OPTIONS = { timeout: 2_000, encoding: 'utf8' as const };
+
+// `ps -A` rows naming a UI driver, never QaReN's own runner package.
+function androidDriverLines(stdout: string, driver: RegExp): string[] {
+  return stdout
+    .split('\n')
+    .filter((line) => driver.test(line))
+    .filter((line) => !/dev\.lykhoyda\.rndevagent\.androidrunner/.test(line));
+}
+
 export async function detectAndroidExternalRunner(
   execFileImpl: typeof execFile = execFile,
   serialArgs: string[] = [],
@@ -19,7 +32,7 @@ export async function detectAndroidExternalRunner(
     // function that already returns a Promise, use it directly.
     const bin = 'adb';
     const argv = [...serialArgs, 'shell', 'ps', '-A'];
-    const opts = { timeout: 2_000, encoding: 'utf8' as const };
+    const opts = ANDROID_PS_OPTIONS;
     const run =
       execFileImpl === execFile
         ? promisify(execFileImpl)
@@ -29,10 +42,7 @@ export async function detectAndroidExternalRunner(
             o: typeof opts,
           ) => Promise<{ stdout: string }>);
     const { stdout } = await run(bin, argv, opts);
-    const lines = stdout
-      .split('\n')
-      .filter((line) => /uiautomator|agent-device|AgentDevice/i.test(line))
-      .filter((line) => !/dev\.lykhoyda\.rndevagent\.androidrunner/.test(line));
+    const lines = androidDriverLines(stdout, ANDROID_ADVISORY_DRIVER);
 
     if (lines.length === 0) return null;
 
@@ -54,6 +64,36 @@ export async function androidForeignDriverMessage(
   execFileImpl: typeof execFile = execFile,
 ): Promise<string | undefined> {
   return (await detectAndroidExternalRunner(execFileImpl, ['-s', serial]))?.message;
+}
+
+export type AndroidStrictRunnerStatus = 'clear' | 'busy' | 'unknown';
+
+export function isAndroidEmulatorSerial(value: string): boolean {
+  return /^emulator-\d{1,5}$/.test(value);
+}
+
+/** Strict admission for a destructive reset: only a readable process table without a driver is clear. */
+export async function probeAndroidExternalRunnerAdmission(
+  serial: string,
+  execFileImpl: typeof execFile = execFile,
+): Promise<{ status: AndroidStrictRunnerStatus; matched?: string }> {
+  try {
+    const run =
+      execFileImpl === execFile
+        ? promisify(execFileImpl)
+        : (execFileImpl as unknown as (
+            b: string,
+            a: string[],
+            o: typeof ANDROID_PS_OPTIONS,
+          ) => Promise<{ stdout: string }>);
+    const { stdout } = await run('adb', ['-s', serial, 'shell', 'ps', '-A'], ANDROID_PS_OPTIONS);
+    if (typeof stdout !== 'string' || stdout.trim() === '') return { status: 'unknown' };
+    const [first] = androidDriverLines(stdout, ANDROID_STRICT_DRIVER);
+    if (first === undefined) return { status: 'clear' };
+    return { status: 'busy', matched: first.trim().split(/\s+/).at(-1) };
+  } catch {
+    return { status: 'unknown' };
+  }
 }
 
 export interface IosExternalRunnerWarning {
