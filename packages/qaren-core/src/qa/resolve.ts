@@ -30,6 +30,7 @@ import {
   confidentChoice,
 } from './questions.js';
 import {
+  type Identity,
   PRESSABLE_SUFFIX,
   exactIdentities,
   focusIdentityOf,
@@ -90,6 +91,13 @@ export function stepTarget(step: Step): Target | undefined {
       : step.target;
 }
 
+// Stored IDs name native targets; React-only twins cannot receive the runner's tap.
+function replayIdentities(identities: Identity[], target: Target, kind: Step['kind']): Identity[] {
+  if (target.exact !== 'id' || kind === 'fill') return identities;
+  const native = identities.filter(({ tag }) => tag !== 'react-only');
+  return native.length >= 1 ? native : identities;
+}
+
 export function prepareTarget(step: Step, screen: Screen): Resolution | TargetQuestion {
   const target = stepTarget(step);
   if (!target) return { refuse: 'NO_TARGET', reason: 'this step has no target to resolve' };
@@ -115,7 +123,11 @@ export function prepareTarget(step: Step, screen: Screen): Resolution | TargetQu
       : { elements: visibility ? screen.elements : actionView(screen) };
   if ('refuse' in projected) return projected;
   if (target.quoted !== undefined) {
-    const identities = exactIdentities(screen, target, step.kind);
+    const identities = replayIdentities(
+      exactIdentities(screen, target, step.kind),
+      target,
+      step.kind,
+    );
     if (identities.length > 1)
       return {
         refuse: 'TARGET_AMBIGUOUS',
@@ -316,10 +328,10 @@ export interface CentreCoverageDiagnostic {
   keyboardFramePresent: boolean | null;
   keyboardCoverage: boolean | null;
   centreInsideKeyboard: boolean | null;
-  branch: 'viewport' | 'keyboard' | 'none';
+  branch: 'viewport' | 'keyboard' | 'overlay' | 'none';
 }
 
-// Keyboard-owned targets bypass keyboard coverage, never the trusted viewport clip.
+// Keyboard-owned targets bypass keyboard and overlay coverage, never the trusted viewport clip.
 export function centreCovered(
   element: Element,
   screen: Screen,
@@ -359,27 +371,40 @@ export function centreCovered(
   }
   const visible = screen.keyboardVisible;
   facts.keyboardVisible = typeof visible === 'boolean' ? visible : null;
-  if (visible === false) return result('none');
-  const keyboardFramePresent = screen.keyboardFrame !== undefined;
-  facts.keyboardFramePresent = keyboardFramePresent;
-  if (!keyboardFramePresent) return result('none');
-  const keyboardCoverage = keyboardCoversElement(element);
-  facts.keyboardCoverage = keyboardCoverage;
-  if (!keyboardCoverage) return result('none');
-  const centreInsideKeyboard = inside(screen.keyboardFrame!);
-  facts.centreInsideKeyboard = centreInsideKeyboard;
-  return result(centreInsideKeyboard ? 'keyboard' : 'none');
+  if (visible !== false) {
+    const keyboardFramePresent = screen.keyboardFrame !== undefined;
+    facts.keyboardFramePresent = keyboardFramePresent;
+    if (keyboardFramePresent) {
+      const keyboardCoverage = keyboardCoversElement(element);
+      facts.keyboardCoverage = keyboardCoverage;
+      if (keyboardCoverage) {
+        const centreInsideKeyboard = inside(screen.keyboardFrame!);
+        facts.centreInsideKeyboard = centreInsideKeyboard;
+        if (centreInsideKeyboard) return result('keyboard');
+      }
+    }
+  }
+  // A centre under a sticky overlay inside the clip is as untouchable as one under the keyboard;
+  // at or below the keyboard top the keyboard clause alone decides.
+  const band = viewport && clearanceBand(element, screen);
+  const keyboardTop = visible !== false ? screen.keyboardFrame?.y : undefined;
+  return result(
+    band &&
+      (y < band.y || (y >= band.y + band.height && (keyboardTop === undefined || y < keyboardTop)))
+      ? 'overlay'
+      : 'none',
+  );
 }
 
-// Pixels a keyboard-covered centre travels to the middle of the band a finger can touch.
+// Pixels an untouchable centre travels to the middle of the band a finger can touch.
 export function keyboardClearance(element: Element, screen: Screen): number | undefined {
   const frame = elementFrame(element);
   const band = clearanceBand(element, screen);
-  if (!frame || !band || screen.keyboardVisible === false || !keyboardCoversElement(element))
-    return undefined;
+  if (!frame || !band) return undefined;
   const centre = frame.y + frame.height / 2;
   const target = band.y + band.height / 2;
-  return centre > target ? centre - target : undefined;
+  const distance = Math.abs(centre - target);
+  return distance > 0 && (centre < band.y || centre >= band.y + band.height) ? distance : undefined;
 }
 
 const sameRect = (a: NativeNode['rect'], b: NativeNode['rect']): boolean =>
@@ -610,7 +635,9 @@ function textIdentities(quoted: string, screen: Screen): number {
 export function targetEvidence(target: Target, screen: Screen): LiteralVerdict {
   if (target.quoted === undefined) return 'fail';
   if (target.exact === 'id') {
-    const matches = exactIdentities(screen, target, 'wait').map(({ element }) => element);
+    const matches = replayIdentities(exactIdentities(screen, target, 'wait'), target, 'wait').map(
+      ({ element }) => element,
+    );
     if (matches.length !== 1)
       throw new ResolutionError({
         refuse: matches.length > 1 ? 'TARGET_AMBIGUOUS' : 'REPLAY_SELECTOR',

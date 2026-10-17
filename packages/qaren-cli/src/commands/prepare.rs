@@ -1803,12 +1803,17 @@ fn install_cached_ios_app(
             if installed.ok() {
                 return Ok(());
             }
-            return Err(artifact_install_failure(
-                &ctx.record.run_id,
-                artifact,
-                installed.summary(),
-                false,
-            ));
+            if !ios::install_refusal_is_transient(&installed.stderr) {
+                return Err(artifact_install_failure(
+                    &ctx.record.run_id,
+                    artifact,
+                    installed.summary(),
+                    false,
+                ));
+            }
+            ctx.runner.sleep(READY_TICK);
+            last = Some(installed);
+            continue;
         }
         if installed_bundle_matches(ctx, udid, artifact) {
             ctx.notes
@@ -1819,8 +1824,9 @@ fn install_cached_ios_app(
     }
     let summary = match last {
         Some(output) => format!(
-            "last of {attempts} attempts {}; preparation budget spent",
-            output.summary()
+            "last of {attempts} attempts {}; preparation budget of {}s spent",
+            output.summary(),
+            ctx.record.scenario.deadlines.build_seconds
         ),
         None => "preparation budget spent before install".into(),
     };
@@ -1845,7 +1851,7 @@ fn artifact_install_failure(
     run_id: &str,
     artifact: &CachedArtifact,
     summary: String,
-    timed_out: bool,
+    budget_spent: bool,
 ) -> Failure {
     Failure::new(
         "build",
@@ -1855,8 +1861,8 @@ fn artifact_install_failure(
             artifact.path.display()
         ),
         match artifact.kind {
-            // A rebuild re-enters this same install, so a timeout keeps the artifact.
-            _ if timed_out => format!(
+            // A rebuild re-enters this same install, so a spent budget keeps the artifact.
+            _ if budget_spent => format!(
                 "the install did not finish in time; keep the cached artifact, qaren cleanup {run_id} --json and re-run prepare"
             ),
             ArtifactKind::AppBundle => format!(
@@ -2616,6 +2622,8 @@ pub(crate) fn wait_ready(ctx: &mut Ctx) -> Result<(), Failure> {
     wait_ready_until(ctx, deadline)
 }
 
+const READY_TICK: Duration = Duration::from_secs(5);
+
 fn wait_ready_until(ctx: &mut Ctx, deadline: u64) -> Result<(), Failure> {
     let metro_resource = ctx.record.resources.metro.clone().expect("metro spawned");
     let identity = metro_resource.identity.clone().expect("identity captured");
@@ -2656,7 +2664,7 @@ fn wait_ready_until(ctx: &mut Ctx, deadline: u64) -> Result<(), Failure> {
             )
             .with_evidence(vec![super::log_tail(&metro_resource.log, 25)]));
         }
-        ctx.runner.sleep(Duration::from_secs(5));
+        ctx.runner.sleep(READY_TICK);
     }
 }
 

@@ -2213,7 +2213,7 @@ interface ScrollArgs {
   qaContext?: QaDispatchContext;
   direction: 'up' | 'down' | 'left' | 'right';
   amount?: number;
-  // Pixels to move the content, for a keyboard clearance scroll.
+  // Pixels to move the content for a clearance scroll.
   distance?: number;
   // The visible part of the scrolled view; the drag starts inside it.
   within?: Band;

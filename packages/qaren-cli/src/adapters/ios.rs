@@ -296,6 +296,14 @@ pub fn install_app_spec(udid: &str, app_path: &Path) -> CmdSpec {
     )
 }
 
+// The install coordinator answers this way on a simulator's first boot before its stores are usable; stderr only.
+pub fn install_refusal_is_transient(stderr: &str) -> bool {
+    let s = stderr.to_ascii_lowercase();
+    s.split(|c: char| !c.is_ascii_alphanumeric() && c != '_')
+        .any(|word| word == "ixerrordomain")
+        && (s.contains("promise") || s.contains("metadata"))
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum AppPresence {
     Installed,

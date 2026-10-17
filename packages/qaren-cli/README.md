@@ -423,8 +423,8 @@ ID remains a twin, and each ambiguity candidate is listed as native or
 React-only and, where proven, as a wrapper of an input, as covered by the
 [forwarding-proof tests](../qaren-core/test/unit/qa/identity.test.ts). A merged composite
 input keeps its placeholder for quoted fill resolution. The refusal is terminal:
-it is never recovered, retried or re-walked,
-including for stored replay selectors and for a handler that finds twins at dispatch. A text element
+it is never recovered, retried or re-walked, including when a handler finds twins
+at dispatch. Stored-selector resolution follows the [saved-block contract](#saved-blocks). A text element
 that is the sole text descendant of matching labelled ancestors links to the
 nearest action candidate: enabled and either hittable or offscreen for scrolling.
 On Android, this also applies when an ancestor has other text descendants but
@@ -518,7 +518,10 @@ the intended button.
 Before dispatch, the walker also treats a press or fill target, including a
 keyboard-fallback wrapper before its tap, whose centre lies outside its trusted
 clipping viewport or covered by an observed keyboard frame
-(unless the keyboard is proven hidden) as covered. Keyboard-owned targets use
+(unless the keyboard is proven hidden) as covered. Inside that viewport and above
+the keyboard top, a centre past an edge of the visible clip band described below
+is covered too: a field whose centre sits under a sticky footer or header inside
+its list is cleared with one scroll, the same as under the keyboard. Keyboard-owned targets use
 the existing explicit tap path and remain subject to trusted clipping and native
 identity guards. An explicit key press performs its normal action, not guaranteed
 keyboard dismissal; QA must freshly prove the keyboard hidden and the intended
@@ -536,11 +539,11 @@ can narrow the band even without a keyboard or when the clip is entirely above i
 The walker passes that band to the shared scroll handler so the drag starts
 inside it, narrowing the existing keyboard-safe band. Callers passing no band
 use the existing keyboard-safe band. On both iOS and Android, a target whose centre
-is covered by the observed keyboard gets a scroll sized to move that centre
+is covered by the observed keyboard or a sticky overlay gets a scroll sized to move that centre
 toward the middle of that band, and the drag may span the band with both endpoints
 at least one pixel inside its edges after rounding. A clearance scroll without
 a band keeps the cap of 60% of the screen area above the keyboard.
-Scrolls without keyboard clearance keep the fixed amount of `0.6`.
+Scrolls without a clearance distance keep the fixed amount of `0.6`.
 Successful iOS fast-runner scrolls now run the same bounded settle wait as taps
 before returning: screen-static probing with snapshot-equality fallback. Results
 include `meta.settle` and `meta.timings_ms.settle`; a timeout reports unsettled
@@ -1184,10 +1187,14 @@ The cached iOS dev-client install shares that budget, which starts before the
 install. The owned `simctl install` gets the remaining preparation time instead
 of a fixed 120-second limit. After a timeout, the installed app container is
 accepted when its content hash equals the cached artifact's (`install_proof`);
-otherwise the install is re-issued only if preparation time remains. A definite
-install error fails immediately; an unproven install with a spent budget fails
-with `ARTIFACT_INSTALL_FAILED`. For a timeout, keep the cached artifact, clean up
-the run and retry as directed by `next_action`.
+otherwise the install is re-issued only if preparation time remains. An install
+refusal whose stderr contains the complete `IXErrorDomain` token and `promise`
+or `metadata` (case-insensitive, with no required error code) skips container
+verification and retries after the existing five-second readiness tick within
+the same budget; all other definite install errors fail immediately.
+An unproven install with a spent budget fails with
+`ARTIFACT_INSTALL_FAILED`. For a spent budget, keep the cached artifact, clean
+up the run and retry as directed by `next_action`.
 Host load is diagnostic only. Other
 manifest and launch errors remain `BUILD_FAILED`. Cleanup retained resources
 before retrying.
@@ -1368,7 +1375,10 @@ presence status and label source must agree too. Excluded labels cannot supply a
 fallback witness. Discovery keeps preferring a unique testID for an eligible
 text match. An ambiguous text target without a unique testID
 can satisfy discovery but leaves the block unsaved; replay follows the
-ambiguity refusal above.
+ambiguity refusal above. A stored testID on a replayed press, wait or scroll resolves
+to its one native element even when a React-only element shares that testID, and
+still refuses when two native elements share it; a stored-testID fill keeps
+counting React-only inputs.
 
 Replay requires the canonical block format emitted by
 [`serializeBlock`](../qaren-core/src/qa/blocks.ts); edited or incompatible files
@@ -1488,8 +1498,8 @@ diagnostic collection and sink failures preserve the refusal.
 
 When a press or fill target's centre remains covered after the one-scroll
 allowance, a private `timing` event with code `CENTRE_COVERED` includes the
-observation ordinal and `clearanceDiagnostic`. It records the viewport or keyboard
-predicate branch, boolean coverage facts, the scroll's origin and requested
+observation ordinal and `clearanceDiagnostic`. It records the viewport, keyboard or
+overlay predicate branch, boolean coverage facts, the scroll's origin and requested
 direction, and whether the target centre changed. Unread or unavailable facts
 remain `null`; target text, identifiers and coordinates are excluded. The
 [walker](../qaren-core/src/qa/walker.ts) owns the event layout; the
