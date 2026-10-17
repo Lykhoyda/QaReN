@@ -110,3 +110,37 @@ test('a clearance distance without a named band keeps the window cap', () => {
   const [y1, y2] = clearanceSwipe(5000);
   assert.ok(Math.abs(y1 - y2 - Math.round(KEYBOARD.rect.y * 0.6)) <= 1, `${y1 - y2}`);
 });
+
+// The keyboard form's band ends at its sticky footer's first row; a drag starting there lands on the footer.
+function bandDragYs(direction: 'up' | 'down', band: { y: number; height: number }): number[] {
+  clearRefMap();
+  updateRefMapFromFlat(
+    [
+      { ...WINDOW, rect: { x: 0, y: 0, width: 1080, height: 2400 } },
+      { ...KEYBOARD, rect: { x: 0, y: 1517, width: 1080, height: 883 } },
+    ] as never,
+    { snapshotGeneration: 1, keyboardVisible: true },
+  );
+  try {
+    const [, , y1, , y2] = buildDirectionalScrollCliArgs(direction, 0.6, undefined, 1290, {
+      x: 0,
+      width: 1080,
+      ...band,
+    }).map(Number);
+    return [y1, y2];
+  } finally {
+    clearRefMap();
+  }
+}
+
+for (const height of [1045, 1044]) {
+  test(`a full-band clearance drag over a ${height}px band starts and ends strictly inside it`, () => {
+    const band = { y: 283, height };
+    for (const direction of ['down', 'up'] as const) {
+      const ys = bandDragYs(direction, band);
+      assert.ok(Math.max(...ys) <= band.y + height - 1, `${direction} ${ys}`);
+      assert.ok(Math.min(...ys) >= band.y + 1, `${direction} ${ys}`);
+      assert.ok(Math.abs(ys[0] - ys[1]) >= height - 3, `${direction} ${ys}`);
+    }
+  });
+}

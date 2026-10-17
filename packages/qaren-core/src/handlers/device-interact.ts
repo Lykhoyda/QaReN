@@ -1994,11 +1994,14 @@ function computeScrollFromDirection(
         )
       : Math.round(screen.height * SWIPE_FRACTION * amount);
   const dx = Math.round(screen.width * SWIPE_FRACTION * amount);
+  // Rounding the centre and the half-span up together can land an end on the band's edge row.
+  const top = Math.max(cy - Math.round(dy / 2), Math.ceil((screen.y ?? 0) + 1));
+  const bottom = Math.min(cy + Math.round(dy / 2), Math.floor((screen.y ?? 0) + screen.height - 1));
   switch (direction) {
     case 'down':
-      return { x1: cx, y1: cy + Math.round(dy / 2), x2: cx, y2: cy - Math.round(dy / 2) };
+      return { x1: cx, y1: bottom, x2: cx, y2: top };
     case 'up':
-      return { x1: cx, y1: cy - Math.round(dy / 2), x2: cx, y2: cy + Math.round(dy / 2) };
+      return { x1: cx, y1: top, x2: cx, y2: bottom };
     case 'left':
       return { x1: cx + Math.round(dx / 2), y1: cy, x2: cx - Math.round(dx / 2), y2: cy };
     case 'right':
