@@ -1,14 +1,19 @@
 // Keyboard clearance on an Android form: the touchable band stops at overlay siblings over the clip.
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { clearanceBand, keyboardClearance } from '../../../dist/qa/resolve.js';
+import {
+  centreCovered,
+  clearanceBand,
+  clearanceScroll,
+  keyboardClearance,
+} from '../../../dist/qa/resolve.js';
 import { join } from '../../../dist/qa/screen.js';
 import type { NativeNode, Screen } from '../../../dist/qa/screen.js';
 
 const WINDOW = { x: 0, y: 0, width: 1080, height: 2400 };
 
 // Header 0-300, a ScrollView list 300-1400 over the keyboard top, a sticky footer sibling 1150-1400.
-function form(extra: NativeNode[] = [], footer = true): Screen {
+function form(extra: NativeNode[] = [], footer = true, field7Y = 1860): Screen {
   return join(
     [
       { ref: '@app', index: 0, type: 'Application', rect: WINDOW },
@@ -52,7 +57,7 @@ function form(extra: NativeNode[] = [], footer = true): Screen {
         type: 'android.widget.EditText',
         identifier: 'qa-kb-input-7',
         hittable: true,
-        rect: { x: 40, y: 1860, width: 1000, height: 80 },
+        rect: { x: 40, y: field7Y, width: 1000, height: 80 },
       },
       {
         ref: '@keyboard',
@@ -169,4 +174,151 @@ test('a sticky header across the band top raises the band below it', () => {
     width: 1080,
     height: 730,
   });
+});
+
+// iOS keyboard form in points: list clip 0-538 down to the keyboard top, sticky footer 432-538 beside it.
+const IOS = { x: 0, y: 0, width: 402, height: 874 };
+const K = 538;
+const F = K - 106;
+
+function iosForm(
+  centre: number,
+  { extra = [] as NativeNode[], footer = { y: F, height: K - F }, list = K } = {},
+): Screen {
+  return join(
+    [
+      { ref: '@app', index: 0, type: 'Application', rect: IOS },
+      { ref: '@win', index: 1, parentIndex: 0, type: 'Window', rect: IOS },
+      { ref: '@root', index: 2, parentIndex: 1, type: 'Other', rect: IOS },
+      {
+        ref: '@list',
+        index: 3,
+        parentIndex: 2,
+        type: 'ScrollView',
+        rect: { x: 0, y: 0, width: 402, height: list },
+      },
+      {
+        ref: '@content',
+        index: 4,
+        parentIndex: 3,
+        type: 'Other',
+        rect: { x: 0, y: 0, width: 402, height: 1400 },
+      },
+      {
+        ref: '@field8',
+        index: 5,
+        parentIndex: 4,
+        type: 'TextField',
+        identifier: 'qa-kb-input-8',
+        hittable: true,
+        rect: { x: 20, y: centre - 22, width: 362, height: 44 },
+      },
+      {
+        ref: '@footer',
+        index: 6,
+        parentIndex: 2,
+        type: 'Other',
+        identifier: 'qa-kb-footer',
+        hittable: true,
+        rect: { x: 0, ...footer, width: 402 },
+      },
+      { ref: '@kw', index: 7, parentIndex: 0, type: 'Window', rect: IOS },
+      {
+        ref: '@keyboard',
+        index: 8,
+        parentIndex: 7,
+        type: 'Keyboard',
+        rect: { x: 0, y: K, width: 402, height: IOS.height - K },
+      },
+      {
+        ref: '@return',
+        index: 9,
+        parentIndex: 8,
+        type: 'Key',
+        label: 'Return',
+        hittable: true,
+        rect: { x: 310, y: 780, width: 80, height: 50 },
+      },
+      ...extra,
+    ],
+    [],
+  );
+}
+
+const byRef = (screen: Screen, ref: string) => screen.elements.find((e) => e.ref === ref)!;
+
+test('a field parked under a sticky footer inside its list is covered and clears down to the band middle', () => {
+  const centre = 480;
+  const screen = iosForm(centre);
+  const field8 = byRef(screen, '@field8');
+  assert.equal(centreCovered(field8, screen), true);
+  assert.equal(clearanceScroll(field8, screen), 'down');
+  const distance = keyboardClearance(field8, screen);
+  assert.equal(distance, centre - F / 2);
+  const moved = iosForm(centre - distance!);
+  const band = clearanceBand(byRef(moved, '@field8'), moved)!;
+  assert.ok(centre - distance! >= band.y && centre - distance! < band.y + band.height);
+  assert.equal(centreCovered(byRef(moved, '@field8'), moved), false);
+});
+
+test('a field already inside the band above the footer is not covered and gets no clearance', () => {
+  const screen = iosForm(F - 40);
+  const field8 = byRef(screen, '@field8');
+  assert.equal(centreCovered(field8, screen), false);
+  assert.equal(keyboardClearance(field8, screen), undefined);
+});
+
+test('a field under a sticky header inside its list is covered and clears up to the band middle', () => {
+  const screen = iosForm(50, {
+    extra: [
+      {
+        ref: '@header',
+        index: 10,
+        parentIndex: 2,
+        type: 'Other',
+        hittable: true,
+        rect: { x: 0, y: 0, width: 402, height: 100 },
+      },
+    ],
+  });
+  const field8 = byRef(screen, '@field8');
+  assert.deepEqual(clearanceBand(field8, screen), {
+    x: 0,
+    y: 100,
+    width: 402,
+    height: F - 100,
+  });
+  assert.equal(centreCovered(field8, screen), true);
+  assert.equal(clearanceScroll(field8, screen), 'up');
+  assert.equal(keyboardClearance(field8, screen), (100 + F) / 2 - 50);
+});
+
+test('a key on the keyboard stays exempt from footer and keyboard coverage', () => {
+  const screen = iosForm(F - 40);
+  assert.equal(centreCovered(byRef(screen, '@return'), screen), false);
+});
+
+test('a field under both the keyboard and the footer is covered once and clears to the band middle', () => {
+  const centre = 570;
+  const screen = iosForm(centre, {
+    footer: { y: F, height: 600 - F },
+    list: 800,
+  });
+  const field8 = byRef(screen, '@field8');
+  let branch: string | undefined;
+  assert.equal(
+    centreCovered(field8, screen, (facts) => {
+      branch = facts.branch;
+    }),
+    true,
+  );
+  assert.equal(branch, 'keyboard');
+  assert.equal(keyboardClearance(field8, screen), centre - F / 2);
+});
+
+test('the Android field moved by its clearance rests inside the band and is no longer covered', () => {
+  const screen = form();
+  assert.equal(centreCovered(field7(screen), screen), true);
+  const moved = form([], true, 1860 - keyboardClearance(field7(screen), screen)!);
+  assert.equal(centreCovered(field7(moved), moved), false);
 });

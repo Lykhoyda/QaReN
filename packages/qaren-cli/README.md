@@ -518,7 +518,10 @@ the intended button.
 Before dispatch, the walker also treats a press or fill target, including a
 keyboard-fallback wrapper before its tap, whose centre lies outside its trusted
 clipping viewport or covered by an observed keyboard frame
-(unless the keyboard is proven hidden) as covered. Keyboard-owned targets use
+(unless the keyboard is proven hidden) as covered. Inside that viewport and above
+the keyboard top, a centre past an edge of the visible clip band described below
+is covered too: a field whose centre sits under a sticky footer or header inside
+its list is cleared with one scroll, the same as under the keyboard. Keyboard-owned targets use
 the existing explicit tap path and remain subject to trusted clipping and native
 identity guards. An explicit key press performs its normal action, not guaranteed
 keyboard dismissal; QA must freshly prove the keyboard hidden and the intended
@@ -536,7 +539,7 @@ can narrow the band even without a keyboard or when the clip is entirely above i
 The walker passes that band to the shared scroll handler so the drag starts
 inside it, narrowing the existing keyboard-safe band. Callers passing no band
 use the existing keyboard-safe band. On both iOS and Android, a target whose centre
-is covered by the observed keyboard gets a scroll sized to move that centre
+is covered by the observed keyboard or a sticky overlay gets a scroll sized to move that centre
 toward the middle of that band, and the drag may span the band with both endpoints
 at least one pixel inside its edges after rounding. A clearance scroll without
 a band keeps the cap of 60% of the screen area above the keyboard.
@@ -1485,8 +1488,8 @@ diagnostic collection and sink failures preserve the refusal.
 
 When a press or fill target's centre remains covered after the one-scroll
 allowance, a private `timing` event with code `CENTRE_COVERED` includes the
-observation ordinal and `clearanceDiagnostic`. It records the viewport or keyboard
-predicate branch, boolean coverage facts, the scroll's origin and requested
+observation ordinal and `clearanceDiagnostic`. It records the viewport, keyboard or
+overlay predicate branch, boolean coverage facts, the scroll's origin and requested
 direction, and whether the target centre changed. Unread or unavailable facts
 remain `null`; target text, identifiers and coordinates are excluded. The
 [walker](../qaren-core/src/qa/walker.ts) owns the event layout; the

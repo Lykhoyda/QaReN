@@ -313,10 +313,10 @@ export interface CentreCoverageDiagnostic {
   keyboardFramePresent: boolean | null;
   keyboardCoverage: boolean | null;
   centreInsideKeyboard: boolean | null;
-  branch: 'viewport' | 'keyboard' | 'none';
+  branch: 'viewport' | 'keyboard' | 'overlay' | 'none';
 }
 
-// Keyboard-owned targets bypass keyboard coverage, never the trusted viewport clip.
+// Keyboard-owned targets bypass keyboard and overlay coverage, never the trusted viewport clip.
 export function centreCovered(
   element: Element,
   screen: Screen,
@@ -356,27 +356,40 @@ export function centreCovered(
   }
   const visible = screen.keyboardVisible;
   facts.keyboardVisible = typeof visible === 'boolean' ? visible : null;
-  if (visible === false) return result('none');
-  const keyboardFramePresent = screen.keyboardFrame !== undefined;
-  facts.keyboardFramePresent = keyboardFramePresent;
-  if (!keyboardFramePresent) return result('none');
-  const keyboardCoverage = keyboardCoversElement(element);
-  facts.keyboardCoverage = keyboardCoverage;
-  if (!keyboardCoverage) return result('none');
-  const centreInsideKeyboard = inside(screen.keyboardFrame!);
-  facts.centreInsideKeyboard = centreInsideKeyboard;
-  return result(centreInsideKeyboard ? 'keyboard' : 'none');
+  if (visible !== false) {
+    const keyboardFramePresent = screen.keyboardFrame !== undefined;
+    facts.keyboardFramePresent = keyboardFramePresent;
+    if (keyboardFramePresent) {
+      const keyboardCoverage = keyboardCoversElement(element);
+      facts.keyboardCoverage = keyboardCoverage;
+      if (keyboardCoverage) {
+        const centreInsideKeyboard = inside(screen.keyboardFrame!);
+        facts.centreInsideKeyboard = centreInsideKeyboard;
+        if (centreInsideKeyboard) return result('keyboard');
+      }
+    }
+  }
+  // A centre under a sticky overlay inside the clip is as untouchable as one under the keyboard;
+  // at or below the keyboard top the keyboard clause alone decides.
+  const band = viewport && clearanceBand(element, screen);
+  const keyboardTop = visible !== false ? screen.keyboardFrame?.y : undefined;
+  return result(
+    band &&
+      (y < band.y || (y >= band.y + band.height && (keyboardTop === undefined || y < keyboardTop)))
+      ? 'overlay'
+      : 'none',
+  );
 }
 
-// Pixels a keyboard-covered centre travels to the middle of the band a finger can touch.
+// Pixels an untouchable centre travels to the middle of the band a finger can touch.
 export function keyboardClearance(element: Element, screen: Screen): number | undefined {
   const frame = elementFrame(element);
   const band = clearanceBand(element, screen);
-  if (!frame || !band || screen.keyboardVisible === false || !keyboardCoversElement(element))
-    return undefined;
+  if (!frame || !band) return undefined;
   const centre = frame.y + frame.height / 2;
   const target = band.y + band.height / 2;
-  return centre > target ? centre - target : undefined;
+  const distance = Math.abs(centre - target);
+  return distance > 0 && (centre < band.y || centre >= band.y + band.height) ? distance : undefined;
 }
 
 const sameRect = (a: NativeNode['rect'], b: NativeNode['rect']): boolean =>
