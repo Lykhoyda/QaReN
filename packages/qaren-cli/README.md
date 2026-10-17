@@ -835,7 +835,10 @@ the viewport but it is reported not visible, as with an Android heading under
 the status bar, scrolling instead moves toward revealing it: up when its centre
 is above the viewport's midpoint, down when at or below it, regardless of the
 requested direction. With no single matching identity, an already visible
-target or no known viewport, the requested direction is retained. See the
+target or no known viewport, the requested direction is retained. The
+scroll-until drag starts inside the list it is meant to move (the target's own
+scroll container, or the frontmost one above the keyboard), not at the screen
+centre. See the
 [scroll-until direction regressions](../qaren-core/test/unit/qa/scroll-until-direction.test.ts).
 
 Waits poll unresolved text as not yet present and end with `VISIBILITY_UNSURE`

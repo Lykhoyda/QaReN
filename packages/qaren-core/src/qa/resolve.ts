@@ -14,6 +14,8 @@ import {
   elementFrame,
   elementViewport,
   forwardedInputOf,
+  isScrollContainer,
+  scrollContainerType,
   semanticActionView,
   semanticDisabled,
   visibilityView,
@@ -367,6 +369,34 @@ export function scrollUntilDirection(
     frame.y < viewport.y + viewport.height &&
     viewport.y < frame.y + frame.height;
   return inside ? clearanceScroll(element, screen) : scrollTo(element).scroll;
+}
+
+// Android containers that scroll only sideways cannot move a vertical scroll-until target.
+const HORIZONTAL_ONLY_SUFFIXES = ['HorizontalScrollView', 'ViewPager2', 'ViewPager'];
+function horizontalOnlyContainer(type: string | undefined): boolean {
+  const leaf = (type ?? '').slice((type ?? '').lastIndexOf('.') + 1);
+  return HORIZONTAL_ONLY_SUFFIXES.some((suffix) => leaf.endsWith(suffix));
+}
+
+// Where a scroll-until drag may start: the target's clip when it resolved, else the frontmost
+// recognised scroll container inside the keyboard-safe band; nothing means today's band centre.
+export function scrollUntilBand(target: Target, screen: Screen): NativeNode['rect'] {
+  const matches = exactIdentities(screen, target, 'scroll');
+  if (matches.length === 1) return clearanceBand(matches[0].element, screen);
+  const keyboardTop =
+    screen.keyboardVisible !== false && screen.keyboardFrame ? screen.keyboardFrame.y : Infinity;
+  let best: NativeNode['rect'];
+  for (const element of screen.elements) {
+    if (!isScrollContainer(element) || horizontalOnlyContainer(scrollContainerType(element)))
+      continue;
+    const rect = elementFrame(element);
+    if (!rect) continue;
+    const height = Math.min(rect.y + rect.height, keyboardTop) - rect.y;
+    if (height <= 0) continue;
+    // Element order is the runner's traversal: later windows are frontmost, children follow parents.
+    best = { ...rect, height };
+  }
+  return best;
 }
 
 export function decideTarget(prepared: TargetQuestion, answer: Answer | undefined): Resolution {

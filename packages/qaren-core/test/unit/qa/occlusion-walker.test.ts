@@ -744,6 +744,43 @@ test('a keyboard-covered row of a list stretched under the keyboard is lifted in
   assert.deepEqual(bands, [{ x: 0, y: 300, width: 400, height: 200 }]);
 });
 
+const listOnly = (): Screen =>
+  covered(
+    join(
+      [
+        ...root(),
+        {
+          ref: '@scroll',
+          index: 2,
+          parentIndex: 1,
+          type: 'ScrollView',
+          rect: { x: 0, y: 300, width: 400, height: 500 },
+        },
+      ],
+      [],
+    ),
+  );
+
+test('(g) scroll-until with its target absent drags inside the list', async () => {
+  const f = fake([listOnly(), stretched(400)], {});
+  const bands = recordingScrolls(f);
+  const outcome = await walkBlock(block('1. Scroll down until "go"\n'), f.deps);
+  assert.equal(outcome.block.outcome, 'pass');
+  assert.deepEqual(
+    f.calls.filter((call) => call !== 'capture'),
+    ['scroll down'],
+  );
+  assert.deepEqual(bands, [{ x: 0, y: 300, width: 400, height: 500 }]);
+});
+
+test('(h) scroll-until with a covered target drags inside its clip band', async () => {
+  const f = fake([stretched(505), stretched(400)], {});
+  const bands = recordingScrolls(f);
+  const outcome = await walkBlock(block('1. Scroll down until "go"\n'), f.deps);
+  assert.equal(outcome.block.outcome, 'pass');
+  assert.deepEqual(bands, [{ x: 0, y: 300, width: 400, height: 200 }]);
+});
+
 test('a stretched-list row still covered after its clearance scroll refuses with one scroll and no press', async () => {
   const f = fake([stretched(505), stretched(505)], {});
   const outcome = await walkBlock(block('1. Tap "go"\n'), f.deps);

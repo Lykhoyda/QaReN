@@ -24,6 +24,7 @@ import {
   bindFillIdentity,
   bindDispatchIdentity,
   stepTarget,
+  scrollUntilBand,
   scrollUntilDirection,
   targetEvidence,
   visibleSelector,
@@ -1308,6 +1309,8 @@ export async function walkBlock(
                   deps.scroll(
                     scrollUntilDirection(item.until!, observation.screen, item.direction),
                     context,
+                    undefined,
+                    scrollUntilBand(item.until!, observation.screen),
                   ),
                 deadline,
               );
