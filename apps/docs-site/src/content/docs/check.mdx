@@ -62,13 +62,12 @@ must be git-ignored; otherwise the build fails `BUILD_FAILED` before generating 
 | `--platform ios\|android`       | Defaults to `ios`.                                                                 |
 | `--device <id>`                 | A simulator UUID on iOS, an emulator serial on Android.                            |
 | `--config <path>`               | Another configuration file. Defaults to `.qaren/config.yaml`.                      |
-| `--fresh-install`               | iOS only. Remove the app and its data, prove it is gone, then install it.          |
+| `--fresh-install`               | See the [fresh-install contract](https://github.com/Lykhoyda/rn-dev-agent/blob/develop/packages/qaren-cli/README.md#fresh-install). |
 | `--boot-device`                 | iOS only. Boot the simulator named by `--device` under the lease.                  |
 | `--json`                        | Accepted for scripts; the receipt is always JSON on stdout.                        |
 
-On Android, `--fresh-install` refuses `PLATFORM_UNSUPPORTED` (exit 4) and `--boot-device` is a
-usage error (exit 2). `--boot-device` without a simulator UUID in `--device` is a usage error
-too.
+On Android, `--boot-device` is a usage error (exit 2). `--boot-device` without a
+simulator UUID in `--device` is a usage error too.
 
 ## The receipt
 

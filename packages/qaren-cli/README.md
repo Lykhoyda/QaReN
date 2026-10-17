@@ -311,7 +311,8 @@ Exactly one must qualify; otherwise selection refuses `DEVICE_UNAVAILABLE`
 (exit 4). With several boot-completed emulators, `--device emulator-NNNN`
 chooses one; an explicitly selected emulator still booting refuses without
 waiting or switching devices. Physical devices are not supported, and
-`--boot-device` and `--fresh-install` refuse on Android. `ANDROID_HOME` must name
+`--boot-device` refuses on Android; see [Fresh install](#fresh-install) for app reset.
+`ANDROID_HOME` must name
 the SDK whose `platform-tools/adb` reaches that server. The build is a Gradle
 `:app:assembleDebug` limited to the emulator's ABI, preceded by
 `expo prebuild --platform android --clean` when `android/` is absent. An absent
@@ -392,11 +393,12 @@ A runner left
 on the emulator by rn-dev-agent 1.x is
 signed differently and cannot be replaced in place: uninstall
 `dev.lykhoyda.rndevagent.androidrunner` and `dev.lykhoyda.rndevagent.androidrunner.test`
-from that emulator first. Admission on the borrowed emulator refuses
+from that emulator first. The walk's advisory scan on the borrowed emulator refuses
 `BUSY_FOREIGN_FLOW` with the process scan's message when another UIAutomator or
 agent-device process runs there (`adb -s <serial> shell ps -A`). The scan does
 not recognise every driver and fails open when `ps` cannot run, so borrow an
-emulator no other automation uses.
+emulator no other automation uses. The separate [fresh-install admission](#fresh-install)
+must succeed before app reset.
 
 Plans contain a `## QA` section, named `###` blocks, numbered actions and
 `✓` checks. See the executable
@@ -1052,11 +1054,26 @@ plan preflight -> device selection -> lease + durable run record
                -> app preparation -> screen proof -> walk -> teardown
 ```
 
+### Fresh install
+
+`--fresh-install` works with `qaren check` and `qaren pr` on iOS and Android.
+Under the run's device lease, strict admission must succeed before removing the
+selected app and its data. If the app is installed, QaReN uninstalls it and
+reads the app inventory again to prove absence before installation and the walk.
+An already absent app skips uninstall. An unreadable inventory stops with
+`APP_PRESENCE_UNKNOWN`; a failed uninstall or an app still present afterward
+stops with `APP_RESET_FAILED`.
+
+On Android, strict admission runs `adb -s <serial> shell ps -A` through the
+borrowed server. A matching UIAutomator, agent-device, Maestro or instrumentation
+process refuses `DEVICE_BUSY`, excluding QaReN's own runner package. A scan
+error, timeout or empty output refuses `FRESH_INSTALL_ADMISSION_UNKNOWN`.
+Both refusals occur before uninstall. This flow never boots, wipes or restarts
+the emulator. For iOS, see [iOS admission and cleanup](#ios-admission-and-cleanup).
+
 On iOS, `check` borrows the only booted simulator, or the booted target
 selected by `--device`. `--boot-device --device <simulator-UUID>` opts into
-booting that exact iOS simulator under the lease. `--fresh-install` opts into
-removing the selected app and its data, proving absence, then installing it
-under the same lease. Both opt-ins require strict admission before mutation.
+booting that exact iOS simulator under the lease, with strict admission before mutation.
 Cleanup leaves the borrowed simulator running and keeps the installed app.
 iOS preparation follows the
 [CLI-owned iOS build routes](#cli-owned-ios-build-routes) and their startup
