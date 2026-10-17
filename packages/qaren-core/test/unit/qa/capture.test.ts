@@ -1024,7 +1024,9 @@ test('digest errors preserve native literals and warn without logging private pa
       ['@save'],
     );
   }
-  assert.deepEqual(warnings, ['interactive digest unavailable; React coverage is unknown']);
+  assert.deepEqual(warnings, [
+    'interactive digest unavailable; React coverage is unknown; observation=null mode=ordinary',
+  ]);
 });
 
 test('non-array adapter data stays unknown rather than masquerading as a complete empty capture', async () => {

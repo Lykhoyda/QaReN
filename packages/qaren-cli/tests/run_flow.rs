@@ -2759,13 +2759,20 @@ fn android_mock() -> MockRunner {
 }
 
 fn script_borrow(mock: &mut MockRunner, devices: &str, serial: &str) {
+    script_borrow_api(mock, devices, serial, 37);
+}
+
+fn script_borrow_api(mock: &mut MockRunner, devices: &str, serial: &str, api: u16) {
     mock.expect_run("adb version", CmdOutput::success(ADB_CLIENT_41));
     mock.expect_run("adb devices", CmdOutput::success(devices));
     mock.expect_run(
         &format!("-s {serial} shell getprop sys.boot_completed"),
         CmdOutput::success("1\n"),
     );
-    mock.expect_run("getprop ro.build.version.sdk", CmdOutput::success("37\n"));
+    mock.expect_run(
+        "getprop ro.build.version.sdk",
+        CmdOutput::success(&format!("{api}\n")),
+    );
     mock.expect_run("getprop ro.product.cpu.abi", CmdOutput::success("x86_64\n"));
     mock.expect_run(
         &format!("-s {serial} emu avd name"),
@@ -3582,19 +3589,227 @@ fn android_check_refuses_a_remote_adb_socket() {
     assert!(!req.lock_root.exists());
 }
 
+fn script_android_admission(mock: &mut MockRunner, status: &str) {
+    mock.expect_run(
+        &format!("fresh-install-preflight.js --platform android --device {EMULATOR}"),
+        CmdOutput {
+            exit_code: Some(if status == "clear" { 0 } else { 4 }),
+            stdout: serde_json::json!({
+                "v": 1, "platform": "android", "deviceId": EMULATOR, "status": status
+            })
+            .to_string(),
+            ..Default::default()
+        },
+    );
+}
+
+const APP_PACKAGE_LISTED: &str = "package:com.rndevagent.testapp\n";
+
+fn android_package_list(mock: &mut MockRunner, stdout: &str) {
+    mock.expect_run(
+        "shell pm list packages com.rndevagent.testapp",
+        CmdOutput::success(stdout),
+    );
+}
+
 #[test]
-fn android_check_refuses_fresh_install_before_preflight() {
+fn android_fresh_install_with_clear_admission_uninstalls_and_proves_absence() {
     let (repo, app) = app_repo();
+    seed_cached_apk(&repo, &app);
     let mut req = android_request(&repo, &app);
     req.fresh_install = true;
     let mut mock = android_mock();
-    let receipt = run(&mut mock, &req);
-    assert_eq!(
-        receipt.failure.unwrap().code,
-        FailureCode::PlatformUnsupported
+    script_android_preflight(&mut mock, &repo, ONE_EMULATOR, EMULATOR);
+    script_android_admission(&mut mock, "clear");
+    android_package_list(&mut mock, APP_PACKAGE_LISTED);
+    mock.expect_run(
+        "uninstall com.rndevagent.testapp",
+        CmdOutput::success("Success\n"),
     );
-    assert!(mock.calls.is_empty());
-    assert!(!req.lock_root.exists());
+    android_package_list(&mut mock, "");
+    mock.expect_run("pnpm install --frozen-lockfile", CmdOutput::success(""));
+    mock.expect_run("ls-files", CmdOutput::success(""));
+    script_android_launch_walk_teardown(&mut mock);
+
+    let receipt = run(&mut mock, &req);
+
+    assert_eq!(receipt.result, ReceiptResult::Pass, "{:?}", receipt.failure);
+    assert_eq!(receipt.outcomes["fresh_install"], "proven_absent");
+    assert_eq!(mock.remaining(), 0);
+    let admission = mock
+        .calls
+        .iter()
+        .find(|c| c.label == "fresh-install-admission")
+        .unwrap();
+    assert!(!admission.args.iter().any(|a| a == "--process-observer"));
+    for (key, value) in [
+        ("ANDROID_SERIAL", EMULATOR),
+        ("ADB_SERVER_SOCKET", "tcp:127.0.0.1:5037"),
+    ] {
+        assert!(
+            admission
+                .env
+                .contains(&(key.to_string(), value.to_string())),
+            "{key}"
+        );
+    }
+    let adb = adb_calls(&mock);
+    let position = |needle: &str| adb.iter().position(|c| c.contains(needle)).unwrap();
+    assert_eq!(
+        adb[position("uninstall")],
+        format!("-s {EMULATOR} uninstall com.rndevagent.testapp")
+    );
+    assert!(position("uninstall") < position("install -r -d"));
+    let labels = labels(&mock);
+    let at = |label: &str| labels.iter().position(|l| l == label).unwrap();
+    assert!(at("fresh-install-admission") < at("adb-pm-list-packages"));
+    let record = RunRecord::load(&req.runs_root, &run_id()).unwrap();
+    let evidence = record.resources.fresh_install.as_ref().unwrap();
+    assert_eq!(
+        (evidence.device_id.as_str(), evidence.app_id.as_str()),
+        (EMULATOR, "com.rndevagent.testapp")
+    );
+}
+
+#[test]
+fn android_fresh_install_skips_uninstall_when_the_app_is_proven_absent() {
+    let (repo, app) = app_repo();
+    seed_cached_apk(&repo, &app);
+    let mut req = android_request(&repo, &app);
+    req.fresh_install = true;
+    let mut mock = android_mock();
+    script_android_preflight(&mut mock, &repo, ONE_EMULATOR, EMULATOR);
+    script_android_admission(&mut mock, "clear");
+    android_package_list(&mut mock, "package:com.rndevagent.testapp.other\n");
+    mock.expect_run("pnpm install --frozen-lockfile", CmdOutput::success(""));
+    mock.expect_run("ls-files", CmdOutput::success(""));
+    script_android_launch_walk_teardown(&mut mock);
+
+    let receipt = run(&mut mock, &req);
+
+    assert_eq!(receipt.result, ReceiptResult::Pass, "{:?}", receipt.failure);
+    assert_eq!(receipt.outcomes["fresh_install"], "proven_absent");
+    assert_eq!(mock.remaining(), 0);
+    assert!(!labels(&mock).iter().any(|l| l == "adb-uninstall"));
+}
+
+#[test]
+fn android_fresh_install_refuses_busy_or_unknown_admission_before_any_uninstall() {
+    for (status, code) in [
+        ("busy", FailureCode::DeviceBusy),
+        ("unknown", FailureCode::FreshInstallAdmissionUnknown),
+    ] {
+        let (repo, app) = app_repo();
+        let mut req = android_request(&repo, &app);
+        req.fresh_install = true;
+        let mut mock = android_mock();
+        script_android_preflight(&mut mock, &repo, ONE_EMULATOR, EMULATOR);
+        script_android_admission(&mut mock, status);
+
+        let receipt = run(&mut mock, &req);
+
+        assert_eq!(receipt.result, ReceiptResult::Refused, "{status}");
+        let failure = receipt.failure.unwrap();
+        assert_eq!(
+            (failure.phase.as_str(), failure.code),
+            ("fresh_install", code)
+        );
+        assert_eq!(receipt.cleanup["device_lease"], "removed", "{status}");
+        assert_eq!(mock.remaining(), 0, "{status}");
+        assert!(
+            !adb_calls(&mock)
+                .iter()
+                .any(|c| c.contains("pm list packages") || c.contains("uninstall")),
+            "{status}"
+        );
+        let record = RunRecord::load(&req.runs_root, &run_id()).unwrap();
+        assert!(record.resources.fresh_install.is_none(), "{status}");
+        assert!(record.resources.lease.is_none(), "{status}");
+    }
+}
+
+#[test]
+fn android_fresh_install_failures_use_the_ios_reset_codes() {
+    let failed_list = CmdOutput::failed(1, "error: device offline");
+    let cases: [(&str, Vec<(&str, CmdOutput)>, FailureCode); 4] = [
+        (
+            "unreadable inventory",
+            vec![("shell pm list packages", failed_list.clone())],
+            FailureCode::AppPresenceUnknown,
+        ),
+        (
+            "uninstall failed",
+            vec![
+                (
+                    "shell pm list packages",
+                    CmdOutput::success(APP_PACKAGE_LISTED),
+                ),
+                (
+                    "uninstall com.rndevagent.testapp",
+                    CmdOutput::success("Failure [DELETE_FAILED_INTERNAL_ERROR]\n"),
+                ),
+            ],
+            FailureCode::AppResetFailed,
+        ),
+        (
+            "still installed",
+            vec![
+                (
+                    "shell pm list packages",
+                    CmdOutput::success(APP_PACKAGE_LISTED),
+                ),
+                (
+                    "uninstall com.rndevagent.testapp",
+                    CmdOutput::success("Success\n"),
+                ),
+                (
+                    "shell pm list packages",
+                    CmdOutput::success(APP_PACKAGE_LISTED),
+                ),
+            ],
+            FailureCode::AppResetFailed,
+        ),
+        (
+            "absence unreadable",
+            vec![
+                (
+                    "shell pm list packages",
+                    CmdOutput::success(APP_PACKAGE_LISTED),
+                ),
+                (
+                    "uninstall com.rndevagent.testapp",
+                    CmdOutput::success("Success\n"),
+                ),
+                ("shell pm list packages", failed_list.clone()),
+            ],
+            FailureCode::AppPresenceUnknown,
+        ),
+    ];
+    for (case, script, code) in cases {
+        let (repo, app) = app_repo();
+        let mut req = android_request(&repo, &app);
+        req.fresh_install = true;
+        let mut mock = android_mock();
+        script_android_preflight(&mut mock, &repo, ONE_EMULATOR, EMULATOR);
+        script_android_admission(&mut mock, "clear");
+        for (hint, output) in script {
+            mock.expect_run(hint, output);
+        }
+
+        let receipt = run(&mut mock, &req);
+
+        let failure = receipt.failure.unwrap();
+        assert_eq!(
+            (failure.phase.as_str(), failure.code),
+            ("fresh_install", code),
+            "{case}"
+        );
+        assert_eq!(receipt.cleanup["device_lease"], "removed", "{case}");
+        assert_eq!(mock.remaining(), 0, "{case}");
+        assert!(!labels(&mock).iter().any(|l| l == "pnpm-install"), "{case}");
+        let record = RunRecord::load(&req.runs_root, &run_id()).unwrap();
+        assert!(record.resources.fresh_install.is_none(), "{case}");
+    }
 }
 
 #[test]
@@ -4986,12 +5201,18 @@ impl PrRunner {
 }
 
 impl Runner for PrRunner {
+    fn adb_server_version(&self, port: u16) -> Result<u32, String> {
+        self.inner.adb_server_version(port)
+    }
     fn env_var(&self, name: &str) -> Option<String> {
         self.inner.env_var(name)
     }
     fn execute(&mut self, spec: &CmdSpec, interruptible: bool) -> CmdOutput {
         let output = self.inner.execute(spec, interruptible);
         match spec.label.as_str() {
+            "adb-pull" if output.ok() => {
+                std::fs::write(spec.args.last().unwrap(), "complete recording").unwrap()
+            }
             "git-worktree-add" => self.materialize(Path::new(&spec.args[3])),
             "git-worktree-remove" => std::fs::remove_dir_all(&spec.args[3]).unwrap(),
             _ => {}
@@ -5007,7 +5228,10 @@ impl Runner for PrRunner {
         self.inner.execute_private(spec, input, interruptible)
     }
     fn spawn_group_unchecked(&mut self, spec: &CmdSpec, log: &Path) -> std::io::Result<Spawned> {
-        if spec.label == "simctl-record-video" {
+        if matches!(
+            spec.label.as_str(),
+            "simctl-record-video" | "adb-screenrecord"
+        ) {
             let run_dir = log.parent().unwrap().parent().unwrap();
             let record: RunRecord =
                 serde_json::from_slice(&std::fs::read(run_dir.join("run.json")).unwrap()).unwrap();
@@ -6691,4 +6915,174 @@ fn android_check_cancelled_before_reverse_leaves_an_existing_mapping() {
     let record = RunRecord::load(&req.runs_root, &run_id()).unwrap();
     assert_eq!(record.resources.adb_reverse_port, None);
     assert!(record.resources.lease.is_none());
+}
+
+fn script_android_pr_preflight(mock: &mut MockRunner, repo: &Path, wt: &Path, api: u16) {
+    mock.expect_run("node --version", CmdOutput::success("v26.8.1\n"));
+    script_plan(mock, repo);
+    script_borrow_api(mock, ONE_EMULATOR, EMULATOR, api);
+    mock.expect_run("git", CmdOutput::success(&format!("{}\n", repo.display()))); // invoking checkout
+    mock.expect_run("gh pr view", pr_view_json(PR_HEAD));
+    mock.expect_run("fetch origin pull/12/head", CmdOutput::success(""));
+    mock.expect_run(
+        "rev-parse refs/qaren/pr/",
+        CmdOutput::success(&format!("{PR_HEAD}\n")),
+    );
+    mock.expect_run("update-ref -d", CmdOutput::success(""));
+    mock.expect_run("worktree add --detach", CmdOutput::success(""));
+    mock.expect_run("git", CmdOutput::success(&format!("{}\n", wt.display()))); // toplevel of the worktree
+    mock.expect_run("git", CmdOutput::success(&format!("{}\n", wt.display()))); // explicit worktree
+    mock.expect_run("git", CmdOutput::success(&format!("{PR_HEAD}\n")));
+    mock.expect_run("git", CmdOutput::success(""));
+    for tool in ANDROID_TOOLS {
+        mock.expect_run("which", CmdOutput::success(&format!("/usr/bin/{tool}\n")));
+    }
+    mock.expect_run("df", df_ok());
+    mock.expect_run("ps", CmdOutput::success("Wed Aug 12 15:59:00 2026\n"));
+    mock.expect_run("ps", CmdOutput::success("qaren pr\n"));
+    mock.expect_run("lsof", free_port());
+}
+
+fn script_android_pr_ready(mock: &mut MockRunner) {
+    mock.expect_run(
+        "install -r -d",
+        CmdOutput::success("Performing Streamed Install\nSuccess\n"),
+    );
+    mock.expect_run(
+        "reverse --no-rebind tcp:8791 tcp:8791",
+        CmdOutput::success("8791\n"),
+    );
+    mock.expect_spawn(
+        "expo start",
+        Spawned {
+            pid: 6000,
+            pgid: 6000,
+        },
+    );
+    mock.expect_run("ps", CmdOutput::success("Wed Aug 12 16:01:00 2026"));
+    mock.expect_run("ps", CmdOutput::success("node expo start"));
+    mock.expect_run("ps", CmdOutput::success("Wed Aug 12 16:01:00 2026"));
+    mock.expect_run("ps", CmdOutput::success("S"));
+    mock.expect_run("lsof", CmdOutput::success("6001"));
+    mock.expect_run("ps", CmdOutput::success("6000"));
+    mock.expect_run("curl", CmdOutput::success("packager-status:running"));
+    mock.expect_run("expo-platform", CmdOutput::success(""));
+    mock.expect_run("am start", CmdOutput::success("Starting: Intent"));
+    mock.expect_run("ps", CmdOutput::success(&format!("{LSTART}\n")));
+    mock.expect_run("ps", CmdOutput::success("S\n"));
+    mock.expect_run("lsof", CmdOutput::success("6001\n"));
+    mock.expect_run("ps", CmdOutput::success("6000\n"));
+    mock.expect_run("curl", CmdOutput::success("packager-status:running"));
+    mock.expect_run(
+        "pm path com.rndevagent.testapp",
+        CmdOutput::success("package:/data/app/~~x/com.rndevagent.testapp/base.apk\n"),
+    );
+    mock.expect_run("pidof com.rndevagent.testapp", CmdOutput::success("4242\n"));
+    mock.expect_run("ls-files", CmdOutput::success(""));
+    script_pr_provenance_recheck(mock);
+    script_drift_status(mock);
+}
+
+#[test]
+fn android_pr_on_api_37_starts_the_recorder() {
+    android_pr_video_flow(37);
+}
+
+#[test]
+fn android_pr_on_api_33_keeps_the_walk_with_an_explicit_video_unavailable_reason() {
+    android_pr_video_flow(33);
+}
+
+fn android_pr_video_flow(api: u16) {
+    let (repo, app) = app_repo();
+    let mut req = android_request(&repo, &app);
+    req.pr = pr_request(&repo, &app).pr;
+    let wt = req.runs_root.join(run_id()).join("wt");
+    let mut runner = PrRunner {
+        inner: android_mock(),
+        app: app.clone(),
+        recorder_persisted_before_spawn: None,
+        fail_core_spawn: false,
+    };
+    let mock = &mut runner.inner;
+    script_android_pr_preflight(mock, &repo, &wt, api);
+    mock.expect_run("pnpm install --frozen-lockfile", CmdOutput::success(""));
+    mock.expect_run("ls-files", CmdOutput::success(""));
+    mock.expect_run("check-ignore -q android/", CmdOutput::success(""));
+    script_android_finite_build(mock, PREBUILD, 5000, 0);
+    script_android_finite_build(mock, GRADLE, 5001, 0);
+    script_android_pr_ready(mock);
+    if api >= 34 {
+        mock.expect_run("shell rm -f", CmdOutput::success(""));
+        mock.expect_spawn(
+            "shell screenrecord --time-limit 0 --bit-rate 4000000",
+            Spawned {
+                pid: 7100,
+                pgid: 7100,
+            },
+        );
+        mock.expect_run("ps", CmdOutput::success(LSTART));
+        mock.expect_run("ps", CmdOutput::success("adb shell screenrecord"));
+        mock.expect_run("shell pgrep -f", CmdOutput::success("42\n"));
+    }
+    mock.expect_spawn_piped("walk.js", 9000, &pr_pass_stdout(), Some(0));
+    script_core_identity(mock);
+    script_drift_status(mock);
+    script_pr_provenance_recheck(mock);
+    if api >= 34 {
+        mock.expect_run(
+            "adb version",
+            CmdOutput::success("Android Debug Bridge version 1.0.41"),
+        );
+        mock.expect_run("shell pkill -INT -f", CmdOutput::success(""));
+        mock.expect_run("shell pgrep -f", CmdOutput::failed(1, ""));
+        mock.expect_run("ps -A", CmdOutput::success("1 1 S\n"));
+        mock.expect_run("pull", CmdOutput::success(""));
+        mock.expect_run("shell rm -f", CmdOutput::success(""));
+    }
+    mock.expect_run("ps -A", CmdOutput::success("1 1 S\n6000 6000 S\n"));
+    script_metro_teardown(mock, EMULATOR, None);
+    script_borrowed_release(mock, false);
+    mock.expect_run("du -sk", CmdOutput::success("4\n"));
+    mock.expect_run("worktree remove --force", CmdOutput::success(""));
+    if api >= 34 {
+        mock.expect_run("which ffmpeg", CmdOutput::failed(1, ""));
+    }
+    mock.expect_run(
+        "gh pr view https://github.com/o/r/pull/12",
+        pr_view_json(PR_MOVED),
+    );
+
+    let receipt = run(&mut runner, &req);
+    assert_eq!(receipt.result, ReceiptResult::Pass, "{:?}", receipt.failure);
+    if api >= 34 {
+        assert_eq!(runner.recorder_persisted_before_spawn, Some(true));
+        assert_subsequence(
+            &labels(&runner.inner),
+            &[
+                "adb-screenrecord",
+                "core-walk",
+                "adb-device-pkill",
+                "adb-pull",
+                "adb-rm",
+                "adb-reverse-remove",
+            ],
+        );
+        assert_eq!(receipt.cleanup["recorder"], "removed");
+    } else {
+        assert_eq!(runner.recorder_persisted_before_spawn, None);
+        assert!(labels(&runner.inner)
+            .iter()
+            .any(|label| label == "core-walk"));
+        assert!(!labels(&runner.inner)
+            .iter()
+            .any(|label| label == "adb-screenrecord"));
+        assert_eq!(
+            receipt.outcomes["video"],
+            "unavailable(Android API <34 stops screen recording at 180 s)"
+        );
+    }
+    assert_eq!(receipt.cleanup["device_lease"], "removed");
+    assert_eq!(runner.inner.remaining(), 0);
+    no_ios_or_expo_android_build(&runner.inner);
 }

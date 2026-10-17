@@ -43,6 +43,7 @@ fn own_recorder(runner: &mut dyn Runner, record: &mut RunRecord, root: &Path, sc
     record.resources.recorder = Some(RecorderResource {
         pid: Some(spawned.pid),
         birth: Some(birth),
+        pulled_sha256: None,
         kind: RecorderKind::IosSimulator,
         device: "fixture-device".into(),
         output: PathBuf::from("raw.mov"),

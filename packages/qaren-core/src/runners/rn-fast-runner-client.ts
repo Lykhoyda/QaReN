@@ -1,4 +1,10 @@
 import { currentInputs } from '../qa/inputs.js';
+import {
+  diagnosticField,
+  diagnosticKind,
+  normalizedSnapshotDiagnostics,
+  snapshotInventory,
+} from '../qa/snapshot-diagnostics.js';
 import { DEVICE_LEASE_REQUIRED, leaseFromEnvironment } from './lease-env.js';
 import { QaDispatchError, type QaDispatchContext } from '../domain/qa-dispatch.js';
 import { measureTiming, observeTiming, type TimingContext } from '../qa/timing.js';
@@ -76,6 +82,7 @@ import {
   isAmbiguousTransportFailure,
   isMutatingCommand,
   parseStatusProbeReply,
+  type ProbeState,
 } from './transport-recovery.js';
 import {
   probeProcessBirth,
@@ -1884,6 +1891,7 @@ async function postCommandWithRecovery(
   qaContext?: QaDispatchContext,
   qaTiming?: TimingContext,
   focusedProof?: () => Promise<boolean>,
+  qaRecovery?: { probeState?: ProbeState },
 ): Promise<{ resp: RunnerResponse; recovery?: TransportRecovery }> {
   if (runnerPoisoned && body.command !== 'status') {
     throw new Error(
@@ -1915,10 +1923,9 @@ async function postCommandWithRecovery(
     if (err instanceof QaDispatchError) throw err;
     const message = err instanceof Error ? err.message : String(err);
     if (!isAmbiguousTransportFailure(message)) throw err;
-    const decision = decideRecovery(
-      await probeCommandStatus(state.port, commandId, qaTiming),
-      body.command,
-    );
+    const probe = await probeCommandStatus(state.port, commandId, qaTiming);
+    if (qaRecovery) qaRecovery.probeState = probe?.state;
+    const decision = decideRecovery(probe, body.command);
     if (decision.action === 'return-recovered') {
       return {
         resp: decision.response as RunnerResponse,
@@ -2141,12 +2148,28 @@ function isNonNegativeSafeInteger(value: unknown): value is number {
 function mapRunnerNodesToFlat(
   nodes: RunnerSnapshotNode[],
   privateValues = false,
+  inventory?: ReturnType<typeof snapshotInventory>,
 ): (FlatNode & { value?: string })[] {
   const out: (FlatNode & { value?: string })[] = [];
   const nativeIndices = new Set<number>();
   let synthCounter = 0;
   for (const n of nodes) {
-    if (!n.rect) continue;
+    const kind = inventory ? diagnosticKind(diagnosticField(n, 'type')) : 0;
+    if (inventory) {
+      inventory.emittedCount++;
+      inventory.emittedByKind[kind]++;
+    }
+    if (!n.rect) {
+      if (inventory) {
+        inventory.missingRectCount++;
+        inventory.missingRectByKind[kind]++;
+      }
+      continue;
+    }
+    if (inventory) {
+      inventory.normalizedCount++;
+      inventory.normalizedByKind[kind]++;
+    }
     const refId = n.index !== undefined ? `e${n.index}` : `e${synthCounter++}`;
     const flat: FlatNode & { value?: string } = {
       ref: `@${refId}`,
@@ -2536,6 +2559,27 @@ export async function runIOS(args: RunIOSArgs): Promise<ToolResult> {
 
   let resp: RunnerResponse;
   let recovery: TransportRecovery | undefined;
+  const qaRecovery: { probeState?: ProbeState } = {};
+  const diagnoseRefusal = <T>(stage: 'dispatch-error' | 'native-response', operation: () => T): T =>
+    args.qaContext
+      ? args.qaContext.diagnoseRefusal(
+          () => ({
+            stage,
+            mutating: isMutatingCommand(args.command),
+            ...(stage === 'native-response'
+              ? {
+                  responseOk: resp?.ok,
+                  nativeCode: resp?.error?.code,
+                  nativeReason: resp?.error?.reason,
+                  nativeMutation: resp?.error?.mutation,
+                }
+              : {}),
+            probeState: qaRecovery.probeState,
+            recovery: recovery?.outcome,
+          }),
+          operation,
+        )
+      : operation();
   let commandAuthorityBefore = captureFastRunnerCommandAuthority();
   try {
     if (presenceRunner) {
@@ -2552,6 +2596,7 @@ export async function runIOS(args: RunIOSArgs): Promise<ToolResult> {
         args.qaContext,
         args.qaTiming,
         args.command === 'type' && args.focused ? args._focusedProof : undefined,
+        args.qaContext ? qaRecovery : undefined,
       ));
     }
   } catch (err) {
@@ -2565,7 +2610,7 @@ export async function runIOS(args: RunIOSArgs): Promise<ToolResult> {
     }
     const mapped = mapRunnerDispatchError(err);
     if (mapped) {
-      args.qaContext?.invalidate();
+      diagnoseRefusal('dispatch-error', () => args.qaContext?.invalidate());
       return mapped;
     }
     const m = err instanceof Error ? err.message : String(err);
@@ -2573,14 +2618,14 @@ export async function runIOS(args: RunIOSArgs): Promise<ToolResult> {
       const result = await (args.command === 'type'
         ? containTypeTimeout(args, commandAuthorityBefore)
         : containRunnerTimeout(args.command, m, commandAuthorityBefore));
-      args.qaContext?.refuse('ACTION_OUTCOME_UNCERTAIN');
+      diagnoseRefusal('dispatch-error', () => args.qaContext?.refuse('ACTION_OUTCOME_UNCERTAIN'));
       return result;
     }
-    args.qaContext?.refuse('ACTION_OUTCOME_UNCERTAIN');
+    diagnoseRefusal('dispatch-error', () => args.qaContext?.refuse('ACTION_OUTCOME_UNCERTAIN'));
     throw err;
   }
   if (!presenceRequested && !resp.ok && resp.error?.code === 'KEYBOARD_RELAYOUT_REQUIRED') {
-    args.qaContext?.refuse('ACTION_OUTCOME_UNCERTAIN');
+    diagnoseRefusal('native-response', () => args.qaContext?.refuse('ACTION_OUTCOME_UNCERTAIN'));
     if (!(await refreshTargetAfterKeyboard())) {
       return refreshFailure.result ?? staleAfterKeyboardDismissal(args._targetRef);
     }
@@ -2608,12 +2653,14 @@ export async function runIOS(args: RunIOSArgs): Promise<ToolResult> {
   }
   const recoveryMeta = recovery ? { transportRecovery: recovery } : {};
   if (resp.error?.reason !== 'focus-proof-refused')
-    checkQaNativeOutcome(
-      args.qaContext,
-      resp.error?.code,
-      resp.data,
-      resp.error?.reason,
-      resp.error?.mutation,
+    diagnoseRefusal('native-response', () =>
+      checkQaNativeOutcome(
+        args.qaContext,
+        resp.error?.code,
+        resp.data,
+        resp.error?.reason,
+        resp.error?.mutation,
+      ),
     );
   const announce = resp.ok ? takeQuiescenceAnnouncement() : null;
   if (!resp.ok) {
@@ -2626,7 +2673,7 @@ export async function runIOS(args: RunIOSArgs): Promise<ToolResult> {
       const result = await (args.command === 'type'
         ? containTypeTimeout(args, commandAuthorityBefore)
         : containRunnerTimeout(args.command, message, commandAuthorityBefore));
-      args.qaContext?.refuse('ACTION_OUTCOME_UNCERTAIN');
+      diagnoseRefusal('native-response', () => args.qaContext?.refuse('ACTION_OUTCOME_UNCERTAIN'));
       return result;
     }
     if (
@@ -2635,7 +2682,7 @@ export async function runIOS(args: RunIOSArgs): Promise<ToolResult> {
       message.includes('main thread execution timed out')
     ) {
       const result = await containTypeTimeout(args, commandAuthorityBefore);
-      args.qaContext?.refuse('ACTION_OUTCOME_UNCERTAIN');
+      diagnoseRefusal('native-response', () => args.qaContext?.refuse('ACTION_OUTCOME_UNCERTAIN'));
       return result;
     }
     const mutation = resp.error?.mutation;
@@ -2665,6 +2712,7 @@ export async function runIOS(args: RunIOSArgs): Promise<ToolResult> {
   ) {
     const data = (resp.data ?? {}) as {
       nodes?: RunnerSnapshotNode[];
+      snapshotDiagnostics?: unknown;
       tree?: unknown;
       presenceCapture?: unknown;
       truncated?: boolean;
@@ -2682,7 +2730,8 @@ export async function runIOS(args: RunIOSArgs): Promise<ToolResult> {
       dirtySnapshotPlatforms.add('ios');
     }
     if (Array.isArray(data.nodes)) {
-      const flat = mapRunnerNodesToFlat(data.nodes);
+      const inventory = qaReadOnly ? snapshotInventory() : undefined;
+      const flat = mapRunnerNodesToFlat(data.nodes, false, inventory);
       const outcome: RefMapUpdateOutcome = missingRefFreshness
         ? { applied: false, reason: 'snapshot-ref-freshness-unknown' }
         : updateRefMapFromFlat(flat, {
@@ -2697,6 +2746,14 @@ export async function runIOS(args: RunIOSArgs): Promise<ToolResult> {
       return okResult(
         {
           nodes: qaReadOnly ? mapRunnerNodesToFlat(data.nodes, true) : flat,
+          ...(inventory
+            ? {
+                snapshotDiagnostics: normalizedSnapshotDiagnostics(
+                  diagnosticField(data, 'snapshotDiagnostics'),
+                  inventory,
+                ),
+              }
+            : {}),
           ...(Object.hasOwn(data, 'presenceCapture')
             ? { presenceCapture: data.presenceCapture }
             : {}),
@@ -2728,8 +2785,10 @@ export async function runIOS(args: RunIOSArgs): Promise<ToolResult> {
           }
         : {}),
     };
+    const fallbackData = { ...data };
+    delete fallbackData.snapshotDiagnostics;
     return okResult(
-      resp.data ?? {},
+      fallbackData,
       Object.keys(fallbackMeta).length ? { meta: fallbackMeta } : undefined,
     );
   }

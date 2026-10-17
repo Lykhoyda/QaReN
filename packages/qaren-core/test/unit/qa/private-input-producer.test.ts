@@ -34,6 +34,157 @@ function assertNoInputs(reply: Record<string, unknown>, ...secrets: string[]) {
   for (const secret of secrets) assert.equal(JSON.stringify(reply).includes(secret), false, secret);
 }
 
+function compositeDigest(props: Record<string, unknown>) {
+  const fixture = setup(
+    { testID: 'continue', accessibilityRole: 'button', onPress() {} },
+    'RCTView',
+  );
+  const wrapper = buildFiber({ name: 'Card', props: { onPress() {}, ...props } });
+  wrapper.tag = 0;
+  wrapper.child = fixture.fiber;
+  fixture.fiber.return = wrapper;
+  fixture.root.current = wrapper;
+  return fixture;
+}
+
+const digestElement = {
+  $$typeof: Symbol.for('react.transitional.element'),
+  type: 'Text',
+  props: { children: 'element-canary' },
+};
+for (const key of ['title', 'accessibilityLabel', 'placeholder']) {
+  for (const [variant, value] of Object.entries({
+    element: digestElement,
+    number: 42,
+    array: [digestElement],
+    boolean: false,
+    null: null,
+    undefined,
+  })) {
+    test(`composite non-string ${key} (${variant}) does not refuse ordinary host capture`, async () => {
+      for (const typography of [false, true]) {
+        const fixture = compositeDigest({ [key]: value });
+        const begin = fixture.api.beginQaCapture(typography);
+        await tick();
+        const result = begin.state === 'pending' ? fixture.api.readQaCapture(begin.id) : begin;
+        assert.equal(result.state, 'ready', `${key}: ${typeof value}, typography=${typography}`);
+        assertNoInputs(result, 'element-canary');
+        const tree = JSON.parse(result.tree);
+        assert.equal(tree.verdict.complete, true);
+        assert.equal(tree.hostEvidence.complete, true);
+        assert.equal(tree.hostEvidence.hosts[0].testID, 'continue');
+        const entry = tree.interactive[0];
+        assert.equal(entry.text, undefined);
+        assert.equal(entry.label, undefined);
+        assert.equal(entry.placeholder, undefined);
+      }
+    });
+  }
+}
+
+test('opaque host strings and composite identities or roles still refuse', () => {
+  const opaque = {
+    toString() {
+      assert.fail('opaque props must not be coerced');
+    },
+  };
+  for (const key of [
+    'role',
+    'accessibilityRole',
+    'testID',
+    'nativeID',
+    'title',
+    'accessibilityLabel',
+    'placeholder',
+  ]) {
+    const result = setup({ [key]: opaque }, 'RCTView').api.beginQaCapture();
+    assert.equal(result.state, 'refused', key);
+  }
+  for (const key of ['role', 'accessibilityRole', 'testID', 'nativeID']) {
+    assert.equal(compositeDigest({ [key]: opaque }).api.beginQaCapture().state, 'refused', key);
+  }
+});
+
+test('composite display and predicate getters and input value getters refuse unread', () => {
+  let reads = 0;
+  for (const key of [
+    'title',
+    'accessibilityLabel',
+    'placeholder',
+    'editable',
+    'readOnly',
+    'aria-readonly',
+    'value',
+  ]) {
+    const fixture = compositeDigest({});
+    const props =
+      key === 'value' ? fixture.fiber.memoizedProps : fixture.root.current.memoizedProps;
+    if (key === 'value') fixture.fiber.type = 'RCTTextInput';
+    Object.defineProperty(props, key, {
+      get() {
+        reads++;
+        throw new Error('getter-canary');
+      },
+    });
+    const result = fixture.api.beginQaCapture();
+    assert.equal(result.state, 'refused', key);
+    assertNoInputs(result, 'getter-canary');
+  }
+  assert.equal(reads, 0);
+});
+
+test('ignored composite objects are never coerced and rendered host text reaches the adapter', async () => {
+  const opaque = {
+    toString() {
+      assert.fail('display props must not be coerced');
+    },
+    toJSON() {
+      assert.fail('display props must not be serialized');
+    },
+  };
+  for (const typography of [false, true]) {
+    const fixture = compositeDigest({
+      title: opaque,
+      accessibilityLabel: opaque,
+      placeholder: opaque,
+    });
+    fixture.fiber.child = buildFiber(
+      { hostType: 'RCTText', children: [{ text: 'Continue' }] },
+      fixture.fiber,
+    );
+    fixture.fiber.child.tag = 5;
+    fixture.fiber.child.child.tag = 6;
+    const observation = await captureQaReact(
+      {
+        async withPrivateHelperWorld(run) {
+          return run(async (expression) => vm.runInContext(expression, fixture.sandbox));
+        },
+      },
+      typography,
+    );
+    assert.equal(observation.hostEvidence?.complete, true);
+    assert.ok(
+      observation.interactive?.some(
+        (entry) => entry.testID === 'continue' && entry.text === 'Continue',
+      ),
+    );
+  }
+});
+
+test('composite string display props retain their digest meaning', () => {
+  const fixture = compositeDigest({
+    title: 'Continue',
+    accessibilityLabel: 'Next step',
+    placeholder: 'Hint',
+  });
+  const result = fixture.api.beginQaCapture();
+  assert.equal(result.state, 'ready');
+  const entry = JSON.parse(result.tree).interactive[0];
+  assert.equal(entry.text, 'Continue');
+  assert.equal(entry.label, 'Next step');
+  assert.equal(entry.placeholder, 'Hint');
+});
+
 const inputCanary = 'native-input-echo-canary';
 
 function inputPipeline(props: Record<string, unknown>, typography: boolean, hostType: string) {
@@ -573,17 +724,19 @@ test('private captures retain fixed refusals for data-named error overlays', () 
   }
 });
 
-test('current helper replaces a warm 89 helper and reinjection preserves the private API', () => {
-  const { sandbox } = setup({ value: '' });
-  sandbox.__QAREN = { __v: 89 };
-  vm.runInContext(INJECTED_HELPERS, sandbox);
-  const upgraded = sandbox.__QAREN;
-  assert.equal(upgraded.__v, HELPERS_VERSION);
-  assert.equal(typeof upgraded.beginQaCapture, 'function');
-  assert.equal(typeof upgraded.readQaCapture, 'function');
-  vm.runInContext(INJECTED_HELPERS, sandbox);
-  assert.equal(sandbox.__QAREN, upgraded);
-});
+for (const previousVersion of [89, 93, 94]) {
+  test(`current helper replaces a warm ${previousVersion} helper and reinjection preserves the private API`, () => {
+    const { sandbox } = setup({ value: '' });
+    sandbox.__QAREN = { __v: previousVersion };
+    vm.runInContext(INJECTED_HELPERS, sandbox);
+    const upgraded = sandbox.__QAREN;
+    assert.equal(upgraded.__v, HELPERS_VERSION);
+    assert.equal(typeof upgraded.beginQaCapture, 'function');
+    assert.equal(typeof upgraded.readQaCapture, 'function');
+    vm.runInContext(INJECTED_HELPERS, sandbox);
+    assert.equal(sandbox.__QAREN, upgraded);
+  });
+}
 
 test('private begin over an anonymous disabled input exposes no input channel and consumes once', () => {
   const { api, sandbox } = setup({
@@ -774,6 +927,114 @@ function withChildren(count: number, props: Record<string, unknown>, hostType = 
   return fixture;
 }
 
+function wrappedTail(count: number, props: Record<string, unknown> = {}) {
+  const fixture = setup({}, 'RCTView');
+  let previous = null;
+  for (let i = 0; i <= count; i++) {
+    const child = buildFiber(
+      i === count
+        ? { hostType: 'RCTTextInput', props: { testID: 'tail', onChangeText() {}, ...props } }
+        : { name: 'Wrapper' },
+      fixture.fiber,
+    );
+    child.tag = i === count ? 5 : 0;
+    child.stateNode =
+      i === count
+        ? { measureInWindow: (done: (...rect: number[]) => void) => done(0, 0, 100, 30) }
+        : null;
+    if (previous) previous.sibling = child;
+    else fixture.fiber.child = child;
+    previous = child;
+  }
+  return { ...fixture, tail: previous! };
+}
+
+test('strict QaReN capture completes a single-root tree beyond 2000 fibers without exposing input values', async (t) => {
+  // Exercise the fiber bound independently of host load; deadline tests keep their own clock.
+  t.mock.timers.enable({ apis: ['Date'], now: 1000 });
+  for (const typography of [false, true]) {
+    const fixture = wrappedTail(2998, { value: 'large-tree-input-canary' });
+    const legacy = JSON.parse(
+      fixture.api.getTree({ interactiveOnly: true, semanticEvidence: true }),
+    );
+    assert.equal(legacy.totalNodes, 2000);
+    assert.equal(legacy.truncated, true);
+    const begin = fixture.api.beginQaCapture(typography);
+    await tick();
+    const result = begin.state === 'pending' ? fixture.api.readQaCapture(begin.id) : begin;
+    assertNoInputs(begin, 'large-tree-input-canary');
+    assertNoInputs(result, 'large-tree-input-canary');
+    assert.equal(result.state, 'ready');
+    const tree = JSON.parse(result.tree);
+    assert.equal(tree.totalNodes, 3000);
+    assert.equal(tree.verdict.complete, true);
+    assert.equal(tree.truncated, undefined);
+    assert.equal(tree.hostEvidence.complete, true);
+    assert.equal(tree.hostEvidence.hosts.length, 2);
+    assert.equal(tree.interactive[0].testID, 'tail');
+    if (typography) assert.equal(tree.hostEvidence.typography.complete, true);
+  }
+});
+
+test('strict QaReN capture accepts at the existing 5000-fiber ceiling and refuses above it', async (t) => {
+  t.mock.timers.enable({ apis: ['Date'], now: 1000 });
+  for (const typography of [false, true]) {
+    const fixture = wrappedTail(4998);
+    const begin = fixture.api.beginQaCapture(typography);
+    await tick();
+    const result = begin.state === 'pending' ? fixture.api.readQaCapture(begin.id) : begin;
+    assert.equal(result.state, 'ready');
+    const tree = JSON.parse(result.tree);
+    assert.equal(tree.totalNodes, 5000);
+    assert.equal(tree.verdict.complete, true);
+    assert.equal(tree.interactive[0].testID, 'tail');
+    assert.equal(wrappedTail(4999).api.beginQaCapture(typography).state, 'refused');
+  }
+});
+
+test('unreadable input props beyond 2000 fibers still refuse without invoking getters', () => {
+  let calls = 0;
+  for (const typography of [false, true]) {
+    const fixture = wrappedTail(2998);
+    Object.defineProperty(fixture.tail.memoizedProps, 'value', {
+      get() {
+        calls++;
+        throw new Error('large-tree-getter-canary');
+      },
+    });
+    const result = fixture.api.beginQaCapture(typography);
+    assert.equal(result.state, 'refused');
+    assertNoInputs(result, 'large-tree-getter-canary');
+  }
+  assert.equal(calls, 0);
+});
+
+test('the larger strict capture retains the 200-interactive-node limit', () => {
+  const fixture = withChildren(201, { onPress() {} }, 'RCTView');
+  assert.equal(fixture.api.beginQaCapture().state, 'refused');
+});
+
+test('a larger strict capture still refuses measurement completion at its original deadline', async () => {
+  const fixture = wrappedTail(2998, { value: 'large-tree-deadline-canary' });
+  let complete: (...rect: number[]) => void = () => assert.fail('measurement not started');
+  fixture.tail.stateNode = {
+    measureInWindow(done: typeof complete) {
+      complete = done;
+    },
+  };
+  const time = clock({ ...fixture, complete: () => complete(0, 0, 100, 30) });
+  const begin = fixture.api.beginQaCapture(true);
+  assert.equal(begin.state, 'pending');
+  time.advance(1000);
+  complete(0, 0, 100, 30);
+  await tick();
+  const result = fixture.api.readQaCapture(begin.id);
+  assert.equal(result.state, 'refused');
+  assertNoInputs(begin, 'large-tree-deadline-canary');
+  assertNoInputs(result, 'large-tree-deadline-canary');
+  assert.equal(time.timers.size, 0);
+});
+
 test('non-input numeric and opaque object values coexist with an input without coercion', async () => {
   let coercions = 0;
   const opaque = {
@@ -808,11 +1069,183 @@ test('non-input numeric and opaque object values coexist with an input without c
 test('host and fiber bounds refuse instead of truncating the capture', () => {
   const { maxHosts } = PRIVATE_INPUT_LIMITS;
   assert.equal(withChildren(maxHosts - 2, {}, 'RCTView').api.beginQaCapture().state, 'ready');
-  assert.equal(withChildren(maxHosts - 1, {}, 'RCTView').api.beginQaCapture().state, 'refused');
+  assert.deepEqual(
+    plain(withChildren(maxHosts - 1, {}, 'RCTView').api.beginQaCapture().diagnostic),
+    {
+      cause: 'host-evidence-incomplete',
+      scanned: maxHosts,
+      budget: 5000,
+      roots: 1,
+      hosts: maxHosts,
+      interactive: 0,
+      queued: 0,
+      pruned: 0,
+    },
+  );
+  const wide = setup({}, 'RCTView');
+  let previous = null;
+  for (let i = 0; i < 5100; i++) {
+    const child = buildFiber({ name: 'Row' }, wide.fiber);
+    child.tag = 0;
+    if (previous) previous.sibling = child;
+    else wide.fiber.child = child;
+    previous = child;
+  }
+  assert.deepEqual(plain(wide.api.beginQaCapture().diagnostic), {
+    cause: 'truncated',
+    scanned: 5000,
+    budget: 5000,
+    roots: 1,
+    hosts: 1,
+    interactive: 0,
+    queued: 0,
+    pruned: 0,
+  });
   const { api, fiber } = setup({ value: '' });
   assert.equal(api.beginQaCapture().state, 'ready');
   fiber.child = fiber;
   assert.equal(api.beginQaCapture().state, 'refused');
+});
+
+test('producer refusals without a scanned tree still name one fixed cause', () => {
+  const empty = setup();
+  empty.sandbox.__REACT_DEVTOOLS_GLOBAL_HOOK__.getFiberRoots = () => new Set();
+  assert.deepEqual(plain(empty.api.beginQaCapture().diagnostic), {
+    cause: 'verdict-reasons:no-renderer',
+  });
+  const throwing = setup();
+  Object.defineProperty(throwing.fiber, 'memoizedProps', {
+    get() {
+      throw new Error('private-secret');
+    },
+  });
+  const reply = throwing.api.beginQaCapture();
+  assert.deepEqual(plain(reply.diagnostic), { cause: 'producer-error' });
+  assert.doesNotMatch(JSON.stringify(reply), /private-secret/);
+});
+
+function link<T extends object>(parent: T, children: object[]): T {
+  let previous: Record<string, unknown> | null = null;
+  for (const child of children as Array<Record<string, unknown>>) {
+    child.return = parent;
+    if (previous) previous.sibling = child;
+    else Reflect.set(parent, 'child', child);
+    previous = child;
+  }
+  return parent;
+}
+
+function composite(name: string, props: Record<string, unknown> = {}) {
+  const fiber = buildFiber({ name, props });
+  fiber.tag = 0;
+  return fiber;
+}
+
+function host(props: Record<string, unknown> = {}, hostType = 'RCTView') {
+  const fiber = buildFiber({ hostType, props });
+  fiber.tag = 5;
+  return fiber;
+}
+
+const leak = 'private-secret-label';
+
+function refusal(api: { beginQaCapture: (typography?: boolean) => Record<string, unknown> }) {
+  const reply = api.beginQaCapture();
+  assert.equal(reply.state, 'refused');
+  assert.doesNotMatch(JSON.stringify(reply), new RegExp(leak));
+  return plain(reply.diagnostic) as Record<string, unknown>;
+}
+
+test('typography-incomplete refusals name the first fixed site without app strings', () => {
+  const overlay = setup({}, 'RCTView');
+  // The overlay walk follows the root fiber's siblings; the digest walks only its children.
+  link(composite('Shell'), [
+    overlay.fiber,
+    ...Array.from({ length: 5100 }, () => composite('Row', { accessibilityLabel: leak })),
+  ]);
+  assert.deepEqual(refusal(overlay.api), {
+    cause: 'overlay-scan-cap',
+    scanned: 1,
+    budget: 5000,
+    roots: 1,
+    hosts: 1,
+    interactive: 0,
+    queued: 0,
+    pruned: 0,
+  });
+
+  const opaque = setup({ title: { text: leak } }, 'RCTView');
+  assert.deepEqual(refusal(opaque.api), {
+    cause: 'digest-prop-opaque',
+    scanned: 1,
+    budget: 5000,
+    roots: 1,
+    hosts: 1,
+    interactive: 0,
+    queued: 0,
+    pruned: 0,
+  });
+
+  const wide = setup({ onPress() {} }, 'RCTView');
+  link(
+    wide.fiber,
+    Array.from({ length: 2600 }, () => composite('Row', { accessibilityLabel: leak })),
+  );
+  const second = { current: host() };
+  wide.sandbox.__REACT_DEVTOOLS_GLOBAL_HOOK__.getFiberRoots = (id: number) =>
+    id === 1 ? new Set([wide.root, second]) : new Set();
+  assert.deepEqual(refusal(wide.api), {
+    cause: 'digest-visit-cap',
+    scanned: 2602,
+    budget: 5000,
+    roots: 2,
+    hosts: 2,
+    interactive: 1,
+    queued: 0,
+    pruned: 0,
+  });
+
+  const late = setup({}, 'RCTView');
+  link(late.fiber, [host({ onPress() {}, accessibilityLabel: leak })]);
+  // The clock reaches the deadline only inside the digest text walk.
+  late.sandbox.Date = {
+    now: () => (new Error().stack?.includes('collectText') ? 2000 : 100),
+  };
+  assert.equal(refusal(late.api).cause, 'typography-deadline');
+
+  const healthy = setup({}, 'RCTView');
+  link(healthy.fiber, [host({ onPress() {}, accessibilityLabel: 'Save' })]);
+  const accepted = healthy.api.beginQaCapture();
+  assert.equal(accepted.state, 'ready');
+  assert.equal('diagnostic' in accepted, false);
+});
+
+test('truncation reports the queued frontier and inactive fibers pruned by the walk', (t) => {
+  t.mock.timers.enable({ apis: ['Date'], now: 1000 });
+  const capped = setup({}, 'RCTView');
+  link(
+    capped.fiber,
+    Array.from({ length: 250 }, () => host({ onPress() {} })),
+  );
+  assert.deepEqual(refusal(capped.api), {
+    cause: 'truncated',
+    scanned: 201,
+    budget: 5000,
+    roots: 1,
+    hosts: 201,
+    interactive: 200,
+    queued: 50,
+    pruned: 0,
+  });
+
+  const pruning = setup({}, 'RCTView');
+  const inactive = composite('RNSScreen', { activityState: 0 });
+  link(inactive, [composite('Row', { accessibilityLabel: leak })]);
+  link(pruning.fiber, [inactive, ...Array.from({ length: 5100 }, () => composite('Row'))]);
+  const pruned = refusal(pruning.api);
+  assert.equal(pruned.cause, 'truncated');
+  assert.equal(pruned.pruned, 1);
+  assert.equal(pruned.scanned, pruned.budget);
 });
 
 async function tick() {
@@ -871,6 +1304,16 @@ test('in-place value prop mutation and root replacement refuse after typography'
       v: 1,
       id: begin.id,
       state: 'refused',
+      diagnostic: {
+        cause: 'tree-changed',
+        scanned: 1,
+        budget: 5000,
+        roots: 1,
+        hosts: 1,
+        interactive: 0,
+        queued: 0,
+        pruned: 0,
+      },
     });
   }
 });
@@ -919,6 +1362,16 @@ test('producer deadline and abandonment expiry clear slots and reject late compl
     v: 1,
     id: first.id,
     state: 'refused',
+    diagnostic: {
+      cause: 'producer-deadline',
+      scanned: 1,
+      budget: 5000,
+      roots: 1,
+      hosts: 1,
+      interactive: 0,
+      queued: 0,
+      pruned: 0,
+    },
   });
   assert.equal(time.timers.size, 0);
   const next = fixture.api.beginQaCapture(true);
@@ -1133,6 +1586,16 @@ test('revalidation never invokes a newly installed private getter or exposes its
     v: 1,
     id: begin.id,
     state: 'refused',
+    diagnostic: {
+      cause: 'tree-changed',
+      scanned: 1,
+      budget: 5000,
+      roots: 1,
+      hosts: 1,
+      interactive: 0,
+      queued: 0,
+      pruned: 0,
+    },
   });
   assert.equal(calls, 0);
 });

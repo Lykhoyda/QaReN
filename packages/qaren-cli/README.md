@@ -311,7 +311,8 @@ Exactly one must qualify; otherwise selection refuses `DEVICE_UNAVAILABLE`
 (exit 4). With several boot-completed emulators, `--device emulator-NNNN`
 chooses one; an explicitly selected emulator still booting refuses without
 waiting or switching devices. Physical devices are not supported, and
-`--boot-device` and `--fresh-install` refuse on Android. `ANDROID_HOME` must name
+`--boot-device` refuses on Android; see [Fresh install](#fresh-install) for app reset.
+`ANDROID_HOME` must name
 the SDK whose `platform-tools/adb` reaches that server. The build is a Gradle
 `:app:assembleDebug` limited to the emulator's ABI, preceded by
 `expo prebuild --platform android --clean` when `android/` is absent. An absent
@@ -392,11 +393,12 @@ A runner left
 on the emulator by rn-dev-agent 1.x is
 signed differently and cannot be replaced in place: uninstall
 `dev.lykhoyda.rndevagent.androidrunner` and `dev.lykhoyda.rndevagent.androidrunner.test`
-from that emulator first. Admission on the borrowed emulator refuses
+from that emulator first. The walk's advisory scan on the borrowed emulator refuses
 `BUSY_FOREIGN_FLOW` with the process scan's message when another UIAutomator or
 agent-device process runs there (`adb -s <serial> shell ps -A`). The scan does
 not recognise every driver and fails open when `ps` cannot run, so borrow an
-emulator no other automation uses.
+emulator no other automation uses. The separate [fresh-install admission](#fresh-install)
+must succeed before app reset.
 
 Plans contain a `## QA` section, named `###` blocks, numbered actions and
 `✓` checks. See the executable
@@ -421,8 +423,8 @@ ID remains a twin, and each ambiguity candidate is listed as native or
 React-only and, where proven, as a wrapper of an input, as covered by the
 [forwarding-proof tests](../qaren-core/test/unit/qa/identity.test.ts). A merged composite
 input keeps its placeholder for quoted fill resolution. The refusal is terminal:
-it is never recovered, retried or re-walked,
-including for stored replay selectors and for a handler that finds twins at dispatch. A text element
+it is never recovered, retried or re-walked, including when a handler finds twins
+at dispatch. Stored-selector resolution follows the [saved-block contract](#saved-blocks). A text element
 that is the sole text descendant of matching labelled ancestors links to the
 nearest action candidate: enabled and either hittable or offscreen for scrolling.
 On Android, this also applies when an ancestor has other text descendants but
@@ -516,18 +518,32 @@ the intended button.
 Before dispatch, the walker also treats a press or fill target, including a
 keyboard-fallback wrapper before its tap, whose centre lies outside its trusted
 clipping viewport or covered by an observed keyboard frame
-(unless the keyboard is proven hidden) as covered. Keyboard-owned targets use
+(unless the keyboard is proven hidden) as covered. Inside that viewport and above
+the keyboard top, a centre past an edge of the visible clip band described below
+is covered too: a field whose centre sits under a sticky footer or header inside
+its list is cleared with one scroll, the same as under the keyboard. Keyboard-owned targets use
 the existing explicit tap path and remain subject to trusted clipping and native
 identity guards. An explicit key press performs its normal action, not guaranteed
 keyboard dismissal; QA must freshly prove the keyboard hidden and the intended
 screen preserved before treating the press as clearance. Ordinary covered content
 uses the same recovery as a native occlusion refusal.
-The walker handles this refusal with one directional scroll: down from the
-lower half of the effective viewport, up from the upper half. Scroll bands stay
-above a visible keyboard. On both iOS and Android, a target whose centre is
-covered by the observed keyboard gets a scroll sized to move that centre toward
-the middle of the band above the keyboard, capped to 60% of that band's height.
-Scrolls without keyboard clearance keep the fixed amount of `0.6`.
+The walker handles this refusal with one directional scroll toward the centre
+of the target's visible clip band: its trusted clipping viewport cut off at the
+top of an observed keyboard unless the keyboard is proven hidden, and between
+sticky overlays. A touchable, non-text element at least half the clip's width,
+outside the target's own scroll content, that crosses the band's bottom edge
+ends the band at its top (a sticky footer); one across the band's top edge
+starts the band below it (a sticky header). A target at
+or below that band's centre scrolls down; one above it scrolls up. Sticky overlays
+can narrow the band even without a keyboard or when the clip is entirely above it.
+The walker passes that band to the shared scroll handler so the drag starts
+inside it, narrowing the existing keyboard-safe band. Callers passing no band
+use the existing keyboard-safe band. On both iOS and Android, a target whose centre
+is covered by the observed keyboard or a sticky overlay gets a scroll sized to move that centre
+toward the middle of that band, and the drag may span the band with both endpoints
+at least one pixel inside its edges after rounding. A clearance scroll without
+a band keeps the cap of 60% of the screen area above the keyboard.
+Scrolls without a clearance distance keep the fixed amount of `0.6`.
 Successful iOS fast-runner scrolls now run the same bounded settle wait as taps
 before returning, using snapshot equality. Results
 include `meta.settle` and `meta.timings_ms.settle`; a timeout reports unsettled
@@ -556,7 +572,8 @@ See the [occlusion regressions](../qaren-core/test/unit/qa/occlusion-walker.test
 
 Fills use strict native value verification first. A strict fill replaces the
 field's content: the bound input is cleared before typing, and verification
-expects exactly the plan text. Keyboard fallback typing also replaces: see below.
+expects exactly the plan text. For keyboard fallback's replacement request and
+read-back policy, see below.
 Rebinding an input without a testID requires its original label and native type;
 the same frame alone cannot substitute a different input.
 Only a stable exact read-back
@@ -630,14 +647,20 @@ on a keyboard-up path types nothing; failure of the pre-dispatch read returns
 `NO_TEXT_INPUT_TARGET` with no mutation. An unknown keyboard state still refuses.
 Each walker focus decision logs one value-free `fallback-focus` line.
 
-QaReN then replaces the focused field's content: the runner selects the whole
-field and types the plan text in one synthesized sequence. When the input is a
+QaReN then requests replacement of the focused field's content: the runner synthesizes
+select-all and types the plan text in one sequence. When the input is a
 controlled React field, its value is then read back locally and compared, never
-logged: an exact match verifies the fill. A stable, nonempty read-back holding a
+logged: an exact match verifies the fill. A stable controlled read-back exactly equal
+to the prior nonempty value followed by the requested text fails with
+`TEXT_ENTRY_UNVERIFIED` and an observed mutation, without retrying or continuing to
+submit. This detects a retained-prefix concatenation after typing; it does not
+repair the native replacement mechanism or cover unreadable values.
+The same check runs after the bounded retype below, comparing against the preserved
+initial value and the retype's fresh controlled, focused value before dispatch.
+A stable, nonempty read-back holding a
 strictly shorter, in-order part of the text is ambiguous: keystrokes dropped under
-host load and a field that strips characters or limits length look alike. Because
-the retype replaces the whole field with the same text, it is safe either way, so
-the field is cleared and retyped once within the same step budget. A match then
+host load and a field that strips characters or limits length look alike. QaReN
+requests one clear-and-retype with the same text within the same step budget. A match then
 verifies the fill. A second loss of a different length points to dropped
 keystrokes and fails with `TEXT_ENTRY_UNVERIFIED` naming only the typed and held
 lengths. The same loss twice points to the field's own transformation and stays
@@ -796,8 +819,13 @@ adds no near-miss explanation.
 
 The [native geometry model](../qaren-core/src/qa/native-presence.ts) clips nodes
 on both axes against the Application screen and trusted Window, ScrollView,
-Table and CollectionView ancestors. Missing or invalid rectangles skip only
-that clip; Application and Window rectangles must have positive size.
+Table and CollectionView ancestors. On Android, scroll containers are recognised
+by class-name suffix, for example ScrollView, ListView or RecyclerView;
+`isScrollContainerType` in that model owns the complete matching rules.
+Their rectangles contribute to the effective clipping viewport, so a row scrolled
+out of its list is offscreen as on iOS. Missing or invalid
+rectangles skip only that clip; Application and Window rectangles must have
+positive size.
 Missing Window ancestry does not create uncertainty when the Application clip
 is valid, including with the keyboard up. Partly overlapping nodes remain eligible.
 A wholly offscreen ancestor with an independently on-screen descendant has
@@ -822,9 +850,8 @@ clip, the boundary remains screen y=0. Quoted scroll-until targets use that
 viewport when exactly one offscreen identity matches. A target wholly above
 the viewport scrolls up; one wholly below scrolls down. When its frame overlaps
 the viewport but it is reported not visible, as with an Android heading under
-the status bar, scrolling instead moves toward revealing it: up when its centre
-is above the viewport's midpoint, down when at or below it, regardless of the
-requested direction. With no single matching identity, an already visible
+the status bar, scrolling uses the clearance direction described above, regardless
+of the requested direction. With no single matching identity, an already visible
 target or no known viewport, the requested direction is retained. See the
 [scroll-until direction regressions](../qaren-core/test/unit/qa/scroll-until-direction.test.ts).
 
@@ -861,6 +888,23 @@ counts and capped symptom samples with Window ancestry and origins, and the coun
 plus up to ten in-app nodes the visibility rules excluded, each with its rule
 (`anc`, `scroll` or `window`) and the deciding ancestor's type and rectangle; it
 excludes labels, identifiers, values and other nodes' sizes.
+Android scroll ancestors are identified by index, with their types still recorded
+as `Other` in this value-free diagnostic. The same line carries
+its observation ordinal and `ordinary`/`platform-presence` mode, the native
+acquisition attestation, producer viewport provenance, and emitted, normalized,
+missing-rect, joined and duplicate kind counts. The
+[snapshot diagnostic implementation](../qaren-core/src/qa/snapshot-diagnostics.ts)
+owns the kind-bin order and metadata validation. Joined counts describe native
+survivors; projection flags are independent counts, and known-boolean/rect counts describe
+source collectedness rather than defaulted element flags. Window lists and
+symptom/exclusion samples shrink to retain the 2 KB bound; counts stay whole.
+A producer viewport may differ from every normalized Window; older runners and
+raw/presence/alert routes leave it missing.
+Missing/invalid viewport status and null inventory groups are distinct from a
+collected zero. React-refusal warnings keep their existing fixed cause/counters
+and add the same observation/mode. Generic failures remain generic. These private
+fields are aggregate evidence, never intended-target presence or native defect
+acceptance; missing device proof remains GAP/NOT RUN.
 The [diagnostic implementation](../qaren-core/src/qa/native-presence.ts)
 owns its field layout.
 
@@ -914,13 +958,62 @@ label, identifier and origin match; deduplication compares those fields separate
 The React digest adds semantics: a deadline, malformed-payload, validation or
 transport failure degrades React coverage to unknown without retrying capture.
 Operations requiring complete React evidence still refuse when that coverage is
-unavailable. Capture deadlines, budgets and item deadlines remain unchanged.
+unavailable. Strict private React capture can scan up to 5,000 fibers across
+renderer roots, including a single-root screen. Existing capture and item
+deadlines, host-evidence and interactive-node limits still apply; incomplete
+evidence is refused.
+
+On composite components, the digest omits non-string `title`,
+`accessibilityLabel` and `placeholder` props without coercing or serializing them;
+rendered host text remains available as evidence, and string display props retain
+their digest meaning. Native Expo image hosts with verified image-source metadata
+and no input semantics also omit non-string image placeholders. Other non-string
+host display props, opaque identities or roles, and getter-backed props still
+refuse capture. The
+[composite/input regressions](../qaren-core/test/unit/qa/private-input-producer.test.ts)
+and [image-placeholder regressions](../qaren-core/test/unit/qa/image-placeholder-producer.test.ts)
+cover these boundaries and warm-helper replacement.
+
+When the React capture adapter classifies a failure, the `interactive digest
+unavailable` warning includes a fixed `cause` code and available nonnegative integer
+counters: scanned fibers (with the scan budget when available), roots, hosts,
+interactive entries, the walk's queued frontier (`queued`), fibers it skipped at
+inactive routes or hosts with `display: none` (`pruned`) and elapsed milliseconds
+(`ms`). Pruned counts exclude the skipped fibers' unvisited descendants. Queued
+and pruned counts are lower bounds observed by the bounded walk, not tree totals.
+These distinguish capture limits, the
+typography sites that leave evidence incomplete, deadlines, renderer coverage,
+malformed evidence and CDP evaluation failures; they exclude app text, labels,
+identifiers and raw errors. Unclassified
+failures retain the generic warning. The
+[React capture adapter](../qaren-core/src/qa/react-capture.ts) owns classification;
+[ReactCaptureIncomplete](../qaren-core/src/qa/private-input.ts) owns the allowed
+codes, counters and warning detail format. This diagnostic identifies the capture
+failure category; it does not establish the underlying app or host cause or change
+refusal and privacy behavior.
+
+On composite components, the digest omits non-string `title`,
+`accessibilityLabel` and `placeholder` props without coercing or serializing them;
+rendered host text remains available as evidence, and string display props retain
+their digest meaning. Native Expo image hosts with verified image-source metadata
+and no input semantics also omit non-string image placeholders. Other non-string
+host display props, opaque identities or roles, and getter-backed props still
+refuse capture. The
+[composite/input regressions](../qaren-core/test/unit/qa/private-input-producer.test.ts)
+and [image-placeholder regressions](../qaren-core/test/unit/qa/image-placeholder-producer.test.ts)
+cover these boundaries and warm-helper replacement.
 
 React-only elements expose no label, placeholder or value strings in the screen
-projection. The React walk excludes provably inactive screen routes and native
+projection. The React digest excludes provably inactive screen routes and native
 hosts with `display: none` before collecting their semantic or descendant text
-evidence. Validated React Native frozen descriptors remain readable; arbitrary
-getters are not invoked, and an unreadable inactivity flag does not prune a subtree.
+evidence. Strict capture's error-overlay pre-scan applies the same rule to skip
+their descendants, so retained, natively detached tabs do not exhaust its
+5,000-visit cap with hidden content. It still checks for LogBox and RedBox at the
+app root or in separate renderer roots; visible error overlays refuse capture.
+Active routes and routes whose inactivity cannot be proven remain scanned under
+the existing limits. Validated React Native frozen descriptors remain readable;
+arbitrary getters are not invoked, and an unreadable inactivity flag does not
+prune a subtree.
 Unreadable display overrides or styles beyond the array or nesting scan budgets
 resolve as unknown and do not establish `display: none`; later readable overrides
 within the budgets still determine display.
@@ -1052,11 +1145,26 @@ plan preflight -> device selection -> lease + durable run record
                -> app preparation -> screen proof -> walk -> teardown
 ```
 
+### Fresh install
+
+`--fresh-install` works with `qaren check` and `qaren pr` on iOS and Android.
+Under the run's device lease, strict admission must succeed before removing the
+selected app and its data. If the app is installed, QaReN uninstalls it and
+reads the app inventory again to prove absence before installation and the walk.
+An already absent app skips uninstall. An unreadable inventory stops with
+`APP_PRESENCE_UNKNOWN`; a failed uninstall or an app still present afterward
+stops with `APP_RESET_FAILED`.
+
+On Android, strict admission runs `adb -s <serial> shell ps -A` through the
+borrowed server. A matching UIAutomator, agent-device, Maestro or instrumentation
+process refuses `DEVICE_BUSY`, excluding QaReN's own runner package. A scan
+error, timeout or empty output refuses `FRESH_INSTALL_ADMISSION_UNKNOWN`.
+Both refusals occur before uninstall. This flow never boots, wipes or restarts
+the emulator. For iOS, see [iOS admission and cleanup](#ios-admission-and-cleanup).
+
 On iOS, `check` borrows the only booted simulator, or the booted target
 selected by `--device`. `--boot-device --device <simulator-UUID>` opts into
-booting that exact iOS simulator under the lease. `--fresh-install` opts into
-removing the selected app and its data, proving absence, then installing it
-under the same lease. Both opt-ins require strict admission before mutation.
+booting that exact iOS simulator under the lease, with strict admission before mutation.
 Cleanup leaves the borrowed simulator running and keeps the installed app.
 iOS preparation follows the
 [CLI-owned iOS build routes](#cli-owned-ios-build-routes) and their startup
@@ -1082,10 +1190,14 @@ The cached iOS dev-client install shares that budget, which starts before the
 install. The owned `simctl install` gets the remaining preparation time instead
 of a fixed 120-second limit. After a timeout, the installed app container is
 accepted when its content hash equals the cached artifact's (`install_proof`);
-otherwise the install is re-issued only if preparation time remains. A definite
-install error fails immediately; an unproven install with a spent budget fails
-with `ARTIFACT_INSTALL_FAILED`. For a timeout, keep the cached artifact, clean up
-the run and retry as directed by `next_action`.
+otherwise the install is re-issued only if preparation time remains. An install
+refusal whose stderr contains the complete `IXErrorDomain` token and `promise`
+or `metadata` (case-insensitive, with no required error code) skips container
+verification and retries after the existing five-second readiness tick within
+the same budget; all other definite install errors fail immediately.
+An unproven install with a spent budget fails with
+`ARTIFACT_INSTALL_FAILED`. For a spent budget, keep the cached artifact, clean
+up the run and retry as directed by `next_action`.
 Host load is diagnostic only. Other
 manifest and launch errors remain `BUILD_FAILED`. Cleanup retained resources
 before retrying.
@@ -1314,7 +1426,10 @@ presence status and label source must agree too. Excluded labels cannot supply a
 fallback witness. Discovery keeps preferring a unique testID for an eligible
 text match. An ambiguous text target without a unique testID
 can satisfy discovery but leaves the block unsaved; replay follows the
-ambiguity refusal above.
+ambiguity refusal above. A stored testID on a replayed press, wait or scroll resolves
+to its one native element even when a React-only element shares that testID, and
+still refuses when two native elements share it; a stored-testID fill keeps
+counting React-only inputs.
 
 Replay requires the canonical block format emitted by
 [`serializeBlock`](../qaren-core/src/qa/blocks.ts); edited or incompatible files
@@ -1423,6 +1538,30 @@ clearance or a non-executing hide with no overlay to clear fails the step.
 
 ### Walk timing
 
+Private `timing` events in `logs/core.log` may include `refusalDiagnostic` when
+an instrumented iOS dispatch boundary records the context's first refusal. This
+bounded, value-free record retains allowlisted refusal, native-response and
+transport-recovery facts; missing or unrecognized facts are `null`. It excludes
+native messages, target identifiers and input values. The
+[dispatch context](../qaren-core/src/domain/qa-dispatch.ts) owns the field layout
+and allowlists. Later refusals cannot replace the first record, and a refusal
+outside these boundaries may have no record. These facts do not establish
+no-mutation proof, authorize another send or change retries, deadlines or outcomes;
+diagnostic collection and sink failures preserve the refusal.
+
+When a press or fill target's centre remains covered after the one-scroll
+allowance, a private `timing` event with code `CENTRE_COVERED` includes the
+observation ordinal and `clearanceDiagnostic`. It records the viewport, keyboard or
+overlay predicate branch, boolean coverage facts, the scroll's origin and requested
+direction, and whether the target centre changed. Unread or unavailable facts
+remain `null`; target text, identifiers and coordinates are excluded. The
+[walker](../qaren-core/src/qa/walker.ts) owns the event layout; the
+[centre predicate](../qaren-core/src/qa/resolve.ts) owns its coverage facts.
+The event preserves the existing failed step and grants no further scroll or
+target dispatch; sink failures leave the outcome unchanged. It stays out of the
+public result and ledger, as covered by the
+[occlusion regressions](../qaren-core/test/unit/qa/occlusion-walker.test.ts).
+
 `ledger.json` adds a `timing` object to each walked attempt row, in milliseconds.
 `captureMs`, `resolveMs` (decision), `actMs`, `postCaptureMs` and `otherMs`
 partition `total`, the elapsed window between consecutive row timestamps
@@ -1507,6 +1646,7 @@ against an unchanged candidate to obtain attributable evidence.
 
 ```sh
 qaren pr <number|url> --plan-file plan.md --device <simulator-UUID> --json
+qaren pr <number|url> --platform android --plan-file plan.md --device emulator-5554 --json
 qaren publish <run-id> --json
 ```
 
@@ -1537,17 +1677,25 @@ request head under `~/.qaren/runs/<run-id>/wt`. It refuses unless origin's
 `pull/<n>/head` is the head GitHub reports and the worktree is clean at that
 commit, both before the lease and again before the walk. Fetch verification uses
 a per-run local ref rather than shared `FETCH_HEAD`, so concurrent PR runs
-verify their own fetched commits. On iOS the simulator
-screen is recorded from just before the walk to just after it and encoded to
-`media/video.mp4` (H.264, 30 fps); without `ffmpeg`, or when a capture cannot
-start, the run continues and the receipt's `video` outcome says why. The local
-recording stays complete; `qaren publish` uploads only
+verify their own fetched commits.
+
+On iOS the simulator screen is recorded from just before the walk to just after
+it. On Android, `pr` [borrows a booted emulator like `check`](#check-a-plan).
+API 34 or newer records one continuous MP4 with `screenrecord --time-limit 0`,
+including walks longer than 180 seconds. API 33 and older still run the walk,
+but skip recording with the explicit video-unavailable reason that Android
+API <34 stops screen recording at 180 seconds.
+
+Both platforms encode the capture to `media/video.mp4` (H.264, 30 fps), using
+`ffmpeg` and checking playable duration with `ffprobe`. If these tools are
+unavailable, capture cannot start, or finalization fails, the walk can still
+complete and the receipt's `video` outcome says why. The local recording stays
+complete; `qaren publish` uploads only
 `media/video-published.mp4`, trimmed under the [video publication contract](#video-publication).
 Blocks the walk saved are copied to `blocks/` before the
 worktree is removed. If the pull
 request moved during the run, the receipt names the tested commit in
-`tested_older_commit`. On Android, `pr` borrows an emulator like `check`; its
-video is unavailable in this release.
+`tested_older_commit`.
 
 Normal teardown and dead-owner recovery remove the PR worktree only after
 cleanup proves the recorded build, core, Metro, recorder and runner-host
@@ -1558,14 +1706,30 @@ after reaping owned children; a free port or dead launcher alone is insufficient
 Present or unknown group evidence retains Metro ownership and any applicable lease.
 Successful PR worktree removal reports measured reclaimed bytes, or explicitly
 reports that the byte count is unknown, including dead-owner recovery. Once a
-playable local video replaces `media/raw.mov`, the raw capture is retired and
-its reclaimed size is reported; failed finalization retains it.
+playable local video replaces the raw capture (`media/raw.mov` on iOS or
+`media/raw.mp4` on Android), the raw capture is retired and its reclaimed size
+is reported; failed finalization retains it.
 
 An unproven recorder shutdown retains recorder ownership and the device lease,
 including when recording startup fails. Teardown retries an unresolved stop;
 the receipt's `cleanup.recorder` reports that final outcome. If shutdown remains
-unresolved, recover with `qaren cleanup <run-id>` as described under
-[iOS admission and cleanup](#ios-admission-and-cleanup).
+unresolved, recover with `qaren cleanup <run-id>`; iOS follows the
+[iOS admission and cleanup contract](#ios-admission-and-cleanup).
+
+Android recorder cleanup requires the run's device lease, its recorded emulator
+endpoint and a compatible borrowed adb server. It signals only the device
+recorder matching the per-run output path, first with INT, then with KILL if
+needed; a KILL fallback is recorded as abnormal media finalization. Cleanup
+must prove device-recorder absence and host adb process-group shutdown before
+pulling the media. Unknown device state retains the resource and lease.
+
+The Android capture stays at `/data/local/tmp/qaren-<run-id>.mp4` until a
+successful pull to the run's `media/raw.mp4` has durable SHA-256 evidence.
+A failed pull preserves the device file and recorder resource for
+`qaren cleanup <run-id>` to retry. Recovery reuses a completed pull only when
+the local bytes match its persisted digest, then retries device-file removal
+and recorder retirement. Cleanup recovers the raw media; it does not encode a
+video or upgrade the original publication verdict.
 
 `qaren publish` posts one comment: the structured PASS/FAIL/REFUSED verdict and refusal code, the
 tested commit, an eligible available video, the plan with ✓/✗ per walked line,

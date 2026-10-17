@@ -1590,7 +1590,7 @@ export async function performFocusedFill(
       (args.vetoUnfocused && read && !read.focused)
     );
   };
-  // clearFirst replaces in the runner: one select-all and text sequence, never an append.
+  // clearFirst requests one select-all and text sequence in the runner.
   const native = await runNative(
     ['fill', args.ref, args.text, ...(args.clearFirst ? ['--clear-first'] : [])],
     { qaContext: args.qaContext, focusedType: true, focusedProof, settle: { enabled: false } },
@@ -1635,8 +1635,9 @@ export async function performFocusedFill(
       },
       'Typed into the focused field; the value could not be confirmed. Confirm with device_screenshot or expect_text before relying on it.',
     );
-  if (before === null || !beforeFocused) return unverified();
-  const expected = (args.clearFirst ? '' : before) + args.text;
+  const initialBefore = before;
+  if (initialBefore === null || !beforeFocused) return unverified();
+  const expected = (args.clearFirst ? '' : initialBefore) + args.text;
   const readBack = () =>
     awaitReactInputValue(() => readReactInputValue(client, oracleTestId), expected);
   const verified = () =>
@@ -1645,8 +1646,28 @@ export async function performFocusedFill(
       verifiedOracle: 'react-tree',
       textEntryRoute,
     });
+  const retainedPrefixFailure = (
+    verification: Awaited<ReturnType<typeof readBack>>,
+    dispatchBefore: string | null,
+  ) => {
+    if (
+      args.clearFirst &&
+      verification.verdict === 'mismatch' &&
+      [initialBefore, dispatchBefore].some(
+        (value) => value !== null && value !== '' && verification.observed === value + args.text,
+      )
+    ) {
+      return fillFailure(
+        'TEXT_ENTRY_UNVERIFIED',
+        'device_fill requested replacement but the focused field retained its prior value before the typed text; not retrying.',
+        { mutation: 'observed', pathsTried },
+      );
+    }
+  };
   const verification = await readBack();
   if (verification.verdict === 'exact') return verified();
+  const retained = retainedPrefixFailure(verification, initialBefore);
+  if (retained) return retained;
   const caseNormalized =
     verification.verdict === 'mismatch' && caseOnly(verification.observed, expected)
       ? { caseNormalizedChars: [...expected].length }
@@ -1678,6 +1699,7 @@ export async function performFocusedFill(
     focusedProof,
     settle: { enabled: false },
   });
+  const retypeBefore = beforeFocused ? before : null;
   if (retyped.isError) {
     return extractMutationDisposition(retyped) === 'none'
       ? lost(first, '; the retype was refused')
@@ -1688,6 +1710,8 @@ export async function performFocusedFill(
   }
   const second = await readBack();
   if (second.verdict === 'exact') return verified();
+  const retainedAfterRetype = retainedPrefixFailure(second, retypeBefore);
+  if (retainedAfterRetype) return retainedAfterRetype;
   const held = droppedLength(second.observed, expected);
   if (held === undefined) return unverified();
   // The same loss twice is the field's own stripping or maxLength: unverified, with the lengths disclosed.
@@ -1958,28 +1982,50 @@ function scrollBand(): { width: number; height: number } {
     : screen;
 }
 
+type Band = { x?: number; y?: number; width: number; height: number };
+
+// A caller-named band only narrows the keyboard-safe band, so the drag lands on the scrolled view.
+function dragBand(within?: Band): Band {
+  const band = scrollBand();
+  if (!within) return band;
+  const top = Math.max(within.y ?? 0, 0);
+  const bottom = Math.min((within.y ?? 0) + within.height, band.height);
+  return bottom > top ? { x: within.x, y: top, width: within.width, height: bottom - top } : band;
+}
+
 // Scroll direction → finger gesture is INVERTED vs swipe ("scroll down" = content
 // moves up = finger moves up) and scaled by `amount` (0..1). Centred half-spans
 // keep the gesture inside the viewport.
-// A vertical clearance distance replaces the amount, capped inside the band.
+// A vertical clearance distance replaces the amount: a caller band is precise, so the drag may
+// span it a pixel inside each edge; the window fallback keeps its cap.
 function computeScrollFromDirection(
   direction: 'up' | 'down' | 'left' | 'right',
   amount: number,
-  screen: { width: number; height: number },
+  screen: Band,
   distance?: number,
 ): { x1: number; y1: number; x2: number; y2: number } {
-  const cx = Math.round(screen.width / 2);
-  const cy = Math.round(screen.height / 2);
+  const cx = Math.round((screen.x ?? 0) + screen.width / 2);
+  const cy = Math.round((screen.y ?? 0) + screen.height / 2);
   const dy =
     distance !== undefined && Number.isFinite(distance) && distance > 0
-      ? Math.round(Math.min(distance, screen.height * CLEARANCE_BAND_FRACTION))
+      ? Math.round(
+          Math.min(
+            distance,
+            screen.x !== undefined || screen.y !== undefined
+              ? screen.height - 2
+              : screen.height * CLEARANCE_BAND_FRACTION,
+          ),
+        )
       : Math.round(screen.height * SWIPE_FRACTION * amount);
   const dx = Math.round(screen.width * SWIPE_FRACTION * amount);
+  // Rounding the centre and the half-span up together can land an end on the band's edge row.
+  const top = Math.max(cy - Math.round(dy / 2), Math.ceil((screen.y ?? 0) + 1));
+  const bottom = Math.min(cy + Math.round(dy / 2), Math.floor((screen.y ?? 0) + screen.height - 1));
   switch (direction) {
     case 'down':
-      return { x1: cx, y1: cy + Math.round(dy / 2), x2: cx, y2: cy - Math.round(dy / 2) };
+      return { x1: cx, y1: bottom, x2: cx, y2: top };
     case 'up':
-      return { x1: cx, y1: cy - Math.round(dy / 2), x2: cx, y2: cy + Math.round(dy / 2) };
+      return { x1: cx, y1: top, x2: cx, y2: bottom };
     case 'left':
       return { x1: cx + Math.round(dx / 2), y1: cy, x2: cx - Math.round(dx / 2), y2: cy };
     case 'right':
@@ -1998,9 +2044,10 @@ export function buildDirectionalScrollCliArgs(
   amount?: number,
   durationMs?: number,
   distance?: number,
+  within?: Band,
 ): string[] {
   const clamped = Math.min(Math.max(amount ?? 0.5, 0), 1);
-  const coords = computeScrollFromDirection(direction, clamped, scrollBand(), distance);
+  const coords = computeScrollFromDirection(direction, clamped, dragBand(within), distance);
   const duration = durationMs ?? DEFAULT_SWIPE_DURATION_MS;
   return [
     'scroll',
@@ -2166,8 +2213,10 @@ interface ScrollArgs {
   qaContext?: QaDispatchContext;
   direction: 'up' | 'down' | 'left' | 'right';
   amount?: number;
-  // Pixels to move the content, for a keyboard clearance scroll.
+  // Pixels to move the content for a clearance scroll.
   distance?: number;
+  // The visible part of the scrolled view; the drag starts inside it.
+  within?: Band;
 }
 
 export function createDeviceScrollHandler(): (args: ScrollArgs) => Promise<ToolResult> {
@@ -2177,7 +2226,7 @@ export function createDeviceScrollHandler(): (args: ScrollArgs) => Promise<ToolR
     const { x1, y1, x2, y2 } = computeScrollFromDirection(
       args.direction,
       amount,
-      scrollBand(),
+      dragBand(args.within),
       args.distance,
     );
     // GH #383: adopt persisted per-device state so a respawned worker sees a
@@ -2220,7 +2269,13 @@ export function createDeviceScrollHandler(): (args: ScrollArgs) => Promise<ToolR
     // builders throw on the raw direction form, so this previously crashed on
     // Android (always) and on the iOS fast-runner fallback.
     return runNative(
-      buildDirectionalScrollCliArgs(args.direction, args.amount, undefined, args.distance),
+      buildDirectionalScrollCliArgs(
+        args.direction,
+        args.amount,
+        undefined,
+        args.distance,
+        args.within,
+      ),
       { qaContext: args.qaContext },
     );
   });

@@ -87,8 +87,17 @@ const log = (message: string): void => {
   );
 };
 
-export function scrollArgs(direction: Parameters<WalkerDeps['scroll']>[0], clearance?: number) {
-  return { direction, amount: 0.6, ...(clearance !== undefined ? { distance: clearance } : {}) };
+export function scrollArgs(
+  direction: Parameters<WalkerDeps['scroll']>[0],
+  clearance?: number,
+  within?: Parameters<WalkerDeps['scroll']>[3],
+) {
+  return {
+    direction,
+    amount: 0.6,
+    ...(clearance !== undefined ? { distance: clearance } : {}),
+    ...(within ? { within } : {}),
+  };
 }
 
 // stdout is a pipe: wait for it to drain before the process exits.
@@ -481,6 +490,7 @@ async function openSession(
       truncated: data.truncated,
       normalizationDroppedNodes: data.normalizationDroppedNodes,
       snapshotVerdict: meta?.snapshotVerdict,
+      snapshotDiagnostics: data.snapshotDiagnostics,
       surface: typeof meta?.foregroundSurface === 'string' ? meta.foregroundSurface : undefined,
     };
   };
@@ -550,6 +560,8 @@ async function openSession(
         captureScreen({
           appId,
           requirePrivateInputs: true,
+          observation: options?.observation,
+          platformPresence: options?.platformPresence,
           now,
           timing: options?.timing,
           warn: log,
@@ -568,8 +580,8 @@ async function openSession(
       ),
     press: (ref, qaContext) => act(() => press({ ref, qaContext }), false),
     fill: (ref, text, qaContext) => act(() => fill({ ref, text, qaContext }), true),
-    scroll: (direction, qaContext, clearance) =>
-      act(() => scroll({ ...scrollArgs(direction, clearance), qaContext }), false),
+    scroll: (direction, qaContext, clearance, within) =>
+      act(() => scroll({ ...scrollArgs(direction, clearance, within), qaContext }), false),
     back: (qaContext) => act(() => back({ qaContext }), false),
     dialog: (action, qaContext) =>
       act(
