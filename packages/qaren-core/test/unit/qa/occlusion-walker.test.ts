@@ -830,6 +830,7 @@ test('terminal diagnostics preserve offscreen versus native-occlusion scroll ori
 
 test('O5: a press whose centre lies past its scroll clip scrolls before any dispatch', async () => {
   const f = fake([clipped(700), clipped(400), clipped(400), done()], {});
+  const seen = recordingClearance(f);
   const events: WalkerTimingDiagnostic[] = [];
   f.deps.diagnostic = (event) => events.push(event);
   const outcome = await walkBlock(block('1. Tap "go"\n'), f.deps);
@@ -846,6 +847,9 @@ test('O5: a press whose centre lies past its scroll clip scrolls before any disp
     events.some((event) => event.code === 'CENTRE_COVERED'),
     false,
   );
+  assert.deepEqual(seen, [
+    { clearance: 722 - 360, within: { x: 0, y: 0, width: 400, height: 720 } },
+  ]);
 });
 
 test('O5: a fill whose centre lies under the keyboard scrolls before any dispatch', async () => {
@@ -1173,6 +1177,87 @@ test('an iOS field inside the band above a sticky footer fills without a scroll'
     f.calls.filter((call) => call !== 'capture'),
     ['fill @target'],
   );
+});
+
+function recordingClearance(f: ReturnType<typeof fake>) {
+  const seen: unknown[] = [];
+  const scroll = f.deps.scroll;
+  f.deps.scroll = (direction, context, clearance, within) => {
+    seen.push({ clearance, within });
+    return scroll(direction, context, clearance, within);
+  };
+  return seen;
+}
+
+// Option 17 parked after five full-list drags; option 20's collapsed frame sits at 1631, below the list.
+test('(y) a press on a row scrolled out of the sheet list lifts it inside that list', async () => {
+  const parked = covered(androidOptionSheet(2510));
+  const reached = covered(androidOptionSheet(168 * 17));
+  const f = fake([parked, reached, reached, done()], {});
+  const seen = recordingClearance(f);
+  const outcome = await walkBlock(block('1. Tap "qa-sheet-capture-option-20"\n'), f.deps);
+  assert.deepEqual(seen, [{ clearance: 1631 - 1201, within: ANDROID_LIST }]);
+  assert.equal(outcome.block.outcome, 'pass');
+  assert.deepEqual(
+    f.calls.filter((call) => call !== 'capture'),
+    ['scroll down', 'press @option-20'],
+  );
+});
+
+test('(z) a row still out of the list after that one lift refuses without a press', async () => {
+  const below = covered(androidOptionSheet(949 + 168 * 19 - 1621));
+  const f = fake([below, below], {});
+  const seen = recordingClearance(f);
+  const outcome = await walkBlock(block('1. Tap "qa-sheet-capture-option-20"\n'), f.deps);
+  assert.deepEqual(seen, [{ clearance: 1621 - 1201, within: ANDROID_LIST }]);
+  assert.equal(outcome.block.outcome, 'fail');
+  assert.deepEqual(
+    f.calls.filter((call) => call !== 'capture'),
+    ['scroll down'],
+  );
+  assert.match(
+    renderReason(outcome.failure?.seen ?? '', (text) => text),
+    /stayed off screen after one scroll/,
+  );
+});
+
+// A plain screen: the list's clip is the window, the target sits 300 px below the fold.
+function belowFold(y: number): Screen {
+  return covered(
+    join(
+      [
+        ...root(),
+        {
+          ref: '@scroll',
+          index: 2,
+          parentIndex: 1,
+          type: 'ScrollView',
+          rect: { x: 0, y: 0, width: 400, height: 800 },
+        },
+        {
+          ref: '@target',
+          index: 3,
+          parentIndex: 2,
+          type: 'Button',
+          identifier: 'go',
+          label: 'Go',
+          hittable: true,
+          rect: { x: 20, y, width: 300, height: 44 },
+        },
+      ],
+      [],
+    ),
+  );
+}
+
+test('(ab) a target below the fold of a plain screen is lifted by its gap, not a window height', async () => {
+  const f = fake([belowFold(1078), belowFold(378), belowFold(378), done()], {});
+  const seen = recordingClearance(f);
+  const outcome = await walkBlock(block('1. Tap "go"\n'), f.deps);
+  assert.deepEqual(seen, [
+    { clearance: 1100 - 400, within: { x: 0, y: 0, width: 400, height: 800 } },
+  ]);
+  assert.equal(outcome.block.outcome, 'pass');
 });
 
 test('(s) scroll-until toward a row scrolled out of the sheet list drags inside that list', async () => {

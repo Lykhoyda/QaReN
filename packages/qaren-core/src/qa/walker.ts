@@ -1556,8 +1556,12 @@ export async function walkBlock(
                     );
                     break;
                   }
-                  const distance = clearance;
-                  const band = within;
+                  const distance =
+                    clearance ??
+                    (resolution.element && keyboardClearance(resolution.element, before.screen));
+                  const band =
+                    within ??
+                    (resolution.element && clearanceBand(resolution.element, before.screen));
                   clearance = undefined;
                   within = undefined;
                   scrollOrigin ??= 'offscreen-resolution';

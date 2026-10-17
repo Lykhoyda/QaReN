@@ -53,7 +53,7 @@ export { ACT, CHECK } from './questions.js';
 export const MAX_CANDIDATES = 30;
 export type Resolution =
   | { ref: string; element: Element }
-  | { scroll: 'down' | 'up' }
+  | { scroll: 'down' | 'up'; element?: Element }
   | { refuse: string; reason: string };
 
 export class ResolutionError extends Error {
@@ -313,9 +313,10 @@ export function bindFillIdentity(
   return fallback ? { kind: 'fallback', fallback } : undefined;
 }
 
-function scrollTo(element: Element): { scroll: 'up' | 'down' } {
+function scrollTo(element: Element): { scroll: 'up' | 'down'; element: Element } {
   const frame = elementFrame(element);
   return {
+    element,
     scroll: frame && frame.y + frame.height <= (elementViewport(element)?.y ?? 0) ? 'up' : 'down',
   };
 }

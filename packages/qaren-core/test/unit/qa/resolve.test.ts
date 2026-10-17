@@ -182,7 +182,10 @@ test('offscreen selections and none with offscreen evidence request a scroll, ne
   ]);
   for (const chosen of ['e1', 'none']) {
     const judge = scriptedJudge((q) => ({ target_0: choice(q.target_0, chosen) }));
-    assert.deepEqual(await resolveTarget(step('Tap Load more'), before, judge), { scroll: 'down' });
+    assert.deepEqual(await resolveTarget(step('Tap Load more'), before, judge), {
+      scroll: 'down',
+      element: before.elements[1],
+    });
   }
 });
 
@@ -513,7 +516,10 @@ test('an exact id target ignores an element whose label equals the id', () => {
   );
   assert.equal('refuse' in missing && missing.refuse, 'REPLAY_SELECTOR');
   const offscreen = screen([element('@far', 'Far', { testID: 'far', offscreen: true })]);
-  assert.deepEqual(prepareTarget(tap('far', 'id'), offscreen), { scroll: 'down' });
+  assert.deepEqual(prepareTarget(tap('far', 'id'), offscreen), {
+    scroll: 'down',
+    element: offscreen.elements[0],
+  });
 });
 
 test('two exact matches refuse TARGET_AMBIGUOUS terminally without asking Jev', async () => {
@@ -780,6 +786,7 @@ test('native offscreen target frames choose up above the viewport and down other
       const judge = scriptedJudge((q) => ({ target_0: choice(q.target_0) }));
       assert.deepEqual(await resolveTarget({ kind: 'press', target }, observed, judge), {
         scroll: expected,
+        element: observed.elements.find((e) => e.ref === '@button'),
       });
     }
   }
