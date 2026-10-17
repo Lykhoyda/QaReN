@@ -1,5 +1,4 @@
 import { renderReason } from '../../../dist/qa/untrusted.js';
-// A dialog step passes on the runner's proof of the tapped button, and an unproven tap never retries.
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { parsePlan } from '../../../dist/qa/plan.js';
