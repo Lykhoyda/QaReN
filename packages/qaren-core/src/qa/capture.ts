@@ -1,7 +1,13 @@
+import { diagnosticField, privateSnapshotDiagnostics } from './snapshot-diagnostics.js';
 import type { ToolResult } from '../utils.js';
 import { foregroundSurfaceFromSnapshot } from '../handlers/expo-dev-menu.js';
 import { isRecord } from './questions.js';
-import { frontFromSurface, join, validateReactHostEvidence } from './screen.js';
+import {
+  frontFromSurface,
+  join,
+  joinedSnapshotDiagnostics,
+  validateReactHostEvidence,
+} from './screen.js';
 import type { DigestEntry, NativeNode, ReactHostEvidence, Screen } from './screen.js';
 import { outsideViewport, validateNativePresence, viewportDiagnostic } from './native-presence.js';
 import { sensitivePixelsReasons } from './privacy.js';
@@ -17,6 +23,7 @@ import {
   applyNativePrivateInputs,
   NativeSnapshotIncomplete,
   PrivateInputCaptureError,
+  ReactCaptureIncomplete,
 } from './private-input.js';
 
 export class NativeCaptureError extends Error {
@@ -46,6 +53,7 @@ export interface NativeObservation {
   normalizationDroppedNodes?: unknown;
   surface?: string;
   snapshotVerdict?: unknown;
+  snapshotDiagnostics?: unknown;
 }
 
 export function postAdmissionSnapshots<A>(
@@ -96,6 +104,8 @@ export interface ReactObservation {
 }
 
 export interface CaptureDeps {
+  observation?: number;
+  platformPresence?: boolean;
   timing?: TimingObserver;
   requirePrivateInputs?: boolean;
   appId?: string;
@@ -442,6 +452,13 @@ export async function captureScreen(deps: CaptureDeps): Promise<Screen> {
 }
 
 async function capture(deps: CaptureDeps): Promise<Screen> {
+  const observation =
+    typeof deps.observation === 'number' &&
+    Number.isSafeInteger(deps.observation) &&
+    deps.observation > 0
+      ? deps.observation
+      : null;
+  const mode = deps.platformPresence === true ? 'platform-presence' : 'ordinary';
   const now = deps.now ?? (() => performance.now());
   const started = now();
   const presenceBudgetMs = NATIVE_PRESENCE_BUDGET_MS;
@@ -472,11 +489,13 @@ async function capture(deps: CaptureDeps): Promise<Screen> {
     }
   }
   let react: ReactObservation = {};
+  let reactWarning: string | undefined;
   try {
     react = await measureTiming(deps.timing, now, 'react-private', () => deps.react());
-  } catch {
+  } catch (error) {
     // The native snapshot carries privacy, so a missing digest only loses semantics.
-    deps.warn?.('interactive digest unavailable; React coverage is unknown');
+    const detail = error instanceof ReactCaptureIncomplete ? ` (${error.detail})` : '';
+    reactWarning = `interactive digest unavailable${detail}; React coverage is unknown`;
   }
   const joinedAt = deps.timing ? now() : 0;
   observeTiming(deps.timing, { stage: 'join-private', edge: 'start', outcome: 'ok', at: joinedAt });
@@ -573,7 +592,33 @@ async function capture(deps: CaptureDeps): Promise<Screen> {
       const warn = deps.warn;
       captureDiagnostics.set(screen, () => {
         try {
-          warn(viewportDiagnostic(nodes, outsideViewport(nodes)));
+          const truncated = diagnosticField(native, 'truncated');
+          const dropped = diagnosticField(native, 'normalizationDroppedNodes');
+          const verdict = diagnosticField(native.snapshotVerdict, 'state');
+          warn(
+            viewportDiagnostic(nodes, outsideViewport(nodes), {
+              observation,
+              mode,
+              native: {
+                acquisition: 'returned',
+                coverage: captureCoverage.native,
+                truncated: typeof truncated === 'boolean' ? truncated : null,
+                normalizationDroppedNodes:
+                  typeof dropped === 'number' && Number.isSafeInteger(dropped) && dropped >= 0
+                    ? dropped
+                    : null,
+                verdict:
+                  verdict === 'ok' || verdict === 'degraded' || verdict === 'failed'
+                    ? verdict
+                    : null,
+                reasons: nativeIncompleteCauses(native).filter((cause) =>
+                  cause.startsWith('reason='),
+                ),
+              },
+              snapshot: privateSnapshotDiagnostics(diagnosticField(native, 'snapshotDiagnostics')),
+              projection: joinedSnapshotDiagnostics(screen),
+            }),
+          );
         } catch {}
         try {
           const reasons = sensitivePixelsReasons(screen, nodes);
@@ -593,6 +638,11 @@ async function capture(deps: CaptureDeps): Promise<Screen> {
         at,
         ms: at - joinedAt,
       });
+    }
+    if (reactWarning && deps.warn) {
+      try {
+        deps.warn(`${reactWarning}; observation=${observation} mode=${mode}`);
+      } catch {}
     }
   }
 }

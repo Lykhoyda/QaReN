@@ -1,3 +1,5 @@
+import type { privateSnapshotDiagnostics } from './snapshot-diagnostics.js';
+import type { joinedSnapshotDiagnostics } from './screen.js';
 import { isRecord } from './questions.js';
 import type { NativeNode } from './screen.js';
 
@@ -276,6 +278,26 @@ export function clippingViewport(offscreen: Set<number>, index: number): Rect | 
   return viewports.get(offscreen)?.get(index);
 }
 
+// iOS exact names; Android accessibility class leaves by suffix, as kindOf does for kinds.
+const IOS_SCROLL_CONTAINERS = new Set(['ScrollView', 'Table', 'CollectionView']);
+const ANDROID_SCROLL_CONTAINER_SUFFIXES = [
+  'RecyclerView',
+  'ListView',
+  'GridView',
+  'ExpandableListView',
+  'HorizontalScrollView',
+  'NestedScrollView',
+  'ScrollView',
+  'ViewPager2',
+  'ViewPager',
+];
+export function isScrollContainerType(type: string | undefined): boolean {
+  if (!type) return false;
+  if (IOS_SCROLL_CONTAINERS.has(type)) return true;
+  const leaf = type.slice(type.lastIndexOf('.') + 1);
+  return ANDROID_SCROLL_CONTAINER_SUFFIXES.some((suffix) => leaf.endsWith(suffix));
+}
+
 function outsideTrustedViewport(nodes: NativeNode[], contradicted: Set<number>): Set<number> {
   const offscreen = new Set<number>();
   const decided = new Map<number, Exclusion>();
@@ -312,7 +334,7 @@ function outsideTrustedViewport(nodes: NativeNode[], contradicted: Set<number>):
       if (
         !contradicted.has(parent) &&
         validRect(ancestor?.rect) &&
-        ['ScrollView', 'Table', 'CollectionView'].includes(ancestor.type ?? '')
+        isScrollContainerType(ancestor.type)
       ) {
         visible = clip(ancestor.rect, visible);
         if (!decider && !within(node.rect, ancestor.rect))
@@ -405,7 +427,24 @@ const DIAGNOSTIC_TYPES = new Set([
 const DIAGNOSTIC_LIMIT = 2048;
 
 // Value-free viewport facts for one capture; it observes production geometry and never decides anything.
-export function viewportDiagnostic(nodes: NativeNode[], offscreen: Set<number>): string {
+export function viewportDiagnostic(
+  nodes: NativeNode[],
+  offscreen: Set<number>,
+  capture?: {
+    observation: number | null;
+    mode: 'ordinary' | 'platform-presence';
+    native: {
+      acquisition: 'returned';
+      coverage: string;
+      truncated: boolean | null;
+      normalizationDroppedNodes: number | null;
+      verdict: 'ok' | 'degraded' | 'failed' | null;
+      reasons: string[];
+    };
+    snapshot: ReturnType<typeof privateSnapshotDiagnostics>;
+    projection: ReturnType<typeof joinedSnapshotDiagnostics>;
+  },
+): string {
   const box = (rect: Rect | undefined) =>
     rect ? [rect.x, rect.y, rect.width, rect.height].map(Math.round) : [null, null, null, null];
   const sized = (rect: Rect | undefined) => !!rect && rect.width > 0 && rect.height > 0;
@@ -437,8 +476,7 @@ export function viewportDiagnostic(nodes: NativeNode[], offscreen: Set<number>):
           break;
         }
       }
-      if (s < 0 && ['ScrollView', 'Table', 'CollectionView'].includes(ancestor?.type ?? ''))
-        s = parent;
+      if (s < 0 && isScrollContainerType(ancestor?.type)) s = parent;
       parent = ancestor?.parentIndex;
     }
     const type = DIAGNOSTIC_TYPES.has(node.type ?? '') ? node.type! : 'Other';
@@ -471,6 +509,7 @@ export function viewportDiagnostic(nodes: NativeNode[], offscreen: Set<number>):
   const line = (windowList: unknown[], sample: unknown[], excluded: unknown[]) =>
     `viewport-diagnostic ${JSON.stringify({
       v: 1,
+      ...capture,
       app: app ? box(app) : null,
       windowCount: windows.length,
       windows: windowList,

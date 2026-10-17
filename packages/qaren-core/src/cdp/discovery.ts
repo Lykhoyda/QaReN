@@ -133,6 +133,7 @@ export async function discoverAllMetroPorts(ports: number[], timeout: number): P
 }
 
 export class TargetReadinessTimeoutError extends Error {}
+export class TargetListAttemptTimeoutError extends TargetReadinessTimeoutError {}
 
 export async function fetchTargets(
   port: number,
@@ -153,7 +154,7 @@ export async function fetchTargets(
   } catch (err) {
     cancellationSignal(signal);
     const message = `Failed to list CDP targets on port ${port}: ${err instanceof Error ? err.message : err}`;
-    if (ctrl.signal.aborted) throw new TargetReadinessTimeoutError(message);
+    if (ctrl.signal.aborted) throw new TargetListAttemptTimeoutError(message);
     throw new Error(message);
   } finally {
     clearTimeout(timer);
@@ -186,10 +187,17 @@ export async function waitForExactPortTargets(
   let remaining = deadline - performance.now();
   while (remaining > 0) {
     signal?.throwIfAborted();
-    const raw = await interruptible(
-      () => fetchTargets(port, Math.min(DISCOVERY_TIMEOUT_MS * 2, remaining), signal),
-      signal,
-    );
+    let raw: HermesTarget[];
+    try {
+      raw = await interruptible(
+        () => fetchTargets(port, Math.min(DISCOVERY_TIMEOUT_MS * 2, remaining), signal),
+        signal,
+      );
+    } catch (error) {
+      signal?.throwIfAborted();
+      if (!(error instanceof TargetListAttemptTimeoutError)) throw error;
+      raw = [];
+    }
     if (!Array.isArray(raw)) {
       throw new Error(`Invalid CDP target list on port ${port}: expected an array`);
     }
@@ -575,6 +583,41 @@ export interface PlatformInferenceReaders {
   readAndroidDeviceModels?: () => Set<string> | null;
 }
 
+export type ReaderOutcome = 'not_consumed' | 'null' | 'empty' | 'nonempty';
+
+export type TargetInferenceEvidence = {
+  token: 'ios' | 'android' | 'none';
+  name: 'absent' | 'neither' | 'ios_only' | 'android_only' | 'both' | 'not_reached';
+  identity: 'present' | 'missing' | 'not_reached';
+  packages: 'neither' | 'ios_only' | 'android_only' | 'both' | 'not_reached';
+  confidence: 'probed' | 'defaulted' | 'ambiguous';
+  deviceMatch?: boolean;
+  bundleMatch?: boolean;
+};
+
+export type PlatformInferenceSummary = {
+  readers: {
+    androidPackages: ReaderOutcome;
+    iosPackages: ReaderOutcome;
+    iosDeviceNames: ReaderOutcome;
+    androidDeviceModels: ReaderOutcome;
+  };
+  targets: TargetInferenceEvidence[];
+};
+
+// shortcut: 'null' merges exec/parse failure, fenced scope and empty inventory; split at the readers only if a captured record needs the origin.
+function readerOutcome(set: Set<string> | null | undefined): ReaderOutcome {
+  if (set === undefined) return 'not_consumed';
+  if (set === null) return 'null';
+  return set.size === 0 ? 'empty' : 'nonempty';
+}
+
+function sides(ios: boolean, android: boolean): 'neither' | 'ios_only' | 'android_only' | 'both' {
+  if (ios && android) return 'both';
+  if (ios) return 'ios_only';
+  return android ? 'android_only' : 'neither';
+}
+
 /**
  * B116 (D639): look up each target's description against BOTH iOS simctl and
  * Android adb installed-package sets. If present in only one, tag that
@@ -623,7 +666,7 @@ export function inferPlatformFromDeviceName(
 export function inferPlatforms(
   targets: HermesTarget[],
   readers: PlatformInferenceReaders = {},
-): void {
+): PlatformInferenceSummary {
   const androidPackages = (readers.readAndroid ?? readAndroidPackages)();
   const iosPackages = (readers.readIOS ?? readIOSPackages)();
   let iosDeviceNames: Set<string> | null | undefined;
@@ -632,6 +675,7 @@ export function inferPlatforms(
     (iosDeviceNames ??= (readers.readIOSDeviceNames ?? readIOSDeviceNames)());
   const liveAndroidModels = () =>
     (androidDeviceModels ??= (readers.readAndroidDeviceModels ?? readAndroidDeviceModels)());
+  const evidence: TargetInferenceEvidence[] = [];
 
   for (const t of targets) {
     // B131 (D660): deviceName is the most reliable signal when present.
@@ -642,6 +686,13 @@ export function inferPlatforms(
     if (fromDeviceName) {
       t.platform = fromDeviceName;
       t.platformInference = 'probed';
+      evidence.push({
+        token: fromDeviceName,
+        name: 'not_reached',
+        identity: 'not_reached',
+        packages: 'not_reached',
+        confidence: 'probed',
+      });
       continue;
     }
 
@@ -649,12 +700,21 @@ export function inferPlatforms(
     // device inventory. Only a one-sided match counts — a name in both
     // inventories stays with the fail-closed bundle inference below.
     const inventoryName = t.deviceName?.trim().toLowerCase();
+    let name: TargetInferenceEvidence['name'] = 'absent';
     if (inventoryName) {
       const inIOSInventory = bootedIOSNames()?.has(inventoryName) ?? false;
       const inAndroidInventory = nameMatchesAndroidModel(inventoryName, liveAndroidModels());
+      name = sides(inIOSInventory, inAndroidInventory);
       if (inIOSInventory !== inAndroidInventory) {
         t.platform = inIOSInventory ? 'ios' : 'android';
         t.platformInference = 'probed';
+        evidence.push({
+          token: 'none',
+          name,
+          identity: 'not_reached',
+          packages: 'not_reached',
+          confidence: 'probed',
+        });
         continue;
       }
     }
@@ -681,7 +741,23 @@ export function inferPlatforms(
       t.platform = 'ios';
       t.platformInference = 'defaulted';
     }
+    evidence.push({
+      token: 'none',
+      name,
+      identity: bundleIdentity ? 'present' : 'missing',
+      packages: bundleIdentity ? sides(inIOS, inAndroid) : 'not_reached',
+      confidence: t.platformInference,
+    });
   }
+  return {
+    readers: {
+      androidPackages: readerOutcome(androidPackages),
+      iosPackages: readerOutcome(iosPackages),
+      iosDeviceNames: readerOutcome(iosDeviceNames),
+      androidDeviceModels: readerOutcome(androidDeviceModels),
+    },
+    targets: evidence,
+  };
 }
 
 export interface SelectTargetResult {
@@ -714,6 +790,7 @@ export class TargetSelectionError extends Error {
     readonly code: 'PLATFORM_TARGET_NOT_FOUND' | 'TARGET_PLATFORM_CONFLICT',
     message: string,
     readonly candidates: readonly HermesTarget[],
+    readonly inference?: PlatformInferenceSummary,
   ) {
     super(message);
     this.name = 'TargetSelectionError';
@@ -1032,6 +1109,7 @@ export interface DiscoveryResult {
   warning?: string;
   errorCode?: 'PLATFORM_TARGET_NOT_FOUND' | 'TARGET_PLATFORM_CONFLICT';
   candidates?: HermesTarget[];
+  inference?: PlatformInferenceSummary;
 }
 
 export async function discoverExactPort(
@@ -1051,13 +1129,22 @@ export async function discoverExactPort(
       return false;
     }
   });
-  inferPlatforms(validTargets);
+  const inference = inferPlatforms(validTargets);
   const { targets, warning, errorCode } = selectTarget(validTargets, filters);
+  if (errorCode) {
+    // Value-free: same comparisons selectTarget makes, never read back by selection.
+    inference.targets.forEach((entry, index) => {
+      const target = validTargets[index]!;
+      if (filters.deviceName)
+        entry.deviceMatch = target.deviceName?.trim() === filters.deviceName.trim();
+      if (filters.bundleId) entry.bundleMatch = targetMatchesBundleId(target, filters.bundleId);
+    });
+  }
   return {
     port: currentPort,
     targets,
     ...(warning ? { warning } : {}),
-    ...(errorCode ? { errorCode, candidates: validTargets } : {}),
+    ...(errorCode ? { errorCode, candidates: validTargets, inference } : {}),
   };
 }
 

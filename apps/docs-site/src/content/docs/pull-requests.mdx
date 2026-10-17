@@ -31,10 +31,9 @@ pull request's head under `~/.qaren/runs/<run-id>/wt` instead of your working tr
 - Teardown removes the worktree only after the run's build, core, Metro, recorder and runner
   host are proven gone. Otherwise it stays recorded for `qaren cleanup <run-id>`.
 
-On iOS the simulator screen is recorded from just before the walk to just after it and
-encoded to `media/video.mp4` (H.264, 30 fps). Without `ffmpeg`, or when the capture cannot
-start, the run continues and the receipt's `video` outcome says why. On Android, `pr`
-borrows an emulator like `check`; video is not available in this release.
+See the authoritative [PR recording contract](https://github.com/Lykhoyda/rn-dev-agent/blob/develop/packages/qaren-cli/README.md#test-a-pull-request)
+for platform and Android API requirements, media tools, video-unavailable outcomes and
+recorder cleanup recovery.
 
 ## qaren publish
 

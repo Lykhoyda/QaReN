@@ -532,6 +532,94 @@ pub fn force_stop_spec(adb: &Path, server_port: u16, serial: &str, package: &str
     )
 }
 
+// Recording uses a per-run device path as its identity; the host adb child owns a group.
+pub fn screenrecord_spec(adb: &Path, port: u16, serial: &str, path: &Path) -> CmdSpec {
+    adb_client(
+        "adb-screenrecord",
+        adb,
+        port,
+        &[
+            "-s",
+            serial,
+            "shell",
+            "screenrecord",
+            "--time-limit",
+            "0",
+            "--bit-rate",
+            "4000000",
+            &path.to_string_lossy(),
+        ],
+        0,
+    )
+}
+
+pub fn device_pkill_spec(
+    adb: &Path,
+    port: u16,
+    serial: &str,
+    signal: &str,
+    path: &Path,
+) -> CmdSpec {
+    adb_client(
+        "adb-device-pkill",
+        adb,
+        port,
+        &[
+            "-s",
+            serial,
+            "shell",
+            "pkill",
+            &format!("-{signal}"),
+            "-f",
+            &path.to_string_lossy(),
+        ],
+        20,
+    )
+}
+
+pub fn device_pgrep_spec(adb: &Path, port: u16, serial: &str, path: &Path) -> CmdSpec {
+    adb_client(
+        "adb-device-pgrep",
+        adb,
+        port,
+        &[
+            "-s",
+            serial,
+            "shell",
+            "pgrep",
+            "-f",
+            &path.to_string_lossy(),
+        ],
+        20,
+    )
+}
+
+pub fn pull_spec(adb: &Path, port: u16, serial: &str, path: &Path, local: &Path) -> CmdSpec {
+    adb_client(
+        "adb-pull",
+        adb,
+        port,
+        &[
+            "-s",
+            serial,
+            "pull",
+            &path.to_string_lossy(),
+            &local.to_string_lossy(),
+        ],
+        60,
+    )
+}
+
+pub fn rm_spec(adb: &Path, port: u16, serial: &str, path: &Path) -> CmdSpec {
+    adb_client(
+        "adb-rm",
+        adb,
+        port,
+        &["-s", serial, "shell", "rm", "-f", &path.to_string_lossy()],
+        20,
+    )
+}
+
 // The runner's process and its instrumentation, in one ActivityManager dump.
 pub fn runner_processes_spec(adb: &Path, server_port: u16, serial: &str) -> CmdSpec {
     adb_client(

@@ -7,14 +7,22 @@ import {
   isAbort,
   sleep,
 } from '../domain/cancellation.js';
-import { TargetReadinessTimeoutError } from '../cdp/discovery.js';
-import { CDPProbeTimeoutError, CDPHandshakeTimeoutError } from '../cdp/connect.js';
+import {
+  TargetReadinessTimeoutError,
+  TargetListAttemptTimeoutError,
+  TargetSelectionError,
+  type PlatformInferenceSummary,
+} from '../cdp/discovery.js';
+import {
+  CDPProbeTimeoutError,
+  CDPHandshakeTimeoutError,
+  CDPTargetClosedError,
+} from '../cdp/connect.js';
 import { REACT_READY_POLL_MS } from '../cdp/setup.js';
+import { CDPRequestTimeoutError } from '../cdp/transport.js';
 import { REACT_READY_PROBE_JS } from '../injected-helpers.js';
 import { HandlerError, describeError } from './adapt.js';
 import type { ProveOutcome } from './prove.js';
-
-export const LOAD_ENVELOPE = 10;
 
 export interface AdmissionSteps {
   metroPort: number;
@@ -23,7 +31,7 @@ export interface AdmissionSteps {
   attach(deadline: number): Promise<void>;
   // Inside the attach deadline: the attached client must have run its bundle before anything reads it.
   bundleReady?(deadline: number): Promise<void>;
-  // A launch stuck on the dev-launcher never recovers by waiting: the one retry relaunches first.
+  // A stalled launch gets one relaunch after its readiness wait.
   relaunch?(): Promise<void>;
   foreignDriver(): Promise<string | undefined>;
   open(): Promise<void>;
@@ -33,6 +41,153 @@ export interface AdmissionSteps {
 }
 
 type Proven = Extract<ProveOutcome, { ok: true }>;
+
+const BOUNDARIES = [
+  'attach',
+  'bundle_ready',
+  'foreign_driver',
+  'open',
+  'prove',
+  'relaunch',
+  'retry_wait',
+] as const;
+export type AdmissionBoundary = (typeof BOUNDARIES)[number];
+
+const INNER_CLASSES = [
+  'target_selection_platform_not_found',
+  'target_selection_platform_conflict',
+  'target_list_attempt_timeout',
+  'target_readiness_timeout',
+  'cdp_probe_timeout',
+  'cdp_handshake_timeout',
+  'cdp_target_closed',
+  'cdp_request_timeout',
+  'untyped',
+] as const;
+export type AdmissionInnerClass = (typeof INNER_CLASSES)[number];
+
+export type AdmissionRefusalFacts = {
+  attempt: number;
+  lastStarted: AdmissionBoundary;
+  lastCompleted: AdmissionBoundary | 'none';
+  inner: AdmissionInnerClass;
+  relaunches: number;
+  relaunchFailed: boolean;
+  elapsedMs: number;
+  remainingMs: number;
+  budgetMs: number;
+  inference?: PlatformInferenceSummary;
+};
+
+// Classified by type only; an error's message or name never reaches the record.
+export function admissionInnerClass(error: unknown): AdmissionInnerClass {
+  if (error instanceof TargetSelectionError)
+    return error.code === 'TARGET_PLATFORM_CONFLICT'
+      ? 'target_selection_platform_conflict'
+      : 'target_selection_platform_not_found';
+  if (error instanceof TargetListAttemptTimeoutError) return 'target_list_attempt_timeout';
+  if (error instanceof TargetReadinessTimeoutError) return 'target_readiness_timeout';
+  if (error instanceof CDPProbeTimeoutError) return 'cdp_probe_timeout';
+  if (error instanceof CDPHandshakeTimeoutError) return 'cdp_handshake_timeout';
+  if (error instanceof CDPTargetClosedError) return 'cdp_target_closed';
+  if (error instanceof CDPRequestTimeoutError) return 'cdp_request_timeout';
+  return 'untyped';
+}
+
+const TARGET_FIELDS = {
+  token: ['ios', 'android', 'none'],
+  name: ['absent', 'neither', 'ios_only', 'android_only', 'both', 'not_reached'],
+  identity: ['present', 'missing', 'not_reached'],
+  packages: ['neither', 'ios_only', 'android_only', 'both', 'not_reached'],
+  confidence: ['probed', 'defaulted', 'ambiguous'],
+} as const;
+const READER_OUTCOMES = ['not_consumed', 'null', 'empty', 'nonempty'] as const;
+const READERS = [
+  'androidPackages',
+  'iosPackages',
+  'iosDeviceNames',
+  'androidDeviceModels',
+] as const;
+const MAX_RECORDED_TARGETS = 8;
+
+const isObject = (value: unknown): value is Record<string, unknown> =>
+  typeof value === 'object' && value !== null && !Array.isArray(value);
+const member = (value: unknown, allowed: readonly string[]): string =>
+  typeof value === 'string' && allowed.includes(value) ? value : 'unknown';
+const count = (value: unknown): number | 'unknown' =>
+  Number.isSafeInteger(value) && (value as number) >= 0 ? (value as number) : 'unknown';
+const flag = (value: unknown): boolean | 'unknown' =>
+  typeof value === 'boolean' ? value : 'unknown';
+
+// Rebuilds the record from allowlisted keys and values only, so no producer can leak a string through it.
+export function formatAdmissionRefusal(
+  meta: unknown,
+  attachStage?: 'wait_targets' | 'connect_exact',
+): string {
+  const facts = isObject(meta) ? meta : {};
+  const lastStarted = member(facts.lastStarted, BOUNDARIES);
+  const record: Record<string, unknown> = {
+    attempt: count(facts.attempt),
+    lastStarted,
+    lastCompleted: member(facts.lastCompleted, [...BOUNDARIES, 'none']),
+    ...(lastStarted === 'attach' && attachStage !== undefined
+      ? { attachStage: member(attachStage, ['wait_targets', 'connect_exact']) }
+      : {}),
+    inner: member(facts.inner, INNER_CLASSES),
+    relaunches: count(facts.relaunches),
+    relaunchFailed: flag(facts.relaunchFailed),
+    elapsedMs: count(facts.elapsedMs),
+    remainingMs: count(facts.remainingMs),
+    budgetMs: count(facts.budgetMs),
+  };
+  if (isObject(facts.inference)) {
+    const readers = isObject(facts.inference.readers) ? facts.inference.readers : {};
+    const targets = Array.isArray(facts.inference.targets) ? facts.inference.targets : [];
+    record.inference = {
+      readers: Object.fromEntries(
+        READERS.map((key) => [key, member(readers[key], READER_OUTCOMES)]),
+      ),
+      targetsTotal: targets.length,
+      targets: targets.slice(0, MAX_RECORDED_TARGETS).map((entry: unknown) => {
+        const target = isObject(entry) ? entry : {};
+        return {
+          ...Object.fromEntries(
+            Object.entries(TARGET_FIELDS).map(([key, allowed]) => [
+              key,
+              member(target[key], allowed),
+            ]),
+          ),
+          ...(target.deviceMatch === undefined ? {} : { deviceMatch: flag(target.deviceMatch) }),
+          ...(target.bundleMatch === undefined ? {} : { bundleMatch: flag(target.bundleMatch) }),
+        };
+      }),
+    };
+  }
+  return JSON.stringify(record);
+}
+
+export function logAdmissionRefusal(
+  error: unknown,
+  attachStage: 'wait_targets' | 'connect_exact' | undefined,
+  log: (message: string) => void,
+): void {
+  if (!(error instanceof HandlerError && error.meta)) return;
+  try {
+    log(`admission-refusal=${formatAdmissionRefusal(error.meta, attachStage)}`);
+  } catch {
+    // Diagnostics cannot change the refusal.
+  }
+}
+
+function transientReadinessFailure(error: unknown): boolean {
+  return (
+    error instanceof TargetReadinessTimeoutError ||
+    error instanceof CDPProbeTimeoutError ||
+    error instanceof CDPHandshakeTimeoutError ||
+    error instanceof CDPTargetClosedError ||
+    error instanceof CDPRequestTimeoutError
+  );
+}
 
 // iOS simulators share host loopback, so a sibling's runtime registers on the run's Metro; Android's Metro device name is a model, not the serial.
 export function metroDevicePin(
@@ -52,7 +207,7 @@ export async function awaitBundleReady(
     try {
       if ((await interruptible(() => evaluate(REACT_READY_PROBE_JS))).value === true) return;
     } catch (error) {
-      if (isAbort(error)) throw error;
+      if (isAbort(error) || error instanceof CDPTargetClosedError) throw error;
     }
     const remaining = deadline - performance.now();
     if (remaining <= 0)
@@ -67,8 +222,7 @@ export interface BundleReloadSteps {
   reinjectHelpers(waitMs: number): Promise<boolean>;
   // The admission origin proof, read again on the reloaded bundle.
   prove(): Promise<ProveOutcome>;
-  // The admission readiness deadline, taken when the reload starts.
-  deadline(): number;
+  remainingMs(): number;
   pollMs?: number;
 }
 
@@ -109,22 +263,32 @@ export function createBundleReload(steps: BundleReloadSteps): {
         );
     },
     async settled() {
-      const deadline = steps.deadline();
+      const deadline = performance.now() + steps.remainingMs();
       try {
         await withDeadline(
           deadline,
           new TargetReadinessTimeoutError('the reload did not finish before the attach deadline'),
           async () => {
-            await replaced(deadline);
-            await awaitBundleReady(steps.evaluate, deadline, pollMs);
-            const waitMs = Math.max(1, deadline - performance.now());
-            if (!(await interruptible(() => steps.reinjectHelpers(waitMs))))
-              throw new HandlerError(
-                'HELPERS_NOT_INJECTED',
-                'the walk helpers could not be injected into the reloaded bundle',
-              );
-            const proof = await interruptible(steps.prove);
-            if (!proof.ok) throw new HandlerError(proof.code, proof.message);
+            for (;;) {
+              try {
+                await replaced(deadline);
+                await awaitBundleReady(steps.evaluate, deadline, pollMs);
+                const waitMs = Math.max(1, deadline - performance.now());
+                if (!(await interruptible(() => steps.reinjectHelpers(waitMs))))
+                  throw new HandlerError(
+                    'HELPERS_NOT_INJECTED',
+                    'the walk helpers could not be injected into the reloaded bundle',
+                  );
+                const proof = await interruptible(steps.prove);
+                if (!proof.ok) throw new HandlerError(proof.code, proof.message);
+                return;
+              } catch (error) {
+                const remaining = deadline - performance.now();
+                if (isAbort(error) || !transientReadinessFailure(error) || remaining <= 0)
+                  throw error;
+                await sleep(Math.min(pollMs, remaining));
+              }
+            }
           },
         );
       } catch (error) {
@@ -143,14 +307,7 @@ export async function admit(
   stop: { readonly signal: AbortSignal },
 ): Promise<Proven> {
   try {
-    return await withCancellation(stop.signal, async () => {
-      await attach(steps);
-      await refuseForeignDriver(steps);
-      await interruptible(steps.open);
-      const proof = await interruptible(steps.prove);
-      if (!proof.ok) throw new HandlerError(proof.code, proof.message);
-      return proof;
-    });
+    return await withCancellation(stop.signal, () => attach(steps));
   } catch (error) {
     await withCancellation(undefined, steps.close);
     stop.signal.throwIfAborted();
@@ -158,61 +315,120 @@ export async function admit(
   }
 }
 
-async function attachReady(steps: AdmissionSteps, deadline: number): Promise<void> {
-  await steps.attach(deadline);
-  await steps.bundleReady?.(deadline);
-}
-
 async function refuseForeignDriver(steps: AdmissionSteps): Promise<void> {
   const foreign = await interruptible(steps.foreignDriver);
   if (foreign !== undefined) throw new HandlerError('BUSY_FOREIGN_FLOW', foreign);
 }
 
-async function attach(steps: AdmissionSteps): Promise<void> {
-  let failure: unknown;
-  try {
-    const deadline = performance.now() + steps.remainingMs();
-    await withDeadline(deadline, new CDPProbeTimeoutError('CDP attach deadline exceeded'), () =>
-      attachReady(steps, deadline),
-    );
-    return;
-  } catch (error) {
-    if (isAbort(error)) throw error;
-    failure = error;
-  }
-  const load = (steps.load ?? (() => loadavg()[0]))();
-  const loaded = load > LOAD_ENVELOPE;
-  const timedOut = (error: unknown) =>
-    error instanceof TargetReadinessTimeoutError ||
-    error instanceof CDPProbeTimeoutError ||
-    error instanceof CDPHandshakeTimeoutError;
-  const retry = loaded && timedOut(failure) && steps.remainingMs() >= steps.readinessMs;
+async function attach(steps: AdmissionSteps): Promise<Proven> {
+  const started = performance.now();
+  const deadline = started + steps.remainingMs();
+  const relaunchAt = started + steps.readinessMs;
+  let relaunched = false;
+  let opened = false;
+  let attaching = true;
   let relaunchFailure: string | undefined;
-  if (retry && steps.relaunch) {
-    await refuseForeignDriver(steps);
+  let attempt = 0;
+  let lastStarted: AdmissionBoundary = 'attach';
+  let lastCompleted: AdmissionBoundary | 'none' = 'none';
+  try {
+    return await withDeadline(
+      deadline,
+      new CDPProbeTimeoutError('CDP attach deadline exceeded'),
+      async () => {
+        for (;;) {
+          attempt++;
+          try {
+            attaching = true;
+            lastStarted = 'attach';
+            await steps.attach(deadline);
+            lastCompleted = 'attach';
+            if (steps.bundleReady) {
+              lastStarted = 'bundle_ready';
+              await steps.bundleReady(deadline);
+              lastCompleted = 'bundle_ready';
+            }
+            attaching = false;
+            if (!opened) {
+              lastStarted = 'foreign_driver';
+              await refuseForeignDriver(steps);
+              lastCompleted = 'foreign_driver';
+              lastStarted = 'open';
+              await interruptible(steps.open);
+              lastCompleted = 'open';
+              opened = true;
+            }
+            lastStarted = 'prove';
+            const proof = await interruptible(steps.prove);
+            lastCompleted = 'prove';
+            if (!proof.ok) throw new HandlerError(proof.code, proof.message);
+            return proof;
+          } catch (error) {
+            if (isAbort(error)) throw error;
+            const remaining = Math.min(deadline - performance.now(), steps.remainingMs());
+            if (!transientReadinessFailure(error) || remaining <= 0) throw error;
+            const recoveryWaitExpired =
+              (error instanceof TargetReadinessTimeoutError &&
+                !(error instanceof TargetListAttemptTimeoutError)) ||
+              (performance.now() >= relaunchAt &&
+                (error instanceof CDPProbeTimeoutError ||
+                  error instanceof CDPHandshakeTimeoutError));
+            if (
+              !opened &&
+              !relaunched &&
+              steps.relaunch &&
+              remaining >= steps.readinessMs &&
+              recoveryWaitExpired
+            ) {
+              lastStarted = 'foreign_driver';
+              await refuseForeignDriver(steps);
+              lastCompleted = 'foreign_driver';
+              relaunched = true;
+              try {
+                lastStarted = 'relaunch';
+                await interruptible(steps.relaunch);
+                lastCompleted = 'relaunch';
+              } catch (relaunchError) {
+                if (isAbort(relaunchError)) throw relaunchError;
+                relaunchFailure = describeError(relaunchError).message;
+                throw error;
+              }
+            }
+            lastStarted = 'retry_wait';
+            await sleep(Math.min(REACT_READY_POLL_MS, remaining));
+            lastCompleted = 'retry_wait';
+          }
+        }
+      },
+    );
+  } catch (error) {
+    if (isAbort(error) || error instanceof HandlerError) throw error;
+    if (!attaching && !transientReadinessFailure(error)) throw error;
+    const load = (steps.load ?? (() => loadavg()[0]))();
+    let facts: AdmissionRefusalFacts | undefined;
     try {
-      await interruptible(steps.relaunch);
-    } catch (error) {
-      if (isAbort(error)) throw error;
-      relaunchFailure = describeError(error).message;
+      const now = performance.now();
+      facts = {
+        attempt,
+        lastStarted,
+        lastCompleted,
+        inner: admissionInnerClass(error),
+        relaunches: relaunched ? 1 : 0,
+        relaunchFailed: relaunchFailure !== undefined,
+        elapsedMs: Math.round(now - started),
+        remainingMs: Math.max(0, Math.round(deadline - now)),
+        budgetMs: Math.round(deadline - started),
+        ...(error instanceof TargetSelectionError && error.inference
+          ? { inference: error.inference }
+          : {}),
+      };
+    } catch {
+      // Diagnostics cannot change the refusal.
     }
+    throw new HandlerError(
+      'CDP_NOT_CONNECTED',
+      `cannot attach to the dev client through Metro ${steps.metroPort}: ${describeError(error).message} (host 1-minute load ${load.toFixed(1)}${relaunchFailure === undefined ? '' : `; relaunch failed: ${relaunchFailure}`})`,
+      facts,
+    );
   }
-  if (retry && relaunchFailure === undefined) {
-    try {
-      const deadline = performance.now() + steps.remainingMs();
-      await withDeadline(deadline, new CDPProbeTimeoutError('CDP attach deadline exceeded'), () =>
-        attachReady(steps, deadline),
-      );
-      return;
-    } catch (error) {
-      if (isAbort(error)) throw error;
-      failure = error;
-    }
-  }
-  const environment = loaded && timedOut(failure);
-  const measured = `host 1-minute load ${load.toFixed(1)} is ${loaded ? 'above' : 'within'} the envelope ${LOAD_ENVELOPE}`;
-  throw new HandlerError(
-    'CDP_NOT_CONNECTED',
-    `cannot attach to the dev client through Metro ${steps.metroPort}: ${describeError(failure).message} (${measured}${environment ? `; an environment refusal ${retry ? 'after one retry' : 'without enough budget for another readiness wait'}` : ''}${relaunchFailure === undefined ? '' : `; relaunch failed: ${relaunchFailure}`})`,
-  );
 }

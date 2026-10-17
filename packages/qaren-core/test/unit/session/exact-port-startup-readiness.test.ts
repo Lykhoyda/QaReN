@@ -245,7 +245,7 @@ for (const phase of ['headers', 'body']) {
     const waiting = assert
       .rejects(
         waitForExactPortTargets(managedPort, 1000, 500),
-        /Failed to list CDP targets on port 8341: request aborted/,
+        /Timed out waiting for CDP targets on port 8341 after 1000ms/,
       )
       .then(() => {
         settled = true;
@@ -267,24 +267,29 @@ for (const phase of ['headers', 'body']) {
   });
 }
 
-test('a request timeout fails once without consuming the entire readiness budget', async (t) => {
+test('target-list attempt timeouts retry only until the readiness deadline', async (t) => {
   const clock = setup(t, async (_url, options) => rejectOnAbort(options?.signal));
   let settled = false;
   const waiting = assert
     .rejects(
-      waitForExactPortTargets(managedPort, 30_000, 500),
-      /Failed to list CDP targets on port 8341: request aborted/,
+      waitForExactPortTargets(managedPort, 7000, 500),
+      /Timed out waiting for CDP targets on port 8341 after 7000ms/,
     )
     .then(() => {
       settled = true;
     });
-  await clock.advance(2999);
+  await clock.advance(3000);
   assert.equal(settled, false);
-  await clock.advance(1);
+  await clock.advance(500);
+  assert.equal(clock.requested.length, 2);
+  await clock.advance(3000);
+  assert.equal(settled, false);
+  await clock.advance(500);
   await waiting;
-  assert.equal(clock.now(), 13_000);
+  assert.equal(clock.now(), 17_000);
+  assert.deepEqual(clock.requested, [endpoint, endpoint]);
   await clock.advance(30_000);
-  assert.deepEqual(clock.requested, [endpoint]);
+  assert.equal(clock.requested.length, 2, 'no requests after the deadline');
 });
 
 for (const delay of [1000, 1001]) {

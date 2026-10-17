@@ -1,24 +1,48 @@
-import { interruptible } from '../../../dist/domain/cancellation.js';
+import { interruptible, withCancellation } from '../../../dist/domain/cancellation.js';
 import { createStop } from '../../../dist/qa/stop.js';
-import { TargetReadinessTimeoutError } from '../../../dist/cdp/discovery.js';
+import { TargetReadinessTimeoutError, TargetSelectionError } from '../../../dist/cdp/discovery.js';
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
-  LOAD_ENVELOPE,
   admit,
   awaitBundleReady,
   createBundleReload,
+  formatAdmissionRefusal,
+  logAdmissionRefusal,
   metroDevicePin,
   type AdmissionSteps,
 } from '../../../dist/qa/admission.js';
 import { REACT_READY_PROBE_JS } from '../../../dist/injected-helpers.js';
+import { HandlerError } from '../../../dist/qa/adapt.js';
 import { runInNewContext } from 'node:vm';
+import { setImmediate as nextTurn } from 'node:timers/promises';
+import { syncBuiltinESMExports } from 'node:module';
+import {
+  CDPProbeTimeoutError,
+  CDPHandshakeTimeoutError,
+  CDPTargetClosedError,
+} from '../../../dist/cdp/connect.js';
+import { CDPRequestTimeoutError, sendWithTimeout } from '../../../dist/cdp/transport.js';
 
 const PROVEN = {
   ok: true,
   scriptURL: 'http://127.0.0.1:8081/index.bundle',
   appModules: 3,
 } as const;
+
+test('bundle readiness returns socket loss to admission instead of polling a dead transport', async () => {
+  await assert.rejects(
+    awaitBundleReady(
+      async () => {
+        await sendWithTimeout(null, new Map(), () => 1, 'Runtime.evaluate', {}, 100);
+        return {};
+      },
+      performance.now() + 20,
+      1,
+    ),
+    CDPTargetClosedError,
+  );
+});
 
 function harness(overrides: Partial<AdmissionSteps> = {}) {
   const calls: string[] = [];
@@ -92,10 +116,25 @@ test('a stop during the attach wait ends the wait instead of running to its time
   assert.deepEqual(calls, ['close']);
 });
 
-test('an attach timeout under host load is retried once and refused as environment with the load', async () => {
+test('cancellation during the retry pause prevents another attach', async () => {
+  const { CDPProbeTimeoutError } = await import('../../../dist/cdp/connect.js');
+  const { calls, stop, steps } = harness();
+  let attempts = 0;
+  steps.attach = async () => {
+    attempts++;
+    setTimeout(() => stop.begin(), 20);
+    throw new CDPProbeTimeoutError('JS is not ready yet');
+  };
+  await assert.rejects(admit(steps, stop), { code: 'RUN_CANCELLED' });
+  assert.equal(attempts, 1);
+  assert.deepEqual(calls, ['close']);
+});
+
+test('an exhausted attach deadline refuses with the diagnostic host load', async () => {
   let attempts = 0;
   const { calls, stop, steps } = harness({
     load: () => 42.25,
+    remainingMs: () => 20,
     attach: async () => {
       attempts++;
       throw new TargetReadinessTimeoutError(
@@ -106,16 +145,15 @@ test('an attach timeout under host load is retried once and refused as environme
   await assert.rejects(admit(steps, stop), (error: Error & { code?: string }) => {
     assert.equal(error.code, 'CDP_NOT_CONNECTED');
     assert.match(error.message, /Metro 8081/);
-    assert.match(error.message, /1-minute load 42\.3 is above the envelope 10/);
-    assert.match(error.message, /environment refusal/);
+    assert.match(error.message, /1-minute load 42\.3/);
+    assert.match(error.message, /deadline exceeded/);
     return true;
   });
-  assert.equal(attempts, 2);
+  assert.equal(attempts, 1);
   assert.ok(!calls.includes('open'));
-  assert.equal(LOAD_ENVELOPE, 10);
 });
 
-test('within the load envelope an attach failure is refused at once, with the load recorded', async () => {
+test('a deterministic attach failure is refused at once, with the load recorded', async () => {
   let attempts = 0;
   const { stop, steps } = harness({
     load: () => 3,
@@ -126,17 +164,17 @@ test('within the load envelope an attach failure is refused at once, with the lo
   });
   await assert.rejects(admit(steps, stop), (error: Error & { code?: string }) => {
     assert.equal(error.code, 'CDP_NOT_CONNECTED');
-    assert.match(error.message, /1-minute load 3\.0 is within the envelope 10/);
+    assert.match(error.message, /1-minute load 3\.0/);
     assert.doesNotMatch(error.message, /environment refusal/);
     return true;
   });
   assert.equal(attempts, 1);
 });
 
-test('a retried attach that connects under load continues the admission', async () => {
+test('a retried attach that connects at low load continues the admission', async () => {
   let attempts = 0;
   const { calls, stop, steps } = harness({
-    load: () => 50,
+    load: () => 3,
     attach: async () => {
       if (++attempts === 1) throw new TargetReadinessTimeoutError('no target yet');
     },
@@ -152,6 +190,53 @@ test('a failed bundle proof closes the session and refuses with its own code', a
   });
   await assert.rejects(admit(steps, stop), { code: 'METRO_ORIGIN_MISMATCH' });
   assert.deepEqual(calls.slice(-1), ['close']);
+});
+
+test('a deterministic origin proof error keeps its original classification without a retry', async () => {
+  const failure = new Error('invalid proof adapter metadata');
+  const { calls, stop, steps } = harness({
+    prove: async () => {
+      throw failure;
+    },
+  });
+  await assert.rejects(admit(steps, stop), (error) => error === failure);
+  assert.deepEqual(calls, ['attach', 'foreignDriver', 'open', 'close']);
+});
+
+test('a socket lost before origin proof reattaches without reopening the admitted device session', async () => {
+  let proofs = 0;
+  const { calls, stop, steps } = harness({
+    prove: async () => {
+      if (++proofs === 1)
+        await sendWithTimeout(null, new Map(), () => 1, 'Runtime.evaluate', {}, 100);
+      return PROVEN;
+    },
+  });
+  assert.deepEqual(await admit(steps, stop), PROVEN);
+  assert.equal(proofs, 2);
+  assert.deepEqual(calls, ['attach', 'foreignDriver', 'open', 'attach']);
+});
+
+test('repeated socket loss at origin proof cannot renew the admission deadline', async (t) => {
+  let now = 0;
+  t.mock.method(performance, 'now', () => now);
+  let proofs = 0;
+  const deadlines: number[] = [];
+  const { calls, stop, steps } = harness({
+    remainingMs: () => 1_000 - now,
+    attach: async (deadline) => {
+      deadlines.push(deadline);
+    },
+    prove: async () => {
+      now = ++proofs === 1 ? 100 : 1_000;
+      await sendWithTimeout(null, new Map(), () => 1, 'Runtime.evaluate', {}, 100);
+      return PROVEN;
+    },
+  });
+  await assert.rejects(admit(steps, stop), { code: 'CDP_NOT_CONNECTED' });
+  assert.equal(proofs, 2);
+  assert.deepEqual(deadlines, [1_000, 1_000]);
+  assert.deepEqual(calls, ['foreignDriver', 'open', 'close']);
 });
 
 test('a foreign automation driver refuses before the session opens', async () => {
@@ -170,18 +255,16 @@ test('cancellation during bundle proof refuses the proven result', async () => {
   assert.equal(calls.at(-1), 'close');
 });
 
-test('a loaded timeout with only 15 seconds left refuses without a second 30-second wait', async () => {
+test('a transient timeout can retry with less than a full readiness window remaining', async () => {
   let attempts = 0;
   const { stop, steps } = harness({
-    load: () => 42,
     remainingMs: () => 15_000,
     attach: async () => {
-      attempts++;
-      throw new TargetReadinessTimeoutError('readiness timeout');
+      if (++attempts === 1) throw new TargetReadinessTimeoutError('readiness timeout');
     },
   });
-  await assert.rejects(admit(steps, stop), /environment refusal without enough budget/);
-  assert.equal(attempts, 1);
+  assert.deepEqual(await admit(steps, stop), PROVEN);
+  assert.equal(attempts, 2);
 });
 
 test('a deterministic rejection under load is never retried or called environmental', async () => {
@@ -230,23 +313,64 @@ test('abort during each awaited admission primitive rejects before any later eff
   }
 });
 
-test('loaded handshake timeout retries once and remains an environment refusal', async () => {
+test('handshake attempts share one deadline at low load', async () => {
   const { CDPHandshakeTimeoutError } = await import('../../../dist/cdp/connect.js');
-  let attempts = 0;
+  const deadlines: number[] = [];
   const { calls, stop, steps } = harness({
-    load: () => 42,
-    attach: async () => {
-      attempts++;
+    load: () => 3,
+    remainingMs: () => 1200,
+    attach: async (deadline) => {
+      deadlines.push(deadline);
       throw new CDPHandshakeTimeoutError('handshake timed out');
     },
   });
-  await assert.rejects(
-    admit(steps, stop),
-    /host 1-minute load 42.0.*environment refusal after one retry/,
-  );
-  assert.equal(attempts, 2);
+  await assert.rejects(admit(steps, stop), /CDP attach deadline exceeded/);
+  assert.ok(deadlines.length >= 2);
+  assert.equal(new Set(deadlines).size, 1, 'retry must not extend the deadline');
   assert.deepEqual(calls, ['close']);
 });
+
+for (const Timeout of [CDPProbeTimeoutError, CDPHandshakeTimeoutError]) {
+  test(`persistent ${Timeout.name} gets one iOS relaunch after its readiness window`, async (t) => {
+    let now = 10_000;
+    t.mock.timers.enable({ apis: ['setTimeout'] });
+    syncBuiltinESMExports();
+    t.mock.method(performance, 'now', () => now);
+    let relaunched = 0;
+    const deadlines: number[] = [];
+    const { stop, steps } = harness({
+      readinessMs: 1000,
+      remainingMs: () => 13_000 - now,
+      attach: async (deadline) => {
+        deadlines.push(deadline);
+        if (!relaunched) throw new Timeout('runtime remains paused');
+      },
+      relaunch: async () => {
+        relaunched++;
+      },
+    });
+    const admitted = admit(steps, stop).catch((error) => error);
+    t.after(async () => {
+      stop.begin();
+      await admitted;
+      t.mock.timers.reset();
+      syncBuiltinESMExports();
+    });
+    const advance = async (ms: number) => {
+      now += ms;
+      t.mock.timers.tick(ms);
+      await nextTurn();
+    };
+    await nextTurn();
+    await advance(500);
+    assert.equal(relaunched, 0, 'transient attempt timeouts do not relaunch immediately');
+    await advance(500);
+    assert.equal(relaunched, 1, 'exhausted readiness retains the existing relaunch recovery');
+    await advance(500);
+    assert.deepEqual(await admitted, PROVEN);
+    assert.equal(new Set(deadlines).size, 1, 'relaunch must not renew the admission deadline');
+  });
+}
 
 test('the single retry relaunches the app before waiting again', async () => {
   const order: string[] = [];
@@ -268,22 +392,22 @@ test('the single retry relaunches the app before waiting again', async () => {
   assert.deepEqual(order, ['attach', 'foreignDriver', 'relaunch', 'attach', 'foreignDriver']);
 });
 
-test('within the load envelope nothing is relaunched', async () => {
+test('an exhausted readiness wait can relaunch once at low load', async () => {
   let relaunched = 0;
   const { stop, steps } = harness({
     load: () => 3,
     attach: async () => {
-      throw new TargetReadinessTimeoutError('no target');
+      if (!relaunched) throw new TargetReadinessTimeoutError('no target');
     },
     relaunch: async () => {
       relaunched++;
     },
   });
-  await assert.rejects(admit(steps, stop));
-  assert.equal(relaunched, 0);
+  assert.deepEqual(await admit(steps, stop), PROVEN);
+  assert.equal(relaunched, 1);
 });
 
-test('a failed relaunch skips the second wait and stays an environment refusal', async () => {
+test('a failed relaunch skips the next wait and retains the failure detail', async () => {
   let attempts = 0;
   const { stop, steps } = harness({
     load: () => 50,
@@ -297,7 +421,6 @@ test('a failed relaunch skips the second wait and stays an environment refusal',
   });
   await assert.rejects(admit(steps, stop), (error: Error & { code?: string }) => {
     assert.equal(error.code, 'CDP_NOT_CONNECTED');
-    assert.match(error.message, /environment refusal/);
     assert.match(error.message, /relaunch failed: simctl launch failed/);
     return true;
   });
@@ -401,14 +524,14 @@ test('the attached client must have run its bundle before the driver probe, sess
 });
 
 test('a bundle still building at the attach deadline refuses as an attach timeout, not an origin mismatch', async () => {
-  const { calls, stop, steps } = harness();
+  const { calls, stop, steps } = harness({ remainingMs: () => 20 });
   steps.bundleReady = async () => {
     calls.push('bundleReady');
     throw new TargetReadinessTimeoutError('React never became ready on the attached client');
   };
   await assert.rejects(admit(steps, stop), (error: Error & { code?: string }) => {
     assert.equal(error.code, 'CDP_NOT_CONNECTED');
-    assert.match(error.message, /React never became ready/);
+    assert.match(error.message, /deadline exceeded/);
     return true;
   });
   assert.ok(!calls.includes('prove'), calls.join());
@@ -477,7 +600,7 @@ test('a Fast Refresh reload is over only once the marked runtime is gone, React 
       calls.push('prove');
       return PROVEN;
     },
-    deadline: () => performance.now() + 5_000,
+    remainingMs: () => 5_000,
     pollMs: 1,
   });
   await reload.mark();
@@ -491,6 +614,136 @@ test('a Fast Refresh reload is over only once the marked runtime is gone, React 
   assert.deepEqual(calls, ['helpers after react true', 'prove']);
 });
 
+test('concurrent reloads retry slow helper and origin reads within their own admission budget', async () => {
+  const results = await Promise.allSettled(
+    ['helpers', 'proof'].map(async (slow) => {
+      const client = devClient();
+      let helpers = 0;
+      let proofs = 0;
+      const reload = createBundleReload({
+        evaluate: client.evaluate,
+        reinjectHelpers: async () => {
+          if (++helpers === 1 && slow === 'helpers')
+            throw new CDPRequestTimeoutError('the reloaded runtime has not answered yet');
+          return true;
+        },
+        prove: async () => {
+          if (++proofs === 1 && slow === 'proof')
+            throw new CDPRequestTimeoutError('the reloaded SourceCode has not answered yet');
+          return PROVEN;
+        },
+        remainingMs: () => 5_000,
+        pollMs: 1,
+      });
+      await reload.mark();
+      client.script.push('closed', 'unready', 'unready', 'ready', 'ready');
+      await reload.settled();
+      assert.ok(helpers >= 1 && proofs >= 1);
+    }),
+  );
+  assert.deepEqual(
+    results.map((result) => result.status),
+    ['fulfilled', 'fulfilled'],
+  );
+});
+
+test('concurrent reloads becoming ready after 30 seconds use the remaining run budget', async (t) => {
+  let now = 0;
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  syncBuiltinESMExports();
+  t.mock.method(performance, 'now', () => now);
+  const stop = createStop();
+  const clients = [devClient(), devClient()];
+  let proven = 0;
+  const reloads = clients.map((client) =>
+    createBundleReload({
+      evaluate: client.evaluate,
+      reinjectHelpers: async (waitMs) => {
+        assert.ok(waitMs > 0 && waitMs <= 59_000);
+        return true;
+      },
+      prove: async () => {
+        proven++;
+        return PROVEN;
+      },
+      remainingMs: () => 90_000 - now,
+    }),
+  );
+  await Promise.all(reloads.map((reload) => reload.mark()));
+  const settled = withCancellation(stop.signal, () =>
+    Promise.allSettled(reloads.map((reload) => reload.settled())),
+  );
+  t.after(async () => {
+    stop.begin();
+    await settled;
+    t.mock.timers.reset();
+    syncBuiltinESMExports();
+  });
+  await nextTurn();
+  assert.equal(proven, 0, 'a responsive old runtime is not reload proof');
+  clients.forEach((client) => client.script.push('ready'));
+  now = 31_000;
+  t.mock.timers.tick(31_000);
+  await nextTurn();
+  assert.deepEqual(
+    (await settled).map((result) => result.status),
+    ['fulfilled', 'fulfilled'],
+  );
+  assert.equal(proven, 2);
+});
+
+test('transient reload attempts cannot renew an exhausted run budget', async (t) => {
+  let now = 0;
+  t.mock.method(performance, 'now', () => now);
+  const client = devClient();
+  let helpers = 0;
+  let proven = false;
+  const reload = createBundleReload({
+    evaluate: client.evaluate,
+    reinjectHelpers: async () => {
+      helpers++;
+      now = helpers === 1 ? 200 : 1_000;
+      throw new CDPRequestTimeoutError('still not answering');
+    },
+    prove: async () => {
+      proven = true;
+      return PROVEN;
+    },
+    remainingMs: () => 1_000 - now,
+    pollMs: 1,
+  });
+  await reload.mark();
+  client.script.push('ready');
+  await assert.rejects(reload.settled(), { code: 'CDP_NOT_CONNECTED' });
+  assert.equal(helpers, 2);
+  assert.equal(proven, false);
+});
+
+test('cancellation during reload readiness prevents helper injection and origin proof', async () => {
+  const client = devClient();
+  const stop = createStop();
+  const calls: string[] = [];
+  const reload = createBundleReload({
+    evaluate: client.evaluate,
+    reinjectHelpers: async () => {
+      calls.push('helpers');
+      return true;
+    },
+    prove: async () => {
+      calls.push('proof');
+      return PROVEN;
+    },
+    remainingMs: () => 90_000,
+  });
+  await reload.mark();
+  const settled = withCancellation(stop.signal, () => reload.settled());
+  const refused = assert.rejects(settled, { code: 'RUN_CANCELLED' });
+  await nextTurn();
+  stop.begin();
+  await refused;
+  assert.deepEqual(calls, []);
+});
+
 test('a runtime that never reloads refuses as an attach timeout and is never proven', async () => {
   const client = devClient();
   let proven = false;
@@ -501,7 +754,7 @@ test('a runtime that never reloads refuses as an attach timeout and is never pro
       proven = true;
       return PROVEN;
     },
-    deadline: () => performance.now() + 20,
+    remainingMs: () => 20,
     pollMs: 1,
   });
   await reload.mark();
@@ -523,7 +776,7 @@ test('a reloaded bundle from another origin refuses with the origin proof', asyn
       code: 'METRO_ORIGIN_MISMATCH',
       message: "scriptURL 127.0.0.1:9999 is not the run's Metro port 8081",
     }),
-    deadline: () => performance.now() + 5_000,
+    remainingMs: () => 5_000,
     pollMs: 1,
   });
   await reload.mark();
@@ -536,7 +789,7 @@ test('a runtime that cannot be marked refuses before the setting that reloads it
     evaluate: async () => ({ error: 'ReferenceError' }),
     reinjectHelpers: async () => true,
     prove: async () => PROVEN,
-    deadline: () => performance.now() + 5_000,
+    remainingMs: () => 5_000,
     pollMs: 1,
   });
   await assert.rejects(reload.mark(), { code: 'CDP_NOT_CONNECTED' });
@@ -552,7 +805,7 @@ test('a reloaded bundle the walk helpers cannot reach refuses before the origin 
       proven = true;
       return PROVEN;
     },
-    deadline: () => performance.now() + 5_000,
+    remainingMs: () => 5_000,
     pollMs: 1,
   });
   await reload.mark();
@@ -569,7 +822,7 @@ for (const late of ['helpers', 'proof'] as const) {
       evaluate: client.evaluate,
       reinjectHelpers: async () => (late === 'helpers' ? never : true),
       prove: async () => (late === 'proof' ? never : PROVEN),
-      deadline: () => performance.now() + 50,
+      remainingMs: () => 50,
       pollMs: 1,
     });
     await reload.mark();
@@ -581,4 +834,329 @@ for (const late of ['helpers', 'proof'] as const) {
 test("an iOS attach is pinned to the run's simulator; Android's Metro device name is a model, so it is not", () => {
   assert.equal(metroDevicePin('ios', 'qa-pr1080-testapp-r2'), 'qa-pr1080-testapp-r2');
   assert.equal(metroDevicePin('android', 'emulator-5574'), undefined);
+});
+
+type Refusal = Error & { code?: string; meta?: Record<string, unknown> };
+
+const SUMMARY = {
+  readers: {
+    androidPackages: 'null',
+    iosPackages: 'nonempty',
+    iosDeviceNames: 'null',
+    androidDeviceModels: 'null',
+  },
+  targets: [
+    {
+      token: 'none',
+      name: 'neither',
+      identity: 'present',
+      packages: 'neither',
+      confidence: 'defaulted',
+      deviceMatch: true,
+      bundleMatch: true,
+    },
+  ],
+} as const;
+
+async function refusalOf(admitted: Promise<unknown>): Promise<Refusal> {
+  const error = await admitted.then(
+    () => assert.fail('admission was expected to refuse'),
+    (error: Refusal) => error,
+  );
+  return error;
+}
+
+function budget(meta: Record<string, unknown>) {
+  const { elapsedMs, remainingMs, budgetMs, ...rest } = meta;
+  for (const value of [elapsedMs, remainingMs, budgetMs])
+    assert.ok(Number.isSafeInteger(value) && (value as number) >= 0, `budget field ${value}`);
+  return { rest, remainingMs: remainingMs as number };
+}
+
+function mockClock(t: { mock: any; after: (fn: () => Promise<void>) => void }) {
+  let now = 0;
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  syncBuiltinESMExports();
+  t.mock.method(performance, 'now', () => now);
+  return {
+    async advance(ms: number) {
+      now += ms;
+      t.mock.timers.tick(ms);
+      await nextTurn();
+    },
+    cleanup(stop: { begin(): void }, admitted: Promise<unknown>) {
+      t.after(async () => {
+        stop.begin();
+        await admitted.catch(() => undefined);
+        t.mock.timers.reset();
+        syncBuiltinESMExports();
+      });
+    },
+  };
+}
+
+test('a platform selection refusal keeps the public refusal and records its class and inference', async () => {
+  const { calls, stop, steps } = harness({
+    attach: async () => {
+      throw new TargetSelectionError(
+        'PLATFORM_TARGET_NOT_FOUND',
+        'PLATFORM_TARGET_NOT_FOUND: x',
+        [],
+        SUMMARY,
+      );
+    },
+  });
+  const error = await refusalOf(admit(steps, stop));
+  assert.equal(error.code, 'CDP_NOT_CONNECTED');
+  assert.match(error.message, /Metro 8081/);
+  assert.match(error.message, /1-minute load/);
+  const { rest, remainingMs } = budget(error.meta!);
+  assert.deepEqual(rest, {
+    attempt: 1,
+    lastStarted: 'attach',
+    lastCompleted: 'none',
+    inner: 'target_selection_platform_not_found',
+    relaunches: 0,
+    relaunchFailed: false,
+    inference: SUMMARY,
+  });
+  assert.ok(remainingMs > 0);
+  assert.deepEqual(calls, ['close']);
+});
+
+test('a deadline during origin proof after one transient attach records the stalled boundary', async (t) => {
+  const clock = mockClock(t);
+  let attempts = 0;
+  const { stop, steps } = harness({
+    remainingMs: () => 1_000,
+    attach: async () => {
+      if (++attempts === 1) throw new TargetReadinessTimeoutError('no target yet');
+    },
+    prove: () => interruptible(() => new Promise<never>(() => undefined)),
+  });
+  const admitted = refusalOf(admit(steps, stop));
+  clock.cleanup(stop, admitted);
+  await nextTurn();
+  await clock.advance(500);
+  await clock.advance(500);
+  const error = await admitted;
+  assert.equal(error.code, 'CDP_NOT_CONNECTED');
+  assert.match(error.message, /CDP attach deadline exceeded/);
+  const { rest, remainingMs } = budget(error.meta!);
+  assert.deepEqual(rest, {
+    attempt: 2,
+    lastStarted: 'prove',
+    lastCompleted: 'open',
+    inner: 'cdp_probe_timeout',
+    relaunches: 0,
+    relaunchFailed: false,
+  });
+  assert.equal(remainingMs, 0);
+});
+
+test('a deadline during the retry pause records the pause, not the attach', async (t) => {
+  const clock = mockClock(t);
+  const { stop, steps } = harness({
+    remainingMs: () => 700,
+    attach: async () => {
+      throw new CDPHandshakeTimeoutError('handshake timed out');
+    },
+  });
+  const admitted = refusalOf(admit(steps, stop));
+  clock.cleanup(stop, admitted);
+  await nextTurn();
+  await clock.advance(500);
+  await clock.advance(200);
+  const error = await admitted;
+  const { rest, remainingMs } = budget(error.meta!);
+  assert.equal(rest.lastStarted, 'retry_wait');
+  assert.equal(rest.inner, 'cdp_probe_timeout');
+  assert.equal(rest.attempt, 2);
+  assert.equal(remainingMs, 0);
+});
+
+test('a relaunch followed by a deterministic failure records one relaunch and two attempts', async () => {
+  let attempts = 0;
+  const { stop, steps } = harness({
+    attach: async () => {
+      if (++attempts === 1) throw new TargetReadinessTimeoutError('stuck on the launcher');
+      throw new Error('no target');
+    },
+    relaunch: async () => undefined,
+  });
+  const error = await refusalOf(admit(steps, stop));
+  const { rest } = budget(error.meta!);
+  assert.deepEqual(rest, {
+    attempt: 2,
+    lastStarted: 'attach',
+    lastCompleted: 'retry_wait',
+    inner: 'untyped',
+    relaunches: 1,
+    relaunchFailed: false,
+  });
+});
+
+test('a failed relaunch records the relaunch boundary and failure without its detail', async () => {
+  const { stop, steps } = harness({
+    attach: async () => {
+      throw new TargetReadinessTimeoutError('stuck on the launcher');
+    },
+    relaunch: async () => {
+      throw new Error('simctl launch failed');
+    },
+  });
+  const error = await refusalOf(admit(steps, stop));
+  const { rest } = budget(error.meta!);
+  assert.deepEqual(rest, {
+    attempt: 1,
+    lastStarted: 'relaunch',
+    lastCompleted: 'foreign_driver',
+    inner: 'target_readiness_timeout',
+    relaunches: 1,
+    relaunchFailed: true,
+  });
+  assert.doesNotMatch(JSON.stringify(error.meta), /simctl/);
+});
+
+test('refusals with their own code carry no admission record', async () => {
+  const mismatch = harness({
+    prove: async () => ({ ok: false, code: 'METRO_ORIGIN_MISMATCH', message: 'foreign bundle' }),
+  });
+  const refused = await refusalOf(admit(mismatch.steps, mismatch.stop));
+  assert.equal(refused.code, 'METRO_ORIGIN_MISMATCH');
+  assert.equal(refused.meta, undefined);
+
+  const cancelled = harness();
+  cancelled.stop.begin();
+  const stopped = await refusalOf(admit(cancelled.steps, cancelled.stop));
+  assert.equal(stopped.code, 'RUN_CANCELLED');
+  assert.equal(stopped.meta, undefined);
+});
+
+test('the deterministic attach refusal message is unchanged', async () => {
+  const { stop, steps } = harness({
+    load: () => 3,
+    attach: async () => {
+      throw new Error('no target');
+    },
+  });
+  const error = await refusalOf(admit(steps, stop));
+  assert.equal(
+    error.message,
+    'cannot attach to the dev client through Metro 8081: no target (host 1-minute load 3.0)',
+  );
+});
+
+test('the admission refusal line round-trips allowlisted facts', () => {
+  const facts = {
+    attempt: 1,
+    lastStarted: 'attach',
+    lastCompleted: 'none',
+    inner: 'target_selection_platform_not_found',
+    relaunches: 0,
+    relaunchFailed: false,
+    elapsedMs: 45_513,
+    remainingMs: 254_487,
+    budgetMs: 300_000,
+    inference: SUMMARY,
+  };
+  assert.deepEqual(JSON.parse(formatAdmissionRefusal(facts, 'connect_exact')), {
+    ...facts,
+    attachStage: 'connect_exact',
+    inference: { ...SUMMARY, targetsTotal: 1 },
+  });
+  const later = JSON.parse(
+    formatAdmissionRefusal({ ...facts, lastStarted: 'prove' }, 'wait_targets'),
+  );
+  assert.equal(later.attachStage, undefined);
+});
+
+test('the admission refusal line never copies a value outside its allowlist', () => {
+  const hostile = {
+    attempt: Number.NaN,
+    lastStarted: 'PRIVATE-udid',
+    lastCompleted: { nested: 'com.private.app' },
+    inner: 'http://private.example/bundle',
+    relaunches: -1,
+    relaunchFailed: 'com.private.app',
+    elapsedMs: 1e300,
+    remainingMs: 1.5,
+    budgetMs: 'PRIVATE-udid',
+    deviceName: 'PRIVATE-udid',
+    inference: {
+      readers: {
+        androidPackages: 'com.private.app',
+        iosPackages: 'nonempty',
+        extra: 'PRIVATE-udid',
+      },
+      targets: Array.from({ length: 9 }, () => ({
+        token: 'PRIVATE-udid',
+        name: 'com.private.app',
+        identity: 'present',
+        packages: { url: 'http://private.example' },
+        confidence: 'probed',
+        deviceMatch: 'PRIVATE-udid',
+        appId: 'com.private.app',
+      })),
+    },
+  };
+  const line = formatAdmissionRefusal(hostile, 'connect_exact');
+  for (const sentinel of ['PRIVATE', 'private', 'http'])
+    assert.ok(!line.includes(sentinel), `${sentinel} leaked: ${line}`);
+  const record = JSON.parse(line);
+  assert.equal(record.attempt, 'unknown');
+  assert.equal(record.lastStarted, 'unknown');
+  assert.equal(record.attachStage, undefined);
+  assert.equal(record.relaunches, 'unknown');
+  assert.equal(record.relaunchFailed, 'unknown');
+  assert.equal(record.elapsedMs, 'unknown');
+  assert.equal(record.remainingMs, 'unknown');
+  assert.equal(record.inference.readers.androidPackages, 'unknown');
+  assert.equal(record.inference.readers.iosDeviceNames, 'unknown');
+  assert.equal(record.inference.readers.extra, undefined);
+  assert.equal(record.inference.targetsTotal, 9);
+  assert.equal(record.inference.targets.length, 8);
+  assert.deepEqual(record.inference.targets[0], {
+    token: 'unknown',
+    name: 'unknown',
+    identity: 'present',
+    packages: 'unknown',
+    confidence: 'probed',
+    deviceMatch: 'unknown',
+  });
+  assert.equal(
+    formatAdmissionRefusal(undefined),
+    JSON.stringify(JSON.parse(formatAdmissionRefusal({}))),
+  );
+});
+
+test('a refused admission writes exactly one value-free refusal line, and other errors write none', async () => {
+  const { stop, steps } = harness({
+    attach: async () => {
+      throw new TargetSelectionError(
+        'PLATFORM_TARGET_NOT_FOUND',
+        'PLATFORM_TARGET_NOT_FOUND: device="PRIVATE-phone"',
+        [],
+        SUMMARY,
+      );
+    },
+  });
+  const refusal = await refusalOf(admit(steps, stop));
+  const lines: string[] = [];
+  logAdmissionRefusal(refusal, 'connect_exact', (line) => lines.push(line));
+  assert.equal(lines.length, 1);
+  assert.match(lines[0]!, /^admission-refusal=\{/);
+  const record = JSON.parse(lines[0]!.slice('admission-refusal='.length));
+  assert.equal(record.inner, 'target_selection_platform_not_found');
+  assert.equal(record.attachStage, 'connect_exact');
+  assert.ok(!lines[0]!.includes('PRIVATE'));
+
+  logAdmissionRefusal(new Error('no target'), 'connect_exact', (line) => lines.push(line));
+  logAdmissionRefusal(new HandlerError('METRO_ORIGIN_MISMATCH', 'x'), undefined, (line) =>
+    lines.push(line),
+  );
+  assert.equal(lines.length, 1);
+  logAdmissionRefusal(refusal, undefined, () => {
+    throw new Error('stderr closed');
+  });
 });

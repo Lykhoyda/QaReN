@@ -185,14 +185,6 @@ fn run_inner(
 ) -> Result<Receipt, Failure> {
     events::stage("preflight", StageState::Running, None, None);
     validate_boot_device(req.platform, req.device.as_deref(), req.boot_device)?;
-    if req.fresh_install && req.platform == Platform::Android {
-        return Err(Failure::new(
-            "device",
-            FailureCode::PlatformUnsupported,
-            "--fresh-install is not available on Android in this release",
-            "re-run without --fresh-install, or with --platform ios",
-        ));
-    }
     let (config, config_raw) = CheckConfig::load(&req.config_path)?;
     config.validate_for_platform(req.platform)?;
     if req.platform == Platform::Ios {
@@ -233,6 +225,14 @@ fn run_inner(
         req.boot_device,
         req.android_home.as_deref(),
     )?;
+    let android_env = device.android.as_ref().map(|emulator| core::AndroidEnv {
+        serial: emulator.serial.clone(),
+        server_port: emulator.server_port,
+        platform_tools: android::adb_path(req.android_home.as_deref().unwrap_or_default())
+            .parent()
+            .expect("adb lives in platform-tools")
+            .to_path_buf(),
+    });
     let mut run_id = format!("check-{}", timefmt::compact_utc(started_ms));
     let mut run_dir = RunRecord::run_dir(&req.runs_root, &run_id);
     let mut run_claim = None;
@@ -408,6 +408,7 @@ fn run_inner(
             &req.runtime_dir,
             &project_root,
             &device.id,
+            None,
         ) {
             return Ok(finish_failed(ctx, f));
         }
@@ -424,13 +425,15 @@ fn run_inner(
             return Ok(finish_failed(ctx, f));
         }
     }
-    if req.platform == Platform::Ios && (req.fresh_install || req.boot_device) {
+    // Last proof before anything destructive; boot_device is iOS-only.
+    if req.fresh_install || req.boot_device {
         if let Err(f) = core::fresh_install_admission(
             ctx.runner,
             &node,
             &req.runtime_dir,
             &project_root,
             &device.id,
+            android_env.as_ref(),
         ) {
             return Ok(finish_failed(ctx, f));
         }
@@ -441,7 +444,7 @@ fn run_inner(
         }
     }
     if req.fresh_install {
-        if let Err(f) = reset_app(&mut ctx, &device.id, &config.app_id) {
+        if let Err(f) = reset_app(&mut ctx, &device.id, &config.app_id, android_env.as_ref()) {
             return Ok(finish_failed(ctx, f));
         }
     }
@@ -549,17 +552,32 @@ fn run_inner(
     let mut video = None;
     // Taken before the spawn, so the trim offset can only cut later than the true admission frame.
     let recording_from = ctx.runner.now_epoch_ms();
-    if pr_state.is_some() && req.platform == Platform::Android {
-        events::stage("recording", StageState::Skipped, None, None);
-        video = Some(VideoStatus::Unavailable(
-            "Android recording arrives in a later slice".to_string(),
-        ));
-    } else if pr_state.is_some() {
-        events::stage("recording", StageState::Running, None, None);
-        if let Err(status) = record::start(ctx.runner, &mut ctx.record, &ctx.runs_root, &device.id)
+    if pr_state.is_some() {
+        if device
+            .android
+            .as_ref()
+            .is_some_and(|emulator| emulator.api_level < 34)
         {
-            events::stage("recording", StageState::Failed, None, None);
-            video = Some(status);
+            events::stage("recording", StageState::Skipped, None, None);
+            video = Some(VideoStatus::Unavailable(
+                "Android API <34 stops screen recording at 180 s".into(),
+            ));
+        } else {
+            events::stage("recording", StageState::Running, None, None);
+            let adb = ctx.record.resources.adb_path.clone();
+            let target = match &device.android {
+                Some(emulator) => record::RecordTarget::Android {
+                    adb: adb.as_deref().expect("borrowed emulator adb path"),
+                    port: emulator.server_port,
+                    serial: &emulator.serial,
+                },
+                None => record::RecordTarget::Ios(&device.id),
+            };
+            if let Err(status) = record::start(ctx.runner, &mut ctx.record, &ctx.runs_root, target)
+            {
+                events::stage("recording", StageState::Failed, None, None);
+                video = Some(status);
+            }
         }
     } else {
         events::stage("recording", StageState::Skipped, None, None);
@@ -592,14 +610,6 @@ fn run_inner(
             worktree: project_root.clone(),
         },
     };
-    let android_env = device.android.as_ref().map(|emulator| core::AndroidEnv {
-        serial: emulator.serial.clone(),
-        server_port: emulator.server_port,
-        platform_tools: android::adb_path(req.android_home.as_deref().unwrap_or_default())
-            .parent()
-            .expect("adb lives in platform-tools")
-            .to_path_buf(),
-    });
     let spec = core::spawn_spec(
         &node,
         &req.runtime_dir,
@@ -804,13 +814,17 @@ fn run_inner(
     let mut tested_older_commit = None;
     let mut published_video = None;
     if let Some(pr) = &pr_state {
+        let raw = record::raw_capture(&run_dir.join("media"));
         let video = video.unwrap_or_else(|| record::finalize(ctx.runner, &run_dir));
         ctx.notes.push(("video".to_string(), video.to_string()));
         if video == VideoStatus::Available {
             if let Some(bytes) = reclaim_raw_capture(&run_dir) {
                 ctx.notes.push((
                     "reclaimed".to_string(),
-                    format!("media/raw.mov: {bytes} bytes"),
+                    format!(
+                        "media/{}: {bytes} bytes",
+                        raw.file_name().unwrap().to_string_lossy()
+                    ),
                 ));
             }
         }
@@ -940,7 +954,7 @@ fn run_inner(
 
 // The raw capture in this run's own directory is redundant once a playable video.mp4 replaces it.
 fn reclaim_raw_capture(run_dir: &Path) -> Option<u64> {
-    let raw = run_dir.join("media").join("raw.mov");
+    let raw = record::raw_capture(&run_dir.join("media"));
     let meta = std::fs::symlink_metadata(&raw)
         .ok()
         .filter(|m| m.is_file())?;
@@ -1087,17 +1101,52 @@ mod block_start_tests {
     }
 }
 
-fn reset_app(ctx: &mut Ctx, udid: &str, app_id: &str) -> Result<(), Failure> {
+// The borrowed emulator's package list, read like the simulator's inventory: only a clean read decides.
+fn app_presence(
+    runner: &mut dyn Runner,
+    udid: &str,
+    app_id: &str,
+    android: Option<&core::AndroidEnv>,
+) -> ios::AppPresence {
+    let Some(emulator) = android else {
+        return ios::probe_app_presence(runner, udid, app_id);
+    };
+    let list = runner.run(&android::pm_list_packages_spec(
+        &emulator.platform_tools.join("adb"),
+        emulator.server_port,
+        &emulator.serial,
+        app_id,
+    ));
+    if !list.ok() || !list.stderr.is_empty() {
+        ios::AppPresence::Unknown
+    } else if android::package_list_has_exact(&list.stdout, app_id) {
+        ios::AppPresence::Installed
+    } else {
+        ios::AppPresence::ProvenAbsent
+    }
+}
+
+fn reset_app(
+    ctx: &mut Ctx,
+    udid: &str,
+    app_id: &str,
+    android: Option<&core::AndroidEnv>,
+) -> Result<(), Failure> {
     ensure_running(ctx.runner, "fresh_install")?;
+    let device = if android.is_some() {
+        "emulator"
+    } else {
+        "simulator"
+    };
     let unknown = || {
         Failure::new(
             "fresh_install",
             FailureCode::AppPresenceUnknown,
             "a successful structured app inventory could not prove app presence or absence",
-            "restore simulator inventory access before retrying the fresh install",
+            format!("restore {device} inventory access before retrying the fresh install"),
         )
     };
-    match ios::probe_app_presence(ctx.runner, udid, app_id) {
+    match app_presence(ctx.runner, udid, app_id, android) {
         ios::AppPresence::Unknown => return Err(unknown()),
         ios::AppPresence::ProvenAbsent => {}
         ios::AppPresence::Installed => {
@@ -1108,16 +1157,28 @@ fn reset_app(ctx: &mut Ctx, udid: &str, app_id: &str) -> Result<(), Failure> {
             );
             ctx.save()?;
             ensure_running(ctx.runner, "fresh_install")?;
-            let output = ctx.runner.run(&ios::uninstall_app_spec(udid, app_id));
-            if !output.ok() {
+            let uninstalled = match android {
+                // adb can exit 0 on a refused uninstall; only its Success line reports removal.
+                Some(emulator) => {
+                    let output = ctx.runner.run(&android::uninstall_spec(
+                        &emulator.platform_tools.join("adb"),
+                        emulator.server_port,
+                        &emulator.serial,
+                        app_id,
+                    ));
+                    output.ok() && output.stdout.contains("Success")
+                }
+                None => ctx.runner.run(&ios::uninstall_app_spec(udid, app_id)).ok(),
+            };
+            if !uninstalled {
                 return Err(Failure::new(
                     "fresh_install",
                     FailureCode::AppResetFailed,
                     "uninstall did not complete successfully on the selected device",
-                    "inspect simulator health and retry the fresh install",
+                    format!("inspect {device} health and retry the fresh install"),
                 ));
             }
-            match ios::probe_app_presence(ctx.runner, udid, app_id) {
+            match app_presence(ctx.runner, udid, app_id, android) {
                 ios::AppPresence::ProvenAbsent => {}
                 ios::AppPresence::Unknown => return Err(unknown()),
                 ios::AppPresence::Installed => {
@@ -1125,7 +1186,7 @@ fn reset_app(ctx: &mut Ctx, udid: &str, app_id: &str) -> Result<(), Failure> {
                         "fresh_install",
                         FailureCode::AppResetFailed,
                         "the selected app remains installed after uninstall",
-                        "inspect simulator health and retry the fresh install",
+                        format!("inspect {device} health and retry the fresh install"),
                     ))
                 }
             }

@@ -217,6 +217,7 @@ interface RunnerSnapshotNode {
   hittable?: boolean;
   selected?: boolean;
   visibleToUser?: boolean;
+  heading?: boolean;
   secure?: boolean;
 }
 
@@ -2058,6 +2059,7 @@ function mapRunnerNodesToFlat(nodes: RunnerSnapshotNode[], qa = false): FlatNode
     if (qa && Object.hasOwn(n, 'presence')) flat.presence = n.presence;
     if (qa && n.selected === true) flat.selected = true;
     if (qa && typeof n.visibleToUser === 'boolean') flat.visibleToUser = n.visibleToUser;
+    if (qa && n.heading === true) flat.heading = true;
     if (n.label !== undefined) flat.label = n.label;
     if (n.identifier !== undefined) flat.identifier = n.identifier;
     if (n.packageName !== undefined) flat.packageName = n.packageName;
