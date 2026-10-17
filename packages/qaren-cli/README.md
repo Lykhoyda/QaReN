@@ -1082,11 +1082,12 @@ The cached iOS dev-client install shares that budget, which starts before the
 install. The owned `simctl install` gets the remaining preparation time instead
 of a fixed 120-second limit. After a timeout, the installed app container is
 accepted when its content hash equals the cached artifact's (`install_proof`);
-otherwise the install is re-issued only if preparation time remains. A definite
-install error fails immediately; the simulator's install-coordination refusal
-(`IXErrorDomain` naming a promise or metadata on stderr, seen on the first boot
-after an erase or create) is retried on the readiness tick within the same
-budget. An unproven install with a spent budget fails with
+otherwise the install is re-issued only if preparation time remains. An install
+refusal whose stderr contains the complete `IXErrorDomain` token and `promise`
+or `metadata` (case-insensitive, with no required error code) skips container
+verification and retries after the existing five-second readiness tick within
+the same budget; all other definite install errors fail immediately.
+An unproven install with a spent budget fails with
 `ARTIFACT_INSTALL_FAILED`. For a spent budget, keep the cached artifact, clean
 up the run and retry as directed by `next_action`.
 Host load is diagnostic only. Other
