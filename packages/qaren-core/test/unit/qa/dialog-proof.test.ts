@@ -116,3 +116,20 @@ test('an unproven dialog tap fails even when the screen changed', async () => {
     /^DIALOG_TAP_UNPROVEN: /,
   );
 });
+
+test('a dialog tap that matched no button label fails even when the screen changed', async () => {
+  const f = fake(
+    {
+      ok: false,
+      proven: false,
+      executed: false,
+      mutation: 'none',
+      error: 'the action did not execute',
+    },
+    true,
+  );
+  const outcome = await walkBlock(block(), f.deps);
+  assert.equal(outcome.block.outcome, 'fail');
+  assert.equal(outcome.rows.at(-1)?.dialog, undefined);
+  assert.ok(!f.notes.some((line) => line.startsWith('dialog-tap ')));
+});
