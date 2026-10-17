@@ -81,6 +81,8 @@ function commandsFor(item: Item, selector: Selector | undefined, platform: Block
       return [platform === 'android' ? '- back' : '# qaren: back'];
     case 'dialog':
       return [`# qaren: dialog ${item.action}`];
+    case 'echo':
+      return [`# qaren: echo ${item.input}`];
     case 'check':
       return item.literal ? [`- assertVisible: { text: ${quote(item.text)} }`] : [];
   }
@@ -131,9 +133,11 @@ export function serializeBlock(
       protectedContent([
         ...(item.kind === 'fill'
           ? [item.input ?? item.text]
-          : item.kind === 'check' && item.literal
-            ? [item.text]
-            : []),
+          : item.kind === 'echo'
+            ? [item.input]
+            : item.kind === 'check' && item.literal
+              ? [item.text]
+              : []),
         selector?.id ?? selector?.text ?? '',
       ])
     )
@@ -189,7 +193,12 @@ function storedStep(raw: string, commands: Command[]): StoredStep | undefined {
   const [first, second] = commands;
   const map = (command: Command | undefined, key: string): unknown =>
     command && typeof command === 'object' && key in command ? command[key] : undefined;
-  if (commands.length === 0) return { raw, kind: 'check' };
+  const declared = parseStep(planLineBody(raw));
+  const echo =
+    declared && !('refuse' in declared) && declared.kind === 'echo' ? declared : undefined;
+  if (commands.length === 0) return echo ? undefined : { raw, kind: 'check' };
+  if (commands.length === 1 && typeof first === 'string' && first.startsWith('#echo '))
+    return echo?.input === first.slice(6) ? { raw, kind: 'echo', input: echo.input } : undefined;
   if (commands.length === 1 && first === 'scroll')
     return { raw, kind: 'scroll', direction: 'down' };
   if (commands.length === 1 && first === 'back') return { raw, kind: 'back' };
@@ -264,7 +273,9 @@ export function readBlock(text: string): StoredBlock | { invalid: string } {
   };
   for (const line of rest.slice(blank + 1)) {
     if (!line.trim()) continue;
-    const marker = /^# qaren: (back|dialog (?:accept|dismiss))$/.exec(line);
+    const marker = /^# qaren: (back|dialog (?:accept|dismiss)|echo [A-Z][A-Z0-9_]{0,31})$/.exec(
+      line,
+    );
     if (marker && open) {
       open.commands.push(`#${marker[1]}`);
       continue;
@@ -302,6 +313,7 @@ export function storedMatches(block: Block, stored: StoredBlock): boolean {
       if (item.kind === 'scroll')
         return step.direction === item.direction && !!step.until === !!item.until;
       if (item.kind === 'dialog') return step.action === item.action;
+      if (item.kind === 'echo') return step.input === item.input;
       return true;
     })
   );

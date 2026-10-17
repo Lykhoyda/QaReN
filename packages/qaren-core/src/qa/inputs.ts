@@ -15,6 +15,12 @@ export class InputPrivacyRefusal extends Error {
 
 export const INPUT_ECHO_MARKER = '[runtime input]';
 
+const echoes = new AsyncLocalStorage<Set<string>>();
+export const withEchoScope = <T>(operation: () => T): T => echoes.run(new Set(), operation);
+export const declareEcho = (name: string): void => {
+  echoes.getStore()?.add(name);
+};
+
 export class RunInputs {
   #values: ReadonlyMap<string, string>;
   #filled = new Set<string>();
@@ -89,14 +95,17 @@ export class RunInputs {
   expectEcho(identifier: string | undefined): void {
     if (identifier) this.#filled.add(identifier);
   }
-  // The field QaReN typed into shows the value by design; its label hashes as a constant.
+  // A registered fill target, or a label the block declared, shows a value by design: it hashes as a constant.
   maskFilledEcho<T extends { identifier?: string; label?: string }>(node: T): T {
-    return node.identifier !== undefined &&
-      node.label !== undefined &&
-      this.#filled.has(node.identifier) &&
-      !this.#privacy.assertInputHashSafe(node.label)
-      ? { ...node, label: INPUT_ECHO_MARKER }
-      : node;
+    const label = node.label;
+    if (label === undefined || this.#privacy.assertInputHashSafe(label)) return node;
+    const declared = echoes.getStore();
+    const allowed =
+      (node.identifier !== undefined && this.#filled.has(node.identifier)) ||
+      [...this.#values].every(
+        ([name, value]) => declared?.has(name) || this.#privacy.assertInputHashSafe(label, [value]),
+      );
+    return allowed ? { ...node, label: INPUT_ECHO_MARKER } : node;
   }
   toJSON(): never {
     throw new Error('runtime inputs cannot be serialized');

@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { hashSnapshotNodes } from '../../dist/lifecycle/settle-hash.js';
-import { RunInputs, withInputs } from '../../dist/qa/inputs.js';
+import { RunInputs, withInputs, withEchoScope, declareEcho } from '../../dist/qa/inputs.js';
 
 const node = (over = {}) => ({
   ref: '@e0',
@@ -89,5 +89,19 @@ test('a registered field label echo does not change the digest between two value
       hashSnapshotNodes([node(), node({ identifier: 'login_email', label: value })]),
     );
   };
+  assert.equal(digest('qa-synth-1234@example.test'), digest('other-user@example.test'));
+});
+
+test('a declared label echo does not change the digest between two values', () => {
+  const digest = (value) =>
+    withInputs(new RunInputs({ EMAIL: value }, ['EMAIL']), () =>
+      withEchoScope(() => {
+        declareEcho('EMAIL');
+        return hashSnapshotNodes([
+          node(),
+          node({ identifier: 'code_hint', label: `Sent to ${value}` }),
+        ]);
+      }),
+    );
   assert.equal(digest('qa-synth-1234@example.test'), digest('other-user@example.test'));
 });

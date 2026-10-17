@@ -660,11 +660,11 @@ export class ObservedPrivacy {
     if (this.inputValues.size) this.mark();
   }
 
-  assertInputHashSafe(text: string): boolean {
+  assertInputHashSafe(text: string, values: Iterable<string> = this.inputValues): boolean {
     return !matchPrivate(
       text,
       {
-        values: [...this.inputValues].flatMap((value) =>
+        values: [...values].flatMap((value) =>
           forms(value)
             .flatMap((form) => [form, JSON.stringify(form).slice(1, -1)])
             .map((text) => ({ text, provenance: 'input' as const })),

@@ -2,7 +2,13 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import crypto from 'node:crypto';
 import { syncBuiltinESMExports } from 'node:module';
-import { RunInputs, withInputs, InputPrivacyRefusal } from '../../../dist/qa/inputs.js';
+import {
+  RunInputs,
+  withInputs,
+  InputPrivacyRefusal,
+  withEchoScope,
+  declareEcho,
+} from '../../../dist/qa/inputs.js';
 import { createStop } from '../../../dist/qa/stop.js';
 import {
   runIOS,
@@ -290,6 +296,128 @@ test('a registered fill target lets the runner snapshot hash and keep its refs',
     const inputs = new RunInputs({ EMAIL: value }, ['EMAIL']);
     inputs.expectEcho('login_email');
     await withInputs(inputs, () => runIOS({ command: 'snapshot', bundleId: 'com.test' }));
+    const digest = getLastSnapshotHash();
+    assert.equal(typeof digest, 'string');
+    assert.equal(hasRefMap(), true);
+    digests.push(digest!);
+  }
+  assert.equal(digests[0], digests[1]);
+  _setFetchForTest(globalThis.fetch);
+  _setFastRunnerStateForTest(null);
+});
+
+test('a declared echo hashes as a constant for this block only', (t) => {
+  const email = 'qa-synth-1234@example.test';
+  const original = crypto.createHash;
+  let calls = 0;
+  t.mock.method(crypto, 'createHash', (...args: Parameters<typeof crypto.createHash>) => {
+    calls++;
+    return original(...args);
+  });
+  syncBuiltinESMExports();
+  try {
+    const hint = (label: string, over: Record<string, unknown> = {}) => [
+      node,
+      { ...node, index: 1, type: 'StaticText', identifier: 'code_hint', label, ...over },
+    ];
+    const run = <T>(values: Record<string, string>, operation: () => T): T =>
+      withInputs(new RunInputs(values, Object.keys(values)), operation);
+    const declared = (
+      values: Record<string, string>,
+      label: string,
+      over = {},
+      names = ['EMAIL'],
+    ) =>
+      run(values, () =>
+        withEchoScope(() => {
+          for (const name of names) declareEcho(name);
+          return hashSnapshotNodes(hint(label, over));
+        }),
+      );
+    const both = { EMAIL: email, OTP: '482913' };
+    calls = 0;
+    const first = declared(both, `We sent a code to ${email}`);
+    assert.equal(calls, 1);
+    const other = 'other-user@example.test';
+    assert.equal(declared({ ...both, EMAIL: other }, `We sent a code to ${other}`), first);
+    assert.notEqual(
+      run(both, () => hashSnapshotNodes(hint('We sent a code to you'))),
+      first,
+    );
+    const nfc = 'caf\u00e9-synth-user';
+    assert.equal(declared({ EMAIL: nfc }, `We sent a code to ${nfc.normalize('NFD')}`), first);
+    const quoted = 'left"right-synth';
+    assert.equal(
+      declared({ EMAIL: quoted }, `We sent a code to ${JSON.stringify(quoted).slice(1, -1)}`),
+      first,
+    );
+    assert.equal(
+      declared({ EMAIL: '482913' }, 'We sent a code to 4 8 2 9 1 3'),
+      declared({ EMAIL: '771204' }, 'We sent a code to 7 7 1 2 0 4'),
+    );
+    const refusals: Array<() => unknown> = [
+      () => run(both, () => hashSnapshotNodes(hint(`We sent a code to ${email}`))),
+      () =>
+        run(both, () => {
+          withEchoScope(() => declareEcho('EMAIL'));
+          return hashSnapshotNodes(hint(`We sent a code to ${email}`));
+        }),
+      () => declared(both, `Code 482913 sent to ${email}`),
+      () => declared(both, 'Your code is 482913'),
+      () => declared(both, 'Email', { identifier: email }),
+      () => declared(both, 'Email', { type: email }),
+    ];
+    for (const refusal of refusals) {
+      calls = 0;
+      assert.throws(refusal, InputPrivacyRefusal);
+      assert.equal(calls, 0);
+    }
+    const dots = '\u2022'.repeat(8);
+    const secure = { type: 'SecureTextField', identifier: 'login_password' };
+    assert.equal(
+      declared(both, dots, secure),
+      run(both, () => hashSnapshotNodes(hint(dots, secure))),
+    );
+  } finally {
+    t.mock.restoreAll();
+    syncBuiltinESMExports();
+  }
+});
+
+test('a declared echo lets the runner snapshot hash and keep its refs', async () => {
+  const digests: string[] = [];
+  for (const value of ['qa-synth-1234@example.test', 'other-user@example.test']) {
+    clearRefMap();
+    _setFastRunnerStateForTest({
+      schemaVersion: 1,
+      pid: process.pid,
+      port: 22090,
+      deviceId: 'TEST-UDID',
+      bundleId: 'com.test',
+      startedAt: '',
+      protocolVersion: 1,
+    });
+    _setFetchForTest(
+      async () =>
+        new Response(
+          JSON.stringify({
+            ok: true,
+            v: 1,
+            data: {
+              nodes: [
+                node,
+                { ...node, index: 1, identifier: 'code_hint', label: `Code sent to ${value}` },
+              ],
+            },
+          }),
+        ),
+    );
+    await withInputs(new RunInputs({ EMAIL: value }, ['EMAIL']), () =>
+      withEchoScope(() => {
+        declareEcho('EMAIL');
+        return runIOS({ command: 'snapshot', bundleId: 'com.test' });
+      }),
+    );
     const digest = getLastSnapshotHash();
     assert.equal(typeof digest, 'string');
     assert.equal(hasRefMap(), true);

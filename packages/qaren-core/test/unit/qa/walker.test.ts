@@ -9,7 +9,8 @@ import {
   screen as fixtureScreen,
   walker as fixtureWalker,
 } from './judgment-fixtures.ts';
-import { RunInputs, withInputs } from '../../../dist/qa/inputs.js';
+import { RunInputs, withInputs, InputPrivacyRefusal } from '../../../dist/qa/inputs.js';
+import { hashSnapshotNodes } from '../../../dist/lifecycle/settle-hash.js';
 import { MASK, ObservedPrivacy } from '../../../dist/qa/privacy.js';
 import { renderReason } from '../../../dist/qa/untrusted.js';
 import type { WalkSequence } from '../../../dist/qa/walker.js';
@@ -863,5 +864,94 @@ test('ledger block names hide input values whole, not their fragments', async ()
   assert.deepEqual(
     ledger.blocks.map((b) => b.key),
     ['example-settings', MASK],
+  );
+});
+
+test('a declared echo is in force from its line to the end of its block', async () => {
+  const email = 'qa-synth-1234@example.test';
+  const otp = '482913';
+  const hint = (label: string) => [
+    {
+      ref: '@h',
+      index: 0,
+      type: 'StaticText',
+      identifier: 'code_hint',
+      label,
+      rect: { x: 0, y: 0, width: 40, height: 20 },
+    },
+  ];
+  const screens = () => [
+    fixtureScreen([
+      fixtureElement('@e1', 'Email', { kind: 'input', testID: 'email' }),
+      fixtureElement('@e2', 'Code', { kind: 'input', testID: 'code' }),
+      fixtureElement('@e3', 'next', { testID: 'next' }),
+    ]),
+  ];
+  const parsed = (markdown: string) => parsePlan(markdown).blocks![0];
+  const declared = parsed(
+    '# Login\n1. Expect input EMAIL on screen\n2. Fill "email" with input EMAIL\n3. Tap "next"\n',
+  );
+  const inputs = () => new RunInputs({ EMAIL: email, OTP: otp }, ['EMAIL', 'OTP']);
+  const walk = (block: typeof declared, opts = {}, onPress?: () => Promise<void> | void) => {
+    const f = fixtureWalker(screens(), scriptedJudge([]));
+    const actions: string[] = [];
+    const press = f.deps.press;
+    f.deps.press = async (...args) => {
+      actions.push('press');
+      hashSnapshotNodes(hint(`We sent a code to ${email}`));
+      await onPress?.();
+      return press(...args);
+    };
+    const fill = f.deps.fill;
+    f.deps.fill = async (...args) => {
+      actions.push('fill');
+      return fill(...args);
+    };
+    const row = f.deps.row;
+    const echoRows: string[][] = [];
+    f.deps.row = (r) => {
+      if (r.line === 2) echoRows.push([r.outcome, ...actions]);
+      return row?.(r);
+    };
+    return { f, echoRows, run: () => walkBlock(block, f.deps, 0, [], undefined, undefined, opts) };
+  };
+  await withInputs(inputs(), async () => {
+    const first = walk(declared);
+    const outcome = await first.run();
+    assert.equal(outcome.failure, undefined);
+    assert.deepEqual(first.echoRows, [['pass']]);
+    assert.throws(() => hashSnapshotNodes(hint(`We sent a code to ${email}`)), InputPrivacyRefusal);
+  });
+  await withInputs(inputs(), () =>
+    assert.rejects(
+      walk(parsed('# Login\n1. Fill "email" with input EMAIL\n2. Tap "next"\n')).run(),
+      InputPrivacyRefusal,
+    ),
+  );
+  await withInputs(inputs(), async () => {
+    assert.equal((await walk(declared, { fromLine: 4 }).run()).failure, undefined);
+  });
+  const login = parsed(
+    '# Recover\n1. Fill "code" with input OTP\n2. Expect input OTP on screen\n3. Tap "next"\n',
+  );
+  let nested = false;
+  await withInputs(inputs(), async () => {
+    const outer = walk(declared, {}, async () => {
+      if (nested) return;
+      nested = true;
+      await walkBlock(login, fixtureWalker(screens(), scriptedJudge([])).deps);
+      hashSnapshotNodes(hint(`We sent a code to ${email}`));
+    });
+    assert.equal((await outer.run()).failure, undefined);
+  });
+  assert.equal(nested, true);
+  await withInputs(inputs(), () =>
+    assert.rejects(
+      walk(declared, {}, async () => {
+        await walkBlock(login, fixtureWalker(screens(), scriptedJudge([])).deps);
+        hashSnapshotNodes(hint(`Your code is ${otp}`));
+      }).run(),
+      InputPrivacyRefusal,
+    ),
   );
 });

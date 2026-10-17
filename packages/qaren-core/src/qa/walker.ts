@@ -1,4 +1,10 @@
-import { fillText, currentInputs, throwIfInputPrivacyRefused } from './inputs.js';
+import {
+  fillText,
+  currentInputs,
+  declareEcho,
+  throwIfInputPrivacyRefused,
+  withEchoScope,
+} from './inputs.js';
 import { isAbort, cancellationSignal } from '../domain/cancellation.js';
 import type { Block, Item, Target } from './plan.js';
 import {
@@ -260,7 +266,14 @@ const NEAR_MISS: Record<LiteralNearMiss, string> = {
 };
 
 // Retry a mutation once only when read-back failed and the screen provably did not move.
-export async function walkBlock(
+// Each block, including a nested login replay, gets its own declared-echo scope.
+export function walkBlock(
+  ...args: Parameters<typeof walkBlockScoped>
+): ReturnType<typeof walkBlockScoped> {
+  return withEchoScope(() => walkBlockScoped(...args));
+}
+
+async function walkBlockScoped(
   block: Block,
   deps: WalkerDeps,
   shotIndex = 0,
@@ -1180,7 +1193,10 @@ export async function walkBlock(
   };
 
   items: for (const item of block.items) {
-    if (opts.fromLine !== undefined && item.line < opts.fromLine) continue;
+    if (opts.fromLine !== undefined && item.line < opts.fromLine) {
+      if (item.kind === 'echo') declareEcho(item.input);
+      continue;
+    }
     mutationStarted = false;
     attempts: for (;;) {
       line = item.line;
@@ -1190,6 +1206,11 @@ export async function walkBlock(
         kind: item.kind === 'check' ? 'check' : 'step',
         t: deps.now(),
       });
+      if (item.kind === 'echo') {
+        declareEcho(item.input);
+        emit({ ...base(item, 1), outcome: 'pass' });
+        continue items;
+      }
       let currentAttempt = 1;
       resolvedBy = item.source === 'jev' && !replay ? 'jev' : 'exact';
       if (item.kind === 'fill' && !typed.includes(fillText(item))) typed.push(fillText(item));
@@ -2126,6 +2147,8 @@ export function loginBlock(slug: string, stored: StoredBlock): Block {
         return { kind: 'back', ...at };
       case 'dialog':
         return { kind: 'dialog', action: step.action!, ...at };
+      case 'echo':
+        return { kind: 'echo', input: step.input!, ...at };
       case 'check':
         return {
           kind: 'check',

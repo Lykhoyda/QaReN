@@ -82,7 +82,7 @@ function describeCandidate(e: Element): string {
 }
 
 export function stepTarget(step: Step): Target | undefined {
-  return step.kind === 'back' || step.kind === 'dialog'
+  return step.kind === 'back' || step.kind === 'dialog' || step.kind === 'echo'
     ? undefined
     : step.kind === 'scroll'
       ? step.until

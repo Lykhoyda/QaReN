@@ -26,6 +26,7 @@ import {
 import { compileFlow } from '../../../dist/flow/compile.js';
 import { parseM7Header } from '../../../dist/domain/reusable-action.js';
 import { ObservedPrivacy, type PrivateSet } from '../../../dist/qa/privacy.js';
+import { loginBlock } from '../../../dist/qa/walker.js';
 
 const secrets = (...values: string[]): PrivateSet => ({
   values: values.map((text) => ({ text, provenance: 'secret' })),
@@ -723,4 +724,44 @@ test('explicit keyboard key and submit serialize as exactly two canonical presse
   assert.deepEqual(serializeBlock(block, rows, ios, secrets('Return')), {
     unsavable: 'contains a protected plan-typed value',
   });
+});
+
+test('a declared echo saves as its plan line and a name-only marker', () => {
+  const block = blockOf(
+    '### Login\n1. Fill "email" with input EMAIL\n2. Expect input EMAIL on screen\n3. Tap "next"\n',
+  );
+  const rows = passRows(block, {
+    [block.items[0].line]: { id: 'email' },
+    [block.items[2].line]: { id: 'next' },
+  });
+  const yamls = ['qa-synth-1234@example.test', 'other-user@example.test'].map((value) => {
+    const privacy = new ObservedPrivacy();
+    privacy.classifyInputs([value]);
+    const result = serializeBlock(block, rows, ios, privacy.privateSet('persisted'));
+    assert.ok('yaml' in result, JSON.stringify(result));
+    assert.ok(!result.yaml.includes(value));
+    return result.yaml;
+  });
+  assert.equal(yamls[0], yamls[1]);
+  const yaml = yamls[0];
+  assert.match(yaml, /# 2\. Expect input EMAIL on screen\n# qaren: echo EMAIL\n/);
+  const read = readBlock(yaml);
+  assert.ok(!('invalid' in read), JSON.stringify(read));
+  assert.deepEqual(read.steps[1], { raw: block.items[1].raw, kind: 'echo', input: 'EMAIL' });
+  assert.ok(storedMatches(block, read));
+  assert.ok(storedFits(block, read, yaml, ios));
+  assert.deepEqual(
+    loginBlock('login', read).items.map((item) => [
+      item.kind,
+      'input' in item ? item.input : undefined,
+    ]),
+    [
+      ['fill', 'EMAIL'],
+      ['echo', 'EMAIL'],
+      ['press', undefined],
+    ],
+  );
+  for (const marker of ['# qaren: echo email', '# qaren: echo OTP']) {
+    assert.ok('invalid' in readBlock(yaml.replace('# qaren: echo EMAIL', marker)), marker);
+  }
 });

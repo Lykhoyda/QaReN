@@ -212,7 +212,16 @@ test('whole-value preflight admits ordinary credentials and refuses whole echoes
     ok: boolean;
   };
   assert.equal(admitted.ok, true);
-  for (const echo of [`6. Wait for "${email}"`, '6. Wait for "4 8 2 1"']) {
+  const declared = (await parseInputPreflight(
+    preflight(loginPlan('6. Expect input USERNAME on screen')),
+    scriptedJudge([]),
+  )) as { ok: boolean };
+  assert.equal(declared.ok, true);
+  for (const echo of [
+    `6. Wait for "${email}"`,
+    '6. Wait for "4 8 2 1"',
+    `6. Expect input USERNAME on screen\n7. Wait for "${email}"`,
+  ]) {
     await assert.rejects(
       parseInputPreflight(preflight(loginPlan(echo)), scriptedJudge([])),
       (error) => {
@@ -272,7 +281,8 @@ test('the preflight child reports a privacy refusal distinctly from an invalid r
 });
 
 test('a filled field slot block stays name-only and value-independent', () => {
-  const plan = '# Login\n1. Fill "login_email" with input QA_EMAIL\n';
+  const plan =
+    '# Login\n1. Fill "login_email" with input QA_EMAIL\n2. Expect input QA_EMAIL on screen\n';
   const outputs = ['qa-synth-1234@example.test', 'other-user@example.test'].map((value) => {
     const privacy = new ObservedPrivacy();
     privacy.classifyInputs([value]);
@@ -289,6 +299,7 @@ test('a filled field slot block stays name-only and value-independent', () => {
     const stored = readBlock(saved.yaml);
     assert.ok(!('invalid' in stored));
     assert.equal(stored.steps[0].input, 'QA_EMAIL');
+    assert.deepEqual([stored.steps[1].kind, stored.steps[1].input], ['echo', 'QA_EMAIL']);
     return [saved.yaml, preparePlan(plan, [block]).hash];
   });
   assert.deepEqual(outputs[0], outputs[1]);

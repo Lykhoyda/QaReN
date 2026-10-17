@@ -22,7 +22,8 @@ export type Step =
   | { kind: 'scroll'; direction: 'down' | 'up'; until?: Target }
   | { kind: 'wait'; target: Target }
   | { kind: 'back' }
-  | { kind: 'dialog'; action: 'accept' | 'dismiss' };
+  | { kind: 'dialog'; action: 'accept' | 'dismiss' }
+  | { kind: 'echo'; input: string };
 
 export interface Check {
   kind: 'check';
@@ -78,6 +79,7 @@ const FILL = /^(?:type|enter|input|write|fill(?:\s+in)?)\b\s*(.*)$/i;
 const FILL_WITH = /^(.*?)\s+with\s+("[^"]+"|“[^”]+”)\s*$/i;
 const PRESS =
   /^(?:tap|press|click|open|select|choose|toggle|hit|go\s+to)\b\s*(?:on\s+)?(?:the\s+)?(.+)$/i;
+const ECHO = /^expect\s+input\b(.*)$/i;
 
 type Grammar = Step | { refuse: string } | null;
 
@@ -107,6 +109,13 @@ function parseFill(rest: string): Grammar {
 }
 
 export function parseStep(rest: string): Grammar {
+  const echo = ECHO.exec(rest);
+  if (echo) {
+    const named = /^\s+([^"“”\s]+)\s+on\s+(?:this\s+)?screen$/i.exec(echo[1]);
+    return named && validInputName(named[1])
+      ? { kind: 'echo', input: named[1] }
+      : { refuse: 'expect input needs a declared input name and "on screen"' };
+  }
   if (BACK.test(rest)) return { kind: 'back' };
   const dialog = DIALOG.exec(rest);
   if (dialog) return explicitDialog(rest);
@@ -357,6 +366,16 @@ function scanPlan(
   }
   closeDeclared();
   encountered?.push(...blocks.flatMap((block) => block.items));
+  const slots = new Set(
+    blocks.flatMap((b) => b.items.flatMap((i) => (i.kind === 'fill' && i.input ? [i.input] : []))),
+  );
+  for (const item of blocks.flatMap((b) => b.items))
+    if (item.kind === 'echo' && !slots.has(item.input))
+      refused.push({
+        line: item.line,
+        text: item.raw,
+        reason: 'expect input names an input no fill step in this plan uses',
+      });
   if (refused.length > 0)
     return {
       refused: inventory
