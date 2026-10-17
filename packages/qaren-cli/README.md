@@ -562,7 +562,8 @@ See the [occlusion regressions](../qaren-core/test/unit/qa/occlusion-walker.test
 
 Fills use strict native value verification first. A strict fill replaces the
 field's content: the bound input is cleared before typing, and verification
-expects exactly the plan text. Keyboard fallback typing also replaces: see below.
+expects exactly the plan text. For keyboard fallback's replacement request and
+read-back policy, see below.
 Rebinding an input without a testID requires its original label and native type;
 the same frame alone cannot substitute a different input.
 Only a stable exact read-back
@@ -636,14 +637,20 @@ on a keyboard-up path types nothing; failure of the pre-dispatch read returns
 `NO_TEXT_INPUT_TARGET` with no mutation. An unknown keyboard state still refuses.
 Each walker focus decision logs one value-free `fallback-focus` line.
 
-QaReN then replaces the focused field's content: the runner selects the whole
-field and types the plan text in one synthesized sequence. When the input is a
+QaReN then requests replacement of the focused field's content: the runner synthesizes
+select-all and types the plan text in one sequence. When the input is a
 controlled React field, its value is then read back locally and compared, never
-logged: an exact match verifies the fill. A stable, nonempty read-back holding a
+logged: an exact match verifies the fill. A stable controlled read-back exactly equal
+to the prior nonempty value followed by the requested text fails with
+`TEXT_ENTRY_UNVERIFIED` and an observed mutation, without retrying or continuing to
+submit. This detects a retained-prefix concatenation after typing; it does not
+repair the native replacement mechanism or cover unreadable values.
+The same check runs after the bounded retype below, comparing against the preserved
+initial value and the retype's fresh controlled, focused value before dispatch.
+A stable, nonempty read-back holding a
 strictly shorter, in-order part of the text is ambiguous: keystrokes dropped under
-host load and a field that strips characters or limits length look alike. Because
-the retype replaces the whole field with the same text, it is safe either way, so
-the field is cleared and retyped once within the same step budget. A match then
+host load and a field that strips characters or limits length look alike. QaReN
+requests one clear-and-retype with the same text within the same step budget. A match then
 verifies the fill. A second loss of a different length points to dropped
 keystrokes and fails with `TEXT_ENTRY_UNVERIFIED` naming only the typed and held
 lengths. The same loss twice points to the field's own transformation and stays

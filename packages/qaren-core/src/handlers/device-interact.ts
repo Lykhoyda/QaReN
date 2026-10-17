@@ -1590,7 +1590,7 @@ export async function performFocusedFill(
       (args.vetoUnfocused && read && !read.focused)
     );
   };
-  // clearFirst replaces in the runner: one select-all and text sequence, never an append.
+  // clearFirst requests one select-all and text sequence in the runner.
   const native = await runNative(
     ['fill', args.ref, args.text, ...(args.clearFirst ? ['--clear-first'] : [])],
     { qaContext: args.qaContext, focusedType: true, focusedProof, settle: { enabled: false } },
@@ -1635,8 +1635,9 @@ export async function performFocusedFill(
       },
       'Typed into the focused field; the value could not be confirmed. Confirm with device_screenshot or expect_text before relying on it.',
     );
-  if (before === null || !beforeFocused) return unverified();
-  const expected = (args.clearFirst ? '' : before) + args.text;
+  const initialBefore = before;
+  if (initialBefore === null || !beforeFocused) return unverified();
+  const expected = (args.clearFirst ? '' : initialBefore) + args.text;
   const readBack = () =>
     awaitReactInputValue(() => readReactInputValue(client, oracleTestId), expected);
   const verified = () =>
@@ -1645,8 +1646,28 @@ export async function performFocusedFill(
       verifiedOracle: 'react-tree',
       textEntryRoute,
     });
+  const retainedPrefixFailure = (
+    verification: Awaited<ReturnType<typeof readBack>>,
+    dispatchBefore: string | null,
+  ) => {
+    if (
+      args.clearFirst &&
+      verification.verdict === 'mismatch' &&
+      [initialBefore, dispatchBefore].some(
+        (value) => value !== null && value !== '' && verification.observed === value + args.text,
+      )
+    ) {
+      return fillFailure(
+        'TEXT_ENTRY_UNVERIFIED',
+        'device_fill requested replacement but the focused field retained its prior value before the typed text; not retrying.',
+        { mutation: 'observed', pathsTried },
+      );
+    }
+  };
   const verification = await readBack();
   if (verification.verdict === 'exact') return verified();
+  const retained = retainedPrefixFailure(verification, initialBefore);
+  if (retained) return retained;
   const caseNormalized =
     verification.verdict === 'mismatch' && caseOnly(verification.observed, expected)
       ? { caseNormalizedChars: [...expected].length }
@@ -1678,6 +1699,7 @@ export async function performFocusedFill(
     focusedProof,
     settle: { enabled: false },
   });
+  const retypeBefore = beforeFocused ? before : null;
   if (retyped.isError) {
     return extractMutationDisposition(retyped) === 'none'
       ? lost(first, '; the retype was refused')
@@ -1688,6 +1710,8 @@ export async function performFocusedFill(
   }
   const second = await readBack();
   if (second.verdict === 'exact') return verified();
+  const retainedAfterRetype = retainedPrefixFailure(second, retypeBefore);
+  if (retainedAfterRetype) return retainedAfterRetype;
   const held = droppedLength(second.observed, expected);
   if (held === undefined) return unverified();
   // The same loss twice is the field's own stripping or maxLength: unverified, with the lengths disclosed.
