@@ -27,6 +27,7 @@ fn fresh_admission_command_pins_runtime_node_device_cwd_and_deadline_without_ado
         Path::new("/runtime path"),
         Path::new("/app path"),
         "AAAA-1111",
+        None,
     )
     .unwrap();
     assert_eq!(
@@ -101,6 +102,7 @@ fn fresh_admission_refusal_reports_only_validated_probe_evidence_and_transport_s
             Path::new("/runtime"),
             Path::new("/app"),
             "AAAA-1111",
+            None,
         )
         .unwrap_err();
         assert_eq!(failure.code, FailureCode::FreshInstallAdmissionUnknown);

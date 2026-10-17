@@ -100,3 +100,174 @@ test('expired probes the time budget like check() without recording a refusal', 
   assert.equal(cancelled.expired, false);
   assert.throws(() => cancelled.check(), { code: 'RUN_CANCELLED' });
 });
+
+test('refusal diagnostics preserve only the first refusal and never infer attestation', () => {
+  const context = new QaDispatchContext(10, () => 1);
+  context.authorize();
+  const facts = {
+    stage: 'native-response',
+    mutating: true,
+    responseOk: false,
+    nativeCode: 'KEYBOARD_TARGET_STALE',
+    nativeReason: 'exact-target-missing',
+    nativeMutation: 'none',
+    probeState: 'failed',
+    recovery: 'recovered-error',
+    message: 'PRIVATE-message',
+    commandId: 'PRIVATE-id',
+    data: { value: 'PRIVATE-data' },
+  };
+  assert.throws(
+    () =>
+      context.diagnoseRefusal(
+        () => facts,
+        () => context.invalidate(),
+      ),
+    {
+      code: 'ACTION_CONTEXT_CHANGED',
+    },
+  );
+  const first = context.refusalDiagnostic;
+  assert.deepEqual(first, {
+    refusal: 'ACTION_CONTEXT_CHANGED',
+    stage: 'native-response',
+    mutating: true,
+    responseOk: false,
+    nativeCode: 'KEYBOARD_TARGET_STALE',
+    nativeReason: 'exact-target-missing',
+    nativeMutation: 'none',
+    probeState: 'failed',
+    recovery: 'recovered-error',
+  });
+  facts.nativeCode = 'PRIVATE-change';
+  assert.throws(() =>
+    context.diagnoseRefusal(
+      () => ({ stage: 'dispatch-error', mutating: false }),
+      () => context.refuse('ACTION_OUTCOME_UNCERTAIN'),
+    ),
+  );
+  assert.equal(context.refusalDiagnostic, first);
+  assert.equal(Object.isFrozen(first), true);
+  assert.equal(context.refusedBeforeMutation, false);
+  assert.equal(context.authorizations, 1);
+  assert.ok(!JSON.stringify(first).includes('PRIVATE-'));
+});
+
+test('missing, malformed and accessor diagnostic facts stay unknown without changing refusal', () => {
+  let reads = 0;
+  for (const facts of [
+    undefined,
+    null,
+    'PRIVATE-canary',
+    [],
+    {},
+    {
+      stage: 'PRIVATE-stage',
+      mutating: 0,
+      responseOk: 'false',
+      nativeCode: 'STALE_REF PRIVATE',
+      nativeReason: 'exact-target-PRIVATE',
+      nativeMutation: false,
+      probeState: 'PRIVATE-probe',
+      recovery: 'PRIVATE-recovery',
+    },
+    Object.defineProperty({}, 'nativeCode', {
+      get() {
+        reads++;
+        throw Error('PRIVATE');
+      },
+    }),
+    Object.create({ nativeCode: 'STALE_REF' }),
+    new Proxy(
+      {},
+      {
+        getOwnPropertyDescriptor() {
+          throw Error('PRIVATE-proxy');
+        },
+      },
+    ),
+  ]) {
+    const context = new QaDispatchContext(10, () => 1);
+    assert.throws(
+      () =>
+        context.diagnoseRefusal(
+          () => facts,
+          () => context.refuse('ACTION_OUTCOME_UNCERTAIN'),
+        ),
+      { code: 'ACTION_OUTCOME_UNCERTAIN' },
+    );
+    assert.deepEqual(context.refusalDiagnostic, {
+      refusal: 'ACTION_OUTCOME_UNCERTAIN',
+      stage: null,
+      mutating: null,
+      responseOk: null,
+      nativeCode: null,
+      nativeReason: null,
+      nativeMutation: null,
+      probeState: null,
+      recovery: null,
+    });
+  }
+  assert.equal(reads, 0);
+  const context = new QaDispatchContext(10, () => 1);
+  assert.equal(
+    context.diagnoseRefusal(
+      () => assert.fail('no successful-path fact read'),
+      () => 42,
+    ),
+    42,
+  );
+  assert.equal(context.refusalDiagnostic, undefined);
+  const error = Error('PRIVATE-error');
+  assert.throws(
+    () =>
+      context.diagnoseRefusal(
+        () => ({}),
+        () => {
+          throw error;
+        },
+      ),
+    (e) => e === error,
+  );
+  assert.equal(context.refusal, undefined);
+  assert.throws(
+    () =>
+      context.diagnoseRefusal(
+        () => {
+          throw Error('PRIVATE-projection');
+        },
+        () => context.invalidate(),
+      ),
+    { code: 'ACTION_CONTEXT_CHANGED' },
+  );
+  assert.equal(context.refusalDiagnostic?.nativeCode, null);
+});
+
+test('a prior refusal without diagnostics cannot acquire a later cause', () => {
+  const context = new QaDispatchContext(10, () => 10);
+  assert.throws(() => context.authorize(), { code: 'EVIDENCE_EXPIRED' });
+  assert.throws(
+    () =>
+      context.diagnoseRefusal(
+        () => assert.fail('no later cause'),
+        () => context.invalidate(true),
+      ),
+    { code: 'EVIDENCE_EXPIRED' },
+  );
+  assert.equal(context.refusalDiagnostic, undefined);
+  assert.equal(context.refusedBeforeMutation, false);
+});
+
+test('diagnostics validate a runtime refusal code without altering the thrown error', () => {
+  const context = new QaDispatchContext(10, () => 1);
+  assert.throws(
+    () =>
+      context.diagnoseRefusal(
+        () => ({}),
+        () => Reflect.apply(context.refuse, context, ['PRIVATE-invalid-code']),
+      ),
+    { code: 'PRIVATE-invalid-code' },
+  );
+  assert.equal(context.refusalDiagnostic?.refusal, null);
+  assert.ok(!JSON.stringify(context.refusalDiagnostic).includes('PRIVATE-'));
+});

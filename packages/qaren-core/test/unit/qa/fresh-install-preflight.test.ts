@@ -417,6 +417,342 @@ test('only kernel evidence scopes a driver away to other simulators', async () =
   );
 });
 
+const spacedXcode = '/Applications/Xcode 26.app/Contents/Developer/usr/bin/xcodebuild';
+const xcodeArgv = (device = OTHER, action = 'test', executable = spacedXcode) => [
+  executable,
+  action,
+  '-destination',
+  `id=${device}`,
+];
+const xcodeIdentity = (executable = spacedXcode, pid = 20) => ({
+  v: 1,
+  pid,
+  birth: { seconds: 1, micros: 0 },
+  executable,
+});
+
+test('direct Xcode spelling correction preserves the six admission outcomes', async (t) => {
+  const absolute = spacedXcode.replace('Xcode 26.app', 'Xcode.app');
+  for (const [name, argv, expected] of [
+    ['bare build', ['xcodebuild', 'build', '-scheme', 'Example'], 'clear'],
+    ['absolute build', [absolute, 'build', '-scheme', 'Example'], 'unknown'],
+    ['spaced build', [spacedXcode, 'build', '-scheme', 'Example'], 'unknown'],
+    ['absolute other test', xcodeArgv(OTHER, 'test', absolute), 'clear'],
+    ['spaced other test', xcodeArgv(), 'clear'],
+    ['absolute selected test', xcodeArgv(UDID, 'test', absolute), 'busy'],
+  ] as const) {
+    await t.test(name, async () => {
+      const calls: Array<boolean | undefined> = [];
+      const result = await probeIosExternalRunnerStrict(
+        fakePs(`20 ${argv.join(' ')}\n`),
+        UDID,
+        async (pid, timeout, withArgv, inspection) => {
+          calls.push(withArgv);
+          assert.ok(timeout > 0 && timeout <= 1_000);
+          assert.equal(inspection, undefined);
+          return { ...xcodeIdentity(argv[0], pid), ...(withArgv ? { argv } : {}) };
+        },
+      );
+      assert.equal(result, expected);
+      assert.deepEqual(
+        calls,
+        name === 'bare build' || name === 'absolute selected test'
+          ? []
+          : name === 'absolute other test'
+            ? [true]
+            : [undefined, true],
+      );
+    });
+  }
+});
+
+test('unresolved direct Xcode tests require exact complete destination pairs', async (t) => {
+  const second = 'CCCCCCCC-4444-5555-6666-DDDDDDDDDDDD';
+  const destinations = ['-destination', `id=${OTHER}`, '-destination', `id=${second}`];
+  for (const executable of spacedExecutables.filter((path) => path.endsWith('/xcodebuild'))) {
+    for (const action of ['test', 'test-without-building']) {
+      for (const [scope, expected] of [
+        [['-destination', `id=${OTHER.toLowerCase()}`], 'clear'],
+        [['-destination', `id=${UDID.toLowerCase()}`], 'busy'],
+        [destinations, 'clear'],
+        [[...destinations, '-destination', `id=${UDID}`], 'busy'],
+      ] as const) {
+        await t.test(`${executable} ${action} ${expected} ${scope.join(' ')}`, async () => {
+          const argv = [executable, action, ...scope];
+          const calls: Array<boolean | undefined> = [];
+          assert.equal(
+            await probeIosExternalRunnerStrict(
+              fakePs(`20 ${argv.join(' ')}\n`),
+              UDID,
+              async (pid, timeout, withArgv) => {
+                calls.push(withArgv);
+                assert.ok(timeout > 0 && timeout <= 1_000);
+                return { ...xcodeIdentity(executable, pid), ...(withArgv ? { argv } : {}) };
+              },
+            ),
+            expected,
+          );
+          assert.deepEqual(calls, [undefined, true]);
+        });
+      }
+    }
+  }
+});
+
+test('unresolved Xcode refuses unsupported or inconsistent exact argv', async (t) => {
+  const valid = xcodeArgv();
+  const invalid: Array<[string, unknown, string?]> = [
+    ['missing', undefined],
+    ['null', null],
+    ['wrong type', valid.join(' ')],
+    ['empty', [], valid.join(' ')],
+    ['partial', valid.slice(0, 2)],
+    ['nonstring', [...valid, null]],
+    ['empty element', [...valid, '']],
+    ['corrupt element', [...valid, '\0'], valid.join(' ')],
+    ['replacement character', [...valid, '\ufffd'], valid.join(' ')],
+    ['missing destination value', valid.slice(0, 3)],
+    ['extra operand', [...valid, 'Example']],
+    ['unknown option', [...valid, '-scheme', 'Example']],
+    ['option operand is test', [spacedXcode, '-unknown', ...valid.slice(1)]],
+    ['default action', [spacedXcode, ...valid.slice(2)]],
+    ['multiple actions', [...valid, 'test-without-building']],
+    ['build', [spacedXcode, 'build', ...valid.slice(2)]],
+    ['build for testing', [spacedXcode, 'build-for-testing', ...valid.slice(2)]],
+    ['unknown action', [spacedXcode, 'unknown-action', ...valid.slice(2)]],
+    ['argv zero mismatch', ['/usr/bin/python3', ...valid.slice(1)], valid.join(' ')],
+    ['argv zero alias', ['/opt/bin/xcodebuild', ...valid.slice(1)], valid.join(' ')],
+    ['argv zero bare', ['xcodebuild', ...valid.slice(1)], valid.join(' ')],
+    [
+      'scan action contradiction',
+      valid,
+      [spacedXcode, 'unknown-action', ...valid.slice(2)].join(' '),
+    ],
+    ['scan destination contradiction', valid, xcodeArgv(UDID).join(' ')],
+    ['quoted scan', valid, `"${spacedXcode}" ${valid.slice(1).join(' ')}`],
+    ['flattened destination words', [spacedXcode, 'test', `-destination id=${OTHER}`]],
+    ['duplicate ids', [spacedXcode, 'test', '-destination', `id=${OTHER},id=${UDID}`]],
+    [
+      'compound destination',
+      [spacedXcode, 'test', '-destination', `platform=iOS Simulator,id=${OTHER}`],
+    ],
+    ['named destination', [spacedXcode, 'test', '-destination', 'name=iPhone 17']],
+    [
+      'generic destination',
+      [spacedXcode, 'test', '-destination', 'generic/platform=iOS Simulator'],
+    ],
+    ['mixed scope', [...valid, '-destination', 'id=not-a-udid']],
+    ['oversized argv', [...valid, 'x'.repeat(8_192)]],
+    [
+      'oversized valid pairs',
+      [spacedXcode, 'test', ...Array.from({ length: 180 }, () => valid.slice(2)).flat()],
+    ],
+  ];
+  for (const [
+    name,
+    argv,
+    shown = Array.isArray(argv) ? argv.join(' ') : valid.join(' '),
+  ] of invalid) {
+    await t.test(name, async () => {
+      const result = await probeIosExternalRunnerAdmission(
+        fakePs(`20 ${shown}\n`),
+        UDID,
+        async () => ({ ...xcodeIdentity(), argv }),
+      );
+      assert.deepEqual(result, {
+        status: 'unknown',
+        evidence: { reason: 'executable_identity_unproven', pid: 20 },
+      });
+    });
+  }
+});
+
+test('unresolved Xcode revalidates identity and preserves observer failure reasons', async (t) => {
+  const argv = xcodeArgv();
+  const identity = xcodeIdentity();
+  const scan = fakePs(`20 ${argv.join(' ')}\n`);
+  const invalid = [
+    null,
+    { ...identity, pid: 21 },
+    { ...identity, v: 2 },
+    { ...identity, birth: { seconds: 0, micros: 0 } },
+    { ...identity, birth: { seconds: 1, micros: -1 } },
+    { ...identity, birth: { seconds: 1, micros: 1_000_000 } },
+    { ...identity, birth: { seconds: 1.5, micros: 0 } },
+    { ...identity, birth: { seconds: Math.ceil(Date.now() / 1_000) + 10, micros: 0 } },
+    { ...identity, executable: 'relative/xcodebuild' },
+    { ...identity, executable: `${spacedXcode}/` },
+    { ...identity, executable: `/\0/${spacedXcode}` },
+    { ...identity, executable: `/${'x'.repeat(4_096)}/xcodebuild` },
+  ];
+  for (const [i, value] of invalid.entries()) {
+    for (const phase of ['identity', 'argv']) {
+      await t.test(`invalid identity ${i} at ${phase}`, async () => {
+        assert.deepEqual(
+          await probeIosExternalRunnerAdmission(scan, UDID, async (_pid, _timeout, withArgv) =>
+            phase === 'identity' || withArgv ? value && { ...value, argv } : identity,
+          ),
+          { status: 'unknown', evidence: { reason: 'executable_identity_unproven', pid: 20 } },
+        );
+      });
+    }
+  }
+  for (const changed of [
+    { ...identity, birth: { seconds: 2, micros: 0 } },
+    { ...identity, birth: { seconds: 1, micros: 1 } },
+    xcodeIdentity(spacedXcode.replace('26', '27')),
+  ]) {
+    assert.equal(
+      await probeIosExternalRunnerStrict(scan, UDID, async (_pid, _timeout, withArgv) =>
+        withArgv ? { ...changed, argv: [changed.executable, ...argv.slice(1)] } : identity,
+      ),
+      'unknown',
+    );
+  }
+  assert.deepEqual(await probeIosExternalRunnerAdmission(scan, UDID), {
+    status: 'unknown',
+    evidence: { reason: 'observer_unavailable', candidates: 1 },
+  });
+  for (const reason of [
+    'observer_failed',
+    'observer_timeout',
+    'observer_stderr',
+    'observer_output_oversize',
+    'observer_invalid_json',
+  ]) {
+    for (const phase of ['identity', 'argv']) {
+      await t.test(`${reason} at ${phase}`, async () => {
+        assert.deepEqual(
+          await probeIosExternalRunnerAdmission(scan, UDID, async (_pid, _timeout, withArgv) =>
+            phase === 'identity' || withArgv ? { observationFailure: reason } : identity,
+          ),
+          { status: 'unknown', evidence: { reason, pid: 20 } },
+        );
+      });
+    }
+  }
+  assert.deepEqual(
+    await probeIosExternalRunnerAdmission(scan, UDID, async (_pid, _timeout, withArgv) => {
+      if (withArgv) throw new Error(secret);
+      return identity;
+    }),
+    { status: 'unknown', evidence: { reason: 'observer_failed', pid: 20 } },
+  );
+});
+
+test('unresolved Xcode refuses container paths even with exact destination proof', async (t) => {
+  const executable = `/Users/test/Library/Developer/CoreSimulator/Devices/${OTHER}/data/Xcode 26.app/Contents/Developer/usr/bin/xcodebuild`;
+  for (const device of [UDID, OTHER]) {
+    await t.test(device, async () => {
+      const argv = xcodeArgv(device, 'test', executable);
+      assert.deepEqual(
+        await probeIosExternalRunnerAdmission(
+          fakePs(`20 ${argv.join(' ')}\n`),
+          UDID,
+          async (pid, _timeout, withArgv) => ({
+            ...xcodeIdentity(executable, pid),
+            ...(withArgv ? { argv } : {}),
+          }),
+        ),
+        { status: 'unknown', evidence: { reason: 'executable_identity_unproven', pid: 20 } },
+        device,
+      );
+    });
+  }
+});
+
+test('unresolved Xcode does not traverse wrappers or excuse another candidate', async () => {
+  const argv = xcodeArgv();
+  for (const wrapper of [
+    '/bin/sh',
+    '/usr/bin/env',
+    '/usr/bin/python3',
+    '/usr/bin/node',
+    '/usr/bin/java',
+  ]) {
+    assert.equal(
+      await probeIosExternalRunnerStrict(
+        fakePs(`20 ${wrapper} ${argv.join(' ')}\n`),
+        UDID,
+        async () => ({ ...xcodeIdentity(wrapper), argv: [wrapper, ...argv] }),
+      ),
+      'unknown',
+    );
+  }
+  for (const [tail, expected] of [
+    [`21 ${spacedXcode} build\n`, 'unknown'],
+    [driver('XCTRunner').replace(/^20 /, '21 '), 'busy'],
+  ] as const) {
+    assert.equal(
+      await probeIosExternalRunnerStrict(
+        fakePs(`20 ${argv.join(' ')}\n${tail}`),
+        UDID,
+        async (pid, _timeout, withArgv) => ({
+          ...xcodeIdentity(spacedXcode, pid),
+          ...(withArgv ? { argv: pid === 20 ? argv : [spacedXcode, 'build'] } : {}),
+        }),
+      ),
+      expected,
+    );
+  }
+});
+
+test('unresolved Xcode shares its one-second allowance and absolute probe deadline', async (t) => {
+  let now = 0;
+  t.mock.method(performance, 'now', () => now);
+  const argv = xcodeArgv();
+  for (const [elapsed, expected, callsExpected] of [
+    [400, 'clear', [1_000, 600]],
+    [1_000, 'unknown', [1_000]],
+    [20_000, 'unknown', [1_000]],
+  ] as const) {
+    now = 0;
+    const timeouts: number[] = [];
+    const result = await probeIosExternalRunnerAdmission(
+      fakePs(`20 ${argv.join(' ')}\n`),
+      UDID,
+      async (_pid, timeout, withArgv) => {
+        timeouts.push(timeout);
+        now += withArgv ? 0 : elapsed;
+        return { ...xcodeIdentity(), ...(withArgv ? { argv } : {}) };
+      },
+    );
+    assert.equal(result.status, expected);
+    if (elapsed === 1_000) assert.equal(result.evidence?.reason, 'observer_timeout');
+    if (elapsed === 20_000) assert.equal(result.evidence?.reason, 'deadline_exceeded');
+    assert.deepEqual(timeouts, callsExpected);
+  }
+  for (const [scanTime, secondReadTime, reason, expectedTimeouts] of [
+    [0, 1_000, 'observer_timeout', [1_000, 600]],
+    [19_500, 100, 'deadline_exceeded', [500, 100]],
+  ] as const) {
+    now = 0;
+    const timeouts: number[] = [];
+    const scan = fakePs(`20 ${argv.join(' ')}\n`);
+    const delayedScan = (async (...args: Parameters<typeof execFile>) => {
+      now = scanTime;
+      return scan(...args);
+    }) as unknown as typeof execFile;
+    assert.deepEqual(
+      await probeIosExternalRunnerAdmission(delayedScan, UDID, async (_pid, timeout, withArgv) => {
+        timeouts.push(timeout);
+        now += withArgv ? secondReadTime : 400;
+        return { ...xcodeIdentity(), ...(withArgv ? { argv } : {}) };
+      }),
+      { status: 'unknown', evidence: { reason, pid: 20 } },
+    );
+    assert.deepEqual(timeouts, expectedTimeouts);
+  }
+  now = 0;
+  const rows = Array.from({ length: 65 }, (_, i) => `${i + 20} ${argv.join(' ')}\n`).join('');
+  assert.deepEqual(
+    await probeIosExternalRunnerAdmission(fakePs(rows), UDID, async () => {
+      assert.fail('candidate cap must precede observation');
+    }),
+    { status: 'unknown', evidence: { reason: 'candidate_budget_exceeded', candidates: 65 } },
+  );
+});
+
 test('attested unscoped MCP controls coexist while observed device automation still blocks', async () => {
   const controls =
     '20 /usr/bin/java -classpath lib maestro.cli.AppKt mcp\n' +
@@ -1165,4 +1501,146 @@ test('direct invocation follows realpaths, preserves exact UDID, and imports hav
     });
     await assert.rejects(readFile(marker), { code: 'ENOENT' });
   });
+});
+
+const SERIAL = 'emulator-5554';
+const ANDROID_HEADER = 'USER PID PPID VSZ RSS WCHAN ADDR S NAME\n';
+const androidIdle = `${ANDROID_HEADER}root 1 0 0 0 0 0 S init\nu0_a1 99 1 0 0 0 0 S dev.lykhoyda.rndevagent.androidrunner\nshell 101 1 0 0 0 0 S dev.lykhoyda.rndevagent.androidrunner.test\n`;
+const androidRow = (name: string) => `shell 4242 1 0 0 0 0 S ${name}\n`;
+
+function fakeAdb(result: { stdout: string } | Error): typeof execFile {
+  return (async (bin: string, argv: string[], opts: object) => {
+    assert.equal(bin, 'adb');
+    assert.deepEqual(argv, ['-s', SERIAL, 'shell', 'ps', '-A']);
+    assert.deepEqual(opts, { timeout: 2_000, encoding: 'utf8' });
+    if (result instanceof Error) throw result;
+    return result;
+  }) as unknown as typeof execFile;
+}
+
+test('Android strict admission is clear only for a readable process table without a foreign driver', async () => {
+  const { probeAndroidExternalRunnerAdmission } =
+    await import('../../../dist/runners/external-runner-detect.js');
+  assert.deepEqual(
+    await probeAndroidExternalRunnerAdmission(SERIAL, fakeAdb({ stdout: androidIdle })),
+    {
+      status: 'clear',
+    },
+  );
+  for (const [name, matched] of [
+    ['uiautomator', 'uiautomator'],
+    ['io.appium.uiautomator2.server.test', 'io.appium.uiautomator2.server.test'],
+    ['dev.mobile.maestro', 'dev.mobile.maestro'],
+    ['com.example.instrumentation', 'com.example.instrumentation'],
+  ]) {
+    assert.deepEqual(
+      await probeAndroidExternalRunnerAdmission(
+        SERIAL,
+        fakeAdb({ stdout: `${androidIdle}${androidRow(name)}${androidRow('uiautomator')}` }),
+      ),
+      { status: 'busy', matched },
+    );
+  }
+  const timeout = Object.assign(new Error('adb timed out'), { killed: true, signal: 'SIGTERM' });
+  for (const result of [
+    new Error('adb: device offline'),
+    timeout,
+    { stdout: '' },
+    { stdout: ' \n\n' },
+  ]) {
+    assert.deepEqual(await probeAndroidExternalRunnerAdmission(SERIAL, fakeAdb(result)), {
+      status: 'unknown',
+    });
+  }
+});
+
+test('the advisory Android detector keeps its patterns and still steps aside on failure', async () => {
+  const { detectAndroidExternalRunner } =
+    await import('../../../dist/runners/external-runner-detect.js');
+  const exec = (stdout: string) => (async () => ({ stdout })) as unknown as typeof execFile;
+  assert.equal(await detectAndroidExternalRunner(exec(androidRow('dev.mobile.maestro'))), null);
+  assert.equal(await detectAndroidExternalRunner(exec(androidIdle)), null);
+  assert.equal(
+    (await detectAndroidExternalRunner(exec(androidRow('uiautomator'))))?.processLines.length,
+    1,
+  );
+  const failing = (async () => {
+    throw new Error('adb: device offline');
+  }) as unknown as typeof execFile;
+  assert.equal(await detectAndroidExternalRunner(failing), null);
+});
+
+test('CLI Android admission scans the selected emulator and fails closed', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'qaren-preflight-android-'));
+  const marker = join(root, 'called');
+  try {
+    await writeFile(
+      join(root, 'adb'),
+      `#!${process.execPath}
+const fs = require('node:fs');
+fs.appendFileSync(process.env.FAKE_ADB_MARKER, JSON.stringify(process.argv.slice(2)) + '\\n');
+if (process.env.FAKE_ADB_MODE === 'timeout') setInterval(() => {}, 1000);
+else {
+  process.stdout.write(process.env.FAKE_ADB_STDOUT || '');
+  process.exitCode = Number(process.env.FAKE_ADB_EXIT || 0);
+}
+`,
+      { mode: 0o755 },
+    );
+    const run = (argv: string[], env: Record<string, string>) =>
+      new Promise<{ code: number | string | null; stdout: string; stderr: string }>((resolve) => {
+        execFile(
+          process.execPath,
+          [entry, ...argv],
+          {
+            env: { ...process.env, PATH: root, FAKE_ADB_MARKER: marker, ...env },
+            timeout: 8_000,
+            encoding: 'utf8',
+          },
+          (error, stdout, stderr) =>
+            resolve({ code: error ? (error.code ?? null) : 0, stdout, stderr }),
+        );
+      });
+    const android = ['--platform', 'android', '--device', SERIAL];
+    for (const [env, status] of [
+      [{ FAKE_ADB_STDOUT: androidIdle }, 'clear'],
+      [{ FAKE_ADB_STDOUT: `${androidIdle}${androidRow('uiautomator')}` }, 'busy'],
+      [{ FAKE_ADB_STDOUT: `${androidIdle}${androidRow('dev.mobile.maestro')}` }, 'busy'],
+      [{ FAKE_ADB_STDOUT: '' }, 'unknown'],
+      [{ FAKE_ADB_STDOUT: androidIdle, FAKE_ADB_EXIT: '1' }, 'unknown'],
+      [{ FAKE_ADB_MODE: 'timeout' }, 'unknown'],
+    ] as const) {
+      const result = await run(android, env);
+      assert.equal(result.code, status === 'clear' ? 0 : 4, status);
+      assert.equal(result.stderr, '');
+      assert.deepEqual(JSON.parse(result.stdout), {
+        v: 1,
+        platform: 'android',
+        deviceId: SERIAL,
+        status,
+      });
+    }
+    for (const call of (await readFile(marker, 'utf8')).trim().split('\n'))
+      assert.deepEqual(JSON.parse(call), ['-s', SERIAL, 'shell', 'ps', '-A']);
+    await rm(marker);
+    for (const invalid of [
+      ['--platform', 'android', '--device', 'emulator-'],
+      ['--platform', 'android', '--device', '127.0.0.1:5555'],
+      ['--platform', 'android', '--device', `${SERIAL}\n`],
+      ['--platform', 'android', '--device', `${SERIAL} -s other`],
+      [...android, '--process-observer', '/usr/bin/true'],
+    ]) {
+      const result = await run(invalid, { FAKE_ADB_STDOUT: androidIdle });
+      assert.equal(result.code, 4);
+      assert.deepEqual(JSON.parse(result.stdout), {
+        v: 1,
+        platform: 'ios',
+        deviceId: '',
+        status: 'unknown',
+      });
+    }
+    await assert.rejects(readFile(marker), { code: 'ENOENT' });
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
 });

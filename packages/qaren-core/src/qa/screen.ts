@@ -1,3 +1,9 @@
+import {
+  diagnosticField,
+  diagnosticKind,
+  diagnosticRect,
+  emptyKindCounts,
+} from './snapshot-diagnostics.js';
 import { isRecord } from './questions.js';
 import {
   captureInputPrivacy,
@@ -172,6 +178,8 @@ export interface NativeNode {
   selected?: boolean;
   // Android only: a scrolled-out node keeps an empty clipped rect inside the viewport.
   visibleToUser?: boolean;
+  // Android only: the accessibility heading fact; header-role text is exposed as android.view.View.
+  heading?: boolean;
   secure?: boolean;
   value?: string;
   rect?: { x: number; y: number; width: number; height: number };
@@ -299,6 +307,11 @@ export function kindOf(type: string | undefined): Kind {
     if (leaf.endsWith(suffix)) return kind;
   }
   return 'other';
+}
+
+// Android header-role text arrives as an untyped View carrying the heading fact.
+function headingText(n: NativeNode): boolean {
+  return n.heading === true && kindOf(n.type) === 'other';
 }
 
 function kindOfRole(role: string): Kind {
@@ -438,6 +451,25 @@ function diagnosticHostKind(
     default:
       return 'unknown';
   }
+}
+
+const projectionCounts = new WeakMap<
+  Screen['elements'],
+  {
+    joinedByKind: number[];
+    duplicateByKind: number[];
+    offscreenCount: number;
+    unresolvedCount: number;
+    disabledCount: number;
+    hittableCount: number;
+    enabledKnownCount: number;
+    hittableKnownCount: number;
+    rectKnownCount: number;
+  }
+>();
+
+export function joinedSnapshotDiagnostics(screen: Screen) {
+  return projectionCounts.get(screen.elements) ?? null;
 }
 
 export function join(
@@ -635,6 +667,7 @@ export function join(
       }
     }
     let kind = kindOf(n.type);
+    if (headingText(n)) kind = 'text';
     const nativeKind = kind;
     const nodeValue = nativeValue(n);
     const host = associatedHosts.get(nodeIndex);
@@ -976,20 +1009,26 @@ export function join(
     for (let p = n.parentIndex; p !== undefined && p >= 0 && p < i; p = nodes[p].parentIndex)
       textDescendants.set(p, [...(textDescendants.get(p) ?? []), i]);
   });
-  textDescendants.forEach(([only, ...more], p) => {
+  textDescendants.forEach((texts, p) => {
     const control = elements[p];
+    // A header-role text repeating its control's label beside other text, as on a titled card, also echoes it.
+    const [only, ...more] =
+      texts.length === 1
+        ? texts
+        : texts.filter((i) => headingText(nodes[i]) && elements[i].label === control.label);
     if (
+      only !== undefined &&
       !more.length &&
       control.label !== undefined &&
       control.kind !== 'text' &&
       control.kind !== 'input' &&
       elements[only].label === control.label
     ) {
-      soleLabelTexts.set(control, elements[only]);
+      if (texts.length === 1) soleLabelTexts.set(control, elements[only]);
       labelAncestors.set(elements[only], [...labelAncestorsOf(elements[only]), control]);
     }
   });
-  return {
+  const screen: Screen = {
     elements: elements.filter((_, i) => !duplicates.has(i)),
     visibleText,
     ...(keyboardFrame ? { keyboardFrame, uncoveredText, uncoveredLabelText } : {}),
@@ -1003,6 +1042,35 @@ export function join(
     ...(reactHostEvidence ? { reactHostEvidence } : {}),
     ...(pressEvidenceGap ? { pressEvidenceGap } : {}),
   };
+  const counts = {
+    joinedByKind: emptyKindCounts(),
+    duplicateByKind: emptyKindCounts(),
+    offscreenCount: 0,
+    unresolvedCount: 0,
+    disabledCount: 0,
+    hittableCount: 0,
+    enabledKnownCount: 0,
+    hittableKnownCount: 0,
+    rectKnownCount: 0,
+  };
+  nodes.forEach((node, i) => {
+    const kind = diagnosticKind(diagnosticField(node, 'type'));
+    if (duplicates.has(i)) {
+      counts.duplicateByKind[kind]++;
+      return;
+    }
+    counts.joinedByKind[kind]++;
+    const element = elements[i];
+    if (element.offscreen) counts.offscreenCount++;
+    if (element.visibilityEvidence === 'unresolved') counts.unresolvedCount++;
+    if (element.disabled) counts.disabledCount++;
+    if (element.hittable) counts.hittableCount++;
+    if (typeof diagnosticField(node, 'enabled') === 'boolean') counts.enabledKnownCount++;
+    if (typeof diagnosticField(node, 'hittable') === 'boolean') counts.hittableKnownCount++;
+    if (diagnosticRect(diagnosticField(node, 'rect'))) counts.rectKnownCount++;
+  });
+  projectionCounts.set(screen.elements, counts);
+  return screen;
 }
 
 export function isNativeInput(element: Element): boolean {

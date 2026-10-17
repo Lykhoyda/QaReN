@@ -390,6 +390,71 @@ test('a pressable with more than one text descendant is not an echo', () => {
   assert.match(resolved.reason, /text no-id frame=150,712,60,24/);
 });
 
+// Android: a titled card is a button whose header-role text repeats its label beside other text.
+const complete = { native: 'complete', react: 'complete' } as const;
+function androidCard(heading?: boolean): NativeNode[] {
+  const display = { x: 0, y: 0, width: 1080, height: 2400 };
+  const node = (index: number, parentIndex: number, type: string, label: string, y: number) => ({
+    ref: `@e${index}`,
+    index,
+    parentIndex,
+    type,
+    label,
+    rect: { x: 84, y, width: 828, height: 61 },
+    enabled: true,
+    visibleToUser: true,
+    hittable: true,
+  });
+  return [
+    { ref: '@e0', index: 0, type: 'Application', rect: display, enabled: true },
+    { ref: '@e1', index: 1, parentIndex: 0, type: 'Window', rect: display, enabled: true },
+    {
+      ...node(2, 1, 'android.widget.Button', 'Card 1', 581),
+      identifier: 'qa-capture-row-one-1',
+      rect: { x: 42, y: 581, width: 996, height: 437 },
+    },
+    { ...node(3, 2, 'android.view.View', 'Card 1', 623), ...(heading ? { heading } : {}) },
+    node(4, 2, 'android.widget.TextView', 'Ready', 700),
+    node(5, 2, 'android.widget.TextView', 'Collection notes', 780),
+    node(6, 2, 'android.widget.TextView', 'A small idea', 860),
+  ];
+}
+
+test('a card button pressed by its label folds in its same-label heading text', () => {
+  const screen = join(androidCard(true), [], 'app', complete);
+  assert.equal(screen.elements[3].kind, 'text');
+  assert.ok(screen.visibleText.includes('Card 1'));
+  assert.deepEqual(literalEvidence(screen, 'Card 1', 'contains'), { verdict: 'pass' });
+  const target = { quoted: 'Card 1', phrase: 'Card 1' };
+  assert.deepEqual(
+    exactIdentities(screen, target, 'press').map((i) => i.element.ref),
+    ['@e2'],
+  );
+  const resolved = prepareTarget({ kind: 'press', target }, screen);
+  assert.ok('ref' in resolved, JSON.stringify(resolved));
+  assert.equal(resolved.ref, '@e2');
+});
+
+test('a card without the heading fact keeps its inner same-label control', () => {
+  const screen = join(androidCard(), [], 'app', complete);
+  assert.equal(screen.elements[3].kind, 'other');
+  const target = { quoted: 'Card 1', phrase: 'Card 1' };
+  const resolved = prepareTarget({ kind: 'press', target }, screen);
+  assert.ok('ref' in resolved, JSON.stringify(resolved));
+  assert.equal(resolved.ref, '@e3');
+});
+
+test('a heading that differs from its card label stays its own text identity', () => {
+  const nodes = androidCard(true);
+  nodes[3] = { ...nodes[3], label: 'Card 1 title' };
+  const resolved = prepareTarget(
+    { kind: 'press', target: { quoted: 'Card 1 title', phrase: 'Card 1 title' } },
+    join(nodes, [], 'app', complete),
+  );
+  assert.ok('ref' in resolved, JSON.stringify(resolved));
+  assert.equal(resolved.ref, '@e3');
+});
+
 // iOS can expose, beside app-root, a hittable full-screen no-identifier container labelled like the first control.
 function echoContainer(controls: number, contained = true): NativeNode[] {
   const nodes: NativeNode[] = [

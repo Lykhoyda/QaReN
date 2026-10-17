@@ -1050,7 +1050,7 @@ extension RnFastRunnerTests {
       let payload = runnerPayload(
         options.raw
           ? snapshotRaw(app: activeApp, options: options)
-          : snapshotFast(app: activeApp, options: options),
+          : snapshotFast(app: activeApp, options: options, includeDiagnostics: command.qaReadOnly == true),
         appProcessIdentifier: observedProcessIdentifier(activeApp)
       )
       retainSnapshotTargets(payload.nodes ?? [])

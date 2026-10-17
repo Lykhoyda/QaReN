@@ -1,3 +1,4 @@
+import CoreGraphics
 import XCTest
 
 // MARK: - Wire Models
@@ -131,6 +132,44 @@ struct Response: Codable {
   }
 }
 
+enum SnapshotViewportSource: String, Codable {
+  case firstNonemptyWindow = "first-nonempty-window"
+  case app
+  case unbounded
+}
+
+struct SnapshotDiagnostics: Codable {
+  let v: Int
+  let viewportSource: SnapshotViewportSource
+  let viewport: [Double]?
+
+  init?(viewport frame: CGRect, source: SnapshotViewportSource) {
+    v = 1
+    viewportSource = source
+    if source == .unbounded {
+      guard frame == .infinite else { return nil }
+      viewport = nil
+    } else {
+      let coordinates = [frame.origin.x, frame.origin.y, frame.size.width, frame.size.height]
+      guard coordinates.allSatisfy({ $0.isFinite }), frame.size.width >= 0, frame.size.height >= 0 else {
+        return nil
+      }
+      viewport = coordinates.map { Double($0.rounded()) }
+    }
+  }
+
+  func encode(to encoder: Encoder) throws {
+    var container = encoder.container(keyedBy: CodingKeys.self)
+    try container.encode(v, forKey: .v)
+    try container.encode(viewportSource, forKey: .viewportSource)
+    if let viewport {
+      try container.encode(viewport, forKey: .viewport)
+    } else {
+      try container.encodeNil(forKey: .viewport)
+    }
+  }
+}
+
 struct DataPayload: Codable {
   let message: String?
   let text: String?
@@ -155,6 +194,7 @@ struct DataPayload: Codable {
   let keyboardGuardMs: Double?
   let keyboardVisible: Bool?
   let snapshotGeneration: Int?
+  let snapshotDiagnostics: SnapshotDiagnostics?
   let presenceCapture: PlatformPresenceCapture?
   let via: String?
   let `static`: Bool?
@@ -201,6 +241,7 @@ struct DataPayload: Codable {
     keyboardGuardMs: Double? = nil,
     keyboardVisible: Bool? = nil,
     snapshotGeneration: Int? = nil,
+    snapshotDiagnostics: SnapshotDiagnostics? = nil,
     presenceCapture: PlatformPresenceCapture? = nil,
     via: String? = nil,
     `static`: Bool? = nil,
@@ -236,6 +277,7 @@ struct DataPayload: Codable {
     self.keyboardGuardMs = keyboardGuardMs
     self.keyboardVisible = keyboardVisible
     self.snapshotGeneration = snapshotGeneration
+    self.snapshotDiagnostics = snapshotDiagnostics
     self.presenceCapture = presenceCapture
     self.via = via
     self.`static` = `static`

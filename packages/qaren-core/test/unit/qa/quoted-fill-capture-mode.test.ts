@@ -78,6 +78,7 @@ test('prepending a semantic check preserves a quoted fill through real private c
     const modes: boolean[] = [];
     f.deps.captureScreen = async (options) => {
       const presence = options?.platformPresence === true;
+      assert.equal(options?.observation, modes.length + 1);
       modes.push(presence);
       const captured = await captureInput(presence);
       const input = captured.elements.find((element) => element.ref === '@email')!;

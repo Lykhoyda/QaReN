@@ -177,6 +177,133 @@ test('hierarchyChanged reflects initialSnapshotHash comparison', async () => {
   assert.equal(out.hierarchyChanged, true);
 });
 
+// A tap whose JS render has not drawn yet: the 100ms gate sees no window
+// update, the hash still equals the pre-tap hash, and the draw lands later.
+function lateDrawProbes(clock, { updates, hashes, calls }) {
+  const nextUpdate = seq(updates);
+  const nextHash = seq(hashes);
+  return {
+    isWindowUpdating: async (timeoutMs) => {
+      calls.push(timeoutMs);
+      const updating = await nextUpdate();
+      clock.advance(updating ? Math.min(timeoutMs, 400) : timeoutMs);
+      return updating;
+    },
+    snapshotHash: nextHash,
+    sleep: clock.sleep,
+    now: clock.now,
+  };
+}
+
+test('android window-gate: idle gate, unchanged hash, late window update → re-probe sees the change', async () => {
+  const clock = fakeClock();
+  const calls = [];
+  const out = await waitForSettle({
+    platform: 'android',
+    capabilities: ['WINDOW_UPDATE'],
+    initialSnapshotHash: 'before',
+    probes: lateDrawProbes(clock, { updates: [false, true], hashes: ['before', 'after'], calls }),
+  });
+  assert.equal(out.method, 'window-gate');
+  assert.equal(out.settled, true);
+  assert.equal(out.hierarchyChanged, true);
+  assert.deepEqual(calls, [100, 2000]);
+});
+
+test('android window-gate: idle twice with unchanged hash → unchanged, inside the settle budget', async () => {
+  const clock = fakeClock();
+  const calls = [];
+  const out = await waitForSettle({
+    platform: 'android',
+    capabilities: ['WINDOW_UPDATE'],
+    initialSnapshotHash: 'before',
+    budgetMs: 1000,
+    probes: lateDrawProbes(clock, { updates: [false, false], hashes: ['before'], calls }),
+  });
+  assert.equal(out.method, 'window-gate');
+  assert.equal(out.hierarchyChanged, false);
+  assert.deepEqual(calls, [100, 850]);
+  assert.ok(out.ms <= 1000, `expected ≤1000ms, got ${out.ms}`);
+});
+
+test('android window-gate: re-probe update but hash still unchanged → unchanged', async () => {
+  const clock = fakeClock();
+  const calls = [];
+  const out = await waitForSettle({
+    platform: 'android',
+    capabilities: ['WINDOW_UPDATE'],
+    initialSnapshotHash: 'before',
+    probes: lateDrawProbes(clock, { updates: [false, true], hashes: ['before'], calls }),
+  });
+  assert.equal(out.hierarchyChanged, false);
+  assert.equal(calls.length, 2);
+});
+
+test('android window-gate: no budget left after the gate → no re-probe', async () => {
+  const clock = fakeClock();
+  const calls = [];
+  const out = await waitForSettle({
+    platform: 'android',
+    capabilities: ['WINDOW_UPDATE'],
+    initialSnapshotHash: 'before',
+    budgetMs: 150,
+    probes: lateDrawProbes(clock, { updates: [false, true], hashes: ['before', 'after'], calls }),
+  });
+  assert.equal(out.hierarchyChanged, false);
+  assert.deepEqual(calls, [100]);
+  assert.ok(out.ms <= 150, `expected ≤150ms, got ${out.ms}`);
+});
+
+test('android window-gate: changed hash on the first read → no re-probe', async () => {
+  const clock = fakeClock();
+  const calls = [];
+  const out = await waitForSettle({
+    platform: 'android',
+    capabilities: ['WINDOW_UPDATE'],
+    initialSnapshotHash: 'before',
+    probes: lateDrawProbes(clock, { updates: [false, true], hashes: ['after'], calls }),
+  });
+  assert.equal(out.hierarchyChanged, true);
+  assert.deepEqual(calls, [100]);
+});
+
+test('android window-gate: caller without initialSnapshotHash → one gate probe, no hash', async () => {
+  const clock = fakeClock();
+  const calls = [];
+  const out = await waitForSettle({
+    platform: 'android',
+    capabilities: ['WINDOW_UPDATE'],
+    probes: {
+      ...lateDrawProbes(clock, { updates: [false, true], hashes: ['x'], calls }),
+      snapshotHash: async () => {
+        throw new Error('must not hash without a pre-tap hash');
+      },
+    },
+  });
+  assert.equal(out.hierarchyChanged, undefined);
+  assert.deepEqual(calls, [100]);
+});
+
+test('ios screen-static with unchanged hash never probes the window', async () => {
+  const clock = fakeClock();
+  const out = await waitForSettle({
+    platform: 'ios',
+    capabilities: ['SCREEN_STATIC', 'WINDOW_UPDATE'],
+    initialSnapshotHash: 'before',
+    probes: {
+      isScreenStatic: async () => true,
+      isWindowUpdating: async () => {
+        throw new Error('ios must not probe the window');
+      },
+      snapshotHash: async () => 'before',
+      sleep: clock.sleep,
+      now: clock.now,
+    },
+  });
+  assert.equal(out.method, 'screen-static');
+  assert.equal(out.hierarchyChanged, false);
+});
+
 test('all snapshot probes fail (null) → timeout, no throw', async () => {
   const clock = fakeClock();
   const out = await waitForSettle({
