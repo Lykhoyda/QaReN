@@ -919,13 +919,51 @@ label, identifier and origin match; deduplication compares those fields separate
 The React digest adds semantics: a deadline, malformed-payload, validation or
 transport failure degrades React coverage to unknown without retrying capture.
 Operations requiring complete React evidence still refuse when that coverage is
-unavailable. Capture deadlines, budgets and item deadlines remain unchanged.
+unavailable. Strict private React capture can scan up to 5,000 fibers across
+renderer roots, including a single-root screen. Existing capture and item
+deadlines, host-evidence and interactive-node limits still apply; incomplete
+evidence is refused.
+
+On composite components, the digest omits non-string `title`,
+`accessibilityLabel` and `placeholder` props without coercing or serializing them;
+rendered host text remains available as evidence, and string display props retain
+their digest meaning. Native Expo image hosts with verified image-source metadata
+and no input semantics also omit non-string image placeholders. Other non-string
+host display props, opaque identities or roles, and getter-backed props still
+refuse capture. The
+[composite/input regressions](../qaren-core/test/unit/qa/private-input-producer.test.ts)
+and [image-placeholder regressions](../qaren-core/test/unit/qa/image-placeholder-producer.test.ts)
+cover these boundaries and warm-helper replacement.
+
+When the React capture adapter classifies a failure, the `interactive digest
+unavailable` warning includes a fixed `cause` code and available nonnegative integer
+counters: scanned fibers (with the scan budget when available), roots, hosts,
+interactive entries, the walk's queued frontier (`queued`), fibers it skipped at
+inactive routes or hosts with `display: none` (`pruned`) and elapsed milliseconds
+(`ms`). Pruned counts exclude the skipped fibers' unvisited descendants. Queued
+and pruned counts are lower bounds observed by the bounded walk, not tree totals.
+These distinguish capture limits, the
+typography sites that leave evidence incomplete, deadlines, renderer coverage,
+malformed evidence and CDP evaluation failures; they exclude app text, labels,
+identifiers and raw errors. Unclassified
+failures retain the generic warning. The
+[React capture adapter](../qaren-core/src/qa/react-capture.ts) owns classification;
+[ReactCaptureIncomplete](../qaren-core/src/qa/private-input.ts) owns the allowed
+codes, counters and warning detail format. This diagnostic identifies the capture
+failure category; it does not establish the underlying app or host cause or change
+refusal and privacy behavior.
 
 React-only elements expose no label, placeholder or value strings in the screen
-projection. The React walk excludes provably inactive screen routes and native
+projection. The React digest excludes provably inactive screen routes and native
 hosts with `display: none` before collecting their semantic or descendant text
-evidence. Validated React Native frozen descriptors remain readable; arbitrary
-getters are not invoked, and an unreadable inactivity flag does not prune a subtree.
+evidence. Strict capture's error-overlay pre-scan applies the same rule to skip
+their descendants, so retained, natively detached tabs do not exhaust its
+5,000-visit cap with hidden content. It still checks for LogBox and RedBox at the
+app root or in separate renderer roots; visible error overlays refuse capture.
+Active routes and routes whose inactivity cannot be proven remain scanned under
+the existing limits. Validated React Native frozen descriptors remain readable;
+arbitrary getters are not invoked, and an unreadable inactivity flag does not
+prune a subtree.
 Unreadable display overrides or styles beyond the array or nesting scan budgets
 resolve as unknown and do not establish `display: none`; later readable overrides
 within the budgets still determine display.
