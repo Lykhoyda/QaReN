@@ -231,7 +231,10 @@ test('an Android row inside its scroll container stays on screen', () => {
 
 test('an Android row overlapping the list edge stays visible until it leaves the list', () => {
   const bottom = list.y + list.height;
-  for (const [y, excluded] of [[bottom - 1, false], [bottom, true]] as const) {
+  for (const [y, excluded] of [
+    [bottom - 1, false],
+    [bottom, true],
+  ] as const) {
     const nodes = androidList('androidx.recyclerview.widget.RecyclerView', {
       ...rowBelowList,
       y,
