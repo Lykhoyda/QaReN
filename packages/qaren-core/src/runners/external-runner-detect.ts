@@ -437,12 +437,12 @@ function identityRulesOutDriver(value: unknown, line: string, scanStartedAt: num
   );
 }
 
-function isDirectXcodeTest(value: unknown, executable: string, line: string): boolean {
+const XCODE_TEST_ACTIONS = new Set(['test', 'test-without-building']);
+
+function attestedXcodeArgv(value: unknown, line: string): string[] | undefined {
   const argv = (value as { argv?: unknown }).argv;
   if (
     !Array.isArray(argv) ||
-    argv.length < 4 ||
-    argv.length % 2 !== 0 ||
     !argv.every(
       (arg) =>
         typeof arg === 'string' &&
@@ -451,9 +451,18 @@ function isDirectXcodeTest(value: unknown, executable: string, line: string): bo
         !/[\x00-\x1f\x7f\ufffd]/.test(arg),
     ) ||
     Buffer.byteLength(argv.join('\0')) + 1 > 8_192 ||
-    argv[0] !== executable ||
-    (argv[1] !== 'test' && argv[1] !== 'test-without-building') ||
     line.replace(/^\s*\d+\s+/, '') !== argv.join(' ')
+  )
+    return undefined;
+  return argv as string[];
+}
+
+function isDirectXcodeTest(argv: string[], executable: string): boolean {
+  if (
+    argv.length < 4 ||
+    argv.length % 2 !== 0 ||
+    argv[0] !== executable ||
+    !XCODE_TEST_ACTIONS.has(argv[1])
   )
     return false;
   for (let i = 2; i < argv.length; i += 2) {
@@ -662,12 +671,20 @@ export async function probeIosExternalRunnerAdmission(
           return unknown('executable_identity_unproven', pid);
         const birth = (observation as { birth: Record<string, unknown> }).birth;
         const exactBirth = (exact as { birth: Record<string, unknown> }).birth;
+        const argv = attestedXcodeArgv(exact, line);
+        // Without a test action xcodebuild cannot drive a simulator; argv[0] may be an alias.
+        const buildOnly = argv?.every((arg) => !XCODE_TEST_ACTIONS.has(arg));
         if (
           birth.seconds !== exactBirth.seconds ||
           birth.micros !== exactBirth.micros ||
-          !isDirectXcodeTest(exact, executable, line)
+          !argv ||
+          (!buildOnly && !isDirectXcodeTest(argv, executable))
         )
           return unknown('executable_identity_unproven', pid);
+        if (buildOnly) {
+          if (target.test(line)) return busy(pid);
+          continue;
+        }
         const devices = observedDriverDevices(exact, line, scanStartedAt);
         if (performance.now() >= deadline) return unknown('deadline_exceeded', pid);
         if (!devices) return unknown('executable_identity_unproven', pid);

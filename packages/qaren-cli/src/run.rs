@@ -1080,11 +1080,24 @@ fn refusal_code(code: &str) -> FailureCode {
     match code {
         "METRO_ORIGIN_MISMATCH" => FailureCode::MetroOriginMismatch,
         "PLAN_UNPARSEABLE" => FailureCode::PlanUnparseable,
+        "BLOCK_START_MISSING" => FailureCode::BlockStartMissing,
         "JEV_AUTH_FAILED" => FailureCode::JevAuthFailed,
         "JEV_REQUEST_INVALID" => FailureCode::JevRequestInvalid,
         "JEV_UNREACHABLE" => FailureCode::JevUnreachable,
         "RUN_CANCELLED" => FailureCode::RunCancelled,
         _ => FailureCode::CoreRefused,
+    }
+}
+
+#[cfg(test)]
+mod block_start_tests {
+    use super::*;
+
+    #[test]
+    fn block_start_refusal_retains_typed_receipt_code() {
+        let code = refusal_code("BLOCK_START_MISSING");
+        assert_eq!(serde_json::to_value(code).unwrap(), "BLOCK_START_MISSING");
+        assert!(code.is_refusal());
     }
 }
 

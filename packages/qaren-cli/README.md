@@ -931,6 +931,20 @@ not emitted. Samples are dropped before histogram entries to keep the line withi
 the byte limit. It excludes value text, label text, identifiers and testIDs. The
 [diagnostic implementation](../qaren-core/src/qa/privacy.ts) owns its field layout.
 
+When a quoted target step fails, the walker attempts a value-free `quoted-target`
+line in `logs/core.log` for that failure's captured screen, rather than each wait
+poll. It reports exact native label or identifier matches before candidate
+filtering, their frames, depths, hittability and trusted-viewport status, plus
+the deepest captured native depth. Unknown geometry or metadata is reported as
+`null`; labels, identifiers, target text and values are omitted. Empty matches
+mean that native snapshot contained no exact label or identifier match; offscreen
+matches indicate clipping, while an inside-viewport match alone does not prove
+action eligibility.
+The deepest captured depth does not establish a snapshot depth limit or explain
+missing cards. Successful step attempts and literal checks emit no such failure line;
+diagnostic errors do not change the failed step's outcome. The
+[capture implementation](../qaren-core/src/qa/capture.ts) owns the field layout.
+
 Phrase presses require complete native and React coverage and proven React-to-native
 associations. Native text, images and plain views are excluded from press candidates
 only when complete React host evidence accounts for every interactive host and no
@@ -1180,12 +1194,17 @@ device lease remain claimed for `qaren cleanup`. The developer
 `QAREN_BOOT_DEVICE=1` alongside `QAREN_DEVICE_UDID`.
 
 iOS preparation, borrowed-emulator builds and cached Android preparation
-request the dev-client manifest from Metro once with the `expo-platform`
-header before launch, so the client's own first request is not the slow cold
-one. Fresh Android scenario-based
+request the dev-client manifest from Metro with the `expo-platform` header
+before launch until one answer arrives inside the dev client's own 10-second
+request timeout, so the client's first request does not time out to its
+launcher. Each request is recorded; slower answers and request timeouts are
+repeated, and a manifest that never answers that fast within the remaining
+`build_seconds` budget refuses with `CORE_REFUSED` and the measured times.
+The 10 seconds only gates the launch; it never shortens a request or ends a
+wait. Fresh Android scenario-based
 `prepare` keeps launch and Metro under `expo run:android` and does not perform
 this warmup.
-A manifest timeout refuses with `CORE_REFUSED`. Dev-client launch and iOS
+Dev-client launch and iOS
 dev-menu defaults timeouts retry regardless of host load until the remaining
 `build_seconds` preparation budget is spent, then refuse with `CORE_REFUSED`,
 unless the timed-out iOS launch is proven by the app-job receipt below.
@@ -1272,6 +1291,9 @@ The host process table is streamed without a total-output byte cap, so its size
 alone does not refuse admission.
 A driver targeting it is busy; a driver can coexist only when kernel executable
 identity and exact arguments prove that it targets other simulators exclusively.
+An `xcodebuild` whose kernel identity and exact arguments show neither a `test`
+nor a `test-without-building` action cannot drive a simulator and coexists; if
+its arguments name the selected simulator's ID, admission refuses `DEVICE_BUSY`.
 An unscoped Maestro MCP controller can coexist when its Java executable and
 exact MCP arguments are attested; its command-line spelling alone is insufficient.
 Unknown identity or scope for an automation candidate, or an incomplete process table, refuses.
@@ -1325,6 +1347,15 @@ activity log records the text of fields it queries, including typed values.
 bundles can remain on disk until the next runner launch performs this cleanup.
 
 ### Saved blocks
+
+Open a block that continues a journey with `starts on: <testID or text>` before its
+steps. The value is literal, with optional quotes, and becomes the block's first
+wait in the ledger and saved YAML. On a fresh walk and replay, QaReN waits up to
+15 seconds for that screen before acting; an absent start refuses at that line with
+`failure.code: BLOCK_START_MISSING` and exit code 4, without dispatching the block's
+actions: reach that screen before this block or re-record it. Uncertain visibility
+retains its screen-evidence refusal instead.
+Previously saved blocks with this declaration walk once and save the leading wait.
 
 Block IDs come from their `###` titles; a headingless block uses the plan's `#`
 title, or `plan` when absent. The [parser's `slugify`](../qaren-core/src/qa/plan.ts)

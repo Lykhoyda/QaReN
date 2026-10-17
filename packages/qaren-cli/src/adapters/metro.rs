@@ -15,7 +15,7 @@ pub fn start_spec(project_root: &Path, port: u16) -> CmdSpec {
     .env("EXPO_NO_TELEMETRY", "1")
 }
 
-// The dev client's first manifest request is the cold one; answering it once before launch keeps the launcher off its timeout.
+// Metro answers this before launch so the dev client's own manifest request fits inside its timeout.
 pub fn manifest_spec(port: u16, platform: &str) -> CmdSpec {
     CmdSpec::new(
         "metro-manifest",

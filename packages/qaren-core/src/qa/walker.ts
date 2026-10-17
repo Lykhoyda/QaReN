@@ -54,7 +54,12 @@ import {
 } from './privacy.js';
 import { renderReason, segments, type Reason } from './untrusted.js';
 import { NativeSnapshotIncomplete, PrivateInputCaptureError } from './private-input.js';
-import { AppProcessGoneError, emitCaptureDiagnostics, NativeCaptureError } from './capture.js';
+import {
+  AppProcessGoneError,
+  emitCaptureDiagnostics,
+  emitQuotedTargetDiagnostic,
+  NativeCaptureError,
+} from './capture.js';
 import {
   QaDispatchContext,
   QaDispatchError,
@@ -744,6 +749,8 @@ export async function walkBlock(
     ref?: string,
     miss = false,
   ): WalkOutcome => {
+    const quoted = item.kind === 'check' ? undefined : stepTarget(item)?.quoted;
+    if (quoted !== undefined) emitQuotedTargetDiagnostic(screen, quoted, item.line);
     emit({
       ...base(item, attempt),
       ...(ref ? { ref } : {}),
@@ -1282,6 +1289,24 @@ export async function walkBlock(
           }
           if (!found) {
             if (unsure) throw unresolvedText(item.target.quoted!);
+            if (item.precondition) {
+              const refusal = {
+                code: 'BLOCK_START_MISSING',
+                message: redact(
+                  `the block starts on "${item.target.quoted}", which is not on screen; reach that screen before this block or re-record it`,
+                ),
+              };
+              return {
+                ...failed(
+                  item,
+                  1,
+                  `${refusal.code}: ${refusal.message}`,
+                  observation.screen,
+                  await shoot(item),
+                ),
+                refusal,
+              };
+            }
             // Repeated literal absence on one unchanged screen is an observed result, not uncertainty.
             if (absent >= 2 && absentScreens.size === 1)
               return failed(
@@ -2077,6 +2102,7 @@ export function replayBlock(block: Block, stored: StoredBlock): Block {
     ...block,
     items: block.items.map((item, i): Item => {
       const step = stored.steps[i];
+      if (item.kind === 'wait' && item.precondition) return item;
       if (item.kind === 'press' || item.kind === 'fill' || item.kind === 'wait')
         return { ...item, target: exact(step.selector!) };
       if (item.kind === 'scroll' && item.until) return { ...item, until: exact(step.until!) };

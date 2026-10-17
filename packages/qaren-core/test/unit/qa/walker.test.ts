@@ -1,11 +1,15 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import { mkdtempSync, rmSync } from 'node:fs';
+import { join } from 'node:path';
 import { parsePlan } from '../../../dist/qa/plan.js';
 import { join as joinScreen, type Screen } from '../../../dist/qa/screen.js';
+import { replayBlock, runPlan, WAIT_BUDGET_MS, walkBlock } from '../../../dist/qa/walker.js';
+import { readBlock, serializeBlock, writeBlock } from '../../../dist/qa/blocks.js';
+import { createWriter, resultForWalk } from '../../../dist/qa/wire.js';
 import { choice, scriptedJudge } from './judgment-fixtures.ts';
 import { renderReason } from '../../../dist/qa/untrusted.js';
 import type { WalkSequence } from '../../../dist/qa/walker.js';
-import { runPlan, walkBlock } from '../../../dist/qa/walker.js';
 import type { ActResult, WalkerDeps } from '../../../dist/qa/walker.js';
 import type { LedgerRow } from '../../../dist/qa/ledger.js';
 
@@ -89,6 +93,117 @@ function block(markdown: string) {
   assert.ok(parsed.blocks, JSON.stringify(parsed.refused));
   return parsed.blocks[0];
 }
+
+const continuation = '### Continue\nstarts on: "wizard-title-input"\n1. Tap "wizard-back-btn"';
+const startMissing =
+  'BLOCK_START_MISSING: the block starts on "wizard-title-input", which is not on screen; reach that screen before this block or re-record it';
+
+test('saved block start refusal reaches the wire with exit 4', async () => {
+  const appRoot = mkdtempSync(join(process.cwd(), '.block-start-test-'));
+  try {
+    const plan = block(continuation);
+    const store = { appRoot, appId: 'com.example.app', platform: 'ios' as const };
+    const rows: LedgerRow[] = plan.items.map((item) => ({
+      block: plan.slug,
+      line: item.line,
+      text: item.raw,
+      attempt: 1,
+      kind: 'step',
+      resolvedBy: 'exact',
+      t: 0,
+      outcome: 'pass',
+      selector: { id: item.line === 2 ? 'wizard-title-input' : 'wizard-back-btn' },
+    }));
+    const serialized = serializeBlock(plan, rows, store);
+    assert.ok('yaml' in serialized);
+    writeBlock(appRoot, plan.slug, serialized.yaml);
+    const f = fake([screen(['Welcome'])]);
+    const result = await runPlan([plan], f.deps, [], store);
+    const lines: string[] = [];
+    const writer = createWriter((line) => lines.push(line), 'block-start-test');
+    const exit = writer.result(resultForWalk(result, 'test-lease'));
+    const { payload } = JSON.parse(lines[0]);
+    assert.equal(payload.verdict, 'REFUSED');
+    assert.equal(payload.code, 'BLOCK_START_MISSING');
+    assert.match(payload.message, /reach that screen before this block or re-record it/);
+    assert.equal(payload.lease, 'test-lease');
+    assert.equal(payload.path, 'replay');
+    assert.equal(payload.failure.step, 2);
+    assert.deepEqual(payload.blocksWritten, []);
+    assert.equal(exit, 4);
+    assert.ok(!f.calls.some((call) => call.startsWith('press')));
+  } finally {
+    rmSync(appRoot, { recursive: true, force: true });
+  }
+});
+
+test('a missing block start fails at its declaration before any action', async () => {
+  const f = fake([screen(['Welcome'])]);
+  const outcome = await walkBlock(block(continuation), f.deps);
+  assert.equal(outcome.block.outcome, 'fail');
+  assert.equal(outcome.failure?.step, 2);
+  assert.ok(renderReason(outcome.failure?.seen ?? '', (text) => text).startsWith(startMissing));
+  assert.deepEqual(
+    outcome.rows.map((row) => [row.line, row.outcome, row.reason]),
+    [[2, 'fail', startMissing]],
+  );
+  assert.ok(!f.calls.some((call) => call.startsWith('press')));
+});
+
+test('a block waits through a transition to its start testID, then acts', async () => {
+  const ready = screen(['Title', 'Back']);
+  ready.elements[0].testID = 'wizard-title-input';
+  ready.elements[1].testID = 'wizard-back-btn';
+  const f = fake([screen(['Welcome']), ready, ready, screen(['Tasks'])]);
+  const outcome = await walkBlock(block(continuation), f.deps);
+  assert.equal(outcome.block.outcome, 'pass');
+  assert.deepEqual(
+    outcome.rows.map((row) => [row.line, row.outcome]),
+    [
+      [2, 'pass'],
+      [3, 'pass'],
+    ],
+  );
+  assert.deepEqual(
+    f.calls.filter((call) => call.startsWith('press')),
+    ['press @e1'],
+  );
+});
+
+test('replay refuses a missing block start after one wait budget without a selector miss or re-walk', async () => {
+  const plan = block(continuation);
+  const rows: LedgerRow[] = plan.items.map((item) => ({
+    block: plan.slug,
+    line: item.line,
+    text: item.raw,
+    attempt: 1,
+    kind: 'step',
+    resolvedBy: 'exact',
+    t: 0,
+    outcome: 'pass',
+    selector: { id: item.line === 2 ? 'stored-title' : 'wizard-back-btn' },
+  }));
+  const serialized = serializeBlock(plan, rows, { appId: 'com.example.app', platform: 'ios' });
+  assert.ok('yaml' in serialized);
+  const stored = readBlock(serialized.yaml);
+  assert.ok(!('invalid' in stored));
+  const replay = replayBlock(plan, stored);
+  const f = fake([screen(['Welcome'])]);
+  let elapsed = 0;
+  f.deps.now = () => elapsed;
+  f.deps.sleep = async (ms) => {
+    elapsed += ms;
+  };
+  const outcome = await walkBlock(replay, f.deps, 0, [], undefined, undefined, { mode: 'replay' });
+  assert.ok(renderReason(outcome.failure?.seen ?? '', (text) => text).startsWith(startMissing));
+  assert.equal(outcome.failure?.step, 2);
+  assert.equal(elapsed, WAIT_BUDGET_MS);
+  assert.deepEqual(
+    outcome.rows.map((row) => [row.line, row.outcome, row.reason]),
+    [[2, 'fail', startMissing]],
+  );
+  assert.ok(!f.calls.some((call) => call.startsWith('press')));
+});
 
 test('a changed screen after a press is done: never re-dispatched', async () => {
   const f = fake([screen(['Settings']), screen(['Profile'])]);
