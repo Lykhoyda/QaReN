@@ -98,7 +98,8 @@ final class Harness {
   var nextClockTime: Double?
   var observationMs = 0.0
   let springboard = XCUIApplication([])
-  func blockingSystemAlertSnapshot() -> DataPayload? { nil }
+  var blockingAlert: DataPayload? = nil
+  func blockingSystemAlertSnapshot() -> DataPayload? { blockingAlert }
   func withSystemModalDiagnostic(_ payload: DataPayload, app: XCUIApplication) -> DataPayload { payload }
   func presenceUptimeMs() -> Double {
     if let next = nextClockTime { nextClockTime = nil; return next }
@@ -221,6 +222,20 @@ try run("final-structural-mismatch", (0..<6).map { _ in tree() } + [tree("hierar
 try run("observation-budget", [tree()], observationMs: 10_000)
 try run("initial-ineligible", [tree()], backgroundAt: 1)
 try run("final-ineligible", [tree()], backgroundAt: 2)
+do {
+  let h = Harness()
+  h.blockingAlert = DataPayload(nodes: [SnapshotNode(index: 0, type: "Alert", label: "PRIVATE-alert", identifier: "", value: nil,
+    rect: SnapshotRect(x: 0, y: 0, width: 270, height: 150), enabled: true, focused: nil, hittable: true, depth: 0,
+    parentIndex: nil, hiddenContentAbove: nil, hiddenContentBelow: nil)], truncated: false)
+  let app = XCUIApplication([tree()])
+  let result = h.snapshotPlatformPresence(app: app, appId: "test", presenceBudgetMs: 20_000)
+  let output: [String: Any] = [
+    "name": "system-alert", "nodes": result.nodes?.count ?? -1, "types": result.nodes?.map { $0.type } ?? [],
+    "keyboardVisible": result.keyboardVisible as Any, "snapshotGeneration": result.snapshotGeneration as Any,
+    "presenceCapture": result.presenceCapture != nil, "reads": app.reads, "states": app.states
+  ]
+  print(String(data: try JSONSerialization.data(withJSONObject: output, options: [.sortedKeys]), encoding: .utf8)!)
+}
 `,
   });
   assert.equal(result.status, 0, result.stderr || String(result.error));
@@ -234,6 +249,17 @@ try run("final-ineligible", [tree()], backgroundAt: 2)
         return [row.name, row];
       }),
   );
+  assert.deepEqual(rows.get('system-alert'), {
+    name: 'system-alert',
+    nodes: 1,
+    types: ['Alert'],
+    keyboardVisible: false,
+    snapshotGeneration: 7,
+    presenceCapture: false,
+    reads: 0,
+    states: 0,
+  });
+  rows.delete('system-alert');
   assert.equal(rows.get('explicit-budget').budget, 1234);
   assert.equal(rows.get('explicit-budget').complete, true);
   for (const name of [

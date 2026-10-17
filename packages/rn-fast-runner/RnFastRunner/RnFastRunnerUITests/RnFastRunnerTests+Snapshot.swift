@@ -417,6 +417,11 @@ extension RnFastRunnerTests {
   }
 
   func snapshotPlatformPresence(app: XCUIApplication, appId: String, presenceBudgetMs: Int) -> DataPayload {
+    // A recognised SpringBoard alert is the observation in every snapshot flavour; it has no Keyboard node.
+    if let blocking = blockingSystemAlertSnapshot() {
+      return DataPayload(nodes: blocking.nodes, truncated: false, keyboardVisible: false,
+        snapshotGeneration: currentSnapshotGeneration)
+    }
     let started = presenceUptimeMs()
     let deadline = started + Double(presenceBudgetMs)
     let timing = PresenceCaptureTiming(started: started, now: presenceUptimeMs)
