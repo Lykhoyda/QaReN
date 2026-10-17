@@ -1,6 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { hashSnapshotNodes } from '../../dist/lifecycle/settle-hash.js';
+import { RunInputs, withInputs, withEchoScope, declareEcho } from '../../dist/qa/inputs.js';
 
 const node = (over = {}) => ({
   ref: '@e0',
@@ -78,4 +79,38 @@ test('node added/removed changes the hash', () => {
 
 test('empty list hashes deterministically', () => {
   assert.equal(hashSnapshotNodes([]), hashSnapshotNodes([]));
+});
+
+test('a registered field label echo does not change the digest between two values', () => {
+  const digest = (value) => {
+    const inputs = new RunInputs({ EMAIL: value }, ['EMAIL']);
+    inputs.expectEcho('login_email');
+    return withInputs(inputs, () =>
+      hashSnapshotNodes([node(), node({ identifier: 'login_email', label: value })]),
+    );
+  };
+  assert.equal(digest('qa-synth-1234@example.test'), digest('other-user@example.test'));
+});
+
+test('a declared label echo does not change the digest between two values', () => {
+  const digest = (value) =>
+    withInputs(new RunInputs({ EMAIL: value }, ['EMAIL']), () =>
+      withEchoScope(() => {
+        declareEcho('EMAIL');
+        return hashSnapshotNodes([
+          node(),
+          node({ identifier: 'code_hint', label: `Sent to ${value}` }),
+        ]);
+      }),
+    );
+  assert.equal(digest('qa-synth-1234@example.test'), digest('other-user@example.test'));
+});
+
+test('a code that only spans adjacent quantized coordinates still hashes', () => {
+  const coded = (value, label = 'Code') =>
+    withInputs(new RunInputs({ OTP: value }, ['OTP']), () =>
+      hashSnapshotNodes([node({ rect: { x: 232, y: 156, width: 40, height: 20 }, label })]),
+    );
+  assert.equal(coded('5839'), coded('2468'));
+  assert.throws(() => coded('5839', '58 39'), /runtime input privacy refused/);
 });

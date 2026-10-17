@@ -1,3 +1,10 @@
+import {
+  fillText,
+  currentInputs,
+  declareEcho,
+  throwIfInputPrivacyRefused,
+  withEchoScope,
+} from './inputs.js';
 import { isAbort, cancellationSignal } from '../domain/cancellation.js';
 import type { Block, Item, Target } from './plan.js';
 import {
@@ -109,6 +116,7 @@ export interface ActResult {
 }
 
 export interface WalkerDeps {
+  privacy?: ObservedPrivacy;
   judge?: Judge;
   publicationInterrupted?(): boolean;
   captureScreen(options?: {
@@ -271,7 +279,14 @@ const NEAR_MISS: Record<LiteralNearMiss, string> = {
 };
 
 // Retry a mutation once only when read-back failed and the screen provably did not move.
-export async function walkBlock(
+// Each block, including a nested login replay, gets its own declared-echo scope.
+export function walkBlock(
+  ...args: Parameters<typeof walkBlockScoped>
+): ReturnType<typeof walkBlockScoped> {
+  return withEchoScope(() => walkBlockScoped(...args));
+}
+
+async function walkBlockScoped(
   block: Block,
   deps: WalkerDeps,
   shotIndex = 0,
@@ -285,7 +300,7 @@ export async function walkBlock(
   const rows: WalkRow[] = [];
   const privateFills: number[] = [];
   for (const item of block.items)
-    if (item.kind === 'fill' && !typed.includes(item.text)) typed.push(item.text);
+    if (item.kind === 'fill' && !typed.includes(fillText(item))) typed.push(fillText(item));
   const judge = deps.judge ?? unavailableJudge;
   let resolvedBy: LedgerRow['resolvedBy'] = 'exact';
   let cached: { item: Item; observation: Observation; decision: ScreenDecision } | undefined;
@@ -648,7 +663,7 @@ export async function walkBlock(
     })(observationDeadline(observation.timing, deadline), deps.now, deps.cancelled);
     try {
       context.check();
-      if (item.kind === 'fill') privacy.didFill(item.text);
+      if (item.kind === 'fill') privacy.didFill(fillText(item));
       // A scroll step's momentum outlives the step and its block; the next targeted dispatch settles first.
       if (item.kind === 'scroll') sequence.momentum = true;
       const result = await send(context);
@@ -726,7 +741,7 @@ export async function walkBlock(
     const value = selector?.id ?? selector?.text;
     return selector &&
       value !== undefined &&
-      !matchPrivate(value, privacy.privateSet(), 'persisted').hit
+      !matchPrivate(value, privacy.privateSet('persisted'), 'persisted').hit
       ? { selector }
       : {};
   };
@@ -895,7 +910,7 @@ export async function walkBlock(
         ? '; the field changed only the letter case'
         : '';
   const keptCounts = (entry: ActResult) =>
-    entry.proven
+    entry.proven || currentInputs()?.hasInputs
       ? {}
       : entry.kept
         ? { kept: { typed: entry.kept.typed, observed: [...entry.kept.observed] } }
@@ -932,12 +947,12 @@ export async function walkBlock(
         before.screen,
       );
     privacy.concealFallback(
-      item.text,
+      fillText(item),
       false,
       quoted,
       target.element.testID ?? target.element.label,
     );
-    if (!privateFills.includes(item.line)) privateFills.push(item.line);
+    if (item.input === undefined && !privateFills.includes(item.line)) privateFills.push(item.line);
     let tap: ActResult | undefined;
     if (!centreCovered(target.element, before.screen))
       try {
@@ -1020,9 +1035,16 @@ export async function walkBlock(
         after.screen,
       );
     let entry: ActResult;
+    currentInputs()?.expectEcho(again.element.testID ?? again.oracleTestID);
     try {
       entry = await mutate(item, after, (context) =>
-        deps.typeFocused!(again.element.ref, item.text, again.oracleTestID, context, proofMode),
+        deps.typeFocused!(
+          again.element.ref,
+          fillText(item),
+          again.oracleTestID,
+          context,
+          proofMode,
+        ),
       );
     } catch (error) {
       if (isAbort(error)) throw error;
@@ -1045,6 +1067,7 @@ export async function walkBlock(
     emit({
       ...base(item, attempt),
       ref: again.element.ref,
+      ...stored({ id: again.oracleTestID }),
       outcome: 'pass',
       ...keptCounts(entry),
       ...(entry.proven
@@ -1075,12 +1098,13 @@ export async function walkBlock(
     )
       return;
     if (!(await focusProven('none', quoted))) return;
-    privacy.concealFallback(item.text, false, quoted);
-    privateFills.push(item.line);
+    privacy.concealFallback(fillText(item), false, quoted);
+    if (item.input === undefined) privateFills.push(item.line);
     let entry: ActResult;
+    currentInputs()?.expectEcho(quoted);
     try {
       entry = await mutate(item, before, (context) =>
-        deps.typeFocused!(quoted, item.text, quoted, context, true),
+        deps.typeFocused!(quoted, fillText(item), quoted, context, true),
       );
     } catch (error) {
       if (isAbort(error)) throw error;
@@ -1105,6 +1129,7 @@ export async function walkBlock(
     await capture(item);
     emit({
       ...base(item, attempt),
+      ...stored({ id: quoted }),
       outcome: 'pass',
       ...keptCounts(entry),
       ...(entry.proven ? {} : { reason: redact(focusedReason(quoted) + keptNote(entry)) }),
@@ -1187,7 +1212,10 @@ export async function walkBlock(
   };
 
   items: for (const item of block.items) {
-    if (opts.fromLine !== undefined && item.line < opts.fromLine) continue;
+    if (opts.fromLine !== undefined && item.line < opts.fromLine) {
+      if (item.kind === 'echo') declareEcho(item.input);
+      continue;
+    }
     mutationStarted = false;
     attempts: for (;;) {
       line = item.line;
@@ -1197,9 +1225,14 @@ export async function walkBlock(
         kind: item.kind === 'check' ? 'check' : 'step',
         t: deps.now(),
       });
+      if (item.kind === 'echo') {
+        declareEcho(item.input);
+        emit({ ...base(item, 1), outcome: 'pass' });
+        continue items;
+      }
       let currentAttempt = 1;
       resolvedBy = item.source === 'jev' && !replay ? 'jev' : 'exact';
-      if (item.kind === 'fill' && item.text && !typed.includes(item.text)) typed.push(item.text);
+      if (item.kind === 'fill' && !typed.includes(fillText(item))) typed.push(fillText(item));
       try {
         if (item.kind === 'check') {
           const next = block.items[block.items.indexOf(item) + 1];
@@ -1516,8 +1549,11 @@ export async function walkBlock(
                 occluded = undefined;
                 let resolution: Exclude<Resolution, { refuse: string }>;
                 if ('refuse' in decided) {
+                  // A stored testID can name a field only React lists, or none: both reach the walk's fallbacks.
+                  const unresolved =
+                    decided.refuse === 'TARGET_NOT_FOUND' || decided.refuse === 'REPLAY_SELECTOR';
                   const fallback =
-                    decided.refuse === 'TARGET_NOT_FOUND' &&
+                    unresolved &&
                     item.kind === 'fill' &&
                     deps.typeFocused &&
                     !fellBack &&
@@ -1527,9 +1563,9 @@ export async function walkBlock(
                   if (
                     !fallback &&
                     item.kind === 'fill' &&
-                    decided.refuse === 'TARGET_NOT_FOUND' &&
+                    unresolved &&
                     item.target.quoted !== undefined &&
-                    !item.target.exact &&
+                    item.target.exact !== 'text' &&
                     before.screen.keyboardVisible === true &&
                     deps.typeFocused &&
                     deps.reactFocused &&
@@ -1704,9 +1740,15 @@ export async function walkBlock(
                 continue;
               }
               if (item.kind === 'fill' && element && isPrivateInput(element)) {
-                privacy.concealFallback(item.text, element.secure, element.testID ?? element.label);
-                if (!privateFills.includes(item.line)) privateFills.push(item.line);
+                privacy.concealFallback(
+                  fillText(item),
+                  element.secure,
+                  element.testID ?? element.label,
+                );
+                if (item.input === undefined && !privateFills.includes(item.line))
+                  privateFills.push(item.line);
               }
+              if (item.kind === 'fill') currentInputs()?.expectEcho(element?.testID);
               if (
                 (item.kind === 'scroll' || item.kind === 'back') &&
                 before.screen.front === 'dialog'
@@ -1716,7 +1758,7 @@ export async function walkBlock(
                 item.kind === 'press'
                   ? deps.press(ref!, context)
                   : item.kind === 'fill'
-                    ? deps.fill(ref!, item.text, context)
+                    ? deps.fill(ref!, fillText(item), context)
                     : item.kind === 'scroll'
                       ? deps.scroll(item.direction, context)
                       : item.kind === 'back'
@@ -1878,7 +1920,9 @@ export async function walkBlock(
                     reason: redact(
                       'UNVERIFIED_FILL: the field changed only the letter case, so the fill was not verified',
                     ),
-                    caseNormalized: { chars: [...item.text].length },
+                    ...(!currentInputs()?.hasInputs
+                      ? { caseNormalized: { chars: [...fillText(item)].length } }
+                      : {}),
                   }
                 : unverified
                   ? {
@@ -2160,7 +2204,12 @@ export function loginBlock(slug: string, stored: StoredBlock): Block {
       case 'wait':
         return { kind: step.kind, target: exact(step.selector!), ...at };
       case 'fill':
-        return { kind: 'fill', target: exact(step.selector!), text: step.text!, ...at };
+        return {
+          kind: 'fill',
+          target: exact(step.selector!),
+          ...(step.input !== undefined ? { input: step.input } : { text: step.text! }),
+          ...at,
+        };
       case 'scroll':
         return {
           kind: 'scroll',
@@ -2172,6 +2221,8 @@ export function loginBlock(slug: string, stored: StoredBlock): Block {
         return { kind: 'back', ...at };
       case 'dialog':
         return { kind: 'dialog', action: step.action!, ...at };
+      case 'echo':
+        return { kind: 'echo', input: step.input!, ...at };
       case 'check':
         return {
           kind: 'check',
@@ -2197,16 +2248,18 @@ export async function runPlan(
     const written: string[] = [];
     let patchedAt: number | undefined;
     const typed = blocks.flatMap((b) =>
-      b.items.flatMap((i) => (i.kind === 'fill' ? [i.text] : [])),
+      b.items.flatMap((i) => (i.kind === 'fill' ? [fillText(i)] : [])),
     );
     const planTyped = typed.length;
-    const privacy = new ObservedPrivacy(typed);
+    const privacy = deps.privacy ?? new ObservedPrivacy(typed);
+    privacy.classify(typed);
     privacy.classify(
-      deps.login?.block?.items.flatMap((i) => (i.kind === 'fill' ? [i.text] : [])) ?? [],
+      deps.login?.block?.items.flatMap((i) => (i.kind === 'fill' ? [fillText(i)] : [])) ?? [],
     );
     let recoveries = 0;
     // A login replay before any plan pass opens the publishable window.
     const videoPublication = (): NonNullable<WalkResult['videoPublication']> =>
+      currentInputs()?.hasInputs ||
       blocks.some((block) => block.items.some((item) => item.kind === 'fill')) ||
       typed.length > (sequence.window?.typed ?? planTyped)
         ? 'withheld-fill'
@@ -2243,7 +2296,7 @@ export async function runPlan(
     const pending: { index: number; write: () => BlockResult }[] = [];
     // The slug stays the operational file name (blocksWritten); a display copy that hits is withheld whole.
     const display = (slug: string): string => {
-      const values = privacy.privateSet();
+      const values = privacy.privateSet('persisted');
       const origins = deps.login?.block ? [...blocks, deps.login.block] : blocks;
       const privateTitle = origins.some(
         (block) => block.slug === slug && matchPrivate(block.title, values, 'identifier').hit,
@@ -2251,8 +2304,9 @@ export async function runPlan(
       return privateTitle || matchPrivate(slug, values, 'identifier').hit ? MASK : slug;
     };
     const unprotected = (value: string): boolean =>
-      !matchPrivate(value, privacy.privateSet(), 'persisted').hit;
+      !matchPrivate(value, privacy.privateSet('persisted'), 'persisted').hit;
     const finish = (outcome?: WalkOutcome): WalkResult => {
+      throwIfInputPrivacyRefused();
       if (!deps.cancelled?.()) {
         cancellationSignal();
         for (const { index, write } of pending.splice(0)) results[index] = write();
@@ -2325,7 +2379,7 @@ export async function runPlan(
     ): BlockResult => {
       const result = withPrivateFills({ key: block.slug, outcome: 'pass', source }, privateFills);
       if (result.saved === false) return result;
-      const serialized = serializeBlock(block, rows, store, privacy.privateSet());
+      const serialized = serializeBlock(block, rows, store, privacy.privateSet('persisted'));
       if ('unsavable' in serialized)
         return { ...result, saved: false, unsavable: serialized.unsavable };
       try {

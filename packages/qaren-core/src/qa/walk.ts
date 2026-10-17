@@ -1,3 +1,6 @@
+import { ownedLogin, parseInputPreflight } from './input-preflight.js';
+import { ObservedPrivacy } from './privacy.js';
+import { InputPrivacyRefusal, withInputs, currentInputs } from './inputs.js';
 import {
   cancellationSignal,
   interruptible,
@@ -71,13 +74,17 @@ import {
   type WireRequest,
   createWriter,
   missingResult,
-  readRequest,
+  parsePrivateRequest,
+  parsePublicRequest,
+  readPrivateLine,
   resultForWalk,
   startupRow,
 } from './wire.js';
 
 const log = (message: string): void => {
-  process.stderr.write(`qaren-core: ${redactApiKey(message)}\n`);
+  process.stderr.write(
+    `qaren-core: ${redactApiKey(currentInputs()?.redact(message) ?? message)}\n`,
+  );
 };
 
 export function scrollArgs(
@@ -347,6 +354,8 @@ async function openSession(
   emitRow: (row: LedgerRow) => void,
   emitStart: (start: StepStart) => void,
   onClose: (close: () => Promise<void>) => void,
+  privacy: ObservedPrivacy,
+  pinnedLogin: NonNullable<WalkerDeps['login']>['block'],
 ): Promise<Session> {
   const { target, platform, appId } = request;
   // Run-relative ms on a monotonic clock, anchored once to the CLI's t0.
@@ -541,12 +550,13 @@ async function openSession(
   const accept = createDeviceAcceptSystemDialogHandler();
   const dismiss = createDeviceDismissSystemDialogHandler();
   const login = request.loginMarker
-    ? { marker: request.loginMarker, block: readLoginBlock(request) }
+    ? { marker: request.loginMarker, block: pinnedLogin }
     : undefined;
   if (login && request.loginBlock && !login.block)
     log(`login block ${request.loginBlock} is missing or unreadable; a login wall fails the step`);
 
   const deps: WalkerDeps = {
+    privacy,
     judge: createJev({ now, timing }),
     timing,
     publicationInterrupted: admittedSnapshots.interrupted,
@@ -585,7 +595,7 @@ async function openSession(
         false,
       ),
     async screenshot(name) {
-      if (stop.stopping) return undefined;
+      if (stop.stopping || currentInputs()?.hasInputs) return undefined;
       const path = join(request.runDir, name);
       const shot = await stop.track(() =>
         captureQaScreenshot(platform, path, target.deviceId, appId),
@@ -633,12 +643,69 @@ async function openSession(
   };
 }
 
+let privateRun = false;
+
 async function main(): Promise<void> {
+  for (const key of Object.keys(process.env))
+    if (key.startsWith('QAREN_INPUT_')) delete process.env[key];
+  if (process.argv[2] === '--preflight-stdin') {
+    try {
+      const value: unknown = JSON.parse(await readPrivateLine(process.stdin));
+      const result = await parseInputPreflight(value, createJev());
+      process.stdout.write(`${JSON.stringify(result)}\n`);
+      return exitAfterDrain((result as { ok?: boolean }).ok ? 0 : 4);
+    } catch (error) {
+      const message =
+        error instanceof InputPrivacyRefusal ? error.message : 'runtime input preflight refused';
+      process.stdout.write(`${JSON.stringify({ ok: false, code: 'CORE_REFUSED', message })}\n`);
+      return exitAfterDrain(4);
+    }
+  }
   if (process.argv[2] === '--compile') return compileOnly(process.argv.slice(3));
   if (process.argv[2] === '--parse' || process.argv[2] === '--preflight')
     return parseOnly(process.argv[3] ?? '', process.argv[2] === '--preflight');
   const cliParent = process.ppid;
-  const request = await readRequest(process.stdin);
+  const line = await readPrivateLine(process.stdin);
+  let parsed: ReturnType<typeof parsePrivateRequest>;
+  try {
+    parsed = parsePrivateRequest(line);
+  } catch {
+    const publicRequest = parsePublicRequest(line);
+    const writer = createWriter((line) => process.stdout.write(line), publicRequest.runId);
+    return exitAfterDrain(
+      writer.result({
+        verdict: 'REFUSED',
+        code: 'CORE_REFUSED',
+        message: 'runtime inputs are invalid',
+        lease: publicRequest.lease,
+      }),
+    );
+  }
+  privateRun = parsed.inputs.hasInputs;
+  parsed.inputs.onRefusal((reason) => stop.begin(reason));
+  return withInputs(parsed.inputs, () => mainRequest(parsed.request, parsed.privacy, cliParent));
+}
+
+async function mainRequest(
+  request: WireRequest,
+  privacy: ObservedPrivacy,
+  cliParent: number,
+): Promise<void> {
+  let pinnedLogin = readLoginBlock(request);
+  if (request.loginSnapshot) {
+    const actual = ownedLogin(
+      request.loginSnapshot.slug,
+      request.appRoot,
+      request.appId,
+      request.platform,
+    );
+    if (actual.content !== request.loginSnapshot.content)
+      throw new Error('CORE_REFUSED: login corpus changed during admission');
+    pinnedLogin =
+      actual.content === null
+        ? undefined
+        : loginBlock(actual.slug, readBlock(actual.content) as import('./blocks.js').StoredBlock);
+  }
   const writer = createWriter((line) => process.stdout.write(redactApiKey(line)), request.runId);
   observeRunnerDrivers((pid) => writer.runnerDriver(pid));
   const rows: LedgerRow[] = [];
@@ -649,12 +716,30 @@ async function main(): Promise<void> {
   // The one exit owner; once stopping, no verdict other than the cancellation is reported.
   let written: 0 | 1 | 4 | undefined;
   const finish = async (payload: ResultPayload, close?: () => Promise<void>): Promise<never> => {
+    if (currentInputs()?.hasInputs && close) {
+      try {
+        await close();
+      } catch {
+        payload = {
+          verdict: 'REFUSED',
+          code: 'CORE_REFUSED',
+          message: 'private run teardown refused',
+          lease: request.lease,
+          jev: payload.jev,
+        };
+      }
+      close = undefined;
+    }
     const code = (written = writer.result(
       stop.stopping
         ? {
             verdict: 'REFUSED',
-            code: 'RUN_CANCELLED',
-            message: 'the run was cancelled',
+            code:
+              stop.signal.reason instanceof InputPrivacyRefusal ? 'CORE_REFUSED' : 'RUN_CANCELLED',
+            message:
+              stop.signal.reason instanceof InputPrivacyRefusal
+                ? stop.signal.reason.message
+                : 'the run was cancelled',
             lease: request.lease,
             jev: payload.jev,
           }
@@ -710,11 +795,22 @@ async function main(): Promise<void> {
     () => halt('the qaren CLI exited'),
   );
   let opened: Session;
+  let inFlight: number | undefined;
   try {
     opened = await stop.track(() =>
-      openSession(request, emitRow, writer.start, (close) => {
-        release = close;
-      }),
+      openSession(
+        request,
+        emitRow,
+        (start) => {
+          inFlight = start.line;
+          writer.start(start);
+        },
+        (close) => {
+          release = close;
+        },
+        privacy,
+        pinnedLogin,
+      ),
     );
   } catch (error) {
     const { code, message } = describeError(error);
@@ -748,7 +844,7 @@ async function main(): Promise<void> {
     );
   } catch (error) {
     const { code, message } = describeError(error);
-    const ledger = missingResult(rows, `${code}: ${message}`);
+    const ledger = missingResult(rows, `${code}: ${message}`, inFlight);
     ledger.jev = summarizeJev([
       ...(request.preflightCalls ?? []),
       ...(opened.deps.judge?.calls ?? []),
@@ -764,7 +860,8 @@ if (
   realpathSync(process.argv[1]) === realpathSync(fileURLToPath(import.meta.url))
 ) {
   main().catch((error) => {
-    log(`fatal before the wire was established: ${describeError(error).message}`);
+    const detail = privateRun ? 'runtime request refused' : describeError(error).message;
+    log(`fatal before the wire was established: ${detail}`);
     process.exit(1);
   });
 }

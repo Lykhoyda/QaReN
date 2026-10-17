@@ -1,3 +1,4 @@
+import { fillText } from './inputs.js';
 import type { Check, Step, Target } from './plan.js';
 import type { Selector } from './ledger.js';
 import { hostPath } from './host-association.js';
@@ -81,7 +82,7 @@ function describeCandidate(e: Element): string {
 }
 
 export function stepTarget(step: Step): Target | undefined {
-  return step.kind === 'back' || step.kind === 'dialog'
+  return step.kind === 'back' || step.kind === 'dialog' || step.kind === 'echo'
     ? undefined
     : step.kind === 'scroll'
       ? step.until
@@ -197,7 +198,8 @@ export function keyboardFallbackTarget(
   step: Step,
   screen: Screen,
 ): { element: Element; oracleTestID: string } | undefined {
-  if (step.kind !== 'fill' || step.target.quoted === undefined || step.target.exact) return;
+  if (step.kind !== 'fill' || step.target.quoted === undefined || step.target.exact === 'text')
+    return;
   const quoted = step.target.quoted;
   const ids = new Set([quoted, withoutPressable(quoted), quoted + PRESSABLE_SUFFIX]);
   const observable = screen.elements.some(
@@ -206,7 +208,7 @@ export function keyboardFallbackTarget(
       [e.testID, e.label, e.placeholder].some((name) => name !== undefined && ids.has(name)),
   );
   if (observable) return;
-  const named = exactIdentities(screen, step.target, 'press');
+  const named = exactIdentities(screen, { quoted, phrase: step.target.phrase }, 'press');
   // A wrapper echoing its hidden field's name is that React-only field unless React places the field elsewhere.
   const identities = named.filter(
     (identity) =>
@@ -992,7 +994,7 @@ export async function resolveTarget(step: Step, screen: Screen, judge: Judge): P
     judge,
     undefined,
     { ...step, line: 0 },
-    step.kind === 'fill' ? [step.text] : [],
+    step.kind === 'fill' ? [fillText(step)] : [],
   );
   return decision.target ?? { refuse: 'NO_TARGET', reason: 'this step has no target to resolve' };
 }

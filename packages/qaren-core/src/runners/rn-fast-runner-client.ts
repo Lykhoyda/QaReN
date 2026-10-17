@@ -1,3 +1,4 @@
+import { currentInputs } from '../qa/inputs.js';
 import {
   diagnosticField,
   diagnosticKind,
@@ -235,10 +236,16 @@ export interface RunnerPostMortem {
 let lastRunnerPostMortem: RunnerPostMortem | null = null;
 
 function appendRunnerOutput(stream: 'stdout' | 'stderr', chunk: string): void {
+  if (currentInputs()?.hasInputs) {
+    runnerOutputTail = '[private output withheld]';
+    return;
+  }
   runnerOutputTail = `${runnerOutputTail}${stream}: ${chunk}`.slice(-8_000);
 }
 
 export function getRunnerPostMortem(): RunnerPostMortem {
+  if (currentInputs()?.hasInputs)
+    return { available: false, provenance: runnerProcess ? 'spawned' : 'adopted' };
   return (
     lastRunnerPostMortem ?? {
       available: false,

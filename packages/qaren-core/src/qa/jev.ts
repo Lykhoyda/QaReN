@@ -1,3 +1,4 @@
+import { currentInputs } from './inputs.js';
 import {
   cancellableFetch,
   sleep as cancellableSleep,
@@ -35,6 +36,24 @@ export interface JevOptions {
 }
 
 function requestBody(state: unknown, questions: Questions): string {
+  const mask = (value: unknown): unknown => {
+    if (typeof value === 'string') return currentInputs()?.redact(value) ?? value;
+    if (Array.isArray(value)) return value.map(mask);
+    if (isRecord(value))
+      return Object.fromEntries(Object.entries(value).map(([key, val]) => [key, mask(val)]));
+    return value;
+  };
+  state = mask(state);
+  questions = Object.fromEntries(
+    Object.entries(questions).map(([id, q]) => [
+      id,
+      {
+        ...q,
+        instructions: currentInputs()?.redact(q.instructions) ?? q.instructions,
+        ...(q.type === 'choice' ? { criteria: mask(q.criteria) } : {}),
+      },
+    ]),
+  ) as Questions;
   const invalid = (): never => {
     throw new JevError('JEV_REQUEST_INVALID');
   };

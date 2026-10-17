@@ -76,6 +76,43 @@ pub fn redact_secrets(raw: &str) -> String {
 
 // Ledger and receipt evidence only; operational records must preserve exact identities.
 pub fn durable_json<T: serde::Serialize>(value: &T) -> serde_json::Result<String> {
+    let mut projected = serde_json::to_value(value)?;
+    fn inputs(value: &mut serde_json::Value) {
+        match value {
+            serde_json::Value::String(s) => *s = redact_inputs(s),
+            serde_json::Value::Array(items) => items.iter_mut().for_each(inputs),
+            serde_json::Value::Object(map) => {
+                *map = std::mem::take(map)
+                    .into_iter()
+                    .map(|(key, mut value)| {
+                        if !value.is_string()
+                            || ![
+                                "verdict",
+                                "result",
+                                "code",
+                                "schema",
+                                "phase",
+                                "kind",
+                                "source",
+                                "path",
+                                "resolvedBy",
+                                "outcome",
+                                "videoPublication",
+                                "method",
+                            ]
+                            .contains(&key.as_str())
+                        {
+                            inputs(&mut value);
+                        }
+                        (redact_inputs(&key), value)
+                    })
+                    .collect();
+            }
+            _ => {}
+        }
+    }
+    inputs(&mut projected);
+    let value = &projected;
     let text = serde_json::to_string_pretty(value)?;
     if !names_private_key(&text) {
         return Ok(text);
@@ -109,7 +146,7 @@ pub fn durable_json<T: serde::Serialize>(value: &T) -> serde_json::Result<String
 }
 
 pub fn redact_plain(raw: &str) -> String {
-    let safe = redact_api_key(raw);
+    let safe = redact_inputs(&redact_api_key(raw));
     let raw = safe.as_str();
     let mut out = String::with_capacity(raw.len());
     let mut rest = raw;
@@ -575,5 +612,237 @@ mod tests {
             redact_machine("macOS on mac, MAC.local", &short),
             "macOS on <host>, <host>"
         );
+    }
+}
+
+pub struct InputValues {
+    entries: std::collections::BTreeMap<std::ffi::OsString, std::ffi::OsString>,
+}
+
+pub struct ResolvedInputs<'a> {
+    owner: &'a InputValues,
+    names: Vec<String>,
+}
+
+impl InputValues {
+    pub fn capture() -> Self {
+        Self::from_entries(std::env::vars_os())
+    }
+
+    pub fn from_entries(
+        entries: impl IntoIterator<Item = (std::ffi::OsString, std::ffi::OsString)>,
+    ) -> Self {
+        Self {
+            entries: entries
+                .into_iter()
+                .filter(|(key, _)| key.as_encoded_bytes().starts_with(b"QAREN_INPUT_"))
+                .collect(),
+        }
+    }
+
+    pub fn has_namespace(&self) -> bool {
+        !self.entries.is_empty()
+    }
+
+    pub fn admit(&self, names: &[String]) -> Result<ResolvedInputs<'_>, crate::failure::Failure> {
+        use crate::failure::{Failure, FailureCode};
+        let invalid = || {
+            Failure::new(
+                "preflight",
+                FailureCode::CoreRefused,
+                "runtime inputs are invalid",
+                "supply bounded owner-resolved runtime inputs",
+            )
+        };
+        let names: Vec<String> = names
+            .iter()
+            .cloned()
+            .collect::<std::collections::BTreeSet<_>>()
+            .into_iter()
+            .collect();
+        if names.len() > 64 || names.iter().any(|name| !valid_input_name(name)) {
+            return Err(invalid());
+        }
+        let missing: Vec<_> = names
+            .iter()
+            .filter(|name| {
+                self.entries
+                    .get(&std::ffi::OsString::from(format!("QAREN_INPUT_{name}")))
+                    .is_none_or(|value| value.is_empty())
+            })
+            .cloned()
+            .collect();
+        if !missing.is_empty() {
+            return Err(Failure::new(
+                "preflight",
+                FailureCode::PlanInputMissing,
+                format!(
+                    "required runtime inputs are missing: {}",
+                    self.redact(&missing.join(", "))
+                ),
+                "set the required QAREN_INPUT_<NAME> variables and re-run",
+            ));
+        }
+        let mut total = 0;
+        for name in &names {
+            let value = self
+                .entries
+                .get(&std::ffi::OsString::from(format!("QAREN_INPUT_{name}")))
+                .and_then(|value| value.to_str())
+                .ok_or_else(invalid)?;
+            total += value.len();
+            let scheme = value.split_once(':').is_some_and(|(prefix, _)| {
+                !prefix.is_empty()
+                    && prefix.as_bytes()[0].is_ascii_alphabetic()
+                    && prefix
+                        .bytes()
+                        .all(|b| b.is_ascii_alphanumeric() || b"+.-".contains(&b))
+            });
+            if value.len() > 4096
+                || value.trim().chars().count() < 3
+                || total > 65536
+                || value.bytes().any(|b| b < 32 || b == 127)
+                || scheme
+                || ["${", "$(", "{{"]
+                    .iter()
+                    .any(|pattern| value.contains(pattern))
+            {
+                return Err(invalid());
+            }
+        }
+        Ok(ResolvedInputs { owner: self, names })
+    }
+
+    pub fn redact(&self, raw: &str) -> String {
+        let mut forms: Vec<String> = self
+            .entries
+            .values()
+            .filter_map(|value| value.to_str())
+            .filter(|value| !value.is_empty())
+            .flat_map(|value| {
+                let encoded = serde_json::to_string(value).unwrap_or_default();
+                [value.to_string(), encoded[1..encoded.len() - 1].to_string()]
+            })
+            .collect();
+        forms.sort_by_key(|value| std::cmp::Reverse(value.len()));
+        forms.dedup();
+        forms.into_iter().fold(raw.to_string(), |text, value| {
+            text.replace(&value, "[REDACTED_INPUT]")
+        })
+    }
+}
+
+pub fn valid_input_name(name: &str) -> bool {
+    !name.is_empty()
+        && name.len() <= 32
+        && name.as_bytes()[0].is_ascii_uppercase()
+        && name
+            .bytes()
+            .all(|b| b.is_ascii_uppercase() || b.is_ascii_digit() || b == b'_')
+}
+
+impl ResolvedInputs<'_> {
+    pub fn has_inputs(&self) -> bool {
+        !self.names.is_empty()
+    }
+    pub fn names(&self) -> &[String] {
+        &self.names
+    }
+    pub fn write_private(
+        &self,
+        writer: &mut impl std::io::Write,
+        public: &impl serde::Serialize,
+        run_id: Option<&str>,
+    ) -> std::io::Result<()> {
+        #[derive(serde::Serialize)]
+        #[serde(rename_all = "camelCase")]
+        struct Payload<'a, T: serde::Serialize> {
+            #[serde(flatten)]
+            public: &'a T,
+            input_protocol: u8,
+            inputs: std::collections::BTreeMap<&'a str, &'a str>,
+        }
+        #[derive(serde::Serialize)]
+        #[serde(rename_all = "camelCase")]
+        struct Envelope<'a, T: serde::Serialize> {
+            v: u8,
+            run_id: &'a str,
+            seq: u8,
+            r#type: &'static str,
+            payload: T,
+        }
+        let values = self
+            .names
+            .iter()
+            .map(|name| {
+                let value = self
+                    .owner
+                    .entries
+                    .get(&std::ffi::OsString::from(format!("QAREN_INPUT_{name}")))
+                    .and_then(|value| value.to_str())
+                    .expect("admitted immutable runtime input");
+                (name.as_str(), value)
+            })
+            .collect();
+        let payload = Payload {
+            public,
+            input_protocol: 1,
+            inputs: values,
+        };
+        let mut bytes = match run_id {
+            Some(run_id) => serde_json::to_vec(&Envelope {
+                v: 1,
+                run_id,
+                seq: 1,
+                r#type: "request",
+                payload,
+            }),
+            None => serde_json::to_vec(&payload),
+        }
+        .map_err(|_| std::io::Error::other("runtime input transport failed"))?;
+        bytes.push(b'\n');
+        if bytes.len() > 16 * 1024 * 1024 {
+            return Err(std::io::Error::other("private request exceeds limit"));
+        }
+        writer.write_all(&bytes)
+    }
+}
+
+thread_local! { static INPUT_SCOPE: std::cell::RefCell<Option<std::sync::Arc<InputValues>>> = const { std::cell::RefCell::new(None) }; }
+
+pub fn capture_input_scope() -> Option<std::sync::Arc<InputValues>> {
+    INPUT_SCOPE.with(|scope| scope.borrow().clone())
+}
+
+pub fn with_input_scope<T>(
+    inputs: std::sync::Arc<InputValues>,
+    operation: impl FnOnce() -> T,
+) -> T {
+    struct Restore(Option<std::sync::Arc<InputValues>>);
+    impl Drop for Restore {
+        fn drop(&mut self) {
+            INPUT_SCOPE.with(|scope| *scope.borrow_mut() = self.0.take());
+        }
+    }
+    let _restore = Restore(INPUT_SCOPE.with(|scope| scope.replace(Some(inputs))));
+    operation()
+}
+
+pub fn private_output_mode() -> bool {
+    capture_input_scope().is_some_and(|scope| scope.has_namespace())
+}
+
+pub fn redact_inputs(raw: &str) -> String {
+    capture_input_scope().map_or_else(|| raw.to_string(), |scope| scope.redact(raw))
+}
+
+pub fn scrub_input_env(command: &mut std::process::Command) {
+    let keys: std::collections::BTreeSet<_> = std::env::vars_os()
+        .map(|(key, _)| key)
+        .chain(command.get_envs().map(|(key, _)| key.to_owned()))
+        .filter(|key| key.as_encoded_bytes().starts_with(b"QAREN_INPUT_"))
+        .collect();
+    for key in keys {
+        command.env_remove(key);
     }
 }

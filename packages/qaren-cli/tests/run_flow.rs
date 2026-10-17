@@ -21,16 +21,50 @@ fn probe_json() -> serde_json::Value {
 }
 
 fn script_plan(mock: &mut MockRunner, repo: &Path) {
+    script_plan_requiring(mock, repo, &[]);
+}
+
+fn script_plan_requiring(mock: &mut MockRunner, repo: &Path, required: &[&str]) {
     mock.environment
         .insert("TYPESAFE_API_KEY".into(), TEST_KEY.into());
     let plan = std::fs::read(repo.join("test-app/plan.md")).unwrap();
     let output = serde_json::json!({"ok":true,"prepared":{
         "hash":qaren::candidate::sha256_hex(&plan),"blocks":[]
     },"jev":probe_json()});
+    let config = std::fs::read_to_string(repo.join("test-app/.qaren/config.yaml")).unwrap();
+    let login = config
+        .lines()
+        .find_map(|line| line.strip_prefix("loginBlock: "))
+        .map(|slug| serde_json::json!({"slug": slug, "content": null}));
+    let mut inventory = serde_json::json!({"ok":true,"inputProtocol":1,"requiredInputs":required});
+    if let Some(login) = &login {
+        inventory["loginSnapshot"] = login.clone();
+    }
+    let inventory = inventory.to_string();
+    mock.expect_run("walk.js --preflight-stdin", CmdOutput::success(&inventory));
+    let mut output = private_preflight(output);
+    output["requiredInputs"] = serde_json::json!(required);
     mock.expect_run(
-        "walk.js --preflight",
+        "walk.js --preflight-stdin",
         CmdOutput::success(&output.to_string()),
     );
+    // A configured login block is re-read before the device is resolved.
+    if login.is_some() {
+        mock.expect_run("walk.js --preflight-stdin", CmdOutput::success(&inventory));
+    }
+}
+
+fn script_inventory(mock: &mut MockRunner) {
+    mock.expect_run(
+        "walk.js --preflight-stdin",
+        CmdOutput::success(r#"{"ok":true,"inputProtocol":1,"requiredInputs":[]}"#),
+    );
+}
+
+fn private_preflight(mut output: serde_json::Value) -> serde_json::Value {
+    output["inputProtocol"] = 1.into();
+    output["requiredInputs"] = serde_json::json!([]);
+    output
 }
 // MockRunner's clock is frozen until the first sleep, so the run id is deterministic.
 fn run_id() -> String {
@@ -2329,8 +2363,9 @@ fn an_unparseable_plan_refuses_before_the_device_is_touched() {
     mock.environment
         .insert("TYPESAFE_API_KEY".into(), TEST_KEY.into());
     mock.expect_run("node --version", CmdOutput::success("v26.8.1\n"));
+    script_inventory(&mut mock);
     mock.expect_run(
-        "walk.js --preflight",
+        "walk.js --preflight-stdin",
         CmdOutput {
             exit_code: Some(4),
             stdout: r#"{"ok":false,"code":"PLAN_UNPARSEABLE","refused":[{"line":3,"text":"Frobnicate","reason":"no verb"}]}"#.to_string(),
@@ -2747,8 +2782,18 @@ fn script_borrow_api(mock: &mut MockRunner, devices: &str, serial: &str, api: u1
 
 // Node, plan preflight, the borrow, candidate, prereqs, disk and self identity, then the Metro port after the lease.
 fn script_android_preflight(mock: &mut MockRunner, repo: &Path, devices: &str, serial: &str) {
+    script_android_preflight_requiring(mock, repo, devices, serial, &[]);
+}
+
+fn script_android_preflight_requiring(
+    mock: &mut MockRunner,
+    repo: &Path,
+    devices: &str,
+    serial: &str,
+    required: &[&str],
+) {
     mock.expect_run("node --version", CmdOutput::success("v26.8.1\n"));
-    script_plan(mock, repo);
+    script_plan_requiring(mock, repo, required);
     script_borrow(mock, devices, serial);
     mock.expect_run("git", CmdOutput::success(&format!("{}\n", repo.display())));
     mock.expect_run("git", CmdOutput::success(&format!("{}\n", repo.display())));
@@ -2937,6 +2982,27 @@ fn android_check_prebuilds_an_absent_android_dir_before_gradle() {
             .any(|s| s.starts_with("install_launch_ready skipped")),
         "{trail:?}"
     );
+}
+
+#[test]
+fn only_ios_runs_with_runtime_inputs_disclose_the_simulator_log() {
+    let (repo, app) = app_repo();
+    let req = android_request(&repo, &app);
+    let mut mock = android_mock();
+    script_android_preflight_requiring(&mut mock, &repo, ONE_EMULATOR, EMULATOR, &["PASSWORD"]);
+    mock.expect_run("pnpm install --frozen-lockfile", CmdOutput::success(""));
+    mock.expect_run("ls-files", CmdOutput::success(""));
+    mock.expect_run("check-ignore -q android/", CmdOutput::success(""));
+    script_android_finite_build(&mut mock, PREBUILD, 5000, 0);
+    script_android_finite_build(&mut mock, GRADLE, 5001, 0);
+    script_android_launch_walk_teardown(&mut mock);
+    let inputs = std::sync::Arc::new(qaren::redact::InputValues::from_entries([(
+        "QAREN_INPUT_PASSWORD".into(),
+        "android-synthetic".into(),
+    )]));
+    let receipt = qaren::redact::with_input_scope(inputs, || run_with_events(&mut mock, &req)).0;
+    assert_eq!(receipt.result, ReceiptResult::Pass, "{:?}", receipt.failure);
+    assert!(!receipt.outcomes.contains_key("platform_log"));
 }
 
 #[test]
@@ -3774,7 +3840,8 @@ fn missing_or_rejected_key_refuses_before_device_or_lease() {
             mock.environment
                 .insert("TYPESAFE_API_KEY".into(), TEST_KEY.into());
         }
-        mock.expect_run("walk.js --preflight", CmdOutput {
+        script_inventory(&mut mock);
+        mock.expect_run("walk.js --preflight-stdin", CmdOutput {
             exit_code: Some(4),
             stdout: serde_json::json!({"ok":false,"code":"JEV_UNREACHABLE","message":TEST_KEY,
                 "jev":{"calls":1,"medianMs":5,"inputTokens":0,"callDetails":[{
@@ -3897,9 +3964,10 @@ fn literal_plan_without_key_proceeds_past_preflight() {
     let output = serde_json::json!({"ok":true,"jevRequired":false,"prepared":{
         "hash":qaren::candidate::sha256_hex(&plan),"blocks":[]
     },"jev":{"calls":0,"medianMs":0,"inputTokens":0,"callDetails":[]}});
+    script_inventory(&mut mock);
     mock.expect_run(
-        "walk.js --preflight",
-        CmdOutput::success(&output.to_string()),
+        "walk.js --preflight-stdin",
+        CmdOutput::success(&private_preflight(output).to_string()),
     );
     // No booted simulator ends the run at device selection, just past preflight.
     mock.expect_run(
@@ -3929,9 +3997,10 @@ fn missing_jev_required_flag_is_treated_as_required() {
         if let Some(required) = required {
             output["jevRequired"] = required.into();
         }
+        script_inventory(&mut mock);
         mock.expect_run(
-            "walk.js --preflight",
-            CmdOutput::success(&output.to_string()),
+            "walk.js --preflight-stdin",
+            CmdOutput::success(&private_preflight(output).to_string()),
         );
         let receipt = run(&mut mock, &request(&repo, &app, 30));
         assert_eq!(receipt.failure.unwrap().code, FailureCode::JevUnreachable);
@@ -3944,15 +4013,16 @@ fn missing_jev_required_flag_is_treated_as_required() {
 fn invalid_preflight_payload_cannot_claim_a_device() {
     for output in [
         "not json",
-        r#"{"ok":true}"#,
-        r#"{"ok":true,"prepared":{"hash":"wrong","blocks":[]},"jev":{"calls":0,"medianMs":0}}"#,
+        r#"{"ok":true,"inputProtocol":1,"requiredInputs":[]}"#,
+        r#"{"ok":true,"inputProtocol":1,"requiredInputs":[],"prepared":{"hash":"wrong","blocks":[]},"jev":{"calls":0,"medianMs":0}}"#,
     ] {
         let (repo, app) = app_repo();
         let mut mock = MockRunner::new();
         mock.environment
             .insert("TYPESAFE_API_KEY".into(), TEST_KEY.into());
         mock.expect_run("node --version", CmdOutput::success("v26.8.1\n"));
-        mock.expect_run("walk.js --preflight", CmdOutput::success(output));
+        script_inventory(&mut mock);
+        mock.expect_run("walk.js --preflight-stdin", CmdOutput::success(output));
         let receipt = run(&mut mock, &request(&repo, &app, 30));
         assert_eq!(receipt.failure.unwrap().code, FailureCode::JevUnreachable);
         assert!(!repo.join(".locks").exists());
@@ -5204,12 +5274,11 @@ impl Runner for PrRunner {
 
 // Preflight through the lease for a PR run: the PR worktree comes before provenance and the lease.
 fn script_pr_preflight(mock: &mut MockRunner, repo: &Path, wt: &Path) {
+    script_pr_preflight_requiring(mock, repo, wt, &[]);
+}
+
+fn script_pr_preflight_requiring(mock: &mut MockRunner, repo: &Path, wt: &Path, required: &[&str]) {
     mock.expect_run("node --version", CmdOutput::success("v26.8.1\n"));
-    script_plan(mock, repo);
-    mock.expect_run(
-        "simctl list devices booted",
-        CmdOutput::success(&booted_json()),
-    );
     mock.expect_run("git", CmdOutput::success(&format!("{}\n", repo.display()))); // invoking checkout
     mock.expect_run("gh pr view", pr_view_json(PR_HEAD));
     mock.expect_run("fetch origin pull/12/head", CmdOutput::success(""));
@@ -5218,6 +5287,11 @@ fn script_pr_preflight(mock: &mut MockRunner, repo: &Path, wt: &Path) {
         CmdOutput::success(&format!("{PR_HEAD}\n")),
     );
     mock.expect_run("update-ref -d", CmdOutput::success(""));
+    script_plan_requiring(mock, repo, required);
+    mock.expect_run(
+        "simctl list devices booted",
+        CmdOutput::success(&booted_json()),
+    );
     mock.expect_run("worktree add --detach", CmdOutput::success(""));
     mock.expect_run("git", CmdOutput::success(&format!("{}\n", wt.display()))); // toplevel of the worktree
     mock.expect_run("git", CmdOutput::success(&format!("{}\n", wt.display()))); // explicit worktree
@@ -5295,6 +5369,99 @@ fn pr_request(repo: &Path, app: &Path) -> RunRequest {
 #[test]
 fn pr_runs_the_walk_on_a_worktree_at_the_head_with_a_recording_in_order() {
     pr_walk_result(false, false);
+}
+
+#[test]
+fn a_pr_run_with_runtime_inputs_never_starts_the_recorder_and_keeps_values_private() {
+    let secret = "synthetic\"slot\\value";
+    let (repo, app) = app_repo();
+    let mut req = pr_request(&repo, &app);
+    req.runs_root = repo.join(".qaren/runs");
+    let wt = req.runs_root.join(run_id()).join("wt");
+    let mut runner = PrRunner {
+        inner: MockRunner::new(),
+        app: app.clone(),
+        recorder_persisted_before_spawn: None,
+        fail_core_spawn: false,
+    };
+    let mock = &mut runner.inner;
+    script_pr_preflight_requiring(mock, &repo, &wt, &["PASSWORD"]);
+    script_provision(mock);
+    script_pr_provenance_recheck(mock);
+    script_drift_status(mock);
+    script_host_probe(mock, UDID, hosts_absent());
+    mock.expect_spawn_piped("walk.js", 9000, &pr_pass_stdout(), Some(0));
+    script_core_identity(mock);
+    script_drift_status(mock);
+    mock.expect_run("git", CmdOutput::success(&format!("{PR_HEAD}\n")));
+    mock.expect_run("git", CmdOutput::success(""));
+    script_pr_teardown_after_drift(mock);
+    mock.expect_run("du -sk", CmdOutput::success("4\n"));
+    mock.expect_run("worktree remove --force", CmdOutput::success(""));
+    mock.expect_run(
+        "gh pr view https://github.com/o/r/pull/12",
+        pr_view_json(PR_HEAD),
+    );
+    let inputs = std::sync::Arc::new(qaren::redact::InputValues::from_entries([
+        ("QAREN_INPUT_PASSWORD".into(), secret.into()),
+        ("QAREN_INPUT_UNUSED".into(), "unused-synthetic".into()),
+    ]));
+    let (receipt, events) =
+        qaren::redact::with_input_scope(inputs, || run_with_events(&mut runner, &req));
+    assert_eq!(receipt.result, ReceiptResult::Pass, "{:?}", receipt.failure);
+    assert_eq!(runner.inner.remaining(), 0);
+    assert!(!labels(&runner.inner).iter().any(|l| l.contains("record")));
+    assert!(receipt.outcomes["video"].starts_with("unavailable("));
+    assert_eq!(
+        receipt.outcomes["platform_log"],
+        "the simulator system log may record displayed field text; see Runtime inputs"
+    );
+    assert_eq!(
+        events
+            .iter()
+            .filter(|e| e["event"] == "stage" && e["payload"]["name"] == "recording")
+            .map(|e| e["payload"]["state"].as_str().unwrap())
+            .collect::<Vec<_>>(),
+        ["skipped"]
+    );
+    let escaped = serde_json::to_string(secret).unwrap();
+    let escaped = &escaped[1..escaped.len() - 1];
+    let preflight = String::from_utf8(runner.inner.private_inputs[1].clone()).unwrap();
+    assert!(preflight.contains(escaped));
+    assert!(!preflight.contains("unused-synthetic"));
+    let core = (0..runner.inner.piped_stdin.len())
+        .map(|i| runner.inner.piped_stdin_text(i))
+        .filter_map(|text| serde_json::from_str::<serde_json::Value>(&text).ok())
+        .find(|value| value["payload"].get("plan").is_some())
+        .unwrap();
+    assert_eq!(
+        core["payload"]["inputs"],
+        serde_json::json!({"PASSWORD": secret})
+    );
+    let durable = walk_files(&req.runs_root);
+    assert!(!durable.is_empty());
+    for (path, bytes) in durable {
+        let text = String::from_utf8_lossy(&bytes);
+        assert!(
+            !text.contains("slot") && !text.contains(escaped),
+            "{}",
+            path.display()
+        );
+    }
+    assert!(!receipt.to_json().contains("slot"));
+}
+
+fn walk_files(root: &Path) -> Vec<(PathBuf, Vec<u8>)> {
+    let mut files = Vec::new();
+    for entry in std::fs::read_dir(root).into_iter().flatten().flatten() {
+        let path = entry.path();
+        if path.is_dir() {
+            files.extend(walk_files(&path));
+        } else if let Ok(bytes) = std::fs::read(&path) {
+            files.push((path, bytes));
+        }
+    }
+    files
 }
 
 #[test]
@@ -5581,6 +5748,7 @@ fn pr_walk_result(candidate_drift: bool, collision: bool) {
     assert_eq!(core.cwd.as_deref(), Some(wt.join("test-app").as_path()));
     assert_eq!(receipt.tested_older_commit.as_deref(), Some(PR_HEAD));
     assert_eq!(receipt.outcomes["video"], "unavailable(ffmpeg)");
+    assert!(!receipt.outcomes.contains_key("platform_log"));
     assert_eq!(receipt.cleanup["recorder"], "removed");
     assert_eq!(
         receipt.cleanup["pr_worktree"],
@@ -5773,11 +5941,6 @@ fn a_fetched_head_that_is_not_the_viewed_head_refuses_and_leaves_no_worktree() {
     let (repo, app) = app_repo();
     let mut mock = MockRunner::new();
     mock.expect_run("node --version", CmdOutput::success("v26.8.1\n"));
-    script_plan(&mut mock, &repo);
-    mock.expect_run(
-        "simctl list devices booted",
-        CmdOutput::success(&booted_json()),
-    );
     mock.expect_run("git", CmdOutput::success(&format!("{}\n", repo.display())));
     mock.expect_run("gh pr view", pr_view_json(PR_HEAD));
     mock.expect_run("fetch origin pull/12/head", CmdOutput::success(""));
@@ -5786,7 +5949,6 @@ fn a_fetched_head_that_is_not_the_viewed_head_refuses_and_leaves_no_worktree() {
         CmdOutput::success(&format!("{PR_MOVED}\n")),
     );
     mock.expect_run("update-ref -d", CmdOutput::success(""));
-    mock.expect_run("worktree prune", CmdOutput::success(""));
 
     let receipt = run(&mut mock, &pr_request(&repo, &app));
 
@@ -5796,9 +5958,11 @@ fn a_fetched_head_that_is_not_the_viewed_head_refuses_and_leaves_no_worktree() {
         FailureCode::PrWorktreeFailed
     );
     assert_eq!(receipt.verb, "pr");
-    assert_eq!(receipt.cleanup["pr_worktree"], "absent");
+    assert_eq!(receipt.run_id, "none");
+    assert!(!receipt.cleanup.contains_key("pr_worktree"));
     assert_eq!(mock.remaining(), 0);
     assert!(!labels(&mock).contains(&"git-worktree-add".to_string()));
+    assert!(!labels(&mock).iter().any(|l| l == "simctl-list-booted"));
 }
 
 #[test]
@@ -5991,6 +6155,12 @@ fn login_keys_reach_the_core() {
         .find(|value| value["payload"].get("plan").is_some())
         .unwrap();
     assert_eq!(request["payload"]["loginBlock"], "log-in");
+    assert_eq!(
+        request["payload"]["loginSnapshot"],
+        serde_json::json!({"slug": "log-in", "content": null})
+    );
+    assert_eq!(request["payload"]["inputProtocol"], 1);
+    assert_eq!(request["payload"]["inputs"], serde_json::json!({}));
     assert_eq!(
         request["payload"]["loginMarker"],
         serde_json::json!({"id": "login-screen"})
@@ -6749,8 +6919,6 @@ fn android_check_cancelled_before_reverse_leaves_an_existing_mapping() {
 
 fn script_android_pr_preflight(mock: &mut MockRunner, repo: &Path, wt: &Path, api: u16) {
     mock.expect_run("node --version", CmdOutput::success("v26.8.1\n"));
-    script_plan(mock, repo);
-    script_borrow_api(mock, ONE_EMULATOR, EMULATOR, api);
     mock.expect_run("git", CmdOutput::success(&format!("{}\n", repo.display()))); // invoking checkout
     mock.expect_run("gh pr view", pr_view_json(PR_HEAD));
     mock.expect_run("fetch origin pull/12/head", CmdOutput::success(""));
@@ -6759,6 +6927,8 @@ fn script_android_pr_preflight(mock: &mut MockRunner, repo: &Path, wt: &Path, ap
         CmdOutput::success(&format!("{PR_HEAD}\n")),
     );
     mock.expect_run("update-ref -d", CmdOutput::success(""));
+    script_plan(mock, repo);
+    script_borrow_api(mock, ONE_EMULATOR, EMULATOR, api);
     mock.expect_run("worktree add --detach", CmdOutput::success(""));
     mock.expect_run("git", CmdOutput::success(&format!("{}\n", wt.display()))); // toplevel of the worktree
     mock.expect_run("git", CmdOutput::success(&format!("{}\n", wt.display()))); // explicit worktree

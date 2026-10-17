@@ -14,13 +14,13 @@ import {
 for (const enabled of [true, false]) {
   test(
     enabled
-      ? 'iOS fast scroll waits for a static screen before returning its settle receipt'
+      ? 'iOS fast scroll waits for an unchanged hierarchy before returning its settle receipt'
       : 'RN_SETTLE=0 disables post-scroll probes and settle metadata',
     async () => {
       const previousSettle = process.env.RN_SETTLE;
       process.env.RN_SETTLE = enabled ? '1' : '0';
       const bodies: Array<Record<string, unknown>> = [];
-      let probes = 0;
+      let snapshots = 0;
       _setFastRunnerStateForTest({
         schemaVersion: 1,
         pid: process.pid,
@@ -41,9 +41,9 @@ for (const enabled of [true, false]) {
       _setFetchForTest((async (_url, init) => {
         const body = JSON.parse(String(init?.body)) as Record<string, unknown>;
         bodies.push(body);
-        if (body.command === 'isScreenStatic') {
-          probes += 1;
-          return Response.json({ ok: true, data: { static: probes >= 3 }, v: 1 });
+        if (body.command === 'snapshot') {
+          snapshots += 1;
+          return Response.json({ ok: true, data: { nodes: [] }, v: 1 });
         }
         assert.equal(body.command, 'drag');
         return Response.json({ ok: true });
@@ -53,11 +53,11 @@ for (const enabled of [true, false]) {
         const envelope = JSON.parse(result.content[0].text);
         assert.equal(envelope.ok, true);
         if (enabled) {
-          assert.deepEqual(envelope.meta?.settle, { method: 'screen-static', settled: true });
-          assert.equal(probes, 3);
+          assert.deepEqual(envelope.meta?.settle, { method: 'snapshot-eq', settled: true });
+          assert.equal(snapshots, 2);
         } else {
           assert.equal(envelope.meta?.settle, undefined);
-          assert.equal(probes, 0);
+          assert.equal(snapshots, 0);
         }
         assert.equal(bodies.filter((body) => body.command === 'drag').length, 1);
         assert.ok(bodies.every((body) => body.appBundleId === 'dev.lykhoyda.rndevagent.fixture'));
