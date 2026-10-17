@@ -703,8 +703,8 @@ multiple actions, such as `Accept the dialog if it appears` or
 `Do not dismiss the alert`, refuse before allocation; Jev cannot override this restriction.
 On Android, a dialog step or dialog recovery has the runner tap exactly one
 enabled button whose text equals the chosen label, in the front window above the
-app when the permission controller or `android` owns it; another app's window
-never matches. The step passes only when the runner reports that label tapped,
+app, or the window standing in for the app's window, when the permission
+controller or `android` owns it; another app's window never matches. The step passes only when the runner reports that label tapped,
 that window gone and the app in front again, and it never falls back to
 Maestro. No such dialog, or no enabled text match in the runner, refuses
 `NO_SYSTEM_DIALOG`; two or more matching buttons refuse `TARGET_AMBIGUOUS`,
@@ -729,7 +729,11 @@ did not change, the step's failure says the keyboard did not open. The runner's
 report never decides a step on its own; the screen comparison does. A window of
 another package above the app that intersects it, such as a permission dialog
 or another app, becomes the snapshot under an `Alert` root, so literal steps
-see a front dialog; the status and navigation bars do not count. A node not
+see a front dialog; the status and navigation bars do not count. When no app
+window is listed and the topmost application window belongs to the permission
+controller or `android`, as with the notification permission prompt on Android
+13 and later, that window stands in for the app's and becomes the `Alert`
+snapshot; any other topmost window leaves no read. A node not
 visible to the user counts as off screen, so a quoted step never passes on a
 scrolled-out control. A node the traversal cannot read is counted as dropped,
 and more than 600 nodes truncate the read; either leaves the capture

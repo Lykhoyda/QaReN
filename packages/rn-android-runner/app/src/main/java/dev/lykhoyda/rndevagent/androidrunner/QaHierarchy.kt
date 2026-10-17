@@ -13,8 +13,9 @@ package dev.lykhoyda.rndevagent.androidrunner
  * application window bottom to top, each followed by its tree in pre-order,
  * then a synthetic `Keyboard` child of Application with the input-method
  * window's bounds. A window of another package above the app that intersects
- * it becomes the snapshot under a synthetic `[0] Alert` root instead, as an
- * iOS system alert does.
+ * it, or a system dialog owner's window standing in for the app's window,
+ * becomes the snapshot under a synthetic `[0] Alert` root instead, as an iOS
+ * system alert does.
  */
 object QaHierarchy {
     const val MAX_NODES = 600
@@ -124,7 +125,8 @@ object QaHierarchy {
         val keyboard = windows
             .filter { it.kind == WindowKind.INPUT_METHOD && !it.bounds.isEmpty }
             .maxByOrNull { it.layer }
-        val top = appWindows.lastOrNull() ?: return null
+        val top = appWindows.lastOrNull()
+            ?: return standInDialog(windows)?.let { Front.Alert(it, keyboard) }
         val foreign = windows
             .filter {
                 (it.kind == WindowKind.APPLICATION || it.kind == WindowKind.SYSTEM) &&
@@ -136,6 +138,12 @@ object QaHierarchy {
             .maxByOrNull { it.layer }
         return if (foreign != null) Front.Alert(foreign, keyboard) else Front.App(appWindows, keyboard)
     }
+
+    // Android drops a window that a touch-modal window in front of it covers, so a system dialog
+    // owner's application window with no app window listed is the dialog standing in for the app.
+    private fun standInDialog(windows: List<RawWindow>): RawWindow? =
+        windows.filter { it.kind == WindowKind.APPLICATION }.maxByOrNull { it.layer }
+            ?.takeIf { it.packageName in SYSTEM_DIALOG_OWNERS }
 
     /**
      * The one enabled node whose text equals a requested label, in a front alert window owned by one of

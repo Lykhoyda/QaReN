@@ -64,7 +64,10 @@ class SystemDialogInstrumentedTest {
 
         assertEquals("Allow", data.getString("tappedLabel"))
         assertTrue(data.getBoolean("alertClosed"))
-        assertEquals(PackageManager.PERMISSION_GRANTED, instrumentation.context.checkSelfPermission(PERMISSION))
+        // The package manager's record, not this process's cached permission read.
+        val grant = shell("dumpsys package $testPackage").lines().map { it.trim() }
+            .single { it.startsWith("$PERMISSION: granted=") }
+        assertTrue(grant, grant.startsWith("$PERMISSION: granted=true") && "USER_SET" in grant)
     }
 
     @Test
@@ -86,9 +89,11 @@ class SystemDialogInstrumentedTest {
             .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TASK)
         instrumentation.context.startActivity(intent)
         val device = UiDevice.getInstance(instrumentation)
-        assertTrue(device.wait(Until.hasObject(By.text(SystemDialogFixtureActivity.TITLE)), 10_000))
-        if (!expectPrompt) return
-        // The prompt's window joins the accessibility window list after the activity draws.
+        if (!expectPrompt) {
+            assertTrue(device.wait(Until.hasObject(By.text(SystemDialogFixtureActivity.TITLE)), 10_000))
+            return
+        }
+        // The prompt replaces the fixture's window in the accessibility window list, so the title is not awaited.
         val deadline = System.currentTimeMillis() + 10_000
         while (frontType() != "Alert" && System.currentTimeMillis() < deadline) Thread.sleep(100)
         assertEquals("Alert", frontType())

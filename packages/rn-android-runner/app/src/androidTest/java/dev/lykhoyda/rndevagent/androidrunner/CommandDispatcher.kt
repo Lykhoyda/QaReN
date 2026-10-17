@@ -130,7 +130,7 @@ class CommandDispatcher(
         }
         if (cmd.optBoolean("qaReadOnly", false)) {
             if (command !in setOf("snapshot", "verifyInput", "isWindowUpdating", "findText", "screenshot", "status") ||
-                appPackage == null || !isPackageForeground(appPackage)
+                appPackage == null || QaHierarchy.front(liveWindows(), appPackage) == null
             ) {
                 return error("ACTION_CONTEXT_CHANGED", "QA read requires the unchanged foreground target; no recovery attempted")
             }
@@ -274,10 +274,9 @@ class CommandDispatcher(
     private var qaSnapshotGeneration = 0
 
     private fun qaSnapshot(appPackage: String): JSONObject {
-        if (!device.wait(Until.hasObject(By.pkg(appPackage)), 10_000)) {
-            throw AccessibilityUnavailableException(
-                "App $appPackage is foreground but absent from UIAutomator accessibility after 10000ms; restart the rn-android-runner session or fix the app's accessibility exposure"
-            )
+        val deadline = SystemClock.uptimeMillis() + 10_000
+        while (QaHierarchy.front(liveWindows(), appPackage) == null && SystemClock.uptimeMillis() < deadline) {
+            SystemClock.sleep(100)
         }
         val live = instrumentation.uiAutomation.windows.map { info ->
             val root = info.root
@@ -285,7 +284,7 @@ class CommandDispatcher(
         }
         val front = QaHierarchy.front(live.map { it.first.second }, appPackage)
             ?: throw AccessibilityUnavailableException(
-                "App $appPackage has no application window in the accessibility window list; refusing an app-less QA snapshot"
+                "App $appPackage is foreground but absent from UIAutomator accessibility after 10000ms; restart the rn-android-runner session or fix the app's accessibility exposure"
             )
         val read = when (front) {
             is QaHierarchy.Front.App -> front.windows.map { it.id }.toSet()

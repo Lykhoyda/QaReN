@@ -342,6 +342,42 @@ class QaHierarchyTest {
         assertFalse(QaHierarchy.closed(before, emptyList(), app))
     }
 
+    private val statusBar = RawWindow(2, WindowKind.SYSTEM, 30, QaHierarchy.SYSTEM_UI_PACKAGE, Bounds(0, 0, 1080, 142), node("StatusBar"))
+
+    @Test fun aSystemDialogStandingInForTheAppWindowIsTheAlert() {
+        val windows = listOf(statusBar, permissionDialog(button("Allow"), button("Don’t allow")))
+        val front = QaHierarchy.front(windows, app)
+        val out = QaHierarchy.assemble(windows, app, display)
+
+        assertEquals(5, (front as QaHierarchy.Front.Alert).window.id)
+        assertEquals(
+            listOf("Alert", "android.widget.LinearLayout", "android.widget.TextView", "android.widget.Button", "android.widget.Button"),
+            out.nodes.map { it.type },
+        )
+        assertFalse(out.eligible)
+        assertEquals(
+            QaHierarchy.DialogMatch.Button(5, listOf(2), "Don’t allow"),
+            QaHierarchy.dialogMatch(front, listOf("Don’t allow"), QaHierarchy.SYSTEM_DIALOG_OWNERS),
+        )
+    }
+
+    @Test fun anotherAppsWindowStandingInForTheAppIsNoSnapshot() {
+        val other = RawWindow(3, WindowKind.APPLICATION, 12, "com.example.other", full, node("Other"))
+        val windows = listOf(statusBar, other, permissionDialog(button("OK"), owner = permissions).copy(layer = 9))
+
+        assertNull(QaHierarchy.front(windows, app))
+    }
+
+    @Test fun theStandInAlertIsClosedOnlyWhenTheAppWindowIsBack() {
+        val prompt = permissionDialog(button("Allow"), button("Don’t allow"))
+        val before = QaHierarchy.front(listOf(statusBar, prompt), app) as QaHierarchy.Front.Alert
+
+        assertTrue(QaHierarchy.closed(before, listOf(statusBar, appWindow(node("A"))), app))
+        assertFalse(QaHierarchy.closed(before, listOf(statusBar, prompt), app))
+        assertFalse(QaHierarchy.closed(before, listOf(statusBar), app))
+        assertFalse(QaHierarchy.closed(before, listOf(statusBar, appWindow(node("A")), permissionDialog(button("Allow"), id = 9)), app))
+    }
+
     private fun appWindow(
         root: RawNode?,
         id: Int = 1,
