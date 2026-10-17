@@ -27,7 +27,7 @@ import {
 } from '../../../dist/handlers/device-interact.js';
 import { createDeviceSnapshotHandler } from '../../../dist/handlers/device-session.js';
 import { createDeviceAcceptSystemDialogHandler } from '../../../dist/handlers/device-system-dialog.js';
-import { clearRefMap } from '../../../dist/fast-runner-ref-map.js';
+import { clearRefMap, updateRefMapFromFlat } from '../../../dist/fast-runner-ref-map.js';
 import {
   REQUIRED_IOS_COMMANDS,
   REQUIRED_IOS_FEATURES,
@@ -360,6 +360,38 @@ for (const handler of [createDeviceScrollHandler, createDeviceSwipeHandler]) {
     assert.equal(context.authorizations, 1);
   });
 }
+
+test('an iOS QA scroll logs its drag, band and keyboard top before the send, numbers only', async () => {
+  session();
+  updateRefMapFromFlat(
+    [
+      { ref: '@w', type: 'Window', rect: { x: 0, y: 0, width: 390, height: 844 } },
+      { ref: '@k', type: 'Keyboard', rect: { x: 0, y: 508, width: 390, height: 336 } },
+    ] as never,
+    { snapshotGeneration: 1, keyboardVisible: true },
+  );
+  const sends = runner(() => ({ ok: false, error: { code: 'FAILED', message: 'unknown effect' } }));
+  const lines: string[] = [];
+  const write = process.stderr.write;
+  process.stderr.write = ((chunk: string) => {
+    lines.push(String(chunk));
+    return true;
+  }) as typeof process.stderr.write;
+  try {
+    await createDeviceScrollHandler()({
+      direction: 'down',
+      within: { x: 0, y: 300, width: 390, height: 200 },
+      qaContext: new QaDispatchContext(10, () => 1),
+    }).catch(() => undefined);
+  } finally {
+    process.stderr.write = write;
+  }
+  assert.deepEqual(sends, ['drag']);
+  assert.deepEqual(
+    lines.filter((line) => line.includes('scroll drag')),
+    ['qaren-core: scroll drag (195,499)->(195,301) band=(0,300,390,200) kb=508 duration=300ms\n'],
+  );
+});
 
 test('scroll catch cannot swallow a send-seam expiry and fall back', async () => {
   session();

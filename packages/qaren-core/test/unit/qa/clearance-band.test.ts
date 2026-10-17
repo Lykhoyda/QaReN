@@ -6,6 +6,7 @@ import {
   clearanceBand,
   clearanceScroll,
   keyboardClearance,
+  KEYBOARD_EDGE_INSET,
 } from '../../../dist/qa/resolve.js';
 import { join } from '../../../dist/qa/screen.js';
 import type { NativeNode, Screen } from '../../../dist/qa/screen.js';
@@ -109,13 +110,13 @@ test('a sticky footer over the list ends the clearance band at its top', () => {
   });
 });
 
-test('without an overlay the band is the list above the keyboard', () => {
+test('without an overlay the band is the list clear of the keyboard edge', () => {
   const screen = form([], false);
   assert.deepEqual(clearanceBand(field7(screen), screen), {
     x: 0,
     y: 300,
     width: 1080,
-    height: 1100,
+    height: 1400 - KEYBOARD_EDGE_INSET - 300,
   });
 });
 
@@ -134,7 +135,7 @@ test("rows inside the target's own list never shrink the band", () => {
     rect: { x: 40, y, width: 1000, height: 80 },
   });
   for (const [y, footer, height] of [
-    [1300, false, 1100],
+    [1300, false, 1400 - KEYBOARD_EDGE_INSET - 300],
     [1100, true, 850],
   ] as const) {
     const screen = form([row('@field6', 10, y)], footer);
@@ -157,7 +158,7 @@ test('a narrow floating button never shrinks the band', () => {
     ],
     false,
   );
-  assert.deepEqual(clearanceBand(field7(screen), screen)?.height, 1100);
+  assert.deepEqual(clearanceBand(field7(screen), screen)?.height, 1400 - KEYBOARD_EDGE_INSET - 300);
 });
 
 test('a sticky header across the band top raises the band below it', () => {
@@ -338,15 +339,16 @@ test("(t) rows of the target's own list never shrink its band, even as direct ch
   const screen = parked();
   assert.deepEqual(clearanceBand(byRef(screen, '@option-20'), screen), {
     ...IOS_LIST,
-    height: 211,
+    height: 568 - 48 - 357,
   });
 });
 
-test('(u) one clearance swipe spans the band and covers the lift the parked row needs', () => {
+// One swipe lifts at most the band (161 pt); option 20 parked 184 pt under the keyboard is past the single-swipe rule.
+test('(u) one clearance swipe spans the band clear of the keyboard edge', () => {
   const screen = parked();
   const target = byRef(screen, '@option-20');
   const distance = keyboardClearance(target, screen);
-  assert.equal(distance, 289.5);
+  assert.equal(distance, 752 - (357 + 163 / 2));
   clearRefMap();
   updateRefMapFromFlat(
     [
@@ -363,8 +365,8 @@ test('(u) one clearance swipe spans the band and covers the lift the parked row 
       distance,
       clearanceBand(target, screen),
     ).map(Number);
-    assert.deepEqual([y1, y2], [567, 358]);
-    assert.ok(y1 - y2 > 752 - 568, `${y1 - y2}`);
+    assert.deepEqual([y1, y2], [519, 358]);
+    assert.ok(y1 - y2 < 752 - 568, `${y1 - y2}`);
   } finally {
     clearRefMap();
   }

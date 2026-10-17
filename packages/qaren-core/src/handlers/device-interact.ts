@@ -2246,6 +2246,10 @@ export function createDeviceScrollHandler(): (args: ScrollArgs) => Promise<ToolR
     // live runner before this fast-path gate.
     if (!args.qaContext) adoptPersistedFastRunnerState(getActiveSession()?.deviceId);
     if ((!args.qaContext || getActiveSession()?.platform === 'ios') && isFastRunnerAvailable()) {
+      if (args.qaContext)
+        process.stderr.write(
+          `qaren-core: scroll drag (${x1},${y1})->(${x2},${y2}) band=(${band.x ?? 0},${band.y ?? 0},${band.width},${band.height}) kb=${getKeyboardTop() ?? 'none'} duration=${DEFAULT_SWIPE_DURATION_MS}ms\n`,
+        );
       try {
         const bundleId = getActiveSession()?.appId ?? resolveBundleId('ios') ?? undefined;
         const resp = await fastSwipe(

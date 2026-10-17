@@ -411,13 +411,19 @@ export function keyboardClearance(element: Element, screen: Screen): number | un
 const sameRect = (a: NativeNode['rect'], b: NativeNode['rect']): boolean =>
   !!a && !!b && a.x === b.x && a.y === b.y && a.width === b.width && a.height === b.height;
 
+// shortcut: 48 clears the ~17 pt measured on iOS between the keyboard's visible top and its reported frame, so a drag never starts on the keyboard; read the keyboard window frame from the runner if a cut band still misses.
+export const KEYBOARD_EDGE_INSET = 48;
+
 // The part of a target's clip a finger can touch: above a visible keyboard, between sticky overlays.
 export function clearanceBand(element: Element, screen: Screen): NativeNode['rect'] {
   const viewport = elementViewport(element);
   if (!viewport) return undefined;
   const keyboard = screen.keyboardVisible !== false ? screen.keyboardFrame : undefined;
   let top = viewport.y;
-  let bottom = Math.min(viewport.y + viewport.height, keyboard?.y ?? Infinity);
+  let bottom = Math.min(
+    viewport.y + viewport.height,
+    keyboard ? keyboard.y - KEYBOARD_EDGE_INSET : Infinity,
+  );
   const lineage = new Set<Element>([element, ...ancestorsOf(element)]);
   const container = ancestorsOf(element).find(isScrollContainer);
   const behind = container ? screen.elements.indexOf(container) : 0;
@@ -483,7 +489,7 @@ export function scrollUntilBand(target: Target, screen: Screen): NativeNode['rec
     screen.keyboardVisible !== false && screen.keyboardFrame ? screen.keyboardFrame.y : Infinity;
   const aboveKeyboard = (rect: NativeNode['rect']): NativeNode['rect'] => {
     if (!rect) return undefined;
-    const height = Math.min(rect.y + rect.height, keyboardTop) - rect.y;
+    const height = Math.min(rect.y + rect.height, keyboardTop - KEYBOARD_EDGE_INSET) - rect.y;
     return rect.width > 0 && height > 0 ? { ...rect, height } : undefined;
   };
   const matches = exactIdentities(screen, target, 'scroll');

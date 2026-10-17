@@ -2,7 +2,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { parseStep } from '../../../dist/qa/plan.js';
-import { clearanceBand, scrollUntilBand } from '../../../dist/qa/resolve.js';
+import { KEYBOARD_EDGE_INSET, clearanceBand, scrollUntilBand } from '../../../dist/qa/resolve.js';
 import { join } from '../../../dist/qa/screen.js';
 import { buildDirectionalScrollCliArgs } from '../../../dist/handlers/device-interact.js';
 import { clearRefMap, updateRefMapFromFlat } from '../../../dist/fast-runner-ref-map.js';
@@ -66,11 +66,17 @@ test('(a) an absent target drags inside the sheet list, not at the screen centre
   assert.deepEqual(scrollUntilBand(option20, androidSheet()), LIST);
 });
 
-test('(b) a keyboard cutting the list keeps only the part above it', () => {
+test('(b) a keyboard cutting the list keeps only the part clear of its edge', () => {
   assert.deepEqual(scrollUntilBand(option20, androidSheet([keyboard(7)])), {
     ...LIST,
-    height: 230,
+    height: 1500 - 48 - 1270,
   });
+});
+
+test('(aa) the keyboard-edge inset is platform-neutral and leaves a list ending above the keyboard alone', () => {
+  const cut = androidSheet([{ ...keyboard(7), rect: { x: 0, y: 1541, width: 1080, height: 883 } }]);
+  assert.deepEqual(scrollUntilBand(option20, cut), { ...LIST, height: 1541 - 48 - 1270 });
+  assert.deepEqual(scrollUntilBand(option20, androidOptionSheet()), ANDROID_LIST);
 });
 
 test('(c) a resolved covered target drags inside its own clip band', () => {
@@ -114,7 +120,7 @@ test('(c) a resolved covered target drags inside its own clip band', () => {
   const target = screen.elements[3];
   const band = scrollUntilBand(until('Scroll down until "go"'), screen);
   assert.deepEqual(band, clearanceBand(target, screen));
-  assert.deepEqual(band, { x: 0, y: 300, width: 400, height: 200 });
+  assert.deepEqual(band, { x: 0, y: 300, width: 400, height: 500 - 48 - 300 });
 });
 
 test('(d) a screen without a scroll container keeps the band centre', () => {
@@ -316,10 +322,11 @@ test('(r) an offscreen target ignores overlays, a covered row still stops at a f
   });
 });
 
-test('(v) an iOS row below a stretched list drags across the whole band above the keyboard', () => {
+test('(v) an iOS row below a stretched list drags across the band, clear of the keyboard edge', () => {
   const screen = iosOptionSheet(1381);
   const band = scrollUntilBand(until('Scroll down until "qa-sheet-capture-option-17"'), screen)!;
-  assert.deepEqual(band, { ...IOS_LIST, height: 211 });
+  assert.deepEqual(band, { ...IOS_LIST, height: 568 - 48 - 357 });
   const [, y1, , y2] = bandDrag(band, { width: 402, height: 874 }, 568);
-  assert.deepEqual([y1, y2], [567, 358]);
+  assert.deepEqual([y1, y2], [519, 358]);
+  assert.ok(y1 <= 568 - KEYBOARD_EDGE_INSET, `${y1}`);
 });

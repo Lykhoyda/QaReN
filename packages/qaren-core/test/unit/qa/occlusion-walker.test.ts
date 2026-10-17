@@ -433,7 +433,7 @@ for (const [name, screens, calls, clearances, typed] of [
     'clears with one overlap-sized scroll before its tap',
     [700, 300],
     ['scroll down', 'press @target'],
-    [472],
+    [496],
     1,
   ],
   ['is tapped without a scroll when uncovered', [300], ['press @target'], [], 1],
@@ -441,7 +441,7 @@ for (const [name, screens, calls, clearances, typed] of [
     'refuses without a tap when still covered after one scroll',
     [700, 650],
     ['scroll down'],
-    [472],
+    [496],
     0,
   ],
 ] as const) {
@@ -877,7 +877,7 @@ test('the iOS keyboard clearance scroll carries the overlap distance', async () 
   };
   const outcome = await walkBlock(block('1. Fill "field" with "x"\n'), f.deps);
   assert.equal(outcome.block.outcome, 'pass');
-  assert.deepEqual(clearances, [472]);
+  assert.deepEqual(clearances, [496]);
 });
 
 test('O5: a target still covered after one scroll refuses with no dispatch', async () => {
@@ -972,7 +972,7 @@ test('a keyboard-covered row of a list stretched under the keyboard is lifted in
     'press @target',
     'capture',
   ]);
-  assert.deepEqual(bands, [{ x: 0, y: 300, width: 400, height: 200 }]);
+  assert.deepEqual(bands, [{ x: 0, y: 300, width: 400, height: 500 - 48 - 300 }]);
 });
 
 const listOnly = (): Screen =>
@@ -1009,7 +1009,7 @@ test('(h) scroll-until with a covered target drags inside its clip band', async 
   const bands = recordingScrolls(f);
   const outcome = await walkBlock(block('1. Scroll down until "go"\n'), f.deps);
   assert.equal(outcome.block.outcome, 'pass');
-  assert.deepEqual(bands, [{ x: 0, y: 300, width: 400, height: 200 }]);
+  assert.deepEqual(bands, [{ x: 0, y: 300, width: 400, height: 500 - 48 - 300 }]);
 });
 
 // An Android keyboard form: a ScrollView list from 300 under the keyboard (1400) and a sticky Submit footer sibling 1150-1400.
@@ -1275,10 +1275,12 @@ test('(s) scroll-until toward a row scrolled out of the sheet list drags inside 
   assert.deepEqual(bands, [ANDROID_LIST]);
 });
 
+// One swipe travels 161 pt and the band ends at 520: option 20 parked with its centre at 672 comes clear, at 752 it stays covered.
 for (const moved of [true, false]) {
   test(`(x) a row parked under the keyboard gets one full-band clearance swipe (${moved ? 'reached' : 'out of reach'})`, async () => {
-    const parked = covered(iosOptionSheet(528));
-    const after = covered(iosOptionSheet(moved ? 528 - 209 : 528));
+    const row17 = moved ? 448 : 528;
+    const parked = covered(iosOptionSheet(row17));
+    const after = covered(iosOptionSheet(row17 - 161));
     const f = fake(moved ? [parked, after, after, done()] : [parked, after], {});
     const seen: unknown[] = [];
     const scroll = f.deps.scroll;
@@ -1287,7 +1289,9 @@ for (const moved of [true, false]) {
       return scroll(direction, context, clearance, within);
     };
     const outcome = await walkBlock(block('1. Tap "qa-sheet-capture-option-20"\n'), f.deps);
-    assert.deepEqual(seen, [{ clearance: 289.5, within: { ...IOS_LIST, height: 211 } }]);
+    assert.deepEqual(seen, [
+      { clearance: row17 + 224 - (357 + 163 / 2), within: { ...IOS_LIST, height: 163 } },
+    ]);
     if (moved) {
       assert.equal(outcome.block.outcome, 'pass');
       assert.deepEqual(

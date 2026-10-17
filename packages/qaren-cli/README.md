@@ -528,8 +528,8 @@ keyboard dismissal; QA must freshly prove the keyboard hidden and the intended
 screen preserved before treating the press as clearance. Ordinary covered content
 uses the same recovery as a native occlusion refusal.
 The walker handles this refusal with one directional scroll toward the centre
-of the target's visible clip band: its trusted clipping viewport cut off at the
-top of an observed keyboard unless the keyboard is proven hidden, and between
+of the target's visible clip band: its trusted clipping viewport cut off 48 pt
+above the top of an observed keyboard unless the keyboard is proven hidden, and between
 sticky overlays. A touchable, non-text element at least half the clip's width,
 outside the target's own scroll content and drawn after it, that crosses the
 band's bottom edge ends the band at its top (a sticky footer); one across the
@@ -545,9 +545,10 @@ toward the middle of that band, and the drag may span the band with both endpoin
 at least one pixel inside its edges after rounding. A clearance scroll without
 a band keeps the cap of 60% of the screen area above the keyboard.
 Scrolls without a clearance distance keep the fixed amount of `0.6` on the window
-band; inside a caller band they span the band a pixel inside each edge, so one
-scroll-until attempt moves the list by one visible band and cannot carry the
-target past it. A band shorter than 50 px refuses `SCROLL_BAND_TOO_SMALL` before
+band; inside a caller band they span the band a pixel inside each edge, except
+a keyboard-bound edge, which the band clears by 48 pt so the drag never starts on
+the keyboard. One scroll-until attempt moves the list by one visible band and
+cannot carry the target past it. A band shorter than 50 px refuses `SCROLL_BAND_TOO_SMALL` before
 anything is sent, because a drag under the touch slop would land as a tap.
 Successful iOS fast-runner scrolls now run the same bounded settle wait as taps
 before returning: screen-static probing with snapshot-equality fallback. Results
