@@ -1630,7 +1630,9 @@ for (const belowFold of [true, false]) {
     );
     assert.deepEqual(
       prepareTarget(fill('custom-pressable'), joined),
-      belowFold ? { scroll: 'down' } : { ref: '@input', element: joined.elements[1] },
+      belowFold
+        ? { scroll: 'down', element: joined.elements[1] }
+        : { ref: '@input', element: joined.elements[1] },
     );
     assert.equal(keyboardFallbackTarget(fill('custom-pressable'), joined), undefined);
   });
@@ -1643,7 +1645,7 @@ test('pressing a React-only input still requests scrolling', () => {
       { kind: 'press', target: { quoted: 'custom-pressable', phrase: 'custom-pressable' } },
       joined,
     ),
-    { scroll: 'down' },
+    { scroll: 'down', element: joined.elements.find((e) => e.ref === 'react:custom-pressable') },
   );
 });
 

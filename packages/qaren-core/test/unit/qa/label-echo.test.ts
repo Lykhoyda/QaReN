@@ -327,7 +327,10 @@ for (const [y, direction] of [
     for (const exact of [undefined, 'text'] as const) {
       const target = { ...press.target, exact };
       assert.equal(exactIdentities(screen, target, 'press')[0].element.ref, '@offscreen');
-      assert.deepEqual(prepareTarget({ ...press, target }, screen), { scroll: direction });
+      assert.deepEqual(prepareTarget({ ...press, target }, screen), {
+        scroll: direction,
+        element: exactIdentities(screen, target, 'press')[0].element,
+      });
     }
   });
 }

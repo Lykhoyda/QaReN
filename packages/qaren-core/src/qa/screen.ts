@@ -17,6 +17,7 @@ import {
   clippingViewport,
   duplicateNodes,
   frameContradictions,
+  isScrollContainerType,
   navigationTitles,
   offscreenNodes,
   outsideViewport,
@@ -114,6 +115,8 @@ const elementFrames = new WeakMap<Element, NonNullable<NativeNode['rect']>>();
 const nativeAncestors = new WeakMap<Element, Element[]>();
 const elementViewports = new WeakMap<Element, NonNullable<NativeNode['rect']>>();
 const keyboardCoveredElements = new WeakSet<Element>();
+// Native scroll containers (iOS names, Android class suffixes); only native-backed elements are ever members.
+const scrollContainers = new WeakMap<Element, string>();
 // Press/fill from the element's own React evidence, without the screen-wide capability gaps.
 const localCapabilities = new WeakMap<
   Element,
@@ -122,6 +125,14 @@ const localCapabilities = new WeakMap<
 
 export function keyboardCoversElement(element: Element): boolean {
   return keyboardCoveredElements.has(element);
+}
+
+export function isScrollContainer(element: Element): boolean {
+  return scrollContainers.has(element);
+}
+
+export function scrollContainerType(element: Element): string | undefined {
+  return scrollContainers.get(element);
 }
 
 export function labelAncestorsOf(element: Element): readonly Element[] {
@@ -985,6 +996,7 @@ export function join(
     if (ancestors.length) nativeAncestors.set(elements[i], ancestors);
     const bounds = clippingViewport(viewport, i);
     if (bounds) elementViewports.set(elements[i], bounds);
+    if (isScrollContainerType(n.type)) scrollContainers.set(elements[i], n.type!);
     if (duplicates.has(i) || elements[i].kind !== 'text') return;
     for (let p = n.parentIndex; p !== undefined && p >= 0 && p < i; p = nodes[p].parentIndex)
       textDescendants.set(p, [...(textDescendants.get(p) ?? []), i]);

@@ -148,7 +148,7 @@ function within(rect: Rect, visible: Rect): boolean {
   );
 }
 
-function clip(a: Rect, b: Rect | undefined): Rect {
+export function clip(a: Rect, b: Rect | undefined): Rect {
   if (!b) return a;
   const x = Math.max(a.x, b.x);
   const y = Math.max(a.y, b.y);

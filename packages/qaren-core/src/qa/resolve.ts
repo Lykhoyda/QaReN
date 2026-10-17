@@ -16,6 +16,8 @@ import {
   elementFrame,
   elementViewport,
   forwardedInputOf,
+  isScrollContainer,
+  scrollContainerType,
   semanticActionView,
   semanticDisabled,
   visibilityView,
@@ -46,12 +48,13 @@ import {
   privateCheckSubjects,
 } from './privacy.js';
 import { literalEvidence, literalTextProjection, type LiteralVerdict } from './evidence.js';
+import { clip } from './native-presence.js';
 
 export { ACT, CHECK } from './questions.js';
 export const MAX_CANDIDATES = 30;
 export type Resolution =
   | { ref: string; element: Element }
-  | { scroll: 'down' | 'up' }
+  | { scroll: 'down' | 'up'; element?: Element }
   | { refuse: string; reason: string };
 
 export class ResolutionError extends Error {
@@ -312,9 +315,10 @@ export function bindFillIdentity(
   return fallback ? { kind: 'fallback', fallback } : undefined;
 }
 
-function scrollTo(element: Element): { scroll: 'up' | 'down' } {
+function scrollTo(element: Element): { scroll: 'up' | 'down'; element: Element } {
   const frame = elementFrame(element);
   return {
+    element,
     scroll: frame && frame.y + frame.height <= (elementViewport(element)?.y ?? 0) ? 'up' : 'down',
   };
 }
@@ -409,17 +413,27 @@ export function keyboardClearance(element: Element, screen: Screen): number | un
 const sameRect = (a: NativeNode['rect'], b: NativeNode['rect']): boolean =>
   !!a && !!b && a.x === b.x && a.y === b.y && a.width === b.width && a.height === b.height;
 
+// shortcut: 48 clears the ~17 pt measured on iOS between the keyboard's visible top and its reported frame, so a drag never starts on the keyboard; read the keyboard window frame from the runner if a cut band still misses.
+export const KEYBOARD_EDGE_INSET = 48;
+
 // The part of a target's clip a finger can touch: above a visible keyboard, between sticky overlays.
 export function clearanceBand(element: Element, screen: Screen): NativeNode['rect'] {
   const viewport = elementViewport(element);
   if (!viewport) return undefined;
   const keyboard = screen.keyboardVisible !== false ? screen.keyboardFrame : undefined;
   let top = viewport.y;
-  let bottom = Math.min(viewport.y + viewport.height, keyboard?.y ?? Infinity);
+  let bottom = Math.min(
+    viewport.y + viewport.height,
+    keyboard ? keyboard.y - KEYBOARD_EDGE_INSET : Infinity,
+  );
   const lineage = new Set<Element>([element, ...ancestorsOf(element)]);
-  for (const other of screen.elements) {
+  const container = ancestorsOf(element).find(isScrollContainer);
+  const behind = container ? screen.elements.indexOf(container) : 0;
+  for (const [i, other] of screen.elements.entries()) {
     // An overlay is a touchable non-text element outside the target's own lineage whose frame straddles a band edge.
     if (lineage.has(other) || other.kind === 'text' || other.offscreen || !other.hittable) continue;
+    // Rows of the target's own list, and anything drawn before that list, lie under it, never over it.
+    if (i < behind || (container && ancestorsOf(other).includes(container))) continue;
     if (
       ancestorsOf(other).some(
         (a) => lineage.has(a) && a !== element && sameRect(elementViewport(a), viewport),
@@ -461,6 +475,42 @@ export function scrollUntilDirection(
     frame.y < viewport.y + viewport.height &&
     viewport.y < frame.y + frame.height;
   return inside ? clearanceScroll(element, screen) : scrollTo(element).scroll;
+}
+
+// Android containers that scroll only sideways cannot move a vertical scroll-until target.
+const HORIZONTAL_ONLY_SUFFIXES = ['HorizontalScrollView', 'ViewPager2', 'ViewPager'];
+function horizontalOnlyContainer(type: string | undefined): boolean {
+  const leaf = (type ?? '').slice((type ?? '').lastIndexOf('.') + 1);
+  return HORIZONTAL_ONLY_SUFFIXES.some((suffix) => leaf.endsWith(suffix));
+}
+
+// Covered inside its clip: its clearance band. Scrolled out of it: the clip itself is the list to
+// move. Otherwise the frontmost visible scroll container above the keyboard.
+export function scrollUntilBand(target: Target, screen: Screen): NativeNode['rect'] {
+  const keyboardTop =
+    screen.keyboardVisible !== false && screen.keyboardFrame ? screen.keyboardFrame.y : Infinity;
+  const aboveKeyboard = (rect: NativeNode['rect']): NativeNode['rect'] => {
+    if (!rect) return undefined;
+    const height = Math.min(rect.y + rect.height, keyboardTop - KEYBOARD_EDGE_INSET) - rect.y;
+    return rect.width > 0 && height > 0 ? { ...rect, height } : undefined;
+  };
+  const matches = exactIdentities(screen, target, 'scroll');
+  if (matches.length === 1) {
+    const element = matches[0].element;
+    if (!element.offscreen) return clearanceBand(element, screen);
+    const own = aboveKeyboard(elementViewport(element));
+    if (own) return own;
+  }
+  let best: NativeNode['rect'];
+  for (const element of screen.elements) {
+    if (!isScrollContainer(element) || horizontalOnlyContainer(scrollContainerType(element)))
+      continue;
+    const frame = elementFrame(element);
+    if (!frame) continue;
+    // Element order is the runner's traversal: later windows are frontmost, children follow parents.
+    best = aboveKeyboard(clip(frame, elementViewport(element))) ?? best;
+  }
+  return best;
 }
 
 export function decideTarget(prepared: TargetQuestion, answer: Answer | undefined): Resolution {
