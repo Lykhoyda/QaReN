@@ -186,14 +186,24 @@ test('stale Android runners without scoped exact-interaction semantics are rejec
   assert.deepEqual(classifyAndroidHealth(common), {
     compatible: false,
     reason: 'missing-features',
-    missing: ['APP_SCOPED_EXACT_INTERACTION', 'FILL_EVIDENCE_V1', 'DISPATCH_OCCLUSION_GUARD_V1'],
+    missing: [
+      'APP_SCOPED_EXACT_INTERACTION',
+      'FILL_EVIDENCE_V1',
+      'DISPATCH_OCCLUSION_GUARD_V1',
+      'SYSTEM_ALERT_TAP_V1',
+    ],
   });
   assert.deepEqual(
     classifyRunnerCompatibility(common, null, REQUIRED_ANDROID_COMMANDS, REQUIRED_ANDROID_FEATURES),
     {
       compatible: false,
       reason: 'missing-features',
-      missing: ['APP_SCOPED_EXACT_INTERACTION', 'FILL_EVIDENCE_V1', 'DISPATCH_OCCLUSION_GUARD_V1'],
+      missing: [
+        'APP_SCOPED_EXACT_INTERACTION',
+        'FILL_EVIDENCE_V1',
+        'DISPATCH_OCCLUSION_GUARD_V1',
+        'SYSTEM_ALERT_TAP_V1',
+      ],
     },
   );
   assert.deepEqual(

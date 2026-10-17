@@ -60,6 +60,7 @@ pub enum FailureCode {
     PlanStepFailed,
     MetroOriginMismatch,
     CoreRefused,
+    BlockStartMissing,
     JevUnreachable,
     JevAuthFailed,
     JevRequestInvalid,
@@ -95,6 +96,7 @@ impl FailureCode {
                 | FailureCode::PlatformUnsupported
                 | FailureCode::MetroOriginMismatch
                 | FailureCode::CoreRefused
+                | FailureCode::BlockStartMissing
                 | FailureCode::JevUnreachable
                 | FailureCode::JevAuthFailed
                 | FailureCode::JevRequestInvalid

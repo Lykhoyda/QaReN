@@ -25,6 +25,10 @@ On the next run, a block whose plan lines, platform and app are unchanged is rep
 stored identities. Quoted targets and literal checks make no Jev calls on replay; phrase checks
 still ask Jev.
 
+Start declarations retain their plan target on replay; see the authoritative
+[saved-block contract](https://github.com/Lykhoyda/rn-dev-agent/blob/develop/packages/qaren-cli/README.md#saved-blocks)
+for start waits and refusal behavior.
+
 | Situation                                                        | Outcome                                                         |
 | ---------------------------------------------------------------- | --------------------------------------------------------------- |
 | A stored identity resolves                                       | The step replays                                                |

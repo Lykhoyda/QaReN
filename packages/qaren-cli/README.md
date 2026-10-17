@@ -712,8 +712,19 @@ Dialog steps require one unconditional accept or dismiss action, such as
 `Accept the permission dialog` or `Dismiss the alert`. Conditions, negation and
 multiple actions, such as `Accept the dialog if it appears` or
 `Do not dismiss the alert`, refuse before allocation; Jev cannot override this restriction.
-On Android, dialog steps and dialog recovery refuse `TARGET_UNSUPPORTED`
-before calling a driver in this release.
+On Android, a dialog step or dialog recovery has the runner tap exactly one
+enabled button whose text equals the chosen label, in the front window above the
+app, or the window standing in for the app's window, when the permission
+controller or `android` owns it; another app's window never matches. The step passes only when the runner reports that label tapped,
+that window gone and the app in front again, and it never falls back to
+Maestro. No such dialog, or no enabled text match in the runner, refuses
+`NO_SYSTEM_DIALOG`; two or more matching buttons refuse `TARGET_AMBIGUOUS`,
+all before tapping. A button that is not exposed to accessibility is never
+tapped by coordinates. Dismiss steps recognize both `Don't allow` and
+`Don’t allow`. The Android `systemAlertTap` command requires
+`SYSTEM_ALERT_TAP_V1`; the client refuses `RUNNER_COMMANDS_STALE` before
+dispatch if the active runner lacks it. Reopen the device session to rebuild
+before retrying.
 
 Android QA reads take one live traversal of the accessibility windows instead
 of the window dump that device tools keep: an `Application` root with the
@@ -729,7 +740,11 @@ did not change, the step's failure says the keyboard did not open. The runner's
 report never decides a step on its own; the screen comparison does. A window of
 another package above the app that intersects it, such as a permission dialog
 or another app, becomes the snapshot under an `Alert` root, so literal steps
-see a front dialog; the status and navigation bars do not count. A node not
+see a front dialog; the status and navigation bars do not count. When no app
+window is listed and the topmost application window belongs to the permission
+controller or `android`, as with the notification permission prompt on Android
+13 and later, that window stands in for the app's and becomes the `Alert`
+snapshot; any other topmost window leaves no read. A node not
 visible to the user counts as off screen, so a quoted step never passes on a
 scrolled-out control. A node the traversal cannot read is counted as dropped,
 and more than 600 nodes truncate the read; either leaves the capture
@@ -747,18 +762,22 @@ button by exact label, so `Allow` never matches `Allow Once`, and the runner
 taps that button element itself. It never taps a coordinate through the app or
 activates the app first. The step passes only when the runner reports that exact
 label tapped and the alert absent from a successful read of every system alert
-and sheet. A completed tap it cannot prove fails with `DIALOG_TAP_UNPROVEN`, and
-a tap that raised in the runner fails `ACTION_OUTCOME_UNCERTAIN`; neither is
-retried, even if the screen changed. A runner refusal before tapping
+and sheet. A runner refusal before tapping
 (`SYSTEM_ALERT_BUTTON_NOT_FOUND`, `SYSTEM_ALERT_BUTTON_AMBIGUOUS`,
 `SYSTEM_ALERT_CHANGED`) keeps its code. A runner without `SYSTEM_ALERT_TAP_V1`
-refuses `RN_FAST_RUNNER_STALE` without tapping. The proven label and frame land on
-the ledger row as `dialog`, in the receipt's `ledger.dialogs`, and in a
-value-free `dialog-tap` run-log line. The button lists are English. A localized
-alert fails `DIALOG_BUTTON_NOT_FOUND` rather than guessing. The permission
-outcome itself is the app's to show: assert it with the plan's next step.
+refuses `RN_FAST_RUNNER_STALE` without tapping.
 In-app alerts that are not SpringBoard-owned still use a text tap and need a
 screen change to pass.
+
+On both platforms, a completed system-dialog tap without a matching
+`tappedLabel`, a valid `tappedRect` and `alertClosed: true` fails with
+`DIALOG_TAP_UNPROVEN`; an uncertain dispatch fails `ACTION_OUTCOME_UNCERTAIN`.
+Neither is retried, even if the screen changed. The proven label and frame land
+on the ledger row as `dialog`, in the receipt's `ledger.dialogs`, and in a
+value-free `dialog-tap` run-log line. The button lists are English; a snapshot
+with no recognized label fails `DIALOG_BUTTON_NOT_FOUND` rather than guessing,
+including localized labels. The permission outcome itself is the app's to show:
+assert it with the plan's next step.
 
 Unparseable lines refuse before allocation; unresolved screen targets refuse during the walk.
 Native platform presence establishes observed presence, not complete visual exposure
@@ -1336,6 +1355,9 @@ The host process table is streamed without a total-output byte cap, so its size
 alone does not refuse admission.
 A driver targeting it is busy; a driver can coexist only when kernel executable
 identity and exact arguments prove that it targets other simulators exclusively.
+An `xcodebuild` whose kernel identity and exact arguments show neither a `test`
+nor a `test-without-building` action cannot drive a simulator and coexists; if
+its arguments name the selected simulator's ID, admission refuses `DEVICE_BUSY`.
 An unscoped Maestro MCP controller can coexist when its Java executable and
 exact MCP arguments are attested; its command-line spelling alone is insufficient.
 Unknown identity or scope for an automation candidate, or an incomplete process table, refuses.
@@ -1389,6 +1411,15 @@ activity log records the text of fields it queries, including typed values.
 bundles can remain on disk until the next runner launch performs this cleanup.
 
 ### Saved blocks
+
+Open a block that continues a journey with `starts on: <testID or text>` before its
+steps. The value is literal, with optional quotes, and becomes the block's first
+wait in the ledger and saved YAML. On a fresh walk and replay, QaReN waits up to
+15 seconds for that screen before acting; an absent start refuses at that line with
+`failure.code: BLOCK_START_MISSING` and exit code 4, without dispatching the block's
+actions: reach that screen before this block or re-record it. Uncertain visibility
+retains its screen-evidence refusal instead.
+Previously saved blocks with this declaration walk once and save the leading wait.
 
 Block IDs come from their `###` titles; a headingless block uses the plan's `#`
 title, or `plan` when absent. The [parser's `slugify`](../qaren-core/src/qa/plan.ts)

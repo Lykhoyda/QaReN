@@ -431,12 +431,69 @@ const xcodeIdentity = (executable = spacedXcode, pid = 20) => ({
   executable,
 });
 
-test('direct Xcode spelling correction preserves the six admission outcomes', async (t) => {
+test('direct Xcode spelling correction preserves the admission outcomes', async (t) => {
   const absolute = spacedXcode.replace('Xcode 26.app', 'Xcode.app');
-  for (const [name, argv, expected] of [
+  for (const [name, argv, expected, executable = argv[0]] of [
     ['bare build', ['xcodebuild', 'build', '-scheme', 'Example'], 'clear'],
-    ['absolute build', [absolute, 'build', '-scheme', 'Example'], 'unknown'],
-    ['spaced build', [spacedXcode, 'build', '-scheme', 'Example'], 'unknown'],
+    ['absolute build', [absolute, 'build', '-scheme', 'Example'], 'clear'],
+    ['spaced build', [spacedXcode, 'build', '-scheme', 'Example'], 'clear'],
+    [
+      'generic build',
+      [
+        absolute,
+        '-workspace',
+        'App.xcworkspace',
+        '-scheme',
+        'App',
+        '-configuration',
+        'Debug',
+        '-sdk',
+        'iphonesimulator',
+        '-destination',
+        'generic/platform=iOS Simulator',
+        '-derivedDataPath',
+        '/tmp/dd',
+      ],
+      'clear',
+    ],
+    [
+      'build other destination',
+      [absolute, 'build', '-scheme', 'App', '-destination', `id=${OTHER}`],
+      'clear',
+    ],
+    [
+      'build named destination',
+      [
+        absolute,
+        'build',
+        '-scheme',
+        'App',
+        '-destination',
+        'platform=iOS Simulator,name=iPhone 17',
+      ],
+      'clear',
+    ],
+    [
+      'build selected destination',
+      [absolute, 'build', '-scheme', 'App', '-destination', `id=${UDID}`],
+      'busy',
+    ],
+    [
+      'build mixed selected destination',
+      [
+        spacedXcode,
+        'build',
+        '-destination',
+        'generic/platform=iOS Simulator',
+        '-destination',
+        `platform=iOS Simulator,id=${UDID.toLowerCase()}`,
+      ],
+      'busy',
+    ],
+    ['archive', [absolute, 'archive', '-scheme', 'App'], 'clear'],
+    ['build for testing', [absolute, 'build-for-testing', '-scheme', 'App'], 'clear'],
+    ['aliased build', ['/opt/bin/xcodebuild', 'build', '-scheme', 'App'], 'clear', absolute],
+    ['build with scheme named test', [absolute, 'build', '-scheme', 'test'], 'unknown'],
     ['absolute other test', xcodeArgv(OTHER, 'test', absolute), 'clear'],
     ['spaced other test', xcodeArgv(), 'clear'],
     ['absolute selected test', xcodeArgv(UDID, 'test', absolute), 'busy'],
@@ -450,7 +507,7 @@ test('direct Xcode spelling correction preserves the six admission outcomes', as
           calls.push(withArgv);
           assert.ok(timeout > 0 && timeout <= 1_000);
           assert.equal(inspection, undefined);
-          return { ...xcodeIdentity(argv[0], pid), ...(withArgv ? { argv } : {}) };
+          return { ...xcodeIdentity(executable, pid), ...(withArgv ? { argv } : {}) };
         },
       );
       assert.equal(result, expected);
@@ -458,7 +515,7 @@ test('direct Xcode spelling correction preserves the six admission outcomes', as
         calls,
         name === 'bare build' || name === 'absolute selected test'
           ? []
-          : name === 'absolute other test'
+          : name === 'absolute other test' || name === 'build with scheme named test'
             ? [true]
             : [undefined, true],
       );
@@ -499,7 +556,7 @@ test('unresolved direct Xcode tests require exact complete destination pairs', a
   }
 });
 
-test('unresolved Xcode refuses unsupported or inconsistent exact argv', async (t) => {
+test('unresolved Xcode refuses unattested argv and tests without exact scope', async (t) => {
   const valid = xcodeArgv();
   const invalid: Array<[string, unknown, string?]> = [
     ['missing', undefined],
@@ -515,11 +572,7 @@ test('unresolved Xcode refuses unsupported or inconsistent exact argv', async (t
     ['extra operand', [...valid, 'Example']],
     ['unknown option', [...valid, '-scheme', 'Example']],
     ['option operand is test', [spacedXcode, '-unknown', ...valid.slice(1)]],
-    ['default action', [spacedXcode, ...valid.slice(2)]],
     ['multiple actions', [...valid, 'test-without-building']],
-    ['build', [spacedXcode, 'build', ...valid.slice(2)]],
-    ['build for testing', [spacedXcode, 'build-for-testing', ...valid.slice(2)]],
-    ['unknown action', [spacedXcode, 'unknown-action', ...valid.slice(2)]],
     ['argv zero mismatch', ['/usr/bin/python3', ...valid.slice(1)], valid.join(' ')],
     ['argv zero alias', ['/opt/bin/xcodebuild', ...valid.slice(1)], valid.join(' ')],
     ['argv zero bare', ['xcodebuild', ...valid.slice(1)], valid.join(' ')],
@@ -543,6 +596,8 @@ test('unresolved Xcode refuses unsupported or inconsistent exact argv', async (t
     ],
     ['mixed scope', [...valid, '-destination', 'id=not-a-udid']],
     ['oversized argv', [...valid, 'x'.repeat(8_192)]],
+    ['build oversized argv', [spacedXcode, 'build', 'x'.repeat(8_192)]],
+    ['build scan contradiction', [spacedXcode, 'build'], [spacedXcode, 'test'].join(' ')],
     [
       'oversized valid pairs',
       [spacedXcode, 'test', ...Array.from({ length: 180 }, () => valid.slice(2)).flat()],
@@ -679,22 +734,33 @@ test('unresolved Xcode does not traverse wrappers or excuse another candidate', 
       'unknown',
     );
   }
-  for (const [tail, expected] of [
-    [`21 ${spacedXcode} build\n`, 'unknown'],
-    [driver('XCTRunner').replace(/^20 /, '21 '), 'busy'],
+  for (const [other, expected] of [
+    [[spacedXcode, 'test', '-scheme', 'Example'], 'unknown'],
+    [[spacedXcode, 'build'], 'clear'],
   ] as const) {
     assert.equal(
       await probeIosExternalRunnerStrict(
-        fakePs(`20 ${argv.join(' ')}\n${tail}`),
+        fakePs(`20 ${argv.join(' ')}\n21 ${other.join(' ')}\n`),
         UDID,
         async (pid, _timeout, withArgv) => ({
           ...xcodeIdentity(spacedXcode, pid),
-          ...(withArgv ? { argv: pid === 20 ? argv : [spacedXcode, 'build'] } : {}),
+          ...(withArgv ? { argv: pid === 20 ? argv : other } : {}),
         }),
       ),
       expected,
     );
   }
+  assert.equal(
+    await probeIosExternalRunnerStrict(
+      fakePs(`20 ${argv.join(' ')}\n${driver('XCTRunner').replace(/^20 /, '21 ')}`),
+      UDID,
+      async (pid, _timeout, withArgv) => ({
+        ...xcodeIdentity(spacedXcode, pid),
+        ...(withArgv ? { argv } : {}),
+      }),
+    ),
+    'busy',
+  );
 });
 
 test('unresolved Xcode shares its one-second allowance and absolute probe deadline', async (t) => {

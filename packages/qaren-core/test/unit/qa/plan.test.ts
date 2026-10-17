@@ -171,16 +171,17 @@ test('a plan splits into blocks by ### heading and hashes its item lines', () =>
   const parsed = parsePlan(markdown);
   assert.ok(parsed.blocks);
   assert.deepEqual(
-    parsed.blocks.map((b) => [b.slug, b.title, b.items.length, b.startsOn]),
+    parsed.blocks.map((b) => [b.slug, b.title, b.items.length]),
     [
-      ['log-in-as-the-test-user', 'Log in as the test user', 1, undefined],
-      ['change-profile-data', 'Change profile data', 6, 'Profile'],
+      ['log-in-as-the-test-user', 'Log in as the test user', 1],
+      ['change-profile-data', 'Change profile data', 7],
     ],
   );
   const [, profile] = parsed.blocks;
   assert.deepEqual(
     profile.items.map((i) => [i.line, i.kind, i.source]),
     [
+      [7, 'wait', 'grammar'],
       [8, 'press', 'grammar'],
       [9, 'press', 'grammar'],
       [10, 'fill', 'grammar'],
@@ -189,8 +190,8 @@ test('a plan splits into blocks by ### heading and hashes its item lines', () =>
       [13, 'check', 'grammar'],
     ],
   );
-  const mixed = profile.items[4];
-  const phrase = profile.items[5];
+  const mixed = profile.items[5];
+  const phrase = profile.items[6];
   assert.ok(
     mixed.kind === 'check' && !mixed.literal && mixed.text === 'The profile header shows "Anton"',
   );
@@ -203,6 +204,35 @@ test('a plan splits into blocks by ### heading and hashes its item lines', () =>
     profile.planHash,
     parsePlan(markdown.replace('4. Tap "Save"', '4.  Tap  "Save"')).blocks![1].planHash,
   );
+});
+
+test('starts on is a leading literal wait for a testID or visible text', () => {
+  for (const [raw, value] of [
+    ['starts on: Profile', 'Profile'],
+    ['starts on: "Profile"', 'Profile'],
+    ['Starts on: wizard-title-input', 'wizard-title-input'],
+  ]) {
+    const parsed = parsePlan(`# Journey\n## QA\n### Continue\n${raw}\n1. Tap "Back"`);
+    assert.ok(parsed.blocks);
+    assert.deepEqual(parsed.blocks[0].items[0], {
+      kind: 'wait',
+      precondition: true,
+      target: { quoted: value, phrase: value },
+      line: 4,
+      raw,
+      source: 'grammar',
+    });
+  }
+});
+
+test('starts on cannot replace the steps or appear after them', () => {
+  assert.match(
+    parsePlan('### Continue\nstarts on: Profile').refused?.[0].reason ?? '',
+    /this block has no steps/,
+  );
+  assert.deepEqual(parsePlan('### Continue\n1. Tap "Back"\nstarts on: Profile').refused, [
+    { line: 3, text: 'starts on: Profile', reason: "starts on must come before the block's steps" },
+  ]);
 });
 
 test('a headingless plan is one block named after the title', () => {

@@ -12,7 +12,12 @@ test('an Android runner without DISPATCH_OCCLUSION_GUARD_V1 classifies for rebui
   const health = {
     protocolVersion: 2,
     commands: [...REQUIRED_ANDROID_COMMANDS],
-    capabilities: ['APP_SCOPED_EXACT_INTERACTION', 'FILL_EVIDENCE_V1', 'QA_READ_ONLY_V1'],
+    capabilities: [
+      'APP_SCOPED_EXACT_INTERACTION',
+      'FILL_EVIDENCE_V1',
+      'QA_READ_ONLY_V1',
+      'SYSTEM_ALERT_TAP_V1',
+    ],
   };
   assert.deepEqual(classifyAndroidHealth(health), {
     compatible: false,
