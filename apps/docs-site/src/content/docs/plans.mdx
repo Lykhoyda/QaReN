@@ -48,6 +48,7 @@ The block ID is the heading in lowercase, with every run of characters outside `
 | Wait     | wait for, wait until, optionally ending `to appear` or `is visible`     | `Wait for "Welcome" to appear`       |
 | Back     | back, go back, navigate back, press back, tap back button               | `Go back`                            |
 | Dialog   | accept, allow, dismiss, deny, decline, cancel with dialog, prompt, alert or permission | `Accept the permission dialog` |
+| Echo     | expect input NAME on screen, expect input NAME on this screen          | `Expect input USERNAME on screen`   |
 
 A fill needs its text in quotes, or a [runtime input](#runtime-inputs). A dialog step needs exactly one unconditional
 action: `Accept the dialog if it appears` and `Do not dismiss the alert` refuse.
@@ -68,6 +69,13 @@ The name is 1–32 characters of `A-Z`, `0-9` and `_`, starting with a letter. q
 the value of `QAREN_INPUT_<NAME>` once when the run starts, here `QAREN_INPUT_USERNAME` and
 `QAREN_INPUT_PASSWORD`. Resolve the value before you run qaren, for example with your
 password manager's CLI; qaren does not read `.env` files or resolve references.
+
+`Expect input NAME on screen` (also `on this screen`, with case-insensitive keywords)
+declares an expected label echo; it does not assert that the value is visible. Its row
+passes without capturing the screen or dispatching an action. The name must follow the
+input-name rules above and be used by a fill in this plan. Malformed declarations and
+names unused by any fill refuse `PLAN_UNPARSEABLE`, without falling back to Jev.
+There is no `no longer` form or heading-level declaration.
 
 - Every input the plan or the configured login block names must be set and non-empty, even
   when login recovery never happens. Otherwise the run refuses `PLAN_INPUT_MISSING`, naming
@@ -92,7 +100,7 @@ password manager's CLI; qaren does not read `.env` files or resolve references.
   label as a constant marker and keeps masking the value in every output, and the
   declaration is saved in the block as plan text. A later block that shows the value
   needs its own line. An undeclared echo, a value in an
-  identifier, or the value in the plan, the login block or the app id still refuses
+  identifier or type, or the value in the plan, the login block or the app id still refuses
   `CORE_REFUSED` with `runtime input privacy refused`. See the CLI guide's
   [runtime-input hash protections](https://github.com/Lykhoyda/rn-dev-agent/blob/develop/packages/qaren-cli/README.md#runtime-inputs).
 - `QAREN_INPUT_*` variables required by neither the plan nor the compatible configured
@@ -130,7 +138,7 @@ need `TYPESAFE_API_KEY`. A plan with any of them runs a Jev readiness probe firs
 missing or rejected key refuses `JEV_UNREACHABLE` before a device is selected.
 
 A plan with only quoted targets and literal checks makes no Jev calls and needs no key.
-Back, dialog and plain scroll steps never call Jev.
+Back, dialog, echo and plain scroll steps never call Jev.
 
 ## Refusals before the walk
 

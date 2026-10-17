@@ -1295,7 +1295,8 @@ file, reference or secret store.
 - After a block's `Expect input NAME on screen` line, until the block ends, a label whose
   whole-value echoes are all of declared inputs hashes as the same constant marker; a
   label that also holds an undeclared input's value, and every identifier and type, stay
-  guarded.
+  guarded. Replay uses the same block scope; resuming from a patched line restores earlier
+  declarations, and a nested login replay gets its own scope.
 - Snapshot hashes refuse `CORE_REFUSED` before any hashing when an identifier, type or
   unmasked label contains the whole value in its raw, trimmed, NFC, NFD or JSON-escaped form, or a numeric
   value's complete digit sequence with only separators between; partial echoes do not
@@ -1597,7 +1598,9 @@ for individual timing breakdowns.
 Without timed rows, `speed` is omitted. With timed rows but no timed actions
 or checks, counts are zero and percentiles are omitted (shown as `n/a` in the
 report). An interrupted child without a final result retains row evidence
-but omits `speed`. Timing is passive: it does not alter verdicts, actions or
+but omits `speed`. A core walk ending without a result attributes `failure.step` to
+the in-flight step, falling back to the last row's line or `0` when no row exists.
+Timing is passive: it does not alter verdicts, actions or
 budgets, and the CLI drops malformed timing rather than rejecting the ledger.
 The [row timing implementation](../qaren-core/src/qa/row-timing.ts) owns
 aggregation; [CLI decoding](src/core.rs) and [report rendering](src/report.rs)
