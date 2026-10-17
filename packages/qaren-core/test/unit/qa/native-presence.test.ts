@@ -208,6 +208,10 @@ test('Android list, recycler, nested-scroll and pager containers clip their rows
     'androidx.recyclerview.widget.RecyclerView',
     'androidx.core.widget.NestedScrollView',
     'android.widget.ListView',
+    'android.widget.ExpandableListView',
+    'android.widget.GridView',
+    'android.widget.HorizontalScrollView',
+    'androidx.viewpager.widget.ViewPager',
     'androidx.viewpager2.widget.ViewPager2',
   ])
     assertScrollClipped(container);
@@ -223,6 +227,19 @@ test('an Android row under a plain view group keeps the window as its clip', () 
 test('an Android row inside its scroll container stays on screen', () => {
   const nodes = androidList('androidx.recyclerview.widget.RecyclerView', rowInList);
   assert.deepEqual([...outsideViewport(nodes)], []);
+});
+
+test('an Android row overlapping the list edge stays visible until it leaves the list', () => {
+  const bottom = list.y + list.height;
+  for (const [y, excluded] of [[bottom - 1, false], [bottom, true]] as const) {
+    const nodes = androidList('androidx.recyclerview.widget.RecyclerView', {
+      ...rowBelowList,
+      y,
+    });
+    const offscreen = outsideViewport(nodes);
+    assert.equal(offscreen.has(3), excluded);
+    assert.deepEqual(clippingViewport(offscreen, 3), list);
+  }
 });
 
 test('iOS scroll containers still clip by exact type and other types do not', () => {

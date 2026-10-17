@@ -533,11 +533,11 @@ or below that band's centre scrolls down; one above it scrolls up. Sticky overla
 can narrow the band even without a keyboard or when the clip is entirely above it.
 The walker passes that band to the shared scroll handler so the drag starts
 inside it, narrowing the existing keyboard-safe band. Callers passing no band
-keep their existing drag origins. On both iOS and Android, a target whose centre
+use the existing keyboard-safe band. On both iOS and Android, a target whose centre
 is covered by the observed keyboard gets a scroll sized to move that centre
-toward the middle of that band, and the drag may span the whole band, one pixel
-inside each edge. A clearance scroll without a band keeps the cap of 60% of the
-screen area above the keyboard.
+toward the middle of that band, and the drag may span the band with both endpoints
+at least one pixel inside its edges after rounding. A clearance scroll without
+a band keeps the cap of 60% of the screen area above the keyboard.
 Scrolls without keyboard clearance keep the fixed amount of `0.6`.
 Successful iOS fast-runner scrolls now run the same bounded settle wait as taps
 before returning: screen-static probing with snapshot-equality fallback. Results
