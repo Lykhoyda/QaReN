@@ -793,12 +793,16 @@ async function mainRequest(
     () => halt('the qaren CLI exited'),
   );
   let opened: Session;
+  let inFlight: number | undefined;
   try {
     opened = await stop.track(() =>
       openSession(
         request,
         emitRow,
-        writer.start,
+        (start) => {
+          inFlight = start.line;
+          writer.start(start);
+        },
         (close) => {
           release = close;
         },
@@ -838,7 +842,7 @@ async function mainRequest(
     );
   } catch (error) {
     const { code, message } = describeError(error);
-    const ledger = missingResult(rows, `${code}: ${message}`);
+    const ledger = missingResult(rows, `${code}: ${message}`, inFlight);
     ledger.jev = summarizeJev([
       ...(request.preflightCalls ?? []),
       ...(opened.deps.judge?.calls ?? []),

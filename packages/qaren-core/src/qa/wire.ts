@@ -358,6 +358,6 @@ export function createWriter(write: (line: string) => void, runId: string): Wire
   };
 }
 
-export function missingResult(rows: LedgerRow[], seen: string): Ledger {
-  return ledgerWithoutResult(rows, seen);
+export function missingResult(rows: LedgerRow[], seen: string, inFlight?: number): Ledger {
+  return ledgerWithoutResult(rows, seen, inFlight);
 }
