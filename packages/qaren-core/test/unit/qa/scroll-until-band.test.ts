@@ -4,6 +4,8 @@ import { test } from 'node:test';
 import { parseStep } from '../../../dist/qa/plan.js';
 import { clearanceBand, scrollUntilBand } from '../../../dist/qa/resolve.js';
 import { join } from '../../../dist/qa/screen.js';
+import { buildDirectionalScrollCliArgs } from '../../../dist/handlers/device-interact.js';
+import { clearRefMap, updateRefMapFromFlat } from '../../../dist/fast-runner-ref-map.js';
 import type { NativeNode, Screen } from '../../../dist/qa/screen.js';
 
 const SCREEN = { x: 0, y: 0, width: 1080, height: 2424 };
@@ -188,4 +190,33 @@ test('(l) an inner vertical list beats the outer list it is nested in', () => {
     width: 460,
     height: 200,
   });
+});
+
+test('a later container below the screen does not displace the visible sheet list', () => {
+  const offscreen: NativeNode = {
+    ref: '@offscreen-list',
+    index: 7,
+    parentIndex: 2,
+    type: 'android.widget.ScrollView',
+    rect: { x: 0, y: 2500, width: 1080, height: 500 },
+  };
+  const screen = androidSheet([offscreen]);
+  const band = scrollUntilBand(option20, screen);
+  clearRefMap();
+  updateRefMapFromFlat(
+    [{ ref: '@window', type: 'Window', rect: SCREEN }] as never,
+    { snapshotGeneration: 1, keyboardVisible: false },
+  );
+  try {
+    const [, x, y1, , y2] = buildDirectionalScrollCliArgs(
+      'down', 0.6, undefined, undefined, band,
+    ).map(Number);
+    assert.ok(x >= LIST.x && x < LIST.x + LIST.width, `swipe x=${x} misses list`);
+    for (const y of [y1, y2]) {
+      assert.ok(y >= LIST.y && y < LIST.y + LIST.height, `swipe y=${y} misses list`);
+    }
+    assert.deepEqual(band, LIST);
+  } finally {
+    clearRefMap();
+  }
 });

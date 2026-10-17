@@ -378,8 +378,7 @@ function horizontalOnlyContainer(type: string | undefined): boolean {
   return HORIZONTAL_ONLY_SUFFIXES.some((suffix) => leaf.endsWith(suffix));
 }
 
-// Where a scroll-until drag may start: the target's clip when it resolved, else the frontmost
-// recognised scroll container inside the keyboard-safe band; nothing means today's band centre.
+// Start in the target's clip or frontmost visible scroll container above the keyboard.
 export function scrollUntilBand(target: Target, screen: Screen): NativeNode['rect'] {
   const matches = exactIdentities(screen, target, 'scroll');
   if (matches.length === 1) return clearanceBand(matches[0].element, screen);
@@ -387,7 +386,11 @@ export function scrollUntilBand(target: Target, screen: Screen): NativeNode['rec
     screen.keyboardVisible !== false && screen.keyboardFrame ? screen.keyboardFrame.y : Infinity;
   let best: NativeNode['rect'];
   for (const element of screen.elements) {
-    if (!isScrollContainer(element) || horizontalOnlyContainer(scrollContainerType(element)))
+    if (
+      element.offscreen ||
+      !isScrollContainer(element) ||
+      horizontalOnlyContainer(scrollContainerType(element))
+    )
       continue;
     const rect = elementFrame(element);
     if (!rect) continue;
