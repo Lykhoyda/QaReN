@@ -617,6 +617,11 @@ fn ios_install_refusal_on_stdout_is_terminal() {
 }
 
 fn script_ios_prepare_before_devmenu(mock: &mut MockRunner, repo: &std::path::Path) {
+    script_ios_prepare_before_manifest(mock, repo);
+    mock.expect_run("expo-platform", CmdOutput::success(""));
+}
+
+fn script_ios_prepare_before_manifest(mock: &mut MockRunner, repo: &std::path::Path) {
     script_ios_prepare_before_install(mock, repo);
     mock.expect_run("simctl install", CmdOutput::success(""));
     mock.expect_run("ps", CmdOutput::success(LSTART));
@@ -624,7 +629,138 @@ fn script_ios_prepare_before_devmenu(mock: &mut MockRunner, repo: &std::path::Pa
     mock.expect_run("lsof", CmdOutput::success("6001"));
     mock.expect_run("ps", CmdOutput::success("6000"));
     mock.expect_run("curl", CmdOutput::success("packager-status:running"));
-    mock.expect_run("expo-platform", CmdOutput::success(""));
+}
+
+fn manifest_answered_in(duration_ms: u64) -> CmdOutput {
+    CmdOutput {
+        duration_ms,
+        ..CmdOutput::success("")
+    }
+}
+
+#[test]
+fn ios_prepare_warms_metro_until_the_manifest_answers_inside_the_dev_client_timeout() {
+    let repo = common::temp_repo();
+    let scenario = write_scenario(&repo, &ios_scenario_yaml(8791));
+    let mut mock = MockRunner::new();
+    script_ios_prepare_before_manifest(&mut mock, &repo);
+    for ms in [12_000, 11_000, 8_000] {
+        mock.expect_run("expo-platform", manifest_answered_in(ms));
+    }
+    common::script_devmenu_defaults(&mut mock, CmdOutput::success(""));
+    common::script_ios_launch(&mut mock);
+    script_ios_readiness(&mut mock);
+    mock.expect_run("ls-files", CmdOutput::success(""));
+    common::script_xcode(&mut mock);
+
+    let receipt = prepare(&mut mock, &prepare_args(&scenario, false, None));
+
+    assert_eq!(
+        receipt.result,
+        ReceiptResult::Ready,
+        "{}",
+        receipt.to_json()
+    );
+    assert_eq!(receipt.timings_ms["metro-manifest_attempt_1"], 12_000);
+    assert_eq!(receipt.timings_ms["metro-manifest_attempt_2"], 11_000);
+    assert_eq!(receipt.timings_ms["metro-manifest_attempt_3"], 8_000);
+    let labels: Vec<&str> = mock.calls.iter().map(|c| c.label.as_str()).collect();
+    let manifests: Vec<usize> = (0..labels.len())
+        .filter(|i| labels[*i] == "metro-manifest")
+        .collect();
+    assert_eq!(manifests.len(), 3);
+    let launch = labels.iter().position(|l| *l == "simctl-launch").unwrap();
+    assert!(manifests[2] < launch);
+    assert_eq!(mock.remaining(), 0);
+}
+
+#[test]
+fn ios_prepare_refuses_when_the_manifest_never_answers_inside_the_dev_client_timeout() {
+    let repo = common::temp_repo();
+    let scenario = write_scenario(&repo, &ios_scenario_yaml(8791));
+    let mut mock = MockRunner::new();
+    script_ios_prepare_before_manifest(&mut mock, &repo);
+    for _ in 0..4 {
+        mock.expect_run("expo-platform", manifest_answered_in(12_000));
+    }
+    common::script_ios_metro_cleanup(&mut mock);
+    mock.advance_on = Some(("expo-platform".into(), 600_000));
+
+    let receipt = prepare(&mut mock, &prepare_args(&scenario, false, None));
+
+    let failure = receipt.failure.as_ref().expect("slow manifest refuses");
+    assert_eq!(failure.code, FailureCode::CoreRefused);
+    assert!(
+        failure
+            .detail
+            .starts_with("dev client manifest never answered inside"),
+        "{failure:?}"
+    );
+    assert!(failure.detail.contains("after 4 attempts"), "{failure:?}");
+    assert!(failure.detail.contains("host"), "{failure:?}");
+    assert_eq!(receipt.outcomes["launch_ready_budget"], "spent");
+    for attempt in 1..=4 {
+        assert_eq!(
+            receipt.timings_ms[&format!("metro-manifest_attempt_{attempt}")],
+            12_000
+        );
+    }
+    let count = |label: &str| mock.calls.iter().filter(|c| c.label == label).count();
+    assert_eq!(count("metro-manifest"), 4);
+    assert_eq!(count("simctl-devmenu-defaults"), 0);
+    assert_eq!(count("simctl-launch"), 0);
+    assert_eq!(mock.remaining(), 0);
+}
+
+#[test]
+fn ios_manifest_error_after_a_slow_answer_stays_a_build_failure() {
+    let repo = common::temp_repo();
+    let scenario = write_scenario(&repo, &ios_scenario_yaml(8791));
+    let mut mock = MockRunner::new();
+    script_ios_prepare_before_manifest(&mut mock, &repo);
+    mock.expect_run("expo-platform", manifest_answered_in(12_000));
+    mock.expect_run("expo-platform", CmdOutput::failed(22, "HTTP 500"));
+    common::script_ios_metro_cleanup(&mut mock);
+
+    let receipt = prepare(&mut mock, &prepare_args(&scenario, false, None));
+
+    assert_eq!(
+        receipt.failure.as_ref().unwrap().code,
+        FailureCode::BuildFailed,
+        "{}",
+        receipt.to_json()
+    );
+    let count = |label: &str| mock.calls.iter().filter(|c| c.label == label).count();
+    assert_eq!(count("metro-manifest"), 2);
+    assert_eq!(count("simctl-devmenu-defaults"), 0);
+    assert_eq!(mock.remaining(), 0);
+}
+
+#[test]
+fn ios_prepare_cancellation_preempts_a_slow_manifest_retry() {
+    let repo = common::temp_repo();
+    let scenario = write_scenario(&repo, &ios_scenario_yaml(8791));
+    let mut mock = MockRunner::new();
+    script_ios_prepare_before_manifest(&mut mock, &repo);
+    mock.expect_run("expo-platform", manifest_answered_in(12_000));
+    common::script_ios_metro_cleanup(&mut mock);
+    mock.cancel_after = Some(("expo-platform".into(), "received SIGTERM".into()));
+
+    let receipt = prepare(&mut mock, &prepare_args(&scenario, false, None));
+
+    assert_eq!(
+        receipt.failure.as_ref().unwrap().code,
+        FailureCode::RunCancelled
+    );
+    assert_eq!(receipt.timings_ms["metro-manifest_attempt_1"], 12_000);
+    assert_eq!(
+        mock.calls
+            .iter()
+            .filter(|c| c.label == "metro-manifest")
+            .count(),
+        1
+    );
+    assert_eq!(mock.remaining(), 0);
 }
 
 fn script_ios_prepare_before_install(mock: &mut MockRunner, repo: &std::path::Path) {
@@ -878,6 +1014,11 @@ fn script_ios_prepare_fingerprints(
         CmdOutput::success("Boot status: finished\n"),
     );
     common::script_finite_ios_build_launch(mock, "expo run:ios", defaults, install, launch);
+    script_ios_readiness(mock);
+    recheck(mock);
+}
+
+fn script_ios_readiness(mock: &mut MockRunner) {
     mock.expect_run("ps", CmdOutput::success(&format!("{LSTART}\n"))); // liveness probe
     mock.expect_run("ps", CmdOutput::success("S\n")); // not a zombie
     mock.expect_run("lsof", CmdOutput::success("6001\n"));
@@ -894,7 +1035,6 @@ fn script_ios_prepare_fingerprints(
     // Provenance recheck immediately before ready: unchanged sha, still clean.
     mock.expect_run("git", CmdOutput::success(&format!("{}\n", "b".repeat(40))));
     mock.expect_run("git", CmdOutput::success(""));
-    recheck(mock);
 }
 
 #[test]
