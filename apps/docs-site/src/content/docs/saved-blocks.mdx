@@ -52,8 +52,9 @@ any value, when:
 - a quoted wait or scroll target has no unique `testID` or unique visible text.
 
 A fill from a [runtime input](../plans/#runtime-inputs) is saved by name only, as
-`inputText: { input: "PASSWORD" }`, and replays with the current run's value. Older qaren
-versions cannot replay such a block.
+`inputText: { input: "PASSWORD" }`, and replays with the current run's value. An
+`Expect input NAME on screen` line is saved as its plan line and a `# qaren: echo NAME`
+marker. Older qaren versions cannot replay such a block.
 
 An edited or incompatible block file is treated as new and walked again. Existing saved
 blocks are never removed.

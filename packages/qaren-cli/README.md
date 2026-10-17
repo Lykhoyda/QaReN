@@ -1284,12 +1284,16 @@ file, reference or secret store.
   contains a whole runtime input value. The value never enters the hash; different values
   produce the same marker. Labels without a registered identifier, and all identifiers
   and types, remain subject to the guard below.
+- After a block's `Expect input NAME on screen` line, until the block ends, a label whose
+  whole-value echoes are all of declared inputs hashes as the same constant marker; a
+  label that also holds an undeclared input's value, and every identifier and type, stay
+  guarded.
 - Snapshot hashes refuse `CORE_REFUSED` before any hashing when an identifier, type or
   unmasked label contains the whole value in its raw, trimmed, NFC, NFD or JSON-escaped form, or a numeric
   value's complete digit sequence with only separators between; partial echoes do not
   refuse. Plan hashes do the same for plan text. The refusal detail starts
   `runtime input privacy refused` and never names the value. The same guard applies to
-  the configured login block and app id. Apart from the registered-label projection,
+  the configured login block and app id. Apart from the registered and declared label projections,
   accepted operands and digests are unchanged. Repository and host provenance hashes, such
   as the lockfile, dirty-file, config and session-path hashes, keep their exact bytes. The
   settle engine no longer uses the iOS screenshot-equality tier; it settles on the Android
