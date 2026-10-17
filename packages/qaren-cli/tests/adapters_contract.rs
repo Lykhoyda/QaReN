@@ -950,6 +950,20 @@ fn launchctl_parsing_requires_live_pid_and_exact_label() {
 }
 
 #[test]
+fn install_refusal_is_transient_only_for_the_install_coordination_signature() {
+    let refusal = "An error was encountered processing the command (domain=IXErrorDomain, code=2):\nSimulator device failed to install the application.\nFailed to locate promise.\nUnderlying error (domain=IXErrorDomain, code=2):\n\tFailed to set metadata for <bundle>\n\tFailed to create promise.";
+    assert!(ios::install_refusal_is_transient(refusal));
+    for terminal in [
+        "An error was encountered processing the command (domain=NSPOSIXErrorDomain, code=2):\nFailed to install the requested application",
+        "An error was encountered processing the command (domain=IXErrorDomain, code=2):\nSimulator device failed to install the application.",
+        "The application's bundle has no valid signature",
+        "",
+    ] {
+        assert!(!ios::install_refusal_is_transient(terminal), "{terminal}");
+    }
+}
+
+#[test]
 fn runner_host_inventory_is_bounded_complete_and_tri_state() {
     use ios::RunnerHostPresence::{Absent, Present, Unknown};
     let app = "dev.lykhoyda.rndevagent.fastrunner";

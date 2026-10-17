@@ -404,6 +404,70 @@ fn ios_install_timeouts_fail_once_the_shared_budget_is_spent() {
     assert_eq!(mock.remaining(), 0);
 }
 
+const IX_REFUSAL: &str = "An error was encountered processing the command (domain=IXErrorDomain, code=2):\nSimulator device failed to install the application.\nFailed to locate promise.\nUnderlying error (domain=IXErrorDomain, code=2):\n\tFailed to set metadata for <bundle>\n\tFailed to create promise.";
+
+#[test]
+fn ios_install_coordination_refusal_is_retried_within_the_budget() {
+    let repo = common::temp_repo();
+    let scenario = write_scenario(&repo, &ios_scenario_yaml(8791));
+    let mut mock = MockRunner::new();
+    script_ios_prepare_install(&mut mock, &repo, CmdOutput::success(""), |m| {
+        m.expect_run("simctl install", CmdOutput::failed(2, IX_REFUSAL));
+        m.expect_run("simctl install", CmdOutput::success(""));
+    });
+
+    let receipt = prepare(&mut mock, &prepare_args(&scenario, false, None));
+
+    assert_eq!(
+        receipt.result,
+        ReceiptResult::Ready,
+        "{}",
+        receipt.to_json()
+    );
+    assert!(receipt.outcomes["simctl-install_attempt_1"].contains("IXErrorDomain"));
+    assert!(receipt.timings_ms.contains_key("simctl-install_attempt_2"));
+    assert!(!receipt.outcomes.contains_key("install_proof"));
+    assert_eq!(
+        mock.calls
+            .iter()
+            .filter(|call| call.label == "simctl-install")
+            .count(),
+        2
+    );
+    assert_eq!(mock.remaining(), 0);
+}
+
+#[test]
+fn ios_install_coordination_refusals_fail_once_the_shared_budget_is_spent() {
+    let repo = common::temp_repo();
+    let scenario = write_scenario(&repo, &ios_scenario_yaml(8791));
+    let mut mock = MockRunner::new();
+    script_ios_prepare_before_install(&mut mock, &repo);
+    for _ in 0..4 {
+        mock.expect_run("simctl install", CmdOutput::failed(2, IX_REFUSAL));
+    }
+    common::script_ios_metro_cleanup(&mut mock);
+    mock.advance_on = Some(("simctl install".into(), 600_000));
+
+    let receipt = prepare(&mut mock, &prepare_args(&scenario, false, None));
+
+    let failure = receipt.failure.as_ref().expect("budget spent must fail");
+    assert_eq!(failure.code, FailureCode::ArtifactInstallFailed);
+    assert!(
+        failure.detail.contains("preparation budget of 2400s spent"),
+        "{failure:?}"
+    );
+    assert_eq!(receipt.outcomes["launch_ready_budget"], "spent");
+    assert_eq!(
+        mock.calls
+            .iter()
+            .filter(|call| call.label == "simctl-install")
+            .count(),
+        4
+    );
+    assert_eq!(mock.remaining(), 0);
+}
+
 #[test]
 fn ios_install_error_fails_after_one_attempt() {
     let repo = common::temp_repo();
