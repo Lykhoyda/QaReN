@@ -33,6 +33,8 @@ export interface AdmissionSteps {
   bundleReady?(deadline: number): Promise<void>;
   // A stalled launch gets one relaunch after its readiness wait.
   relaunch?(): Promise<void>;
+  // Before that one relaunch, when no target registered: a live app process makes the relaunch unnecessary.
+  appAlive?(): Promise<boolean>;
   foreignDriver(): Promise<string | undefined>;
   open(): Promise<void>;
   prove(): Promise<ProveOutcome>;
@@ -66,6 +68,9 @@ const INNER_CLASSES = [
 ] as const;
 export type AdmissionInnerClass = (typeof INNER_CLASSES)[number];
 
+const LIVENESS = ['not_probed', 'alive', 'dead', 'probe_failed'] as const;
+export type AdmissionLiveness = (typeof LIVENESS)[number];
+
 export type AdmissionRefusalFacts = {
   attempt: number;
   lastStarted: AdmissionBoundary;
@@ -73,6 +78,7 @@ export type AdmissionRefusalFacts = {
   inner: AdmissionInnerClass;
   relaunches: number;
   relaunchFailed: boolean;
+  liveness: AdmissionLiveness;
   elapsedMs: number;
   remainingMs: number;
   budgetMs: number;
@@ -136,6 +142,7 @@ export function formatAdmissionRefusal(
     inner: member(facts.inner, INNER_CLASSES),
     relaunches: count(facts.relaunches),
     relaunchFailed: flag(facts.relaunchFailed),
+    liveness: member(facts.liveness, LIVENESS),
     elapsedMs: count(facts.elapsedMs),
     remainingMs: count(facts.remainingMs),
     budgetMs: count(facts.budgetMs),
@@ -320,11 +327,25 @@ async function refuseForeignDriver(steps: AdmissionSteps): Promise<void> {
   if (foreign !== undefined) throw new HandlerError('BUSY_FOREIGN_FLOW', foreign);
 }
 
+async function probeLiveness(steps: AdmissionSteps): Promise<AdmissionLiveness> {
+  if (!steps.appAlive) return 'not_probed';
+  try {
+    return (await interruptible(steps.appAlive)) ? 'alive' : 'dead';
+  } catch (error) {
+    if (isAbort(error)) throw error;
+    return 'probe_failed';
+  }
+}
+
 async function attach(steps: AdmissionSteps): Promise<Proven> {
   const started = performance.now();
   const deadline = started + steps.remainingMs();
   const relaunchAt = started + steps.readinessMs;
   let relaunched = false;
+  let relaunchDecided = false;
+  // first probe/handshake timeout against a registered target; it gets a full readiness window before a relaunch
+  let stallSeenAt: number | undefined;
+  let liveness: AdmissionLiveness = 'not_probed';
   let opened = false;
   let attaching = true;
   let relaunchFailure: string | undefined;
@@ -367,15 +388,21 @@ async function attach(steps: AdmissionSteps): Promise<Proven> {
             if (isAbort(error)) throw error;
             const remaining = Math.min(deadline - performance.now(), steps.remainingMs());
             if (!transientReadinessFailure(error) || remaining <= 0) throw error;
+            const noTarget =
+              error instanceof TargetReadinessTimeoutError &&
+              !(error instanceof TargetListAttemptTimeoutError);
+            const probeStall =
+              error instanceof CDPProbeTimeoutError || error instanceof CDPHandshakeTimeoutError;
+            if (probeStall && stallSeenAt === undefined) stallSeenAt = performance.now();
             const recoveryWaitExpired =
-              (error instanceof TargetReadinessTimeoutError &&
-                !(error instanceof TargetListAttemptTimeoutError)) ||
-              (performance.now() >= relaunchAt &&
-                (error instanceof CDPProbeTimeoutError ||
-                  error instanceof CDPHandshakeTimeoutError));
+              noTarget ||
+              (probeStall &&
+                stallSeenAt !== undefined &&
+                performance.now() >= Math.max(relaunchAt, stallSeenAt + steps.readinessMs));
             if (
               !opened &&
               !relaunched &&
+              (!noTarget || !relaunchDecided) &&
               steps.relaunch &&
               remaining >= steps.readinessMs &&
               recoveryWaitExpired
@@ -383,15 +410,19 @@ async function attach(steps: AdmissionSteps): Promise<Proven> {
               lastStarted = 'foreign_driver';
               await refuseForeignDriver(steps);
               lastCompleted = 'foreign_driver';
-              relaunched = true;
-              try {
-                lastStarted = 'relaunch';
-                await interruptible(steps.relaunch);
-                lastCompleted = 'relaunch';
-              } catch (relaunchError) {
-                if (isAbort(relaunchError)) throw relaunchError;
-                relaunchFailure = describeError(relaunchError).message;
-                throw error;
+              relaunchDecided = true;
+              if (noTarget) liveness = await probeLiveness(steps);
+              if (!noTarget || liveness !== 'alive') {
+                relaunched = true;
+                try {
+                  lastStarted = 'relaunch';
+                  await interruptible(steps.relaunch);
+                  lastCompleted = 'relaunch';
+                } catch (relaunchError) {
+                  if (isAbort(relaunchError)) throw relaunchError;
+                  relaunchFailure = describeError(relaunchError).message;
+                  throw error;
+                }
               }
             }
             lastStarted = 'retry_wait';
@@ -415,6 +446,7 @@ async function attach(steps: AdmissionSteps): Promise<Proven> {
         inner: admissionInnerClass(error),
         relaunches: relaunched ? 1 : 0,
         relaunchFailed: relaunchFailure !== undefined,
+        liveness,
         elapsedMs: Math.round(now - started),
         remainingMs: Math.max(0, Math.round(deadline - now)),
         budgetMs: Math.round(deadline - started),

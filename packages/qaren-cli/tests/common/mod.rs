@@ -260,6 +260,16 @@ pub fn script_finite_ios_build_install(
     defaults: CmdOutput,
     install: impl FnOnce(&mut MockRunner),
 ) {
+    script_finite_ios_build_launch(mock, command, defaults, install, script_ios_launch);
+}
+
+pub fn script_finite_ios_build_launch(
+    mock: &mut MockRunner,
+    command: &str,
+    defaults: CmdOutput,
+    install: impl FnOnce(&mut MockRunner),
+    launch: impl FnOnce(&mut MockRunner),
+) {
     script_ios_metro_spawn(mock);
     mock.expect_spawn_piped(command, 5000, "", Some(0));
     mock.expect_run("ps", CmdOutput::success("Wed Aug 12 16:00:00 2026"));
@@ -268,7 +278,7 @@ pub fn script_finite_ios_build_install(
     script_ios_app_verification(mock);
     script_ios_app_verification(mock);
     install(mock);
-    script_ios_metro_wait_and_launch(mock, defaults);
+    script_ios_metro_wait_and_launch_with(mock, defaults, launch);
 }
 
 pub fn script_ios_install_and_launch(mock: &mut MockRunner) {
@@ -317,6 +327,21 @@ pub fn script_ios_metro_cleanup(mock: &mut MockRunner) {
 }
 
 pub fn script_ios_metro_wait_and_launch(mock: &mut MockRunner, defaults: CmdOutput) {
+    script_ios_metro_wait_and_launch_with(mock, defaults, script_ios_launch);
+}
+
+pub fn script_ios_launch(mock: &mut MockRunner) {
+    mock.expect_run(
+        "simctl launch --terminate-running-process",
+        CmdOutput::success(""),
+    );
+}
+
+pub fn script_ios_metro_wait_and_launch_with(
+    mock: &mut MockRunner,
+    defaults: CmdOutput,
+    launch: impl FnOnce(&mut MockRunner),
+) {
     mock.expect_run("ps", CmdOutput::success("Wed Aug 12 16:01:00 2026"));
     mock.expect_run("ps", CmdOutput::success("S"));
     mock.expect_run("lsof", CmdOutput::success("6001"));
@@ -324,10 +349,7 @@ pub fn script_ios_metro_wait_and_launch(mock: &mut MockRunner, defaults: CmdOutp
     mock.expect_run("curl", CmdOutput::success("packager-status:running"));
     mock.expect_run("expo-platform", CmdOutput::success(""));
     script_devmenu_defaults(mock, defaults);
-    mock.expect_run(
-        "simctl launch --terminate-running-process",
-        CmdOutput::success(""),
-    );
+    launch(mock);
 }
 
 #[derive(Default)]
