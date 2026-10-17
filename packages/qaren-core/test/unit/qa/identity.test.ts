@@ -99,7 +99,7 @@ const shapes = (): Shape[] => {
       quoted: 'twin',
       identities: 2,
       press: 'TARGET_AMBIGUOUS',
-      replay: 'TARGET_AMBIGUOUS',
+      replay: '@n2',
     },
     {
       name: 'a container echo',
