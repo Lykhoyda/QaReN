@@ -11,6 +11,7 @@ import {
 } from './screen.js';
 import {
   type Resolution,
+  type CentreCoverageDiagnostic,
   type ScreenDecision,
   CHECK,
   ResolutionError,
@@ -54,7 +55,11 @@ import {
 import { renderReason, segments, type Reason } from './untrusted.js';
 import { NativeSnapshotIncomplete, PrivateInputCaptureError } from './private-input.js';
 import { AppProcessGoneError, emitCaptureDiagnostics, NativeCaptureError } from './capture.js';
-import { QaDispatchContext, QaDispatchError } from '../domain/qa-dispatch.js';
+import {
+  QaDispatchContext,
+  QaDispatchError,
+  type QaDispatchDiagnostic,
+} from '../domain/qa-dispatch.js';
 import {
   admitObservation,
   observationDeadline,
@@ -102,7 +107,11 @@ export interface ActResult {
 export interface WalkerDeps {
   judge?: Judge;
   publicationInterrupted?(): boolean;
-  captureScreen(options?: { platformPresence?: boolean; timing?: TimingObserver }): Promise<Screen>;
+  captureScreen(options?: {
+    observation?: number;
+    platformPresence?: boolean;
+    timing?: TimingObserver;
+  }): Promise<Screen>;
   press(ref: string, context: QaDispatchContext): Promise<ActResult>;
   fill(ref: string, text: string, context: QaDispatchContext): Promise<ActResult>;
   // iOS only: type, proven only by a matching React read-back; testID identifies the pre-dispatch focus veto.
@@ -158,6 +167,7 @@ export interface WalkerTimingDiagnostic {
     | 'RUN_CANCELLED'
     | 'ACTION_OUTCOME_UNCERTAIN'
     | 'TARGET_MOVED_BEFORE_DISPATCH'
+    | 'CENTRE_COVERED'
     | 'SCREEN_EVIDENCE_INCOMPLETE';
   at: number;
   acquisitionMs: number;
@@ -165,6 +175,13 @@ export interface WalkerTimingDiagnostic {
   authorizations?: number;
   observation?: number;
   visibilityBlocker?: VisibilityBlockerDiagnostic;
+  refusalDiagnostic?: QaDispatchDiagnostic;
+  clearanceDiagnostic?: {
+    predicate: Readonly<CentreCoverageDiagnostic> | null;
+    scrollOrigin: 'offscreen-resolution' | 'centre-covered' | 'native-occlusion' | null;
+    requestedDirection: 'up' | 'down' | null;
+    targetCentreChanged: boolean | null;
+  };
 }
 
 interface Observation {
@@ -321,13 +338,11 @@ export async function walkBlock(
     let admitted = false;
     try {
       try {
-        latest = await deps.captureScreen(
-          deps.timing
-            ? { ...(platformPresence ? { platformPresence: true } : {}), timing: timingObserver }
-            : platformPresence
-              ? { platformPresence: true }
-              : undefined,
-        );
+        latest = await deps.captureScreen({
+          observation: id,
+          ...(platformPresence ? { platformPresence: true } : {}),
+          ...(timingObserver ? { timing: timingObserver } : {}),
+        });
       } catch (error) {
         if (isAbort(error)) throw error;
         if (error instanceof AppProcessGoneError) throw processChanged();
@@ -397,6 +412,8 @@ export async function walkBlock(
     code: WalkerTimingDiagnostic['code'],
     authorizations?: number,
     visibilityBlocker?: VisibilityBlockerDiagnostic,
+    refusalDiagnostic?: QaDispatchDiagnostic,
+    clearanceDiagnostic?: WalkerTimingDiagnostic['clearanceDiagnostic'],
   ): void => {
     try {
       const at = deps.now();
@@ -408,7 +425,10 @@ export async function walkBlock(
         acquisitionMs: observation.timing.completedAt - observation.timing.startedAt,
         observationAgeMs: at - observation.timing.startedAt,
         ...(authorizations === undefined ? {} : { authorizations }),
-        ...(visibilityBlocker ? { observation: observation.id, visibilityBlocker } : {}),
+        ...(visibilityBlocker || clearanceDiagnostic ? { observation: observation.id } : {}),
+        ...(visibilityBlocker ? { visibilityBlocker } : {}),
+        ...(refusalDiagnostic ? { refusalDiagnostic } : {}),
+        ...(clearanceDiagnostic ? { clearanceDiagnostic } : {}),
       });
     } catch (error) {
       if (isAbort(error)) throw error;
@@ -641,6 +661,8 @@ export async function walkBlock(
               ? 'ITEM_DEADLINE_EXCEEDED'
               : refusal.code,
           context.authorizations,
+          undefined,
+          context.refusalDiagnostic,
         );
         if (refusal.code === 'EVIDENCE_EXPIRED' && context.authorizations === 0)
           throw new EvidenceExpired(itemExpired);
@@ -1362,6 +1384,10 @@ export async function walkBlock(
         let typedUnverified = false;
         let again = false;
         let scrolled = false;
+        let scrollOrigin: NonNullable<
+          WalkerTimingDiagnostic['clearanceDiagnostic']
+        >['scrollOrigin'] = null;
+        let scrollDirection: 'up' | 'down' | null = null;
         let refusedIdentity: Element | undefined;
         let moved: { target: Element; error: string } | undefined;
         let settledFrame: string | undefined;
@@ -1509,6 +1535,8 @@ export async function walkBlock(
                   const band = within;
                   clearance = undefined;
                   within = undefined;
+                  scrollOrigin ??= 'offscreen-resolution';
+                  scrollDirection = resolution.scroll;
                   const result = await mutate(item, before, (context) =>
                     deps.scroll(resolution.scroll, context, distance, band),
                   );
@@ -1576,10 +1604,13 @@ export async function walkBlock(
                 );
                 break;
               }
+              let centreDiagnostic: Readonly<CentreCoverageDiagnostic> | null = null;
               if (
                 (item.kind === 'press' || item.kind === 'fill') &&
                 element !== undefined &&
-                centreCovered(element, before.screen)
+                centreCovered(element, before.screen, (facts) => {
+                  centreDiagnostic = facts;
+                })
               ) {
                 if (scrolled) {
                   outcome = failed(
@@ -1590,10 +1621,39 @@ export async function walkBlock(
                     await shoot(item),
                     ref,
                   );
+                  const originalFrame = refusedIdentity && elementFrame(refusedIdentity);
+                  const currentFrame = elementFrame(element);
+                  const centres =
+                    originalFrame && currentFrame
+                      ? [
+                          originalFrame.x + originalFrame.width / 2,
+                          originalFrame.y + originalFrame.height / 2,
+                          currentFrame.x + currentFrame.width / 2,
+                          currentFrame.y + currentFrame.height / 2,
+                        ]
+                      : undefined;
+                  diagnostic(
+                    item,
+                    before,
+                    'decision',
+                    'CENTRE_COVERED',
+                    undefined,
+                    undefined,
+                    undefined,
+                    {
+                      predicate: centreDiagnostic,
+                      scrollOrigin,
+                      requestedDirection: scrollDirection,
+                      targetCentreChanged: centres?.every(Number.isFinite)
+                        ? centres[0] !== centres[2] || centres[1] !== centres[3]
+                        : null,
+                    },
+                  );
                   break;
                 }
                 refusedIdentity = element;
                 occluded = clearanceScroll(element, before.screen);
+                scrollOrigin = 'centre-covered';
                 clearance = keyboardClearance(element, before.screen);
                 within = clearanceBand(element, before.screen);
                 continue;
@@ -1645,6 +1705,7 @@ export async function walkBlock(
                 refusedIdentity = element;
                 occluded = clearanceScroll(element, before.screen);
                 within = clearanceBand(element, before.screen);
+                scrollOrigin = 'native-occlusion';
                 continue;
               }
               if (

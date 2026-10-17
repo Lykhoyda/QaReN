@@ -12,6 +12,8 @@ import { capturePrivateScreen } from '../../../dist/qa/privacy.js';
 import type { ActResult, WalkerDeps } from '../../../dist/qa/walker.js';
 import { checkQaNativeOutcome } from '../../../dist/runners/qa-native-policy.js';
 import type { QaDispatchContext } from '../../../dist/domain/qa-dispatch.js';
+import { centreCovered, type CentreCoverageDiagnostic } from '../../../dist/qa/resolve.js';
+import type { WalkerTimingDiagnostic } from '../../../dist/qa/walker.js';
 import type { TimingEvent } from '../../../dist/qa/timing.js';
 
 const OCCLUDED: ActResult = {
@@ -607,8 +609,228 @@ function clipped(y: number, type = 'Button', occluder: 'tabs' | 'keyboard' = 'ta
   );
 }
 
+test('centre predicate diagnostics preserve short-circuit reads and explicit unknowns', () => {
+  const inspect = (screen: Screen, ref = '@target') => {
+    let facts: CentreCoverageDiagnostic | undefined;
+    const target = screen.elements.find((e) => e.ref === ref)!;
+    Object.defineProperty(target, 'label', {
+      get() {
+        assert.fail('no app-value read');
+      },
+    });
+    const result = centreCovered(target, screen, (value) => {
+      facts = value;
+    });
+    return { result, facts };
+  };
+  const viewport = clipped(710);
+  for (const key of ['keyboardVisible', 'keyboardFrame'])
+    Object.defineProperty(viewport, key, {
+      get() {
+        assert.fail('viewport short-circuits keyboard');
+      },
+    });
+  assert.deepEqual(inspect(viewport), {
+    result: true,
+    facts: {
+      framePresent: true,
+      viewportPresent: true,
+      viewportOutside: true,
+      keyboardVisible: null,
+      keyboardFramePresent: null,
+      keyboardCoverage: null,
+      centreInsideKeyboard: null,
+      branch: 'viewport',
+    },
+  });
+  const hidden = clipped(710, 'TextField', 'keyboard');
+  hidden.keyboardVisible = false;
+  Object.defineProperty(hidden, 'keyboardFrame', {
+    get() {
+      assert.fail('hidden short-circuits frame');
+    },
+  });
+  assert.deepEqual(inspect(hidden), {
+    result: false,
+    facts: {
+      framePresent: true,
+      viewportPresent: true,
+      viewportOutside: false,
+      keyboardVisible: false,
+      keyboardFramePresent: null,
+      keyboardCoverage: null,
+      centreInsideKeyboard: null,
+      branch: 'none',
+    },
+  });
+  const unknown = clipped(710, 'TextField', 'keyboard');
+  unknown.keyboardVisible = undefined;
+  const keyboardFrame = unknown.keyboardFrame;
+  let keyboardReads = 0;
+  Object.defineProperty(unknown, 'keyboardFrame', {
+    get() {
+      keyboardReads++;
+      return keyboardFrame;
+    },
+  });
+  assert.deepEqual(inspect(unknown), {
+    result: true,
+    facts: {
+      framePresent: true,
+      viewportPresent: true,
+      viewportOutside: false,
+      keyboardVisible: null,
+      keyboardFramePresent: true,
+      keyboardCoverage: true,
+      centreInsideKeyboard: true,
+      branch: 'keyboard',
+    },
+  });
+  assert.equal(keyboardReads, 2);
+  const visible = clipped(710, 'TextField', 'keyboard');
+  visible.keyboardVisible = true;
+  assert.equal(inspect(visible).facts?.keyboardVisible, true);
+  const owned = inspect(explicitKeyboard(), '@return');
+  assert.equal(owned.result, false);
+  assert.equal(owned.facts?.keyboardCoverage, false);
+  assert.equal(owned.facts?.centreInsideKeyboard, null);
+  assert.equal(owned.facts?.branch, 'none');
+  const clippedKey = inspect(
+    explicitKeyboard(false, (nodes) =>
+      nodes.map((node) =>
+        node.ref === '@kw' ? { ...node, rect: { x: 0, y: 0, width: 402, height: 760 } } : node,
+      ),
+    ),
+    '@return',
+  );
+  assert.equal(clippedKey.result, true);
+  assert.equal(clippedKey.facts?.branch, 'viewport');
+  assert.equal(clippedKey.facts?.keyboardCoverage, null);
+  const missing = covered(
+    join(
+      [{ ref: '@target', index: 0, type: 'Button', rect: { x: 10, y: 10, width: 40, height: 40 } }],
+      [],
+    ),
+  );
+  assert.deepEqual(inspect(missing), {
+    result: false,
+    facts: {
+      framePresent: true,
+      viewportPresent: false,
+      viewportOutside: null,
+      keyboardVisible: null,
+      keyboardFramePresent: false,
+      keyboardCoverage: null,
+      centreInsideKeyboard: null,
+      branch: 'none',
+    },
+  });
+  const noFrame = { elements: [element('@target', 'PRIVATE-label')], visibleText: [] };
+  assert.deepEqual(inspect(noFrame), {
+    result: false,
+    facts: {
+      framePresent: false,
+      viewportPresent: null,
+      viewportOutside: null,
+      keyboardVisible: null,
+      keyboardFramePresent: null,
+      keyboardCoverage: null,
+      centreInsideKeyboard: null,
+      branch: 'none',
+    },
+  });
+  const normal = clipped(710, 'TextField', 'keyboard');
+  const target = normal.elements.find((e) => e.ref === '@target')!;
+  assert.equal(
+    centreCovered(target, normal, () => {
+      throw Error('PRIVATE-observer');
+    }),
+    true,
+  );
+});
+
+test('final centre refusal privately distinguishes viewport and keyboard without changing the failed walk', async () => {
+  for (const occluder of ['tabs', 'keyboard'] as const) {
+    for (const sink of ['absent', 'record', 'throw'] as const) {
+      const f = fake([clipped(700, 'Button', occluder), clipped(710, 'Button', occluder)], {});
+      const events: WalkerTimingDiagnostic[] = [];
+      let authorizations = 0;
+      f.deps.scroll = async (direction, context) => {
+        context.authorize();
+        authorizations++;
+        f.calls.push(`scroll ${direction}`);
+        return { ok: true, proven: false };
+      };
+      if (sink !== 'absent')
+        f.deps.diagnostic = (event) => {
+          events.push(event);
+          if (sink === 'throw') throw Error('PRIVATE-sink');
+        };
+      const result = await walkBlock(block('1. Tap "go"\n'), f.deps);
+      assert.equal(result.block.outcome, 'fail');
+      assert.match(
+        renderReason(result.failure!.seen, (text) => text),
+        /stayed off screen after one scroll: its centre/,
+      );
+      assert.deepEqual(f.calls, ['capture', 'scroll down', 'capture', 'capture']);
+      assert.equal(authorizations, 1);
+      const terminal = events.filter((event) => event.code === 'CENTRE_COVERED');
+      if (sink !== 'absent') {
+        assert.equal(terminal.length, 1);
+        assert.equal(terminal[0].stage, 'decision');
+        assert.equal(terminal[0].observation, 3);
+        assert.deepEqual(terminal[0].clearanceDiagnostic, {
+          predicate: {
+            framePresent: true,
+            viewportPresent: true,
+            viewportOutside: occluder === 'tabs',
+            keyboardVisible: null,
+            keyboardFramePresent: occluder === 'tabs' ? null : true,
+            keyboardCoverage: occluder === 'tabs' ? null : true,
+            centreInsideKeyboard: occluder === 'tabs' ? null : true,
+            branch: occluder === 'tabs' ? 'viewport' : 'keyboard',
+          },
+          scrollOrigin: 'centre-covered',
+          requestedDirection: 'down',
+          targetCentreChanged: true,
+        });
+      }
+      assert.ok(!JSON.stringify(events).includes('PRIVATE-'));
+      assert.ok(!JSON.stringify(result).includes('clearanceDiagnostic'));
+      assert.ok(!JSON.stringify(result).includes('CENTRE_COVERED'));
+      assert.ok(!JSON.stringify(events).includes('@target'));
+    }
+  }
+});
+
+test('terminal diagnostics preserve offscreen versus native-occlusion scroll origin and pinned movement', async () => {
+  for (const origin of ['offscreen-resolution', 'native-occlusion'] as const) {
+    const f = fake(
+      origin === 'offscreen-resolution'
+        ? [clipped(740), clipped(-30)]
+        : [clipped(80), clipped(710)],
+      origin === 'native-occlusion' ? { press: [OCCLUDED] } : {},
+    );
+    const events: WalkerTimingDiagnostic[] = [];
+    f.deps.diagnostic = (event) => events.push(event);
+    const result = await walkBlock(block('1. Tap "go"\n'), f.deps);
+    assert.equal(result.block.outcome, 'fail');
+    const diagnostic = events.find((event) => event.code === 'CENTRE_COVERED')?.clearanceDiagnostic;
+    assert.equal(diagnostic?.scrollOrigin, origin);
+    assert.equal(diagnostic?.requestedDirection, origin === 'offscreen-resolution' ? 'down' : 'up');
+    assert.equal(diagnostic?.targetCentreChanged, origin === 'offscreen-resolution' ? null : true);
+    assert.equal(f.calls.filter((call) => call.startsWith('scroll')).length, 1);
+    assert.equal(
+      f.calls.filter((call) => call.startsWith('press')).length,
+      origin === 'offscreen-resolution' ? 0 : 1,
+    );
+  }
+});
+
 test('O5: a press whose centre lies past its scroll clip scrolls before any dispatch', async () => {
   const f = fake([clipped(700), clipped(400), clipped(400), done()], {});
+  const events: WalkerTimingDiagnostic[] = [];
+  f.deps.diagnostic = (event) => events.push(event);
   const outcome = await walkBlock(block('1. Tap "go"\n'), f.deps);
   assert.equal(outcome.block.outcome, 'pass');
   assert.deepEqual(f.calls, [
@@ -619,6 +841,10 @@ test('O5: a press whose centre lies past its scroll clip scrolls before any disp
     'press @target',
     'capture',
   ]);
+  assert.equal(
+    events.some((event) => event.code === 'CENTRE_COVERED'),
+    false,
+  );
 });
 
 test('O5: a fill whose centre lies under the keyboard scrolls before any dispatch', async () => {
@@ -1678,11 +1904,17 @@ test('a keyboard-owned key outside its trusted viewport still refuses', async ()
     ),
   );
   const f = fake([screen], {});
+  const events: WalkerTimingDiagnostic[] = [];
+  f.deps.diagnostic = (event) => events.push(event);
   const outcome = await walkBlock(block('1. Tap "Return"\n'), f.deps);
   assert.equal(outcome.block.outcome, 'fail');
   assert.deepEqual(
     f.calls.filter((call) => call !== 'capture'),
     ['scroll down'],
+  );
+  assert.equal(
+    events.some((event) => event.code === 'CENTRE_COVERED'),
+    false,
   );
 });
 
