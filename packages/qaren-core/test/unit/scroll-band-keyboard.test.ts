@@ -144,3 +144,36 @@ for (const height of [1045, 1044]) {
     }
   });
 }
+
+function bandedYs(band: { y: number; height: number }, distance?: number): number[] {
+  clearRefMap();
+  updateRefMapFromFlat([WINDOW, KEYBOARD] as never, {
+    snapshotGeneration: 1,
+    keyboardVisible: true,
+  });
+  try {
+    const [, , y1, , y2] = buildDirectionalScrollCliArgs('down', 0.6, undefined, distance, {
+      x: 0,
+      width: 390,
+      ...band,
+    }).map(Number);
+    return [y1, y2];
+  } finally {
+    clearRefMap();
+  }
+}
+
+test('(w1) a scroll without a distance spans its named band above the keyboard', () => {
+  assert.deepEqual(bandedYs({ y: 300, height: 500 }), [507, 301]);
+});
+
+test('(w2) a band too short for a real drag refuses before anything is built', () => {
+  assert.throws(() => bandedYs({ y: 300, height: 49 }), /SCROLL_BAND_TOO_SMALL/);
+  const [y1, y2] = bandedYs({ y: 300, height: 50 });
+  assert.equal(y1 - y2, 48);
+});
+
+test('(w3) a clearance distance shorter than a real drag drags the minimum', () => {
+  const [y1, y2] = bandedYs({ y: 300, height: 100 }, 10);
+  assert.equal(y1 - y2, 48);
+});

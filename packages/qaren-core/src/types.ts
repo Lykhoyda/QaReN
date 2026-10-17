@@ -420,7 +420,8 @@ export type ToolErrorCode =
   | 'SETUP_ERROR'
   | 'NO_E2E_TESTS'
   | 'E2E_RUN_ACTIVE'
-  | 'E2E_RUN_CRASHED';
+  | 'E2E_RUN_CRASHED'
+  | 'SCROLL_BAND_TOO_SMALL';
 
 export interface ResultEnvelope<T = unknown> {
   ok: boolean;

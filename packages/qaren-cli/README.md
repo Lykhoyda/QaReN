@@ -531,9 +531,10 @@ The walker handles this refusal with one directional scroll toward the centre
 of the target's visible clip band: its trusted clipping viewport cut off at the
 top of an observed keyboard unless the keyboard is proven hidden, and between
 sticky overlays. A touchable, non-text element at least half the clip's width,
-outside the target's own scroll content, that crosses the band's bottom edge
-ends the band at its top (a sticky footer); one across the band's top edge
-starts the band below it (a sticky header). A target at
+outside the target's own scroll content and drawn after it, that crosses the
+band's bottom edge ends the band at its top (a sticky footer); one across the
+band's top edge starts the band below it (a sticky header). Content drawn behind
+the list, such as a screen's rows under a sheet, never counts. A target at
 or below that band's centre scrolls down; one above it scrolls up. Sticky overlays
 can narrow the band even without a keyboard or when the clip is entirely above it.
 The walker passes that band to the shared scroll handler so the drag starts
@@ -543,7 +544,11 @@ is covered by the observed keyboard or a sticky overlay gets a scroll sized to m
 toward the middle of that band, and the drag may span the band with both endpoints
 at least one pixel inside its edges after rounding. A clearance scroll without
 a band keeps the cap of 60% of the screen area above the keyboard.
-Scrolls without a clearance distance keep the fixed amount of `0.6`.
+Scrolls without a clearance distance keep the fixed amount of `0.6` on the window
+band; inside a caller band they span the band a pixel inside each edge, so one
+scroll-until attempt moves the list by one visible band and cannot carry the
+target past it. A band shorter than 50 px refuses `SCROLL_BAND_TOO_SMALL` before
+anything is sent, because a drag under the touch slop would land as a tap.
 Successful iOS fast-runner scrolls now run the same bounded settle wait as taps
 before returning: screen-static probing with snapshot-equality fallback. Results
 include `meta.settle` and `meta.timings_ms.settle`; a timeout reports unsettled
@@ -854,7 +859,11 @@ of the requested direction. With no single matching identity, an already visible
 target or no known viewport, the requested direction is retained. The
 scroll-until drag starts inside the list it is meant to move (the target's own
 scroll container, or the frontmost one above the keyboard), not at the screen
-centre. See the
+centre. A row scrolled out of its list drags inside that list; a row covered
+inside it drags inside its clearance band. One clearance swipe lifts a covered
+row by at most the height of its list's visible band above the keyboard, so
+scroll until a row within one band of the row you then press; a row further
+away refuses after that one swipe instead of scrolling twice. See the
 [scroll-until direction regressions](../qaren-core/test/unit/qa/scroll-until-direction.test.ts).
 
 Waits poll unresolved text as not yet present and end with `VISIBILITY_UNSURE`

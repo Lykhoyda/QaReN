@@ -418,9 +418,13 @@ export function clearanceBand(element: Element, screen: Screen): NativeNode['rec
   let top = viewport.y;
   let bottom = Math.min(viewport.y + viewport.height, keyboard?.y ?? Infinity);
   const lineage = new Set<Element>([element, ...ancestorsOf(element)]);
-  for (const other of screen.elements) {
+  const container = ancestorsOf(element).find(isScrollContainer);
+  const behind = container ? screen.elements.indexOf(container) : 0;
+  for (const [i, other] of screen.elements.entries()) {
     // An overlay is a touchable non-text element outside the target's own lineage whose frame straddles a band edge.
     if (lineage.has(other) || other.kind === 'text' || other.offscreen || !other.hittable) continue;
+    // Rows of the target's own list, and anything drawn before that list, lie under it, never over it.
+    if (i < behind || (container && ancestorsOf(other).includes(container))) continue;
     if (
       ancestorsOf(other).some(
         (a) => lineage.has(a) && a !== element && sameRect(elementViewport(a), viewport),
@@ -471,23 +475,31 @@ function horizontalOnlyContainer(type: string | undefined): boolean {
   return HORIZONTAL_ONLY_SUFFIXES.some((suffix) => leaf.endsWith(suffix));
 }
 
-// Start in the target's clip or frontmost visible scroll container above the keyboard.
+// Covered inside its clip: its clearance band. Scrolled out of it: the clip itself is the list to
+// move. Otherwise the frontmost visible scroll container above the keyboard.
 export function scrollUntilBand(target: Target, screen: Screen): NativeNode['rect'] {
-  const matches = exactIdentities(screen, target, 'scroll');
-  if (matches.length === 1) return clearanceBand(matches[0].element, screen);
   const keyboardTop =
     screen.keyboardVisible !== false && screen.keyboardFrame ? screen.keyboardFrame.y : Infinity;
+  const aboveKeyboard = (rect: NativeNode['rect']): NativeNode['rect'] => {
+    if (!rect) return undefined;
+    const height = Math.min(rect.y + rect.height, keyboardTop) - rect.y;
+    return rect.width > 0 && height > 0 ? { ...rect, height } : undefined;
+  };
+  const matches = exactIdentities(screen, target, 'scroll');
+  if (matches.length === 1) {
+    const element = matches[0].element;
+    if (!element.offscreen) return clearanceBand(element, screen);
+    const own = aboveKeyboard(elementViewport(element));
+    if (own) return own;
+  }
   let best: NativeNode['rect'];
   for (const element of screen.elements) {
     if (!isScrollContainer(element) || horizontalOnlyContainer(scrollContainerType(element)))
       continue;
     const frame = elementFrame(element);
     if (!frame) continue;
-    const rect = clip(frame, elementViewport(element));
-    const height = Math.min(rect.y + rect.height, keyboardTop) - rect.y;
-    if (rect.width <= 0 || height <= 0) continue;
     // Element order is the runner's traversal: later windows are frontmost, children follow parents.
-    best = { ...rect, height };
+    best = aboveKeyboard(clip(frame, elementViewport(element))) ?? best;
   }
   return best;
 }

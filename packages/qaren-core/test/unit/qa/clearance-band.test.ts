@@ -9,6 +9,9 @@ import {
 } from '../../../dist/qa/resolve.js';
 import { join } from '../../../dist/qa/screen.js';
 import type { NativeNode, Screen } from '../../../dist/qa/screen.js';
+import { buildDirectionalScrollCliArgs } from '../../../dist/handlers/device-interact.js';
+import { clearRefMap, updateRefMapFromFlat } from '../../../dist/fast-runner-ref-map.js';
+import { ANDROID_LIST, IOS_LIST, androidOptionSheet, iosOptionSheet } from './sheet-fixtures.ts';
 
 const WINDOW = { x: 0, y: 0, width: 1080, height: 2400 };
 
@@ -321,4 +324,48 @@ test('the Android field moved by its clearance rests inside the band and is no l
   assert.equal(centreCovered(field7(screen), screen), true);
   const moved = form([], true, 1860 - keyboardClearance(field7(screen), screen)!);
   assert.equal(centreCovered(field7(moved), moved), false);
+});
+
+test('(q) rows of the screen behind the sheet never shrink the band of a row in the sheet list', () => {
+  const screen = androidOptionSheet();
+  assert.deepEqual(clearanceBand(byRef(screen, '@option-20'), screen), ANDROID_LIST);
+});
+
+// Option 17 stopped with its centre at 560, just above the keyboard top; option 20 sits at 720 under it.
+const parked = () => iosOptionSheet(528);
+
+test("(t) rows of the target's own list never shrink its band, even as direct children of the list", () => {
+  const screen = parked();
+  assert.deepEqual(clearanceBand(byRef(screen, '@option-20'), screen), {
+    ...IOS_LIST,
+    height: 211,
+  });
+});
+
+test('(u) one clearance swipe spans the band and covers the lift the parked row needs', () => {
+  const screen = parked();
+  const target = byRef(screen, '@option-20');
+  const distance = keyboardClearance(target, screen);
+  assert.equal(distance, 289.5);
+  clearRefMap();
+  updateRefMapFromFlat(
+    [
+      { ref: '@window', type: 'Window', rect: { x: 0, y: 0, width: 402, height: 874 } },
+      { ref: '@keyboard', type: 'Keyboard', rect: { x: 0, y: 568, width: 402, height: 306 } },
+    ] as never,
+    { snapshotGeneration: 1, keyboardVisible: true },
+  );
+  try {
+    const [, , y1, , y2] = buildDirectionalScrollCliArgs(
+      'down',
+      0.6,
+      undefined,
+      distance,
+      clearanceBand(target, screen),
+    ).map(Number);
+    assert.deepEqual([y1, y2], [567, 358]);
+    assert.ok(y1 - y2 > 752 - 568, `${y1 - y2}`);
+  } finally {
+    clearRefMap();
+  }
 });

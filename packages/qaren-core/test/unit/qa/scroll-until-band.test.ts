@@ -7,6 +7,13 @@ import { join } from '../../../dist/qa/screen.js';
 import { buildDirectionalScrollCliArgs } from '../../../dist/handlers/device-interact.js';
 import { clearRefMap, updateRefMapFromFlat } from '../../../dist/fast-runner-ref-map.js';
 import type { NativeNode, Screen } from '../../../dist/qa/screen.js';
+import {
+  ANDROID_LIST,
+  IOS_LIST,
+  androidOptionSheet,
+  byRef,
+  iosOptionSheet,
+} from './sheet-fixtures.ts';
 
 const SCREEN = { x: 0, y: 0, width: 1080, height: 2424 };
 const LIST = { x: 64, y: 1270, width: 460, height: 504 };
@@ -252,4 +259,67 @@ test('(n) a later container wholly beside the screen does not displace the sheet
     rect: { x: 1200, y: 1300, width: 400, height: 400 },
   };
   assert.deepEqual(scrollUntilBand(option20, androidSheet([beside])), LIST);
+});
+
+function bandDrag(
+  band: NonNullable<ReturnType<typeof scrollUntilBand>>,
+  window: { width: number; height: number },
+  keyboardTop: number,
+): number[] {
+  clearRefMap();
+  updateRefMapFromFlat(
+    [
+      { ref: '@window', type: 'Window', rect: { x: 0, y: 0, ...window } },
+      {
+        ref: '@keyboard',
+        type: 'Keyboard',
+        rect: { x: 0, y: keyboardTop, width: window.width, height: window.height - keyboardTop },
+      },
+    ] as never,
+    { snapshotGeneration: 1, keyboardVisible: true },
+  );
+  try {
+    return buildDirectionalScrollCliArgs('down', 0.6, undefined, undefined, band)
+      .slice(1, 5)
+      .map(Number);
+  } finally {
+    clearRefMap();
+  }
+}
+
+test('(o) a row scrolled out of the sheet list drags inside that list, whatever lies behind the sheet', () => {
+  assert.deepEqual(scrollUntilBand(option20, androidOptionSheet()), ANDROID_LIST);
+});
+
+test('(p) that drag spans the visible list and cannot land as a tap', () => {
+  const band = scrollUntilBand(option20, androidOptionSheet())!;
+  const [x1, y1, x2, y2] = bandDrag(band, { width: 1080, height: 2424 }, 1541);
+  assert.deepEqual([x1, x2], [540, 540]);
+  assert.ok(y1 - y2 >= 500, `${y1} -> ${y2}`);
+  for (const y of [y1, y2]) assert.ok(y > 949 && y < 1453, `${y}`);
+});
+
+test('(r) an offscreen target ignores overlays, a covered row still stops at a footer after the list', () => {
+  const footer: NativeNode = {
+    ref: '@footer',
+    index: 31,
+    parentIndex: 8,
+    type: 'android.view.ViewGroup',
+    hittable: true,
+    rect: { x: 37, y: 1300, width: 1006, height: 153 },
+  };
+  const screen = androidOptionSheet(0, [footer]);
+  assert.deepEqual(scrollUntilBand(option20, screen), ANDROID_LIST);
+  assert.deepEqual(clearanceBand(byRef(screen, '@option-2'), screen), {
+    ...ANDROID_LIST,
+    height: 1300 - 949,
+  });
+});
+
+test('(v) an iOS row below a stretched list drags across the whole band above the keyboard', () => {
+  const screen = iosOptionSheet(1381);
+  const band = scrollUntilBand(until('Scroll down until "qa-sheet-capture-option-17"'), screen)!;
+  assert.deepEqual(band, { ...IOS_LIST, height: 211 });
+  const [, y1, , y2] = bandDrag(band, { width: 402, height: 874 }, 568);
+  assert.deepEqual([y1, y2], [567, 358]);
 });
