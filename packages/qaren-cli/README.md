@@ -953,6 +953,17 @@ codes, counters and warning detail format. This diagnostic identifies the captur
 failure category; it does not establish the underlying app or host cause or change
 refusal and privacy behavior.
 
+On composite components, the digest omits non-string `title`,
+`accessibilityLabel` and `placeholder` props without coercing or serializing them;
+rendered host text remains available as evidence, and string display props retain
+their digest meaning. Native Expo image hosts with verified image-source metadata
+and no input semantics also omit non-string image placeholders. Other non-string
+host display props, opaque identities or roles, and getter-backed props still
+refuse capture. The
+[composite/input regressions](../qaren-core/test/unit/qa/private-input-producer.test.ts)
+and [image-placeholder regressions](../qaren-core/test/unit/qa/image-placeholder-producer.test.ts)
+cover these boundaries and warm-helper replacement.
+
 React-only elements expose no label, placeholder or value strings in the screen
 projection. The React digest excludes provably inactive screen routes and native
 hosts with `display: none` before collecting their semantic or descendant text
