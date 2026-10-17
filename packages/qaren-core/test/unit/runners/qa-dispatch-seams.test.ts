@@ -300,7 +300,7 @@ test('a successful action followed by a read-only refusal never labels the probe
   const context = new QaDispatchContext(10, () => 1);
   await runIOS({ command: 'tap', x: 10, y: 20, qaContext: context });
   assert.equal(context.refusalDiagnostic, undefined);
-  assert.equal(await buildIosProbes('qa.app', context).isScreenStatic(), null);
+  assert.equal(await buildIosProbes('qa.app', context).snapshotHash(), null);
   assert.throws(() => context.assertComplete(), /ACTION_CONTEXT_CHANGED/);
   assert.deepEqual(context.refusalDiagnostic, {
     refusal: 'ACTION_CONTEXT_CHANGED',
@@ -315,7 +315,7 @@ test('a successful action followed by a read-only refusal never labels the probe
   });
   assert.equal(context.refusedBeforeMutation, false);
   assert.equal(context.authorizations, 1);
-  assert.deepEqual(sends, ['tap', 'isScreenStatic']);
+  assert.deepEqual(sends, ['tap', 'snapshot']);
 });
 
 test('runNative cannot hide an iOS startup in QA preparation', async () => {

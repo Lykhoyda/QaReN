@@ -6919,8 +6919,6 @@ fn android_check_cancelled_before_reverse_leaves_an_existing_mapping() {
 
 fn script_android_pr_preflight(mock: &mut MockRunner, repo: &Path, wt: &Path, api: u16) {
     mock.expect_run("node --version", CmdOutput::success("v26.8.1\n"));
-    script_plan(mock, repo);
-    script_borrow_api(mock, ONE_EMULATOR, EMULATOR, api);
     mock.expect_run("git", CmdOutput::success(&format!("{}\n", repo.display()))); // invoking checkout
     mock.expect_run("gh pr view", pr_view_json(PR_HEAD));
     mock.expect_run("fetch origin pull/12/head", CmdOutput::success(""));
@@ -6929,6 +6927,8 @@ fn script_android_pr_preflight(mock: &mut MockRunner, repo: &Path, wt: &Path, ap
         CmdOutput::success(&format!("{PR_HEAD}\n")),
     );
     mock.expect_run("update-ref -d", CmdOutput::success(""));
+    script_plan(mock, repo);
+    script_borrow_api(mock, ONE_EMULATOR, EMULATOR, api);
     mock.expect_run("worktree add --detach", CmdOutput::success(""));
     mock.expect_run("git", CmdOutput::success(&format!("{}\n", wt.display()))); // toplevel of the worktree
     mock.expect_run("git", CmdOutput::success(&format!("{}\n", wt.display()))); // explicit worktree
