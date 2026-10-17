@@ -543,7 +543,7 @@ is covered by the observed keyboard or a sticky overlay gets a scroll sized to m
 toward the middle of that band, and the drag may span the band with both endpoints
 at least one pixel inside its edges after rounding. A clearance scroll without
 a band keeps the cap of 60% of the screen area above the keyboard.
-Scrolls without keyboard clearance keep the fixed amount of `0.6`.
+Scrolls without a clearance distance keep the fixed amount of `0.6`.
 Successful iOS fast-runner scrolls now run the same bounded settle wait as taps
 before returning: screen-static probing with snapshot-equality fallback. Results
 include `meta.settle` and `meta.timings_ms.settle`; a timeout reports unsettled
