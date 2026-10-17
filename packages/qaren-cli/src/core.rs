@@ -398,9 +398,14 @@ pub fn spawn_spec(
     .cwd(worktree)
     .env("QAREN_DEVICE_LEASE", lease)
     .env("QAREN_METRO_PORT", &metro_port.to_string());
-    let Some(android) = android else {
-        return spec;
-    };
+    match android {
+        Some(android) => with_android_env(spec, android),
+        None => spec,
+    }
+}
+
+// A core child's adb reaches only the run's server and the borrowed emulator.
+fn with_android_env(spec: CmdSpec, android: &AndroidEnv) -> CmdSpec {
     let mut path = std::ffi::OsString::from(&android.platform_tools);
     if let Some(inherited) = std::env::var_os("PATH").filter(|p| !p.is_empty()) {
         path.push(":");
@@ -464,48 +469,63 @@ struct AdmissionProbeEvidence {
     candidates: Option<u32>,
 }
 
+// None admits an iOS simulator; Some scans the borrowed emulator through the run's adb server.
 pub fn fresh_install_admission(
     runner: &mut dyn Runner,
     node: &Path,
     runtime_dir: &Path,
     worktree: &Path,
     device_id: &str,
+    android: Option<&AndroidEnv>,
 ) -> Result<(), Failure> {
-    let observer = std::env::current_exe()
-        .ok()
-        .filter(|path| path.is_absolute())
-        .and_then(|path| path.into_os_string().into_string().ok())
-        .ok_or_else(|| {
-            Failure::new(
-                "fresh_install",
-                FailureCode::FreshInstallAdmissionUnknown,
-                "native process observer is unavailable",
-                "ensure the qaren executable is available and re-run",
-            )
-        })?;
-    let output = runner.run(
-        &CmdSpec::new(
-            "fresh-install-admission",
-            &node.to_string_lossy(),
-            &[
-                &runtime_dir
-                    .join("qa/fresh-install-preflight.js")
-                    .to_string_lossy(),
-                "--platform",
-                "ios",
-                "--device",
-                device_id,
-                "--process-observer",
-                &observer,
-            ],
-            30,
-        )
-        .cwd(worktree),
-    );
+    let script = runtime_dir
+        .join("qa/fresh-install-preflight.js")
+        .to_string_lossy()
+        .into_owned();
+    let platform = if android.is_some() { "android" } else { "ios" };
+    // Android's scan is adb's process table; only the iOS scan needs the native observer.
+    let observer = match android {
+        Some(_) => None,
+        None => Some(
+            std::env::current_exe()
+                .ok()
+                .filter(|path| path.is_absolute())
+                .and_then(|path| path.into_os_string().into_string().ok())
+                .ok_or_else(|| {
+                    Failure::new(
+                        "fresh_install",
+                        FailureCode::FreshInstallAdmissionUnknown,
+                        "native process observer is unavailable",
+                        "ensure the qaren executable is available and re-run",
+                    )
+                })?,
+        ),
+    };
+    let mut args = vec![
+        script.as_str(),
+        "--platform",
+        platform,
+        "--device",
+        device_id,
+    ];
+    if let Some(observer) = &observer {
+        args.extend(["--process-observer", observer.as_str()]);
+    }
+    let spec = CmdSpec::new(
+        "fresh-install-admission",
+        &node.to_string_lossy(),
+        &args,
+        30,
+    )
+    .cwd(worktree);
+    let output = runner.run(&match android {
+        Some(android) => with_android_env(spec, android),
+        None => spec,
+    });
     let value = serde_json::from_str::<Value>(&output.stdout).ok();
     let matched = value.as_ref().filter(|v| {
         v.get("v").and_then(Value::as_u64) == Some(1)
-            && v.get("platform").and_then(Value::as_str) == Some("ios")
+            && v.get("platform").and_then(Value::as_str) == Some(platform)
             && v.get("deviceId").and_then(Value::as_str) == Some(device_id)
     });
     let status = matched

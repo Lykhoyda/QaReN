@@ -167,3 +167,28 @@ final class SnapshotInclusionTests: XCTestCase {
     XCTAssertEqual(snapshotTypeName(XCUIElement.ElementType(rawValue: 20)!), "Key")
   }
 }
+
+final class SnapshotDiagnosticsTests: XCTestCase {
+  func testViewportEncodingPreservesSourceAndActualRoundedFrame() throws {
+    let diagnostic = SnapshotDiagnostics(
+      viewport: CGRect(x: -12.4, y: 31.6, width: 123, height: 456),
+      source: .firstNonemptyWindow
+    )
+    let encoded = try JSONEncoder().encode(diagnostic)
+    let object = try XCTUnwrap(JSONSerialization.jsonObject(with: encoded) as? [String: Any])
+    XCTAssertEqual(object["v"] as? Int, 1)
+    XCTAssertEqual(object["viewportSource"] as? String, "first-nonempty-window")
+    XCTAssertEqual(object["viewport"] as? [Double], [-12, 32, 123, 456])
+  }
+
+  func testUnboundedIsExplicitNullAndMissingIsOmitted() throws {
+    let diagnostic = SnapshotDiagnostics(viewport: .infinite, source: .unbounded)
+    let encoded = try JSONEncoder().encode(diagnostic)
+    let object = try XCTUnwrap(JSONSerialization.jsonObject(with: encoded) as? [String: Any])
+    XCTAssertTrue(object["viewport"] is NSNull)
+    XCTAssertEqual(object["viewportSource"] as? String, "unbounded")
+    let missing = try JSONSerialization.jsonObject(with: JSONEncoder().encode(DataPayload())) as? [String: Any]
+    XCTAssertNil(missing?["snapshotDiagnostics"])
+    XCTAssertNil(SnapshotDiagnostics(viewport: .null, source: .app))
+  }
+}

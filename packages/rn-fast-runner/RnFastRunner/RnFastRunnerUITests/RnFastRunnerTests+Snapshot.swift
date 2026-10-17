@@ -18,6 +18,7 @@ extension RnFastRunnerTests {
     let queryRoot: XCUIElement
     let rootSnapshot: XCUIElementSnapshot
     let viewport: CGRect
+    var viewportSource: SnapshotViewportSource? = nil
     let maxDepth: Int
   }
 
@@ -36,7 +37,7 @@ extension RnFastRunnerTests {
     snapshotTypeName(type)
   }
 
-  func snapshotFast(app: XCUIApplication, options: SnapshotOptions) -> DataPayload {
+  func snapshotFast(app: XCUIApplication, options: SnapshotOptions, includeDiagnostics: Bool = false) -> DataPayload {
     if let blocking = blockingSystemAlertSnapshot() {
       return blocking
     }
@@ -160,7 +161,10 @@ extension RnFastRunnerTests {
       nodes: nodes,
       truncated: truncated,
       keyboardVisible: isKeyboardVisible(app: app),
-      snapshotGeneration: currentSnapshotGeneration
+      snapshotGeneration: currentSnapshotGeneration,
+      snapshotDiagnostics: includeDiagnostics ? context.viewportSource.flatMap {
+        SnapshotDiagnostics(viewport: context.viewport, source: $0)
+      } : nil
     )
   }
 
@@ -756,7 +760,8 @@ extension RnFastRunnerTests {
     return SnapshotTraversalContext(
       queryRoot: queryRoot,
       rootSnapshot: rootSnapshot,
-      viewport: viewport,
+      viewport: viewport.frame,
+      viewportSource: viewport.source,
       maxDepth: options.depth ?? Int.max
     )
   }
@@ -813,16 +818,16 @@ extension RnFastRunnerTests {
     return text.isEmpty ? nil : text
   }
 
-  private func snapshotViewport(app: XCUIApplication) -> CGRect {
+  private func snapshotViewport(app: XCUIApplication) -> (frame: CGRect, source: SnapshotViewportSource) {
     let windows = app.windows.allElementsBoundByIndex
     if let window = windows.first(where: { $0.exists && !$0.frame.isNull && !$0.frame.isEmpty }) {
-      return window.frame
+      return (window.frame, .firstNonemptyWindow)
     }
     let appFrame = app.frame
     if !appFrame.isNull && !appFrame.isEmpty {
-      return appFrame
+      return (appFrame, .app)
     }
-    return .infinite
+    return (.infinite, .unbounded)
   }
 
   func aggregatedLabel(for snapshot: XCUIElementSnapshot, depth: Int = 0) -> String? {

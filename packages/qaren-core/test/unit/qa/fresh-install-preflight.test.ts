@@ -1502,3 +1502,145 @@ test('direct invocation follows realpaths, preserves exact UDID, and imports hav
     await assert.rejects(readFile(marker), { code: 'ENOENT' });
   });
 });
+
+const SERIAL = 'emulator-5554';
+const ANDROID_HEADER = 'USER PID PPID VSZ RSS WCHAN ADDR S NAME\n';
+const androidIdle = `${ANDROID_HEADER}root 1 0 0 0 0 0 S init\nu0_a1 99 1 0 0 0 0 S dev.lykhoyda.rndevagent.androidrunner\nshell 101 1 0 0 0 0 S dev.lykhoyda.rndevagent.androidrunner.test\n`;
+const androidRow = (name: string) => `shell 4242 1 0 0 0 0 S ${name}\n`;
+
+function fakeAdb(result: { stdout: string } | Error): typeof execFile {
+  return (async (bin: string, argv: string[], opts: object) => {
+    assert.equal(bin, 'adb');
+    assert.deepEqual(argv, ['-s', SERIAL, 'shell', 'ps', '-A']);
+    assert.deepEqual(opts, { timeout: 2_000, encoding: 'utf8' });
+    if (result instanceof Error) throw result;
+    return result;
+  }) as unknown as typeof execFile;
+}
+
+test('Android strict admission is clear only for a readable process table without a foreign driver', async () => {
+  const { probeAndroidExternalRunnerAdmission } =
+    await import('../../../dist/runners/external-runner-detect.js');
+  assert.deepEqual(
+    await probeAndroidExternalRunnerAdmission(SERIAL, fakeAdb({ stdout: androidIdle })),
+    {
+      status: 'clear',
+    },
+  );
+  for (const [name, matched] of [
+    ['uiautomator', 'uiautomator'],
+    ['io.appium.uiautomator2.server.test', 'io.appium.uiautomator2.server.test'],
+    ['dev.mobile.maestro', 'dev.mobile.maestro'],
+    ['com.example.instrumentation', 'com.example.instrumentation'],
+  ]) {
+    assert.deepEqual(
+      await probeAndroidExternalRunnerAdmission(
+        SERIAL,
+        fakeAdb({ stdout: `${androidIdle}${androidRow(name)}${androidRow('uiautomator')}` }),
+      ),
+      { status: 'busy', matched },
+    );
+  }
+  const timeout = Object.assign(new Error('adb timed out'), { killed: true, signal: 'SIGTERM' });
+  for (const result of [
+    new Error('adb: device offline'),
+    timeout,
+    { stdout: '' },
+    { stdout: ' \n\n' },
+  ]) {
+    assert.deepEqual(await probeAndroidExternalRunnerAdmission(SERIAL, fakeAdb(result)), {
+      status: 'unknown',
+    });
+  }
+});
+
+test('the advisory Android detector keeps its patterns and still steps aside on failure', async () => {
+  const { detectAndroidExternalRunner } =
+    await import('../../../dist/runners/external-runner-detect.js');
+  const exec = (stdout: string) => (async () => ({ stdout })) as unknown as typeof execFile;
+  assert.equal(await detectAndroidExternalRunner(exec(androidRow('dev.mobile.maestro'))), null);
+  assert.equal(await detectAndroidExternalRunner(exec(androidIdle)), null);
+  assert.equal(
+    (await detectAndroidExternalRunner(exec(androidRow('uiautomator'))))?.processLines.length,
+    1,
+  );
+  const failing = (async () => {
+    throw new Error('adb: device offline');
+  }) as unknown as typeof execFile;
+  assert.equal(await detectAndroidExternalRunner(failing), null);
+});
+
+test('CLI Android admission scans the selected emulator and fails closed', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'qaren-preflight-android-'));
+  const marker = join(root, 'called');
+  try {
+    await writeFile(
+      join(root, 'adb'),
+      `#!${process.execPath}
+const fs = require('node:fs');
+fs.appendFileSync(process.env.FAKE_ADB_MARKER, JSON.stringify(process.argv.slice(2)) + '\\n');
+if (process.env.FAKE_ADB_MODE === 'timeout') setInterval(() => {}, 1000);
+else {
+  process.stdout.write(process.env.FAKE_ADB_STDOUT || '');
+  process.exitCode = Number(process.env.FAKE_ADB_EXIT || 0);
+}
+`,
+      { mode: 0o755 },
+    );
+    const run = (argv: string[], env: Record<string, string>) =>
+      new Promise<{ code: number | string | null; stdout: string; stderr: string }>((resolve) => {
+        execFile(
+          process.execPath,
+          [entry, ...argv],
+          {
+            env: { ...process.env, PATH: root, FAKE_ADB_MARKER: marker, ...env },
+            timeout: 8_000,
+            encoding: 'utf8',
+          },
+          (error, stdout, stderr) =>
+            resolve({ code: error ? (error.code ?? null) : 0, stdout, stderr }),
+        );
+      });
+    const android = ['--platform', 'android', '--device', SERIAL];
+    for (const [env, status] of [
+      [{ FAKE_ADB_STDOUT: androidIdle }, 'clear'],
+      [{ FAKE_ADB_STDOUT: `${androidIdle}${androidRow('uiautomator')}` }, 'busy'],
+      [{ FAKE_ADB_STDOUT: `${androidIdle}${androidRow('dev.mobile.maestro')}` }, 'busy'],
+      [{ FAKE_ADB_STDOUT: '' }, 'unknown'],
+      [{ FAKE_ADB_STDOUT: androidIdle, FAKE_ADB_EXIT: '1' }, 'unknown'],
+      [{ FAKE_ADB_MODE: 'timeout' }, 'unknown'],
+    ] as const) {
+      const result = await run(android, env);
+      assert.equal(result.code, status === 'clear' ? 0 : 4, status);
+      assert.equal(result.stderr, '');
+      assert.deepEqual(JSON.parse(result.stdout), {
+        v: 1,
+        platform: 'android',
+        deviceId: SERIAL,
+        status,
+      });
+    }
+    for (const call of (await readFile(marker, 'utf8')).trim().split('\n'))
+      assert.deepEqual(JSON.parse(call), ['-s', SERIAL, 'shell', 'ps', '-A']);
+    await rm(marker);
+    for (const invalid of [
+      ['--platform', 'android', '--device', 'emulator-'],
+      ['--platform', 'android', '--device', '127.0.0.1:5555'],
+      ['--platform', 'android', '--device', `${SERIAL}\n`],
+      ['--platform', 'android', '--device', `${SERIAL} -s other`],
+      [...android, '--process-observer', '/usr/bin/true'],
+    ]) {
+      const result = await run(invalid, { FAKE_ADB_STDOUT: androidIdle });
+      assert.equal(result.code, 4);
+      assert.deepEqual(JSON.parse(result.stdout), {
+        v: 1,
+        platform: 'ios',
+        deviceId: '',
+        status: 'unknown',
+      });
+    }
+    await assert.rejects(readFile(marker), { code: 'ENOENT' });
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});

@@ -1,6 +1,7 @@
 import { afterEach, test } from 'node:test';
 import assert from 'node:assert/strict';
 import { QaDispatchContext } from '../../../dist/domain/qa-dispatch.js';
+import { buildIosProbes } from '../../../dist/lifecycle/settle.js';
 import {
   _setFetchForTest,
   _setFastRunnerStateForTest,
@@ -72,7 +73,8 @@ function runner(
     }
     const body = JSON.parse(String(init?.body));
     sends.push(body.command);
-    return Response.json(reply(body));
+    const response = reply(body);
+    return response instanceof Response ? response : Response.json(response);
   });
   return sends;
 }
@@ -157,6 +159,164 @@ test('a swallowed refusal cannot authorize a later fast swipe', async () => {
 function session(platform: 'ios' | 'android' = 'ios') {
   setActiveSessionInMemoryForTest({ name: 'qa', platform, appId: 'qa.app', deviceId: 'qa-device' });
 }
+
+test('QA native refusal retains a bounded response without another send', async () => {
+  const sends = runner(() => ({
+    ok: false,
+    error: {
+      code: 'NO_TEXT_INPUT_TARGET',
+      mutation: 'none',
+      reason: 'exact-target-missing',
+      message: 'PRIVATE-message',
+      data: 'PRIVATE-data',
+    },
+  }));
+  const context = new QaDispatchContext(10, () => 1);
+  await assert.rejects(
+    runIOS({ command: 'tap', x: 10, y: 20, qaContext: context }),
+    /ACTION_CONTEXT_CHANGED/,
+  );
+  assert.deepEqual(context.refusalDiagnostic, {
+    refusal: 'ACTION_CONTEXT_CHANGED',
+    stage: 'native-response',
+    mutating: true,
+    responseOk: false,
+    nativeCode: 'NO_TEXT_INPUT_TARGET',
+    nativeReason: 'exact-target-missing',
+    nativeMutation: 'none',
+    probeState: null,
+    recovery: null,
+  });
+  assert.equal(context.refusedBeforeMutation, true);
+  assert.equal(context.authorizations, 1);
+  assert.deepEqual(sends, ['tap']);
+  assert.ok(!JSON.stringify(context.refusalDiagnostic).includes('PRIVATE-'));
+});
+
+for (const failure of ['transport', 'decode']) {
+  test(`QA ${failure} failure stays unknown after the existing status probe`, async () => {
+    const sends = runner((body) => {
+      if (body.command === 'tap') {
+        if (failure === 'decode') return new Response('PRIVATE-not-json');
+        throw Error('PRIVATE-transport');
+      }
+      return { ok: true, data: { commandId: body.commandId, state: 'unknown' } };
+    });
+    const context = new QaDispatchContext(10, () => 1);
+    await assert.rejects(
+      runIOS({ command: 'tap', x: 10, y: 20, qaContext: context }),
+      /ACTION_OUTCOME_UNCERTAIN/,
+    );
+    assert.deepEqual(context.refusalDiagnostic, {
+      refusal: 'ACTION_OUTCOME_UNCERTAIN',
+      stage: 'dispatch-error',
+      mutating: true,
+      responseOk: null,
+      nativeCode: null,
+      nativeReason: null,
+      nativeMutation: null,
+      probeState: 'unknown',
+      recovery: null,
+    });
+    assert.equal(context.refusedBeforeMutation, false);
+    assert.equal(context.authorizations, 1);
+    assert.deepEqual(sends, ['tap', 'status']);
+  });
+}
+
+test('unrecognized native fields and malformed ok remain unknown on a recognized refusal', async () => {
+  const sends = runner(() => ({
+    ok: 'PRIVATE-ok',
+    data: { verifyVerdict: 'target-lost' },
+    error: {
+      code: 'PRIVATE-code',
+      reason: 'exact-target-PRIVATE-reason',
+      mutation: 'PRIVATE-mutation',
+      message: 'PRIVATE-message',
+    },
+  }));
+  const context = new QaDispatchContext(10, () => 1);
+  await assert.rejects(
+    runIOS({ command: 'tap', x: 10, y: 20, qaContext: context }),
+    /ACTION_CONTEXT_CHANGED/,
+  );
+  assert.deepEqual(context.refusalDiagnostic, {
+    refusal: 'ACTION_CONTEXT_CHANGED',
+    stage: 'native-response',
+    mutating: true,
+    responseOk: null,
+    nativeCode: null,
+    nativeReason: null,
+    nativeMutation: null,
+    probeState: null,
+    recovery: null,
+  });
+  assert.equal(context.refusedBeforeMutation, false);
+  assert.deepEqual(sends, ['tap']);
+});
+
+test('QA recovered refusal keeps the already-obtained journal disposition without replay', async () => {
+  const sends = runner((body) => {
+    if (body.command === 'tap') throw Error('PRIVATE-response-lost');
+    return {
+      ok: true,
+      data: {
+        commandId: body.commandId,
+        state: 'failed',
+        result: {
+          ok: false,
+          error: { code: 'STALE_REF', mutation: 'none' },
+        },
+      },
+    };
+  });
+  const context = new QaDispatchContext(10, () => 1);
+  await assert.rejects(
+    runIOS({ command: 'tap', x: 10, y: 20, qaContext: context }),
+    /ACTION_CONTEXT_CHANGED/,
+  );
+  assert.equal(context.refusalDiagnostic?.recovery, 'recovered-error');
+  assert.equal(context.refusalDiagnostic?.probeState, 'failed');
+  assert.equal(context.refusalDiagnostic?.nativeCode, 'STALE_REF');
+  assert.equal(context.refusedBeforeMutation, true);
+  assert.equal(context.authorizations, 1);
+  assert.deepEqual(sends, ['tap', 'status']);
+});
+
+test('a successful action followed by a read-only refusal never labels the probe as its receipt', async () => {
+  const sends = runner((body) =>
+    body.command === 'tap'
+      ? { ok: true }
+      : {
+          ok: false,
+          error: {
+            code: 'ACTION_CONTEXT_CHANGED',
+            mutation: 'PRIVATE-mutation',
+            reason: 'PRIVATE-reason',
+            message: 'PRIVATE-message',
+          },
+        },
+  );
+  const context = new QaDispatchContext(10, () => 1);
+  await runIOS({ command: 'tap', x: 10, y: 20, qaContext: context });
+  assert.equal(context.refusalDiagnostic, undefined);
+  assert.equal(await buildIosProbes('qa.app', context).isScreenStatic(), null);
+  assert.throws(() => context.assertComplete(), /ACTION_CONTEXT_CHANGED/);
+  assert.deepEqual(context.refusalDiagnostic, {
+    refusal: 'ACTION_CONTEXT_CHANGED',
+    stage: 'native-response',
+    mutating: false,
+    responseOk: false,
+    nativeCode: 'ACTION_CONTEXT_CHANGED',
+    nativeReason: null,
+    nativeMutation: null,
+    probeState: null,
+    recovery: null,
+  });
+  assert.equal(context.refusedBeforeMutation, false);
+  assert.equal(context.authorizations, 1);
+  assert.deepEqual(sends, ['tap', 'isScreenStatic']);
+});
 
 test('runNative cannot hide an iOS startup in QA preparation', async () => {
   session();

@@ -1,3 +1,5 @@
+import type { privateSnapshotDiagnostics } from './snapshot-diagnostics.js';
+import type { joinedSnapshotDiagnostics } from './screen.js';
 import { isRecord } from './questions.js';
 import type { NativeNode } from './screen.js';
 
@@ -425,7 +427,24 @@ const DIAGNOSTIC_TYPES = new Set([
 const DIAGNOSTIC_LIMIT = 2048;
 
 // Value-free viewport facts for one capture; it observes production geometry and never decides anything.
-export function viewportDiagnostic(nodes: NativeNode[], offscreen: Set<number>): string {
+export function viewportDiagnostic(
+  nodes: NativeNode[],
+  offscreen: Set<number>,
+  capture?: {
+    observation: number | null;
+    mode: 'ordinary' | 'platform-presence';
+    native: {
+      acquisition: 'returned';
+      coverage: string;
+      truncated: boolean | null;
+      normalizationDroppedNodes: number | null;
+      verdict: 'ok' | 'degraded' | 'failed' | null;
+      reasons: string[];
+    };
+    snapshot: ReturnType<typeof privateSnapshotDiagnostics>;
+    projection: ReturnType<typeof joinedSnapshotDiagnostics>;
+  },
+): string {
   const box = (rect: Rect | undefined) =>
     rect ? [rect.x, rect.y, rect.width, rect.height].map(Math.round) : [null, null, null, null];
   const sized = (rect: Rect | undefined) => !!rect && rect.width > 0 && rect.height > 0;
@@ -490,6 +509,7 @@ export function viewportDiagnostic(nodes: NativeNode[], offscreen: Set<number>):
   const line = (windowList: unknown[], sample: unknown[], excluded: unknown[]) =>
     `viewport-diagnostic ${JSON.stringify({
       v: 1,
+      ...capture,
       app: app ? box(app) : null,
       windowCount: windows.length,
       windows: windowList,
