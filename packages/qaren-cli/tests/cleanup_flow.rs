@@ -2321,37 +2321,63 @@ fn android_borrowed_cleanup_absent_reverse_is_absent() {
 
 #[test]
 fn android_borrowed_cleanup_refuses_without_the_runs_lease() {
-    for foreign in [false, true] {
-        let repo = common::temp_repo();
-        let mut record = borrowed_record(&repo);
-        if foreign {
-            // A second run now holds the emulator's lease.
-            record.resources.lease.as_mut().unwrap().holder = "another-run-holder".to_string();
-        } else {
-            let lease = record.resources.lease.take().unwrap();
-            assert_eq!(
-                qaren::lease::release(&lease),
-                qaren::buildplan::ReleaseOutcome::Removed
-            );
-        }
-        record.save(&repo).unwrap();
-        let mut mock = borrowed_mock();
+    for with_recorder in [false, true] {
+        for foreign in [true, false] {
+            let repo = common::temp_repo();
+            let mut record = borrowed_record(&repo);
+            if foreign {
+                // A second run now holds the emulator's lease.
+                record.resources.lease.as_mut().unwrap().holder = "another-run-holder".to_string();
+            } else {
+                let lease = record.resources.lease.take().unwrap();
+                assert_eq!(
+                    qaren::lease::release(&lease),
+                    qaren::buildplan::ReleaseOutcome::Removed
+                );
+            }
+            if with_recorder {
+                record.resources.recorder = Some(qaren::runrecord::RecorderResource {
+                    pid: None,
+                    birth: None,
+                    pulled_sha256: None,
+                    kind: qaren::runrecord::RecorderKind::AndroidEmulator,
+                    device: BORROWED.into(),
+                    output: "/data/local/tmp/qaren-borrowed-run.mp4".into(),
+                });
+            }
+            record.save(&repo).unwrap();
+            let mut mock = borrowed_mock();
+            if with_recorder {
+                owner_gone(&mut mock);
+            }
 
-        let receipt = cleanup(&mut mock, &repo, "borrowed-run");
+            let receipt = cleanup(&mut mock, &repo, "borrowed-run");
 
-        for leg in ["adb_reverse", "android_runner"] {
+            for leg in ["adb_reverse", "android_runner"]
+                .into_iter()
+                .chain(with_recorder.then_some("recorder"))
+            {
+                assert_eq!(
+                    receipt.cleanup[leg], "refused: the device lease is not held by this run",
+                    "{leg}"
+                );
+            }
+            assert_eq!(receipt.result, ReceiptResult::Refused);
+            assert!(adb_commands(&mock).is_empty(), "{:?}", adb_commands(&mock));
+            assert_no_owned_server_legs(&receipt);
+            if foreign {
+                assert!(receipt.cleanup["device_lease"].starts_with("unresolved: retained"));
+            }
             assert_eq!(
-                receipt.cleanup[leg], "refused: the device lease is not held by this run",
-                "{leg}"
+                RunRecord::load(&repo, "borrowed-run")
+                    .unwrap()
+                    .resources
+                    .recorder
+                    .is_some(),
+                with_recorder
             );
+            assert_eq!(mock.remaining(), 0);
         }
-        assert_eq!(receipt.result, ReceiptResult::Refused);
-        assert!(adb_commands(&mock).is_empty(), "{:?}", adb_commands(&mock));
-        assert_no_owned_server_legs(&receipt);
-        if foreign {
-            assert!(receipt.cleanup["device_lease"].starts_with("unresolved: retained"));
-        }
-        assert_eq!(mock.remaining(), 0);
     }
 }
 
@@ -2420,31 +2446,60 @@ fn android_borrowed_runner_release_unverified_retains_the_lease() {
 
 #[test]
 fn android_borrowed_cleanup_never_runs_an_adb_the_borrowed_server_would_not_accept() {
-    for server in [None, Some(40)] {
-        let repo = common::temp_repo();
-        let record = borrowed_record(&repo);
-        let lock = record.resources.lease.as_ref().unwrap().lock_dir.clone();
-        record.save(&repo).unwrap();
-        let mut mock = MockRunner::new();
-        owner_gone(&mut mock);
-        mock.expect_run("ps -A", CmdOutput::success("1 1 S\n"));
-        if let Some(version) = server {
-            mock.adb_servers.push((5037, version));
-            mock.expect_run("adb version", CmdOutput::success(ADB_CLIENT_41));
-        }
+    for with_recorder in [false, true] {
+        for server in [Some(40), None] {
+            let repo = common::temp_repo();
+            let mut record = borrowed_record(&repo);
+            let lock = record.resources.lease.as_ref().unwrap().lock_dir.clone();
+            if with_recorder {
+                record.resources.recorder = Some(qaren::runrecord::RecorderResource {
+                    pid: None,
+                    birth: None,
+                    pulled_sha256: None,
+                    kind: qaren::runrecord::RecorderKind::AndroidEmulator,
+                    device: BORROWED.into(),
+                    output: "/data/local/tmp/qaren-borrowed-run.mp4".into(),
+                });
+            }
+            record.save(&repo).unwrap();
+            let mut mock = MockRunner::new();
+            owner_gone(&mut mock);
+            mock.expect_run("ps -A", CmdOutput::success("1 1 S\n"));
+            if with_recorder {
+                owner_gone(&mut mock);
+            }
+            if let Some(version) = server {
+                mock.adb_servers.push((5037, version));
+                mock.expect_run("adb version", CmdOutput::success(ADB_CLIENT_41));
+                if with_recorder {
+                    mock.expect_run("adb version", CmdOutput::success(ADB_CLIENT_41));
+                }
+            }
 
-        let receipt = cleanup(&mut mock, &repo, "borrowed-run");
+            let receipt = cleanup(&mut mock, &repo, "borrowed-run");
 
-        for leg in ["adb_reverse", "android_runner"] {
-            assert!(
-                receipt.cleanup[leg].starts_with("unresolved"),
-                "{leg}: {:?}",
-                receipt.cleanup
+            for leg in ["adb_reverse", "android_runner"]
+                .into_iter()
+                .chain(with_recorder.then_some("recorder"))
+            {
+                assert!(
+                    receipt.cleanup[leg].starts_with("unresolved"),
+                    "{leg}: {:?}",
+                    receipt.cleanup
+                );
+            }
+            assert!(adb_commands(&mock).iter().all(|c| c == "version"));
+            assert!(lock.exists());
+            assert_eq!(
+                RunRecord::load(&repo, "borrowed-run")
+                    .unwrap()
+                    .resources
+                    .recorder
+                    .is_some(),
+                with_recorder
             );
+            assert_eq!(mock.remaining(), 0);
         }
-        assert!(adb_commands(&mock).iter().all(|c| c == "version"));
-        assert!(lock.exists());
-        assert_eq!(mock.remaining(), 0);
     }
 }
 
@@ -2574,4 +2629,288 @@ fn android_borrowed_runner_forward_that_cannot_be_parsed_is_not_absent() {
     assert!(receipt.cleanup["android_runner"].starts_with("unresolved"));
     assert!(lock.exists());
     assert_eq!(mock.remaining(), 0);
+}
+
+fn script_borrowed_recorder_release(mock: &mut MockRunner) {
+    mock.expect_run("adb version", CmdOutput::success(ADB_CLIENT_41));
+    mock.expect_run("reverse --remove tcp:8791", CmdOutput::success(""));
+    mock.expect_run("reverse --list", CmdOutput::success(""));
+    mock.expect_run("forward --list", CmdOutput::success("\n"));
+    mock.expect_run(
+        "dumpsys activity processes",
+        CmdOutput::success(NO_RUNNER_PROCESS),
+    );
+}
+
+#[test]
+fn dead_owner_android_recorder_is_reclaimed_before_borrowed_release_and_keeps_lease_on_failure() {
+    use qaren::runrecord::{RecorderKind, RecorderResource};
+    for failure in ["none", "pull", "rm", "changed", "probe"] {
+        let repo = common::temp_repo();
+        let mut record = borrowed_record(&repo);
+        record.resources.core = None;
+        let media = RunRecord::run_dir(&repo, &record.run_id).join("media");
+        std::fs::create_dir_all(&media).unwrap();
+        // The scripted successful pull supplies these bytes, without prior completion evidence.
+        std::fs::write(media.join("raw.mp4"), "complete recording").unwrap();
+        let path = format!("/data/local/tmp/qaren-{}.mp4", record.run_id);
+        record.resources.recorder = Some(RecorderResource {
+            pid: Some(7100),
+            birth: Some(common::identity(7100, LSTART)),
+            pulled_sha256: None,
+            kind: RecorderKind::AndroidEmulator,
+            device: BORROWED.into(),
+            output: path.clone().into(),
+        });
+        let lock = record.resources.lease.as_ref().unwrap().lock_dir.clone();
+        record.save(&repo).unwrap();
+        let mut mock = MockRunner::new();
+        mock.adb_servers.push((5037, 41));
+        owner_gone(&mut mock);
+        mock.expect_run("adb version", CmdOutput::success(ADB_CLIENT_41));
+        mock.expect_run("shell pkill -INT -f", CmdOutput::success(""));
+        mock.expect_run(
+            "shell pgrep -f",
+            if failure == "probe" {
+                CmdOutput::failed(2, "unknown")
+            } else {
+                CmdOutput::failed(1, "")
+            },
+        );
+        if failure != "probe" {
+            mock.expect_run("ps -A", CmdOutput::success("1 1 S\n"));
+            mock.expect_run(
+                "pull",
+                if failure == "pull" {
+                    CmdOutput::failed(1, "Permission denied")
+                } else {
+                    CmdOutput::success("")
+                },
+            );
+            if failure != "pull" {
+                mock.expect_run(
+                    "shell rm -f",
+                    if matches!(failure, "rm" | "changed") {
+                        CmdOutput::failed(1, "Permission denied")
+                    } else {
+                        CmdOutput::success("")
+                    },
+                );
+            }
+        }
+        script_borrowed_recorder_release(&mut mock);
+        let receipt = cleanup(&mut mock, &repo, "borrowed-run");
+        assert_eq!(mock.remaining(), 0, "{failure}");
+        let position = |label: &str| {
+            mock.calls
+                .iter()
+                .position(|call| call.label == label)
+                .unwrap()
+        };
+        assert!(position("adb-device-pkill") < position("adb-reverse-remove"));
+        if failure == "none" {
+            assert!(position("adb-rm") < position("adb-reverse-remove"));
+            assert_eq!(receipt.cleanup["recorder"], "removed");
+            assert_eq!(receipt.cleanup["device_lease"], "removed");
+            assert!(!lock.exists());
+            assert!(RunRecord::load(&repo, "borrowed-run")
+                .unwrap()
+                .resources
+                .recorder
+                .is_none());
+        } else {
+            assert!(
+                receipt.cleanup["recorder"].starts_with("unresolved:"),
+                "{failure}: {:?}",
+                receipt.cleanup
+            );
+            assert!(receipt.cleanup["device_lease"].contains("recorder"));
+            assert!(lock.exists());
+            assert!(RunRecord::load(&repo, "borrowed-run")
+                .unwrap()
+                .resources
+                .recorder
+                .is_some());
+            if failure == "pull" {
+                assert!(receipt.cleanup["recorder"].contains(&path));
+                assert!(!mock.calls.iter().any(|call| call.label == "adb-rm"));
+            }
+            if failure == "changed" {
+                // A partial/replaced file is not the successfully pulled recording.
+                std::fs::write(media.join("raw.mp4"), "partial recording").unwrap();
+            }
+            let mut retry = MockRunner::new();
+            retry.adb_servers.push((5037, 41));
+            owner_gone(&mut retry);
+            retry.expect_run("adb version", CmdOutput::success(ADB_CLIENT_41));
+            retry.expect_run("shell pkill -INT -f", CmdOutput::failed(1, ""));
+            retry.expect_run("shell pgrep -f", CmdOutput::failed(1, ""));
+            retry.expect_run("ps -A", CmdOutput::success("1 1 S\n"));
+            if failure != "rm" {
+                retry.expect_run("pull", CmdOutput::success(""));
+            }
+            retry.expect_run("shell rm -f", CmdOutput::success(""));
+            script_borrowed_recorder_release(&mut retry);
+            let recovered = cleanup(&mut retry, &repo, "borrowed-run");
+            assert_eq!(recovered.cleanup["recorder"], "removed");
+            assert_eq!(recovered.cleanup["device_lease"], "removed");
+            assert!(!lock.exists());
+            assert_eq!(retry.remaining(), 0);
+        }
+    }
+}
+
+// Model successful pull/rm at the device boundary, then interrupt only local retirement.
+struct RecorderRetirementRunner {
+    mock: MockRunner,
+    record_path: std::path::PathBuf,
+    device_media: bool,
+    interrupt: Option<bool>,
+}
+
+impl qaren::exec::Runner for RecorderRetirementRunner {
+    fn execute(&mut self, spec: &qaren::exec::CmdSpec, interruptible: bool) -> CmdOutput {
+        if spec.label == "adb-pull" {
+            self.mock.calls.push(spec.clone());
+            let raw = spec.args.last().unwrap();
+            if !self.device_media {
+                return CmdOutput::failed(1, "remote file does not exist");
+            }
+            std::fs::write(raw, "complete recording").unwrap();
+            return CmdOutput::success("");
+        }
+        let output = if spec.label == "adb-rm" {
+            self.mock.calls.push(spec.clone());
+            CmdOutput::success("")
+        } else {
+            self.mock.execute(spec, interruptible)
+        };
+        if spec.label == "adb-rm" && output.ok() {
+            self.device_media = false;
+            if let Some(crash) = self.interrupt.take() {
+                if crash {
+                    panic!("interrupted after successful device rm");
+                }
+                std::fs::create_dir(
+                    self.record_path
+                        .parent()
+                        .unwrap()
+                        .join(format!(".run.json.tmp.{}", std::process::id())),
+                )
+                .unwrap();
+            }
+        }
+        output
+    }
+    fn adb_server_version(&self, port: u16) -> Result<u32, String> {
+        self.mock.adb_server_version(port)
+    }
+    fn spawn_group_unchecked(
+        &mut self,
+        spec: &qaren::exec::CmdSpec,
+        log: &std::path::Path,
+    ) -> std::io::Result<qaren::exec::Spawned> {
+        self.mock.spawn_group_unchecked(spec, log)
+    }
+    fn spawn_piped_unchecked(
+        &mut self,
+        spec: &qaren::exec::CmdSpec,
+        log: &std::path::Path,
+    ) -> std::io::Result<qaren::exec::PipedChild> {
+        self.mock.spawn_piped_unchecked(spec, log)
+    }
+    fn sleep(&mut self, d: std::time::Duration) {
+        self.mock.sleep(d)
+    }
+    fn now_epoch_ms(&self) -> u64 {
+        self.mock.now_epoch_ms()
+    }
+    fn commands_executed(&self) -> u64 {
+        self.mock.commands_executed()
+    }
+}
+
+#[test]
+fn android_recorder_cleanup_recovers_after_device_rm_before_retirement_is_saved() {
+    for crash in [true, false] {
+        let repo = common::temp_repo();
+        let mut record = borrowed_record(&repo);
+        record.resources.core = None;
+        record.resources.recorder = Some(qaren::runrecord::RecorderResource {
+            pid: None,
+            birth: None,
+            pulled_sha256: None,
+            kind: qaren::runrecord::RecorderKind::AndroidEmulator,
+            device: BORROWED.into(),
+            output: "/data/local/tmp/qaren-borrowed-run.mp4".into(),
+        });
+        record.save(&repo).unwrap();
+        let lock = record.resources.lease.as_ref().unwrap().lock_dir.clone();
+        let mut mock = MockRunner::new();
+        mock.adb_servers.push((5037, 41));
+        mock.expect_run("adb version", CmdOutput::success(ADB_CLIENT_41));
+        mock.expect_run("shell pkill -INT", CmdOutput::success(""));
+        mock.expect_run("shell pgrep", CmdOutput::failed(1, ""));
+        let mut runner = RecorderRetirementRunner {
+            mock,
+            record_path: RunRecord::path(&repo, &record.run_id),
+            device_media: true,
+            interrupt: Some(crash),
+        };
+        let stopped = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            qaren::record::stop(&mut runner, &mut record, &repo)
+        }));
+        if crash {
+            assert!(stopped.is_err());
+        } else {
+            assert_eq!(
+                stopped.unwrap(),
+                qaren::commands::cleanup::Outcome::Unresolved(
+                    "recorder retirement was not persisted".into()
+                )
+            );
+            std::fs::remove_dir(
+                runner
+                    .record_path
+                    .parent()
+                    .unwrap()
+                    .join(format!(".run.json.tmp.{}", std::process::id())),
+            )
+            .unwrap();
+        }
+        assert!(!runner.device_media);
+        assert!(lock.exists());
+        assert!(RunRecord::load(&repo, "borrowed-run")
+            .unwrap()
+            .resources
+            .recorder
+            .is_some());
+        assert_eq!(runner.mock.remaining(), 0);
+        runner.mock.calls.clear();
+        owner_gone(&mut runner.mock);
+        runner
+            .mock
+            .expect_run("adb version", CmdOutput::success(ADB_CLIENT_41));
+        runner
+            .mock
+            .expect_run("shell pkill -INT", CmdOutput::failed(1, ""));
+        runner
+            .mock
+            .expect_run("shell pgrep", CmdOutput::failed(1, ""));
+        script_borrowed_recorder_release(&mut runner.mock);
+        let receipt = cleanup(&mut runner, &repo, "borrowed-run");
+        assert_eq!(
+            receipt.cleanup["recorder"], "removed",
+            "{crash}: {:?}",
+            receipt.cleanup
+        );
+        assert_eq!(receipt.cleanup["device_lease"], "removed");
+        assert!(!lock.exists());
+        assert!(!runner.mock.calls.iter().any(|c| c.label == "adb-pull"));
+        assert_eq!(runner.mock.remaining(), 0);
+        assert_eq!(
+            std::fs::read(runner.record_path.parent().unwrap().join("media/raw.mp4")).unwrap(),
+            b"complete recording"
+        );
+    }
 }

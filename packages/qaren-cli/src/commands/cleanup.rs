@@ -1225,11 +1225,7 @@ pub(crate) fn release_borrowed_android(
             .map(|leg| (leg.to_string(), outcome.clone()))
             .collect::<Vec<_>>()
     };
-    let held = record.resources.lease.as_ref().is_some_and(|lease| {
-        crate::buildplan::read_holder(&lease.lock_dir)
-            .is_some_and(|h| h.holder == lease.holder && h.run_id == record.run_id)
-    });
-    if !held {
+    if !record.holds_device_lease() {
         return every(Outcome::Refused(
             "the device lease is not held by this run".into(),
         ));
@@ -1394,7 +1390,10 @@ fn read_runner(
     }
     let processes = runner.run(&android::runner_processes_spec(adb, port, serial));
     if !processes.ok() {
-        return Err(format!("dumpsys activity processes: {}", processes.summary()));
+        return Err(format!(
+            "dumpsys activity processes: {}",
+            processes.summary()
+        ));
     }
     let Some(instrumenting) = android::runner_in_processes(&processes.stdout) else {
         return Err("dumpsys activity processes: unrecognised output".to_string());
