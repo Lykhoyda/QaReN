@@ -919,6 +919,20 @@ not emitted. Samples are dropped before histogram entries to keep the line withi
 the byte limit. It excludes value text, label text, identifiers and testIDs. The
 [diagnostic implementation](../qaren-core/src/qa/privacy.ts) owns its field layout.
 
+When a quoted target step fails, the walker attempts a value-free `quoted-target`
+line in `logs/core.log` for that failure's captured screen, rather than each wait
+poll. It reports exact native label or identifier matches before candidate
+filtering, their frames, depths, hittability and trusted-viewport status, plus
+the deepest captured native depth. Unknown geometry or metadata is reported as
+`null`; labels, identifiers, target text and values are omitted. Empty matches
+mean that native snapshot contained no exact label or identifier match; offscreen
+matches indicate clipping, while an inside-viewport match alone does not prove
+action eligibility.
+The deepest captured depth does not establish a snapshot depth limit or explain
+missing cards. Successful step attempts and literal checks emit no such failure line;
+diagnostic errors do not change the failed step's outcome. The
+[capture implementation](../qaren-core/src/qa/capture.ts) owns the field layout.
+
 Phrase presses require complete native and React coverage and proven React-to-native
 associations. Native text, images and plain views are excluded from press candidates
 only when complete React host evidence accounts for every interactive host and no
