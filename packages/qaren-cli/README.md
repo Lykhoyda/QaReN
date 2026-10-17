@@ -1260,8 +1260,9 @@ The host process table is streamed without a total-output byte cap, so its size
 alone does not refuse admission.
 A driver targeting it is busy; a driver can coexist only when kernel executable
 identity and exact arguments prove that it targets other simulators exclusively.
-An `xcodebuild` whose kernel identity and exact arguments show no `test` action
-cannot drive a simulator and coexists unless its arguments name the selected simulator.
+An `xcodebuild` whose kernel identity and exact arguments show neither a `test`
+nor a `test-without-building` action cannot drive a simulator and coexists; if
+its arguments name the selected simulator's ID, admission refuses `DEVICE_BUSY`.
 An unscoped Maestro MCP controller can coexist when its Java executable and
 exact MCP arguments are attested; its command-line spelling alone is insufficient.
 Unknown identity or scope for an automation candidate, or an incomplete process table, refuses.
