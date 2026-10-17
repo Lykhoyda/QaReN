@@ -105,3 +105,12 @@ test('a declared label echo does not change the digest between two values', () =
     );
   assert.equal(digest('qa-synth-1234@example.test'), digest('other-user@example.test'));
 });
+
+test('a code that only spans adjacent quantized coordinates still hashes', () => {
+  const coded = (value, label = 'Code') =>
+    withInputs(new RunInputs({ OTP: value }, ['OTP']), () =>
+      hashSnapshotNodes([node({ rect: { x: 232, y: 156, width: 40, height: 20 }, label })]),
+    );
+  assert.equal(coded('5839'), coded('2468'));
+  assert.throws(() => coded('5839', '58 39'), /runtime input privacy refused/);
+});

@@ -28,7 +28,6 @@ export function hashSnapshotNodes(nodes: FlatNode[]): string {
       if (typeof text === 'string') assertInputHashSafe(text);
   }
   const tuples = projected.map(normalizeNodeForHash);
-  tuples.forEach(assertInputHashSafe);
   const h = createHash('sha256');
   for (const tuple of tuples) {
     h.update(tuple);
