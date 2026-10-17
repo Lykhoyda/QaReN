@@ -588,13 +588,12 @@ a refusal, with `caseNormalized: { chars }` beside the reason and a receipt and
 report detail such as `field case-normalized 12 chars`. The iOS runner makes that
 comparison itself (verdict `case-normalized`), so the value never leaves it;
 keyboard fallback applies the same rule to its React read-back. A different
-letter is still a mismatch. A screen change alone never verifies a fill. During discovery, a quoted
+letter is still a mismatch. A screen change alone never verifies a fill. A quoted
 iOS fill can use keyboard fallback when no observable native input resolves, or
 strict binding refuses `NO_TEXT_INPUT_TARGET` before any text mutation for a
 non-native-input target. Phrase fills and stored text selectors do not use
-this fallback; a stored testID replays through it exactly as the walk did, and
-the saved block stores the field's testID the focus proof used. Ambiguous targets
-and potentially mutated fills still fail.
+this fallback; a stored testID replays through it with fresh eligibility and focus
+checks. Ambiguous targets and potentially mutated fills still fail.
 
 On Android API 26 and later, a fresh read of the bound input with null text
 and no hint showing counts as empty, so clearing a plain field verifies as
@@ -1421,8 +1420,9 @@ blocks that passed earlier in the run remain saved. A step without a `testID`
 or label, a phrase wait, or a literal fill into a secure or private input or through
 [keyboard fallback](#fill-verification-and-keyboard-fallback) leaves the block
 unsaved and the ledger says why without naming any value. A [runtime input](#runtime-inputs)
-fill can be saved in those private or fallback paths when it has a stored selector,
-which is the field's testID the focus proof used; the remaining persistence checks
+fill can be saved in those private or fallback paths when it has a stored selector.
+Keyboard fallback and proven-focus fills store the field testID used by their focus
+proof, even for a passing `UNVERIFIED_FILL` row; the remaining persistence checks
 still apply. Planned fill literals
 also undergo the [shared masking rules](#input-value-masking), so a protected
 literal withholds a newly discovered or patched block even for an ordinary input.
