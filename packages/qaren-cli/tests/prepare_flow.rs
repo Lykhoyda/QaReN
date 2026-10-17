@@ -494,6 +494,31 @@ fn ios_install_error_fails_after_one_attempt() {
     assert_eq!(mock.remaining(), 0);
 }
 
+#[test]
+fn ios_install_refusal_on_stdout_is_terminal() {
+    let repo = common::temp_repo();
+    let scenario = write_scenario(&repo, &ios_scenario_yaml(8791));
+    let mut mock = MockRunner::new();
+    script_ios_prepare_before_install(&mut mock, &repo);
+    mock.expect_run(
+        "simctl install",
+        CmdOutput {
+            stdout: IX_REFUSAL.into(),
+            ..CmdOutput::failed(2, "")
+        },
+    );
+    common::script_ios_metro_cleanup(&mut mock);
+
+    let receipt = prepare(&mut mock, &prepare_args(&scenario, false, None));
+
+    assert_eq!(
+        receipt.failure.as_ref().unwrap().code,
+        FailureCode::ArtifactInstallFailed
+    );
+    assert!(!receipt.timings_ms.contains_key("simctl-install_attempt_2"));
+    assert_eq!(mock.remaining(), 0);
+}
+
 fn script_ios_prepare_before_devmenu(mock: &mut MockRunner, repo: &std::path::Path) {
     script_ios_prepare_before_install(mock, repo);
     mock.expect_run("simctl install", CmdOutput::success(""));

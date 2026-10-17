@@ -953,10 +953,19 @@ fn launchctl_parsing_requires_live_pid_and_exact_label() {
 fn install_refusal_is_transient_only_for_the_install_coordination_signature() {
     let refusal = "An error was encountered processing the command (domain=IXErrorDomain, code=2):\nSimulator device failed to install the application.\nFailed to locate promise.\nUnderlying error (domain=IXErrorDomain, code=2):\n\tFailed to set metadata for <bundle>\n\tFailed to create promise.";
     assert!(ios::install_refusal_is_transient(refusal));
+    for transient in ["ixerrordomain PROMISE", "IXERRORDOMAIN metadata"] {
+        assert!(ios::install_refusal_is_transient(transient), "{transient}");
+    }
     for terminal in [
         "An error was encountered processing the command (domain=NSPOSIXErrorDomain, code=2):\nFailed to install the requested application",
         "An error was encountered processing the command (domain=IXErrorDomain, code=2):\nSimulator device failed to install the application.",
         "The application's bundle has no valid signature",
+        "NSPOSIXErrorDomain failed to create promise",
+        "NSPOSIXErrorDomain failed to set metadata",
+        "IXErrorDomainOther failed to create promise",
+        "Failed to set metadata",
+        "Device is not booted",
+        "Invalid bundle",
         "",
     ] {
         assert!(!ios::install_refusal_is_transient(terminal), "{terminal}");
