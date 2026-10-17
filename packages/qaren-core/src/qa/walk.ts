@@ -481,6 +481,7 @@ async function openSession(
       truncated: data.truncated,
       normalizationDroppedNodes: data.normalizationDroppedNodes,
       snapshotVerdict: meta?.snapshotVerdict,
+      snapshotDiagnostics: data.snapshotDiagnostics,
       surface: typeof meta?.foregroundSurface === 'string' ? meta.foregroundSurface : undefined,
     };
   };
@@ -549,6 +550,8 @@ async function openSession(
         captureScreen({
           appId,
           requirePrivateInputs: true,
+          observation: options?.observation,
+          platformPresence: options?.platformPresence,
           now,
           timing: options?.timing,
           warn: log,

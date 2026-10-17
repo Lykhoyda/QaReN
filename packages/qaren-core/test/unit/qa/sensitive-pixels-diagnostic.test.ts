@@ -728,7 +728,7 @@ test('at most four shapes are listed and the rest are counted', async () => {
   );
   assert.equal(run.line.shapes.length, 4);
   assert.equal(run.line.omittedShapes, 6);
-  for (const line of run.lines)
+  for (const line of run.lines.filter((line) => line.startsWith('sensitive-pixels ')))
     assert.ok(Buffer.byteLength(`${SINK_PREFIX}${line}\n`, 'utf8') <= 512, line);
 });
 

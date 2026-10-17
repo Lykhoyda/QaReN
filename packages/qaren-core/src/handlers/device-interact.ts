@@ -1996,7 +1996,8 @@ function dragBand(within?: Band): Band {
 // Scroll direction → finger gesture is INVERTED vs swipe ("scroll down" = content
 // moves up = finger moves up) and scaled by `amount` (0..1). Centred half-spans
 // keep the gesture inside the viewport.
-// A vertical clearance distance replaces the amount, capped inside the band.
+// A vertical clearance distance replaces the amount: a caller band is precise, so the drag may
+// span it a pixel inside each edge; the window fallback keeps its cap.
 function computeScrollFromDirection(
   direction: 'up' | 'down' | 'left' | 'right',
   amount: number,
@@ -2007,14 +2008,24 @@ function computeScrollFromDirection(
   const cy = Math.round((screen.y ?? 0) + screen.height / 2);
   const dy =
     distance !== undefined && Number.isFinite(distance) && distance > 0
-      ? Math.round(Math.min(distance, screen.height * CLEARANCE_BAND_FRACTION))
+      ? Math.round(
+          Math.min(
+            distance,
+            screen.x !== undefined || screen.y !== undefined
+              ? screen.height - 2
+              : screen.height * CLEARANCE_BAND_FRACTION,
+          ),
+        )
       : Math.round(screen.height * SWIPE_FRACTION * amount);
   const dx = Math.round(screen.width * SWIPE_FRACTION * amount);
+  // Rounding the centre and the half-span up together can land an end on the band's edge row.
+  const top = Math.max(cy - Math.round(dy / 2), Math.ceil((screen.y ?? 0) + 1));
+  const bottom = Math.min(cy + Math.round(dy / 2), Math.floor((screen.y ?? 0) + screen.height - 1));
   switch (direction) {
     case 'down':
-      return { x1: cx, y1: cy + Math.round(dy / 2), x2: cx, y2: cy - Math.round(dy / 2) };
+      return { x1: cx, y1: bottom, x2: cx, y2: top };
     case 'up':
-      return { x1: cx, y1: cy - Math.round(dy / 2), x2: cx, y2: cy + Math.round(dy / 2) };
+      return { x1: cx, y1: top, x2: cx, y2: bottom };
     case 'left':
       return { x1: cx + Math.round(dx / 2), y1: cy, x2: cx - Math.round(dx / 2), y2: cy };
     case 'right':
@@ -2202,7 +2213,7 @@ interface ScrollArgs {
   qaContext?: QaDispatchContext;
   direction: 'up' | 'down' | 'left' | 'right';
   amount?: number;
-  // Pixels to move the content, for a keyboard clearance scroll.
+  // Pixels to move the content for a clearance scroll.
   distance?: number;
   // The visible part of the scrolled view; the drag starts inside it.
   within?: Band;
