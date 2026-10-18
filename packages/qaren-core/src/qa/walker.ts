@@ -287,9 +287,10 @@ export interface WalkSequence {
 
 // Title and button labels of a system prompt, held in memory only.
 const promptSignature = (screen: Screen): string =>
-  JSON.stringify(
-    screen.elements.flatMap((e) => (e.label === undefined ? [] : [[e.kind, e.label]])),
-  );
+  JSON.stringify([
+    screen.elements.find((e) => e.kind !== 'button' && e.label !== undefined)?.label,
+    screen.elements.flatMap((e) => (e.kind === 'button' && e.label !== undefined ? [e.label] : [])),
+  ]);
 
 // Capture and process refusals, ambiguity and the replay-miss path are never recovered.
 const UNRECOVERABLE = new Set([
@@ -1213,7 +1214,7 @@ async function walkBlockScoped(
     reason: string,
   ): Promise<'retry' | WalkOutcome | undefined> => {
     const first = recovered.get(item);
-    if (opts.recover === false || !deps.hideDevMenu || first === null) return undefined;
+    if (opts.recover === false || !deps.hideDevMenu) return undefined;
     recovered.set(item, null);
     loginReplayed = false;
     let fresh: Observation;
@@ -1252,6 +1253,7 @@ async function walkBlockScoped(
         fresh.screen,
         await shoot(item),
       );
+    if (first === null) return undefined;
     if (first !== undefined) {
       if (fresh.screen.front !== 'dialog' && fresh.screen.front !== 'app') return undefined;
       if (
@@ -1292,6 +1294,7 @@ async function walkBlockScoped(
         },
         dialog: async () => {
           declineAttempted = true;
+          recoveries += 1;
           return (dialogAct = await mutate(item, fresh, (context) =>
             deps.dialog(item.kind === 'dialog' ? item.action : 'dismiss', context),
           ));
@@ -1322,6 +1325,7 @@ async function walkBlockScoped(
           }
           interruptionShot = await shoot(item);
           declineAttempted = true;
+          recoveries += 1;
           const support: Block = {
             slug: '@interruption',
             title: 'Dismiss interruption',
@@ -1406,8 +1410,7 @@ async function walkBlockScoped(
       planTargets,
     );
     if (!result) return undefined;
-    // A decline that was attempted counts even when it failed.
-    if ('handled' in result || ('fail' in result && declineAttempted)) recoveries += 1;
+    if ('handled' in result && !declineAttempted) recoveries += 1;
     if ('handled' in result) {
       if (prompt !== undefined && result.handled === 'dialog') declinedPrompts.add(prompt);
       // A dialog step answers with its own action, so it never gets a second, decline-only recovery.

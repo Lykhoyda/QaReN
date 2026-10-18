@@ -6,6 +6,7 @@ import { join } from 'node:path';
 import { loadBlock } from '../../../dist/qa/blocks.js';
 import { parsePlan } from '../../../dist/qa/plan.js';
 import { runPlan } from '../../../dist/qa/walker.js';
+import { NativeSnapshotIncomplete } from '../../../dist/qa/private-input.js';
 import type { Screen } from '../../../dist/qa/screen.js';
 import type { WalkerDeps } from '../../../dist/qa/walker.js';
 import { choice, element, screen, scriptedJudge } from './judgment-fixtures.ts';
@@ -715,4 +716,100 @@ test('a dialog step keeps its single recovery', async () => {
   const result = await runPlan(parsePlan('1. Allow the permission prompt').blocks!, f.deps);
   assert.equal(result.verdict, 'FAIL');
   assert.equal(result.recoveries, 1);
+});
+
+test('a repeated prompt with the same title and buttons stays declined when its message changes', async () => {
+  const prompt = (message: string): Screen => ({
+    ...alert(),
+    elements: [
+      element('@title', 'Notifications', { kind: 'text' }),
+      element('@message', message, { kind: 'text' }),
+      element('@deny', "Don't Allow"),
+      element('@allow', 'Allow'),
+    ],
+    visibleText: ['Notifications', message, "Don't Allow", 'Allow'],
+  });
+  const f = app(prompt('Receive updates'));
+  f.deps.press = async (ref) => {
+    f.actions.push(`press ${ref}`);
+    f.show(prompt('Receive reminders'));
+    return { ok: true, proven: false, executed: true };
+  };
+  ticking(f);
+  const result = await runPlan(
+    parsePlan('1. Tap "Settings"\n2. Wait for "Done" to appear').blocks!,
+    f.deps,
+  );
+  assert.deepEqual(f.actions, ['dialog dismiss', 'press @settings']);
+  assert.equal(result.recoveries, 1);
+  assert.match(result.failure?.seen ?? '', /the app asked again after recovery declined it/);
+});
+
+test('a dispatched decline counts when its read-back refuses incomplete capture', async () => {
+  const f = app(promo());
+  let dispatched = false;
+  f.deps.press = async (ref) => {
+    f.actions.push(`press ${ref}`);
+    dispatched = true;
+    return { ok: true, proven: false, executed: true };
+  };
+  f.deps.captureScreen = async () => {
+    if (dispatched) throw new NativeSnapshotIncomplete(1, ['truncated']);
+    return promo();
+  };
+  const result = await runPlan(plan(), f.deps);
+  assert.deepEqual(f.actions, ['press @close']);
+  assert.equal(result.verdict, 'REFUSED');
+  assert.equal(result.recoveries, 1);
+});
+
+test('a second app interruption still respects later plan targets and consent boundaries', async () => {
+  for (const second of [
+    screen([element('@skip', 'Skip'), element('@profile', 'Profile')]),
+    screen([element('@allow', 'Allow')]),
+  ]) {
+    const f = app(promo());
+    f.deps.press = async (ref) => {
+      f.actions.push(`press ${ref}`);
+      f.show(second);
+      return { ok: true, proven: false, executed: true };
+    };
+    const result = await runPlan(
+      parsePlan('1. Tap "Settings"\n2. Tap "Profile"').blocks!,
+      f.deps,
+    );
+    assert.equal(result.verdict, 'FAIL');
+    assert.deepEqual(f.actions, ['press @close']);
+    assert.equal(result.recoveries, 1);
+  }
+});
+
+test('a system prompt after an app decline stays with the next dialog step', async () => {
+  const f = app(promo());
+  f.deps.press = async (ref) => {
+    f.actions.push(`press ${ref}`);
+    f.show(alert());
+    return { ok: true, proven: false, executed: true };
+  };
+  const result = await runPlan(
+    parsePlan('1. Tap "Settings"\n2. Dismiss the permission dialog').blocks!,
+    f.deps,
+  );
+  assert.equal(result.verdict, 'FAIL');
+  assert.deepEqual(f.actions, ['press @close']);
+  assert.equal(result.recoveries, 1);
+});
+
+test('a repeat prompt after two different declines still explains that the author must answer it', async () => {
+  const f = app(titled('Notifications'));
+  f.deps.dialog = async (action) => {
+    f.actions.push(`dialog ${action}`);
+    f.show(titled(f.actions.length === 1 ? 'Camera' : 'Notifications'));
+    return { ok: true, proven: true, executed: true };
+  };
+  const result = await runPlan(parsePlan('1. Tap "Settings"').blocks!, f.deps);
+  assert.equal(result.verdict, 'FAIL');
+  assert.deepEqual(f.actions, ['dialog dismiss', 'dialog dismiss']);
+  assert.equal(result.recoveries, 2);
+  assert.match(result.failure?.seen ?? '', /the app asked again after recovery declined it/);
 });
