@@ -716,6 +716,17 @@ need no key; recognised back, dialog and fixed-scroll steps also stay model-free
 When a key is available, [app-interruption recovery](#step-recovery) may ask Jev
 for a safety veto even in a plan with only quoted targets.
 
+Child environments remove names case-insensitively when they end in `TOKEN`,
+`_API_KEY` or `APIKEY`, contain `SECRET`, `PASSWORD`, `PASSWD`, `_CREDENTIALS` or
+`_PRIVATE_KEY`, or start with `QAREN_INPUT_`. `SSH_AUTH_SOCK`, `ADB_VENDOR_KEYS` and
+ordinary toolchain variables remain available. Only core walk and plan-preflight
+receive `TYPESAFE_API_KEY`; core captures it and clears secret-named variables before
+spawning tools, preserving Jev authentication and the interruption safety veto.
+The log redactor receives its key over a private control socket; log and wire
+redaction mask literal and JSON-encoded keys. Only `pnpm-install` and `expo-prebuild`
+retain `NPM_TOKEN`, `NODE_AUTH_TOKEN`, `YARN_NPM_AUTH_TOKEN`, `COREPACK_NPM_TOKEN`,
+`GITHUB_TOKEN` and `GH_TOKEN` for dependency preparation.
+
 Dialog steps require one unconditional accept or dismiss action, such as
 `Accept the permission dialog` or `Dismiss the alert`. Conditions, negation and
 multiple actions, such as `Accept the dialog if it appears` or
@@ -2358,9 +2369,11 @@ authority is retired.
 **Credential-authorized dependency prewarming.** Under `deps.policy:
 require-prewarm`, `qaren prewarm <scenario>` is the one deliberate network
 moment (the default `install` policy keeps today's behavior: prepare's own
-`pnpm install` may reach the network): run it while registry credentials
-are available; it runs `pnpm fetch` + `pnpm install
---frozen-lockfile` (CI, stdin-null) and persists only
+`pnpm install` may reach the network): it runs `pnpm fetch` + `pnpm install
+--frozen-lockfile` (CI, stdin-null). The fetch step strips exported secret-named
+variables, including registry tokens, so registry access that depends on those
+variables fails there; the install step has the exact exceptions in the
+[child-environment contract](#plan-checks-and-screen-evidence). Prewarm persists only
 `{worktree, project, lockfile sha256, timestamp}`; failure summaries follow the
 [diagnostic redaction contract](#preparation-ownership-and-safety-rules).
 A scenario with `deps.policy: require-prewarm` then refuses to prepare without a matching record

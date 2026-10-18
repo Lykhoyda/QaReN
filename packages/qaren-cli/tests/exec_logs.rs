@@ -436,6 +436,7 @@ fn subprocess_logs_are_redacted_before_persistence() {
         .env("PATH", "/usr/bin:/bin")
         .env("TYPESAFE_API_KEY", KEY)
         .env("QAREN_TEST_LOG_DIR", &dir)
+        .env("QAREN_INPUT_INHERITED", "synthetic-inherited-slot")
         .output()
         .unwrap();
     assert!(
@@ -587,10 +588,23 @@ fn subprocess_fixture_worker() {
     assert!(!output.ok());
     assert!(output.stderr.contains("command output exceeded 16 MiB"));
 
-    let core = shell(
-        r#"printf '{"token":"%s"}\n' "$TYPESAFE_API_KEY"; printf 'core diagnostic %s' "$TYPESAFE_API_KEY" >&2"#,
+    let tool = shell(
+        r#"test "${TYPESAFE_API_KEY+x}" != x && test "${QAREN_INPUT_SLOT+x}" != x && test "${QAREN_INPUT_INHERITED+x}" != x && printf 'scrubbed\n'"#,
+        dir,
+    )
+    .env("TYPESAFE_API_KEY", KEY)
+    .env("QAREN_INPUT_SLOT", "synthetic-slot-value");
+    let mut tool_child = runner.spawn_piped(&tool, &dir.join("tool.log")).unwrap();
+    let mut tool_wire = String::new();
+    tool_child.stdout.read_line(&mut tool_wire).unwrap();
+    assert_eq!(tool_wire, "scrubbed\n");
+    until(|| tool_child.handle.try_wait().unwrap().is_some());
+
+    let mut core = shell(
+        r#"test "${QAREN_INPUT_INHERITED+x}" != x || exit 10; printf '{"token":"%s"}\n' "$TYPESAFE_API_KEY"; printf 'core diagnostic %s' "$TYPESAFE_API_KEY" >&2"#,
         dir,
     );
+    core.label = "core-walk".into();
     let mut child = runner.spawn_piped(&core, &dir.join("core.log")).unwrap();
     let mut wire = String::new();
     child.stdout.read_line(&mut wire).unwrap();
@@ -607,7 +621,7 @@ fn subprocess_fixture_worker() {
     let mut killed = runner
         .spawn_piped(
             &shell(
-                r#"printf 'kill tail %s' "$TYPESAFE_API_KEY" >&2; : > kill-ready; sleep 5"#,
+                r#". ./.env; printf 'kill tail %s' "$TYPESAFE_API_KEY" >&2; : > kill-ready; sleep 5"#,
                 dir,
             ),
             &dir.join("killed.log"),
