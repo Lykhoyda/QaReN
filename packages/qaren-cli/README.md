@@ -716,12 +716,16 @@ need no key; recognised back, dialog and fixed-scroll steps also stay model-free
 When a key is available, [app-interruption recovery](#step-recovery) may ask Jev
 for a safety veto even in a plan with only quoted targets.
 
-The CLI passes `TYPESAFE_API_KEY` only to the core walk and plan-preflight
-processes, removing it from tool child environments after applying their command
-environment. At startup, the core captures the key and removes it alongside every
-`QAREN_INPUT_*` variable before spawning tools. The captured key still authenticates
-Jev calls and enables the interruption safety veto; log and wire redaction mask its
-literal and JSON-encoded forms. Other shell credentials are left unchanged.
+Child environments remove names case-insensitively when they end in `TOKEN`,
+`_API_KEY` or `APIKEY`, contain `SECRET`, `PASSWORD`, `PASSWD`, `_CREDENTIALS` or
+`_PRIVATE_KEY`, or start with `QAREN_INPUT_`. `SSH_AUTH_SOCK`, `ADB_VENDOR_KEYS` and
+ordinary toolchain variables remain available. Only core walk and plan-preflight
+receive `TYPESAFE_API_KEY`; core captures it and clears secret-named variables before
+spawning tools, preserving Jev authentication and the interruption safety veto.
+The log redactor receives its key over a private control socket; log and wire
+redaction mask literal and JSON-encoded keys. Only `pnpm-install` and `expo-prebuild`
+retain `NPM_TOKEN`, `NODE_AUTH_TOKEN`, `YARN_NPM_AUTH_TOKEN`, `COREPACK_NPM_TOKEN`,
+`GITHUB_TOKEN` and `GH_TOKEN` for dependency preparation.
 
 Dialog steps require one unconditional accept or dismiss action, such as
 `Accept the permission dialog` or `Dismiss the alert`. Conditions, negation and

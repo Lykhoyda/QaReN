@@ -10,6 +10,7 @@ pub const HELPER_ARG: &str = "--internal-redact-log";
 // The helper also drains the child's stderr from fd 3 into the same log.
 pub const WITHHOLD_ARG: &str = "--private-output-withheld";
 pub const PAIRED_ARG: &str = "--stderr-fd3";
+const KEY_CONTROL_ARG: &str = "--redaction-key-control";
 const DRAIN_TIMEOUT: Duration = Duration::from_secs(5);
 const MAX_LINE: usize = 64 * 1024;
 
@@ -60,9 +61,13 @@ impl LogDrain {
             None
         };
         // A separate group drains through target SIGKILL and survives a detached prepare.
+        let key = serde_json::to_vec(&std::env::var("TYPESAFE_API_KEY").ok())
+            .map_err(io::Error::other)?;
+        let key_len = u32::try_from(key.len()).map_err(io::Error::other)?;
         let mut command = Command::new(executable);
         command
             .arg(HELPER_ARG)
+            .arg(KEY_CONTROL_ARG)
             .stdin(Stdio::from(OwnedFd::from(input)))
             .stdout(Stdio::from(OwnedFd::from(child_control)))
             .stderr(log)
@@ -87,14 +92,19 @@ impl LogDrain {
         if crate::redact::private_output_mode() {
             command.arg(WITHHOLD_ARG);
         }
-        crate::redact::scrub_input_env(&mut command);
+        crate::redact::scrub_secret_env(&mut command, "");
         let child = command.spawn()?;
         let error = second.map(|(stderr_input, stderr_output)| {
             drop(stderr_input);
             stderr_output
         });
         let mut drain = Self { child, control };
-        if let Err(failure) = drain.flush() {
+        let initialized = drain
+            .control
+            .write_all(&key_len.to_be_bytes())
+            .and_then(|_| drain.control.write_all(&key))
+            .and_then(|_| drain.flush());
+        if let Err(failure) = initialized {
             drop(output);
             return Err(failure);
         }
@@ -206,11 +216,22 @@ impl Lines {
 }
 
 pub fn run_helper(paired: bool) -> io::Result<()> {
-    if std::env::var("TYPESAFE_API_KEY").is_ok_and(|key| key.contains(['\r', '\n'])) {
+    let mut control = UnixStream::from(std::io::stdout().as_fd().try_clone_to_owned()?);
+    let key = if std::env::args().any(|arg| arg == KEY_CONTROL_ARG) {
+        let mut length = [0; 4];
+        control.read_exact(&mut length)?;
+        let mut key = vec![0; u32::from_be_bytes(length) as usize];
+        control.read_exact(&mut key)?;
+        serde_json::from_slice::<Option<String>>(&key).map_err(io::Error::other)?
+    } else {
+        std::env::var("TYPESAFE_API_KEY").ok()
+    };
+    if key.as_ref().is_some_and(|key| key.contains(['\r', '\n'])) {
         return Err(io::Error::other(
             "cannot stream-redact a multiline configured key",
         ));
     }
+    crate::redact::set_redaction_key(key);
     let mut inputs = vec![UnixStream::from(
         std::io::stdin().as_fd().try_clone_to_owned()?,
     )];
@@ -225,7 +246,6 @@ pub fn run_helper(paired: bool) -> io::Result<()> {
     for (input, _, _) in &streams {
         input.set_nonblocking(true)?;
     }
-    let mut control = UnixStream::from(std::io::stdout().as_fd().try_clone_to_owned()?);
     control.set_nonblocking(true)?;
     let file = std::fs::File::from(std::io::stderr().as_fd().try_clone_to_owned()?);
     let mut log = Sink {

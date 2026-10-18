@@ -57,7 +57,7 @@ import { isRecord } from './questions.js';
 import { createTimingObserver, formatTimingEvent, type TimingContext } from './timing.js';
 import { preflightPlan } from './preflight.js';
 import { summarizeJev } from './ledger.js';
-import { redactApiKey, setRedactionKey } from '../util/redact.js';
+import { isSecretEnvName, redactApiKey, setRedactionKey } from '../util/redact.js';
 import { createStop, watchOwnerPipe, watchParent } from './stop.js';
 import { prove } from './prove.js';
 import {
@@ -653,8 +653,7 @@ async function main(): Promise<void> {
   const apiKey = process.env.TYPESAFE_API_KEY;
   delete process.env.TYPESAFE_API_KEY;
   setRedactionKey(apiKey);
-  for (const key of Object.keys(process.env))
-    if (key.startsWith('QAREN_INPUT_')) delete process.env[key];
+  for (const key of Object.keys(process.env)) if (isSecretEnvName(key)) delete process.env[key];
   if (process.argv[2] === '--preflight-stdin') {
     try {
       const value: unknown = JSON.parse(await readPrivateLine(process.stdin));

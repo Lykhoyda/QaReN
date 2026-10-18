@@ -2,4 +2,4 @@
 'qaren': patch
 ---
 
-Keep the model credential out of tool subprocess environments while preserving model authentication and log redaction.
+Remove secret-named environment variables from child processes while preserving model authentication, log redaction and scoped registry access during dependency preparation.

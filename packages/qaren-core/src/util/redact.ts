@@ -47,6 +47,12 @@ export function setRedactionKey(key: string | undefined): void {
   redactionKey = key;
 }
 
+export function isSecretEnvName(name: string): boolean {
+  return /(?:TOKEN|_API_KEY|APIKEY)$|SECRET|PASSWORD|PASSWD|_CREDENTIALS|_PRIVATE_KEY|^QAREN_INPUT_/i.test(
+    name,
+  );
+}
+
 export function redactApiKey(value: string, key = redactionKey): string {
   if (!key) return value;
   return value

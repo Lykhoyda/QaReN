@@ -17,10 +17,35 @@ test('startup keeps model authentication and redaction while scrubbing tool chil
   writeFileSync(planFile, plan);
   const key = 'synthetic"model\\credential';
   const slot = 'synthetic-slot-value';
+  const secretName =
+    /(?:TOKEN|_API_KEY|APIKEY)$|SECRET|PASSWORD|PASSWD|_CREDENTIALS|_PRIVATE_KEY|^QAREN_INPUT_/i;
   const inheritedEnv = Object.fromEntries(
-    Object.entries(process.env).filter(([name]) => !name.startsWith('QAREN_INPUT_')),
+    Object.entries(process.env).filter(([name]) => !secretName.test(name)),
   );
-  const scan = `JSON.stringify({ key: 'TYPESAFE_API_KEY' in process.env, slots: Object.keys(process.env).filter(k => k.startsWith('QAREN_INPUT_')).length, values: Object.values(process.env).some(v => ${JSON.stringify([key, slot])}.includes(v)) })`;
+  const secretEnv = {
+    TYPESAFE_API_KEY: key,
+    QAREN_INPUT_FIRST: slot,
+    QAREN_INPUT_SECOND: slot,
+    CLAUDE_CODE_OAUTH_TOKEN: 'synthetic-oauth',
+    GITHUB_TOKEN: 'synthetic-forge',
+    AWS_SECRET_ACCESS_KEY: 'synthetic-cloud',
+    serviceAPIKEY: 'synthetic-service',
+    appPASSWORDfile: 'synthetic-password',
+    dbPASSWD: 'synthetic-passwd',
+    APP_CREDENTIALS_FILE: 'synthetic-credentials',
+    SIGN_PRIVATE_KEY_FILE: 'synthetic-private-key',
+    qaren_input_lower: 'synthetic-lower-slot',
+  };
+  const preservedEnv = {
+    SSH_AUTH_SOCK: 'synthetic-socket',
+    ADB_VENDOR_KEYS: 'synthetic-vendor',
+    ANDROID_HOME: 'synthetic-android',
+    DEVELOPER_DIR: 'synthetic-developer',
+    AUTH: 'synthetic-auth',
+    KEY: 'synthetic-key',
+    TOKEN_PATH: 'synthetic-token-path',
+  };
+  const scan = `JSON.stringify({ key: 'TYPESAFE_API_KEY' in process.env, slots: Object.keys(process.env).filter(k => k.startsWith('QAREN_INPUT_')).length, secrets: Object.keys(process.env).filter(k => ${secretName}.test(k)).length, values: Object.values(process.env).some(v => ${JSON.stringify(Object.values(secretEnv))}.includes(v)), kept: !!process.env.PATH && Object.entries(${JSON.stringify(preservedEnv)}).every(([k, v]) => process.env[k] === v) })`;
   for (const mode of ['--preflight', '--parse', '--preflight-stdin']) {
     const receipt = join(dir, `${mode}.json`);
     const preload = `
@@ -49,9 +74,8 @@ test('startup keeps model authentication and redaction while scrubbing tool chil
       {
         env: {
           ...inheritedEnv,
-          TYPESAFE_API_KEY: key,
-          QAREN_INPUT_FIRST: slot,
-          QAREN_INPUT_SECOND: slot,
+          ...secretEnv,
+          ...preservedEnv,
         },
         input: `${JSON.stringify({ v: 1, phase: 'plan-preflight', inputProtocol: 1, plan, appId: 'com.example', platform: 'ios', inputs: {} })}\n`,
         encoding: 'utf8',
@@ -59,9 +83,27 @@ test('startup keeps model authentication and redaction while scrubbing tool chil
     );
     assert.equal(result.status, 0, `${mode}: ${result.stderr} ${result.stdout}`);
     const observed = JSON.parse(readFileSync(receipt, 'utf8'));
-    assert.deepEqual(observed.before, { key: true, slots: 2, values: true });
-    assert.deepEqual(observed.inherited, { key: false, slots: 0, values: false });
-    assert.deepEqual(observed.explicit, { key: false, slots: 0, values: false });
+    assert.deepEqual(observed.before, {
+      key: true,
+      slots: 2,
+      secrets: Object.keys(secretEnv).length,
+      values: true,
+      kept: true,
+    });
+    assert.deepEqual(observed.inherited, {
+      key: false,
+      slots: 0,
+      secrets: 0,
+      values: false,
+      kept: true,
+    });
+    assert.deepEqual(observed.explicit, {
+      key: false,
+      slots: 0,
+      secrets: 0,
+      values: false,
+      kept: true,
+    });
     assert.equal(observed.authenticated, true);
     assert.equal(observed.redacted, true);
     assert.ok(observed.calls > 0);
