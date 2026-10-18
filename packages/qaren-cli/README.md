@@ -716,6 +716,13 @@ need no key; recognised back, dialog and fixed-scroll steps also stay model-free
 When a key is available, [app-interruption recovery](#step-recovery) may ask Jev
 for a safety veto even in a plan with only quoted targets.
 
+The CLI passes `TYPESAFE_API_KEY` only to the core walk and plan-preflight
+processes, removing it from tool child environments after applying their command
+environment. At startup, the core captures the key and removes it alongside every
+`QAREN_INPUT_*` variable before spawning tools. The captured key still authenticates
+Jev calls and enables the interruption safety veto; log and wire redaction mask its
+literal and JSON-encoded forms. Other shell credentials are left unchanged.
+
 Dialog steps require one unconditional accept or dismiss action, such as
 `Accept the permission dialog` or `Dismiss the alert`. Conditions, negation and
 multiple actions, such as `Accept the dialog if it appears` or
