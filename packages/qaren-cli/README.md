@@ -720,7 +720,8 @@ Dialog steps require one unconditional accept or dismiss action, such as
 multiple actions, such as `Accept the dialog if it appears` or
 `Do not dismiss the alert`, refuse before allocation; Jev cannot override this restriction.
 On Android, a dialog step or dialog recovery has the runner tap exactly one
-enabled button whose text equals the chosen label, in the front window above the
+enabled button whose text equals the chosen label (recovery always chooses a dismiss
+label), in the front window above the
 app, or the window standing in for the app's window, when the permission
 controller or `android` owns it; another app's window never matches. The step passes only when the runner reports that label tapped,
 that window gone and the app in front again, and it never falls back to
@@ -1589,8 +1590,8 @@ An action without success evidence after its one retry, a step target that
 does not resolve, a definite failed check, an unmet quoted wait, or a phrase check still
 unsure after its re-ask gets at most one deterministic recovery, then the step runs once more from a fresh
 capture. The order is owned by [`recover.ts`](../qaren-core/src/qa/recover.ts): a
-recognized system dialog in front is declined by default (an explicit
-`Allow the permission prompt` or `Accept the dialog` step still accepts, and a
+recognized system prompt met during an ordinary app step is declined, never accepted
+(only an explicit `Allow the permission prompt` or `Accept the dialog` step accepts, and a
 dialog is left to the plan when its next step is a dialog step); a dev
 menu or floating button in front is cleared through the shared
 [overlay clearance mechanism](#check-a-plan); an eligible app interruption is
