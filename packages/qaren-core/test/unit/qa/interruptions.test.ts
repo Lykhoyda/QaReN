@@ -669,3 +669,50 @@ test('a different system prompt after a declined one is declined once too', asyn
   ]);
   assert.equal(result.recoveries, 2);
 });
+
+test('a system prompt sharing a declined pop-up label is still declined as a different interruption', async () => {
+  const prompt: Screen = {
+    ...alert(),
+    elements: [
+      element('@title', 'Save?', { kind: 'text' }),
+      element('@cancel', 'Cancel'),
+      element('@ok', 'OK'),
+    ],
+    visibleText: ['Save?', 'Cancel', 'OK'],
+  };
+  let gone = 0;
+  let current: Screen = screen([element('@c', 'Cancel')]);
+  const f = app(current);
+  f.deps.captureScreen = async () =>
+    gone > 0 ? (gone--, screen([element('@done', 'Done')])) : current;
+  f.deps.press = async (ref) => {
+    f.actions.push(`press ${ref}`);
+    if (ref === '@c') {
+      gone = 2;
+      current = prompt;
+    } else current = screen([element('@done', 'Done')]);
+    return { ok: true, proven: false, executed: true };
+  };
+  f.deps.dialog = async (action) => {
+    f.actions.push(`dialog ${action}`);
+    current = home();
+    return { ok: true, proven: true, executed: true };
+  };
+  const result = await runPlan(plan(), f.deps);
+  assert.equal(result.verdict, 'PASS', result.failure?.seen);
+  assert.deepEqual(f.actions, ['press @c', 'dialog dismiss', 'press @settings']);
+  assert.equal(result.recoveries, 2);
+});
+
+test('a dialog step keeps its single recovery', async () => {
+  const f = app(alert());
+  let calls = 0;
+  f.deps.dialog = async (action) => {
+    f.actions.push(`dialog ${action}`);
+    calls += 1;
+    return { ok: true, proven: calls === 3, executed: true };
+  };
+  const result = await runPlan(parsePlan('1. Allow the permission prompt').blocks!, f.deps);
+  assert.equal(result.verdict, 'FAIL');
+  assert.equal(result.recoveries, 1);
+});

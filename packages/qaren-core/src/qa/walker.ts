@@ -1254,7 +1254,10 @@ async function walkBlockScoped(
       );
     if (first !== undefined) {
       if (fresh.screen.front !== 'dialog' && fresh.screen.front !== 'app') return undefined;
-      if (fresh.screen.elements.some((e) => !e.offscreen && `app ${e.label}` === first))
+      if (
+        fresh.screen.front === 'app' &&
+        fresh.screen.elements.some((e) => !e.offscreen && `app ${e.label}` === first)
+      )
         return failed(
           item,
           attempt,
@@ -1407,7 +1410,12 @@ async function walkBlockScoped(
     if ('handled' in result || ('fail' in result && declineAttempted)) recoveries += 1;
     if ('handled' in result) {
       if (prompt !== undefined && result.handled === 'dialog') declinedPrompts.add(prompt);
-      if (first === undefined && (result.handled === 'dialog' || result.handled === 'interruption'))
+      // A dialog step answers with its own action, so it never gets a second, decline-only recovery.
+      if (
+        first === undefined &&
+        item.kind !== 'dialog' &&
+        (result.handled === 'dialog' || result.handled === 'interruption')
+      )
         recovered.set(
           item,
           result.handled === 'dialog'
