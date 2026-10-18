@@ -2369,9 +2369,11 @@ authority is retired.
 **Credential-authorized dependency prewarming.** Under `deps.policy:
 require-prewarm`, `qaren prewarm <scenario>` is the one deliberate network
 moment (the default `install` policy keeps today's behavior: prepare's own
-`pnpm install` may reach the network): run it while registry credentials
-are available; it runs `pnpm fetch` + `pnpm install
---frozen-lockfile` (CI, stdin-null) and persists only
+`pnpm install` may reach the network): it runs `pnpm fetch` + `pnpm install
+--frozen-lockfile` (CI, stdin-null). The fetch step strips exported secret-named
+variables, including registry tokens, so registry access that depends on those
+variables fails there; the install step has the exact exceptions in the
+[child-environment contract](#plan-checks-and-screen-evidence). Prewarm persists only
 `{worktree, project, lockfile sha256, timestamp}`; failure summaries follow the
 [diagnostic redaction contract](#preparation-ownership-and-safety-rules).
 A scenario with `deps.policy: require-prewarm` then refuses to prepare without a matching record

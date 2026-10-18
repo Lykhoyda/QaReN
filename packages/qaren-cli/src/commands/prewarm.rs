@@ -12,10 +12,7 @@ pub struct PrewarmArgs {
     pub scenario_path: PathBuf,
 }
 
-// Prewarm is the one deliberate, credential-authorized network moment: the
-// operator runs it while their keychain/1Password session is available, and
-// the durable record then lets require-prewarm prepares run fully offline.
-// Only the lockfile hash and a timestamp are persisted — never a credential.
+// The prewarm record lets require-prewarm prepares run offline without persisting credentials.
 pub fn prewarm(runner: &mut dyn Runner, args: &PrewarmArgs) -> Receipt {
     let started_ms = runner.now_epoch_ms();
     match prewarm_validated(runner, args, started_ms) {
