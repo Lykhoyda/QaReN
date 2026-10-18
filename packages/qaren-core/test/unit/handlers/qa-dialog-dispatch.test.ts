@@ -275,6 +275,118 @@ test('a button matching a known label only by identifier is never tapped, so rec
   assert.equal(env.meta?.code, 'DIALOG_BUTTON_NOT_FOUND', JSON.stringify(env));
 });
 
+test('dialog context refusal records its first failed stage without authorizing a tap', async () => {
+  permissionPrompt();
+  _setFetchSnapshotNodesForTest(async () => ({ ok: false, reason: 'empty-capture' }));
+  const logs: string[] = [];
+  const context = new QaDispatchContext(10, () => 1);
+  await assert.rejects(
+    createDeviceAcceptSystemDialogHandler()({
+      platform: 'ios',
+      qaContext: context,
+      note: (line) => logs.push(line),
+    }),
+    /ACTION_CONTEXT_CHANGED/,
+  );
+  assert.deepEqual(logs, ['system-dialog-stage=empty-capture']);
+  assert.equal(context.authorizations, 0);
+});
+
+test('a proven dialog tap emits no failed-stage diagnostic', async () => {
+  permissionPrompt();
+  const logs: string[] = [];
+  _setTapSystemAlertForTest(async (label, context) => {
+    context!.authorize();
+    return okResult({ tappedLabel: label, tappedRect: RECT, alertClosed: true });
+  });
+  const result = await createDeviceAcceptSystemDialogHandler()({
+    platform: 'ios',
+    qaContext: new QaDispatchContext(10, () => 1),
+    note: (line) => logs.push(line),
+  });
+  assert.equal(JSON.parse(result.content[0].text).ok, true);
+  assert.deepEqual(logs, []);
+});
+
+for (const [stage, setup] of [
+  ['session', () => _setDialogRunnerForTest(null)],
+  [
+    'snapshot-failed',
+    () =>
+      _setFetchSnapshotNodesForTest(async () => {
+        throw new Error('private payload');
+      }),
+  ],
+  [
+    'root-not-alert',
+    () =>
+      _setFetchSnapshotNodesForTest(async () => ({
+        ok: true,
+        nodes: [],
+        provenance: { source: 'fresh', originAuthority: 'not-proven' },
+      })),
+  ],
+  [
+    'recovered-tier',
+    () =>
+      _setFetchSnapshotNodesForTest(async () => ({
+        ok: true,
+        nodes: [{ ref: '@private', type: 'Alert' }],
+        provenance: { source: 'fresh', originAuthority: 'not-proven' },
+        recoveredTier: 'reacquire',
+      })),
+  ],
+] as const) {
+  test(`dialog refusal records ${stage} once and preserves the context guard`, async () => {
+    permissionPrompt();
+    setup();
+    const logs: string[] = [];
+    const context = new QaDispatchContext(10, () => 1);
+    await assert.rejects(
+      createDeviceAcceptSystemDialogHandler()({
+        platform: 'ios',
+        qaContext: context,
+        note: (line) => logs.push(line),
+      }),
+      /ACTION_CONTEXT_CHANGED/,
+    );
+    assert.deepEqual(logs, [`system-dialog-stage=${stage}`]);
+    assert.equal(context.authorizations, 0);
+    permissionPrompt();
+    setup();
+    await assert.rejects(
+      createDeviceAcceptSystemDialogHandler()({
+        platform: 'ios',
+        qaContext: new QaDispatchContext(10, () => 1),
+        note: () => {
+          throw new Error('sink error');
+        },
+      }),
+      /ACTION_CONTEXT_CHANGED/,
+    );
+  });
+}
+
+test('a non-alert root records the local stage while leaving its existing null result unchanged', async () => {
+  const { tapSystemDialogViaRunner } =
+    await import('../../../dist/handlers/device-system-dialog.js');
+  permissionPrompt();
+  _setFetchSnapshotNodesForTest(async () => ({
+    ok: true,
+    nodes: [{ ref: '@private', type: 'Other', label: 'private label' }],
+    provenance: { source: 'fresh', originAuthority: 'not-proven' },
+  }));
+  const context = new QaDispatchContext(10, () => 1);
+  const logs: string[] = [];
+  assert.equal(
+    await tapSystemDialogViaRunner(['Allow'], context, 'ios', (line) => logs.push(line)),
+    null,
+  );
+  assert.deepEqual(logs, ['system-dialog-stage=root-not-alert']);
+  assert.equal(context.refusal, undefined);
+  assert.equal(context.authorizations, 0);
+});
+
 // Android: the runner taps one labelled button in a system dialog window above the app.
 function androidPermissionPrompt(dismissLabel: string, maestro: string[]) {
   _setDialogRunnerForTest('android');

@@ -122,7 +122,7 @@ test('an app element behind a system dialog is not scrolled to; the dialog is re
     screen(['Reminder set']),
   ]);
   const outcome = await walkBlock(block('1. Tap "notif-remind-1m"\n'), f.deps);
-  assert.deepEqual(sent(f.calls), ['dialog accept', 'press @e0']);
+  assert.deepEqual(sent(f.calls), ['dialog dismiss', 'press @e0']);
   assert.equal(outcome.recoveries, 1);
   assert.match(
     renderReason(outcome.rows[0].reason ?? '', (text) => text),
@@ -143,8 +143,8 @@ for (const [plan, verb] of [
     ]);
     const outcome = await walkBlock(block(plan), f.deps);
     const calls = sent(f.calls);
-    assert.equal(calls[0], 'dialog accept');
-    assert.deepEqual(calls, ['dialog accept', verb]);
+    assert.equal(calls[0], 'dialog dismiss');
+    assert.deepEqual(calls, ['dialog dismiss', verb]);
     assert.equal(outcome.recoveries, 1);
   });
 }
@@ -168,13 +168,13 @@ test('a retry that finds the prompt its step raised passes on that late effect w
   assert.equal(outcome.block.outcome, 'pass');
 });
 
-test('a retry that finds a dialog with no dialog step next keeps the existing accept-and-retry', async () => {
+test('a retry that finds a dialog with no dialog step next declines it by default and retries', async () => {
   const remind = screen(['Remind']);
   const settings = screen(['Settings']);
   const prompt = screen(['Allow'], 'dialog');
   const f = fake([remind, remind, prompt, prompt, remind, settings, settings, screen(['Profile'])]);
   const outcome = await walkBlock(block('1. Tap "Remind"\n2. Tap "Settings"\n'), f.deps);
-  assert.deepEqual(sent(f.calls), ['press @e0', 'dialog accept', 'press @e0', 'press @e0']);
+  assert.deepEqual(sent(f.calls), ['press @e0', 'dialog dismiss', 'press @e0', 'press @e0']);
   assert.equal(outcome.recoveries, 1);
 });
 
@@ -185,7 +185,7 @@ test('a first attempt under a dialog leaves it to the next dialog step and fails
     block('1. Tap "Settings"\n2. Accept the system dialog\n'),
     f.deps,
   );
-  assert.ok(!f.calls.includes('dialog accept'));
+  assert.ok(!f.calls.some((call) => call.startsWith('dialog ')));
   assert.equal(outcome.block.outcome, 'fail');
   assert.equal(outcome.failure?.step, 1);
   assert.match(

@@ -43,12 +43,12 @@ extension RnFastRunnerTests {
     }
 
     guard let context = makeSnapshotTraversalContext(app: app, options: options) else {
-      return DataPayload(
+      return withSystemModalDiagnostic(DataPayload(
         nodes: [],
         truncated: false,
         keyboardVisible: isKeyboardVisible(app: app),
         snapshotGeneration: currentSnapshotGeneration
-      )
+      ), app: app)
     }
 
     var cachedDescendantElements: [XCUIElement]?
@@ -157,7 +157,7 @@ extension RnFastRunnerTests {
 
     }
 
-    return DataPayload(
+    return withSystemModalDiagnostic(DataPayload(
       nodes: nodes,
       truncated: truncated,
       keyboardVisible: isKeyboardVisible(app: app),
@@ -165,7 +165,7 @@ extension RnFastRunnerTests {
       snapshotDiagnostics: includeDiagnostics ? context.viewportSource.flatMap {
         SnapshotDiagnostics(viewport: context.viewport, source: $0)
       } : nil
-    )
+    ), app: app)
   }
 
   func snapshotRaw(app: XCUIApplication, options: SnapshotOptions) -> DataPayload {
@@ -174,12 +174,12 @@ extension RnFastRunnerTests {
     }
 
     guard let context = makeSnapshotTraversalContext(app: app, options: options) else {
-      return DataPayload(
+      return withSystemModalDiagnostic(DataPayload(
         nodes: [],
         truncated: false,
         keyboardVisible: isKeyboardVisible(app: app),
         snapshotGeneration: currentSnapshotGeneration
-      )
+      ), app: app)
     }
 
     var nodes: [SnapshotNode] = []
@@ -222,12 +222,12 @@ extension RnFastRunnerTests {
     }
 
     walk(context.rootSnapshot, depth: 0, parentIndex: nil)
-    return DataPayload(
+    return withSystemModalDiagnostic(DataPayload(
       nodes: nodes,
       truncated: truncated,
       keyboardVisible: isKeyboardVisible(app: app),
       snapshotGeneration: currentSnapshotGeneration
-    )
+    ), app: app)
   }
 
   private struct PresenceDescriptor: Equatable {
@@ -417,6 +417,11 @@ extension RnFastRunnerTests {
   }
 
   func snapshotPlatformPresence(app: XCUIApplication, appId: String, presenceBudgetMs: Int) -> DataPayload {
+    // A recognised SpringBoard alert is the observation in every snapshot flavour; it has no Keyboard node.
+    if let blocking = blockingSystemAlertSnapshot() {
+      return DataPayload(nodes: blocking.nodes, truncated: false, keyboardVisible: false,
+        snapshotGeneration: currentSnapshotGeneration)
+    }
     let started = presenceUptimeMs()
     let deadline = started + Double(presenceBudgetMs)
     let timing = PresenceCaptureTiming(started: started, now: presenceUptimeMs)
@@ -540,7 +545,7 @@ extension RnFastRunnerTests {
         nodes[index].presence?.observedUptimeMs = nil
       }
     }
-    return makePlatformPresencePayload(
+    var payload = makePlatformPresencePayload(
       nodes: nodes, truncated: truncated,
       capture: PlatformPresenceCapture(
         version: 2, source: "xcui-live", captureId: captureId, appId: appId,
@@ -549,6 +554,10 @@ extension RnFastRunnerTests {
         diagnostics: timing.diagnostics(complete: complete)
       )
     )
+    if !complete, blockingSystemAlertSnapshot() == nil {
+      payload = withSystemModalDiagnostic(payload, app: app)
+    }
+    return payload
   }
 
   private func presenceEnumerationIsUnchanged(

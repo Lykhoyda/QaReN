@@ -1178,3 +1178,94 @@ test('a gone app process passes through private capture; other native failures s
   await assert.rejects(fail(new AppProcessGoneError()), AppProcessGoneError);
   await assert.rejects(fail(new Error('secret runner detail')), NativeCaptureError);
 });
+
+test('unrecognised system-modal diagnostics survive privacy refusal with no app content', async () => {
+  const logs: string[] = [];
+  const systemModal = {
+    appState: 'runningForeground',
+    alertCount: 1,
+    sheetCount: 0,
+    modals: [
+      {
+        exists: true,
+        frameEmpty: false,
+        centerInViewport: true,
+        springboardFrameEmpty: false,
+        descendantTypes: [{ type: 9, count: 2 }],
+        hittableDescendantCount: 0,
+        label: 'private modal',
+      },
+    ],
+    identifier: 'private-id',
+  };
+  await assert.rejects(
+    captureScreen({
+      requirePrivateInputs: true,
+      native: async () => ({ nodes: [], systemModal }),
+      react: async () => ({ interactive: [] }),
+      warn: (line) => logs.push(line),
+    }),
+    /native snapshot was incomplete/,
+  );
+  assert.deepEqual(logs, [
+    'presence-system-modal=' +
+      JSON.stringify({
+        appState: 'runningForeground',
+        alertCount: 1,
+        sheetCount: 0,
+        modals: [
+          {
+            exists: true,
+            frameEmpty: false,
+            centerInViewport: true,
+            springboardFrameEmpty: false,
+            descendantTypes: [{ type: 9, count: 2 }],
+            hittableDescendantCount: 0,
+          },
+        ],
+      }),
+  ]);
+  assert.doesNotMatch(logs.join(''), /private/);
+});
+
+test('absent or malformed modal diagnostics emit nothing and cannot repair private capture', async () => {
+  for (const systemModal of [
+    undefined,
+    { appState: 'private', alertCount: 1, sheetCount: 0, modals: [] },
+    { appState: 'runningForeground', alertCount: 0, sheetCount: 0, modals: [] },
+    {
+      appState: 'runningForeground',
+      alertCount: 1,
+      sheetCount: 0,
+      modals: [{ exists: 'private' }],
+    },
+  ]) {
+    const logs: string[] = [];
+    await assert.rejects(
+      captureScreen({
+        requirePrivateInputs: true,
+        native: async () => ({ nodes: [], systemModal }),
+        react: async () => ({ interactive: [] }),
+        warn: (line) => logs.push(line),
+      }),
+      /native snapshot was incomplete/,
+    );
+    assert.deepEqual(logs, []);
+  }
+  const logs: string[] = [];
+  const observation = nativeCapture();
+  const baseline = await captureScreen({
+    native: async () => observation,
+    react: async () => ({ interactive: [] }),
+  });
+  const successful = await captureScreen({
+    native: async () => observation,
+    react: async () => ({ interactive: [] }),
+    warn: (line) => logs.push(line),
+  });
+  assert.deepEqual(successful, baseline);
+  assert.equal(
+    logs.some((line) => line.startsWith('presence-system-modal=')),
+    false,
+  );
+});

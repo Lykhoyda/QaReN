@@ -443,3 +443,45 @@ test('incomplete presence invalidates targeting cache and the next find refreshe
     assert.equal(hasRefMap(), true);
   }
 });
+
+test('snapshot preserves only structural modal metadata and never treats it as complete presence', async () => {
+  _setCapabilitiesForTest([...REQUIRED_IOS_FEATURES, 'HONEST_HITTABLE', 'PLATFORM_PRESENCE_V2']);
+  _setFetchForTest(async (url) =>
+    String(url).endsWith('/health')
+      ? Response.json({
+          ok: true,
+          protocolVersion: 2,
+          commands: REQUIRED_IOS_COMMANDS,
+          capabilities: [...REQUIRED_IOS_FEATURES, 'HONEST_HITTABLE', 'PLATFORM_PRESENCE_V2'],
+        })
+      : Response.json({
+          ok: true,
+          data: {
+            nodes: [],
+            snapshotGeneration: 1,
+            keyboardVisible: false,
+            systemModal: {
+              appState: 'runningForeground',
+              alertCount: 1,
+              sheetCount: 0,
+              modals: [],
+              label: 'private modal',
+              identifier: 'private-id',
+            },
+          },
+        }),
+  );
+  const result = parseEnvelope(
+    await runIOS({ command: 'snapshot', platformPresence: true, presenceBudgetMs: 5000 }),
+  );
+  assert.equal(result.ok, true);
+  assert.deepEqual(result.meta.systemModal, {
+    appState: 'runningForeground',
+    alertCount: 1,
+    sheetCount: 0,
+    modals: [],
+  });
+  assert.doesNotMatch(JSON.stringify(result), /private modal|private-id/);
+  assert.equal(result.meta.snapshotVerdict.state, 'degraded');
+  assert.equal(hasRefMap(), false);
+});

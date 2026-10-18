@@ -167,6 +167,14 @@ const joinedDiagnosticFacts = new WeakMap<
   }
 >();
 
+const hostAssociationIdentities = new WeakMap<Element, HostAssociationDiagnostic['identity']>();
+
+export function hostAssociationIdentity(
+  element: Element,
+): HostAssociationDiagnostic['identity'] | undefined {
+  return hostAssociationIdentities.get(element);
+}
+
 export interface NativeNode {
   ref: string;
   index?: number;
@@ -820,6 +828,18 @@ export function join(
       nativeStatus: observed?.status,
       nativeUnknownReason: observed?.status === 'unknown' ? observed.unknownReason : undefined,
     });
+    try {
+      const matchingHosts =
+        reactHostEvidence?.hosts.flatMap((host, index) =>
+          host.testID && host.testID === n.identifier ? [index] : [],
+        ) ?? [];
+      if (matchingHosts.length === 1) {
+        const identity = associationDiagnostics.get(matchingHosts[0])?.identity;
+        if (identity) hostAssociationIdentities.set(element, identity);
+      }
+    } catch {
+      // Diagnostics cannot change host association.
+    }
     localCapabilities.set(element, local);
     return element;
   });
