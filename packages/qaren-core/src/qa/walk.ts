@@ -561,6 +561,7 @@ async function openSession(
     privacy,
     judge: createJev({ now, timing }),
     interruptionVeto: !!process.env.TYPESAFE_API_KEY,
+    presenceUnavailable: platform === 'android',
     timing,
     publicationInterrupted: admittedSnapshots.interrupted,
     captureScreen: (options) =>

@@ -128,6 +128,8 @@ export interface WalkerDeps {
   privacy?: ObservedPrivacy;
   judge?: Judge;
   interruptionVeto?: boolean;
+  // Android has no platform presence capture yet.
+  presenceUnavailable?: boolean;
   publicationInterrupted?(): boolean;
   captureScreen(options?: {
     observation?: number;
@@ -1204,7 +1206,23 @@ async function walkBlockScoped(
     if (opts.recover === false || !deps.hideDevMenu || recovered.has(item)) return undefined;
     recovered.add(item);
     loginReplayed = false;
-    const fresh = await capture(undefined, true, true);
+    let fresh: Observation;
+    try {
+      fresh = await capture(undefined, true, true);
+    } catch (error) {
+      if (
+        !deps.presenceUnavailable ||
+        !(error instanceof ResolutionError) ||
+        error.code !== 'SCREEN_EVIDENCE_INCOMPLETE'
+      )
+        throw error;
+      try {
+        deps.note?.('recovery-skipped=presence-unavailable');
+      } catch {
+        /* Diagnostics cannot change recovery. */
+      }
+      return undefined;
+    }
     // A system alert the plan's next step answers is the author's, not recovery's.
     const next = block.items[block.items.indexOf(item) + 1];
     if (fresh.screen.front === 'dialog' && next?.kind === 'dialog') return undefined;

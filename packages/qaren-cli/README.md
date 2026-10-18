@@ -1637,7 +1637,10 @@ privacy-eligible screenshot; this support action is not added to the saved block
 Recovery requires admitted screen evidence. iOS phrase steps behind a recognized
 system or permission alert reach dialog recovery when the raw native capture is
 complete, even though platform presence excludes the system surface. Incomplete
-raw captures still refuse. For Android dialog limits, see [Check a plan](#check-a-plan).
+raw captures still refuse. On Android, recovery answers a system prompt; app-screen
+interruptions are recovered once Android presence capture lands. Until then, a step whose
+recovery cannot read the screen there keeps its own failure reason and logs
+`recovery-skipped=presence-unavailable`. For Android dialog limits, see [Check a plan](#check-a-plan).
 An action reporting `tapped: false`
 or `executed: false` establishes no action proof and cannot count as a recovery.
 

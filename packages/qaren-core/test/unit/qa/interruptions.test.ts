@@ -507,3 +507,45 @@ test('a quoted wait that fails again after one decline does not recover a second
   assert.equal(result.recoveries, 1);
   assert.match(result.failure?.seen ?? '', /^"Settings" did not appear within 15s/);
 });
+
+// Android has no platform presence capture yet, so the recovery's presence read is incomplete.
+const withoutPresence = (elements = [element('@close', 'Skip')]): Screen => ({
+  ...screen(elements),
+  coverage: { native: 'incomplete', react: 'complete' },
+  captureCoverage: { native: 'complete', react: 'complete' },
+});
+
+test('on Android a failed check keeps its own reason when recovery has no presence capture', async () => {
+  const f = app(withoutPresence());
+  f.deps.presenceUnavailable = true;
+  const logs: string[] = [];
+  f.deps.note = (line) => logs.push(line);
+  const result = await runPlan(parsePlan('✓ "Settings"').blocks!, f.deps);
+  assert.equal(result.verdict, 'FAIL');
+  assert.match(result.failure?.seen ?? '', /"Settings" is not satisfied on screen/);
+  assert.doesNotMatch(result.failure?.seen ?? '', /SCREEN_EVIDENCE_INCOMPLETE/);
+  assert.deepEqual(f.actions, []);
+  assert.equal(result.recoveries ?? 0, 0);
+  assert.deepEqual(
+    logs.filter((line) => line.startsWith('recovery-skipped=')),
+    ['recovery-skipped=presence-unavailable'],
+  );
+});
+
+test('with presence capture available the incomplete recovery read still refuses', async () => {
+  const f = app(withoutPresence());
+  const logs: string[] = [];
+  f.deps.note = (line) => logs.push(line);
+  const result = await runPlan(parsePlan('✓ "Settings"').blocks!, f.deps);
+  assert.match(result.failure?.seen ?? '', /SCREEN_EVIDENCE_INCOMPLETE: NATIVE_PRESENCE_UNUSABLE/);
+  assert.deepEqual(f.actions, []);
+  assert.equal(logs.filter((line) => line.startsWith('recovery-skipped=')).length, 0);
+});
+
+test('on Android a system dialog in front is still declined by recovery', async () => {
+  const f = app(alert());
+  f.deps.presenceUnavailable = true;
+  const result = await runPlan(parsePlan('1. Tap "Settings"').blocks!, f.deps);
+  assert.equal(result.verdict, 'PASS', result.failure?.seen);
+  assert.deepEqual(f.actions, ['dialog dismiss', 'press @settings']);
+});
