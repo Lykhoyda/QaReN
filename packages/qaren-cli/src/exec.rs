@@ -479,11 +479,10 @@ impl Runner for RealRunner {
             for k in &spec.unset {
                 cmd.env_remove(k);
             }
-            cmd.env_remove("TYPESAFE_API_KEY");
             if let Some(reason) = self.cancellation() {
                 return Err(std::io::Error::new(std::io::ErrorKind::Interrupted, reason));
             }
-            crate::redact::scrub_input_env(&mut cmd);
+            crate::redact::scrub_secret_env(&mut cmd, &spec.label);
             let child = cmd.spawn()?;
             let pid = child.id() as i32;
             self.logs.push(drain);
@@ -552,7 +551,7 @@ impl Runner for RealRunner {
             if let Some(reason) = self.cancellation() {
                 return Err(std::io::Error::new(std::io::ErrorKind::Interrupted, reason));
             }
-            crate::redact::scrub_input_env(&mut cmd);
+            crate::redact::scrub_secret_env(&mut cmd, &spec.label);
             let mut child = cmd.spawn()?;
             let stdin = child.stdin.take().expect("stdin is piped");
             let stdout = child.stdout.take().expect("stdout is piped");
@@ -666,13 +665,10 @@ fn run_captured(
     for k in &spec.unset {
         cmd.env_remove(k);
     }
-    if spec.label != "plan-preflight" {
-        cmd.env_remove("TYPESAFE_API_KEY");
-    }
     if let Some(reason) = cancellation() {
         return Err(std::io::Error::new(std::io::ErrorKind::Interrupted, reason));
     }
-    crate::redact::scrub_input_env(&mut cmd);
+    crate::redact::scrub_secret_env(&mut cmd, &spec.label);
     let mut child = cmd.spawn()?;
     drop(cmd);
     let mut out = Vec::new();
@@ -746,7 +742,7 @@ fn kill_group_and_reap(child: &mut std::process::Child) {
     kill.args(["-9", "--", &format!("-{pid}")])
         .stdout(Stdio::null())
         .stderr(Stdio::null());
-    crate::redact::scrub_input_env(&mut kill);
+    crate::redact::scrub_secret_env(&mut kill, "");
     let _ = kill.status();
     let _ = child.kill();
     let reap_deadline = Instant::now() + Duration::from_secs(5);
