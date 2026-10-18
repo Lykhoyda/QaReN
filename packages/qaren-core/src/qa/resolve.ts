@@ -972,7 +972,7 @@ export async function decideScreen(
         Object.entries(q.criteria).map(([key, text]) => {
           const candidate =
             prepared && 'question' in prepared && q === prepared.question
-              ? prepared.candidates.find((_, i) => key === `e${i}`)
+              ? prepared.shown.find((_, i) => key === `e${i}`)
               : undefined;
           return [
             key,
@@ -994,7 +994,7 @@ export async function decideScreen(
           front: screen.front,
           ...(prepared && 'question' in prepared
             ? {
-                elements: prepared.candidates.map((e) => mask.describeElement(e, describeSemantic)),
+                elements: prepared.shown.map((e) => mask.describeElement(e, describeSemantic)),
               }
             : {}),
           ...(evidence && (questions[checkId] || questions[visibilityId])

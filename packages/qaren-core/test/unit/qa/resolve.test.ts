@@ -284,6 +284,11 @@ test('phrase action questions count and index only the 12 on-screen controls, ke
     const resolved = await resolveTarget(step(line), observed, judge);
     assert.ok('ref' in resolved);
     assert.equal(resolved.ref, '@save-11');
+    const asked = judge.requests[0];
+    const modelCriteria = asked.questions.target_0.criteria!;
+    assert.ok(Object.values(modelCriteria).every((text) => !/Off|Far/.test(text)));
+    assert.match(modelCriteria.e11, /Save 11/);
+    assert.equal((asked.state as { elements: string[] }).elements.length, 12);
   }
 });
 
