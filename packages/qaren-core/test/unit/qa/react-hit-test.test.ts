@@ -96,6 +96,42 @@ test('a missing or repeated sibling order leaves the hit unresolved, which never
   }
 });
 
+test('an order-unknown sibling that cannot take the touch does not block the hit', () => {
+  // A row elsewhere whose style could not be read: it is nowhere near the point.
+  const result = reaches(
+    [
+      { parent: null, rect: full, order: 0, pointerEvents: 'box-none' },
+      { parent: 0, rect: button, order: 0 },
+      { parent: 0, rect: { x: 0, y: 60, width: 100, height: 40 }, order: undefined },
+      { parent: 2, rect: { x: 0, y: 70, width: 100, height: 10 }, order: 0 },
+    ],
+    1,
+  );
+  assert.deepEqual(result, { hit: 1, reaches: true });
+});
+
+test('an order-unknown sibling whose subtree holds a frame over the point leaves the hit unresolved', () => {
+  for (const [rect, child] of [
+    [full, undefined],
+    [{ x: 0, y: 60, width: 100, height: 40 }, full],
+  ] as const) {
+    const result = reaches(
+      [
+        { parent: null, rect: full, order: 0, pointerEvents: 'box-none' },
+        { parent: 0, rect: button, order: 0 },
+        { parent: 0, rect, order: undefined },
+        ...(child ? [{ parent: 2, rect: child, order: 0 } as Host] : []),
+      ],
+      1,
+    );
+    assert.deepEqual(
+      result,
+      { hit: 'unresolved', reaches: false },
+      JSON.stringify({ rect, child }),
+    );
+  }
+});
+
 test('zIndex outranks fiber order among siblings; equal zIndex keeps fiber order', () => {
   const hosts = (zIndex: number): Host[] => [
     { parent: null, rect: full, order: 0, pointerEvents: 'box-none' },

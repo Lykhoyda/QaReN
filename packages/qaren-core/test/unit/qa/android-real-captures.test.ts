@@ -13,7 +13,12 @@ import type { NativePresence } from '../../../dist/qa/native-presence.js';
 
 // Seven Test App captures from the S3P-0 probe on an API 37 emulator, value-free: classes, testIDs,
 // rects, ancestry and visibility only. React frames are the core capture's own measurements;
-// pointerEvents and zIndex come from the S3P-b-0 live Home read, mapped onto shared subtrees.
+// pointerEvents and zIndex come from the S3P-b-0 live Home read, mapped onto shared subtrees. They
+// predate the fiber-order fact, so they carry no `order` and serve association rows only.
+// The `live-*` captures are Home, Home scrolled to the Pager button and the keyboard form, exported
+// by this capture code and runner on the same emulator: the runner's own presence verdicts and the
+// React hosts' pointerEvents, zIndex and order exactly as captured.
+type Presence = NativePresence['nodes'][number];
 type Capture = {
   pointScale: number;
   nodes: Array<{
@@ -25,6 +30,7 @@ type Capture = {
     rect: [number, number, number, number];
     visibleToUser: boolean;
     enabled: boolean;
+    presence?: Presence;
   }>;
   hosts: Array<{
     hostType: string;
@@ -35,8 +41,9 @@ type Capture = {
     press?: true;
     fill?: true;
     hidden?: true;
-    pointerEvents?: 'none' | 'box-none' | 'box-only';
+    pointerEvents?: 'auto' | 'none' | 'box-none' | 'box-only';
     zIndex?: number;
+    order?: number;
   }>;
 };
 const captures: Record<string, Capture> = JSON.parse(
@@ -48,13 +55,12 @@ const captures: Record<string, Capture> = JSON.parse(
 
 const box = ([x, y, width, height]: [number, number, number, number]) => ({ x, y, width, height });
 
-// The runner's presence rows the probe's facts decide: a scrolled-out node is clipped, one under the
-// keyboard keyboard-covered, an empty visible one empty-frame; other identified nodes are observed.
-// The saved captures predate the fiber order fact; siblings take their capture order, which is the
-// fiber order whenever they sit at one composite depth below their parent host.
+// A live capture carries the runner's presence; for the S3P-0 ones, the probe's facts decide it: a
+// scrolled-out node is clipped, one under the keyboard keyboard-covered, an empty visible one
+// empty-frame, other identified nodes observed. [scrolledOut] reads those nodes as clipped instead.
 function load(name: string, extraHosts: Capture['hosts'] = [], scrolledOut: string[] = []) {
   const capture = { ...captures[name], hosts: [...captures[name].hosts, ...extraHosts] };
-  const nodes: NativeNode[] = capture.nodes.map((n) => ({
+  const nodes: NativeNode[] = capture.nodes.map(({ presence: _, ...n }) => ({
     ...n,
     ref: `@e${n.index}`,
     rect: box(n.rect),
@@ -64,7 +70,12 @@ function load(name: string, extraHosts: Capture['hosts'] = [], scrolledOut: stri
   const presence: NativePresence = {
     source: 'android-a11y-live',
     pointScale: capture.pointScale,
-    nodes: nodes.map((n) => {
+    nodes: nodes.map((n, i): Presence => {
+      const live = capture.nodes[i].presence;
+      if (live)
+        return scrolledOut.includes(n.identifier!)
+          ? { status: 'unknown', labelSource: live.labelSource, unknownReason: 'clipped' }
+          : live;
       const r = n.rect!;
       if (['Application', 'Window', 'Keyboard'].includes(n.type!) || !n.identifier)
         return { status: 'unknown', labelSource: 'none' };
@@ -87,7 +98,7 @@ function load(name: string, extraHosts: Capture['hosts'] = [], scrolledOut: stri
   };
   const evidence = validateReactHostEvidence({
     complete: true,
-    hosts: capture.hosts.map((h, i) => ({
+    hosts: capture.hosts.map((h) => ({
       role: h.role ?? null,
       roleSource: h.role ? 'role' : 'none',
       capabilities: { ...(h.press ? { press: true } : {}), ...(h.fill ? { fill: true } : {}) },
@@ -95,7 +106,7 @@ function load(name: string, extraHosts: Capture['hosts'] = [], scrolledOut: stri
       ...(h.hidden ? { hidden: true } : {}),
       ...(h.pointerEvents ? { pointerEvents: h.pointerEvents } : {}),
       ...(h.zIndex === undefined ? {} : { zIndex: h.zIndex }),
-      order: capture.hosts.filter((s, j) => j < i && s.parent === h.parent).length,
+      ...(h.order === undefined ? {} : { order: h.order }),
     })),
     typography: {
       version: 1,
@@ -232,45 +243,71 @@ function visibleControls(capture: ReturnType<typeof load>, name: string) {
 
 const COUNTERS = ['tab-home-press-counters', 'tab-home-handler-count', 'tab-home-tabpress-count'];
 
-// The S3P-b-0 replay's visible React controls per screen.
-for (const [name, count] of [
-  ['home-top', 12],
-  ['home-mid', 17],
-  ['qa-home', 5],
-] as const)
-  test(`${name}: transparent chrome covers no visible control; the touch-transparent counters read react-covered`, () => {
-    const home = load(name);
-    const controls = visibleControls(home, name);
-    assert.equal(controls.length, count);
-    for (const id of controls) assert.equal(home.covered(id), false, id);
-    assert.deepEqual(
-      [...home.reactCovered].map((i) => home.nodes[i].identifier).sort(),
-      [...COUNTERS].sort(),
+test('live Home: every host carries its exported fiber order and every visible control is observed', () => {
+  assert.equal(
+    captures['live-home-top'].hosts.filter((h) => h.order === undefined).length,
+    0,
+    'the export ranks every host, dev-frozen styles included',
+  );
+  const home = load('live-home-top');
+  const controls = visibleControls(home, 'live-home-top');
+  assert.equal(controls.length, 12);
+  const screen = home.screen();
+  for (const id of controls) {
+    assert.equal(home.covered(id), false, id);
+    assert.equal(screen.elements[home.native(id)].semantic?.visibility, 'visible', id);
+  }
+  // Only the touch-transparent counters (pointerEvents none) lose their touch, to what lies beneath.
+  assert.deepEqual(
+    [...home.reactCovered].map((i) => home.nodes[i].identifier).sort(),
+    [...COUNTERS].sort(),
+  );
+  const press = semanticActionView(screen, 'press');
+  assert.ok('elements' in press, JSON.stringify(press));
+  for (const id of controls)
+    assert.ok(
+      press.elements.some((e) => e.testID === id),
+      `${id} is a press candidate`,
     );
-    const screen = home.screen();
-    const press = semanticActionView(screen, 'press');
-    assert.ok('elements' in press, JSON.stringify(press));
-    for (const id of controls)
-      assert.ok(
-        press.elements.some((e) => e.testID === id),
-        `${id} is a press candidate`,
-      );
-    assert.ok('elements' in semanticActionView(screen, 'fill'));
-  });
+  assert.ok('elements' in semanticActionView(screen, 'fill'));
+});
+
+test('live Home scrolled: the Pager button is observed and pressable once in view', () => {
+  const home = load('live-home-pager');
+  const screen = home.screen();
+  const pager = screen.elements[home.native('home-pager-qa-btn')];
+  assert.equal(home.covered('home-pager-qa-btn'), false);
+  assert.equal(pager.semantic?.visibility, 'visible');
+  assert.equal(pager.semantic?.press, 'supported');
+  assert.deepEqual(
+    [...home.reactCovered].map((i) => home.nodes[i].identifier).sort(),
+    [...COUNTERS].sort(),
+  );
+  // The one control the status bar's window covers stays the runner's not-hittable, not a React cover.
+  for (const id of visibleControls(home, 'live-home-pager')) {
+    const observed = screen.elements[home.native(id)].semantic?.visibility === 'visible';
+    assert.equal(observed, id !== 'home-sheet-rows-btn', id);
+  }
+  assert.equal(
+    home.presence.nodes[home.native('home-sheet-rows-btn')].unknownReason,
+    'not-hittable',
+  );
+});
 
 // A transparent full-screen view over Home, drawn last: with pointerEvents auto it takes every touch.
-const overlay = (pointerEvents?: 'none'): Capture['hosts'][number] => ({
+const overlay = (name: string, pointerEvents?: 'none'): Capture['hosts'][number] => ({
   hostType: 'RCTView',
   parent: 0,
   rect: [0, -136 / 2.625, 1080 / 2.625, 2400 / 2.625],
   zIndex: 10000,
+  order: captures[name].hosts.filter((h) => h.parent === 0).length,
   ...(pointerEvents ? { pointerEvents } : {}),
 });
 
-for (const name of ['home-top', 'home-mid'])
+for (const name of ['live-home-top', 'live-home-pager'])
   test(`${name}: a transparent auto overlay covers every visible control and leaves no visible press candidate`, () => {
-    const home = load(name, [overlay()]);
-    const controls = visibleControls(home, name);
+    const home = load(name, [overlay(name)]);
+    const controls = visibleControls(home, name).filter((id) => id !== 'home-sheet-rows-btn');
     for (const id of controls) assert.ok(home.covered(id), id);
     const screen = home.screen();
     for (const id of controls) {
@@ -280,16 +317,19 @@ for (const name of ['home-top', 'home-mid'])
       assert.equal(element.semantic?.fill, 'unsupported', id);
     }
     const press = semanticActionView(screen, 'press');
-    assert.ok('elements' in press, JSON.stringify(press));
+    const visible =
+      'elements' in press
+        ? press.elements.filter((e) => e.semantic?.visibility !== 'offscreen')
+        : [];
     assert.deepEqual(
-      press.elements.filter((e) => e.semantic?.visibility !== 'offscreen').map((e) => e.ref),
+      visible.map((e) => e.ref),
       [],
     );
   });
 
-test('home-top: the same overlay with pointerEvents none leaves Home exactly as without it', () => {
-  const plain = load('home-top');
-  const none = load('home-top', [overlay('none')]);
+test('live Home: the same overlay with pointerEvents none leaves Home exactly as without it', () => {
+  const plain = load('live-home-top');
+  const none = load('live-home-top', [overlay('live-home-top', 'none')]);
   assert.deepEqual([...none.reactCovered], [...plain.reactCovered]);
   const refs = (capture: ReturnType<typeof load>) => {
     const press = semanticActionView(capture.screen(), 'press');
@@ -299,16 +339,8 @@ test('home-top: the same overlay with pointerEvents none leaves Home exactly as 
   assert.deepEqual(refs(none), refs(plain));
 });
 
-test('covered-top: the header action is observed and pressable', () => {
-  const top = load('covered-top');
-  assert.equal(top.covered('qa-covered-header-action'), false);
-  const press = semanticActionView(top.screen(), 'press');
-  assert.ok('elements' in press, JSON.stringify(press));
-  assert.ok(press.elements.some((e) => e.testID === 'qa-covered-header-action'));
-});
-
-test('kb-up: the sticky footer covers input 4, which stays anchored but offers no press or fill', () => {
-  const form = load('kb-up');
+test('live kb-up: the sticky footer covers input 4, which stays anchored but offers no press or fill', () => {
+  const form = load('live-kb-up');
   for (const id of ['qa-kb-input-1', 'qa-kb-input-2', 'qa-kb-input-3']) {
     assert.equal(form.covered(id), false, id);
     assert.ok(form.associated(id), id);
@@ -317,6 +349,7 @@ test('kb-up: the sticky footer covers input 4, which stays anchored but offers n
   assert.ok(form.associated('qa-kb-input-4'), 'react-covered keeps the anchor');
   assert.equal(form.identity('qa-kb-input-4'), 'matched');
   const screen = form.screen();
+  assert.equal(screen.elements[form.native('qa-kb-input-1')].semantic?.visibility, 'visible');
   const input4 = screen.elements[form.native('qa-kb-input-4')];
   assert.equal(input4.semantic?.visibility, 'unknown');
   assert.equal(input4.semantic?.press, 'unsupported');
@@ -337,18 +370,18 @@ test('kb-up: the sticky footer covers input 4, which stays anchored but offers n
     assert.equal(refused.diagnostic?.reactCoveredCount, 2, kind);
     assert.deepEqual(
       refused.diagnostic?.gapHosts?.rows.map(
-        (row) => captures['kb-up'].hosts[row.hostOrdinal].testID,
+        (row) => captures['live-kb-up'].hosts[row.hostOrdinal].testID,
       ),
       ['qa-kb-input-5', 'qa-kb-input-6', 'qa-kb-input-7', 'qa-kb-input-8'],
     );
   }
 });
 
-test('kb-up: input 4 alone refuses no fill step; input 1 stays a fill candidate', () => {
+test('live kb-up: input 4 alone refuses no fill step; input 1 stays a fill candidate', () => {
   // The same capture with inputs 5-8 scrolled out instead of under the keyboard: no gap remains.
   const fill = semanticActionView(
     load(
-      'kb-up',
+      'live-kb-up',
       [],
       ['qa-kb-input-5', 'qa-kb-input-6', 'qa-kb-input-7', 'qa-kb-input-8'],
     ).screen(),

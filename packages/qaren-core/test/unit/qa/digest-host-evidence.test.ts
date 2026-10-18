@@ -4,6 +4,7 @@ import vm from 'node:vm';
 import { HELPERS_VERSION } from '../../../dist/injected-helpers.js';
 import { buildFiber, createSandbox, INJECTED_HELPERS } from '../helpers/inject-harness.js';
 import { PRIVATE_INPUT_LIMITS } from '../../../dist/qa/private-input-limits.js';
+import { devFreeze } from './rn-dev-freeze.ts';
 
 const { maxHosts } = PRIVATE_INPUT_LIMITS;
 
@@ -506,10 +507,20 @@ test('a host drawn before a shallower sibling ranks first, whatever its breadth-
   );
 });
 
-test('opaque or invalid touch facts leave only that host unordered, and the capture complete', () => {
+test('an unknown pointerEvents reads as auto; an unreadable zIndex leaves only that host unordered', () => {
+  const sometimes = digest([
+    { hostType: 'RCTView', props: { testID: 'odd', pointerEvents: 'sometimes' } },
+    { hostType: 'RCTView', props: { testID: 'plain' } },
+  ]);
+  assert.deepEqual(
+    sometimes.hostEvidence.hosts.map(({ pointerEvents, order }) => ({ pointerEvents, order })),
+    [
+      { pointerEvents: undefined, order: 0 },
+      { pointerEvents: undefined, order: 1 },
+    ],
+  );
   for (const props of [
     { style: 7 },
-    { pointerEvents: 'sometimes' },
     { style: { zIndex: '2' } },
     { style: { zIndex: Number.NaN } },
   ]) {
@@ -532,4 +543,36 @@ test('opaque or invalid touch facts leave only that host unordered, and the capt
       JSON.stringify(props),
     );
   }
+});
+
+test("a dev renderer's frozen props still yield touch facts and an order for every host", () => {
+  // RN dev renderers deep-freeze host prop values into bound identity accessors; a strict read refuses them.
+  const result = digest([
+    {
+      hostType: 'RCTView',
+      props: devFreeze({
+        testID: 'counters',
+        style: devFreeze([devFreeze({ position: 'absolute' }), devFreeze({ zIndex: 100 })]),
+        pointerEvents: 'none',
+      }),
+    },
+    {
+      hostType: 'RCTView',
+      props: devFreeze({ style: devFreeze({ pointerEvents: 'box-none', zIndex: 2 }) }),
+    },
+    { hostType: 'RCTView', props: devFreeze({ testID: 'plain', style: devFreeze({ flex: 1 }) }) },
+  ]);
+  assert.equal(result.hostEvidence.complete, true);
+  assert.deepEqual(
+    result.hostEvidence.hosts.map(({ pointerEvents, zIndex, order }) => ({
+      pointerEvents,
+      zIndex,
+      order,
+    })),
+    [
+      { pointerEvents: 'none', zIndex: 100, order: 0 },
+      { pointerEvents: 'box-none', zIndex: 2, order: 1 },
+      { pointerEvents: undefined, zIndex: undefined, order: 2 },
+    ],
+  );
 });

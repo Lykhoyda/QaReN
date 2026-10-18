@@ -786,8 +786,12 @@ React host, one of its descendants or an ancestor. The hit test orders siblings
 by `zIndex`, then fiber order. It skips accessibility-hidden and
 `pointerEvents="none"` subtrees, passes touches through `box-none` views to
 their children, and keeps a `box-only` view's children out. The React capture
-supplies each host's `pointerEvents`, `zIndex` and fiber-order rank; a missing
-or repeated rank, or more than one React root, leaves the hit unresolved. A node
+supplies each host's `pointerEvents`, `zIndex` and fiber-order rank, reading a
+development build's frozen props as it reads other display facts. An unreadable
+`pointerEvents` counts as `auto`, a cover; an unreadable `zIndex` leaves that
+host without a rank. A sibling without a unique rank leaves the hit unresolved
+only when its subtree holds a frame over the point, and more than one React root
+always does. A node
 whose React hit test reaches an unrelated host or no host, or stays unresolved,
 reads `unknown` with reason `react-covered`. It keeps its association, so it is
 not a screen-wide gap, but it offers no press or

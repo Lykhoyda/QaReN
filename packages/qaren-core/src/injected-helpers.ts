@@ -3,7 +3,7 @@ import { TYPOGRAPHY_TEXT_LIMITS } from './qa/host-typography.js';
 import { INPUT_HOST_TYPES } from './qa/input-host-types.js';
 
 // Bump when the injected surface changes so warm runtimes replace stale helpers.
-export const HELPERS_VERSION = 98;
+export const HELPERS_VERSION = 99;
 
 export const INJECTED_HELPERS = `
 (function() {
@@ -549,32 +549,42 @@ export const INJECTED_HELPERS = `
     return descriptorValue(object, descriptor);
   }
 
-  // A host view's touch facts, read as eligibilityPointerEvents does (prop, then style) but through
-  // qaData: { pointerEvents, zIndex }, each null when unset. Throws when a value is opaque or invalid.
+  // A host view's touch facts, public and value-free, read like the display facts: devFrozen accepts the
+  // dev renderer's frozen prop values. pointerEvents falls back to eligibilityPointerEvents and reads an
+  // unknown or invalid value as auto (a cover); zIndexKnown false leaves the host without an order.
   var QA_POINTER_EVENTS = ['auto', 'none', 'box-none', 'box-only'];
   function qaStyleFact(style, key, depth) {
     if (style == null || style === false) return undefined;
     if (depth > 32) throw new Error('Capture refused');
     if (Array.isArray(style)) {
-      var length = qaData(style, 'length');
+      var length = qaData(style, 'length', true);
       for (var i = length - 1; i >= 0; i--) {
-        var value = qaStyleFact(qaData(style, i), key, depth + 1);
+        var value = qaStyleFact(qaData(style, String(i), true), key, depth + 1);
         if (value !== undefined) return value;
       }
       return undefined;
     }
     if (typeof style !== 'object') throw new Error('Capture refused');
-    return qaData(style, key);
+    return qaData(style, key, true);
   }
   function qaTouchFacts(fiber) {
-    var props = qaData(fiber, 'memoizedProps');
-    var style = qaData(props, 'style');
-    var pointerEvents = qaData(props, 'pointerEvents');
-    if (pointerEvents == null) pointerEvents = qaStyleFact(style, 'pointerEvents', 0);
-    var zIndex = qaStyleFact(style, 'zIndex', 0);
-    if (pointerEvents != null && QA_POINTER_EVENTS.indexOf(pointerEvents) === -1) throw new Error('Capture refused');
-    if (zIndex != null && (typeof zIndex !== 'number' || !isFinite(zIndex))) throw new Error('Capture refused');
-    return { pointerEvents: pointerEvents == null ? null : pointerEvents, zIndex: zIndex == null ? null : zIndex };
+    var props = qaData(fiber, 'memoizedProps', true);
+    var pointerEvents = null;
+    try {
+      pointerEvents = qaData(props, 'pointerEvents', true);
+      if (pointerEvents == null) pointerEvents = qaStyleFact(qaData(props, 'style', true), 'pointerEvents', 0);
+    } catch (_) {
+      try { pointerEvents = eligibilityPointerEvents(fiber); } catch (_) { pointerEvents = null; }
+    }
+    if (QA_POINTER_EVENTS.indexOf(pointerEvents) === -1) pointerEvents = null;
+    var zIndex = null;
+    var zIndexKnown = true;
+    try {
+      zIndex = qaStyleFact(qaData(props, 'style', true), 'zIndex', 0);
+      if (zIndex == null) zIndex = null;
+      else if (typeof zIndex !== 'number' || !isFinite(zIndex)) zIndexKnown = false;
+    } catch (_) { zIndexKnown = false; }
+    return { pointerEvents: pointerEvents, zIndex: zIndexKnown ? zIndex : null, zIndexKnown: zIndexKnown };
   }
 
   function qaHostType(fiber) {
@@ -1531,14 +1541,15 @@ export const INJECTED_HELPERS = `
           && (props.editable == null || props.editable === true)
           && (props.readOnly == null || props.readOnly === false)
           && (props['aria-readonly'] == null || props['aria-readonly'] === false)) host.capabilities.fill = true;
-        // Opaque touch facts (a registered style id, say) leave this host without an order, so the core
-        // cannot rank it among its siblings and any hit through them stays unresolved.
-        var touchKnown = true;
+        // An unreadable zIndex (a registered style id, say) leaves this host without an order: the core
+        // cannot rank it among its siblings, so a hit its subtree could take stays unresolved.
+        var touchKnown = false;
         try {
           var touch = qaTouchFacts(fiber);
           if (touch.pointerEvents !== null) host.pointerEvents = touch.pointerEvents;
           if (touch.zIndex !== null) host.zIndex = touch.zIndex;
-        } catch (_) { touchKnown = false; }
+          touchKnown = touch.zIndexKnown;
+        } catch (_) {}
         hostEvidence.hosts.push(host);
         hostTouchKnown[hostEvidence.hosts.length - 1] = touchKnown;
         if (hostEvidence.hosts.length === ${PRIVATE_INPUT_LIMITS.maxHosts}) hostEvidence.complete = false;
