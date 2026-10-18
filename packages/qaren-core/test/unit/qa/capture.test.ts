@@ -1255,10 +1255,12 @@ test('absent or malformed modal diagnostics emit nothing and cannot repair priva
   const logs: string[] = [];
   const observation = nativeCapture();
   const baseline = await captureScreen({
+    now: () => 0,
     native: async () => observation,
     react: async () => ({ interactive: [] }),
   });
   const successful = await captureScreen({
+    now: () => 0,
     native: async () => observation,
     react: async () => ({ interactive: [] }),
     warn: (line) => logs.push(line),
