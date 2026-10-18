@@ -110,6 +110,13 @@ async function fixedPlanPipeline() {
     const capture = nativeCapture();
     capture.nodes[0].label = `Screen ${changes}`;
     capture.nodes[1].identifier = 'tab-profile';
+    capture.nodes[1].label = [
+      'Skip onboarding',
+      'Done finish onboarding',
+      'Tasks',
+      'Home',
+      'Profile',
+    ][Math.min(presses, 4)];
     if (presses >= 5)
       capture.nodes.push({
         ...capture.nodes[1],

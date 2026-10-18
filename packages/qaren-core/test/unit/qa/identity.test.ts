@@ -138,6 +138,7 @@ for (const shape of shapes()) {
       const keys = candidates.map((_, i) => `e${i}`).concat('none');
       const phrase = {
         candidates,
+        phrase: 'skip control',
         question: {
           type: 'choice' as const,
           instructions: 'Which element is the skip control?',
