@@ -93,7 +93,9 @@ There is no `no longer` form or heading-level declaration.
   `CORE_REFUSED`. Invalid values refuse with `runtime inputs are invalid`.
 - The value is masked in every output and never written by qaren to a file, log, saved
   block or report, sent to Jev or hashed. A run with inputs takes no screenshots, records
-  no video and withholds the logs of the processes it starts.
+  no video and withholds the logs of the processes it starts. Value-free step timing and
+  block and saved-login outcomes stay in `logs/core-diagnostics.jsonl`; see the CLI guide's
+  [runtime-input diagnostics](https://github.com/Lykhoyda/rn-dev-agent/blob/develop/packages/qaren-cli/README.md#runtime-inputs).
 - The iOS simulator's own system log may record text the app displays, including a filled
   field's value, as it does for every XCTest-driven run; erase a dedicated QA simulator
   (`xcrun simctl erase <udid>`) when that matters. The runner's XCTest result bundles are
