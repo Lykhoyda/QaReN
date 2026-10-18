@@ -1591,13 +1591,17 @@ An action without success evidence after its one retry, a step target that
 does not resolve, a definite failed check, an unmet quoted wait, or a phrase check still
 unsure after its re-ask gets a deterministic recovery, then the step runs once more from a fresh
 capture. If it fails again, a second recovery may decline a different system prompt or app
-interruption once the first is proven gone; the same one twice fails with `the app interruption
-did not disappear`, and a step never gets more than two recoveries. The order is owned by [`recover.ts`](../qaren-core/src/qa/recover.ts): a
+interruption once the first is proven gone. An app interruption with the same decline label
+fails with `the app interruption did not disappear`; a different kind of interruption or
+decline label may be eligible, subject to the same guards on each recovery. A step never
+gets more than two recoveries. The order is owned by [`recover.ts`](../qaren-core/src/qa/recover.ts): a
 recognized system prompt met during an ordinary app step is declined, never accepted
 (only an explicit `Allow the permission prompt` or `Accept the dialog` step accepts, and a
 dialog is left to the plan when its next step is a dialog step). Recovery declines a given
-system prompt at most once per run: when the app asks again, the step fails with its own
-reason and `the app asked again after recovery declined it; answer it with a dialog step`. A
+system prompt, identified by its alert title and button labels, at most once per run;
+changing only its message does not make it a different prompt. When the app asks again,
+even after the step's recovery limit, the step fails with its own reason and
+`the app asked again after recovery declined it; answer it with a dialog step`. A
 declined prompt's proven label and frame land on the recovery's `retry` row as `dialog`
 and in a value-free `dialog-tap` run-log line. A dev
 menu or floating button in front is cleared through the shared
@@ -1608,7 +1612,8 @@ saved block `loginBlock` (`.qaren/actions/<loginBlock>.yaml`, saved for this app
 platform) replays by its stored identities. The two keys are set together, with
 exactly one nonempty marker `id` or `text`. A missing, unreadable or incompatible
 login block fails when login recovery is needed. A login or dev-menu recovery is the
-step's only one, a failure after the last recovery fails the step, recovery never runs inside the login replay, and
+step's only one. An explicit dialog step also gets at most one recovery, using its own
+accept or dismiss action. A failure after the last recovery fails the step, recovery never runs inside the login replay, and
 capture, Jev, process, replay-miss and cancellation refusals are never recovered. The
 ledger's `recoveries` counts recoveries that let the step retry and attempted declines that
 failed; `escapes` and `llmTurns`
@@ -1649,8 +1654,9 @@ raw captures still refuse. On Android, recovery answers a system prompt; app-scr
 interruptions are recovered once Android presence capture lands. Until then, a step whose
 recovery cannot read the screen there keeps its own failure reason and logs
 `recovery-skipped=presence-unavailable`. For Android dialog limits, see [Check a plan](#check-a-plan).
-An action reporting `tapped: false`
-or `executed: false` establishes no action proof and cannot count as a recovery.
+An action reporting `tapped: false` or `executed: false` establishes no action proof
+and cannot authorize a retry; an attempted decline still counts in `recoveries`,
+including when its read-back refuses incomplete capture.
 
 `logs/core.log` includes value-free diagnostics for failed interruption admission:
 `interruption-rejected` reports a front, coverage, indexed target or no-candidate
