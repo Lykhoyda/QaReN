@@ -582,3 +582,52 @@ test('gap-host dependencies remain private when a pending heading wait is batche
     assert.equal(judge.requests.length, 1);
   }
 });
+
+test('a refused phrase step names its blocking association stage, including the nearest named ancestor', async () => {
+  const f = fixture();
+  const hosts = f.evidence.typography!.nodes;
+  hosts[0].hostType = hosts[1].hostType = 'RCTView';
+  hosts[1].parentHostIndex = 0;
+  addNative(f, 0, { rect: { ...frame, x: frame.x + 1 } });
+  addNative(f, 1);
+  const screen = f.screen();
+  const action = semanticActionView(screen, 'press');
+  assert.ok('refuse' in action);
+  assert.equal(action.refuse, 'SCREEN_EVIDENCE_INCOMPLETE');
+  const rows = action.diagnostic?.gapHosts?.rows;
+  assert.deepEqual(
+    rows?.map((row) => [row.hostOrdinal, row.association?.identity, row.association?.ancestorPath]),
+    [
+      [0, 'frame-mismatch', 'self-anchor-missing'],
+      [1, 'matched', 'ancestor-structure-missing'],
+    ],
+  );
+  assert.equal(rows![0].ancestorAssociation, undefined);
+  assert.equal(rows![1].ancestorAssociation?.identity, 'frame-mismatch');
+  assert.equal(rows![1].ancestorAssociation?.sameFrameCount, 0);
+  assert.deepEqual(rows![1].ancestorAssociation?.frameMismatch?.delta, {
+    x: 1,
+    y: 0,
+    width: 0,
+    height: 0,
+  });
+
+  const plan = parsePlan('1. Tap the save control').blocks!;
+  const judge = () => scriptedJudge(() => assert.fail('a projection refusal reaches no judgment'));
+  const baseline = await runPlan(plan, walker([screen], judge()).deps);
+  const w = walker([{ ...screen }], judge());
+  const events: WalkerTimingDiagnostic[] = [];
+  w.deps.diagnostic = (event) => events.push(event);
+  const result = await runPlan(plan, w.deps);
+  assert.deepEqual(result, baseline);
+  assert.equal(result.verdict, 'FAIL');
+  assert.deepEqual(w.actions, []);
+  const refused = events.filter(
+    (event) => event.stage === 'decision' && event.code === 'SCREEN_EVIDENCE_INCOMPLETE',
+  );
+  assert.equal(refused.length, 1);
+  assert.equal(refused[0].line, 1);
+  assert.deepEqual(refused[0].visibilityBlocker, action.diagnostic);
+  assert.doesNotMatch(JSON.stringify(events), /PRIVATE-|RCT|TextInput|hash|nativeID"|testID"/);
+  assert.doesNotMatch(JSON.stringify(result), /gapHosts|ancestorAssociation|frameMismatch/);
+});

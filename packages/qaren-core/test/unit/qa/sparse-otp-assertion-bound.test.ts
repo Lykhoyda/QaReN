@@ -206,11 +206,16 @@ test('a screen-wide capability gap does not make content-free containers asserti
 
 test('the capability gap still leaves action projections and element capabilities unchanged', () => {
   const screen = capture(liveRows());
-  for (const kind of ['press', 'fill'] as const)
-    assert.deepEqual(semanticActionView(screen, kind), {
+  for (const kind of ['press', 'fill'] as const) {
+    const { diagnostic, ...refusal } = semanticActionView(screen, kind) as {
+      diagnostic?: unknown;
+    };
+    assert.deepEqual(refusal, {
       refuse: 'SCREEN_EVIDENCE_INCOMPLETE',
       reason: `an observation has unknown ${kind} capability (@n2, other${kind === 'press' ? '; 2 interactive React hosts unassociated' : ''})`,
     });
+    assert.ok(diagnostic, 'the refusal carries its value-free blocker diagnostic');
+  }
   assert.equal(screen.elements[2].semantic?.press, 'unknown');
 });
 

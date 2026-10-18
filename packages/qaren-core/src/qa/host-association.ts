@@ -124,6 +124,15 @@ function compatible(
   if (host === 'RCTText' || host === 'Text') return native === 'StaticText';
   if (host === 'RCTView' || host === 'View')
     return native === 'Other' || native === 'Button' || native === 'Cell';
+  if (host === 'RNCSafeAreaView' || host === 'RNCSafeAreaProvider')
+    return [
+      'Other',
+      'Button',
+      'Cell',
+      'android.view.ViewGroup',
+      'android.view.View',
+      'android.widget.Button',
+    ].includes(native ?? '');
   // On iOS the identifier sits on the scroll view's container view, directly above the native ScrollView.
   if (host === 'RCTScrollView' || host === 'ScrollView')
     return native === 'ScrollView' || (native === 'Other' && scrollsBeneath);
