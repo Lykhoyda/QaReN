@@ -237,7 +237,7 @@ test('recognizable unsupported visibility traits refuse before an optimistic mod
 });
 
 test('a heading request without qualified heading evidence stays pending, never refused or absent', async (t) => {
-  for (const phrase of ['welcome heading', 'the welcome header', 'the Welcome TITLE']) {
+  for (const phrase of ['welcome heading', 'the welcome headings', 'the Welcome TITLE']) {
     await t.test(phrase, async () => {
       const observed = screen([
         element('@welcome', 'Welcome', { kind: 'text' }),

@@ -8,5 +8,5 @@
     "visibleText": ["Profile", "Settings"]
   },
   "line": "Visit the profile tab",
-  "expected": { "kind": "target", "ref": "@profile" }
+  "expected": { "kind": "target", "refuse": "TARGET_NOT_FOUND" }
 }

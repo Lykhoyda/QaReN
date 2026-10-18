@@ -704,6 +704,8 @@ covered by the [fallback tests](../qaren-core/test/unit/qa/keyboard-fallback.tes
 
 ### Plan checks and screen evidence
 
+For phrase actions, the selected control's observed name must contain the words of the phrase that name it; otherwise the step refuses `TARGET_NOT_FOUND`.
+
 A check is literal only when its entire payload is one quoted string:
 `✓ "Welcome"`. Text outside the quotes, as in
 `✓ The heading shows "Welcome" and no error is visible`, makes the whole

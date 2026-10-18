@@ -134,7 +134,10 @@ export async function evaluateSyntheticCase(
       { [`target_${item.line}`]: question },
       'walk',
     );
-    const resolution = decideTarget({ question, candidates }, answers[`target_${item.line}`]);
+    const resolution = decideTarget(
+      { question, candidates, phrase: item.target.phrase },
+      answers[`target_${item.line}`],
+    );
     target =
       'ref' in resolution
         ? { ref: resolution.ref }
