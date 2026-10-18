@@ -12,8 +12,10 @@ import android.widget.Button
 import android.widget.EditText
 import android.widget.FrameLayout
 import android.widget.LinearLayout
+import android.widget.ScrollView
 
-// A nested layout whose second button and second input sit under clickable covers drawn above them.
+// A nested layout whose second button and second input sit under clickable covers drawn above them,
+// and a one-row scroll view whose second button is scrolled out of view.
 class QaHierarchyFixtureActivity : Activity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -49,8 +51,22 @@ class QaHierarchyFixtureActivity : Activity() {
         coverParams.topMargin = TOP_OFFSET + ROW_HEIGHT
         val inputCoverParams = FrameLayout.LayoutParams(ROW_WIDTH, ROW_HEIGHT, Gravity.TOP)
         inputCoverParams.topMargin = TOP_OFFSET + ROW_HEIGHT * 3
+        val scroll = ScrollView(this)
+        scroll.addView(
+            LinearLayout(this).apply {
+                orientation = LinearLayout.VERTICAL
+                addView(Button(this@QaHierarchyFixtureActivity), LinearLayout.LayoutParams(ROW_WIDTH, ROW_HEIGHT))
+                addView(
+                    Button(this@QaHierarchyFixtureActivity).apply { contentDescription = SCROLLED_OUT_IDENTIFIER },
+                    LinearLayout.LayoutParams(ROW_WIDTH, ROW_HEIGHT),
+                )
+            },
+        )
+        val scrollParams = FrameLayout.LayoutParams(ROW_WIDTH, ROW_HEIGHT, Gravity.TOP)
+        scrollParams.topMargin = TOP_OFFSET + ROW_HEIGHT * 5 + ROW_HEIGHT / 4
         val root = FrameLayout(this)
         root.addView(column, columnParams)
+        root.addView(scroll, scrollParams)
         root.addView(cover, coverParams)
         root.addView(inputCover, inputCoverParams)
         // Neither input starts focused, so every fill needs its focus tap.
@@ -75,6 +91,7 @@ class QaHierarchyFixtureActivity : Activity() {
         const val COVERED_INPUT_IDENTIFIER = "qa-covered-input"
         const val INPUT_COVER_IDENTIFIER = "qa-input-cover"
         const val KEYBOARD_INPUT_IDENTIFIER = "qa-keyboard-input"
+        const val SCROLLED_OUT_IDENTIFIER = "qa-scrolled-out"
         const val COVERED_INPUT_TEXT = "before"
         const val ROW_WIDTH = 600
         const val ROW_HEIGHT = 240

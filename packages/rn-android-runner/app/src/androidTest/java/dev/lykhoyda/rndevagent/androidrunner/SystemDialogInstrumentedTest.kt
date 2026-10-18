@@ -19,6 +19,7 @@ import org.json.JSONArray
 import org.json.JSONObject
 import org.junit.After
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Assert.fail
 import org.junit.Assume.assumeTrue
@@ -81,6 +82,30 @@ class SystemDialogInstrumentedTest {
             assertEquals("NO_SYSTEM_DIALOG", refusal.code)
             assertEquals(MutationDisposition.NONE, refusal.mutation)
         }
+    }
+
+    // Another package's window in front makes the capture ineligible, so no node is vouched for.
+    @Test
+    fun aPresenceCaptureUnderASystemDialogIsIneligible() {
+        launchFixture(expectPrompt = true)
+        val data = dispatcher.dispatch(
+            JSONObject()
+                .put("command", "snapshot")
+                .put("appBundleId", testPackage)
+                .put("qaReadOnly", true)
+                .put("platformPresence", true)
+                .put("presenceBudgetMs", 20_000),
+        ).getJSONObject("data")
+        val capture = data.getJSONObject("presenceCapture")
+        assertFalse(capture.toString(), capture.getBoolean("complete"))
+        val failure = capture.getJSONObject("diagnostics").getJSONObject("failure")
+        assertEquals("initial-eligibility", failure.getString("phase"))
+        assertEquals("ineligible", failure.getString("reason"))
+        val nodes = data.getJSONArray("nodes")
+        for (i in 0 until nodes.length()) {
+            assertEquals("unknown", nodes.getJSONObject(i).getJSONObject("presence").getString("status"))
+        }
+        dispatcher.dispatch(systemAlertTap(DISMISS))
     }
 
     private fun launchFixture(expectPrompt: Boolean) {

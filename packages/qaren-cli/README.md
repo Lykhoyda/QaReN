@@ -757,8 +757,27 @@ snapshot; any other topmost window leaves no read. A node not
 visible to the user counts as off screen, so a quoted step never passes on a
 scrolled-out control. A node the traversal cannot read is counted as dropped,
 and more than 600 nodes truncate the read; either leaves the capture
-incomplete. An RN `Modal` is a second `Window`: literal steps see its content,
-but phrase actions inside an Android modal refuse in this release.
+incomplete. Literal steps can read an RN `Modal`'s content; its effect on React
+host association is described below.
+
+Android QA snapshots can also request native presence through the runner's
+`A11Y_PRESENCE_V1` capability. After enumeration, the runner checks eligibility,
+observes nodes, checks final eligibility and revalidates the enumeration within
+the requested capture budget. The version-2 capture uses `android-a11y-live`,
+`app-windows` and the display density as `pointScale`. The
+[presence validator](../qaren-core/src/qa/native-presence.ts) requires matching
+app, capture and generation identities, the requested budget and complete,
+in-budget evidence. An incomplete capture resets every node to `unknown`.
+The [Android cover rule](../rn-android-runner/app/src/main/java/dev/lykhoyda/rndevagent/androidrunner/PresenceRules.kt)
+requires the node's visible centre to be clear of higher windows and unrelated
+visible nodes drawn above it; uncertain evidence stays unknown.
+
+Android phrase steps still refuse in this release: transparent chrome above
+React content can leave targets unproven until the cover check incorporates
+React touchability. Valid captures with unproven targets retain the
+`SCREEN_EVIDENCE_INCOMPLETE` presence gap; stale or incomplete captures refuse
+with `NATIVE_PRESENCE_UNUSABLE`. Quoted targets and literal checks remain usable
+without requesting presence.
 
 Context-bound iOS QA reads require the unchanged target app already in the
 foreground. They never activate or relaunch it, or retry a failed read through
@@ -810,6 +829,19 @@ ancestry and that window's origin, including captures with other app or keyboard
 windows. Unique identity, type, frame, presence and ancestor proofs still apply;
 missing or ambiguous window membership refuses association. Typography compares
 title and body evidence only within the same window.
+
+Android [React host association](../qaren-core/src/qa/host-association.ts) scales
+React points by the display density and calibrates the origin per capture from
+at least two uniquely identified, unclipped anchors that agree within two pixels.
+It accepts frames shortened or emptied by a vertical scroll clip. Missing or
+disagreeing anchors leave association unavailable. Android layout, scroll and
+drawing classes, including parked sliders, supply no native press or fill
+capability of their own; the [screen projection](../qaren-core/src/qa/screen.ts)
+owns their classification.
+
+Known limit: a mounted Android React Native `Modal` makes association
+unavailable, even when accessibility lists only the modal's window, so phrase
+press and fill targets on such screens refuse.
 Phrase waits capture fresh screen and presence evidence on every poll, even when the
 screen appears unchanged; prior observations do not establish current presence.
 
@@ -855,7 +887,10 @@ Table and CollectionView ancestors. On Android, scroll containers are recognised
 by class-name suffix, for example ScrollView, ListView or RecyclerView;
 `isScrollContainerType` in that model owns the complete matching rules.
 Their rectangles contribute to the effective clipping viewport, so a row scrolled
-out of its list is offscreen as on iOS. Missing or invalid
+out of its list is offscreen as on iOS. Validated Android presence also treats
+`clipped` nodes as offscreen when accessibility collapses their frames to empty
+rectangles. A node hidden under the keyboard is `keyboard-covered`, preserving
+covered-target recovery instead of classifying it as scrolled out. Missing or invalid
 rectangles skip only that clip; Application and Window rectangles must have
 positive size.
 Missing Window ancestry does not create uncertainty when the Application clip

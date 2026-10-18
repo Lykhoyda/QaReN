@@ -22,6 +22,7 @@ import { existsSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { createHash, randomBytes, randomUUID } from 'node:crypto';
 import type { ToolResult } from '../utils.js';
+import type { ToolErrorCode } from '../types.js';
 import { okResult, failResult } from '../utils.js';
 import {
   updateRefMapFromFlat,
@@ -182,6 +183,9 @@ export interface RunAndroidArgs {
   timeoutMs?: number;
   scale?: number;
   interactiveOnly?: boolean;
+  /** A QA snapshot that also runs the runner's presence pass within this budget. */
+  platformPresence?: boolean;
+  presenceBudgetMs?: number;
   outPath?: string;
   /** GH #581: exact input identity + declared focus point for type/verifyInput. */
   snapshotGeneration?: number;
@@ -2078,6 +2082,16 @@ function mapRunnerNodesToFlat(nodes: RunnerSnapshotNode[], qa = false): FlatNode
   return out;
 }
 
+const ANDROID_PRESENCE_CAPABILITY = 'A11Y_PRESENCE_V1';
+
+function presenceCaptureUnavailable(reason: string, code: ToolErrorCode): ToolResult {
+  return failResult(
+    `Platform presence capture unavailable: ${reason}; no recovery attempted.`,
+    code,
+    { capture: 'unknown', mutation: 'none', dispatched: false },
+  );
+}
+
 export function shouldRecoverAndroidAccessibility(
   command: string,
   response: Pick<RunnerResponse, 'ok' | 'error'>,
@@ -2143,8 +2157,27 @@ export async function runAndroid(args: RunAndroidArgs): Promise<ToolResult> {
     );
   }
 
+  const presenceRequested = args.command === 'snapshot' && args.platformPresence === true;
+  if (presenceRequested) {
+    if (!Number.isSafeInteger(args.presenceBudgetMs) || (args.presenceBudgetMs ?? 0) <= 0)
+      return presenceCaptureUnavailable(
+        'presenceBudgetMs must be an explicit positive integer',
+        'INVALID_ARGUMENT',
+      );
+    // A runner without its presence pass cannot vouch for a phrase target.
+    if (!lastKnownCapabilities.includes(ANDROID_PRESENCE_CAPABILITY))
+      return presenceCaptureUnavailable(
+        `the runner lacks ${ANDROID_PRESENCE_CAPABILITY}`,
+        'RUNNER_COMMANDS_STALE',
+      );
+  }
+
   const body: Record<string, unknown> = { command: args.command };
   if (qaReadOnly) body.qaReadOnly = true;
+  if (presenceRequested) {
+    body.platformPresence = true;
+    body.presenceBudgetMs = args.presenceBudgetMs;
+  }
   if (args.bundleId) body.appBundleId = args.bundleId;
   if (args.x !== undefined) body.x = args.x;
   if (args.y !== undefined) body.y = args.y;
@@ -2329,6 +2362,7 @@ export async function runAndroid(args: RunAndroidArgs): Promise<ToolResult> {
       normalizationDroppedNodes?: unknown;
       snapshotGeneration?: unknown;
       keyboardVisible?: unknown;
+      presenceCapture?: unknown;
     };
     if (Array.isArray(data.nodes)) {
       const flat = mapRunnerNodesToFlat(data.nodes, qaReadOnly);
@@ -2355,6 +2389,9 @@ export async function runAndroid(args: RunAndroidArgs): Promise<ToolResult> {
           ...(typeof data.truncated === 'boolean' ? { truncated: data.truncated } : {}),
           ...(Number.isSafeInteger(dropped) ? { normalizationDroppedNodes: dropped } : {}),
           ...freshness,
+          ...(qaReadOnly && Object.hasOwn(data, 'presenceCapture')
+            ? { presenceCapture: data.presenceCapture }
+            : {}),
         },
         { meta: { snapshotVerdict, ...recoveryMeta } },
       );

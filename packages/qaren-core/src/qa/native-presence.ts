@@ -11,6 +11,8 @@ export const NATIVE_PRESENCE_UNKNOWN_REASONS = [
   'read-unavailable',
   'match-count-mismatch',
   'post-hit-mismatch',
+  // Android only: the on-screen keyboard covers the node, which is not scrolled out of view.
+  'keyboard-covered',
 ] as const;
 
 export interface NativePresenceNode {
@@ -20,8 +22,14 @@ export interface NativePresenceNode {
 }
 
 export interface NativePresence {
-  source: 'xcui-live';
+  source: 'xcui-live' | 'android-a11y-live';
   nodes: NativePresenceNode[];
+  // Android only: physical pixels per React point (the display density).
+  pointScale?: number;
+}
+
+function android(capture: Record<string, unknown>): boolean {
+  return capture.source === 'android-a11y-live' && capture.enumeration === 'app-windows';
 }
 
 function finite(value: unknown): value is number {
@@ -42,8 +50,10 @@ export function validateNativePresence(
     !isRecord(capture) ||
     capture.version !== 2 ||
     capture.appliedBudgetMs !== requestedBudgetMs ||
-    capture.source !== 'xcui-live' ||
-    capture.enumeration !== 'raw-unfiltered' ||
+    !(
+      (capture.source === 'xcui-live' && capture.enumeration === 'raw-unfiltered') ||
+      (android(capture) && finite(capture.pointScale) && capture.pointScale > 0)
+    ) ||
     capture.complete !== true ||
     !expectedAppId ||
     capture.appId !== expectedAppId ||
@@ -110,7 +120,10 @@ export function validateNativePresence(
       return undefined;
     const unknownReason =
       p.status === 'unknown'
-        ? NATIVE_PRESENCE_UNKNOWN_REASONS.find((reason) => reason === p.unknownReason)
+        ? NATIVE_PRESENCE_UNKNOWN_REASONS.find(
+            (reason) =>
+              reason === p.unknownReason && (reason !== 'keyboard-covered' || android(capture)),
+          )
         : undefined;
     observations.push({
       status: p.status,
@@ -118,7 +131,9 @@ export function validateNativePresence(
       ...(unknownReason ? { unknownReason } : {}),
     });
   }
-  return { source: 'xcui-live', nodes: observations };
+  return android(capture)
+    ? { source: 'android-a11y-live', nodes: observations, pointScale: capture.pointScale as number }
+    : { source: 'xcui-live', nodes: observations };
 }
 
 type Rect = NonNullable<NativeNode['rect']>;
@@ -252,12 +267,13 @@ export function scrollChromeNodes(
 }
 
 // Unobserved nodes of a verified capture lying wholly outside the screen, the window or a scroll view ancestor.
+// Android clips a scrolled-out node to an empty rect inside the viewport; its clipped presence says so instead.
 export function offscreenNodes(
   nodes: NativeNode[],
   presence: NativePresence | undefined,
 ): Set<number> {
   if (!presence) return new Set();
-  return new Set(
+  const offscreen = new Set(
     [...outsideViewport(nodes)].filter(
       (i) =>
         presence.nodes[i]?.status === 'unknown' &&
@@ -265,9 +281,20 @@ export function offscreenNodes(
         nodes[i].rect!.height > 0,
     ),
   );
+  if (presence.source === 'android-a11y-live')
+    presence.nodes.forEach((node, i) => {
+      if (node.status === 'unknown' && node.unknownReason === 'clipped') offscreen.add(i);
+    });
+  return offscreen;
 }
 
-const TEXT_INPUT_TYPES = new Set(['TextView', 'TextField', 'SecureTextField', 'SearchField']);
+const TEXT_INPUT_TYPES = new Set([
+  'TextView',
+  'TextField',
+  'SecureTextField',
+  'SearchField',
+  'android.widget.EditText',
+]);
 type Exclusion = { rule: 'anc' | 'scroll' | 'window'; ancestor: number };
 // Diagnostic only: which rule and ancestor removed an in-app node; never read by decisions.
 const exclusions = new WeakMap<Set<number>, Map<number, Exclusion>>();

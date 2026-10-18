@@ -58,6 +58,7 @@ export const REQUIRED_ANDROID_FEATURES = [
   // Android's narrower occlusion guard, not the iOS accessibility hit test.
   'DISPATCH_OCCLUSION_GUARD_V1',
   'SYSTEM_ALERT_TAP_V1',
+  'A11Y_PRESENCE_V1',
 ] as const;
 
 export const REQUIRED_ANDROID_COMMANDS = [

@@ -286,7 +286,8 @@ test('native text, image and plain views are not pressable unless React evidence
       'supported',
       'unsupported',
       'unknown',
-      'unknown',
+      // An Android layout view is plain, as iOS's Other is.
+      'unsupported',
     ],
     'an unrecognized native type proves nothing about press',
   );

@@ -128,6 +128,14 @@ class CommandDispatcher(
         if (cmd.has("qaReadOnly") && cmd.opt("qaReadOnly") !is Boolean) {
             return error("INVALID_ARGUMENT", "qaReadOnly must be a boolean")
         }
+        if (cmd.has("platformPresence")) {
+            val budget = cmd.opt("presenceBudgetMs")
+            if (cmd.opt("platformPresence") != true || command != "snapshot" || !cmd.optBoolean("qaReadOnly", false) ||
+                budget !is Int || budget <= 0
+            ) {
+                return error("INVALID_ARGUMENT", "platformPresence needs a QA snapshot with a positive integer presenceBudgetMs")
+            }
+        }
         if (cmd.optBoolean("qaReadOnly", false)) {
             if (command !in setOf("snapshot", "verifyInput", "isWindowUpdating", "findText", "screenshot", "status") ||
                 appPackage == null || QaHierarchy.front(liveWindows(), appPackage) == null
@@ -150,7 +158,11 @@ class CommandDispatcher(
 
         val data = when (command) {
             // Fork A: QA reads take one live traversal of the windows; device tools keep the XML dump.
-            "snapshot" -> if (cmd.optBoolean("qaReadOnly", false)) qaSnapshot(appPackage!!) else snapshot(appPackage)
+            "snapshot" -> if (cmd.optBoolean("qaReadOnly", false)) {
+                qaSnapshot(appPackage!!, if (cmd.has("platformPresence")) cmd.getInt("presenceBudgetMs") else null)
+            } else {
+                snapshot(appPackage)
+            }
             "tap", "press" -> tap(cmd)
             "type", "fill" -> type(cmd)
             "verifyInput" -> verifyInput(cmd)
@@ -273,38 +285,201 @@ class CommandDispatcher(
 
     private var qaSnapshotGeneration = 0
 
-    private fun qaSnapshot(appPackage: String): JSONObject {
-        val deadline = SystemClock.uptimeMillis() + 10_000
+    // presenceBudgetMs: when set, the A11Y_PRESENCE_V1 pass runs after enumeration within that budget.
+    private fun qaSnapshot(appPackage: String, presenceBudgetMs: Int?): JSONObject {
+        val started = SystemClock.uptimeMillis()
+        val deadline = started + 10_000
         while (QaHierarchy.front(liveWindows(), appPackage) == null && SystemClock.uptimeMillis() < deadline) {
             SystemClock.sleep(100)
         }
+        val handles = if (presenceBudgetMs != null) mutableListOf<AccessibilityNodeInfo>() else null
+        try {
+            val enumerated = enumerateQa(appPackage, handles)
+                ?: throw AccessibilityUnavailableException(
+                    "App $appPackage is foreground but absent from UIAutomator accessibility after 10000ms; restart the rn-android-runner session or fix the app's accessibility exposure"
+                )
+            val (windows, assembled, exhausted) = enumerated
+            qaSnapshotGeneration += 1
+            val presence = presenceBudgetMs?.let {
+                PresencePass(appPackage, qaSnapshotGeneration, started, it, windows, assembled, exhausted).run()
+            }
+            val nodes = JSONArray()
+            assembled.nodes.forEachIndexed { index, node ->
+                val json = qaNodeJson(node)
+                presence?.let { json.put("presence", it.node(index)) }
+                nodes.put(json)
+            }
+            return JSONObject()
+                .put("nodes", nodes)
+                .put("truncated", assembled.truncated || exhausted)
+                .put("normalizationDroppedNodes", assembled.droppedNodes)
+                .put("snapshotGeneration", qaSnapshotGeneration)
+                .put("keyboardVisible", assembled.keyboardVisible)
+                .apply { presence?.let { put("presenceCapture", it.capture()) } }
+        } finally {
+            if (Build.VERSION.SDK_INT < 33) handles?.forEach { it.recycle() }
+        }
+    }
+
+    private data class Enumerated(
+        val windows: List<QaHierarchy.RawWindow>,
+        val assembled: QaHierarchy.Assembled,
+        val exhausted: Boolean,
+    )
+
+    // One live traversal of the front windows; with handles, every live node is kept for the presence pass.
+    private fun enumerateQa(appPackage: String, handles: MutableList<AccessibilityNodeInfo>?): Enumerated? {
         val live = instrumentation.uiAutomation.windows.map { info ->
             val root = info.root
-            info to rawWindow(info, root?.packageName?.toString()) to root
+            rawWindow(info, root?.packageName?.toString()) to root
         }
-        val front = QaHierarchy.front(live.map { it.first.second }, appPackage)
-            ?: throw AccessibilityUnavailableException(
-                "App $appPackage is foreground but absent from UIAutomator accessibility after 10000ms; restart the rn-android-runner session or fix the app's accessibility exposure"
-            )
+        val front = QaHierarchy.front(live.map { it.first }, appPackage) ?: return null
         val read = when (front) {
             is QaHierarchy.Front.App -> front.windows.map { it.id }.toSet()
             is QaHierarchy.Front.Alert -> setOf(front.window.id)
         }
         val budget = CopyBudget(QaHierarchy.MAX_NODES + 1)
-        val windows = live.map { (pair, root) ->
-            val window = pair.second
-            if (window.id in read && root != null) window.copy(root = copyNode(root, budget)) else window
+        val windows = live.map { (window, root) ->
+            if (window.id in read && root != null) window.copy(root = copyNode(root, budget, handles)) else window
         }
-        val assembled = QaHierarchy.assemble(windows, appPackage, displayBounds())
-        qaSnapshotGeneration += 1
-        val nodes = JSONArray()
-        assembled.nodes.forEach { nodes.put(qaNodeJson(it)) }
-        return JSONObject()
-            .put("nodes", nodes)
-            .put("truncated", assembled.truncated || budget.exhausted)
-            .put("normalizationDroppedNodes", assembled.droppedNodes)
-            .put("snapshotGeneration", qaSnapshotGeneration)
-            .put("keyboardVisible", assembled.keyboardVisible)
+        return Enumerated(windows, QaHierarchy.assemble(windows, appPackage, displayBounds()), budget.exhausted)
+    }
+
+    /**
+     * The A11Y_PRESENCE_V1 pass over one QA enumeration: initial eligibility, per-node
+     * observation, final eligibility and revalidation, each read checked against the budget.
+     * Any failure leaves the capture incomplete and every node unknown.
+     */
+    private inner class PresencePass(
+        private val appPackage: String,
+        private val generation: Int,
+        private val started: Long,
+        private val budgetMs: Int,
+        private val windows: List<QaHierarchy.RawWindow>,
+        private val assembled: QaHierarchy.Assembled,
+        private val exhausted: Boolean,
+    ) {
+        private val captureId = "android-${java.util.UUID.randomUUID()}"
+        private val phaseMs = JSONObject()
+        private var failure: JSONObject? = null
+        private var deadline: JSONObject? = null
+        private var observations: List<PresenceRules.Observation> = emptyList()
+        private var observedAt: LongArray = LongArray(0)
+        private var ended = started
+
+        private fun expired(phase: String, read: String): Boolean {
+            if (SystemClock.uptimeMillis() - started < budgetMs) return false
+            fail(phase, "deadline")
+            deadline = JSONObject().put("phase", phase).put("read", read).put("edge", "before")
+            return true
+        }
+
+        private fun fail(phase: String, reason: String) {
+            if (failure == null) failure = JSONObject().put("phase", phase).put("reason", reason)
+        }
+
+        private inline fun phase(name: String, block: () -> Unit) {
+            val at = SystemClock.uptimeMillis()
+            if (failure == null) block()
+            phaseMs.put(name, SystemClock.uptimeMillis() - at)
+        }
+
+        private fun eligible(assembled: QaHierarchy.Assembled): Boolean =
+            assembled.eligible && !assembled.truncated && !exhausted && isPackageForeground(appPackage)
+
+        fun run(): PresencePass {
+            val nodes = assembled.nodes
+            val labelSources = PresenceRules.labelSources(nodes)
+            observations = labelSources.map { PresenceRules.Observation(false, it) }
+            observedAt = LongArray(nodes.size)
+            phase("initial-eligibility") { if (!eligible(assembled)) fail("initial-eligibility", "ineligible") }
+            phase("observation") {
+                val groups = PresenceRules.descriptorGroups(nodes)
+                val keyboard = nodes.firstOrNull { it.type == "Keyboard" && it.source == null }?.rect
+                observations = nodes.mapIndexed { index, node ->
+                    if (failure != null || expired("observation", "observation")) return@mapIndexed observations[index]
+                    PresenceRules.observe(node, labelSources[index], groups[index], keyboard) { live(nodes, index) }
+                        .also { if (it.observed) observedAt[index] = SystemClock.uptimeMillis() }
+                }
+            }
+            phase("final-eligibility") {
+                if (!expired("final-eligibility", "app-state")) {
+                    val again = QaHierarchy.front(liveWindows(), appPackage)
+                    val same = again is QaHierarchy.Front.App &&
+                        again.windows.map { it.id } == windows.filter { it.root != null }.map { it.id }
+                    if (!same || !isPackageForeground(appPackage)) fail("final-eligibility", "ineligible")
+                }
+            }
+            phase("revalidation") {
+                if (!expired("revalidation", "revalidation")) {
+                    val handles = mutableListOf<AccessibilityNodeInfo>()
+                    try {
+                        val again = enumerateQa(appPackage, handles)
+                        if (again == null || again.exhausted ||
+                            !PresenceRules.sameEnumeration(nodes, again.assembled.nodes)
+                        ) {
+                            fail("revalidation", "enumeration-changed")
+                        }
+                    } finally {
+                        if (Build.VERSION.SDK_INT < 33) handles.forEach { it.recycle() }
+                    }
+                }
+            }
+            ended = SystemClock.uptimeMillis()
+            if (ended - started >= budgetMs) fail("finalization", "deadline")
+            return this
+        }
+
+        // The refresh, hit check and re-read of one node; null when the live node cannot be refreshed.
+        private fun live(nodes: List<QaHierarchy.QaNode>, index: Int): PresenceRules.Live? {
+            val handle = nodes[index].source?.handle as? AccessibilityNodeInfo ?: return null
+            val refreshed = try {
+                handle.refresh()
+            } catch (e: RuntimeException) {
+                false
+            }
+            if (!refreshed) return null
+            val hit = PresenceRules.hit(nodes, index, windows)
+            val reread = try {
+                QaHierarchy.node(rawNode(handle, emptyList(), null))
+            } catch (e: RuntimeException) {
+                null
+            }
+            return PresenceRules.Live(hit, reread)
+        }
+
+        fun node(index: Int): JSONObject {
+            val observation = observations[index]
+            val complete = failure == null
+            val json = JSONObject()
+                .put("captureId", captureId)
+                .put("generation", generation)
+                .put("nodeIndex", index)
+                .put("status", if (complete && observation.observed) "observed" else "unknown")
+                .put("labelSource", observation.labelSource.wire)
+            if (complete && observation.observed) json.put("observedUptimeMs", observedAt[index])
+            if (complete) observation.reason?.let { json.put("unknownReason", it.wire) }
+            return json
+        }
+
+        fun capture(): JSONObject {
+            val diagnostics = JSONObject().put("phaseMs", phaseMs)
+            failure?.let { diagnostics.put("failure", it) }
+            deadline?.let { diagnostics.put("deadline", it) }
+            return JSONObject()
+                .put("version", 2)
+                .put("source", "android-a11y-live")
+                .put("enumeration", "app-windows")
+                .put("captureId", captureId)
+                .put("appId", appPackage)
+                .put("generation", generation)
+                .put("startedUptimeMs", started)
+                .put("endedUptimeMs", ended)
+                .put("complete", failure == null)
+                .put("appliedBudgetMs", budgetMs)
+                .put("pointScale", instrumentation.targetContext.resources.displayMetrics.density.toDouble())
+                .put("diagnostics", diagnostics)
+        }
     }
 
     private class CopyBudget(private val limit: Int) {
@@ -322,24 +497,44 @@ class CommandDispatcher(
         }
     }
 
-    // A node that cannot be read is null, which the assembly counts as dropped.
-    private fun copyNode(node: AccessibilityNodeInfo, budget: CopyBudget): QaHierarchy.RawNode? = try {
-        val bounds = Rect().also { node.getBoundsInScreen(it) }
+    // A node that cannot be read is null, which the assembly counts as dropped. With
+    // handles, the live children are kept (and recycled by the caller) for the presence pass.
+    private fun copyNode(
+        node: AccessibilityNodeInfo,
+        budget: CopyBudget,
+        handles: MutableList<AccessibilityNodeInfo>? = null,
+    ): QaHierarchy.RawNode? = try {
         val children = mutableListOf<QaHierarchy.RawNode?>()
         for (index in 0 until node.childCount) {
             if (!budget.take()) break
             val child = node.getChild(index)
             children.add(
                 child?.let {
-                    try {
-                        copyNode(it, budget)
-                    } finally {
-                        it.recycle()
+                    if (handles != null) {
+                        handles.add(it)
+                        copyNode(it, budget, handles)
+                    } else {
+                        try {
+                            copyNode(it, budget)
+                        } finally {
+                            it.recycle()
+                        }
                     }
                 },
             )
         }
-        QaHierarchy.RawNode(
+        rawNode(node, children, if (handles != null) node else null)
+    } catch (e: RuntimeException) {
+        null
+    }
+
+    private fun rawNode(
+        node: AccessibilityNodeInfo,
+        children: List<QaHierarchy.RawNode?>,
+        handle: AccessibilityNodeInfo?,
+    ): QaHierarchy.RawNode {
+        val bounds = Rect().also { node.getBoundsInScreen(it) }
+        return QaHierarchy.RawNode(
             className = node.className?.toString(),
             text = node.text?.toString(),
             contentDescription = node.contentDescription?.toString(),
@@ -353,9 +548,10 @@ class CommandDispatcher(
             password = node.isPassword,
             heading = Build.VERSION.SDK_INT >= Build.VERSION_CODES.P && node.isHeading,
             children = children,
+            editable = node.isEditable,
+            drawingOrder = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) node.drawingOrder else null,
+            handle = handle,
         )
-    } catch (e: RuntimeException) {
-        null
     }
 
     private fun rawWindow(info: AccessibilityWindowInfo, packageName: String?): QaHierarchy.RawWindow {

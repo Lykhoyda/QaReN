@@ -191,6 +191,7 @@ test('stale Android runners without scoped exact-interaction semantics are rejec
       'FILL_EVIDENCE_V1',
       'DISPATCH_OCCLUSION_GUARD_V1',
       'SYSTEM_ALERT_TAP_V1',
+      'A11Y_PRESENCE_V1',
     ],
   });
   assert.deepEqual(
@@ -203,6 +204,7 @@ test('stale Android runners without scoped exact-interaction semantics are rejec
         'FILL_EVIDENCE_V1',
         'DISPATCH_OCCLUSION_GUARD_V1',
         'SYSTEM_ALERT_TAP_V1',
+        'A11Y_PRESENCE_V1',
       ],
     },
   );

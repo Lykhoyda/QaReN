@@ -479,9 +479,7 @@ async function openSession(
       action: 'snapshot',
       qaReadOnly: true,
       qaTiming,
-      ...(platform === 'ios' && platformPresence
-        ? { platformPresence: true, presenceBudgetMs }
-        : {}),
+      ...(platformPresence ? { platformPresence: true, presenceBudgetMs } : {}),
     });
     const { data, meta } = unwrap<
       NativeObservation & { presenceCapture?: unknown; snapshotGeneration?: unknown }

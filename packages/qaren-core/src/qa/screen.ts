@@ -394,18 +394,36 @@ function thirds(center: number, extent: number, names: readonly [string, string,
   return ratio < 1 / 3 ? names[0] : ratio < 2 / 3 ? names[1] : names[2];
 }
 
+// Android layout, scroll and drawing containers, as the Test App's probe enumerated them.
+const ANDROID_PLAIN_TYPES = new Set([
+  'android.view.View',
+  'android.view.ViewGroup',
+  'android.widget.FrameLayout',
+  'android.widget.LinearLayout',
+  'android.widget.ScrollView',
+  'android.widget.HorizontalScrollView',
+  // A slider: QaReN has no adjust action, so it offers no press of its own.
+  'android.widget.SeekBar',
+  'androidx.appcompat.widget.LinearLayoutCompat',
+  'androidx.compose.ui.platform.ComposeView',
+  'com.horcrux.svg.SvgView',
+  'com.horcrux.svg.GroupView',
+  'com.horcrux.svg.PathView',
+]);
+
 function nativeCapabilities(
   kind: Kind,
   type: string | undefined,
   react: { press: boolean; fill: boolean },
 ): Pick<NonNullable<Element['semantic']>, 'press' | 'fill'> {
-  // Plain iOS views and scroll containers carry no press or text entry of their own.
+  // Plain views and scroll containers carry no press or text entry of their own.
   const plain =
     kind === 'text' ||
     kind === 'image' ||
     type === 'Other' ||
     type === 'ScrollView' ||
-    type === 'NavigationBar';
+    type === 'NavigationBar' ||
+    (kind === 'other' && ANDROID_PLAIN_TYPES.has(type ?? ''));
   return {
     press:
       kind === 'button' || kind === 'switch' || kind === 'link'
@@ -768,7 +786,10 @@ export function join(
                 kind: nativeKind,
                 labelSource: observed.labelSource,
                 structural:
-                  n.type === 'Application' || n.type === 'Window' || chrome.has(nodeIndex),
+                  n.type === 'Application' ||
+                  n.type === 'Window' ||
+                  chrome.has(nodeIndex) ||
+                  (presence?.source === 'android-a11y-live' && n.type === 'Keyboard'),
               },
             }
           : {}),

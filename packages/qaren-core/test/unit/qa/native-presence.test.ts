@@ -8,7 +8,7 @@ import {
 } from '../../../dist/qa/native-presence.js';
 import type { NativeNode } from '../../../dist/qa/screen.js';
 
-import { nativeCapture } from './platform-presence-fixtures.ts';
+import { androidPresenceCapture, nativeCapture } from './platform-presence-fixtures.ts';
 
 test('native presence requires a complete app/generation-bound unfiltered observation interval', () => {
   const source = nativeCapture();
@@ -261,4 +261,77 @@ test('iOS scroll containers still clip by exact type and other types do not', ()
   const offscreen = outsideViewport(ios('Other'));
   assert.deepEqual([...offscreen], []);
   assert.deepEqual(clippingViewport(offscreen, 3), androidScreen);
+});
+
+function androidNodes() {
+  const { data } = androidPresenceCapture();
+  return {
+    capture: data.presenceCapture,
+    nodes: data.nodes.map((node) => ({ ...node, ref: `@e${node.index}` })) as NativeNode[],
+  };
+}
+
+test('an Android capture is accepted with its density, and only as the Android source and enumeration pair', () => {
+  const { capture, nodes } = androidNodes();
+  const valid = validateNativePresence(capture, nodes, 4, 'com.test', 20_000);
+  assert.equal(valid?.source, 'android-a11y-live');
+  assert.equal(valid?.pointScale, 2.625);
+  assert.equal(valid?.nodes[3].status, 'observed');
+  for (const patch of [
+    { enumeration: 'raw-unfiltered' },
+    { source: 'xcui-live' },
+    { pointScale: undefined },
+    { pointScale: 0 },
+    { pointScale: -2.625 },
+    { pointScale: Infinity },
+    { pointScale: '2.625' },
+    { generation: 3 },
+    { complete: false },
+    { endedUptimeMs: 20_100 },
+  ])
+    assert.equal(
+      validateNativePresence({ ...capture, ...patch }, nodes, 4, 'com.test', 20_000),
+      undefined,
+      JSON.stringify(patch),
+    );
+  assert.equal(validateNativePresence(capture, nodes, 5, 'com.test', 20_000), undefined);
+  const stale = nodes.map((node, i) =>
+    i === 3 ? { ...node, presence: { ...(node.presence as object), generation: 3 } } : node,
+  );
+  assert.equal(validateNativePresence(capture, stale, 4, 'com.test', 20_000), undefined);
+});
+
+test('only an Android capture may say the keyboard covers a node', () => {
+  const { capture, nodes } = androidNodes();
+  const covered = (reason: string) =>
+    nodes.map((node, i) =>
+      i === 3
+        ? {
+            ...node,
+            presence: {
+              captureId: capture.captureId,
+              generation: 4,
+              nodeIndex: 3,
+              status: 'unknown',
+              labelSource: 'direct',
+              unknownReason: reason,
+            },
+          }
+        : node,
+    );
+  assert.equal(
+    validateNativePresence(capture, covered('keyboard-covered'), 4, 'com.test', 20_000)?.nodes[3]
+      .unknownReason,
+    'keyboard-covered',
+  );
+  const ios = nativeCapture();
+  ios.nodes[1].presence = {
+    ...ios.nodes[1].presence,
+    status: 'unknown',
+    unknownReason: 'keyboard-covered',
+  } as (typeof ios.nodes)[1]['presence'];
+  delete (ios.nodes[1].presence as { observedUptimeMs?: number }).observedUptimeMs;
+  const read = validateNativePresence(ios.presenceCapture, ios.nodes, 7, 'com.test', 20_000);
+  assert.equal(read?.nodes[1].status, 'unknown');
+  assert.equal(read?.nodes[1].unknownReason, undefined);
 });
