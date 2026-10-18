@@ -846,6 +846,7 @@ test('an Android control clipped to an empty rect scrolls toward its side of the
     for (const target of [{ phrase: 'the Save button' }, { phrase: 'Save', quoted: 'Save' }])
       assert.deepEqual(await resolveTarget({ kind: 'press', target }, observed, judge), {
         scroll: expected,
+        element: observed.elements[3],
       });
   }
 });
