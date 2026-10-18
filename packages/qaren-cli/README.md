@@ -1026,6 +1026,13 @@ The native snapshot is the privacy boundary before walking a screen. Capture
 refuses with `PRIVATE_INPUT_CAPTURE_UNKNOWN` unless native completeness is attested;
 the refusal reports only a value-free node count and fixed cause codes. Native
 acquisition failures also refuse without reinjection or a public-tree fallback.
+A required private capture re-reads a canonical empty snapshot (`nodes=[]`,
+verdict `degraded`, `nodeCount=0`, reasons exactly `empty-capture`, no truncation
+or dropped nodes) at 500 ms intervals within the existing 6-second settle budget
+and remaining total capture budget. Its unchanged ref map and zero-node count
+diagnostics do not prevent this read-only retry; persistent emptiness still
+refuses with the same code and message, and other incomplete captures refuse
+immediately.
 Native input classification follows the [screen projection](../qaren-core/src/qa/screen.ts),
 including Other or unknown nodes carrying nonempty values regardless of React evidence,
 with one exception: native `Other` elements matching the iOS system vertical or

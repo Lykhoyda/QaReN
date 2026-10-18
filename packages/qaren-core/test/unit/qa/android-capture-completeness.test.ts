@@ -74,7 +74,6 @@ async function capture(data: unknown) {
   return captureScreen({
     appId: 'com.test',
     requirePrivateInputs: true,
-    now: () => 0,
     native: async () => {
       const result = parseEnvelope(
         await runAndroid({
