@@ -1720,6 +1720,10 @@ clearance or a non-executing hide with no overlay to clear fails the step.
 
 ### Walk timing
 
+For runs using runtime inputs, see the [runtime-input diagnostics](#runtime-inputs)
+for the retained event file and field limits. The `core.log` details below apply
+to runs without runtime inputs.
+
 Private `timing` events in `logs/core.log` may include `refusalDiagnostic` when
 an instrumented iOS dispatch boundary records the context's first refusal. This
 bounded, value-free record retains allowlisted refusal, native-response and
