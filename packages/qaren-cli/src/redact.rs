@@ -1,5 +1,14 @@
+static REDACTION_KEY: std::sync::OnceLock<Option<String>> = std::sync::OnceLock::new();
+
+pub(crate) fn set_redaction_key(key: Option<String>) {
+    let _ = REDACTION_KEY.set(key);
+}
+
 pub fn redact_api_key(raw: &str) -> String {
-    redact_known_key(raw, std::env::var("TYPESAFE_API_KEY").ok().as_deref())
+    match REDACTION_KEY.get() {
+        Some(key) => redact_known_key(raw, key.as_deref()),
+        None => redact_known_key(raw, std::env::var("TYPESAFE_API_KEY").ok().as_deref()),
+    }
 }
 
 pub fn redact_known_key(raw: &str, key: Option<&str>) -> String {
@@ -836,11 +845,40 @@ pub fn redact_inputs(raw: &str) -> String {
     capture_input_scope().map_or_else(|| raw.to_string(), |scope| scope.redact(raw))
 }
 
-pub fn scrub_input_env(command: &mut std::process::Command) {
+pub fn scrub_secret_env(command: &mut std::process::Command, label: &str) {
     let keys: std::collections::BTreeSet<_> = std::env::vars_os()
         .map(|(key, _)| key)
         .chain(command.get_envs().map(|(key, _)| key.to_owned()))
-        .filter(|key| key.as_encoded_bytes().starts_with(b"QAREN_INPUT_"))
+        .filter(|key| {
+            let name = key.as_encoded_bytes().to_ascii_uppercase();
+            let secret = name.starts_with(b"QAREN_INPUT_")
+                || [b"TOKEN".as_slice(), b"_API_KEY", b"APIKEY"]
+                    .iter()
+                    .any(|suffix| name.ends_with(suffix))
+                || [
+                    b"SECRET".as_slice(),
+                    b"PASSWORD",
+                    b"PASSWD",
+                    b"_CREDENTIALS",
+                    b"_PRIVATE_KEY",
+                ]
+                .iter()
+                .any(|part| name.windows(part.len()).any(|window| window == *part));
+            let model =
+                key == "TYPESAFE_API_KEY" && matches!(label, "core-walk" | "plan-preflight");
+            let registry = matches!(label, "pnpm-install" | "expo-prebuild")
+                && [
+                    "NPM_TOKEN",
+                    "NODE_AUTH_TOKEN",
+                    "YARN_NPM_AUTH_TOKEN",
+                    "COREPACK_NPM_TOKEN",
+                    "GITHUB_TOKEN",
+                    "GH_TOKEN",
+                ]
+                .iter()
+                .any(|allowed| key == *allowed);
+            secret && !model && !registry
+        })
         .collect();
     for key in keys {
         command.env_remove(key);

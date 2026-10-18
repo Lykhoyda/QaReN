@@ -57,7 +57,7 @@ import { isRecord } from './questions.js';
 import { createTimingObserver, formatTimingEvent, type TimingContext } from './timing.js';
 import { preflightPlan } from './preflight.js';
 import { summarizeJev } from './ledger.js';
-import { redactApiKey } from '../util/redact.js';
+import { isSecretEnvName, redactApiKey, setRedactionKey } from '../util/redact.js';
 import { createStop, watchOwnerPipe, watchParent } from './stop.js';
 import { prove } from './prove.js';
 import {
@@ -107,7 +107,7 @@ function exitAfterDrain(code: number): Promise<never> {
   });
 }
 
-async function parseOnly(planFile: string, probe: boolean): Promise<never> {
+async function parseOnly(planFile: string, probe: boolean, apiKey?: string): Promise<never> {
   let markdown: string;
   try {
     markdown = readFileSync(planFile, 'utf8');
@@ -117,7 +117,7 @@ async function parseOnly(planFile: string, probe: boolean): Promise<never> {
     );
     return exitAfterDrain(4);
   }
-  const judge = createJev();
+  const judge = createJev({ apiKey });
   if (probe) {
     const result = await preflightPlan(markdown, judge);
     process.stdout.write(`${JSON.stringify(result)}\n`);
@@ -356,6 +356,7 @@ async function openSession(
   onClose: (close: () => Promise<void>) => void,
   privacy: ObservedPrivacy,
   pinnedLogin: NonNullable<WalkerDeps['login']>['block'],
+  apiKey: string | undefined,
 ): Promise<Session> {
   const { target, platform, appId } = request;
   // Run-relative ms on a monotonic clock, anchored once to the CLI's t0.
@@ -557,8 +558,8 @@ async function openSession(
   const deps: WalkerDeps = {
     note: log,
     privacy,
-    judge: createJev({ now, timing }),
-    interruptionVeto: !!process.env.TYPESAFE_API_KEY,
+    judge: createJev({ apiKey, now, timing }),
+    interruptionVeto: !!apiKey,
     presenceUnavailable: platform === 'android',
     timing,
     publicationInterrupted: admittedSnapshots.interrupted,
@@ -649,12 +650,14 @@ async function openSession(
 let privateRun = false;
 
 async function main(): Promise<void> {
-  for (const key of Object.keys(process.env))
-    if (key.startsWith('QAREN_INPUT_')) delete process.env[key];
+  const apiKey = process.env.TYPESAFE_API_KEY;
+  delete process.env.TYPESAFE_API_KEY;
+  setRedactionKey(apiKey);
+  for (const key of Object.keys(process.env)) if (isSecretEnvName(key)) delete process.env[key];
   if (process.argv[2] === '--preflight-stdin') {
     try {
       const value: unknown = JSON.parse(await readPrivateLine(process.stdin));
-      const result = await parseInputPreflight(value, createJev());
+      const result = await parseInputPreflight(value, createJev({ apiKey }));
       process.stdout.write(`${JSON.stringify(result)}\n`);
       return exitAfterDrain((result as { ok?: boolean }).ok ? 0 : 4);
     } catch (error) {
@@ -666,7 +669,7 @@ async function main(): Promise<void> {
   }
   if (process.argv[2] === '--compile') return compileOnly(process.argv.slice(3));
   if (process.argv[2] === '--parse' || process.argv[2] === '--preflight')
-    return parseOnly(process.argv[3] ?? '', process.argv[2] === '--preflight');
+    return parseOnly(process.argv[3] ?? '', process.argv[2] === '--preflight', apiKey);
   const cliParent = process.ppid;
   const line = await readPrivateLine(process.stdin);
   let parsed: ReturnType<typeof parsePrivateRequest>;
@@ -686,13 +689,16 @@ async function main(): Promise<void> {
   }
   privateRun = parsed.inputs.hasInputs;
   parsed.inputs.onRefusal((reason) => stop.begin(reason));
-  return withInputs(parsed.inputs, () => mainRequest(parsed.request, parsed.privacy, cliParent));
+  return withInputs(parsed.inputs, () =>
+    mainRequest(parsed.request, parsed.privacy, cliParent, apiKey),
+  );
 }
 
 async function mainRequest(
   request: WireRequest,
   privacy: ObservedPrivacy,
   cliParent: number,
+  apiKey: string | undefined,
 ): Promise<void> {
   let pinnedLogin = readLoginBlock(request);
   if (request.loginSnapshot) {
@@ -813,6 +819,7 @@ async function mainRequest(
         },
         privacy,
         pinnedLogin,
+        apiKey,
       ),
     );
   } catch (error) {
