@@ -549,6 +549,9 @@ impl Runner for RealRunner {
             for k in &spec.unset {
                 cmd.env_remove(k);
             }
+            if spec.label != "core-walk" {
+                cmd.env_remove("TYPESAFE_API_KEY");
+            }
             if let Some(reason) = self.cancellation() {
                 return Err(std::io::Error::new(std::io::ErrorKind::Interrupted, reason));
             }

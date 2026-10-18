@@ -41,7 +41,13 @@ const AUTH_PATHS =
 
 const MAX_STRING_LENGTH = 2000;
 
-export function redactApiKey(value: string, key = process.env.TYPESAFE_API_KEY): string {
+let redactionKey: string | undefined;
+
+export function setRedactionKey(key: string | undefined): void {
+  redactionKey = key;
+}
+
+export function redactApiKey(value: string, key = redactionKey): string {
   if (!key) return value;
   return value
     .split(JSON.stringify(key).slice(1, -1))
