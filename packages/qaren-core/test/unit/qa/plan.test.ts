@@ -4,6 +4,7 @@ import { createHash } from 'node:crypto';
 import {
   parsePlan,
   parseStep,
+  planNeedsJev,
   preparePlan,
   readPreparedPlan,
   slugify,
@@ -325,4 +326,71 @@ test('a fill preposition is only stripped as a whole word', () => {
     target: { quoted: undefined, phrase: 'topic' },
     text: 'hello',
   });
+});
+
+test('named input grammar is declarative and malformed reserved forms never become literals', () => {
+  for (const name of ['A', 'SLOT_A', 'A' + '_'.repeat(31)]) {
+    const parsed = parseStep(`Fill "slot-field" with input ${name}`);
+    assert.deepEqual(parsed, {
+      kind: 'fill',
+      target: { quoted: 'slot-field', phrase: 'slot-field' },
+      input: name,
+    });
+    const source = `# Sign in\n1. Fill "slot-field" with input ${name}`;
+    const plan = parsePlan(source);
+    assert.ok(plan.blocks);
+    const prepared = preparePlan(source, plan.blocks);
+    assert.deepEqual(readPreparedPlan(source, prepared), plan.blocks);
+    const extra = structuredClone(prepared);
+    extra.blocks[0].items[0].text = 'invented';
+    assert.equal(readPreparedPlan(source, extra), undefined);
+  }
+  for (const name of ['', 'slot_a', '_PASS', 'A'.repeat(33), 'PASS extra', '${PASS}']) {
+    assert.ok('refuse' in parseStep(`Fill "slot-field" with input ${name}`));
+  }
+  assert.equal(parseStep('Fill "slot-field" with "input SLOT_A"').text, 'input SLOT_A');
+  assert.equal(
+    parseStep('Fill "note" with "remember with input BAR"').text,
+    'remember with input BAR',
+  );
+  assert.equal(parseStep('Type "with input BAR" into "note"').text, 'with input BAR');
+});
+
+test('a declared input echo parses as its own step and refuses every malformed form', () => {
+  for (const line of ['Expect input EMAIL on screen', 'expect input EMAIL on this screen']) {
+    assert.deepEqual(parseStep(line), { kind: 'echo', input: 'EMAIL' });
+  }
+  const reason = 'expect input needs a declared input name and "on screen"';
+  for (const line of [
+    'Expect input "qa@example.test" on screen',
+    'Expect input email on screen',
+    'Expect input EMAIL',
+    'Expect input EMAIL on the sheet',
+    'Expect input ${EMAIL} on screen',
+  ]) {
+    assert.deepEqual(parseStep(line), { refuse: reason });
+    const plan = parsePlan(`# Sign in\n1. Fill "email" with input EMAIL\n2. ${line}\n`);
+    assert.deepEqual(
+      plan.refused?.map((r) => [r.line, r.reason]),
+      [[3, reason]],
+    );
+  }
+  assert.deepEqual(
+    parsePlan(
+      '# Sign in\n1. Fill "email" with input EMAIL\n2. Expect input OTP on screen\n',
+    ).refused?.map((r) => [r.line, r.reason]),
+    [[3, 'expect input names an input no fill step in this plan uses']],
+  );
+  const source =
+    '# Sign in\n1. Fill "email" with input EMAIL\n2. Expect input EMAIL on screen\n3. Tap "submit"\n';
+  const plan = parsePlan(source);
+  assert.ok(plan.blocks);
+  assert.deepEqual(
+    plan.blocks[0].items.map((item) => item.kind),
+    ['fill', 'echo', 'press'],
+  );
+  assert.deepEqual(readPreparedPlan(source, preparePlan(source, plan.blocks)), plan.blocks);
+  assert.equal(planNeedsJev(source), false);
+  const without = parsePlan(source.replace('2. Expect input EMAIL on screen\n', ''));
+  assert.notEqual(without.blocks![0].planHash, plan.blocks[0].planHash);
 });

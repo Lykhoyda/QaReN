@@ -1,3 +1,5 @@
+import { systemModalDiagnostic } from '../domain/system-modal-diagnostic.js';
+import { currentInputs } from '../qa/inputs.js';
 import {
   diagnosticField,
   diagnosticKind,
@@ -235,10 +237,16 @@ export interface RunnerPostMortem {
 let lastRunnerPostMortem: RunnerPostMortem | null = null;
 
 function appendRunnerOutput(stream: 'stdout' | 'stderr', chunk: string): void {
+  if (currentInputs()?.hasInputs) {
+    runnerOutputTail = '[private output withheld]';
+    return;
+  }
   runnerOutputTail = `${runnerOutputTail}${stream}: ${chunk}`.slice(-8_000);
 }
 
 export function getRunnerPostMortem(): RunnerPostMortem {
+  if (currentInputs()?.hasInputs)
+    return { available: false, provenance: runnerProcess ? 'spawned' : 'adopted' };
   return (
     lastRunnerPostMortem ?? {
       available: false,
@@ -2709,6 +2717,7 @@ export async function runIOS(args: RunIOSArgs): Promise<ToolResult> {
       tree?: unknown;
       presenceCapture?: unknown;
       truncated?: boolean;
+      systemModal?: unknown;
       snapshotGeneration?: number;
       keyboardVisible?: boolean;
       appProcessIdentifier?: number;
@@ -2736,6 +2745,7 @@ export async function runIOS(args: RunIOSArgs): Promise<ToolResult> {
               : {}),
           });
       const snapshotVerdict = buildSnapshotVerdict('rn-fast-runner', flat.length, outcome);
+      const systemModal = systemModalDiagnostic(data.systemModal);
       return okResult(
         {
           nodes: qaReadOnly ? mapRunnerNodesToFlat(data.nodes, true) : flat,
@@ -2762,7 +2772,14 @@ export async function runIOS(args: RunIOSArgs): Promise<ToolResult> {
             ? { appProcessIdentifier: data.appProcessIdentifier }
             : {}),
         },
-        { meta: { ...announce, snapshotVerdict, ...recoveryMeta } },
+        {
+          meta: {
+            ...announce,
+            snapshotVerdict,
+            ...recoveryMeta,
+            ...(systemModal ? { systemModal } : {}),
+          },
+        },
       );
     }
     // Defensive fallback: the test seam mocks `{ tree: ... }`. Don't crash.

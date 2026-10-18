@@ -1,5 +1,4 @@
 import { renderReason } from '../../../dist/qa/untrusted.js';
-// A dialog step passes on the runner's proof of the tapped button, and an unproven tap never retries.
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { parsePlan } from '../../../dist/qa/plan.js';
@@ -115,4 +114,21 @@ test('an unproven dialog tap fails even when the screen changed', async () => {
     renderReason(outcome.failure?.seen ?? '', (text) => text),
     /^DIALOG_TAP_UNPROVEN: /,
   );
+});
+
+test('a dialog tap that matched no button label fails even when the screen changed', async () => {
+  const f = fake(
+    {
+      ok: false,
+      proven: false,
+      executed: false,
+      mutation: 'none',
+      error: 'the action did not execute',
+    },
+    true,
+  );
+  const outcome = await walkBlock(block(), f.deps);
+  assert.equal(outcome.block.outcome, 'fail');
+  assert.equal(outcome.rows.at(-1)?.dialog, undefined);
+  assert.ok(!f.notes.some((line) => line.startsWith('dialog-tap ')));
 });

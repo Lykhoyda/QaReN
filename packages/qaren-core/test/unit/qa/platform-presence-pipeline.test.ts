@@ -27,7 +27,12 @@ afterEach(() => {
   clearRefMap();
 });
 
-async function capture(source = nativeCapture(), elapsed = 0, hostType = 'RCTView') {
+async function capture(
+  source: object = nativeCapture(),
+  elapsed = 0,
+  hostType = 'RCTView',
+  requirePrivateInputs = false,
+) {
   _setRunnerStateForTest({
     port: 22088,
     pid: process.pid,
@@ -57,6 +62,7 @@ async function capture(source = nativeCapture(), elapsed = 0, hostType = 'RCTVie
   let clock = 0;
   return captureScreen({
     appId: 'com.test',
+    requirePrivateInputs,
     now: () => clock,
     native: async (presenceBudgetMs) => {
       const { data, meta } = parseEnvelope(
@@ -108,6 +114,37 @@ test('native wire through normalization, real React producer and capture reaches
   assert.equal(result.steps[0].resolvedBy, 'jev');
   assert.equal(judge.requests.length, 1);
   assert.deepEqual(f.actions, []);
+});
+
+test('a recognised system alert answering a presence request is admitted as a dialog, and an empty capture still refuses', async () => {
+  const rect = { x: 60, y: 300, width: 270, height: 150 };
+  const button = { depth: 1, parentIndex: 0, type: 'Button', enabled: true, hittable: true, rect };
+  const alert = {
+    nodes: [
+      {
+        index: 0,
+        depth: 0,
+        type: 'Alert',
+        label: 'Notifications',
+        enabled: true,
+        hittable: true,
+        rect,
+      },
+      { ...button, index: 1, label: 'Don’t Allow' },
+      { ...button, index: 2, label: 'Allow' },
+    ],
+    truncated: false,
+    keyboardVisible: false,
+    snapshotGeneration: 7,
+  };
+  const screen = await capture(alert, 0, 'RCTView', true);
+  assert.equal(screen.front, 'dialog');
+  assert.equal(screen.captureCoverage?.native, 'complete');
+  const empty = { ...nativeCapture(), nodes: [] };
+  empty.presenceCapture.complete = false;
+  await assert.rejects(capture(empty, 0, 'RCTView', true), {
+    code: 'PRIVATE_INPUT_CAPTURE_UNKNOWN',
+  });
 });
 
 test('live platform presence is independent of the geometric hint and enabledness', async () => {

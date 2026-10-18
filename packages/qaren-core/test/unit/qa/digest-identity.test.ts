@@ -212,7 +212,7 @@ test('an attested offscreen control remains a scroll candidate, never visible as
   });
   assert.deepEqual(
     await resolveTarget({ kind: 'press', target: { phrase: 'Load more' } }, screen, judge),
-    { scroll: 'down' },
+    { scroll: 'down', element: screen.elements.find((e) => e.ref === 'react:later') },
   );
   const visibility = await decideScreen(screen, judge, undefined, {
     kind: 'wait',

@@ -63,6 +63,18 @@ function nativePath(nodes: NativeNode[], start: number): number[] {
   return path;
 }
 
+export function nativeWindowIndex(nodes: NativeNode[], start: number): number | undefined {
+  const path = nativePath(nodes, start);
+  if (
+    !path.length ||
+    nodes[path.at(-1)!].parentIndex !== undefined ||
+    path.some((index, depth) => depth + 1 < path.length && path[depth + 1] >= index)
+  )
+    return undefined;
+  const windows = path.filter((i) => nodes[i].type === 'Window');
+  return windows.length === 1 ? windows[0] : undefined;
+}
+
 function compatible(
   host: string | null,
   native: string | undefined,
@@ -217,20 +229,12 @@ export function associateHosts(
   if (!evidence?.complete || !snapshot?.complete || !presence)
     return unavailable('evidence-unavailable');
   const windows = nodes.flatMap((node, i) => (node.type === 'Window' ? [i] : []));
-  if (windows.length !== 1) return unavailable('window-count');
-  const windowIndex = windows[0];
-  const window = nodes[windowIndex].rect;
-  if (
-    !window ||
-    !Object.values(window).every(Number.isFinite) ||
-    window.width <= 0 ||
-    window.height <= 0
-  )
-    return unavailable('window-frame');
+  if (!windows.length) return unavailable('window-count');
   const paths = snapshot.nodes.map((node) => hostPath(snapshot, node.hostIndex)!);
   const nativePaths = nodes.map((_, i) => nativePath(nodes, i));
+  const nativeWindows = nodes.map((_, i) => nativeWindowIndex(nodes, i));
   const inWindow = (i: number) =>
-    nativePaths[i].includes(windowIndex) &&
+    nativeWindows[i] !== undefined &&
     typeof nodes[i].ref === 'string' &&
     !!nodes[i].ref.trim() &&
     nodes.filter((node) => node.ref === nodes[i].ref).length === 1;
@@ -267,6 +271,16 @@ export function associateHosts(
     const nativeIndex = matches[0];
     if (!inWindow(nativeIndex)) {
       note(host.hostIndex, { identity: 'outside-window' });
+      continue;
+    }
+    const window = nodes[nativeWindows[nativeIndex]!].rect;
+    if (
+      !window ||
+      !Object.values(window).every(Number.isFinite) ||
+      window.width <= 0 ||
+      window.height <= 0
+    ) {
+      note(host.hostIndex, { identity: 'window-frame' });
       continue;
     }
     const compatibleType = compatible(
@@ -315,6 +329,7 @@ export function associateHosts(
   );
   // Identified ancestors may be hoisted beside the native path; only the host needs presence.
   const onNativePath = (child: number, ancestor: number) => {
+    if (nativeWindows[child] !== nativeWindows[ancestor]) return false;
     if (child === ancestor || nativePaths[ancestor].includes(child)) return false;
     // Direct native ancestry proves itself, even when the child overflows its parent.
     if (nativePaths[child].includes(ancestor)) return true;
@@ -369,6 +384,8 @@ export function associateHosts(
     const anchorHost = paths[host.hostIndex].slice(1).find((i) => structural.has(i));
     if (anchorHost === undefined) continue;
     const anchorIndex = structural.get(anchorHost)!;
+    const windowIndex = nativeWindows[anchorIndex]!;
+    const window = nodes[windowIndex].rect!;
     const ancestors = paths[host.hostIndex].slice(1).map((i) => snapshot.nodes[i]);
     if (
       ancestors.some(
@@ -383,6 +400,7 @@ export function associateHosts(
     const content = host.text.content;
     const matches = nodes.flatMap((node, i) =>
       i !== anchorIndex &&
+      nativeWindows[i] === windowIndex &&
       !duplicates.has(i) &&
       nativePaths[i].includes(anchorIndex) &&
       node.type === 'StaticText' &&

@@ -6,9 +6,13 @@ import {
   clearanceBand,
   clearanceScroll,
   keyboardClearance,
+  KEYBOARD_EDGE_INSET,
 } from '../../../dist/qa/resolve.js';
 import { join } from '../../../dist/qa/screen.js';
 import type { NativeNode, Screen } from '../../../dist/qa/screen.js';
+import { buildDirectionalScrollCliArgs } from '../../../dist/handlers/device-interact.js';
+import { clearRefMap, updateRefMapFromFlat } from '../../../dist/fast-runner-ref-map.js';
+import { ANDROID_LIST, IOS_LIST, androidOptionSheet, iosOptionSheet } from './sheet-fixtures.ts';
 
 const WINDOW = { x: 0, y: 0, width: 1080, height: 2400 };
 
@@ -106,13 +110,13 @@ test('a sticky footer over the list ends the clearance band at its top', () => {
   });
 });
 
-test('without an overlay the band is the list above the keyboard', () => {
+test('without an overlay the band is the list clear of the keyboard edge', () => {
   const screen = form([], false);
   assert.deepEqual(clearanceBand(field7(screen), screen), {
     x: 0,
     y: 300,
     width: 1080,
-    height: 1100,
+    height: 1400 - KEYBOARD_EDGE_INSET - 300,
   });
 });
 
@@ -131,7 +135,7 @@ test("rows inside the target's own list never shrink the band", () => {
     rect: { x: 40, y, width: 1000, height: 80 },
   });
   for (const [y, footer, height] of [
-    [1300, false, 1100],
+    [1300, false, 1400 - KEYBOARD_EDGE_INSET - 300],
     [1100, true, 850],
   ] as const) {
     const screen = form([row('@field6', 10, y)], footer);
@@ -154,7 +158,7 @@ test('a narrow floating button never shrinks the band', () => {
     ],
     false,
   );
-  assert.deepEqual(clearanceBand(field7(screen), screen)?.height, 1100);
+  assert.deepEqual(clearanceBand(field7(screen), screen)?.height, 1400 - KEYBOARD_EDGE_INSET - 300);
 });
 
 test('a sticky header across the band top raises the band below it', () => {
@@ -321,4 +325,85 @@ test('the Android field moved by its clearance rests inside the band and is no l
   assert.equal(centreCovered(field7(screen), screen), true);
   const moved = form([], true, 1860 - keyboardClearance(field7(screen), screen)!);
   assert.equal(centreCovered(field7(moved), moved), false);
+});
+
+test('(q) rows of the screen behind the sheet never shrink the band of a row in the sheet list', () => {
+  const screen = androidOptionSheet();
+  assert.deepEqual(clearanceBand(byRef(screen, '@option-20'), screen), ANDROID_LIST);
+});
+
+// Option 17 stopped with its centre at 560, just above the keyboard top; option 20 sits at 720 under it.
+const parked = () => iosOptionSheet(528);
+
+test("(t) rows of the target's own list never shrink its band, even as direct children of the list", () => {
+  const screen = parked();
+  assert.deepEqual(clearanceBand(byRef(screen, '@option-20'), screen), {
+    ...IOS_LIST,
+    height: 568 - 48 - 357,
+  });
+});
+
+// One swipe lifts at most the band (161 pt); option 20 parked 184 pt under the keyboard is past the single-swipe rule.
+test('(u) one clearance swipe spans the band clear of the keyboard edge', () => {
+  const screen = parked();
+  const target = byRef(screen, '@option-20');
+  const distance = keyboardClearance(target, screen);
+  assert.equal(distance, 752 - (357 + 163 / 2));
+  clearRefMap();
+  updateRefMapFromFlat(
+    [
+      { ref: '@window', type: 'Window', rect: { x: 0, y: 0, width: 402, height: 874 } },
+      { ref: '@keyboard', type: 'Keyboard', rect: { x: 0, y: 568, width: 402, height: 306 } },
+    ] as never,
+    { snapshotGeneration: 1, keyboardVisible: true },
+  );
+  try {
+    const [, , y1, , y2] = buildDirectionalScrollCliArgs(
+      'down',
+      0.6,
+      undefined,
+      distance,
+      clearanceBand(target, screen),
+    ).map(Number);
+    assert.deepEqual([y1, y2], [519, 358]);
+    assert.ok(y1 - y2 < 752 - 568, `${y1 - y2}`);
+  } finally {
+    clearRefMap();
+  }
+});
+
+// A modal screen in its own window over the app: the app's full-width bar lies behind "Skip", never over it.
+// A framed Application root shares an unclipped target's viewport and already excludes everything; without it the clip is the Window.
+test("anything in the window behind a modal never shrinks the band of a header control in the modal's window", () => {
+  for (const root of [{ rect: IOS }, {}]) {
+    const screen = join(
+      [
+        { ref: '@app', index: 0, type: 'Application', ...root },
+        { ref: '@win1', index: 1, parentIndex: 0, type: 'Window', rect: IOS },
+        {
+          ref: '@bar',
+          index: 2,
+          parentIndex: 1,
+          type: 'Other',
+          hittable: true,
+          rect: { ...IOS, height: 120 },
+        },
+        { ref: '@win2', index: 3, parentIndex: 0, type: 'Window', rect: IOS },
+        { ref: '@modal', index: 4, parentIndex: 3, type: 'Other', hittable: true, rect: IOS },
+        {
+          ref: '@skip',
+          index: 5,
+          parentIndex: 4,
+          type: 'Button',
+          label: 'Skip',
+          hittable: true,
+          rect: { x: 352, y: 73, width: 34, height: 24 },
+        },
+      ],
+      [],
+    );
+    const skip = byRef(screen, '@skip');
+    assert.equal(clearanceBand(skip, screen)?.y, 0);
+    assert.equal(centreCovered(skip, screen), false);
+  }
 });

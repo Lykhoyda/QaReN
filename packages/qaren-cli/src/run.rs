@@ -111,6 +111,12 @@ pub fn validate_boot_device(
 }
 
 pub fn run(runner: &mut dyn Runner, req: &RunRequest) -> Receipt {
+    let inputs = crate::redact::capture_input_scope()
+        .unwrap_or_else(|| std::sync::Arc::new(crate::redact::InputValues::capture()));
+    crate::redact::with_input_scope(inputs, || run_scoped(runner, req))
+}
+
+fn run_scoped(runner: &mut dyn Runner, req: &RunRequest) -> Receipt {
     let started_ms = runner.now_epoch_ms();
     let mut preflight_jev = None;
     // A PR worktree created before the run record owns it; removed here if the run never got that far.
@@ -199,11 +205,77 @@ fn run_inner(
         .unwrap_or_else(|| PathBuf::from("node"));
     preflight_node(runner, &node)?;
     let plan = read_plan(&req.plan_file)?;
-    let prepared = preflight_plan(
+    let mut prepared_pr = None;
+    let login_source = if let Some(target) = &req.pr {
+        let (repo_root, app_rel) = locate_worktree(runner, &req.project_root)?;
+        let info = github::pr_view(runner, &target.target, &repo_root)?;
+        worktree::fetch_head(runner, &repo_root, &info)?;
+        let content = match config.login_block.as_deref() {
+            Some(slug) => {
+                worktree::login_at_head(runner, &repo_root, &info.head_ref_oid, &app_rel, slug)?
+            }
+            None => None,
+        };
+        prepared_pr = Some(PrState {
+            info,
+            repo_root,
+            app_rel,
+        });
+        serde_json::json!({ "kind": "git", "content": content })
+    } else {
+        serde_json::json!({ "kind": "owned", "appRoot": app_root_for(&req.config_path, &req.project_root)? })
+    };
+    let inventory = input_inventory(
         runner,
         &node,
         &req.runtime_dir,
-        &req.plan_file,
+        &plan,
+        &config,
+        req.platform,
+        &login_source,
+    )?;
+    let names = inventory_names(&inventory)?;
+    // A pull request's login block may only use inputs the owner's plan or login block declares.
+    if req.pr.is_some() && config.login_block.is_some() {
+        let owned = serde_json::json!({ "kind": "owned", "appRoot": app_root_for(&req.config_path, &req.project_root)? });
+        let declared = inventory_names(&input_inventory(
+            runner,
+            &node,
+            &req.runtime_dir,
+            &plan,
+            &config,
+            req.platform,
+            &owned,
+        )?)?;
+        let undeclared: Vec<_> = names
+            .iter()
+            .filter(|name| !declared.contains(name))
+            .cloned()
+            .collect();
+        if !undeclared.is_empty() {
+            return Err(Failure::new(
+                "preflight",
+                FailureCode::PlanInputMissing,
+                format!(
+                    "the pull request's login block names runtime inputs the owner's plan and login block do not declare: {}",
+                    crate::redact::redact_inputs(&undeclared.join(", "))
+                ),
+                "declare these inputs in the plan or the checked-out login block, or remove them from the pull request's login block",
+            ));
+        }
+    }
+    let input_owner = crate::redact::capture_input_scope().expect("run input scope");
+    let resolved_inputs = input_owner.admit(&names)?;
+    let login_snapshot = inventory.get("loginSnapshot").cloned();
+    let prepared = preflight_inputs(
+        runner,
+        &node,
+        &req.runtime_dir,
+        &plan,
+        &config,
+        req.platform,
+        login_snapshot.as_ref(),
+        &resolved_inputs,
         preflight_jev,
     )?;
     // The parser read the file by path; the walk must use the bytes that passed.
@@ -217,6 +289,20 @@ fn run_inner(
             ),
             "leave the plan file alone during the run, then re-run",
         ));
+    }
+    if req.pr.is_none()
+        && config.login_block.is_some()
+        && input_inventory(
+            runner,
+            &node,
+            &req.runtime_dir,
+            &plan,
+            &config,
+            req.platform,
+            &login_source,
+        )? != inventory
+    {
+        return Err(input_refused());
     }
     let device = resolve_device(
         runner,
@@ -238,9 +324,12 @@ fn run_inner(
     let mut run_claim = None;
     let mut project_root = req.project_root.clone();
     let mut pr_state = None;
-    if let Some(target) = &req.pr {
-        let (repo_root, app_rel) = locate_worktree(runner, &req.project_root)?;
-        let info = github::pr_view(runner, &target.target, &repo_root)?;
+    if let Some(pr) = prepared_pr {
+        let PrState {
+            info,
+            repo_root,
+            app_rel,
+        } = pr;
         let claim = claim_run_dir(&req.runs_root, &run_id)?;
         run_id = claim.run_id.clone();
         run_dir = claim.path.clone();
@@ -250,7 +339,7 @@ fn run_inner(
         // ponytail: until run.json exists only this process knows the worktree; a SIGKILL here
         // leaves it under the run directory for `git worktree prune`; add durable intent if that bites.
         *unowned_worktree = Some((repo_root.clone(), wt.clone()));
-        worktree::add(runner, &repo_root, &info, &wt)?;
+        worktree::add_prepared(runner, &repo_root, &info, &wt)?;
         project_root = if app_rel == "." {
             wt
         } else {
@@ -266,6 +355,21 @@ fn run_inner(
             repo_root,
             app_rel,
         });
+    }
+    if pr_state.is_some() && config.login_block.is_some() {
+        let actual_source = serde_json::json!({ "kind": "owned", "appRoot": app_root_for(&req.config_path, &project_root)? });
+        let actual = input_inventory(
+            runner,
+            &node,
+            &req.runtime_dir,
+            &plan,
+            &config,
+            req.platform,
+            &actual_source,
+        )?;
+        if actual != inventory {
+            return Err(input_refused());
+        }
     }
     let (repo_root, project_rel) = locate_worktree(runner, &project_root)?;
     let scenario = build_scenario(&config, req.platform, &device, &repo_root, &project_rel);
@@ -552,7 +656,12 @@ fn run_inner(
     let mut video = None;
     // Taken before the spawn, so the trim offset can only cut later than the true admission frame.
     let recording_from = ctx.runner.now_epoch_ms();
-    if pr_state.is_some() {
+    if resolved_inputs.has_inputs() {
+        events::stage("recording", StageState::Skipped, None, None);
+        video = Some(VideoStatus::Unavailable(
+            "runtime inputs withhold recording".to_string(),
+        ));
+    } else if pr_state.is_some() {
         if device
             .android
             .as_ref()
@@ -581,6 +690,13 @@ fn run_inner(
         }
     } else {
         events::stage("recording", StageState::Skipped, None, None);
+    }
+    if req.platform == Platform::Ios && resolved_inputs.has_inputs() {
+        ctx.notes.push((
+            "platform_log".to_string(),
+            "the simulator system log may record displayed field text; see Runtime inputs"
+                .to_string(),
+        ));
     }
     if let Err(f) = ensure_running(ctx.runner, "walk") {
         return Ok(finish_failed(ctx, f));
@@ -631,7 +747,14 @@ fn run_inner(
     let core_log = run_dir.join("logs").join("core.log");
     events::core_t0(core_request.t0);
     events::stage("attach", StageState::Running, None, None);
-    let core_child = match core::spawn(ctx.runner, &spec, &core_log, &core_request) {
+    let core_child = match core::spawn_private(
+        ctx.runner,
+        &spec,
+        &core_log,
+        &core_request,
+        (resolved_inputs.has_inputs() || login_snapshot.is_some()).then_some(&resolved_inputs),
+        login_snapshot.as_ref(),
+    ) {
         Ok(child) => child,
         Err(f) => return Ok(finish_failed(ctx, f)),
     };
@@ -1079,6 +1202,7 @@ pub fn worktree_drift(before: &BTreeSet<String>, after: &BTreeSet<String>) -> Ve
 fn refusal_code(code: &str) -> FailureCode {
     match code {
         "METRO_ORIGIN_MISMATCH" => FailureCode::MetroOriginMismatch,
+        "PLAN_INPUT_MISSING" => FailureCode::PlanInputMissing,
         "PLAN_UNPARSEABLE" => FailureCode::PlanUnparseable,
         "BLOCK_START_MISSING" => FailureCode::BlockStartMissing,
         "JEV_AUTH_FAILED" => FailureCode::JevAuthFailed,
@@ -1418,82 +1542,6 @@ pub(crate) fn preflight_node(runner: &mut dyn Runner, node: &Path) -> Result<Str
             "point nodePath in .qaren/config.yaml at a node >= 24",
         )),
     }
-}
-
-fn preflight_plan(
-    runner: &mut dyn Runner,
-    node: &Path,
-    runtime_dir: &Path,
-    plan_file: &Path,
-    accounting: &mut Option<core::JevRollup>,
-) -> Result<Value, Failure> {
-    let unavailable = || {
-        Failure::new(
-            "preflight",
-            FailureCode::JevUnreachable,
-            "the fixed Jev probe or plan judgments did not succeed",
-            "this plan has phrase or unrecognised lines that need Jev: set a valid TYPESAFE_API_KEY, or quote every target and ✓ line",
-        )
-    };
-    // The core decides whether the plan needs Jev; a missing key fails its probe before any device.
-    let output = runner.run(&core::preflight_spec(node, runtime_dir, plan_file));
-    let value = serde_json::from_str::<Value>(output.stdout.trim()).map_err(|_| unavailable())?;
-    let jev = value
-        .get("jev")
-        .cloned()
-        .and_then(|v| serde_json::from_value::<core::JevRollup>(v).ok());
-    *accounting = jev;
-    if output.ok() && value.get("ok").and_then(Value::as_bool) == Some(true) {
-        let prepared = value
-            .get("prepared")
-            .filter(|p| p.get("blocks").is_some_and(Value::is_array));
-        // An absent or non-boolean jevRequired counts as required, so an older core cannot skip the probe.
-        let jev_required = value.get("jevRequired").and_then(Value::as_bool) != Some(false);
-        if let (Some(prepared), Some(jev)) = (prepared, accounting.as_ref()) {
-            if prepared.get("hash").and_then(Value::as_str)
-                == Some(&sha256_hex(read_plan(plan_file)?.as_bytes()))
-                && (!jev_required
-                    || jev
-                        .call_details
-                        .iter()
-                        .any(|c| c.scope == "preflight" && c.outcome == "ok"))
-            {
-                return Ok(prepared.clone());
-            }
-        }
-        return Err(unavailable());
-    }
-    if output.exit_code == Some(4)
-        && value.get("code").and_then(Value::as_str) == Some("PLAN_UNPARSEABLE")
-    {
-        let refused = value
-            .get("refused")
-            .cloned()
-            .and_then(|r| r.as_array().cloned())
-            .map(|entries| {
-                entries
-                    .iter()
-                    .map(|e| {
-                        format!(
-                            "line {}: {}",
-                            e.get("line").and_then(Value::as_u64).unwrap_or(0),
-                            e.get("reason")
-                                .and_then(Value::as_str)
-                                .unwrap_or("unreadable")
-                        )
-                    })
-                    .collect::<Vec<_>>()
-                    .join("; ")
-            })
-            .unwrap_or_else(|| "unreadable plan".to_string());
-        return Err(Failure::new(
-            "preflight",
-            FailureCode::PlanUnparseable,
-            format!("the plan does not parse: {refused}"),
-            "rewrite the named lines with the verb grammar (Tap \"X\", Type \"t\" into \"X\", Scroll down, Wait for \"X\", Go back, Accept the dialog, ✓ \"text\")",
-        ));
-    }
-    Err(unavailable())
 }
 
 fn preflight_disk(runner: &mut dyn Runner, runs_root: &Path) -> Result<(), Failure> {
@@ -2003,4 +2051,202 @@ fn claim_run_dir(runs_root: &Path, base_id: &str) -> Result<RunDirClaim, Failure
         format!("no available run id for {base_id}"),
         "check the run directory contents",
     ))
+}
+
+const PRIVATE_REPLY_MAX: usize = 4 * 1024 * 1024;
+
+fn input_refused() -> Failure {
+    Failure::new(
+        "preflight",
+        FailureCode::CoreRefused,
+        "runtime input admission refused",
+        "use a matching runtime and an unchanged owned plan and login corpus",
+    )
+}
+
+fn inventory_names(value: &Value) -> Result<Vec<String>, Failure> {
+    if value.get("inputProtocol").and_then(Value::as_u64) != Some(1)
+        || value.get("ok").and_then(Value::as_bool) != Some(true)
+    {
+        return Err(input_refused());
+    }
+    let names: Vec<String> = value
+        .get("requiredInputs")
+        .and_then(Value::as_array)
+        .ok_or_else(input_refused)?
+        .iter()
+        .map(|value| {
+            value
+                .as_str()
+                .filter(|name| crate::redact::valid_input_name(name))
+                .map(String::from)
+                .ok_or_else(input_refused)
+        })
+        .collect::<Result<_, _>>()?;
+    if names.len() > 64 || names.windows(2).any(|pair| pair[0] >= pair[1]) {
+        return Err(input_refused());
+    }
+    Ok(names)
+}
+
+fn input_inventory(
+    runner: &mut dyn Runner,
+    node: &Path,
+    runtime: &Path,
+    plan: &str,
+    config: &CheckConfig,
+    platform: Platform,
+    source: &Value,
+) -> Result<Value, Failure> {
+    let mut request = serde_json::json!({ "v": 1, "phase": "input-inventory", "plan": plan, "platform": platform_str(platform), "appId": config.app_id });
+    if let Some(slug) = &config.login_block {
+        request["login"] = serde_json::json!({ "slug": slug, "source": source });
+    }
+    let mut bytes = serde_json::to_vec(&request).map_err(|_| input_refused())?;
+    bytes.push(b'\n');
+    let output = runner.run_private(&core::private_preflight_spec(node, runtime), &bytes);
+    if output.exit_code() != Some(0)
+        || output.timed_out()
+        || output.stdout().len() > PRIVATE_REPLY_MAX
+    {
+        return Err(input_refused());
+    }
+    let value: Value = serde_json::from_str(output.stdout().trim()).map_err(|_| input_refused())?;
+    inventory_names(&value)?;
+    let fields = value.as_object().ok_or_else(input_refused)?;
+    if fields.keys().any(|key| {
+        !["ok", "inputProtocol", "requiredInputs", "loginSnapshot"].contains(&key.as_str())
+    }) {
+        return Err(input_refused());
+    }
+    match (&config.login_block, value.get("loginSnapshot")) {
+        (None, None) => {}
+        (Some(slug), Some(snapshot))
+            if snapshot.as_object().is_some_and(|map| map.len() == 2)
+                && snapshot.get("slug").and_then(Value::as_str) == Some(slug.as_str())
+                && snapshot
+                    .get("content")
+                    .is_some_and(|content| content.is_null() || content.is_string()) => {}
+        _ => return Err(input_refused()),
+    }
+    Ok(value)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn preflight_inputs(
+    runner: &mut dyn Runner,
+    node: &Path,
+    runtime: &Path,
+    plan: &str,
+    config: &CheckConfig,
+    platform: Platform,
+    login: Option<&Value>,
+    inputs: &crate::redact::ResolvedInputs<'_>,
+    accounting: &mut Option<core::JevRollup>,
+) -> Result<Value, Failure> {
+    let unavailable = || {
+        Failure::new(
+            "preflight",
+            FailureCode::JevUnreachable,
+            "the fixed Jev probe or plan judgments did not succeed",
+            "this plan has phrase or unrecognised lines that need Jev: set a valid TYPESAFE_API_KEY, or quote every target and ✓ line",
+        )
+    };
+    let mut request = serde_json::json!({ "v": 1, "phase": "plan-preflight", "plan": plan, "platform": platform_str(platform), "appId": config.app_id });
+    if let Some(login) = login {
+        request["loginSnapshot"] = login.clone();
+    }
+    let mut bytes = Vec::new();
+    inputs
+        .write_private(&mut bytes, &request, None)
+        .map_err(|_| input_refused())?;
+    // The core decides whether the plan needs Jev; a missing key fails its probe before any device.
+    let output = runner.run_private(&core::private_preflight_spec(node, runtime), &bytes);
+    if output.stdout().len() > PRIVATE_REPLY_MAX {
+        return Err(input_refused());
+    }
+    let value = serde_json::from_str::<Value>(output.stdout().trim()).map_err(|_| unavailable())?;
+    let jev = value
+        .get("jev")
+        .cloned()
+        .and_then(|v| serde_json::from_value::<core::JevRollup>(v).ok());
+    *accounting = jev;
+    if output.exit_code() == Some(0)
+        && !output.timed_out()
+        && value.get("ok").and_then(Value::as_bool) == Some(true)
+    {
+        if value.get("inputProtocol").and_then(Value::as_u64) != Some(1)
+            || inventory_names(&value)? != inputs.names()
+        {
+            return Err(input_refused());
+        }
+        let prepared = value
+            .get("prepared")
+            .filter(|p| p.get("blocks").is_some_and(Value::is_array));
+        // An absent or non-boolean jevRequired counts as required, so an older core cannot skip the probe.
+        let jev_required = value.get("jevRequired").and_then(Value::as_bool) != Some(false);
+        if let (Some(prepared), Some(jev)) = (prepared, accounting.as_ref()) {
+            if prepared.get("hash").and_then(Value::as_str) == Some(&sha256_hex(plan.as_bytes()))
+                && (!jev_required
+                    || jev
+                        .call_details
+                        .iter()
+                        .any(|c| c.scope == "preflight" && c.outcome == "ok"))
+            {
+                return Ok(prepared.clone());
+            }
+        }
+        return Err(unavailable());
+    }
+    match (
+        output.exit_code(),
+        value.get("code").and_then(Value::as_str),
+    ) {
+        (Some(4), Some("PLAN_UNPARSEABLE")) => {
+            let refused = value
+                .get("refused")
+                .and_then(Value::as_array)
+                .map(|entries| {
+                    entries
+                        .iter()
+                        .map(|e| {
+                            format!(
+                                "line {}: {}",
+                                e.get("line").and_then(Value::as_u64).unwrap_or(0),
+                                e.get("reason")
+                                    .and_then(Value::as_str)
+                                    .unwrap_or("unreadable")
+                            )
+                        })
+                        .collect::<Vec<_>>()
+                        .join("; ")
+                })
+                .unwrap_or_else(|| "unreadable plan".to_string());
+            Err(Failure::new(
+                "preflight",
+                FailureCode::PlanUnparseable,
+                format!("the plan does not parse: {refused}"),
+                "rewrite the named lines with the verb grammar (Tap \"X\", Type \"t\" into \"X\", Scroll down, Wait for \"X\", Go back, Accept the dialog, ✓ \"text\")",
+            ))
+        }
+        (Some(4), Some("CORE_REFUSED")) => Err(
+            if value.get("message").and_then(Value::as_str) == Some("runtime input privacy refused")
+            {
+                Failure::new(
+                    "preflight",
+                    FailureCode::CoreRefused,
+                    "runtime input privacy refused: a value appears in the plan, the login block or the app id",
+                    "remove the value from the plan and the login block, or use a value the app id does not contain, then re-run",
+                )
+            } else {
+                Failure::new(
+                    "preflight",
+                    FailureCode::CoreRefused,
+                    "runtime inputs are invalid",
+                    "supply bounded owner-resolved runtime inputs",
+                )
+            },
+        ),
+        _ => Err(unavailable()),
+    }
 }

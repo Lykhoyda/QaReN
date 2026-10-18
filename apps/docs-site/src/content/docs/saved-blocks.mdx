@@ -22,8 +22,8 @@ separate compile contract for saved actions.
 ## Replay, then walk
 
 On the next run, a block whose plan lines, platform and app are unchanged is replayed by its
-stored identities. Quoted targets and literal checks make no Jev calls on replay; phrase checks
-still ask Jev.
+stored identities. For Jev requirements, including the optional interruption safety veto,
+see the [plan readiness contract](https://github.com/Lykhoyda/rn-dev-agent/blob/develop/packages/qaren-cli/README.md#plan-checks-and-screen-evidence).
 
 Start declarations retain their plan target on replay; see the authoritative
 [saved-block contract](https://github.com/Lykhoyda/rn-dev-agent/blob/develop/packages/qaren-cli/README.md#saved-blocks)
@@ -34,7 +34,7 @@ for start waits and refusal behavior.
 | A stored identity resolves                                       | The step replays                                                |
 | A stored identity no longer resolves, before the step changed the app | The block is walked again from that line; earlier steps stay done |
 | A stored identity is ambiguous                                   | `TARGET_AMBIGUOUS`, without walking again                        |
-| A check fails                                                    | FAIL; the block is never walked again or rewritten               |
+| A check fails after any eligible recovery                        | FAIL; the block is never walked again or rewritten               |
 
 When a re-walked block passes, only the commands from the re-walked line on are rewritten,
 and every `✓` comment stays byte-identical. A failing block is never saved; blocks that passed
@@ -50,11 +50,15 @@ any value, when:
 
 - a step had neither a `testID` nor a label to store;
 - it has a phrase wait;
-- it fills a secure or private input;
-- a fill fell back to the keyboard;
+- a fill meets the [private-input or keyboard-fallback persistence restrictions](https://github.com/Lykhoyda/rn-dev-agent/blob/develop/packages/qaren-cli/README.md#saved-blocks);
 - a protected value from the plan or the run appears in the block, which reports
   `contains a protected plan-typed value`;
 - a quoted wait or scroll target has no unique `testID` or unique visible text.
+
+A fill from a [runtime input](../plans/#runtime-inputs) is saved by name only, as
+`inputText: { input: "PASSWORD" }`, and replays with the current run's value. An
+`Expect input NAME on screen` line is saved as its plan line and a `# qaren: echo NAME`
+marker. Older qaren versions cannot replay such a block.
 
 An edited or incompatible block file is treated as new and walked again. Existing saved
 blocks are never removed.
@@ -74,13 +78,10 @@ link for Git worktrees, see the authoritative
 
 ## Login recovery
 
-When an action shows no success evidence after its one retry, a step's target does not resolve,
-or a phrase check is still unsure after its re-ask, qaren tries one deterministic recovery and
-then runs the step once more from a fresh capture. In order, it:
-
-1. accepts a recognized system dialog in front;
-2. clears a developer menu or floating developer button in front;
-3. replays the login block, when the login marker is on screen.
+For recovery triggers, ordering, default permission decline, optional app interruptions,
+and terminal failures, see the authoritative
+[step recovery contract](https://github.com/Lykhoyda/rn-dev-agent/blob/develop/packages/qaren-cli/README.md#step-recovery).
+Login recovery uses a saved sign-in block when its configured marker is visible.
 
 Configure the login block in `.qaren/config.yaml`:
 
@@ -93,10 +94,10 @@ loginMarker:
 `loginBlock` names a saved block, `.qaren/actions/sign-in.yaml` here, saved for this app and
 platform. `loginMarker` has exactly one of `id` (a `testID`) or `text` (a label). The two keys
 are set together. A missing or incompatible login block fails when login recovery is needed.
-
-A second failure of the same step fails it. Recovery never runs inside the login replay, and
-capture, Jev, app-process, replay-miss and cancellation refusals are never recovered. The
-ledger's `recoveries` counts recoveries that let a step retry.
+qaren reads the login block before it selects a device, so the runtime inputs it names are
+required for every run. `qaren pr` reads it at the pull request head and refuses a symlinked
+or unreadable `.qaren/actions` there. That block may only use inputs your plan or your
+checked-out login block already names; any other name refuses `PLAN_INPUT_MISSING`.
 
 An observed React Native red box fails the current step at once and never triggers recovery.
 On iOS, a change of the app's process between captures, such as a crash or restart, fails the

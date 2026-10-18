@@ -43,6 +43,9 @@ compilation.
 A bare `- eraseText` or `eraseText:` with no value uses the default count;
 `charactersToErase: null` refuses.
 
+`inputText: { input: "NAME" }` refuses compilation with `FLOW_UNSUPPORTED`.
+Named [runtime inputs](../../plans/#runtime-inputs) require `qaren check` or `qaren pr`.
+
 A top-level action needs an `appId` header. A file-backed `runFlow` must have no
 `appId` header. Both require a final, non-empty command list: an absent, empty,
 null, scalar, or mapping final document refuses at its location, as does a

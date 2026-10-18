@@ -5,6 +5,7 @@ import { capturePrivateScreen } from '../../../dist/qa/privacy.js';
 import { runPlan } from '../../../dist/qa/walker.js';
 import { postAdmissionSnapshots } from '../../../dist/qa/capture.js';
 import { okResult, failResult } from '../../../dist/utils.js';
+import { RunInputs, withInputs } from '../../../dist/qa/inputs.js';
 import { element, screen, scriptedJudge, walker } from './judgment-fixtures.ts';
 
 test('video eligibility follows the entire plan and sticky screenshot privacy', async () => {
@@ -38,6 +39,21 @@ test('video eligibility follows the entire plan and sticky screenshot privacy', 
     assert.equal(result.verdict, plan.includes('Missing') ? 'FAIL' : 'PASS');
     assert.doesNotMatch(JSON.stringify(result), /private-canary|prefilled-canary/);
   }
+});
+
+test('a recovery-only runtime input withholds video even when the plan never fills', async () => {
+  const observed = screen([element('@save', 'Save')]);
+  const f = walker(
+    [observed, screen(observed.elements)],
+    scriptedJudge(() => assert.fail('literal plan is model-free')),
+  );
+  const inputs = new RunInputs({ PASSWORD: 'recovery-only-canary' }, ['PASSWORD']);
+  const result = await withInputs(inputs, () =>
+    runPlan(parsePlan('1. Tap "Save"').blocks!, f.deps),
+  );
+  assert.equal(result.verdict, 'PASS');
+  assert.equal(result.videoPublication, 'withheld-fill');
+  assert.doesNotMatch(JSON.stringify(result), /recovery-only-canary/);
 });
 
 test('post-admission startup observations remain in the ledger after normal walker captures', async () => {

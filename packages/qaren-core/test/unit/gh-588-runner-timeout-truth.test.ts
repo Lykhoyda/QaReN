@@ -358,11 +358,11 @@ test('GH-588 V6: success-shaped fill fails closed when settle observes runner au
         { status: 200, headers: { 'content-type': 'application/json' } },
       );
     }
-    if (request.command === 'isScreenStatic') {
+    if (request.command === 'snapshot') {
       // Reproduce the live race: the type reply was success-shaped, then the
       // health/settle window observed the triggering XCTest state disappear.
       _setFastRunnerStateForTest(null);
-      return new Response(JSON.stringify({ ok: true, v: 2, data: { static: true } }), {
+      return new Response(JSON.stringify({ ok: true, v: 2, data: { nodes: [] } }), {
         status: 200,
         headers: { 'content-type': 'application/json' },
       });
