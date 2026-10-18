@@ -61,7 +61,7 @@ function fixture(
 }
 
 for (const platform of ['ios', 'android'] as const) {
-  test(`${platform} settle reads propagate QA no-activation policy`, async () => {
+  test(`${platform} settle reads ${platform === 'ios' ? 'omit the dispatch context' : 'propagate QA no-activation policy'}`, async () => {
     const { requests } = fixture(platform);
     const context = new QaDispatchContext(10, () => 1);
     const probes = (platform === 'ios' ? buildIosProbes : buildAndroidProbes)('qa.app', context);
@@ -69,15 +69,22 @@ for (const platform of ['ios', 'android'] as const) {
     if (platform === 'ios') await probes.snapshotHash();
     else await probes.isWindowUpdating!(100);
     assert.equal(requests.length, 2);
-    assert.ok(requests.every((request) => request.qaReadOnly === true));
+    assert.ok(
+      requests.every((request) => request.qaReadOnly === (platform === 'ios' ? undefined : true)),
+    );
   });
-  test(`${platform} swallowed settle refusal still invalidates the QA context`, async () => {
+  test(`${platform} settle without read-only capability ${platform === 'ios' ? 'leaves the dispatch context intact' : 'invalidates the QA context'}`, async () => {
     const { requests } = fixture(platform, false);
     const context = new QaDispatchContext(10, () => 1);
     const probes = (platform === 'ios' ? buildIosProbes : buildAndroidProbes)('qa.app', context);
     await probes.snapshotHash();
-    assert.deepEqual(requests, []);
-    assert.throws(() => context.assertComplete(), /ACTION_CONTEXT_CHANGED/);
+    if (platform === 'ios') {
+      assert.equal(requests.length, 1);
+      assert.doesNotThrow(() => context.assertComplete());
+    } else {
+      assert.deepEqual(requests, []);
+      assert.throws(() => context.assertComplete(), /ACTION_CONTEXT_CHANGED/);
+    }
   });
   test(`${platform} post-dispatch settle reads do not retrospectively expire completed work`, async () => {
     const { requests, run } = fixture(platform);

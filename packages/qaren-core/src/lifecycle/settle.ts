@@ -150,14 +150,13 @@ function envelopeData(result: ToolResult): unknown {
 
 const realSleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms));
 
-export function buildIosProbes(bundleId?: string, qaContext?: QaDispatchContext): SettleProbes {
+export function buildIosProbes(bundleId?: string, _qaContext?: QaDispatchContext): SettleProbes {
   return {
     snapshotHash: async () => {
       try {
         const data = envelopeData(
           await runIOS({
             command: 'snapshot',
-            qaContext,
             interactiveOnly: true,
             ...(bundleId ? { bundleId } : {}),
           }),
