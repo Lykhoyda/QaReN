@@ -830,6 +830,11 @@ windows. Unique identity, type, frame, presence and ancestor proofs still apply;
 missing or ambiguous window membership refuses association. Typography compares
 title and body evidence only within the same window.
 
+`react-native-safe-area-context` roots (`RNCSafeAreaView` and
+`RNCSafeAreaProvider`) support association on Android as well as iOS, allowing
+controls beneath them to associate when the same proofs hold. Ambiguous or
+incompatible identified roots still block association for their descendants.
+
 Android [React host association](../qaren-core/src/qa/host-association.ts) scales
 React points by the display density and calibrates the origin per capture from
 at least two uniquely identified, unclipped anchors that agree within two pixels.

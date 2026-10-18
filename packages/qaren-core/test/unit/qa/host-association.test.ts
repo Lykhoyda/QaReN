@@ -1333,7 +1333,6 @@ test('iOS: a host beneath an identified react-native-safe-area-context root asso
   }
 });
 
-// Android presence is not captured on develop, so this pair is reachable once the Android capture path lands.
 test('Android: an identified react-native-safe-area-context host associates with its ViewGroup', () => {
   for (const root of ['RNCSafeAreaView', 'RNCSafeAreaProvider'])
     assert.deepEqual(
