@@ -2374,7 +2374,13 @@ export async function runAndroid(args: RunAndroidArgs): Promise<ToolResult> {
           ? { keyboardVisible: data.keyboardVisible }
           : {}),
       };
-      const outcome = updateRefMapFromFlat(flat, freshness);
+      const presence = data.presenceCapture;
+      const outcome = updateRefMapFromFlat(flat, {
+        ...freshness,
+        ...(presence && typeof presence === 'object' && 'pointScale' in presence
+          ? { pointScale: presence.pointScale }
+          : {}),
+      });
       const snapshotVerdict = buildSnapshotVerdict('rn-android-runner', flat.length, outcome);
       const producerDropped = data.normalizationDroppedNodes;
       const dropped =

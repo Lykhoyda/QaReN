@@ -44,6 +44,7 @@ import { join, type NativeNode } from '../qa/screen.js';
 import {
   getCachedSignature,
   getKeyboardTop,
+  getScreenPointScale,
   isRefMapFresh,
   refreshRef,
   lookupRef,
@@ -1990,9 +1991,15 @@ type Band = { x?: number; y?: number; width: number; height: number };
 function dragBand(within?: Band): Band {
   const band = scrollBand();
   if (!within) return band;
-  const top = Math.max(within.y ?? 0, 0);
-  const bottom = Math.min((within.y ?? 0) + within.height, band.height);
-  return bottom > top ? { x: within.x, y: top, width: within.width, height: bottom - top } : band;
+  const bandTop = Math.max(within.y ?? 0, 0);
+  const bandBottom = Math.min((within.y ?? 0) + within.height, band.height);
+  if (bandBottom <= bandTop) return band;
+  const screen = getCachedScreenRect() ?? DEFAULT_SCREEN;
+  const androidInset = 48 * getScreenPointScale();
+  const android = getActiveSession()?.platform === 'android';
+  const top = Math.max(bandTop, android ? androidInset : 20);
+  const bottom = Math.min(bandBottom, screen.height - (android ? androidInset : 34));
+  return { x: within.x, y: top, width: within.width, height: Math.max(0, bottom - top) };
 }
 
 // A band too short for a real drag would be dispatched as a tap on whatever lies under the finger.

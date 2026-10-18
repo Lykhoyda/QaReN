@@ -14,7 +14,7 @@ import {
   RUNNER_PROTOCOL_VERSION,
   getPluginVersion,
 } from '../../../dist/runners/protocol.js';
-import { clearRefMap } from '../../../dist/fast-runner-ref-map.js';
+import { clearRefMap, getScreenPointScale } from '../../../dist/fast-runner-ref-map.js';
 import { QA_READ_ONLY_CAPABILITY } from '../../../dist/runners/qa-native-policy.js';
 import { parseEnvelope } from '../../helpers/result-helpers.js';
 import { choice, scriptedJudge, walker } from './judgment-fixtures.ts';
@@ -105,6 +105,14 @@ const judge = () =>
   scriptedJudge((q) =>
     Object.fromEntries(Object.entries(q).map(([key, question]) => [key, choice(question)])),
   );
+
+test('the Android capture retains its point scale for scroll gesture insets', async () => {
+  const fixture = androidPresenceCapture();
+  await capturing(() => fixture)({ platformPresence: true });
+  assert.equal(getScreenPointScale(), fixture.data.presenceCapture.pointScale);
+  clearRefMap();
+  assert.equal(getScreenPointScale(), 1);
+});
 
 test('an Android phrase tap on a visible unique control refuses with the presence gap and presses nothing', async () => {
   const requests: Record<string, unknown>[] = [];
