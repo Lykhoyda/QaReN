@@ -6,6 +6,8 @@ import { waitForExactPortTargets } from '../../../dist/cdp/discovery.js';
 import { admit, awaitBundleReady, createBundleReload } from '../../../dist/qa/admission.js';
 import { INJECTED_HELPERS, REACT_READY_PROBE_JS } from '../../../dist/injected-helpers.js';
 import { runInNewContext } from 'node:vm';
+import { setImmediate as nextTurn } from 'node:timers/promises';
+import { syncBuiltinESMExports } from 'node:module';
 import { createStop } from '../../../dist/qa/stop.js';
 import { CDPClient } from '../../../dist/cdp-client.js';
 import { NO_REPLY, startFakeCDP } from '../../helpers/fake-cdp-server.js';
@@ -250,56 +252,97 @@ test('a never-responsive native page exhausts one admission deadline and closes 
     ],
   });
   const client = new CDPClient(fake.port);
+  const stop = createStop();
+  let admitted: Promise<unknown> | undefined;
   t.after(async () => {
+    stop.begin();
+    await admitted;
     await client.disconnect();
     await fake.close();
+    t.mock.timers.reset();
+    syncBuiltinESMExports();
   });
+  let now = 0;
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  syncBuiltinESMExports();
+  t.mock.method(performance, 'now', () => now);
   let probes = 0;
   let opened = false;
+  let settled = false;
+  const deadlines: number[] = [];
+  const firstAttachFailed = Promise.withResolvers<void>();
+  const retryProbed = Promise.withResolvers<void>();
   fake.setResponse('Runtime.evaluate', (params: { expression?: string }) => {
     if (params.expression === '1+1') {
       probes++;
+      if (probes === 1) fake.disconnectAll();
+      else retryProbed.resolve();
       return NO_REPLY;
     }
     return { result: { type: 'boolean', value: true } };
   });
-  const started = performance.now();
-  const deadline = started + 4500;
-  await assert.rejects(
-    admit(
-      {
-        metroPort: fake.port,
-        readinessMs: 30_000,
-        remainingMs: () => deadline - performance.now(),
-        attach: (attachDeadline) =>
-          client
-            .connectExact(
-              fake.port,
-              { platform: 'android', bundleId: 'com.example.app' },
-              'default',
-              1,
-              undefined,
-              attachDeadline,
-            )
-            .then(() => {}),
-        foreignDriver: async () => undefined,
-        open: async () => {
-          opened = true;
-        },
-        prove: async () => ({
-          ok: true,
-          scriptURL: `http://127.0.0.1:${fake.port}/index.bundle`,
-          appModules: 3,
-        }),
-        close: () => client.disconnect(),
-        load: () => 3,
+  const deadline = 4500;
+  admitted = admit(
+    {
+      metroPort: fake.port,
+      readinessMs: 30_000,
+      remainingMs: () => deadline - performance.now(),
+      attach: async (attachDeadline) => {
+        deadlines.push(attachDeadline);
+        try {
+          await client.connectExact(
+            fake.port,
+            { platform: 'android', bundleId: 'com.example.app' },
+            'default',
+            1,
+            undefined,
+            attachDeadline,
+          );
+        } catch (error) {
+          firstAttachFailed.resolve();
+          throw error;
+        }
       },
-      createStop(),
-    ),
-    { code: 'CDP_NOT_CONNECTED' },
+      foreignDriver: async () => undefined,
+      open: async () => {
+        opened = true;
+      },
+      prove: async () => ({
+        ok: true,
+        scriptURL: `http://127.0.0.1:${fake.port}/index.bundle`,
+        appModules: 3,
+      }),
+      close: () => client.disconnect(),
+      load: () => 3,
+    },
+    stop,
+  )
+    .catch((error) => error)
+    .finally(() => {
+      settled = true;
+    });
+  await firstAttachFailed.promise;
+  await nextTurn();
+  now = 500;
+  t.mock.timers.tick(500);
+  await retryProbed.promise;
+  assert.deepEqual(
+    deadlines,
+    [deadline, deadline],
+    'retries must not renew the admission deadline',
   );
-  assert.ok(performance.now() - started < 8000, 'retries must not renew the admission deadline');
-  assert.ok(probes >= 1, 'the native page received a readiness probe');
+  now = deadline - 1;
+  t.mock.timers.tick(deadline - 501);
+  await nextTurn();
+  assert.equal(settled, false, 'the never-responsive page retains its full admission budget');
+  now = deadline;
+  t.mock.timers.tick(1);
+  await nextTurn();
+  assert.equal(settled, true, 'the never-responsive page must hit the admission deadline');
+  const error = await admitted;
+  assert.ok(error instanceof Error && 'code' in error);
+  assert.equal(error.code, 'CDP_NOT_CONNECTED');
+  assert.equal(probes, 2, 'both native pages received a readiness probe');
   assert.equal(opened, false);
   assert.equal(client.isConnected, false);
   assert.equal(client.connectedTarget, null);

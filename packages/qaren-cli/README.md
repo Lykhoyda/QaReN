@@ -704,6 +704,8 @@ covered by the [fallback tests](../qaren-core/test/unit/qa/keyboard-fallback.tes
 
 ### Plan checks and screen evidence
 
+For phrase actions, the selected control's observed name must contain the words of the phrase that name it; otherwise the step refuses `TARGET_NOT_FOUND`.
+
 A check is literal only when its entire payload is one quoted string:
 `✓ "Welcome"`. Text outside the quotes, as in
 `✓ The heading shows "Welcome" and no error is visible`, makes the whole
@@ -867,6 +869,11 @@ ancestry and that window's origin, including captures with other app or keyboard
 windows. Unique identity, type, frame, presence and ancestor proofs still apply;
 missing or ambiguous window membership refuses association. Typography compares
 title and body evidence only within the same window.
+
+`react-native-safe-area-context` roots (`RNCSafeAreaView` and
+`RNCSafeAreaProvider`) support association on Android as well as iOS, allowing
+controls beneath them to associate when the same proofs hold. Ambiguous or
+incompatible identified roots still block association for their descendants.
 
 Android [React host association](../qaren-core/src/qa/host-association.ts) scales
 React points by the display density and calibrates the origin per capture from

@@ -304,7 +304,7 @@ test('explicit synthetic evidence exercises semantic eval targets, fills, scroll
       fixture: {
         screen: tabs,
         line: 'Visit the profile tab',
-        expected: { kind: 'target', ref: '@profile' },
+        expected: { kind: 'target', refuse: 'TARGET_NOT_FOUND' },
       },
       selected: 'e1',
     },

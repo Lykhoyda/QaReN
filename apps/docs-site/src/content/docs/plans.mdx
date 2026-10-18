@@ -122,7 +122,9 @@ test IDs on screen. Two or more distinct matches refuse with `TARGET_AMBIGUOUS`;
 refusal is never retried or re-walked.
 
 A **phrase** target, such as `Tap the tasks tab`, has no quotes. Jev, QaReN's screen
-judge, picks the element.
+judge, picks the element, which must carry the phrase's
+[naming words](https://github.com/Lykhoyda/rn-dev-agent/blob/develop/packages/qaren-cli/README.md#plan-checks-and-screen-evidence)
+or the step refuses `TARGET_NOT_FOUND`.
 
 ## Checks
 

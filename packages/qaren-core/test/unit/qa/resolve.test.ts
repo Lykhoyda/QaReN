@@ -26,6 +26,81 @@ const save = screen([element('@save', 'Save'), element('@draft', 'Save draft')])
 const target = step('Tap the Save button');
 const check = { kind: 'check' as const, text: 'The profile was saved', literal: false };
 
+test('phrase name mismatches and unnamed picks refuse before any mutation', async () => {
+  for (const labelSource of ['direct', 'descendant'] as const) {
+    for (const [line, label, extra, missing] of [
+      [
+        'Tap the Base action button',
+        'Header action',
+        { testID: 'qa-covered-header-action' },
+        'base',
+      ],
+      ['Tap the Base action button', 'Database action', {}, 'base'],
+      ['Tap the button', '', { value: 'Base action' }, undefined],
+      ['Tap sign in', 'Log in', {}, 'sign'],
+    ] as const) {
+      const observed = screen([
+        element('@pick', label, {
+          ...extra,
+          semantic: {
+            press: 'supported',
+            fill: 'unsupported',
+            visibility: 'visible',
+            nativePresence: { kind: 'button', labelSource, structural: false },
+          },
+        }),
+      ]);
+      const judge = scriptedJudge((q) => ({ target_1: choice(q.target_1) }));
+      const f = walker([observed], judge);
+      const ledger = await runPlan(parsePlan(`1. ${line}`).blocks!, f.deps);
+      assert.equal(ledger.verdict, 'FAIL');
+      assert.match(ledger.failure?.seen ?? '', /TARGET_NOT_FOUND/);
+      if (missing) assert.ok(ledger.failure?.seen?.includes(`"${missing}"`));
+      const resolved = await resolveTarget(
+        step(line),
+        observed,
+        scriptedJudge((q) => ({ target_0: choice(q.target_0) })),
+      );
+      assert.ok('refuse' in resolved);
+      assert.ok(!resolved.reason.includes(label) || !label);
+      assert.deepEqual(f.actions, []);
+    }
+  }
+});
+
+test('phrase picks retain matching names from labels, IDs, placeholders and merged text', async () => {
+  for (const [line, label, extra] of [
+    ['Open Pager QA', 'Open Pager QA', { testID: 'home-pager-qa-btn' }],
+    ['Tap option 20', 'Option 20', {}],
+    ['Tap the back button', 'Back', {}],
+    ['Tap search', '', { testID: 'home-search-btn' }],
+    ['Tap the BASE action button', 'Base', { testID: 'qa-action' }],
+    ['Type "x" into the email field', '', { kind: 'input', placeholder: 'Email' }],
+    ['Tap the button', 'Named control', {}],
+  ] as const) {
+    const observed = screen([element('@pick', label, extra)]);
+    const judge = scriptedJudge((q) => ({ target_0: choice(q.target_0) }));
+    const resolved = await resolveTarget(step(line), observed, judge);
+    assert.ok('ref' in resolved, `${line}: ${JSON.stringify(resolved)}`);
+    assert.equal(resolved.ref, '@pick');
+  }
+});
+
+test('Header action visibility is not a heading claim; heading and title still need evidence', async () => {
+  const observed = screen([element('@header', 'Header action')]);
+  for (const noun of ['Header action button', 'heading', 'title']) {
+    const judge = scriptedJudge(() => ({ check_1: { type: 'noul', noul: 0.99 } }));
+    const decision = await decideScreen(observed, judge, {
+      kind: 'check',
+      text: `The ${noun} is visible`,
+      literal: false,
+      line: 1,
+    });
+    assert.equal(decision.check, noun === 'Header action button' ? 'pass' : 'unsure');
+    assert.equal(judge.requests.length, noun === 'Header action button' ? 1 : 0);
+  }
+});
+
 for (const type of ['StaticText', 'Button']) {
   test(`text waits save and replay only uncovered ${type} identities`, () => {
     const observed = (covered: boolean, duplicate = true) =>
@@ -190,7 +265,7 @@ test('offscreen selections and none with offscreen evidence request a scroll, ne
 });
 
 test('candidate coverage is bounded, disabled/hidden candidates excluded, fill only selects inputs', async () => {
-  const limit = screen(Array.from({ length: 30 }, (_, i) => element(`@${i}`, `button ${i}`)));
+  const limit = screen(Array.from({ length: 30 }, (_, i) => element(`@${i}`, `Save button ${i}`)));
   const judge = scriptedJudge((q) => ({ target_0: choice(q.target_0) }));
   assert.equal((await resolveTarget(target, limit, judge)).ref, '@0');
   assert.equal(Object.keys(judge.requests[0].questions.target_0.criteria!).length, 31);
