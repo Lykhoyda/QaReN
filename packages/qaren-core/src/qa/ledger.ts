@@ -135,11 +135,11 @@ export function summarizeJev(calls: readonly JevCall[]): JevRollup {
   };
 }
 
-// A walk that ended without a verdict is a FAIL attributed to its last row; its rows cannot give a walk time.
-export function ledgerWithoutResult(steps: LedgerRow[], seen: string): Ledger {
+// A walk that ended without a verdict is a FAIL attributed to its in-flight step, else its last row; its rows cannot give a walk time.
+export function ledgerWithoutResult(steps: LedgerRow[], seen: string, inFlight?: number): Ledger {
   const last = steps[steps.length - 1];
   const { speed: _speed, ...ledger } = buildLedger([], steps, {
-    step: last?.line ?? 0,
+    step: inFlight ?? last?.line ?? 0,
     seen,
     ...(last?.screenshot ? { screenshot: last.screenshot } : {}),
   });

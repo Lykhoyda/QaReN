@@ -1,3 +1,5 @@
+import { throwIfInputPrivacyRefused } from './qa/inputs.js';
+import { throwIfCancelled } from './domain/cancellation.js';
 import { unlinkSync, rmSync } from 'node:fs';
 import { QaDispatchError, type QaDispatchContext } from './domain/qa-dispatch.js';
 import type { TimingContext } from './qa/timing.js';
@@ -831,6 +833,10 @@ export function buildRunAndroidArgs(
       const text = cliArgs[2] ?? '';
       return { command: 'verifyInput', text, ...withBundle };
     }
+
+    case 'system-alert-tap':
+      return { command: 'systemAlertTap', labels: [cliArgs[1] ?? ''], ...withBundle };
+
     case 'fill':
     case 'type': {
       const ref = cliArgs[1] && pinnedElementRef(cliArgs[1]);
@@ -1539,6 +1545,8 @@ export async function settleAfterMutationWithOutcome(
     };
   } catch {
     invalidateLastSnapshotHash();
+    throwIfInputPrivacyRefused();
+    throwIfCancelled();
     return { result, outcome: null };
   }
 }
@@ -1667,6 +1675,8 @@ export async function establishInteractionBaseline(
         : settle.buildAndroidProbes(ctx.appId, ctx.qaContext);
     return (await probes.snapshotHash()) ?? undefined;
   } catch {
+    throwIfInputPrivacyRefused();
+    throwIfCancelled();
     return undefined;
   }
 }
@@ -2037,6 +2047,7 @@ export async function runNative(
     'drag',
     'longpress',
     'pinch',
+    'system-alert-tap',
   ]);
 
   // eradicate-agent-device Phase 2 Task 9: when the operator explicitly disables the
@@ -2101,10 +2112,7 @@ export async function runNative(
     const { runAndroid, consumePendingAndroidUpgradeNote } =
       await import('./runners/rn-android-runner-client.js');
     const outsideApp = androidOutsideAppWindowRefusal(cliArgs, appId);
-    if (outsideApp) {
-      opts.qaContext?.invalidate();
-      return outsideAppWindowFailResult(outsideApp);
-    }
+    if (outsideApp) return outsideAppWindowFailResult(outsideApp);
     let android = buildRunAndroidArgs(cliArgs, appId);
     android.qaContext = opts.qaContext;
     android.qaReadOnly = opts.qaReadOnly;

@@ -64,14 +64,14 @@ test('window-gate WITHOUT initial hash → no hash probe at all (Story 04 budget
   assert.equal(hashCalls, 0);
 });
 
-test('screen-static settle + initial hash → hierarchyChanged computed', async () => {
+test('snapshot settle + initial hash → hierarchyChanged computed', async () => {
   const outcome = await waitForSettle({
     platform: 'ios',
     capabilities: ['SCREEN_STATIC'],
     initialSnapshotHash: 'AAA',
     probes: { ...probesBase(), isScreenStatic: async () => true, snapshotHash: async () => 'AAA' },
   });
-  assert.equal(outcome.method, 'screen-static');
+  assert.equal(outcome.method, 'snapshot-eq');
   assert.equal(outcome.hierarchyChanged, false);
 });
 

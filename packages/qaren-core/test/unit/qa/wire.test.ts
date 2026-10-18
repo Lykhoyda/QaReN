@@ -146,6 +146,12 @@ test('a missing result is a FAIL attributed to the last row, and the startup row
   assert.equal(startup.outcome, 'pass');
 });
 
+test('a missing result names the in-flight step when one had started', () => {
+  const rows = [startupRow(), row(7)];
+  assert.equal(missingResult(rows, 'refused mid-step', 8).failure?.step, 8);
+  assert.equal(missingResult(rows, 'refused mid-step').failure?.step, 7);
+});
+
 test('malformed envelopes and requests are rejected', () => {
   assert.equal(parseEnvelope('not json'), null);
   assert.equal(

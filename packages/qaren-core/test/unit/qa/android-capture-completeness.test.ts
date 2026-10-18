@@ -545,8 +545,8 @@ test('the clearance scroll for a keyboard-hidden field carries the distance that
   };
   const result = await runPlan(parsePlan('1. Type "x" into "qa-kb-input-7"').blocks!, f.deps);
   assert.equal(result.verdict, 'PASS', result.failure?.seen);
-  // Centre 2049 + 93 / 2 moves to the middle of the 1517 px above the keyboard.
-  assert.deepEqual(clearances, [2049 + 93 / 2 - 1517 / 2]);
+  // Centre 2049 + 93 / 2 moves to the middle of the band ending 48 px above the keyboard at 1517.
+  assert.deepEqual(clearances, [2049 + 93 / 2 - (1517 - 48) / 2]);
 });
 
 test('a not-visible Android field away from the keyboard stays off screen', async () => {

@@ -208,6 +208,33 @@ test('a target missing behind a dialog recovers once', async () => {
   );
 });
 
+test('a press refused outside the app window ends the step with no retry and no recovery', async () => {
+  const prompt = screen(['Allow'], 'dialog');
+  const f = fake([prompt, prompt, prompt], {
+    async press(ref) {
+      f.calls.push(`press ${ref}`);
+      return {
+        ok: false,
+        proven: false,
+        mutation: 'none',
+        error:
+          'OUTSIDE_APP_WINDOW: Ref @e0 belongs to "com.google.android.permissioncontroller", outside the owned app window (app)',
+      };
+    },
+  });
+  const outcome = await walkBlock(block('1. Tap "Allow"\n'), f.deps);
+  assert.deepEqual(
+    f.calls.filter((c) => !c.startsWith('capture')),
+    ['press @e0'],
+  );
+  assert.equal(outcome.block.outcome, 'fail');
+  assert.equal(outcome.recoveries, undefined);
+  assert.match(
+    renderReason(outcome.failure?.seen ?? '', (text) => text),
+    /^OUTSIDE_APP_WINDOW/,
+  );
+});
+
 test('the dev menu in front is hidden, then the step retries', async () => {
   const f = fake([
     screen(['Reload'], 'dev-menu'),

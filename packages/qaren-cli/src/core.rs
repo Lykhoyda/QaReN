@@ -599,6 +599,17 @@ pub fn spawn(
     stderr_log: &Path,
     request: &CoreRequest,
 ) -> Result<CoreChild, Failure> {
+    spawn_private(runner, spec, stderr_log, request, None, None)
+}
+
+pub fn spawn_private(
+    runner: &mut dyn Runner,
+    spec: &CmdSpec,
+    stderr_log: &Path,
+    request: &CoreRequest,
+    inputs: Option<&crate::redact::ResolvedInputs<'_>>,
+    login_snapshot: Option<&Value>,
+) -> Result<CoreChild, Failure> {
     crate::cancel::ensure_running(runner, "core")?;
     let mut child = runner.spawn_piped(spec, stderr_log).map_err(|e| {
         Failure::new(
@@ -612,17 +623,20 @@ pub fn spawn(
         child.handle.kill_group();
         return Err(failure);
     }
-    let envelope = json!({
-        "v": WIRE_VERSION,
-        "runId": request.run_id,
-        "seq": 1,
-        "type": "request",
-        "payload": request,
-    });
-    let written = child
-        .stdin
-        .write_all(format!("{envelope}\n").as_bytes())
-        .and_then(|()| child.stdin.flush());
+    let written = (|| {
+        if let Some(inputs) = inputs {
+            let mut public = serde_json::to_value(request)
+                .map_err(|_| std::io::Error::other("private request failed"))?;
+            if let Some(snapshot) = login_snapshot {
+                public["loginSnapshot"] = snapshot.clone();
+            }
+            inputs.write_private(&mut child.stdin, &public, Some(&request.run_id))?;
+        } else {
+            let envelope = json!({ "v": WIRE_VERSION, "runId": request.run_id, "seq": 1, "type": "request", "payload": request });
+            child.stdin.write_all(format!("{envelope}\n").as_bytes())?;
+        }
+        child.stdin.flush()
+    })();
     if let Err(e) = written {
         child.handle.kill_group();
         return Err(Failure::new(
@@ -635,27 +649,35 @@ pub fn spawn(
     // Bounded: a flooding child blocks on the pipe instead of growing our memory.
     let (tx, rx) = mpsc::sync_channel::<Msg>(INBOX_DEPTH);
     let mut stdout = std::mem::replace(&mut child.stdout, Box::new(std::io::empty()));
+    let input_scope = crate::redact::capture_input_scope();
     std::thread::spawn(move || {
-        let mut line = Vec::new();
-        loop {
-            line.clear();
-            let mut limited = std::io::Read::take(&mut *stdout, MAX_LINE_BYTES as u64 + 1);
-            match limited.read_until(b'\n', &mut line) {
-                Ok(0) | Err(_) => break,
-                Ok(_) => {
-                    let msg = if line.len() > MAX_LINE_BYTES {
-                        Msg::Oversize
-                    } else {
-                        Msg::Line(String::from_utf8_lossy(&line).trim_end().to_string())
-                    };
-                    let stop = matches!(msg, Msg::Oversize);
-                    if tx.send(msg).is_err() || stop {
-                        break;
+        let mut read = || {
+            let mut line = Vec::new();
+            loop {
+                line.clear();
+                let mut limited = std::io::Read::take(&mut *stdout, MAX_LINE_BYTES as u64 + 1);
+                match limited.read_until(b'\n', &mut line) {
+                    Ok(0) | Err(_) => break,
+                    Ok(_) => {
+                        let msg = if line.len() > MAX_LINE_BYTES {
+                            Msg::Oversize
+                        } else {
+                            Msg::Line(String::from_utf8_lossy(&line).trim_end().to_string())
+                        };
+                        let stop = matches!(msg, Msg::Oversize);
+                        if tx.send(msg).is_err() || stop {
+                            break;
+                        }
                     }
                 }
             }
+            let _ = tx.send(Msg::Eof);
+        };
+        if let Some(scope) = input_scope {
+            crate::redact::with_input_scope(scope, read);
+        } else {
+            read();
         }
-        let _ = tx.send(Msg::Eof);
     });
     Ok(CoreChild {
         pid: child.pid,
@@ -806,6 +828,9 @@ impl Inbox {
 }
 
 fn excerpt(line: &str) -> String {
+    if crate::redact::private_output_mode() {
+        return "[private output withheld]".into();
+    }
     redact_secrets(line).chars().take(120).collect()
 }
 
@@ -1202,4 +1227,16 @@ pub fn synthesized_ledger(rows: &[Row], verdict: &str, seen: &str) -> Ledger {
 pub(crate) fn host_load_1m() -> Option<f64> {
     let mut load = 0.0;
     (unsafe { libc::getloadavg(&mut load, 1) } == 1).then_some(load)
+}
+
+pub fn private_preflight_spec(node: &Path, runtime_dir: &Path) -> CmdSpec {
+    CmdSpec::new(
+        "plan-preflight",
+        &node.to_string_lossy(),
+        &[
+            &runtime_dir.join("qa").join("walk.js").to_string_lossy(),
+            "--preflight-stdin",
+        ],
+        320,
+    )
 }

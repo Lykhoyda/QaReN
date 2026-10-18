@@ -528,12 +528,13 @@ keyboard dismissal; QA must freshly prove the keyboard hidden and the intended
 screen preserved before treating the press as clearance. Ordinary covered content
 uses the same recovery as a native occlusion refusal.
 The walker handles this refusal with one directional scroll toward the centre
-of the target's visible clip band: its trusted clipping viewport cut off at the
-top of an observed keyboard unless the keyboard is proven hidden, and between
+of the target's visible clip band: its trusted clipping viewport cut off 48 pt
+above the top of an observed keyboard unless the keyboard is proven hidden, and between
 sticky overlays. A touchable, non-text element at least half the clip's width,
-outside the target's own scroll content, that crosses the band's bottom edge
-ends the band at its top (a sticky footer); one across the band's top edge
-starts the band below it (a sticky header). A target at
+outside the target's own scroll content and drawn after it, that crosses the
+band's bottom edge ends the band at its top (a sticky footer); one across the
+band's top edge starts the band below it (a sticky header). Content drawn behind
+the list, such as a screen's rows under a sheet, never counts. A target at
 or below that band's centre scrolls down; one above it scrolls up. Sticky overlays
 can narrow the band even without a keyboard or when the clip is entirely above it.
 The walker passes that band to the shared scroll handler so the drag starts
@@ -543,9 +544,14 @@ is covered by the observed keyboard or a sticky overlay gets a scroll sized to m
 toward the middle of that band, and the drag may span the band with both endpoints
 at least one pixel inside its edges after rounding. A clearance scroll without
 a band keeps the cap of 60% of the screen area above the keyboard.
-Scrolls without a clearance distance keep the fixed amount of `0.6`.
+Scrolls without a clearance distance keep the fixed amount of `0.6` on the window
+band; inside a caller band they span the band a pixel inside each edge, except
+a keyboard-bound edge, which the band clears by 48 pt so the drag never starts on
+the keyboard. One scroll-until attempt moves the list by one visible band and
+cannot carry the target past it. A band shorter than 50 px refuses `SCROLL_BAND_TOO_SMALL` before
+anything is sent, because a drag under the touch slop would land as a tap.
 Successful iOS fast-runner scrolls now run the same bounded settle wait as taps
-before returning: screen-static probing with snapshot-equality fallback. Results
+before returning, using snapshot equality. Results
 include `meta.settle` and `meta.timings_ms.settle`; a timeout reports unsettled
 rather than proving the target safe. `RN_SETTLE=0` or `false` skips this wait,
 its probes and metadata, but does not disable the walker's frame guard below.
@@ -588,11 +594,13 @@ a refusal, with `caseNormalized: { chars }` beside the reason and a receipt and
 report detail such as `field case-normalized 12 chars`. The iOS runner makes that
 comparison itself (verdict `case-normalized`), so the value never leaves it;
 keyboard fallback applies the same rule to its React read-back. A different
-letter is still a mismatch. A screen change alone never verifies a fill. During discovery, a quoted
+letter is still a mismatch. A screen change alone never verifies a fill. A quoted
 iOS fill can use keyboard fallback when no observable native input resolves, or
 strict binding refuses `NO_TEXT_INPUT_TARGET` before any text mutation for a
-non-native-input target. Phrase fills and stored replay selectors do not use
-this fallback; ambiguous targets and potentially mutated fills still fail.
+non-native-input target. Phrase fills and stored text selectors do not use
+this fallback; a stored testID replays through it exactly as the walk did, and
+the saved block stores the field's testID the focus proof used. Ambiguous targets
+and potentially mutated fills still fail.
 
 On Android API 26 and later, a fresh read of the bound input with null text
 and no hint showing counts as empty, so clearing a plain field verifies as
@@ -672,7 +680,8 @@ value also stays unverified. A later plan check still decides whether the value
 is acceptable. The receipt's `ledger.unverified_fills` lists each passing fill
 left unverified with its line and value-free reason, plus `kept` and a `detail`
 such as `field kept 10 of 13 chars on 2 attempts` when counts exist; the report
-line shows the same detail. The list is omitted when empty. A runner
+line shows the same detail. Fill character counts are omitted when the run requires
+runtime inputs. The list is omitted when empty. A runner
 must advertise `FILL_EVIDENCE_V1` on both iOS and Android. Session startup routes
 a missing capability through the bounded source-rebuild path instead of
 accepting the released artifact; see [prebuilt runner selection](../../README.md#prebuilt-runners)
@@ -686,8 +695,8 @@ allowing later plan steps to continue; it does not establish the field's final
 value. Apart from that one retype, failed keyboard typing is not retried. Before the fallback tap or
 no-target typing dispatch, the value is protected under the
 [shared masking rules](#input-value-masking), and screenshots are withheld for the rest
-of the walk. The block remains unsaved,
-including when the tap leads back to strict verification. Eligibility is owned
+of the walk. For block persistence after fallback, see [Saved blocks](#saved-blocks).
+Eligibility is owned
 by the [resolver](../qaren-core/src/qa/resolve.ts), exact identity counting by
 the [shared identity model](../qaren-core/src/qa/identity.ts), and both are
 covered by the [fallback tests](../qaren-core/test/unit/qa/keyboard-fallback.test.ts).
@@ -710,8 +719,19 @@ Dialog steps require one unconditional accept or dismiss action, such as
 `Accept the permission dialog` or `Dismiss the alert`. Conditions, negation and
 multiple actions, such as `Accept the dialog if it appears` or
 `Do not dismiss the alert`, refuse before allocation; Jev cannot override this restriction.
-On Android, dialog steps and dialog recovery refuse `TARGET_UNSUPPORTED`
-before calling a driver in this release.
+On Android, a dialog step or dialog recovery has the runner tap exactly one
+enabled button whose text equals the chosen label, in the front window above the
+app, or the window standing in for the app's window, when the permission
+controller or `android` owns it; another app's window never matches. The step passes only when the runner reports that label tapped,
+that window gone and the app in front again, and it never falls back to
+Maestro. No such dialog, or no enabled text match in the runner, refuses
+`NO_SYSTEM_DIALOG`; two or more matching buttons refuse `TARGET_AMBIGUOUS`,
+all before tapping. A button that is not exposed to accessibility is never
+tapped by coordinates. Dismiss steps recognize both `Don't allow` and
+`Don’t allow`. The Android `systemAlertTap` command requires
+`SYSTEM_ALERT_TAP_V1`; the client refuses `RUNNER_COMMANDS_STALE` before
+dispatch if the active runner lacks it. Reopen the device session to rebuild
+before retrying.
 
 Android QA reads take one live traversal of the accessibility windows instead
 of the window dump that device tools keep: an `Application` root with the
@@ -727,7 +747,11 @@ did not change, the step's failure says the keyboard did not open. The runner's
 report never decides a step on its own; the screen comparison does. A window of
 another package above the app that intersects it, such as a permission dialog
 or another app, becomes the snapshot under an `Alert` root, so literal steps
-see a front dialog; the status and navigation bars do not count. A node not
+see a front dialog; the status and navigation bars do not count. When no app
+window is listed and the topmost application window belongs to the permission
+controller or `android`, as with the notification permission prompt on Android
+13 and later, that window stands in for the app's and becomes the `Alert`
+snapshot; any other topmost window leaves no read. A node not
 visible to the user counts as off screen, so a quoted step never passes on a
 scrolled-out control. A node the traversal cannot read is counted as dropped,
 and more than 600 nodes truncate the read; either leaves the capture
@@ -745,18 +769,23 @@ button by exact label, so `Allow` never matches `Allow Once`, and the runner
 taps that button element itself. It never taps a coordinate through the app or
 activates the app first. The step passes only when the runner reports that exact
 label tapped and the alert absent from a successful read of every system alert
-and sheet. A completed tap it cannot prove fails with `DIALOG_TAP_UNPROVEN`, and
-a tap that raised in the runner fails `ACTION_OUTCOME_UNCERTAIN`; neither is
-retried, even if the screen changed. A runner refusal before tapping
+and sheet. A runner refusal before tapping
 (`SYSTEM_ALERT_BUTTON_NOT_FOUND`, `SYSTEM_ALERT_BUTTON_AMBIGUOUS`,
 `SYSTEM_ALERT_CHANGED`) keeps its code. A runner without `SYSTEM_ALERT_TAP_V1`
-refuses `RN_FAST_RUNNER_STALE` without tapping. The proven label and frame land on
-the ledger row as `dialog`, in the receipt's `ledger.dialogs`, and in a
-value-free `dialog-tap` run-log line. The button lists are English. A localized
-alert fails `DIALOG_BUTTON_NOT_FOUND` rather than guessing. The permission
-outcome itself is the app's to show: assert it with the plan's next step.
+refuses `RN_FAST_RUNNER_STALE` without tapping.
 In-app alerts that are not SpringBoard-owned still use a text tap and need a
 screen change to pass.
+
+On both platforms, a completed system-dialog tap without a matching
+`tappedLabel`, a valid `tappedRect` and `alertClosed: true` fails with
+`DIALOG_TAP_UNPROVEN`; an uncertain dispatch fails `ACTION_OUTCOME_UNCERTAIN`.
+Neither is retried, even if the screen changed. A system-dialog step passes
+only on the runner's proof of the tap and of the alert closing. The proven label and frame land
+on the ledger row as `dialog`, in the receipt's `ledger.dialogs`, and in a
+value-free `dialog-tap` run-log line. The button lists are English; a snapshot
+with no recognized label fails `DIALOG_BUTTON_NOT_FOUND` rather than guessing,
+including localized labels. The permission outcome itself is the app's to show:
+assert it with the plan's next step.
 
 Unparseable lines refuse before allocation; unresolved screen targets refuse during the walk.
 Native platform presence establishes observed presence, not complete visual exposure
@@ -853,7 +882,14 @@ the viewport scrolls up; one wholly below scrolls down. When its frame overlaps
 the viewport but it is reported not visible, as with an Android heading under
 the status bar, scrolling uses the clearance direction described above, regardless
 of the requested direction. With no single matching identity, an already visible
-target or no known viewport, the requested direction is retained. See the
+target or no known viewport, the requested direction is retained. The
+scroll-until drag starts inside the list it is meant to move (the target's own
+scroll container, or the frontmost one above the keyboard), not at the screen
+centre. A row scrolled out of its list drags inside that list; a row covered
+inside it drags inside its clearance band. One clearance swipe lifts a covered
+row by at most the height of its list's visible band above the keyboard, so
+scroll until a row within one band of the row you then press; a row further
+away refuses after that one swipe instead of scrolling twice. See the
 [scroll-until direction regressions](../qaren-core/test/unit/qa/scroll-until-direction.test.ts).
 
 Waits poll unresolved text as not yet present and end with `VISIBILITY_UNSURE`
@@ -1082,6 +1118,11 @@ Planned fill values are classified before progress streams. Streamed rows contai
 only value-free progress metadata and eligible screenshot paths; plan text,
 reasons, selectors and block names appear only in the final projected ledger.
 CLI progress shows the line, outcome, resolver and attempt without plan text.
+Runtime input values are at least three characters after trimming; they are protected
+from preflight in their raw, trimmed, NFC, NFD and JSON-escaped forms, fragment masking
+of them applies to output before dispatch, and hash and saved-block decisions use only
+the whole value. The length thresholds and dispatch timing below describe literal fills
+and observed values.
 The shared [privacy matcher](../qaren-core/src/qa/privacy.ts) protects complete values of
 three or more characters after trimming, using case-sensitive substring matches
 for raw and trimmed NFC/NFD forms. Values containing at least three digits after
@@ -1276,6 +1317,55 @@ briefly re-reading while overlays settle. An unconfirmed floating-button hide
 or failure to obtain complete clearance evidence within those reads refuses
 the walk with `DEV_MENU_HIDE_UNVERIFIED` before the first step.
 
+### Runtime inputs
+
+`Fill "staging-password" with input PASSWORD` types the value of `QAREN_INPUT_PASSWORD`;
+see the [plan guide](../../apps/docs-site/src/content/docs/plans.mdx) for the grammar and
+value bounds. The owner resolves the value before running qaren; qaren reads no `.env`
+file, reference or secret store.
+
+- `main` captures the `QAREN_INPUT_` namespace once into the
+  [invocation-scoped redaction owner](src/redact.rs). Every child spawned by the CLI has the
+  namespace removed after its spec's environment is applied, including names the spec sets.
+- Before device selection, `check` and `pr` run `walk.js --preflight-stdin` twice: an
+  inventory of the names required by the plan and the configured login block, then the plan
+  preflight with only those values on private stdin. Missing or empty names refuse
+  `PLAN_INPUT_MISSING` with run id `none`; invalid values and runtime mismatches refuse
+  `CORE_REFUSED`. Neither phase writes a run directory, lease or log.
+- `pr` fetches and verifies the head before inventory, then reads the configured login block
+  at that commit with `git ls-tree` and `git show`. A symlinked or non-regular corpus path
+  refuses before allocation; after worktree creation the owned block must match those bytes.
+  Inputs that block names must also appear in the inventory of the plan and the invoking
+  checkout's login block; any other name refuses `PLAN_INPUT_MISSING`.
+  `check` re-reads its owned login block before device selection, and the core rechecks it
+  before the session opens.
+- The core receives the values only inside its stdin request. The walker types them, saves
+  slot fills as `inputText: { input: "PASSWORD" }` and replays saved and login blocks with
+  the same values. Private literal fills stay unsavable.
+- With any input namespace present, subprocess logs hold one withheld marker, preflight and
+  core output excerpts are withheld, and native runner output tails are not retained. A run
+  that requires inputs skips recording and screenshots.
+- Before a fill dispatch, the walker registers the target's identifier when available.
+  Snapshot hashing replaces a registered target's label with a constant marker when it
+  contains a whole runtime input value. The value never enters the hash; different values
+  produce the same marker. Labels without a registered identifier, and all identifiers
+  and types, remain subject to the guard below.
+- After a block's `Expect input NAME on screen` line, until the block ends, a label whose
+  whole-value echoes are all of declared inputs hashes as the same constant marker; a
+  label that also holds an undeclared input's value, and every identifier and type, stay
+  guarded. Replay uses the same block scope; resuming from a patched line restores earlier
+  declarations, and a nested login replay gets its own scope.
+- Snapshot hashes refuse `CORE_REFUSED` before any hashing when an identifier, type or
+  unmasked label contains the whole value in its raw, trimmed, NFC, NFD or JSON-escaped form, or a numeric
+  value's complete digit sequence with only separators between; partial echoes do not
+  refuse. Plan hashes do the same for plan text. The refusal detail starts
+  `runtime input privacy refused` and never names the value. The same guard applies to
+  the configured login block and app id. Apart from the registered and declared label projections,
+  accepted operands and digests are unchanged. Repository and host provenance hashes, such
+  as the lockfile, dirty-file, config and session-path hashes, keep their exact bytes. The
+  settle engine no longer uses the iOS screenshot-equality tier; it settles on the Android
+  window gate or snapshot equality.
+
 ### iOS admission and cleanup
 
 Strict admission observes known automation patterns for the selected simulator.
@@ -1283,6 +1373,9 @@ The host process table is streamed without a total-output byte cap, so its size
 alone does not refuse admission.
 A driver targeting it is busy; a driver can coexist only when kernel executable
 identity and exact arguments prove that it targets other simulators exclusively.
+An `xcodebuild` whose kernel identity and exact arguments show neither a `test`
+nor a `test-without-building` action cannot drive a simulator and coexists; if
+its arguments name the selected simulator's ID, admission refuses `DEVICE_BUSY`.
 An unscoped Maestro MCP controller can coexist when its Java executable and
 exact MCP arguments are attested; its command-line spelling alone is insufficient.
 Unknown identity or scope for an automation candidate, or an incomplete process table, refuses.
@@ -1337,6 +1430,15 @@ bundles can remain on disk until the next runner launch performs this cleanup.
 
 ### Saved blocks
 
+Open a block that continues a journey with `starts on: <testID or text>` before its
+steps. The value is literal, with optional quotes, and becomes the block's first
+wait in the ledger and saved YAML. On a fresh walk and replay, QaReN waits up to
+15 seconds for that screen before acting; an absent start refuses at that line with
+`failure.code: BLOCK_START_MISSING` and exit code 4, without dispatching the block's
+actions: reach that screen before this block or re-record it. Uncertain visibility
+retains its screen-evidence refusal instead.
+Previously saved blocks with this declaration walk once and save the leading wait.
+
 Block IDs come from their `###` titles; a headingless block uses the plan's `#`
 title, or `plan` when absent. The [parser's `slugify`](../qaren-core/src/qa/plan.ts)
 lowercases the title, replaces runs outside `a-z` and `0-9` with hyphens, trims
@@ -1365,12 +1467,15 @@ line and later ones are rewritten, and every `✓` comment stays byte-identical.
 is never re-walked or rewritten. Timeout recovery remains deferred (see
 [Step recovery](#step-recovery)); app-process changes stay terminal. A failing block is never saved;
 blocks that passed earlier in the run remain saved. A step without a `testID`
-or label, a phrase wait, a fill into a secure or private input, or an attempt at
+or label, a phrase wait, or a literal fill into a secure or private input or through
 [keyboard fallback](#fill-verification-and-keyboard-fallback) leaves the block
-unsaved and the ledger says why without naming any value. Planned fill literals
+unsaved and the ledger says why without naming any value. A [runtime input](#runtime-inputs)
+fill can be saved in those private or fallback paths when it has a stored selector,
+which is the field's testID the focus proof used, even for a passing `UNVERIFIED_FILL`
+row; the remaining persistence checks still apply. Planned fill literals
 also undergo the [shared masking rules](#input-value-masking), so a protected
 literal withholds a newly discovered or patched block even for an ordinary input.
-A previously saved block replayed against a now-private
+A previously saved block with a literal fill replayed against a now-private
 input also reports withholding without rewriting or deleting the existing action.
 Discovered or patched block writes are deferred until the walk finishes. Values
 preclassified from the plan or protected by private observations or keyboard
@@ -1378,7 +1483,9 @@ fallback anywhere in the same run are checked under those rules.
 A matching block title, header field, raw comment, fill
 literal, literal assertion or stored selector withholds the block rather than
 rewriting its bytes, including matches to filled-secret fragments under the
-[shared masking rules](#input-value-masking). Structural plan numbering is
+[shared masking rules](#input-value-masking). Runtime input values match whole for
+these persistence decisions; partial echoes alone do not withhold a block, while
+output masking still covers fragments. Structural plan numbering is
 excluded from matching. The final serialized YAML check matches complete
 protected values; generated command syntax does not enable fragment withholding.
 The value-free reason is
@@ -1441,6 +1548,8 @@ refuses inspection and is not overwritten by `check`. These inspection commands
 refuse symlinked corpora and action files. Inspection header validity and defaults follow the
 [core header parser](../qaren-core/src/domain/reusable-action.ts); `list` skips
 invalid headers and `show` refuses them.
+Both commands mask values from the invocation's `QAREN_INPUT_` namespace in stdout,
+including values not required by a plan.
 
 The TypeScript action store used by saved-block reads, replay and writes normally
 uses a real `.qaren/actions` directory. A linked Git
@@ -1596,7 +1705,9 @@ for individual timing breakdowns.
 Without timed rows, `speed` is omitted. With timed rows but no timed actions
 or checks, counts are zero and percentiles are omitted (shown as `n/a` in the
 report). An interrupted child without a final result retains row evidence
-but omits `speed`. Timing is passive: it does not alter verdicts, actions or
+but omits `speed`. A core walk ending without a result attributes `failure.step` to
+the in-flight step, falling back to the last row's line or `0` when no row exists.
+Timing is passive: it does not alter verdicts, actions or
 budgets, and the CLI drops malformed timing rather than rejecting the ledger.
 The [row timing implementation](../qaren-core/src/qa/row-timing.ts) owns
 aggregation; [CLI decoding](src/core.rs) and [report rendering](src/report.rs)

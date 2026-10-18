@@ -14,7 +14,14 @@ import { ObservedPrivacy, codeBoxRows } from '../../../dist/qa/privacy.js';
 import { describe } from '../../../dist/qa/screen.js';
 import { exactIdentities } from '../../../dist/qa/identity.js';
 import { keyboardFallbackTarget, prepareTarget } from '../../../dist/qa/resolve.js';
-import { KEYBOARD_READY_CAPTURES, runPlan, walkBlock } from '../../../dist/qa/walker.js';
+import {
+  KEYBOARD_READY_CAPTURES,
+  loginBlock,
+  runPlan,
+  walkBlock,
+} from '../../../dist/qa/walker.js';
+import { RunInputs, withInputs } from '../../../dist/qa/inputs.js';
+import { readBlock, storedFits, storedMatches } from '../../../dist/qa/blocks.js';
 import type { ActResult, BlockStore, WalkerDeps } from '../../../dist/qa/walker.js';
 import type { Ledger, LedgerRow, WalkResult } from '../../../dist/qa/ledger.js';
 import type { Questions } from '../../../dist/qa/questions.js';
@@ -474,7 +481,7 @@ test('U8: a field the snapshot cannot see is tapped, typed once, marked unverifi
   const fill = outcome.rows[0];
   assert.equal(fill.outcome, 'pass');
   assert.equal(fill.screenshot, undefined);
-  assert.equal(fill.selector, undefined);
+  assert.deepEqual(fill.selector, { id: 'qa-hidden-email' });
   assert.equal(
     fill.reason,
     'UNVERIFIED_FILL: typed with the keyboard after tapping "qa-hidden-email"; the field is not an observable native input, so its final value was not validated',
@@ -947,7 +954,7 @@ test('U13: deferred writes preserve ordinary blocks and withhold the planned fil
 const fill = (target: string, extra: Partial<Step & { kind: 'fill' }> = {}): Step =>
   ({ kind: 'fill', target: { quoted: target, phrase: target }, text: 'v', ...extra }) as Step;
 
-test('U1: phrase and exact replay fills never fall back', () => {
+test('U1: phrase and text-stored replay fills never fall back; an id-stored fill does', () => {
   const s = screenOf([wrapper(), submit], false);
   assert.equal(
     keyboardFallbackTarget({ kind: 'fill', target: { phrase: 'email' }, text: 'v' }, s),
@@ -955,11 +962,17 @@ test('U1: phrase and exact replay fills never fall back', () => {
   );
   assert.equal(
     keyboardFallbackTarget(
-      { kind: 'fill', target: { quoted: WRAP, phrase: WRAP, exact: 'id' }, text: 'v' },
+      { kind: 'fill', target: { quoted: WRAP, phrase: WRAP, exact: 'text' }, text: 'v' },
       s,
     ),
     undefined,
   );
+  const stored = keyboardFallbackTarget(
+    { kind: 'fill', target: { quoted: WRAP, phrase: WRAP, exact: 'id' }, text: 'v' },
+    s,
+  );
+  assert.equal(stored?.element.ref, '@wrap');
+  assert.equal(stored?.oracleTestID, 'qa-hidden-email');
   assert.equal(
     keyboardFallbackTarget({ kind: 'press', target: { quoted: WRAP, phrase: WRAP } }, s),
     undefined,
@@ -1002,28 +1015,6 @@ test('U1: non-qualifying refusals keep the strict refusal with no tap or type', 
       steps(fake.log).filter((s) => !s.startsWith('shot')),
       [],
     );
-});
-
-test('U1: an exact replay fill misses instead of falling back', async () => {
-  const fake = app();
-  const block = blocks(plan())[0];
-  const item = block.items[0];
-  assert.equal(item.kind, 'fill');
-  const replayed: Block = {
-    ...block,
-    items: [
-      { ...item, target: { quoted: 'qa-hidden-email', phrase: 'qa-hidden-email', exact: 'id' } },
-    ],
-  };
-  const outcome = await walkBlock(replayed, fake.deps, 0, [], undefined, undefined, {
-    mode: 'replay',
-  });
-  assert.equal(outcome.miss, item.line);
-  assert.equal(fake.typed.length, 0);
-  assert.deepEqual(
-    steps(fake.log).filter((s) => !s.startsWith('shot')),
-    [],
-  );
 });
 
 for (const [name, observable] of [
@@ -1639,7 +1630,9 @@ for (const belowFold of [true, false]) {
     );
     assert.deepEqual(
       prepareTarget(fill('custom-pressable'), joined),
-      belowFold ? { scroll: 'down' } : { ref: '@input', element: joined.elements[1] },
+      belowFold
+        ? { scroll: 'down', element: joined.elements[1] }
+        : { ref: '@input', element: joined.elements[1] },
     );
     assert.equal(keyboardFallbackTarget(fill('custom-pressable'), joined), undefined);
   });
@@ -1652,7 +1645,7 @@ test('pressing a React-only input still requests scrolling', () => {
       { kind: 'press', target: { quoted: 'custom-pressable', phrase: 'custom-pressable' } },
       joined,
     ),
-    { scroll: 'down' },
+    { scroll: 'down', element: joined.elements.find((e) => e.ref === 'react:custom-pressable') },
   );
 });
 
@@ -2480,4 +2473,157 @@ test('a focus-only fill keeps the publish window dirty with no field to see leav
   const focused = { initial: [submit], initialKeyboard: true, reactFocused: true } as const;
   assert.equal(await publishWindow(fillOnly, focused), false);
   assert.equal(await publishWindow(otpPlan(), focused), false);
+});
+
+const slotPlan = (name = 'EMAIL', target = 'qa-hidden-email') =>
+  `## QA\n\n### Hidden email\n\n1. Fill "${target}" with input ${name}\n2. Tap "qa-hidden-submit"\n✓ "Form accepted"\n`;
+const SLOT_SHAPES = [
+  ['nothing names the field', {}],
+  ['React lists the field', { initial: [...wrappedInput('Email').elements, submit] }],
+] as const;
+const slotStore = (): BlockStore => {
+  const dir = mkdtempSync(join(tmpdir(), 'qaren-slot-'));
+  mkdirSync(join(dir, '.qaren'));
+  return { appRoot: dir, platform: 'ios', appId: 'com.example.app' };
+};
+const slotRun = (
+  store: BlockStore,
+  value: string,
+  options: AppOptions = {},
+  markdown = slotPlan(),
+) => {
+  const fake = app(options);
+  const inputs = new RunInputs({ [markdown.includes('OTP') ? 'OTP' : 'EMAIL']: value }, [
+    markdown.includes('OTP') ? 'OTP' : 'EMAIL',
+  ]);
+  return withInputs(inputs, async () => ({
+    fake,
+    result: (await runPlan(blocks(markdown), fake.deps, [], store)) as Ledger,
+  }));
+};
+const savedFile = (store: BlockStore, slug: string) =>
+  readFileSync(join(store.appRoot, '.qaren', 'actions', `${slug}.yaml`), 'utf8');
+
+for (const [shape, options] of SLOT_SHAPES) {
+  test(`a wrapper slot fill stores the field id and saves name-only when ${shape}`, async () => {
+    const block = blocks(slotPlan())[0];
+    const fake = app(options);
+    const outcome = await withInputs(new RunInputs({ EMAIL: EMAIL }, ['EMAIL']), () =>
+      walkBlock(block, fake.deps),
+    );
+    assert.equal(outcome.block.outcome, 'pass', JSON.stringify(outcome.failure));
+    assert.equal(outcome.rows[0].ref, '@wrap');
+    assert.deepEqual(outcome.rows[0].selector, { id: 'qa-hidden-email' });
+    const files = [];
+    for (const value of [EMAIL, 'qa-other@example.test']) {
+      const store = slotStore();
+      const { result } = await slotRun(store, value, options);
+      assert.deepEqual(result.blocks, [
+        { key: 'hidden-email', outcome: 'pass', source: 'discovered' },
+      ]);
+      const text = savedFile(store, 'hidden-email');
+      assert.ok(
+        text.includes(
+          '# 1. Fill "qa-hidden-email" with input EMAIL\n- tapOn: { id: "qa-hidden-email" }\n- inputText: { input: "EMAIL" }',
+        ),
+        text,
+      );
+      assert.equal(text.includes(value), false);
+      const stored = readBlock(text);
+      assert.ok('steps' in stored, JSON.stringify(stored));
+      assert.equal(stored.steps[0].input, 'EMAIL');
+      assert.equal(storedMatches(block, stored), true);
+      assert.equal(storedFits(block, stored, text, store), true);
+      files.push(text);
+    }
+    assert.equal(files[0], files[1]);
+  });
+
+  test(`a saved wrapper slot fill replays through the same fallback when ${shape}`, async () => {
+    const store = slotStore();
+    const walk = await slotRun(store, EMAIL, options);
+    assert.deepEqual(walk.result.blocksWritten, ['hidden-email']);
+    const before = savedFile(store, 'hidden-email');
+    const { fake, result } = await slotRun(store, 'qa-other@example.test', options);
+    assert.equal(result.verdict, 'PASS', JSON.stringify(result.failure));
+    assert.equal(result.path, 'replay');
+    assert.deepEqual(result.blocks, [{ key: 'hidden-email', outcome: 'pass', source: 'replayed' }]);
+    assert.deepEqual(result.blocksWritten, []);
+    assert.deepEqual(steps(fake.log), steps(walk.fake.log));
+    assert.deepEqual(fake.typed, [
+      { ref: '@wrap', text: 'qa-other@example.test', testID: 'qa-hidden-email' },
+    ]);
+    assert.deepEqual(fake.focusRequirements, walk.fake.focusRequirements);
+    assert.equal(result.jev.calls, 0);
+    assert.equal(savedFile(store, 'hidden-email'), before);
+  });
+}
+
+test('a proven-focus slot fill stores the quoted id and replays the same way', async () => {
+  const markdown = `## QA\n\n### Code\n\n1. Fill "qa-otp-code" with input OTP\n2. Tap "qa-hidden-submit"\n`;
+  const options = { initial: [submit], initialKeyboard: true, reactFocused: true } as const;
+  const fake = app(options);
+  const outcome = await withInputs(new RunInputs({ OTP: '5839' }, ['OTP']), () =>
+    walkBlock(blocks(markdown)[0], fake.deps),
+  );
+  assert.equal(outcome.block.outcome, 'pass', JSON.stringify(outcome.failure));
+  assert.equal(outcome.rows[0].ref, undefined);
+  assert.deepEqual(outcome.rows[0].selector, { id: 'qa-otp-code' });
+  const store = slotStore();
+  const walk = await slotRun(store, '5839', options, markdown);
+  assert.deepEqual(walk.result.blocksWritten, ['code']);
+  const text = savedFile(store, 'code');
+  assert.ok(text.includes('- tapOn: { id: "qa-otp-code" }\n- inputText: { input: "OTP" }'), text);
+  const { fake: again, result } = await slotRun(store, '2468', options, markdown);
+  assert.equal(result.path, 'replay', JSON.stringify(result.failure));
+  assert.deepEqual(result.blocks, [{ key: 'code', outcome: 'pass', source: 'replayed' }]);
+  assert.deepEqual(steps(again.log), ['type qa-otp-code', 'press @submit']);
+  assert.deepEqual(again.focusRequirements, [true]);
+  assert.equal(savedFile(store, 'code'), text);
+});
+
+test('login recovery replays a saved slot fill through the fallback', async () => {
+  const store = slotStore();
+  await slotRun(store, EMAIL);
+  const stored = readBlock(savedFile(store, 'hidden-email'));
+  assert.ok('steps' in stored);
+  const fake = app();
+  const outcome = await withInputs(new RunInputs({ EMAIL: EMAIL }, ['EMAIL']), () =>
+    walkBlock(loginBlock('hidden-email', stored), fake.deps, 0, [], undefined, undefined, {
+      recover: false,
+      login: true,
+    }),
+  );
+  assert.equal(outcome.block.outcome, 'pass', JSON.stringify(outcome.failure));
+  assert.equal(steps(fake.log).filter((s) => s === 'type @wrap').length, 1);
+});
+
+test('a slot fill whose field id contains the input value is not stored and stays unsavable', async () => {
+  const store = slotStore();
+  const fake = app();
+  // Parsed outside the run: the plan hash alone would refuse a plan that quotes the value.
+  const parsed = blocks(slotPlan());
+  const result = await withInputs(new RunInputs({ EMAIL: 'qa-hidden-email' }, ['EMAIL']), () =>
+    runPlan(parsed, fake.deps, [], store),
+  );
+  assert.equal(result.verdict, 'PASS', JSON.stringify(result));
+  const block = (result as Ledger).blocks[0];
+  assert.equal(block.saved, false);
+  assert.match(block.unsavable ?? '', /^line \d+: element has no testID or label$/);
+});
+
+test('a slot fill matched only by placeholder on a native input stays unsavable', async () => {
+  const field = {
+    ...element('@field', '', { kind: 'input', nativeKind: 'input', placeholder: 'Email address' }),
+    label: undefined,
+  };
+  const { result } = await slotRun(
+    slotStore(),
+    EMAIL,
+    { initial: [field, submit] },
+    slotPlan('EMAIL', 'Email address'),
+  );
+  assert.equal(result.verdict, 'PASS', JSON.stringify(result.failure));
+  assert.equal(result.blocks[0].saved, false);
+  assert.match(result.blocks[0].unsavable ?? '', /^line \d+: element has no testID or label$/);
 });

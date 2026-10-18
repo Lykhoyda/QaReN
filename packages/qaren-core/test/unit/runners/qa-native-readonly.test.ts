@@ -66,7 +66,7 @@ for (const platform of ['ios', 'android'] as const) {
     const context = new QaDispatchContext(10, () => 1);
     const probes = (platform === 'ios' ? buildIosProbes : buildAndroidProbes)('qa.app', context);
     await probes.snapshotHash();
-    if (platform === 'ios') await probes.isScreenStatic!();
+    if (platform === 'ios') await probes.snapshotHash();
     else await probes.isWindowUpdating!(100);
     assert.equal(requests.length, 2);
     assert.ok(requests.every((request) => request.qaReadOnly === true));
@@ -87,7 +87,7 @@ for (const platform of ['ios', 'android'] as const) {
     now = 11;
     const probes = (platform === 'ios' ? buildIosProbes : buildAndroidProbes)('qa.app', context);
     await probes.snapshotHash();
-    if (platform === 'ios') await probes.isScreenStatic!();
+    if (platform === 'ios') await probes.snapshotHash();
     else await probes.isWindowUpdating!(100);
     assert.equal(requests.length, 3);
     assert.equal(context.authorizations, 1);

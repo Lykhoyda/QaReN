@@ -8,6 +8,7 @@ import { detectPlatform } from './platform-utils.js';
 import { extractMutationDisposition, fetchSnapshotNodes } from './device-interact.js';
 import type { SnapshotFetchResult } from './device-interact.js';
 import { hasActiveSession, getActiveSession, runNative } from '../agent-device-wrapper.js';
+import { getAndroidRunnerCapabilities } from '../runners/rn-android-runner-client.js';
 import { shouldRejectMaestroDeviceAuthority } from '../domain/maestro-device-authority.js';
 
 // iOS dialog button labels. Note: "Don't Allow" uses U+2019 typographic apostrophe,
@@ -45,7 +46,16 @@ const ACCEPT_LABELS_ANDROID = [
   'Yes',
 ];
 
-const DISMISS_LABELS_ANDROID = ['Deny', 'DENY', 'Cancel', 'CANCEL', 'No', 'Not now'];
+const DISMISS_LABELS_ANDROID = [
+  'Deny',
+  'DENY',
+  'Cancel',
+  'CANCEL',
+  'No',
+  'Not now',
+  `Don${APOSTROPHE_ASCII}t allow`,
+  `Don${APOSTROPHE_CURLY}t allow`,
+];
 
 export interface SystemDialogArgs {
   qaContext?: QaDispatchContext;
@@ -67,8 +77,17 @@ const tapSystemAlert: TapSystemAlert = (label, qaContext) =>
 let tapSystemAlertFn: TapSystemAlert = tapSystemAlert;
 let runMaestroInlineFn: typeof runMaestroInline = runMaestroInline;
 let sleepFn: (ms: number) => Promise<void> = realSleep;
-let iosSessionActiveFn: () => boolean = () =>
-  hasActiveSession() && getActiveSession()?.platform === 'ios';
+// The platform of the active session whose runner taps a system alert by its label.
+type DialogRunner = () => 'ios' | 'android' | null;
+const dialogRunner: DialogRunner = () => {
+  if (!hasActiveSession()) return null;
+  const platform = getActiveSession()?.platform;
+  if (platform === 'ios') return 'ios';
+  return platform === 'android' && getAndroidRunnerCapabilities().includes('SYSTEM_ALERT_TAP_V1')
+    ? 'android'
+    : null;
+};
+let dialogRunnerFn: DialogRunner = dialogRunner;
 
 export function _setFetchSnapshotNodesForTest(fn: typeof fetchSnapshotNodes): void {
   fetchSnapshotNodesFn = fn;
@@ -94,11 +113,11 @@ export function _setRunMaestroInlineForTest(fn: typeof runMaestroInline): void {
 export function _resetRunMaestroInlineForTest(): void {
   runMaestroInlineFn = runMaestroInline;
 }
-export function _setIosSessionActiveForTest(value: boolean): void {
-  iosSessionActiveFn = () => value;
+export function _setDialogRunnerForTest(platform: 'ios' | 'android' | null): void {
+  dialogRunnerFn = () => platform;
 }
-export function _resetIosSessionActiveForTest(): void {
-  iosSessionActiveFn = () => hasActiveSession() && getActiveSession()?.platform === 'ios';
+export function _resetDialogRunnerForTest(): void {
+  dialogRunnerFn = dialogRunner;
 }
 
 export interface RunnerDialogOutcome {
@@ -131,10 +150,11 @@ function isRect(value: unknown): value is { x: number; y: number; width: number;
   );
 }
 
-// SpringBoard modals require the native runner; QA snapshot uncertainty never permits fallback.
+// System dialogs above the app require the native runner; QA snapshot uncertainty never permits fallback.
 export async function tapSystemDialogViaRunner(
   labels: string[],
   qaContext?: QaDispatchContext,
+  platform: 'ios' | 'android' = 'ios',
   note?: (line: string) => void,
 ): Promise<RunnerDialogOutcome | null> {
   const failed = (
@@ -147,7 +167,7 @@ export async function tapSystemDialogViaRunner(
     }
   };
   qaContext?.check();
-  if (!iosSessionActiveFn()) {
+  if (dialogRunnerFn() !== platform) {
     failed('session');
     qaContext?.invalidate();
     return null;
@@ -178,7 +198,7 @@ export async function tapSystemDialogViaRunner(
   for (const label of labels) {
     // Exact label only: the chosen label is always one of these known constants, never app or user text.
     if (!buttons.some((n) => n.label === label)) continue;
-    // One chosen label, one dispatch: the runner taps that SpringBoard button element, never a coordinate.
+    // One chosen label, one dispatch: the runner taps that dialog button element, never a coordinate.
     const chosen = label;
     let tap: ToolResult;
     try {
@@ -244,7 +264,7 @@ export async function acceptDeeplinkOpenConfirmation(): Promise<RunnerDialogOutc
   // Without an open iOS session the runner cannot reach a SpringBoard dialog
   // at all — bail before the retry timer so a session-less deeplink (the common
   // CLI path) never eats a dead 750ms wait for a probe that must return null.
-  if (!iosSessionActiveFn()) return null;
+  if (dialogRunnerFn() !== 'ios') return null;
   const first = await tapSystemDialogViaRunner(OPEN_CONFIRMATION_LABELS);
   if (first) return first;
   await sleepFn(OPEN_CONFIRMATION_RETRY_DELAY_MS);
@@ -348,45 +368,51 @@ async function handleSystemDialog(
   }
   const defaults = platform === 'ios' ? iosDefaults : androidDefaults;
   const labels = pickLabels(args.label, defaults);
-  if (platform === 'ios') {
-    const runner = await tapSystemDialogViaRunner(labels, args.qaContext, args.note);
-    if (runner?.tapped) {
-      return okResult(
-        {
-          tapped: true,
-          platform,
-          matchedLabel: runner.matchedLabel,
-          tappedLabel: runner.matchedLabel,
-          tappedRect: runner.tappedRect,
-          dialogTitle: runner.dialogTitle,
-          via: 'rn-fast-runner',
-        },
-        { meta: { verify: 'exact' } },
-      );
-    }
-    if (runner?.refusal) {
-      return failResult(runner.refusal.message, runner.refusal.code, {
-        mutation: runner.refusal.mutation,
+  const runner = await tapSystemDialogViaRunner(labels, args.qaContext, platform, args.note);
+  if (runner?.tapped) {
+    return okResult(
+      {
+        tapped: true,
+        platform,
+        matchedLabel: runner.matchedLabel,
+        tappedLabel: runner.matchedLabel,
+        tappedRect: runner.tappedRect,
+        dialogTitle: runner.dialogTitle,
+        via: platform === 'ios' ? 'rn-fast-runner' : 'rn-android-runner',
+      },
+      { meta: { verify: 'exact' } },
+    );
+  }
+  if (runner?.refusal) {
+    return failResult(runner.refusal.message, runner.refusal.code, {
+      mutation: runner.refusal.mutation,
+      platform,
+      dialogTitle: runner.dialogTitle,
+    });
+  }
+  if (runner) {
+    // A system dialog IS up but none of the probed labels matched its
+    // buttons. Maestro cannot see a SpringBoard dialog at all — surface the
+    // real buttons instead of burning N×4s on probes that can never match.
+    return warnResult(
+      {
+        tapped: false,
         platform,
         dialogTitle: runner.dialogTitle,
-      });
-    }
-    if (runner) {
-      // A SpringBoard dialog IS up but none of the probed labels matched its
-      // buttons. Maestro cannot see this dialog at all — surface the real
-      // buttons instead of burning N×4s on probes that can never match.
-      return warnResult(
-        {
-          tapped: false,
-          platform,
-          dialogTitle: runner.dialogTitle,
-          availableButtons: runner.availableButtons,
-          triedLabels: labels,
-        },
-        `A system dialog${runner.dialogTitle ? ` ("${runner.dialogTitle}")` : ''} is on screen but none of the probed labels matched its buttons. Retry with label set to one of availableButtons.`,
-        { code: 'DIALOG_BUTTON_NOT_FOUND' },
-      );
-    }
+        availableButtons: runner.availableButtons,
+        triedLabels: labels,
+      },
+      `A system dialog${runner.dialogTitle ? ` ("${runner.dialogTitle}")` : ''} is on screen but none of the probed labels matched its buttons. Retry with label set to one of availableButtons.`,
+      { code: 'DIALOG_BUTTON_NOT_FOUND' },
+    );
+  }
+  // An Android QA step has only the runner path: with no system dialog in front, nothing is tapped.
+  if (platform === 'android' && args.qaContext) {
+    return failResult(
+      'NO_SYSTEM_DIALOG: no system dialog is in front of the app; nothing was tapped',
+      'NO_SYSTEM_DIALOG',
+      { mutation: 'none', platform, triedLabels: labels },
+    );
   }
   return tapSystemDialog(
     labels,

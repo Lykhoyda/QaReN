@@ -1,3 +1,4 @@
+import { currentInputs } from '../qa/inputs.js';
 import { homedir } from 'node:os';
 
 const HOME = homedir();
@@ -54,7 +55,7 @@ function redactString(value: string): string {
   // e.g. a PEM private key's -----END----- marker — so the pattern would never
   // match and the key body would leak through. Apply every pattern to the full
   // string first, then clip what remains.
-  let result = redactApiKey(value).replace(HOME_RE, '~');
+  let result = redactApiKey(currentInputs()?.redact(value) ?? value).replace(HOME_RE, '~');
   KEYED_SECRET_RE.lastIndex = 0;
   result = result.replace(KEYED_SECRET_RE, '$1[REDACTED_SECRET]');
   for (const pattern of SECRET_PATTERNS) {

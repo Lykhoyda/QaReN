@@ -1,3 +1,5 @@
+import { throwIfInputPrivacyRefused } from '../qa/inputs.js';
+import { throwIfCancelled } from '../domain/cancellation.js';
 import type { ToolResult } from '../utils.js';
 import type { QaDispatchContext } from '../domain/qa-dispatch.js';
 import type { FlatNode } from '../fast-runner-ref-map.js';
@@ -10,7 +12,7 @@ import {
   runAndroid,
 } from '../runners/rn-android-runner-client.js';
 
-export type SettleMethod = 'window-gate' | 'screen-static' | 'snapshot-eq' | 'timeout';
+export type SettleMethod = 'window-gate' | 'snapshot-eq' | 'timeout';
 
 export interface SettleOutcome {
   settled: boolean;
@@ -20,7 +22,6 @@ export interface SettleOutcome {
 }
 
 export interface SettleProbes {
-  isScreenStatic?: () => Promise<boolean | null>;
   isWindowUpdating?: (timeoutMs: number) => Promise<boolean | null>;
   snapshotHash: () => Promise<string | null>;
   sleep: (ms: number) => Promise<void>;
@@ -40,10 +41,6 @@ export const SETTLE_DEFAULT_BUDGET_MS = 6000;
 // the slow-command timeout class. Non-finite/negative input falls back to the
 // default rather than disabling or unbounding the wait.
 export const SETTLE_MAX_BUDGET_MS = 30_000;
-// Keep the initial window gate cheap for already-visible effects and callers
-// without a baseline; the conditional late-render wait belongs in the gate below.
-const SCREEN_STATIC_TIER_MS = 3000;
-const SCREEN_STATIC_POLL_INTERVAL_MS = 200;
 const WINDOW_GATE_TIMEOUT_MS = 100;
 const WINDOW_GATE_SETTLED_SLEEP_MS = 50;
 const SNAPSHOT_POLL_MAX = 10;
@@ -89,20 +86,6 @@ export async function waitForSettle(opts: WaitForSettleOpts): Promise<SettleOutc
     // updating or probe failure → pay for snapshot polling below
   }
 
-  if (platform === 'ios' && capabilities.includes('SCREEN_STATIC') && probes.isScreenStatic) {
-    const tierDeadline = Math.min(SCREEN_STATIC_TIER_MS, budgetMs);
-    while (elapsed() < tierDeadline) {
-      const isStatic = await safeProbe(() => probes.isScreenStatic!());
-      if (isStatic === true) {
-        const change = await postSettleChange(probes, initialSnapshotHash);
-        return { settled: true, method: 'screen-static', ms: elapsed(), ...change };
-      }
-      if (isStatic === null) break; // probe infra failed — don't burn the tier budget
-      const nap = Math.min(SCREEN_STATIC_POLL_INTERVAL_MS, tierDeadline - elapsed());
-      if (nap > 0) await probes.sleep(nap);
-    }
-  }
-
   let prev: string | null = null;
   let hierarchyChanged: boolean | undefined;
   for (let i = 0; i < SNAPSHOT_POLL_MAX; i++) {
@@ -137,13 +120,13 @@ async function safeProbe<T>(fn: () => Promise<T>): Promise<T | null> {
   try {
     return await fn();
   } catch {
+    throwIfInputPrivacyRefused();
+    throwIfCancelled();
     return null;
   }
 }
 
-// Idle/static probes alone cannot establish an interaction's effect. Only
-// callers with a baseline pay for a separate hierarchy comparison; the Android
-// gate above owns whether a late update warrants another comparison.
+// Only callers with a baseline pay for a hierarchy comparison; the Android gate owns late re-probes.
 async function postSettleChange(
   probes: SettleProbes,
   initialSnapshotHash: string | undefined,
@@ -154,21 +137,13 @@ async function postSettleChange(
   return { hierarchyChanged: hash !== initialSnapshotHash };
 }
 
-// --- Production probe builders ---
-//
-// Probes call runIOS / the Android thin probes directly, NEVER runNative — no
-// recursion into settle, no double snapshot-dirty marking. Because the snapshot
-// paths call updateRefMapFromFlat, every settle refreshes the ref-map for free
-// (the Story 05 hook). snapshotHash uses interactiveOnly:true — a deliberate,
-// documented deviation from Maestro's full-hierarchy compare (full-tree iOS
-// serialization costs ~1.5s/poll); revisit if live verification shows
-// false-settled transitions.
-
 function envelopeData(result: ToolResult): unknown {
   try {
     const parsed = JSON.parse(result.content[0].text) as { ok?: boolean; data?: unknown };
     return parsed.ok === false ? null : parsed.data;
   } catch {
+    throwIfInputPrivacyRefused();
+    throwIfCancelled();
     return null;
   }
 }
@@ -177,17 +152,6 @@ const realSleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r
 
 export function buildIosProbes(bundleId?: string, qaContext?: QaDispatchContext): SettleProbes {
   return {
-    isScreenStatic: async () => {
-      try {
-        const data = envelopeData(
-          await runIOS({ command: 'isScreenStatic', qaContext, ...(bundleId ? { bundleId } : {}) }),
-        );
-        const s = (data as { static?: unknown } | null)?.static;
-        return typeof s === 'boolean' ? s : null;
-      } catch {
-        return null;
-      }
-    },
     snapshotHash: async () => {
       try {
         const data = envelopeData(
@@ -201,6 +165,8 @@ export function buildIosProbes(bundleId?: string, qaContext?: QaDispatchContext)
         const nodes = (data as { nodes?: FlatNode[] } | null)?.nodes;
         return Array.isArray(nodes) ? hashSnapshotNodes(nodes) : null;
       } catch {
+        throwIfInputPrivacyRefused();
+        throwIfCancelled();
         return null;
       }
     },
@@ -230,6 +196,8 @@ export function buildAndroidProbes(bundleId?: string, qaContext?: QaDispatchCont
         await runAndroid({ command, bundleId, qaContext, timeoutMs, interactiveOnly: true }),
       );
     } catch {
+      throwIfInputPrivacyRefused();
+      throwIfCancelled();
       return null;
     }
   };

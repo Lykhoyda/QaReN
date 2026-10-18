@@ -1,11 +1,24 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import { mkdtempSync, rmSync } from 'node:fs';
+import { join } from 'node:path';
 import { parsePlan } from '../../../dist/qa/plan.js';
 import { join as joinScreen, type Screen } from '../../../dist/qa/screen.js';
-import { choice, scriptedJudge } from './judgment-fixtures.ts';
+import { replayBlock, runPlan, WAIT_BUDGET_MS, walkBlock } from '../../../dist/qa/walker.js';
+import { readBlock, serializeBlock, writeBlock } from '../../../dist/qa/blocks.js';
+import { createWriter, resultForWalk } from '../../../dist/qa/wire.js';
+import {
+  choice,
+  scriptedJudge,
+  element as fixtureElement,
+  screen as fixtureScreen,
+  walker as fixtureWalker,
+} from './judgment-fixtures.ts';
+import { RunInputs, withInputs, InputPrivacyRefusal } from '../../../dist/qa/inputs.js';
+import { hashSnapshotNodes } from '../../../dist/lifecycle/settle-hash.js';
+import { MASK, ObservedPrivacy } from '../../../dist/qa/privacy.js';
 import { renderReason } from '../../../dist/qa/untrusted.js';
 import type { WalkSequence } from '../../../dist/qa/walker.js';
-import { runPlan, walkBlock } from '../../../dist/qa/walker.js';
 import type { ActResult, WalkerDeps } from '../../../dist/qa/walker.js';
 import type { LedgerRow } from '../../../dist/qa/ledger.js';
 
@@ -89,6 +102,117 @@ function block(markdown: string) {
   assert.ok(parsed.blocks, JSON.stringify(parsed.refused));
   return parsed.blocks[0];
 }
+
+const continuation = '### Continue\nstarts on: "wizard-title-input"\n1. Tap "wizard-back-btn"';
+const startMissing =
+  'BLOCK_START_MISSING: the block starts on "wizard-title-input", which is not on screen; reach that screen before this block or re-record it';
+
+test('saved block start refusal reaches the wire with exit 4', async () => {
+  const appRoot = mkdtempSync(join(process.cwd(), '.block-start-test-'));
+  try {
+    const plan = block(continuation);
+    const store = { appRoot, appId: 'com.example.app', platform: 'ios' as const };
+    const rows: LedgerRow[] = plan.items.map((item) => ({
+      block: plan.slug,
+      line: item.line,
+      text: item.raw,
+      attempt: 1,
+      kind: 'step',
+      resolvedBy: 'exact',
+      t: 0,
+      outcome: 'pass',
+      selector: { id: item.line === 2 ? 'wizard-title-input' : 'wizard-back-btn' },
+    }));
+    const serialized = serializeBlock(plan, rows, store);
+    assert.ok('yaml' in serialized);
+    writeBlock(appRoot, plan.slug, serialized.yaml);
+    const f = fake([screen(['Welcome'])]);
+    const result = await runPlan([plan], f.deps, [], store);
+    const lines: string[] = [];
+    const writer = createWriter((line) => lines.push(line), 'block-start-test');
+    const exit = writer.result(resultForWalk(result, 'test-lease'));
+    const { payload } = JSON.parse(lines[0]);
+    assert.equal(payload.verdict, 'REFUSED');
+    assert.equal(payload.code, 'BLOCK_START_MISSING');
+    assert.match(payload.message, /reach that screen before this block or re-record it/);
+    assert.equal(payload.lease, 'test-lease');
+    assert.equal(payload.path, 'replay');
+    assert.equal(payload.failure.step, 2);
+    assert.deepEqual(payload.blocksWritten, []);
+    assert.equal(exit, 4);
+    assert.ok(!f.calls.some((call) => call.startsWith('press')));
+  } finally {
+    rmSync(appRoot, { recursive: true, force: true });
+  }
+});
+
+test('a missing block start fails at its declaration before any action', async () => {
+  const f = fake([screen(['Welcome'])]);
+  const outcome = await walkBlock(block(continuation), f.deps);
+  assert.equal(outcome.block.outcome, 'fail');
+  assert.equal(outcome.failure?.step, 2);
+  assert.ok(renderReason(outcome.failure?.seen ?? '', (text) => text).startsWith(startMissing));
+  assert.deepEqual(
+    outcome.rows.map((row) => [row.line, row.outcome, row.reason]),
+    [[2, 'fail', startMissing]],
+  );
+  assert.ok(!f.calls.some((call) => call.startsWith('press')));
+});
+
+test('a block waits through a transition to its start testID, then acts', async () => {
+  const ready = screen(['Title', 'Back']);
+  ready.elements[0].testID = 'wizard-title-input';
+  ready.elements[1].testID = 'wizard-back-btn';
+  const f = fake([screen(['Welcome']), ready, ready, screen(['Tasks'])]);
+  const outcome = await walkBlock(block(continuation), f.deps);
+  assert.equal(outcome.block.outcome, 'pass');
+  assert.deepEqual(
+    outcome.rows.map((row) => [row.line, row.outcome]),
+    [
+      [2, 'pass'],
+      [3, 'pass'],
+    ],
+  );
+  assert.deepEqual(
+    f.calls.filter((call) => call.startsWith('press')),
+    ['press @e1'],
+  );
+});
+
+test('replay refuses a missing block start after one wait budget without a selector miss or re-walk', async () => {
+  const plan = block(continuation);
+  const rows: LedgerRow[] = plan.items.map((item) => ({
+    block: plan.slug,
+    line: item.line,
+    text: item.raw,
+    attempt: 1,
+    kind: 'step',
+    resolvedBy: 'exact',
+    t: 0,
+    outcome: 'pass',
+    selector: { id: item.line === 2 ? 'stored-title' : 'wizard-back-btn' },
+  }));
+  const serialized = serializeBlock(plan, rows, { appId: 'com.example.app', platform: 'ios' });
+  assert.ok('yaml' in serialized);
+  const stored = readBlock(serialized.yaml);
+  assert.ok(!('invalid' in stored));
+  const replay = replayBlock(plan, stored);
+  const f = fake([screen(['Welcome'])]);
+  let elapsed = 0;
+  f.deps.now = () => elapsed;
+  f.deps.sleep = async (ms) => {
+    elapsed += ms;
+  };
+  const outcome = await walkBlock(replay, f.deps, 0, [], undefined, undefined, { mode: 'replay' });
+  assert.ok(renderReason(outcome.failure?.seen ?? '', (text) => text).startsWith(startMissing));
+  assert.equal(outcome.failure?.step, 2);
+  assert.equal(elapsed, WAIT_BUDGET_MS);
+  assert.deepEqual(
+    outcome.rows.map((row) => [row.line, row.outcome, row.reason]),
+    [[2, 'fail', startMissing]],
+  );
+  assert.ok(!f.calls.some((call) => call.startsWith('press')));
+});
 
 test('a changed screen after a press is done: never re-dispatched', async () => {
   const f = fake([screen(['Settings']), screen(['Profile'])]);
@@ -816,3 +940,133 @@ for (const refusal of ['unsettled', 'different retry'] as const) {
     }
   });
 }
+
+test('a slot fill registers its dispatched identifier before the fill runs', async () => {
+  for (const [testID, target, expected] of [
+    ['login_email', 'login_email', 'login_email'],
+    [undefined, 'Email', undefined],
+  ] as const) {
+    const field = fixtureElement('@e1', 'Email', {
+      kind: 'input',
+      ...(testID ? { testID } : {}),
+    });
+    const f = fixtureWalker([fixtureScreen([field])], scriptedJudge([]));
+    const events: string[] = [];
+    const fill = f.deps.fill;
+    f.deps.fill = async (...args) => {
+      events.push('fill');
+      return fill(...args);
+    };
+    const inputs = new RunInputs({ QA_EMAIL: 'qa-synth-1234@example.test' }, ['QA_EMAIL']);
+    const register = inputs.expectEcho?.bind(inputs);
+    inputs.expectEcho = (identifier?: string) => {
+      events.push(`echo ${identifier}`);
+      register?.(identifier);
+    };
+    const block = parsePlan(`# Login\n1. Fill "${target}" with input QA_EMAIL\n`).blocks![0];
+    await withInputs(inputs, () => walkBlock(block, f.deps));
+    assert.deepEqual(events, [`echo ${expected}`, 'fill']);
+  }
+});
+
+test('ledger block names hide input values whole, not their fragments', async () => {
+  const value = 'qa-synth-1234@example.test';
+  const f = fake([screen(['A']), screen(['B']), screen(['C'])]);
+  f.deps.privacy = new ObservedPrivacy();
+  f.deps.privacy.classifyInputs([value]);
+  const parsed = parsePlan(`### Example settings\n1. Tap "A"\n### ${value}\n1. Tap "B"\n`);
+  const ledger = await runPlan(parsed.blocks!, f.deps);
+  assert.deepEqual(
+    ledger.blocks.map((b) => b.key),
+    ['example-settings', MASK],
+  );
+});
+
+test('a declared echo is in force from its line to the end of its block', async () => {
+  const email = 'qa-synth-1234@example.test';
+  const otp = '482913';
+  const hint = (label: string) => [
+    {
+      ref: '@h',
+      index: 0,
+      type: 'StaticText',
+      identifier: 'code_hint',
+      label,
+      rect: { x: 0, y: 0, width: 40, height: 20 },
+    },
+  ];
+  const screens = () => [
+    fixtureScreen([
+      fixtureElement('@e1', 'Email', { kind: 'input', testID: 'email' }),
+      fixtureElement('@e2', 'Code', { kind: 'input', testID: 'code' }),
+      fixtureElement('@e3', 'next', { testID: 'next' }),
+    ]),
+  ];
+  const parsed = (markdown: string) => parsePlan(markdown).blocks![0];
+  const declared = parsed(
+    '# Login\n1. Expect input EMAIL on screen\n2. Fill "email" with input EMAIL\n3. Tap "next"\n',
+  );
+  const inputs = () => new RunInputs({ EMAIL: email, OTP: otp }, ['EMAIL', 'OTP']);
+  const walk = (block: typeof declared, opts = {}, onPress?: () => Promise<void> | void) => {
+    const f = fixtureWalker(screens(), scriptedJudge([]));
+    const actions: string[] = [];
+    const press = f.deps.press;
+    f.deps.press = async (...args) => {
+      actions.push('press');
+      hashSnapshotNodes(hint(`We sent a code to ${email}`));
+      await onPress?.();
+      return press(...args);
+    };
+    const fill = f.deps.fill;
+    f.deps.fill = async (...args) => {
+      actions.push('fill');
+      return fill(...args);
+    };
+    const row = f.deps.row;
+    const echoRows: string[][] = [];
+    f.deps.row = (r) => {
+      if (r.line === 2) echoRows.push([r.outcome, ...actions]);
+      return row?.(r);
+    };
+    return { f, echoRows, run: () => walkBlock(block, f.deps, 0, [], undefined, undefined, opts) };
+  };
+  await withInputs(inputs(), async () => {
+    const first = walk(declared);
+    const outcome = await first.run();
+    assert.equal(outcome.failure, undefined);
+    assert.deepEqual(first.echoRows, [['pass']]);
+    assert.throws(() => hashSnapshotNodes(hint(`We sent a code to ${email}`)), InputPrivacyRefusal);
+  });
+  await withInputs(inputs(), () =>
+    assert.rejects(
+      walk(parsed('# Login\n1. Fill "email" with input EMAIL\n2. Tap "next"\n')).run(),
+      InputPrivacyRefusal,
+    ),
+  );
+  await withInputs(inputs(), async () => {
+    assert.equal((await walk(declared, { fromLine: 4 }).run()).failure, undefined);
+  });
+  const login = parsed(
+    '# Recover\n1. Fill "code" with input OTP\n2. Expect input OTP on screen\n3. Tap "next"\n',
+  );
+  let nested = false;
+  await withInputs(inputs(), async () => {
+    const outer = walk(declared, {}, async () => {
+      if (nested) return;
+      nested = true;
+      await walkBlock(login, fixtureWalker(screens(), scriptedJudge([])).deps);
+      hashSnapshotNodes(hint(`We sent a code to ${email}`));
+    });
+    assert.equal((await outer.run()).failure, undefined);
+  });
+  assert.equal(nested, true);
+  await withInputs(inputs(), () =>
+    assert.rejects(
+      walk(declared, {}, async () => {
+        await walkBlock(login, fixtureWalker(screens(), scriptedJudge([])).deps);
+        hashSnapshotNodes(hint(`Your code is ${otp}`));
+      }).run(),
+      InputPrivacyRefusal,
+    ),
+  );
+});

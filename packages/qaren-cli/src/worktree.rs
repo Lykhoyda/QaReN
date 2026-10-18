@@ -2,7 +2,7 @@ use crate::commands::cleanup::Outcome;
 use crate::exec::{CmdOutput, CmdSpec, Runner};
 use crate::failure::{Failure, FailureCode};
 use crate::github::PrInfo;
-use sha2::{Digest, Sha256};
+use std::io::Read;
 use std::path::{Path, PathBuf};
 
 pub fn pr_worktree_path(run_dir: &Path) -> PathBuf {
@@ -28,17 +28,23 @@ fn failed(detail: String) -> Failure {
     )
 }
 
-// Fetches the PR head from origin and checks it out detached; the fetched head must be the one gh named.
 pub fn add(
     runner: &mut dyn Runner,
     repo_root: &Path,
     pr: &PrInfo,
     wt: &Path,
 ) -> Result<(), Failure> {
-    let Some(wt_arg) = wt.to_str() else {
-        return Err(failed(format!("{} is not a UTF-8 path", wt.display())));
-    };
-    let run_ref = format!("refs/qaren/pr/{:x}", Sha256::digest(wt_arg.as_bytes()));
+    fetch_head(runner, repo_root, pr)?;
+    add_prepared(runner, repo_root, pr, wt)
+}
+
+pub fn fetch_head(runner: &mut dyn Runner, repo_root: &Path, pr: &PrInfo) -> Result<(), Failure> {
+    let mut random = [0u8; 16];
+    std::fs::File::open("/dev/urandom")
+        .and_then(|mut file| file.read_exact(&mut random))
+        .map_err(|_| failed("cannot name the private fetch ref".into()))?;
+    let suffix: String = random.iter().map(|byte| format!("{byte:02x}")).collect();
+    let run_ref = format!("refs/qaren/pr/{suffix}");
     let refspec = format!("pull/{}/head:{run_ref}", pr.number);
     let fetch = git(
         runner,
@@ -75,6 +81,18 @@ pub fn add(
             pr.head_ref_oid
         )));
     }
+    Ok(())
+}
+
+pub fn add_prepared(
+    runner: &mut dyn Runner,
+    repo_root: &Path,
+    pr: &PrInfo,
+    wt: &Path,
+) -> Result<(), Failure> {
+    let wt_arg = wt
+        .to_str()
+        .ok_or_else(|| failed("worktree path is not UTF-8".into()))?;
     let added = git(
         runner,
         "git-worktree-add",
@@ -161,6 +179,104 @@ pub fn safe_slug(slug: &str) -> bool {
         && slug
             .chars()
             .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.'))
+}
+
+pub fn login_at_head(
+    runner: &mut dyn Runner,
+    repo: &Path,
+    sha: &str,
+    app_rel: &str,
+    slug: &str,
+) -> Result<Option<String>, Failure> {
+    let refused = || {
+        Failure::new(
+            "preflight",
+            FailureCode::CoreRefused,
+            "runtime input corpus inventory refused",
+            "restore an inspectable regular login corpus at the exact pull request head",
+        )
+    };
+    if !safe_slug(slug) {
+        return Err(refused());
+    }
+    let prefix = if app_rel == "." {
+        String::new()
+    } else {
+        format!("{app_rel}/")
+    };
+    let parent = format!("{prefix}.qaren/actions");
+    let mut path = String::new();
+    let inspect =
+        |runner: &mut dyn Runner, path: &str| -> Result<Option<(String, String)>, Failure> {
+            let output = runner.run_private(
+                &CmdSpec::new(
+                    "git-login-tree",
+                    "git",
+                    &["ls-tree", "-z", sha, "--", path],
+                    30,
+                )
+                .cwd(repo),
+                b"",
+            );
+            if !output.clean() {
+                return Err(refused());
+            }
+            let raw = output.stdout();
+            if raw.is_empty() {
+                return Ok(None);
+            }
+            let (header, actual) = raw
+                .strip_suffix('\0')
+                .and_then(|line| line.split_once('\t'))
+                .ok_or_else(refused)?;
+            if actual != path || header.contains('\0') {
+                return Err(refused());
+            }
+            let fields: Vec<_> = header.split_whitespace().collect();
+            if fields.len() != 3 {
+                return Err(refused());
+            }
+            Ok(Some((fields[0].into(), fields[1].into())))
+        };
+    for component in Path::new(&parent).components() {
+        let std::path::Component::Normal(component) = component else {
+            return Err(refused());
+        };
+        if !path.is_empty() {
+            path.push('/');
+        }
+        path.push_str(component.to_str().ok_or_else(refused)?);
+        match inspect(runner, &path)? {
+            None => return Ok(None),
+            Some((mode, kind)) if mode == "040000" && kind == "tree" => {}
+            _ => return Err(refused()),
+        }
+    }
+    let mut chosen = None;
+    for extension in ["yaml", "yml"] {
+        let file = format!("{parent}/{slug}.{extension}");
+        match inspect(runner, &file)? {
+            None => {}
+            Some((mode, kind))
+                if (mode == "100644" || mode == "100755") && kind == "blob" && chosen.is_none() =>
+            {
+                chosen = Some(file)
+            }
+            _ => return Err(refused()),
+        }
+    }
+    let Some(file) = chosen else {
+        return Ok(None);
+    };
+    let spec = format!("{sha}:{file}");
+    let output = runner.run_private(
+        &CmdSpec::new("git-login-blob", "git", &["show", &spec], 30).cwd(repo),
+        b"",
+    );
+    if !output.clean() {
+        return Err(refused());
+    }
+    Ok(Some(output.stdout().to_string()))
 }
 
 fn is_real(path: &Path, dir: bool) -> bool {

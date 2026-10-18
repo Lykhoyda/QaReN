@@ -25,6 +25,10 @@ On the next run, a block whose plan lines, platform and app are unchanged is rep
 stored identities. For Jev requirements, including the optional interruption safety veto,
 see the [plan readiness contract](https://github.com/Lykhoyda/rn-dev-agent/blob/develop/packages/qaren-cli/README.md#plan-checks-and-screen-evidence).
 
+Start declarations retain their plan target on replay; see the authoritative
+[saved-block contract](https://github.com/Lykhoyda/rn-dev-agent/blob/develop/packages/qaren-cli/README.md#saved-blocks)
+for start waits and refusal behavior.
+
 | Situation                                                        | Outcome                                                         |
 | ---------------------------------------------------------------- | --------------------------------------------------------------- |
 | A stored identity resolves                                       | The step replays                                                |
@@ -46,11 +50,15 @@ any value, when:
 
 - a step had neither a `testID` nor a label to store;
 - it has a phrase wait;
-- it fills a secure or private input;
-- a fill fell back to the keyboard;
+- a fill meets the [private-input or keyboard-fallback persistence restrictions](https://github.com/Lykhoyda/rn-dev-agent/blob/develop/packages/qaren-cli/README.md#saved-blocks);
 - a protected value from the plan or the run appears in the block, which reports
   `contains a protected plan-typed value`;
 - a quoted wait or scroll target has no unique `testID` or unique visible text.
+
+A fill from a [runtime input](../plans/#runtime-inputs) is saved by name only, as
+`inputText: { input: "PASSWORD" }`, and replays with the current run's value. An
+`Expect input NAME on screen` line is saved as its plan line and a `# qaren: echo NAME`
+marker. Older qaren versions cannot replay such a block.
 
 An edited or incompatible block file is treated as new and walked again. Existing saved
 blocks are never removed.
@@ -86,6 +94,10 @@ loginMarker:
 `loginBlock` names a saved block, `.qaren/actions/sign-in.yaml` here, saved for this app and
 platform. `loginMarker` has exactly one of `id` (a `testID`) or `text` (a label). The two keys
 are set together. A missing or incompatible login block fails when login recovery is needed.
+qaren reads the login block before it selects a device, so the runtime inputs it names are
+required for every run. `qaren pr` reads it at the pull request head and refuses a symlinked
+or unreadable `.qaren/actions` there. That block may only use inputs your plan or your
+checked-out login block already names; any other name refuses `PLAN_INPUT_MISSING`.
 
 A second failure of the same step fails it. Recovery never runs inside the login replay, and
 capture, Jev, app-process, replay-miss and cancellation refusals are never recovered. The

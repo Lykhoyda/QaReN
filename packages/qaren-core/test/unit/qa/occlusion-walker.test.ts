@@ -15,6 +15,7 @@ import type { QaDispatchContext } from '../../../dist/domain/qa-dispatch.js';
 import { centreCovered, type CentreCoverageDiagnostic } from '../../../dist/qa/resolve.js';
 import type { WalkerTimingDiagnostic } from '../../../dist/qa/walker.js';
 import type { TimingEvent } from '../../../dist/qa/timing.js';
+import { ANDROID_LIST, IOS_LIST, androidOptionSheet, iosOptionSheet } from './sheet-fixtures.ts';
 
 const OCCLUDED: ActResult = {
   ok: false,
@@ -432,7 +433,7 @@ for (const [name, screens, calls, clearances, typed] of [
     'clears with one overlap-sized scroll before its tap',
     [700, 300],
     ['scroll down', 'press @target'],
-    [472],
+    [496],
     1,
   ],
   ['is tapped without a scroll when uncovered', [300], ['press @target'], [], 1],
@@ -440,7 +441,7 @@ for (const [name, screens, calls, clearances, typed] of [
     'refuses without a tap when still covered after one scroll',
     [700, 650],
     ['scroll down'],
-    [472],
+    [496],
     0,
   ],
 ] as const) {
@@ -829,6 +830,7 @@ test('terminal diagnostics preserve offscreen versus native-occlusion scroll ori
 
 test('O5: a press whose centre lies past its scroll clip scrolls before any dispatch', async () => {
   const f = fake([clipped(700), clipped(400), clipped(400), done()], {});
+  const seen = recordingClearance(f);
   const events: WalkerTimingDiagnostic[] = [];
   f.deps.diagnostic = (event) => events.push(event);
   const outcome = await walkBlock(block('1. Tap "go"\n'), f.deps);
@@ -845,6 +847,9 @@ test('O5: a press whose centre lies past its scroll clip scrolls before any disp
     events.some((event) => event.code === 'CENTRE_COVERED'),
     false,
   );
+  assert.deepEqual(seen, [
+    { clearance: 722 - 360, within: { x: 0, y: 0, width: 400, height: 720 } },
+  ]);
 });
 
 test('O5: a fill whose centre lies under the keyboard scrolls before any dispatch', async () => {
@@ -872,7 +877,7 @@ test('the iOS keyboard clearance scroll carries the overlap distance', async () 
   };
   const outcome = await walkBlock(block('1. Fill "field" with "x"\n'), f.deps);
   assert.equal(outcome.block.outcome, 'pass');
-  assert.deepEqual(clearances, [472]);
+  assert.deepEqual(clearances, [496]);
 });
 
 test('O5: a target still covered after one scroll refuses with no dispatch', async () => {
@@ -967,7 +972,44 @@ test('a keyboard-covered row of a list stretched under the keyboard is lifted in
     'press @target',
     'capture',
   ]);
-  assert.deepEqual(bands, [{ x: 0, y: 300, width: 400, height: 200 }]);
+  assert.deepEqual(bands, [{ x: 0, y: 300, width: 400, height: 500 - 48 - 300 }]);
+});
+
+const listOnly = (): Screen =>
+  covered(
+    join(
+      [
+        ...root(),
+        {
+          ref: '@scroll',
+          index: 2,
+          parentIndex: 1,
+          type: 'ScrollView',
+          rect: { x: 0, y: 300, width: 400, height: 500 },
+        },
+      ],
+      [],
+    ),
+  );
+
+test('(g) scroll-until with its target absent drags inside the list', async () => {
+  const f = fake([listOnly(), stretched(400)], {});
+  const bands = recordingScrolls(f);
+  const outcome = await walkBlock(block('1. Scroll down until "go"\n'), f.deps);
+  assert.equal(outcome.block.outcome, 'pass');
+  assert.deepEqual(
+    f.calls.filter((call) => call !== 'capture'),
+    ['scroll down'],
+  );
+  assert.deepEqual(bands, [{ x: 0, y: 300, width: 400, height: 500 }]);
+});
+
+test('(h) scroll-until with a covered target drags inside its clip band', async () => {
+  const f = fake([stretched(505), stretched(400)], {});
+  const bands = recordingScrolls(f);
+  const outcome = await walkBlock(block('1. Scroll down until "go"\n'), f.deps);
+  assert.equal(outcome.block.outcome, 'pass');
+  assert.deepEqual(bands, [{ x: 0, y: 300, width: 400, height: 500 - 48 - 300 }]);
 });
 
 // An Android keyboard form: a ScrollView list from 300 under the keyboard (1400) and a sticky Submit footer sibling 1150-1400.
@@ -1136,6 +1178,139 @@ test('an iOS field inside the band above a sticky footer fills without a scroll'
     ['fill @target'],
   );
 });
+
+function recordingClearance(f: ReturnType<typeof fake>) {
+  const seen: unknown[] = [];
+  const scroll = f.deps.scroll;
+  f.deps.scroll = (direction, context, clearance, within) => {
+    seen.push({ clearance, within });
+    return scroll(direction, context, clearance, within);
+  };
+  return seen;
+}
+
+// Option 17 parked after five full-list drags; option 20's collapsed frame sits at 1631, below the list.
+test('(y) a press on a row scrolled out of the sheet list lifts it inside that list', async () => {
+  const parked = covered(androidOptionSheet(2510));
+  const reached = covered(androidOptionSheet(168 * 17));
+  const f = fake([parked, reached, reached, done()], {});
+  const seen = recordingClearance(f);
+  const outcome = await walkBlock(block('1. Tap "qa-sheet-capture-option-20"\n'), f.deps);
+  assert.deepEqual(seen, [{ clearance: 1631 - 1201, within: ANDROID_LIST }]);
+  assert.equal(outcome.block.outcome, 'pass');
+  assert.deepEqual(
+    f.calls.filter((call) => call !== 'capture'),
+    ['scroll down', 'press @option-20'],
+  );
+});
+
+test('(z) a row still out of the list after that one lift refuses without a press', async () => {
+  const below = covered(androidOptionSheet(949 + 168 * 19 - 1621));
+  const f = fake([below, below], {});
+  const seen = recordingClearance(f);
+  const outcome = await walkBlock(block('1. Tap "qa-sheet-capture-option-20"\n'), f.deps);
+  assert.deepEqual(seen, [{ clearance: 1621 - 1201, within: ANDROID_LIST }]);
+  assert.equal(outcome.block.outcome, 'fail');
+  assert.deepEqual(
+    f.calls.filter((call) => call !== 'capture'),
+    ['scroll down'],
+  );
+  assert.match(
+    renderReason(outcome.failure?.seen ?? '', (text) => text),
+    /stayed off screen after one scroll/,
+  );
+});
+
+// A plain screen: the list's clip is the window, the target sits 300 px below the fold.
+function belowFold(y: number): Screen {
+  return covered(
+    join(
+      [
+        ...root(),
+        {
+          ref: '@scroll',
+          index: 2,
+          parentIndex: 1,
+          type: 'ScrollView',
+          rect: { x: 0, y: 0, width: 400, height: 800 },
+        },
+        {
+          ref: '@target',
+          index: 3,
+          parentIndex: 2,
+          type: 'Button',
+          identifier: 'go',
+          label: 'Go',
+          hittable: true,
+          rect: { x: 20, y, width: 300, height: 44 },
+        },
+      ],
+      [],
+    ),
+  );
+}
+
+test('(ab) a target below the fold of a plain screen is lifted by its gap, not a window height', async () => {
+  const f = fake([belowFold(1078), belowFold(378), belowFold(378), done()], {});
+  const seen = recordingClearance(f);
+  const outcome = await walkBlock(block('1. Tap "go"\n'), f.deps);
+  assert.deepEqual(seen, [
+    { clearance: 1100 - 400, within: { x: 0, y: 0, width: 400, height: 800 } },
+  ]);
+  assert.equal(outcome.block.outcome, 'pass');
+});
+
+test('(s) scroll-until toward a row scrolled out of the sheet list drags inside that list', async () => {
+  const f = fake([covered(androidOptionSheet()), covered(androidOptionSheet(168 * 17))], {});
+  const bands = recordingScrolls(f);
+  const outcome = await walkBlock(
+    block('1. Scroll down until "qa-sheet-capture-option-20"\n'),
+    f.deps,
+  );
+  assert.equal(outcome.block.outcome, 'pass');
+  assert.deepEqual(
+    f.calls.filter((call) => call !== 'capture'),
+    ['scroll down'],
+  );
+  assert.deepEqual(bands, [ANDROID_LIST]);
+});
+
+// One swipe travels 161 pt and the band ends at 520: option 20 parked with its centre at 672 comes clear, at 752 it stays covered.
+for (const moved of [true, false]) {
+  test(`(x) a row parked under the keyboard gets one full-band clearance swipe (${moved ? 'reached' : 'out of reach'})`, async () => {
+    const row17 = moved ? 448 : 528;
+    const parked = covered(iosOptionSheet(row17));
+    const after = covered(iosOptionSheet(row17 - 161));
+    const f = fake(moved ? [parked, after, after, done()] : [parked, after], {});
+    const seen: unknown[] = [];
+    const scroll = f.deps.scroll;
+    f.deps.scroll = (direction, context, clearance, within) => {
+      seen.push({ clearance, within });
+      return scroll(direction, context, clearance, within);
+    };
+    const outcome = await walkBlock(block('1. Tap "qa-sheet-capture-option-20"\n'), f.deps);
+    assert.deepEqual(seen, [
+      { clearance: row17 + 224 - (357 + 163 / 2), within: { ...IOS_LIST, height: 163 } },
+    ]);
+    if (moved) {
+      assert.equal(outcome.block.outcome, 'pass');
+      assert.deepEqual(
+        f.calls.filter((call) => call !== 'capture'),
+        ['scroll down', 'press @option-20'],
+      );
+    } else {
+      assert.equal(outcome.block.outcome, 'fail');
+      assert.deepEqual(
+        f.calls.filter((call) => call !== 'capture'),
+        ['scroll down'],
+      );
+      assert.match(
+        renderReason(outcome.failure?.seen ?? '', (text) => text),
+        /stayed off screen after one scroll/,
+      );
+    }
+  });
+}
 
 test('a stretched-list row still covered after its clearance scroll refuses with one scroll and no press', async () => {
   const f = fake([stretched(505), stretched(505)], {});

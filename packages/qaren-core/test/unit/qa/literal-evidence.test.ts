@@ -576,7 +576,8 @@ test('quoted and semantic targets scroll relative to every trusted clipping view
       const step = parseStep('Press "Earlier"');
       assert.ok(step && !('refuse' in step) && step.kind === 'press');
       const exact = prepareTarget(step, screen);
-      if (direction) assert.deepEqual(exact, { scroll: direction }, type);
+      const earlier = screen.elements[2];
+      if (direction) assert.deepEqual(exact, { scroll: direction, element: earlier }, type);
       else assert.ok('ref' in exact, type);
       const semantic = prepareTarget({ ...step, target: { phrase: 'the earlier button' } }, screen);
       assert.ok('question' in semantic, type);
@@ -590,7 +591,7 @@ test('quoted and semantic targets scroll relative to every trusted clipping view
         probabilities: { [choice]: 1, none: 0 },
       });
       if (direction) {
-        assert.deepEqual(chosen, { scroll: direction }, type);
+        assert.deepEqual(chosen, { scroll: direction, element: earlier }, type);
         assert.deepEqual(
           decideTarget(semantic, {
             type: 'choice',
@@ -598,7 +599,7 @@ test('quoted and semantic targets scroll relative to every trusted clipping view
             confidence: 1,
             probabilities: { [choice]: 0, none: 1 },
           }),
-          { scroll: direction },
+          { scroll: direction, element: earlier },
           type,
         );
       } else assert.ok('ref' in chosen, type);
@@ -624,7 +625,10 @@ test('nested clips and absent clips retain the correct scroll boundary', () => {
   ] as const) {
     const screen = observed([...specs]);
     if (screen.elements.length === 1) screen.elements[0].offscreen = true;
-    assert.deepEqual(prepareTarget(step, screen), { scroll: direction });
+    assert.deepEqual(prepareTarget(step, screen), {
+      scroll: direction,
+      element: screen.elements.find((e) => e.label === 'Earlier'),
+    });
   }
 });
 

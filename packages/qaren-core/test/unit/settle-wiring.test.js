@@ -58,15 +58,22 @@ test('runIOS dispatches isScreenStatic and returns {static}', async () => {
   assert.equal(envelope.data.static, true);
 });
 
-test('buildIosProbes.isScreenStatic maps envelope → boolean, failure → null', async () => {
+test('production iOS settle never sends a pixel-hash request', async () => {
   _setFastRunnerStateForTest(iosState());
-  setIosFetch(async () => jsonResponse({ ok: true, data: { static: false }, v: 1 }));
-  const probes = buildIosProbes('com.test');
-  assert.equal(await probes.isScreenStatic(), false);
-  setIosFetch(async () => {
-    throw new Error('boom');
+  const commands = [];
+  setIosFetch(async (_url, init) => {
+    commands.push(JSON.parse(init.body).command);
+    return jsonResponse({ ok: true, data: { nodes: [] }, v: 1 });
   });
-  assert.equal(await probes.isScreenStatic(), null);
+  const { waitForSettle } = await import('../../dist/lifecycle/settle.js');
+  const result = await waitForSettle({
+    platform: 'ios',
+    capabilities: ['SCREEN_STATIC'],
+    probes: buildIosProbes('com.test'),
+  });
+  assert.equal(result.method, 'snapshot-eq');
+  assert.ok(commands.length >= 2);
+  assert.ok(commands.every((command) => command === 'snapshot'));
 });
 
 test('buildAndroidProbes.isWindowUpdating posts timeoutMs and maps {updating}', async () => {
@@ -99,11 +106,11 @@ test('settleAfterMutation attaches meta.settle + timings_ms.settle on mutating s
       enabled: () => true,
       capabilities: () => ['SCREEN_STATIC'],
       probes: () => ({ snapshotHash: async () => 'h', sleep: async () => {}, now: () => 0 }),
-      wait: async () => ({ settled: true, method: 'screen-static', ms: 240 }),
+      wait: async () => ({ settled: true, method: 'snapshot-eq', ms: 240 }),
     },
   );
   const envelope = JSON.parse(out.content[0].text);
-  assert.deepEqual(envelope.meta.settle, { method: 'screen-static', settled: true });
+  assert.deepEqual(envelope.meta.settle, { method: 'snapshot-eq', settled: true });
   assert.equal(envelope.meta.timings_ms.settle, 240);
 });
 
@@ -114,7 +121,7 @@ test('settleAfterMutation skips non-mutating verbs, errors, per-call opt-out, an
     enabled: () => true,
     capabilities: () => ['SCREEN_STATIC'],
     probes: () => ({ snapshotHash: async () => 'h', sleep: async () => {}, now: () => 0 }),
-    wait: async () => ({ settled: true, method: 'screen-static', ms: 1 }),
+    wait: async () => ({ settled: true, method: 'snapshot-eq', ms: 1 }),
   };
   const cases = [
     [okResult({}), { platform: 'ios', verb: 'snapshot' }, fakeDeps],
@@ -240,15 +247,14 @@ test('end-to-end: runNative ios tap → runner /command + settle probe → meta.
     }
     const body = JSON.parse(init.body);
     if (body.command === 'tap') return jsonResponse({ ok: true, data: { tapped: true }, v: 1 });
-    if (body.command === 'isScreenStatic')
-      return jsonResponse({ ok: true, data: { static: true }, v: 1 });
+    if (body.command === 'snapshot') return jsonResponse({ ok: true, data: { nodes: [] }, v: 1 });
     return jsonResponse({ ok: true, data: {}, v: 1 });
   });
   try {
     const result = await runNative(['tap', '100', '200'], { platform: 'ios' });
     const envelope = JSON.parse(result.content[0].text);
     assert.equal(envelope.meta.settle.settled, true);
-    assert.equal(envelope.meta.settle.method, 'screen-static');
+    assert.equal(envelope.meta.settle.method, 'snapshot-eq');
     assert.equal(typeof envelope.meta.timings_ms.settle, 'number');
   } finally {
     _setPluginVersionForTest(undefined);

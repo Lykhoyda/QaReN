@@ -8,9 +8,9 @@ export function createStop() {
     get stopping(): boolean {
       return controller.signal.aborted;
     },
-    begin(): boolean {
+    begin(reason: Error = new RunCancelledError()): boolean {
       if (controller.signal.aborted) return false;
-      controller.abort(new RunCancelledError());
+      controller.abort(reason);
       return true;
     },
     track<T>(op: () => Promise<T>): Promise<T> {

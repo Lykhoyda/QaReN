@@ -3,6 +3,21 @@ import assert from 'node:assert/strict';
 import { Writable } from 'node:stream';
 import { createStop, watchOwnerPipe, watchParent } from '../../../dist/qa/stop.js';
 
+test('the first typed terminal reason cancels pending and subsequent work', async () => {
+  const stop = createStop();
+  const reason = Object.assign(new Error('private hash operand refused'), { code: 'CORE_REFUSED' });
+  const pending = stop.track(() => new Promise(() => undefined));
+  const refused = assert.rejects(pending, (error) => error === reason);
+  assert.equal(stop.begin(reason), true);
+  assert.equal(stop.begin(), false);
+  assert.equal(stop.signal.reason, reason);
+  await refused;
+  await assert.rejects(
+    stop.track(async () => assert.fail('must not dispatch')),
+    (error) => error === reason,
+  );
+});
+
 test('a stop begins once and then refuses new device work', async () => {
   const stop = createStop();
   let ran = 0;

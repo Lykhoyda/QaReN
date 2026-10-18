@@ -50,6 +50,7 @@ pub enum FailureCode {
     AppPresenceUnknown,
     AppResetFailed,
     PlanUnparseable,
+    PlanInputMissing,
     NodeUnsupported,
     DiskBudgetExceeded,
     PlatformUnsupported,
@@ -59,6 +60,7 @@ pub enum FailureCode {
     PlanStepFailed,
     MetroOriginMismatch,
     CoreRefused,
+    BlockStartMissing,
     JevUnreachable,
     JevAuthFailed,
     JevRequestInvalid,
@@ -87,12 +89,14 @@ impl FailureCode {
                 | FailureCode::IosBuildCapabilityUnavailable
                 | FailureCode::FreshInstallAdmissionUnknown
                 | FailureCode::AppPresenceUnknown
+                | FailureCode::PlanInputMissing
                 | FailureCode::PlanUnparseable
                 | FailureCode::NodeUnsupported
                 | FailureCode::DiskBudgetExceeded
                 | FailureCode::PlatformUnsupported
                 | FailureCode::MetroOriginMismatch
                 | FailureCode::CoreRefused
+                | FailureCode::BlockStartMissing
                 | FailureCode::JevUnreachable
                 | FailureCode::JevAuthFailed
                 | FailureCode::JevRequestInvalid

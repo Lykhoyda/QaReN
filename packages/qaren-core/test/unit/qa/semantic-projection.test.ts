@@ -494,7 +494,7 @@ test('an offscreen native control is a described action candidate; an unobserved
       probabilities: chosen,
       confidence: 0.9,
     }),
-    { scroll: 'down' },
+    { scroll: 'down', element: question.candidates[0] },
   );
 
   const shown = projection.join(
