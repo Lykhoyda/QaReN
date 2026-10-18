@@ -371,3 +371,39 @@ test('(u) one clearance swipe spans the band clear of the keyboard edge', () => 
     clearRefMap();
   }
 });
+
+// A modal screen in its own window over the app: the app's full-width bar lies behind "Skip", never over it.
+// A framed Application root shares an unclipped target's viewport and already excludes everything; without it the clip is the Window.
+test("anything in the window behind a modal never shrinks the band of a header control in the modal's window", () => {
+  for (const root of [{ rect: IOS }, {}]) {
+    const screen = join(
+      [
+        { ref: '@app', index: 0, type: 'Application', ...root },
+        { ref: '@win1', index: 1, parentIndex: 0, type: 'Window', rect: IOS },
+        {
+          ref: '@bar',
+          index: 2,
+          parentIndex: 1,
+          type: 'Other',
+          hittable: true,
+          rect: { ...IOS, height: 120 },
+        },
+        { ref: '@win2', index: 3, parentIndex: 0, type: 'Window', rect: IOS },
+        { ref: '@modal', index: 4, parentIndex: 3, type: 'Other', hittable: true, rect: IOS },
+        {
+          ref: '@skip',
+          index: 5,
+          parentIndex: 4,
+          type: 'Button',
+          label: 'Skip',
+          hittable: true,
+          rect: { x: 352, y: 73, width: 34, height: 24 },
+        },
+      ],
+      [],
+    );
+    const skip = byRef(screen, '@skip');
+    assert.equal(clearanceBand(skip, screen)?.y, 0);
+    assert.equal(centreCovered(skip, screen), false);
+  }
+});
