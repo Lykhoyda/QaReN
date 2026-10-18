@@ -774,10 +774,7 @@ test('a second app interruption still respects later plan targets and consent bo
       f.show(second);
       return { ok: true, proven: false, executed: true };
     };
-    const result = await runPlan(
-      parsePlan('1. Tap "Settings"\n2. Tap "Profile"').blocks!,
-      f.deps,
-    );
+    const result = await runPlan(parsePlan('1. Tap "Settings"\n2. Tap "Profile"').blocks!, f.deps);
     assert.equal(result.verdict, 'FAIL');
     assert.deepEqual(f.actions, ['press @close']);
     assert.equal(result.recoveries, 1);
