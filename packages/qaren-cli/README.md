@@ -1497,7 +1497,9 @@ is replayed by those stored identities through the same walk, without Jev for qu
 targets or literal checks; phrase checks still ask Jev. An ambiguous stored
 identity refuses `TARGET_AMBIGUOUS` without re-walking. A stored identity that no
 longer resolves before that step authorizes any mutation re-walks
-the block from that line; earlier completed steps are kept. Once that step authorizes
+the block from that line; earlier completed steps are kept. A stored wait or
+scroll-until first polls its full budget; the re-walk follows only if the identity
+never appears and the step has not authorized a mutation. Once that step authorizes
 a mutation, its selector failure is terminal; recovered selector misses follow
 [Step recovery](#step-recovery). On PASS only the commands under that
 line and later ones are rewritten, and every `✓` comment stays byte-identical. A failing check is a FAIL and

@@ -17,10 +17,17 @@ import { parsePlan, slugify } from '../../../dist/qa/plan.js';
 import type { Block } from '../../../dist/qa/plan.js';
 import type { Element, Screen } from '../../../dist/qa/screen.js';
 import { join as joinScreen } from '../../../dist/qa/screen.js';
-import { runPlan, walkBlock, type BlockStore } from '../../../dist/qa/walker.js';
+import {
+  runPlan,
+  walkBlock,
+  WAIT_BUDGET_MS,
+  SCROLL_ATTEMPTS,
+  type BlockStore,
+} from '../../../dist/qa/walker.js';
 import type { Ledger, LedgerRow, WalkResult } from '../../../dist/qa/ledger.js';
 import { element, screen, scriptedJudge, walker } from './judgment-fixtures.ts';
 import { AppProcessGoneError } from '../../../dist/qa/capture.js';
+import { PHRASE_WAIT_BUDGET_MS } from '../../../dist/qa/timing.js';
 import { captureInputPrivacy, isPrivateInput } from '../../../dist/qa/privacy.js';
 import { readBlock, serializeBlock, writeBlock } from '../../../dist/qa/blocks.js';
 
@@ -582,6 +589,118 @@ test('the private-input predicate covers secure fields and inputs the privacy mo
   assert.equal(isPrivateInput(labelValue), true);
 });
 
+for (const verb of ['Wait for "Ready"', 'Scroll down until "Ready"']) {
+  test(`stored-ID ${verb} polls until a delayed match without re-walking`, async () => {
+    const dir = root();
+    try {
+      const plan = blocks(`### Ready\n1. ${verb}`);
+      const shown = screen([element('@ready', 'Ready', { testID: 'ready-id' })]);
+      const judge = scriptedJudge(() => assert.fail('stored-ID visibility must not ask Jev'));
+      const seed = walker([shown], judge);
+      assert.equal(ledger(await runPlan(plan, seed.deps, [], store(dir))).verdict, 'PASS');
+      const fake = walker([screen([]), screen([]), shown], judge);
+      const scroll = fake.deps.scroll;
+      fake.deps.scroll = (direction, context) => {
+        context.authorize();
+        return scroll(direction, context);
+      };
+      const result = ledger(await runPlan(plan, fake.deps, [], store(dir)));
+      assert.equal(result.verdict, 'PASS');
+      assert.equal(result.path, 'replay');
+      assert.deepEqual(result.blocks, [{ key: plan[0].slug, outcome: 'pass', source: 'replayed' }]);
+      assert.deepEqual(
+        result.steps.map((row) => [row.outcome, row.resolvedBy]),
+        [['pass', 'exact']],
+      );
+      assert.deepEqual(result.blocksWritten, []);
+      assert.equal(fake.captures(), 3);
+      assert.deepEqual(
+        fake.actions,
+        verb.startsWith('Scroll') ? ['scroll down', 'scroll down'] : [],
+      );
+      assert.equal(judge.calls.length, 0);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+}
+
+for (const drift of [false, true]) {
+  test(`stored-ID wait exhausts its budget before re-walking a ${drift ? 'renamed' : 'missing'} ID`, async () => {
+    const dir = root();
+    try {
+      const plan = blocks('### Ready\n1. Wait for "Ready"');
+      const judge = scriptedJudge(() => assert.fail('stored-ID visibility must not ask Jev'));
+      const seed = walker([screen([element('@ready', 'Ready', { testID: 'ready-id' })])], judge);
+      assert.equal(ledger(await runPlan(plan, seed.deps, [], store(dir))).verdict, 'PASS');
+      const saved = readFileSync(join(dir, '.qaren/actions/ready.yaml'), 'utf8');
+      const fake = walker(
+        [screen(drift ? [element('@ready', 'Ready', { testID: 'new-ready-id' })] : [])],
+        judge,
+      );
+      const result = ledger(await runPlan(plan, fake.deps, [], store(dir)));
+      assert.equal(result.verdict, drift ? 'PASS' : 'FAIL');
+      assert.equal(result.path, `replay→walk@${plan[0].items[0].line}`);
+      const [retry, completion] = result.steps;
+      assert.equal(retry.outcome, 'retry');
+      assert.equal(retry.t, WAIT_BUDGET_MS);
+      assert.equal(
+        retry.reason,
+        'REPLAY_SELECTOR: 0 identities match the stored id "ready-id"; re-walking from this line',
+      );
+      assert.equal(completion.outcome, drift ? 'pass' : 'fail');
+      assert.equal(completion.operationId, retry.operationId);
+      assert.deepEqual(fake.actions, []);
+      assert.equal(judge.calls.length, 0);
+      if (drift) assert.deepEqual(completion.selector, { id: 'new-ready-id' });
+      else {
+        assert.match(completion.reason ?? '', /did not appear within 15s/);
+        assert.deepEqual(result.blocksWritten, []);
+        assert.equal(readFileSync(join(dir, '.qaren/actions/ready.yaml'), 'utf8'), saved);
+      }
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+}
+
+for (const budget of ['attempts', 'deadline']) {
+  test(`stored-ID scroll-until exhausts its ${budget} and preserves a post-dispatch terminal miss`, async () => {
+    const block = blocks('1. Scroll down until "Ready"')[0];
+    block.items[0] = {
+      ...block.items[0],
+      until: { quoted: 'ready-id', phrase: 'ready-id', exact: 'id' },
+    };
+    const fake = walker(
+      [screen([])],
+      scriptedJudge(() => assert.fail('exact replay cannot ask Jev')),
+    );
+    if (budget === 'deadline') {
+      let now = 0;
+      fake.deps.now = () => now;
+      fake.deps.sleep = async () => {
+        now = PHRASE_WAIT_BUDGET_MS;
+      };
+    }
+    const scroll = fake.deps.scroll;
+    fake.deps.scroll = (direction, context) => {
+      context.authorize();
+      return scroll(direction, context);
+    };
+    const result = await walkBlock(block, fake.deps, 0, [], undefined, undefined, {
+      mode: 'replay',
+    });
+    assert.equal(result.miss, undefined);
+    assert.match(
+      renderReason(result.failure?.seen ?? '', (text) => text),
+      /REPLAY_SELECTOR/,
+    );
+    const attempts = budget === 'attempts' ? SCROLL_ATTEMPTS : 1;
+    assert.deepEqual(fake.actions, Array(attempts).fill('scroll down'));
+    assert.equal(fake.captures(), budget === 'attempts' ? SCROLL_ATTEMPTS + 1 : 1);
+  });
+}
+
 for (const targetLine of ['3. Wait for "Welcome" to appear', '3. Scroll down until "Welcome"']) {
   test(`${targetLine} re-walks target ID drift without repeating prior actions`, async () => {
     const dir = root();
@@ -591,7 +710,12 @@ for (const targetLine of ['3. Wait for "Welcome" to appear', '3. Scroll down unt
     const { result, fake } = await run(plan, dir, { welcomeId: 'welcome-title' });
     assert.equal(result.verdict, 'PASS', JSON.stringify(result.failure));
     assert.equal(result.path, `replay→walk@${line}`);
-    assert.deepEqual(fake.actions, ['press @skip', 'press @done', 'press @tasks']);
+    assert.deepEqual(fake.actions, [
+      'press @skip',
+      'press @done',
+      ...(targetLine.includes('Scroll') ? Array(SCROLL_ATTEMPTS).fill('scroll down') : []),
+      'press @tasks',
+    ]);
     assert.equal(result.steps.find((row) => row.line === line)?.outcome, 'retry');
     assert.match(readFileSync(actionFile(dir), 'utf8'), /id: "welcome-title"/);
   });
@@ -630,6 +754,8 @@ for (const kind of ['wait', 'scroll', 'press', 'fill'] as const) {
         /TARGET_AMBIGUOUS/,
       );
       assert.deepEqual(fake.actions, []);
+      assert.equal(fake.captures(), 1);
+      assert.equal(fake.deps.now(), 0);
     });
   }
 }
