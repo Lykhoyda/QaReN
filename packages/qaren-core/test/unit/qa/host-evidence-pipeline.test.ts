@@ -58,9 +58,9 @@ test('real host producer survives the handler and capture without becoming visua
   assert.deepEqual(screen.coverage, { native: 'unknown', react: 'complete' });
   assert.deepEqual(screen.reactHostEvidence, {
     hosts: [
-      { testID: 'welcome', role: 'heading', roleSource: 'role', capabilities: {} },
-      { testID: 'save', role: null, roleSource: 'none', capabilities: { press: true } },
-      { testID: 'save', role: null, roleSource: 'none', capabilities: {} },
+      { testID: 'welcome', role: 'heading', roleSource: 'role', capabilities: {}, order: 0 },
+      { testID: 'save', role: null, roleSource: 'none', capabilities: { press: true }, order: 1 },
+      { testID: 'save', role: null, roleSource: 'none', capabilities: {}, order: 2 },
     ],
     complete: true,
   });
@@ -101,7 +101,7 @@ test('the component tree handler forwards host capture only with the interactive
     await tree({ depth: 4, interactiveOnly: true, semanticEvidence: true }),
   );
   assert.deepEqual(envelope.data.hostEvidence.hosts, [
-    { role: 'heading', roleSource: 'role', capabilities: {} },
+    { role: 'heading', roleSource: 'role', capabilities: {}, order: 0 },
   ]);
   assert.equal(envelope.meta.treeVerdict.complete, true);
 });
@@ -124,6 +124,12 @@ test('host admission rejects malformed facts and retains independent identities 
     { hosts: [{ ...host, roleSource: 'none' }], complete: true },
     { hosts: [{ ...host, nativeID: 1 }], complete: true },
     { hosts: [{ ...host, disabled: false }], complete: true },
+    { hosts: [{ ...host, pointerEvents: 'unknown' }], complete: true },
+    { hosts: [{ ...host, pointerEvents: null }], complete: true },
+    { hosts: [{ ...host, zIndex: '1' }], complete: true },
+    { hosts: [{ ...host, zIndex: Number.POSITIVE_INFINITY }], complete: true },
+    { hosts: [{ ...host, order: -1 }], complete: true },
+    { hosts: [{ ...host, order: 1.5 }], complete: true },
     {
       hosts: [{ ...host, roleSource: { toString: () => assert.fail('no coercion') } }],
       complete: true,
@@ -135,6 +141,11 @@ test('host admission rejects malformed facts and retains independent identities 
     },
   ])
     assert.equal(validateReactHostEvidence(invalid), undefined);
+  const touch = { ...host, pointerEvents: 'box-none', zIndex: -2, order: 3 };
+  assert.deepEqual(validateReactHostEvidence({ hosts: [touch], complete: true }), {
+    hosts: [touch],
+    complete: true,
+  });
   const input = { hosts: [host, host], complete: true };
   const valid = validateReactHostEvidence(input)!;
   assert.deepEqual(valid, input);

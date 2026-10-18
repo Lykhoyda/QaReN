@@ -9,14 +9,14 @@ import dev.lykhoyda.rndevagent.androidrunner.QaHierarchy.QaNode
 import dev.lykhoyda.rndevagent.androidrunner.QaHierarchy.RawWindow
 
 /**
- * The A11Y_PRESENCE_V1 per-node decisions over a QA snapshot. Framework-free so
+ * The A11Y_PRESENCE_V2 per-node decisions over a QA snapshot. Framework-free so
  * the JVM tests cover every rule; the dispatcher supplies the live refresh,
  * re-read and window list.
  *
- * A node is observed only when nothing in its window and no other window lies
- * above its visible centre. Anything uncertain is unknown with a reason, and a
- * node Android hides under the on-screen keyboard is keyboard-covered, not
- * scrolled out.
+ * A node is observed only when no window and no enabled, visible, clickable node
+ * of its window lies above its visible centre; transparent chrome that takes no
+ * touch is not a cover. Anything uncertain is unknown with a reason, and a node
+ * Android hides under the on-screen keyboard is keyboard-covered, not scrolled out.
  */
 object PresenceRules {
     enum class LabelSource(val wire: String) { DIRECT("direct"), VALUE("value"), DESCENDANT("descendant"), NONE("none") }
@@ -91,9 +91,10 @@ object PresenceRules {
     }
 
     /**
-     * Whether anything lies above [target]'s visible centre: any visible node of its window drawn
-     * above it, other than its own ancestors and descendants, or any window above that window. A
-     * window covering the point at the same layer, or a missing draw order, is unresolved.
+     * Whether anything that takes a touch lies above [target]'s visible centre: an enabled, visible,
+     * clickable node of its window drawn above it, other than its own ancestors and descendants, or
+     * any window above that window. A window covering the point at the same layer, or such a node
+     * with a missing draw order, is unresolved.
      */
     fun hit(nodes: List<QaNode>, target: Int, windows: List<RawWindow>): Hit {
         val node = nodes[target]
@@ -109,7 +110,7 @@ object PresenceRules {
         val path = zOrderPath(nodes, target) ?: return Hit.UNRESOLVED
         for ((index, other) in nodes.withIndex()) {
             if (index == target || other.windowId != node.windowId || structural(other)) continue
-            if (!other.visibleToUser || !other.rect.contains(x, y)) continue
+            if (!other.enabled || !other.visibleToUser || !other.clickable || !other.rect.contains(x, y)) continue
             val otherPath = zOrderPath(nodes, index) ?: return Hit.UNRESOLVED
             when (ExactPressSafety.sameWindowOcclusion(path, otherPath)) {
                 ExactPressSafety.OcclusionVerdict.CLEAR -> Unit
@@ -137,7 +138,7 @@ object PresenceRules {
     fun sameEvidence(a: QaNode, b: QaNode): Boolean =
         a.type == b.type && a.identifier == b.identifier && a.label == b.label && a.rect == b.rect &&
             a.enabled == b.enabled && a.selected == b.selected && a.secure == b.secure &&
-            a.editable == b.editable && a.visibleToUser == b.visibleToUser
+            a.editable == b.editable && a.visibleToUser == b.visibleToUser && a.clickable == b.clickable
 
     /** The revalidation: the same nodes with the same evidence and the same ancestry. */
     fun sameEnumeration(a: List<QaNode>, b: List<QaNode>): Boolean =

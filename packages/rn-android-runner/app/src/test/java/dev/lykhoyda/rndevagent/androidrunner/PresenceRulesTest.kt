@@ -33,6 +33,8 @@ class PresenceRulesTest {
         visibleToUser: Boolean = true,
         editable: Boolean = false,
         drawingOrder: Int? = 0,
+        clickable: Boolean = false,
+        enabled: Boolean = true,
         children: List<RawNode?> = emptyList(),
     ) = RawNode(
         className = className,
@@ -41,7 +43,7 @@ class PresenceRulesTest {
         viewIdResourceName = viewId?.let { "$app:id/$it" },
         packageName = app,
         bounds = bounds,
-        enabled = true,
+        enabled = enabled,
         visibleToUser = visibleToUser,
         selected = false,
         checked = false,
@@ -50,6 +52,7 @@ class PresenceRulesTest {
         children = children,
         editable = editable,
         drawingOrder = drawingOrder,
+        clickable = clickable,
     )
 
     private fun assembled(root: RawNode, vararg windows: RawWindow) =
@@ -131,21 +134,21 @@ class PresenceRulesTest {
         assertEquals(Reason.CLIPPED, observe(nodes, 3).reason)
     }
 
-    @Test fun anyVisibleNodeDrawnAboveTheCentreOrAnyWindowAboveCoversIt() {
+    @Test fun anEnabledClickableNodeDrawnAboveTheCentreOrAnyWindowAboveCoversIt() {
         val nodes = assembled(
             raw(
                 className = "android.view.ViewGroup", viewId = "root", bounds = display,
                 children = listOf(
-                    raw(viewId = "save", drawingOrder = 0, children = listOf(raw(className = "android.widget.TextView", viewId = null, text = "Save"))),
-                    raw(className = "android.view.ViewGroup", viewId = null, bounds = Bounds(0, 200, 1080, 400), drawingOrder = 1),
-                    raw(className = "android.view.ViewGroup", viewId = null, bounds = Bounds(0, 0, 1080, 2400), visibleToUser = false, drawingOrder = 2),
+                    raw(viewId = "save", drawingOrder = 0, clickable = true, children = listOf(raw(className = "android.widget.TextView", viewId = null, text = "Save"))),
+                    raw(className = "android.view.ViewGroup", viewId = null, bounds = Bounds(0, 200, 1080, 400), drawingOrder = 1, clickable = true),
+                    raw(className = "android.view.ViewGroup", viewId = null, bounds = Bounds(0, 0, 1080, 2400), visibleToUser = false, drawingOrder = 2, clickable = true),
                 ),
             ),
         )
         val save = 3
         assertEquals("save", nodes[save].identifier)
         val windows = listOf(appWindow)
-        // A plain, unclickable sibling drawn later covers the button.
+        // A clickable sibling drawn later takes the touch.
         assertEquals(Hit.COVERED, PresenceRules.hit(nodes, save, windows))
         // Its own descendants never cover it; the not-visible full-screen node is not drawn.
         val uncovered = nodes.filterIndexed { i, _ -> i != 5 }.mapIndexed { i, n -> n.copy(index = i) }
@@ -156,8 +159,50 @@ class PresenceRulesTest {
         assertEquals(Hit.COVERED, PresenceRules.hit(uncovered, save, windows + ime))
         val sameLayer = RawWindow(7, WindowKind.APPLICATION, 0, app, display)
         assertEquals(Hit.UNRESOLVED, PresenceRules.hit(uncovered, save, windows + sameLayer))
+        // A clickable sibling whose draw order is unknown leaves the hit unresolved.
         val noOrder = nodes.map { if (it.index == 5) it.copy(drawingOrder = null) else it }
         assertEquals(Hit.UNRESOLVED, PresenceRules.hit(noOrder, save, windows))
+        // A disabled clickable sibling takes no touch.
+        val disabled = nodes.map { if (it.index == 5) it.copy(enabled = false) else it }
+        assertEquals(Hit.CLEAR, PresenceRules.hit(disabled, save, windows))
+    }
+
+    @Test fun transparentNonClickableChromeAboveTheCentreDoesNotCoverIt() {
+        // The Test App's three full-screen covers, as the S3P-0 probe read them: the dev client's
+        // ComposeView with its View, React Native's DebuggingOverlay host, and the parked bottom
+        // sheet's container. None is clickable, so a touch passes through each of them.
+        val nodes = assembled(
+            raw(
+                className = "android.widget.FrameLayout", viewId = null, bounds = display,
+                children = listOf(
+                    raw(
+                        className = "android.view.ViewGroup", viewId = "app-root", bounds = display, drawingOrder = 0,
+                        children = listOf(
+                            raw(viewId = "save", drawingOrder = 0, clickable = true),
+                            raw(
+                                className = "android.view.ViewGroup", viewId = null, bounds = display, drawingOrder = 1,
+                                children = listOf(raw(className = "android.view.View", viewId = null, bounds = display)),
+                            ),
+                            raw(className = "android.view.ViewGroup", viewId = null, bounds = display, drawingOrder = 2),
+                        ),
+                    ),
+                    raw(
+                        className = "androidx.compose.ui.platform.ComposeView", viewId = null, bounds = display, drawingOrder = 1,
+                        children = listOf(raw(className = "android.view.View", viewId = null, bounds = display)),
+                    ),
+                ),
+            ),
+        )
+        val save = nodes.indexOfFirst { it.identifier == "save" }
+        assertEquals(Hit.CLEAR, PresenceRules.hit(nodes, save, listOf(appWindow)))
+        // The same chrome, clickable, is a cover again: the rule weighs touches, not pixels.
+        for (cover in nodes.indices.filter { nodes[it].identifier.isBlank() && nodes[it].index > save && nodes[it].type != "Application" && nodes[it].type != "Window" }) {
+            val clickable = nodes.map { if (it.index == cover) it.copy(clickable = true) else it }
+            assertEquals(nodes[cover].type, Hit.COVERED, PresenceRules.hit(clickable, save, listOf(appWindow)))
+        }
+        // A non-clickable cover with no draw order is not a cover, so it cannot leave the hit unresolved.
+        val noOrder = nodes.map { if (it.index > save && it.identifier.isBlank()) it.copy(drawingOrder = null) else it }
+        assertEquals(Hit.CLEAR, PresenceRules.hit(noOrder, save, listOf(appWindow)))
     }
 
     @Test fun labelSourcesNameWhereTheLabelCameFrom() {
@@ -188,6 +233,7 @@ class PresenceRulesTest {
             nodes[3].copy(secure = true),
             nodes[3].copy(editable = true),
             nodes[3].copy(visibleToUser = false),
+            nodes[3].copy(clickable = true),
             nodes[3].copy(parentIndex = 1, depth = 2),
         )) {
             assertFalse(changed.toString(), PresenceRules.sameEnumeration(nodes, nodes.dropLast(1) + changed))

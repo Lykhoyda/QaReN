@@ -6,6 +6,7 @@ import { runPlan } from '../../../dist/qa/walker.js';
 import {
   _setAndroidRunnerStateForTest,
   _setFetchForTest,
+  classifyAndroidHealth,
   runAndroid,
 } from '../../../dist/runners/rn-android-runner-client.js';
 import {
@@ -125,6 +126,59 @@ test('an Android phrase tap on a visible unique control refuses with the presenc
   assert.equal(requests[0].presenceBudgetMs, 20_000);
 });
 
+test('an Android phrase tap resolves when both the native rule and the React hit test reach the control', async () => {
+  const j = judge();
+  const f = walker([], j);
+  f.deps.captureScreen = capturing(androidPresenceCapture);
+  const result = await runPlan(parsePlan('1. Tap the Open Pager QA button').blocks!, f.deps);
+  assert.equal(result.verdict, 'PASS', result.failure?.seen);
+  assert.deepEqual(f.actions, ['press @e3']);
+  assert.equal(j.requests.length, 1);
+});
+
+// A transparent full-screen React view drawn above the button with the default pointerEvents (auto):
+// the runner sees no clickable cover, but React Native gives the touch to the overlay.
+function underReactOverlay(pointerEvents?: 'none') {
+  const fixture = androidPresenceCapture();
+  fixture.hostEvidence.hosts.push({
+    role: null,
+    roleSource: 'none',
+    capabilities: {},
+    order: 1,
+    ...(pointerEvents ? { pointerEvents } : {}),
+  } as (typeof fixture.hostEvidence.hosts)[number]);
+  fixture.hostEvidence.typography.nodes.push({
+    hostIndex: 3,
+    parentHostIndex: 0,
+    rootIndex: 0,
+    hostType: 'RCTView',
+    rect: fixture.hostEvidence.typography.nodes[0].rect,
+    text: { kind: 'none' },
+  } as (typeof fixture.hostEvidence.typography.nodes)[number]);
+  return fixture;
+}
+
+test('an Android phrase tap on a control a React overlay covers refuses and presses nothing', async () => {
+  const f = walker([], judge());
+  f.deps.captureScreen = capturing(() => underReactOverlay());
+  const result = await runPlan(parsePlan('1. Tap the Open Pager QA button').blocks!, f.deps);
+  assert.notEqual(result.verdict, 'PASS');
+  // The covered button keeps its identity but offers no press: nothing is left to choose from.
+  assert.match(
+    result.failure?.seen ?? '',
+    /^TARGET_NOT_FOUND: the screen has no eligible candidates/,
+  );
+  assert.deepEqual(f.actions, []);
+  const passThrough = walker([], judge());
+  passThrough.deps.captureScreen = capturing(() => underReactOverlay('none'));
+  const through = await runPlan(
+    parsePlan('1. Tap the Open Pager QA button').blocks!,
+    passThrough.deps,
+  );
+  assert.equal(through.verdict, 'PASS', through.failure?.seen);
+  assert.deepEqual(passThrough.actions, ['press @e3']);
+});
+
 test('an incomplete or stale Android capture is unusable before any action', async () => {
   for (const spoil of [
     (f: Fixture) => void (f.data.presenceCapture.complete = false),
@@ -146,6 +200,25 @@ test('an incomplete or stale Android capture is unusable before any action', asy
 
 test('a runner without the presence pass serves no QA read and is sent no snapshot', async () => {
   await assert.rejects(runAndroidPresence([]), /ACTION_CONTEXT_CHANGED/);
+});
+
+test('a runner advertising only the earlier presence rule is stale: no QA read, no snapshot', async () => {
+  // A11Y_PRESENCE_V1 counted any visible view above a control as a cover; the core's React hit test
+  // pairs only with the tighter V2 rule, so the earlier runner is rebuilt rather than paired.
+  await assert.rejects(runAndroidPresence(['A11Y_PRESENCE_V1']), /ACTION_CONTEXT_CHANGED/);
+  const health = {
+    protocolVersion: RUNNER_PROTOCOL_VERSION,
+    commands: [...REQUIRED_ANDROID_COMMANDS],
+    capabilities: [
+      ...REQUIRED_ANDROID_FEATURES.filter((f) => f !== 'A11Y_PRESENCE_V2'),
+      'A11Y_PRESENCE_V1',
+    ],
+  };
+  assert.deepEqual(classifyAndroidHealth(health), {
+    compatible: false,
+    reason: 'missing-features',
+    missing: ['A11Y_PRESENCE_V2'],
+  });
 });
 
 test('a literal Android step needs no presence and is unchanged', async () => {
@@ -171,7 +244,7 @@ async function runAndroidPresence(capabilities: string[]) {
         runnerVersion: getPluginVersion(),
         commands: REQUIRED_ANDROID_COMMANDS,
         capabilities: [
-          ...REQUIRED_ANDROID_FEATURES.filter((f) => f !== 'A11Y_PRESENCE_V1'),
+          ...REQUIRED_ANDROID_FEATURES.filter((f) => !f.startsWith('A11Y_PRESENCE_')),
           QA_READ_ONLY_CAPABILITY,
           ...capabilities,
         ],

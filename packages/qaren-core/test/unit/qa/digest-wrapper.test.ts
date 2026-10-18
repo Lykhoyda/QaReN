@@ -134,7 +134,7 @@ test('J1 does not remove host evidence or turn incomplete captures into complete
   const react = await observe([wrapper([{ hostType: 'RCTView', props: { onClick: handler } }])]);
   assert.equal(join([], react.interactive!).semanticUnassociatedReact, 1);
   assert.deepEqual(react.hostEvidence!.hosts, [
-    { role: null, roleSource: 'none', capabilities: { press: true } },
+    { role: null, roleSource: 'none', capabilities: { press: true }, order: 0 },
   ]);
   const screen = join([], react.interactive!, 'app', { native: 'complete', react: 'incomplete' });
   assert.ok('refuse' in visibilityView(screen));

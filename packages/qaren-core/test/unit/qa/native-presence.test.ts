@@ -324,6 +324,10 @@ test('only an Android capture may say the keyboard covers a node', () => {
       .unknownReason,
     'keyboard-covered',
   );
+  // react-covered is the core's own React hit-test verdict; a runner cannot claim it.
+  const claimed = validateNativePresence(capture, covered('react-covered'), 4, 'com.test', 20_000);
+  assert.equal(claimed?.nodes[3].status, 'unknown');
+  assert.equal(claimed?.nodes[3].unknownReason, undefined);
   const ios = nativeCapture();
   ios.nodes[1].presence = {
     ...ios.nodes[1].presence,

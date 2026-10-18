@@ -13,6 +13,9 @@ export const NATIVE_PRESENCE_UNKNOWN_REASONS = [
   'post-hit-mismatch',
   // Android only: the on-screen keyboard covers the node, which is not scrolled out of view.
   'keyboard-covered',
+  // Android only, set by the core and never read from the runner: the native rule found the node
+  // observed, but React Native's own hit test gives its centre's touch to a React view above it.
+  'react-covered',
 ] as const;
 
 export interface NativePresenceNode {
@@ -122,7 +125,9 @@ export function validateNativePresence(
       p.status === 'unknown'
         ? NATIVE_PRESENCE_UNKNOWN_REASONS.find(
             (reason) =>
-              reason === p.unknownReason && (reason !== 'keyboard-covered' || android(capture)),
+              reason === p.unknownReason &&
+              reason !== 'react-covered' &&
+              (reason !== 'keyboard-covered' || android(capture)),
           )
         : undefined;
     observations.push({
