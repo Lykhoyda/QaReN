@@ -1382,6 +1382,15 @@ file, reference or secret store.
 - With any input namespace present, subprocess logs hold one withheld marker, preflight and
   core output excerpts are withheld, and native runner output tails are not retained. A run
   that requires inputs skips recording and screenshots.
+- Slot runs retain value-free structured events in `core-diagnostics.jsonl` beside `core.log`:
+  `metric` has measured stage timings, and `timing` has decision/dispatch timing, finite outcome
+  codes and allowlisted native refusal codes. Each attempted block containing a slot fill emits
+  `block-outcome` with its first plan line and existing `pass`/`fail`/`refused` result; only saved-login
+  recovery emits `login-outcome`. A block passing is its existing block result, not a new assertion
+  of authentication. These events contain no block names, slot names, input-derived tokens, screen
+  text, selectors, hashes or error messages. Raw log withholding and masking stay unchanged.
+  Timing events are capped at 20,000 independently of the 10,000 outcome-marker cap; malformed
+  diagnostics and sink failures are ignored without changing the run verdict or step deadline.
 - Before a fill dispatch, the walker registers the target's identifier when available.
   Snapshot hashing replaces a registered target's label with a constant marker when it
   contains a whole runtime input value. The value never enters the hash; different values
