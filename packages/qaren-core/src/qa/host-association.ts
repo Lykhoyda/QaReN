@@ -83,6 +83,18 @@ function nativePath(nodes: NativeNode[], start: number): number[] {
   return path;
 }
 
+export function nativeWindowIndex(nodes: NativeNode[], start: number): number | undefined {
+  const path = nativePath(nodes, start);
+  if (
+    !path.length ||
+    nodes[path.at(-1)!].parentIndex !== undefined ||
+    path.some((index, depth) => depth + 1 < path.length && path[depth + 1] >= index)
+  )
+    return undefined;
+  const windows = path.filter((i) => nodes[i].type === 'Window');
+  return windows.length === 1 ? windows[0] : undefined;
+}
+
 function compatible(
   host: string | null,
   native: string | undefined,
@@ -332,16 +344,7 @@ export function associateHosts(
   if (!evidence?.complete || !snapshot?.complete || !presence)
     return unavailable('evidence-unavailable');
   const windows = nodes.flatMap((node, i) => (node.type === 'Window' ? [i] : []));
-  if (windows.length !== 1) return unavailable('window-count');
-  const windowIndex = windows[0];
-  const window = nodes[windowIndex].rect;
-  if (
-    !window ||
-    !Object.values(window).every(Number.isFinite) ||
-    window.width <= 0 ||
-    window.height <= 0
-  )
-    return unavailable('window-frame');
+  if (!windows.length) return unavailable('window-count');
   const android = presence.source === 'android-a11y-live';
   // Android lists only a React Native Modal's own window, so the second window shows only in React.
   if (
@@ -353,19 +356,23 @@ export function associateHosts(
     )
   )
     return unavailable('window-count');
-  let transform: FrameTransform = { scale: 1, x: window.x, y: window.y, tolerance: 0 };
+  let androidTransform: FrameTransform | undefined;
   if (android) {
     const scale = presence.pointScale!;
     const origin = calibratedOrigin(snapshot, evidence, nodes, scale, ANDROID_FRAME_TOLERANCE_PX);
     if (!origin) return unavailable('origin-unknown');
-    transform = { scale, ...origin, tolerance: ANDROID_FRAME_TOLERANCE_PX };
+    androidTransform = { scale, ...origin, tolerance: ANDROID_FRAME_TOLERANCE_PX };
   }
+  // iOS compares exactly against the node's own window origin; Android uses the capture's calibrated one.
+  const transformFor = (window: Rect): FrameTransform =>
+    androidTransform ?? { scale: 1, x: window.x, y: window.y, tolerance: 0 };
   const text = android ? ANDROID_TEXT : 'StaticText';
   const viewport = android ? outsideViewport(nodes) : undefined;
   const paths = snapshot.nodes.map((node) => hostPath(snapshot, node.hostIndex)!);
   const nativePaths = nodes.map((_, i) => nativePath(nodes, i));
+  const nativeWindows = nodes.map((_, i) => nativeWindowIndex(nodes, i));
   const inWindow = (i: number) =>
-    nativePaths[i].includes(windowIndex) &&
+    nativeWindows[i] !== undefined &&
     typeof nodes[i].ref === 'string' &&
     !!nodes[i].ref.trim() &&
     nodes.filter((node) => node.ref === nodes[i].ref).length === 1;
@@ -405,6 +412,17 @@ export function associateHosts(
       note(host.hostIndex, { identity: 'outside-window' });
       continue;
     }
+    const window = nodes[nativeWindows[nativeIndex]!].rect;
+    if (
+      !window ||
+      !Object.values(window).every(Number.isFinite) ||
+      window.width <= 0 ||
+      window.height <= 0
+    ) {
+      note(host.hostIndex, { identity: 'window-frame' });
+      continue;
+    }
+    const transform = transformFor(window);
     const compatibleType = compatible(
       host.hostType,
       nodes[nativeIndex].type,
@@ -460,6 +478,7 @@ export function associateHosts(
   );
   // Identified ancestors may be hoisted beside the native path; only the host needs presence.
   const onNativePath = (child: number, ancestor: number) => {
+    if (nativeWindows[child] !== nativeWindows[ancestor]) return false;
     if (child === ancestor || nativePaths[ancestor].includes(child)) return false;
     // Direct native ancestry proves itself, even when the child overflows its parent.
     if (nativePaths[child].includes(ancestor)) return true;
@@ -514,6 +533,8 @@ export function associateHosts(
     const anchorHost = paths[host.hostIndex].slice(1).find((i) => structural.has(i));
     if (anchorHost === undefined) continue;
     const anchorIndex = structural.get(anchorHost)!;
+    const windowIndex = nativeWindows[anchorIndex]!;
+    const transform = transformFor(nodes[windowIndex].rect!);
     const ancestors = paths[host.hostIndex].slice(1).map((i) => snapshot.nodes[i]);
     if (
       ancestors.some(
@@ -528,6 +549,7 @@ export function associateHosts(
     const content = host.text.content;
     const matches = nodes.flatMap((node, i) =>
       i !== anchorIndex &&
+      nativeWindows[i] === windowIndex &&
       !duplicates.has(i) &&
       nativePaths[i].includes(anchorIndex) &&
       node.type === text &&

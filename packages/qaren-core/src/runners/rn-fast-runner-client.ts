@@ -1,3 +1,4 @@
+import { systemModalDiagnostic } from '../domain/system-modal-diagnostic.js';
 import { currentInputs } from '../qa/inputs.js';
 import {
   diagnosticField,
@@ -2716,6 +2717,7 @@ export async function runIOS(args: RunIOSArgs): Promise<ToolResult> {
       tree?: unknown;
       presenceCapture?: unknown;
       truncated?: boolean;
+      systemModal?: unknown;
       snapshotGeneration?: number;
       keyboardVisible?: boolean;
       appProcessIdentifier?: number;
@@ -2743,6 +2745,7 @@ export async function runIOS(args: RunIOSArgs): Promise<ToolResult> {
               : {}),
           });
       const snapshotVerdict = buildSnapshotVerdict('rn-fast-runner', flat.length, outcome);
+      const systemModal = systemModalDiagnostic(data.systemModal);
       return okResult(
         {
           nodes: qaReadOnly ? mapRunnerNodesToFlat(data.nodes, true) : flat,
@@ -2769,7 +2772,14 @@ export async function runIOS(args: RunIOSArgs): Promise<ToolResult> {
             ? { appProcessIdentifier: data.appProcessIdentifier }
             : {}),
         },
-        { meta: { ...announce, snapshotVerdict, ...recoveryMeta } },
+        {
+          meta: {
+            ...announce,
+            snapshotVerdict,
+            ...recoveryMeta,
+            ...(systemModal ? { systemModal } : {}),
+          },
+        },
       );
     }
     // Defensive fallback: the test seam mocks `{ tree: ... }`. Don't crash.

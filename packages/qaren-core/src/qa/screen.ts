@@ -117,6 +117,7 @@ const elementViewports = new WeakMap<Element, NonNullable<NativeNode['rect']>>()
 const keyboardCoveredElements = new WeakSet<Element>();
 // Native scroll containers (iOS names, Android class suffixes); only native-backed elements are ever members.
 const scrollContainers = new WeakMap<Element, string>();
+const windows = new WeakSet<Element>();
 // Press/fill from the element's own React evidence, without the screen-wide capability gaps.
 const localCapabilities = new WeakMap<
   Element,
@@ -129,6 +130,10 @@ export function keyboardCoversElement(element: Element): boolean {
 
 export function isScrollContainer(element: Element): boolean {
   return scrollContainers.has(element);
+}
+
+export function isWindow(element: Element): boolean {
+  return windows.has(element);
 }
 
 export function scrollContainerType(element: Element): string | undefined {
@@ -166,6 +171,14 @@ const joinedDiagnosticFacts = new WeakMap<
     gapHosts?: GapHostDiagnostics;
   }
 >();
+
+const hostAssociationIdentities = new WeakMap<Element, HostAssociationDiagnostic['identity']>();
+
+export function hostAssociationIdentity(
+  element: Element,
+): HostAssociationDiagnostic['identity'] | undefined {
+  return hostAssociationIdentities.get(element);
+}
 
 export interface NativeNode {
   ref: string;
@@ -841,6 +854,18 @@ export function join(
       nativeStatus: observed?.status,
       nativeUnknownReason: observed?.status === 'unknown' ? observed.unknownReason : undefined,
     });
+    try {
+      const matchingHosts =
+        reactHostEvidence?.hosts.flatMap((host, index) =>
+          host.testID && host.testID === n.identifier ? [index] : [],
+        ) ?? [];
+      if (matchingHosts.length === 1) {
+        const identity = associationDiagnostics.get(matchingHosts[0])?.identity;
+        if (identity) hostAssociationIdentities.set(element, identity);
+      }
+    } catch {
+      // Diagnostics cannot change host association.
+    }
     localCapabilities.set(element, local);
     return element;
   });
@@ -1018,6 +1043,7 @@ export function join(
     const bounds = clippingViewport(viewport, i);
     if (bounds) elementViewports.set(elements[i], bounds);
     if (isScrollContainerType(n.type)) scrollContainers.set(elements[i], n.type!);
+    if (n.type === 'Window') windows.add(elements[i]);
     if (duplicates.has(i) || elements[i].kind !== 'text') return;
     for (let p = n.parentIndex; p !== undefined && p >= 0 && p < i; p = nodes[p].parentIndex)
       textDescendants.set(p, [...(textDescendants.get(p) ?? []), i]);

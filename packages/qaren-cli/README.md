@@ -534,7 +534,8 @@ sticky overlays. A touchable, non-text element at least half the clip's width,
 outside the target's own scroll content and drawn after it, that crosses the
 band's bottom edge ends the band at its top (a sticky footer); one across the
 band's top edge starts the band below it (a sticky header). Content drawn behind
-the list, such as a screen's rows under a sheet, never counts. A target at
+the list, such as a screen's rows under a sheet, never counts; for a target in no
+list, nothing drawn before its window counts, such as the app screen behind a modal. A target at
 or below that band's centre scrolls down; one above it scrolls up. Sticky overlays
 can narrow the band even without a keyboard or when the clip is entirely above it.
 The walker passes that band to the shared scroll handler so the drag starts
@@ -711,15 +712,17 @@ scroll-until targets, phrase checks and unrecognised verbs require
 `TYPESAFE_API_KEY`. They run the fixed Jev readiness probe even when another
 line is unparseable; a missing or rejected key refuses `JEV_UNREACHABLE` before
 device selection or leasing. Plans with only quoted targets and literal checks
-make no Jev calls and need no key; recognised back, dialog and fixed-scroll
-steps also stay model-free.
+need no key; recognised back, dialog and fixed-scroll steps also stay model-free.
+When a key is available, [app-interruption recovery](#step-recovery) may ask Jev
+for a safety veto even in a plan with only quoted targets.
 
 Dialog steps require one unconditional accept or dismiss action, such as
 `Accept the permission dialog` or `Dismiss the alert`. Conditions, negation and
 multiple actions, such as `Accept the dialog if it appears` or
 `Do not dismiss the alert`, refuse before allocation; Jev cannot override this restriction.
 On Android, a dialog step or dialog recovery has the runner tap exactly one
-enabled button whose text equals the chosen label, in the front window above the
+enabled button whose text equals the chosen label (recovery always chooses a dismiss
+label), in the front window above the
 app, or the window standing in for the app's window, when the permission
 controller or `android` owns it; another app's window never matches. The step passes only when the runner reports that label tapped,
 that window gone and the app in front again, and it never falls back to
@@ -821,6 +824,11 @@ A phrase check judges at most 30 contributions. A plain native container with no
 label, value or placeholder of its own and no press or fill evidence of its own is
 not a contribution, even when unassociated React hosts leave press or fill unknown
 screen-wide; that screen-wide gap still keeps a rejected claim uncertain.
+React host association uses the candidate's uniquely established native Window
+ancestry and that window's origin, including captures with other app or keyboard
+windows. Unique identity, type, frame, presence and ancestor proofs still apply;
+missing or ambiguous window membership refuses association. Typography compares
+title and body evidence only within the same window.
 
 Android [React host association](../qaren-core/src/qa/host-association.ts) scales
 React points by the display density and calibrates the origin per capture from
@@ -831,12 +839,9 @@ drawing classes, including parked sliders, supply no native press or fill
 capability of their own; the [screen projection](../qaren-core/src/qa/screen.ts)
 owns their classification.
 
-Known limit: React host association is unavailable while more than one native
-window is captured, as with the iOS software keyboard up. A mounted Android
-React Native `Modal` also makes association unavailable, even when accessibility
-lists only the modal's window. Phrase press and fill targets on such screens
-may refuse when their capability or target association
-cannot be proven.
+Known limit: a mounted Android React Native `Modal` makes association
+unavailable, even when accessibility lists only the modal's window, so phrase
+press and fill targets on such screens refuse.
 Phrase waits capture fresh screen and presence evidence on every poll, even when the
 screen appears unchanged; prior observations do not establish current presence.
 
@@ -928,6 +933,8 @@ Waits poll unresolved text as not yet present and end with `VISIBILITY_UNSURE`
 when the final evidence remains unsure. A quoted wait with at least two definite
 absence observations sharing one screen signature fails at its deadline with
 “did not appear”; it does not report expired evidence for that stable absence.
+Either unmet ending first gets [step recovery](#step-recovery), so a quoted wait
+behind a blocking screen or system dialog runs once more with its full budget.
 Scroll-until-text uses the same visibility verdict
 within its scroll and time budgets. Literal checks re-ask from a fresh capture
 and use `CHECK_UNSURE` if uncertainty remains. This is distinct from acquisition
@@ -1616,20 +1623,35 @@ It is checked before accepting a step or refusing incomplete semantic evidence,
 and never triggers recovery.
 
 An action without success evidence after its one retry, a step target that
-does not resolve, or a phrase check still unsure after its re-ask
-gets at most one deterministic recovery, then the step runs once more from a fresh
-capture. The order is owned by [`recover.ts`](../qaren-core/src/qa/recover.ts): a
-recognized system dialog in front is accepted; a dev menu or floating button in
-front is cleared through the shared [overlay clearance mechanism](#check-a-plan);
-and when `loginMarker`
+does not resolve, a definite failed check, an unmet quoted wait, or a phrase check still
+unsure after its re-ask gets a deterministic recovery, then the step runs once more from a fresh
+capture. If it fails again, a second recovery may decline a different system prompt or app
+interruption once the first is proven gone. An app interruption with the same decline label
+fails with `the app interruption did not disappear`; a different kind of interruption or
+decline label may be eligible, subject to the same guards on each recovery. A step never
+gets more than two recoveries. The order is owned by [`recover.ts`](../qaren-core/src/qa/recover.ts): a
+recognized system prompt met during an ordinary app step is declined, never accepted
+(only an explicit `Allow the permission prompt` or `Accept the dialog` step accepts, and a
+dialog is left to the plan when its next step is a dialog step). Recovery declines a given
+system prompt, identified by its alert title and button labels, at most once per run;
+changing only its message does not make it a different prompt. When the app asks again,
+even after the step's recovery limit, the step fails with its own reason and
+`the app asked again after recovery declined it; answer it with a dialog step`. A
+declined prompt's proven label and frame land on the recovery's `retry` row as `dialog`
+and in a value-free `dialog-tap` run-log line. A dev
+menu or floating button in front is cleared through the shared
+[overlay clearance mechanism](#check-a-plan); an eligible app interruption is
+declined as described below; and when `loginMarker`
 (`{ id: <testID> }` or `{ text: <label> }`) is on screen, the
 saved block `loginBlock` (`.qaren/actions/<loginBlock>.yaml`, saved for this app and
 platform) replays by its stored identities. The two keys are set together, with
 exactly one nonempty marker `id` or `text`. A missing, unreadable or incompatible
-login block fails when login recovery is needed. A second
-failure of the same step fails it, recovery never runs inside the login replay, and
+login block fails when login recovery is needed. A login or dev-menu recovery is the
+step's only one. An explicit dialog step also gets at most one recovery, using its own
+accept or dismiss action. A failure after the last recovery fails the step, recovery never runs inside the login replay, and
 capture, Jev, process, replay-miss and cancellation refusals are never recovered. The
-ledger's `recoveries` counts recoveries that let the step retry; `escapes` and `llmTurns`
+ledger's `recoveries` counts recoveries that let the step retry and attempted declines that
+failed; `escapes` and `llmTurns`
 stay `0`. Login fills are masked like plan fills; see [Video publication](#video-publication)
 for recording eligibility.
 
@@ -1640,12 +1662,49 @@ phrase actions retain presence capture through readback and retries.
 See the [recovery regressions](../qaren-core/test/unit/qa/walker-recover.test.ts)
 and [freshness regressions](../qaren-core/test/unit/qa/temporal-walker.test.ts).
 
-Recovery requires admitted screen evidence. iOS phrase steps behind a system or
-permission alert can refuse `SCREEN_EVIDENCE_INCOMPLETE` before recovery because
-platform presence excludes that system surface; phrase-step dialog recovery is
-best-effort. For Android dialog limits, see [Check a plan](#check-a-plan).
-An action reporting `tapped: false`
-or `executed: false` establishes no action proof and cannot count as a recovery.
+App interruptions need no app-specific configuration. Recovery requires complete
+native capture and React coverage, with the current quoted target (or literal
+check) and every later quoted plan target, including later blocks, absent from
+a fresh capture. Exactly one eligible control must be visible, hittable, enabled,
+non-secure and have proven press support, with one of these exact English labels:
+`Close`, `Not now`, `Not Now`, `Maybe later`, `Later`, `Skip`, `No thanks`,
+`Dismiss`, `Cancel`.
+Zero candidates leave the original failure in place; several refuse
+`INTERRUPTION_AMBIGUOUS` without tapping. A visible plan target, uncertain absence,
+or a control inside the target prevents dismissal. Phrase-only targets cannot
+establish this deterministic absence guard.
+
+With `TYPESAFE_API_KEY`, Jev may veto a selected control when the screen may be
+related to the step or its purpose is uncertain. It never chooses a control,
+breaks a tie, or authorizes a tap. Without the key, recovery uses only the
+deterministic guards. Recovery rechecks those guards before one exact press,
+proves the label gone in a fresh capture, and retries the original step once.
+The ledger records `recovered: dismissed an app screen with <label>` and a
+privacy-eligible screenshot; this support action is not added to the saved block.
+
+Recovery requires admitted screen evidence. iOS phrase steps behind a recognized
+system or permission alert reach dialog recovery when the raw native capture is
+complete, even though platform presence excludes the system surface. Incomplete
+raw captures still refuse. On Android, recovery answers a system prompt; app-screen
+interruptions are recovered once Android presence capture lands. Until then, a step whose
+recovery cannot read the screen there keeps its own failure reason and logs
+`recovery-skipped=presence-unavailable`. For Android dialog limits, see [Check a plan](#check-a-plan).
+An action reporting `tapped: false` or `executed: false` establishes no action proof
+and cannot authorize a retry; an attempted decline still counts in `recoveries`,
+including when its read-back refuses incomplete capture.
+
+`logs/core.log` includes value-free diagnostics for failed interruption admission:
+`interruption-rejected` reports a front, coverage, indexed target or no-candidate
+veto and the exact-decline-label element count. A no-candidate veto also reports
+each decline-labelled element's first failed predicate; press capability failures
+include the existing host association identity when available.
+`presence-system-modal` reports an unrecognized SpringBoard modal's
+app state, alert/sheet counts and structural geometry and descendant counts.
+`system-dialog-stage` reports local dialog context failures. These records
+contain only counts, indices, booleans and fixed enums, omit labels, identifiers,
+refs and app text, and never authorize a tap or change capture admission.
+Successful selection, recognized modals and proven dialog taps emit none of
+these failure records.
 
 Dev-overlay recovery must re-prove clearance before retrying the step. A failed
 clearance or a non-executing hide with no overlay to clear fails the step.

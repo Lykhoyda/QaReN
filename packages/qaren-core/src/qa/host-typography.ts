@@ -1,5 +1,5 @@
 import { isRecord } from './questions.js';
-import { associateHosts, hostPath } from './host-association.js';
+import { associateHosts, hostPath, nativeWindowIndex } from './host-association.js';
 import { PRIVATE_INPUT_LIMITS } from './private-input-limits.js';
 import type { HostAssociation } from './host-association.js';
 import type { NativePresence } from './native-presence.js';
@@ -221,6 +221,8 @@ export function associateHeadings(
       presence.nodes[association.nativeIndex].labelSource !== 'direct'
     )
       continue;
+    const windowIndex = nativeWindowIndex(nodes, association.nativeIndex);
+    if (windowIndex === undefined) continue;
     const parent = container(host.hostIndex);
     if (parent === undefined || snapshot.nodes[parent].text.kind !== 'none') continue;
     const siblings = snapshot.nodes.filter(
@@ -241,6 +243,7 @@ export function associateHeadings(
         const bodyAssociation = associations.get(body.hostIndex);
         return (
           bodyAssociation &&
+          nativeWindowIndex(nodes, bodyAssociation.nativeIndex) === windowIndex &&
           body.rect &&
           nodes[bodyAssociation.nativeIndex].type === 'StaticText' &&
           nodes[bodyAssociation.nativeIndex].label === text.content &&

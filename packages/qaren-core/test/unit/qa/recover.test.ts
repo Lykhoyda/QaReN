@@ -45,16 +45,16 @@ function deps(overrides: Partial<RecoverDeps> = {}): { deps: RecoverDeps; calls:
   };
 }
 
-test('a system dialog in front is accepted', async () => {
+test('a system dialog in front uses the supplied dialog action', async () => {
   const d = deps();
   assert.deepEqual(await recover(screen('dialog'), d.deps), { handled: 'dialog' });
   assert.deepEqual(d.calls, ['dialog']);
 });
 
-test('a dialog that cannot be accepted fails with the reason', async () => {
+test('a dialog that cannot be handled fails with the reason', async () => {
   const d = deps({ dialog: async () => ({ ok: false, proven: false, error: 'NO_DIALOG: gone' }) });
   assert.deepEqual(await recover(screen('dialog'), d.deps), {
-    fail: 'the system dialog in front could not be accepted: NO_DIALOG: gone',
+    fail: 'the system dialog in front could not be handled: NO_DIALOG: gone',
   });
 });
 
