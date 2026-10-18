@@ -281,7 +281,16 @@ export interface WalkSequence {
   momentum?: boolean;
   planPassed?: boolean;
   window?: { fromMs: number; typed: number };
+  // System prompts recovery declined in this run; a repeat ask is the plan author's to answer.
+  declinedPrompts?: Set<string>;
 }
+
+// Title and button labels of a system prompt, held in memory only.
+const promptSignature = (screen: Screen): string =>
+  JSON.stringify([
+    screen.elements.find((e) => e.kind !== 'button' && e.label !== undefined)?.label,
+    screen.elements.flatMap((e) => (e.kind === 'button' && e.label !== undefined ? [e.label] : [])),
+  ]);
 
 // Capture and process refusals, ambiguity and the replay-miss path are never recovered.
 const UNRECOVERABLE = new Set([
@@ -332,7 +341,8 @@ async function walkBlockScoped(
   let mutationStarted = false;
   let latestObservation = 0;
   let recoveries = 0;
-  const recovered = new Set<Item>();
+  // The interruption a step's first decline answered; null once no further recovery is allowed.
+  const recovered = new Map<Item, string | null>();
   const metric = (
     stage: TimingEvent['stage'],
     observation?: Observation,
@@ -1197,14 +1207,15 @@ async function walkBlockScoped(
     }
     return 'pass' as const;
   };
-  // At most one recovery per item; 'retry' re-runs the item from a fresh capture.
+  // At most two recoveries per item, the second only declining a different interruption; 'retry' re-runs the item from a fresh capture.
   const recovery = async (
     item: Item,
     attempt: number,
     reason: string,
   ): Promise<'retry' | WalkOutcome | undefined> => {
-    if (opts.recover === false || !deps.hideDevMenu || recovered.has(item)) return undefined;
-    recovered.add(item);
+    const first = recovered.get(item);
+    if (opts.recover === false || !deps.hideDevMenu) return undefined;
+    recovered.set(item, null);
     loginReplayed = false;
     let fresh: Observation;
     try {
@@ -1226,6 +1237,37 @@ async function walkBlockScoped(
     // A system alert the plan's next step answers is the author's, not recovery's.
     const next = block.items[block.items.indexOf(item) + 1];
     if (fresh.screen.front === 'dialog' && next?.kind === 'dialog') return undefined;
+    const declinedPrompts = (sequence.declinedPrompts ??= new Set());
+    // A dialog step answers with its own action, so only other steps decline by default.
+    const prompt =
+      fresh.screen.front === 'dialog' && item.kind !== 'dialog'
+        ? promptSignature(fresh.screen)
+        : undefined;
+    if (prompt !== undefined && declinedPrompts.has(prompt))
+      return failed(
+        item,
+        attempt,
+        redact(
+          `${reason}; the app asked again after recovery declined it; answer it with a dialog step`,
+        ),
+        fresh.screen,
+        await shoot(item),
+      );
+    if (first === null) return undefined;
+    if (first !== undefined) {
+      if (fresh.screen.front !== 'dialog' && fresh.screen.front !== 'app') return undefined;
+      if (
+        fresh.screen.front === 'app' &&
+        fresh.screen.elements.some((e) => !e.offscreen && `app ${e.label}` === first)
+      )
+        return failed(
+          item,
+          attempt,
+          'the app interruption did not disappear',
+          fresh.screen,
+          await shoot(item),
+        );
+    }
     const planTargets = [
       recoveryTarget(item) ?? { phrase: '' },
       ...block.items.slice(block.items.indexOf(item) + 1).flatMap((remaining) => {
@@ -1235,6 +1277,8 @@ async function walkBlockScoped(
       ...(opts.laterTargets ?? []),
     ];
     let interruptionShot: string | undefined;
+    let dialogAct: ActResult | undefined;
+    let declineAttempted = false;
     const result = await recover(
       fresh.screen,
       {
@@ -1248,11 +1292,14 @@ async function walkBlockScoped(
             /* Diagnostics cannot change recovery. */
           }
         },
-        dialog: () =>
-          mutate(item, fresh, (context) =>
+        dialog: async () => {
+          declineAttempted = true;
+          recoveries += 1;
+          return (dialogAct = await mutate(item, fresh, (context) =>
             deps.dialog(item.kind === 'dialog' ? item.action : 'dismiss', context),
-          ),
-        ...(deps.login ? { replayLogin } : {}),
+          ));
+        },
+        ...(deps.login && first === undefined ? { replayLogin } : {}),
         dismiss: async (label) => {
           if (deps.interruptionVeto) {
             const mask = privacy.maskForModel(privacy.modelValues(), [
@@ -1277,6 +1324,8 @@ async function walkBlockScoped(
               };
           }
           interruptionShot = await shoot(item);
+          declineAttempted = true;
+          recoveries += 1;
           const support: Block = {
             slug: '@interruption',
             title: 'Dismiss interruption',
@@ -1361,14 +1410,33 @@ async function walkBlockScoped(
       planTargets,
     );
     if (!result) return undefined;
+    if ('handled' in result && !declineAttempted) recoveries += 1;
     if ('handled' in result) {
-      recoveries += 1;
+      if (prompt !== undefined && result.handled === 'dialog') declinedPrompts.add(prompt);
+      // A dialog step answers with its own action, so it never gets a second, decline-only recovery.
+      if (
+        first === undefined &&
+        item.kind !== 'dialog' &&
+        (result.handled === 'dialog' || result.handled === 'interruption')
+      )
+        recovered.set(
+          item,
+          result.handled === 'dialog'
+            ? `dialog ${promptSignature(fresh.screen)}`
+            : `app ${result.label}`,
+        );
       // The recovery acted on the device, so a later selector miss is not a pre-mutation re-walk.
       mutationStarted = true;
+      const proof = result.handled === 'dialog' ? dialogAct?.dialog : undefined;
+      if (proof)
+        deps.note?.(
+          `dialog-tap ${JSON.stringify({ v: 1, line: item.line, label: proof.label, rect: proof.rect })}`,
+        );
       emit({
         ...base(item, attempt),
         outcome: 'retry',
         ...(interruptionShot ? { screenshot: interruptionShot } : {}),
+        ...(proof ? { dialog: proof } : {}),
         reason: redact(
           `${reason}; recovered: ${result.label ? `dismissed an app screen with ${result.label}` : result.handled}; retrying the step once`,
         ),

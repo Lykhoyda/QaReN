@@ -99,10 +99,6 @@ required for every run. `qaren pr` reads it at the pull request head and refuses
 or unreadable `.qaren/actions` there. That block may only use inputs your plan or your
 checked-out login block already names; any other name refuses `PLAN_INPUT_MISSING`.
 
-A second failure of the same step fails it. Recovery never runs inside the login replay, and
-capture, Jev, app-process, replay-miss and cancellation refusals are never recovered. The
-ledger's `recoveries` counts recoveries that let a step retry.
-
 An observed React Native red box fails the current step at once and never triggers recovery.
 On iOS, a change of the app's process between captures, such as a crash or restart, fails the
 walk with `APP_PROCESS_CHANGED`.

@@ -17,6 +17,7 @@ import {
   elementViewport,
   forwardedInputOf,
   isScrollContainer,
+  isWindow,
   scrollContainerType,
   semanticActionView,
   semanticDisabled,
@@ -428,11 +429,12 @@ export function clearanceBand(element: Element, screen: Screen): NativeNode['rec
   );
   const lineage = new Set<Element>([element, ...ancestorsOf(element)]);
   const container = ancestorsOf(element).find(isScrollContainer);
-  const behind = container ? screen.elements.indexOf(container) : 0;
+  const floor = container ?? ancestorsOf(element).find(isWindow);
+  const behind = floor ? screen.elements.indexOf(floor) : 0;
   for (const [i, other] of screen.elements.entries()) {
     // An overlay is a touchable non-text element outside the target's own lineage whose frame straddles a band edge.
     if (lineage.has(other) || other.kind === 'text' || other.offscreen || !other.hittable) continue;
-    // Rows of the target's own list, and anything drawn before that list, lie under it, never over it.
+    // Rows of the target's own list, and anything drawn before that list or its window, lie under it, never over it.
     if (i < behind || (container && ancestorsOf(other).includes(container))) continue;
     if (
       ancestorsOf(other).some(

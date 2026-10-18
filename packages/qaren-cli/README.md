@@ -534,7 +534,8 @@ sticky overlays. A touchable, non-text element at least half the clip's width,
 outside the target's own scroll content and drawn after it, that crosses the
 band's bottom edge ends the band at its top (a sticky footer); one across the
 band's top edge starts the band below it (a sticky header). Content drawn behind
-the list, such as a screen's rows under a sheet, never counts. A target at
+the list, such as a screen's rows under a sheet, never counts; for a target in no
+list, nothing drawn before its window counts, such as the app screen behind a modal. A target at
 or below that band's centre scrolls down; one above it scrolls up. Sticky overlays
 can narrow the band even without a keyboard or when the clip is entirely above it.
 The walker passes that band to the shared scroll handler so the drag starts
@@ -897,7 +898,7 @@ Waits poll unresolved text as not yet present and end with `VISIBILITY_UNSURE`
 when the final evidence remains unsure. A quoted wait with at least two definite
 absence observations sharing one screen signature fails at its deadline with
 “did not appear”; it does not report expired evidence for that stable absence.
-Either unmet ending first gets one [step recovery](#step-recovery), so a quoted wait
+Either unmet ending first gets [step recovery](#step-recovery), so a quoted wait
 behind a blocking screen or system dialog runs once more with its full budget.
 Scroll-until-text uses the same visibility verdict
 within its scroll and time budgets. Literal checks re-ask from a fresh capture
@@ -1588,11 +1589,21 @@ and never triggers recovery.
 
 An action without success evidence after its one retry, a step target that
 does not resolve, a definite failed check, an unmet quoted wait, or a phrase check still
-unsure after its re-ask gets at most one deterministic recovery, then the step runs once more from a fresh
-capture. The order is owned by [`recover.ts`](../qaren-core/src/qa/recover.ts): a
+unsure after its re-ask gets a deterministic recovery, then the step runs once more from a fresh
+capture. If it fails again, a second recovery may decline a different system prompt or app
+interruption once the first is proven gone. An app interruption with the same decline label
+fails with `the app interruption did not disappear`; a different kind of interruption or
+decline label may be eligible, subject to the same guards on each recovery. A step never
+gets more than two recoveries. The order is owned by [`recover.ts`](../qaren-core/src/qa/recover.ts): a
 recognized system prompt met during an ordinary app step is declined, never accepted
 (only an explicit `Allow the permission prompt` or `Accept the dialog` step accepts, and a
-dialog is left to the plan when its next step is a dialog step); a dev
+dialog is left to the plan when its next step is a dialog step). Recovery declines a given
+system prompt, identified by its alert title and button labels, at most once per run;
+changing only its message does not make it a different prompt. When the app asks again,
+even after the step's recovery limit, the step fails with its own reason and
+`the app asked again after recovery declined it; answer it with a dialog step`. A
+declined prompt's proven label and frame land on the recovery's `retry` row as `dialog`
+and in a value-free `dialog-tap` run-log line. A dev
 menu or floating button in front is cleared through the shared
 [overlay clearance mechanism](#check-a-plan); an eligible app interruption is
 declined as described below; and when `loginMarker`
@@ -1600,10 +1611,12 @@ declined as described below; and when `loginMarker`
 saved block `loginBlock` (`.qaren/actions/<loginBlock>.yaml`, saved for this app and
 platform) replays by its stored identities. The two keys are set together, with
 exactly one nonempty marker `id` or `text`. A missing, unreadable or incompatible
-login block fails when login recovery is needed. A second
-failure of the same step fails it, recovery never runs inside the login replay, and
+login block fails when login recovery is needed. A login or dev-menu recovery is the
+step's only one. An explicit dialog step also gets at most one recovery, using its own
+accept or dismiss action. A failure after the last recovery fails the step, recovery never runs inside the login replay, and
 capture, Jev, process, replay-miss and cancellation refusals are never recovered. The
-ledger's `recoveries` counts recoveries that let the step retry; `escapes` and `llmTurns`
+ledger's `recoveries` counts recoveries that let the step retry and attempted declines that
+failed; `escapes` and `llmTurns`
 stay `0`. Login fills are masked like plan fills; see [Video publication](#video-publication)
 for recording eligibility.
 
@@ -1641,8 +1654,9 @@ raw captures still refuse. On Android, recovery answers a system prompt; app-scr
 interruptions are recovered once Android presence capture lands. Until then, a step whose
 recovery cannot read the screen there keeps its own failure reason and logs
 `recovery-skipped=presence-unavailable`. For Android dialog limits, see [Check a plan](#check-a-plan).
-An action reporting `tapped: false`
-or `executed: false` establishes no action proof and cannot count as a recovery.
+An action reporting `tapped: false` or `executed: false` establishes no action proof
+and cannot authorize a retry; an attempted decline still counts in `recoveries`,
+including when its read-back refuses incomplete capture.
 
 `logs/core.log` includes value-free diagnostics for failed interruption admission:
 `interruption-rejected` reports a front, coverage, indexed target or no-candidate
