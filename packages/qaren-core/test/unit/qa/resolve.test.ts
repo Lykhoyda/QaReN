@@ -250,17 +250,67 @@ test('ambiguous quoted press and fill targets refuse locally without asking or a
   }
 });
 
-test('offscreen selections and none with offscreen evidence request a scroll, never a React ref press', async () => {
+test('none with a name-matching offscreen hint requests a scroll, never a React ref press', async () => {
   const before = screen([
     element('@a', 'Header'),
     element('react:more', 'Load more', { offscreen: true, hittable: false }),
   ]);
-  for (const chosen of ['e1', 'none']) {
-    const judge = scriptedJudge((q) => ({ target_0: choice(q.target_0, chosen) }));
-    assert.deepEqual(await resolveTarget(step('Tap Load more'), before, judge), {
-      scroll: 'down',
-      element: before.elements[1],
-    });
+  const judge = scriptedJudge((q) => ({ target_0: choice(q.target_0, 'none') }));
+  assert.deepEqual(await resolveTarget(step('Tap Load more'), before, judge), {
+    scroll: 'down',
+    element: before.elements[1],
+  });
+});
+
+test('phrase action questions count and index only the 12 on-screen controls, keeping 24 scroll hints', async () => {
+  for (const line of ['Tap Save', 'Type "x" into the Save field']) {
+    const kind = line.startsWith('Tap') ? 'button' : 'input';
+    const observed = screen(
+      Array.from({ length: 12 }, (_, i) => [
+        element(`@off-${i}`, `Off ${i}`, { kind, offscreen: true, hittable: false }),
+        element(`@save-${i}`, `Save ${i}`, { kind }),
+        element(`@far-${i}`, `Far ${i}`, { kind, offscreen: true, hittable: false }),
+      ]).flat(),
+    );
+    const prepared = prepareTarget(step(line), observed);
+    assert.ok('question' in prepared, JSON.stringify(prepared));
+    assert.equal(prepared.candidates.length, 36);
+    assert.deepEqual(Object.keys(prepared.question.criteria!), [
+      ...Array.from({ length: 12 }, (_, i) => `e${i}`),
+      'none',
+    ]);
+    assert.ok(Object.values(prepared.question.criteria!).every((text) => !/Off|Far/.test(text)));
+    const judge = scriptedJudge((q) => ({ target_0: choice(q.target_0, 'e11') }));
+    const resolved = await resolveTarget(step(line), observed, judge);
+    assert.ok('ref' in resolved);
+    assert.equal(resolved.ref, '@save-11');
+  }
+});
+
+test('offscreen scroll hints require a unique matching name, with or without on-screen choices', async () => {
+  for (const visible of [[], [element('@header', 'Header')]]) {
+    for (const labels of [['Other'], ['Other', 'Load more'], ['Load more', 'Load more']]) {
+      const hints = labels.map((label, i) =>
+        element(`@hint-${i}`, label, { offscreen: true, hittable: false }),
+      );
+      const judge = scriptedJudge((q) => ({ target_0: choice(q.target_0, 'none') }));
+      const resolved = await resolveTarget(
+        step('Tap Load more'),
+        screen([...visible, ...hints]),
+        judge,
+      );
+      if (labels.length === 2 && labels[0] === 'Other') {
+        assert.deepEqual(resolved, { scroll: 'down', element: hints[1] });
+      } else {
+        assert.ok('refuse' in resolved);
+        assert.equal(
+          resolved.refuse,
+          labels.length === 1 ? 'TARGET_NOT_FOUND' : 'TARGET_AMBIGUOUS',
+        );
+        assert.ok(!resolved.reason.includes('Load more'));
+      }
+      assert.equal(judge.requests.length, visible.length ? 1 : 0);
+    }
   }
 });
 
@@ -382,7 +432,7 @@ test('preliminary scrolling requires a fresh target question before any press', 
   assert.deepEqual(f.actions, ['scroll down', 'press @native-save']);
   assert.deepEqual(
     judge.calls.map((c) => c.questionIds),
-    [['check_1', 'target_2'], ['target_2']],
+    [['check_1'], ['target_2']],
   );
 });
 

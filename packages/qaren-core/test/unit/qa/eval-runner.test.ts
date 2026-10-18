@@ -130,14 +130,14 @@ test('synthetic authored targets do not grant frozen assertions provenance or by
             ];
           const expected = fixture.expected;
           const candidates = fixture.screen.elements.filter(
-            (element) => !fixture.line.startsWith('Type') || element.kind === 'input',
+            (element) =>
+              element.semantic?.visibility !== 'offscreen' &&
+              (!fixture.line.startsWith('Type') || element.kind === 'input'),
           );
           const index =
             expected.kind === 'target' && 'ref' in expected
               ? candidates.findIndex((element) => element.ref === expected.ref)
-              : expected.kind === 'target' && 'scroll' in expected
-                ? candidates.findIndex((element) => element.offscreen)
-                : -1;
+              : -1;
           return [id, choice(q, index < 0 ? 'none' : `e${index}`)];
         }),
       ),
@@ -210,28 +210,28 @@ test('synthetic phrase choices expose descriptions and none, scroll offscreen, a
     expected: { kind: 'target', scroll: 'down' },
   };
   const scrollJudge = scriptedJudge((questions) => ({
-    target_1: choice(questions.target_1, 'e1'),
+    target_1: choice(questions.target_1, 'none'),
   }));
   assert.deepEqual(await evaluateSyntheticCase(fixture, scrollJudge), {
     pass: true,
     actual: fixture.expected,
   });
   const { state, questions } = scrollJudge.requests[0];
-  assert.deepEqual(Object.keys(questions.target_1.criteria!), ['e0', 'e1', 'none']);
+  assert.deepEqual(Object.keys(questions.target_1.criteria!), ['e0', 'none']);
   assert.deepEqual(state, {
     front: 'app',
-    elements: ['Button "Save"', 'Button "Load more" off screen'],
+    elements: ['Button "Save"'],
   });
 
   const unsureJudge = scriptedJudge((questions) => ({
-    target_1: choice(questions.target_1, 'e1', { e0: 0.3, e1: 0.5, none: 0.2 }),
+    target_1: choice(questions.target_1, 'none', { e0: 0.5, none: 0.5 }),
   }));
   assert.deepEqual(await evaluateSyntheticCase(fixture, unsureJudge), {
     pass: false,
     actual: { kind: 'target', refuse: 'TARGET_UNSURE' },
   });
   const narrowJudge = scriptedJudge((questions) => ({
-    target_1: choice(questions.target_1, 'e1', { e0: 0.43, e1: 0.57, none: 0 }),
+    target_1: choice(questions.target_1, 'none', { e0: 0.43, none: 0.57 }),
   }));
   assert.deepEqual(await evaluateSyntheticCase(fixture, narrowJudge), {
     pass: false,
@@ -290,7 +290,7 @@ test('explicit synthetic evidence exercises semantic eval targets, fills, scroll
         line: 'Tap the load more control',
         expected: { kind: 'target', scroll: 'down' },
       },
-      selected: 'e1',
+      selected: 'none',
     },
     {
       fixture: {

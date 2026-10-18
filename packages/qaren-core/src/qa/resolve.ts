@@ -75,6 +75,7 @@ export function resolutionVisible(resolution: Resolution | undefined): boolean {
 export interface TargetQuestion {
   question: Question;
   candidates: Element[];
+  shown: Element[];
   phrase: string;
 }
 
@@ -165,17 +166,20 @@ export function prepareTarget(step: Step, screen: Screen): Resolution | TargetQu
   const candidates = projected.elements;
   if (!candidates.length)
     return { refuse: 'TARGET_NOT_FOUND', reason: 'the screen has no eligible candidates' };
-  if (candidates.length > MAX_CANDIDATES)
+  const shown = candidates.filter((e) => e.semantic?.visibility !== 'offscreen');
+  if (!shown.length) return offscreenTarget(candidates, target.phrase);
+  if (shown.length > MAX_CANDIDATES)
     return {
       refuse: 'CANDIDATE_LIMIT',
       reason: `more than ${MAX_CANDIDATES} eligible candidates; use an exact quoted target`,
     };
-  if (new Set(candidates.map((e) => e.ref)).size !== candidates.length)
+  if (new Set(shown.map((e) => e.ref)).size !== shown.length)
     return { refuse: 'AMBIGUOUS_REFS', reason: 'screen references are not unique' };
-  const criteria = Object.fromEntries(candidates.map((e, i) => [`e${i}`, describeSemantic(e)]));
+  const criteria = Object.fromEntries(shown.map((e, i) => [`e${i}`, describeSemantic(e)]));
   criteria.none = 'No candidate matches this target';
   return {
     candidates,
+    shown,
     phrase: target.phrase,
     question: {
       type: 'choice',
@@ -527,6 +531,33 @@ function nameTokens(text: string): string[] {
   return text.toLowerCase().match(/[a-z0-9]+/g) ?? [];
 }
 
+function targetNameMismatch(chosen: Element, phrase: string): string | undefined {
+  const observedName = new Set(
+    [chosen.label, chosen.testID, chosen.placeholder].flatMap((name) => nameTokens(name ?? '')),
+  );
+  const missing = [...new Set(nameTokens(phrase))].filter(
+    (word) => !GENERIC_TARGET_WORDS.has(word) && !observedName.has(word),
+  );
+  if (!observedName.size || missing.length)
+    return missing.length
+      ? `the selected candidate's observed name does not contain "${missing.join(' ')}"`
+      : 'the selected candidate has no observed name';
+}
+
+function offscreenTarget(candidates: Element[], phrase: string): Resolution {
+  const matching = candidates.filter(
+    (e) => e.semantic?.visibility === 'offscreen' && targetNameMismatch(e, phrase) === undefined,
+  );
+  if (matching.length > 1)
+    return {
+      refuse: 'TARGET_AMBIGUOUS',
+      reason: `multiple offscreen candidates match the target; candidates: ${matching.map(describeCandidate).join('; ')}`,
+    };
+  return matching.length
+    ? scrollTo(matching[0])
+    : { refuse: 'TARGET_NOT_FOUND', reason: 'no candidate matches the target' };
+}
+
 export function decideTarget(prepared: TargetQuestion, answer: Answer | undefined): Resolution {
   const top = confidentChoice(prepared.question, answer);
   if (!top)
@@ -534,28 +565,11 @@ export function decideTarget(prepared: TargetQuestion, answer: Answer | undefine
       refuse: 'TARGET_UNSURE',
       reason: 'target probabilities did not meet the act threshold and margin',
     };
-  const offscreen = (e: Element): boolean => e.semantic?.visibility === 'offscreen';
-  if (top === 'none') {
-    const candidate = prepared.candidates.find(offscreen);
-    return candidate
-      ? scrollTo(candidate)
-      : { refuse: 'TARGET_NOT_FOUND', reason: 'no candidate matches the target' };
-  }
-  const chosen = prepared.candidates[Number(top.slice(1))];
-  const observedName = new Set(
-    [chosen.label, chosen.testID, chosen.placeholder].flatMap((name) => nameTokens(name ?? '')),
-  );
-  const missing = [...new Set(nameTokens(prepared.phrase))].filter(
-    (word) => !GENERIC_TARGET_WORDS.has(word) && !observedName.has(word),
-  );
-  if (!observedName.size || missing.length)
-    return {
-      refuse: 'TARGET_NOT_FOUND',
-      reason: missing.length
-        ? `the selected candidate's observed name does not contain "${missing.join(' ')}"`
-        : 'the selected candidate has no observed name',
-    };
-  return offscreen(chosen) ? scrollTo(chosen) : { ref: chosen.ref, element: chosen };
+  if (top === 'none') return offscreenTarget(prepared.candidates, prepared.phrase);
+  const chosen = prepared.shown[Number(top.slice(1))];
+  const mismatch = targetNameMismatch(chosen, prepared.phrase);
+  if (mismatch) return { refuse: 'TARGET_NOT_FOUND', reason: mismatch };
+  return { ref: chosen.ref, element: chosen };
 }
 
 function describeSemantic(element: Element): string {

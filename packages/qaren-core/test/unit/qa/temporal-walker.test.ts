@@ -266,11 +266,11 @@ test('screenshot delay preserves check acceptance but the cached action owns a s
 
 test('completed resolution scroll survives freshness refresh without a repeated scroll', async () => {
   let now = 0;
-  const off = screen([element('@off', 'Save', { offscreen: true })]);
+  const off = screen([element('@header', 'Header'), element('@off', 'Save', { offscreen: true })]);
   const on = screen([element('@on', 'Save')]);
   const judge = scriptedJudge((questions, index) => {
     if (index === 1) now += 10_000;
-    return { target_1: choice(questions.target_1) };
+    return { target_1: choice(questions.target_1, index === 0 ? 'none' : 'e0') };
   });
   const f = walker([off, on], judge);
   f.deps.now = () => now;
@@ -282,11 +282,11 @@ test('completed resolution scroll survives freshness refresh without a repeated 
 
 test('one freshness allowance spans both sides of resolution scrolling', async () => {
   let now = 0;
-  const off = screen([element('@off', 'Save', { offscreen: true })]);
+  const off = screen([element('@header', 'Header'), element('@off', 'Save', { offscreen: true })]);
   const on = screen([element('@on', 'Save')]);
   const judge = scriptedJudge((questions, index) => {
     if (index !== 1) now += 10_000;
-    return { target_1: choice(questions.target_1) };
+    return { target_1: choice(questions.target_1, index < 2 ? 'none' : 'e0') };
   });
   const f = walker([off, off, on], judge);
   f.deps.now = () => now;

@@ -104,12 +104,13 @@ export async function evaluateSyntheticCase(
   const candidates = actionView(input.screen).filter(
     (element) => item.kind !== 'fill' || element.kind === 'input',
   );
+  const shown = candidates.filter((element) => element.semantic?.visibility !== 'offscreen');
   let target;
   if (!candidates.length) {
     target = { refuse: 'TARGET_NOT_FOUND' };
-  } else if (candidates.length > MAX_CANDIDATES) {
+  } else if (shown.length > MAX_CANDIDATES) {
     target = { refuse: 'CANDIDATE_LIMIT' };
-  } else if (new Set(candidates.map((element) => element.ref)).size !== candidates.length) {
+  } else if (new Set(shown.map((element) => element.ref)).size !== shown.length) {
     target = { refuse: 'AMBIGUOUS_REFS' };
   } else {
     const values = [
@@ -117,7 +118,7 @@ export async function evaluateSyntheticCase(
       ...(item.kind === 'fill' ? [item.text] : []),
       ...inputValues(input.screen),
     ];
-    const descriptions = candidates.map(describe);
+    const descriptions = shown.map(describe);
     const mask = modelMask(values, [item.target.phrase, ...descriptions]);
     const question = {
       type: 'choice' as const,
@@ -129,14 +130,18 @@ export async function evaluateSyntheticCase(
         none: 'No candidate matches this target',
       },
     };
-    const answers = await judge.ask(
-      { front: input.screen.front, elements: descriptions.map(mask.apply) },
-      { [`target_${item.line}`]: question },
-      'walk',
-    );
+    const answer = shown.length
+      ? (
+          await judge.ask(
+            { front: input.screen.front, elements: descriptions.map(mask.apply) },
+            { [`target_${item.line}`]: question },
+            'walk',
+          )
+        )[`target_${item.line}`]
+      : { type: 'choice', choice: 'none', confidence: 1, probabilities: { none: 1 } };
     const resolution = decideTarget(
-      { question, candidates, phrase: item.target.phrase },
-      answers[`target_${item.line}`],
+      { question, candidates, shown, phrase: item.target.phrase },
+      answer,
     );
     target =
       'ref' in resolution

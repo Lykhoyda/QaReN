@@ -580,8 +580,12 @@ test('quoted and semantic targets scroll relative to every trusted clipping view
       if (direction) assert.deepEqual(exact, { scroll: direction, element: earlier }, type);
       else assert.ok('ref' in exact, type);
       const semantic = prepareTarget({ ...step, target: { phrase: 'the earlier button' } }, screen);
+      if (direction) {
+        assert.deepEqual(semantic, { scroll: direction, element: earlier }, type);
+        continue;
+      }
       assert.ok('question' in semantic, type);
-      const index = semantic.candidates.findIndex((e) => e.label === 'Earlier');
+      const index = semantic.shown.findIndex((e) => e.label === 'Earlier');
       assert.notEqual(index, -1);
       const choice = `e${index}`;
       const chosen = decideTarget(semantic, {
@@ -590,19 +594,7 @@ test('quoted and semantic targets scroll relative to every trusted clipping view
         confidence: 1,
         probabilities: { [choice]: 1, none: 0 },
       });
-      if (direction) {
-        assert.deepEqual(chosen, { scroll: direction, element: earlier }, type);
-        assert.deepEqual(
-          decideTarget(semantic, {
-            type: 'choice',
-            choice: 'none',
-            confidence: 1,
-            probabilities: { [choice]: 0, none: 1 },
-          }),
-          { scroll: direction, element: earlier },
-          type,
-        );
-      } else assert.ok('ref' in chosen, type);
+      assert.ok('ref' in chosen, type);
     }
   }
 });
