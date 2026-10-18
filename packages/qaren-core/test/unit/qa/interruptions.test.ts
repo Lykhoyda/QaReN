@@ -173,8 +173,10 @@ test('a decline that leaves the control visible is attempted only once and never
     f.show(screen([element('@close', 'Close'), element('@other', 'Changed')]));
     return { ok: true, proven: false, executed: true };
   };
-  assert.equal((await runPlan(plan(), f.deps)).verdict, 'FAIL');
+  const result = await runPlan(plan(), f.deps);
+  assert.equal(result.verdict, 'FAIL');
   assert.deepEqual(f.actions, ['press @close']);
+  assert.equal(result.recoveries, 1);
 });
 
 test('an unchanged decline control is never pressed a second time', async () => {
@@ -183,8 +185,10 @@ test('an unchanged decline control is never pressed a second time', async () => 
     f.actions.push(`press ${ref}`);
     return { ok: true, proven: false, executed: true };
   };
-  assert.equal((await runPlan(plan(), f.deps)).verdict, 'FAIL');
+  const result = await runPlan(plan(), f.deps);
+  assert.equal(result.verdict, 'FAIL');
   assert.deepEqual(f.actions, ['press @close']);
+  assert.equal(result.recoveries, 1);
 });
 
 test('without the key-gated veto, a quoted plan uses only deterministic evidence', async () => {
@@ -251,7 +255,7 @@ test('a non-executing decline cannot count as recovery even if the screen change
   assert.equal(result.verdict, 'FAIL');
   assert.match(result.failure?.seen ?? '', /INTERRUPTION_NOT_DISPATCHED/);
   assert.deepEqual(f.actions, ['press @close']);
-  assert.equal(result.recoveries, 0);
+  assert.equal(result.recoveries, 1);
 });
 
 test('interruption support actions do not become required commands in the saved block', async (t) => {
@@ -548,4 +552,120 @@ test('on Android a system dialog in front is still declined by recovery', async 
   const result = await runPlan(parsePlan('1. Tap "Settings"').blocks!, f.deps);
   assert.equal(result.verdict, 'PASS', result.failure?.seen);
   assert.deepEqual(f.actions, ['dialog dismiss', 'press @settings']);
+});
+
+const DECLINED = { label: "Don't Allow", rect: { x: 40, y: 500, width: 160, height: 44 } };
+const titled = (title: string): Screen => ({
+  ...alert(),
+  elements: [element('@title', title, { kind: 'text' }), element('@allow', 'Allow')],
+  visibleText: [title, 'Allow'],
+});
+
+test('a declined system prompt followed by a different app pop-up declines both, then retries the wait', async () => {
+  const f = app(alert());
+  f.deps.dialog = async (action) => {
+    f.actions.push(`dialog ${action}`);
+    f.show(promo());
+    return { ok: true, proven: true, executed: true, dialog: DECLINED };
+  };
+  ticking(f);
+  const logs: string[] = [];
+  f.deps.note = (line) => logs.push(line);
+  const result = await runPlan(waitPlan(), f.deps);
+  assert.equal(result.verdict, 'PASS', result.failure?.seen);
+  assert.deepEqual(f.actions, ['dialog dismiss', 'press @close']);
+  assert.equal(result.recoveries, 2);
+  const retries = result.steps.filter((row) => row.outcome === 'retry');
+  assert.equal(retries.length, 2);
+  assert.match(retries[0].reason ?? '', /recovered: dialog; retrying the step once$/);
+  assert.deepEqual(retries[0].dialog, DECLINED);
+  assert.match(retries[1].reason ?? '', /recovered: dismissed an app screen with Close/);
+  assert.equal(retries[1].dialog, undefined);
+  assert.deepEqual(
+    logs.filter((line) => line.startsWith('dialog-tap ')),
+    [`dialog-tap ${JSON.stringify({ v: 1, line: 1, ...DECLINED })}`],
+  );
+});
+
+test('the same app pop-up after its own decline fails the step without a second tap', async () => {
+  const f = app(promo());
+  let gone = 0;
+  f.deps.press = async (ref) => {
+    f.actions.push(`press ${ref}`);
+    // Gone for the decline's read-back and its proof capture, then the app shows the same sheet again.
+    gone = 2;
+    return { ok: true, proven: false, executed: true };
+  };
+  f.deps.captureScreen = async () => (gone-- > 0 ? screen([element('@done', 'Done')]) : promo());
+  const result = await runPlan(plan(), f.deps);
+  assert.equal(result.verdict, 'FAIL');
+  assert.deepEqual(f.actions, ['press @close']);
+  assert.equal(result.recoveries, 1);
+  assert.match(result.failure?.seen ?? '', /^the app interruption did not disappear/);
+  assert.match(
+    result.steps.find((row) => row.outcome === 'retry')?.reason ?? '',
+    /recovered: dismissed an app screen with Close/,
+  );
+});
+
+test('a step recovers at most two different pop-ups', async () => {
+  const sheets = [screen([element('@a', 'Skip')]), screen([element('@b', 'Close')])];
+  const f = app(screen([element('@c', 'Not now')]));
+  f.show(sheets[0]);
+  let next = 1;
+  f.deps.press = async (ref) => {
+    f.actions.push(`press ${ref}`);
+    f.show(sheets[next++] ?? screen([element('@c', 'Not now')]));
+    return { ok: true, proven: false, executed: true };
+  };
+  const result = await runPlan(plan(), f.deps);
+  assert.equal(result.verdict, 'FAIL');
+  assert.deepEqual(f.actions, ['press @a', 'press @b']);
+  assert.equal(result.recoveries, 2);
+  assert.match(result.failure?.seen ?? '', /Settings/);
+});
+
+test('a system prompt the app asks again after recovery declined it is left to the plan author', async () => {
+  const f = app(alert());
+  f.deps.press = async (ref) => {
+    f.actions.push(`press ${ref}`);
+    f.show(alert());
+    return { ok: true, proven: false, executed: true };
+  };
+  ticking(f);
+  const result = await runPlan(
+    parsePlan('1. Tap "Settings"\n2. Wait for "Done" to appear').blocks!,
+    f.deps,
+  );
+  assert.equal(result.verdict, 'FAIL');
+  assert.equal(result.failure?.step, 2);
+  assert.deepEqual(f.actions, ['dialog dismiss', 'press @settings']);
+  assert.equal(result.recoveries, 1);
+  assert.match(
+    result.failure?.seen ?? '',
+    /^"Done" did not appear within 15s.*; the app asked again after recovery declined it; answer it with a dialog step/,
+  );
+});
+
+test('a different system prompt after a declined one is declined once too', async () => {
+  const f = app(titled('Notifications'));
+  f.deps.dialog = async (action) => {
+    f.actions.push(`dialog ${action}`);
+    f.show(f.actions.length === 1 ? home() : screen([element('@done', 'Done')]));
+    return { ok: true, proven: true, executed: true };
+  };
+  f.deps.press = async (ref) => {
+    f.actions.push(`press ${ref}`);
+    f.show(ref === '@settings' ? titled('Location') : home());
+    return { ok: true, proven: false, executed: true };
+  };
+  const result = await runPlan(parsePlan('1. Tap "Settings"\n2. Tap "Done"').blocks!, f.deps);
+  assert.equal(result.verdict, 'PASS', result.failure?.seen);
+  assert.deepEqual(f.actions, [
+    'dialog dismiss',
+    'press @settings',
+    'dialog dismiss',
+    'press @done',
+  ]);
+  assert.equal(result.recoveries, 2);
 });
