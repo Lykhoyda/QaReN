@@ -664,6 +664,15 @@ async function walkBlockScoped(
           );
         throw new ResolutionError(decision.check);
       }
+      if (decision.target && 'refuse' in decision.target && decision.target.diagnostic)
+        diagnostic(
+          item,
+          observation,
+          'decision',
+          'SCREEN_EVIDENCE_INCOMPLETE',
+          undefined,
+          decision.target.diagnostic,
+        );
       usable(observation, item, deadline);
       diagnostic(item, observation, 'decision', 'ACCEPTED');
       accepted = true;

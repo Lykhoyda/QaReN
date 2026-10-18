@@ -445,6 +445,7 @@ interface GapHostDiagnostics {
     pressGap: boolean;
     fillGap: boolean;
     association?: HostAssociationDiagnostic;
+    ancestorAssociation?: HostAssociationDiagnostic;
   }>;
 }
 
@@ -611,6 +612,12 @@ export function join(
           const host = reactHostEvidence!.hosts[hostOrdinal];
           const measured = reactHostEvidence!.typography?.nodes[hostOrdinal];
           const rect = measured?.rect;
+          const typography = reactHostEvidence!.typography;
+          const ancestor = typography
+            ? hostPath(typography, hostOrdinal)
+                ?.slice(1)
+                .find((i) => !!reactHostEvidence!.hosts[i]?.testID)
+            : undefined;
           const validRect =
             rect &&
             [rect.x, rect.y, rect.width, rect.height].every(Number.isFinite) &&
@@ -642,6 +649,9 @@ export function join(
             pressGap: pressGaps.has(hostOrdinal),
             fillGap: fillGaps.has(hostOrdinal),
             association: associationDiagnostics.get(hostOrdinal),
+            ...(ancestor === undefined
+              ? {}
+              : { ancestorAssociation: associationDiagnostics.get(ancestor) }),
           };
         }),
       };
@@ -1225,10 +1235,17 @@ export function semanticActionView(screen: Screen, kind: 'press' | 'fill'): Proj
     if (semanticDisabled(e)) continue;
     if (!e.semantic) return incomplete('an observation has no semantic facts');
     if (e.semantic.visibility === 'hidden' || e.semantic[kind] === 'unsupported') continue;
-    if (e.semantic[kind] !== 'supported')
-      return incomplete(
+    if (e.semantic[kind] !== 'supported') {
+      const refusal: Extract<Projection, { refuse: string }> = incomplete(
         `an observation has unknown ${kind} capability (${e.ref}, ${e.kind}${kind === 'press' && screen.pressEvidenceGap ? `; ${screen.pressEvidenceGap}` : ''})`,
       );
+      try {
+        refusal.diagnostic = visibilityBlocker(screen, e, screen.elements.indexOf(e));
+      } catch {
+        // Diagnostics cannot change action admission.
+      }
+      return refusal;
+    }
     if (e.semantic.nativePresence && e.semantic.visibility === 'unknown')
       return incomplete('a native control lacks positive platform presence');
     if (e.semantic.visibility !== 'offscreen' && !e.hittable)

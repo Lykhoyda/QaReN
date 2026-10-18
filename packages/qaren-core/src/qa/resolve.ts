@@ -56,7 +56,7 @@ export const MAX_CANDIDATES = 30;
 export type Resolution =
   | { ref: string; element: Element }
   | { scroll: 'down' | 'up'; element?: Element }
-  | { refuse: string; reason: string };
+  | { refuse: string; reason: string; diagnostic?: VisibilityBlockerDiagnostic };
 
 export class ResolutionError extends Error {
   readonly code: string;
