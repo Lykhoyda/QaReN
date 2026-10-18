@@ -123,9 +123,9 @@ qaren prewarm <scenario.yaml> [--json]
 ```
 
 Installs the app's dependencies ahead of time for a scenario with
-`deps.policy: require-prewarm`. Run it while registry credentials are available; such a
-scenario then refuses to prepare without a matching prewarm record (`DEPS_NOT_PREWARMED`)
-and installs offline.
+`deps.policy: require-prewarm`. See the authoritative
+[dependency prewarming contract](https://github.com/Lykhoyda/rn-dev-agent/blob/develop/packages/qaren-cli/README.md#native-fingerprint-build-selection)
+for registry access restrictions, prewarm records and offline preparation.
 
 ### qaren status
 
