@@ -116,6 +116,20 @@ function load(name: string) {
   };
 }
 
+test('Covered base associates its safe-area root and both Pressables on Android', () => {
+  // Keep the captured frames: associateHosts calibrates their origin at the real device scale.
+  const covered = load('covered-base');
+  assert.equal(covered.presence.source, 'android-a11y-live');
+  assert.equal(covered.presence.pointScale, 2.625);
+  assert.equal(covered.identity('qa-covered-base-screen'), 'matched');
+  assert.ok(covered.associated('qa-covered-base-screen'));
+  for (const button of ['qa-covered-base-action', 'qa-covered-push-top']) {
+    assert.equal(covered.identity(button), 'matched', button);
+    assert.ok(covered.associated(button), button);
+  }
+  assert.equal(covered.unassociatedPress, 0);
+});
+
 test('Home top associates every interactive host, the 24 scrolled out of view included', () => {
   const home = load('home-top');
   assert.equal(home.unassociatedPress, 0);
