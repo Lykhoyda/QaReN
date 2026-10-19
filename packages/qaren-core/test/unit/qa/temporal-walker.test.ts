@@ -501,14 +501,15 @@ test('equal or fewer unmatched observations after a scroll do not refresh', asyn
 
 test('association regression after scrolling cannot replenish a consumed freshness allowance', async () => {
   let now = 0;
-  const off = screen([element('@off', 'Save', { offscreen: true })]);
+  // The visible header ensures the allowance is consumed before the named scroll.
+  const off = screen([element('@header', 'Header'), element('@off', 'Save', { offscreen: true })]);
   const lagging = {
     ...screen([element('@on', 'Save')]),
     semanticUnassociatedReact: 35,
   };
   const judge = scriptedJudge((questions, index) => {
     if (index === 0) now += 10_000;
-    return { target_1: choice(questions.target_1) };
+    return { target_1: choice(questions.target_1, 'none') };
   });
   const f = walker([off, off, lagging], judge);
   f.deps.now = () => now;
