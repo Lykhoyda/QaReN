@@ -8,6 +8,8 @@ use std::path::{Path, PathBuf};
 use std::sync::mpsc;
 use std::time::Duration;
 
+mod diagnostics;
+
 pub const WIRE_VERSION: u64 = 1;
 const MAX_ROWS: usize = 10_000;
 const MAX_LINE_BYTES: usize = 4 * 1024 * 1024;
@@ -585,6 +587,7 @@ pub struct CoreChild {
     run_id: String,
     child: crate::exec::PipedChild,
     rx: mpsc::Receiver<Msg>,
+    diagnostics: diagnostics::Sink,
 }
 
 // The caller could not persist the pid, so nothing else will ever find this child: kill its group now.
@@ -684,6 +687,7 @@ pub fn spawn_private(
         run_id: request.run_id.clone(),
         child,
         rx,
+        diagnostics: diagnostics::Sink::new(stderr_log),
     })
 }
 
@@ -697,6 +701,7 @@ struct Inbox {
     announced: usize,
     result: Option<Value>,
     violation: Option<String>,
+    diagnostics: diagnostics::Sink,
 }
 
 const MAX_RUNNER_DRIVERS: usize = 8;
@@ -730,6 +735,10 @@ impl Inbox {
             }
         }
         match (kind, value.get("payload")) {
+            (Some("diagnostic"), Some(payload)) => {
+                self.diagnostics.accept(payload);
+                false
+            }
             (Some("admitted"), Some(payload))
                 if !self.admitted && payload.as_object().is_some_and(|p| p.is_empty()) =>
             {
@@ -847,6 +856,7 @@ pub fn wait(
         run_id,
         mut child,
         rx,
+        diagnostics,
     } = core;
     let started = runner.monotonic_ms();
     let mut last_progress = started;
@@ -860,6 +870,7 @@ pub fn wait(
         announced: 0,
         result: None,
         violation: None,
+        diagnostics,
     };
     let mut exit: Option<i32> = None;
     let mut eof = false;

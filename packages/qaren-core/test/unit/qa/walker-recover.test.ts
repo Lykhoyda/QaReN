@@ -6,6 +6,7 @@ import type { WalkSequence } from '../../../dist/qa/walker.js';
 import type { Block } from '../../../dist/qa/plan.js';
 import type { Screen } from '../../../dist/qa/screen.js';
 import { NativeCaptureError } from '../../../dist/qa/capture.js';
+import { InputPrivacyRefusal, RunInputs, withInputs } from '../../../dist/qa/inputs.js';
 import { loginBlock, runPlan, walkBlock } from '../../../dist/qa/walker.js';
 import type { ActResult, WalkerDeps } from '../../../dist/qa/walker.js';
 import type { LedgerRow, StepStart } from '../../../dist/qa/ledger.js';
@@ -360,6 +361,70 @@ test('a configured but unreadable login block fails at the step', async () => {
     renderReason(outcome.failure?.seen ?? '', (text) => text),
     /the login block did not pass/,
   );
+});
+
+test('slot runs report only existing saved-login recovery outcomes, even when the sink fails', async () => {
+  for (const expected of ['pass', 'fail', 'refused'] as const) {
+    for (const brokenSink of [false, true]) {
+      const wall = screen(['Sign in'], 'app', { 'Sign in': 'login-screen' });
+      const events: unknown[] = [];
+      const f = fake(
+        expected === 'pass'
+          ? [wall, wall, wall, screen(['Settings']), screen(['Settings']), screen(['Profile'])]
+          : [wall],
+        {
+          login: {
+            marker: { id: 'login-screen' },
+            ...(expected === 'fail'
+              ? {}
+              : {
+                  block: { ...block('1. Tap "Sign in"\n'), slug: 'private-title' },
+                }),
+          },
+          loginOutcome: (outcome) => {
+            events.push(outcome);
+            if (brokenSink) throw Error('private-sink');
+          },
+        },
+      );
+      if (expected === 'refused') {
+        let reads = 0;
+        f.deps.captureScreen = async () => {
+          if (++reads >= 3) throw new NativeCaptureError();
+          return wall;
+        };
+      }
+      const ledger = await withInputs(
+        new RunInputs({ PASSWORD: 'private-value' }, ['PASSWORD']),
+        () => runPlan([block('1. Tap "Settings"\n')], f.deps),
+      );
+      assert.equal(
+        ledger.verdict,
+        expected === 'pass' ? 'PASS' : expected === 'refused' ? 'REFUSED' : 'FAIL',
+      );
+      assert.deepEqual(events, [expected]);
+    }
+  }
+});
+
+test('a saved-login input-privacy refusal is reported while the original abort still propagates', async () => {
+  const wall = screen(['Sign in'], 'app', { 'Sign in': 'login-screen' });
+  const events: string[] = [];
+  const error = new InputPrivacyRefusal();
+  const f = fake([wall], {
+    login: { marker: { id: 'login-screen' }, block: block('1. Tap "Sign in"') },
+    loginOutcome: (outcome) => events.push(outcome),
+    press: async () => {
+      throw error;
+    },
+  });
+  await assert.rejects(
+    withInputs(new RunInputs({ PASSWORD: 'private-value' }, ['PASSWORD']), () =>
+      runPlan([block('1. Tap "Settings"')], f.deps),
+    ),
+    (caught) => caught === error,
+  );
+  assert.deepEqual(events, ['refused']);
 });
 
 const passwordInput: Screen = {

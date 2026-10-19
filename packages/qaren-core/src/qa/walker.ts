@@ -1,5 +1,6 @@
 import {
   fillText,
+  InputPrivacyRefusal,
   currentInputs,
   declareEcho,
   throwIfInputPrivacyRefused,
@@ -58,6 +59,7 @@ import {
   checkVerdict,
 } from './questions.js';
 import { type LoginMarker, dismissCandidate, recover } from './recover.js';
+import type { BlockOutcome, BlockOutcomeDiagnostic } from './diagnostics.js';
 import {
   concealsScreen,
   isPrivateInput,
@@ -167,6 +169,8 @@ export interface WalkerDeps {
   start?(start: StepStart): void;
   cancelled?(): boolean;
   diagnostic?(event: WalkerTimingDiagnostic): void;
+  blockOutcome?(event: BlockOutcomeDiagnostic): void;
+  loginOutcome?(outcome: BlockOutcome): void;
   timing?: TimingObserver;
   rowTiming?(t: number): RowTiming;
   // iOS only: the app process every capture must still belong to, set by the first capture.
@@ -315,7 +319,34 @@ const NEAR_MISS: Record<LiteralNearMiss, string> = {
 export function walkBlock(
   ...args: Parameters<typeof walkBlockScoped>
 ): ReturnType<typeof walkBlockScoped> {
-  return withEchoScope(() => walkBlockScoped(...args));
+  return withEchoScope(async () => {
+    const [block, deps] = args;
+    const report = (outcome: BlockOutcome): void => {
+      if (!currentInputs()?.hasInputs) return;
+      if (block.items.some((item) => item.kind === 'fill' && item.input)) {
+        try {
+          deps.blockOutcome?.({ kind: 'block-outcome', line: block.items[0].line, outcome });
+        } catch {
+          // Diagnostics cannot change the block's outcome.
+        }
+      }
+      if (args[6]?.login) {
+        try {
+          deps.loginOutcome?.(outcome);
+        } catch {
+          // Diagnostics cannot change login recovery.
+        }
+      }
+    };
+    try {
+      const outcome = await walkBlockScoped(...args);
+      report(outcome.refusal ? 'refused' : outcome.block.outcome);
+      return outcome;
+    } catch (error) {
+      if (error instanceof InputPrivacyRefusal) report('refused');
+      throw error;
+    }
+  });
 }
 
 async function walkBlockScoped(
@@ -1188,7 +1219,16 @@ async function walkBlockScoped(
   let loginReplayed = false;
   const replayLogin = async () => {
     const login = deps.login?.block;
-    if (!login) return 'fail' as const;
+    if (!login) {
+      if (currentInputs()?.hasInputs) {
+        try {
+          deps.loginOutcome?.('fail');
+        } catch {
+          // Diagnostics cannot change login recovery.
+        }
+      }
+      return 'fail' as const;
+    }
     loginReplayed = true;
     sequence.window = undefined;
     let taken = 0;

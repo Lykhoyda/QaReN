@@ -1,4 +1,5 @@
-import { RunInputs, withInputs } from './inputs.js';
+import { RunInputs, withInputs, currentInputs } from './inputs.js';
+import { cleanDiagnostic } from './diagnostics.js';
 import { ObservedPrivacy } from './privacy.js';
 import { collectInputNames } from './plan.js';
 import { readBlock } from './blocks.js';
@@ -17,6 +18,7 @@ export type EnvelopeType =
   | 'request'
   | 'admitted'
   | 'start'
+  | 'diagnostic'
   | 'row'
   | 'resource'
   | 'result'
@@ -132,6 +134,7 @@ const TYPES: ReadonlySet<string> = new Set([
   'request',
   'admitted',
   'start',
+  'diagnostic',
   'row',
   'resource',
   'result',
@@ -321,6 +324,7 @@ export async function readPrivateRequest(input: AsyncIterable<Buffer | string>) 
 }
 
 export interface WireWriter {
+  diagnostic(payload: unknown): void;
   admitted(): void;
   start(payload: StepStart): void;
   row(payload: LedgerRow): void;
@@ -333,6 +337,8 @@ export interface WireWriter {
 export function createWriter(write: (line: string) => void, runId: string): WireWriter {
   let seq = 1;
   let closed = false;
+  let diagnostics = 0;
+  let outcomes = 0;
   const send = (type: EnvelopeType, payload: unknown): void => {
     if (closed) throw new WireError('the result line was already written; nothing may follow it');
     seq += 1;
@@ -340,6 +346,23 @@ export function createWriter(write: (line: string) => void, runId: string): Wire
     write(`${JSON.stringify(envelope)}\n`);
   };
   return {
+    diagnostic: (payload) => {
+      if (closed || !currentInputs()?.hasInputs) return;
+      try {
+        const clean = cleanDiagnostic(payload);
+        if (!clean) return;
+        if (clean.kind === 'block-outcome' || clean.kind === 'login-outcome') {
+          if (outcomes >= 10_000) return;
+          outcomes++;
+        } else {
+          if (diagnostics >= 20_000) return;
+          diagnostics++;
+        }
+        send('diagnostic', clean);
+      } catch {
+        // Diagnostics cannot change the run's outcome.
+      }
+    },
     admitted: () => send('admitted', {}),
     start: ({ operationId, line, kind, t }) => send('start', { operationId, line, kind, t }),
     row: (payload) => send('row', payload),

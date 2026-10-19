@@ -182,6 +182,112 @@ fn run_child(mock: &mut MockRunner, log: &Path) -> core::CoreOutcome {
 }
 
 #[test]
+fn slot_diagnostics_retain_only_allowlisted_events_without_affecting_the_result() {
+    use qaren::redact::{with_input_scope, InputValues};
+    use std::ffi::OsString;
+    use std::sync::Arc;
+    let repo = common::temp_repo();
+    let secret = "private-synthetic-value";
+    let inputs = Arc::new(InputValues::from_entries([(
+        OsString::from("QAREN_INPUT_PASSWORD"),
+        OsString::from(secret),
+    )]));
+    with_input_scope(inputs, || {
+        let payloads = [
+            r#"{"kind":"metric","stage":"capture","edge":"end","outcome":"ok","at":200,"ms":100}"#.to_string(),
+            r#"{"kind":"timing","stage":"dispatch","code":"ACTION_INTERRUPTED","line":2,"at":220,"acquisitionMs":100,"observationAgeMs":120,"nativeCode":"RUNNER_TIMEOUT","nativeMutation":"possible"}"#.into(),
+            r#"{"kind":"block-outcome","line":2,"outcome":"pass"}"#.into(),
+            r#"{"kind":"login-outcome","outcome":"refused"}"#.into(),
+            format!(r#"{{"kind":"login-outcome","outcome":"{secret}"}}"#),
+            format!(r#"{{"kind":"block-outcome","line":2,"outcome":"pass","title":"{secret}"}}"#),
+            format!(r#"{{"kind":"timing","stage":"dispatch","code":"{secret}","line":2,"at":1,"acquisitionMs":0,"observationAgeMs":0}}"#),
+            r#"{"kind":"metric","stage":"capture","edge":"end","outcome":"ok","at":-1}"#.into(),
+        ];
+        let mut stdout = String::new();
+        for (i, payload) in payloads.iter().enumerate() {
+            stdout.push_str(&envelope(i as u64 + 2, "diagnostic", payload));
+            stdout.push('\n');
+        }
+        stdout.push_str(&envelope(10, "result", &pass_ledger(&[])));
+        stdout.push('\n');
+        let mut mock = MockRunner::new();
+        mock.expect_spawn_piped("walk.js", 9000, &stdout, Some(0));
+        let result = run_child(&mut mock, &repo.join("core.log"));
+        assert_eq!(result.verdict, Verdict::Pass);
+        let stored = std::fs::read_to_string(repo.join("core-diagnostics.jsonl")).unwrap();
+        assert!(!stored.contains(secret));
+        let got: Vec<serde_json::Value> = stored
+            .lines()
+            .map(|line| serde_json::from_str(line).unwrap())
+            .collect();
+        assert_eq!(got.len(), 4);
+        for (event, expected) in got.iter().zip(&payloads) {
+            assert_eq!(
+                *event,
+                serde_json::from_str::<serde_json::Value>(expected).unwrap()
+            );
+        }
+    });
+}
+
+#[test]
+fn a_real_slot_child_keeps_raw_logs_withheld_while_retaining_structured_diagnostics() {
+    use qaren::exec::RealRunner;
+    use qaren::redact::{with_input_scope, InputValues};
+    use std::ffi::OsString;
+    use std::sync::Arc;
+    let repo = common::temp_repo();
+    let secret = "quote\"slash\\private-synthetic";
+    let inputs = Arc::new(InputValues::from_entries([(
+        OsString::from("QAREN_INPUT_PASSWORD"),
+        OsString::from(secret),
+    )]));
+    with_input_scope(inputs.clone(), || {
+        let resolved = inputs.admit(&["PASSWORD".into()]).unwrap();
+        let script = r#"
+          const reader = require('node:readline').createInterface({input: process.stdin});
+          reader.once('line', input => {
+            const { payload, runId } = JSON.parse(input);
+            process.stderr.write(payload.inputs.PASSWORD + '\n');
+            let seq = 1;
+            const send = (type, payload) => process.stdout.write(JSON.stringify({v: 1, runId, seq: ++seq, type, payload}) + '\n');
+            send('diagnostic', {kind: 'metric', stage: 'capture', edge: 'end', outcome: 'ok', at: 200, ms: 100});
+            send('diagnostic', {kind: 'timing', stage: 'dispatch', code: 'COMPLETED', line: 2, at: 220, acquisitionMs: 100, observationAgeMs: 120});
+            send('diagnostic', {kind: 'block-outcome', line: 2, outcome: 'pass'});
+            send('diagnostic', {kind: 'login-outcome', outcome: 'pass'});
+            send('diagnostic', {kind: 'login-outcome', outcome: payload.inputs.PASSWORD});
+            send('result', {verdict: 'PASS', path: 'walk', blocks: [], steps: [], jev: {calls: 0, medianMs: 0}, llmTurns: 0, escapes: 0, recoveries: 0});
+            reader.close();
+            process.stdin.destroy();
+          });
+        "#;
+        let mut runner = RealRunner::with_log_executable(env!("CARGO_BIN_EXE_qaren").into());
+        let fixture = CmdSpec::new("fixture", "node", &["-e", script], 5);
+        let raw_log = repo.join("core.log");
+        let child = core::spawn_private(
+            &mut runner,
+            &fixture,
+            &raw_log,
+            &request(),
+            Some(&resolved),
+            None,
+        )
+        .unwrap();
+        let result = core::wait(&mut runner, child, budgets(), &mut |_, _| {});
+        assert_eq!(result.verdict, Verdict::Pass);
+        assert_eq!(
+            std::fs::read_to_string(raw_log).unwrap(),
+            "[private output withheld]\n"
+        );
+        let retained = std::fs::read_to_string(repo.join("core-diagnostics.jsonl")).unwrap();
+        assert_eq!(retained.lines().count(), 4);
+        assert!(!retained.contains(secret));
+        assert!(!retained.contains("private-synthetic"));
+        assert!(!format!("{result:?}").contains("private-synthetic"));
+    });
+}
+
+#[test]
 fn scripted_rows_and_a_pass_result_become_a_typed_ledger() {
     let repo = common::temp_repo();
     let rows = [row(1, 1, "pass"), row(2, 1, "pass")];
