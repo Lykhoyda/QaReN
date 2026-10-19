@@ -479,6 +479,7 @@ test('an offscreen native control is a model-free scroll hint; an unobserved one
   assert.deepEqual(prepareTarget({ kind: 'press', target: { phrase: 'show more' } }, below), {
     scroll: 'down',
     element: below.elements[3],
+    origin: 'named-offscreen',
   });
 
   const shown = projection.join(

@@ -1695,7 +1695,7 @@ async function walkBlockScoped(
         let fillIdentity: string | undefined;
         let typedUnverified = false;
         let again = false;
-        let scrolled = false;
+        let scrolled = 0;
         let scrollOrigin: NonNullable<
           WalkerTimingDiagnostic['clearanceDiagnostic']
         >['scrollOrigin'] = null;
@@ -1839,7 +1839,13 @@ async function walkBlockScoped(
                   if (!fallback || item.kind !== 'fill') throw new ResolutionError(decided);
                   fellBack = true;
                   fillIdentity = fallback.oracleTestID;
-                  const result = await keyboardFallback(item, attempt, before, fallback, scrolled);
+                  const result = await keyboardFallback(
+                    item,
+                    attempt,
+                    before,
+                    fallback,
+                    !!scrolled,
+                  );
                   if (result === 'typed') {
                     typedUnverified = true;
                     break;
@@ -1848,17 +1854,22 @@ async function walkBlockScoped(
                     outcome = result;
                     break;
                   }
-                  scrolled ||= result.scrolled;
+                  scrolled ||= Number(result.scrolled);
                   before = result.observation;
                   fillIdentity = result.identity;
                   resolution = result;
                 } else resolution = decided;
                 if ('scroll' in resolution) {
-                  if (scrolled) {
+                  if (
+                    scrolled &&
+                    (resolution.origin !== 'named-offscreen' ||
+                      scrollOrigin !== 'offscreen-resolution' ||
+                      scrolled >= SCROLL_ATTEMPTS)
+                  ) {
                     outcome = failed(
                       item,
                       attempt,
-                      `${scrollError ? `${scrollError}; ` : ''}"${item.target.phrase}" stayed off screen after one scroll`,
+                      `${scrollError ? `${scrollError}; ` : ''}"${item.target.phrase}" stayed off screen after ${scrolled === 1 ? 'one scroll' : `${scrolled} scrolls`}`,
                       before.screen,
                       await shoot(item),
                     );
@@ -1878,7 +1889,7 @@ async function walkBlockScoped(
                   const result = await mutate(item, before, (context) =>
                     deps.scroll(resolution.scroll, context, distance, band),
                   );
-                  scrolled = true;
+                  scrolled += 1;
                   scrollNeedsReadback = !result.ok && !result.proven;
                   scrollError = result.ok
                     ? undefined
@@ -1887,14 +1898,13 @@ async function walkBlockScoped(
                   before = await settledCapture(item);
                   usable(before, item);
                   if (
-                    !result.ok &&
-                    !result.proven &&
+                    (resolution.origin === 'named-offscreen' || (!result.ok && !result.proven)) &&
                     screenSignature(before.screen) === signature
                   ) {
                     outcome = failed(
                       item,
                       attempt,
-                      `${scrollError}; "${item.target.phrase}" stayed off screen after one scroll`,
+                      `${scrollError ? `${scrollError}; ` : ''}"${item.target.phrase}" stayed off screen after ${scrolled === 1 ? 'one scroll' : `${scrolled} scrolls`}`,
                       before.screen,
                       await shoot(item),
                     );
@@ -2109,7 +2119,7 @@ async function walkBlockScoped(
                   break;
                 }
                 fillIdentity = fallback.oracleTestID;
-                const result = await keyboardFallback(item, attempt, before, fallback, scrolled);
+                const result = await keyboardFallback(item, attempt, before, fallback, !!scrolled);
                 if (result === 'typed') {
                   typedUnverified = true;
                   break;
@@ -2118,7 +2128,7 @@ async function walkBlockScoped(
                   outcome = result;
                   break;
                 }
-                scrolled ||= result.scrolled;
+                scrolled ||= Number(result.scrolled);
                 before = result.observation;
                 fillIdentity = result.identity;
                 continue;

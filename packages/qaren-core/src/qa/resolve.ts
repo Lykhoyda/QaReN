@@ -55,7 +55,7 @@ export { ACT, CHECK } from './questions.js';
 export const MAX_CANDIDATES = 30;
 export type Resolution =
   | { ref: string; element: Element }
-  | { scroll: 'down' | 'up'; element?: Element }
+  | { scroll: 'down' | 'up'; element?: Element; origin?: 'named-offscreen' }
   | { refuse: string; reason: string; diagnostic?: VisibilityBlockerDiagnostic };
 
 export class ResolutionError extends Error {
@@ -554,7 +554,7 @@ function offscreenTarget(candidates: Element[], phrase: string): Resolution {
       reason: `multiple offscreen candidates match the target; candidates: ${matching.map(describeCandidate).join('; ')}`,
     };
   return matching.length
-    ? scrollTo(matching[0])
+    ? { ...scrollTo(matching[0]), origin: 'named-offscreen' }
     : { refuse: 'TARGET_NOT_FOUND', reason: 'no candidate matches the target' };
 }
 

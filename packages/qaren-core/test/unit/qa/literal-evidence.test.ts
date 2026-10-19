@@ -581,7 +581,11 @@ test('quoted and semantic targets scroll relative to every trusted clipping view
       else assert.ok('ref' in exact, type);
       const semantic = prepareTarget({ ...step, target: { phrase: 'the earlier button' } }, screen);
       if (direction) {
-        assert.deepEqual(semantic, { scroll: direction, element: earlier }, type);
+        assert.deepEqual(
+          semantic,
+          { scroll: direction, element: earlier, origin: 'named-offscreen' },
+          type,
+        );
         continue;
       }
       assert.ok('question' in semantic, type);

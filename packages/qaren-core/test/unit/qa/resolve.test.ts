@@ -259,6 +259,7 @@ test('none with a name-matching offscreen hint requests a scroll, never a React 
   assert.deepEqual(await resolveTarget(step('Tap Load more'), before, judge), {
     scroll: 'down',
     element: before.elements[1],
+    origin: 'named-offscreen',
   });
 });
 
@@ -305,7 +306,11 @@ test('offscreen scroll hints require a unique matching name, with or without on-
         judge,
       );
       if (labels.length === 2 && labels[0] === 'Other') {
-        assert.deepEqual(resolved, { scroll: 'down', element: hints[1] });
+        assert.deepEqual(resolved, {
+          scroll: 'down',
+          element: hints[1],
+          origin: 'named-offscreen',
+        });
       } else {
         assert.ok('refuse' in resolved);
         assert.equal(
@@ -917,6 +922,7 @@ test('native offscreen target frames choose up above the viewport and down other
       assert.deepEqual(await resolveTarget({ kind: 'press', target }, observed, judge), {
         scroll: expected,
         element: observed.elements.find((e) => e.ref === '@button'),
+        ...('quoted' in target ? {} : { origin: 'named-offscreen' }),
       });
     }
   }
@@ -977,6 +983,7 @@ test('an Android control clipped to an empty rect scrolls toward its side of the
       assert.deepEqual(await resolveTarget({ kind: 'press', target }, observed, judge), {
         scroll: expected,
         element: observed.elements[3],
+        ...('quoted' in target ? {} : { origin: 'named-offscreen' }),
       });
   }
 });
