@@ -8,7 +8,12 @@ import {
 } from '../qa/snapshot-diagnostics.js';
 import { DEVICE_LEASE_REQUIRED, leaseFromEnvironment } from './lease-env.js';
 import { QaDispatchError, type QaDispatchContext } from '../domain/qa-dispatch.js';
-import { measureTiming, observeTiming, type TimingContext } from '../qa/timing.js';
+import {
+  measureTiming,
+  observeTiming,
+  type TimingContext,
+  type ReadinessReason,
+} from '../qa/timing.js';
 import { QA_READ_ONLY_CAPABILITY, checkQaNativeOutcome } from './qa-native-policy.js';
 import {
   execFile,
@@ -1245,6 +1250,7 @@ export interface HttpProbeResult {
   ok: boolean;
   status: number;
   bodyOk?: boolean;
+  bodyReason?: 'health-body-unreadable' | 'health-wedged' | 'health-body-not-ok';
   protocolVersion?: number;
   runnerVersion?: string;
   capabilities?: string[];
@@ -1321,15 +1327,11 @@ async function defaultHttpProbe(
   timeoutMs: number,
   capabilityOverride?: string,
 ): Promise<HttpProbeResult> {
-  // Use the same IPv4 loopback as the /command client (postCommand). The prior
-  // [::1] here meant the health probe and the command channel could resolve to
-  // different stacks, so a healthy IPv4 listener looked dead over IPv6.
+  // Health and commands must use the same loopback stack.
   const url = `http://127.0.0.1:${port}/health`;
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
   try {
-    // fetchImpl (not bare fetch) so the _setFetchForTest seam covers the health
-    // probe like every other client call — production default is globalThis.fetch.
     const capability =
       capabilityOverride ?? (runnerState?.port === port ? runnerState.capability : undefined);
     const res = await cancellableFetch(fetchImpl, url, {
@@ -1338,6 +1340,7 @@ async function defaultHttpProbe(
     });
     if (!res.ok) return { ok: false, status: res.status };
     let bodyOk: boolean | undefined;
+    let bodyReason: HttpProbeResult['bodyReason'];
     let protocolVersion: number | undefined;
     let runnerVersion: string | undefined;
     let capabilities: string[] | undefined;
@@ -1350,6 +1353,7 @@ async function defaultHttpProbe(
     try {
       const body = (await res.json()) as {
         ok?: boolean;
+        reason?: unknown;
         protocolVersion?: number;
         runnerVersion?: string;
         capabilities?: unknown;
@@ -1374,14 +1378,20 @@ async function defaultHttpProbe(
       if (typeof body.claimEpoch === 'number') claimEpoch = body.claimEpoch;
       if (typeof body.deviceId === 'string') deviceId = body.deviceId;
       if (typeof body.appId === 'string') appId = body.appId;
+      if (!bodyOk) {
+        bodyReason =
+          body.ok === false && body.reason === 'wedged' ? 'health-wedged' : 'health-body-not-ok';
+      }
     } catch {
       throwIfCancelled();
       bodyOk = false;
+      bodyReason = 'health-body-unreadable';
     }
     return {
       ok: true,
       status: res.status,
       bodyOk,
+      ...(bodyReason !== undefined ? { bodyReason } : {}),
       ...(protocolVersion !== undefined ? { protocolVersion } : {}),
       ...(runnerVersion !== undefined ? { runnerVersion } : {}),
       ...(capabilities !== undefined ? { capabilities } : {}),
@@ -1461,6 +1471,7 @@ export type FastRunnerStaleReason = 'health' | 'authority-mismatch' | RunnerInco
 
 export interface FastRunnerLivenessDetail {
   liveness: FastRunnerLiveness;
+  readinessReason?: ReadinessReason;
   staleReason?: FastRunnerStaleReason;
   runnerProtocolVersion?: number;
   runnerVersion?: string;
@@ -1481,18 +1492,27 @@ export async function probeFastRunnerLivenessDetailed(
   const timeoutMs = deps.timeoutMs ?? 2000;
 
   const state = getState();
-  if (!state) return { liveness: 'dead' };
+  if (!state) return { liveness: 'dead', readinessReason: 'no-state' };
 
   if (!processAlive(state.pid)) {
     clearState();
-    return { liveness: 'dead' };
+    return { liveness: 'dead', readinessReason: 'process-check-failed' };
   }
 
   try {
     const res = await httpProbe(state.port, timeoutMs);
     if (!(res.ok && res.status === 200 && res.bodyOk === true)) {
       lastKnownCapabilities = [];
-      return { liveness: 'stale', staleReason: 'health' };
+      return {
+        liveness: 'stale',
+        staleReason: 'health',
+        readinessReason:
+          !res.ok && res.status === 401
+            ? 'health-unauthorized'
+            : !res.ok || res.status !== 200
+              ? 'health-http-rejected'
+              : (res.bodyReason ?? 'health-body-not-ok'),
+      };
     }
     if (
       state.sessionId !== undefined &&
@@ -1503,7 +1523,11 @@ export async function probeFastRunnerLivenessDetailed(
         res.appId !== state.bundleId)
     ) {
       lastKnownCapabilities = [];
-      return { liveness: 'stale', staleReason: 'authority-mismatch' };
+      return {
+        liveness: 'stale',
+        staleReason: 'authority-mismatch',
+        readinessReason: 'authority-mismatch',
+      };
     }
     const plugin = deps.pluginVersion !== undefined ? deps.pluginVersion : getPluginVersion();
     const compat = classifyRunnerCompatibility(
@@ -1522,6 +1546,7 @@ export async function probeFastRunnerLivenessDetailed(
       return {
         liveness: 'stale',
         staleReason: compat.reason,
+        readinessReason: compat.reason,
         ...(compat.missing !== undefined && compat.reason === 'missing-commands'
           ? { missingCommands: compat.missing }
           : {}),
@@ -1536,15 +1561,13 @@ export async function probeFastRunnerLivenessDetailed(
     }
     lastKnownCapabilities = res.capabilities ?? [];
     noteStaleHittableArtifact(res.capabilities);
-    // startFastRunner stamps the bridge's own RUNNER_PROTOCOL_VERSION optimistically;
-    // /health is the only place the artifact's real wire version is learned. Without
-    // writing it back, a compatible v1 runner reads as v2 and the client-side
-    // dismiss-first fallback that v1 requires is silently skipped.
+    // Learn the artifact's real protocol so v1 retains its dismiss-first fallback.
     if (typeof res.protocolVersion === 'number') {
       state.protocolVersion = res.protocolVersion;
     }
     return {
       liveness: 'alive',
+      readinessReason: 'alive',
       ...(res.protocolVersion !== undefined ? { runnerProtocolVersion: res.protocolVersion } : {}),
       ...(res.runnerVersion !== undefined ? { runnerVersion: res.runnerVersion } : {}),
       ...(res.capabilities !== undefined ? { capabilities: res.capabilities } : {}),
@@ -1552,7 +1575,7 @@ export async function probeFastRunnerLivenessDetailed(
   } catch {
     throwIfCancelled();
     lastKnownCapabilities = [];
-    return { liveness: 'stale', staleReason: 'health' };
+    return { liveness: 'stale', staleReason: 'health', readinessReason: 'probe-exception' };
   }
 }
 
@@ -2266,20 +2289,32 @@ async function probeQaReadiness(
   count: number,
 ): Promise<FastRunnerLivenessDetail> {
   let alive = false;
+  let readinessReason: ReadinessReason | undefined;
   return measureTiming(
     qaTiming &&
       ((event) =>
         observeTiming(qaTiming.observe, {
           ...event,
           count,
-          ...(event.edge === 'end' ? { outcome: alive ? 'ok' : 'failed' } : {}),
+          ...(event.edge === 'end' ? { outcome: alive ? 'ok' : 'failed', readinessReason } : {}),
         })),
     qaTiming?.now ?? (() => performance.now()),
     'native-readiness',
     async () => {
-      const readiness = await probeFastRunnerLivenessDetailed({ clearState: () => {} });
-      alive = readiness.liveness === 'alive';
-      return readiness;
+      try {
+        const readiness = await probeFastRunnerLivenessDetailed({ clearState: () => {} });
+        alive = readiness.liveness === 'alive';
+        readinessReason = readiness.readinessReason;
+        return readiness;
+      } catch (error) {
+        readinessReason = 'probe-threw';
+        try {
+          throwIfCancelled();
+        } catch {
+          readinessReason = 'cancelled-context';
+        }
+        throw error;
+      }
     },
   );
 }

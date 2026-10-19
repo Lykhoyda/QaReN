@@ -3,7 +3,10 @@ import assert from 'node:assert/strict';
 import {
   _setFastRunnerStateForTest,
   getFastRunnerState,
+  getFastRunnerCapabilities,
+  _setCapabilitiesForTest,
   probeFastRunnerLiveness,
+  probeFastRunnerLivenessDetailed,
   reapStaleFastRunner,
 } from '../../dist/runners/rn-fast-runner-client.js';
 import { REQUIRED_IOS_COMMANDS, REQUIRED_IOS_FEATURES } from '../../dist/runners/protocol.js';
@@ -445,4 +448,124 @@ test('M7 reap: completed teardown cannot clear a concurrent replacement', async 
   });
   assert.equal(getFastRunnerState()?.pid, replacement.pid);
   _setFastRunnerStateForTest(null);
+});
+
+test('detailed readiness reasons preserve liveness, stale policy and clearing counts', async () => {
+  const healthy = {
+    ok: true,
+    status: 200,
+    bodyOk: true,
+    protocolVersion: 1,
+    runnerVersion: '1.0.0',
+    commands: [...REQUIRED_IOS_COMMANDS],
+    capabilities: [...REQUIRED_IOS_FEATURES],
+  };
+  const cases = [
+    ['no-state', null, true, healthy, 'dead', undefined, 0],
+    ['process-check-failed', STATE, false, healthy, 'dead', undefined, 1],
+    ['health-unauthorized', STATE, true, { ok: false, status: 401 }, 'stale', 'health', 0],
+    ['health-http-rejected', STATE, true, { ok: false, status: 500 }, 'stale', 'health', 0],
+    ['health-http-rejected', STATE, true, { ...healthy, status: 201 }, 'stale', 'health', 0],
+    ['health-body-not-ok', STATE, true, { ...healthy, bodyOk: false }, 'stale', 'health', 0],
+    ['health-body-not-ok', STATE, true, { ...healthy, bodyOk: undefined }, 'stale', 'health', 0],
+    [
+      'health-body-unreadable',
+      STATE,
+      true,
+      { ...healthy, bodyOk: false, bodyReason: 'health-body-unreadable' },
+      'stale',
+      'health',
+      0,
+    ],
+    [
+      'health-wedged',
+      STATE,
+      true,
+      { ...healthy, bodyOk: false, bodyReason: 'health-wedged' },
+      'stale',
+      'health',
+      0,
+    ],
+    [
+      'authority-mismatch',
+      { ...STATE, sessionId: 'PRIVATE' },
+      true,
+      healthy,
+      'stale',
+      'authority-mismatch',
+      0,
+    ],
+    ['legacy', STATE, true, { ...healthy, protocolVersion: undefined }, 'stale', 'legacy', 0],
+    [
+      'protocol-older',
+      STATE,
+      true,
+      { ...healthy, protocolVersion: 0 },
+      'stale',
+      'protocol-older',
+      0,
+    ],
+    [
+      'protocol-newer',
+      STATE,
+      true,
+      { ...healthy, protocolVersion: 99 },
+      'stale',
+      'protocol-newer',
+      0,
+    ],
+    [
+      'version-skew',
+      STATE,
+      true,
+      { ...healthy, runnerVersion: '0.0.1' },
+      'stale',
+      'version-skew',
+      0,
+    ],
+    ['missing-commands', STATE, true, { ...healthy, commands: [] }, 'stale', 'missing-commands', 0],
+    [
+      'missing-features',
+      STATE,
+      true,
+      { ...healthy, capabilities: [] },
+      'stale',
+      'missing-features',
+      0,
+    ],
+    ['probe-exception', STATE, true, new Error('PRIVATE'), 'stale', 'health', 0],
+    ['alive', STATE, true, healthy, 'alive', undefined, 0],
+  ];
+  for (const [reason, state, alive, reply, liveness, staleReason, clears] of cases) {
+    let clearCalls = 0;
+    let healthCalls = 0;
+    let processCalls = 0;
+    _setCapabilitiesForTest(['PRIVATE-cache']);
+    const result = await probeFastRunnerLivenessDetailed({
+      getState: () => state,
+      processAlive: () => {
+        processCalls++;
+        return alive;
+      },
+      httpProbe: async () => {
+        healthCalls++;
+        if (reply instanceof Error) throw reply;
+        return reply;
+      },
+      clearState: () => {
+        clearCalls++;
+      },
+      pluginVersion: '1.0.0',
+    });
+    assert.equal(result.readinessReason, reason);
+    assert.equal(result.liveness, liveness);
+    assert.equal(result.staleReason, staleReason);
+    assert.equal(clearCalls, clears);
+    assert.deepEqual(
+      getFastRunnerCapabilities(),
+      liveness === 'alive' ? healthy.capabilities : liveness === 'dead' ? ['PRIVATE-cache'] : [],
+    );
+    assert.equal(processCalls, state ? 1 : 0);
+    assert.equal(healthCalls, state && alive ? 1 : 0);
+  }
 });

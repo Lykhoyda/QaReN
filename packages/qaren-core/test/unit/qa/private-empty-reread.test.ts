@@ -2,8 +2,26 @@ import assert from 'node:assert/strict';
 import { syncBuiltinESMExports } from 'node:module';
 import { setImmediate as nextTurn } from 'node:timers/promises';
 import { test, type TestContext } from 'node:test';
-import { captureScreen, type NativeObservation } from '../../../dist/qa/capture.js';
+import {
+  captureScreen,
+  NativeCaptureError,
+  type NativeObservation,
+} from '../../../dist/qa/capture.js';
 import { NativeSnapshotIncomplete } from '../../../dist/qa/private-input.js';
+import { unwrap } from '../../../dist/qa/adapt.js';
+import {
+  _setFastRunnerStateForTest,
+  _setFetchForTest,
+  getFastRunnerState,
+  runIOS,
+} from '../../../dist/runners/rn-fast-runner-client.js';
+import {
+  getPluginVersion,
+  REQUIRED_IOS_COMMANDS,
+  REQUIRED_IOS_FEATURES,
+} from '../../../dist/runners/protocol.js';
+import { clearRefMap } from '../../../dist/fast-runner-ref-map.js';
+import type { TimingEvent } from '../../../dist/qa/timing.js';
 import { nativeCapture } from './platform-presence-fixtures.ts';
 
 function emptyCapture(): NativeObservation {
@@ -209,4 +227,124 @@ test('ordinary empty capture retains its immediate incomplete result', async () 
   });
   assert.equal(reads, 1);
   assert.equal(screen.captureCoverage?.native, 'incomplete');
+});
+
+test('canonical-empty reread reaches a second snapshot only when its real readiness probe is healthy', async (t) => {
+  for (const unhealthy of [false, true]) {
+    for (const observer of ['absent', 'present', 'throwing'] as const) {
+      await t.test(
+        `${unhealthy ? 'unhealthy' : 'healthy'} second health, ${observer} diagnostics`,
+        async (t) => {
+          const time = clock(t);
+          clearRefMap();
+          _setFastRunnerStateForTest({
+            port: 12345,
+            pid: process.pid,
+            deviceId: 'qa-device',
+            bundleId: 'com.test',
+            startedAt: 'now',
+          });
+          const state = getFastRunnerState();
+          t.after(() => {
+            _setFetchForTest(fetch);
+            _setFastRunnerStateForTest(null);
+            clearRefMap();
+          });
+          let healthCalls = 0;
+          const commands: string[] = [];
+          const events: TimingEvent[] = [];
+          let reactCalls = 0;
+          const observe =
+            observer === 'absent'
+              ? undefined
+              : (event: TimingEvent) => {
+                  if (observer === 'throwing') throw new Error('PRIVATE-sink');
+                  events.push(event);
+                };
+          _setFetchForTest(async (url, init) => {
+            if (String(url).endsWith('/health')) {
+              healthCalls++;
+              return Response.json(
+                unhealthy && healthCalls === 2
+                  ? { ok: false, reason: 'wedged' }
+                  : {
+                      ok: true,
+                      protocolVersion: 2,
+                      runnerVersion: getPluginVersion(),
+                      commands: REQUIRED_IOS_COMMANDS,
+                      capabilities: [...REQUIRED_IOS_FEATURES, 'QA_READ_ONLY_V1'],
+                    },
+              );
+            }
+            commands.push(JSON.parse(String(init?.body)).command);
+            return Response.json({
+              ok: true,
+              v: 2,
+              data:
+                commands.length === 1
+                  ? {
+                      nodes: [],
+                      truncated: false,
+                      keyboardVisible: false,
+                      snapshotGeneration: 7,
+                    }
+                  : nativeCapture(),
+            });
+          });
+          const pending = captureScreen({
+            requirePrivateInputs: true,
+            appId: 'com.test',
+            now: time.now,
+            timing: observe,
+            native: async () => {
+              const result = unwrap<NativeObservation>(
+                await runIOS({
+                  command: 'snapshot',
+                  qaReadOnly: true,
+                  bundleId: 'com.test',
+                  deviceId: 'qa-device',
+                  ...(observe ? { qaTiming: { now: time.now, observe } } : {}),
+                }),
+              );
+              return { ...result.data, snapshotVerdict: result.meta?.snapshotVerdict };
+            },
+            react: async () => {
+              reactCalls++;
+              return {};
+            },
+          }).catch((error: Error) => error);
+          await nextTurn();
+          await time.advance(499);
+          assert.equal(healthCalls, 1);
+          assert.deepEqual(commands, ['snapshot']);
+          await time.advance(1);
+          const result = await pending;
+          if (unhealthy) {
+            assert.ok(result instanceof NativeCaptureError);
+            assert.equal(result.code, 'NATIVE_CAPTURE_UNAVAILABLE');
+          } else {
+            assert.ok(!(result instanceof Error), String(result));
+            assert.equal(result.captureCoverage?.native, 'complete');
+          }
+          assert.equal(healthCalls, 2);
+          assert.deepEqual(commands, unhealthy ? ['snapshot'] : ['snapshot', 'snapshot']);
+          assert.equal(reactCalls, unhealthy ? 0 : 1);
+          assert.equal(time.now(), 500);
+          assert.equal(getFastRunnerState(), state);
+          if (observer === 'present') {
+            assert.deepEqual(
+              events
+                .filter((e) => e.stage === 'native-readiness' && e.edge === 'end')
+                .map((e) => [e.count, e.outcome, e.readinessReason]),
+              [
+                [1, 'ok', 'alive'],
+                [1, unhealthy ? 'failed' : 'ok', unhealthy ? 'health-wedged' : 'alive'],
+              ],
+            );
+          }
+          assert.ok(!JSON.stringify(events).includes('PRIVATE'));
+        },
+      );
+    }
+  }
 });

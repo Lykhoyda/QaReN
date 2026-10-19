@@ -31,6 +31,7 @@ test('gh-383 gate: healthy + matching protocol + version → alive', async () =>
   );
   assert.deepEqual(d, {
     liveness: 'alive',
+    readinessReason: 'alive',
     runnerProtocolVersion: 1,
     runnerVersion: '0.58.0',
     capabilities: [...REQUIRED_IOS_FEATURES],
@@ -74,7 +75,11 @@ test('gh-383 gate: version check is fail-open when plugin version unknown', asyn
 
 test('gh-383 gate: health failure stays stale/health', async () => {
   const d = await probeFastRunnerLivenessDetailed(deps({ ok: false, status: 500 }));
-  assert.deepEqual(d, { liveness: 'stale', staleReason: 'health' });
+  assert.deepEqual(d, {
+    liveness: 'stale',
+    staleReason: 'health',
+    readinessReason: 'health-http-rejected',
+  });
 });
 
 test('iOS authority mismatch has a rebuild-eligible stale reason', async () => {
@@ -99,7 +104,11 @@ test('iOS authority mismatch has a rebuild-eligible stale reason', async () => {
     }),
   });
 
-  assert.deepEqual(d, { liveness: 'stale', staleReason: 'authority-mismatch' });
+  assert.deepEqual(d, {
+    liveness: 'stale',
+    staleReason: 'authority-mismatch',
+    readinessReason: 'authority-mismatch',
+  });
 });
 
 test('gh-383 ensure: transparent upgrade returns ok + note', async () => {

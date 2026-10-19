@@ -4,6 +4,26 @@ use std::io::Write;
 use std::path::Path;
 
 const MAX_NUMBER: f64 = 9_007_199_254_740_991.0;
+const READINESS_REASONS: &[&str] = &[
+    "alive",
+    "no-state",
+    "process-check-failed",
+    "health-unauthorized",
+    "health-http-rejected",
+    "health-body-unreadable",
+    "health-wedged",
+    "health-body-not-ok",
+    "authority-mismatch",
+    "legacy",
+    "protocol-older",
+    "protocol-newer",
+    "version-skew",
+    "missing-commands",
+    "missing-features",
+    "probe-exception",
+    "cancelled-context",
+    "probe-threw",
+];
 const STAGES: &[&str] = &[
     "walk",
     "capture",
@@ -85,6 +105,7 @@ fn clean(value: &Value) -> Option<Value> {
                 "appliedBudgetMs",
                 "moved",
                 "maxDelta",
+                "readinessReason",
             ],
         ),
         "timing" => (
@@ -110,6 +131,13 @@ fn clean(value: &Value) -> Option<Value> {
     if required.iter().any(|key| !fields.contains_key(*key)) {
         return None;
     }
+    if fields.contains_key("readinessReason")
+        && (kind != "metric"
+            || fields.get("stage").and_then(Value::as_str) != Some("native-readiness")
+            || fields.get("edge").and_then(Value::as_str) != Some("end"))
+    {
+        return None;
+    }
     let mut clean = Map::new();
     clean.insert("kind".into(), kind.into());
     for (key, value) in fields {
@@ -122,6 +150,7 @@ fn clean(value: &Value) -> Option<Value> {
         let words: Option<&[&str]> = match key.as_str() {
             "stage" if kind == "metric" => Some(STAGES),
             "stage" => Some(&["decision", "dispatch"]),
+            "readinessReason" => Some(READINESS_REASONS),
             "edge" => Some(&["start", "end", "point"]),
             "outcome" if kind == "metric" => Some(&["ok", "failed", "unknown", "withheld"]),
             "outcome" => Some(&["pass", "fail", "refused"]),

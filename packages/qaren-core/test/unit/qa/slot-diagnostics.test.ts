@@ -6,7 +6,7 @@ import { ObservedPrivacy } from '../../../dist/qa/privacy.js';
 import { parsePlan } from '../../../dist/qa/plan.js';
 import { runPlan } from '../../../dist/qa/walker.js';
 import { PrivateInputCaptureError } from '../../../dist/qa/private-input.js';
-import { createTimingObserver } from '../../../dist/qa/timing.js';
+import { createTimingObserver, READINESS_REASONS } from '../../../dist/qa/timing.js';
 import { element, screen, scriptedJudge, walker } from './judgment-fixtures.ts';
 
 test('the slot diagnostic wire projects only fixed vocabulary and measured numbers', () => {
@@ -221,11 +221,60 @@ test('timing volume cannot suppress block and login outcomes, and ordinary runs 
   assert.equal(lines.length, 0);
   withInputs(new RunInputs({ PASSWORD: 'private-value' }, ['PASSWORD']), () => {
     for (let i = 0; i < 20_010; i++)
-      writer.diagnostic({ kind: 'metric', stage: 'capture', edge: 'end', outcome: 'ok', at: i });
+      writer.diagnostic({
+        kind: 'metric',
+        stage: 'native-readiness',
+        edge: 'end',
+        outcome: 'ok',
+        at: i,
+        readinessReason: 'alive',
+      });
     writer.diagnostic({ kind: 'block-outcome', line: 1, outcome: 'pass' });
     writer.diagnostic({ kind: 'login-outcome', outcome: 'pass' });
   });
   assert.equal(lines.length, 20_002);
   assert.equal(JSON.parse(lines.at(-2)!).payload.kind, 'block-outcome');
   assert.equal(JSON.parse(lines.at(-1)!).payload.kind, 'login-outcome');
+});
+
+test('readiness reasons cross the private diagnostic wire without body or error values', () => {
+  const outputs = ['first-PRIVATE-sentinel', 'other-PRIVATE-sentinel'].map((secret) => {
+    const lines: string[] = [];
+    const writer = createWriter((line) => lines.push(line), 'run');
+    withInputs(new RunInputs({ PASSWORD: secret }, ['PASSWORD']), () => {
+      const metric = {
+        kind: 'metric',
+        stage: 'native-readiness',
+        edge: 'end',
+        outcome: 'failed',
+        at: 10,
+      };
+      for (const readinessReason of READINESS_REASONS)
+        writer.diagnostic({ ...metric, readinessReason, body: { reason: secret }, error: secret });
+      for (const change of [
+        { readinessReason: secret },
+        { readinessReason: null },
+        { stage: 'capture' },
+        { edge: 'start' },
+        { edge: 'point' },
+        { count: Infinity },
+      ])
+        writer.diagnostic({ ...metric, readinessReason: 'alive', ...change });
+    });
+    const payloads = lines.map((line) => JSON.parse(line).payload);
+    assert.deepEqual(
+      payloads,
+      READINESS_REASONS.map((readinessReason) => ({
+        kind: 'metric',
+        stage: 'native-readiness',
+        edge: 'end',
+        outcome: 'failed',
+        at: 10,
+        readinessReason,
+      })),
+    );
+    assert.ok(!lines.join('').includes(secret));
+    return lines.join('');
+  });
+  assert.equal(outputs[0], outputs[1]);
 });

@@ -40,6 +40,27 @@ export const TIMING_STAGES = [
   'overflow',
 ] as const;
 export type TimingStage = (typeof TIMING_STAGES)[number];
+export const READINESS_REASONS = [
+  'alive',
+  'no-state',
+  'process-check-failed',
+  'health-unauthorized',
+  'health-http-rejected',
+  'health-body-unreadable',
+  'health-wedged',
+  'health-body-not-ok',
+  'authority-mismatch',
+  'legacy',
+  'protocol-older',
+  'protocol-newer',
+  'version-skew',
+  'missing-commands',
+  'missing-features',
+  'probe-exception',
+  'cancelled-context',
+  'probe-threw',
+] as const;
+export type ReadinessReason = (typeof READINESS_REASONS)[number];
 export interface TimingEvent {
   stage: TimingStage;
   edge: 'start' | 'end' | 'point';
@@ -57,6 +78,7 @@ export interface TimingEvent {
   appliedBudgetMs?: number;
   moved?: number;
   maxDelta?: number;
+  readinessReason?: ReadinessReason;
 }
 export type TimingObserver = (event: TimingEvent) => void;
 export interface TimingContext {
@@ -104,6 +126,11 @@ export function cleanTimingEvent(value: unknown): TimingEvent | undefined {
     )
       return undefined;
     event[key] = number;
+  }
+  if (input.readinessReason !== undefined) {
+    const reason = READINESS_REASONS.find((word) => word === input.readinessReason);
+    if (!reason || event.stage !== 'native-readiness' || event.edge !== 'end') return undefined;
+    event.readinessReason = reason;
   }
   return event;
 }

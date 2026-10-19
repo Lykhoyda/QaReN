@@ -6,6 +6,8 @@ import { parsePlan } from '../../../dist/qa/plan.js';
 import { capturePrivateScreen } from '../../../dist/qa/privacy.js';
 import { runPlan } from '../../../dist/qa/walker.js';
 import {
+  READINESS_REASONS,
+  cleanTimingEvent,
   createTimingObserver,
   observeTiming,
   TIMING_EVENT_LIMIT,
@@ -280,4 +282,46 @@ test('a throwing observer cannot change the functional ledger or action count', 
     });
   }
   assert.deepEqual(outcomes[0], outcomes[1]);
+});
+
+const readinessReasons = [
+  'alive',
+  'no-state',
+  'process-check-failed',
+  'health-unauthorized',
+  'health-http-rejected',
+  'health-body-unreadable',
+  'health-wedged',
+  'health-body-not-ok',
+  'authority-mismatch',
+  'legacy',
+  'protocol-older',
+  'protocol-newer',
+  'version-skew',
+  'missing-commands',
+  'missing-features',
+  'probe-exception',
+  'cancelled-context',
+  'probe-threw',
+];
+
+test('readiness reasons survive only as fixed vocabulary on readiness end metrics', () => {
+  assert.deepEqual(READINESS_REASONS, readinessReasons);
+  const metric = { stage: 'native-readiness', edge: 'end', outcome: 'failed', at: 20 };
+  for (const readinessReason of readinessReasons) {
+    assert.deepEqual(cleanTimingEvent({ ...metric, readinessReason, body: 'PRIVATE' }), {
+      ...metric,
+      readinessReason,
+    });
+  }
+  for (const readinessReason of ['PRIVATE', '', null, 401, {}, ['alive']])
+    assert.equal(cleanTimingEvent({ ...metric, readinessReason }), undefined);
+  for (const change of [
+    { stage: 'capture' },
+    { edge: 'start' },
+    { edge: 'point' },
+    { at: NaN },
+    { count: -1 },
+  ])
+    assert.equal(cleanTimingEvent({ ...metric, readinessReason: 'alive', ...change }), undefined);
 });

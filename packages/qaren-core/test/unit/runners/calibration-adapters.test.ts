@@ -2,10 +2,12 @@ import assert from 'node:assert/strict';
 import { afterEach, test } from 'node:test';
 import {
   _setFastRunnerStateForTest,
+  getFastRunnerState,
   _setFetchForTest,
   _setCapabilitiesForTest,
   runIOS,
 } from '../../../dist/runners/rn-fast-runner-client.js';
+import { withCancellation } from '../../../dist/domain/cancellation.js';
 import { QaDispatchContext } from '../../../dist/domain/qa-dispatch.js';
 import {
   REQUIRED_IOS_COMMANDS,
@@ -64,6 +66,7 @@ function fixture(
   const events: TimingEvent[] = [];
   const requests: Record<string, unknown>[] = [];
   let healthCalls = 0;
+  let healthBodyReads = 0;
   const qaTiming = { now: () => now, observe: createTimingObserver((e) => events.push(e)) };
   _setFetchForTest(async (url, init) => {
     if (String(url).endsWith('/health')) {
@@ -85,7 +88,15 @@ function fixture(
         deviceId: state.deviceId,
         appId: state.bundleId,
       };
-      return Response.json(options.health ? options.health(reply, ++healthCalls) : reply);
+      healthCalls++;
+      const body = options.health ? options.health(reply, healthCalls) : reply;
+      const response = body instanceof Response ? body : Response.json(body);
+      const json = response.json.bind(response);
+      response.json = async () => {
+        healthBodyReads++;
+        return json();
+      };
+      return response;
     }
     requests.push(JSON.parse(String(init?.body)));
     now += 7;
@@ -109,6 +120,8 @@ function fixture(
     qaTiming,
     events,
     requests,
+    healthCalls: () => healthCalls,
+    healthBodyReads: () => healthBodyReads,
     advance: (ms: number) => {
       now += ms;
     },
@@ -256,20 +269,41 @@ test('native transport instrumentation stays before authorization and cannot ext
   assert.equal(context.authorizations, 0);
 });
 
-test('a failing metric sink cannot alter adapter requests or successful capture evidence', async () => {
-  const f = fixture();
-  f.qaTiming.observe = () => {
-    throw new Error('PRIVATE-sink');
-  };
-  const result = await createDeviceSnapshotHandler()({
-    action: 'snapshot',
-    qaReadOnly: true,
-    platformPresence: true,
-    presenceBudgetMs: 20_000,
-    qaTiming: f.qaTiming,
-  });
-  assert.equal(result.isError, undefined);
-  assert.equal(f.requests.length, 1);
+test('absent, present and throwing diagnostics preserve both adapters and refusal counts', async () => {
+  for (const platformPresence of [false, true]) {
+    for (const unhealthy of [false, true]) {
+      const outcomes: unknown[] = [];
+      for (const observer of ['absent', 'present', 'throwing']) {
+        const f = fixture(unhealthy ? { health: () => ({ ok: false, reason: 'PRIVATE' }) } : {});
+        if (observer === 'throwing')
+          f.qaTiming.observe = () => {
+            throw new Error('PRIVATE-sink');
+          };
+        const call = runIOS({
+          command: 'snapshot',
+          qaReadOnly: true,
+          platformPresence,
+          presenceBudgetMs: 20_000,
+          bundleId: 'com.test',
+          deviceId: 'qa-device',
+          ...(observer === 'absent' ? {} : { qaTiming: f.qaTiming }),
+        });
+        if (unhealthy) await assert.rejects(call, /ACTION_CONTEXT_CHANGED/);
+        else outcomes.push(await call);
+        assert.equal(f.healthCalls(), !unhealthy && platformPresence ? 2 : 1);
+        assert.equal(f.requests.length, unhealthy ? 0 : 1);
+        assert.ok(
+          f.requests.every(
+            (request) => request.command === 'snapshot' && request.qaReadOnly === true,
+          ),
+        );
+      }
+      if (!unhealthy) {
+        assert.deepEqual(outcomes[0], outcomes[1]);
+        assert.deepEqual(outcomes[0], outcomes[2]);
+      }
+    }
+  }
 });
 
 test('an existing ordinary-read status probe and resend retain every transport and decoding span', async () => {
@@ -295,4 +329,123 @@ test('an existing ordinary-read status probe and resend retain every transport a
     f.requests.every((r) => !Object.keys(r).some((key) => /timing|observe|now/i.test(key))),
   );
   assert.ok(!JSON.stringify(f.events).includes('PRIVATE'));
+});
+
+test('default health parsing emits a finite readiness end reason without changing probe policy', async () => {
+  const cases: [string, (reply: Record<string, unknown>) => unknown, number?][] = [
+    ['alive', (reply) => reply],
+    ['health-unauthorized', () => new Response('PRIVATE', { status: 401 }), 0],
+    ['health-http-rejected', () => new Response('PRIVATE', { status: 503 }), 0],
+    ['health-http-rejected', (reply) => Response.json(reply, { status: 201 })],
+    ['health-body-unreadable', () => new Response('{PRIVATE')],
+    ['health-body-unreadable', () => null],
+    [
+      'health-body-unreadable',
+      () => {
+        const response = Response.json({});
+        response.json = async () => {
+          throw new Error('PRIVATE-body');
+        };
+        return response;
+      },
+    ],
+    ['health-wedged', () => ({ ok: false, reason: 'wedged' })],
+    ['health-body-not-ok', () => ({ ok: false, reason: 'PRIVATE' })],
+    ['health-body-not-ok', () => ({ reason: 'wedged' })],
+    ['health-body-not-ok', () => ({ ok: 'false', reason: 'wedged' })],
+    ['authority-mismatch', (reply) => ({ ...reply, sessionId: 'PRIVATE-other' })],
+    [
+      'probe-exception',
+      () => {
+        throw new Error('PRIVATE-fetch');
+      },
+    ],
+  ];
+  for (const [reason, health, bodyReads = 1] of cases) {
+    for (const platformPresence of [false, true]) {
+      const f = fixture({ health });
+      const call = runIOS({
+        command: 'snapshot',
+        qaReadOnly: true,
+        platformPresence,
+        presenceBudgetMs: 20_000,
+        bundleId: 'com.test',
+        deviceId: 'qa-device',
+        qaTiming: f.qaTiming,
+      });
+      if (reason === 'alive') assert.equal((await call).isError, undefined);
+      else await assert.rejects(call, /ACTION_CONTEXT_CHANGED/);
+      assert.deepEqual(
+        f.events
+          .filter((e) => e.stage === 'native-readiness' && e.edge === 'end')
+          .map((e) => [e.count, e.outcome, e.readinessReason]),
+        reason === 'alive' && platformPresence
+          ? [
+              [1, 'ok', 'alive'],
+              [2, 'ok', 'alive'],
+            ]
+          : [[1, reason === 'alive' ? 'ok' : 'failed', reason]],
+      );
+      assert.equal(f.healthCalls(), reason === 'alive' && platformPresence ? 2 : 1);
+      assert.equal(
+        f.healthBodyReads(),
+        reason === 'probe-exception'
+          ? 0
+          : bodyReads * (reason === 'alive' && platformPresence ? 2 : 1),
+      );
+      assert.equal(f.requests.length, reason === 'alive' ? 1 : 0);
+      assert.ok(
+        f.events.filter((e) => e.edge !== 'end').every((e) => e.readinessReason === undefined),
+      );
+      assert.ok(!JSON.stringify(f.events).includes('PRIVATE'));
+    }
+  }
+});
+
+test('readiness end diagnoses ambient cancellation and preserves the original thrown object', async () => {
+  const controller = new AbortController();
+  const original = new Error('PRIVATE-cancel');
+  const f = fixture({
+    health: () => {
+      controller.abort(original);
+      throw new Error('PRIVATE-fetch');
+    },
+  });
+  await assert.rejects(
+    withCancellation(controller.signal, () =>
+      runIOS({ command: 'snapshot', qaReadOnly: true, qaTiming: f.qaTiming }),
+    ),
+    (caught) => caught === original,
+  );
+  assert.deepEqual(
+    f.events
+      .filter((e) => e.stage === 'native-readiness' && e.edge === 'end')
+      .map((e) => [e.outcome, e.readinessReason]),
+    [['failed', 'cancelled-context']],
+  );
+  assert.equal(f.healthCalls(), 1);
+  assert.equal(f.requests.length, 0);
+});
+
+test('an uncancelled thrown probe keeps its identity even when named AbortError', async () => {
+  const f = fixture();
+  const original = new Error('PRIVATE-probe');
+  original.name = 'AbortError';
+  Object.defineProperty(getFastRunnerState()!, 'pid', {
+    get: () => {
+      throw original;
+    },
+  });
+  await assert.rejects(
+    runIOS({ command: 'snapshot', qaReadOnly: true, qaTiming: f.qaTiming }),
+    (caught) => caught === original,
+  );
+  assert.deepEqual(
+    f.events
+      .filter((e) => e.stage === 'native-readiness' && e.edge === 'end')
+      .map((e) => [e.outcome, e.readinessReason]),
+    [['failed', 'probe-threw']],
+  );
+  assert.equal(f.healthCalls(), 0);
+  assert.equal(f.requests.length, 0);
 });
