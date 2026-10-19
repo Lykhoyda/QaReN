@@ -264,6 +264,166 @@ test('screenshot delay preserves check acceptance but the cached action owns a s
   assert.ok(diagnostics.some((e) => e.line === 2 && e.code === 'EVIDENCE_EXPIRED'));
 });
 
+test('a scrolled-to target with unknown visibility refreshes once even when gap counts are equal', async () => {
+  const off = screen([element('@off', 'Save', { offscreen: true })]);
+  const unknown = screen([
+    element('@unknown', 'Save', {
+      semantic: {
+        press: 'supported',
+        fill: 'unsupported',
+        visibility: 'unknown',
+        nativePresence: { kind: 'button', labelSource: 'direct', structural: false },
+      },
+    }),
+  ]);
+  const on = screen([element('@on', 'Save')]);
+  const f = walker(
+    [off, unknown, unknown, on, on, on],
+    scriptedJudge((questions) => ({ target_1: choice(questions.target_1) })),
+  );
+  let refreshes = 0;
+  f.deps.timing = (event) => {
+    if (event.stage === 'refresh') refreshes++;
+  };
+  const result = await runPlan(parsePlan('1. Tap the save button').blocks!, f.deps);
+  assert.equal(result.verdict, 'PASS');
+  assert.equal(refreshes, 1);
+  assert.equal(f.captures(), 6);
+  assert.deepEqual(f.actions, ['scroll down', 'press @on']);
+});
+
+test('a target still off screen after one scroll keeps its refusal without refreshing', async () => {
+  const off = screen([element('@off', 'Save', { offscreen: true })]);
+  const f = walker(
+    [off],
+    scriptedJudge((questions) => ({ target_1: choice(questions.target_1) })),
+  );
+  let refreshes = 0;
+  f.deps.timing = (event) => {
+    if (event.stage === 'refresh') refreshes++;
+  };
+  const result = await runPlan(parsePlan('1. Tap the save button').blocks!, f.deps);
+  assert.equal(result.verdict, 'FAIL');
+  assert.match(result.failure!.seen, /stayed off screen after one scroll/);
+  assert.equal(refreshes, 0);
+  assert.equal(f.captures(), 3);
+  assert.deepEqual(f.actions, ['scroll down']);
+});
+
+test('worse association after a resolution scroll refreshes once before tapping', async () => {
+  const off = screen([element('@off', 'Save', { offscreen: true })]);
+  const lagging = {
+    ...screen([element('@lagging', 'Save')]),
+    semanticUnassociatedReact: 35,
+  };
+  const on = screen([element('@on', 'Save')]);
+  const f = walker(
+    [off, lagging, lagging, on, on, on],
+    scriptedJudge((questions) => ({ target_1: choice(questions.target_1) })),
+  );
+  let refreshes = 0;
+  f.deps.timing = (event) => {
+    if (event.stage === 'refresh') refreshes++;
+  };
+  const result = await runPlan(parsePlan('1. Tap the save button').blocks!, f.deps);
+  assert.equal(result.verdict, 'PASS');
+  assert.equal(refreshes, 1);
+  assert.equal(f.captures(), 6);
+  assert.deepEqual(f.actions, ['scroll down', 'press @on']);
+});
+
+test('association still incomplete after the scroll refresh keeps the existing refusal', async () => {
+  const off = screen([element('@off', 'Save', { offscreen: true })]);
+  const lagging = {
+    ...screen([element('@on', 'Save')]),
+    semanticUnassociatedReact: 35,
+  };
+  const f = walker(
+    [off, lagging],
+    scriptedJudge((questions) => ({ target_1: choice(questions.target_1) })),
+  );
+  let refreshes = 0;
+  f.deps.timing = (event) => {
+    if (event.stage === 'refresh') refreshes++;
+  };
+  const result = await runPlan(parsePlan('1. Tap the save button').blocks!, f.deps);
+  assert.equal(result.verdict, 'FAIL');
+  assert.match(result.failure!.seen, /SCREEN_EVIDENCE_INCOMPLETE/);
+  assert.equal(refreshes, 1);
+  assert.equal(f.captures(), 5);
+  assert.deepEqual(f.actions, ['scroll down']);
+});
+
+test('equal or fewer unmatched observations after a scroll do not refresh', async () => {
+  for (const [before, after] of [
+    [0, 0],
+    [2, 2],
+    [2, 1],
+    [2, 0],
+  ]) {
+    const off = {
+      ...screen([element('@off', 'Save', { offscreen: true })]),
+      semanticUnassociatedReact: before,
+    };
+    const on = { ...screen([element('@on', 'Save')]), semanticUnassociatedReact: after };
+    const f = walker(
+      [off, on],
+      scriptedJudge(() => ({})),
+    );
+    let refreshes = 0;
+    f.deps.timing = (event) => {
+      if (event.stage === 'refresh') refreshes++;
+    };
+    const result = await runPlan(parsePlan('1. Tap "Save"').blocks!, f.deps);
+    assert.equal(result.verdict, 'PASS');
+    assert.equal(refreshes, 0);
+    assert.equal(f.captures(), 4);
+    assert.deepEqual(f.actions, ['scroll down', 'press @on']);
+  }
+});
+
+test('association regression after scrolling cannot replenish a consumed freshness allowance', async () => {
+  let now = 0;
+  const off = screen([element('@off', 'Save', { offscreen: true })]);
+  const lagging = {
+    ...screen([element('@on', 'Save')]),
+    semanticUnassociatedReact: 35,
+  };
+  const judge = scriptedJudge((questions, index) => {
+    if (index === 0) now += 10_000;
+    return { target_1: choice(questions.target_1) };
+  });
+  const f = walker([off, off, lagging], judge);
+  f.deps.now = () => now;
+  let refreshes = 0;
+  f.deps.timing = (event) => {
+    if (event.stage === 'refresh') refreshes++;
+  };
+  const result = await runPlan(parsePlan('1. Tap the save button').blocks!, f.deps);
+  assert.equal(result.verdict, 'FAIL');
+  assert.match(result.failure!.seen, /EVIDENCE_EXPIRED/);
+  assert.equal(refreshes, 1);
+  assert.equal(f.captures(), 4);
+  assert.deepEqual(f.actions, ['scroll down']);
+});
+
+test('incomplete association without a scroll refuses without refreshing', async () => {
+  const f = walker(
+    [{ ...screen([element('@on', 'Save')]), semanticUnassociatedReact: 35 }],
+    scriptedJudge(() => ({})),
+  );
+  let refreshes = 0;
+  f.deps.timing = (event) => {
+    if (event.stage === 'refresh') refreshes++;
+  };
+  const result = await runPlan(parsePlan('1. Tap the save button').blocks!, f.deps);
+  assert.equal(result.verdict, 'FAIL');
+  assert.match(result.failure!.seen, /SCREEN_EVIDENCE_INCOMPLETE/);
+  assert.equal(refreshes, 0);
+  assert.equal(f.captures(), 1);
+  assert.deepEqual(f.actions, []);
+});
+
 test('completed resolution scroll survives freshness refresh without a repeated scroll', async () => {
   let now = 0;
   const off = screen([element('@off', 'Save', { offscreen: true })]);

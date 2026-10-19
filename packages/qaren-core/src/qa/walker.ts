@@ -1875,6 +1875,7 @@ async function walkBlockScoped(
                   scrollOrigin ??= 'offscreen-resolution';
                   scrollDirection = resolution.scroll;
                   if (before.screen.front === 'dialog') throw dialogInFront(item.target.phrase);
+                  const unassociated = before.screen.semanticUnassociatedReact ?? 0;
                   const result = await mutate(item, before, (context) =>
                     deps.scroll(resolution.scroll, context, distance, band),
                   );
@@ -1886,6 +1887,14 @@ async function walkBlockScoped(
                   const signature = screenSignature(before.screen);
                   before = await settledCapture(item);
                   usable(before, item);
+                  const landed = resolution.element
+                    ? before.screen.elements.find((e) => sameIdentity(e, resolution.element!))
+                    : undefined;
+                  if (
+                    landed?.semantic?.visibility === 'unknown' ||
+                    (before.screen.semanticUnassociatedReact ?? 0) > unassociated
+                  )
+                    throw new EvidenceExpired(false);
                   if (
                     !result.ok &&
                     !result.proven &&

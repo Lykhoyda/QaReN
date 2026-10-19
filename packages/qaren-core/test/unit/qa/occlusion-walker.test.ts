@@ -1189,10 +1189,17 @@ function recordingClearance(f: ReturnType<typeof fake>) {
   return seen;
 }
 
+function presentTarget(screen: Screen, ref = '@target'): Screen {
+  const target = screen.elements.find((element) => element.ref === ref);
+  assert.ok(target?.semantic);
+  target.semantic.visibility = 'visible';
+  return screen;
+}
+
 // Option 17 parked after five full-list drags; option 20's collapsed frame sits at 1631, below the list.
 test('(y) a press on a row scrolled out of the sheet list lifts it inside that list', async () => {
   const parked = covered(androidOptionSheet(2510));
-  const reached = covered(androidOptionSheet(168 * 17));
+  const reached = presentTarget(covered(androidOptionSheet(168 * 17)), '@option-20');
   const f = fake([parked, reached, reached, done()], {});
   const seen = recordingClearance(f);
   const outcome = await walkBlock(block('1. Tap "qa-sheet-capture-option-20"\n'), f.deps);
@@ -1251,7 +1258,8 @@ function belowFold(y: number): Screen {
 }
 
 test('(ab) a target below the fold of a plain screen is lifted by its gap, not a window height', async () => {
-  const f = fake([belowFold(1078), belowFold(378), belowFold(378), done()], {});
+  const reached = presentTarget(belowFold(378));
+  const f = fake([belowFold(1078), reached, reached, done()], {});
   const seen = recordingClearance(f);
   const outcome = await walkBlock(block('1. Tap "go"\n'), f.deps);
   assert.deepEqual(seen, [
@@ -1910,8 +1918,9 @@ test('the retry after settling dispatches only the target that settled', async (
 });
 
 test('a settled target that needs a clearance scroll is pressed at its post-scroll frame', async () => {
+  const reached = presentTarget(clipped(400));
   const f = fake(
-    [clipped(400), clipped(400), clipped(730), clipped(730), clipped(400), clipped(400), done()],
+    [clipped(400), clipped(400), clipped(730), clipped(730), reached, reached, done()],
     { press: [MOVED] },
   );
   const outcome = await walkBlock(block('1. Tap "go"\n'), f.deps);
