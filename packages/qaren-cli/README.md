@@ -1083,6 +1083,15 @@ The native snapshot is the privacy boundary before walking a screen. Capture
 refuses with `PRIVATE_INPUT_CAPTURE_UNKNOWN` unless native completeness is attested;
 the refusal reports only a value-free node count and fixed cause codes. Native
 acquisition failures also refuse without reinjection or a public-tree fallback.
+After timeout containment reaps the iOS reader, its relaunch awaits one health
+probe attesting `alive` and `PLATFORM_PRESENCE_V2` within the remaining 30-second
+ready limit. A required private capture that encounters `RN_FAST_RUNNER_DOWN`
+during that relaunch or within six seconds of its completion re-reads within
+the existing settle and total capture budgets; it never starts another reader.
+Exhaustion still refuses with `NATIVE_CAPTURE_UNAVAILABLE`. Slot diagnostics
+retain the `relaunch` metric with `attempted`, `ready`, `failed` or `timeout`,
+its duration and the fixed reap disposition, without runner output or values.
+
 A required private capture re-reads a canonical empty snapshot (`nodes=[]`,
 verdict `degraded`, `nodeCount=0`, reasons exactly `empty-capture`, no truncation
 or dropped nodes) at 500 ms intervals within the existing 6-second settle budget
