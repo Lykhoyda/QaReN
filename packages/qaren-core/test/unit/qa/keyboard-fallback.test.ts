@@ -2680,3 +2680,26 @@ test('annotated wrapper and focused slots replay current fixtures with symbolic 
     assert.equal(f.typed[0].text, 'third-fixture');
   }
 });
+
+test('fallback focus emits value-free keyboard proof even when the metric sink fails', async () => {
+  for (const focused of [false, true]) {
+    for (const throwing of [false, true]) {
+      const fake = app({ initialKeyboard: true, reactFocused: focused });
+      const events: Array<Record<string, unknown>> = [];
+      fake.deps.timing = (event) => {
+        events.push(event);
+        if (throwing) throw Error('private-sink');
+      };
+      const outcome = await walkBlock(blocks(plan())[0], fake.deps);
+      assert.equal(outcome.block.outcome, focused ? 'pass' : 'fail');
+      const proofs = events.filter((event) => event.stage === 'keyboard');
+      assert.equal(proofs.length, 1);
+      assert.equal(proofs[0].keyboard, true);
+      assert.equal(proofs[0].proof, focused ? 'focused' : 'not-proven');
+      assert.equal(typeof proofs[0].ms, 'number');
+      assert.equal(Object.hasOwn(proofs[0], 'path'), false);
+      assert.equal(JSON.stringify(proofs).includes('qa-hidden-email'), false);
+      assert.equal(JSON.stringify(proofs).includes(EMAIL), false);
+    }
+  }
+});

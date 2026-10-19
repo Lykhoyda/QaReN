@@ -20,6 +20,7 @@ export const NATIVE_CODES = [
   'RUNNER_TIMEOUT',
   'RUNNER_PROTOCOL_MISMATCH',
 ] as const satisfies readonly (ToolErrorCode | QaDispatchRefusal | 'KEYBOARD_RELAYOUT_REQUIRED')[];
+export const REFUSAL_STAGES = ['dispatch-error', 'native-response'] as const;
 const NATIVE_REASONS = [
   'app-window-unavailable',
   'exact-target-unresolved',
@@ -56,7 +57,7 @@ function refusalDiagnostic(refusal: QaDispatchRefusal, facts: unknown) {
       'ACTION_OUTCOME_UNCERTAIN',
       'TARGET_MOVED_BEFORE_DISPATCH',
     ] as const),
-    stage: allowed(fact(facts, 'stage'), ['dispatch-error', 'native-response'] as const),
+    stage: allowed(fact(facts, 'stage'), REFUSAL_STAGES),
     mutating: typeof mutating === 'boolean' ? mutating : null,
     responseOk: typeof responseOk === 'boolean' ? responseOk : null,
     nativeCode: allowed(fact(facts, 'nativeCode'), NATIVE_CODES),

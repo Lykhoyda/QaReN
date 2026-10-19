@@ -718,6 +718,7 @@ async function walkBlockScoped(
         });
     }
   };
+  let dispatchStarted: number | undefined;
   const mutate = async (
     item: Item,
     observation: Observation,
@@ -725,6 +726,7 @@ async function walkBlockScoped(
     deadline = Infinity,
   ): Promise<ActResult> => {
     const preparedAt = deps.timing ? deps.now() : 0;
+    dispatchStarted = deps.timing ? preparedAt : undefined;
     metric('mutation', observation, { edge: 'start' });
     let completed = false;
     const context = new (class extends QaDispatchContext {
@@ -974,6 +976,16 @@ async function walkBlockScoped(
       if (isAbort(error)) throw error;
       focused = false;
     }
+    const at = deps.now();
+    observeTiming(deps.timing, {
+      stage: 'keyboard',
+      edge: 'point',
+      outcome: focused ? 'ok' : 'failed',
+      at,
+      ...(dispatchStarted !== undefined ? { ms: at - dispatchStarted } : {}),
+      keyboard: true,
+      proof: focused ? 'focused' : 'not-proven',
+    });
     deps.note?.(
       `fallback-focus ${JSON.stringify({ v: 1, path, keyboard: true, proof: focused ? 'focused' : 'not-proven' })}`,
     );

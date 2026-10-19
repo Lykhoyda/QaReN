@@ -7,6 +7,7 @@ import { HandlerError, describeError, fillEvidence, unwrap } from '../../../dist
 import { classifyNativeVerification } from '../../../dist/handlers/fill-verify.js';
 import { isRecord } from '../../../dist/qa/questions.js';
 import { recover } from '../../../dist/qa/recover.js';
+import { observeTiming, type TimingContext, type TimingEvent } from '../../../dist/qa/timing.js';
 import { createStop } from '../../../dist/qa/stop.js';
 import type { ActResult } from '../../../dist/qa/walker.js';
 import type { ToolResult } from '../../../dist/utils.js';
@@ -19,20 +20,24 @@ function fixture(throwSink = false) {
   const logs: string[] = [];
   const stop = createStop();
   // Execute the built action adapter without starting the wire, CDP, or a device session.
-  const act: (handler: () => Promise<ToolResult>, proven: boolean) => Promise<ActResult> =
-    runInNewContext(`${source.slice(from, to)}; act`, {
-      HandlerError,
-      extractMutationDisposition,
-      describeError,
-      fillEvidence,
-      unwrap,
-      isRecord,
-      stop,
-      log: (line: string) => {
-        logs.push(line);
-        if (throwSink) throw new Error('PRIVATE-log-sink');
-      },
-    });
+  const act: (
+    handler: () => Promise<ToolResult>,
+    proven: boolean,
+    timing?: TimingContext,
+  ) => Promise<ActResult> = runInNewContext(`${source.slice(from, to)}; act`, {
+    observeTiming,
+    HandlerError,
+    extractMutationDisposition,
+    describeError,
+    fillEvidence,
+    unwrap,
+    isRecord,
+    stop,
+    log: (line: string) => {
+      logs.push(line);
+      if (throwSink) throw new Error('PRIVATE-log-sink');
+    },
+  });
   return { act, logs, stop };
 }
 
@@ -228,4 +233,69 @@ test('act carries the keyboard a tap reported, on success and refusal, logged va
     assert.equal(outcome.keyboardShown, undefined);
     assert.deepEqual(f.logs, [`action-settle=${JSON.stringify(unknown)}`]);
   }
+});
+
+test('settle metrics survive withheld logs and preserve action outcomes when the sink throws', async () => {
+  for (const throwing of [false, true]) {
+    for (const ok of [false, true]) {
+      const f = fixture(true);
+      const events: TimingEvent[] = [];
+      const outcome = await f.act(
+        async () =>
+          result(
+            {
+              settle: { method: 'timeout', settled: false, hierarchyChanged: true },
+              timings_ms: { settle: 30 },
+            },
+            ok,
+          ),
+        true,
+        {
+          now: () => 100,
+          observe: (event) => {
+            events.push(event);
+            if (throwing) throw Error('private-sink');
+          },
+        },
+      );
+      assert.equal(outcome.ok, ok);
+      assert.deepEqual(JSON.parse(JSON.stringify(events)), [
+        {
+          stage: 'settle',
+          edge: 'end',
+          outcome: 'failed',
+          at: 100,
+          ms: 30,
+          method: 'timeout',
+          settled: false,
+          hierarchyChanged: true,
+        },
+      ]);
+    }
+  }
+  const events: TimingEvent[] = [];
+  await fixture().act(
+    async () =>
+      result({
+        settle: {
+          method: 'private-canary',
+          settled: 'private-canary',
+          hierarchyChanged: 'private-canary',
+        },
+        timings_ms: { settle: 'private-canary' },
+      }),
+    true,
+    { now: () => 100, observe: (event) => events.push(event) },
+  );
+  assert.deepEqual(JSON.parse(JSON.stringify(events)), [
+    {
+      stage: 'settle',
+      edge: 'end',
+      outcome: 'unknown',
+      at: 100,
+      method: 'unknown',
+      settled: 'unknown',
+      hierarchyChanged: 'unknown',
+    },
+  ]);
 });

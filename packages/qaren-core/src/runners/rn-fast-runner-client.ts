@@ -1903,16 +1903,27 @@ async function sendCommandOnce(
 ): Promise<RunnerResponse> {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
+  const now = qaTiming?.now ?? (() => performance.now());
+  let typeStarted: number | undefined;
+  let typeOutcome: 'ok' | 'failed' = 'failed';
   try {
     const capability = runnerState?.port === port ? runnerState.capability : undefined;
     if (!capability) {
       throw new Error('RUNNER_OWNERSHIP_MISMATCH: runner capability is unavailable');
     }
     const serialized = JSON.stringify(body);
-    const now = qaTiming?.now ?? (() => performance.now());
     const resp = await measureTiming(qaTiming?.observe, now, 'native-transport', async () => {
       if (focusedProof && !(await focusedProof())) return undefined;
       if (isMutatingCommand(body.command)) qaContext?.authorize();
+      if (body.command === 'type' && qaTiming) {
+        typeStarted = now();
+        observeTiming(qaTiming.observe, {
+          stage: 'type-call',
+          edge: 'start',
+          outcome: 'ok',
+          at: typeStarted,
+        });
+      }
       return cancellableFetch(fetchImpl, `http://127.0.0.1:${port}/command`, {
         method: 'POST',
         headers: {
@@ -1947,6 +1958,7 @@ async function sendCommandOnce(
         `RUNNER_PROTOCOL_MISMATCH: runner replied with wire protocol v${parsed.v}, bridge supports v${MIN_SUPPORTED_RUNNER_PROTOCOL}..${RUNNER_PROTOCOL_VERSION}`,
       );
     }
+    typeOutcome = parsed.ok ? 'ok' : 'failed';
     return parsed;
   } catch (err) {
     throwIfCancelled();
@@ -1958,6 +1970,16 @@ async function sendCommandOnce(
     throw err;
   } finally {
     clearTimeout(timer);
+    if (typeStarted !== undefined) {
+      const at = now();
+      observeTiming(qaTiming?.observe, {
+        stage: 'type-call',
+        edge: 'end',
+        outcome: typeOutcome,
+        at,
+        ms: at - typeStarted,
+      });
+    }
   }
 }
 
@@ -2140,13 +2162,21 @@ async function containTypeTimeout(
   runnerPoisoned = true;
   poisonHolders++;
   let verification: { matches: boolean; actual?: string | null } = { matches: false };
-  try {
-    if (args._verifyExactReadback && typeof args.text === 'string') {
-      verification = await args._verifyExactReadback(args.text);
-    }
-  } catch {
-    verification = { matches: false };
-  }
+  const readback = await measureTiming(
+    args.qaTiming?.observe,
+    args.qaTiming?.now ?? (() => performance.now()),
+    'type-readback',
+    async () => {
+      if (!args._verifyExactReadback || typeof args.text !== 'string') return undefined;
+      try {
+        return await args._verifyExactReadback(args.text);
+      } catch {
+        return undefined;
+      }
+    },
+    (result) => (result === undefined ? 'unavailable' : result.matches ? 'ok' : 'failed'),
+  );
+  verification = readback ?? { matches: false };
 
   let reapDisposition: 'reaped' | 'already-absent' | 'replacement-preserved';
   let runnerPostMortem = getRunnerPostMortem();
@@ -2700,6 +2730,19 @@ export async function runIOS(args: RunIOSArgs): Promise<ToolResult> {
     );
   }
 
+  const dispatchStarted = args.qaTiming?.now() ?? 0;
+  const keyboardEvent = (event: 'shown' | 'hidden' | 'relayout') => {
+    if (!args.qaTiming) return;
+    const at = args.qaTiming.now();
+    observeTiming(args.qaTiming.observe, {
+      stage: 'keyboard',
+      edge: 'point',
+      outcome: 'ok',
+      at,
+      ms: at - dispatchStarted,
+      event,
+    });
+  };
   let keyboardRelayoutRecovered = false;
   // Protocol-v1 runners ignore fresh-geometry fields. Enforce the corrected
   // policy client-side instead of silently downgrading to point containment.
@@ -2725,7 +2768,10 @@ export async function runIOS(args: RunIOSArgs): Promise<ToolResult> {
           { attemptedTiers: ['native-control', 'native-swipe'], protocolVersion: 1 },
         );
       }
-      if (data.wasVisible && data.dismissed) keyboardRelayoutRecovered = true;
+      if (data.wasVisible && data.dismissed) {
+        keyboardRelayoutRecovered = true;
+        keyboardEvent('hidden');
+      }
     } catch (err) {
       throwIfCancelled();
       const mapped = mapRunnerDispatchError(err);
@@ -2802,7 +2848,11 @@ export async function runIOS(args: RunIOSArgs): Promise<ToolResult> {
   let resp: RunnerResponse;
   let recovery: TransportRecovery | undefined;
   const qaRecovery: { probeState?: ProbeState } = {};
-  const diagnoseRefusal = <T>(stage: 'dispatch-error' | 'native-response', operation: () => T): T =>
+  const diagnoseRefusal = <T>(
+    stage: 'dispatch-error' | 'native-response',
+    operation: () => T,
+    nativeCode?: string,
+  ): T =>
     args.qaContext
       ? args.qaContext.diagnoseRefusal(
           () => ({
@@ -2816,6 +2866,7 @@ export async function runIOS(args: RunIOSArgs): Promise<ToolResult> {
                   nativeMutation: resp?.error?.mutation,
                 }
               : {}),
+            ...(nativeCode ? { nativeCode } : {}),
             probeState: qaRecovery.probeState,
             recovery: recovery?.outcome,
           }),
@@ -2861,38 +2912,70 @@ export async function runIOS(args: RunIOSArgs): Promise<ToolResult> {
       const result = await (args.command === 'type'
         ? containTypeTimeout(args, commandAuthorityBefore)
         : containRunnerTimeout(args.command, m, commandAuthorityBefore));
-      diagnoseRefusal('dispatch-error', () => args.qaContext?.refuse('ACTION_OUTCOME_UNCERTAIN'));
+      diagnoseRefusal(
+        'dispatch-error',
+        () => args.qaContext?.refuse('ACTION_OUTCOME_UNCERTAIN'),
+        'RUNNER_TIMEOUT',
+      );
       return result;
     }
     diagnoseRefusal('dispatch-error', () => args.qaContext?.refuse('ACTION_OUTCOME_UNCERTAIN'));
     throw err;
   }
   if (!presenceRequested && !resp.ok && resp.error?.code === 'KEYBOARD_RELAYOUT_REQUIRED') {
-    diagnoseRefusal('native-response', () => args.qaContext?.refuse('ACTION_OUTCOME_UNCERTAIN'));
-    if (!(await refreshTargetAfterKeyboard())) {
-      return refreshFailure.result ?? staleAfterKeyboardDismissal(args._targetRef);
-    }
-    commandAuthorityBefore = captureFastRunnerCommandAuthority();
-    try {
-      ({ resp, recovery } = await postCommandWithRecovery(
-        withKeyboardGuard(body, args.command, process.env) as Record<string, unknown>,
-        args.qaContext,
-        args.qaTiming,
-        args.command === 'type' && args.focused ? args._focusedProof : undefined,
-      ));
-    } catch (err) {
-      throwIfCancelled();
-      const mapped = mapRunnerDispatchError(err);
-      if (mapped) return mapped;
-      const message = err instanceof Error ? err.message : String(err);
-      if (message.startsWith('RUNNER_TIMEOUT')) {
-        return args.command === 'type'
-          ? containTypeTimeout(args, commandAuthorityBefore)
-          : containRunnerTimeout(args.command, message, commandAuthorityBefore);
-      }
-      throw err;
-    }
-    keyboardRelayoutRecovered = true;
+    keyboardEvent('relayout');
+    diagnoseRefusal(
+      'native-response',
+      () => args.qaContext?.refuse('ACTION_OUTCOME_UNCERTAIN'),
+      'KEYBOARD_RELAYOUT_REQUIRED',
+    );
+    const relayoutFailure = await measureTiming(
+      args.qaTiming?.observe,
+      args.qaTiming?.now ?? (() => performance.now()),
+      'relayout-retap',
+      async () => {
+        if (!(await refreshTargetAfterKeyboard())) {
+          return refreshFailure.result ?? staleAfterKeyboardDismissal(args._targetRef);
+        }
+        commandAuthorityBefore = captureFastRunnerCommandAuthority();
+        try {
+          ({ resp, recovery } = await postCommandWithRecovery(
+            withKeyboardGuard(body, args.command, process.env) as Record<string, unknown>,
+            args.qaContext,
+            args.qaTiming,
+            args.command === 'type' && args.focused ? args._focusedProof : undefined,
+          ));
+        } catch (err) {
+          throwIfCancelled();
+          const mapped = mapRunnerDispatchError(err);
+          if (mapped) return mapped;
+          const message = err instanceof Error ? err.message : String(err);
+          if (message.startsWith('RUNNER_TIMEOUT')) {
+            return args.command === 'type'
+              ? containTypeTimeout(args, commandAuthorityBefore)
+              : containRunnerTimeout(args.command, message, commandAuthorityBefore);
+          }
+          throw err;
+        }
+        keyboardRelayoutRecovered = true;
+        return undefined;
+      },
+      (result) => (result || !resp.ok ? 'failed' : 'ok'),
+    );
+    if (relayoutFailure) return relayoutFailure;
+  }
+  if (resp.data && typeof resp.data === 'object') {
+    const data = resp.data as Record<string, unknown>;
+    if (
+      ['dismissed', 'auto_dismissed', 'no_keyboard'].includes(data.keyboardGuard as string) ||
+      data.dismissed === true
+    )
+      keyboardEvent('hidden');
+    else if (
+      ['keyboard_target', 'not_occluded'].includes(data.keyboardGuard as string) ||
+      data.visible === true
+    )
+      keyboardEvent('shown');
   }
   const recoveryMeta = recovery ? { transportRecovery: recovery } : {};
   if (resp.error?.reason !== 'focus-proof-refused')
@@ -2924,7 +3007,11 @@ export async function runIOS(args: RunIOSArgs): Promise<ToolResult> {
       const result = await (args.command === 'type'
         ? containTypeTimeout(args, commandAuthorityBefore)
         : containRunnerTimeout(args.command, message, commandAuthorityBefore));
-      diagnoseRefusal('native-response', () => args.qaContext?.refuse('ACTION_OUTCOME_UNCERTAIN'));
+      diagnoseRefusal(
+        'native-response',
+        () => args.qaContext?.refuse('ACTION_OUTCOME_UNCERTAIN'),
+        'RUNNER_TIMEOUT',
+      );
       return result;
     }
     if (
@@ -2933,7 +3020,11 @@ export async function runIOS(args: RunIOSArgs): Promise<ToolResult> {
       message.includes('main thread execution timed out')
     ) {
       const result = await containTypeTimeout(args, commandAuthorityBefore);
-      diagnoseRefusal('native-response', () => args.qaContext?.refuse('ACTION_OUTCOME_UNCERTAIN'));
+      diagnoseRefusal(
+        'native-response',
+        () => args.qaContext?.refuse('ACTION_OUTCOME_UNCERTAIN'),
+        'RUNNER_TIMEOUT',
+      );
       return result;
     }
     const mutation = resp.error?.mutation;

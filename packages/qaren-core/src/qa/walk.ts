@@ -66,7 +66,9 @@ import {
   createTimingObserver,
   formatTimingEvent,
   observeDispatchPhases,
+  observeTiming,
   type TimingContext,
+  type TimingEvent,
 } from './timing.js';
 import { preflightPlan } from './preflight.js';
 import { summarizeJev } from './ledger.js';
@@ -216,7 +218,11 @@ type Handler<A> = (args: A) => Promise<ToolResult>;
 
 const stop = createStop();
 
-function act(handler: () => Promise<ToolResult>, proven: boolean): Promise<ActResult> {
+function act(
+  handler: () => Promise<ToolResult>,
+  proven: boolean,
+  timing?: TimingContext,
+): Promise<ActResult> {
   if (stop.stopping)
     return Promise.resolve({
       ok: false,
@@ -236,7 +242,7 @@ function act(handler: () => Promise<ToolResult>, proven: boolean): Promise<ActRe
           tappedLabel?: unknown;
           tappedRect?: unknown;
         }>(result);
-        logActionSettle(meta);
+        logActionSettle(meta, timing);
         const keyboard = actionKeyboard(meta);
         if (data?.executed === false || data?.tapped === false)
           return {
@@ -276,7 +282,7 @@ function act(handler: () => Promise<ToolResult>, proven: boolean): Promise<ActRe
           ...(typeof chars === 'number' ? { caseNormalized: { chars } } : {}),
         };
       } catch (error) {
-        logActionSettle(error instanceof HandlerError ? error.meta : undefined);
+        logActionSettle(error instanceof HandlerError ? error.meta : undefined, timing);
         const keyboard = actionKeyboard(error instanceof HandlerError ? error.meta : undefined);
         const { code, message } = describeError(error);
         return {
@@ -291,7 +297,7 @@ function act(handler: () => Promise<ToolResult>, proven: boolean): Promise<ActRe
       }
     },
     (error) => {
-      logActionSettle(error instanceof HandlerError ? error.meta : undefined);
+      logActionSettle(error instanceof HandlerError ? error.meta : undefined, timing);
       const { code, message } = describeError(error);
       return {
         ok: false,
@@ -337,26 +343,38 @@ function actionKeyboard(meta?: Record<string, unknown>): boolean | undefined {
   return shown;
 }
 
-function logActionSettle(meta?: Record<string, unknown>): void {
+function logActionSettle(meta?: Record<string, unknown>, timing?: TimingContext): void {
   try {
     const settle = isRecord(meta?.settle) ? meta.settle : {};
     const ms = isRecord(meta?.timings_ms) ? meta.timings_ms.settle : undefined;
-    log(
-      `action-settle=${JSON.stringify({
-        method:
-          typeof settle.method === 'string' &&
-          ['window-gate', 'screen-static', 'snapshot-eq', 'timeout'].includes(settle.method)
-            ? settle.method
-            : 'unknown',
-        settled: typeof settle.settled === 'boolean' ? settle.settled : 'unknown',
-        hierarchyChanged:
-          typeof settle.hierarchyChanged === 'boolean' ? settle.hierarchyChanged : 'unknown',
-        ms:
-          typeof ms === 'number' && Number.isFinite(ms) && ms >= 0 && ms <= Number.MAX_SAFE_INTEGER
-            ? ms
-            : 'unknown',
-      })}`,
-    );
+    const summary: Pick<TimingEvent, 'method' | 'settled' | 'hierarchyChanged'> & {
+      ms: number | 'unknown';
+    } = {
+      method:
+        typeof settle.method === 'string' &&
+        ['window-gate', 'screen-static', 'snapshot-eq', 'timeout'].includes(settle.method)
+          ? (settle.method as TimingEvent['method'])
+          : 'unknown',
+      settled: typeof settle.settled === 'boolean' ? settle.settled : 'unknown',
+      hierarchyChanged:
+        typeof settle.hierarchyChanged === 'boolean' ? settle.hierarchyChanged : 'unknown',
+      ms:
+        typeof ms === 'number' && Number.isFinite(ms) && ms >= 0 && ms <= Number.MAX_SAFE_INTEGER
+          ? ms
+          : 'unknown',
+    };
+    if (timing)
+      observeTiming(timing.observe, {
+        stage: 'settle',
+        edge: 'end',
+        outcome: summary.settled === true ? 'ok' : summary.settled === false ? 'failed' : 'unknown',
+        at: timing.now(),
+        method: summary.method,
+        settled: summary.settled,
+        hierarchyChanged: summary.hierarchyChanged,
+        ...(typeof summary.ms === 'number' ? { ms: summary.ms } : {}),
+      });
+    log(`action-settle=${JSON.stringify(summary)}`);
   } catch {
     // Diagnostics cannot change an action's outcome.
   }
@@ -378,7 +396,14 @@ async function openSession(
   const runOffset = Date.now() - request.t0;
   const perfStart = performance.now();
   const now = (): number => Math.round(runOffset + performance.now() - perfStart);
+  let currentLine: number | undefined;
   const timing = createTimingObserver((event) => {
+    if (
+      currentLine !== undefined &&
+      event.line === undefined &&
+      ['type-call', 'type-readback', 'relayout-retap', 'settle', 'keyboard'].includes(event.stage)
+    )
+      event = { ...event, line: currentLine };
     if (currentInputs()?.hasInputs) diagnostic({ kind: 'metric', ...event });
     else process.stderr.write(redactApiKey(formatTimingEvent(event)));
   });
@@ -610,8 +635,16 @@ async function openSession(
           react: () => captureQaReact(cdp, options?.platformPresence === true),
         }),
       ),
-    press: (ref, qaContext) => act(() => press({ ref, qaContext }), false),
-    fill: (ref, text, qaContext) => act(() => fill({ ref, text, qaContext }), true),
+    press: (ref, qaContext) =>
+      act(() => press({ ref, qaContext, qaTiming: { now, observe: timing } }), false, {
+        now,
+        observe: timing,
+      }),
+    fill: (ref, text, qaContext) =>
+      act(() => fill({ ref, text, qaContext, qaTiming: { now, observe: timing } }), true, {
+        now,
+        observe: timing,
+      }),
     scroll: (direction, qaContext, clearance, within) =>
       act(() => scroll({ ...scrollArgs(direction, clearance, within), qaContext }), false),
     back: (qaContext) => act(() => back({ qaContext }), false),
@@ -644,7 +677,10 @@ async function openSession(
     ...(login ? { login } : {}),
     sleep,
     row: emitRow,
-    start: emitStart,
+    start: (start) => {
+      currentLine = start.line;
+      emitStart(start);
+    },
     ...(platform === 'ios'
       ? {
           appProcess: {},
@@ -663,8 +699,10 @@ async function openSession(
                   skipFinalValidation: true,
                   clearFirst: true,
                   qaContext,
+                  qaTiming: { now, observe: timing },
                 }),
               false,
+              { now, observe: timing },
             ),
         }
       : {}),
