@@ -5,6 +5,8 @@ import fs from 'node:fs';
 import { syncBuiltinESMExports } from 'node:module';
 import { PassThrough } from 'node:stream';
 import { afterEach, beforeEach, test } from 'node:test';
+import { QaDispatchContext } from '../../../dist/domain/qa-dispatch.js';
+import { buildIosProbes, waitForSettle } from '../../../dist/lifecycle/settle.js';
 import {
   _setFastRunnerStateForTest,
   _setFetchForTest,
@@ -22,11 +24,15 @@ import { parseEnvelope } from '../../helpers/result-helpers.js';
 let launches = 0;
 let failLaunch = false;
 let launchEnv: NodeJS.ProcessEnv;
+let timeoutKind: 'runner' | 'transport';
+let capturePort: string;
 
 beforeEach((t) => {
   launches = 0;
   failLaunch = false;
   launchEnv = {};
+  timeoutKind = 'runner';
+  capturePort = '22089';
   for (const [key, value] of Object.entries({
     QAREN_DEVICE_LEASE: 'fixture:abcdefghijklmnop',
     RN_RUNNER_BUILD: 'local',
@@ -105,10 +111,12 @@ beforeEach((t) => {
       });
     }
     const request = JSON.parse(String(init?.body));
+    assert.equal(request.advisorySnapshot, undefined);
     if (request.command === 'snapshot' && request.platformPresence) {
-      assert.equal(new URL(String(url)).port, '22089');
+      assert.equal(new URL(String(url)).port, capturePort);
       return Response.json({ ok: true, data: { nodes: [], snapshotGeneration: 1 } });
     }
+    if (timeoutKind === 'transport') throw new DOMException('fixture timeout', 'AbortError');
     return Response.json({
       ok: false,
       error: {
@@ -125,6 +133,58 @@ afterEach((t) => {
   t.mock.restoreAll();
   syncBuiltinESMExports();
 });
+
+for (const kind of ['runner', 'transport'] as const) {
+  test(`an advisory settle ${kind} timeout preserves the reader until a real command times out`, async (t) => {
+    timeoutKind = kind;
+    capturePort = '22088';
+    let readerAlive = true;
+    const kill = process.kill;
+    t.mock.method(process, 'kill', (pid, signal) => {
+      assert.equal(signal, 0, 'no process may be signalled by the fixture');
+      if (pid === 999_999_999 && readerAlive) return true;
+      return kill(pid, signal);
+    });
+    const initial = getFastRunnerState();
+    const context = new QaDispatchContext(10_000, () => 0);
+    context.authorize();
+    const probes = buildIosProbes('dev.fixture', context);
+    assert.equal(await probes.snapshotHash(), null);
+    assert.equal(launches, 0);
+    assert.equal(getFastRunnerState(), initial);
+    let now = 0;
+    const outcome = await waitForSettle({
+      platform: 'ios',
+      capabilities: [],
+      probes: {
+        ...probes,
+        now: () => now,
+        sleep: async (ms) => {
+          now += ms;
+        },
+      },
+    });
+    assert.equal(outcome.method, 'timeout');
+    assert.equal(outcome.settled, false);
+    assert.equal(context.refusal, undefined);
+    context.assertComplete();
+    assert.equal(launches, 0);
+    assert.equal(getFastRunnerState(), initial);
+    const capture = parseEnvelope(
+      await runIOS({ command: 'snapshot', platformPresence: true, presenceBudgetMs: 20_000 }),
+    );
+    assert.equal(capture.ok, true, JSON.stringify(capture));
+    assert.equal(launches, 0);
+    assert.equal(getFastRunnerState(), initial);
+
+    readerAlive = false;
+    const command = parseEnvelope(await runIOS({ command: 'snapshot' }));
+    assert.equal(command.code, 'RUNNER_TIMEOUT');
+    assert.equal(command.meta.runnerTimeoutRecovery.reaped, true);
+    assert.equal(launches, 1);
+    assert.equal(getFastRunnerState()?.port, 22089);
+  });
+}
 
 test('a verified type timeout relaunches the reaped reader before the next presence capture', async () => {
   const result = parseEnvelope(
@@ -164,6 +224,15 @@ test('a non-type timeout keeps its verdict and restores presence capture', async
     await runIOS({ command: 'snapshot', platformPresence: true, presenceBudgetMs: 20_000 }),
   );
   assert.equal(capture.ok, true, JSON.stringify(capture));
+  assert.equal(launches, 1);
+});
+
+test('an advisory snapshot marker cannot disable mutation timeout recovery', async () => {
+  const result = parseEnvelope(
+    await runIOS({ command: 'tap', x: 50, y: 50, advisorySnapshot: true }),
+  );
+  assert.equal(result.code, 'RUNNER_TIMEOUT');
+  assert.equal(result.meta.runnerTimeoutRecovery.reaped, true);
   assert.equal(launches, 1);
 });
 

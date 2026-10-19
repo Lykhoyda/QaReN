@@ -157,6 +157,7 @@ export function buildIosProbes(bundleId?: string, _qaContext?: QaDispatchContext
         const data = envelopeData(
           await runIOS({
             command: 'snapshot',
+            advisorySnapshot: true,
             interactiveOnly: true,
             ...(bundleId ? { bundleId } : {}),
           }),
