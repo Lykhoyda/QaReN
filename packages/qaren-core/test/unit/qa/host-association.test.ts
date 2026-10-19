@@ -153,14 +153,19 @@ test('an exact structural match below the window associates without presence; an
   assert.equal(below.elements[2].semantic?.visibility, 'offscreen');
   assert.equal(below.elements[2].semantic?.press, 'supported');
   assert.equal(below.pressEvidenceGap, undefined);
+  assert.equal(below.pressGapCount, 0);
+  assert.equal(below.fillGapCount, 0);
   assert.deepEqual(semanticActionView(below, 'press'), { elements: [below.elements[2]] });
   assert.deepEqual(visibilityView(below), { elements: [], unknown: [], unassociatedReact: 0 });
 
   const onScreen = fixture();
   onScreen.native.nodes[2].presence = unknown;
+  onScreen.hostEvidence.hosts[0].capabilities.fill = true;
   const shown = await onScreen.capture();
   assert.equal(shown.elements[2].semantic?.visibility, 'unknown');
   assert.equal(shown.pressEvidenceGap, '1 interactive React host unassociated');
+  assert.equal(shown.pressGapCount, 1);
+  assert.equal(shown.fillGapCount, 1);
 });
 
 test('associated disabled and read-only facts block both operations without erasing positive capabilities', async () => {

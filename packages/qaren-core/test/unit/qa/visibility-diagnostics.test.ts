@@ -332,7 +332,7 @@ test('coverage refuses without a diagnostic while other evidence gaps retain the
   }
 });
 
-test('successful presence exposes no diagnostic facts to the model or public screen', async () => {
+test('successful presence keeps diagnostic facts and capture gap counts out of the model and public rows', async () => {
   const screen = join(
     [{ ref: '@e0', type: 'Button', label: 'Continue' }],
     [],
@@ -363,7 +363,13 @@ test('successful presence exposes no diagnostic facts to the model or public scr
   assert.equal(judge.requests.length, 1);
   assert.ok(events.every((event) => event.visibilityBlocker === undefined));
   assert.equal(JSON.stringify(screen), before);
-  assert.doesNotMatch(before, /diagnostic|GapCount|nativeStatus/);
+  assert.equal(screen.pressGapCount, 0);
+  assert.equal(screen.fillGapCount, 0);
+  assert.doesNotMatch(before, /diagnostic|nativeStatus/);
+  assert.doesNotMatch(
+    JSON.stringify({ result, rows: f.rows }),
+    /pressGapCount|fillGapCount|diagnostic|nativeStatus/,
+  );
   assert.deepEqual(f.actions, []);
 });
 

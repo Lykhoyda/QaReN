@@ -5,6 +5,7 @@ import {
   outsideViewport,
 } from './native-presence.js';
 import { INPUT_HOST_TYPES } from './input-host-types.js';
+import { reactHitTest, touchReaches } from './react-hit-test.js';
 import type { NativePresence } from './native-presence.js';
 import type { NativeNode, ReactHostEvidence } from './screen.js';
 import type { HostTypography } from './host-typography.js';
@@ -320,11 +321,15 @@ function possibleTextOwner(host: HostTypography['nodes'][number], content: strin
   }
 }
 
+// Android: an observed anchor's touch must also reach its host in React Native's own hit test at the
+// node's centre; [reactCovered] collects the native nodes where a React view above takes it. They stay
+// anchored, as the native observation still proves identity, but are not observed at this capture.
 export function associateHosts(
   nodes: NativeNode[],
   evidence: ReactHostEvidence | undefined,
   presence: NativePresence | undefined,
   diagnostics?: Map<number, HostAssociationDiagnostic>,
+  reactCovered?: Set<number>,
 ): Map<number, HostAssociation> {
   const associations = new Map<number, HostAssociation>();
   const note = (index: number, facts: Partial<HostAssociationDiagnostic>) => {
@@ -476,6 +481,22 @@ export function associateHosts(
     }
     structural.set(host.hostIndex, nativeIndex);
     note(host.hostIndex, { identity: 'matched' });
+  }
+  if (androidTransform && reactCovered) {
+    const { scale, x, y } = androidTransform;
+    const hit = reactHitTest(evidence, (rect) => ({
+      x: rect.x * scale + x,
+      y: rect.y * scale + y,
+      width: rect.width * scale,
+      height: rect.height * scale,
+    }));
+    for (const [hostIndex, i] of structural) {
+      const rect = nodes[i].rect;
+      if (!positive(i) || !rect) continue;
+      // The runner's own centre: integer pixels, as the native rule tests it.
+      const centre = hit(Math.trunc(rect.x + rect.width / 2), Math.trunc(rect.y + rect.height / 2));
+      if (!touchReaches(evidence, hostIndex, centre)) reactCovered.add(i);
+    }
   }
   const offscreen = offscreenNodes(nodes, presence);
   const anchors = new Map(

@@ -1,5 +1,6 @@
 import {
   fillText,
+  InputPrivacyRefusal,
   currentInputs,
   declareEcho,
   throwIfInputPrivacyRefused,
@@ -58,6 +59,7 @@ import {
   checkVerdict,
 } from './questions.js';
 import { type LoginMarker, dismissCandidate, recover } from './recover.js';
+import type { BlockOutcome, BlockOutcomeDiagnostic } from './diagnostics.js';
 import {
   concealsScreen,
   isPrivateInput,
@@ -167,6 +169,8 @@ export interface WalkerDeps {
   start?(start: StepStart): void;
   cancelled?(): boolean;
   diagnostic?(event: WalkerTimingDiagnostic): void;
+  blockOutcome?(event: BlockOutcomeDiagnostic): void;
+  loginOutcome?(outcome: BlockOutcome): void;
   timing?: TimingObserver;
   rowTiming?(t: number): RowTiming;
   // iOS only: the app process every capture must still belong to, set by the first capture.
@@ -315,7 +319,34 @@ const NEAR_MISS: Record<LiteralNearMiss, string> = {
 export function walkBlock(
   ...args: Parameters<typeof walkBlockScoped>
 ): ReturnType<typeof walkBlockScoped> {
-  return withEchoScope(() => walkBlockScoped(...args));
+  return withEchoScope(async () => {
+    const [block, deps] = args;
+    const report = (outcome: BlockOutcome): void => {
+      if (!currentInputs()?.hasInputs) return;
+      if (block.items.some((item) => item.kind === 'fill' && item.input)) {
+        try {
+          deps.blockOutcome?.({ kind: 'block-outcome', line: block.items[0].line, outcome });
+        } catch {
+          // Diagnostics cannot change the block's outcome.
+        }
+      }
+      if (args[6]?.login) {
+        try {
+          deps.loginOutcome?.(outcome);
+        } catch {
+          // Diagnostics cannot change login recovery.
+        }
+      }
+    };
+    try {
+      const outcome = await walkBlockScoped(...args);
+      report(outcome.refusal ? 'refused' : outcome.block.outcome);
+      return outcome;
+    } catch (error) {
+      if (error instanceof InputPrivacyRefusal) report('refused');
+      throw error;
+    }
+  });
 }
 
 async function walkBlockScoped(
@@ -1188,7 +1219,16 @@ async function walkBlockScoped(
   let loginReplayed = false;
   const replayLogin = async () => {
     const login = deps.login?.block;
-    if (!login) return 'fail' as const;
+    if (!login) {
+      if (currentInputs()?.hasInputs) {
+        try {
+          deps.loginOutcome?.('fail');
+        } catch {
+          // Diagnostics cannot change login recovery.
+        }
+      }
+      return 'fail' as const;
+    }
     loginReplayed = true;
     sequence.window = undefined;
     let taken = 0;
@@ -1548,11 +1588,26 @@ async function walkBlockScoped(
           let observation = held?.observation ?? (await capture(item));
           cached = undefined;
           const probe = visibilityProbe(item, deadline);
+          let replayMiss: ResolutionError | undefined;
           let unsure = false;
           let absent = 0;
           const absentScreens = new Set<string>();
           const visible = async (s: Observation, initial?: ScreenDecision): Promise<boolean> => {
-            const observed = await probe(s, initial);
+            let observed;
+            try {
+              observed = await probe(s, initial);
+            } catch (error) {
+              if (
+                !(error instanceof ResolutionError) ||
+                error.code !== 'REPLAY_SELECTOR' ||
+                item.target.exact !== 'id' ||
+                deps.now() >= deadline
+              )
+                throw error;
+              replayMiss = error;
+              observation = s;
+              return false;
+            }
             observation = observed.observation;
             unsure = observed.unsure === true;
             if (!observed.found && !unsure && item.target.quoted !== undefined) {
@@ -1593,6 +1648,7 @@ async function walkBlockScoped(
                 refusal,
               };
             }
+            if (replayMiss) throw replayMiss;
             // Repeated literal absence on one unchanged screen is an observed result, not uncertainty.
             const unchanged = absent >= 2 && absentScreens.size === 1;
             const reason = unchanged
@@ -1622,9 +1678,26 @@ async function walkBlockScoped(
           let observation = held?.observation ?? (await capture(item));
           cached = undefined;
           const probe = visibilityProbe(item, deadline);
+          let replayMiss: ResolutionError | undefined;
           let unsure = false;
           const visible = async (s: Observation, initial?: ScreenDecision): Promise<boolean> => {
-            const observed = await probe(s, initial);
+            let observed;
+            try {
+              observed = await probe(s, initial);
+            } catch (error) {
+              if (
+                !(error instanceof ResolutionError) ||
+                error.code !== 'REPLAY_SELECTOR' ||
+                item.until!.exact !== 'id' ||
+                deps.now() >= deadline
+              )
+                throw error instanceof EvidenceExpired && error.itemExpired && replayMiss
+                  ? replayMiss
+                  : error;
+              replayMiss = error;
+              observation = s;
+              return false;
+            }
             observation = observed.observation;
             unsure = observed.unsure === true;
             return observed.found;
@@ -1650,17 +1723,20 @@ async function walkBlockScoped(
               );
             } catch (error) {
               if (isAbort(error)) throw error;
-              if (!(error instanceof EvidenceExpired) || error.itemExpired) throw error;
+              if (!(error instanceof EvidenceExpired) || error.itemExpired)
+                throw error instanceof EvidenceExpired && error.itemExpired && replayMiss
+                  ? replayMiss
+                  : error;
               metric('refresh', observation);
               await pause(Math.min(WAIT_POLL_MS, Math.max(0, deadline - deps.now())));
-              if (deps.now() >= deadline) throw new EvidenceExpired(true);
+              if (deps.now() >= deadline) throw replayMiss ?? new EvidenceExpired(true);
               observation = await capture(item);
               found = await visible(observation);
               continue;
             }
             attempts += 1;
             await pause(Math.min(WAIT_POLL_MS, Math.max(0, deadline - deps.now())));
-            if (deps.now() >= deadline) throw new EvidenceExpired(true);
+            if (deps.now() >= deadline) throw replayMiss ?? new EvidenceExpired(true);
             observation = await capture(item);
             found = await visible(observation);
             const moved = screenSignature(observation.screen) !== beforeSignature;
@@ -1673,6 +1749,7 @@ async function walkBlockScoped(
                 await shoot(item),
               );
           }
+          if (!found && replayMiss) throw replayMiss;
           if (!found && unsure) throw unresolvedText(item.until.quoted!);
           if (!found) usable(observation, item, deadline);
           const shot = await shoot(item);
@@ -1695,7 +1772,7 @@ async function walkBlockScoped(
         let fillIdentity: string | undefined;
         let typedUnverified = false;
         let again = false;
-        let scrolled = false;
+        let scrolled = 0;
         let scrollOrigin: NonNullable<
           WalkerTimingDiagnostic['clearanceDiagnostic']
         >['scrollOrigin'] = null;
@@ -1839,7 +1916,13 @@ async function walkBlockScoped(
                   if (!fallback || item.kind !== 'fill') throw new ResolutionError(decided);
                   fellBack = true;
                   fillIdentity = fallback.oracleTestID;
-                  const result = await keyboardFallback(item, attempt, before, fallback, scrolled);
+                  const result = await keyboardFallback(
+                    item,
+                    attempt,
+                    before,
+                    fallback,
+                    !!scrolled,
+                  );
                   if (result === 'typed') {
                     typedUnverified = true;
                     break;
@@ -1848,17 +1931,22 @@ async function walkBlockScoped(
                     outcome = result;
                     break;
                   }
-                  scrolled ||= result.scrolled;
+                  scrolled ||= Number(result.scrolled);
                   before = result.observation;
                   fillIdentity = result.identity;
                   resolution = result;
                 } else resolution = decided;
                 if ('scroll' in resolution) {
-                  if (scrolled) {
+                  if (
+                    scrolled &&
+                    (resolution.origin !== 'named-offscreen' ||
+                      scrollOrigin !== 'offscreen-resolution' ||
+                      scrolled >= SCROLL_ATTEMPTS)
+                  ) {
                     outcome = failed(
                       item,
                       attempt,
-                      `${scrollError ? `${scrollError}; ` : ''}"${item.target.phrase}" stayed off screen after one scroll`,
+                      `${scrollError ? `${scrollError}; ` : ''}"${item.target.phrase}" stayed off screen after ${scrolled === 1 ? 'one scroll' : `${scrolled} scrolls`}`,
                       before.screen,
                       await shoot(item),
                     );
@@ -1875,10 +1963,13 @@ async function walkBlockScoped(
                   scrollOrigin ??= 'offscreen-resolution';
                   scrollDirection = resolution.scroll;
                   if (before.screen.front === 'dialog') throw dialogInFront(item.target.phrase);
+                  const preScroll = before;
+                  const gaps = (screen: Screen) =>
+                    (item.kind === 'fill' ? screen.fillGapCount : screen.pressGapCount) ?? 0;
                   const result = await mutate(item, before, (context) =>
                     deps.scroll(resolution.scroll, context, distance, band),
                   );
-                  scrolled = true;
+                  scrolled += 1;
                   scrollNeedsReadback = !result.ok && !result.proven;
                   scrollError = result.ok
                     ? undefined
@@ -1886,15 +1977,24 @@ async function walkBlockScoped(
                   const signature = screenSignature(before.screen);
                   before = await settledCapture(item);
                   usable(before, item);
+                  const landed = resolution.element
+                    ? before.screen.elements.find((e) => sameIdentity(e, resolution.element!))
+                    : undefined;
                   if (
-                    !result.ok &&
-                    !result.proven &&
+                    landed?.semantic?.visibility === 'unknown' ||
+                    gaps(before.screen) > gaps(preScroll.screen) ||
+                    (before.screen.semanticUnassociatedReact ?? 0) >
+                      (preScroll.screen.semanticUnassociatedReact ?? 0)
+                  )
+                    throw new EvidenceExpired(false);
+                  if (
+                    (resolution.origin === 'named-offscreen' || (!result.ok && !result.proven)) &&
                     screenSignature(before.screen) === signature
                   ) {
                     outcome = failed(
                       item,
                       attempt,
-                      `${scrollError}; "${item.target.phrase}" stayed off screen after one scroll`,
+                      `${scrollError ? `${scrollError}; ` : ''}"${item.target.phrase}" stayed off screen after ${scrolled === 1 ? 'one scroll' : `${scrolled} scrolls`}`,
                       before.screen,
                       await shoot(item),
                     );
@@ -2109,7 +2209,7 @@ async function walkBlockScoped(
                   break;
                 }
                 fillIdentity = fallback.oracleTestID;
-                const result = await keyboardFallback(item, attempt, before, fallback, scrolled);
+                const result = await keyboardFallback(item, attempt, before, fallback, !!scrolled);
                 if (result === 'typed') {
                   typedUnverified = true;
                   break;
@@ -2118,7 +2218,7 @@ async function walkBlockScoped(
                   outcome = result;
                   break;
                 }
-                scrolled ||= result.scrolled;
+                scrolled ||= Number(result.scrolled);
                 before = result.observation;
                 fillIdentity = result.identity;
                 continue;

@@ -3,12 +3,7 @@ import { test } from 'node:test';
 import * as projection from '../../../dist/qa/screen.js';
 import type { DigestEntry, Element, ReactHostEvidence, Screen } from '../../../dist/qa/screen.js';
 import { inputValues, redactEvidence } from '../../../dist/qa/privacy.js';
-import {
-  decideScreen,
-  decideTarget,
-  prepareTarget,
-  resolveTarget,
-} from '../../../dist/qa/resolve.js';
+import { decideScreen, prepareTarget, resolveTarget } from '../../../dist/qa/resolve.js';
 import { parsePlan, parseStep } from '../../../dist/qa/plan.js';
 import { runPlan } from '../../../dist/qa/walker.js';
 import { choice, scriptedJudge, walker } from './judgment-fixtures.ts';
@@ -457,7 +452,7 @@ test('a verified node outside its scroll view or the window is offscreen; partia
   );
 });
 
-test('an offscreen native control is a described action candidate; an unobserved one on screen still refuses', async () => {
+test('an offscreen native control is a model-free scroll hint; an unobserved one on screen still refuses', async () => {
   const more = (y: number) => [
     ...scrolled,
     {
@@ -481,22 +476,11 @@ test('an offscreen native control is a described action candidate; an unobserved
   assert.deepEqual(projection.semanticActionView(below, 'press'), {
     elements: [below.elements[3]],
   });
-  const question = prepareTarget({ kind: 'press', target: { phrase: 'show more' } }, below);
-  assert.ok('question' in question);
-  assert.equal(
-    question.question.criteria.e0,
-    'Button "Show more" off screen (native accessibility name; outside the visible area)',
-  );
-  const chosen = { e0: 0.97, none: 0.03 };
-  assert.deepEqual(
-    decideTarget(question, {
-      type: 'choice',
-      choice: 'e0',
-      probabilities: chosen,
-      confidence: 0.9,
-    }),
-    { scroll: 'down', element: question.candidates[0] },
-  );
+  assert.deepEqual(prepareTarget({ kind: 'press', target: { phrase: 'show more' } }, below), {
+    scroll: 'down',
+    element: below.elements[3],
+    origin: 'named-offscreen',
+  });
 
   const shown = projection.join(
     more(300),

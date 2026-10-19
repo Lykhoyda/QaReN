@@ -7,7 +7,7 @@ export type QaDispatchRefusal =
   | 'ACTION_OUTCOME_UNCERTAIN'
   | 'TARGET_MOVED_BEFORE_DISPATCH';
 
-const NATIVE_CODES = [
+export const NATIVE_CODES = [
   'ACTION_CONTEXT_CHANGED',
   'KEYBOARD_TARGET_STALE',
   'STALE_REF',

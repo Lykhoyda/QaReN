@@ -283,7 +283,7 @@ test('QA recovered refusal keeps the already-obtained journal disposition withou
   assert.deepEqual(sends, ['tap', 'status']);
 });
 
-test('a successful action followed by a read-only refusal never labels the probe as its receipt', async () => {
+test('a successful action followed by a settle probe failure retains its completed context', async () => {
   const sends = runner((body) =>
     body.command === 'tap'
       ? { ok: true }
@@ -301,18 +301,8 @@ test('a successful action followed by a read-only refusal never labels the probe
   await runIOS({ command: 'tap', x: 10, y: 20, qaContext: context });
   assert.equal(context.refusalDiagnostic, undefined);
   assert.equal(await buildIosProbes('qa.app', context).snapshotHash(), null);
-  assert.throws(() => context.assertComplete(), /ACTION_CONTEXT_CHANGED/);
-  assert.deepEqual(context.refusalDiagnostic, {
-    refusal: 'ACTION_CONTEXT_CHANGED',
-    stage: 'native-response',
-    mutating: false,
-    responseOk: false,
-    nativeCode: 'ACTION_CONTEXT_CHANGED',
-    nativeReason: null,
-    nativeMutation: null,
-    probeState: null,
-    recovery: null,
-  });
+  assert.doesNotThrow(() => context.assertComplete());
+  assert.equal(context.refusalDiagnostic, undefined);
   assert.equal(context.refusedBeforeMutation, false);
   assert.equal(context.authorizations, 1);
   assert.deepEqual(sends, ['tap', 'snapshot']);

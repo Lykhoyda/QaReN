@@ -1,4 +1,7 @@
 import { systemModalDiagnostic } from '../domain/system-modal-diagnostic.js';
+import { sleep } from '../domain/cancellation.js';
+import { SETTLE_DEFAULT_BUDGET_MS } from '../lifecycle/settle.js';
+import { WAIT_POLL_MS } from './walker.js';
 import { diagnosticField, privateSnapshotDiagnostics } from './snapshot-diagnostics.js';
 import type { ToolResult } from '../utils.js';
 import { foregroundSurfaceFromSnapshot } from '../handlers/expo-dev-menu.js';
@@ -166,6 +169,23 @@ function nativeIncompleteCauses(observation: NativeObservation): string[] {
 }
 
 const SNAPSHOT_REASONS = new Set<unknown>(['empty-capture', 'snapshot-ref-freshness-unknown']);
+
+function retryableEmptyCapture(observation: NativeObservation): boolean {
+  const verdict = observation.snapshotVerdict;
+  return (
+    Array.isArray(observation.nodes) &&
+    observation.nodes.length === 0 &&
+    observation.truncated === false &&
+    observation.normalizationDroppedNodes === 0 &&
+    isRecord(verdict) &&
+    verdict.state === 'degraded' &&
+    verdict.nodeCount === 0 &&
+    typeof verdict.refMapUpdated === 'boolean' &&
+    Array.isArray(verdict.reasons) &&
+    verdict.reasons.length === 1 &&
+    verdict.reasons[0] === 'empty-capture'
+  );
+}
 
 const PRESENCE_PHASES = [
   'initial-eligibility',
@@ -479,16 +499,28 @@ async function capture(deps: CaptureDeps): Promise<Screen> {
   const mode = deps.platformPresence === true ? 'platform-presence' : 'ordinary';
   const now = deps.now ?? (() => performance.now());
   const started = now();
-  const presenceBudgetMs = NATIVE_PRESENCE_BUDGET_MS;
+  let presenceBudgetMs = NATIVE_PRESENCE_BUDGET_MS;
   let native: NativeObservation;
-  try {
-    native = await measureTiming(deps.timing, now, 'native-total', () =>
-      deps.native(presenceBudgetMs),
-    );
-  } catch (error) {
-    if (error instanceof AppProcessGoneError) throw error;
-    if (deps.requirePrivateInputs) throw new NativeCaptureError();
-    throw error;
+  let emptyDeadline: number | undefined;
+  for (;;) {
+    try {
+      native = await measureTiming(deps.timing, now, 'native-total', () =>
+        deps.native(presenceBudgetMs),
+      );
+    } catch (error) {
+      if (error instanceof AppProcessGoneError) throw error;
+      if (deps.requirePrivateInputs) throw new NativeCaptureError();
+      throw error;
+    }
+    if (!deps.requirePrivateInputs || !retryableEmptyCapture(native)) break;
+    const at = now();
+    emptyDeadline ??= Math.min(at + SETTLE_DEFAULT_BUDGET_MS, started + CAPTURE_BUDGET_MS);
+    const remaining = emptyDeadline - at;
+    if (!(remaining > 0)) break;
+    await sleep(Math.min(WAIT_POLL_MS, remaining));
+    const readBudget = emptyDeadline - now();
+    if (!(readBudget > 0)) break;
+    presenceBudgetMs = Math.min(NATIVE_PRESENCE_BUDGET_MS, readBudget);
   }
   if (deps.timing) observeNativeTiming(native.presenceCapture, deps.timing, now());
   if (deps.warn) {

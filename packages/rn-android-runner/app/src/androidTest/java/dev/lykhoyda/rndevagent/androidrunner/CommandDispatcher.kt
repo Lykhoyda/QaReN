@@ -285,7 +285,7 @@ class CommandDispatcher(
 
     private var qaSnapshotGeneration = 0
 
-    // presenceBudgetMs: when set, the A11Y_PRESENCE_V1 pass runs after enumeration within that budget.
+    // presenceBudgetMs: when set, the A11Y_PRESENCE_V2 pass runs after enumeration within that budget.
     private fun qaSnapshot(appPackage: String, presenceBudgetMs: Int?): JSONObject {
         val started = SystemClock.uptimeMillis()
         val deadline = started + 10_000
@@ -347,7 +347,7 @@ class CommandDispatcher(
     }
 
     /**
-     * The A11Y_PRESENCE_V1 pass over one QA enumeration: initial eligibility, per-node
+     * The A11Y_PRESENCE_V2 pass over one QA enumeration: initial eligibility, per-node
      * observation, final eligibility and revalidation, each read checked against the budget.
      * Any failure leaves the capture incomplete and every node unknown.
      */
@@ -551,6 +551,7 @@ class CommandDispatcher(
             children = children,
             editable = node.isEditable,
             drawingOrder = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) node.drawingOrder else null,
+            clickable = node.isClickable,
             handle = handle,
         )
     }

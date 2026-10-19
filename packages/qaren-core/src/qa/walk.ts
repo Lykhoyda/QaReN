@@ -356,6 +356,7 @@ async function openSession(
   onClose: (close: () => Promise<void>) => void,
   privacy: ObservedPrivacy,
   pinnedLogin: NonNullable<WalkerDeps['login']>['block'],
+  diagnostic: (event: unknown) => void,
   apiKey: string | undefined,
 ): Promise<Session> {
   const { target, platform, appId } = request;
@@ -363,9 +364,10 @@ async function openSession(
   const runOffset = Date.now() - request.t0;
   const perfStart = performance.now();
   const now = (): number => Math.round(runOffset + performance.now() - perfStart);
-  const timing = createTimingObserver((event) =>
-    process.stderr.write(redactApiKey(formatTimingEvent(event))),
-  );
+  const timing = createTimingObserver((event) => {
+    if (currentInputs()?.hasInputs) diagnostic({ kind: 'metric', ...event });
+    else process.stderr.write(redactApiKey(formatTimingEvent(event)));
+  });
   const cdp = new CDPClient(target.metroPort);
   const getClient = (): CDPClient => cdp;
   const snapshot: Handler<{
@@ -610,7 +612,12 @@ async function openSession(
     },
     now,
     cancelled: () => stop.stopping,
-    diagnostic: (event) => log(`timing ${JSON.stringify(event)}`),
+    diagnostic: (event) => {
+      if (currentInputs()?.hasInputs) diagnostic({ kind: 'timing', ...event });
+      else log(`timing ${JSON.stringify(event)}`);
+    },
+    blockOutcome: diagnostic,
+    loginOutcome: (outcome) => diagnostic({ kind: 'login-outcome', outcome }),
     hideDevMenu: () => act(() => recoverDevOverlays(overlays), false),
     ...(login ? { login } : {}),
     sleep,
@@ -819,6 +826,7 @@ async function mainRequest(
         },
         privacy,
         pinnedLogin,
+        writer.diagnostic,
         apiKey,
       ),
     );

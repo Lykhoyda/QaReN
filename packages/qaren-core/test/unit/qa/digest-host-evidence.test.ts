@@ -4,6 +4,7 @@ import vm from 'node:vm';
 import { HELPERS_VERSION } from '../../../dist/injected-helpers.js';
 import { buildFiber, createSandbox, INJECTED_HELPERS } from '../helpers/inject-harness.js';
 import { PRIVATE_INPUT_LIMITS } from '../../../dist/qa/private-input-limits.js';
+import { devFreeze } from './rn-dev-freeze.ts';
 
 const { maxHosts } = PRIVATE_INPUT_LIMITS;
 
@@ -54,6 +55,7 @@ test('opt-in host evidence includes a heading-only host without changing the leg
         role: 'heading',
         roleSource: 'role',
         capabilities: {},
+        order: 0,
       },
     ],
     complete: true,
@@ -81,11 +83,12 @@ test('only actual hosts contribute evidence, including unidentified and independ
     { hostType: 'RCTView' },
   ]);
   assert.equal(result.hostEvidence.complete, true);
+  // Host indices are breadth-first; order is the fiber (paint) order among each parent's host children.
   assert.deepEqual(result.hostEvidence.hosts, [
-    { nativeID: 'shared', role: null, roleSource: 'none', capabilities: {} },
-    { role: null, roleSource: 'none', capabilities: {} },
-    { testID: 'shared', role: null, roleSource: 'none', capabilities: { press: true } },
-    { testID: 'shared', role: 'heading', roleSource: 'role', capabilities: {} },
+    { nativeID: 'shared', role: null, roleSource: 'none', capabilities: {}, order: 1 },
+    { role: null, roleSource: 'none', capabilities: {}, order: 2 },
+    { testID: 'shared', role: null, roleSource: 'none', capabilities: { press: true }, order: 0 },
+    { testID: 'shared', role: 'heading', roleSource: 'role', capabilities: {}, order: 0 },
   ]);
 });
 
@@ -124,14 +127,14 @@ test('host disabled and read-only positives stay separate from forwarded parent 
   ]);
   assert.equal(result.interactive.find((entry) => entry.testID === 'save').disabled, true);
   assert.deepEqual(result.hostEvidence.hosts, [
-    { role: null, roleSource: 'none', capabilities: { press: true }, disabled: true },
-    { role: null, roleSource: 'none', capabilities: {}, disabled: true },
-    { role: null, roleSource: 'none', capabilities: {}, disabled: true },
-    { role: null, roleSource: 'none', capabilities: {}, readOnly: true },
-    { role: null, roleSource: 'none', capabilities: {}, readOnly: true },
-    { role: null, roleSource: 'none', capabilities: {}, readOnly: true },
-    { role: null, roleSource: 'none', capabilities: { fill: true }, disabled: true },
-    { testID: 'save', role: null, roleSource: 'none', capabilities: { press: true } },
+    { role: null, roleSource: 'none', capabilities: { press: true }, disabled: true, order: 1 },
+    { role: null, roleSource: 'none', capabilities: {}, disabled: true, order: 2 },
+    { role: null, roleSource: 'none', capabilities: {}, disabled: true, order: 3 },
+    { role: null, roleSource: 'none', capabilities: {}, readOnly: true, order: 4 },
+    { role: null, roleSource: 'none', capabilities: {}, readOnly: true, order: 5 },
+    { role: null, roleSource: 'none', capabilities: {}, readOnly: true, order: 6 },
+    { role: null, roleSource: 'none', capabilities: { fill: true }, disabled: true, order: 7 },
+    { testID: 'save', role: null, roleSource: 'none', capabilities: { press: true }, order: 0 },
   ]);
 });
 
@@ -143,7 +146,7 @@ test('unsupported editability values do not establish a positive fill capability
     { 'aria-readonly': 'true' },
   ]) {
     assert.deepEqual(digest([{ hostType: 'AndroidTextInput', props }]).hostEvidence.hosts, [
-      { role: null, roleSource: 'none', capabilities: {} },
+      { role: null, roleSource: 'none', capabilities: {}, order: 0 },
     ]);
   }
 });
@@ -188,6 +191,7 @@ test('unsupported selected roles are unknown and incomplete, never coerced or by
             role: null,
             roleSource: 'role' in props ? 'role' : 'accessibilityRole',
             capabilities: {},
+            order: 0,
           },
         ],
         complete: false,
@@ -201,7 +205,7 @@ test('unsupported identities keep their host observation and mark coverage incom
     for (const value of [12, false, {}, ['save']]) {
       const result = digest([{ hostType: 'RCTView', props: { [field]: value, onPress: handler } }]);
       assert.deepEqual(result.hostEvidence, {
-        hosts: [{ role: null, roleSource: 'none', capabilities: { press: true } }],
+        hosts: [{ role: null, roleSource: 'none', capabilities: { press: true }, order: 0 }],
         complete: false,
       });
     }
@@ -212,7 +216,7 @@ test('host tag identifies native object types but similarly named composites are
   const root = buildFiber({ name: 'RCTText', props: { role: 'heading', testID: 'title' } });
   Object.assign(root, { tag: 5 });
   assert.deepEqual(readDigest(createSandbox({ fiberRoot: root })).hostEvidence, {
-    hosts: [{ testID: 'title', role: 'heading', roleSource: 'role', capabilities: {} }],
+    hosts: [{ testID: 'title', role: 'heading', roleSource: 'role', capabilities: {}, order: 0 }],
     complete: true,
   });
   Object.assign(root, { tag: 0 });
@@ -307,7 +311,7 @@ test('renderer enumeration failures retain observed hosts but withhold completen
     assert.deepEqual(
       result.hostEvidence,
       {
-        hosts: [{ testID: 'observed', role: null, roleSource: 'none', capabilities: {} }],
+        hosts: [{ testID: 'observed', role: null, roleSource: 'none', capabilities: {}, order: 0 }],
         complete: false,
       },
       mode,
@@ -360,9 +364,10 @@ test('hosts across renderer roots are included once per actual fiber, not dedupl
     },
   });
   assert.deepEqual(readDigest(sandbox).hostEvidence, {
+    // Separate roots rank by root; the core leaves a hit across several roots unresolved.
     hosts: [
-      { testID: 'shared', role: 'heading', roleSource: 'role', capabilities: {} },
-      { testID: 'shared', role: 'heading', roleSource: 'role', capabilities: {} },
+      { testID: 'shared', role: 'heading', roleSource: 'role', capabilities: {}, order: 0 },
+      { testID: 'shared', role: 'heading', roleSource: 'role', capabilities: {}, order: 1 },
     ],
     complete: true,
   });
@@ -455,4 +460,119 @@ test('observations under an accessibility-hidden host view are marked hidden', (
     assert.equal(host('home-btn').hidden, true);
     assert.equal(host('tasks-btn').hidden, undefined);
   }
+});
+
+test('hosts carry their pointerEvents and zIndex, prop before style and the last style entry first', () => {
+  const result = digest([
+    { hostType: 'RCTView', props: { pointerEvents: 'none', style: { pointerEvents: 'auto' } } },
+    {
+      hostType: 'RCTView',
+      props: { style: [{ pointerEvents: 'box-only', zIndex: 1 }, { zIndex: 100 }] },
+    },
+    { hostType: 'RCTView', props: { style: [null, false, [{ pointerEvents: 'box-none' }]] } },
+    { hostType: 'RCTView', props: { pointerEvents: 'auto', style: { zIndex: -1 } } },
+    { hostType: 'RCTView' },
+  ]);
+  assert.equal(result.hostEvidence.complete, true);
+  assert.deepEqual(
+    result.hostEvidence.hosts.map(({ pointerEvents, zIndex, order }) => ({
+      pointerEvents,
+      zIndex,
+      order,
+    })),
+    [
+      { pointerEvents: 'none', zIndex: undefined, order: 0 },
+      { pointerEvents: 'box-only', zIndex: 100, order: 1 },
+      { pointerEvents: 'box-none', zIndex: undefined, order: 2 },
+      { pointerEvents: 'auto', zIndex: -1, order: 3 },
+      { pointerEvents: undefined, zIndex: undefined, order: 4 },
+    ],
+  );
+});
+
+test('a host drawn before a shallower sibling ranks first, whatever its breadth-first index', () => {
+  const result = digest([
+    {
+      name: 'Card',
+      children: [{ name: 'Inner', children: [{ hostType: 'RCTView', props: { testID: 'deep' } }] }],
+    },
+    { hostType: 'RCTView', props: { testID: 'overlay' } },
+  ]);
+  assert.deepEqual(
+    result.hostEvidence.hosts.map(({ testID, order }) => ({ testID, order })),
+    [
+      { testID: 'overlay', order: 1 },
+      { testID: 'deep', order: 0 },
+    ],
+  );
+});
+
+test('an unknown pointerEvents reads as auto; an unreadable zIndex leaves only that host unordered', () => {
+  const sometimes = digest([
+    { hostType: 'RCTView', props: { testID: 'odd', pointerEvents: 'sometimes' } },
+    { hostType: 'RCTView', props: { testID: 'plain' } },
+  ]);
+  assert.deepEqual(
+    sometimes.hostEvidence.hosts.map(({ pointerEvents, order }) => ({ pointerEvents, order })),
+    [
+      { pointerEvents: undefined, order: 0 },
+      { pointerEvents: undefined, order: 1 },
+    ],
+  );
+  for (const props of [
+    { style: 7 },
+    { style: { zIndex: '2' } },
+    { style: { zIndex: Number.NaN } },
+  ]) {
+    const result = digest([
+      { hostType: 'RCTView', props: { testID: 'opaque', ...props } },
+      { hostType: 'RCTView', props: { testID: 'plain' } },
+    ]);
+    assert.equal(result.hostEvidence.complete, true, JSON.stringify(props));
+    assert.deepEqual(
+      result.hostEvidence.hosts.map(({ testID, pointerEvents, zIndex, order }) => ({
+        testID,
+        pointerEvents,
+        zIndex,
+        order,
+      })),
+      [
+        { testID: 'opaque', pointerEvents: undefined, zIndex: undefined, order: undefined },
+        { testID: 'plain', pointerEvents: undefined, zIndex: undefined, order: 1 },
+      ],
+      JSON.stringify(props),
+    );
+  }
+});
+
+test("a dev renderer's frozen props still yield touch facts and an order for every host", () => {
+  // RN dev renderers deep-freeze host prop values into bound identity accessors; a strict read refuses them.
+  const result = digest([
+    {
+      hostType: 'RCTView',
+      props: devFreeze({
+        testID: 'counters',
+        style: devFreeze([devFreeze({ position: 'absolute' }), devFreeze({ zIndex: 100 })]),
+        pointerEvents: 'none',
+      }),
+    },
+    {
+      hostType: 'RCTView',
+      props: devFreeze({ style: devFreeze({ pointerEvents: 'box-none', zIndex: 2 }) }),
+    },
+    { hostType: 'RCTView', props: devFreeze({ testID: 'plain', style: devFreeze({ flex: 1 }) }) },
+  ]);
+  assert.equal(result.hostEvidence.complete, true);
+  assert.deepEqual(
+    result.hostEvidence.hosts.map(({ pointerEvents, zIndex, order }) => ({
+      pointerEvents,
+      zIndex,
+      order,
+    })),
+    [
+      { pointerEvents: 'none', zIndex: 100, order: 0 },
+      { pointerEvents: 'box-none', zIndex: 2, order: 1 },
+      { pointerEvents: undefined, zIndex: undefined, order: 2 },
+    ],
+  );
 });

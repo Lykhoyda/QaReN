@@ -66,6 +66,8 @@ object QaHierarchy {
         val editable: Boolean = false,
         // AccessibilityNodeInfo.drawingOrder among its siblings, read on API 24 and later.
         val drawingOrder: Int? = null,
+        // AccessibilityNodeInfo.isClickable: only an enabled, visible, clickable view takes a touch.
+        val clickable: Boolean = false,
         // The live node the presence pass refreshes and re-reads; opaque to the pure rules.
         val handle: Any? = null,
     )
@@ -99,6 +101,7 @@ object QaHierarchy {
         val editable: Boolean = false,
         val hasText: Boolean = false,
         val drawingOrder: Int? = null,
+        val clickable: Boolean = false,
         val windowId: Int? = null,
         val source: RawNode? = null,
     )
@@ -302,6 +305,7 @@ object QaHierarchy {
             editable = raw.editable,
             hasText = !raw.text.isNullOrBlank(),
             drawingOrder = raw.drawingOrder,
+            clickable = raw.clickable,
             source = raw,
         )
     }

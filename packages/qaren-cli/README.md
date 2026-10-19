@@ -563,12 +563,19 @@ It then requires a unique rebind to the refused target's testID and kind before
 retrying, including keyboard-fallback wrapper
 taps. A label-only target cannot rebind after scrolling; a missing or nonunique
 identity refuses `TARGET_NOT_FOUND` with “stayed off screen after one scroll”.
+Phrase press/fill steps may scroll toward a uniquely name-matched off-screen target
+up to six times, with a settled re-read and fresh resolution after each scroll;
+an unchanged screen stops the search with “stayed off screen after N scrolls”.
 After scrolling to resolve or uncover a press or fill target, or after a scroll
 step whose momentum may still move it (across blocks too), capture requires
 agreeing consecutive frame readbacks within the existing bounded readback
 budget; otherwise `SCROLL_UNSETTLED`
 refuses without another dispatch or recovery. Keyboard-fallback focus readbacks
-use the same settlement check.
+use the same settlement check. When the settled capture after a resolution scroll
+leaves the target's visibility unknown, has more unresolved React identities, or
+has more unassociated press-capable (or fill-capable) hosts for the step's kind
+than the capture that decided the scroll, the action spends its one existing
+expiry refresh on a fresh capture; no new budget or refusal code applies.
 When timing observation is enabled, `settle-readback` metrics report `moved` as
 the symmetric difference between frame sets and `maxDelta` as the largest
 vertical change among identities unique in both captures. The
@@ -708,6 +715,7 @@ covered by the [fallback tests](../qaren-core/test/unit/qa/keyboard-fallback.tes
 ### Plan checks and screen evidence
 
 For phrase actions, the selected control's observed name must contain the words of the phrase that name it; otherwise the step refuses `TARGET_NOT_FOUND`.
+The 30-candidate bound counts the controls on screen; scrolled-out controls are reached by scrolling toward the one the phrase names, and two or more scrolled-out name matches refuse `TARGET_AMBIGUOUS`.
 
 A check is literal only when its entire payload is one quoted string:
 `✓ "Welcome"`. Text outside the quotes, as in
@@ -777,23 +785,50 @@ incomplete. Literal steps can read an RN `Modal`'s content; its effect on React
 host association is described below.
 
 Android QA snapshots can also request native presence through the runner's
-`A11Y_PRESENCE_V1` capability. After enumeration, the runner checks eligibility,
-observes nodes, checks final eligibility and revalidates the enumeration within
+`A11Y_PRESENCE_V2` capability; the core treats a runner without it, including
+one that advertises only the earlier `A11Y_PRESENCE_V1` rule, as stale. The runner
+no longer advertises V1, so an earlier core requiring V1 also refuses it. After
+enumeration, the runner checks eligibility, observes nodes, checks final
+eligibility and revalidates the enumeration within
 the requested capture budget. The version-2 capture uses `android-a11y-live`,
 `app-windows` and the display density as `pointScale`. The
 [presence validator](../qaren-core/src/qa/native-presence.ts) requires matching
 app, capture and generation identities, the requested budget and complete,
 in-budget evidence. An incomplete capture resets every node to `unknown`.
 The [Android cover rule](../rn-android-runner/app/src/main/java/dev/lykhoyda/rndevagent/androidrunner/PresenceRules.kt)
-requires the node's visible centre to be clear of higher windows and unrelated
-visible nodes drawn above it; uncertain evidence stays unknown.
+requires the node's visible centre to be clear of higher windows and of unrelated
+enabled, visible, clickable nodes of its window drawn above it; its own ancestors
+and descendants do not count as native covers. Transparent chrome that
+takes no touch, such as the dev client's overlay, React Native's debugging overlay
+or a parked bottom-sheet container, is not a cover. Uncertain evidence, such as a
+clickable node without a draw order, stays unknown.
 
-Android phrase steps still refuse in this release: transparent chrome above
-React content can leave targets unproven until the cover check incorporates
-React touchability. Valid captures with unproven targets retain the
-`SCREEN_EVIDENCE_INCOMPLETE` presence gap; stale or incomplete captures refuse
-with `NATIVE_PRESENCE_UNUSABLE`. Quoted targets and literal checks remain usable
-without requesting presence.
+On Android, `observed` proves that the native rule above passes at the node's
+centre and that the core's React Native
+[hit test](../qaren-core/src/qa/react-hit-test.ts) reaches the node's associated
+React host, one of its descendants or an ancestor. The hit test orders siblings
+by `zIndex`, then fiber order. It skips accessibility-hidden and
+`pointerEvents="none"` subtrees, passes touches through `box-none` views to
+their children, and keeps a `box-only` view's children out. The React capture
+supplies each host's `pointerEvents`, `zIndex` and fiber-order rank, reading a
+development build's frozen props as it reads other display facts. An unreadable
+`pointerEvents` counts as `auto`, a cover; an unreadable `zIndex` leaves that
+host without a rank. A sibling without a unique rank leaves the hit unresolved
+only when its subtree holds a frame over the point, and more than one React root
+always does. A node
+whose React hit test reaches an unrelated host or no host, or stays unresolved,
+reads `unknown` with reason `react-covered`. It keeps its association, so it is
+not a screen-wide gap, but it offers no press or
+fill in that capture. A phrase step naming it refuses, and other targets stay
+usable. Native nodes without a React host rely on the native rule alone. Neither
+rule sees a native touch listener on a non-clickable view or a cover hidden from
+accessibility; assert a tap's expected result with the plan's next step.
+
+Android phrase steps resolve against these observations. A valid capture whose
+interactive React hosts cannot all be associated (a mounted `Modal`, or inputs
+the keyboard covers) keeps the `SCREEN_EVIDENCE_INCOMPLETE` presence gap, as on
+iOS; stale or incomplete captures refuse with `NATIVE_PRESENCE_UNUSABLE`. Quoted
+targets and literal checks remain usable without requesting presence.
 
 Context-bound iOS QA reads require the unchanged target app already in the
 foreground. They never activate or relaunch it, or retry a failed read through
@@ -945,9 +980,10 @@ scroll-until drag starts inside the list it is meant to move (the target's own
 scroll container, or the frontmost one above the keyboard), not at the screen
 centre. A row scrolled out of its list drags inside that list; a row covered
 inside it drags inside its clearance band. One clearance swipe lifts a covered
-row by at most the height of its list's visible band above the keyboard, so
-scroll until a row within one band of the row you then press; a row further
-away refuses after that one swipe instead of scrolling twice. See the
+row by at most the height of its list's visible band above the keyboard.
+A uniquely name-matched off-screen row further away is scrolled toward again,
+at most six times, stopping on an unchanged screen or the existing deadline;
+covered rows and other scroll origins still get one clearance swipe. See the
 [scroll-until direction regressions](../qaren-core/test/unit/qa/scroll-until-direction.test.ts).
 
 Waits poll unresolved text as not yet present and end with `VISIBILITY_UNSURE`
@@ -1047,6 +1083,13 @@ The native snapshot is the privacy boundary before walking a screen. Capture
 refuses with `PRIVATE_INPUT_CAPTURE_UNKNOWN` unless native completeness is attested;
 the refusal reports only a value-free node count and fixed cause codes. Native
 acquisition failures also refuse without reinjection or a public-tree fallback.
+A required private capture re-reads a canonical empty snapshot (`nodes=[]`,
+verdict `degraded`, `nodeCount=0`, reasons exactly `empty-capture`, no truncation
+or dropped nodes) at 500 ms intervals within the existing 6-second settle budget
+and remaining total capture budget. Its unchanged ref map and zero-node count
+diagnostics do not prevent this read-only retry; persistent emptiness still
+refuses with the same code and message, and other incomplete captures refuse
+immediately.
 Native input classification follows the [screen projection](../qaren-core/src/qa/screen.ts),
 including Other or unknown nodes carrying nonempty values regardless of React evidence,
 with one exception: native `Other` elements matching the iOS system vertical or
@@ -1403,6 +1446,15 @@ file, reference or secret store.
 - With any input namespace present, subprocess logs hold one withheld marker, preflight and
   core output excerpts are withheld, and native runner output tails are not retained. A run
   that requires inputs skips recording and screenshots.
+- Slot runs retain value-free structured events in `core-diagnostics.jsonl` beside `core.log`:
+  `metric` has measured stage timings, and `timing` has decision/dispatch timing, finite outcome
+  codes and allowlisted native refusal codes. Each attempted block containing a slot fill emits
+  `block-outcome` with its first plan line and existing `pass`/`fail`/`refused` result; only saved-login
+  recovery emits `login-outcome`. A block passing is its existing block result, not a new assertion
+  of authentication. These events contain no block names, slot names, input-derived tokens, screen
+  text, selectors, hashes or error messages. Raw log withholding and masking stay unchanged.
+  Timing events are capped at 20,000 independently of the 10,000 outcome-marker cap; malformed
+  diagnostics and sink failures are ignored without changing the run verdict or step deadline.
 - Before a fill dispatch, the walker registers the target's identifier when available.
   Snapshot hashing replaces a registered target's label with a constant marker when it
   contains a whole runtime input value. The value never enters the hash; different values
@@ -1518,7 +1570,9 @@ is replayed by those stored identities through the same walk, without Jev for qu
 targets or literal checks; phrase checks still ask Jev. An ambiguous stored
 identity refuses `TARGET_AMBIGUOUS` without re-walking. A stored identity that no
 longer resolves before that step authorizes any mutation re-walks
-the block from that line; earlier completed steps are kept. Once that step authorizes
+the block from that line; earlier completed steps are kept. A stored wait or
+scroll-until first polls its full budget; the re-walk follows only if the identity
+never appears and the step has not authorized a mutation. Once that step authorizes
 a mutation, its selector failure is terminal; recovered selector misses follow
 [Step recovery](#step-recovery). On PASS only the commands under that
 line and later ones are rewritten, and every `✓` comment stays byte-identical. A failing check is a FAIL and
@@ -1706,10 +1760,10 @@ privacy-eligible screenshot; this support action is not added to the saved block
 Recovery requires admitted screen evidence. iOS phrase steps behind a recognized
 system or permission alert reach dialog recovery when the raw native capture is
 complete, even though platform presence excludes the system surface. Incomplete
-raw captures still refuse. On Android, recovery answers a system prompt; app-screen
-interruptions are recovered once Android presence capture lands. Until then, a step whose
-recovery cannot read the screen there keeps its own failure reason and logs
-`recovery-skipped=presence-unavailable`. For Android dialog limits, see [Check a plan](#check-a-plan).
+raw captures still refuse. On Android, system prompts and app-screen interruptions
+use the [Android presence and dialog rules](#check-a-plan). When recovery's fresh
+capture refuses with `SCREEN_EVIDENCE_INCOMPLETE`, the step keeps its own failure
+reason and logs `recovery-skipped=presence-unavailable`.
 An action reporting `tapped: false` or `executed: false` establishes no action proof
 and cannot authorize a retry; an attempted decline still counts in `recoveries`,
 including when its read-back refuses incomplete capture.
@@ -1731,6 +1785,10 @@ Dev-overlay recovery must re-prove clearance before retrying the step. A failed
 clearance or a non-executing hide with no overlay to clear fails the step.
 
 ### Walk timing
+
+For runs using runtime inputs, see the [runtime-input diagnostics](#runtime-inputs)
+for the retained event file and field limits. The `core.log` details below apply
+to runs without runtime inputs.
 
 Private `timing` events in `logs/core.log` may include `refusalDiagnostic` when
 an instrumented iOS dispatch boundary records the context's first refusal. This
