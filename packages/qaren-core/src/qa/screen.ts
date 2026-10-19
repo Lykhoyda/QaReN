@@ -168,6 +168,7 @@ const joinedDiagnosticFacts = new WeakMap<
     nativeUnknownReason?: NativePresenceNode['unknownReason'];
     pressGapCount: number;
     fillGapCount: number;
+    reactCoveredCount?: number;
     gapHosts?: GapHostDiagnostics;
   }
 >();
@@ -228,7 +229,14 @@ export interface ReactHostObservation {
   disabled?: true;
   readOnly?: true;
   hidden?: true;
+  // Touch facts for the React hit test: absent pointerEvents is auto and absent zIndex is 0.
+  pointerEvents?: (typeof POINTER_EVENTS)[number];
+  zIndex?: number;
+  // Rank among the parent host's host children in fiber (paint) order; host indices are breadth-first.
+  order?: number;
 }
+
+const POINTER_EVENTS = ['auto', 'none', 'box-none', 'box-only'] as const;
 
 export interface ReactHostEvidence {
   hosts: ReactHostObservation[];
@@ -265,7 +273,13 @@ export function validateReactHostEvidence(value: unknown): ReactHostEvidence | u
       ) ||
       ['disabled', 'readOnly', 'hidden'].some(
         (key) => host[key] !== undefined && host[key] !== true,
-      )
+      ) ||
+      (host.pointerEvents !== undefined &&
+        !POINTER_EVENTS.includes(host.pointerEvents as (typeof POINTER_EVENTS)[number])) ||
+      (host.zIndex !== undefined &&
+        (typeof host.zIndex !== 'number' || !Number.isFinite(host.zIndex))) ||
+      (host.order !== undefined &&
+        (!Number.isSafeInteger(host.order) || (host.order as number) < 0))
     )
       return undefined;
     hosts.push({
@@ -277,6 +291,11 @@ export function validateReactHostEvidence(value: unknown): ReactHostEvidence | u
       ...(host.disabled === true ? { disabled: true } : {}),
       ...(host.readOnly === true ? { readOnly: true } : {}),
       ...(host.hidden === true ? { hidden: true as const } : {}),
+      ...(host.pointerEvents !== undefined
+        ? { pointerEvents: host.pointerEvents as (typeof POINTER_EVENTS)[number] }
+        : {}),
+      ...(host.zIndex !== undefined ? { zIndex: host.zIndex as number } : {}),
+      ...(host.order !== undefined ? { order: host.order as number } : {}),
     });
   }
   const typography =
@@ -579,7 +598,14 @@ export function join(
   const contradicted = frameContradictions(nodes);
   const chrome = scrollChromeNodes(nodes, presence);
   const associationDiagnostics = new Map<number, HostAssociationDiagnostic>();
-  const associations = associateHosts(nodes, reactHostEvidence, presence, associationDiagnostics);
+  const reactCovered = new Set<number>();
+  const associations = associateHosts(
+    nodes,
+    reactHostEvidence,
+    presence,
+    associationDiagnostics,
+    reactCovered,
+  );
   const associatedHosts = new Map(
     [...associations].map(([hostIndex, { nativeIndex }]) => [
       nativeIndex,
@@ -676,7 +702,11 @@ export function join(
   } catch {
     // Diagnostic dependencies cannot change host accounting.
   }
-  const diagnosticFacts = { ...gapCounts, ...(gapHosts ? { gapHosts } : {}) };
+  const diagnosticFacts = {
+    ...gapCounts,
+    ...(reactCovered.size ? { reactCoveredCount: reactCovered.size } : {}),
+    ...(gapHosts ? { gapHosts } : {}),
+  };
   let width = 0;
   let height = 0;
   for (const n of nodes) {
@@ -690,7 +720,12 @@ export function join(
     (d) => !d.hidden && !((d.handlerless || d.compositeWrapper) && !d.testID),
   ).length;
   const elements: Element[] = nodes.map((n, nodeIndex) => {
-    const observed = nativePresence === 'unknown' ? undefined : nativePresence?.nodes[nodeIndex];
+    const native = presence?.nodes[nodeIndex];
+    // A React view takes this node's touch at this capture: identified, but neither seen nor operable.
+    const observed: NativePresenceNode | undefined =
+      native && reactCovered.has(nodeIndex)
+        ? { ...native, status: 'unknown', unknownReason: 'react-covered' }
+        : native;
     const testID = nonEmpty(n.identifier);
     const label = nonEmpty(n.label);
     let match: DigestEntry | undefined;
@@ -745,6 +780,10 @@ export function join(
     const local = nativeCapabilities(kind, n.type, hints);
     if (host?.capabilities.press === true) capabilities.press = 'supported';
     if (host?.capabilities.fill === true) capabilities.fill = 'supported';
+    if (reactCovered.has(nodeIndex)) {
+      capabilities.press = 'unsupported';
+      capabilities.fill = 'unsupported';
+    }
     const uniqueIdentity =
       testID !== undefined &&
       n.identifier === testID &&
@@ -1152,6 +1191,7 @@ export interface VisibilityBlockerDiagnostic {
   semanticUnassociatedReact?: number;
   pressGapCount?: number;
   fillGapCount?: number;
+  reactCoveredCount?: number;
   gapHosts?: GapHostDiagnostics;
 }
 
@@ -1215,6 +1255,7 @@ function visibilityBlocker(
       ? {
           pressGapCount: count(facts.pressGapCount),
           fillGapCount: count(facts.fillGapCount),
+          ...(facts.reactCoveredCount ? { reactCoveredCount: count(facts.reactCoveredCount) } : {}),
           ...(facts.gapHosts ? { gapHosts: facts.gapHosts } : {}),
         }
       : {}),

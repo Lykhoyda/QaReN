@@ -774,23 +774,50 @@ incomplete. Literal steps can read an RN `Modal`'s content; its effect on React
 host association is described below.
 
 Android QA snapshots can also request native presence through the runner's
-`A11Y_PRESENCE_V1` capability. After enumeration, the runner checks eligibility,
-observes nodes, checks final eligibility and revalidates the enumeration within
+`A11Y_PRESENCE_V2` capability; the core treats a runner without it, including
+one that advertises only the earlier `A11Y_PRESENCE_V1` rule, as stale. The runner
+no longer advertises V1, so an earlier core requiring V1 also refuses it. After
+enumeration, the runner checks eligibility, observes nodes, checks final
+eligibility and revalidates the enumeration within
 the requested capture budget. The version-2 capture uses `android-a11y-live`,
 `app-windows` and the display density as `pointScale`. The
 [presence validator](../qaren-core/src/qa/native-presence.ts) requires matching
 app, capture and generation identities, the requested budget and complete,
 in-budget evidence. An incomplete capture resets every node to `unknown`.
 The [Android cover rule](../rn-android-runner/app/src/main/java/dev/lykhoyda/rndevagent/androidrunner/PresenceRules.kt)
-requires the node's visible centre to be clear of higher windows and unrelated
-visible nodes drawn above it; uncertain evidence stays unknown.
+requires the node's visible centre to be clear of higher windows and of unrelated
+enabled, visible, clickable nodes of its window drawn above it; its own ancestors
+and descendants do not count as native covers. Transparent chrome that
+takes no touch, such as the dev client's overlay, React Native's debugging overlay
+or a parked bottom-sheet container, is not a cover. Uncertain evidence, such as a
+clickable node without a draw order, stays unknown.
 
-Android phrase steps still refuse in this release: transparent chrome above
-React content can leave targets unproven until the cover check incorporates
-React touchability. Valid captures with unproven targets retain the
-`SCREEN_EVIDENCE_INCOMPLETE` presence gap; stale or incomplete captures refuse
-with `NATIVE_PRESENCE_UNUSABLE`. Quoted targets and literal checks remain usable
-without requesting presence.
+On Android, `observed` proves that the native rule above passes at the node's
+centre and that the core's React Native
+[hit test](../qaren-core/src/qa/react-hit-test.ts) reaches the node's associated
+React host, one of its descendants or an ancestor. The hit test orders siblings
+by `zIndex`, then fiber order. It skips accessibility-hidden and
+`pointerEvents="none"` subtrees, passes touches through `box-none` views to
+their children, and keeps a `box-only` view's children out. The React capture
+supplies each host's `pointerEvents`, `zIndex` and fiber-order rank, reading a
+development build's frozen props as it reads other display facts. An unreadable
+`pointerEvents` counts as `auto`, a cover; an unreadable `zIndex` leaves that
+host without a rank. A sibling without a unique rank leaves the hit unresolved
+only when its subtree holds a frame over the point, and more than one React root
+always does. A node
+whose React hit test reaches an unrelated host or no host, or stays unresolved,
+reads `unknown` with reason `react-covered`. It keeps its association, so it is
+not a screen-wide gap, but it offers no press or
+fill in that capture. A phrase step naming it refuses, and other targets stay
+usable. Native nodes without a React host rely on the native rule alone. Neither
+rule sees a native touch listener on a non-clickable view or a cover hidden from
+accessibility; assert a tap's expected result with the plan's next step.
+
+Android phrase steps resolve against these observations. A valid capture whose
+interactive React hosts cannot all be associated (a mounted `Modal`, or inputs
+the keyboard covers) keeps the `SCREEN_EVIDENCE_INCOMPLETE` presence gap, as on
+iOS; stale or incomplete captures refuse with `NATIVE_PRESENCE_UNUSABLE`. Quoted
+targets and literal checks remain usable without requesting presence.
 
 Context-bound iOS QA reads require the unchanged target app already in the
 foreground. They never activate or relaunch it, or retry a failed read through
@@ -1703,10 +1730,10 @@ privacy-eligible screenshot; this support action is not added to the saved block
 Recovery requires admitted screen evidence. iOS phrase steps behind a recognized
 system or permission alert reach dialog recovery when the raw native capture is
 complete, even though platform presence excludes the system surface. Incomplete
-raw captures still refuse. On Android, recovery answers a system prompt; app-screen
-interruptions are recovered once Android presence capture lands. Until then, a step whose
-recovery cannot read the screen there keeps its own failure reason and logs
-`recovery-skipped=presence-unavailable`. For Android dialog limits, see [Check a plan](#check-a-plan).
+raw captures still refuse. On Android, system prompts and app-screen interruptions
+use the [Android presence and dialog rules](#check-a-plan). When recovery's fresh
+capture refuses with `SCREEN_EVIDENCE_INCOMPLETE`, the step keeps its own failure
+reason and logs `recovery-skipped=presence-unavailable`.
 An action reporting `tapped: false` or `executed: false` establishes no action proof
 and cannot authorize a retry; an attempted decline still counts in `recoveries`,
 including when its read-back refuses incomplete capture.

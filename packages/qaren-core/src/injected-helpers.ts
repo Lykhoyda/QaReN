@@ -3,7 +3,7 @@ import { TYPOGRAPHY_TEXT_LIMITS } from './qa/host-typography.js';
 import { INPUT_HOST_TYPES } from './qa/input-host-types.js';
 
 // Bump when the injected surface changes so warm runtimes replace stale helpers.
-export const HELPERS_VERSION = 97;
+export const HELPERS_VERSION = 99;
 
 export const INJECTED_HELPERS = `
 (function() {
@@ -547,6 +547,44 @@ export const INJECTED_HELPERS = `
     if (!descriptor && !(key in object)) return undefined;
     if (!descriptor || (devFrozen !== true && !Object.prototype.hasOwnProperty.call(descriptor, 'value'))) throw new Error('Capture refused');
     return descriptorValue(object, descriptor);
+  }
+
+  // A host view's touch facts, public and value-free, read like the display facts: devFrozen accepts the
+  // dev renderer's frozen prop values. pointerEvents falls back to eligibilityPointerEvents and reads an
+  // unknown or invalid value as auto (a cover); zIndexKnown false leaves the host without an order.
+  var QA_POINTER_EVENTS = ['auto', 'none', 'box-none', 'box-only'];
+  function qaStyleFact(style, key, depth) {
+    if (style == null || style === false) return undefined;
+    if (depth > 32) throw new Error('Capture refused');
+    if (Array.isArray(style)) {
+      var length = qaData(style, 'length', true);
+      for (var i = length - 1; i >= 0; i--) {
+        var value = qaStyleFact(qaData(style, String(i), true), key, depth + 1);
+        if (value !== undefined) return value;
+      }
+      return undefined;
+    }
+    if (typeof style !== 'object') throw new Error('Capture refused');
+    return qaData(style, key, true);
+  }
+  function qaTouchFacts(fiber) {
+    var props = qaData(fiber, 'memoizedProps', true);
+    var pointerEvents = null;
+    try {
+      pointerEvents = qaData(props, 'pointerEvents', true);
+      if (pointerEvents == null) pointerEvents = qaStyleFact(qaData(props, 'style', true), 'pointerEvents', 0);
+    } catch (_) {
+      try { pointerEvents = eligibilityPointerEvents(fiber); } catch (_) { pointerEvents = null; }
+    }
+    if (QA_POINTER_EVENTS.indexOf(pointerEvents) === -1) pointerEvents = null;
+    var zIndex = null;
+    var zIndexKnown = true;
+    try {
+      zIndex = qaStyleFact(qaData(props, 'style', true), 'zIndex', 0);
+      if (zIndex == null) zIndex = null;
+      else if (typeof zIndex !== 'number' || !isFinite(zIndex)) zIndexKnown = false;
+    } catch (_) { zIndexKnown = false; }
+    return { pointerEvents: pointerEvents, zIndex: zIndexKnown ? zIndex : null, zIndexKnown: zIndexKnown };
   }
 
   function qaHostType(fiber) {
@@ -1503,14 +1541,29 @@ export const INJECTED_HELPERS = `
           && (props.editable == null || props.editable === true)
           && (props.readOnly == null || props.readOnly === false)
           && (props['aria-readonly'] == null || props['aria-readonly'] === false)) host.capabilities.fill = true;
+        // An unreadable zIndex (a registered style id, say) leaves this host without an order: the core
+        // cannot rank it among its siblings, so a hit its subtree could take stays unresolved.
+        var touchKnown = false;
+        try {
+          var touch = qaTouchFacts(fiber);
+          if (touch.pointerEvents !== null) host.pointerEvents = touch.pointerEvents;
+          if (touch.zIndex !== null) host.zIndex = touch.zIndex;
+          touchKnown = touch.zIndexKnown;
+        } catch (_) {}
         hostEvidence.hosts.push(host);
+        hostTouchKnown[hostEvidence.hosts.length - 1] = touchKnown;
         if (hostEvidence.hosts.length === ${PRIVATE_INPUT_LIMITS.maxHosts}) hostEvidence.complete = false;
         return hostEvidence.hosts.length - 1;
       }
       var iRoots = findAllRootFibers(typography);
       var iBudget = privateCapture ? 5000 : Math.min(5000, 2000 * Math.max(1, iRoots.length));
       var iQueue = [];
-      for (var iri = 0; iri < iRoots.length; iri++) iQueue.push({ fiber: iRoots[iri].fiber, forwarded: null, parentFiber: null, parentHostIndex: null, textOwnerHostIndex: null, rootIndex: iri });
+      // Each host's sibling-index path from its parent host (or its root) orders host siblings in fiber
+      // order, which the breadth-first host indices do not; ranked into host.order after the scan.
+      var hostOrderPaths = [];
+      var hostOrderParents = [];
+      var hostTouchKnown = [];
+      for (var iri = 0; iri < iRoots.length; iri++) iQueue.push({ fiber: iRoots[iri].fiber, forwarded: null, parentFiber: null, parentHostIndex: null, textOwnerHostIndex: null, rootIndex: iri, orderPath: hostEvidence ? [iri] : null });
       var iSeen = new WeakSet();
       var iScanned = 0;
       var iStart = Date.now();
@@ -1526,6 +1579,10 @@ export const INJECTED_HELPERS = `
         if (inactiveRoute(ifiber)) { iPruned++; continue; }
         if (typography) typography.prepare(ifiber);
         var hostIndex = collectHostEvidence(ifiber);
+        if (hostIndex !== null) {
+          hostOrderPaths[hostIndex] = iframe.orderPath;
+          hostOrderParents[hostIndex] = iframe.parentHostIndex;
+        }
         var typographyRecord = typography ? typography.observe(ifiber, iframe, hostIndex) : null;
         var iprops = digestProps(ifiber) || {};
         // A host view hiding its subtree from accessibility keeps that subtree out of the native tree.
@@ -1600,9 +1657,11 @@ export const INJECTED_HELPERS = `
           if (typographyRecord.hostType === 'RCTText') textOwnerHostIndex = hostIndex;
           else if (typographyRecord.hostType !== 'RCTVirtualText') textOwnerHostIndex = null;
         }
+        var childOrderBase = hostEvidence ? (hostIndex === null ? iframe.orderPath : []) : null;
+        var childOrdinal = 0;
         while (ich) {
           if (typography && (++iEnqueued > iBudget || Date.now() >= typography.deadline)) { iEnqueueTruncated = true; break; }
-          iQueue.push({ fiber: ich, forwarded: nextForwarded, wrapperCandidate: wrapperCandidate, inputAncestors: inputAncestors, parentFiber: ifiber, parentHostIndex: parentHostIndex, textOwnerHostIndex: textOwnerHostIndex, rootIndex: iframe.rootIndex, animatedTypography: typographyRecord && typographyRecord.animated, hidden: hidden });
+          iQueue.push({ fiber: ich, forwarded: nextForwarded, wrapperCandidate: wrapperCandidate, inputAncestors: inputAncestors, parentFiber: ifiber, parentHostIndex: parentHostIndex, textOwnerHostIndex: textOwnerHostIndex, rootIndex: iframe.rootIndex, animatedTypography: typographyRecord && typographyRecord.animated, hidden: hidden, orderPath: childOrderBase ? childOrderBase.concat([childOrdinal++]) : null });
           ich = ich.sibling;
         }
       }
@@ -1621,6 +1680,22 @@ export const INJECTED_HELPERS = `
         scanBudgetExhausted: iQueue.length > 0 || iEnqueueTruncated
       });
       if (hostEvidence) {
+        var orderGroups = new Map();
+        for (var oi = 0; oi < hostEvidence.hosts.length; oi++) {
+          var orderGroup = orderGroups.get(hostOrderParents[oi]);
+          if (!orderGroup) orderGroups.set(hostOrderParents[oi], orderGroup = []);
+          orderGroup.push(oi);
+        }
+        orderGroups.forEach(function(group) {
+          group.sort(function(a, b) {
+            var pa = hostOrderPaths[a], pb = hostOrderPaths[b];
+            for (var k = 0; k < pa.length && k < pb.length; k++) if (pa[k] !== pb[k]) return pa[k] - pb[k];
+            return pa.length - pb.length;
+          });
+          for (var rank = 0; rank < group.length; rank++) {
+            if (hostTouchKnown[group[rank]]) hostEvidence.hosts[group[rank]].order = rank;
+          }
+        });
         hostEvidence.complete = hostEvidence.complete && iRoots.length > 0 && iOut.verdict.complete;
         iOut.hostEvidence = hostEvidence;
       }

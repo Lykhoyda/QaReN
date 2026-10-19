@@ -193,14 +193,15 @@ export function androidPresenceCapture() {
   const hostEvidence = {
     complete: true,
     hosts: [
-      { testID: 'app-root', role: null, roleSource: 'none', capabilities: {} },
+      { testID: 'app-root', role: null, roleSource: 'none', capabilities: {}, order: 0 },
       {
         testID: 'home-pager-qa-btn',
         role: 'button',
         roleSource: 'accessibilityRole',
         capabilities: { press: true },
+        order: 0,
       },
-      { role: null, roleSource: 'none', capabilities: {} },
+      { role: null, roleSource: 'none', capabilities: {}, order: 0 },
     ],
     typography: {
       version: 1,

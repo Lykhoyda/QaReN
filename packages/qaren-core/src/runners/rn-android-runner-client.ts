@@ -2082,7 +2082,7 @@ function mapRunnerNodesToFlat(nodes: RunnerSnapshotNode[], qa = false): FlatNode
   return out;
 }
 
-const ANDROID_PRESENCE_CAPABILITY = 'A11Y_PRESENCE_V1';
+const ANDROID_PRESENCE_CAPABILITY = 'A11Y_PRESENCE_V2';
 
 function presenceCaptureUnavailable(reason: string, code: ToolErrorCode): ToolResult {
   return failResult(

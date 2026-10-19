@@ -58,7 +58,9 @@ export const REQUIRED_ANDROID_FEATURES = [
   // Android's narrower occlusion guard, not the iOS accessibility hit test.
   'DISPATCH_OCCLUSION_GUARD_V1',
   'SYSTEM_ALERT_TAP_V1',
-  'A11Y_PRESENCE_V1',
+  // V2 counts only enabled, visible, clickable views as same-window covers; the core's React hit test
+  // supplies the rest, so a V1 runner (any visible view covers) cannot pair with this core.
+  'A11Y_PRESENCE_V2',
 ] as const;
 
 export const REQUIRED_ANDROID_COMMANDS = [
