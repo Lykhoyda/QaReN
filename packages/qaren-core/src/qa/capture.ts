@@ -1,3 +1,4 @@
+import { HandlerError } from './adapt.js';
 import { systemModalDiagnostic } from '../domain/system-modal-diagnostic.js';
 import { sleep } from '../domain/cancellation.js';
 import { SETTLE_DEFAULT_BUDGET_MS } from '../lifecycle/settle.js';
@@ -500,26 +501,39 @@ async function capture(deps: CaptureDeps): Promise<Screen> {
   const now = deps.now ?? (() => performance.now());
   const started = now();
   let presenceBudgetMs = NATIVE_PRESENCE_BUDGET_MS;
-  let native: NativeObservation;
-  let emptyDeadline: number | undefined;
+  let native: NativeObservation = {};
+  let retryDeadline: number | undefined;
   for (;;) {
+    let runnerDown = false;
     try {
       native = await measureTiming(deps.timing, now, 'native-total', () =>
         deps.native(presenceBudgetMs),
       );
     } catch (error) {
       if (error instanceof AppProcessGoneError) throw error;
-      if (deps.requirePrivateInputs) throw new NativeCaptureError();
-      throw error;
+      if (!deps.requirePrivateInputs) throw error;
+      if (
+        !(error instanceof HandlerError) ||
+        error.code !== 'RN_FAST_RUNNER_DOWN' ||
+        error.meta?.runnerRelaunch !== true
+      )
+        throw new NativeCaptureError();
+      runnerDown = true;
     }
-    if (!deps.requirePrivateInputs || !retryableEmptyCapture(native)) break;
+    if (!runnerDown && (!deps.requirePrivateInputs || !retryableEmptyCapture(native))) break;
     const at = now();
-    emptyDeadline ??= Math.min(at + SETTLE_DEFAULT_BUDGET_MS, started + CAPTURE_BUDGET_MS);
-    const remaining = emptyDeadline - at;
-    if (!(remaining > 0)) break;
+    retryDeadline ??= Math.min(at + SETTLE_DEFAULT_BUDGET_MS, started + CAPTURE_BUDGET_MS);
+    const remaining = retryDeadline - at;
+    if (!(remaining > 0)) {
+      if (runnerDown) throw new NativeCaptureError();
+      break;
+    }
     await sleep(Math.min(WAIT_POLL_MS, remaining));
-    const readBudget = emptyDeadline - now();
-    if (!(readBudget > 0)) break;
+    const readBudget = retryDeadline - now();
+    if (!(readBudget > 0)) {
+      if (runnerDown) throw new NativeCaptureError();
+      break;
+    }
     presenceBudgetMs = Math.min(NATIVE_PRESENCE_BUDGET_MS, readBudget);
   }
   if (deps.timing) observeNativeTiming(native.presenceCapture, deps.timing, now());

@@ -4,13 +4,18 @@ import { EventEmitter } from 'node:events';
 import fs from 'node:fs';
 import { syncBuiltinESMExports } from 'node:module';
 import { PassThrough } from 'node:stream';
-import { afterEach, beforeEach, test } from 'node:test';
+import { afterEach, beforeEach, test, type TestContext } from 'node:test';
+import { setImmediate as nextTurn } from 'node:timers/promises';
+import { captureScreen, NativeCaptureError } from '../../../dist/qa/capture.js';
+import { unwrap } from '../../../dist/qa/adapt.js';
+import { nativeCapture } from '../qa/platform-presence-fixtures.ts';
 import {
   _setFastRunnerStateForTest,
   _setFetchForTest,
   ensureFastRunner,
   getFastRunnerState,
   runIOS,
+  resolveReadyTimeoutMs,
 } from '../../../dist/runners/rn-fast-runner-client.js';
 import {
   getPluginVersion,
@@ -19,13 +24,19 @@ import {
 } from '../../../dist/runners/protocol.js';
 import { parseEnvelope } from '../../helpers/result-helpers.js';
 
+let healthReplies: ('down' | 'missing-presence' | 'alive')[] = [];
+let emptySnapshots = 0;
 let launches = 0;
 let failLaunch = false;
+let launchDelayMs = 0;
 let launchEnv: NodeJS.ProcessEnv;
 
 beforeEach((t) => {
+  healthReplies = [];
+  emptySnapshots = 0;
   launches = 0;
   failLaunch = false;
+  launchDelayMs = 0;
   launchEnv = {};
   for (const [key, value] of Object.entries({
     QAREN_DEVICE_LEASE: 'fixture:abcdefghijklmnop',
@@ -74,10 +85,12 @@ beforeEach((t) => {
       stderr: new PassThrough(),
       kill: () => assert.fail('fixture runner must never be signalled'),
     });
-    queueMicrotask(() => {
+    const ready = () => {
       if (failLaunch) child.emit('error', new Error('fixture launch failed'));
       else child.stdout.write('RN_FAST_RUNNER_LISTENER_READY\nRN_FAST_RUNNER_PORT=22089\n');
-    });
+    };
+    if (launchDelayMs > 0) setTimeout(ready, launchDelayMs);
+    else queueMicrotask(ready);
     return child;
   });
   syncBuiltinESMExports();
@@ -91,12 +104,18 @@ beforeEach((t) => {
   });
   _setFetchForTest(async (url, init) => {
     if (String(url).endsWith('/health')) {
+      const health = healthReplies.shift() ?? 'alive';
+      if (health === 'down') return Response.json({ ok: false });
       return Response.json({
         ok: true,
         protocolVersion: 2,
         runnerVersion: getPluginVersion(),
         commands: REQUIRED_IOS_COMMANDS,
-        capabilities: [...REQUIRED_IOS_FEATURES, 'PLATFORM_PRESENCE_V2'],
+        capabilities: [
+          ...REQUIRED_IOS_FEATURES,
+          'QA_READ_ONLY_V1',
+          ...(health === 'alive' ? ['PLATFORM_PRESENCE_V2'] : []),
+        ],
         instanceId: launchEnv.RN_RUNNER_INSTANCE_ID,
         sessionId: launchEnv.RN_RUNNER_SESSION_ID,
         claimEpoch: Number(launchEnv.RN_RUNNER_CLAIM_EPOCH),
@@ -107,7 +126,12 @@ beforeEach((t) => {
     const request = JSON.parse(String(init?.body));
     if (request.command === 'snapshot' && request.platformPresence) {
       assert.equal(new URL(String(url)).port, '22089');
-      return Response.json({ ok: true, data: { nodes: [], snapshotGeneration: 1 } });
+      const data = nativeCapture();
+      if (emptySnapshots > 0) {
+        emptySnapshots--;
+        data.nodes = [];
+      }
+      return Response.json({ ok: true, data });
     }
     return Response.json({
       ok: false,
@@ -259,3 +283,173 @@ test('ensureFastRunner replaces a wedged reader whose process exits before reapi
   assert.equal(launches, 1);
   assert.equal(getFastRunnerState()?.port, 22089);
 });
+
+function clock(t: TestContext) {
+  let now = 0;
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  t.mock.method(performance, 'now', () => now);
+  t.after(() => {
+    t.mock.timers.reset();
+    syncBuiltinESMExports();
+  });
+  syncBuiltinESMExports();
+  return {
+    now: () => now,
+    async advance(ms: number) {
+      now += ms;
+      t.mock.timers.tick(ms);
+      await nextTurn();
+    },
+  };
+}
+
+function privateCapture(now: () => number, onRead: () => void) {
+  return captureScreen({
+    requirePrivateInputs: true,
+    appId: 'com.test',
+    now,
+    native: async (presenceBudgetMs) => {
+      onRead();
+      const { data, meta } = unwrap<Record<string, unknown>>(
+        await runIOS({
+          command: 'snapshot',
+          qaReadOnly: true,
+          platformPresence: true,
+          presenceBudgetMs,
+        }),
+      );
+      return { ...data, snapshotVerdict: meta?.snapshotVerdict };
+    },
+    react: async () => ({}),
+  });
+}
+
+test('relaunch waits for alive readiness with platform presence after the listener marker', async (t) => {
+  const time = clock(t);
+  healthReplies = ['down', 'missing-presence', 'alive'];
+  let finished = false;
+  const type = runIOS({ command: 'type', text: 'exact' }).then((result) => {
+    finished = true;
+    return parseEnvelope(result);
+  });
+  await nextTurn();
+  assert.equal(launches, 1);
+  assert.equal(finished, false);
+  await time.advance(500);
+  assert.equal(finished, false, 'alive without PLATFORM_PRESENCE_V2 is insufficient');
+  await time.advance(500);
+  assert.equal((await type).code, 'RUNNER_TIMEOUT');
+  assert.equal(finished, true);
+});
+
+test(
+  'private capture during reap and relaunch succeeds on its second read',
+  { timeout: 5_000 },
+  async (t) => {
+    const time = clock(t);
+    healthReplies = ['down', 'alive'];
+    const type = runIOS({ command: 'type', text: 'exact' });
+    await nextTurn();
+    assert.equal(launches, 1);
+    let reads = 0;
+    const capture = privateCapture(time.now, () => reads++).catch((error: Error) => error);
+    await nextTurn();
+    assert.equal(reads, 1);
+    await time.advance(500);
+    assert.equal(parseEnvelope(await type).code, 'RUNNER_TIMEOUT');
+    const screen = await capture;
+    assert.ok(!(screen instanceof Error), String(screen));
+    assert.equal(screen.captureCoverage?.native, 'complete');
+    assert.equal(reads, 2);
+    assert.equal(launches, 1);
+  },
+);
+
+test('failed relaunch private capture keeps its refusal after the existing settle budget', async (t) => {
+  const time = clock(t);
+  failLaunch = true;
+  await runIOS({ command: 'type', text: 'exact' });
+  let reads = 0;
+  let finished = false;
+  const capture = privateCapture(time.now, () => reads++).catch((error: Error) => {
+    finished = true;
+    return error;
+  });
+  await nextTurn();
+  for (let poll = 0; poll < 11; poll++) await time.advance(500);
+  assert.equal(finished, false);
+  await time.advance(499);
+  assert.equal(finished, false);
+  await time.advance(1);
+  const error = await capture;
+  assert.ok(error instanceof NativeCaptureError);
+  assert.equal(error.code, 'NATIVE_CAPTURE_UNAVAILABLE');
+  assert.equal(reads, 12);
+  assert.equal(launches, 1);
+});
+
+test('post-relaunch readiness uses only the remaining READY timeout', async (t) => {
+  const time = clock(t);
+  const readyTimeout = resolveReadyTimeoutMs();
+  launchDelayMs = readyTimeout - 1_000;
+  healthReplies = ['down', 'down', 'alive'];
+  let finished = false;
+  const type = runIOS({ command: 'type', text: 'exact' }).then((result) => {
+    finished = true;
+    return parseEnvelope(result);
+  });
+  await nextTurn();
+  await time.advance(launchDelayMs);
+  assert.equal(finished, false);
+  await time.advance(500);
+  assert.equal(finished, false);
+  await time.advance(499);
+  assert.equal(finished, false);
+  await time.advance(1);
+  assert.equal((await type).code, 'RUNNER_TIMEOUT');
+  assert.equal(time.now(), readyTimeout);
+  assert.deepEqual(healthReplies, ['alive'], 'no probe starts after the existing deadline');
+});
+
+test(
+  'private capture also retries a runner down immediately after relaunch completes',
+  { timeout: 5_000 },
+  async (t) => {
+    const time = clock(t);
+    await runIOS({ command: 'type', text: 'exact' });
+    healthReplies = ['down', 'alive'];
+    let reads = 0;
+    const capture = privateCapture(time.now, () => reads++);
+    await nextTurn();
+    assert.equal(reads, 1);
+    await time.advance(500);
+    assert.equal((await capture).captureCoverage?.native, 'complete');
+    assert.equal(reads, 2);
+    healthReplies = ['down'];
+    await assert.rejects(
+      privateCapture(time.now, () => reads++),
+      NativeCaptureError,
+    );
+    assert.equal(reads, 3);
+  },
+);
+
+test(
+  'an empty read retains relaunch retry eligibility through the private capture',
+  { timeout: 5_000 },
+  async (t) => {
+    const time = clock(t);
+    await runIOS({ command: 'type', text: 'exact' });
+    emptySnapshots = 1;
+    healthReplies = ['alive', 'alive', 'down', 'alive', 'alive'];
+    let reads = 0;
+    const capture = privateCapture(time.now, () => reads++).catch((error: Error) => error);
+    await nextTurn();
+    await time.advance(500);
+    await time.advance(500);
+    const screen = await capture;
+    assert.ok(!(screen instanceof Error), String(screen));
+    assert.equal(screen.captureCoverage?.native, 'complete');
+    assert.equal(reads, 3);
+  },
+);
