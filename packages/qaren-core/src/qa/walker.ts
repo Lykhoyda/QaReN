@@ -1963,6 +1963,9 @@ async function walkBlockScoped(
                   scrollOrigin ??= 'offscreen-resolution';
                   scrollDirection = resolution.scroll;
                   if (before.screen.front === 'dialog') throw dialogInFront(item.target.phrase);
+                  const preScroll = before;
+                  const gaps = (screen: Screen) =>
+                    (item.kind === 'fill' ? screen.fillGapCount : screen.pressGapCount) ?? 0;
                   const result = await mutate(item, before, (context) =>
                     deps.scroll(resolution.scroll, context, distance, band),
                   );
@@ -1974,6 +1977,16 @@ async function walkBlockScoped(
                   const signature = screenSignature(before.screen);
                   before = await settledCapture(item);
                   usable(before, item);
+                  const landed = resolution.element
+                    ? before.screen.elements.find((e) => sameIdentity(e, resolution.element!))
+                    : undefined;
+                  if (
+                    landed?.semantic?.visibility === 'unknown' ||
+                    gaps(before.screen) > gaps(preScroll.screen) ||
+                    (before.screen.semanticUnassociatedReact ?? 0) >
+                      (preScroll.screen.semanticUnassociatedReact ?? 0)
+                  )
+                    throw new EvidenceExpired(false);
                   if (
                     (resolution.origin === 'named-offscreen' || (!result.ok && !result.proven)) &&
                     screenSignature(before.screen) === signature
