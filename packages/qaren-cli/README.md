@@ -539,7 +539,10 @@ list, nothing drawn before its window counts, such as the app screen behind a mo
 or below that band's centre scrolls down; one above it scrolls up. Sticky overlays
 can narrow the band even without a keyboard or when the clip is entirely above it.
 The walker passes that band to the shared scroll handler so the drag starts
-inside it, narrowing the existing keyboard-safe band. Callers passing no band
+inside it, narrowing the existing keyboard-safe band. A caller band is also kept
+clear of the system gesture edges: 48 dp from the top and bottom window edges on
+Android, using the snapshot's display density, and 20 pt from the top and 34 pt
+from the bottom on iOS. Callers passing no band
 use the existing keyboard-safe band. On both iOS and Android, a target whose centre
 is covered by the observed keyboard or a sticky overlay gets a scroll sized to move that centre
 toward the middle of that band, and the drag may span the band with both endpoints
