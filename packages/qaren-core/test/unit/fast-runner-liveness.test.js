@@ -569,3 +569,114 @@ test('detailed readiness reasons preserve liveness, stale policy and clearing co
     assert.equal(healthCalls, state && alive ? 1 : 0);
   }
 });
+
+test('injected probe exceptions retain a finite class without changing stale policy or counts', async () => {
+  const codes = [
+    ['ECONNREFUSED', 'connection-refused'],
+    ['ECONNRESET', 'connection-reset'],
+    ['UND_ERR_SOCKET', 'socket-closed'],
+    ['ETIMEDOUT', 'transport-timeout'],
+    ['UND_ERR_CONNECT_TIMEOUT', 'transport-timeout'],
+    ['UND_ERR_HEADERS_TIMEOUT', 'transport-timeout'],
+    ['HPE_INVALID_CONSTANT', 'http-protocol'],
+    ['HPE_INVALID_HEADER_TOKEN', 'http-protocol'],
+    ['HPE_INVALID_CONTENT_LENGTH', 'http-protocol'],
+    ['HPE_UNEXPECTED_CONTENT_LENGTH', 'http-protocol'],
+    ['HPE_INVALID_CHUNK_SIZE', 'http-protocol'],
+    ['PRIVATE-code', 'other'],
+  ];
+  for (const [code, kind] of codes) {
+    for (const nested of [false, true]) {
+      let health = 0,
+        processes = 0,
+        clears = 0;
+      _setCapabilitiesForTest(['PRIVATE-cached']);
+      const result = await probeFastRunnerLivenessDetailed({
+        getState: () => ({ ...STATE }),
+        processAlive: () => {
+          processes++;
+          return true;
+        },
+        httpProbe: async () => {
+          health++;
+          throw nested ? { cause: { code } } : { code };
+        },
+        clearState: () => {
+          clears++;
+        },
+      });
+      assert.deepEqual(result, {
+        liveness: 'stale',
+        staleReason: 'health',
+        readinessReason: 'probe-exception',
+        readinessExceptionStage: 'http-probe',
+        readinessExceptionKind: kind,
+      });
+      assert.deepEqual([processes, health, clears], [1, 1, 0]);
+      assert.deepEqual(getFastRunnerCapabilities(), []);
+    }
+  }
+});
+
+test('exceptions after health identify their existing operation without weakening any guard', async () => {
+  for (const stage of [
+    'health-evaluation',
+    'authority-evaluation',
+    'compatibility-evaluation',
+    'state-update',
+  ]) {
+    const state = { ...STATE };
+    const reply = {
+      ok: true,
+      status: 200,
+      bodyOk: true,
+      protocolVersion: 1,
+      commands: [...REQUIRED_IOS_COMMANDS],
+      capabilities: [...REQUIRED_IOS_FEATURES],
+    };
+    if (stage === 'health-evaluation')
+      Object.defineProperty(reply, 'ok', {
+        get: () => {
+          throw Error('PRIVATE');
+        },
+      });
+    if (stage === 'authority-evaluation')
+      Object.defineProperty(state, 'sessionId', {
+        get: () => {
+          throw Error('PRIVATE');
+        },
+      });
+    if (stage === 'compatibility-evaluation')
+      reply.commands = {
+        [Symbol.iterator]() {
+          throw Error('PRIVATE');
+        },
+      };
+    if (stage === 'state-update')
+      Object.defineProperty(state, 'protocolVersion', { value: 1, writable: false });
+    let health = 0,
+      clears = 0;
+    _setCapabilitiesForTest(['PRIVATE-cached']);
+    const result = await probeFastRunnerLivenessDetailed({
+      getState: () => state,
+      processAlive: () => true,
+      httpProbe: async () => {
+        health++;
+        return reply;
+      },
+      clearState: () => {
+        clears++;
+      },
+      pluginVersion: null,
+    });
+    assert.deepEqual(result, {
+      liveness: 'stale',
+      staleReason: 'health',
+      readinessReason: 'probe-exception',
+      readinessExceptionStage: stage,
+      readinessExceptionKind: 'other',
+    });
+    assert.deepEqual([health, clears], [1, 0]);
+    assert.deepEqual(getFastRunnerCapabilities(), []);
+  }
+});

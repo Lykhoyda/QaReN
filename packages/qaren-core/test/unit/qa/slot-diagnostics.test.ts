@@ -6,7 +6,12 @@ import { ObservedPrivacy } from '../../../dist/qa/privacy.js';
 import { parsePlan } from '../../../dist/qa/plan.js';
 import { runPlan } from '../../../dist/qa/walker.js';
 import { PrivateInputCaptureError } from '../../../dist/qa/private-input.js';
-import { createTimingObserver, READINESS_REASONS } from '../../../dist/qa/timing.js';
+import {
+  createTimingObserver,
+  READINESS_REASONS,
+  READINESS_EXCEPTION_STAGES,
+  READINESS_EXCEPTION_KINDS,
+} from '../../../dist/qa/timing.js';
 import { element, screen, scriptedJudge, walker } from './judgment-fixtures.ts';
 
 test('the slot diagnostic wire projects only fixed vocabulary and measured numbers', () => {
@@ -225,9 +230,11 @@ test('timing volume cannot suppress block and login outcomes, and ordinary runs 
         kind: 'metric',
         stage: 'native-readiness',
         edge: 'end',
-        outcome: 'ok',
+        outcome: 'failed',
         at: i,
-        readinessReason: 'alive',
+        readinessReason: 'probe-exception',
+        readinessExceptionStage: 'fetch',
+        readinessExceptionKind: 'other',
       });
     writer.diagnostic({ kind: 'block-outcome', line: 1, outcome: 'pass' });
     writer.diagnostic({ kind: 'login-outcome', outcome: 'pass' });
@@ -272,6 +279,53 @@ test('readiness reasons cross the private diagnostic wire without body or error 
         at: 10,
         readinessReason,
       })),
+    );
+    assert.ok(!lines.join('').includes(secret));
+    return lines.join('');
+  });
+  assert.equal(outputs[0], outputs[1]);
+});
+
+test('exception pairs cross the private wire without exposing arbitrary error metadata', () => {
+  const outputs = ['first-PRIVATE-sentinel', 'other-PRIVATE-sentinel'].map((secret) => {
+    const lines: string[] = [];
+    const writer = createWriter((line) => lines.push(line), 'run');
+    const expected: unknown[] = [];
+    withInputs(new RunInputs({ PASSWORD: secret }, ['PASSWORD']), () => {
+      const metric = {
+        kind: 'metric',
+        stage: 'native-readiness',
+        edge: 'end',
+        outcome: 'failed',
+        at: 10,
+        readinessReason: 'probe-exception',
+      };
+      for (const readinessExceptionStage of READINESS_EXCEPTION_STAGES) {
+        for (const readinessExceptionKind of READINESS_EXCEPTION_KINDS) {
+          const event = { ...metric, readinessExceptionStage, readinessExceptionKind };
+          writer.diagnostic({ ...event, error: { code: secret, cause: secret }, message: secret });
+          expected.push(event);
+        }
+      }
+      const pair = { ...metric, readinessExceptionStage: 'fetch', readinessExceptionKind: 'other' };
+      for (const change of [
+        { readinessExceptionStage: secret },
+        { readinessExceptionKind: secret },
+        { readinessExceptionStage: undefined },
+        { readinessExceptionKind: undefined },
+        { readinessReason: 'alive' },
+        { readinessReason: undefined },
+        { stage: 'capture' },
+        { edge: 'start' },
+        { edge: 'point' },
+        { outcome: 'ok' },
+        { count: NaN },
+      ])
+        writer.diagnostic({ ...pair, ...change });
+    });
+    assert.deepEqual(
+      lines.map((line) => JSON.parse(line).payload),
+      expected,
     );
     assert.ok(!lines.join('').includes(secret));
     return lines.join('');

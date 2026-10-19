@@ -2,4 +2,4 @@
 "qaren": patch
 ---
 
-Retain a finite value-free reason on native readiness end diagnostics without changing capture or recovery behavior.
+Retain finite value-free readiness reasons and exception stage/kind details in private native-readiness diagnostics without changing capture or recovery behavior.

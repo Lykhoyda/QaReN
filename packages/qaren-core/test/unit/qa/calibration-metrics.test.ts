@@ -7,6 +7,8 @@ import { capturePrivateScreen } from '../../../dist/qa/privacy.js';
 import { runPlan } from '../../../dist/qa/walker.js';
 import {
   READINESS_REASONS,
+  READINESS_EXCEPTION_STAGES,
+  READINESS_EXCEPTION_KINDS,
   cleanTimingEvent,
   createTimingObserver,
   observeTiming,
@@ -324,4 +326,64 @@ test('readiness reasons survive only as fixed vocabulary on readiness end metric
     { count: -1 },
   ])
     assert.equal(cleanTimingEvent({ ...metric, readinessReason: 'alive', ...change }), undefined);
+});
+
+const exceptionStages = [
+  'http-probe',
+  'http-setup',
+  'fetch',
+  'response-access',
+  'http-cleanup',
+  'health-evaluation',
+  'authority-evaluation',
+  'compatibility-evaluation',
+  'state-update',
+];
+const exceptionKinds = [
+  'local-signal-aborted',
+  'connection-refused',
+  'connection-reset',
+  'socket-closed',
+  'transport-timeout',
+  'http-protocol',
+  'other',
+];
+
+test('exception diagnostics require a finite complete pair on failed probe-exception ends', () => {
+  assert.deepEqual(READINESS_EXCEPTION_STAGES, exceptionStages);
+  assert.deepEqual(READINESS_EXCEPTION_KINDS, exceptionKinds);
+  const metric = {
+    stage: 'native-readiness',
+    edge: 'end',
+    outcome: 'failed',
+    at: 20,
+    readinessReason: 'probe-exception',
+  };
+  assert.deepEqual(cleanTimingEvent(metric), metric, 'legacy reason-only metrics remain valid');
+  for (const readinessExceptionStage of exceptionStages) {
+    for (const readinessExceptionKind of exceptionKinds) {
+      const event = { ...metric, readinessExceptionStage, readinessExceptionKind };
+      assert.deepEqual(
+        cleanTimingEvent({ ...event, error: 'PRIVATE', cause: { code: 'PRIVATE' } }),
+        event,
+      );
+    }
+  }
+  const pair = { ...metric, readinessExceptionStage: 'fetch', readinessExceptionKind: 'other' };
+  for (const change of [
+    { readinessExceptionStage: undefined },
+    { readinessExceptionKind: undefined },
+    { readinessExceptionStage: 'PRIVATE' },
+    { readinessExceptionKind: 'PRIVATE' },
+    { readinessExceptionStage: null },
+    { readinessExceptionKind: 1 },
+    { stage: 'capture' },
+    { edge: 'start' },
+    { edge: 'point' },
+    { outcome: 'ok' },
+    { outcome: 'unknown' },
+    { readinessReason: 'alive' },
+    { readinessReason: undefined },
+  ])
+    assert.equal(cleanTimingEvent({ ...pair, ...change }), undefined);
 });

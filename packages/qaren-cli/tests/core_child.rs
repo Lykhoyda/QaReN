@@ -203,6 +203,10 @@ fn slot_diagnostics_retain_only_allowlisted_events_without_affecting_the_result(
             format!(r#"{{"kind":"timing","stage":"dispatch","code":"{secret}","line":2,"at":1,"acquisitionMs":0,"observationAgeMs":0}}"#),
             r#"{"kind":"metric","stage":"capture","edge":"end","outcome":"ok","at":-1}"#.into(),
         ];
+        let mut expected: Vec<serde_json::Value> = payloads[..4]
+            .iter()
+            .map(|payload| serde_json::from_str(payload).unwrap())
+            .collect();
         let reasons = [
             "alive",
             "no-state",
@@ -228,6 +232,66 @@ fn slot_diagnostics_retain_only_allowlisted_events_without_affecting_the_result(
         for reason in reasons {
             let mut event = metric.clone();
             event["readinessReason"] = reason.into();
+            payloads.push(event.to_string());
+            expected.push(event);
+        }
+        let exception_stages = [
+            "http-probe",
+            "http-setup",
+            "fetch",
+            "response-access",
+            "http-cleanup",
+            "health-evaluation",
+            "authority-evaluation",
+            "compatibility-evaluation",
+            "state-update",
+        ];
+        let exception_kinds = [
+            "local-signal-aborted",
+            "connection-refused",
+            "connection-reset",
+            "socket-closed",
+            "transport-timeout",
+            "http-protocol",
+            "other",
+        ];
+        let mut exception = metric.clone();
+        exception["readinessReason"] = "probe-exception".into();
+        for stage in exception_stages {
+            for kind in exception_kinds {
+                let mut event = exception.clone();
+                event["readinessExceptionStage"] = stage.into();
+                event["readinessExceptionKind"] = kind.into();
+                payloads.push(event.to_string());
+                expected.push(event);
+            }
+        }
+        exception["readinessExceptionStage"] = "fetch".into();
+        exception["readinessExceptionKind"] = "other".into();
+        for (key, value) in [
+            ("readinessExceptionStage", serde_json::json!(secret)),
+            ("readinessExceptionKind", serde_json::json!(secret)),
+            ("readinessExceptionStage", serde_json::Value::Null),
+            ("readinessExceptionKind", serde_json::json!(1)),
+            ("stage", serde_json::json!("capture")),
+            ("edge", serde_json::json!("start")),
+            ("edge", serde_json::json!("point")),
+            ("outcome", serde_json::json!("ok")),
+            ("outcome", serde_json::json!("unknown")),
+            ("readinessReason", serde_json::json!("alive")),
+            ("error", serde_json::json!({"code": secret})),
+        ] {
+            let mut event = exception.clone();
+            event[key] = value;
+            payloads.push(event.to_string());
+        }
+        for key in [
+            "readinessExceptionStage",
+            "readinessExceptionKind",
+            "readinessReason",
+        ] {
+            let mut event = exception.clone();
+            event.as_object_mut().unwrap().remove(key);
             payloads.push(event.to_string());
         }
         for (key, value) in [
@@ -268,18 +332,7 @@ fn slot_diagnostics_retain_only_allowlisted_events_without_affecting_the_result(
             .lines()
             .map(|line| serde_json::from_str(line).unwrap())
             .collect();
-        assert_eq!(got.len(), 4 + reasons.len());
-        for (event, expected) in got[..4].iter().zip(&payloads) {
-            assert_eq!(
-                *event,
-                serde_json::from_str::<serde_json::Value>(expected).unwrap()
-            );
-        }
-        for (event, reason) in got[4..].iter().zip(reasons) {
-            let mut expected = metric.clone();
-            expected["readinessReason"] = reason.into();
-            assert_eq!(*event, expected);
-        }
+        assert_eq!(got, expected);
     });
 }
 
@@ -304,7 +357,7 @@ fn a_real_slot_child_keeps_raw_logs_withheld_while_retaining_structured_diagnost
             process.stderr.write(payload.inputs.PASSWORD + '\n');
             let seq = 1;
             const send = (type, payload) => process.stdout.write(JSON.stringify({v: 1, runId, seq: ++seq, type, payload}) + '\n');
-            send('diagnostic', {kind: 'metric', stage: 'native-readiness', edge: 'end', outcome: 'ok', readinessReason: 'alive', at: 200, ms: 100});
+            send('diagnostic', {kind: 'metric', stage: 'native-readiness', edge: 'end', outcome: 'failed', readinessReason: 'probe-exception', readinessExceptionStage: 'fetch', readinessExceptionKind: 'socket-closed', at: 200, ms: 100});
             send('diagnostic', {kind: 'timing', stage: 'dispatch', code: 'COMPLETED', line: 2, at: 220, acquisitionMs: 100, observationAgeMs: 120});
             send('diagnostic', {kind: 'block-outcome', line: 2, outcome: 'pass'});
             send('diagnostic', {kind: 'login-outcome', outcome: 'pass'});
@@ -336,7 +389,9 @@ fn a_real_slot_child_keeps_raw_logs_withheld_while_retaining_structured_diagnost
         assert_eq!(retained.lines().count(), 4);
         let metric: serde_json::Value =
             serde_json::from_str(retained.lines().next().unwrap()).unwrap();
-        assert_eq!(metric["readinessReason"], "alive");
+        assert_eq!(metric["readinessReason"], "probe-exception");
+        assert_eq!(metric["readinessExceptionStage"], "fetch");
+        assert_eq!(metric["readinessExceptionKind"], "socket-closed");
         assert!(!retained.contains(secret));
         assert!(!retained.contains("private-synthetic"));
         assert!(!format!("{result:?}").contains("private-synthetic"));

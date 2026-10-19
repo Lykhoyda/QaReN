@@ -61,6 +61,28 @@ export const READINESS_REASONS = [
   'probe-threw',
 ] as const;
 export type ReadinessReason = (typeof READINESS_REASONS)[number];
+export const READINESS_EXCEPTION_STAGES = [
+  'http-probe',
+  'http-setup',
+  'fetch',
+  'response-access',
+  'http-cleanup',
+  'health-evaluation',
+  'authority-evaluation',
+  'compatibility-evaluation',
+  'state-update',
+] as const;
+export type ReadinessExceptionStage = (typeof READINESS_EXCEPTION_STAGES)[number];
+export const READINESS_EXCEPTION_KINDS = [
+  'local-signal-aborted',
+  'connection-refused',
+  'connection-reset',
+  'socket-closed',
+  'transport-timeout',
+  'http-protocol',
+  'other',
+] as const;
+export type ReadinessExceptionKind = (typeof READINESS_EXCEPTION_KINDS)[number];
 export interface TimingEvent {
   stage: TimingStage;
   edge: 'start' | 'end' | 'point';
@@ -79,6 +101,8 @@ export interface TimingEvent {
   moved?: number;
   maxDelta?: number;
   readinessReason?: ReadinessReason;
+  readinessExceptionStage?: ReadinessExceptionStage;
+  readinessExceptionKind?: ReadinessExceptionKind;
 }
 export type TimingObserver = (event: TimingEvent) => void;
 export interface TimingContext {
@@ -131,6 +155,21 @@ export function cleanTimingEvent(value: unknown): TimingEvent | undefined {
     const reason = READINESS_REASONS.find((word) => word === input.readinessReason);
     if (!reason || event.stage !== 'native-readiness' || event.edge !== 'end') return undefined;
     event.readinessReason = reason;
+  }
+  if (input.readinessExceptionStage !== undefined || input.readinessExceptionKind !== undefined) {
+    const stage = READINESS_EXCEPTION_STAGES.find((word) => word === input.readinessExceptionStage);
+    const kind = READINESS_EXCEPTION_KINDS.find((word) => word === input.readinessExceptionKind);
+    if (
+      !stage ||
+      !kind ||
+      event.stage !== 'native-readiness' ||
+      event.edge !== 'end' ||
+      event.outcome !== 'failed' ||
+      event.readinessReason !== 'probe-exception'
+    )
+      return undefined;
+    event.readinessExceptionStage = stage;
+    event.readinessExceptionKind = kind;
   }
   return event;
 }

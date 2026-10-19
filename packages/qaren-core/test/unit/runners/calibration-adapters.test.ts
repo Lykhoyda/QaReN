@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { setImmediate as nextTurn } from 'node:timers/promises';
 import { afterEach, test } from 'node:test';
 import {
   _setFastRunnerStateForTest,
@@ -397,6 +398,13 @@ test('default health parsing emits a finite readiness end reason without changin
       assert.ok(
         f.events.filter((e) => e.edge !== 'end').every((e) => e.readinessReason === undefined),
       );
+      if (reason !== 'probe-exception')
+        assert.ok(
+          f.events.every(
+            (e) =>
+              e.readinessExceptionStage === undefined && e.readinessExceptionKind === undefined,
+          ),
+        );
       assert.ok(!JSON.stringify(f.events).includes('PRIVATE'));
     }
   }
@@ -425,6 +433,11 @@ test('readiness end diagnoses ambient cancellation and preserves the original th
   );
   assert.equal(f.healthCalls(), 1);
   assert.equal(f.requests.length, 0);
+  assert.ok(
+    f.events.every(
+      (e) => e.readinessExceptionStage === undefined && e.readinessExceptionKind === undefined,
+    ),
+  );
 });
 
 test('an uncancelled thrown probe keeps its identity even when named AbortError', async () => {
@@ -447,5 +460,192 @@ test('an uncancelled thrown probe keeps its identity even when named AbortError'
     [['failed', 'probe-threw']],
   );
   assert.equal(f.healthCalls(), 0);
+  assert.equal(f.requests.length, 0);
+});
+
+test('default probe reports only bounded own data codes and never invokes error accessors', async () => {
+  const codes: [string, string][] = [
+    ['ECONNREFUSED', 'connection-refused'],
+    ['ECONNRESET', 'connection-reset'],
+    ['UND_ERR_SOCKET', 'socket-closed'],
+    ['ETIMEDOUT', 'transport-timeout'],
+    ['UND_ERR_CONNECT_TIMEOUT', 'transport-timeout'],
+    ['UND_ERR_HEADERS_TIMEOUT', 'transport-timeout'],
+    ['HPE_INVALID_CONSTANT', 'http-protocol'],
+    ['HPE_INVALID_HEADER_TOKEN', 'http-protocol'],
+    ['HPE_INVALID_CONTENT_LENGTH', 'http-protocol'],
+    ['HPE_UNEXPECTED_CONTENT_LENGTH', 'http-protocol'],
+    ['HPE_INVALID_CHUNK_SIZE', 'http-protocol'],
+  ];
+  let getterCalls = 0;
+  let descriptorCalls = 0;
+  const errors: [unknown, string][] = codes.flatMap(([code, kind]) => [
+    [{ code, message: 'PRIVATE', cause: undefined }, kind],
+    [{ cause: { code, message: 'PRIVATE' } }, kind],
+  ]);
+  const accessor = {
+    get code() {
+      getterCalls++;
+      throw new Error('PRIVATE');
+    },
+    get cause() {
+      getterCalls++;
+      throw new Error('PRIVATE');
+    },
+  };
+  errors.push(
+    [new Error('PRIVATE'), 'other'],
+    ['PRIVATE', 'other'],
+    [null, 'other'],
+    [Object.assign(new Error('PRIVATE'), { name: 'AbortError' }), 'other'],
+    [Object.create({ code: 'ECONNREFUSED' }), 'other'],
+    [accessor, 'other'],
+    [
+      new Proxy(
+        {},
+        {
+          getOwnPropertyDescriptor() {
+            descriptorCalls++;
+            throw Error('PRIVATE');
+          },
+        },
+      ),
+      'other',
+    ],
+    [
+      {
+        cause: new Proxy(
+          {},
+          {
+            getOwnPropertyDescriptor() {
+              descriptorCalls++;
+              throw Error('PRIVATE');
+            },
+          },
+        ),
+      },
+      'other',
+    ],
+    [{ code: 'ECONNRESET', cause: { code: 'ECONNREFUSED' } }, 'other'],
+    [{ code: 'ETIMEDOUT', cause: { code: 'UND_ERR_CONNECT_TIMEOUT' } }, 'other'],
+    [{ code: 'PRIVATE', cause: { code: 'ECONNREFUSED' } }, 'connection-refused'],
+    [{ code: 'ECONNRESET', cause: { code: 'ECONNRESET' } }, 'connection-reset'],
+    [{ cause: { cause: { code: 'ECONNREFUSED' } } }, 'other'],
+  );
+  for (const [error, kind] of errors) {
+    for (const observer of ['absent', 'present', 'throwing']) {
+      const f = fixture({
+        health: () => {
+          throw error;
+        },
+      });
+      if (observer === 'throwing')
+        f.qaTiming.observe = () => {
+          throw Error('PRIVATE-observer');
+        };
+      await assert.rejects(
+        runIOS({
+          command: 'snapshot',
+          qaReadOnly: true,
+          ...(observer === 'absent' ? {} : { qaTiming: f.qaTiming }),
+        }),
+        /ACTION_CONTEXT_CHANGED/,
+      );
+      if (observer === 'present') {
+        assert.deepEqual(
+          f.events
+            .filter((e) => e.stage === 'native-readiness' && e.edge === 'end')
+            .map((e) => [e.readinessReason, e.readinessExceptionStage, e.readinessExceptionKind]),
+          [['probe-exception', 'fetch', kind]],
+        );
+        assert.ok(!/PRIVATE|ECONN|UND_ERR|HPE_/.test(JSON.stringify(f.events)));
+      }
+      assert.deepEqual([f.healthCalls(), f.healthBodyReads(), f.requests.length], [1, 0, 0]);
+    }
+  }
+  assert.equal(getterCalls, 0);
+  assert.equal(descriptorCalls, 6, 'one guarded descriptor failure per proxy and observation mode');
+});
+
+test('default probe distinguishes setup, response access and cleanup exceptions at their existing seams', async (t) => {
+  for (const stage of ['http-setup', 'response-access', 'http-cleanup']) {
+    const original = Object.assign(new Error('PRIVATE'), { code: 'ECONNRESET' });
+    const f = fixture({
+      health: (reply) => {
+        const response = Response.json(reply);
+        if (stage === 'response-access')
+          Object.defineProperty(response, 'ok', {
+            get: () => {
+              throw original;
+            },
+          });
+        return response;
+      },
+    });
+    if (stage === 'http-setup')
+      Object.defineProperty(getFastRunnerState()!, 'capability', {
+        get: () => {
+          throw original;
+        },
+      });
+    const clear = globalThis.clearTimeout;
+    const mockedClear =
+      stage === 'http-cleanup'
+        ? t.mock.method(globalThis, 'clearTimeout', (handle) => {
+            clear(handle);
+            throw original;
+          })
+        : undefined;
+    try {
+      await assert.rejects(
+        runIOS({ command: 'snapshot', qaReadOnly: true, qaTiming: f.qaTiming }),
+        /ACTION_CONTEXT_CHANGED/,
+      );
+    } finally {
+      mockedClear?.mock.restore();
+    }
+    assert.deepEqual(
+      f.events
+        .filter((e) => e.stage === 'native-readiness' && e.edge === 'end')
+        .map((e) => [e.readinessReason, e.readinessExceptionStage, e.readinessExceptionKind]),
+      [['probe-exception', stage, 'connection-reset']],
+    );
+    assert.equal(f.healthCalls(), stage === 'http-setup' ? 0 : 1);
+    assert.equal(f.healthBodyReads(), stage === 'http-cleanup' ? 1 : 0);
+    assert.equal(f.requests.length, 0);
+  }
+});
+
+test('the existing local probe controller is classified at its unchanged 2000ms timeout', async (t) => {
+  const f = fixture();
+  let healthCalls = 0;
+  _setFetchForTest(async () => {
+    healthCalls++;
+    return new Promise(() => {});
+  });
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  let finished = false;
+  const pending = runIOS({ command: 'snapshot', qaReadOnly: true, qaTiming: f.qaTiming }).catch(
+    (error) => {
+      finished = true;
+      return error;
+    },
+  );
+  await nextTurn();
+  f.advance(1999);
+  t.mock.timers.tick(1999);
+  await nextTurn();
+  assert.equal(finished, false);
+  f.advance(1);
+  t.mock.timers.tick(1);
+  const error = await pending;
+  assert.match(String(error), /ACTION_CONTEXT_CHANGED/);
+  assert.deepEqual(
+    f.events
+      .filter((e) => e.stage === 'native-readiness' && e.edge === 'end')
+      .map((e) => [e.ms, e.readinessReason, e.readinessExceptionStage, e.readinessExceptionKind]),
+    [[2000, 'probe-exception', 'fetch', 'local-signal-aborted']],
+  );
+  assert.equal(healthCalls, 1);
   assert.equal(f.requests.length, 0);
 });
