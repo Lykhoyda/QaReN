@@ -1448,8 +1448,10 @@ file, reference or secret store.
   that requires inputs skips recording and screenshots.
 - Slot runs retain value-free structured events in `core-diagnostics.jsonl` beside `core.log`:
   `metric` has measured stage timings, and `timing` has decision/dispatch timing, finite outcome
-  codes and allowlisted native refusal codes. Each attempted block containing a slot fill emits
-  `block-outcome` with its first plan line and existing `pass`/`fail`/`refused` result; only saved-login
+  codes and allowlisted native refusal codes. A `native-readiness` end metric may carry one
+  `readinessReason` from the finite [readiness vocabulary](../qaren-core/src/qa/timing.ts);
+  it is diagnostic only and changes no capture, recovery or refusal. Each attempted block
+  containing a slot fill emits `block-outcome` with its first plan line and existing `pass`/`fail`/`refused` result; only saved-login
   recovery emits `login-outcome`. A block passing is its existing block result, not a new assertion
   of authentication. These events contain no block names, slot names, input-derived tokens, screen
   text, selectors, hashes or error messages. Raw log withholding and masking stay unchanged.
