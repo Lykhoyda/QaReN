@@ -219,10 +219,8 @@ function signalDriver(child: ChildProcess, signal: NodeJS.Signals): void {
 let runnerLaunchCount = 0;
 let runnerState: FastRunnerState | null = null;
 let runnerPoisoned = false;
-let poisonReap: Promise<void> | null = null;
-// Concurrent containments share one poison flag. Clearing it on the first
-// completion would reopen mutating commands while a second containment is
-// still awaiting its own reap — exactly the window the poison exists to close.
+let poisonReap: Promise<RunnerPostMortem> | null = null;
+// Keep mutators poisoned until every concurrent containment has finished.
 let poisonHolders = 0;
 let runnerOutputTail = '';
 let lastRunnerCommand: string | null = null;
@@ -783,6 +781,25 @@ export function resolveRunnerRequestedPort(explicitPort?: number): number {
   // address-family-safe allocation when multiple simulators have live runners.
   // The READY handshake reports the actual assigned port back to the client.
   return explicitPort ?? 0;
+}
+
+export async function ensureFastRunner(
+  deviceId: string,
+  bundleId: string,
+  opts: { forceLocalBuild?: boolean; attachOnly?: boolean } = {},
+): Promise<void> {
+  const liveness = await probeFastRunnerLiveness();
+  if (liveness === 'alive') return;
+  if (liveness === 'stale') {
+    await reapStaleFastRunner();
+  }
+  try {
+    await startFastRunner(deviceId, bundleId, undefined, opts);
+  } catch (err) {
+    console.error(
+      `Fast runner auto-start failed: ${err instanceof Error ? err.message : String(err)}`,
+    );
+  }
 }
 
 export async function startFastRunner(
@@ -1958,18 +1975,22 @@ async function postCommand(
   return (await postCommandWithRecovery(body, qaContext)).resp;
 }
 
-/**
- * Convert a runner SnapshotNode array (flat, already indexed) → FlatNode[]
- * for the ref-map. Each runner node gets a synthetic ref `@e<index>` so
- * downstream press/fill can target it.
- */
+async function reapAndRelaunchFastRunner(state: FastRunnerState): Promise<RunnerPostMortem> {
+  poisonReap ??= (async () => {
+    await reapStaleFastRunner();
+    const postMortem = getRunnerPostMortem();
+    await ensureFastRunner(state.deviceId, state.bundleId);
+    return postMortem;
+  })();
+  return poisonReap;
+}
+
 async function containTypeTimeout(
   args: RunIOSArgs,
   authorityBefore: FastRunnerCommandAuthority | null = captureFastRunnerCommandAuthority(),
   trigger: 'main-thread-timeout' | 'post-settle-runner-authority-lost' = 'main-thread-timeout',
 ): Promise<ToolResult> {
-  // Poison before any asynchronous readback: concurrently queued mutators are
-  // refused at postCommandWithRecovery and cannot reach this XCTest instance.
+  // Poison before readback so queued mutators cannot reach this XCTest instance.
   const runnerBefore = authorityBefore;
   runnerPoisoned = true;
   poisonHolders++;
@@ -1983,15 +2004,13 @@ async function containTypeTimeout(
   }
 
   let reapDisposition: 'reaped' | 'already-absent' | 'replacement-preserved';
+  let runnerPostMortem = getRunnerPostMortem();
   try {
     if (runnerBefore && runnerState?.pid === runnerBefore.pid) {
-      poisonReap ??= reapStaleFastRunner();
-      await poisonReap;
+      runnerPostMortem = await reapAndRelaunchFastRunner(runnerState);
       reapDisposition = 'reaped';
     } else {
-      // A concurrent health gate may already have reaped the triggering runner
-      // and even spawned its replacement. Never signal that replacement merely
-      // because the prior command's authority was lost.
+      // A concurrent health gate may have replaced the runner; preserve that replacement.
       reapDisposition = runnerState ? 'replacement-preserved' : 'already-absent';
     }
   } finally {
@@ -2014,8 +2033,14 @@ async function containTypeTimeout(
       stateCleared: runnerState === null,
       nextMutationRequiresRespawn: runnerState === null,
     },
-    runnerPostMortem: getRunnerPostMortem(),
-    containmentOrder: ['poison', 'independent-readback', 'reap', 'result'],
+    runnerPostMortem,
+    containmentOrder: [
+      'poison',
+      'independent-readback',
+      'reap',
+      ...(reapDisposition === 'reaped' ? ['relaunch'] : []),
+      'result',
+    ],
     lateMutationContainment:
       reapDisposition === 'reaped'
         ? 'runner-process-reaped-before-next-mutation'
@@ -2026,7 +2051,8 @@ async function containTypeTimeout(
       wasRunningBeforeRecovery: 'unverified',
       pidPreserved: 'unverified',
       activateLaunchedApp: 'unverified',
-      semantics: 'runner host is lazily relaunched; target activation semantics are unchanged',
+      semantics:
+        'runner relaunch is attempted after a proven reap; target activation semantics are unchanged',
     },
     // GH #581: never carry the actual field value — the verdict alone ships.
   };
@@ -2059,8 +2085,7 @@ async function containRunnerTimeout(
   let reapDisposition: 'reaped' | 'already-absent' | 'replacement-preserved';
   try {
     if (authorityBefore && runnerState?.pid === authorityBefore.pid) {
-      poisonReap ??= reapStaleFastRunner();
-      await poisonReap;
+      await reapAndRelaunchFastRunner(runnerState);
       reapDisposition = 'reaped';
     } else {
       reapDisposition = runnerState ? 'replacement-preserved' : 'already-absent';
@@ -2086,7 +2111,12 @@ async function containRunnerTimeout(
         stateCleared: runnerState === null,
         nextMutationRequiresRespawn: runnerState === null,
       },
-      containmentOrder: ['poison', 'reap', 'result'],
+      containmentOrder: [
+        'poison',
+        'reap',
+        ...(reapDisposition === 'reaped' ? ['relaunch'] : []),
+        'result',
+      ],
     },
   });
 }
