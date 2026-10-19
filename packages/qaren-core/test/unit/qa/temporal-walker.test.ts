@@ -264,6 +264,123 @@ test('screenshot delay preserves check acceptance but the cached action owns a s
   assert.ok(diagnostics.some((e) => e.line === 2 && e.code === 'EVIDENCE_EXPIRED'));
 });
 
+test('press gaps growing after a scroll refresh once even when identity counts stay zero and the target is off screen', async () => {
+  const off = { ...screen([element('@off', 'Save', { offscreen: true })]), pressGapCount: 0 };
+  const lagging = { ...off, pressGapCount: 35, semanticUnassociatedReact: 0 };
+  const on = { ...screen([element('@on', 'Save')]), pressGapCount: 0 };
+  const f = walker(
+    [off, lagging, lagging, on, on, on],
+    scriptedJudge((questions) => ({ target_1: choice(questions.target_1) })),
+  );
+  let refreshes = 0;
+  f.deps.timing = (event) => {
+    if (event.stage === 'refresh') refreshes++;
+  };
+  const result = await runPlan(parsePlan('1. Tap the save button').blocks!, f.deps);
+  assert.equal(result.verdict, 'PASS');
+  assert.equal(refreshes, 1);
+  assert.equal(f.captures(), 6);
+  assert.deepEqual(f.actions, ['scroll down', 'press @on']);
+});
+
+test('one press gap and unknown target visibility share the single post-scroll refresh', async () => {
+  const off = { ...screen([element('@off', 'Save', { offscreen: true })]), pressGapCount: 0 };
+  const unknown = {
+    ...screen([
+      element('@unknown', 'Save', {
+        semantic: {
+          press: 'supported',
+          fill: 'unsupported',
+          visibility: 'unknown',
+          nativePresence: { kind: 'button', labelSource: 'direct', structural: false },
+        },
+      }),
+    ]),
+    pressGapCount: 1,
+    semanticUnassociatedReact: 0,
+  };
+  const on = { ...screen([element('@on', 'Save')]), pressGapCount: 0 };
+  const f = walker(
+    [off, unknown, unknown, on, on, on],
+    scriptedJudge((questions) => ({ target_1: choice(questions.target_1) })),
+  );
+  let refreshes = 0;
+  f.deps.timing = (event) => {
+    if (event.stage === 'refresh') refreshes++;
+  };
+  const result = await runPlan(parsePlan('1. Tap the save button').blocks!, f.deps);
+  assert.equal(result.verdict, 'PASS');
+  assert.equal(refreshes, 1);
+  assert.equal(f.captures(), 6);
+  assert.deepEqual(f.actions, ['scroll down', 'press @on']);
+});
+
+test('equal or fewer press gaps with a visible target do not refresh even when fill gaps grow', async () => {
+  for (const count of [2, 1, 0]) {
+    const off = { ...screen([element('@off', 'Save', { offscreen: true })]), pressGapCount: 2 };
+    const on = {
+      ...screen([element('@on', 'Save')]),
+      pressGapCount: count,
+      fillGapCount: 35,
+      semanticUnassociatedReact: 0,
+    };
+    const f = walker(
+      [off, on],
+      scriptedJudge(() => ({})),
+    );
+    let refreshes = 0;
+    f.deps.timing = (event) => {
+      if (event.stage === 'refresh') refreshes++;
+    };
+    const result = await runPlan(parsePlan('1. Tap "Save"').blocks!, f.deps);
+    assert.equal(result.verdict, 'PASS');
+    assert.equal(refreshes, 0);
+    assert.equal(f.captures(), 4);
+    assert.deepEqual(f.actions, ['scroll down', 'press @on']);
+  }
+});
+
+test('a post-scroll fill compares fill gaps and ignores press gaps', async () => {
+  for (const fillGaps of [35, 0]) {
+    const off = {
+      ...screen([
+        element('@off', 'Name', {
+          kind: 'input',
+          nativeKind: 'input',
+          testID: 'field',
+          offscreen: true,
+        }),
+      ]),
+      fillGapCount: 0,
+      pressGapCount: 0,
+    };
+    const on = {
+      ...screen([element('@on', 'Name', { kind: 'input', nativeKind: 'input', testID: 'field' })]),
+      fillGapCount: 0,
+      pressGapCount: 0,
+    };
+    const lagging = {
+      ...(fillGaps > 0 ? off : on),
+      fillGapCount: fillGaps,
+      pressGapCount: fillGaps > 0 ? 0 : 35,
+      semanticUnassociatedReact: 0,
+    };
+    const f = walker(
+      [off, lagging, lagging, on, on, on],
+      scriptedJudge(() => ({})),
+    );
+    let refreshes = 0;
+    f.deps.timing = (event) => {
+      if (event.stage === 'refresh') refreshes++;
+    };
+    const result = await runPlan(parsePlan('1. Fill "field" with "x"').blocks!, f.deps);
+    assert.equal(result.verdict, 'PASS');
+    assert.equal(refreshes, fillGaps > 0 ? 1 : 0);
+    assert.equal(f.captures(), fillGaps > 0 ? 6 : 4);
+    assert.deepEqual(f.actions, ['scroll down', 'fill @on x']);
+  }
+});
+
 test('a scrolled-to target with unknown visibility refreshes once even when gap counts are equal', async () => {
   const off = screen([element('@off', 'Save', { offscreen: true })]);
   const unknown = screen([

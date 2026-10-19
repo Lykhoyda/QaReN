@@ -85,6 +85,8 @@ export interface Screen {
   captureCoverage?: Screen['coverage'];
   nativeCaptureCauses?: string[];
   pressEvidenceGap?: string;
+  pressGapCount?: number;
+  fillGapCount?: number;
   reactHostEvidence?: ReactHostEvidence;
   appProcessIdentifier?: number;
   keyboardVisible?: boolean;
@@ -1129,6 +1131,7 @@ export function join(
     ...(coverage ? { coverage } : {}),
     ...(reactHostEvidence ? { reactHostEvidence } : {}),
     ...(pressEvidenceGap ? { pressEvidenceGap } : {}),
+    ...gapCounts,
   };
   const counts = {
     joinedByKind: emptyKindCounts(),

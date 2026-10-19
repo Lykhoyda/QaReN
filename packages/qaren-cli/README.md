@@ -566,9 +566,10 @@ agreeing consecutive frame readbacks within the existing bounded readback
 budget; otherwise `SCROLL_UNSETTLED`
 refuses without another dispatch or recovery. Keyboard-fallback focus readbacks
 use the same settlement check. When the settled capture after a resolution scroll
-leaves the target's visibility unknown or has more unmatched React hosts than the
-capture before it, the action spends its one existing expiry refresh on a fresh
-capture; no new budget or refusal code applies.
+leaves the target's visibility unknown, has more unresolved React identities, or
+has more unassociated press-capable (or fill-capable) hosts for the step's kind
+than the capture that decided the scroll, the action spends its one existing
+expiry refresh on a fresh capture; no new budget or refusal code applies.
 When timing observation is enabled, `settle-readback` metrics report `moved` as
 the symmetric difference between frame sets and `maxDelta` as the largest
 vertical change among identities unique in both captures. The
