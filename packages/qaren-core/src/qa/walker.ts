@@ -1588,11 +1588,26 @@ async function walkBlockScoped(
           let observation = held?.observation ?? (await capture(item));
           cached = undefined;
           const probe = visibilityProbe(item, deadline);
+          let replayMiss: ResolutionError | undefined;
           let unsure = false;
           let absent = 0;
           const absentScreens = new Set<string>();
           const visible = async (s: Observation, initial?: ScreenDecision): Promise<boolean> => {
-            const observed = await probe(s, initial);
+            let observed;
+            try {
+              observed = await probe(s, initial);
+            } catch (error) {
+              if (
+                !(error instanceof ResolutionError) ||
+                error.code !== 'REPLAY_SELECTOR' ||
+                item.target.exact !== 'id' ||
+                deps.now() >= deadline
+              )
+                throw error;
+              replayMiss = error;
+              observation = s;
+              return false;
+            }
             observation = observed.observation;
             unsure = observed.unsure === true;
             if (!observed.found && !unsure && item.target.quoted !== undefined) {
@@ -1633,6 +1648,7 @@ async function walkBlockScoped(
                 refusal,
               };
             }
+            if (replayMiss) throw replayMiss;
             // Repeated literal absence on one unchanged screen is an observed result, not uncertainty.
             const unchanged = absent >= 2 && absentScreens.size === 1;
             const reason = unchanged
@@ -1662,9 +1678,26 @@ async function walkBlockScoped(
           let observation = held?.observation ?? (await capture(item));
           cached = undefined;
           const probe = visibilityProbe(item, deadline);
+          let replayMiss: ResolutionError | undefined;
           let unsure = false;
           const visible = async (s: Observation, initial?: ScreenDecision): Promise<boolean> => {
-            const observed = await probe(s, initial);
+            let observed;
+            try {
+              observed = await probe(s, initial);
+            } catch (error) {
+              if (
+                !(error instanceof ResolutionError) ||
+                error.code !== 'REPLAY_SELECTOR' ||
+                item.until!.exact !== 'id' ||
+                deps.now() >= deadline
+              )
+                throw error instanceof EvidenceExpired && error.itemExpired && replayMiss
+                  ? replayMiss
+                  : error;
+              replayMiss = error;
+              observation = s;
+              return false;
+            }
             observation = observed.observation;
             unsure = observed.unsure === true;
             return observed.found;
@@ -1690,17 +1723,20 @@ async function walkBlockScoped(
               );
             } catch (error) {
               if (isAbort(error)) throw error;
-              if (!(error instanceof EvidenceExpired) || error.itemExpired) throw error;
+              if (!(error instanceof EvidenceExpired) || error.itemExpired)
+                throw error instanceof EvidenceExpired && error.itemExpired && replayMiss
+                  ? replayMiss
+                  : error;
               metric('refresh', observation);
               await pause(Math.min(WAIT_POLL_MS, Math.max(0, deadline - deps.now())));
-              if (deps.now() >= deadline) throw new EvidenceExpired(true);
+              if (deps.now() >= deadline) throw replayMiss ?? new EvidenceExpired(true);
               observation = await capture(item);
               found = await visible(observation);
               continue;
             }
             attempts += 1;
             await pause(Math.min(WAIT_POLL_MS, Math.max(0, deadline - deps.now())));
-            if (deps.now() >= deadline) throw new EvidenceExpired(true);
+            if (deps.now() >= deadline) throw replayMiss ?? new EvidenceExpired(true);
             observation = await capture(item);
             found = await visible(observation);
             const moved = screenSignature(observation.screen) !== beforeSignature;
@@ -1713,6 +1749,7 @@ async function walkBlockScoped(
                 await shoot(item),
               );
           }
+          if (!found && replayMiss) throw replayMiss;
           if (!found && unsure) throw unresolvedText(item.until.quoted!);
           if (!found) usable(observation, item, deadline);
           const shot = await shoot(item);
