@@ -264,7 +264,7 @@ fn readiness_reasons_reach_private_diagnostics_only_as_classified_end_events() {
             "kind": "metric", "stage": "native-readiness", "edge": "end", "outcome": "failed",
             "at": 200, "line": 3, "observation": 7, "count": 2
         });
-        let expected: Vec<_> = reasons
+        let mut expected: Vec<_> = reasons
             .iter()
             .map(|reason| {
                 let mut value = metric.clone();
@@ -272,6 +272,33 @@ fn readiness_reasons_reach_private_diagnostics_only_as_classified_end_events() {
                 value
             })
             .collect();
+        for stage in [
+            "http-probe",
+            "http-setup",
+            "fetch",
+            "response-access",
+            "http-cleanup",
+            "health-evaluation",
+            "authority-evaluation",
+            "compatibility-evaluation",
+            "state-update",
+        ] {
+            for kind in [
+                "local-signal-aborted",
+                "connection-refused",
+                "connection-reset",
+                "socket-closed",
+                "transport-timeout",
+                "http-protocol",
+                "other",
+            ] {
+                let mut value = metric.clone();
+                value["readinessReason"] = json!("health");
+                value["readinessExceptionStage"] = json!(stage);
+                value["readinessExceptionKind"] = json!(kind);
+                expected.push(value);
+            }
+        }
         let mut payloads = expected.clone();
         payloads.push(metric.clone());
         for reason in [
@@ -293,6 +320,27 @@ fn readiness_reasons_reach_private_diagnostics_only_as_classified_end_events() {
         ] {
             let mut invalid = expected[0].clone();
             invalid[key] = json!(value);
+            payloads.push(invalid);
+        }
+        let pair = expected.last().unwrap();
+        for (key, value) in [
+            ("readinessExceptionStage", json!("private-synthetic-value")),
+            ("readinessExceptionKind", json!("private-synthetic-value")),
+            ("readinessExceptionKind", json!({})),
+            ("readinessReason", json!("unknown")),
+            ("readinessReason", json!("probe-exception")),
+            ("outcome", json!("ok")),
+            ("stage", json!("capture")),
+            ("edge", json!("start")),
+            ("raw", json!("private-synthetic-value")),
+        ] {
+            let mut invalid = pair.clone();
+            invalid[key] = value;
+            payloads.push(invalid);
+        }
+        for key in ["readinessExceptionStage", "readinessExceptionKind"] {
+            let mut invalid = pair.clone();
+            invalid.as_object_mut().unwrap().remove(key);
             payloads.push(invalid);
         }
         let mut stdout = String::new();
@@ -448,6 +496,7 @@ fn a_real_slot_child_keeps_raw_logs_withheld_while_retaining_structured_diagnost
             send('diagnostic', {kind: 'timing', stage: 'dispatch', code: 'COMPLETED', line: 2, at: 220, acquisitionMs: 100, observationAgeMs: 120});
             send('diagnostic', {kind: 'block-outcome', line: 2, outcome: 'pass'});
             send('diagnostic', {kind: 'login-outcome', outcome: 'pass'});
+            send('diagnostic', {kind: 'metric', stage: 'native-readiness', edge: 'end', outcome: 'failed', at: 250, readinessReason: 'health', readinessExceptionStage: 'fetch', readinessExceptionKind: 'connection-refused'});
             send('diagnostic', {kind: 'login-outcome', outcome: payload.inputs.PASSWORD});
             send('result', {verdict: 'PASS', path: 'walk', blocks: [], steps: [], jev: {calls: 0, medianMs: 0}, llmTurns: 0, escapes: 0, recoveries: 0});
             reader.close();
@@ -475,7 +524,17 @@ fn a_real_slot_child_keeps_raw_logs_withheld_while_retaining_structured_diagnost
             "[private output withheld]\n"
         );
         let retained = std::fs::read_to_string(repo.join("core-diagnostics.jsonl")).unwrap();
-        assert_eq!(retained.lines().count(), 4);
+        assert_eq!(retained.lines().count(), 5);
+        let pair: serde_json::Value =
+            serde_json::from_str(retained.lines().last().unwrap()).unwrap();
+        assert_eq!(
+            pair,
+            serde_json::json!({
+                "kind": "metric", "stage": "native-readiness", "edge": "end", "outcome": "failed",
+                "at": 250, "readinessReason": "health", "readinessExceptionStage": "fetch",
+                "readinessExceptionKind": "connection-refused"
+            })
+        );
         assert!(!retained.contains(secret));
         assert!(!retained.contains("private-synthetic"));
         assert!(!format!("{result:?}").contains("private-synthetic"));

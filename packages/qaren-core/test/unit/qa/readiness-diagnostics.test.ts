@@ -152,3 +152,79 @@ test('dispatch phase spans survive both cleaners as ordinary timing stages', () 
     assert.deepEqual(cleanDiagnostic(event), event);
   }
 });
+
+const exceptionStages = [
+  'http-probe',
+  'http-setup',
+  'fetch',
+  'response-access',
+  'http-cleanup',
+  'health-evaluation',
+  'authority-evaluation',
+  'compatibility-evaluation',
+  'state-update',
+] as const;
+const exceptionKinds = [
+  'local-signal-aborted',
+  'connection-refused',
+  'connection-reset',
+  'socket-closed',
+  'transport-timeout',
+  'http-protocol',
+  'other',
+] as const;
+
+test('caught health exceptions retain only the complete finite pair through timing and wire', () => {
+  for (const readinessExceptionStage of exceptionStages) {
+    for (const readinessExceptionKind of exceptionKinds) {
+      const expected = {
+        ...metric,
+        readinessReason: 'health',
+        readinessExceptionStage,
+        readinessExceptionKind,
+      };
+      for (const sentinel of ['PRIVATE-error-a', 'PRIVATE-error-b']) {
+        const input = { ...expected, error: sentinel, message: sentinel, body: sentinel };
+        assert.deepEqual(cleanDiagnostic({ ...cleanTimingEvent(input), kind: 'metric' }), expected);
+        assert.deepEqual(cleanDiagnostic(input), expected);
+      }
+    }
+  }
+});
+
+test('exception pairs reject incomplete, unknown and out-of-scope values', () => {
+  const event = {
+    ...metric,
+    readinessReason: 'health',
+    readinessExceptionStage: 'fetch',
+    readinessExceptionKind: 'connection-refused',
+  };
+  for (const changes of [
+    { readinessExceptionStage: undefined },
+    { readinessExceptionKind: undefined },
+    { readinessExceptionStage: 'PRIVATE-stage' },
+    { readinessExceptionKind: 'PRIVATE-kind' },
+    { readinessExceptionKind: { toString: () => 'connection-refused' } },
+    { readinessReason: 'unknown' },
+    { readinessReason: 'probe-exception' },
+    { outcome: 'ok' },
+    { edge: 'start' },
+    { stage: 'capture' },
+  ]) {
+    const invalid = { ...event, ...changes };
+    assert.equal(cleanTimingEvent(invalid), undefined);
+    assert.equal(cleanDiagnostic(invalid), undefined);
+  }
+});
+
+test('a health detail and an exception pair survive together on one failed health end event', () => {
+  const event = {
+    ...health,
+    healthDetail: 'refused',
+    readinessExceptionStage: 'fetch',
+    readinessExceptionKind: 'connection-refused',
+  } as const;
+  const { kind: _, ...timedEvent } = event;
+  assert.deepEqual(cleanTimingEvent(event), timedEvent);
+  assert.deepEqual(cleanDiagnostic(event), event);
+});

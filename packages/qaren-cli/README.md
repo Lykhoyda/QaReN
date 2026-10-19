@@ -1588,6 +1588,9 @@ that secret despite artifact redaction.
   The failure class describes the current retry or refusal; cancellation retains the most recent
   retry's class, or `none` before any retry. Cancellation emits synchronously on abort before
   the terminal result closes the diagnostic stream, subject to the event caps below.
+  Caught probe exceptions add a complete finite `readinessExceptionStage` and
+  `readinessExceptionKind` pair only to failed `health` end metrics. The pair identifies
+  the operation and bounded error class without retaining raw errors or changing readiness policy.
   Each attempted block containing a slot fill emits
   `block-outcome` with its first plan line and existing `pass`/`fail`/`refused` result; only saved-login
   recovery emits `login-outcome`. A block passing is its existing block result, not a new assertion

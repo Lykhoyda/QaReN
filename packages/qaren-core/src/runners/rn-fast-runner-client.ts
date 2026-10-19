@@ -17,6 +17,8 @@ import {
   type HealthDetail,
   type NativeReadinessReason,
   type RunnerMarkerCounts,
+  type ReadinessExceptionStage,
+  type ReadinessExceptionKind,
   type TimingContext,
   type TimingEvent,
 } from '../qa/timing.js';
@@ -1384,88 +1386,150 @@ function defaultProcessAlive(pid: number): boolean {
   }
 }
 
+function ownErrorData(value: unknown, key: 'code' | 'cause'): unknown {
+  if ((typeof value !== 'object' || value === null) && typeof value !== 'function')
+    return undefined;
+  const descriptor = Object.getOwnPropertyDescriptor(value, key);
+  return descriptor && 'value' in descriptor ? descriptor.value : undefined;
+}
+
+function readinessKindForCode(code: unknown): ReadinessExceptionKind | undefined {
+  switch (code) {
+    case 'ECONNREFUSED':
+      return 'connection-refused';
+    case 'ECONNRESET':
+      return 'connection-reset';
+    case 'UND_ERR_SOCKET':
+      return 'socket-closed';
+    case 'ETIMEDOUT':
+    case 'UND_ERR_CONNECT_TIMEOUT':
+    case 'UND_ERR_HEADERS_TIMEOUT':
+      return 'transport-timeout';
+    case 'HPE_INVALID_CONSTANT':
+    case 'HPE_INVALID_HEADER_TOKEN':
+    case 'HPE_INVALID_CONTENT_LENGTH':
+    case 'HPE_UNEXPECTED_CONTENT_LENGTH':
+    case 'HPE_INVALID_CHUNK_SIZE':
+      return 'http-protocol';
+    default:
+      return undefined;
+  }
+}
+
+function classifyReadinessException(error: unknown): ReadinessExceptionKind {
+  try {
+    const code = ownErrorData(error, 'code');
+    const causeCode = ownErrorData(ownErrorData(error, 'cause'), 'code');
+    const kind = readinessKindForCode(code);
+    const causeKind = readinessKindForCode(causeCode);
+    if (kind && causeKind && code !== causeCode) return 'other';
+    return kind ?? causeKind ?? 'other';
+  } catch {
+    return 'other';
+  }
+}
+
 async function defaultHttpProbe(
   port: number,
   timeoutMs: number,
   capabilityOverride?: string,
+  onException?: (stage: ReadinessExceptionStage, kind: ReadinessExceptionKind) => void,
 ): Promise<HttpProbeResult> {
-  // Use the same IPv4 loopback as the /command client (postCommand). The prior
-  // [::1] here meant the health probe and the command channel could resolve to
-  // different stacks, so a healthy IPv4 listener looked dead over IPv6.
-  const url = `http://127.0.0.1:${port}/health`;
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  let exceptionStage: ReadinessExceptionStage = 'http-setup';
+  let probeController: AbortController | undefined;
   try {
-    // fetchImpl (not bare fetch) so the _setFetchForTest seam covers the health
-    // probe like every other client call — production default is globalThis.fetch.
-    const capability =
-      capabilityOverride ?? (runnerState?.port === port ? runnerState.capability : undefined);
-    const res = await cancellableFetch(fetchImpl, url, {
-      signal: controller.signal,
-      headers: capability ? { authorization: `Bearer ${capability}` } : {},
-    });
-    if (!res.ok) return { ok: false, status: res.status };
-    let bodyOk: boolean | undefined;
-    let wedged = false;
-    let protocolVersion: number | undefined;
-    let runnerVersion: string | undefined;
-    let capabilities: string[] | undefined;
-    let commands: string[] | undefined;
-    let instanceId: string | undefined;
-    let sessionId: string | undefined;
-    let claimEpoch: number | undefined;
-    let deviceId: string | undefined;
-    let appId: string | undefined;
+    // Health and commands must use the same loopback stack.
+    const url = `http://127.0.0.1:${port}/health`;
+    const controller = new AbortController();
+    probeController = controller;
+    const timer = setTimeout(() => controller.abort(), timeoutMs);
     try {
-      const body = (await res.json()) as {
-        ok?: boolean;
-        reason?: unknown;
-        protocolVersion?: number;
-        runnerVersion?: string;
-        capabilities?: unknown;
-        commands?: unknown;
-        instanceId?: string;
-        sessionId?: string;
-        claimEpoch?: number;
-        deviceId?: string;
-        appId?: string;
+      // Health shares the command transport and its test seam.
+      const capability =
+        capabilityOverride ?? (runnerState?.port === port ? runnerState.capability : undefined);
+      exceptionStage = 'fetch';
+      const res = await cancellableFetch(fetchImpl, url, {
+        signal: controller.signal,
+        headers: capability ? { authorization: `Bearer ${capability}` } : {},
+      });
+      exceptionStage = 'response-access';
+      if (!res.ok) return { ok: false, status: res.status };
+      let bodyOk: boolean | undefined;
+      let wedged = false;
+      let protocolVersion: number | undefined;
+      let runnerVersion: string | undefined;
+      let capabilities: string[] | undefined;
+      let commands: string[] | undefined;
+      let instanceId: string | undefined;
+      let sessionId: string | undefined;
+      let claimEpoch: number | undefined;
+      let deviceId: string | undefined;
+      let appId: string | undefined;
+      try {
+        const body = (await res.json()) as {
+          ok?: boolean;
+          reason?: unknown;
+          protocolVersion?: number;
+          runnerVersion?: string;
+          capabilities?: unknown;
+          commands?: unknown;
+          instanceId?: string;
+          sessionId?: string;
+          claimEpoch?: number;
+          deviceId?: string;
+          appId?: string;
+        };
+        bodyOk = body.ok === true;
+        wedged = body.reason === 'wedged';
+        if (typeof body.protocolVersion === 'number') protocolVersion = body.protocolVersion;
+        if (typeof body.runnerVersion === 'string') runnerVersion = body.runnerVersion;
+        if (Array.isArray(body.capabilities)) {
+          capabilities = body.capabilities.filter((c): c is string => typeof c === 'string');
+        }
+        if (Array.isArray(body.commands)) {
+          commands = body.commands.filter((c): c is string => typeof c === 'string');
+        }
+        if (typeof body.instanceId === 'string') instanceId = body.instanceId;
+        if (typeof body.sessionId === 'string') sessionId = body.sessionId;
+        if (typeof body.claimEpoch === 'number') claimEpoch = body.claimEpoch;
+        if (typeof body.deviceId === 'string') deviceId = body.deviceId;
+        if (typeof body.appId === 'string') appId = body.appId;
+      } catch {
+        throwIfCancelled();
+        bodyOk = false;
+      }
+      return {
+        ok: true,
+        status: res.status,
+        bodyOk,
+        ...(wedged ? { wedged } : {}),
+        ...(protocolVersion !== undefined ? { protocolVersion } : {}),
+        ...(runnerVersion !== undefined ? { runnerVersion } : {}),
+        ...(capabilities !== undefined ? { capabilities } : {}),
+        ...(commands !== undefined ? { commands } : {}),
+        ...(instanceId !== undefined ? { instanceId } : {}),
+        ...(sessionId !== undefined ? { sessionId } : {}),
+        ...(claimEpoch !== undefined ? { claimEpoch } : {}),
+        ...(deviceId !== undefined ? { deviceId } : {}),
+        ...(appId !== undefined ? { appId } : {}),
       };
-      bodyOk = body.ok === true;
-      wedged = body.reason === 'wedged';
-      if (typeof body.protocolVersion === 'number') protocolVersion = body.protocolVersion;
-      if (typeof body.runnerVersion === 'string') runnerVersion = body.runnerVersion;
-      if (Array.isArray(body.capabilities)) {
-        capabilities = body.capabilities.filter((c): c is string => typeof c === 'string');
-      }
-      if (Array.isArray(body.commands)) {
-        commands = body.commands.filter((c): c is string => typeof c === 'string');
-      }
-      if (typeof body.instanceId === 'string') instanceId = body.instanceId;
-      if (typeof body.sessionId === 'string') sessionId = body.sessionId;
-      if (typeof body.claimEpoch === 'number') claimEpoch = body.claimEpoch;
-      if (typeof body.deviceId === 'string') deviceId = body.deviceId;
-      if (typeof body.appId === 'string') appId = body.appId;
-    } catch {
-      throwIfCancelled();
-      bodyOk = false;
+    } finally {
+      const previousStage = exceptionStage;
+      exceptionStage = 'http-cleanup';
+      clearTimeout(timer);
+      exceptionStage = previousStage;
     }
-    return {
-      ok: true,
-      status: res.status,
-      bodyOk,
-      ...(wedged ? { wedged } : {}),
-      ...(protocolVersion !== undefined ? { protocolVersion } : {}),
-      ...(runnerVersion !== undefined ? { runnerVersion } : {}),
-      ...(capabilities !== undefined ? { capabilities } : {}),
-      ...(commands !== undefined ? { commands } : {}),
-      ...(instanceId !== undefined ? { instanceId } : {}),
-      ...(sessionId !== undefined ? { sessionId } : {}),
-      ...(claimEpoch !== undefined ? { claimEpoch } : {}),
-      ...(deviceId !== undefined ? { deviceId } : {}),
-      ...(appId !== undefined ? { appId } : {}),
-    };
-  } finally {
-    clearTimeout(timer);
+  } catch (error: unknown) {
+    let kind: ReadinessExceptionKind = 'other';
+    try {
+      kind = probeController?.signal.aborted
+        ? 'local-signal-aborted'
+        : classifyReadinessException(error);
+    } catch {}
+    try {
+      onException?.(exceptionStage, kind);
+    } catch {}
+    throw error;
   }
 }
 
@@ -1542,6 +1606,8 @@ export interface FastRunnerLivenessDetail {
   /** GH #656: set only when staleReason === 'missing-features'. */
   missingFeatures?: string[];
   healthDetail?: HealthDetail;
+  readinessExceptionStage?: ReadinessExceptionStage;
+  readinessExceptionKind?: ReadinessExceptionKind;
 }
 
 function healthDetailForReply(res: HttpProbeResult): HealthDetail {
@@ -1567,7 +1633,16 @@ export async function probeFastRunnerLivenessDetailed(
 ): Promise<FastRunnerLivenessDetail> {
   const getState = deps.getState ?? (() => runnerState);
   const processAlive = deps.processAlive ?? defaultProcessAlive;
-  const httpProbe = deps.httpProbe ?? defaultHttpProbe;
+  let exceptionStage: ReadinessExceptionStage = 'http-probe';
+  let httpException:
+    | Pick<FastRunnerLivenessDetail, 'readinessExceptionStage' | 'readinessExceptionKind'>
+    | undefined;
+  const httpProbe =
+    deps.httpProbe ??
+    ((port: number, timeoutMs: number) =>
+      defaultHttpProbe(port, timeoutMs, undefined, (stage, kind) => {
+        httpException = { readinessExceptionStage: stage, readinessExceptionKind: kind };
+      }));
   const clearState = deps.clearState ?? clearStateFile;
   const timeoutMs = deps.timeoutMs ?? 2000;
 
@@ -1581,10 +1656,12 @@ export async function probeFastRunnerLivenessDetailed(
 
   try {
     const res = await httpProbe(state.port, timeoutMs);
+    exceptionStage = 'health-evaluation';
     if (!(res.ok && res.status === 200 && res.bodyOk === true)) {
       lastKnownCapabilities = [];
       return { liveness: 'stale', staleReason: 'health', healthDetail: healthDetailForReply(res) };
     }
+    exceptionStage = 'authority-evaluation';
     if (
       state.sessionId !== undefined &&
       (res.instanceId !== state.instanceId ||
@@ -1596,6 +1673,7 @@ export async function probeFastRunnerLivenessDetailed(
       lastKnownCapabilities = [];
       return { liveness: 'stale', staleReason: 'authority-mismatch' };
     }
+    exceptionStage = 'compatibility-evaluation';
     const plugin = deps.pluginVersion !== undefined ? deps.pluginVersion : getPluginVersion();
     const compat = classifyRunnerCompatibility(
       {
@@ -1625,6 +1703,7 @@ export async function probeFastRunnerLivenessDetailed(
         ...(res.runnerVersion !== undefined ? { runnerVersion: res.runnerVersion } : {}),
       };
     }
+    exceptionStage = 'state-update';
     lastKnownCapabilities = res.capabilities ?? [];
     noteStaleHittableArtifact(res.capabilities);
     // startFastRunner stamps the bridge's own RUNNER_PROTOCOL_VERSION optimistically;
@@ -1640,10 +1719,18 @@ export async function probeFastRunnerLivenessDetailed(
       ...(res.runnerVersion !== undefined ? { runnerVersion: res.runnerVersion } : {}),
       ...(res.capabilities !== undefined ? { capabilities: res.capabilities } : {}),
     };
-  } catch (error) {
+  } catch (error: unknown) {
     throwIfCancelled();
     lastKnownCapabilities = [];
-    return { liveness: 'stale', staleReason: 'health', healthDetail: healthDetailForError(error) };
+    return {
+      liveness: 'stale',
+      staleReason: 'health',
+      healthDetail: healthDetailForError(error),
+      ...(httpException ?? {
+        readinessExceptionStage: exceptionStage,
+        readinessExceptionKind: classifyReadinessException(error),
+      }),
+    };
   }
 }
 
@@ -2418,6 +2505,10 @@ async function probeQaReadiness(
   let alive = false;
   let readinessReason: NativeReadinessReason = 'unknown';
   let healthDetail: HealthDetail | undefined;
+  let exception: Pick<
+    FastRunnerLivenessDetail,
+    'readinessExceptionStage' | 'readinessExceptionKind'
+  > = {};
   const readiness = await measureTiming(
     qaTiming &&
       ((event) =>
@@ -2425,7 +2516,7 @@ async function probeQaReadiness(
           ...event,
           count,
           ...(event.edge === 'end'
-            ? { outcome: alive ? 'ok' : 'failed', readinessReason, healthDetail }
+            ? { outcome: alive ? 'ok' : 'failed', readinessReason, healthDetail, ...exception }
             : {}),
         })),
     qaTiming?.now ?? (() => performance.now()),
@@ -2433,6 +2524,10 @@ async function probeQaReadiness(
     async () => {
       const readiness = await probeFastRunnerLivenessDetailed({ clearState: () => {} });
       alive = readiness.liveness === 'alive';
+      exception = {
+        readinessExceptionStage: readiness.readinessExceptionStage,
+        readinessExceptionKind: readiness.readinessExceptionKind,
+      };
       readinessReason =
         readiness.liveness === 'stale' ? (readiness.staleReason ?? 'unknown') : readiness.liveness;
       healthDetail = readiness.healthDetail;
