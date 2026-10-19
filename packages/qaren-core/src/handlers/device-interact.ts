@@ -1989,7 +1989,7 @@ type Band = { x?: number; y?: number; width: number; height: number };
 // A caller-named band only narrows the keyboard-safe band, so the drag lands on the scrolled view.
 function dragBand(within?: Band): Band {
   const band = scrollBand();
-  if (!within) return band;
+  if (!within) return { width: band.width, height: band.height };
   const top = Math.max(within.y ?? 0, 0);
   const bottom = Math.min((within.y ?? 0) + within.height, band.height);
   return bottom > top ? { x: within.x, y: top, width: within.width, height: bottom - top } : band;
