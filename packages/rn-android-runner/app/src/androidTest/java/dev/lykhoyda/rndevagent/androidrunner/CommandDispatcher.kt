@@ -315,6 +315,7 @@ class CommandDispatcher(
                 .put("normalizationDroppedNodes", assembled.droppedNodes)
                 .put("snapshotGeneration", qaSnapshotGeneration)
                 .put("keyboardVisible", assembled.keyboardVisible)
+                .put("pointScale", instrumentation.targetContext.resources.displayMetrics.density.toDouble())
                 .apply { presence?.let { put("presenceCapture", it.capture()) } }
         } finally {
             if (Build.VERSION.SDK_INT < 33) handles?.forEach { it.recycle() }

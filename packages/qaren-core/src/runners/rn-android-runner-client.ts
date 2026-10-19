@@ -2363,6 +2363,7 @@ export async function runAndroid(args: RunAndroidArgs): Promise<ToolResult> {
       snapshotGeneration?: unknown;
       keyboardVisible?: unknown;
       presenceCapture?: unknown;
+      pointScale?: unknown;
     };
     if (Array.isArray(data.nodes)) {
       const flat = mapRunnerNodesToFlat(data.nodes, qaReadOnly);
@@ -2375,11 +2376,13 @@ export async function runAndroid(args: RunAndroidArgs): Promise<ToolResult> {
           : {}),
       };
       const presence = data.presenceCapture;
+      const presencePointScale =
+        presence && typeof presence === 'object' && 'pointScale' in presence
+          ? presence.pointScale
+          : undefined;
       const outcome = updateRefMapFromFlat(flat, {
         ...freshness,
-        ...(presence && typeof presence === 'object' && 'pointScale' in presence
-          ? { pointScale: presence.pointScale }
-          : {}),
+        pointScale: data.pointScale ?? presencePointScale,
       });
       const snapshotVerdict = buildSnapshotVerdict('rn-android-runner', flat.length, outcome);
       const producerDropped = data.normalizationDroppedNodes;
