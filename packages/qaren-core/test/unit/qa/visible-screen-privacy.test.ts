@@ -525,7 +525,7 @@ test('scroll clips exclude detached text from checks, waits and scroll-until on 
             type: 'StaticText',
             label: 'Partial',
             parentIndex: 2,
-            rect: { x: 40, y: 390, width: 100, height: 30 },
+            rect: { x: 40, y: 384, width: 100, height: 30 },
           },
         ];
         if (x === 20 && y === 500) nodes[2].rect = { x: 0, y: 100, width: 402, height: 300 };
@@ -588,7 +588,7 @@ test('screen and nested container clips remain cumulative across missing and inv
   }
   const overlapping = nodes.map((node, i) => {
     if (i === 2) return { ...node, rect: { x: 0, y: 800, width: 402, height: 200 } };
-    if (i === 4) return { ...node, rect: { x: 20, y: 870, width: 200, height: 30 } };
+    if (i === 4) return { ...node, rect: { x: 20, y: 858, width: 200, height: 30 } };
     return node;
   });
   assert.equal(outsideViewport(overlapping).has(4), false);
@@ -718,7 +718,7 @@ test('nested ScrollView clips intersect Table and CollectionView clips on both a
         rect: { x: 60, y: 120, width: 0, height: 0 },
       },
     ];
-    assert.deepEqual([...outsideViewport(nodes)], [4, 5, 6, 7], type);
+    assert.deepEqual([...outsideViewport(nodes)], [3, 4, 5, 6, 7], type);
     const initial = attested(nodes);
     const revealed = attested(
       nodes.map((node) =>
@@ -818,7 +818,7 @@ test('a node whose page slid wholly off screen is off screen despite its own on-
 
 test('the same page shown on screen keeps its placeholder text visible', async () => {
   const shown = wizardTree(0);
-  assert.deepEqual([...outsideViewport(shown.nodes)], [6, 7]);
+  assert.deepEqual([...outsideViewport(shown.nodes)], [2, 6, 7]);
   const { result } = await walkViewport('✓ "Add details (optional)"', [shown]);
   assert.equal(result.verdict, 'PASS', result.failure?.seen);
 });

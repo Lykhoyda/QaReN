@@ -57,7 +57,10 @@ const diagnose = (nodes: NativeNode[]) => parse(viewportDiagnostic(nodes, outsid
 // The diagnostic alone, as if nothing were clipped, so its categories stay testable.
 const unclipped = (nodes: NativeNode[]) => parse(viewportDiagnostic(nodes, new Set()));
 const offscreenTitles = (nodes: NativeNode[]) =>
-  [...outsideViewport(nodes)].map((i) => nodes[i].rect!.x).sort((a, b) => a - b);
+  [...outsideViewport(nodes)]
+    .filter((i) => nodes[i].type === 'StaticText')
+    .map((i) => nodes[i].rect!.x)
+    .sort((a, b) => a - b);
 
 test('the Application rect clips fixtures A-F regardless of Window ancestry', () => {
   const inside = [title(16), title(30), title(60)];
@@ -86,11 +89,11 @@ test('keyboard-up capture: later pages chained to no Window are offscreen', () =
     { type: 'Button', parent: 0, rect: { x: 820, y: 600, width: 200, height: 44 } },
     { type: 'Keyboard', parent: 2, rect: { x: 0, y: 538, width: 402, height: 336 } },
   ]);
-  assert.deepEqual([...outsideViewport(nodes)], [5, 6, 7, 8]);
+  assert.deepEqual([...outsideViewport(nodes)], [3, 5, 6, 7, 8]);
   assert.equal(diagnose(nodes).symptom, 0);
 });
 
-test('a partly visible node outside every Window still counts as on screen', () => {
+test('partly visible nodes whose centres lie outside the Application are offscreen without a Window', () => {
   const nodes = tree([
     { type: 'Application', rect: screenRect },
     { type: 'StaticText', parent: 0, rect: { x: 390, y: 120, width: 300, height: 30 } },
@@ -100,7 +103,7 @@ test('a partly visible node outside every Window still counts as on screen', () 
     { type: 'StaticText', parent: 0, rect: { x: -300, y: 120, width: 300, height: 30 } },
     { type: 'StaticText', parent: 0, rect: { x: 10, y: 874, width: 300, height: 30 } },
   ]);
-  assert.deepEqual([...outsideViewport(nodes)], [4, 5, 6]);
+  assert.deepEqual([...outsideViewport(nodes)], [1, 2, 3, 4, 5, 6]);
 });
 
 test('a missing or invalid Application rect keeps the Window-only clip', () => {
@@ -431,8 +434,11 @@ test('rows below the fold of a long list stay offscreen', () => {
     { type: 'StaticText', parent: 2, rect: { x: 16, y: 300, width: 370, height: 44 } },
     { type: 'StaticText', parent: 2, rect: { x: 16, y: 1200, width: 370, height: 44 } },
   ]);
-  assert.deepEqual([...outsideViewport(nodes)], [4]);
-  assert.deepEqual(diagnose(nodes).excluded, []);
+  assert.deepEqual([...outsideViewport(nodes)], [2, 4]);
+  assert.deepEqual(
+    diagnose(nodes).excluded.map((entry: unknown[]) => entry[0]),
+    [2],
+  );
 });
 
 test('excluded names the scroll or Window clip that removed an in-app node', () => {

@@ -229,10 +229,12 @@ test('an Android row inside its scroll container stays on screen', () => {
   assert.deepEqual([...outsideViewport(nodes)], []);
 });
 
-test('an Android row overlapping the list edge stays visible until it leaves the list', () => {
+test('a row overlapping the list edge is offscreen once its centre leaves the list', () => {
   const bottom = list.y + list.height;
   for (const [y, excluded] of [
-    [bottom - 1, false],
+    [bottom - 33, false],
+    [bottom - 32, true],
+    [bottom - 1, true],
     [bottom, true],
   ] as const) {
     const nodes = androidList('androidx.recyclerview.widget.RecyclerView', {
@@ -241,6 +243,30 @@ test('an Android row overlapping the list edge stays visible until it leaves the
     });
     const offscreen = outsideViewport(nodes);
     assert.equal(offscreen.has(3), excluded);
+    assert.deepEqual(clippingViewport(offscreen, 3), list);
+  }
+});
+
+test('iOS list clips include centres on the top and left edges and exclude bottom and right edges', () => {
+  for (const [x, y, excluded] of [
+    [31, 1300, true],
+    [32, 1300, false],
+    [491, 1300, false],
+    [492, 1300, true],
+    [64, 1237, true],
+    [64, 1238, false],
+    [64, 1741, false],
+    [64, 1742, true],
+    [64, 1800, true],
+  ] as const) {
+    const nodes = tree([
+      { type: 'Application', rect: androidScreen },
+      { type: 'Window', parent: 0, rect: androidScreen },
+      { type: 'ScrollView', parent: 1, rect: list },
+      { type: 'Button', parent: 2, rect: { x, y, width: 64, height: 64 } },
+    ]);
+    const offscreen = outsideViewport(nodes);
+    assert.equal(offscreen.has(3), excluded, `${x},${y}`);
     assert.deepEqual(clippingViewport(offscreen, 3), list);
   }
 });

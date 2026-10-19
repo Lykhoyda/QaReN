@@ -168,6 +168,17 @@ function within(rect: Rect, visible: Rect): boolean {
   );
 }
 
+function centreOutside(rect: Rect, visible: Rect): boolean {
+  const cx = rect.x + rect.width / 2;
+  const cy = rect.y + rect.height / 2;
+  return (
+    cx < visible.x ||
+    cx >= visible.x + visible.width ||
+    cy < visible.y ||
+    cy >= visible.y + visible.height
+  );
+}
+
 export function clip(a: Rect, b: Rect | undefined): Rect {
   if (!b) return a;
   const x = Math.max(a.x, b.x);
@@ -271,8 +282,7 @@ export function scrollChromeNodes(
   return chrome;
 }
 
-// Unobserved nodes of a verified capture lying wholly outside the screen, the window or a scroll view ancestor.
-// Android clips a scrolled-out node to an empty rect inside the viewport; its clipped presence says so instead.
+// Unknown nodes with centres outside the clip, plus Android's explicitly clipped nodes.
 export function offscreenNodes(
   nodes: NativeNode[],
   presence: NativePresence | undefined,
@@ -375,7 +385,7 @@ function outsideTrustedViewport(nodes: NativeNode[], contradicted: Set<number>):
       parent = ancestor?.parentIndex;
     }
     if (visible) bounds.set(i, visible);
-    if (visible && !within(node.rect, visible)) {
+    if (visible && (!within(node.rect, visible) || centreOutside(node.rect, visible))) {
       offscreen.add(i);
       if (decider) decided.set(i, decider);
     }
