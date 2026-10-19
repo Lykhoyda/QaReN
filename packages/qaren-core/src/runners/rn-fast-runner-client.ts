@@ -2345,7 +2345,12 @@ export async function verifyTypeResultAfterSettle(
     authorityBefore,
     'post-settle-runner-authority-lost',
   );
-  args.qaContext?.invalidate();
+  const context = args.qaContext;
+  if (context)
+    context.diagnoseRefusal(
+      () => ({ stage: 'settle', mutating: true, nativeCode: 'RUNNER_TIMEOUT' }),
+      () => context.invalidate(),
+    );
   return contained;
 }
 

@@ -289,7 +289,7 @@ fn clean(value: &Value) -> Option<Value> {
             "outcome" => Some(&["pass", "fail", "refused"]),
             "code" => Some(CODES),
             "nativeCode" => Some(NATIVE_CODES),
-            "refusalStage" => Some(&["dispatch-error", "native-response"]),
+            "refusalStage" => Some(&["dispatch-error", "native-response", "settle"]),
             "method" => Some(&[
                 "window-gate",
                 "screen-static",

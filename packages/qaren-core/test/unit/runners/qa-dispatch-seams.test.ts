@@ -2,6 +2,10 @@ import { createWriter } from '../../../dist/qa/wire.js';
 import { RunInputs, withInputs } from '../../../dist/qa/inputs.js';
 import { afterEach, test } from 'node:test';
 import assert from 'node:assert/strict';
+import { runPlan } from '../../../dist/qa/walker.js';
+import { parsePlan } from '../../../dist/qa/plan.js';
+import { createTimingObserver } from '../../../dist/qa/timing.js';
+import { element, screen, scriptedJudge, walker } from '../qa/judgment-fixtures.ts';
 import { QaDispatchContext } from '../../../dist/domain/qa-dispatch.js';
 import { buildIosProbes } from '../../../dist/lifecycle/settle.js';
 import {
@@ -1050,4 +1054,83 @@ test('QA relayout refusal keeps the native code and keyboard event before declin
   assert.deepEqual(sends, ['tap']);
   assert.ok(events.some((event) => event.stage === 'keyboard' && event.event === 'relayout'));
   assert.ok(!events.some((event) => event.stage === 'relayout-retap'));
+});
+
+test('instant-submit authority loss retains refusal facts beside long typing and unavailable readback', async () => {
+  const outputs: string[] = [];
+  for (const secret of ['private-code-one', 'private-code-two']) {
+    session();
+    let now = 0;
+    const lines: string[] = [];
+    const writer = createWriter((line) => lines.push(line), 'run');
+    const sends = runner(() => {
+      now += 12532;
+      _setFastRunnerStateForTest(null);
+      return { ok: true, data: { typed: true } };
+    });
+    const f = walker(
+      [screen([element('@field', 'Code', { kind: 'input', testID: 'field' })])],
+      scriptedJudge(() => ({})),
+    );
+    f.deps.now = () => now;
+    f.deps.timing = createTimingObserver((event) =>
+      writer.diagnostic({ kind: 'metric', ...event, line: 17 }),
+    );
+    f.deps.diagnostic = (event) => writer.diagnostic({ kind: 'timing', ...event });
+    f.deps.fill = async (_ref, text, context) => {
+      await runNative(['fill', '@field', text, '--clear-first'], {
+        qaContext: context,
+        qaTiming: { now: () => now, observe: f.deps.timing! },
+        focusedType: true,
+        focusedProof: async () => true,
+        settle: { enabled: false },
+      });
+      assert.fail('lost authority must retain its existing refusal');
+    };
+    const result = await withInputs(new RunInputs({ CODE: secret }, ['CODE']), () =>
+      runPlan(parsePlan('\n'.repeat(16) + '1. Fill "field" with input CODE').blocks!, f.deps),
+    );
+    const record = lines.map((line) => JSON.parse(line).payload);
+    assert.equal(result.verdict, 'FAIL');
+    assert.match(result.failure!.seen, /ACTION_OUTCOME_UNCERTAIN/);
+    assert.deepEqual(sends, ['type']);
+    assert.ok(
+      record.some(
+        (event) =>
+          event.stage === 'type-call' &&
+          event.edge === 'end' &&
+          event.ms === 12532 &&
+          event.outcome === 'ok',
+      ),
+    );
+    assert.ok(
+      record.some(
+        (event) =>
+          event.stage === 'type-readback' &&
+          event.edge === 'end' &&
+          event.ms === 0 &&
+          event.outcome === 'unavailable',
+      ),
+    );
+    const refusal = record.find(
+      (event) =>
+        event.kind === 'timing' &&
+        event.stage === 'dispatch' &&
+        event.code === 'ACTION_INTERRUPTED',
+    );
+    assert.equal(refusal?.line, 17);
+    assert.equal(refusal?.authorizations, 1);
+    assert.equal(refusal?.refusalStage, 'settle');
+    assert.equal(refusal?.nativeCode, 'RUNNER_TIMEOUT');
+    assert.equal(refusal?.mutating, true);
+    for (const token of [
+      secret,
+      Buffer.from(secret).toString('hex'),
+      Buffer.from(secret).toString('base64'),
+      encodeURIComponent(secret),
+    ])
+      assert.ok(!lines.join('').includes(token));
+    outputs.push(lines.join(''));
+  }
+  assert.equal(outputs[0], outputs[1]);
 });

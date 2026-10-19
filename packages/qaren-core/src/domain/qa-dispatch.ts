@@ -20,7 +20,7 @@ export const NATIVE_CODES = [
   'RUNNER_TIMEOUT',
   'RUNNER_PROTOCOL_MISMATCH',
 ] as const satisfies readonly (ToolErrorCode | QaDispatchRefusal | 'KEYBOARD_RELAYOUT_REQUIRED')[];
-export const REFUSAL_STAGES = ['dispatch-error', 'native-response'] as const;
+export const REFUSAL_STAGES = ['dispatch-error', 'native-response', 'settle'] as const;
 const NATIVE_REASONS = [
   'app-window-unavailable',
   'exact-target-unresolved',

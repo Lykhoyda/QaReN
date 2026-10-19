@@ -448,6 +448,10 @@ fn slot_failure_path_diagnostics_keep_only_ruled_fields() {
         valid.push(serde_json::json!({"kind":"metric", "stage":"keyboard", "edge":"point", "outcome":"ok", "at":16000, "ms":25, "event":"relayout", "proof":"not-proven", "keyboard":true}));
         valid.push(serde_json::json!({"kind":"metric", "stage":"type-readback", "edge":"end", "outcome":"unavailable", "at":16000, "ms":25}));
         valid.push(serde_json::json!({"kind":"timing", "stage":"dispatch", "code":"ACTION_INTERRUPTED", "line":17, "at":16000, "acquisitionMs":1, "observationAgeMs":16000, "authorizations":1, "refusalStage":"dispatch-error", "mutating":true, "nativeCode":"RUNNER_TIMEOUT"}));
+        let mut settle_refusal = valid.last().unwrap().clone();
+        settle_refusal["refusalStage"] = "settle".into();
+        settle_refusal["nativeMutation"] = "possible".into();
+        valid.push(settle_refusal);
         let mut invalid = Vec::new();
         for (index, key) in [
             (0, "stage"),
