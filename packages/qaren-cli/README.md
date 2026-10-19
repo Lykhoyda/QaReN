@@ -560,6 +560,9 @@ It then requires a unique rebind to the refused target's testID and kind before
 retrying, including keyboard-fallback wrapper
 taps. A label-only target cannot rebind after scrolling; a missing or nonunique
 identity refuses `TARGET_NOT_FOUND` with “stayed off screen after one scroll”.
+Phrase press/fill steps may scroll toward a uniquely name-matched off-screen target
+up to six times, with a settled re-read and fresh resolution after each scroll;
+an unchanged screen stops the search with “stayed off screen after N scrolls”.
 After scrolling to resolve or uncover a press or fill target, or after a scroll
 step whose momentum may still move it (across blocks too), capture requires
 agreeing consecutive frame readbacks within the existing bounded readback
@@ -705,6 +708,7 @@ covered by the [fallback tests](../qaren-core/test/unit/qa/keyboard-fallback.tes
 ### Plan checks and screen evidence
 
 For phrase actions, the selected control's observed name must contain the words of the phrase that name it; otherwise the step refuses `TARGET_NOT_FOUND`.
+The 30-candidate bound counts the controls on screen; scrolled-out controls are reached by scrolling toward the one the phrase names, and two or more scrolled-out name matches refuse `TARGET_AMBIGUOUS`.
 
 A check is literal only when its entire payload is one quoted string:
 `✓ "Welcome"`. Text outside the quotes, as in
@@ -969,9 +973,10 @@ scroll-until drag starts inside the list it is meant to move (the target's own
 scroll container, or the frontmost one above the keyboard), not at the screen
 centre. A row scrolled out of its list drags inside that list; a row covered
 inside it drags inside its clearance band. One clearance swipe lifts a covered
-row by at most the height of its list's visible band above the keyboard, so
-scroll until a row within one band of the row you then press; a row further
-away refuses after that one swipe instead of scrolling twice. See the
+row by at most the height of its list's visible band above the keyboard.
+A uniquely name-matched off-screen row further away is scrolled toward again,
+at most six times, stopping on an unchanged screen or the existing deadline;
+covered rows and other scroll origins still get one clearance swipe. See the
 [scroll-until direction regressions](../qaren-core/test/unit/qa/scroll-until-direction.test.ts).
 
 Waits poll unresolved text as not yet present and end with `VISIBILITY_UNSURE`
