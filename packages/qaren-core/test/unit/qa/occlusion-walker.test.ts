@@ -861,6 +861,18 @@ test('O5: a press whose centre lies past its scroll clip scrolls before any disp
   ]);
 });
 
+test('a press on a row whose centre lies above its scroll clip scrolls up and presses it', async () => {
+  const f = fake([clipped(-30), ...Array.from({ length: 4 }, () => clipped(300)), done()], {});
+  const outcome = await walkBlock(block('1. Tap "go"\n'), f.deps);
+  assert.equal(outcome.block.outcome, 'pass');
+  assert.equal(f.calls[1], 'scroll up');
+  assert.ok(f.calls.includes('press @target'));
+  assert.equal(
+    f.calls.some((call) => call === 'scroll down'),
+    false,
+  );
+});
+
 test('O5: a fill whose centre lies under the keyboard scrolls before any dispatch', async () => {
   const kb = (y: number) => clipped(y, 'TextField', 'keyboard');
   const f = fake([kb(700), kb(300), kb(300)], {});
