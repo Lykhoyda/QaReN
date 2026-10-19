@@ -122,7 +122,7 @@ test('native-only Android input labels are private outward data, not rewritten l
         observed,
         judge,
         { kind: 'check', literal: false, text: 'The confirmation is visible', line: 1 },
-        { kind: 'fill', target: { phrase: 'the address field' }, text: 'replacement', line: 2 },
+        { kind: 'fill', target: { phrase: 'the address1 field' }, text: 'replacement', line: 2 },
       );
       assert.deepEqual(decision.check, {
         refuse: 'SCREEN_EVIDENCE_INCOMPLETE',
@@ -133,7 +133,7 @@ test('native-only Android input labels are private outward data, not rewritten l
       assert.equal(judge.requests.length, 0);
       const standalone = await decideScreen(observed, judge, undefined, {
         kind: 'fill',
-        target: { phrase: 'the address field' },
+        target: { phrase: 'the address1 field' },
         text: 'replacement',
         line: 2,
       });
@@ -348,13 +348,13 @@ test('current short private values cannot expose suffixes of an earlier private 
   assert.ok(!JSON.stringify(result).includes('SECRET'));
 });
 
-test('adding inputs cannot disable readable validation messages or promote body text to a header', async () => {
+test('adding inputs cannot disable readable validation messages or promote body text to a heading', async () => {
   for (const [text, visibleText] of [
     ['The email validation error is visible', ['Email format is invalid']],
     ['The email field error says the format is invalid', ['Email format is invalid']],
     ['The email field shows a validation error', ['Email format is invalid']],
     ['The email field is invalid', ['Email format is invalid']],
-    ['The profile header shows Anton', ['Profile: Anton']],
+    ['The profile heading shows Anton', ['Profile: Anton']],
     ['The name was saved successfully', ['Name saved successfully']],
   ] as const) {
     for (const noul of [0.7, 0.3, 0.5]) {
@@ -376,8 +376,8 @@ test('adding inputs cannot disable readable validation messages or promote body 
           undefined,
           ['Anton'],
         );
-        if (text === 'The profile header shows Anton') {
-          assert.equal(judge.requests.length, 0, 'body text cannot establish a header');
+        if (text === 'The profile heading shows Anton') {
+          assert.equal(judge.requests.length, 0, 'body text cannot establish a heading');
           assert.equal(result.check, 'unsure');
           continue;
         }

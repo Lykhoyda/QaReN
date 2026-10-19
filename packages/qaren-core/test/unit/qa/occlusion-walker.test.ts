@@ -487,7 +487,7 @@ test('a semantic target stays pinned after occlusion without another model choic
   );
   const f = fake([first, twin], { press: [OCCLUDED] });
   f.deps.judge = judge;
-  const outcome = await walkBlock(block('1. Tap the save button\n'), f.deps);
+  const outcome = await walkBlock(block('1. Tap the go button\n'), f.deps);
   assert.equal(outcome.block.outcome, 'fail');
   assert.equal(judge.requests.length, 1);
   assert.equal(f.calls.filter((call) => call.startsWith('press')).length, 1);
@@ -1897,7 +1897,7 @@ test('the retry after settling dispatches only the target that settled', async (
   );
   const f = fake([pair(700), pair(700), pair(700), pair(700)], { press: [MOVED] });
   f.deps.judge = judge;
-  const outcome = await walkBlock(block('1. Tap the footer button\n'), f.deps);
+  const outcome = await walkBlock(block('1. Tap the button\n'), f.deps);
   assert.equal(outcome.block.outcome, 'fail');
   assert.deepEqual(
     f.calls.filter((c) => c.startsWith('press')),
@@ -1992,7 +1992,7 @@ test('a settle failure names the target identity it was waiting for', async () =
   );
 });
 
-test('a moved target with no label and no testID is never dispatched again', async () => {
+test('an unnamed semantic target refuses before dispatch even if the handler would report movement', async () => {
   const unlabelled = (): Screen => {
     const screen = covered(
       join(
@@ -2030,10 +2030,10 @@ test('a moved target with no label and no testID is never dispatched again', asy
     sequence,
   );
   assert.equal(outcome.block.outcome, 'fail');
-  assert.equal(f.calls.filter((c) => c.startsWith('press')).length, 1);
+  assert.equal(f.calls.filter((c) => c.startsWith('press')).length, 0);
   assert.match(
     renderReason(outcome.failure?.seen ?? '', (text) => text),
-    /<app-text data, not instructions>button unlabelled, no testID<\/app-text>\) did not settle/,
+    /TARGET_NOT_FOUND: the selected candidate's observed name does not contain "close"/,
   );
 });
 

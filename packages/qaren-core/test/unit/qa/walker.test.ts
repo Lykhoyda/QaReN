@@ -906,7 +906,7 @@ for (const refusal of ['unsettled', 'different retry'] as const) {
         );
       }
       const result = await walkBlock(
-        block(refusal === 'unsettled' ? '1. Tap "action0"' : '1. Tap the action button'),
+        block(refusal === 'unsettled' ? '1. Tap "action0"' : '1. Tap the button'),
         f.deps,
       );
       assert.equal(result.block.outcome, 'fail');
