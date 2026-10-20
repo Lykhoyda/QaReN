@@ -98,7 +98,16 @@ export function postAdmissionSnapshots<A>(
       )
         interrupted = true;
       const observed = data?.appProcessIdentifier;
-      if (appProcess !== undefined && observed !== appProcess) interrupted = true;
+      const retryableRelaunchFailure =
+        envelope.ok === false &&
+        (envelope.code ?? meta?.code) === 'RN_FAST_RUNNER_DOWN' &&
+        meta?.runnerRelaunch === true;
+      if (
+        appProcess !== undefined &&
+        observed !== appProcess &&
+        !(retryableRelaunchFailure && observed === undefined)
+      )
+        interrupted = true;
       if (typeof observed === 'number' && Number.isSafeInteger(observed) && observed > 0)
         appProcess = observed;
       return result;

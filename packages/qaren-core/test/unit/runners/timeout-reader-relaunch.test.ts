@@ -6,8 +6,13 @@ import { syncBuiltinESMExports } from 'node:module';
 import { PassThrough } from 'node:stream';
 import { afterEach, beforeEach, test, type TestContext } from 'node:test';
 import { setImmediate as nextTurn } from 'node:timers/promises';
-import { captureScreen, NativeCaptureError } from '../../../dist/qa/capture.js';
+import {
+  captureScreen,
+  NativeCaptureError,
+  postAdmissionSnapshots,
+} from '../../../dist/qa/capture.js';
 import { unwrap } from '../../../dist/qa/adapt.js';
+import { okResult } from '../../../dist/utils.js';
 import { nativeCapture } from '../qa/platform-presence-fixtures.ts';
 import {
   _setFastRunnerStateForTest,
@@ -33,6 +38,7 @@ let healthDelayMs = 0;
 let blockSnapshots = false;
 let recoveryStage: 'status' | 'resend' | undefined;
 let snapshotRequests = 0;
+let appProcessIdentifier = 41;
 let commands: string[] = [];
 let abortedRequests: string[] = [];
 let launchEnv: NodeJS.ProcessEnv;
@@ -47,6 +53,7 @@ beforeEach((t) => {
   blockSnapshots = false;
   recoveryStage = undefined;
   snapshotRequests = 0;
+  appProcessIdentifier = 41;
   commands = [];
   abortedRequests = [];
   launchEnv = {};
@@ -158,7 +165,7 @@ beforeEach((t) => {
       }
       if (blockSnapshots) await new Promise(() => {});
       assert.equal(new URL(String(url)).port, '22089');
-      const data = nativeCapture();
+      const data = { ...nativeCapture(), appProcessIdentifier };
       if (emptySnapshots > 0) {
         emptySnapshots--;
         data.nodes = [];
@@ -335,7 +342,12 @@ function clock(t: TestContext) {
   };
 }
 
-function privateCapture(now: () => number, onRead: () => void, platformPresence = true) {
+function privateCapture(
+  now: () => number,
+  onRead: () => void,
+  platformPresence = true,
+  snapshot = runIOS,
+) {
   return captureScreen({
     requirePrivateInputs: true,
     appId: 'com.test',
@@ -343,7 +355,7 @@ function privateCapture(now: () => number, onRead: () => void, platformPresence 
     native: async (presenceBudgetMs) => {
       onRead();
       const { data, meta } = unwrap<Record<string, unknown>>(
-        await runIOS({
+        await snapshot({
           command: 'snapshot',
           qaReadOnly: true,
           ...(platformPresence ? { platformPresence: true, presenceBudgetMs } : {}),
@@ -538,3 +550,33 @@ test('ordinary private relaunch recovery admits a successful re-read', async (t)
   assert.equal(reads, 2);
   assert.equal(launches, 1);
 });
+
+for (const platformPresence of [true, false]) {
+  for (const recoveredProcess of [41, 77]) {
+    test(`${platformPresence ? 'presence' : 'ordinary'} recovered capture preserves post-admission process tracking for PID ${recoveredProcess}`, async (t) => {
+      const time = clock(t);
+      let baseline = true;
+      const snapshots = postAdmissionSnapshots(async (args: Parameters<typeof runIOS>[0]) => {
+        if (baseline) {
+          baseline = false;
+          return okResult({ appProcessIdentifier: 41, nodes: [] });
+        }
+        return runIOS(args);
+      }, 'com.test');
+      await snapshots.snapshot({ command: 'snapshot', qaReadOnly: true });
+      await runIOS({ command: 'type', text: 'exact' });
+      assert.equal(snapshots.interrupted(), false);
+      appProcessIdentifier = recoveredProcess;
+      healthReplies = ['down', 'alive'];
+      let reads = 0;
+      const capture = privateCapture(time.now, () => reads++, platformPresence, snapshots.snapshot);
+      await nextTurn();
+      assert.equal(reads, 1);
+      assert.equal(snapshots.interrupted(), false, 'transient absence is not a process change');
+      await time.advance(500);
+      assert.equal((await capture).captureCoverage?.native, 'complete');
+      assert.equal(reads, 2);
+      assert.equal(snapshots.interrupted(), recoveredProcess !== 41);
+    });
+  }
+}
