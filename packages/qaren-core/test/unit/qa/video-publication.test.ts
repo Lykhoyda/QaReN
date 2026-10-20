@@ -47,7 +47,9 @@ test('a recovery-only runtime input withholds video even when the plan never fil
     [observed, screen(observed.elements)],
     scriptedJudge(() => assert.fail('literal plan is model-free')),
   );
-  const inputs = new RunInputs({ PASSWORD: 'recovery-only-canary' }, ['PASSWORD']);
+  const inputs = new RunInputs({ PASSWORD: 'recovery-only-canary' }, ['PASSWORD'], undefined, [
+    'PASSWORD',
+  ]);
   const result = await withInputs(inputs, () =>
     runPlan(parsePlan('1. Tap "Save"').blocks!, f.deps),
   );
@@ -200,4 +202,16 @@ test('dev chrome interrupts publication even when recovery hides it and the retr
     assert.equal(current.front, 'app', front);
     assert.equal(result.publicationInterrupted, true, front);
   }
+});
+
+test('non-secret-only runs still refuse screenshots at the capture adapter', async () => {
+  const { captureQaScreenshot } = await import('../../../dist/qa/screenshot.js');
+  const inputs = new RunInputs({ FIXTURE: 'fixture-canary' }, ['FIXTURE'], undefined, ['FIXTURE']);
+  for (const platform of ['ios', 'android'] as const)
+    assert.deepEqual(
+      await withInputs(inputs, () =>
+        captureQaScreenshot(platform, '/unused', 'unused', 'com.test'),
+      ),
+      { ok: false, reason: 'WITHHELD_PRIVATE_INPUT' },
+    );
 });

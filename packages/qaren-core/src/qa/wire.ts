@@ -1,7 +1,7 @@
 import { RunInputs, withInputs, currentInputs } from './inputs.js';
 import { cleanDiagnostic } from './diagnostics.js';
 import { ObservedPrivacy } from './privacy.js';
-import { collectInputNames } from './plan.js';
+import { assertLoginPolicy, inputInventory } from './input-preflight.js';
 import { readBlock } from './blocks.js';
 import { isAbsolute } from 'node:path';
 import { StringDecoder } from 'node:string_decoder';
@@ -286,7 +286,6 @@ export function parsePrivateRequest(line: string): {
     )
       throw new WireError('runtime inputs are invalid');
   }
-  const names = collectInputNames(request.plan).names;
   if (request.loginSnapshot?.content) {
     const stored = readBlock(request.loginSnapshot.content);
     if (
@@ -295,8 +294,9 @@ export function parsePrivateRequest(line: string): {
       stored.header.platform !== request.platform
     )
       throw new WireError('runtime inputs are invalid');
-    for (const step of stored.steps) if (step.input !== undefined) names.push(step.input);
   }
+  const inventory = inputInventory(request.plan, request.loginSnapshot);
+  const names = inventory.requiredInputs;
   if (
     (names.length || payload.inputs !== undefined || payload.inputProtocol !== undefined) &&
     payload.inputProtocol !== 1
@@ -305,8 +305,9 @@ export function parsePrivateRequest(line: string): {
   if (request.loginBlock && names.length && !request.loginSnapshot)
     throw new WireError('runtime inputs are invalid');
   const privacy = new ObservedPrivacy();
-  const inputs = new RunInputs(payload.inputs ?? {}, names, privacy);
+  const inputs = new RunInputs(payload.inputs ?? {}, names, privacy, inventory.nonSecretInputs);
   withInputs(inputs, () => {
+    assertLoginPolicy(request.loginSnapshot, inputs);
     for (const text of [request.runId, request.appId, request.lease, request.loginBlock ?? ''])
       inputs.assertHashSafe(text);
   });

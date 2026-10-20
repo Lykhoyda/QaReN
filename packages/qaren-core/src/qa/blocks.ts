@@ -33,6 +33,7 @@ export interface StoredStep {
   selector?: Selector;
   text?: string;
   input?: string;
+  sensitivity?: 'non-secret';
   direction?: 'down' | 'up';
   until?: Selector;
   action?: 'accept' | 'dismiss';
@@ -67,7 +68,7 @@ function commandsFor(item: Item, selector: Selector | undefined, platform: Block
     case 'fill':
       return [
         `- tapOn: ${selectorYaml(selector!)}`,
-        `- inputText: ${item.input !== undefined ? `{ input: ${quote(item.input)} }` : quote(item.text)}`,
+        `- inputText: ${item.input !== undefined ? `{ input: ${quote(item.input)}${item.sensitivity ? ', sensitivity: "non-secret"' : ''} }` : quote(item.text)}`,
       ];
     case 'scroll':
       if (item.until)
@@ -208,19 +209,37 @@ function storedStep(raw: string, commands: Command[]): StoredStep | undefined {
   const tap = selectorFrom(map(first, 'tapOn'));
   if (commands.length === 1 && tap) return { raw, kind: 'press', selector: tap };
   const typed = map(second, 'inputText');
-  if (commands.length === 2 && tap && typeof typed === 'string')
+  if (
+    commands.length === 2 &&
+    tap &&
+    typeof typed === 'string' &&
+    !(
+      declared &&
+      !('refuse' in declared) &&
+      declared.kind === 'fill' &&
+      declared.input !== undefined
+    )
+  )
     return { raw, kind: 'fill', selector: tap, text: typed };
-  const slot = only(typed, ['input']);
+  const slot = only(typed, ['input']) ?? only(typed, ['input', 'sensitivity']);
   if (commands.length === 2 && tap && validInputName(slot?.input)) {
     const declared = parseStep(planLineBody(raw));
     if (
       !declared ||
       'refuse' in declared ||
       declared.kind !== 'fill' ||
-      declared.input !== slot.input
+      declared.input !== slot.input ||
+      (slot.sensitivity !== undefined && slot.sensitivity !== 'non-secret') ||
+      declared.sensitivity !== slot.sensitivity
     )
       return undefined;
-    return { raw, kind: 'fill', selector: tap, input: slot.input };
+    return {
+      raw,
+      kind: 'fill',
+      selector: tap,
+      input: slot.input,
+      ...(declared.sensitivity ? { sensitivity: declared.sensitivity } : {}),
+    };
   }
   if (commands.length !== 1) return undefined;
   const swipe = only(map(first, 'swipe'), ['direction']);
@@ -309,7 +328,12 @@ export function storedMatches(block: Block, stored: StoredBlock): boolean {
       const step = stored.steps[i];
       if (step.raw !== item.raw || step.kind !== item.kind) return false;
       if (item.kind === 'check') return item.literal ? step.text === item.text : !step.text;
-      if (item.kind === 'fill') return step.text === item.text && step.input === item.input;
+      if (item.kind === 'fill')
+        return (
+          step.text === item.text &&
+          step.input === item.input &&
+          step.sensitivity === item.sensitivity
+        );
       if (item.kind === 'scroll')
         return step.direction === item.direction && !!step.until === !!item.until;
       if (item.kind === 'dialog') return step.action === item.action;
