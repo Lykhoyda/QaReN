@@ -592,7 +592,10 @@ anything is sent, because a drag under the touch slop would land as a tap.
 Successful iOS fast-runner scrolls now run the same bounded settle wait as taps
 before returning, using snapshot equality. Results
 include `meta.settle` and `meta.timings_ms.settle`; a timeout reports unsettled
-rather than proving the target safe. `RN_SETTLE=0` or `false` skips this wait,
+rather than proving the target safe. On iOS, an advisory settle snapshot timeout
+leaves the screen reader running without changing the dispatch result or settle
+budget. If the next ordinary command also times out, its own timeout path still
+contains and relaunches the reader. `RN_SETTLE=0` or `false` skips this wait,
 its probes and metadata, but does not disable the walker's frame guard below.
 It then requires a unique rebind to the refused target's testID and kind before
 retrying, including keyboard-fallback wrapper
