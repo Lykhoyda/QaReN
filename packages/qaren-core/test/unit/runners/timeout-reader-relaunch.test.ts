@@ -31,6 +31,9 @@ let failLaunch = false;
 let launchDelayMs = 0;
 let healthDelayMs = 0;
 let blockSnapshots = false;
+let recoveryStage: 'status' | 'resend' | undefined;
+let snapshotRequests = 0;
+let commands: string[] = [];
 let abortedRequests: string[] = [];
 let launchEnv: NodeJS.ProcessEnv;
 
@@ -42,6 +45,9 @@ beforeEach((t) => {
   launchDelayMs = 0;
   healthDelayMs = 0;
   blockSnapshots = false;
+  recoveryStage = undefined;
+  snapshotRequests = 0;
+  commands = [];
   abortedRequests = [];
   launchEnv = {};
   for (const [key, value] of Object.entries({
@@ -133,7 +139,23 @@ beforeEach((t) => {
       });
     }
     const request = JSON.parse(String(init?.body));
-    if (request.command === 'snapshot' && request.platformPresence) {
+    commands.push(request.command);
+    if (request.command === 'status' && recoveryStage) {
+      if (recoveryStage === 'status') await new Promise(() => {});
+      await new Promise((resolve) => setTimeout(resolve, 1_000));
+      return Response.json({
+        ok: true,
+        data: { commandId: request.commandId, state: 'completed' },
+      });
+    }
+    if (request.command === 'snapshot') {
+      snapshotRequests++;
+      if (recoveryStage && snapshotRequests === 1) {
+        await new Promise((resolve) =>
+          setTimeout(resolve, recoveryStage === 'status' ? 4_000 : 1_000),
+        );
+        throw new Error('connection reset');
+      }
       if (blockSnapshots) await new Promise(() => {});
       assert.equal(new URL(String(url)).port, '22089');
       const data = nativeCapture();
@@ -313,7 +335,7 @@ function clock(t: TestContext) {
   };
 }
 
-function privateCapture(now: () => number, onRead: () => void) {
+function privateCapture(now: () => number, onRead: () => void, platformPresence = true) {
   return captureScreen({
     requirePrivateInputs: true,
     appId: 'com.test',
@@ -324,8 +346,7 @@ function privateCapture(now: () => number, onRead: () => void) {
         await runIOS({
           command: 'snapshot',
           qaReadOnly: true,
-          platformPresence: true,
-          presenceBudgetMs,
+          ...(platformPresence ? { platformPresence: true, presenceBudgetMs } : {}),
         }),
       );
       return { ...data, snapshotVerdict: meta?.snapshotVerdict };
@@ -464,30 +485,56 @@ test(
   },
 );
 
-for (const slowStage of ['health', 'snapshot'] as const) {
-  test(`private relaunch recovery bounds slow ${slowStage} reads by the settle budget`, async (t) => {
-    const time = clock(t);
-    await runIOS({ command: 'type', text: 'exact' });
-    healthReplies = ['down'];
-    let reads = 0;
-    let finished = false;
-    const capture = privateCapture(time.now, () => reads++).catch((error: Error) => {
-      finished = true;
-      return error;
+for (const platformPresence of [true, false]) {
+  for (const slowStage of ['health', 'snapshot', 'status', 'resend'] as const) {
+    if (platformPresence && (slowStage === 'status' || slowStage === 'resend')) continue;
+    test(`${platformPresence ? 'presence' : 'ordinary'} relaunch recovery bounds slow ${slowStage} reads by the settle budget`, async (t) => {
+      const time = clock(t);
+      await runIOS({ command: 'type', text: 'exact' });
+      healthReplies = ['down'];
+      let reads = 0;
+      let finished = false;
+      const capture = privateCapture(time.now, () => reads++, platformPresence).catch(
+        (error: Error) => {
+          finished = true;
+          return error;
+        },
+      );
+      await nextTurn();
+      assert.equal(reads, 1);
+      commands = [];
+      if (slowStage === 'health') {
+        healthDelayMs = 2_000;
+        healthReplies = ['down', 'down', 'down'];
+      } else {
+        healthDelayMs = slowStage === 'snapshot' ? 1_500 : 0;
+        blockSnapshots = true;
+        if (slowStage === 'status' || slowStage === 'resend') recoveryStage = slowStage;
+      }
+      for (let tick = 0; tick < 11; tick++) await time.advance(500);
+      assert.equal(finished, false);
+      await time.advance(499);
+      assert.equal(finished, false);
+      await time.advance(1);
+      assert.ok((await capture) instanceof NativeCaptureError);
+      assert.equal(time.now(), 6_000);
+      assert.ok(abortedRequests.includes(slowStage === 'health' ? '/health' : '/command'));
+      if (slowStage === 'status') assert.deepEqual(commands, ['snapshot', 'status']);
+      if (slowStage === 'resend') assert.deepEqual(commands, ['snapshot', 'status', 'snapshot']);
+      assert.equal(launches, 1);
     });
-    await nextTurn();
-    assert.equal(reads, 1);
-    healthDelayMs = slowStage === 'health' ? 2_000 : 1_500;
-    if (slowStage === 'health') healthReplies = ['down', 'down', 'down'];
-    else blockSnapshots = true;
-    for (let tick = 0; tick < 11; tick++) await time.advance(500);
-    assert.equal(finished, false);
-    await time.advance(499);
-    assert.equal(finished, false);
-    await time.advance(1);
-    assert.ok((await capture) instanceof NativeCaptureError);
-    assert.equal(time.now(), 6_000);
-    assert.ok(abortedRequests.includes(slowStage === 'health' ? '/health' : '/command'));
-    assert.equal(launches, 1);
-  });
+  }
 }
+
+test('ordinary private relaunch recovery admits a successful re-read', async (t) => {
+  const time = clock(t);
+  await runIOS({ command: 'type', text: 'exact' });
+  healthReplies = ['down', 'alive'];
+  let reads = 0;
+  const capture = privateCapture(time.now, () => reads++, false);
+  await nextTurn();
+  await time.advance(500);
+  assert.equal((await capture).captureCoverage?.native, 'complete');
+  assert.equal(reads, 2);
+  assert.equal(launches, 1);
+});

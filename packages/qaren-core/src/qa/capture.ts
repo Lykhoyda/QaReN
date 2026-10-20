@@ -1,6 +1,6 @@
 import { HandlerError } from './adapt.js';
 import { systemModalDiagnostic } from '../domain/system-modal-diagnostic.js';
-import { sleep } from '../domain/cancellation.js';
+import { sleep, withDeadline } from '../domain/cancellation.js';
 import { SETTLE_DEFAULT_BUDGET_MS } from '../lifecycle/settle.js';
 import { WAIT_POLL_MS } from './walker.js';
 import { diagnosticField, privateSnapshotDiagnostics } from './snapshot-diagnostics.js';
@@ -507,7 +507,13 @@ async function capture(deps: CaptureDeps): Promise<Screen> {
     let runnerDown = false;
     try {
       native = await measureTiming(deps.timing, now, 'native-total', () =>
-        deps.native(presenceBudgetMs),
+        retryDeadline === undefined
+          ? deps.native(presenceBudgetMs)
+          : withDeadline(
+              performance.now() + Math.max(0, retryDeadline - now()),
+              new NativeCaptureError(),
+              () => deps.native(presenceBudgetMs),
+            ),
       );
     } catch (error) {
       if (error instanceof AppProcessGoneError) throw error;
