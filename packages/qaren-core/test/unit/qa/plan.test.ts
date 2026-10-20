@@ -394,3 +394,29 @@ test('a declared input echo parses as its own step and refuses every malformed f
   const without = parsePlan(source.replace('2. Expect input EMAIL on screen\n', ''));
   assert.notEqual(without.blocks![0].planHash, plan.blocks[0].planHash);
 });
+
+test('named fixture grammar is finite and literal fill shapes remain unchanged', () => {
+  assert.deepEqual(parseStep('Fill "code" with input FIXTURE (non-secret)'), {
+    kind: 'fill',
+    target: { quoted: 'code', phrase: 'code' },
+    input: 'FIXTURE',
+    sensitivity: 'non-secret',
+  });
+  assert.deepEqual(parseStep('Fill "code" with input FIXTURE'), {
+    kind: 'fill',
+    target: { quoted: 'code', phrase: 'code' },
+    input: 'FIXTURE',
+  });
+  assert.equal(parseStep('Type "text with input FIXTURE" into "field"')?.kind, 'fill');
+  assert.equal(parseStep('Type "text" into field (optional)')?.kind, 'fill');
+  for (const text of [
+    'Fill "field" with input "FIXTURE"',
+    'Fill "field" with input FIXTURE (non-secert)',
+    'Fill "field" with "fixture" (non-secret)',
+    'Expect input FIXTURE on screen (non-secret)',
+    'Please fill "field" with input FIXTURE (non-secret)',
+  ]) {
+    assert.ok(parsePlan(`1. ${text}`).refused, text);
+    assert.equal(planNeedsJev(`1. ${text}`), false);
+  }
+});

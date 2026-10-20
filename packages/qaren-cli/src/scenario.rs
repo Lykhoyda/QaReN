@@ -218,6 +218,12 @@ pub enum DepsPolicy {
 pub struct DepsSpec {
     #[serde(default = "d_policy")]
     pub policy: DepsPolicy,
+    #[serde(
+        default,
+        skip_serializing_if = "Vec::is_empty",
+        deserialize_with = "crate::redact::deserialize_registry_auth_env"
+    )]
+    pub registry_auth_env: Vec<String>,
 }
 
 fn d_policy() -> DepsPolicy {
@@ -228,6 +234,7 @@ impl Default for DepsSpec {
     fn default() -> Self {
         DepsSpec {
             policy: DepsPolicy::Install,
+            registry_auth_env: Vec::new(),
         }
     }
 }
@@ -273,11 +280,11 @@ impl Scenario {
                 "check the scenario path",
             )
         })?;
-        let scenario: Scenario = serde_yaml::from_str(&raw).map_err(|e| {
+        let scenario: Scenario = serde_yaml::from_str(&raw).map_err(|_| {
             Failure::new(
                 "validate",
                 FailureCode::ScenarioInvalid,
-                format!("scenario {} does not parse as qaren/1: {e}", path.display()),
+                format!("scenario {} does not parse as qaren/1", path.display()),
                 "fix the scenario file against packages/qaren-cli/README.md",
             )
         })?;
@@ -294,6 +301,9 @@ impl Scenario {
                 "fix the scenario file against packages/qaren-cli/README.md",
             )
         };
+        if !crate::redact::valid_registry_auth_env_names(&self.deps.registry_auth_env) {
+            return Err(invalid("deps.registry_auth_env requires at most 64 non-reserved environment names matching [A-Za-z_][A-Za-z0-9_]*, each at most 128 ASCII bytes".into()));
+        }
         if self.schema != SCENARIO_SCHEMA {
             return Err(Failure::new(
                 "validate",

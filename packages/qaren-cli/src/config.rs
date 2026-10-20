@@ -13,6 +13,11 @@ pub struct CheckConfig {
     pub app_id: String,
     #[serde(default = "d_package_manager")]
     pub package_manager: String,
+    #[serde(
+        default,
+        deserialize_with = "crate::redact::deserialize_registry_auth_env"
+    )]
+    pub registry_auth_env: Vec<String>,
     #[serde(default = "d_metro_port")]
     pub metro_port: u16,
     #[serde(default)]
@@ -93,12 +98,12 @@ impl CheckConfig {
                 "create .qaren/config.yaml with at least `appId: <bundle id>`",
             )
         })?;
-        let config: CheckConfig = serde_yaml::from_str(&raw).map_err(|e| {
+        let config: CheckConfig = serde_yaml::from_str(&raw).map_err(|_| {
             Failure::new(
                 "config",
                 FailureCode::ScenarioInvalid,
-                format!("{} does not parse: {e}", path.display()),
-                "fix .qaren/config.yaml (keys: appId, packageManager, metroPort, ios, android, nodePath, devClientScheme, loginBlock, loginMarker)",
+                format!("{} does not parse as check configuration", path.display()),
+                "fix .qaren/config.yaml (keys: appId, packageManager, metroPort, ios, android, nodePath, devClientScheme, loginBlock, loginMarker, registryAuthEnv)",
             )
         })?;
         config.validate(path)?;
@@ -117,6 +122,9 @@ impl CheckConfig {
                 "fix .qaren/config.yaml",
             )
         };
+        if !crate::redact::valid_registry_auth_env_names(&self.registry_auth_env) {
+            return Err(invalid("registryAuthEnv requires at most 64 non-reserved environment names matching [A-Za-z_][A-Za-z0-9_]*, each at most 128 ASCII bytes".into()));
+        }
         if self.package_manager != "pnpm" {
             return Err(invalid(format!(
                 "packageManager {:?} is not supported in this release; only pnpm is",

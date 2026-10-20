@@ -231,6 +231,91 @@ fn slot_diagnostics_retain_only_allowlisted_events_without_affecting_the_result(
 }
 
 #[test]
+fn readiness_reasons_reach_private_diagnostics_only_as_classified_end_events() {
+    use qaren::redact::{with_input_scope, InputValues};
+    use serde_json::json;
+    use std::ffi::OsString;
+    use std::sync::Arc;
+    let repo = common::temp_repo();
+    let inputs = Arc::new(InputValues::from_entries([(
+        OsString::from("QAREN_INPUT_PASSWORD"),
+        OsString::from("private-synthetic-value"),
+    )]));
+    with_input_scope(inputs, || {
+        let reasons = [
+            "alive",
+            "dead",
+            "health",
+            "authority-mismatch",
+            "legacy",
+            "protocol-older",
+            "protocol-newer",
+            "version-skew",
+            "missing-commands",
+            "missing-features",
+            "unknown",
+        ];
+        let metric = json!({
+            "kind": "metric", "stage": "native-readiness", "edge": "end", "outcome": "failed",
+            "at": 200, "line": 3, "observation": 7, "count": 2
+        });
+        let expected: Vec<_> = reasons
+            .iter()
+            .map(|reason| {
+                let mut value = metric.clone();
+                value["readinessReason"] = json!(reason);
+                value
+            })
+            .collect();
+        let mut payloads = expected.clone();
+        payloads.push(metric.clone());
+        for reason in [
+            json!("private-synthetic-value"),
+            json!({}),
+            json!([]),
+            json!(1),
+            json!(null),
+        ] {
+            let mut invalid = metric.clone();
+            invalid["readinessReason"] = reason;
+            payloads.push(invalid);
+        }
+        for (key, value) in [
+            ("stage", "capture"),
+            ("edge", "start"),
+            ("edge", "point"),
+            ("raw", "private-synthetic-value"),
+        ] {
+            let mut invalid = expected[0].clone();
+            invalid[key] = json!(value);
+            payloads.push(invalid);
+        }
+        let mut stdout = String::new();
+        for (i, value) in payloads.iter().enumerate() {
+            stdout.push_str(&envelope(i as u64 + 2, "diagnostic", &value.to_string()));
+            stdout.push('\n');
+        }
+        stdout.push_str(&envelope(
+            payloads.len() as u64 + 2,
+            "result",
+            &pass_ledger(&[]),
+        ));
+        stdout.push('\n');
+        let mut mock = MockRunner::new();
+        mock.expect_spawn_piped("walk.js", 9000, &stdout, Some(0));
+        let result = run_child(&mut mock, &repo.join("core.log"));
+        assert_eq!(result.verdict, Verdict::Pass);
+        let stored = std::fs::read_to_string(repo.join("core-diagnostics.jsonl")).unwrap();
+        assert!(!stored.contains("private-synthetic-value"));
+        let got: Vec<serde_json::Value> = stored
+            .lines()
+            .map(|line| serde_json::from_str(line).unwrap())
+            .collect();
+        assert_eq!(got, [expected, vec![metric]].concat());
+    });
+}
+
+#[test]
 fn a_real_slot_child_keeps_raw_logs_withheld_while_retaining_structured_diagnostics() {
     use qaren::exec::RealRunner;
     use qaren::redact::{with_input_scope, InputValues};
@@ -248,6 +333,7 @@ fn a_real_slot_child_keeps_raw_logs_withheld_while_retaining_structured_diagnost
           const reader = require('node:readline').createInterface({input: process.stdin});
           reader.once('line', input => {
             const { payload, runId } = JSON.parse(input);
+            if (!payload.plan.includes('input PASSWORD (non-secret)')) process.exit(4);
             process.stderr.write(payload.inputs.PASSWORD + '\n');
             let seq = 1;
             const send = (type, payload) => process.stdout.write(JSON.stringify({v: 1, runId, seq: ++seq, type, payload}) + '\n');
@@ -264,11 +350,13 @@ fn a_real_slot_child_keeps_raw_logs_withheld_while_retaining_structured_diagnost
         let mut runner = RealRunner::with_log_executable(env!("CARGO_BIN_EXE_qaren").into());
         let fixture = CmdSpec::new("fixture", "node", &["-e", script], 5);
         let raw_log = repo.join("core.log");
+        let mut annotated = request();
+        annotated.plan = "1. Fill \"code-field\" with input PASSWORD (non-secret)".into();
         let child = core::spawn_private(
             &mut runner,
             &fixture,
             &raw_log,
-            &request(),
+            &annotated,
             Some(&resolved),
             None,
         )

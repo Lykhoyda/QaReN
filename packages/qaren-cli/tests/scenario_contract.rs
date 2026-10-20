@@ -1,3 +1,5 @@
+mod common;
+
 use qaren::failure::FailureCode;
 use qaren::scenario::{Platform, Scenario};
 use std::path::Path;
@@ -378,4 +380,51 @@ fn prepare_refuses_a_borrowed_emulator_scenario_before_any_command() {
     );
     assert!(mock.calls.is_empty());
     std::fs::remove_dir_all(&dir).unwrap();
+}
+
+#[test]
+fn registry_auth_scenario_defaults_roundtrips_and_refuses_value_echoes() {
+    let repo = common::temp_repo();
+    let path = repo.join("scenario.yaml");
+    let base = valid_ios_yaml();
+    std::fs::write(&path, &base).unwrap();
+    let (scenario, _) = Scenario::load(&path).unwrap();
+    assert!(scenario.deps.registry_auth_env.is_empty());
+    assert!(!serde_yaml::to_string(&scenario)
+        .unwrap()
+        .contains("registry_auth_env"));
+    std::fs::write(&path, format!("{base}deps:\n  registry_auth_env: [PRIVATE_REGISTRY_TOKEN, lower_token, _AUTH, PRIVATE_REGISTRY_TOKEN]\n")).unwrap();
+    let (scenario, _) = Scenario::load(&path).unwrap();
+    let yaml = serde_yaml::to_string(&scenario).unwrap();
+    std::fs::write(&path, yaml).unwrap();
+    let (roundtrip, _) = Scenario::load(&path).unwrap();
+    assert_eq!(
+        roundtrip.deps.registry_auth_env,
+        [
+            "PRIVATE_REGISTRY_TOKEN",
+            "lower_token",
+            "_AUTH",
+            "PRIVATE_REGISTRY_TOKEN"
+        ]
+    );
+    for value in common::invalid_registry_auth_lists() {
+        std::fs::write(
+            &path,
+            format!("{base}deps:\n  registry_auth_env: {value}\n"),
+        )
+        .unwrap();
+        let failure = Scenario::load(&path).unwrap_err();
+        assert_eq!(failure.code, FailureCode::ScenarioInvalid);
+        let output = serde_json::to_string(&failure).unwrap();
+        assert!(!output.contains("mistaken-value"));
+        assert!(!output.contains("fallback"));
+    }
+    for key in ["registryAuthEnv", "REGISTRY_AUTH_ENV", "env"] {
+        std::fs::write(&path, format!("{base}deps:\n  {key}: []\n")).unwrap();
+        assert_eq!(
+            Scenario::load(&path).unwrap_err().code,
+            FailureCode::ScenarioInvalid
+        );
+    }
+    std::fs::remove_dir_all(repo).unwrap();
 }

@@ -47,7 +47,9 @@ test('a recovery-only runtime input withholds video even when the plan never fil
     [observed, screen(observed.elements)],
     scriptedJudge(() => assert.fail('literal plan is model-free')),
   );
-  const inputs = new RunInputs({ PASSWORD: 'recovery-only-canary' }, ['PASSWORD']);
+  const inputs = new RunInputs({ PASSWORD: 'recovery-only-canary' }, ['PASSWORD'], undefined, [
+    'PASSWORD',
+  ]);
   const result = await withInputs(inputs, () =>
     runPlan(parsePlan('1. Tap "Save"').blocks!, f.deps),
   );
@@ -83,6 +85,46 @@ test('post-admission startup observations remain in the ledger after normal walk
     ],
     ['process change', okResult({ appProcessIdentifier: 77, nodes: [] }), true],
     ['process lost', failResult('app stopped', { reason: 'app-not-running' }), true],
+    [
+      'transient relaunch failure',
+      failResult('runner restarting', 'RN_FAST_RUNNER_DOWN', { runnerRelaunch: true }),
+      false,
+    ],
+    [
+      'transient relaunch failure with metadata code',
+      failResult('runner restarting', { code: 'RN_FAST_RUNNER_DOWN', runnerRelaunch: true }),
+      false,
+    ],
+    ['runner down outside relaunch', failResult('runner unavailable', 'RN_FAST_RUNNER_DOWN'), true],
+    [
+      'other relaunch failure',
+      failResult('runner stale', 'RN_FAST_RUNNER_STALE', { runnerRelaunch: true }),
+      true,
+    ],
+    ...[
+      { code: 'RUNNER_LEAK' },
+      { reason: 'app-not-running' },
+      { recovered: 'runner' },
+      { recoveryTier: 'relaunch' },
+      { recoveryReason: 'relaunch-failed' },
+      { foregroundSurface: 'dev_client_picker' },
+      { foregroundSurface: 'first_run_tutorial' },
+    ].map(
+      (evidence) =>
+        [
+          'transient failure with interruption evidence',
+          failResult('runner restarting', 'RN_FAST_RUNNER_DOWN', {
+            runnerRelaunch: true,
+            ...evidence,
+          }),
+          true,
+        ] as const,
+    ),
+    [
+      'successful response without process proof',
+      okResult({}, { meta: { code: 'RN_FAST_RUNNER_DOWN', runnerRelaunch: true } }),
+      true,
+    ],
     ['normal app', app, false],
   ] as const) {
     let probes = 0;
@@ -160,4 +202,16 @@ test('dev chrome interrupts publication even when recovery hides it and the retr
     assert.equal(current.front, 'app', front);
     assert.equal(result.publicationInterrupted, true, front);
   }
+});
+
+test('non-secret-only runs still refuse screenshots at the capture adapter', async () => {
+  const { captureQaScreenshot } = await import('../../../dist/qa/screenshot.js');
+  const inputs = new RunInputs({ FIXTURE: 'fixture-canary' }, ['FIXTURE'], undefined, ['FIXTURE']);
+  for (const platform of ['ios', 'android'] as const)
+    assert.deepEqual(
+      await withInputs(inputs, () =>
+        captureQaScreenshot(platform, '/unused', 'unused', 'com.test'),
+      ),
+      { ok: false, reason: 'WITHHELD_PRIVATE_INPUT' },
+    );
 });

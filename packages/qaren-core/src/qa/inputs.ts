@@ -24,11 +24,18 @@ export const declareEcho = (name: string): void => {
 export class RunInputs {
   #values: ReadonlyMap<string, string>;
   #filled = new Set<string>();
+  #strict: ReadonlyMap<string, string>;
+  #nonSecret: readonly string[];
   #privacy: ObservedPrivacy;
   #refuse?: (reason: InputPrivacyRefusal) => void;
   #terminal?: InputPrivacyRefusal;
 
-  constructor(value: unknown, required: readonly string[], privacy = new ObservedPrivacy()) {
+  constructor(
+    value: unknown,
+    required: readonly string[],
+    privacy = new ObservedPrivacy(),
+    nonSecretInputs: readonly string[] = [],
+  ) {
     const invalid = () => new Error('runtime inputs are invalid');
     if (!value || typeof value !== 'object' || Object.getPrototypeOf(value) !== Object.prototype)
       throw invalid();
@@ -59,12 +66,19 @@ export class RunInputs {
         throw invalid();
     }
     this.#values = new Map(entries as [string, string][]);
+    if (nonSecretInputs.some((name) => !validInputName(name) || !names.includes(name)))
+      throw invalid();
+    this.#nonSecret = Object.freeze([...new Set(nonSecretInputs)].sort());
+    this.#strict = new Map([...this.#values].filter(([name]) => !this.#nonSecret.includes(name)));
     this.#privacy = privacy;
     privacy.classifyInputs([...this.#values.values()]);
   }
 
   names(): string[] {
     return [...this.#values.keys()].sort();
+  }
+  nonSecretNames(): readonly string[] {
+    return this.#nonSecret;
   }
   get hasInputs(): boolean {
     return this.#values.size > 0;
@@ -87,22 +101,24 @@ export class RunInputs {
   }
   assertHashSafe(text: string): void {
     if (this.#terminal) throw this.#terminal;
-    if (this.#privacy.assertInputHashSafe(text)) return;
+    if (this.#privacy.assertInputHashSafe(text, [...this.#strict.values()])) return;
     this.#terminal = new InputPrivacyRefusal();
     this.#refuse?.(this.#terminal);
     throw this.#terminal;
   }
-  expectEcho(identifier: string | undefined): void {
+  expectEcho(identifier: string | undefined, inputName?: string): void {
+    if (inputName !== undefined && this.#nonSecret.includes(inputName)) return;
     if (identifier) this.#filled.add(identifier);
   }
   // A registered fill target, or a label the block declared, shows a value by design: it hashes as a constant.
   maskFilledEcho<T extends { identifier?: string; label?: string }>(node: T): T {
     const label = node.label;
-    if (label === undefined || this.#privacy.assertInputHashSafe(label)) return node;
+    if (label === undefined || this.#privacy.assertInputHashSafe(label, [...this.#strict.values()]))
+      return node;
     const declared = echoes.getStore();
     const allowed =
       (node.identifier !== undefined && this.#filled.has(node.identifier)) ||
-      [...this.#values].every(
+      [...this.#strict].every(
         ([name, value]) => declared?.has(name) || this.#privacy.assertInputHashSafe(label, [value]),
       );
     return allowed ? { ...node, label: INPUT_ECHO_MARKER } : node;

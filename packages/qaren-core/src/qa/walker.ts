@@ -1114,7 +1114,7 @@ async function walkBlockScoped(
         after.screen,
       );
     let entry: ActResult;
-    currentInputs()?.expectEcho(again.element.testID ?? again.oracleTestID);
+    currentInputs()?.expectEcho(again.element.testID ?? again.oracleTestID, item.input);
     try {
       entry = await mutate(item, after, (context) =>
         deps.typeFocused!(
@@ -1180,7 +1180,7 @@ async function walkBlockScoped(
     privacy.concealFallback(fillText(item), false, quoted);
     if (item.input === undefined) privateFills.push(item.line);
     let entry: ActResult;
-    currentInputs()?.expectEcho(quoted);
+    currentInputs()?.expectEcho(quoted, item.input);
     try {
       entry = await mutate(item, before, (context) =>
         deps.typeFocused!(quoted, fillText(item), quoted, context, true),
@@ -2105,7 +2105,7 @@ async function walkBlockScoped(
                 if (item.input === undefined && !privateFills.includes(item.line))
                   privateFills.push(item.line);
               }
-              if (item.kind === 'fill') currentInputs()?.expectEcho(element?.testID);
+              if (item.kind === 'fill') currentInputs()?.expectEcho(element?.testID, item.input);
               if (
                 (item.kind === 'scroll' || item.kind === 'back') &&
                 before.screen.front === 'dialog'
@@ -2563,7 +2563,9 @@ export function loginBlock(slug: string, stored: StoredBlock): Block {
         return {
           kind: 'fill',
           target: exact(step.selector!),
-          ...(step.input !== undefined ? { input: step.input } : { text: step.text! }),
+          ...(step.input !== undefined
+            ? { input: step.input, ...(step.sensitivity ? { sensitivity: step.sensitivity } : {}) }
+            : { text: step.text! }),
           ...at,
         };
       case 'scroll':

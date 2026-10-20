@@ -21,10 +21,15 @@ fn probe_json() -> serde_json::Value {
 }
 
 fn script_plan(mock: &mut MockRunner, repo: &Path) {
-    script_plan_requiring(mock, repo, &[]);
+    script_plan_requiring(mock, repo, &[], &[]);
 }
 
-fn script_plan_requiring(mock: &mut MockRunner, repo: &Path, required: &[&str]) {
+fn script_plan_requiring(
+    mock: &mut MockRunner,
+    repo: &Path,
+    required: &[&str],
+    non_secret: &[&str],
+) {
     mock.environment
         .insert("TYPESAFE_API_KEY".into(), TEST_KEY.into());
     let plan = std::fs::read(repo.join("test-app/plan.md")).unwrap();
@@ -40,10 +45,16 @@ fn script_plan_requiring(mock: &mut MockRunner, repo: &Path, required: &[&str]) 
     if let Some(login) = &login {
         inventory["loginSnapshot"] = login.clone();
     }
+    if !non_secret.is_empty() {
+        inventory["nonSecretInputs"] = serde_json::json!(non_secret);
+    }
     let inventory = inventory.to_string();
     mock.expect_run("walk.js --preflight-stdin", CmdOutput::success(&inventory));
     let mut output = private_preflight(output);
     output["requiredInputs"] = serde_json::json!(required);
+    if !non_secret.is_empty() {
+        output["nonSecretInputs"] = serde_json::json!(non_secret);
+    }
     mock.expect_run(
         "walk.js --preflight-stdin",
         CmdOutput::success(&output.to_string()),
@@ -1010,6 +1021,7 @@ fn workspace_changed_by_clean_prebuild_refuses_before_creating_output_or_buildin
         common::write_ios_workspace(&app, "ios/Native.xcworkspace");
         configure_workspace(&app, "ios/Native.xcworkspace", "Native");
         let req = request(&repo, &app, 30);
+        common::append_registry_config(&req.config_path);
         let mut mock = MockRunner::new();
         let path = app.join("ios/Native.xcworkspace");
         mock.workspace_mutation = Some(if symlink {
@@ -1039,6 +1051,7 @@ fn workspace_changed_by_clean_prebuild_refuses_before_creating_output_or_buildin
             FailureCode::IosBuildCapabilityUnavailable
         );
         assert_eq!(mock.remaining(), 0);
+        common::assert_registry_specs(&mock.calls);
         assert_eq!(mock.piped_stdin_text(0), "start\n");
         assert!(!req.runs_root.join(run_id()).join("ios-build").exists());
         assert!(!labels(&mock).iter().any(|l| matches!(
@@ -2782,7 +2795,7 @@ fn script_borrow_api(mock: &mut MockRunner, devices: &str, serial: &str, api: u1
 
 // Node, plan preflight, the borrow, candidate, prereqs, disk and self identity, then the Metro port after the lease.
 fn script_android_preflight(mock: &mut MockRunner, repo: &Path, devices: &str, serial: &str) {
-    script_android_preflight_requiring(mock, repo, devices, serial, &[]);
+    script_android_preflight_requiring(mock, repo, devices, serial, &[], &[]);
 }
 
 fn script_android_preflight_requiring(
@@ -2791,9 +2804,10 @@ fn script_android_preflight_requiring(
     devices: &str,
     serial: &str,
     required: &[&str],
+    non_secret: &[&str],
 ) {
     mock.expect_run("node --version", CmdOutput::success("v26.8.1\n"));
-    script_plan_requiring(mock, repo, required);
+    script_plan_requiring(mock, repo, required, non_secret);
     script_borrow(mock, devices, serial);
     mock.expect_run("git", CmdOutput::success(&format!("{}\n", repo.display())));
     mock.expect_run("git", CmdOutput::success(&format!("{}\n", repo.display())));
@@ -2929,7 +2943,19 @@ const GRADLE: &str =
 #[test]
 fn android_check_prebuilds_an_absent_android_dir_before_gradle() {
     let (repo, app) = app_repo();
-    let req = android_request(&repo, &app);
+    let mut req = android_request(&repo, &app);
+    let config = std::fs::read_to_string(&req.config_path).unwrap();
+    std::fs::write(
+        &req.config_path,
+        format!("{config}registryAuthEnv: [CANDIDATE_REGISTRY_TOKEN]\n"),
+    )
+    .unwrap();
+    req.config_path = repo.join("operator-config.yaml");
+    std::fs::write(
+        &req.config_path,
+        format!("{config}registryAuthEnv: [PRIVATE_REGISTRY_TOKEN]\n"),
+    )
+    .unwrap();
     let mut mock = android_mock();
     script_android_preflight(&mut mock, &repo, ONE_EMULATOR, EMULATOR);
     mock.expect_run("pnpm install --frozen-lockfile", CmdOutput::success(""));
@@ -2943,6 +2969,20 @@ fn android_check_prebuilds_an_absent_android_dir_before_gradle() {
 
     assert_eq!(receipt.result, ReceiptResult::Pass, "{:?}", receipt.failure);
     assert_eq!(mock.remaining(), 0);
+    common::assert_registry_specs(&mock.calls);
+    let prebuild = mock
+        .calls
+        .iter()
+        .find(|spec| spec.label == "expo-prebuild")
+        .unwrap();
+    assert_eq!(prebuild.program, "/bin/bash");
+    assert!(prebuild.unset.contains(&"CI".into()));
+    assert_eq!(mock.piped_stdin_text(0), "start\n");
+    let record = RunRecord::load(&req.runs_root, &receipt.run_id).unwrap();
+    assert_eq!(
+        record.scenario.deps.registry_auth_env,
+        ["PRIVATE_REGISTRY_TOKEN"]
+    );
     assert_subsequence(
         &labels(&mock),
         &[
@@ -2986,23 +3026,39 @@ fn android_check_prebuilds_an_absent_android_dir_before_gradle() {
 
 #[test]
 fn only_ios_runs_with_runtime_inputs_disclose_the_simulator_log() {
-    let (repo, app) = app_repo();
-    let req = android_request(&repo, &app);
-    let mut mock = android_mock();
-    script_android_preflight_requiring(&mut mock, &repo, ONE_EMULATOR, EMULATOR, &["PASSWORD"]);
-    mock.expect_run("pnpm install --frozen-lockfile", CmdOutput::success(""));
-    mock.expect_run("ls-files", CmdOutput::success(""));
-    mock.expect_run("check-ignore -q android/", CmdOutput::success(""));
-    script_android_finite_build(&mut mock, PREBUILD, 5000, 0);
-    script_android_finite_build(&mut mock, GRADLE, 5001, 0);
-    script_android_launch_walk_teardown(&mut mock);
-    let inputs = std::sync::Arc::new(qaren::redact::InputValues::from_entries([(
-        "QAREN_INPUT_PASSWORD".into(),
-        "android-synthetic".into(),
-    )]));
-    let receipt = qaren::redact::with_input_scope(inputs, || run_with_events(&mut mock, &req)).0;
-    assert_eq!(receipt.result, ReceiptResult::Pass, "{:?}", receipt.failure);
-    assert!(!receipt.outcomes.contains_key("platform_log"));
+    for non_secret in [false, true] {
+        let (repo, app) = app_repo();
+        let annotation = if non_secret { " (non-secret)" } else { "" };
+        std::fs::write(
+            app.join("plan.md"),
+            format!("1. Fill \"password\" with input PASSWORD{annotation}\n"),
+        )
+        .unwrap();
+        let req = android_request(&repo, &app);
+        let mut mock = android_mock();
+        script_android_preflight_requiring(
+            &mut mock,
+            &repo,
+            ONE_EMULATOR,
+            EMULATOR,
+            &["PASSWORD"],
+            if non_secret { &["PASSWORD"] } else { &[] },
+        );
+        mock.expect_run("pnpm install --frozen-lockfile", CmdOutput::success(""));
+        mock.expect_run("ls-files", CmdOutput::success(""));
+        mock.expect_run("check-ignore -q android/", CmdOutput::success(""));
+        script_android_finite_build(&mut mock, PREBUILD, 5000, 0);
+        script_android_finite_build(&mut mock, GRADLE, 5001, 0);
+        script_android_launch_walk_teardown(&mut mock);
+        let inputs = std::sync::Arc::new(qaren::redact::InputValues::from_entries([(
+            "QAREN_INPUT_PASSWORD".into(),
+            "android-synthetic".into(),
+        )]));
+        let receipt =
+            qaren::redact::with_input_scope(inputs, || run_with_events(&mut mock, &req)).0;
+        assert_eq!(receipt.result, ReceiptResult::Pass, "{:?}", receipt.failure);
+        assert!(!receipt.outcomes.contains_key("platform_log"));
+    }
 }
 
 #[test]
@@ -3051,6 +3107,7 @@ fn android_check_refuses_to_generate_an_android_dir_git_would_track() {
 fn android_check_prebuild_failure_is_build_failed() {
     let (repo, app) = app_repo();
     let req = android_request(&repo, &app);
+    common::append_registry_config(&req.config_path);
     let mut mock = android_mock();
     script_android_preflight(&mut mock, &repo, ONE_EMULATOR, EMULATOR);
     mock.expect_run("pnpm install --frozen-lockfile", CmdOutput::success(""));
@@ -3065,6 +3122,19 @@ fn android_check_prebuild_failure_is_build_failed() {
         FailureCode::BuildFailed
     );
     assert_eq!(mock.remaining(), 0);
+    assert!(receipt
+        .failure
+        .as_ref()
+        .unwrap()
+        .next_action
+        .contains("output was withheld"));
+    assert!(receipt
+        .failure
+        .as_ref()
+        .unwrap()
+        .next_action
+        .contains("registry setup"));
+    assert_eq!(mock.piped_stdin_text(0), "start\n");
     assert!(!labels(&mock).iter().any(|l| l == "gradle-assemble"));
     let devices: Vec<String> = adb_calls(&mock)
         .into_iter()
@@ -5274,10 +5344,16 @@ impl Runner for PrRunner {
 
 // Preflight through the lease for a PR run: the PR worktree comes before provenance and the lease.
 fn script_pr_preflight(mock: &mut MockRunner, repo: &Path, wt: &Path) {
-    script_pr_preflight_requiring(mock, repo, wt, &[]);
+    script_pr_preflight_requiring(mock, repo, wt, &[], &[]);
 }
 
-fn script_pr_preflight_requiring(mock: &mut MockRunner, repo: &Path, wt: &Path, required: &[&str]) {
+fn script_pr_preflight_requiring(
+    mock: &mut MockRunner,
+    repo: &Path,
+    wt: &Path,
+    required: &[&str],
+    non_secret: &[&str],
+) {
     mock.expect_run("node --version", CmdOutput::success("v26.8.1\n"));
     mock.expect_run("git", CmdOutput::success(&format!("{}\n", repo.display()))); // invoking checkout
     mock.expect_run("gh pr view", pr_view_json(PR_HEAD));
@@ -5287,7 +5363,7 @@ fn script_pr_preflight_requiring(mock: &mut MockRunner, repo: &Path, wt: &Path, 
         CmdOutput::success(&format!("{PR_HEAD}\n")),
     );
     mock.expect_run("update-ref -d", CmdOutput::success(""));
-    script_plan_requiring(mock, repo, required);
+    script_plan_requiring(mock, repo, required, non_secret);
     mock.expect_run(
         "simctl list devices booted",
         CmdOutput::success(&booted_json()),
@@ -5373,82 +5449,96 @@ fn pr_runs_the_walk_on_a_worktree_at_the_head_with_a_recording_in_order() {
 
 #[test]
 fn a_pr_run_with_runtime_inputs_never_starts_the_recorder_and_keeps_values_private() {
-    let secret = "synthetic\"slot\\value";
-    let (repo, app) = app_repo();
-    let mut req = pr_request(&repo, &app);
-    req.runs_root = repo.join(".qaren/runs");
-    let wt = req.runs_root.join(run_id()).join("wt");
-    let mut runner = PrRunner {
-        inner: MockRunner::new(),
-        app: app.clone(),
-        recorder_persisted_before_spawn: None,
-        fail_core_spawn: false,
-    };
-    let mock = &mut runner.inner;
-    script_pr_preflight_requiring(mock, &repo, &wt, &["PASSWORD"]);
-    script_provision(mock);
-    script_pr_provenance_recheck(mock);
-    script_drift_status(mock);
-    script_host_probe(mock, UDID, hosts_absent());
-    mock.expect_spawn_piped("walk.js", 9000, &pr_pass_stdout(), Some(0));
-    script_core_identity(mock);
-    script_drift_status(mock);
-    mock.expect_run("git", CmdOutput::success(&format!("{PR_HEAD}\n")));
-    mock.expect_run("git", CmdOutput::success(""));
-    script_pr_teardown_after_drift(mock);
-    mock.expect_run("du -sk", CmdOutput::success("4\n"));
-    mock.expect_run("worktree remove --force", CmdOutput::success(""));
-    mock.expect_run(
-        "gh pr view https://github.com/o/r/pull/12",
-        pr_view_json(PR_HEAD),
-    );
-    let inputs = std::sync::Arc::new(qaren::redact::InputValues::from_entries([
-        ("QAREN_INPUT_PASSWORD".into(), secret.into()),
-        ("QAREN_INPUT_UNUSED".into(), "unused-synthetic".into()),
-    ]));
-    let (receipt, events) =
-        qaren::redact::with_input_scope(inputs, || run_with_events(&mut runner, &req));
-    assert_eq!(receipt.result, ReceiptResult::Pass, "{:?}", receipt.failure);
-    assert_eq!(runner.inner.remaining(), 0);
-    assert!(!labels(&runner.inner).iter().any(|l| l.contains("record")));
-    assert!(receipt.outcomes["video"].starts_with("unavailable("));
-    assert_eq!(
-        receipt.outcomes["platform_log"],
-        "the simulator system log may record displayed field text; see Runtime inputs"
-    );
-    assert_eq!(
-        events
-            .iter()
-            .filter(|e| e["event"] == "stage" && e["payload"]["name"] == "recording")
-            .map(|e| e["payload"]["state"].as_str().unwrap())
-            .collect::<Vec<_>>(),
-        ["skipped"]
-    );
-    let escaped = serde_json::to_string(secret).unwrap();
-    let escaped = &escaped[1..escaped.len() - 1];
-    let preflight = String::from_utf8(runner.inner.private_inputs[1].clone()).unwrap();
-    assert!(preflight.contains(escaped));
-    assert!(!preflight.contains("unused-synthetic"));
-    let core = (0..runner.inner.piped_stdin.len())
-        .map(|i| runner.inner.piped_stdin_text(i))
-        .filter_map(|text| serde_json::from_str::<serde_json::Value>(&text).ok())
-        .find(|value| value["payload"].get("plan").is_some())
+    for non_secret in [false, true] {
+        let secret = "synthetic\"slot\\value";
+        let (repo, app) = app_repo();
+        let annotation = if non_secret { " (non-secret)" } else { "" };
+        std::fs::write(
+            app.join("plan.md"),
+            format!("1. Fill \"password\" with input PASSWORD{annotation}\n"),
+        )
         .unwrap();
-    assert_eq!(
-        core["payload"]["inputs"],
-        serde_json::json!({"PASSWORD": secret})
-    );
-    let durable = walk_files(&req.runs_root);
-    assert!(!durable.is_empty());
-    for (path, bytes) in durable {
-        let text = String::from_utf8_lossy(&bytes);
-        assert!(
-            !text.contains("slot") && !text.contains(escaped),
-            "{}",
-            path.display()
+        let mut req = pr_request(&repo, &app);
+        req.runs_root = repo.join(".qaren/runs");
+        let wt = req.runs_root.join(run_id()).join("wt");
+        let mut runner = PrRunner {
+            inner: MockRunner::new(),
+            app: app.clone(),
+            recorder_persisted_before_spawn: None,
+            fail_core_spawn: false,
+        };
+        let mock = &mut runner.inner;
+        script_pr_preflight_requiring(
+            mock,
+            &repo,
+            &wt,
+            &["PASSWORD"],
+            if non_secret { &["PASSWORD"] } else { &[] },
         );
+        script_provision(mock);
+        script_pr_provenance_recheck(mock);
+        script_drift_status(mock);
+        script_host_probe(mock, UDID, hosts_absent());
+        mock.expect_spawn_piped("walk.js", 9000, &pr_pass_stdout(), Some(0));
+        script_core_identity(mock);
+        script_drift_status(mock);
+        mock.expect_run("git", CmdOutput::success(&format!("{PR_HEAD}\n")));
+        mock.expect_run("git", CmdOutput::success(""));
+        script_pr_teardown_after_drift(mock);
+        mock.expect_run("du -sk", CmdOutput::success("4\n"));
+        mock.expect_run("worktree remove --force", CmdOutput::success(""));
+        mock.expect_run(
+            "gh pr view https://github.com/o/r/pull/12",
+            pr_view_json(PR_HEAD),
+        );
+        let inputs = std::sync::Arc::new(qaren::redact::InputValues::from_entries([
+            ("QAREN_INPUT_PASSWORD".into(), secret.into()),
+            ("QAREN_INPUT_UNUSED".into(), "unused-synthetic".into()),
+        ]));
+        let (receipt, events) =
+            qaren::redact::with_input_scope(inputs, || run_with_events(&mut runner, &req));
+        assert_eq!(receipt.result, ReceiptResult::Pass, "{:?}", receipt.failure);
+        assert_eq!(runner.inner.remaining(), 0);
+        assert!(!labels(&runner.inner).iter().any(|l| l.contains("record")));
+        assert!(receipt.outcomes["video"].starts_with("unavailable("));
+        assert_eq!(
+            receipt.outcomes["platform_log"],
+            "the simulator system log may record displayed field text; see Runtime inputs"
+        );
+        assert_eq!(
+            events
+                .iter()
+                .filter(|e| e["event"] == "stage" && e["payload"]["name"] == "recording")
+                .map(|e| e["payload"]["state"].as_str().unwrap())
+                .collect::<Vec<_>>(),
+            ["skipped"]
+        );
+        let escaped = serde_json::to_string(secret).unwrap();
+        let escaped = &escaped[1..escaped.len() - 1];
+        let preflight = String::from_utf8(runner.inner.private_inputs[1].clone()).unwrap();
+        assert!(preflight.contains(escaped));
+        assert!(!preflight.contains("unused-synthetic"));
+        let core = (0..runner.inner.piped_stdin.len())
+            .map(|i| runner.inner.piped_stdin_text(i))
+            .filter_map(|text| serde_json::from_str::<serde_json::Value>(&text).ok())
+            .find(|value| value["payload"].get("plan").is_some())
+            .unwrap();
+        assert_eq!(
+            core["payload"]["inputs"],
+            serde_json::json!({"PASSWORD": secret})
+        );
+        let durable = walk_files(&req.runs_root);
+        assert!(!durable.is_empty());
+        for (path, bytes) in durable {
+            let text = String::from_utf8_lossy(&bytes);
+            assert!(
+                !text.contains("slot") && !text.contains(escaped),
+                "{}",
+                path.display()
+            );
+        }
+        assert!(!receipt.to_json().contains("slot"));
     }
-    assert!(!receipt.to_json().contains("slot"));
 }
 
 fn walk_files(root: &Path) -> Vec<(PathBuf, Vec<u8>)> {

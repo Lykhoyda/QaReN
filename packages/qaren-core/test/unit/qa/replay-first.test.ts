@@ -1187,3 +1187,47 @@ for (const mode of ['absent', 'duplicate'] as const) {
     );
   });
 }
+
+test('run-wide fixture policy changes re-walk unchanged earlier blocks, including the last opt-in removal', async () => {
+  const { RunInputs, withInputs } = await import('../../../dist/qa/inputs.js');
+  const dir = root();
+  try {
+    for (const [nonSecret, expected] of [
+      [true, 'discovered'],
+      [true, 'replayed'],
+      [false, 'discovered'],
+      [false, 'replayed'],
+      [true, 'discovered'],
+    ] as const) {
+      const source = `### First\n1. Tap "ready"\n### Second\n1. Fill "field" with input FIXTURE${nonSecret ? ' (non-secret)' : ''}`;
+      const inputs = new RunInputs(
+        { FIXTURE: expected === 'replayed' ? 'second-fixture' : 'first-fixture' },
+        ['FIXTURE'],
+        undefined,
+        nonSecret ? ['FIXTURE'] : [],
+      );
+      const f = walker(
+        [
+          screen([
+            element('@ready', 'Ready', { testID: 'ready' }),
+            element('@field', 'Field', { kind: 'input', testID: 'field' }),
+          ]),
+        ],
+        scriptedJudge(() => assert.fail('literal targets do not need Jev')),
+      );
+      const result = ledger(
+        await withInputs(inputs, () => runPlan(blocks(source), f.deps, [], store(dir))),
+      );
+      assert.equal(result.verdict, 'PASS');
+      assert.deepEqual(
+        result.blocks.map((block) => block.source),
+        [expected, expected],
+      );
+      const first = readFileSync(join(dir, '.qaren/actions/first.yaml'), 'utf8');
+      assert.equal(first.includes('# planHash: ns1:'), nonSecret);
+      assert.ok(!first.includes('first-fixture') && !first.includes('second-fixture'));
+    }
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});

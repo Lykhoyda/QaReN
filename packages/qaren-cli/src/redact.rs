@@ -845,7 +845,46 @@ pub fn redact_inputs(raw: &str) -> String {
     capture_input_scope().map_or_else(|| raw.to_string(), |scope| scope.redact(raw))
 }
 
-pub fn scrub_secret_env(command: &mut std::process::Command, label: &str) {
+pub(crate) fn deserialize_registry_auth_env<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> Result<Vec<String>, D::Error> {
+    let items = <Vec<serde_json::Value> as serde::Deserialize>::deserialize(deserializer)?;
+    items
+        .into_iter()
+        .map(|item| match item {
+            serde_json::Value::String(name) => Ok(name),
+            _ => Err(serde::de::Error::custom(
+                "registry auth environment requires a list of strings",
+            )),
+        })
+        .collect()
+}
+
+pub fn valid_registry_auth_env_name(name: &str) -> bool {
+    let upper = name.to_ascii_uppercase();
+    let mut bytes = name.bytes();
+    name.len() <= 128
+        && bytes
+            .next()
+            .is_some_and(|b| b.is_ascii_alphabetic() || b == b'_')
+        && bytes.all(|b| b.is_ascii_alphanumeric() || b == b'_')
+        && upper != "TYPESAFE_API_KEY"
+        && !upper.starts_with("QAREN_INPUT_")
+}
+
+pub fn valid_registry_auth_env_names(names: &[String]) -> bool {
+    names.len() <= 64 && names.iter().all(|name| valid_registry_auth_env_name(name))
+}
+
+pub(crate) fn is_registry_child(label: &str) -> bool {
+    matches!(label, "pnpm-install" | "expo-prebuild")
+}
+
+pub fn scrub_secret_env(
+    command: &mut std::process::Command,
+    label: &str,
+    registry_auth_env: &[String],
+) {
     let keys: std::collections::BTreeSet<_> = std::env::vars_os()
         .map(|(key, _)| key)
         .chain(command.get_envs().map(|(key, _)| key.to_owned()))
@@ -866,8 +905,8 @@ pub fn scrub_secret_env(command: &mut std::process::Command, label: &str) {
                 .any(|part| name.windows(part.len()).any(|window| window == *part));
             let model =
                 key == "TYPESAFE_API_KEY" && matches!(label, "core-walk" | "plan-preflight");
-            let registry = matches!(label, "pnpm-install" | "expo-prebuild")
-                && [
+            let registry = is_registry_child(label)
+                && ([
                     "NPM_TOKEN",
                     "NODE_AUTH_TOKEN",
                     "YARN_NPM_AUTH_TOKEN",
@@ -876,7 +915,11 @@ pub fn scrub_secret_env(command: &mut std::process::Command, label: &str) {
                     "GH_TOKEN",
                 ]
                 .iter()
-                .any(|allowed| key == *allowed);
+                .any(|allowed| key == *allowed)
+                    || (valid_registry_auth_env_names(registry_auth_env)
+                        && registry_auth_env
+                            .iter()
+                            .any(|allowed| key.as_os_str() == std::ffi::OsStr::new(allowed))));
             secret && !model && !registry
         })
         .collect();
