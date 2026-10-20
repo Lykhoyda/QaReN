@@ -1085,8 +1085,16 @@ the refusal reports only a value-free node count and fixed cause codes. Native
 acquisition failures also refuse without reinjection or a public-tree fallback.
 A required private capture re-reads a canonical empty snapshot (`nodes=[]`,
 verdict `degraded`, `nodeCount=0`, reasons exactly `empty-capture`, no truncation
-or dropped nodes) at 500 ms intervals within the existing 6-second settle budget
-and remaining total capture budget. Its unchanged ref map and zero-node count
+or dropped nodes), or an iOS `RN_FAST_RUNNER_DOWN` failure marked as pending
+runner relaunch recovery, at 500 ms intervals within the existing 6-second settle
+budget and remaining total capture budget. Both conditions share one retry
+deadline; re-reads on both ordinary and platform-presence routes, including
+readiness probes and snapshot transport, stop waiting at that deadline.
+After timeout containment relaunches the iOS reader, it waits for an `alive`
+probe with `PLATFORM_PRESENCE_V2` within the remaining `READY_TIMEOUT_MS`;
+the type call retains its existing result. Persistent runner unavailability
+refuses with `NATIVE_CAPTURE_UNAVAILABLE` after the capture retry budget.
+An empty snapshot's unchanged ref map and zero-node count
 diagnostics do not prevent this read-only retry; persistent emptiness still
 refuses with the same code and message, and other incomplete captures refuse
 immediately.
@@ -2087,6 +2095,10 @@ reach the pull request. Without a start time or a successful trim, or when an ap
 process change, launcher/server-picker fallback, floating button or open dev menu
 is observed after admission, no video is uploaded, even if recovery clears the
 overlay and the retry passes. A pre-plan login does not reset these interruptions.
+During [private-capture relaunch recovery](#check-a-plan), a transient runner-down
+failure without an app process identifier does not alone mark an interruption;
+a subsequent capture reporting a different app process still does, as does
+any other existing interruption evidence.
 Missing, unknown or unreadable eligibility also withholds the video; the comment
 explains why, without changing the run verdict.
 
