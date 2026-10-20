@@ -1586,8 +1586,8 @@ New files for passing `###` blocks use `<app>/.qaren/actions/<slug>.yaml`, where
 `<app>` is the directory holding `.qaren/config.yaml` (with an external `--config`,
 the checked working tree). The file is a Maestro-shaped action: each plan line as a
 comment, then the commands with the exact `testID` (or, without one, the label) the
-step used. On the next run a block whose plan lines, platform and app are unchanged
-is replayed by those stored identities through the same walk, without Jev for quoted
+step used. On the next run a block whose plan lines, platform, app and
+[runtime input](#runtime-inputs) policy are unchanged is replayed by those stored identities through the same walk, without Jev for quoted
 targets or literal checks; phrase checks still ask Jev. An ambiguous stored
 identity refuses `TARGET_AMBIGUOUS` without re-walking. A stored identity that no
 longer resolves before that step authorizes any mutation re-walks
