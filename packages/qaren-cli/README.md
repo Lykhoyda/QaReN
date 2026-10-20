@@ -1090,7 +1090,8 @@ runner relaunch recovery, at 500 ms intervals within the existing 6-second settl
 budget and remaining total capture budget. Both conditions share one retry
 deadline; re-reads on both ordinary and platform-presence routes, including
 readiness probes and snapshot transport, stop waiting at that deadline.
-After timeout containment relaunches the iOS reader, it waits for an `alive`
+After timeout containment relaunches the iOS reader attach-only to the
+already-running target app (same process, never a fresh launch), it waits for an `alive`
 probe with `PLATFORM_PRESENCE_V2` within the remaining `READY_TIMEOUT_MS`;
 the type call retains its existing result. Persistent runner unavailability
 refuses with `NATIVE_CAPTURE_UNAVAILABLE` after the capture retry budget.
