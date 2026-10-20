@@ -8,7 +8,12 @@ import {
 } from '../qa/snapshot-diagnostics.js';
 import { DEVICE_LEASE_REQUIRED, leaseFromEnvironment } from './lease-env.js';
 import { QaDispatchError, type QaDispatchContext } from '../domain/qa-dispatch.js';
-import { measureTiming, observeTiming, type TimingContext } from '../qa/timing.js';
+import {
+  measureTiming,
+  observeTiming,
+  type NativeReadinessReason,
+  type TimingContext,
+} from '../qa/timing.js';
 import { QA_READ_ONLY_CAPABILITY, checkQaNativeOutcome } from './qa-native-policy.js';
 import {
   execFile,
@@ -2283,19 +2288,22 @@ async function probeQaReadiness(
   count: number,
 ): Promise<FastRunnerLivenessDetail> {
   let alive = false;
+  let readinessReason: NativeReadinessReason = 'unknown';
   return measureTiming(
     qaTiming &&
       ((event) =>
         observeTiming(qaTiming.observe, {
           ...event,
           count,
-          ...(event.edge === 'end' ? { outcome: alive ? 'ok' : 'failed' } : {}),
+          ...(event.edge === 'end' ? { outcome: alive ? 'ok' : 'failed', readinessReason } : {}),
         })),
     qaTiming?.now ?? (() => performance.now()),
     'native-readiness',
     async () => {
       const readiness = await probeFastRunnerLivenessDetailed({ clearState: () => {} });
       alive = readiness.liveness === 'alive';
+      readinessReason =
+        readiness.liveness === 'stale' ? (readiness.staleReason ?? 'unknown') : readiness.liveness;
       return readiness;
     },
   );

@@ -65,6 +65,19 @@ const NATIVE_CODES: &[&str] = &[
     "RUNNER_TIMEOUT",
     "RUNNER_PROTOCOL_MISMATCH",
 ];
+const NATIVE_READINESS_REASONS: &[&str] = &[
+    "alive",
+    "dead",
+    "health",
+    "authority-mismatch",
+    "legacy",
+    "protocol-older",
+    "protocol-newer",
+    "version-skew",
+    "missing-commands",
+    "missing-features",
+    "unknown",
+];
 
 fn clean(value: &Value) -> Option<Value> {
     let fields = value.as_object()?;
@@ -85,6 +98,7 @@ fn clean(value: &Value) -> Option<Value> {
                 "appliedBudgetMs",
                 "moved",
                 "maxDelta",
+                "readinessReason",
             ],
         ),
         "timing" => (
@@ -119,6 +133,12 @@ fn clean(value: &Value) -> Option<Value> {
         if !required.contains(&key.as_str()) && !optional.contains(&key.as_str()) {
             return None;
         }
+        if key == "readinessReason"
+            && (fields.get("stage")?.as_str()? != "native-readiness"
+                || fields.get("edge")?.as_str()? != "end")
+        {
+            return None;
+        }
         let words: Option<&[&str]> = match key.as_str() {
             "stage" if kind == "metric" => Some(STAGES),
             "stage" => Some(&["decision", "dispatch"]),
@@ -128,6 +148,7 @@ fn clean(value: &Value) -> Option<Value> {
             "code" => Some(CODES),
             "nativeCode" => Some(NATIVE_CODES),
             "nativeMutation" => Some(&["none", "observed", "possible"]),
+            "readinessReason" => Some(NATIVE_READINESS_REASONS),
             _ => None,
         };
         if let Some(words) = words {

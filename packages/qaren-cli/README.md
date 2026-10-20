@@ -1456,7 +1456,10 @@ file, reference or secret store.
   that requires inputs skips recording and screenshots.
 - Slot runs retain value-free structured events in `core-diagnostics.jsonl` beside `core.log`:
   `metric` has measured stage timings, and `timing` has decision/dispatch timing, finite outcome
-  codes and allowlisted native refusal codes. Each attempted block containing a slot fill emits
+  codes and allowlisted native refusal codes. Native-readiness end metrics also retain the
+  existing liveness classification as `readinessReason`, or `unknown` if the probe did not
+  return a classification; `count` identifies the probe site, not a retry ordinal.
+  Each attempted block containing a slot fill emits
   `block-outcome` with its first plan line and existing `pass`/`fail`/`refused` result; only saved-login
   recovery emits `login-outcome`. A block passing is its existing block result, not a new assertion
   of authentication. These events contain no block names, slot names, input-derived tokens, screen
