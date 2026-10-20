@@ -1988,7 +1988,7 @@ async function reapAndRelaunchFastRunner(state: FastRunnerState): Promise<Runner
     await reapStaleFastRunner();
     const postMortem = getRunnerPostMortem();
     const deadline = performance.now() + READY_TIMEOUT_MS;
-    await ensureFastRunner(state.deviceId, state.bundleId);
+    await ensureFastRunner(state.deviceId, state.bundleId, { attachOnly: true });
     while (runnerState && performance.now() < deadline) {
       const readiness = await probeFastRunnerLivenessDetailed({
         clearState: () => {},
@@ -2073,7 +2073,7 @@ async function containTypeTimeout(
       pidPreserved: 'unverified',
       activateLaunchedApp: 'unverified',
       semantics:
-        'runner relaunch is attempted after a proven reap; target activation semantics are unchanged',
+        'runner relaunch is attempted after a proven reap and attaches only to the existing target app',
     },
     // GH #581: never carry the actual field value — the verdict alone ships.
   };

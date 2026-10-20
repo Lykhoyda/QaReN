@@ -200,6 +200,9 @@ test('a verified type timeout relaunches the reaped reader before the next prese
   assert.equal(result.ok, true);
   assert.equal(result.data.verification, 'exact-readback');
   assert.equal(result.meta.runnerTimeoutRecovery.runnerPostMortem.provenance, 'adopted');
+  assert.equal(launchEnv.RN_RUNNER_ATTACH_ONLY, '1');
+  assert.equal(launchEnv.TEST_RUNNER_RN_RUNNER_ATTACH_ONLY, '1');
+  assert.equal(launchEnv.TEST_RUNNER_RN_RUNNER_APP_ID, 'dev.fixture');
   const capture = parseEnvelope(
     await runIOS({ command: 'snapshot', platformPresence: true, presenceBudgetMs: 20_000 }),
   );
