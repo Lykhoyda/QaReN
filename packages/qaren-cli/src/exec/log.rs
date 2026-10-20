@@ -20,8 +20,12 @@ pub(super) struct LogDrain {
 }
 
 impl LogDrain {
-    pub(super) fn spawn(executable: &Path, path: &Path) -> io::Result<(Self, UnixStream)> {
-        let (drain, output, _) = Self::start(executable, path, false)?;
+    pub(super) fn spawn(
+        executable: &Path,
+        path: &Path,
+        withhold: bool,
+    ) -> io::Result<(Self, UnixStream)> {
+        let (drain, output, _) = Self::start(executable, path, false, withhold)?;
         Ok((drain, output))
     }
 
@@ -29,8 +33,9 @@ impl LogDrain {
     pub(super) fn spawn_paired(
         executable: &Path,
         path: &Path,
+        withhold: bool,
     ) -> io::Result<(Self, UnixStream, UnixStream)> {
-        let (drain, output, error) = Self::start(executable, path, true)?;
+        let (drain, output, error) = Self::start(executable, path, true, withhold)?;
         Ok((
             drain,
             output,
@@ -42,6 +47,7 @@ impl LogDrain {
         executable: &Path,
         path: &Path,
         paired: bool,
+        withhold: bool,
     ) -> io::Result<(Self, UnixStream, Option<UnixStream>)> {
         let log = std::fs::OpenOptions::new()
             .create(true)
@@ -89,10 +95,10 @@ impl LogDrain {
                 });
             }
         }
-        if crate::redact::private_output_mode() {
+        if withhold || crate::redact::private_output_mode() {
             command.arg(WITHHOLD_ARG);
         }
-        crate::redact::scrub_secret_env(&mut command, "");
+        crate::redact::scrub_secret_env(&mut command, "", &[]);
         let child = command.spawn()?;
         let error = second.map(|(stderr_input, stderr_output)| {
             drop(stderr_input);

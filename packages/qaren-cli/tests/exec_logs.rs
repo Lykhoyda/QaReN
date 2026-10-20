@@ -695,3 +695,273 @@ fn a_command_log_that_cannot_be_truncated_is_refused() {
     drop(reader);
     std::fs::remove_dir_all(dir).unwrap();
 }
+
+#[test]
+fn declared_registry_auth_output_is_withheld() {
+    let dir = common::temp_repo();
+    let result = Command::new(std::env::current_exe().unwrap())
+        .args(["--exact", "registry_output_fixture_worker", "--nocapture"])
+        .env_clear()
+        .env("PATH", "/usr/bin:/bin")
+        .env("QAREN_REGISTRY_OUTPUT_FIXTURE_DIR", &dir)
+        .env("NPM_TOKEN", "bare-synthetic-canary-6d7e\n\"slash\\tail")
+        .env(
+            "PRIVATE_REGISTRY_TOKEN",
+            "bare-synthetic-canary-6d7e\n\"slash\\tail",
+        )
+        .output()
+        .unwrap();
+    std::fs::remove_dir_all(dir).unwrap();
+    assert!(
+        result.status.success(),
+        "{}",
+        String::from_utf8_lossy(&result.stderr)
+    );
+}
+
+#[test]
+fn registry_output_emitter() {
+    let Ok(name) = std::env::var("QAREN_EMITTER_NAME") else {
+        return;
+    };
+    let value = std::env::var(name).unwrap();
+    let encoded = serde_json::to_string(&value).unwrap();
+    for bytes in [value.as_bytes(), encoded.as_bytes()] {
+        for byte in bytes {
+            std::io::stdout().write_all(&[*byte]).unwrap();
+            std::io::stderr().write_all(&[*byte]).unwrap();
+        }
+    }
+    let mut input = String::new();
+    std::io::stdin().read_to_string(&mut input).unwrap();
+    let dir = std::env::var_os("QAREN_REGISTRY_OUTPUT_FIXTURE_DIR").unwrap();
+    std::fs::write(
+        Path::new(&dir).join("handshake"),
+        if input == "start\n" { "yes" } else { "no" },
+    )
+    .unwrap();
+    if std::env::var("QAREN_EMITTER_STATUS").unwrap() == "timeout" {
+        std::thread::sleep(Duration::from_secs(5));
+    }
+    std::process::exit(
+        std::env::var("QAREN_EMITTER_STATUS")
+            .unwrap()
+            .parse()
+            .unwrap_or(0),
+    );
+}
+
+#[test]
+fn registry_output_fixture_worker() {
+    let Some(dir) = std::env::var_os("QAREN_REGISTRY_OUTPUT_FIXTURE_DIR") else {
+        return;
+    };
+    let dir = Path::new(&dir);
+    let canary = std::env::var("NPM_TOKEN").unwrap();
+    let encoded = serde_json::to_string(&canary).unwrap();
+    let no_canary = |text: &str| {
+        assert!(!text.contains("bare-synthetic-canary"));
+        assert!(!text.contains(&encoded));
+        assert!(!text.contains(&canary));
+    };
+    for label in ["pnpm-install", "expo-prebuild"] {
+        for name in ["NPM_TOKEN", "PRIVATE_REGISTRY_TOKEN"] {
+            for status in ["0", "7", "timeout"] {
+                for route in ["captured", "private", "piped", "group"] {
+                    if status == "timeout" && !matches!(route, "captured" | "private") {
+                        continue;
+                    }
+                    let spec = CmdSpec::new(
+                        label,
+                        std::env::current_exe().unwrap().to_str().unwrap(),
+                        &["--exact", "registry_output_emitter", "--nocapture"],
+                        1,
+                    )
+                    .registry_auth_env(&[name.to_string()])
+                    .env("QAREN_EMITTER_NAME", name)
+                    .env("QAREN_EMITTER_STATUS", status);
+                    no_canary(&format!(
+                        "{spec:?} {} {}",
+                        spec.rendered(),
+                        serde_json::to_string(&spec).unwrap()
+                    ));
+                    let log = dir.join("child.log");
+                    std::fs::write(&log, "earlier command\n").unwrap();
+                    qaren::events::init();
+                    qaren::events::attach(&dir.join("events.jsonl"));
+                    let mut runner =
+                        RealRunner::with_log_executable(env!("CARGO_BIN_EXE_qaren").into());
+                    let retained = match route {
+                        "captured" => {
+                            let output = runner.run(&spec);
+                            assert_eq!(output.timed_out, status == "timeout");
+                            assert_eq!(
+                                output.exit_code,
+                                if status == "timeout" {
+                                    None
+                                } else {
+                                    Some(status.parse().unwrap())
+                                }
+                            );
+                            assert!(output.stdout.is_empty());
+                            assert_eq!(output.stderr, "[private output withheld]");
+                            format!("{} {} {}", output.stdout, output.stderr, output.summary())
+                        }
+                        "private" => {
+                            let output = runner.run_private(&spec, b"start\n");
+                            assert_eq!(output.timed_out(), status == "timeout");
+                            assert_eq!(
+                                output.exit_code(),
+                                if status == "timeout" {
+                                    None
+                                } else {
+                                    Some(status.parse().unwrap())
+                                }
+                            );
+                            assert!(output.stdout().is_empty());
+                            output.summary()
+                        }
+                        "piped" => {
+                            let mut child = runner.spawn_piped(&spec, &log).unwrap();
+                            child.stdin.write_all(b"start\n").unwrap();
+                            drop(child.stdin);
+                            let mut stdout = String::new();
+                            child.stdout.read_to_string(&mut stdout).unwrap();
+                            assert!(stdout.is_empty());
+                            let mut exit = None;
+                            until(|| {
+                                exit = child.handle.try_wait().unwrap();
+                                exit.is_some()
+                            });
+                            assert_eq!(exit, Some(status.parse().unwrap()));
+                            assert_eq!(
+                                std::fs::read_to_string(dir.join("handshake")).unwrap(),
+                                "yes"
+                            );
+                            std::fs::read_to_string(&log).unwrap()
+                        }
+                        _ => {
+                            let child = runner.spawn_group(&spec, &log).unwrap();
+                            until(|| runner.try_reap(child.pid));
+                            runner.flush_logs().unwrap();
+                            std::fs::read_to_string(&log).unwrap()
+                        }
+                    };
+                    no_canary(&retained);
+                    assert!(retained.contains("[private output withheld]"));
+                    if matches!(route, "group" | "piped") {
+                        assert!(retained.starts_with("earlier command\n"));
+                    }
+                    let failure = Failure::new(
+                        "deps",
+                        FailureCode::DepsInstallFailed,
+                        &retained,
+                        "check registry setup",
+                    )
+                    .with_evidence(vec![retained.clone()]);
+                    persist_failure(dir, "registryrun", failure.clone());
+                    no_canary(
+                        &std::fs::read_to_string(qaren::runrecord::RunRecord::path(
+                            dir,
+                            "registryrun",
+                        ))
+                        .unwrap(),
+                    );
+                    let mut receipt = qaren::receipt::Receipt::new(
+                        "check",
+                        "registryrun",
+                        qaren::receipt::ReceiptResult::Failed,
+                        "deps",
+                        "fixture".into(),
+                    );
+                    receipt.failure = Some(failure);
+                    no_canary(&receipt.to_json());
+                    qaren::events::end(&receipt, 1);
+                    qaren::events::finish();
+                    no_canary(&std::fs::read_to_string(dir.join("events.jsonl")).unwrap());
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn registry_output_policy_preserves_unconfigured_protocols_and_withholds_missing_names() {
+    let dir = common::temp_repo();
+    let result = Command::new(std::env::current_exe().unwrap())
+        .args([
+            "--exact",
+            "registry_output_policy_fixture_worker",
+            "--nocapture",
+        ])
+        .env_clear()
+        .env("PATH", "/usr/bin:/bin")
+        .env("QAREN_PROTOCOL_FIXTURE_DIR", &dir)
+        .output()
+        .unwrap();
+    std::fs::remove_dir_all(dir).unwrap();
+    assert!(
+        result.status.success(),
+        "{}",
+        String::from_utf8_lossy(&result.stderr)
+    );
+}
+
+#[test]
+fn registry_output_policy_fixture_worker() {
+    let Some(dir) = std::env::var_os("QAREN_PROTOCOL_FIXTURE_DIR") else {
+        return;
+    };
+    let dir = Path::new(&dir);
+    for (label, names, withhold) in [
+        ("core-walk", vec!["ABSENT_SECRET".into()], false),
+        ("tool", vec!["ABSENT_SECRET".into()], false),
+        ("pnpm-install", vec![], false),
+        ("expo-prebuild", vec![], false),
+        ("pnpm-install", vec!["ABSENT_SECRET".into()], true),
+        ("expo-prebuild", vec!["ABSENT_SECRET".into()], true),
+    ] {
+        for route in ["captured", "piped", "group"] {
+            let spec = CmdSpec::new(
+                label,
+                "/bin/sh",
+                &["-c", "printf 'protocol\\n'; printf 'diagnostic\\n' >&2"],
+                5,
+            )
+            .registry_auth_env(&names);
+            let log = dir.join("protocol.log");
+            std::fs::write(&log, "earlier command\n").unwrap();
+            let mut runner = RealRunner::with_log_executable(env!("CARGO_BIN_EXE_qaren").into());
+            let retained = match route {
+                "captured" => {
+                    let output = runner.run(&spec);
+                    assert!(output.ok());
+                    if !withhold {
+                        assert_eq!(output.stdout, "protocol\n");
+                        assert_eq!(output.stderr, "diagnostic\n");
+                    }
+                    format!("{}{}", output.stdout, output.stderr)
+                }
+                "piped" => {
+                    let mut child = runner.spawn_piped(&spec, &log).unwrap();
+                    let mut output = String::new();
+                    child.stdout.read_to_string(&mut output).unwrap();
+                    until(|| child.handle.try_wait().unwrap().is_some());
+                    if !withhold {
+                        assert_eq!(output, "protocol\n");
+                    }
+                    format!("{output}{}", std::fs::read_to_string(&log).unwrap())
+                }
+                _ => {
+                    let child = runner.spawn_group(&spec, &log).unwrap();
+                    until(|| runner.try_reap(child.pid));
+                    runner.flush_logs().unwrap();
+                    std::fs::read_to_string(&log).unwrap()
+                }
+            };
+            assert_eq!(retained.contains("protocol"), !withhold, "{label} {route}");
+            assert_eq!(retained.contains("diagnostic"), !withhold);
+            assert_eq!(retained.contains("[private output withheld]"), withhold);
+        }
+    }
+}

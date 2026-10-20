@@ -651,3 +651,61 @@ impl qaren::exec::Runner for IosBuildRunner {
         self.inner.cancellation()
     }
 }
+
+pub fn invalid_registry_auth_lists() -> Vec<serde_json::Value> {
+    use serde_json::json;
+    let mut invalid = vec![
+        json!(null),
+        json!("mistaken-value"),
+        json!({"name": "mistaken-value"}),
+        json!([12]),
+        json!([true]),
+        json!([{"name": "mistaken-value"}]),
+        json!([null]),
+    ];
+    for name in [
+        "",
+        "space name",
+        "NAME=value",
+        "NAME\0TAIL",
+        "${NAME}",
+        "${NAME:-fallback}",
+        "NAME-DASH",
+        "ÜNICODE",
+        "1NAME",
+        "TYPESAFE_API_KEY",
+        "typesafe_api_key",
+        "QaReN_InPuT_SLOT",
+        &"A".repeat(129),
+    ] {
+        invalid.push(json!([name]));
+    }
+    invalid.push(json!(vec!["PRIVATE_REGISTRY_TOKEN"; 65]));
+    invalid
+}
+
+pub fn append_registry_config(path: &std::path::Path) {
+    let raw = std::fs::read_to_string(path).unwrap();
+    std::fs::write(
+        path,
+        format!("{raw}registryAuthEnv: [PRIVATE_REGISTRY_TOKEN]\n"),
+    )
+    .unwrap();
+}
+
+pub fn assert_registry_specs(calls: &[qaren::exec::CmdSpec]) {
+    assert!(calls.iter().any(|spec| spec.label == "pnpm-install"));
+    assert!(calls.iter().any(|spec| spec.label == "expo-prebuild"));
+    for spec in calls {
+        if matches!(spec.label.as_str(), "pnpm-install" | "expo-prebuild") {
+            assert_eq!(
+                spec.registry_auth_env,
+                ["PRIVATE_REGISTRY_TOKEN"],
+                "{}",
+                spec.label
+            );
+        } else {
+            assert!(spec.registry_auth_env.is_empty(), "{}", spec.label);
+        }
+    }
+}

@@ -296,6 +296,41 @@ The configuration keys, defaults and validation are owned by
 `devClientScheme`; only `pnpm` is supported as the app package manager.
 `--config` selects another configuration file.
 
+For private registries whose credentials use other environment names, declare the
+names in the operator-selected configuration (empty by default):
+
+```yaml
+appId: com.example.fixture
+devClientScheme: exp+fixture
+registryAuthEnv:
+  - PRIVATE_REGISTRY_TOKEN
+```
+
+The existing `qaren/1` scenario form puts the same list under `deps`:
+
+```yaml
+deps:
+  policy: install
+  registry_auth_env: [PRIVATE_REGISTRY_TOKEN]
+```
+
+Use environment **names only**, never credential values. Entries match inherited
+names exactly, including case, with no expansion or wildcards. Each must match
+`[A-Za-z_][A-Za-z0-9_]*` and be at most 128 ASCII bytes; the list has at most 64
+entries, with duplicates accepted. `TYPESAFE_API_KEY` and all `QAREN_INPUT_`
+prefixes are reserved case-insensitively. Missing variables stay missing and
+empty values stay empty. Invalid lists refuse as `SCENARIO_INVALID` without
+echoing entries.
+
+Treat this list as authorization to disclose those inherited variables to
+`pnpm-install`, `expo-prebuild`, and their descendants, including installer
+lifecycle scripts and Expo config plugins. Use trusted, reviewed configuration;
+`--config` can select an operator-controlled file outside the candidate. QaReN
+uses that selected list rather than reloading candidate configuration. The
+package manager keeps its own configuration: QaReN does not discover, parse or
+rewrite npmrc or validate credentials. Output withholding does not contain what
+those processes can write themselves or send over the network.
+
 `--platform android` borrows one booted emulator on the host's already running
 adb server: `ADB_SERVER_SOCKET` (loopback only), else `ANDROID_ADB_SERVER_PORT`,
 else 5037. `qaren` asks that server for its version over the adb protocol and
@@ -738,7 +773,17 @@ spawning tools, preserving Jev authentication and the interruption safety veto.
 The log redactor receives its key over a private control socket; log and wire
 redaction mask literal and JSON-encoded keys. Only `pnpm-install` and `expo-prebuild`
 retain `NPM_TOKEN`, `NODE_AUTH_TOKEN`, `YARN_NPM_AUTH_TOKEN`, `COREPACK_NPM_TOKEN`,
-`GITHUB_TOKEN` and `GH_TOKEN` for dependency preparation.
+`GITHUB_TOKEN` and `GH_TOKEN` for dependency preparation. The optional
+[`registryAuthEnv`](#check-a-plan) list adds exact-name exemptions only for those
+two labels. A nonempty list withholds both streams before returning captured
+output or persisting command logs, even when the listed variables are absent or
+already conventionally allowed; exit status and deadlines remain unchanged.
+Omitting the list or setting it to `[]` preserves existing output behavior.
+Names that the scrub already passes retain their ordinary inheritance elsewhere.
+`qaren prewarm` carries the list to its install step, but its preceding
+`pnpm-fetch` remains excluded and may fail first on a fresh private package.
+Other children, including implicit installs under `expo-run-ios`, receive no new
+exemption.
 
 Dialog steps require one unconditional accept or dismiss action, such as
 `Accept the permission dialog` or `Dismiss the alert`. Conditions, negation and

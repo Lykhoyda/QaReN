@@ -21,6 +21,8 @@ pub struct CmdSpec {
     pub env: Vec<(String, String)>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub unset: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub registry_auth_env: Vec<String>,
     pub timeout_seconds: u64,
 }
 
@@ -33,6 +35,7 @@ impl CmdSpec {
             cwd: None,
             env: Vec::new(),
             unset: Vec::new(),
+            registry_auth_env: Vec::new(),
             timeout_seconds,
         }
     }
@@ -51,6 +54,15 @@ impl CmdSpec {
     pub fn env_remove(mut self, key: &str) -> Self {
         self.unset.push(key.to_string());
         self
+    }
+
+    pub fn registry_auth_env(mut self, names: &[String]) -> Self {
+        self.registry_auth_env = names.to_vec();
+        self
+    }
+
+    fn withholds_registry_output(&self) -> bool {
+        crate::redact::is_registry_child(&self.label) && !self.registry_auth_env.is_empty()
     }
 
     pub fn rendered(&self) -> String {
@@ -462,8 +474,11 @@ impl Runner for RealRunner {
         crate::progress::started(&spec.label, true);
         crate::events::cmd(&spec.label, crate::events::Edge::Start, None, None);
         let result = (|| {
-            let (drain, output, error) =
-                log::LogDrain::spawn_paired(&self.log_executable, log_path)?;
+            let (drain, output, error) = log::LogDrain::spawn_paired(
+                &self.log_executable,
+                log_path,
+                spec.withholds_registry_output(),
+            )?;
             let mut cmd = Command::new(&spec.program);
             cmd.args(&spec.args)
                 .stdin(Stdio::null())
@@ -482,7 +497,7 @@ impl Runner for RealRunner {
             if let Some(reason) = self.cancellation() {
                 return Err(std::io::Error::new(std::io::ErrorKind::Interrupted, reason));
             }
-            crate::redact::scrub_secret_env(&mut cmd, &spec.label);
+            crate::redact::scrub_secret_env(&mut cmd, &spec.label, &spec.registry_auth_env);
             let child = cmd.spawn()?;
             let pid = child.id() as i32;
             self.logs.push(drain);
@@ -532,11 +547,19 @@ impl Runner for RealRunner {
         crate::progress::started(&spec.label, true);
         crate::events::cmd(&spec.label, crate::events::Edge::Start, None, None);
         let result = (|| {
-            let (log, stderr) = log::LogDrain::spawn(&self.log_executable, stderr_log)?;
+            let withhold = spec.withholds_registry_output();
+            let (log, stdout, stderr) = if withhold {
+                let (log, stdout, stderr) =
+                    log::LogDrain::spawn_paired(&self.log_executable, stderr_log, true)?;
+                (log, Stdio::from(OwnedFd::from(stdout)), stderr)
+            } else {
+                let (log, stderr) = log::LogDrain::spawn(&self.log_executable, stderr_log, false)?;
+                (log, Stdio::piped(), stderr)
+            };
             let mut cmd = Command::new(&spec.program);
             cmd.args(&spec.args)
                 .stdin(Stdio::piped())
-                .stdout(Stdio::piped())
+                .stdout(stdout)
                 .stderr(Stdio::from(OwnedFd::from(stderr)))
                 .process_group(0);
             if let Some(dir) = &spec.cwd {
@@ -551,14 +574,20 @@ impl Runner for RealRunner {
             if let Some(reason) = self.cancellation() {
                 return Err(std::io::Error::new(std::io::ErrorKind::Interrupted, reason));
             }
-            crate::redact::scrub_secret_env(&mut cmd, &spec.label);
+            crate::redact::scrub_secret_env(&mut cmd, &spec.label, &spec.registry_auth_env);
             let mut child = cmd.spawn()?;
             let stdin = child.stdin.take().expect("stdin is piped");
-            let stdout = child.stdout.take().expect("stdout is piped");
+            let stdout: Box<dyn BufRead + Send> = if withhold {
+                Box::new(std::io::empty())
+            } else {
+                Box::new(BufReader::new(
+                    child.stdout.take().expect("stdout is piped"),
+                ))
+            };
             Ok(PipedChild {
                 pid: child.id() as i32,
                 stdin: Box::new(stdin),
-                stdout: Box::new(BufReader::new(stdout)),
+                stdout,
                 handle: Box::new(RealChildHandle {
                     child,
                     log,
@@ -668,7 +697,7 @@ fn run_captured(
     if let Some(reason) = cancellation() {
         return Err(std::io::Error::new(std::io::ErrorKind::Interrupted, reason));
     }
-    crate::redact::scrub_secret_env(&mut cmd, &spec.label);
+    crate::redact::scrub_secret_env(&mut cmd, &spec.label, &spec.registry_auth_env);
     let mut child = cmd.spawn()?;
     drop(cmd);
     let mut out = Vec::new();
@@ -728,8 +757,16 @@ fn run_captured(
     }
     Ok(CmdOutput {
         exit_code: result?,
-        stdout: String::from_utf8_lossy(&out).into_owned(),
-        stderr: String::from_utf8_lossy(&err).into_owned(),
+        stdout: if spec.withholds_registry_output() {
+            String::new()
+        } else {
+            String::from_utf8_lossy(&out).into_owned()
+        },
+        stderr: if spec.withholds_registry_output() {
+            "[private output withheld]".into()
+        } else {
+            String::from_utf8_lossy(&err).into_owned()
+        },
         timed_out,
         duration_ms: started.elapsed().as_millis() as u64,
     })
@@ -742,7 +779,7 @@ fn kill_group_and_reap(child: &mut std::process::Child) {
     kill.args(["-9", "--", &format!("-{pid}")])
         .stdout(Stdio::null())
         .stderr(Stdio::null());
-    crate::redact::scrub_secret_env(&mut kill, "");
+    crate::redact::scrub_secret_env(&mut kill, "", &[]);
     let _ = kill.status();
     let _ = child.kill();
     let reap_deadline = Instant::now() + Duration::from_secs(5);

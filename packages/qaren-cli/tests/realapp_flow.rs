@@ -776,7 +776,13 @@ fn prewarm_preserves_the_scenario_launch_scheme_refusal_before_any_command() {
 #[test]
 fn prewarm_records_lockfile_binding_and_no_secrets() {
     let repo = common::temp_repo();
-    let scenario_path = write_scenario(&repo, &ios_reuse_scenario_yaml(8791));
+    let scenario_path = write_scenario(
+        &repo,
+        &format!(
+            "{}deps:\n  registry_auth_env: [PRIVATE_REGISTRY_TOKEN]\n",
+            ios_reuse_scenario_yaml(8791)
+        ),
+    );
 
     let mut mock = MockRunner::new();
     mock.expect_run("git", CmdOutput::success(&format!("{}\n", repo.display())));
@@ -806,6 +812,12 @@ fn prewarm_records_lockfile_binding_and_no_secrets() {
         .unwrap();
     assert!(install.env.contains(&("CI".to_string(), "1".to_string())));
 
+    assert_eq!(install.registry_auth_env, ["PRIVATE_REGISTRY_TOKEN"]);
+    for spec in &mock.calls {
+        if spec.label != "pnpm-install" {
+            assert!(spec.registry_auth_env.is_empty(), "{}", spec.label);
+        }
+    }
     let record_path = buildplan::prewarm_path(&repo);
     let raw = std::fs::read_to_string(&record_path).unwrap();
     let value: serde_json::Value = serde_json::from_str(&raw).unwrap();
@@ -1559,4 +1571,35 @@ fn android_reuse_path_records_install_provenance_after_a_successful_adb_install(
     assert_eq!(install.artifact.path, apk);
     assert_eq!(install.artifact.sha256, artifact_sha);
     assert!(install.removal.is_none());
+}
+
+#[test]
+fn configured_registry_auth_does_not_extend_prewarm_fetch() {
+    let repo = common::temp_repo();
+    let scenario_path = write_scenario(
+        &repo,
+        &format!(
+            "{}deps:\n  registry_auth_env: [PRIVATE_REGISTRY_TOKEN]\n",
+            ios_reuse_scenario_yaml(8791)
+        ),
+    );
+    let mut mock = MockRunner::new();
+    mock.expect_run("git", CmdOutput::success(&format!("{}\n", repo.display())));
+    mock.expect_run("git", CmdOutput::success(&format!("{}\n", "b".repeat(40))));
+    mock.expect_run("git", CmdOutput::success(""));
+    mock.expect_run(
+        "pnpm fetch",
+        CmdOutput::failed(1, "synthetic registry refusal"),
+    );
+    let receipt = prewarm(&mut mock, &PrewarmArgs { scenario_path });
+    assert_eq!(
+        receipt.failure.unwrap().code,
+        FailureCode::DepsInstallFailed
+    );
+    assert_eq!(mock.remaining(), 0);
+    assert!(mock
+        .calls
+        .iter()
+        .all(|spec| spec.registry_auth_env.is_empty()));
+    assert!(!mock.calls.iter().any(|spec| spec.label == "pnpm-install"));
 }
