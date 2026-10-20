@@ -20,7 +20,6 @@ packages/qaren-core/test/unit/audit-h1-redact-before-truncate.test.js
 packages/qaren-core/test/unit/audit-h2-h3-m7-scroll-swipe-coords.test.js
 packages/qaren-core/test/unit/audit-h4-android-runner-deviceid.test.js
 packages/qaren-core/test/unit/audit-l6-action-id-dot.test.js
-packages/qaren-core/test/unit/audit-m3-ensure-fast-runner-liveness.test.js
 packages/qaren-core/test/unit/audit-m5-shared-appfile-resolution.test.js
 packages/qaren-core/test/unit/auto-connect-config.test.js
 packages/qaren-core/test/unit/b130-recovery-refmap-clear.test.js

@@ -25,10 +25,13 @@ Text inside `app-text` tags in `failure.detail`, the ledger and the report came 
 
 1. Read the feature's screens in source for `testID`s and visible labels.
 2. Write one `###` block per user journey under `## QA`: numbered user actions such as `Tap "…"`, `Fill "…" with "…"` (or `Fill "…" with input PASSWORD` for a credential the user sets as `QAREN_INPUT_PASSWORD`, and `Expect input NAME on screen` before a step whose screen shows that input; never put a real credential in a plan), `Wait for "…" to appear`, scroll and back, with `✓ "…"` checks of what the user should then see; open a block that continues a journey with `starts on: <testID or text>`.
+   For an operator-designated non-secret fixture only, use `Fill "code-field" with input FIXTURE_CODE (non-secret)`. Keep real credentials strict; never infer this annotation from OTP/code wording or an environment name. This relaxes hash/echo protection only; log/model redaction and media withholding remain. See [Runtime inputs](https://github.com/Lykhoyda/rn-dev-agent/blob/develop/apps/docs-site/src/content/docs/plans.mdx#runtime-inputs) for collisions and saved-login policy identity.
 3. Quote every action target, preferring `testID`s over labels. For `✓` checks, choose visible text according to [Plan checks and screen evidence](https://github.com/Lykhoyda/rn-dev-agent/blob/develop/packages/qaren-cli/README.md#plan-checks-and-screen-evidence).
-4. Use unquoted phrase steps only when `TYPESAFE_API_KEY` is set; without it they refuse.
-5. Follow the user's path only: no deep links or navigation shortcuts.
-6. Save it as `.qaren/plans/<feature>.md`.
+4. Read in source every conditional screen the flow can insert on the path, such as form validators, required fields, profile-completion and verification screens, and plan a step for each one.
+5. Take every `Fill` value as a literal from the user or the project's documented test-data source. If one is missing, ask the user before running; never invent or guess a value.
+6. Use unquoted phrase steps only when `TYPESAFE_API_KEY` is set; without it they refuse.
+7. Follow the user's path only: no deep links or navigation shortcuts.
+8. Save it as `.qaren/plans/<feature>.md`.
 
 ```markdown
 ## QA
@@ -61,3 +64,12 @@ For a predictable opt-in screen, pair the choice with a visible result from the 
 ```
 
 The plan grammar is owned by the CLI README's [Check a plan](https://github.com/Lykhoyda/rn-dev-agent/blob/develop/packages/qaren-cli/README.md#check-a-plan) section.
+
+## When a correct path stops early
+
+A `PLAN_STEP_FAILED` run can mean the plan was short, not that the app was wrong: its `failure.seen` or the failing step's screenshot shows the app correctly on a screen the plan did not include, such as an empty required field. Report it as a plan gap, not an app defect, and do not treat it as product FAIL evidence. Then:
+
+1. Name the failing plan line and the kind of screen in front: input form, choice or confirmation.
+2. Ask the user for any value that screen needs.
+3. Read that screen in source and add its missing steps to the plan.
+4. Re-run.

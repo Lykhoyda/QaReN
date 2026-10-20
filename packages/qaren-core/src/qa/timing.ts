@@ -40,6 +40,20 @@ export const TIMING_STAGES = [
   'overflow',
 ] as const;
 export type TimingStage = (typeof TIMING_STAGES)[number];
+const NATIVE_READINESS_REASONS = [
+  'alive',
+  'dead',
+  'health',
+  'authority-mismatch',
+  'legacy',
+  'protocol-older',
+  'protocol-newer',
+  'version-skew',
+  'missing-commands',
+  'missing-features',
+  'unknown',
+] as const;
+export type NativeReadinessReason = (typeof NATIVE_READINESS_REASONS)[number];
 export interface TimingEvent {
   stage: TimingStage;
   edge: 'start' | 'end' | 'point';
@@ -57,6 +71,7 @@ export interface TimingEvent {
   appliedBudgetMs?: number;
   moved?: number;
   maxDelta?: number;
+  readinessReason?: NativeReadinessReason;
 }
 export type TimingObserver = (event: TimingEvent) => void;
 export interface TimingContext {
@@ -79,6 +94,15 @@ export function cleanTimingEvent(value: unknown): TimingEvent | undefined {
   )
     return undefined;
   const event = { stage: input.stage, edge: input.edge, outcome: input.outcome } as TimingEvent;
+  if (input.readinessReason !== undefined) {
+    if (
+      input.stage !== 'native-readiness' ||
+      input.edge !== 'end' ||
+      !NATIVE_READINESS_REASONS.includes(input.readinessReason as NativeReadinessReason)
+    )
+      return undefined;
+    event.readinessReason = input.readinessReason as NativeReadinessReason;
+  }
   for (const key of [
     'at',
     'line',

@@ -1,6 +1,10 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { createDeviceScrollHandler } from '../../../dist/handlers/device-interact.js';
+import {
+  buildDirectionalScrollCliArgs,
+  createDeviceScrollHandler,
+} from '../../../dist/handlers/device-interact.js';
+import { clearRefMap, updateRefMapFromFlat } from '../../../dist/fast-runner-ref-map.js';
 import {
   resetActiveSessionInMemoryForTest,
   setActiveSessionInMemoryForTest,
@@ -10,6 +14,84 @@ import {
   _setFastRunnerStateForTest,
   _setFetchForTest,
 } from '../../../dist/runners/rn-fast-runner-client.js';
+
+for (const platform of ['ios', 'android'] as const) {
+  const pointScale = platform === 'android' ? 2.625 : 1;
+  const topInset = platform === 'android' ? 48 * pointScale : 20;
+  const bottomInset = platform === 'android' ? 48 * pointScale : 34;
+  const height = platform === 'android' ? 2400 : 844;
+  const width = platform === 'android' ? 1080 : 390;
+
+  function withWindow(run: () => void): void {
+    setActiveSessionInMemoryForTest({
+      name: 'test-scroll-edges',
+      platform,
+      deviceId: 'TEST-DEVICE',
+      openedAt: '2026-10-18T00:00:00.000Z',
+    });
+    updateRefMapFromFlat(
+      [{ ref: '@e0', type: 'Window', rect: { x: 0, y: 0, width, height }, hittable: true }],
+      { snapshotGeneration: 1, keyboardVisible: false, pointScale },
+    );
+    try {
+      run();
+    } finally {
+      clearRefMap();
+      resetActiveSessionInMemoryForTest();
+    }
+  }
+
+  test(`${platform} scroll endpoints stay outside the window gesture insets`, () => {
+    withWindow(() => {
+      for (const direction of ['up', 'down'] as const) {
+        for (const distance of [undefined, 5000]) {
+          for (const top of [0, 300]) {
+            const [, , y1, , y2] = buildDirectionalScrollCliArgs(
+              direction,
+              0.6,
+              undefined,
+              distance,
+              { x: 0, y: top, width, height: height - top },
+            ).map(Number);
+            for (const y of [y1, y2]) {
+              assert.ok(y >= topInset, `${direction}: ${y} < ${topInset}`);
+              assert.ok(y <= height - bottomInset, `${direction}: ${y} > ${height - bottomInset}`);
+            }
+          }
+        }
+      }
+    });
+  });
+
+  test(`${platform} interior scroll bands retain their endpoints`, () => {
+    withWindow(() => {
+      assert.deepEqual(
+        buildDirectionalScrollCliArgs('down', 0.6, undefined, undefined, {
+          x: 0,
+          y: 300,
+          width,
+          height: 200,
+        }),
+        ['scroll', String(width / 2), '499', String(width / 2), '301', '300'],
+      );
+    });
+  });
+
+  test(`${platform} a gesture-inset-clamped band too short to drag still refuses`, () => {
+    withWindow(() => {
+      for (const band of [
+        { x: 0, y: height - bottomInset - 40, width, height: bottomInset + 40 },
+        { x: 0, y: 0, width, height: topInset + 40 },
+        { x: 0, y: height - 20, width, height: 20 },
+      ]) {
+        assert.throws(
+          () => buildDirectionalScrollCliArgs('down', 0.6, undefined, undefined, band),
+          /SCROLL_BAND_TOO_SMALL/,
+        );
+      }
+    });
+  });
+}
 
 for (const enabled of [true, false]) {
   test(
@@ -95,17 +177,23 @@ test('a scroll band too short for a real drag refuses before any runner call, so
     bodies.push(JSON.parse(String(init?.body)));
     return Response.json({ ok: true });
   }) as typeof fetch);
+  updateRefMapFromFlat([
+    { ref: '@e0', type: 'Window', rect: { x: 0, y: 0, width: 390, height: 844 }, hittable: true },
+  ]);
   try {
-    const result = await createDeviceScrollHandler()({
-      direction: 'down',
-      within: { x: 0, y: 300, width: 390, height: 40 },
-    });
-    const envelope = JSON.parse(result.content[0].text);
-    assert.equal(envelope.ok, false);
-    assert.equal(envelope.code, 'SCROLL_BAND_TOO_SMALL');
-    assert.equal(envelope.meta?.mutation, 'none');
+    for (const within of [
+      { x: 0, y: 300, width: 390, height: 40 },
+      { x: 0, y: 770, width: 390, height: 74 },
+    ]) {
+      const result = await createDeviceScrollHandler()({ direction: 'down', within });
+      const envelope = JSON.parse(result.content[0].text);
+      assert.equal(envelope.ok, false);
+      assert.equal(envelope.code, 'SCROLL_BAND_TOO_SMALL');
+      assert.equal(envelope.meta?.mutation, 'none');
+    }
     assert.deepEqual(bodies, []);
   } finally {
+    clearRefMap();
     resetActiveSessionInMemoryForTest();
     _setFetchForTest(globalThis.fetch);
     _setFastRunnerStateForTest(null);

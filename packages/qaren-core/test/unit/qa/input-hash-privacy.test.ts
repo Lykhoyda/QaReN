@@ -427,3 +427,125 @@ test('a declared echo lets the runner snapshot hash and keep its refs', async ()
   _setFetchForTest(globalThis.fetch);
   _setFastRunnerStateForTest(null);
 });
+
+test('non-secret forms retain exact hash operands, even at a filled target or with a redundant echo', () => {
+  const hashes: string[] = [];
+  for (const value of [
+    'fixture-canary',
+    'other-fixture',
+    'caf\u00e9-value',
+    'cafe\u0301-value',
+    'left"right',
+    '123456',
+  ]) {
+    const inputs = new RunInputs({ FIXTURE: value }, ['FIXTURE'], undefined, ['FIXTURE']);
+    inputs.expectEcho(node.identifier, 'FIXTURE');
+    for (const field of ['label', 'identifier', 'type']) {
+      const forms = [
+        value,
+        ` ${value} `,
+        value.normalize('NFC'),
+        value.normalize('NFD'),
+        JSON.stringify(value).slice(1, -1),
+        ...(value === '123456' ? ['12-34 56'] : []),
+      ];
+      for (const form of forms) {
+        const nodes = [{ ...node, [field]: form }];
+        const ordinary = hashSnapshotNodes(nodes);
+        const actual = withInputs(inputs, () =>
+          withEchoScope(() => {
+            declareEcho('FIXTURE');
+            return hashSnapshotNodes(nodes);
+          }),
+        );
+        assert.equal(actual, ordinary, field);
+        assert.equal(inputs.maskFilledEcho(nodes[0]), nodes[0]);
+      }
+    }
+    hashes.push(withInputs(inputs, () => hashSnapshotNodes([{ ...node, label: value }])));
+  }
+  assert.notEqual(hashes[0], hashes[1]);
+});
+
+test('strict collisions win across equal, normalized, escaped, digit and mixed echoes', () => {
+  for (const [strict, fixture, label] of [
+    ['same-value', 'same-value', 'same-value'],
+    ['caf\u00e9-value', 'cafe\u0301-value', 'cafe\u0301-value'],
+    ['left"right', 'left\\"right', 'left\\"right'],
+    ['123456', '12-34 56', '12-34 56'],
+    ['strict-value', 'fixture-value', 'strict-value and fixture-value'],
+  ]) {
+    for (const field of ['label', 'identifier', 'type']) {
+      const inputs = new RunInputs(
+        { SECRET: strict, FIXTURE: fixture },
+        ['SECRET', 'FIXTURE'],
+        undefined,
+        ['FIXTURE'],
+      );
+      inputs.expectEcho(node.identifier, 'FIXTURE');
+      assert.throws(
+        () =>
+          withInputs(inputs, () =>
+            withEchoScope(() => {
+              declareEcho('FIXTURE');
+              return hashSnapshotNodes([{ ...node, [field]: label }]);
+            }),
+          ),
+        InputPrivacyRefusal,
+      );
+      assert.throws(() => inputs.assertHashSafe('ordinary fixture-value'), InputPrivacyRefusal);
+    }
+    const inputs = new RunInputs(
+      { SECRET: strict, FIXTURE: fixture },
+      ['SECRET', 'FIXTURE'],
+      undefined,
+      ['FIXTURE'],
+    );
+    withInputs(inputs, () =>
+      withEchoScope(() => {
+        declareEcho('SECRET');
+        assert.equal(
+          hashSnapshotNodes([{ ...node, label }]),
+          hashSnapshotNodes([{ ...node, label: '[runtime input]' }]),
+        );
+      }),
+    );
+  }
+});
+
+test('non-secret snapshots retain runner refs and ordinary package and settle hashes', async () => {
+  const { getLastSnapshotHashForPackage, updateRefMapFromFlat } =
+    await import('../../../dist/fast-runner-ref-map.js');
+  const { buildIosProbes, hashAndroidAppSnapshotNodes } =
+    await import('../../../dist/lifecycle/settle.js');
+  for (const value of ['first-fixture', 'second-fixture']) {
+    const nodes = [{ ...node, label: value, packageName: 'com.test' }];
+    const expected = hashSnapshotNodes(nodes);
+    _setFastRunnerStateForTest({
+      schemaVersion: 1,
+      pid: process.pid,
+      port: 22090,
+      deviceId: 'TEST-UDID',
+      bundleId: 'com.test',
+      startedAt: '',
+      protocolVersion: 1,
+    });
+    _setFetchForTest(async () => new Response(JSON.stringify({ ok: true, v: 1, data: { nodes } })));
+    try {
+      const inputs = new RunInputs({ FIXTURE: value }, ['FIXTURE'], undefined, ['FIXTURE']);
+      await withInputs(inputs, async () => {
+        await runIOS({ command: 'snapshot', bundleId: 'com.test' });
+        assert.equal(hasRefMap(), true);
+        assert.equal(getLastSnapshotHash(), expected);
+        updateRefMapFromFlat(nodes);
+        assert.equal(getLastSnapshotHashForPackage('com.test'), expected);
+        assert.equal(await buildIosProbes('com.test').snapshotHash!(), expected);
+        assert.equal(hashAndroidAppSnapshotNodes(nodes, 'com.test'), expected);
+      });
+    } finally {
+      _setFetchForTest(globalThis.fetch);
+      _setFastRunnerStateForTest(null);
+      clearRefMap();
+    }
+  }
+});

@@ -13,7 +13,7 @@ test('the slot diagnostic wire projects only fixed vocabulary and measured numbe
   const outputs = ['private-user@example.test', 'quote"slash\\sentinel'].map((secret) => {
     const lines: string[] = [];
     const writer = createWriter((line) => lines.push(line), 'run');
-    withInputs(new RunInputs({ PASSWORD: secret }, ['PASSWORD']), () => {
+    withInputs(new RunInputs({ PASSWORD: secret }, ['PASSWORD'], undefined, ['PASSWORD']), () => {
       writer.diagnostic({
         kind: 'metric',
         stage: 'capture',

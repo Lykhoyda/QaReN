@@ -238,7 +238,7 @@ fn run_inner(
     // A pull request's login block may only use inputs the owner's plan or login block declares.
     if req.pr.is_some() && config.login_block.is_some() {
         let owned = serde_json::json!({ "kind": "owned", "appRoot": app_root_for(&req.config_path, &req.project_root)? });
-        let declared = inventory_names(&input_inventory(
+        let owner_inventory = input_inventory(
             runner,
             &node,
             &req.runtime_dir,
@@ -246,7 +246,8 @@ fn run_inner(
             &config,
             req.platform,
             &owned,
-        )?)?;
+        )?;
+        let declared = inventory_names(&owner_inventory)?;
         let undeclared: Vec<_> = names
             .iter()
             .filter(|name| !declared.contains(name))
@@ -263,6 +264,14 @@ fn run_inner(
                 "declare these inputs in the plan or the checked-out login block, or remove them from the pull request's login block",
             ));
         }
+        let candidate_non_secret = non_secret_names(&inventory, &names)?;
+        let owner_non_secret = non_secret_names(&owner_inventory, &declared)?;
+        if names
+            .iter()
+            .any(|name| candidate_non_secret.contains(name) != owner_non_secret.contains(name))
+        {
+            return Err(input_refused());
+        }
     }
     let input_owner = crate::redact::capture_input_scope().expect("run input scope");
     let resolved_inputs = input_owner.admit(&names)?;
@@ -274,7 +283,7 @@ fn run_inner(
         &plan,
         &config,
         req.platform,
-        login_snapshot.as_ref(),
+        &inventory,
         &resolved_inputs,
         preflight_jev,
     )?;
@@ -1984,7 +1993,10 @@ fn build_scenario(
                 .and_then(|ios| ios.build.clone()),
             ..BuildSpec::default()
         },
-        deps: DepsSpec::default(),
+        deps: DepsSpec {
+            registry_auth_env: config.registry_auth_env.clone(),
+            ..DepsSpec::default()
+        },
         deadlines: Deadlines::default(),
     }
 }
@@ -2086,6 +2098,32 @@ fn inventory_names(value: &Value) -> Result<Vec<String>, Failure> {
     if names.len() > 64 || names.windows(2).any(|pair| pair[0] >= pair[1]) {
         return Err(input_refused());
     }
+    non_secret_names(value, &names)?;
+    Ok(names)
+}
+
+fn non_secret_names(value: &Value, required: &[String]) -> Result<Vec<String>, Failure> {
+    let Some(raw) = value.get("nonSecretInputs") else {
+        return Ok(Vec::new());
+    };
+    let names = raw
+        .as_array()
+        .ok_or_else(input_refused)?
+        .iter()
+        .map(|name| {
+            name.as_str()
+                .filter(|name| crate::redact::valid_input_name(name))
+                .map(String::from)
+                .ok_or_else(input_refused)
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    if names.is_empty()
+        || names.len() > 64
+        || names.windows(2).any(|pair| pair[0] >= pair[1])
+        || names.iter().any(|name| !required.contains(name))
+    {
+        return Err(input_refused());
+    }
     Ok(names)
 }
 
@@ -2115,7 +2153,14 @@ fn input_inventory(
     inventory_names(&value)?;
     let fields = value.as_object().ok_or_else(input_refused)?;
     if fields.keys().any(|key| {
-        !["ok", "inputProtocol", "requiredInputs", "loginSnapshot"].contains(&key.as_str())
+        ![
+            "ok",
+            "inputProtocol",
+            "requiredInputs",
+            "nonSecretInputs",
+            "loginSnapshot",
+        ]
+        .contains(&key.as_str())
     }) {
         return Err(input_refused());
     }
@@ -2140,7 +2185,7 @@ fn preflight_inputs(
     plan: &str,
     config: &CheckConfig,
     platform: Platform,
-    login: Option<&Value>,
+    inventory: &Value,
     inputs: &crate::redact::ResolvedInputs<'_>,
     accounting: &mut Option<core::JevRollup>,
 ) -> Result<Value, Failure> {
@@ -2153,7 +2198,7 @@ fn preflight_inputs(
         )
     };
     let mut request = serde_json::json!({ "v": 1, "phase": "plan-preflight", "plan": plan, "platform": platform_str(platform), "appId": config.app_id });
-    if let Some(login) = login {
+    if let Some(login) = inventory.get("loginSnapshot") {
         request["loginSnapshot"] = login.clone();
     }
     let mut bytes = Vec::new();
@@ -2177,6 +2222,22 @@ fn preflight_inputs(
     {
         if value.get("inputProtocol").and_then(Value::as_u64) != Some(1)
             || inventory_names(&value)? != inputs.names()
+            || non_secret_names(&value, inputs.names())?
+                != non_secret_names(inventory, inputs.names())?
+            || value.as_object().is_none_or(|fields| {
+                fields.keys().any(|key| {
+                    ![
+                        "ok",
+                        "inputProtocol",
+                        "requiredInputs",
+                        "nonSecretInputs",
+                        "prepared",
+                        "jev",
+                        "jevRequired",
+                    ]
+                    .contains(&key.as_str())
+                })
+            })
         {
             return Err(input_refused());
         }

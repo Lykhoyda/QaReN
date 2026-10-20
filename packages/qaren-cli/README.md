@@ -296,6 +296,41 @@ The configuration keys, defaults and validation are owned by
 `devClientScheme`; only `pnpm` is supported as the app package manager.
 `--config` selects another configuration file.
 
+For private registries whose credentials use other environment names, declare the
+names in the operator-selected configuration (empty by default):
+
+```yaml
+appId: com.example.fixture
+devClientScheme: exp+fixture
+registryAuthEnv:
+  - PRIVATE_REGISTRY_TOKEN
+```
+
+The existing `qaren/1` scenario form puts the same list under `deps`:
+
+```yaml
+deps:
+  policy: install
+  registry_auth_env: [PRIVATE_REGISTRY_TOKEN]
+```
+
+Use environment **names only**, never credential values. Entries match inherited
+names exactly, including case, with no expansion or wildcards. Each must match
+`[A-Za-z_][A-Za-z0-9_]*` and be at most 128 ASCII bytes; the list has at most 64
+entries, with duplicates accepted. `TYPESAFE_API_KEY` and all `QAREN_INPUT_`
+prefixes are reserved case-insensitively. Missing variables stay missing and
+empty values stay empty. Invalid lists refuse as `SCENARIO_INVALID` without
+echoing entries.
+
+Treat this list as authorization to disclose those inherited variables to
+`pnpm-install`, `expo-prebuild`, and their descendants, including installer
+lifecycle scripts and Expo config plugins. Use trusted, reviewed configuration;
+`--config` can select an operator-controlled file outside the candidate. QaReN
+uses that selected list rather than reloading candidate configuration. The
+package manager keeps its own configuration: QaReN does not discover, parse or
+rewrite npmrc or validate credentials. Output withholding does not contain what
+those processes can write themselves or send over the network.
+
 `--platform android` borrows one booted emulator on the host's already running
 adb server: `ADB_SERVER_SOCKET` (loopback only), else `ANDROID_ADB_SERVER_PORT`,
 else 5037. `qaren` asks that server for its version over the adb protocol and
@@ -539,7 +574,10 @@ list, nothing drawn before its window counts, such as the app screen behind a mo
 or below that band's centre scrolls down; one above it scrolls up. Sticky overlays
 can narrow the band even without a keyboard or when the clip is entirely above it.
 The walker passes that band to the shared scroll handler so the drag starts
-inside it, narrowing the existing keyboard-safe band. Callers passing no band
+inside it, narrowing the existing keyboard-safe band. A caller band is also kept
+clear of the system gesture edges: 48 dp from the top and bottom window edges on
+Android, using the snapshot's display density, and 20 pt from the top and 34 pt
+from the bottom on iOS. Callers passing no band
 use the existing keyboard-safe band. On both iOS and Android, a target whose centre
 is covered by the observed keyboard or a sticky overlay gets a scroll sized to move that centre
 toward the middle of that band, and the drag may span the band with both endpoints
@@ -735,7 +773,17 @@ spawning tools, preserving Jev authentication and the interruption safety veto.
 The log redactor receives its key over a private control socket; log and wire
 redaction mask literal and JSON-encoded keys. Only `pnpm-install` and `expo-prebuild`
 retain `NPM_TOKEN`, `NODE_AUTH_TOKEN`, `YARN_NPM_AUTH_TOKEN`, `COREPACK_NPM_TOKEN`,
-`GITHUB_TOKEN` and `GH_TOKEN` for dependency preparation.
+`GITHUB_TOKEN` and `GH_TOKEN` for dependency preparation. The optional
+[`registryAuthEnv`](#check-a-plan) list adds exact-name exemptions only for those
+two labels. A nonempty list withholds both streams before returning captured
+output or persisting command logs, even when the listed variables are absent or
+already conventionally allowed; exit status and deadlines remain unchanged.
+Omitting the list or setting it to `[]` preserves existing output behavior.
+Names that the scrub already passes retain their ordinary inheritance elsewhere.
+`qaren prewarm` carries the list to its install step, but its preceding
+`pnpm-fetch` remains excluded and may fail first on a fresh private package.
+Other children, including implicit installs under `expo-run-ios`, receive no new
+exemption.
 
 Dialog steps require one unconditional accept or dismiss action, such as
 `Accept the permission dialog` or `Dismiss the alert`. Conditions, negation and
@@ -1085,8 +1133,16 @@ the refusal reports only a value-free node count and fixed cause codes. Native
 acquisition failures also refuse without reinjection or a public-tree fallback.
 A required private capture re-reads a canonical empty snapshot (`nodes=[]`,
 verdict `degraded`, `nodeCount=0`, reasons exactly `empty-capture`, no truncation
-or dropped nodes) at 500 ms intervals within the existing 6-second settle budget
-and remaining total capture budget. Its unchanged ref map and zero-node count
+or dropped nodes), or an iOS `RN_FAST_RUNNER_DOWN` failure marked as pending
+runner relaunch recovery, at 500 ms intervals within the existing 6-second settle
+budget and remaining total capture budget. Both conditions share one retry
+deadline; re-reads on both ordinary and platform-presence routes, including
+readiness probes and snapshot transport, stop waiting at that deadline.
+After timeout containment relaunches the iOS reader, it waits for an `alive`
+probe with `PLATFORM_PRESENCE_V2` within the remaining `READY_TIMEOUT_MS`;
+the type call retains its existing result. Persistent runner unavailability
+refuses with `NATIVE_CAPTURE_UNAVAILABLE` after the capture retry budget.
+An empty snapshot's unchanged ref map and zero-node count
 diagnostics do not prevent this read-only retry; persistent emptiness still
 refuses with the same code and message, and other incomplete captures refuse
 immediately.
@@ -1425,6 +1481,19 @@ see the [plan guide](../../apps/docs-site/src/content/docs/plans.mdx) for the gr
 value bounds. The owner resolves the value before running qaren; qaren reads no `.env`
 file, reference or secret store.
 
+Inputs are strict unless their named Fill explicitly opts in, for example
+`Fill "code-field" with input FIXTURE_CODE (non-secret)` for an operator-designated dev or
+staging fixture. The flag relaxes only execution hash and echo checks: pure fixture
+labels, identifiers and types retain their original hash operands, even at the filled
+field, and a redundant expected-echo declaration does not mask them to a constant.
+Strict matches win on equal or overlapping values; a non-secret alias cannot authorize a
+strict echo. Repeated declarations across the plan and configured login block must agree
+before device selection. There is no config, global switch or inferred environment policy.
+All values still receive log, model and artifact redaction; screenshots and video stay
+withheld. Never annotate real credentials: qaren cannot establish whether a backend is
+production or an input is a fixture, and misclassification permits execution hashing of
+that secret despite artifact redaction.
+
 - `main` captures the `QAREN_INPUT_` namespace once into the
   [invocation-scoped redaction owner](src/redact.rs). Every child spawned by the CLI has the
   namespace removed after its spec's environment is applied, including names the spec sets.
@@ -1437,36 +1506,47 @@ file, reference or secret store.
   at that commit with `git ls-tree` and `git show`. A symlinked or non-regular corpus path
   refuses before allocation; after worktree creation the owned block must match those bytes.
   Inputs that block names must also appear in the inventory of the plan and the invoking
-  checkout's login block; any other name refuses `PLAN_INPUT_MISSING`.
+  checkout's login block; any other name refuses `PLAN_INPUT_MISSING`. Effective sensitivities
+  must match too, including strict defaults, so a PR cannot downgrade an owner's secret.
   `check` re-reads its owned login block before device selection, and the core rechecks it
   before the session opens.
 - The core receives the values only inside its stdin request. The walker types them, saves
   slot fills as `inputText: { input: "PASSWORD" }` and replays saved and login blocks with
-  the same values. Private literal fills stay unsavable.
+  the current run's values. A non-secret slot saves as
+  `inputText: { input: "FIXTURE_CODE", sensitivity: "non-secret" }`, with no raw value.
+  When any slot is non-secret, every block's `planHash` uses a versioned `ns1:` digest of
+  normalized source steps and the sorted non-secret names. Policy changes invalidate saved
+  evidence across the run, including unchanged earlier blocks and removal of the last opt-in.
+  Ordinary blocks re-walk; policy-stale configured login evidence refuses before session open
+  and must be explicitly refreshed. Legacy strict-only hashes and login admission stay unchanged.
+  Private literal fills stay unsavable.
 - With any input namespace present, subprocess logs hold one withheld marker, preflight and
   core output excerpts are withheld, and native runner output tails are not retained. A run
   that requires inputs skips recording and screenshots.
 - Slot runs retain value-free structured events in `core-diagnostics.jsonl` beside `core.log`:
   `metric` has measured stage timings, and `timing` has decision/dispatch timing, finite outcome
-  codes and allowlisted native refusal codes. Each attempted block containing a slot fill emits
+  codes and allowlisted native refusal codes. Native-readiness end metrics also retain the
+  existing liveness classification as `readinessReason`, or `unknown` if the probe did not
+  return a classification; `count` identifies the probe site, not a retry ordinal.
+  Each attempted block containing a slot fill emits
   `block-outcome` with its first plan line and existing `pass`/`fail`/`refused` result; only saved-login
   recovery emits `login-outcome`. A block passing is its existing block result, not a new assertion
   of authentication. These events contain no block names, slot names, input-derived tokens, screen
   text, selectors, hashes or error messages. Raw log withholding and masking stay unchanged.
   Timing events are capped at 20,000 independently of the 10,000 outcome-marker cap; malformed
   diagnostics and sink failures are ignored without changing the run verdict or step deadline.
-- Before a fill dispatch, the walker registers the target's identifier when available.
+- Before a strict or literal fill dispatch, the walker registers the target's identifier when available.
   Snapshot hashing replaces a registered target's label with a constant marker when it
-  contains a whole runtime input value. The value never enters the hash; different values
+  contains a whole strict runtime input value. The value never enters the hash; different values
   produce the same marker. Labels without a registered identifier, and all identifiers
   and types, remain subject to the guard below.
 - After a block's `Expect input NAME on screen` line, until the block ends, a label whose
-  whole-value echoes are all of declared inputs hashes as the same constant marker; a
+  whole-value strict echoes are all of declared inputs hashes as the same constant marker; a
   label that also holds an undeclared input's value, and every identifier and type, stay
   guarded. Replay uses the same block scope; resuming from a patched line restores earlier
   declarations, and a nested login replay gets its own scope.
 - Snapshot hashes refuse `CORE_REFUSED` before any hashing when an identifier, type or
-  unmasked label contains the whole value in its raw, trimmed, NFC, NFD or JSON-escaped form, or a numeric
+  unmasked label contains a strict input's whole value in its raw, trimmed, NFC, NFD or JSON-escaped form, or a numeric
   value's complete digit sequence with only separators between; partial echoes do not
   refuse. Plan hashes do the same for plan text. The refusal detail starts
   `runtime input privacy refused` and never names the value. The same guard applies to
@@ -1565,8 +1645,8 @@ New files for passing `###` blocks use `<app>/.qaren/actions/<slug>.yaml`, where
 `<app>` is the directory holding `.qaren/config.yaml` (with an external `--config`,
 the checked working tree). The file is a Maestro-shaped action: each plan line as a
 comment, then the commands with the exact `testID` (or, without one, the label) the
-step used. On the next run a block whose plan lines, platform and app are unchanged
-is replayed by those stored identities through the same walk, without Jev for quoted
+step used. On the next run a block whose plan lines, platform, app and
+[runtime input](#runtime-inputs) policy are unchanged is replayed by those stored identities through the same walk, without Jev for quoted
 targets or literal checks; phrase checks still ask Jev. An ambiguous stored
 identity refuses `TARGET_AMBIGUOUS` without re-walking. A stored identity that no
 longer resolves before that step authorizes any mutation re-walks
@@ -2087,6 +2167,10 @@ reach the pull request. Without a start time or a successful trim, or when an ap
 process change, launcher/server-picker fallback, floating button or open dev menu
 is observed after admission, no video is uploaded, even if recovery clears the
 overlay and the retry passes. A pre-plan login does not reset these interruptions.
+During [private-capture relaunch recovery](#check-a-plan), a transient runner-down
+failure without an app process identifier does not alone mark an interruption;
+a subsequent capture reporting a different app process still does, as does
+any other existing interruption evidence.
 Missing, unknown or unreadable eligibility also withholds the video; the comment
 explains why, without changing the run verdict.
 

@@ -642,7 +642,8 @@ pub(crate) fn install_deps(ctx: &mut Ctx) -> Result<(), Failure> {
             &deps_args,
             ctx.record.scenario.deadlines.install_deps_seconds,
         )
-        .cwd(&ctx.record.candidate.project_root.clone()),
+        .cwd(&ctx.record.candidate.project_root.clone())
+        .registry_auth_env(&ctx.record.scenario.deps.registry_auth_env),
     );
     ensure_running(ctx.runner, "deps")?;
     if !deps.ok() {
@@ -654,7 +655,9 @@ pub(crate) fn install_deps(ctx: &mut Ctx) -> Result<(), Failure> {
                 deps_args.join(" "),
                 redact_secrets(&deps.summary())
             ),
-            if offline {
+            if !ctx.record.scenario.deps.registry_auth_env.is_empty() {
+                "dependency output was withheld; check the declared registry auth environment names and registry setup, then re-run"
+            } else if offline {
                 "the pnpm store no longer covers the lockfile; re-run qaren prewarm, then re-run"
             } else {
                 "fix the dependency install in the candidate project, then re-run"
@@ -1406,7 +1409,12 @@ fn native_build_output_dirs(platform: &str) -> &'static [&'static str] {
     }
 }
 
-fn native_prebuild_spec(project_root: &Path, platform: &str, build_seconds: u64) -> CmdSpec {
+fn native_prebuild_spec(
+    project_root: &Path,
+    platform: &str,
+    build_seconds: u64,
+    registry_auth_env: &[String],
+) -> CmdSpec {
     CmdSpec::new(
         "expo-prebuild",
         "pnpm",
@@ -1423,6 +1431,7 @@ fn native_prebuild_spec(project_root: &Path, platform: &str, build_seconds: u64)
     .cwd(project_root)
     .env_remove("CI")
     .env("EXPO_NO_TELEMETRY", "1")
+    .registry_auth_env(registry_auth_env)
 }
 
 pub(crate) fn run_clean_preparation(ctx: &mut Ctx, plan: &BuildPlan) -> Result<(), Failure> {
@@ -1434,6 +1443,7 @@ pub(crate) fn run_clean_preparation(ctx: &mut Ctx, plan: &BuildPlan) -> Result<(
             &project_root,
             platform,
             ctx.record.scenario.deadlines.build_seconds,
+            &ctx.record.scenario.deps.registry_auth_env,
         );
         let prebuild = if ctx.record.scenario.platform == Platform::Ios {
             run_finite_build(ctx, &spec)?;
@@ -1446,10 +1456,14 @@ pub(crate) fn run_clean_preparation(ctx: &mut Ctx, plan: &BuildPlan) -> Result<(
                 "build",
                 FailureCode::BuildFailed,
                 format!("expo prebuild --clean: {}", prebuild.summary()),
-                format!(
-                    "inspect the prebuild output, then qaren cleanup {} --json",
-                    ctx.record.run_id
-                ),
+                if spec.registry_auth_env.is_empty() {
+                    format!(
+                        "inspect the prebuild output, then qaren cleanup {} --json",
+                        ctx.record.run_id
+                    )
+                } else {
+                    format!("dependency output was withheld; check the declared registry auth environment names and registry setup, then qaren cleanup {} --json", ctx.record.run_id)
+                },
             ));
         }
         ctx.notes.push((
@@ -2461,7 +2475,7 @@ fn run_finite_build(ctx: &mut Ctx, spec: &CmdSpec) -> Result<(), Failure> {
         return Err(Failure::cancelled("build", &reason));
     }
     if !started || exit != Some(0) || !matches!(outcome, super::cleanup::Outcome::Absent) {
-        return Err(build_failure(
+        let mut failure = build_failure(
             ctx,
             format!(
                 "{} did not finish cleanly: exit={exit:?}; group={}; see {}",
@@ -2470,7 +2484,11 @@ fn run_finite_build(ctx: &mut Ctx, spec: &CmdSpec) -> Result<(), Failure> {
                 log.display()
             ),
         )
-        .with_evidence(vec![super::log_tail(&log, 25)]));
+        .with_evidence(vec![super::log_tail(&log, 25)]);
+        if crate::redact::is_registry_child(&spec.label) && !spec.registry_auth_env.is_empty() {
+            failure.next_action = crate::redact::OutputText::from_output(&format!("dependency output was withheld; check the declared registry auth environment names and registry setup, then qaren cleanup {} --json", ctx.record.run_id));
+        }
+        return Err(failure);
     }
     Ok(())
 }
@@ -2569,7 +2587,12 @@ pub(crate) fn build_and_ready(ctx: &mut Ctx) -> Result<(), Failure> {
                     // Like expo run:ios, the borrowed-emulator build generates an absent native dir itself.
                     run_finite_build(
                         ctx,
-                        &native_prebuild_spec(&project_root, "android", deadline),
+                        &native_prebuild_spec(
+                            &project_root,
+                            "android",
+                            deadline,
+                            &ctx.record.scenario.deps.registry_auth_env,
+                        ),
                     )?;
                 }
                 if !project_root.join("android").join("gradlew").is_file() {
@@ -2790,7 +2813,8 @@ fn dry_run_receipt(
             "pnpm",
             &deps_args,
             scenario.deadlines.install_deps_seconds,
-        )];
+        )
+        .registry_auth_env(&scenario.deps.registry_auth_env)];
         if scenario.platform == Platform::Ios {
             let ios_spec = scenario.ios.as_ref().expect("validated");
             planned.push(ios::create_spec(
@@ -2871,7 +2895,8 @@ fn dry_run_receipt(
         "pnpm",
         &deps_args,
         deadlines.install_deps_seconds,
-    )];
+    )
+    .registry_auth_env(&scenario.deps.registry_auth_env)];
     let reuse = receipt
         .build
         .as_ref()
@@ -2995,7 +3020,12 @@ fn dry_run_receipt(
         };
         planned.insert(
             preparation,
-            native_prebuild_spec(&cand.project_root, platform, deadlines.build_seconds),
+            native_prebuild_spec(
+                &cand.project_root,
+                platform,
+                deadlines.build_seconds,
+                &scenario.deps.registry_auth_env,
+            ),
         );
     }
     // Reuse installs the cached binary instead of compiling.

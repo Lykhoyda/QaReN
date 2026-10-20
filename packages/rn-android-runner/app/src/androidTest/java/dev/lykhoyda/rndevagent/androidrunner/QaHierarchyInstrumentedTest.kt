@@ -161,6 +161,11 @@ class QaHierarchyInstrumentedTest {
         assertFalse(first.getBoolean("truncated"))
         assertEquals(0, first.getInt("normalizationDroppedNodes"))
         assertFalse(first.getBoolean("keyboardVisible"))
+        assertEquals(
+            instrumentation.targetContext.resources.displayMetrics.density.toDouble(),
+            first.getDouble("pointScale"),
+            0.0,
+        )
 
         val nodes = first.getJSONArray("nodes")
         val root = nodes.getJSONObject(0)

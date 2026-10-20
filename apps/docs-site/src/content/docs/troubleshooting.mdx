@@ -18,7 +18,7 @@ Refusals exit `4` and mean the run could not start or could not decide; failures
 | `JEV_UNREACHABLE`          | The plan needs Jev and the readiness probe did not succeed       | Set a valid `TYPESAFE_API_KEY`, or quote every target and `✓` line                          |
 | `JEV_AUTH_FAILED`          | Jev rejected the key                                             | Check `TYPESAFE_API_KEY`                                                                    |
 | `SCENARIO_UNREADABLE`      | `.qaren/config.yaml` cannot be read                              | Create it with at least `appId`                                                             |
-| `SCENARIO_INVALID`         | The configuration does not parse or fails validation            | Fix the key the detail names; see [Configuration](../configuration/)             |
+| `SCENARIO_INVALID`         | The configuration does not parse or fails validation            | Fix the key a validation detail names; see [Configuration](../configuration/)    |
 | `DEV_CLIENT_SCHEME_REQUIRED` | `devClientScheme` is missing or malformed                      | Set it to the app's registered URI scheme                                                   |
 | `NODE_UNSUPPORTED`         | Node is older than 24                                            | Point `nodePath` at Node 24 or newer                                                        |
 | `DISK_BUDGET_EXCEEDED`     | Too little free disk under `~/.qaren/runs`                       | Free disk space, then re-run                                                                |

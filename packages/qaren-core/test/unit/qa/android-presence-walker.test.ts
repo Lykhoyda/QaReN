@@ -15,7 +15,12 @@ import {
   RUNNER_PROTOCOL_VERSION,
   getPluginVersion,
 } from '../../../dist/runners/protocol.js';
-import { clearRefMap } from '../../../dist/fast-runner-ref-map.js';
+import { clearRefMap, getScreenPointScale } from '../../../dist/fast-runner-ref-map.js';
+import { buildDirectionalScrollCliArgs } from '../../../dist/handlers/device-interact.js';
+import {
+  resetActiveSessionInMemoryForTest,
+  setActiveSessionInMemoryForTest,
+} from '../../../dist/agent-device-wrapper.js';
 import { QA_READ_ONLY_CAPABILITY } from '../../../dist/runners/qa-native-policy.js';
 import { parseEnvelope } from '../../helpers/result-helpers.js';
 import { choice, scriptedJudge, walker } from './judgment-fixtures.ts';
@@ -106,6 +111,52 @@ const judge = () =>
   scriptedJudge((q) =>
     Object.fromEntries(Object.entries(q).map(([key, question]) => [key, choice(question)])),
   );
+
+test('the Android capture retains its point scale for scroll gesture insets', async () => {
+  const fixture = androidPresenceCapture();
+  Reflect.deleteProperty(fixture.data, 'pointScale');
+  await capturing(() => fixture)({ platformPresence: true });
+  assert.equal(getScreenPointScale(), fixture.data.presenceCapture.pointScale);
+  clearRefMap();
+  assert.equal(getScreenPointScale(), 1);
+});
+
+for (const platformPresence of [false, true]) {
+  test(`Android snapshot density keeps scroll endpoints 48 dp from window edges with presence=${platformPresence}`, async () => {
+    const fixture = androidPresenceCapture();
+    if (!platformPresence) {
+      Reflect.deleteProperty(fixture.data, 'presenceCapture');
+      for (const node of fixture.data.nodes) Reflect.deleteProperty(node, 'presence');
+    }
+    await capturing(() => fixture)({ platformPresence });
+    setActiveSessionInMemoryForTest({
+      name: 'test-scroll-density',
+      platform: 'android',
+      deviceId: 'test-emulator',
+      openedAt: '2026-10-19T00:00:00.000Z',
+    });
+    try {
+      assert.equal(getScreenPointScale(), fixture.data.pointScale);
+      const within = fixture.data.nodes[0].rect;
+      const inset = 48 * fixture.data.pointScale;
+      for (const direction of ['up', 'down'] as const) {
+        const [, , y1, , y2] = buildDirectionalScrollCliArgs(
+          direction,
+          0.6,
+          undefined,
+          undefined,
+          within,
+        ).map(Number);
+        for (const y of [y1, y2]) {
+          assert.ok(y >= inset, `${y} < ${inset}`);
+          assert.ok(y <= within.height - inset, `${y} > ${within.height - inset}`);
+        }
+      }
+    } finally {
+      resetActiveSessionInMemoryForTest();
+    }
+  });
+}
 
 test('an Android phrase tap on a visible unique control refuses with the presence gap and presses nothing', async () => {
   const requests: Record<string, unknown>[] = [];

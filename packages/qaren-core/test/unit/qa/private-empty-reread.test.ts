@@ -2,7 +2,12 @@ import assert from 'node:assert/strict';
 import { syncBuiltinESMExports } from 'node:module';
 import { setImmediate as nextTurn } from 'node:timers/promises';
 import { test, type TestContext } from 'node:test';
-import { captureScreen, type NativeObservation } from '../../../dist/qa/capture.js';
+import {
+  captureScreen,
+  NativeCaptureError,
+  type NativeObservation,
+} from '../../../dist/qa/capture.js';
+import { HandlerError } from '../../../dist/qa/adapt.js';
 import { NativeSnapshotIncomplete } from '../../../dist/qa/private-input.js';
 import { nativeCapture } from './platform-presence-fixtures.ts';
 
@@ -209,4 +214,29 @@ test('ordinary empty capture retains its immediate incomplete result', async () 
   });
   assert.equal(reads, 1);
   assert.equal(screen.captureCoverage?.native, 'incomplete');
+});
+
+test('private capture does not retry runner failures outside relaunch recovery', async (t) => {
+  const time = clock(t);
+  for (const error of [
+    new HandlerError('RN_FAST_RUNNER_DOWN', 'unavailable'),
+    new HandlerError('RUNNER_OWNERSHIP_MISMATCH', 'unavailable', { runnerRelaunch: true }),
+    new HandlerError('RN_FAST_RUNNER_STALE', 'unavailable', { runnerRelaunch: true }),
+  ]) {
+    let reads = 0;
+    await assert.rejects(
+      captureScreen({
+        requirePrivateInputs: true,
+        now: time.now,
+        native: async () => {
+          reads++;
+          throw error;
+        },
+        react: async () => ({}),
+      }),
+      NativeCaptureError,
+    );
+    assert.equal(reads, 1);
+    assert.equal(time.now(), 0);
+  }
 });

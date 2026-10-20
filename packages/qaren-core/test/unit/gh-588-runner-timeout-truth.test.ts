@@ -124,6 +124,7 @@ test('GH-588 Slice C: timeout succeeds only as exact-readback recovery', async (
     'poison',
     'independent-readback',
     'reap',
+    'relaunch',
     'result',
   ]);
   assert.equal(recovery?.runnerPostMortem?.provenance, 'adopted');

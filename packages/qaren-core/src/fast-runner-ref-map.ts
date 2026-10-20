@@ -79,6 +79,7 @@ interface StoredRefRecord extends RefMetadata {
 let refMap = new Map<string, ElementRect>();
 let metadataMap = new Map<string, StoredRefRecord>();
 let screenRect: ElementRect | null = null;
+let screenPointScale = 1;
 let lastUpdated = 0;
 let lastSnapshotHash: string | null = null;
 const lastPackageSnapshotHashes = new Map<string, string>();
@@ -200,6 +201,7 @@ function resolveScreenRect(entries: ExtentEntry[]): ElementRect | null {
 export function updateRefMap(nodes: SnapshotNode[]): void {
   refMap.clear();
   screenRect = null;
+  screenPointScale = 1;
   keyboardTop = null;
 
   const entries: ExtentEntry[] = [];
@@ -236,6 +238,10 @@ export function getScreenRect(): ElementRect | null {
   return screenRect;
 }
 
+export function getScreenPointScale(): number {
+  return screenPointScale;
+}
+
 export function getKeyboardTop(): number | null {
   return keyboardTop;
 }
@@ -259,6 +265,7 @@ export function clearRefMap(): void {
   refMap.clear();
   metadataMap.clear();
   screenRect = null;
+  screenPointScale = 1;
   lastUpdated = 0;
   lastSnapshotHash = null;
   lastPackageSnapshotHashes.clear();
@@ -346,7 +353,7 @@ export function buildSnapshotVerdict(
 
 export function updateRefMapFromFlat(
   nodes: FlatNode[],
-  freshness: { snapshotGeneration?: number; keyboardVisible?: boolean } = {},
+  freshness: { snapshotGeneration?: number; keyboardVisible?: boolean; pointScale?: unknown } = {},
 ): RefMapUpdateOutcome {
   // GH #409: a zero-node capture is indistinguishable from a degraded walk
   // (AX failure, wedged runner, mid-transition screen). It must never wipe the
@@ -363,6 +370,12 @@ export function updateRefMapFromFlat(
 
   refMap.clear();
   screenRect = null;
+  screenPointScale =
+    typeof freshness.pointScale === 'number' &&
+    Number.isFinite(freshness.pointScale) &&
+    freshness.pointScale > 0
+      ? freshness.pointScale
+      : 1;
   snapshotGeneration = freshness.snapshotGeneration ?? snapshotGeneration + 1;
   keyboardStateAtSnapshot = freshness.keyboardVisible ?? null;
   keyboardTop = null;

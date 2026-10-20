@@ -8,7 +8,12 @@ import {
 } from '../qa/snapshot-diagnostics.js';
 import { DEVICE_LEASE_REQUIRED, leaseFromEnvironment } from './lease-env.js';
 import { QaDispatchError, type QaDispatchContext } from '../domain/qa-dispatch.js';
-import { measureTiming, observeTiming, type TimingContext } from '../qa/timing.js';
+import {
+  measureTiming,
+  observeTiming,
+  type NativeReadinessReason,
+  type TimingContext,
+} from '../qa/timing.js';
 import { QA_READ_ONLY_CAPABILITY, checkQaNativeOutcome } from './qa-native-policy.js';
 import {
   execFile,
@@ -219,10 +224,9 @@ function signalDriver(child: ChildProcess, signal: NodeJS.Signals): void {
 let runnerLaunchCount = 0;
 let runnerState: FastRunnerState | null = null;
 let runnerPoisoned = false;
-let poisonReap: Promise<void> | null = null;
-// Concurrent containments share one poison flag. Clearing it on the first
-// completion would reopen mutating commands while a second containment is
-// still awaiting its own reap — exactly the window the poison exists to close.
+let poisonReap: Promise<RunnerPostMortem> | null = null;
+let relaunchCapturePending = false;
+// Keep mutators poisoned until every concurrent containment has finished.
 let poisonHolders = 0;
 let runnerOutputTail = '';
 let lastRunnerCommand: string | null = null;
@@ -281,6 +285,7 @@ export function _setFastRunnerStateForTest(state: FastRunnerState | null): void 
     : null;
   runnerProcess = null;
   lastRunnerPostMortem = null;
+  relaunchCapturePending = false;
 }
 
 // GH #384: announce the runner's quiescence-bypass status on the FIRST
@@ -783,6 +788,25 @@ export function resolveRunnerRequestedPort(explicitPort?: number): number {
   // address-family-safe allocation when multiple simulators have live runners.
   // The READY handshake reports the actual assigned port back to the client.
   return explicitPort ?? 0;
+}
+
+export async function ensureFastRunner(
+  deviceId: string,
+  bundleId: string,
+  opts: { forceLocalBuild?: boolean; attachOnly?: boolean } = {},
+): Promise<void> {
+  const liveness = await probeFastRunnerLiveness();
+  if (liveness === 'alive') return;
+  if (liveness === 'stale') {
+    await reapStaleFastRunner();
+  }
+  try {
+    await startFastRunner(deviceId, bundleId, undefined, opts);
+  } catch (err) {
+    console.error(
+      `Fast runner auto-start failed: ${err instanceof Error ? err.message : String(err)}`,
+    );
+  }
 }
 
 export async function startFastRunner(
@@ -1958,18 +1982,36 @@ async function postCommand(
   return (await postCommandWithRecovery(body, qaContext)).resp;
 }
 
-/**
- * Convert a runner SnapshotNode array (flat, already indexed) → FlatNode[]
- * for the ref-map. Each runner node gets a synthetic ref `@e<index>` so
- * downstream press/fill can target it.
- */
+async function reapAndRelaunchFastRunner(state: FastRunnerState): Promise<RunnerPostMortem> {
+  poisonReap ??= (async () => {
+    relaunchCapturePending = true;
+    await reapStaleFastRunner();
+    const postMortem = getRunnerPostMortem();
+    const deadline = performance.now() + READY_TIMEOUT_MS;
+    await ensureFastRunner(state.deviceId, state.bundleId, { attachOnly: true });
+    while (runnerState && performance.now() < deadline) {
+      const readiness = await probeFastRunnerLivenessDetailed({
+        clearState: () => {},
+        timeoutMs: Math.min(2000, deadline - performance.now()),
+      });
+      if (
+        readiness.liveness === 'alive' &&
+        readiness.capabilities?.includes('PLATFORM_PRESENCE_V2')
+      )
+        break;
+      await cancellableSleep(Math.min(500, Math.max(0, deadline - performance.now())));
+    }
+    return postMortem;
+  })();
+  return poisonReap;
+}
+
 async function containTypeTimeout(
   args: RunIOSArgs,
   authorityBefore: FastRunnerCommandAuthority | null = captureFastRunnerCommandAuthority(),
   trigger: 'main-thread-timeout' | 'post-settle-runner-authority-lost' = 'main-thread-timeout',
 ): Promise<ToolResult> {
-  // Poison before any asynchronous readback: concurrently queued mutators are
-  // refused at postCommandWithRecovery and cannot reach this XCTest instance.
+  // Poison before readback so queued mutators cannot reach this XCTest instance.
   const runnerBefore = authorityBefore;
   runnerPoisoned = true;
   poisonHolders++;
@@ -1983,15 +2025,13 @@ async function containTypeTimeout(
   }
 
   let reapDisposition: 'reaped' | 'already-absent' | 'replacement-preserved';
+  let runnerPostMortem = getRunnerPostMortem();
   try {
     if (runnerBefore && runnerState?.pid === runnerBefore.pid) {
-      poisonReap ??= reapStaleFastRunner();
-      await poisonReap;
+      runnerPostMortem = await reapAndRelaunchFastRunner(runnerState);
       reapDisposition = 'reaped';
     } else {
-      // A concurrent health gate may already have reaped the triggering runner
-      // and even spawned its replacement. Never signal that replacement merely
-      // because the prior command's authority was lost.
+      // A concurrent health gate may have replaced the runner; preserve that replacement.
       reapDisposition = runnerState ? 'replacement-preserved' : 'already-absent';
     }
   } finally {
@@ -2014,8 +2054,14 @@ async function containTypeTimeout(
       stateCleared: runnerState === null,
       nextMutationRequiresRespawn: runnerState === null,
     },
-    runnerPostMortem: getRunnerPostMortem(),
-    containmentOrder: ['poison', 'independent-readback', 'reap', 'result'],
+    runnerPostMortem,
+    containmentOrder: [
+      'poison',
+      'independent-readback',
+      'reap',
+      ...(reapDisposition === 'reaped' ? ['relaunch'] : []),
+      'result',
+    ],
     lateMutationContainment:
       reapDisposition === 'reaped'
         ? 'runner-process-reaped-before-next-mutation'
@@ -2026,7 +2072,8 @@ async function containTypeTimeout(
       wasRunningBeforeRecovery: 'unverified',
       pidPreserved: 'unverified',
       activateLaunchedApp: 'unverified',
-      semantics: 'runner host is lazily relaunched; target activation semantics are unchanged',
+      semantics:
+        'runner relaunch is attempted after a proven reap and attaches only to the existing target app',
     },
     // GH #581: never carry the actual field value — the verdict alone ships.
   };
@@ -2059,8 +2106,7 @@ async function containRunnerTimeout(
   let reapDisposition: 'reaped' | 'already-absent' | 'replacement-preserved';
   try {
     if (authorityBefore && runnerState?.pid === authorityBefore.pid) {
-      poisonReap ??= reapStaleFastRunner();
-      await poisonReap;
+      await reapAndRelaunchFastRunner(runnerState);
       reapDisposition = 'reaped';
     } else {
       reapDisposition = runnerState ? 'replacement-preserved' : 'already-absent';
@@ -2086,7 +2132,12 @@ async function containRunnerTimeout(
         stateCleared: runnerState === null,
         nextMutationRequiresRespawn: runnerState === null,
       },
-      containmentOrder: ['poison', 'reap', 'result'],
+      containmentOrder: [
+        'poison',
+        'reap',
+        ...(reapDisposition === 'reaped' ? ['relaunch'] : []),
+        'result',
+      ],
     },
   });
 }
@@ -2227,6 +2278,7 @@ function presenceCaptureUnavailable(
       capture: 'unknown',
       mutation: 'none',
       dispatched,
+      ...(code === 'RN_FAST_RUNNER_DOWN' && relaunchCapturePending ? { runnerRelaunch: true } : {}),
     },
   );
 }
@@ -2236,19 +2288,22 @@ async function probeQaReadiness(
   count: number,
 ): Promise<FastRunnerLivenessDetail> {
   let alive = false;
+  let readinessReason: NativeReadinessReason = 'unknown';
   return measureTiming(
     qaTiming &&
       ((event) =>
         observeTiming(qaTiming.observe, {
           ...event,
           count,
-          ...(event.edge === 'end' ? { outcome: alive ? 'ok' : 'failed' } : {}),
+          ...(event.edge === 'end' ? { outcome: alive ? 'ok' : 'failed', readinessReason } : {}),
         })),
     qaTiming?.now ?? (() => performance.now()),
     'native-readiness',
     async () => {
       const readiness = await probeFastRunnerLivenessDetailed({ clearState: () => {} });
       alive = readiness.liveness === 'alive';
+      readinessReason =
+        readiness.liveness === 'stale' ? (readiness.staleReason ?? 'unknown') : readiness.liveness;
       return readiness;
     },
   );
@@ -2286,10 +2341,20 @@ async function requireQaFastRunner(
   deviceId?: string,
   readOnly = false,
   qaTiming?: TimingContext,
-): Promise<void> {
+): Promise<boolean> {
   qaContext?.assertComplete();
   const before = runnerState;
   const readiness = await probeQaReadiness(qaTiming, 1);
+  if (
+    !qaContext &&
+    readOnly &&
+    relaunchCapturePending &&
+    (!before ||
+      runnerPoisoned ||
+      readiness.liveness === 'dead' ||
+      (readiness.liveness === 'stale' && readiness.staleReason === 'health'))
+  )
+    return false;
   if (
     !before ||
     runnerState !== before ||
@@ -2303,6 +2368,7 @@ async function requireQaFastRunner(
     throw new QaDispatchError('ACTION_CONTEXT_CHANGED');
   }
   if (readOnly) attestQaReadOnly(qaTiming, before, readiness, 1);
+  return true;
 }
 
 export async function runIOS(args: RunIOSArgs): Promise<ToolResult> {
@@ -2312,14 +2378,16 @@ export async function runIOS(args: RunIOSArgs): Promise<ToolResult> {
     if (args.qaContext) args.qaContext.invalidate();
     throw new QaDispatchError('ACTION_CONTEXT_CHANGED');
   }
-  if (args.qaContext || args.qaReadOnly)
-    await requireQaFastRunner(
+  if (args.qaContext || args.qaReadOnly) {
+    const ready = await requireQaFastRunner(
       args.qaContext,
       args.bundleId,
       args.deviceId,
       qaReadOnly,
       args.qaTiming,
     );
+    if (!ready) return presenceCaptureUnavailable('the relaunched runner is not ready');
+  }
   const presenceRequested = args.command === 'snapshot' && args.platformPresence === true;
   const presenceRunner = presenceRequested ? runnerState : null;
   if (presenceRequested) {
@@ -2745,6 +2813,13 @@ export async function runIOS(args: RunIOSArgs): Promise<ToolResult> {
               : {}),
           });
       const snapshotVerdict = buildSnapshotVerdict('rn-fast-runner', flat.length, outcome);
+      if (
+        qaReadOnly &&
+        snapshotVerdict.state === 'ok' &&
+        data.truncated === false &&
+        data.nodes.length === flat.length
+      )
+        relaunchCapturePending = false;
       const systemModal = systemModalDiagnostic(data.systemModal);
       return okResult(
         {

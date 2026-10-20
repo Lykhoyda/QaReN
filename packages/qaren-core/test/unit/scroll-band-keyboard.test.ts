@@ -27,7 +27,62 @@ function swipeYs(nodes: unknown[], keyboardVisible: boolean): number[] {
 }
 
 test('with the keyboard up, the scroll band stays above it', () => {
+  assert.deepEqual(swipeYs([WINDOW, KEYBOARD], true), [193, 315, 315, 193]);
   for (const y of swipeYs([WINDOW, KEYBOARD], true)) assert.ok(y < KEYBOARD.rect.y, `${y}`);
+});
+
+test('a plain scroll with no container uses a centred drag despite the cached screen origin', () => {
+  clearRefMap();
+  updateRefMapFromFlat([{ ...WINDOW, rect: { x: 0, y: 0, width: 402, height: 874 } }] as never, {
+    snapshotGeneration: 1,
+    keyboardVisible: false,
+  });
+  try {
+    assert.deepEqual(buildDirectionalScrollCliArgs('down'), [
+      'scroll',
+      '201',
+      '525',
+      '201',
+      '349',
+      '300',
+    ]);
+    assert.deepEqual(buildDirectionalScrollCliArgs('down', 0.6), [
+      'scroll',
+      '201',
+      '542',
+      '201',
+      '332',
+      '300',
+    ]);
+    assert.deepEqual(buildDirectionalScrollCliArgs('down', 0.6, undefined, 5000), [
+      'scroll',
+      '201',
+      '699',
+      '201',
+      '175',
+      '300',
+    ]);
+  } finally {
+    clearRefMap();
+  }
+});
+
+test('without a keyboard an explicit container band still spans a pixel inside its edges', () => {
+  clearRefMap();
+  updateRefMapFromFlat([WINDOW] as never, { snapshotGeneration: 1, keyboardVisible: false });
+  try {
+    assert.deepEqual(
+      buildDirectionalScrollCliArgs('down', 0.6, undefined, undefined, {
+        x: 20,
+        y: 100,
+        width: 360,
+        height: 600,
+      }),
+      ['scroll', '200', '699', '200', '101', '300'],
+    );
+  } finally {
+    clearRefMap();
+  }
 });
 
 test('without a keyboard the band is the full screen as before', () => {

@@ -169,6 +169,7 @@ export function androidPresenceCapture() {
     normalizationDroppedNodes: 0,
     snapshotGeneration: generation,
     keyboardVisible: false,
+    pointScale: ANDROID_SCALE,
     presenceCapture: {
       version: 2,
       source: 'android-a11y-live',

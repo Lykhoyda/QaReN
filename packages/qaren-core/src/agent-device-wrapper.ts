@@ -9,8 +9,7 @@ import type { ToolResult } from './utils.js';
 import type { SessionState } from './types.js';
 import { failResult } from './utils.js';
 import {
-  startFastRunner,
-  probeFastRunnerLiveness,
+  ensureFastRunner,
   probeFastRunnerLivenessDetailed,
   adoptPersistedFastRunnerState,
   awaitSpawnedRunnerExit,
@@ -25,6 +24,7 @@ import {
   consumePendingFastRunnerArtifactNote,
   getRunnerPostMortem,
 } from './runners/rn-fast-runner-client.js';
+export { ensureFastRunner } from './runners/rn-fast-runner-client.js';
 import { getPluginVersion } from './runners/protocol.js';
 import type {
   FastRunnerLiveness,
@@ -1343,32 +1343,6 @@ export async function ensureRunnerForCommand(
       `rn-fast-runner did not become ready after auto-spawn${firstStartRetried ? ' (one internal retry included)' : ''}. ` +
       'Retry, or run `device_snapshot action=open appId=<your.app.id> platform=ios` to surface the build error.',
   };
-}
-
-export async function ensureFastRunner(
-  deviceId: string,
-  bundleId: string,
-  // GH #382 (Codex P1): recovery forces a source rebuild by bypassing prebuilt.
-  opts: { forceLocalBuild?: boolean; attachOnly?: boolean } = {},
-): Promise<void> {
-  // M7/Phase-109: probe tri-state liveness instead of the PID-only
-  // isFastRunnerAvailable(). A runner whose PID is alive but whose HTTP server
-  // has wedged ('stale') must be reaped before a fresh start — otherwise it is
-  // reused and every subsequent device_* command burns the full HTTP timeout
-  // before failing. /health responds in ms when healthy, so the happy path is
-  // cheap; only a wedged runner pays the 2s probe timeout (vs. 10s per command).
-  const liveness = await probeFastRunnerLiveness();
-  if (liveness === 'alive') return;
-  if (liveness === 'stale') {
-    await reapStaleFastRunner();
-  }
-  try {
-    await startFastRunner(deviceId, bundleId, undefined, opts);
-  } catch (err) {
-    console.error(
-      `Fast runner auto-start failed: ${err instanceof Error ? err.message : String(err)}`,
-    );
-  }
 }
 
 // Issue #103 — test-only override hook. Tests that exercise handlers
