@@ -29,6 +29,9 @@ let emptySnapshots = 0;
 let launches = 0;
 let failLaunch = false;
 let launchDelayMs = 0;
+let healthDelayMs = 0;
+let blockSnapshots = false;
+let abortedRequests: string[] = [];
 let launchEnv: NodeJS.ProcessEnv;
 
 beforeEach((t) => {
@@ -37,6 +40,9 @@ beforeEach((t) => {
   launches = 0;
   failLaunch = false;
   launchDelayMs = 0;
+  healthDelayMs = 0;
+  blockSnapshots = false;
+  abortedRequests = [];
   launchEnv = {};
   for (const [key, value] of Object.entries({
     QAREN_DEVICE_LEASE: 'fixture:abcdefghijklmnop',
@@ -103,7 +109,10 @@ beforeEach((t) => {
     startedAt: 'now',
   });
   _setFetchForTest(async (url, init) => {
-    if (String(url).endsWith('/health')) {
+    const endpoint = new URL(String(url)).pathname;
+    init?.signal?.addEventListener('abort', () => abortedRequests.push(endpoint), { once: true });
+    if (endpoint === '/health') {
+      if (healthDelayMs > 0) await new Promise((resolve) => setTimeout(resolve, healthDelayMs));
       const health = healthReplies.shift() ?? 'alive';
       if (health === 'down') return Response.json({ ok: false });
       return Response.json({
@@ -125,6 +134,7 @@ beforeEach((t) => {
     }
     const request = JSON.parse(String(init?.body));
     if (request.command === 'snapshot' && request.platformPresence) {
+      if (blockSnapshots) await new Promise(() => {});
       assert.equal(new URL(String(url)).port, '22089');
       const data = nativeCapture();
       if (emptySnapshots > 0) {
@@ -453,3 +463,31 @@ test(
     assert.equal(reads, 3);
   },
 );
+
+for (const slowStage of ['health', 'snapshot'] as const) {
+  test(`private relaunch recovery bounds slow ${slowStage} reads by the settle budget`, async (t) => {
+    const time = clock(t);
+    await runIOS({ command: 'type', text: 'exact' });
+    healthReplies = ['down'];
+    let reads = 0;
+    let finished = false;
+    const capture = privateCapture(time.now, () => reads++).catch((error: Error) => {
+      finished = true;
+      return error;
+    });
+    await nextTurn();
+    assert.equal(reads, 1);
+    healthDelayMs = slowStage === 'health' ? 2_000 : 1_500;
+    if (slowStage === 'health') healthReplies = ['down', 'down', 'down'];
+    else blockSnapshots = true;
+    for (let tick = 0; tick < 11; tick++) await time.advance(500);
+    assert.equal(finished, false);
+    await time.advance(499);
+    assert.equal(finished, false);
+    await time.advance(1);
+    assert.ok((await capture) instanceof NativeCaptureError);
+    assert.equal(time.now(), 6_000);
+    assert.ok(abortedRequests.includes(slowStage === 'health' ? '/health' : '/command'));
+    assert.equal(launches, 1);
+  });
+}

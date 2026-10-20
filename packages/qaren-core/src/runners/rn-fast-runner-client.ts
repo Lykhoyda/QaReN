@@ -2281,6 +2281,7 @@ function presenceCaptureUnavailable(
 async function probeQaReadiness(
   qaTiming: TimingContext | undefined,
   count: number,
+  deadline?: number,
 ): Promise<FastRunnerLivenessDetail> {
   let alive = false;
   return measureTiming(
@@ -2294,7 +2295,12 @@ async function probeQaReadiness(
     qaTiming?.now ?? (() => performance.now()),
     'native-readiness',
     async () => {
-      const readiness = await probeFastRunnerLivenessDetailed({ clearState: () => {} });
+      const remaining = deadline === undefined ? 2000 : deadline - performance.now();
+      if (remaining <= 0) return { liveness: 'stale', staleReason: 'health' };
+      const readiness = await probeFastRunnerLivenessDetailed({
+        clearState: () => {},
+        timeoutMs: Math.min(2000, remaining),
+      });
       alive = readiness.liveness === 'alive';
       return readiness;
     },
@@ -2333,10 +2339,11 @@ async function requireQaFastRunner(
   deviceId?: string,
   readOnly = false,
   qaTiming?: TimingContext,
+  deadline?: number,
 ): Promise<boolean> {
   qaContext?.assertComplete();
   const before = runnerState;
-  const readiness = await probeQaReadiness(qaTiming, 1);
+  const readiness = await probeQaReadiness(qaTiming, 1, deadline);
   if (
     !qaContext &&
     readOnly &&
@@ -2364,6 +2371,14 @@ async function requireQaFastRunner(
 }
 
 export async function runIOS(args: RunIOSArgs): Promise<ToolResult> {
+  const presenceRequested = args.command === 'snapshot' && args.platformPresence === true;
+  const captureDeadline =
+    presenceRequested &&
+    relaunchCapturePending &&
+    Number.isSafeInteger(args.presenceBudgetMs) &&
+    (args.presenceBudgetMs ?? 0) > 0
+      ? performance.now() + (args.presenceBudgetMs ?? 0)
+      : undefined;
   const qaReadOnly =
     (args.qaContext !== undefined || args.qaReadOnly === true) && !isMutatingCommand(args.command);
   if (args.qaReadOnly && isMutatingCommand(args.command)) {
@@ -2377,10 +2392,10 @@ export async function runIOS(args: RunIOSArgs): Promise<ToolResult> {
       args.deviceId,
       qaReadOnly,
       args.qaTiming,
+      captureDeadline,
     );
     if (!ready) return presenceCaptureUnavailable('the relaunched runner is not ready');
   }
-  const presenceRequested = args.command === 'snapshot' && args.platformPresence === true;
   const presenceRunner = presenceRequested ? runnerState : null;
   if (presenceRequested) {
     if (!Number.isSafeInteger(args.presenceBudgetMs) || (args.presenceBudgetMs ?? 0) <= 0) {
@@ -2390,7 +2405,7 @@ export async function runIOS(args: RunIOSArgs): Promise<ToolResult> {
       );
     }
     // Observation may probe readiness, but must not tear down or repair a dead runner.
-    const readiness = await probeQaReadiness(args.qaTiming, 2);
+    const readiness = await probeQaReadiness(args.qaTiming, 2, captureDeadline);
     if (
       !presenceRunner ||
       runnerState !== presenceRunner ||
@@ -2644,13 +2659,18 @@ export async function runIOS(args: RunIOSArgs): Promise<ToolResult> {
   let commandAuthorityBefore = captureFastRunnerCommandAuthority();
   try {
     if (presenceRunner) {
+      const remaining =
+        captureDeadline === undefined ? Infinity : captureDeadline - performance.now();
+      if (remaining <= 0) return presenceCaptureUnavailable('the capture budget expired');
       resp = await sendCommandOnce(
         presenceRunner.port,
         { ...body, commandId: generateCommandId() },
-        commandTimeoutMs(args.command),
+        Math.min(commandTimeoutMs(args.command), remaining),
         undefined,
         args.qaTiming,
       );
+      if (captureDeadline !== undefined && performance.now() >= captureDeadline)
+        return presenceCaptureUnavailable('the capture budget expired', 'RN_FAST_RUNNER_DOWN', true);
     } else {
       ({ resp, recovery } = await postCommandWithRecovery(
         withKeyboardGuard(body, args.command, process.env) as Record<string, unknown>,
