@@ -56,7 +56,15 @@ any value, when:
 - a quoted wait or scroll target has no unique `testID` or unique visible text.
 
 A fill from a [runtime input](../plans/#runtime-inputs) is saved by name only, as
-`inputText: { input: "PASSWORD" }`, and replays with the current run's value. An
+`inputText: { input: "PASSWORD" }`, and replays with the current run's value.
+A fixture annotated `(non-secret)` retains its classification as
+`inputText: { input: "FIXTURE_CODE", sensitivity: "non-secret" }`; neither form stores values.
+An effective non-secret policy gives every block a versioned `ns1:` plan hash, binding
+its source steps and the sorted non-secret names for the whole run. Changing a later
+block's policy can therefore invalidate an earlier block, including when the last opt-in
+is removed. Ordinary blocks re-walk on a mismatch; a configured login block with stale
+policy refuses before the session opens and needs an explicit refresh. Legacy strict-only
+hashes and login admission stay unchanged. An
 `Expect input NAME on screen` line is saved as its plan line and a `# qaren: echo NAME`
 marker. Older qaren versions cannot replay such a block.
 
@@ -98,6 +106,8 @@ qaren reads the login block before it selects a device, so the runtime inputs it
 required for every run. `qaren pr` reads it at the pull request head and refuses a symlinked
 or unreadable `.qaren/actions` there. That block may only use inputs your plan or your
 checked-out login block already names; any other name refuses `PLAN_INPUT_MISSING`.
+Its effective sensitivity must also match for every required input, including the strict
+default, so a pull request cannot downgrade an owner's secret slot.
 
 An observed React Native red box fails the current step at once and never triggers recovery.
 On iOS, a change of the app's process between captures, such as a crash or restart, fails the

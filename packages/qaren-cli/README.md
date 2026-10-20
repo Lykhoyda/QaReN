@@ -1425,6 +1425,19 @@ see the [plan guide](../../apps/docs-site/src/content/docs/plans.mdx) for the gr
 value bounds. The owner resolves the value before running qaren; qaren reads no `.env`
 file, reference or secret store.
 
+Inputs are strict unless their named Fill explicitly opts in, for example
+`Fill "code-field" with input FIXTURE_CODE (non-secret)` for an operator-designated dev or
+staging fixture. The flag relaxes only execution hash and echo checks: pure fixture
+labels, identifiers and types retain their original hash operands, even at the filled
+field, and a redundant expected-echo declaration does not mask them to a constant.
+Strict matches win on equal or overlapping values; a non-secret alias cannot authorize a
+strict echo. Repeated declarations across the plan and configured login block must agree
+before device selection. There is no config, global switch or inferred environment policy.
+All values still receive log, model and artifact redaction; screenshots and video stay
+withheld. Never annotate real credentials: qaren cannot establish whether a backend is
+production or an input is a fixture, and misclassification permits execution hashing of
+that secret despite artifact redaction.
+
 - `main` captures the `QAREN_INPUT_` namespace once into the
   [invocation-scoped redaction owner](src/redact.rs). Every child spawned by the CLI has the
   namespace removed after its spec's environment is applied, including names the spec sets.
@@ -1437,12 +1450,20 @@ file, reference or secret store.
   at that commit with `git ls-tree` and `git show`. A symlinked or non-regular corpus path
   refuses before allocation; after worktree creation the owned block must match those bytes.
   Inputs that block names must also appear in the inventory of the plan and the invoking
-  checkout's login block; any other name refuses `PLAN_INPUT_MISSING`.
+  checkout's login block; any other name refuses `PLAN_INPUT_MISSING`. Effective sensitivities
+  must match too, including strict defaults, so a PR cannot downgrade an owner's secret.
   `check` re-reads its owned login block before device selection, and the core rechecks it
   before the session opens.
 - The core receives the values only inside its stdin request. The walker types them, saves
   slot fills as `inputText: { input: "PASSWORD" }` and replays saved and login blocks with
-  the same values. Private literal fills stay unsavable.
+  the current run's values. A non-secret slot saves as
+  `inputText: { input: "FIXTURE_CODE", sensitivity: "non-secret" }`, with no raw value.
+  When any slot is non-secret, every block's `planHash` uses a versioned `ns1:` digest of
+  normalized source steps and the sorted non-secret names. Policy changes invalidate saved
+  evidence across the run, including unchanged earlier blocks and removal of the last opt-in.
+  Ordinary blocks re-walk; policy-stale configured login evidence refuses before session open
+  and must be explicitly refreshed. Legacy strict-only hashes and login admission stay unchanged.
+  Private literal fills stay unsavable.
 - With any input namespace present, subprocess logs hold one withheld marker, preflight and
   core output excerpts are withheld, and native runner output tails are not retained. A run
   that requires inputs skips recording and screenshots.
@@ -1455,18 +1476,18 @@ file, reference or secret store.
   text, selectors, hashes or error messages. Raw log withholding and masking stay unchanged.
   Timing events are capped at 20,000 independently of the 10,000 outcome-marker cap; malformed
   diagnostics and sink failures are ignored without changing the run verdict or step deadline.
-- Before a fill dispatch, the walker registers the target's identifier when available.
+- Before a strict or literal fill dispatch, the walker registers the target's identifier when available.
   Snapshot hashing replaces a registered target's label with a constant marker when it
-  contains a whole runtime input value. The value never enters the hash; different values
+  contains a whole strict runtime input value. The value never enters the hash; different values
   produce the same marker. Labels without a registered identifier, and all identifiers
   and types, remain subject to the guard below.
 - After a block's `Expect input NAME on screen` line, until the block ends, a label whose
-  whole-value echoes are all of declared inputs hashes as the same constant marker; a
+  whole-value strict echoes are all of declared inputs hashes as the same constant marker; a
   label that also holds an undeclared input's value, and every identifier and type, stay
   guarded. Replay uses the same block scope; resuming from a patched line restores earlier
   declarations, and a nested login replay gets its own scope.
 - Snapshot hashes refuse `CORE_REFUSED` before any hashing when an identifier, type or
-  unmasked label contains the whole value in its raw, trimmed, NFC, NFD or JSON-escaped form, or a numeric
+  unmasked label contains a strict input's whole value in its raw, trimmed, NFC, NFD or JSON-escaped form, or a numeric
   value's complete digit sequence with only separators between; partial echoes do not
   refuse. Plan hashes do the same for plan text. The refusal detail starts
   `runtime input privacy refused` and never names the value. The same guard applies to

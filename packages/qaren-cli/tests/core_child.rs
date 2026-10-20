@@ -248,6 +248,7 @@ fn a_real_slot_child_keeps_raw_logs_withheld_while_retaining_structured_diagnost
           const reader = require('node:readline').createInterface({input: process.stdin});
           reader.once('line', input => {
             const { payload, runId } = JSON.parse(input);
+            if (!payload.plan.includes('input PASSWORD (non-secret)')) process.exit(4);
             process.stderr.write(payload.inputs.PASSWORD + '\n');
             let seq = 1;
             const send = (type, payload) => process.stdout.write(JSON.stringify({v: 1, runId, seq: ++seq, type, payload}) + '\n');
@@ -264,11 +265,13 @@ fn a_real_slot_child_keeps_raw_logs_withheld_while_retaining_structured_diagnost
         let mut runner = RealRunner::with_log_executable(env!("CARGO_BIN_EXE_qaren").into());
         let fixture = CmdSpec::new("fixture", "node", &["-e", script], 5);
         let raw_log = repo.join("core.log");
+        let mut annotated = request();
+        annotated.plan = "1. Fill \"code-field\" with input PASSWORD (non-secret)".into();
         let child = core::spawn_private(
             &mut runner,
             &fixture,
             &raw_log,
-            &request(),
+            &annotated,
             Some(&resolved),
             None,
         )

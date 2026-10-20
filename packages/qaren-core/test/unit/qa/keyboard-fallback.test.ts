@@ -2493,9 +2493,13 @@ const slotRun = (
   markdown = slotPlan(),
 ) => {
   const fake = app(options);
-  const inputs = new RunInputs({ [markdown.includes('OTP') ? 'OTP' : 'EMAIL']: value }, [
-    markdown.includes('OTP') ? 'OTP' : 'EMAIL',
-  ]);
+  const name = markdown.includes('OTP') ? 'OTP' : 'EMAIL';
+  const inputs = new RunInputs(
+    { [name]: value },
+    [name],
+    undefined,
+    markdown.includes('(non-secret)') ? [name] : [],
+  );
   return withInputs(inputs, async () => ({
     fake,
     result: (await runPlan(blocks(markdown), fake.deps, [], store)) as Ledger,
@@ -2626,4 +2630,53 @@ test('a slot fill matched only by placeholder on a native input stays unsavable'
   assert.equal(result.verdict, 'PASS', JSON.stringify(result.failure));
   assert.equal(result.blocks[0].saved, false);
   assert.match(result.blocks[0].unsavable ?? '', /^line \d+: element has no testID or label$/);
+});
+
+test('annotated wrapper and focused slots replay current fixtures with symbolic policy', async () => {
+  for (const [name, markdown, options] of [
+    ['EMAIL', slotPlan().replace('input EMAIL', 'input EMAIL (non-secret)'), {}],
+    [
+      'OTP',
+      '## QA\n### Code\n1. Fill "qa-otp-code" with input OTP (non-secret)\n2. Tap "qa-hidden-submit"',
+      { initial: [submit], initialKeyboard: true, reactFocused: true },
+    ],
+  ] as const) {
+    const store = slotStore();
+    const first = await slotRun(store, 'first-fixture', options, markdown);
+    assert.equal(first.result.verdict, 'PASS');
+    const slug = name === 'EMAIL' ? 'hidden-email' : 'code';
+    const saved = savedFile(store, slug);
+    assert.ok(saved.includes(`input: "${name}", sensitivity: "non-secret"`));
+    const stored = readBlock(saved);
+    assert.ok('steps' in stored);
+    const again = await slotRun(store, 'second-fixture', options, markdown);
+    assert.equal(again.result.path, 'replay');
+    assert.equal(again.result.verdict, 'PASS');
+    assert.equal(again.fake.typed[0].text, 'second-fixture');
+    assert.equal(savedFile(store, slug), saved);
+    const f = app(options);
+    const inputs = new RunInputs(
+      { [name]: 'third-fixture', SECRET: 'strict-canary' },
+      [name, 'SECRET'],
+      undefined,
+      [name],
+    );
+    const register = inputs.expectEcho.bind(inputs);
+    const names: (string | undefined)[] = [];
+    inputs.expectEcho = (identifier, inputName) => {
+      names.push(inputName);
+      register(identifier, inputName);
+      const candidate = { identifier, label: 'strict-canary' };
+      assert.equal(inputs.maskFilledEcho(candidate), candidate);
+    };
+    const outcome = await withInputs(inputs, () =>
+      walkBlock(loginBlock(slug, stored), f.deps, 0, [], undefined, undefined, {
+        recover: false,
+        login: true,
+      }),
+    );
+    assert.equal(outcome.block.outcome, 'pass');
+    assert.deepEqual(names, [name]);
+    assert.equal(f.typed[0].text, 'third-fixture');
+  }
 });

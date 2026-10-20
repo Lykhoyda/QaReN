@@ -18,6 +18,7 @@ fn owner(entries: &[(&str, &str)]) -> Arc<InputValues> {
 #[test]
 fn saved_action_stdout_masks_runtime_inputs() {
     let secret = "private-synthetic-value";
+    let policy_hash = format!("ns1:{}", "a".repeat(64));
     let repo = std::env::current_dir()
         .unwrap()
         .join(format!(".input-slot-actions-test-{}", std::process::id()));
@@ -25,7 +26,7 @@ fn saved_action_stdout_masks_runtime_inputs() {
     std::fs::create_dir_all(&corpus).unwrap();
     std::fs::write(
         corpus.join("sign-in.yaml"),
-        format!("# id: sign-in\n# intent: Sign in\n# status: {secret}\n# platform: ios\n"),
+        format!("# id: sign-in\n# intent: Sign in\n# status: {secret}\n# platform: ios\n# planHash: {policy_hash}\n"),
     )
     .unwrap();
     let outputs: Vec<_> = [
@@ -55,6 +56,8 @@ fn saved_action_stdout_masks_runtime_inputs() {
     let json: serde_json::Value = serde_json::from_slice(&outputs[0].stdout).unwrap();
     assert_eq!(json[0]["status"], "[REDACTED_INPUT]");
     assert_eq!(json[0]["platform"], "ios");
+    assert_eq!(json[0]["planHash"], policy_hash);
+    assert!(String::from_utf8_lossy(&outputs[2].stdout).contains(&policy_hash));
 }
 
 #[test]
@@ -309,9 +312,27 @@ fn real_children_cannot_receive_reinserted_input_env_and_private_logs_never_reta
 
 #[test]
 fn a_pr_head_login_block_cannot_request_inputs_the_owner_never_declared() {
-    for (head_names, refused) in [
-        (r#"["EXFIL","PASSWORD"]"#, true),
-        (r#"["PASSWORD"]"#, false),
+    for (head_names, head_policy, owner_policy, refused) in [
+        (r#"["EXFIL","PASSWORD"]"#, "", "", true),
+        (r#"["PASSWORD"]"#, "", "", false),
+        (
+            r#"["PASSWORD"]"#,
+            r#","nonSecretInputs":["PASSWORD"]"#,
+            "",
+            true,
+        ),
+        (
+            r#"["PASSWORD"]"#,
+            "",
+            r#","nonSecretInputs":["PASSWORD"]"#,
+            true,
+        ),
+        (
+            r#"["PASSWORD"]"#,
+            r#","nonSecretInputs":["PASSWORD"]"#,
+            r#","nonSecretInputs":["PASSWORD"]"#,
+            false,
+        ),
     ] {
         let repo = common::temp_repo();
         let app = repo.join("test-app");
@@ -354,13 +375,13 @@ fn a_pr_head_login_block_cannot_request_inputs_the_owner_never_declared() {
         runner.expect_run(
             "--preflight-stdin",
             CmdOutput::success(&format!(
-                r#"{{"ok":true,"inputProtocol":1,"requiredInputs":{head_names},"loginSnapshot":{{"slug":"sign-in","content":"head login block bytes"}}}}"#
+                r#"{{"ok":true,"inputProtocol":1,"requiredInputs":{head_names}{head_policy},"loginSnapshot":{{"slug":"sign-in","content":"head login block bytes"}}}}"#
             )),
         );
         runner.expect_run(
             "--preflight-stdin",
             CmdOutput::success(
-                r#"{"ok":true,"inputProtocol":1,"requiredInputs":["PASSWORD"],"loginSnapshot":{"slug":"sign-in","content":null}}"#,
+                &format!(r#"{{"ok":true,"inputProtocol":1,"requiredInputs":["PASSWORD"]{owner_policy},"loginSnapshot":{{"slug":"sign-in","content":null}}}}"#),
             ),
         );
         if !refused {
@@ -400,8 +421,18 @@ fn a_pr_head_login_block_cannot_request_inputs_the_owner_never_declared() {
         assert!(!req.lock_root.exists());
         if refused {
             assert_eq!(receipt.result, ReceiptResult::Refused);
-            assert_eq!(failure.code, FailureCode::PlanInputMissing);
-            assert!(failure.detail.contains("EXFIL"));
+            assert_eq!(
+                failure.code,
+                if head_names.contains("EXFIL") {
+                    FailureCode::PlanInputMissing
+                } else {
+                    FailureCode::CoreRefused
+                }
+            );
+            assert_eq!(
+                failure.detail.contains("EXFIL"),
+                head_names.contains("EXFIL")
+            );
             assert!(!failure.detail.contains("PASSWORD"));
             assert!(runner
                 .private_inputs
@@ -487,6 +518,106 @@ fn privacy_preflight_refusal_is_distinct_from_invalid_inputs() {
             );
         } else {
             assert_eq!(failure.detail, "runtime inputs are invalid");
+        }
+    }
+}
+
+#[test]
+fn fixture_inventory_metadata_and_preflight_must_agree_before_device_selection() {
+    let invalid_policies = [
+        serde_json::json!(null),
+        serde_json::json!([]),
+        serde_json::json!(["UNKNOWN"]),
+        serde_json::json!(["PASSWORD", "PASSWORD"]),
+        serde_json::json!(["bad"]),
+        serde_json::json!(["USERNAME", "PASSWORD"]),
+        serde_json::json!("PASSWORD"),
+        serde_json::json!(["A".repeat(33)]),
+        serde_json::json!(vec!["PASSWORD"; 65]),
+    ];
+    for (policy, preflight_policy, valid) in invalid_policies
+        .into_iter()
+        .map(|p| (p, None, false))
+        .chain([
+            (
+                serde_json::json!(["PASSWORD"]),
+                Some(serde_json::json!(["PASSWORD"])),
+                true,
+            ),
+            (serde_json::json!(["PASSWORD"]), None, false),
+            (
+                serde_json::json!(["PASSWORD"]),
+                Some(serde_json::json!(["USERNAME"])),
+                false,
+            ),
+        ])
+    {
+        let repo = common::temp_repo();
+        let app = repo.join("test-app");
+        std::fs::create_dir_all(app.join(".qaren")).unwrap();
+        std::fs::write(
+            app.join(".qaren/config.yaml"),
+            "appId: com.test\nmetroPort: 8791\ndevClientScheme: test\n",
+        )
+        .unwrap();
+        let plan = "1. Fill \"password\" with input PASSWORD (non-secret)\n";
+        std::fs::write(app.join("plan.md"), plan).unwrap();
+        let mut runner = MockRunner::new();
+        runner.expect_run("node --version", CmdOutput::success("v24.14.0\n"));
+        let inventory = serde_json::json!({"ok":true,"inputProtocol":1,"requiredInputs":["PASSWORD"],"nonSecretInputs":policy});
+        runner.expect_run(
+            "--preflight-stdin",
+            CmdOutput::success(&inventory.to_string()),
+        );
+        if policy == serde_json::json!(["PASSWORD"]) {
+            let mut reply = serde_json::json!({"ok":true,"inputProtocol":1,"requiredInputs":["PASSWORD"],"jevRequired":false,"jev":{"calls":0,"medianMs":0},"prepared":{"hash":qaren::candidate::sha256_hex(plan.as_bytes()),"blocks":[]}});
+            if let Some(policy) = preflight_policy {
+                reply["nonSecretInputs"] = policy;
+            }
+            runner.expect_run("--preflight-stdin", CmdOutput::success(&reply.to_string()));
+        }
+        if valid {
+            runner.expect_run(
+                "simctl list devices booted",
+                CmdOutput::success(r#"{"devices":{}}"#),
+            );
+        }
+        let req = RunRequest {
+            project_root: app.clone(),
+            config_path: app.join(".qaren/config.yaml"),
+            plan_file: app.join("plan.md"),
+            platform: Platform::Ios,
+            device: None,
+            boot_device: false,
+            fresh_install: false,
+            runtime_dir: "/runtime".into(),
+            node: Some("node".into()),
+            lock_root: repo.join("locks"),
+            runs_root: repo.join("runs"),
+            native_cache_root: repo.join("native"),
+            android_home: None,
+            budgets: Budgets {
+                walk_seconds: 30,
+                step_seconds: 30,
+            },
+            pr: None,
+        };
+        let receipt = with_input_scope(
+            owner(&[("QAREN_INPUT_PASSWORD", "synthetic-fixture")]),
+            || qaren::run::run(&mut runner, &req),
+        );
+        assert_eq!(runner.remaining(), 0);
+        assert_eq!(
+            runner.calls.iter().any(|call| call
+                .args
+                .windows(3)
+                .any(|args| args == ["list", "devices", "booted"])),
+            valid
+        );
+        assert!(!req.lock_root.exists());
+        assert!(!req.runs_root.exists());
+        if !valid {
+            assert_eq!(receipt.failure.unwrap().code, FailureCode::CoreRefused);
         }
     }
 }

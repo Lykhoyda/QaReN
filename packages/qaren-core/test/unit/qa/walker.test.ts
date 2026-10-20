@@ -1070,3 +1070,47 @@ test('a declared echo is in force from its line to the end of its block', async 
     ),
   );
 });
+
+test('annotated fixture reaches the next capture, fill row and authenticated assertion without an echo', async () => {
+  const value = 'fixture-canary';
+  const inputs = new RunInputs({ FIXTURE: value }, ['FIXTURE'], undefined, ['FIXTURE']);
+  const field = fixtureElement('@field', 'Code', { kind: 'input', testID: 'code-field' });
+  const f = fixtureWalker([fixtureScreen([field])], scriptedJudge([]));
+  let filled = false;
+  let echoedCaptures = 0;
+  f.deps.fill = async (_ref, text) => {
+    assert.equal(text, value);
+    filled = true;
+    return { ok: true, proven: true };
+  };
+  f.deps.captureScreen = async () => {
+    const label = filled ? value : 'Code';
+    hashSnapshotNodes([
+      {
+        ref: '@field',
+        index: 0,
+        type: 'TextField',
+        identifier: 'code-field',
+        label,
+        rect: { x: 0, y: 0, width: 40, height: 40 },
+      },
+    ]);
+    if (filled) echoedCaptures++;
+    return fixtureScreen([
+      { ...field, label },
+      ...(filled ? [fixtureElement('@signed', 'signed-in', { kind: 'text' })] : []),
+    ]);
+  };
+  const result = await withInputs(inputs, () =>
+    runPlan(
+      parsePlan('1. Fill "code-field" with input FIXTURE (non-secret)\n✓ "signed-in"').blocks!,
+      f.deps,
+    ),
+  );
+  assert.equal(result.verdict, 'PASS', JSON.stringify(result));
+  assert.ok(echoedCaptures > 0);
+  assert.equal(result.steps.find((row) => row.line === 1)?.outcome, 'pass');
+  assert.equal(result.steps.find((row) => row.line === 2)?.outcome, 'pass');
+  assert.equal(result.videoPublication, 'withheld-fill');
+  assert.ok(!JSON.stringify(result).includes(value));
+});

@@ -6,7 +6,12 @@ import { syncBuiltinESMExports } from 'node:module';
 import { Readable } from 'node:stream';
 import { RunInputs, withInputs } from '../../../dist/qa/inputs.js';
 import { ObservedPrivacy, MASK } from '../../../dist/qa/privacy.js';
-import { collectInputNames, parsePlan, preparePlan } from '../../../dist/qa/plan.js';
+import {
+  collectInputNames,
+  parsePlan,
+  preparePlan,
+  readPreparedPlan,
+} from '../../../dist/qa/plan.js';
 import { requiredInputs, parseInputPreflight } from '../../../dist/qa/input-preflight.js';
 import { readPrivateLine, parsePrivateRequest } from '../../../dist/qa/wire.js';
 import { InputPrivacyRefusal } from '../../../dist/qa/inputs.js';
@@ -27,7 +32,7 @@ test('inventory honors active QA/comments and does not hash even overflowing hea
   syncBuiltinESMExports();
   try {
     const result = collectInputNames(
-      `1. Fill "outside" with input OUTSIDE\n## QA\n### ${'a'.repeat(200)}\n<!--\n1. Fill "hidden" with input HIDDEN\n-->\n1. Fill "slot-field" with input SLOT_A\n2. Fill "name-field" with input USERNAME\n## Other\n1. Fill "outside" with input OTHER`,
+      `1. Fill "outside" with input OUTSIDE\n## QA\n### ${'a'.repeat(200)}\n<!--\n1. Fill "hidden" with input HIDDEN\n-->\n1. Fill "slot-field" with input SLOT_A (non-secret)\n2. Fill "name-field" with input USERNAME\n## Other\n1. Fill "outside" with input OTHER`,
     );
     assert.deepEqual(result.names, ['SLOT_A', 'USERNAME']);
     assert.deepEqual(result.refused, []);
@@ -303,4 +308,320 @@ test('a filled field slot block stays name-only and value-independent', () => {
     return [saved.yaml, preparePlan(plan, [block]).hash];
   });
   assert.deepEqual(outputs[0], outputs[1]);
+});
+
+test('non-secret fixture passes grammar, private admission, hashing and symbolic persistence', async () => {
+  const plan = source.replace('SLOT_A', 'SLOT_A (non-secret)');
+  const parsed = parsePlan(plan);
+  assert.ok(parsed.blocks, 'annotated Fill must parse without a model');
+  const judge = scriptedJudge([]);
+  assert.deepEqual(
+    await parseInputPreflight(
+      { v: 1, phase: 'input-inventory', plan, platform: 'ios', appId: 'com.test' },
+      judge,
+    ),
+    {
+      ok: true,
+      inputProtocol: 1,
+      requiredInputs: ['SLOT_A'],
+      nonSecretInputs: ['SLOT_A'],
+    },
+  );
+  const result = await parseInputPreflight(
+    {
+      v: 1,
+      phase: 'plan-preflight',
+      plan,
+      platform: 'ios',
+      appId: 'com.test',
+      inputProtocol: 1,
+      inputs: { SLOT_A: 'fixture-canary' },
+    },
+    judge,
+  );
+  assert.equal(result.ok, true);
+  const { inputs, privacy } = parsePrivateRequest(
+    JSON.stringify({
+      v: 1,
+      runId: 'check-1',
+      seq: 1,
+      type: 'request',
+      payload: {
+        runId: 'check-1',
+        t0: 1770000000000,
+        walkBudgetMs: 300000,
+        plan,
+        platform: 'ios',
+        appId: 'com.test',
+        appRoot: '/tmp/app',
+        runDir: '/tmp/runs/check-1',
+        lease: 'check-1:0123456789abcdef0123456789abcdef',
+        inputProtocol: 1,
+        inputs: { SLOT_A: 'fixture-canary' },
+        target: {
+          deviceId: 'UDID',
+          deviceName: 'iPhone',
+          metroPort: 8791,
+          metroUrlForDevice: 'http://127.0.0.1:8791',
+          worktree: '/tmp/app',
+        },
+      },
+    }),
+  );
+  withInputs(inputs, () => {
+    inputs.assertHashSafe('fixture-canary');
+    const block = parsePlan(plan).blocks![0];
+    const saved = serializeBlock(
+      block,
+      [{ block: block.slug, line: 2, outcome: 'pass', selector: { id: 'slot-field' } }],
+      { appId: 'com.test', platform: 'ios' },
+      privacy.privateSet(),
+    );
+    assert.ok('yaml' in saved);
+    assert.ok(saved.yaml.includes('sensitivity: "non-secret"'));
+    assert.ok(!saved.yaml.includes('fixture-canary'));
+    const stored = readBlock(saved.yaml);
+    assert.ok(!('invalid' in stored));
+    assert.equal(stored.steps[0].sensitivity, 'non-secret');
+    assert.ok(storedFits(block, stored, saved.yaml, { appId: 'com.test', platform: 'ios' }));
+  });
+  assert.equal(privacy.canScreenshot(), false);
+  assert.ok(!inputs.redact('fixture-canary').includes('fixture-canary'));
+  assert.equal(judge.calls.length, 0);
+});
+
+test('input policy inventory refuses conflicts and malformed annotations without a model', async () => {
+  const judge = scriptedJudge([]);
+  for (const plan of [
+    `${source}\n### Later\n1. Fill "again" with input SLOT_A (non-secret)`,
+    source.replace('SLOT_A', 'SLOT_A (secret)'),
+    source.replace('SLOT_A', 'SLOT_A (nonsecret)'),
+    source.replace('SLOT_A', 'SLOT_A (non-secret) trailing'),
+    '1. Fill "field" with "literal" (non-secret)',
+    `${source}\n2. Expect input SLOT_A on screen (non-secret)`,
+    '1. Please fill "field" with input SLOT_A (non-secret)',
+  ]) {
+    assert.ok(parsePlan(plan).refused, plan);
+    await assert.rejects(
+      parseInputPreflight(
+        { v: 1, phase: 'input-inventory', plan, platform: 'ios', appId: 'com.test' },
+        judge,
+      ),
+      /runtime input inventory refused/,
+    );
+  }
+  const valid = `outside\n## QA\n<!-- 1. Fill "hidden" with input SLOT_A -->\n${source}\n2. Fill "again" with input SLOT_A\n## Other\n1. Fill "outside" with input SLOT_A (non-secret)`;
+  assert.deepEqual(requiredInputs(valid), ['SLOT_A']);
+  assert.equal(judge.calls.length, 0);
+});
+
+test('login policy binds the whole run and symbolic replay rebinds current values', async () => {
+  const annotated = source.replace('SLOT_A', 'SLOT_A (non-secret)');
+  const build = (plan: string, nonSecret: string[]) => {
+    const inputs = new RunInputs(
+      { SLOT_A: 'first-fixture' },
+      ['SLOT_A'],
+      new ObservedPrivacy(),
+      nonSecret,
+    );
+    return withInputs(inputs, () => {
+      const block = parsePlan(plan).blocks![0];
+      const saved = serializeBlock(
+        block,
+        [{ block: block.slug, line: 2, outcome: 'pass', selector: { id: 'slot-field' } }],
+        { appId: 'com.test', platform: 'ios' },
+      );
+      assert.ok('yaml' in saved);
+      return saved.yaml;
+    });
+  };
+  const yaml = build(annotated, ['SLOT_A']);
+  assert.match(yaml, /# planHash: ns1:[a-f0-9]{64}/);
+  const current = new RunInputs({ SLOT_A: 'second-fixture' }, ['SLOT_A'], new ObservedPrivacy(), [
+    'SLOT_A',
+  ]);
+  const stored = readBlock(yaml);
+  assert.ok(!('invalid' in stored));
+  assert.equal(current.textFor(stored.steps[0]), 'second-fixture');
+  const request = (
+    content: string,
+    plan = '1. Tap "ready"',
+    values = { SLOT_A: 'second-fixture' },
+  ) => ({
+    v: 1,
+    phase: 'plan-preflight',
+    plan,
+    appId: 'com.test',
+    platform: 'ios',
+    inputProtocol: 1,
+    inputs: values,
+    loginSnapshot: { slug: 'login', content },
+  });
+  assert.equal((await parseInputPreflight(request(yaml), scriptedJudge([]))).ok, true);
+  await assert.rejects(
+    parseInputPreflight(request(yaml, source), scriptedJudge([])),
+    /inventory refused/,
+  );
+  for (const stale of [
+    yaml.replace(/ns1:[a-f0-9]{64}/, 'ns1:' + '0'.repeat(64)),
+    yaml.replace('ns1:', 'ns2:'),
+  ])
+    await assert.rejects(
+      parseInputPreflight(request(stale), scriptedJudge([])),
+      /saved login input policy refused/,
+    );
+  assert.throws(
+    () =>
+      parsePrivateRequest(
+        runtimeLine(
+          '1. Tap "ready"',
+          { SLOT_A: 'second-fixture' },
+          {
+            loginBlock: 'login',
+            loginMarker: { id: 'login-screen' },
+            loginSnapshot: { slug: 'login', content: yaml.replace('ns1:', 'ns2:') },
+          },
+        ),
+      ),
+    /saved login input policy refused/,
+  );
+  const strict = build(source, []);
+  assert.equal((await parseInputPreflight(request(strict), scriptedJudge([]))).ok, true);
+  await assert.rejects(
+    parseInputPreflight(
+      request(strict, '1. Fill "other" with input FIXTURE (non-secret)', {
+        SLOT_A: 'second-fixture',
+        FIXTURE: 'other-fixture',
+      }),
+      scriptedJudge([]),
+    ),
+    /saved login input policy refused/,
+  );
+  const strictVersioned = strict.replace(
+    /# planHash: [a-f0-9]{64}/,
+    '# planHash: ns1:' + '0'.repeat(64),
+  );
+  await assert.rejects(
+    parseInputPreflight(request(strictVersioned), scriptedJudge([])),
+    /saved login input policy refused/,
+  );
+  for (const placeholder of [
+    '{ input: "SLOT_A" }',
+    '{ input: "SLOT_A", sensitivity: "secret" }',
+    '{ input: "SLOT_A", sensitivity: "non-secret", extra: true }',
+    '{ input: "SLOT_A", sensitivity: "non-secret", text: "literal" }',
+    '"literal"',
+  ])
+    assert.ok(
+      'invalid' in
+        readBlock(yaml.replace('{ input: "SLOT_A", sensitivity: "non-secret" }', placeholder)),
+    );
+  assert.ok(
+    'invalid' in readBlock(yaml.replace('with input SLOT_A (non-secret)', 'with input SLOT_A')),
+  );
+});
+
+test('prepared plan binds sensitivity and action identity includes every block policy', () => {
+  const first = '### First\n1. Tap "ready"\n';
+  const strict = `${first}### Second\n1. Fill "field" with input FIXTURE`;
+  const annotated = strict + ' (non-secret)';
+  const legacy = parsePlan(strict).blocks!;
+  const policy = parsePlan(annotated).blocks!;
+  assert.equal(
+    legacy[0].planHash,
+    crypto.createHash('sha256').update('1. Tap "ready"').digest('hex'),
+  );
+  assert.notEqual(policy[0].planHash, legacy[0].planHash);
+  assert.match(policy[0].planHash, /^ns1:/);
+  const prepared = preparePlan(annotated, policy);
+  assert.deepEqual(readPreparedPlan(annotated, prepared), policy);
+  for (const change of [undefined, 'secret', 'unknown']) {
+    const changed = structuredClone(prepared);
+    if (change === undefined) delete changed.blocks[1].items[0].sensitivity;
+    else changed.blocks[1].items[0].sensitivity = change;
+    assert.equal(readPreparedPlan(annotated, changed), undefined);
+  }
+  const forged = preparePlan(strict, legacy);
+  forged.blocks[1].items[0].sensitivity = 'non-secret';
+  assert.equal(readPreparedPlan(strict, forged), undefined);
+});
+
+test('non-secret fixtures stay model-masked and cannot be saved through value selectors', async () => {
+  for (const value of ['fixture-canary', 'left"right', 'caf\u00e9-value', '123456']) {
+    const privacy = new ObservedPrivacy();
+    const inputs = new RunInputs({ FIXTURE: value }, ['FIXTURE'], privacy, ['FIXTURE']);
+    for (const form of [value, value.normalize('NFD'), JSON.stringify(value).slice(1, -1)]) {
+      assert.ok(!privacy.redact(form).includes(form));
+      const masked = privacy.maskForModel(privacy.modelValues(), [form]);
+      assert.ok(!masked.apply(form).includes(form));
+    }
+    assert.equal(inputs.hasInputs, true);
+    assert.equal(privacy.canScreenshot(), false);
+    withInputs(inputs, () => {
+      const block = parsePlan('1. Fill "field" with input FIXTURE (non-secret)').blocks![0];
+      assert.ok(
+        'unsavable' in
+          serializeBlock(
+            block,
+            [{ block: block.slug, line: 1, outcome: 'pass', selector: { text: value } }],
+            { appId: 'com.test', platform: 'ios' },
+            privacy.privateSet(),
+          ),
+      );
+    });
+  }
+});
+
+function runtimeLine(plan: string, values: Record<string, string>, extra = {}) {
+  return JSON.stringify({
+    v: 1,
+    runId: 'check-1',
+    seq: 1,
+    type: 'request',
+    payload: {
+      runId: 'check-1',
+      t0: 1770000000000,
+      walkBudgetMs: 300000,
+      plan,
+      platform: 'ios',
+      appId: 'com.test',
+      appRoot: '/tmp/app',
+      runDir: '/tmp/runs/check-1',
+      lease: 'check-1:0123456789abcdef0123456789abcdef',
+      inputProtocol: 1,
+      inputs: values,
+      target: {
+        deviceId: 'UDID',
+        deviceName: 'iPhone',
+        metroPort: 8791,
+        metroUrlForDevice: 'http://127.0.0.1:8791',
+        worktree: '/tmp/app',
+      },
+      ...extra,
+    },
+  });
+}
+
+test('private wire derives policy from source rather than arbitrary policy or prepared fields', () => {
+  const prepared = preparePlan(source, parsePlan(source).blocks!);
+  prepared.blocks[0].items[0].sensitivity = 'non-secret';
+  const { inputs } = parsePrivateRequest(
+    runtimeLine(source, { SLOT_A: 'fixture-canary' }, { nonSecretInputs: ['SLOT_A'], prepared }),
+  );
+  assert.deepEqual(inputs.nonSecretNames(), []);
+  assert.throws(() => inputs.assertHashSafe('fixture-canary'), InputPrivacyRefusal);
+  assert.throws(
+    () => new RunInputs({ SLOT_A: 'fixture-canary' }, ['SLOT_A'], undefined, ['OTHER']),
+    /runtime inputs are invalid/,
+  );
+  for (const values of [
+    {},
+    { SLOT_A: 'fixture-canary', OTHER: 'extra-value' },
+    { SLOT_A: 'op://vault' },
+  ])
+    assert.throws(
+      () =>
+        parsePrivateRequest(runtimeLine(source.replace('SLOT_A', 'SLOT_A (non-secret)'), values)),
+      /runtime inputs are invalid/,
+    );
 });

@@ -464,3 +464,10 @@ test('walk.js --compile prints the plan or the refusal', () => {
     assert.equal(JSON.parse(usage.stdout).code, 'FLOW_USAGE', args.join(' '));
   }
 });
+
+test('symbolic inputs remain unsupported with or without fixture sensitivity', () => {
+  for (const fields of ['input: FIXTURE', 'input: FIXTURE, sensitivity: non-secret']) {
+    const error = refusal(`- inputText: { ${fields} }\n`);
+    assert.match(error.reason, /named inputs require qaren check or pr/);
+  }
+});
