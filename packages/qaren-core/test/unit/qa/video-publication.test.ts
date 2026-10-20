@@ -83,6 +83,46 @@ test('post-admission startup observations remain in the ledger after normal walk
     ],
     ['process change', okResult({ appProcessIdentifier: 77, nodes: [] }), true],
     ['process lost', failResult('app stopped', { reason: 'app-not-running' }), true],
+    [
+      'transient relaunch failure',
+      failResult('runner restarting', 'RN_FAST_RUNNER_DOWN', { runnerRelaunch: true }),
+      false,
+    ],
+    [
+      'transient relaunch failure with metadata code',
+      failResult('runner restarting', { code: 'RN_FAST_RUNNER_DOWN', runnerRelaunch: true }),
+      false,
+    ],
+    ['runner down outside relaunch', failResult('runner unavailable', 'RN_FAST_RUNNER_DOWN'), true],
+    [
+      'other relaunch failure',
+      failResult('runner stale', 'RN_FAST_RUNNER_STALE', { runnerRelaunch: true }),
+      true,
+    ],
+    ...[
+      { code: 'RUNNER_LEAK' },
+      { reason: 'app-not-running' },
+      { recovered: 'runner' },
+      { recoveryTier: 'relaunch' },
+      { recoveryReason: 'relaunch-failed' },
+      { foregroundSurface: 'dev_client_picker' },
+      { foregroundSurface: 'first_run_tutorial' },
+    ].map(
+      (evidence) =>
+        [
+          'transient failure with interruption evidence',
+          failResult('runner restarting', 'RN_FAST_RUNNER_DOWN', {
+            runnerRelaunch: true,
+            ...evidence,
+          }),
+          true,
+        ] as const,
+    ),
+    [
+      'successful response without process proof',
+      okResult({}, { meta: { code: 'RN_FAST_RUNNER_DOWN', runnerRelaunch: true } }),
+      true,
+    ],
     ['normal app', app, false],
   ] as const) {
     let probes = 0;

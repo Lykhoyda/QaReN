@@ -7,6 +7,7 @@ import {
   runIOS,
 } from '../../../dist/runners/rn-fast-runner-client.js';
 import { QaDispatchContext } from '../../../dist/domain/qa-dispatch.js';
+import { withCancellation } from '../../../dist/domain/cancellation.js';
 import {
   REQUIRED_IOS_COMMANDS,
   REQUIRED_IOS_FEATURES,
@@ -129,13 +130,19 @@ test('the real snapshot handler forwards host-only timing through both iOS captu
     assert.deepEqual(
       events
         .filter((e) => e.stage === 'native-readiness' && e.edge === 'end')
-        .map((e) => [e.count, e.ms, e.outcome]),
+        .map((e) => [e.count, e.ms, e.outcome, e.readinessReason]),
       platformPresence
         ? [
-            [1, 3, 'ok'],
-            [2, 3, 'ok'],
+            [1, 3, 'ok', 'alive'],
+            [2, 3, 'ok', 'alive'],
           ]
-        : [[1, 3, 'ok']],
+        : [[1, 3, 'ok', 'alive']],
+    );
+    assert.ok(
+      events.every(
+        (e) =>
+          e.readinessReason === undefined || (e.stage === 'native-readiness' && e.edge === 'end'),
+      ),
     );
     assert.equal(events.find((e) => e.stage === 'native-transport' && e.edge === 'end')?.ms, 7);
     assert.equal(events.find((e) => e.stage === 'native-decode' && e.edge === 'end')?.ms, 11);
@@ -146,6 +153,90 @@ test('the real snapshot handler forwards host-only timing through both iOS captu
     assert.ok(!Object.keys(requests[0]).some((key) => /timing|observe|now/i.test(key)));
     assert.ok(!JSON.stringify(events).includes('PRIVATE'));
   }
+});
+
+test('both readiness probes retain the finite refusal category without changing dispatch', async () => {
+  const cases = [
+    [
+      'health',
+      () => {
+        throw new Error('PRIVATE-health');
+      },
+    ],
+    ['authority-mismatch', (reply) => ({ ...reply, sessionId: 'PRIVATE-foreign-session' })],
+    ['legacy', (reply) => ({ ...reply, protocolVersion: undefined })],
+    ['protocol-older', (reply) => ({ ...reply, protocolVersion: 0 })],
+    ['protocol-newer', (reply) => ({ ...reply, protocolVersion: 99 })],
+    ['version-skew', (reply) => ({ ...reply, runnerVersion: 'PRIVATE-version' })],
+    ['missing-commands', (reply) => ({ ...reply, commands: [] })],
+    ['missing-features', (reply) => ({ ...reply, capabilities: [] })],
+  ] satisfies [string, (reply: Record<string, unknown>) => unknown][];
+  for (const [reason, health] of cases) {
+    for (const probe of [1, 2]) {
+      const f = fixture({ health: (reply, count) => (count === probe ? health(reply) : reply) });
+      const call = createDeviceSnapshotHandler()({
+        action: 'snapshot',
+        qaReadOnly: true,
+        platformPresence: true,
+        presenceBudgetMs: 20_000,
+        qaTiming: f.qaTiming,
+      });
+      if (probe === 1) await assert.rejects(call, /ACTION_CONTEXT_CHANGED/);
+      else {
+        const result = await call;
+        assert.equal(result.isError, true);
+        const envelope = JSON.parse(result.content[0].text);
+        assert.equal(
+          envelope.code,
+          reason === 'authority-mismatch' ? 'RUNNER_OWNERSHIP_MISMATCH' : 'RN_FAST_RUNNER_DOWN',
+        );
+        assert.equal(envelope.meta.runnerRelaunch, undefined);
+      }
+      assert.deepEqual(
+        f.events
+          .filter((e) => e.stage === 'native-readiness' && e.edge === 'end')
+          .map((e) => [e.count, e.outcome, e.readinessReason]),
+        [...(probe === 2 ? [[1, 'ok', 'alive']] : []), [probe, 'failed', reason]],
+      );
+      assert.equal(f.requests.length, 0);
+      assert.ok(!JSON.stringify(f.events).includes('PRIVATE'));
+    }
+  }
+});
+
+test('missing runner state is dead while an aborted readiness probe is unknown', async () => {
+  const dead = fixture();
+  _setFastRunnerStateForTest(null);
+  await assert.rejects(
+    runIOS({ command: 'snapshot', qaReadOnly: true, qaTiming: dead.qaTiming }),
+    /ACTION_CONTEXT_CHANGED/,
+  );
+  assert.equal(
+    dead.events.find((e) => e.stage === 'native-readiness' && e.edge === 'end')?.readinessReason,
+    'dead',
+  );
+  assert.equal(dead.requests.length, 0);
+
+  const controller = new AbortController();
+  const reason = new Error('PRIVATE-abort');
+  const aborted = fixture({
+    health: () => {
+      controller.abort(reason);
+      throw reason;
+    },
+  });
+  await assert.rejects(
+    withCancellation(controller.signal, () =>
+      runIOS({ command: 'snapshot', qaReadOnly: true, qaTiming: aborted.qaTiming }),
+    ),
+    (error) => error === reason,
+  );
+  assert.equal(
+    aborted.events.find((e) => e.stage === 'native-readiness' && e.edge === 'end')?.readinessReason,
+    'unknown',
+  );
+  assert.equal(aborted.requests.length, 0);
+  assert.ok(!JSON.stringify(aborted.events).includes('PRIVATE'));
 });
 
 test('cached or lookalike capabilities and unbound health cannot attest read-only capture', async () => {
