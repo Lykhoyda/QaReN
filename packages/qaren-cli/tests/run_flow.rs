@@ -1010,6 +1010,7 @@ fn workspace_changed_by_clean_prebuild_refuses_before_creating_output_or_buildin
         common::write_ios_workspace(&app, "ios/Native.xcworkspace");
         configure_workspace(&app, "ios/Native.xcworkspace", "Native");
         let req = request(&repo, &app, 30);
+        common::append_registry_config(&req.config_path);
         let mut mock = MockRunner::new();
         let path = app.join("ios/Native.xcworkspace");
         mock.workspace_mutation = Some(if symlink {
@@ -1039,6 +1040,7 @@ fn workspace_changed_by_clean_prebuild_refuses_before_creating_output_or_buildin
             FailureCode::IosBuildCapabilityUnavailable
         );
         assert_eq!(mock.remaining(), 0);
+        common::assert_registry_specs(&mock.calls);
         assert_eq!(mock.piped_stdin_text(0), "start\n");
         assert!(!req.runs_root.join(run_id()).join("ios-build").exists());
         assert!(!labels(&mock).iter().any(|l| matches!(
@@ -2929,7 +2931,19 @@ const GRADLE: &str =
 #[test]
 fn android_check_prebuilds_an_absent_android_dir_before_gradle() {
     let (repo, app) = app_repo();
-    let req = android_request(&repo, &app);
+    let mut req = android_request(&repo, &app);
+    let config = std::fs::read_to_string(&req.config_path).unwrap();
+    std::fs::write(
+        &req.config_path,
+        format!("{config}registryAuthEnv: [CANDIDATE_REGISTRY_TOKEN]\n"),
+    )
+    .unwrap();
+    req.config_path = repo.join("operator-config.yaml");
+    std::fs::write(
+        &req.config_path,
+        format!("{config}registryAuthEnv: [PRIVATE_REGISTRY_TOKEN]\n"),
+    )
+    .unwrap();
     let mut mock = android_mock();
     script_android_preflight(&mut mock, &repo, ONE_EMULATOR, EMULATOR);
     mock.expect_run("pnpm install --frozen-lockfile", CmdOutput::success(""));
@@ -2943,6 +2957,20 @@ fn android_check_prebuilds_an_absent_android_dir_before_gradle() {
 
     assert_eq!(receipt.result, ReceiptResult::Pass, "{:?}", receipt.failure);
     assert_eq!(mock.remaining(), 0);
+    common::assert_registry_specs(&mock.calls);
+    let prebuild = mock
+        .calls
+        .iter()
+        .find(|spec| spec.label == "expo-prebuild")
+        .unwrap();
+    assert_eq!(prebuild.program, "/bin/bash");
+    assert!(prebuild.unset.contains(&"CI".into()));
+    assert_eq!(mock.piped_stdin_text(0), "start\n");
+    let record = RunRecord::load(&req.runs_root, &receipt.run_id).unwrap();
+    assert_eq!(
+        record.scenario.deps.registry_auth_env,
+        ["PRIVATE_REGISTRY_TOKEN"]
+    );
     assert_subsequence(
         &labels(&mock),
         &[
@@ -3051,6 +3079,7 @@ fn android_check_refuses_to_generate_an_android_dir_git_would_track() {
 fn android_check_prebuild_failure_is_build_failed() {
     let (repo, app) = app_repo();
     let req = android_request(&repo, &app);
+    common::append_registry_config(&req.config_path);
     let mut mock = android_mock();
     script_android_preflight(&mut mock, &repo, ONE_EMULATOR, EMULATOR);
     mock.expect_run("pnpm install --frozen-lockfile", CmdOutput::success(""));
@@ -3065,6 +3094,19 @@ fn android_check_prebuild_failure_is_build_failed() {
         FailureCode::BuildFailed
     );
     assert_eq!(mock.remaining(), 0);
+    assert!(receipt
+        .failure
+        .as_ref()
+        .unwrap()
+        .next_action
+        .contains("output was withheld"));
+    assert!(receipt
+        .failure
+        .as_ref()
+        .unwrap()
+        .next_action
+        .contains("registry setup"));
+    assert_eq!(mock.piped_stdin_text(0), "start\n");
     assert!(!labels(&mock).iter().any(|l| l == "gradle-assemble"));
     let devices: Vec<String> = adb_calls(&mock)
         .into_iter()

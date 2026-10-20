@@ -43,6 +43,13 @@ devClientScheme: exp+<slug>
 
 The keys and their validation are owned by the CLI's [`config.rs`](https://github.com/Lykhoyda/rn-dev-agent/blob/develop/packages/qaren-cli/src/config.rs).
 
+If the operator supplies custom registry credential environment names, optionally
+add `registryAuthEnv: [PRIVATE_REGISTRY_TOKEN]` using names only, never values.
+Keep the default configuration above minimal; obtain names from the operator
+rather than reading auth stores to detect them. The list exposes inherited
+variables to install/prebuild descendants and withholds their output; follow the
+[CLI registry-auth policy](https://github.com/Lykhoyda/rn-dev-agent/blob/develop/packages/qaren-cli/README.md#check-a-plan), including reserved names and the prewarm-fetch exclusion.
+
 ## 4. Device
 
 Read the simulator inventory; never boot, shut down or erase a simulator yourself:

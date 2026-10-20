@@ -111,3 +111,44 @@ fn check_config_rejects_unsupported_environment_injection() {
     let failure = load("appId: a\nenv: { ENVIRONMENT: staging }\n").unwrap_err();
     assert_eq!(failure.code, FailureCode::ScenarioInvalid);
 }
+
+#[test]
+fn registry_auth_env_loads_names_only() {
+    let config = load("appId: a\nregistryAuthEnv: [PRIVATE_REGISTRY_TOKEN, lower_token, _AUTH, PRIVATE_REGISTRY_TOKEN]\n").unwrap();
+    assert_eq!(
+        config.registry_auth_env,
+        [
+            "PRIVATE_REGISTRY_TOKEN",
+            "lower_token",
+            "_AUTH",
+            "PRIVATE_REGISTRY_TOKEN"
+        ]
+    );
+    assert!(load("appId: a\n").unwrap().registry_auth_env.is_empty());
+    for name in ["A".repeat(128), "_".into()] {
+        assert!(load(&format!("appId: a\nregistryAuthEnv: [{name}]\n")).is_ok());
+    }
+    assert!(load(&format!(
+        "appId: a\nregistryAuthEnv: {}\n",
+        serde_json::json!(vec!["NAME"; 64])
+    ))
+    .is_ok());
+}
+
+#[test]
+fn registry_auth_env_refuses_invalid_lists_without_echoing_content() {
+    for value in common::invalid_registry_auth_lists() {
+        let failure = load(&format!("appId: a\nregistryAuthEnv: {value}\n")).unwrap_err();
+        assert_eq!(failure.code, FailureCode::ScenarioInvalid);
+        let output = serde_json::to_string(&failure).unwrap();
+        assert!(!output.contains("mistaken-value"));
+        assert!(!output.contains("fallback"));
+        assert!(!output.contains("UNICODE"));
+    }
+    for key in ["registry_auth_env", "REGISTRYAUTHENV", "env"] {
+        assert_eq!(
+            load(&format!("appId: a\n{key}: []\n")).unwrap_err().code,
+            FailureCode::ScenarioInvalid
+        );
+    }
+}

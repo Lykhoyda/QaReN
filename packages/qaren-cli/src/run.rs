@@ -1984,7 +1984,10 @@ fn build_scenario(
                 .and_then(|ios| ios.build.clone()),
             ..BuildSpec::default()
         },
-        deps: DepsSpec::default(),
+        deps: DepsSpec {
+            registry_auth_env: config.registry_auth_env.clone(),
+            ..DepsSpec::default()
+        },
         deadlines: Deadlines::default(),
     }
 }
