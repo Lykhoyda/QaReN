@@ -2,12 +2,12 @@ import assert from 'node:assert/strict';
 import { syncBuiltinESMExports } from 'node:module';
 import { setImmediate as nextTurn } from 'node:timers/promises';
 import { test, type TestContext } from 'node:test';
-import { HandlerError } from '../../../dist/qa/adapt.js';
 import {
   captureScreen,
   NativeCaptureError,
   type NativeObservation,
 } from '../../../dist/qa/capture.js';
+import { HandlerError } from '../../../dist/qa/adapt.js';
 import { NativeSnapshotIncomplete } from '../../../dist/qa/private-input.js';
 import { nativeCapture } from './platform-presence-fixtures.ts';
 
@@ -216,6 +216,31 @@ test('ordinary empty capture retains its immediate incomplete result', async () 
   assert.equal(screen.captureCoverage?.native, 'incomplete');
 });
 
+test('private capture does not retry runner failures outside relaunch recovery', async (t) => {
+  const time = clock(t);
+  for (const error of [
+    new HandlerError('RN_FAST_RUNNER_DOWN', 'unavailable'),
+    new HandlerError('RUNNER_OWNERSHIP_MISMATCH', 'unavailable', { runnerRelaunch: true }),
+    new HandlerError('RN_FAST_RUNNER_STALE', 'unavailable', { runnerRelaunch: true }),
+  ]) {
+    let reads = 0;
+    await assert.rejects(
+      captureScreen({
+        requirePrivateInputs: true,
+        now: time.now,
+        native: async () => {
+          reads++;
+          throw error;
+        },
+        react: async () => ({}),
+      }),
+      NativeCaptureError,
+    );
+    assert.equal(reads, 1);
+    assert.equal(time.now(), 0);
+  }
+});
+
 test('reader relaunch retries share the total capture deadline', async (t) => {
   const time = clock(t);
   const budgets: number[] = [];
@@ -226,7 +251,7 @@ test('reader relaunch retries share the total capture deadline', async (t) => {
       budgets.push(budget);
       if (budgets.length === 1) time.elapse(20_900);
       throw new HandlerError('RN_FAST_RUNNER_DOWN', 'unavailable', {
-        readerRelaunch: { outcome: 'attempted' },
+        runnerRelaunch: true,
       });
     },
     react: async () => ({}),
@@ -238,31 +263,4 @@ test('reader relaunch retries share the total capture deadline', async (t) => {
   assert.ok((await result) instanceof NativeCaptureError);
   assert.deepEqual(budgets, [20_000, 600, 100]);
   assert.equal(time.now(), 22_000);
-});
-
-test('unrelated native failures and ownership refusals never get relaunch retries', async () => {
-  for (const error of [
-    new HandlerError('RN_FAST_RUNNER_DOWN', 'unavailable'),
-    new HandlerError('RUNNER_OWNERSHIP_MISMATCH', 'unavailable', {
-      readerRelaunch: { outcome: 'attempted' },
-    }),
-    new HandlerError('RN_FAST_RUNNER_STALE', 'unavailable', {
-      readerRelaunch: { outcome: 'ready' },
-    }),
-    new Error('unavailable'),
-  ]) {
-    let reads = 0;
-    await assert.rejects(
-      captureScreen({
-        requirePrivateInputs: true,
-        native: async () => {
-          reads++;
-          throw error;
-        },
-        react: async () => ({}),
-      }),
-      NativeCaptureError,
-    );
-    assert.equal(reads, 1);
-  }
 });

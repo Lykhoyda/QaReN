@@ -386,7 +386,12 @@ fn ios_install_over_120_seconds_completes_within_the_preparation_budget() {
 
     let receipt = prepare(&mut mock, &prepare_args(&scenario, false, None));
 
-    assert_eq!(receipt.result, ReceiptResult::Ready, "{}", receipt.to_json());
+    assert_eq!(
+        receipt.result,
+        ReceiptResult::Ready,
+        "{}",
+        receipt.to_json()
+    );
     assert_eq!(receipt.timings_ms["simctl-install_attempt_1"], 130_000);
     let installs: Vec<_> = mock
         .calls
@@ -697,7 +702,12 @@ fn ios_prepare_retries_a_manifest_request_timeout_with_the_original_attempt_boun
 
     let receipt = prepare(&mut mock, &prepare_args(&scenario, false, None));
 
-    assert_eq!(receipt.result, ReceiptResult::Ready, "{}", receipt.to_json());
+    assert_eq!(
+        receipt.result,
+        ReceiptResult::Ready,
+        "{}",
+        receipt.to_json()
+    );
     assert_eq!(receipt.timings_ms["metro-manifest_attempt_1"], 60_000);
     assert_eq!(receipt.timings_ms["metro-manifest_attempt_2"], 9_999);
     assert!(receipt.outcomes["metro-manifest_attempt_1"].contains("timed out"));
@@ -2614,6 +2624,7 @@ fn dry_run_plans_generated_native_regeneration_before_every_build_route() {
                     common::android_scenario_yaml(8792)
                 };
                 let mut scenario = common::scenario_from(&scenario_yaml);
+                scenario.deps.registry_auth_env = vec!["PRIVATE_REGISTRY_TOKEN".into()];
                 let platform = if scenario.platform == Platform::Ios {
                     "ios"
                 } else {
@@ -2735,6 +2746,10 @@ fn dry_run_plans_generated_native_regeneration_before_every_build_route() {
                     }
                 );
                 assert_eq!(plan.regenerate_native_dir, generated);
+                assert!(!receipt
+                    .planned_commands
+                    .join("\n")
+                    .contains("PRIVATE_REGISTRY_TOKEN"));
                 let prebuild = format!("pnpm exec expo prebuild --platform {platform} --clean");
                 let regeneration: Vec<_> = receipt
                     .planned_commands
@@ -2844,7 +2859,13 @@ fn build_process_death_fails_with_log_evidence() {
 #[test]
 fn recording_a_build_retires_run_output_and_publishes_to_the_machine_store_without_pruning() {
     let repo = common::temp_repo();
-    let scenario_path = write_scenario(&repo, &ios_scenario_yaml(8797));
+    let scenario_path = write_scenario(
+        &repo,
+        &format!(
+            "{}deps:\n  registry_auth_env: [PRIVATE_REGISTRY_TOKEN]\n",
+            ios_scenario_yaml(8797)
+        ),
+    );
     let retained_caches = ["test-app/ios/Pods/cached", "DerivedData/cached"];
     for cache in retained_caches {
         let path = repo.join(cache);
@@ -2992,6 +3013,7 @@ fn recording_a_build_retires_run_output_and_publishes_to_the_machine_store_witho
         .iter()
         .filter(|spec| spec.label == "expo-prebuild")
         .collect();
+    common::assert_registry_specs(&probing.inner.calls);
     assert_eq!(prebuilds.len(), 1);
     assert_eq!(prebuilds[0].program, "/bin/bash");
     assert_eq!(
@@ -3238,7 +3260,13 @@ fn unproven_or_unpersisted_build_group_absence_retains_run_output() {
 #[test]
 fn android_build_route_records_install_provenance_from_the_hashed_apk() {
     let repo = common::temp_repo();
-    let scenario_path = write_scenario(&repo, &common::android_scenario_yaml(8792));
+    let scenario_path = write_scenario(
+        &repo,
+        &format!(
+            "{}deps:\n  registry_auth_env: [PRIVATE_REGISTRY_TOKEN]\n",
+            common::android_scenario_yaml(8792)
+        ),
+    );
     let sdk = android_sdk(&repo);
     let retained_caches = [
         "test-app/android/build/cached",
@@ -3392,6 +3420,7 @@ fn android_build_route_records_install_provenance_from_the_hashed_apk() {
         .iter()
         .filter(|spec| spec.label == "expo-prebuild")
         .collect();
+    common::assert_registry_specs(&mock.calls);
     assert_eq!(prebuilds.len(), 1);
     assert_eq!(prebuilds[0].program, "pnpm");
     assert_eq!(

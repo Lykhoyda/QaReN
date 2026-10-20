@@ -24,6 +24,7 @@ loginMarker:
 | `packageManager`  | string           | `pnpm`  | The app's package manager. Only `pnpm` is supported.                                          |
 | `metroPort`       | integer          | `8791`  | The port of the Metro server the run starts. At least `1024`.                                 |
 | `nodePath`        | string           | `node` on `PATH` | An absolute path to the Node binary to use. It must be Node 24 or newer.             |
+| `registryAuthEnv` | list of strings  | `[]`    | Names, never values, of extra environment variables kept for private-registry auth during dependency install and Expo prebuild, whose output is then withheld; see the [registry-auth policy](https://github.com/Lykhoyda/rn-dev-agent/blob/develop/packages/qaren-cli/README.md#check-a-plan). |
 | `loginBlock`      | string           | —       | The slug of a saved block that signs in; see [login recovery](../saved-blocks/#login-recovery). |
 | `loginMarker`     | object           | —       | What shows the login screen: exactly one non-empty `id` (a `testID`) or `text` (a label).     |
 | `ios`             | object           | —       | iOS settings, below.                                                                          |

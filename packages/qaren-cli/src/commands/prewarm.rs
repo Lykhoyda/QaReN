@@ -87,8 +87,8 @@ fn prewarm_validated(
             scenario.deadlines.install_deps_seconds,
         )
         .cwd(&cand.project_root)
-        // Non-interactive: any state pnpm would ask about becomes a failure,
-        // never a prompt.
+        .registry_auth_env(&scenario.deps.registry_auth_env)
+        // CI turns interactive install prompts into failures.
         .env("CI", "1"),
     );
     if !install.ok() {
@@ -100,7 +100,11 @@ fn prewarm_validated(
                     "pnpm install --frozen-lockfile: {}",
                     redact_secrets(&install.summary())
                 ),
-                "fix the dependency install (credentials/registry access), then re-run prewarm",
+                if scenario.deps.registry_auth_env.is_empty() {
+                    "fix the dependency install (credentials/registry access), then re-run prewarm"
+                } else {
+                    "dependency output was withheld; check the declared registry auth environment names and registry setup, then re-run prewarm"
+                },
             ),
             Some(cand),
         )));

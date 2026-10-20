@@ -1,4 +1,4 @@
-import { assertInputHashSafe, validInputName } from './inputs.js';
+import { assertInputHashSafe, currentInputs, validInputName } from './inputs.js';
 import { createHash } from 'node:crypto';
 import { isDeepStrictEqual } from 'node:util';
 import { ACTION_ID_MAX_LEN } from '../domain/path-safety.js';
@@ -12,8 +12,8 @@ export interface Target {
 }
 
 export type Fill = { kind: 'fill'; target: Target } & (
-  | { text: string; input?: never }
-  | { input: string; text?: never }
+  | { text: string; input?: never; sensitivity?: never }
+  | { input: string; text?: never; sensitivity?: 'non-secret' }
 );
 
 export type Step =
@@ -85,10 +85,22 @@ type Grammar = Step | { refuse: string } | null;
 function parseFill(rest: string): Grammar {
   const slot = /^(.*?)\s+with\s+input(?:\s+([^"“”]*))?$/i.exec(rest);
   if (slot) {
-    if (!slot[1].trim() || !validInputName(slot[2]))
+    const named = /^([A-Z][A-Z0-9_]{0,31})(?:\s+\((non-secret)\))?$/i.exec(slot[2] ?? '');
+    if (!slot[1].trim() || !named || !validInputName(named[1]))
       return { refuse: 'fill needs a target and a valid input name' };
-    return { kind: 'fill', target: targetFrom(slot[1]), input: slot[2] };
+    return {
+      kind: 'fill',
+      target: targetFrom(slot[1]),
+      input: named[1],
+      ...(named[2] ? { sensitivity: 'non-secret' } : {}),
+    };
   }
+  if (
+    /\swith\s+input\b/i.test(rest.replace(/"[^"]*"|“[^”]*”/g, '""')) ||
+    /\s+\(non-secret\)\s*$/i.test(rest) ||
+    /\swith\s+(?:"[^"]*"|“[^”]*”)\s+\([^)]*\)\s*$/i.test(rest)
+  )
+    return { refuse: 'invalid runtime input declaration' };
   const withForm = FILL_WITH.exec(rest);
   if (withForm) {
     const text = firstQuoted(withForm[2]);
@@ -108,6 +120,12 @@ function parseFill(rest: string): Grammar {
 }
 
 export function parseStep(rest: string): Grammar {
+  if (
+    !FILL.test(rest) &&
+    (/\s+\(non-secret\)\s*$/i.test(rest) ||
+      /\bwith\s+input\b/i.test(rest.replace(/"[^"]*"|“[^”]*”/g, '""')))
+  )
+    return { refuse: 'invalid runtime input declaration' };
   const echo = ECHO.exec(rest);
   if (echo) {
     const named = /^\s+([^"“”\s]+)\s+on\s+(?:this\s+)?screen$/i.exec(echo[1]);
@@ -152,10 +170,17 @@ export function slugify(title: string): string {
   return `${slug.slice(0, ACTION_ID_MAX_LEN - suffix.length - 1)}-${suffix}`;
 }
 
-export function planHash(items: Item[]): string {
+export function planHash(
+  items: readonly { raw: string }[],
+  nonSecretInputs: readonly string[] = currentInputs()?.nonSecretNames() ?? [],
+): string {
   items.forEach((item) => assertInputHashSafe(item.raw));
   const normalized = items.map((item) => item.raw.replace(/\s+/g, ' ').trim()).join('\n');
   assertInputHashSafe(normalized);
+  if (nonSecretInputs.length)
+    return `ns1:${createHash('sha256')
+      .update(JSON.stringify(['ns1', normalized, [...new Set(nonSecretInputs)].sort()]))
+      .digest('hex')}`;
   return createHash('sha256').update(normalized).digest('hex');
 }
 
@@ -201,6 +226,15 @@ export function parsePlan(markdown: string): ParsedPlan {
 }
 
 export function collectInputNames(markdown: string): { names: string[]; refused: RefusedLine[] } {
+  const { names, refused } = collectInputInventory(markdown);
+  return { names, refused };
+}
+
+export function collectInputInventory(markdown: string): {
+  names: string[];
+  nonSecretInputs: string[];
+  refused: RefusedLine[];
+} {
   const items: (Step | Check)[] = [];
   const pending: RefusedLine[] = [];
   const parsed = scanPlan(markdown, new Map(), pending, undefined, items, true);
@@ -209,6 +243,13 @@ export function collectInputNames(markdown: string): { names: string[]; refused:
       ...new Set(
         items.flatMap((item) =>
           item.kind === 'fill' && item.input !== undefined ? [item.input] : [],
+        ),
+      ),
+    ].sort(),
+    nonSecretInputs: [
+      ...new Set(
+        items.flatMap((item) =>
+          item.kind === 'fill' && item.sensitivity === 'non-secret' ? [item.input] : [],
         ),
       ),
     ].sort(),
@@ -320,6 +361,8 @@ function scanPlan(
     if (heading) {
       closeDeclared();
       const title = heading[1].trim();
+      if (/\s+\(non-secret\)\s*$/i.test(title))
+        refused.push({ line, text, reason: 'invalid runtime input declaration' });
       open(title, line, text);
       declaredAt = line;
       continue;
@@ -383,6 +426,17 @@ function scanPlan(
   }
   closeDeclared();
   encountered?.push(...blocks.flatMap((block) => block.items));
+  const declarations = new Map<string, string | undefined>();
+  for (const item of blocks.flatMap((b) => b.items)) {
+    if (item.kind !== 'fill' || item.input === undefined) continue;
+    if (declarations.has(item.input) && declarations.get(item.input) !== item.sensitivity)
+      refused.push({
+        line: item.line,
+        text: item.raw,
+        reason: 'conflicting runtime input declarations',
+      });
+    declarations.set(item.input, item.sensitivity);
+  }
   const slots = new Set(
     blocks.flatMap((b) => b.items.flatMap((i) => (i.kind === 'fill' && i.input ? [i.input] : []))),
   );
@@ -412,7 +466,15 @@ function scanPlan(
   );
   if (filled.length === 0)
     return { refused: [{ line: 0, text: '', reason: 'the plan has no steps' }] };
-  if (!inventory) for (const block of filled) block.planHash = planHash(block.items);
+  if (!inventory) {
+    const nonSecretInputs =
+      currentInputs()?.nonSecretNames() ??
+      [...declarations]
+        .filter(([, sensitivity]) => sensitivity === 'non-secret')
+        .map(([name]) => name)
+        .sort();
+    for (const block of filled) block.planHash = planHash(block.items, nonSecretInputs);
+  }
   return { blocks: filled };
 }
 

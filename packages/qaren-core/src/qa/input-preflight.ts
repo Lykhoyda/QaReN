@@ -1,6 +1,6 @@
 import { isAbsolute } from 'node:path';
 import { loadBlock, readBlock } from './blocks.js';
-import { collectInputNames } from './plan.js';
+import { collectInputInventory, planHash } from './plan.js';
 import { RunInputs, withInputs } from './inputs.js';
 import { ObservedPrivacy } from './privacy.js';
 import { isRecord, type Judge } from './questions.js';
@@ -40,14 +40,53 @@ export function ownedLogin(
   return eligibleLogin(slug, content, appId, platform);
 }
 
-export function requiredInputs(plan: string, login?: LoginSnapshot): string[] {
-  const names = collectInputNames(plan).names;
+export function inputInventory(
+  plan: string,
+  login?: LoginSnapshot,
+): { requiredInputs: string[]; nonSecretInputs?: string[] } {
+  const invalid = () => new Error('CORE_REFUSED: runtime input inventory refused');
+  const scanned = collectInputInventory(plan);
+  if (scanned.refused.length) throw invalid();
+  const declarations = new Map(
+    scanned.names.map((name) => [name, scanned.nonSecretInputs.includes(name)]),
+  );
   if (login?.content) {
     const stored = readBlock(login.content);
-    if ('invalid' in stored) throw new Error('CORE_REFUSED: runtime input inventory refused');
-    for (const step of stored.steps) if (step.input !== undefined) names.push(step.input);
+    if ('invalid' in stored) throw invalid();
+    for (const step of stored.steps) {
+      if (step.input === undefined || step.kind !== 'fill') continue;
+      const nonSecret = step.sensitivity === 'non-secret';
+      if (declarations.has(step.input) && declarations.get(step.input) !== nonSecret)
+        throw invalid();
+      declarations.set(step.input, nonSecret);
+    }
   }
-  return [...new Set(names)].sort();
+  const nonSecretInputs = [...declarations]
+    .filter(([, nonSecret]) => nonSecret)
+    .map(([name]) => name)
+    .sort();
+  return {
+    requiredInputs: [...declarations.keys()].sort(),
+    ...(nonSecretInputs.length ? { nonSecretInputs } : {}),
+  };
+}
+
+export function requiredInputs(plan: string, login?: LoginSnapshot): string[] {
+  return inputInventory(plan, login).requiredInputs;
+}
+
+export function assertLoginPolicy(login: LoginSnapshot | undefined, inputs: RunInputs): void {
+  if (!login?.content) return;
+  const stored = readBlock(login.content);
+  if ('invalid' in stored) throw new Error('CORE_REFUSED: runtime input inventory refused');
+  const hash = stored.header.planHash;
+  if (inputs.nonSecretNames().length || hash.startsWith('ns')) {
+    if (
+      (hash.includes(':') && !/^ns1:[a-f0-9]{64}$/.test(hash)) ||
+      hash !== planHash(stored.steps, inputs.nonSecretNames())
+    )
+      throw new Error('CORE_REFUSED: saved login input policy refused');
+  }
 }
 
 export async function parseInputPreflight(value: unknown, judge: Judge): Promise<object> {
@@ -96,7 +135,7 @@ export async function parseInputPreflight(value: unknown, judge: Judge): Promise
     return {
       ok: true,
       inputProtocol: 1,
-      requiredInputs: requiredInputs(value.plan, loginSnapshot),
+      ...inputInventory(value.plan, loginSnapshot),
       ...(loginSnapshot ? { loginSnapshot } : {}),
     };
   }
@@ -114,16 +153,22 @@ export async function parseInputPreflight(value: unknown, judge: Judge): Promise
     loginSnapshot = eligibleLogin(snap.slug, snap.content, value.appId, String(value.platform));
     if (loginSnapshot.content !== snap.content) throw invalid();
   }
-  const required = requiredInputs(value.plan, loginSnapshot);
+  const inventory = inputInventory(value.plan, loginSnapshot);
   const privacy = new ObservedPrivacy();
-  const inputs = new RunInputs(value.inputs, required, privacy);
+  const inputs = new RunInputs(
+    value.inputs,
+    inventory.requiredInputs,
+    privacy,
+    inventory.nonSecretInputs,
+  );
   return withInputs(inputs, async () => {
+    assertLoginPolicy(loginSnapshot, inputs);
     inputs.assertHashSafe(value.appId as string);
     if (loginSnapshot?.content) inputs.assertHashSafe(loginSnapshot.content);
     return {
       ...(await preflightPlan(value.plan as string, judge)),
       inputProtocol: 1,
-      requiredInputs: required,
+      ...inventory,
     };
   });
 }
