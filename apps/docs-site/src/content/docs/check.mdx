@@ -24,8 +24,8 @@ plan preflight -> device selection -> lease + durable run record
 
 The plan is parsed first, so an unparseable plan or a missing Jev key refuses before any
 device is touched. The run then leases the device, prepares the app and its own Metro,
-walks the plan and tears down what it started. The simulator or emulator and the
-installed app stay.
+walks the plan and tears down what it started. By default, the simulator or emulator
+stays running and the installed app stays.
 See [CLI-owned iOS build routes](https://github.com/Lykhoyda/rn-dev-agent/blob/develop/packages/qaren-cli/README.md#cli-owned-ios-build-routes)
 for iOS startup ordering.
 
@@ -37,8 +37,8 @@ for iOS startup ordering.
 `--device <simulator-UUID>`. With no simulator booted, or more than one booted and no
 `--device`, it refuses `DEVICE_UNAVAILABLE`.
 
-`--boot-device --device <simulator-UUID>` boots that exact simulator under the lease. It
-needs the UUID, not a name. Cleanup leaves the simulator running.
+For explicit boot, restart or exit shutdown, follow the
+[iOS simulator lifecycle contract](https://github.com/Lykhoyda/rn-dev-agent/blob/develop/packages/qaren-cli/README.md#ios-simulator-lifecycle).
 
 ### Android
 
@@ -63,11 +63,8 @@ must be git-ignored; otherwise the build fails `BUILD_FAILED` before generating 
 | `--device <id>`                 | A simulator UUID on iOS, an emulator serial on Android.                            |
 | `--config <path>`               | Another configuration file. Defaults to `.qaren/config.yaml`.                      |
 | `--fresh-install`               | See the [fresh-install contract](https://github.com/Lykhoyda/rn-dev-agent/blob/develop/packages/qaren-cli/README.md#fresh-install). |
-| `--boot-device`                 | iOS only. Boot the simulator named by `--device` under the lease.                  |
+| `--boot-device`, `--restart-device`, `--shutdown-device-on-exit` | See the [iOS simulator lifecycle contract](https://github.com/Lykhoyda/rn-dev-agent/blob/develop/packages/qaren-cli/README.md#ios-simulator-lifecycle). |
 | `--json`                        | Accepted for scripts; the receipt is always JSON on stdout.                        |
-
-On Android, `--boot-device` is a usage error (exit 2). `--boot-device` without a
-simulator UUID in `--device` is a usage error too.
 
 ## The receipt
 

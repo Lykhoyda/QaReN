@@ -10,20 +10,20 @@ narration on stderr. A usage error exits `2` with help on stderr and nothing on 
 ## qaren check
 
 ```sh
-qaren check --plan-file <plan.md> [--platform ios|android] [--device <udid>] [--config .qaren/config.yaml] [--fresh-install] [--boot-device] [--json]
+qaren check --plan-file <plan.md> [options]
 ```
 
 Walks the plan on a borrowed simulator or emulator against the working tree. Runs land in
-`~/.qaren/runs/<run-id>/`. See [Check a plan](../check/).
+`~/.qaren/runs/<run-id>/`. See [Check a plan](../check/#flags) for available options.
 
 ## qaren pr
 
 ```sh
-qaren pr <number|url> --plan-file <plan.md> [--platform ios|android] [--device <udid>] [--config .qaren/config.yaml] [--fresh-install] [--boot-device] [--json]
+qaren pr <number|url> --plan-file <plan.md> [options]
 ```
 
 Walks the plan on a detached worktree at the pull request's head. Takes the same flags as
-`check`. See [Test a pull request](../pull-requests/) for recording support.
+[`check`](../check/#flags). See [Test a pull request](../pull-requests/) for recording support.
 
 ## qaren publish
 
