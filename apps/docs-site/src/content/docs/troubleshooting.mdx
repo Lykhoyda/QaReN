@@ -35,7 +35,7 @@ and [iOS admission diagnostics](https://github.com/Lykhoyda/rn-dev-agent/blob/de
 | `DEVICE_UNAVAILABLE` | No booted simulator, more than one, or the named one is not booted  | Boot the simulator to walk on, or shut down the ones you are not testing on        |
 | `DEVICE_UNAVAILABLE` | On Android: no adb server answering, a version mismatch, or not exactly one booted emulator | Start the emulator, or pass `--device emulator-NNNN`                 |
 | `DEVICE_BUSY`        | Another run holds the device's lease                                | Wait for that run to finish, or clean it up with `qaren cleanup <its-run-id>`; a live holder is never stolen |
-| `ARTIFACT_INSTALL_FAILED` | The cached dev-client artifact was invalid (`artifact-invalid`) or its install timed out or failed (`install-timeout`, `install-failed`) | Follow `next_action`: keep a verified artifact, clean up the run, and inspect target, package-service, and transport state, or rebuild only on `artifact-invalid`; see the [cached-install recovery contract](https://github.com/Lykhoyda/rn-dev-agent/blob/develop/packages/qaren-cli/README.md#check-a-plan) |
+| `ARTIFACT_INSTALL_FAILED` | The cached dev-client verification or installation failed | Follow `next_action`; see the [cached-install recovery contract](https://github.com/Lykhoyda/rn-dev-agent/blob/develop/packages/qaren-cli/README.md#check-a-plan) |
 
 ## During the walk
 
