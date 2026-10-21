@@ -81,10 +81,8 @@ fn fixed_uid_default_and_exact_override_are_pure_os_paths() {
     }
     let raw = OsString::from_vec(b"/private/cache-\xff".to_vec());
     assert_eq!(
-        resolve_native_cache_root(Some(&raw), 501)
-            .unwrap()
-            .as_os_str(),
-        raw
+        resolve_native_cache_root(Some(&raw), 501).unwrap_err(),
+        "native cache root: path must be valid UTF-8"
     );
 }
 
@@ -390,24 +388,56 @@ fn two_real_publishers_expose_only_a_complete_immutable_winner() {
 }
 
 #[test]
-fn non_utf8_override_is_preserved_and_never_falls_back() {
+fn non_utf8_override_is_refused_before_cache_access() {
     let fixture = common::temp_repo();
     let path = fixture.join(OsString::from_vec(b"cache-\xff".to_vec()));
-    let root =
-        resolve_native_cache_root(Some(path.as_os_str()), unsafe { libc::geteuid() }).unwrap();
-    assert_eq!(root, path);
-    #[cfg(target_os = "linux")]
-    {
-        let e = entry(&root);
-        let record = seed(&e, &source(&fixture, "source"), "run");
-        assert!(publish_store_record(&e, &record).unwrap());
-        assert_eq!(load_store_record(&e).unwrap(), Some(record));
-    }
-    #[cfg(target_os = "macos")]
-    assert!(
-        open_native_store_root(&root, true).is_err(),
-        "Darwin rejects invalid UTF-8 filesystem names without a fallback"
+    let reason = "native cache root: path must be valid UTF-8";
+    assert_eq!(
+        resolve_native_cache_root(Some(path.as_os_str()), unsafe { libc::geteuid() }).unwrap_err(),
+        reason
     );
+    for create in [false, true] {
+        assert_eq!(open_native_store_root(&path, create).err().unwrap(), reason);
+        assert!(!path.exists());
+    }
+}
+
+#[test]
+fn non_utf8_derived_paths_are_refused_before_copy_or_publication() {
+    let fixture = common::temp_repo();
+    let root = fixture.join("store");
+    let store = open_native_store_root(&root, true).unwrap().unwrap();
+    let raw = OsString::from_vec(b"private-path-\xff".to_vec());
+    let reason = "native cache root: path must be valid UTF-8";
+    assert_eq!(store.entry(Path::new(&raw), true).err().unwrap(), reason);
+    assert_eq!(std::fs::read_dir(&root).unwrap().count(), 0);
+    let e = entry(&root);
+    for (src, generation) in [
+        (fixture.join("source.app"), raw.clone()),
+        (
+            fixture.join(OsString::from_vec(b"source-\xff.app".to_vec())),
+            "run".into(),
+        ),
+    ] {
+        assert_eq!(
+            e.copy_app(&MockRunner::new(), &src, &generation, "unused")
+                .err()
+                .unwrap(),
+            reason
+        );
+        assert_eq!(std::fs::read_dir(e.path()).unwrap().count(), 0);
+    }
+    let record = StoreRecord {
+        artifact: CachedArtifact {
+            path: e.path().join(raw).join("source.app"),
+            sha256: "a".repeat(64),
+            kind: ArtifactKind::AppBundle,
+        },
+        built_at: "fixture".into(),
+        candidate_sha: "a".repeat(40),
+    };
+    assert_eq!(publish_store_record(&e, &record).unwrap_err(), reason);
+    assert_eq!(std::fs::read_dir(e.path()).unwrap().count(), 0);
 }
 
 #[cfg(target_os = "macos")]

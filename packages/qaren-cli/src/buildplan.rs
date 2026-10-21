@@ -72,6 +72,9 @@ pub fn resolve_native_cache_root(
             "/private/var/tmp/qaren-native-cache-{effective_uid}"
         )));
     };
+    if value.to_str().is_none() {
+        return Err("native cache root: path must be valid UTF-8".into());
+    }
     let bytes = value.as_bytes();
     if bytes.first() != Some(&b'/')
         || bytes.contains(&0)
@@ -430,6 +433,9 @@ pub fn open_native_store_root(
 
 impl NativeStoreRoot {
     pub fn entry(&self, relative: &Path, create: bool) -> Result<Option<NativeStoreEntry>, String> {
+        resolve_native_cache_root(Some(self.dir.path.join(relative).as_os_str()), unsafe {
+            libc::geteuid()
+        })?;
         if relative.as_os_str().is_empty()
             || !relative
                 .components()
@@ -555,6 +561,9 @@ pub fn publish_store_record(
     entry: &NativeStoreEntry,
     record: &StoreRecord,
 ) -> Result<bool, String> {
+    resolve_native_cache_root(Some(record.artifact.path.as_os_str()), unsafe {
+        libc::geteuid()
+    })?;
     store_mutation_allowed()?;
     entry.recheck()?;
     if let Some(existing) = load_store_record(entry)? {
@@ -631,11 +640,15 @@ impl NativeStoreEntry {
         expected: &str,
     ) -> Result<NativeStoreCopy, String> {
         store_name(generation)?;
-        self.recheck()?;
         let name = src
             .file_name()
             .filter(|_| src.extension() == Some(OsStr::new("app")))
             .ok_or(ENTRY_UNSAFE)?;
+        let artifact_path = resolve_native_cache_root(
+            Some(self.path().join(generation).join(name).as_os_str()),
+            unsafe { libc::geteuid() },
+        )?;
+        self.recheck()?;
         let staging = OsString::from(format!(
             ".staging-{}-{}",
             std::process::id(),
@@ -652,7 +665,7 @@ impl NativeStoreEntry {
             generation: generation.into(),
             committed: false,
             artifact: CachedArtifact {
-                path: self.path().join(generation).join(name),
+                path: artifact_path,
                 sha256: expected.into(),
                 kind: ArtifactKind::AppBundle,
             },

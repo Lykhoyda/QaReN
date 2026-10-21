@@ -60,7 +60,10 @@ fn native_cache_root() -> Result<PathBuf, String> {
             Some(value) => qaren::buildplan::resolve_native_cache_root(Some(&value), unsafe {
                 libc::geteuid()
             }),
-            None => qaren_home().map(|home| home.join("native-cache")),
+            None => qaren::buildplan::resolve_native_cache_root(
+                Some(qaren_home()?.join("native-cache").as_os_str()),
+                unsafe { libc::geteuid() },
+            ),
         }
     }
 }
@@ -740,10 +743,14 @@ mod tests {
         let Some(expected) = std::env::var_os("QAREN_TEST_EXPECT_CACHE") else {
             return;
         };
-        if expected == "invalid" {
+        if expected == "invalid" || expected == "utf8" {
             assert_eq!(
                 super::native_cache_root().unwrap_err(),
-                "native cache root: invalid absolute path"
+                if expected == "utf8" {
+                    "native cache root: path must be valid UTF-8"
+                } else {
+                    "native cache root: invalid absolute path"
+                }
             );
         } else {
             assert_eq!(super::native_cache_root().unwrap().as_os_str(), expected);
@@ -770,7 +777,7 @@ mod tests {
                 Some(std::ffi::OsString::from_vec(
                     b"/private/cache-\xff".to_vec(),
                 )),
-                std::ffi::OsString::from_vec(b"/private/cache-\xff".to_vec()),
+                "utf8".into(),
             ),
         ];
         #[cfg(target_os = "macos")]

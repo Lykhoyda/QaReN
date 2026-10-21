@@ -2578,8 +2578,11 @@ with `:` replaced by `-` in the fingerprint directory name. Isolated HOME values
 clones and `qaren pr` worktrees under the same OS user share this store. Set
 `QAREN_NATIVE_CACHE_ROOT` to an exact private absolute directory to select another
 store, including a private SSD location; no UID suffix is appended to the override.
-The override preserves OS paths and rejects empty, relative, root-only, NUL and
-explicit dot/dot-dot components. It does not expand `~` or environment variables.
+The override is read as an OS string and rejects empty, relative, root-only, NUL
+and explicit dot/dot-dot components. Cache roots and derived artifact paths must
+be valid UTF-8 for the unchanged JSON schemas; non-UTF-8 roots fail with a
+value-free `PREREQ_MISSING` before cache reads or publication. This narrows the
+previous OS-path contract. It does not expand `~` or environment variables.
 Other platforms retain their HOME-derived default and validate explicit overrides;
 Android storage is unchanged.
 
