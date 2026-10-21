@@ -1998,7 +1998,10 @@ Target readiness and attachment accept only a runtime Metro reports with the
 requested `appId` bundle identity (and on iOS, under the run's simulator name on
 that same target), so another app on the selected device or another booted
 simulator running the same app on the same port does not satisfy readiness or
-get attached. Metro identifies a simulator only by name: give each
+get attached. Missing, malformed or conflicting bundle identity does not satisfy
+readiness. A readiness match is not connection authority: exact selection still
+enforces platform and ambiguity checks, and post-open origin proof remains
+required. Metro identifies a simulator only by name: give each
 booted simulator a distinct name, because a same-named one is refused as
 ambiguous only once both have registered.
 Transient target-list, WebSocket-handshake and runtime-probe timeouts, along with
@@ -2007,9 +2010,9 @@ of host load, with bounded polling and exact-port rediscovery between attachment
 attempts. If the requested bundle never registers within the bounded discovery
 wait, admission refuses `CDP_NOT_CONNECTED` before liveness probing, relaunch or
 another attachment attempt. Exhausted runtime readiness also refuses
-`CDP_NOT_CONNECTED`; invalid metadata and deterministic attachment rejections
-refuse immediately. Host load is diagnostic and does not decide whether the app
-is ready.
+`CDP_NOT_CONNECTED`; malformed target-list responses and deterministic attachment
+rejections refuse immediately. Host load is diagnostic and does not decide whether
+the app is ready.
 Persistent runtime-probe or WebSocket-handshake timeouts lasting a full readiness
 window from the first such timeout (never before the original readiness window
 ends) remain recoverable: an iOS dev
