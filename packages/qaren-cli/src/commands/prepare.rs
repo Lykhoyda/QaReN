@@ -92,7 +92,7 @@ impl<'a> Ctx<'a> {
             } else {
                 None
             };
-        if self.record.resources.any_owned() {
+        if self.record.resources.any_owned() && failure.code != FailureCode::ArtifactInstallFailed {
             failure.next_action = crate::redact::OutputText::from_output(&format!(
                 "qaren cleanup {} --json",
                 self.record.run_id
