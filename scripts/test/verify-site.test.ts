@@ -66,6 +66,9 @@ for (const name of ['cdp_get_tree', 'device_snapshot', 'device_boot_seconds_extr
 
     assert.equal(result.status, 1);
     assert.match(result.stderr, /1\.x tool name in index\.html/);
-    assert.match(result.stderr, /FAIL {2}no page outside the changelog names a cdp_ or device_ tool/);
+    assert.match(
+      result.stderr,
+      /FAIL {2}no page outside the changelog names a cdp_ or device_ tool/,
+    );
   });
 }
