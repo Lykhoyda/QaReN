@@ -2495,6 +2495,13 @@ pub(crate) fn record_build_result(ctx: &mut Ctx, fp: &NativeFingerprint) -> Resu
     } else {
         buildplan::copy_artifact(ctx.runner, &src, &staged)
             .and_then(|()| buildplan::hash_artifact(&staged))
+            .and_then(|hash| {
+                if verified.as_ref().is_some_and(|a| a.sha256 != hash) {
+                    Err("copied artifact differs from the verified build".into())
+                } else {
+                    Ok(hash)
+                }
+            })
     };
     let sha256 = match copied {
         Ok(hash) => hash,

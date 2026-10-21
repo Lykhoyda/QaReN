@@ -2995,6 +2995,39 @@ const GRADLE: &str =
     "./gradlew :app:assembleDebug -PreactNativeArchitectures=x86_64 --no-daemon --console=plain";
 
 #[test]
+fn android_check_does_not_cache_an_apk_replaced_after_install() {
+    let (repo, app) = app_repo();
+    let req = android_request(&repo, &app);
+    let mut mock = android_mock();
+    mock.apk_replacement_after_install = Some(b"replacement apk".to_vec());
+    script_android_preflight(&mut mock, &repo, ONE_EMULATOR, EMULATOR);
+    mock.expect_run("pnpm install --frozen-lockfile", CmdOutput::success(""));
+    mock.expect_run("ls-files", CmdOutput::success(""));
+    mock.expect_run("check-ignore -q android/", CmdOutput::success(""));
+    script_android_finite_build(&mut mock, PREBUILD, 5000, 0);
+    script_android_finite_build(&mut mock, GRADLE, 5001, 0);
+    script_android_launch_walk_teardown(&mut mock);
+
+    let receipt = run(&mut mock, &req);
+    assert_eq!(receipt.result, ReceiptResult::Pass, "{:?}", receipt.failure);
+    assert_eq!(mock.remaining(), 0);
+    assert!(mock.apk_replacement_after_install.is_none());
+    let record = RunRecord::load(&req.runs_root, &receipt.run_id).unwrap();
+    let installed = record.resources.app_install.unwrap().artifact;
+    assert_eq!(installed.sha256, qaren::candidate::sha256_hex(b"built apk"));
+    assert_eq!(std::fs::read(&installed.path).unwrap(), b"replacement apk");
+    assert!(receipt.outcomes["artifact_cache"].contains("differs from the verified build"));
+    assert!(!qaren::buildplan::state_path(&repo, "android", "com.rndevagent.testapp").exists());
+    let artifacts = qaren::buildplan::cache_dir(&repo).join("artifacts/android");
+    for bucket in std::fs::read_dir(artifacts).unwrap() {
+        assert_eq!(
+            std::fs::read_dir(bucket.unwrap().path()).unwrap().count(),
+            0
+        );
+    }
+}
+
+#[test]
 fn android_check_prebuilds_an_absent_android_dir_before_gradle() {
     let (repo, app) = app_repo();
     let mut req = android_request(&repo, &app);

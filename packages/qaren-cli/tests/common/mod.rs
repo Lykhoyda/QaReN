@@ -380,6 +380,7 @@ pub struct IosBuildRunner {
     pub timeouts: std::collections::VecDeque<(String, u64)>,
     pub omit_app: bool,
     pub cache_publication_fault: Option<PathBuf>,
+    pub apk_replacement_after_install: Option<Vec<u8>>,
     pub ambiguous_app: bool,
     pub workspace_mutation: Option<WorkspaceMutation>,
     pub build_log: Option<String>,
@@ -571,7 +572,13 @@ impl qaren::exec::Runner for IosBuildRunner {
             self.inner.calls.push(spec.clone());
             return CmdOutput::success(&format!("{installed}\n"));
         }
-        self.inner.execute(spec, interruptible)
+        let output = self.inner.execute(spec, interruptible);
+        if spec.label == "adb-install" && output.ok() {
+            if let Some(bytes) = self.apk_replacement_after_install.take() {
+                std::fs::write(spec.args.last().unwrap(), bytes).unwrap();
+            }
+        }
+        output
     }
     fn execute_private(
         &mut self,
