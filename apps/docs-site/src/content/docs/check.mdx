@@ -13,7 +13,8 @@ qaren check --platform android --plan-file plan.md --device emulator-5554 --json
 ```
 
 The [configuration](../configuration/) needs at least `appId` and
-`devClientScheme`.
+`devClientScheme`. Optional [`deadlines`](../configuration/#deadlines) in that
+file set the preparation budgets `check` and `pr` store on the run record.
 
 ## What a run does
 

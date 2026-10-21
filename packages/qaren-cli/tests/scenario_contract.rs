@@ -428,3 +428,74 @@ fn registry_auth_scenario_defaults_roundtrips_and_refuses_value_echoes() {
     }
     std::fs::remove_dir_all(repo).unwrap();
 }
+
+#[test]
+fn scenario_deadline_bounds_match_the_shared_contract_and_keep_defaults() {
+    for yaml in [valid_ios_yaml(), valid_android_yaml(), valid_handoff_yaml()] {
+        let scenario = parse(&yaml).unwrap();
+        assert_eq!(scenario.deadlines.install_deps_seconds, 900);
+        assert_eq!(scenario.deadlines.build_seconds, 2400);
+        assert_eq!(scenario.deadlines.device_boot_seconds, 420);
+    }
+    let stripped = valid_ios_yaml().replace(
+        "deadlines:\n  install_deps_seconds: 900\n  build_seconds: 2400\n  device_boot_seconds: 420\n",
+        "",
+    );
+    assert!(!stripped.contains("deadlines:"));
+    let omitted = parse(&stripped).unwrap();
+    assert_eq!(omitted.deadlines.install_deps_seconds, 900);
+    assert_eq!(omitted.deadlines.build_seconds, 2400);
+    assert_eq!(omitted.deadlines.device_boot_seconds, 420);
+
+    let repo = common::temp_repo();
+    let path = repo.join("scenario.yaml");
+    for (field, from, value) in [
+        ("install_deps_seconds", "900", 30u64),
+        ("install_deps_seconds", "900", 7200),
+        ("build_seconds", "2400", 30),
+        ("build_seconds", "2400", 7200),
+        ("device_boot_seconds", "420", 30),
+        ("device_boot_seconds", "420", 7200),
+    ] {
+        let yaml =
+            valid_ios_yaml().replace(&format!("{field}: {from}"), &format!("{field}: {value}"));
+        std::fs::write(&path, &yaml).unwrap();
+        let (scenario, raw) = Scenario::load(&path).unwrap();
+        assert_eq!(raw, yaml);
+        let actual = match field {
+            "install_deps_seconds" => scenario.deadlines.install_deps_seconds,
+            "build_seconds" => scenario.deadlines.build_seconds,
+            "device_boot_seconds" => scenario.deadlines.device_boot_seconds,
+            _ => unreachable!(),
+        };
+        assert_eq!(actual, value, "{field}");
+    }
+    for (field, value) in [
+        ("install_deps_seconds", 0u64),
+        ("build_seconds", 29),
+        ("device_boot_seconds", 7201),
+        ("build_seconds", u64::MAX),
+    ] {
+        let from = match field {
+            "install_deps_seconds" => "900",
+            "build_seconds" => "2400",
+            "device_boot_seconds" => "420",
+            _ => unreachable!(),
+        };
+        let yaml =
+            valid_ios_yaml().replace(&format!("{field}: {from}"), &format!("{field}: {value}"));
+        let failure = parse(&yaml).unwrap_err();
+        assert_eq!(failure.code, FailureCode::ScenarioInvalid);
+        assert!(
+            failure.detail.contains(&format!(
+                "deadlines.{field} = {value} must be within 30..=7200 seconds"
+            )),
+            "{}",
+            failure.detail
+        );
+        std::fs::write(&path, &yaml).unwrap();
+        let loaded = Scenario::load(&path).unwrap_err();
+        assert_eq!(loaded.code, FailureCode::ScenarioInvalid);
+        assert_eq!(loaded.detail.to_string(), failure.detail.to_string());
+    }
+}

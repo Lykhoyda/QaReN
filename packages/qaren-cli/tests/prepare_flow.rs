@@ -3679,3 +3679,50 @@ fn dry_run_total_timing_includes_the_fingerprint_computation() {
     assert_eq!(mock.remaining(), 0);
     assert_eq!(receipt.timings_ms.get("total"), Some(&4_434));
 }
+
+#[test]
+fn prepare_keeps_scenario_deadlines_when_app_config_disagrees() {
+    let conflicting = "appId: com.rndevagent.testapp\ndevClientScheme: rndatest\ndeadlines:\n  install_deps_seconds: 30\n  build_seconds: 31\n  device_boot_seconds: 32\n";
+    let explicit = format!(
+        "{}deadlines:\n  build_seconds: 5400\n",
+        ios_scenario_yaml(8791)
+    );
+    for (yaml, deps, build, boot) in [
+        (explicit, 900, 5400, 420),
+        (ios_scenario_yaml(8791), 900, 2400, 420),
+    ] {
+        let repo = common::temp_repo();
+        let config_dir = repo.join("test-app/.qaren");
+        std::fs::create_dir_all(&config_dir).unwrap();
+        std::fs::write(config_dir.join("config.yaml"), conflicting).unwrap();
+        let scenario = write_scenario(&repo, &yaml);
+        let mut mock = MockRunner::new();
+        script_ios_prepare(&mut mock, &repo, CmdOutput::success(""));
+        let receipt = prepare(&mut mock, &prepare_args(&scenario, false, None));
+        assert_eq!(
+            receipt.result,
+            ReceiptResult::Ready,
+            "{}",
+            receipt.to_json()
+        );
+        assert_eq!(mock.remaining(), 0);
+        let record = RunRecord::load(&repo, &receipt.run_id).unwrap();
+        assert_eq!(record.scenario.deadlines.install_deps_seconds, deps);
+        assert_eq!(record.scenario.deadlines.build_seconds, build);
+        assert_eq!(record.scenario.deadlines.device_boot_seconds, boot);
+        let timeout = |label: &str| {
+            mock.calls
+                .iter()
+                .find(|call| call.label == label)
+                .unwrap()
+                .timeout_seconds
+        };
+        assert_eq!(timeout("pnpm-install"), deps);
+        assert_eq!(timeout("expo-run-ios"), build);
+        assert_eq!(timeout("simctl-bootstatus"), boot);
+        assert_eq!(
+            std::fs::read_to_string(config_dir.join("config.yaml")).unwrap(),
+            conflicting
+        );
+    }
+}

@@ -51,10 +51,14 @@ fn check_config_owns_bounded_launch_scheme_validation_without_echoing_input() {
 }
 
 fn load(yaml: &str) -> Result<CheckConfig, qaren::failure::Failure> {
+    load_raw(yaml).map(|(config, _)| config)
+}
+
+fn load_raw(yaml: &str) -> Result<(CheckConfig, String), qaren::failure::Failure> {
     let repo = common::temp_repo();
     let path = repo.join("config.yaml");
     std::fs::write(&path, yaml).unwrap();
-    CheckConfig::load(&path).map(|(config, _)| config)
+    CheckConfig::load(&path)
 }
 
 #[test]
@@ -110,6 +114,139 @@ fn login_config_refuses_half_pairs_bad_slugs_and_ambiguous_markers() {
 fn check_config_rejects_unsupported_environment_injection() {
     let failure = load("appId: a\nenv: { ENVIRONMENT: staging }\n").unwrap_err();
     assert_eq!(failure.code, FailureCode::ScenarioInvalid);
+}
+
+fn config_yaml(deadlines: &str) -> String {
+    format!("appId: com.example.testapp\ndevClientScheme: testapp\n{deadlines}")
+}
+
+fn assert_deadline_values(config: &CheckConfig, deps: u64, build: u64, boot: u64) {
+    assert_eq!(config.deadlines.install_deps_seconds, deps);
+    assert_eq!(config.deadlines.build_seconds, build);
+    assert_eq!(config.deadlines.device_boot_seconds, boot);
+}
+
+#[test]
+fn load_accepts_a_configured_build_deadline() {
+    let yaml = config_yaml("deadlines:\n  build_seconds: 5400\n");
+    let (config, raw) = load_raw(&yaml).expect("deadlines are part of check configuration");
+    assert_eq!(raw, yaml);
+    assert_deadline_values(&config, 900, 5400, 420);
+}
+
+#[test]
+fn omitted_empty_and_bare_deadline_blocks_keep_defaults() {
+    for deadlines in ["", "deadlines: {}\n", "deadlines:\n"] {
+        let yaml = config_yaml(deadlines);
+        let (config, raw) = load_raw(&yaml).unwrap();
+        assert_eq!(raw, yaml, "{deadlines:?}");
+        assert_deadline_values(&config, 900, 2400, 420);
+    }
+}
+
+#[test]
+fn each_deadline_field_overrides_only_itself() {
+    let cases = [
+        ("install_deps_seconds: 120\n", 120, 2400, 420),
+        ("build_seconds: 5400\n", 900, 5400, 420),
+        ("device_boot_seconds: 90\n", 900, 2400, 90),
+        (
+            "install_deps_seconds: 120\n  build_seconds: 5400\n  device_boot_seconds: 90\n",
+            120,
+            5400,
+            90,
+        ),
+        (
+            "install_deps_seconds: 30\n  build_seconds: 30\n  device_boot_seconds: 30\n",
+            30,
+            30,
+            30,
+        ),
+        (
+            "install_deps_seconds: 7200\n  build_seconds: 7200\n  device_boot_seconds: 7200\n",
+            7200,
+            7200,
+            7200,
+        ),
+    ];
+    for (fields, deps, build, boot) in cases {
+        let yaml = config_yaml(&format!("deadlines:\n  {fields}"));
+        let (config, raw) = load_raw(&yaml).unwrap_or_else(|e| panic!("{fields}: {e:?}"));
+        assert_eq!(raw, yaml);
+        assert_deadline_values(&config, deps, build, boot);
+    }
+}
+
+#[test]
+fn deadline_values_outside_30_through_7200_are_invalid() {
+    for (field, value) in [
+        ("install_deps_seconds", 0u64),
+        ("install_deps_seconds", 29),
+        ("install_deps_seconds", 7201),
+        ("install_deps_seconds", u64::MAX),
+        ("build_seconds", 0),
+        ("build_seconds", 29),
+        ("build_seconds", 7201),
+        ("build_seconds", u64::MAX),
+        ("device_boot_seconds", 0),
+        ("device_boot_seconds", 29),
+        ("device_boot_seconds", 7201),
+        ("device_boot_seconds", u64::MAX),
+    ] {
+        let yaml = config_yaml(&format!("deadlines:\n  {field}: {value}\n"));
+        let failure = load(&yaml).unwrap_err();
+        assert_eq!(
+            failure.code,
+            FailureCode::ScenarioInvalid,
+            "{field}={value}"
+        );
+        let detail = failure.detail.to_string();
+        assert!(
+            detail.contains(&format!(
+                "deadlines.{field} = {value} must be within 30..=7200 seconds"
+            )),
+            "{detail}"
+        );
+    }
+}
+
+#[test]
+fn deadline_parse_refusals_stay_generic() {
+    let blocks = [
+        "deadlines: null\n",
+        "deadlines: ~\n",
+        "deadlines: 30\n",
+        "deadlines: [30]\n",
+        "deadlines:\n  - 30\n",
+        "deadlines:\n  build_seconds: null\n",
+        "deadlines:\n  build_seconds: ~\n",
+        "deadlines:\n  build_seconds:\n",
+        "deadlines:\n  build_seconds: -1\n",
+        "deadlines:\n  build_seconds: 30.5\n",
+        "deadlines:\n  build_seconds: \"5400\"\n",
+        "deadlines:\n  build_seconds: true\n",
+        "deadlines:\n  build_seconds: [30]\n",
+        "deadlines:\n  build_seconds: {seconds: 30}\n",
+        "deadlines:\n  build_seconds: 18446744073709551616\n",
+        "deadlines:\n  build_seconds: 5400\n  build_seconds: 30\n",
+        "deadlines:\n  build_seconds: 5400\n  extra: mistaken-value\n",
+        "deadlines:\n  deps_seconds: 900\n",
+        "deadlines:\n  boot_seconds: 420\n",
+        "deadlines:\n  buildSeconds: 5400\n",
+        "deadlineBudget: mistaken-value\n",
+    ];
+    for block in blocks {
+        let failure = load(&config_yaml(block)).unwrap_err();
+        assert_eq!(failure.code, FailureCode::ScenarioInvalid, "{block}");
+        let output = serde_json::to_string(&failure).unwrap();
+        assert!(
+            output.contains("does not parse as check configuration"),
+            "{block}: {output}"
+        );
+        assert!(!output.contains("mistaken-value"), "{block}: {output}");
+        assert!(!output.contains("18446744073709551616"), "{output}");
+        assert!(!output.contains("5400"), "{block}: {output}");
+    }
 }
 
 #[test]

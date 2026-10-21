@@ -1,5 +1,5 @@
 use crate::failure::{Failure, FailureCode};
-use crate::scenario::{require_launch_scheme, BuildOwner, IosWorkspaceBuild, Platform};
+use crate::scenario::{require_launch_scheme, BuildOwner, Deadlines, IosWorkspaceBuild, Platform};
 use serde::{Deserialize, Serialize};
 use std::path::Path;
 
@@ -32,6 +32,9 @@ pub struct CheckConfig {
     pub login_block: Option<String>,
     #[serde(default)]
     pub login_marker: Option<LoginMarker>,
+    // Nested keys stay snake_case; this block does not inherit camelCase.
+    #[serde(default)]
+    pub deadlines: Deadlines,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -103,7 +106,7 @@ impl CheckConfig {
                 "config",
                 FailureCode::ScenarioInvalid,
                 format!("{} does not parse as check configuration", path.display()),
-                "fix .qaren/config.yaml (keys: appId, packageManager, metroPort, ios, android, nodePath, devClientScheme, loginBlock, loginMarker, registryAuthEnv)",
+                "fix .qaren/config.yaml (keys: appId, packageManager, metroPort, ios, android, nodePath, devClientScheme, loginBlock, loginMarker, registryAuthEnv, deadlines)",
             )
         })?;
         config.validate(path)?;
@@ -137,6 +140,7 @@ impl CheckConfig {
                 self.metro_port
             )));
         }
+        self.deadlines.validate().map_err(invalid)?;
         if self.app_id.trim().is_empty() {
             return Err(invalid("appId is required".to_string()));
         }

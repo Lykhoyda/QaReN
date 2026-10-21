@@ -296,6 +296,21 @@ The configuration keys, defaults and validation are owned by
 `devClientScheme`; only `pnpm` is supported as the app package manager.
 `--config` selects another configuration file.
 
+`check` and `pr` take optional preparation deadlines from that same file.
+The block uses the snake_case keys `install_deps_seconds` (default 900),
+`build_seconds` (default 2400), and `device_boot_seconds` (default 420).
+Each value is a whole number of seconds from 30 through 7200 inclusive.
+Omitted fields keep those defaults. The effective values are stored at
+`scenario.deadlines` in the run's `run.json`. A `prepare` scenario keeps the
+deadlines in its own file.
+
+```yaml
+appId: com.example.fixture
+devClientScheme: exp+fixture
+deadlines:
+  build_seconds: 5400
+```
+
 For private registries whose credentials use other environment names, declare the
 names in the operator-selected configuration (empty by default):
 

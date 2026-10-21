@@ -23,8 +23,8 @@ use crate::runrecord::{
     PrWorktreeResource, Resources, RunRecord, TerminalResult, RUN_SCHEMA,
 };
 use crate::scenario::{
-    is_emulator_serial, AndroidEmulatorSpec, BuildSpec, CandidateSpec, Deadlines, DepsSpec,
-    IosSpec, MetroSpec, Platform, Scenario, SCENARIO_SCHEMA,
+    is_emulator_serial, AndroidEmulatorSpec, BuildSpec, CandidateSpec, DepsSpec, IosSpec,
+    MetroSpec, Platform, Scenario, SCENARIO_SCHEMA,
 };
 use crate::timefmt;
 use crate::worktree;
@@ -1997,7 +1997,7 @@ fn build_scenario(
             registry_auth_env: config.registry_auth_env.clone(),
             ..DepsSpec::default()
         },
-        deadlines: Deadlines::default(),
+        deadlines: config.deadlines.clone(),
     }
 }
 
