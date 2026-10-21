@@ -2005,11 +2005,22 @@ export async function runNative(
         iosPolicy,
       ),
     );
-    opts.qaContext?.assertComplete();
-    const settled = result;
-    result = await phase('dispatch-health', () =>
-      verifyTypeResultAfterSettle(ios, settled, runnerAuthorityBefore),
-    );
+    try {
+      opts.qaContext?.assertComplete();
+      const settled = result;
+      result = await phase('dispatch-health', () =>
+        verifyTypeResultAfterSettle(ios, settled, runnerAuthorityBefore),
+      );
+    } catch (error) {
+      if (error instanceof QaDispatchError) {
+        try {
+          error.retainSettle(JSON.parse(result.content[0]?.text ?? '').meta);
+        } catch {
+          // Diagnostic capture cannot replace the refusal.
+        }
+      }
+      throw error;
+    }
     if (healMeta) result = attachMeta(result, healMeta);
     return upgradeNote ? attachMetaNote(result, upgradeNote) : result;
   }

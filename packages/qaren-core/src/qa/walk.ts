@@ -1,3 +1,4 @@
+import { QaDispatchError } from '../domain/qa-dispatch.js';
 import { ownedLogin, parseInputPreflight } from './input-preflight.js';
 import { ObservedPrivacy } from './privacy.js';
 import { InputPrivacyRefusal, withInputs, currentInputs } from './inputs.js';
@@ -297,7 +298,14 @@ function act(
       }
     },
     (error) => {
-      logActionSettle(error instanceof HandlerError ? error.meta : undefined, timing);
+      logActionSettle(
+        error instanceof HandlerError
+          ? error.meta
+          : error instanceof QaDispatchError
+            ? error.settleMeta
+            : undefined,
+        timing,
+      );
       const { code, message } = describeError(error);
       return {
         ok: false,
