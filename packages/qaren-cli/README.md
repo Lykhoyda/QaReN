@@ -2004,22 +2004,20 @@ ambiguous only once both have registered.
 Transient target-list, WebSocket-handshake and runtime-probe timeouts, along with
 inspector page closure or replacement, retry within that same deadline regardless
 of host load, with bounded polling and exact-port rediscovery between attachment
-attempts. Exhausted readiness refuses `CDP_NOT_CONNECTED`; invalid
-metadata and deterministic attachment rejections refuse immediately. Host load
-is diagnostic and does not decide whether the app is ready.
-After an exhausted target-readiness wait, or persistent runtime-probe or
-WebSocket-handshake timeouts lasting a full readiness window from the first such
-timeout (never before the original readiness window ends), an iOS dev
+attempts. If the requested bundle never registers within the bounded discovery
+wait, admission refuses `CDP_NOT_CONNECTED` before liveness probing, relaunch or
+another attachment attempt. Exhausted runtime readiness also refuses
+`CDP_NOT_CONNECTED`; invalid metadata and deterministic attachment rejections
+refuse immediately. Host load is diagnostic and does not decide whether the app
+is ready.
+Persistent runtime-probe or WebSocket-handshake timeouts lasting a full readiness
+window from the first such timeout (never before the original readiness window
+ends) remain recoverable: an iOS dev
 client can be relaunched once if the remaining deadline still covers a full
 readiness wait. Individual target-list timeouts and inspector page closures do
-not trigger relaunch. Before a relaunch for a missing target, admission uses the
-[iOS app-job liveness rule](#check-a-plan). A live app skips that no-target
-relaunch, logs `relaunch skipped: app-alive`, and keeps waiting within the same
-deadline; an absent job or failed probe permits recovery as before. Skipping
-does not consume the one relaunch for persistent runtime-probe or
-WebSocket-handshake timeouts, and a target that registers late gets the same
-readiness window before a stalled handshake triggers the one relaunch. For retained admission facts,
-see [runtime-input diagnostics](#runtime-inputs). Before the liveness check or
+not trigger relaunch. A target that registers late gets the same readiness window
+before a stalled handshake triggers the one relaunch. For retained admission facts,
+see [runtime-input diagnostics](#runtime-inputs). Before
 relaunch, admission checks for a foreign driver;
 a conflict refuses `BUSY_FOREIGN_FLOW`
 without relaunching. It relaunches on the exact simulator with the CLI's original
