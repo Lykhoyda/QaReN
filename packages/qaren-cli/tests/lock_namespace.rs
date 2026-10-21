@@ -223,6 +223,33 @@ fn explicit_roots_partition_when_they_differ_and_contend_when_they_match() {
 }
 
 #[test]
+fn literal_dot_segments_refuse_before_lock_root_normalization() {
+    for raw in [
+        "/private/var/tmp/./",
+        "/private/./var/tmp",
+        "/private/var/tmp/../tmp",
+    ] {
+        assert_eq!(
+            buildplan::configured_lock_root(Some(OsStr::new(raw)), Some(OsStr::new("1")), None)
+                .unwrap_err(),
+            "QAREN_LOCK_ROOT must not contain . or .."
+        );
+        assert!(buildplan::canonical_lock_root(Path::new(raw)).is_err());
+    }
+    let output = Command::new(env!("CARGO_BIN_EXE_qaren"))
+        .args(["prepare", "missing-scenario.yaml", "--json"])
+        .env("HOME", std::env::current_dir().unwrap())
+        .env("QAREN_MACHINE_LOCKS", "1")
+        .env("QAREN_LOCK_ROOT", "/private/var/tmp/./")
+        .output()
+        .unwrap();
+    assert_eq!(output.status.code(), Some(1));
+    let receipt: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(receipt["failure"]["code"], "PREREQ_MISSING");
+    assert_eq!(receipt["failure"]["phase"], "validate");
+}
+
+#[test]
 fn unsafe_overrides_fail_closed_without_a_home_fallback() {
     let home = OsStr::new("/tmp/qaren-lock-home");
     assert!(buildplan::configured_lock_root(Some(OsStr::new("")), None, Some(home)).is_err());

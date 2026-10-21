@@ -72,12 +72,13 @@ fn absolute_lock_override(raw: &OsStr, reject_dot_segments: bool) -> Result<Path
     if !path.is_absolute() {
         return Err("QAREN_LOCK_ROOT must be an absolute path".to_string());
     }
-    if reject_dot_segments {
-        for component in path.components() {
-            if matches!(component, Component::CurDir | Component::ParentDir) {
-                return Err("QAREN_LOCK_ROOT must not contain . or ..".to_string());
-            }
-        }
+    if reject_dot_segments
+        && raw
+            .as_bytes()
+            .split(|byte| *byte == b'/')
+            .any(|segment| segment == b"." || segment == b"..")
+    {
+        return Err("QAREN_LOCK_ROOT must not contain . or ..".to_string());
     }
     Ok(path)
 }
@@ -1194,6 +1195,16 @@ fn components_of(path: &Path) -> Result<Vec<OsString>, WalkError> {
     if !path.is_absolute() {
         return Err(WalkError::Unsafe(
             "lock root is not an absolute path".to_string(),
+        ));
+    }
+    if path
+        .as_os_str()
+        .as_bytes()
+        .split(|byte| *byte == b'/')
+        .any(|segment| segment == b"." || segment == b"..")
+    {
+        return Err(WalkError::Unsafe(
+            "lock root must not contain . or ..".to_string(),
         ));
     }
     let mut names = Vec::new();
