@@ -1577,6 +1577,8 @@ that secret despite artifact redaction.
   `mutating`; typing records `type-call` and `type-readback` durations (including unavailable
   readback), keyboard refresh/retry records `relayout-retap`, and structured `settle` and
   `keyboard` events retain only finite methods, proofs, booleans and elapsed times.
+  A dispatch refusal after settlement preserves measured settle facts; unavailable settle
+  facts are `unknown`, and an unmeasured duration is omitted from the structured event.
   Native-readiness end metrics also retain the
   existing liveness classification as `readinessReason`, or `unknown` if the probe did not
   return a classification; `count` identifies the probe site, not a retry ordinal.
