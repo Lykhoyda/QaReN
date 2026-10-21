@@ -43,9 +43,11 @@ pub struct RunRequest {
     pub config_path: PathBuf,
     pub plan_file: PathBuf,
     pub platform: Platform,
-    // None borrows the only booted simulator; boot_device requires an exact UDID.
+    // None borrows the only booted simulator; lifecycle flags require an exact UDID.
     pub device: Option<String>,
     pub boot_device: bool,
+    pub restart_device: bool,
+    pub shutdown_device_on_exit: bool,
     pub fresh_install: bool,
     pub runtime_dir: PathBuf,
     pub node: Option<PathBuf>,
@@ -56,6 +58,44 @@ pub struct RunRequest {
     pub budgets: Budgets,
     // `qaren pr`: the run happens on a detached worktree at this PR's head.
     pub pr: Option<PrTarget>,
+}
+
+// The core runtime: QAREN_RUNTIME, else the installed <exe>/../runtime, else the source checkout.
+pub fn default_runtime_dir() -> PathBuf {
+    runtime_dir_from(
+        std::env::var_os("QAREN_RUNTIME"),
+        std::env::current_exe().ok(),
+    )
+}
+
+pub fn runtime_dir_from(explicit: Option<std::ffi::OsString>, exe: Option<PathBuf>) -> PathBuf {
+    if let Some(explicit) = explicit.filter(|value| !value.is_empty()) {
+        return PathBuf::from(explicit);
+    }
+    // macOS current_exe() returns a PATH symlink itself, not the installed binary.
+    let exe = exe.map(|exe| exe.canonicalize().unwrap_or(exe));
+    let Some(bin_dir) = exe.as_deref().and_then(|exe| exe.parent()) else {
+        return PathBuf::from("packages/qaren-core/dist");
+    };
+    let installed = bin_dir.join("../runtime");
+    if installed.join("qa").join("walk.js").is_file() {
+        return installed.canonicalize().unwrap_or(installed);
+    }
+    let checkout = bin_dir.join("../../../qaren-core/dist");
+    checkout.canonicalize().unwrap_or(checkout)
+}
+
+pub fn resolve_node_for_record(record: &RunRecord) -> PathBuf {
+    std::env::var_os("QAREN_NODE")
+        .filter(|v| !v.is_empty())
+        .map(PathBuf::from)
+        .or_else(|| {
+            CheckConfig::load(&record.scenario_path)
+                .ok()
+                .and_then(|(cfg, _)| cfg.node_path)
+                .map(PathBuf::from)
+        })
+        .unwrap_or_else(|| PathBuf::from("node"))
 }
 
 pub struct PrTarget {
@@ -87,25 +127,50 @@ pub fn validate_boot_device(
     platform: Platform,
     device: Option<&str>,
     boot_device: bool,
+    restart_device: bool,
+    shutdown_device_on_exit: bool,
 ) -> Result<(), Failure> {
-    if !boot_device {
+    if !boot_device && !restart_device && !shutdown_device_on_exit {
         return Ok(());
     }
-    if platform != Platform::Ios {
-        return Err(Failure::new(
-            "device",
-            FailureCode::PlatformUnsupported,
-            "--boot-device is only valid for check on iOS",
-            "use --platform ios with an explicit --device UUID",
-        ));
+    for (enabled, flag) in [
+        (boot_device, "--boot-device"),
+        (restart_device, "--restart-device"),
+        (shutdown_device_on_exit, "--shutdown-device-on-exit"),
+    ] {
+        if !enabled {
+            continue;
+        }
+        if platform != Platform::Ios {
+            return Err(Failure::new(
+                "device",
+                FailureCode::PlatformUnsupported,
+                format!("{flag} is only valid for check on iOS"),
+                "use --platform ios with an explicit --device UUID",
+            ));
+        }
     }
-    if device.and_then(ios::canonical_udid).is_none() {
+    if boot_device && restart_device {
         return Err(Failure::new(
             "device",
             FailureCode::DeviceUnavailable,
-            "--boot-device requires --device with an exact iOS simulator UUID",
-            "pass the selected simulator UUID, not a name or booted alias",
+            "--boot-device and --restart-device are redundant; --restart-device already boots the selected simulator",
+            "pass --restart-device without --boot-device, or pass --boot-device alone",
         ));
+    }
+    for (enabled, flag) in [
+        (boot_device, "--boot-device"),
+        (restart_device, "--restart-device"),
+        (shutdown_device_on_exit, "--shutdown-device-on-exit"),
+    ] {
+        if enabled && device.and_then(ios::canonical_udid).is_none() {
+            return Err(Failure::new(
+                "device",
+                FailureCode::DeviceUnavailable,
+                format!("{flag} requires --device with an exact iOS simulator UUID"),
+                "pass the selected simulator UUID, not a name or booted alias",
+            ));
+        }
     }
     Ok(())
 }
@@ -190,7 +255,13 @@ fn run_inner(
     unowned_worktree: &mut Option<(PathBuf, PathBuf)>,
 ) -> Result<Receipt, Failure> {
     events::stage("preflight", StageState::Running, None, None);
-    validate_boot_device(req.platform, req.device.as_deref(), req.boot_device)?;
+    validate_boot_device(
+        req.platform,
+        req.device.as_deref(),
+        req.boot_device,
+        req.restart_device,
+        req.shutdown_device_on_exit,
+    )?;
     let (config, config_raw) = CheckConfig::load(&req.config_path)?;
     config.validate_for_platform(req.platform)?;
     if req.platform == Platform::Ios {
@@ -317,7 +388,8 @@ fn run_inner(
         runner,
         req.platform,
         req.device.as_deref(),
-        req.boot_device,
+        req.boot_device || req.restart_device,
+        req.shutdown_device_on_exit,
         req.android_home.as_deref(),
     )?;
     let android_env = device.android.as_ref().map(|emulator| core::AndroidEnv {
@@ -421,10 +493,11 @@ fn run_inner(
     ) {
         Ok(lease) => lease,
         Err(busy) if busy.failure.code == FailureCode::DeviceBusy => {
-            recovered = Some(crate::commands::cleanup::reclaim_dead_holder(
+            recovered = Some(crate::commands::cleanup::reclaim_dead_holder_with_runtime(
                 runner,
                 &req.runs_root,
                 &busy,
+                Some((&node, &req.runtime_dir)),
             )?);
             lease::acquire(
                 runner,
@@ -504,6 +577,8 @@ fn run_inner(
         notes: Vec::new(),
         verb: verb(req),
     };
+    let finish_failed =
+        |ctx: Ctx, failure: Failure| finish_failed(ctx, &node, &req.runtime_dir, failure);
     if let Some(earlier) = recovered {
         ctx.notes.push(("recovered_run".to_string(), earlier));
     }
@@ -514,7 +589,8 @@ fn run_inner(
         return Ok(finish_failed(ctx, f));
     }
 
-    if req.platform == Platform::Ios && (req.fresh_install || req.boot_device) {
+    let ios_lifecycle = req.boot_device || req.restart_device || req.shutdown_device_on_exit;
+    if req.platform == Platform::Ios && (req.fresh_install || ios_lifecycle) {
         if let Err(f) = core::fresh_install_admission(
             ctx.runner,
             &node,
@@ -538,8 +614,8 @@ fn run_inner(
             return Ok(finish_failed(ctx, f));
         }
     }
-    // Last proof before anything destructive; boot_device is iOS-only.
-    if req.fresh_install || req.boot_device {
+    // Last proof before anything destructive; ios_lifecycle options are iOS-only.
+    if req.fresh_install || ios_lifecycle {
         if let Err(f) = core::fresh_install_admission(
             ctx.runner,
             &node,
@@ -551,8 +627,21 @@ fn run_inner(
             return Ok(finish_failed(ctx, f));
         }
     }
-    if req.boot_device {
-        if let Err(f) = boot_selected_device(&mut ctx, &device) {
+    if req.shutdown_device_on_exit {
+        if let Err(f) = ensure_running(&*ctx.runner, "deps") {
+            return Ok(finish_failed(ctx, f));
+        }
+        let prev = ctx.record.resources.borrowed_ios_stop();
+        if let Err(f) = ctx.record.resources.arm_borrowed_ios_stop() {
+            return Ok(finish_failed(ctx, f));
+        }
+        if let Err(f) = ctx.save() {
+            ctx.record.resources.revert_borrowed_ios_stop(prev);
+            return Ok(finish_failed(ctx, f));
+        }
+    }
+    if req.boot_device || req.restart_device {
+        if let Err(f) = boot_selected_device(&mut ctx, &device, req.restart_device) {
             return Ok(finish_failed(ctx, f));
         }
     }
@@ -894,7 +983,8 @@ fn run_inner(
         }
     }
 
-    let (mut cleanup, all_clean, ownership_proven) = teardown(&mut ctx, outcome.group_survived);
+    let (mut cleanup, all_clean, ownership_proven) =
+        teardown(&mut ctx, &node, &req.runtime_dir, outcome.group_survived);
     cleanup.splice(..0, early_cleanup);
     ctx.mark("teardown", t);
 
@@ -1341,7 +1431,7 @@ fn reset_app(
     Ok(())
 }
 
-fn boot_selected_device(ctx: &mut Ctx, device: &Device) -> Result<(), Failure> {
+fn boot_selected_device(ctx: &mut Ctx, device: &Device, restart: bool) -> Result<(), Failure> {
     ensure_running(ctx.runner, "boot_device")?;
     let failed = |detail| {
         Failure::new(
@@ -1351,7 +1441,37 @@ fn boot_selected_device(ctx: &mut Ctx, device: &Device) -> Result<(), Failure> {
             "check the selected simulator's health and inventory, then re-run",
         )
     };
-    if device.needs_boot {
+    let Some((device_type, runtime)) = device.ios.as_ref() else {
+        return Err(failed(
+            "selected simulator lacks recorded runtime and device type",
+        ));
+    };
+    let mut needs_boot = device.needs_boot;
+    if restart && !device.needs_boot {
+        let shutdown = ios::shutdown_selected_sim(ctx.runner, &device.id, device_type, runtime);
+        ensure_running(ctx.runner, "boot_device")?;
+        match shutdown {
+            ios::SelectedSimShutdown::ShutDown | ios::SelectedSimShutdown::AlreadyShutdown => {
+                needs_boot = true;
+            }
+            ios::SelectedSimShutdown::InventoryInvalid => {
+                return Err(failed(
+                    "inventory did not prove the exact selected simulator before restart shutdown",
+                ))
+            }
+            ios::SelectedSimShutdown::ShutdownFailed => {
+                return Err(failed(
+                    "simctl shutdown did not complete successfully for the selected simulator",
+                ))
+            }
+            ios::SelectedSimShutdown::ReadbackInvalid => {
+                return Err(failed(
+                    "inventory did not prove the exact selected simulator Shutdown with unchanged runtime and device type",
+                ))
+            }
+        }
+    }
+    if needs_boot {
         let output = ctx.runner.run(&ios::bootstatus_spec(
             &device.id,
             ctx.record.scenario.deadlines.device_boot_seconds,
@@ -1364,12 +1484,12 @@ fn boot_selected_device(ctx: &mut Ctx, device: &Device) -> Result<(), Failure> {
         }
     }
     let output = ctx.runner.run(&ios::list_devices_spec());
-    if output.ok() && output.stderr.is_empty() {
+    ensure_running(ctx.runner, "boot_device")?;
+    if output.ok() && output.stderr.is_empty() && output.stdout.len() < 1024 * 1024 {
         if let Some(sim) = ios::parse_selected_sim(&output.stdout, &device.id) {
             if sim.state == ios::SimState::Booted
-                && device.ios.as_ref().is_some_and(|(device_type, runtime)| {
-                    sim.device_type == *device_type && sim.runtime == *runtime
-                })
+                && sim.device_type == *device_type
+                && sim.runtime == *runtime
             {
                 return Ok(());
             }
@@ -1398,12 +1518,12 @@ pub fn runner_driver(
     })
 }
 
-fn finish_failed(mut ctx: Ctx, failure: Failure) -> Receipt {
+fn finish_failed(mut ctx: Ctx, node: &Path, runtime_dir: &Path, failure: Failure) -> Receipt {
     let failure = ensure_running(ctx.runner, &failure.phase)
         .err()
         .unwrap_or(failure);
     events::close_running(StageState::Failed, Some(&failure.code_str()), &[]);
-    let (cleanup, _, _) = teardown(&mut ctx, false);
+    let (cleanup, _, _) = teardown(&mut ctx, node, runtime_dir, false);
     let mut receipt = ctx.fail(failure);
     for (name, rendered) in cleanup {
         receipt.cleanup.insert(name, rendered);
@@ -1412,7 +1532,12 @@ fn finish_failed(mut ctx: Ctx, failure: Failure) -> Receipt {
 }
 
 // Returns rendered outcomes, whether every leg is clean, and whether the run's producers are proven gone.
-fn teardown(ctx: &mut Ctx, wait_unresolved: bool) -> (Vec<(String, String)>, bool, bool) {
+fn teardown(
+    ctx: &mut Ctx,
+    node: &Path,
+    runtime_dir: &Path,
+    wait_unresolved: bool,
+) -> (Vec<(String, String)>, bool, bool) {
     events::stage("cleanup", StageState::Running, None, None);
     let mut outcomes: Vec<(String, Outcome)> = Vec::new();
     if let Some(outcome) =
@@ -1454,7 +1579,15 @@ fn teardown(ctx: &mut Ctx, wait_unresolved: bool) -> (Vec<(String, String)>, boo
     }
     prepare::release_build_lock(ctx);
     if ctx.record.resources.ios_simulator.is_some() {
-        outcomes.push(("simulator".to_string(), Outcome::Kept));
+        let outcome = crate::commands::cleanup::cleanup_borrowed_ios(
+            ctx.runner,
+            &mut ctx.record,
+            &ctx.runs_root,
+            &outcomes,
+            false,
+            Some((node, runtime_dir)),
+        );
+        outcomes.push(("simulator".to_string(), outcome));
     }
     // Released while the lease is still this run's; an unclean leg below retains it.
     outcomes.extend(crate::commands::cleanup::release_borrowed_android(
@@ -1463,7 +1596,10 @@ fn teardown(ctx: &mut Ctx, wait_unresolved: bool) -> (Vec<(String, String)>, boo
     ));
     if let Some(lease) = ctx.record.resources.lease.clone() {
         let unclean = unclean_legs(&outcomes);
-        let outcome = if ctx.record.resources.can_release_build_ownership() && unclean.is_empty() {
+        let outcome = if ctx.record.resources.can_release_build_ownership()
+            && ctx.record.resources.can_release_borrowed_ios_stop()
+            && unclean.is_empty()
+        {
             let outcome = release_lease_outcome(lease::release(&lease));
             if outcome.clean() {
                 ctx.record.resources.lease = None;
@@ -1475,10 +1611,12 @@ fn teardown(ctx: &mut Ctx, wait_unresolved: bool) -> (Vec<(String, String)>, boo
         outcomes.push(("device_lease".to_string(), outcome));
     }
     if let Some(wt) = ctx.record.resources.pr_worktree.clone() {
-        let outcome = if crate::commands::cleanup::producers_quiescent(&outcomes) {
-            worktree::remove(ctx.runner, &wt.repo_root, &wt.path)
-        } else {
+        let outcome = if !crate::commands::cleanup::producers_quiescent(&outcomes) {
             Outcome::Unresolved("producer cleanup is unproven; PR worktree retained".into())
+        } else if !ctx.record.resources.can_release_borrowed_ios_stop() {
+            Outcome::Unresolved("simulator stop is incomplete; PR worktree retained".into())
+        } else {
+            worktree::remove(ctx.runner, &wt.repo_root, &wt.path)
         };
         if outcome.clean() {
             ctx.record.resources.pr_worktree = None;
@@ -1607,18 +1745,20 @@ fn resolve_device(
     runner: &mut dyn Runner,
     platform: Platform,
     device: Option<&str>,
-    boot_device: bool,
+    select_from_inventory: bool,
+    shutdown_device_on_exit: bool,
     android_home: Option<&str>,
 ) -> Result<Device, Failure> {
     match platform {
         Platform::Android => borrow_emulator(runner, device, android_home),
         Platform::Ios => {
-            let output = runner.run(&if boot_device {
+            let strict_inventory = select_from_inventory || shutdown_device_on_exit;
+            let output = runner.run(&if select_from_inventory {
                 ios::list_devices_spec()
             } else {
                 ios::list_booted_spec()
             });
-            if !output.ok() || (boot_device && !output.stderr.is_empty()) {
+            if !output.ok() || (strict_inventory && !output.stderr.is_empty()) {
                 return Err(Failure::new(
                     "device",
                     FailureCode::DeviceUnavailable,
@@ -1633,7 +1773,7 @@ fn resolve_device(
                 android: None,
                 needs_boot: sim.state == ios::SimState::Shutdown,
             };
-            if boot_device {
+            if select_from_inventory {
                 return device
                     .and_then(|udid| ios::parse_selected_sim(&output.stdout, udid))
                     .map(|sim| borrow(&sim))
@@ -1653,13 +1793,31 @@ fn resolve_device(
                 ));
             };
             if let Some(udid) = device {
-                return match sims.iter().find(|sim| sim.udid == udid) {
-                    Some(sim) => Ok(borrow(sim)),
-                    None => Err(Failure::new(
+                let target = if shutdown_device_on_exit {
+                    ios::canonical_udid(udid).unwrap_or_else(|| udid.to_string())
+                } else {
+                    udid.to_string()
+                };
+                let matching: Vec<_> = sims.iter().filter(|sim| sim.udid == target).collect();
+                return match matching.as_slice() {
+                    [sim]
+                        if !shutdown_device_on_exit
+                            || (ios::canonical_udid(&sim.udid).as_deref()
+                                == Some(sim.udid.as_str())
+                                && !sim.name.trim().is_empty()
+                                && !sim.device_type.trim().is_empty()
+                                && sim
+                                    .runtime
+                                    .strip_prefix("com.apple.CoreSimulator.SimRuntime.iOS-")
+                                    .is_some_and(|s| !s.is_empty())) =>
+                    {
+                        Ok(borrow(sim))
+                    }
+                    _ => Err(Failure::new(
                         "device",
                         FailureCode::DeviceUnavailable,
                         format!(
-                            "{udid} is not a booted iOS simulator ({} booted)",
+                            "{target} is not a booted iOS simulator ({} booted)",
                             sims.len()
                         ),
                         "boot the simulator named by --device, then re-run",

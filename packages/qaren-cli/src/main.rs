@@ -3,7 +3,10 @@ use qaren::core::Budgets;
 use qaren::exec::{RealRunner, Runner};
 use qaren::failure::{Failure, FailureCode};
 use qaren::receipt::{Receipt, ReceiptResult};
-use qaren::run::{self, RunRequest, DEFAULT_STEP_SECONDS, DEFAULT_WALK_SECONDS};
+use qaren::run::{
+    self, default_runtime_dir as runtime_dir, RunRequest, DEFAULT_STEP_SECONDS,
+    DEFAULT_WALK_SECONDS,
+};
 use qaren::scenario::Platform;
 use std::path::PathBuf;
 use std::process::ExitCode;
@@ -12,7 +15,7 @@ macro_rules! eprintln {
     ($($args:tt)*) => { std::eprintln!("{}", qaren::redact::redact_inputs(&format!($($args)*))) };
 }
 
-const USAGE: &str = "usage: qaren check --plan-file <plan.md> [--platform ios|android] [--device <udid>] [--config .qaren/config.yaml] [--fresh-install] [--boot-device] [--json]\n       qaren pr <number|url> --plan-file <plan.md> [--platform ios|android] [--device <udid>] [--config .qaren/config.yaml] [--fresh-install] [--boot-device] [--json]\n       qaren publish <run-id> [--json]\n       qaren prepare <scenario.yaml> [--json] [--dry-run]\n       qaren prewarm <scenario.yaml> [--json]\n       qaren watch [<run-id> | --latest] [--plain] [--json]\n       qaren status  <run-id> [--json]\n       qaren complete <run-id> <build-log> [--json]\n       qaren cleanup <run-id> [--json] [--remove-app --confirm-remove-app <run-id>/<remote-serial>/<app-id>]\n       qaren actions list [--json]\n       qaren actions show <slug>\n       qaren update\n       qaren doctor [--json] [--config .qaren/config.yaml]\n       qaren --version\n\ncheck walks the plan on the booted simulator against the working tree; runs land in ~/.qaren/runs/<run-id>/.\npr walks the plan on a detached worktree at the pull request head, recording the screen; publish posts the reviewer comment and saves discovered blocks to the PR branch.\nupdate, run from the rn-dev-agent checkout root, fast-forwards it, rebuilds and reinstalls qaren, and says whether the build changed.\ndoctor checks this host, the installed build and the app config, and lists rn-dev-agent 1.x leftovers; it changes nothing.\n--fresh-install opts into removing the selected app and its data under the check device lease before installation.\n--boot-device opts into booting an exact iOS simulator UUID selected by --device under the check lease; cleanup leaves it running.\n--remove-app also uninstalls the app (and its data) this run installed on its leased Android emulator;\nthe confirmation must name exactly this run, its recorded emulator serial and its app id.";
+const USAGE: &str = "usage: qaren check --plan-file <plan.md> [--platform ios|android] [--device <udid>] [--config .qaren/config.yaml] [--fresh-install] [--boot-device | --restart-device] [--shutdown-device-on-exit] [--json]\n       qaren pr <number|url> --plan-file <plan.md> [--platform ios|android] [--device <udid>] [--config .qaren/config.yaml] [--fresh-install] [--boot-device | --restart-device] [--shutdown-device-on-exit] [--json]\n       qaren publish <run-id> [--json]\n       qaren prepare <scenario.yaml> [--json] [--dry-run]\n       qaren prewarm <scenario.yaml> [--json]\n       qaren watch [<run-id> | --latest] [--plain] [--json]\n       qaren status  <run-id> [--json]\n       qaren complete <run-id> <build-log> [--json]\n       qaren cleanup <run-id> [--json] [--remove-app --confirm-remove-app <run-id>/<remote-serial>/<app-id>]\n       qaren actions list [--json]\n       qaren actions show <slug>\n       qaren update\n       qaren doctor [--json] [--config .qaren/config.yaml]\n       qaren --version\n\ncheck walks the plan on the booted simulator against the working tree; runs land in ~/.qaren/runs/<run-id>/.\npr walks the plan on a detached worktree at the pull request head, recording the screen; publish posts the reviewer comment and saves discovered blocks to the PR branch.\nupdate, run from the rn-dev-agent checkout root, fast-forwards it, rebuilds and reinstalls qaren, and says whether the build changed.\ndoctor checks this host, the installed build and the app config, and lists rn-dev-agent 1.x leftovers; it changes nothing.\n--fresh-install opts into removing the selected app and its data under the check device lease before installation.\n--boot-device opts into booting an exact iOS simulator UUID selected by --device under the check lease; cleanup leaves it running.\n--restart-device opts into restarting (or booting if Shutdown) an exact iOS simulator UUID selected by --device under the check lease.\n--shutdown-device-on-exit opts into shutting down the exact iOS simulator UUID selected by --device during teardown while this run holds its lease.\n--remove-app also uninstalls the app (and its data) this run installed on its leased Android emulator;\nthe confirmation must name exactly this run, its recorded emulator serial and its app id.";
 
 fn user_home() -> Result<PathBuf, String> {
     match std::env::var_os("HOME") {
@@ -52,31 +55,6 @@ fn native_cache_root() -> Result<PathBuf, String> {
 
 fn build_roots() -> Result<(PathBuf, PathBuf, PathBuf), String> {
     Ok((lock_root()?, runs_root()?, native_cache_root()?))
-}
-
-// The core runtime: QAREN_RUNTIME, else the installed <exe>/../runtime, else the source checkout.
-fn runtime_dir() -> PathBuf {
-    runtime_dir_from(
-        std::env::var_os("QAREN_RUNTIME"),
-        std::env::current_exe().ok(),
-    )
-}
-
-fn runtime_dir_from(explicit: Option<std::ffi::OsString>, exe: Option<PathBuf>) -> PathBuf {
-    if let Some(explicit) = explicit.filter(|value| !value.is_empty()) {
-        return PathBuf::from(explicit);
-    }
-    // macOS current_exe() returns a PATH symlink itself, not the installed binary.
-    let exe = exe.map(|exe| exe.canonicalize().unwrap_or(exe));
-    let Some(bin_dir) = exe.as_deref().and_then(|exe| exe.parent()) else {
-        return PathBuf::from("packages/qaren-core/dist");
-    };
-    let installed = bin_dir.join("../runtime");
-    if installed.join("qa").join("walk.js").is_file() {
-        return installed.canonicalize().unwrap_or(installed);
-    }
-    let checkout = bin_dir.join("../../../qaren-core/dist");
-    checkout.canonicalize().unwrap_or(checkout)
 }
 
 fn env_seconds(name: &str, default: u64) -> u64 {
@@ -185,6 +163,8 @@ fn main_inner(args: Vec<String>) -> ExitCode {
     let mut dry_run = false;
     let mut fresh_install = false;
     let mut boot_device = false;
+    let mut restart_device = false;
+    let mut shutdown_device_on_exit = false;
     let mut remove_app = false;
     let mut confirm_remove_app: Option<String> = None;
     let mut plan_file: Option<String> = None;
@@ -208,6 +188,8 @@ fn main_inner(args: Vec<String>) -> ExitCode {
             "--dry-run" => dry_run = true,
             "--fresh-install" => fresh_install = true,
             "--boot-device" => boot_device = true,
+            "--restart-device" => restart_device = true,
+            "--shutdown-device-on-exit" => shutdown_device_on_exit = true,
             "--remove-app" => remove_app = true,
             "--confirm-remove-app" => match value_for("--confirm-remove-app", &mut iter) {
                 Some(v) => confirm_remove_app = Some(v),
@@ -272,12 +254,14 @@ fn main_inner(args: Vec<String>) -> ExitCode {
         || (config.is_some() && verb != "doctor")
         || device.is_some()
         || fresh_install
-        || boot_device)
+        || boot_device
+        || restart_device
+        || shutdown_device_on_exit)
         && verb != "check"
         && verb != "pr"
     {
         eprintln!(
-            "--plan-file, --platform, --config, --device, --fresh-install and --boot-device are only valid for check and pr (--config also for doctor)\n{USAGE}"
+            "--plan-file, --platform, --config, --device, --fresh-install, --boot-device, --restart-device and --shutdown-device-on-exit are only valid for check and pr (--config also for doctor)\n{USAGE}"
         );
         return ExitCode::from(2);
     }
@@ -338,10 +322,6 @@ fn main_inner(args: Vec<String>) -> ExitCode {
     let mut runner = RealRunner::new();
     let receipt = match verb.as_str() {
         "check" | "pr" => {
-            let Some(plan_file) = plan_file else {
-                eprintln!("{verb} requires --plan-file <plan.md>\n{USAGE}");
-                return ExitCode::from(2);
-            };
             let platform = match platform.as_deref() {
                 None | Some("ios") => Platform::Ios,
                 Some("android") => Platform::Android,
@@ -350,12 +330,20 @@ fn main_inner(args: Vec<String>) -> ExitCode {
                     return ExitCode::from(2);
                 }
             };
-            if let Err(failure) =
-                run::validate_boot_device(platform, device.as_deref(), boot_device)
-            {
+            if let Err(failure) = run::validate_boot_device(
+                platform,
+                device.as_deref(),
+                boot_device,
+                restart_device,
+                shutdown_device_on_exit,
+            ) {
                 eprintln!("{}\n{USAGE}", failure.detail);
                 return ExitCode::from(2);
             }
+            let Some(plan_file) = plan_file else {
+                eprintln!("{verb} requires --plan-file <plan.md>\n{USAGE}");
+                return ExitCode::from(2);
+            };
             qaren::cancel::install();
             runner.watch_caller();
             qaren::progress::enable();
@@ -375,6 +363,8 @@ fn main_inner(args: Vec<String>) -> ExitCode {
                         platform,
                         device,
                         boot_device,
+                        restart_device,
+                        shutdown_device_on_exit,
                         fresh_install,
                         runtime_dir: runtime_dir(),
                         node: std::env::var_os("QAREN_NODE").map(PathBuf::from),
@@ -618,18 +608,24 @@ mod tests {
         let exe = install.join("bin/qaren");
 
         assert_eq!(
-            super::runtime_dir_from(Some("/explicit".into()), Some(exe.clone())),
+            qaren::run::runtime_dir_from(Some("/explicit".into()), Some(exe.clone())),
             std::path::PathBuf::from("/explicit")
         );
 
         let checkout = install.join("bin/../../../qaren-core/dist");
-        assert_eq!(super::runtime_dir_from(None, Some(exe.clone())), checkout);
+        assert_eq!(
+            qaren::run::runtime_dir_from(None, Some(exe.clone())),
+            checkout
+        );
 
         std::fs::write(install.join("runtime/qa/walk.js"), "").unwrap();
         let installed = install.join("runtime").canonicalize().unwrap();
-        assert_eq!(super::runtime_dir_from(None, Some(exe.clone())), installed);
         assert_eq!(
-            super::runtime_dir_from(Some("".into()), Some(exe)),
+            qaren::run::runtime_dir_from(None, Some(exe.clone())),
+            installed
+        );
+        assert_eq!(
+            qaren::run::runtime_dir_from(Some("".into()), Some(exe)),
             installed
         );
         std::fs::remove_dir_all(&root).unwrap();
@@ -649,7 +645,7 @@ mod tests {
         std::os::unix::fs::symlink(install.join("bin/qaren"), &link).unwrap();
 
         assert_eq!(
-            super::runtime_dir_from(None, Some(link)),
+            qaren::run::runtime_dir_from(None, Some(link)),
             install.join("runtime").canonicalize().unwrap()
         );
         std::fs::remove_dir_all(&root).unwrap();

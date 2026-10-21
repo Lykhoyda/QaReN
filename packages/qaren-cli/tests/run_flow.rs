@@ -154,6 +154,8 @@ fn request(repo: &Path, app: &Path, step_seconds: u64) -> RunRequest {
         platform: Platform::Ios,
         device: None,
         boot_device: false,
+        restart_device: false,
+        shutdown_device_on_exit: false,
         fresh_install: false,
         runtime_dir: PathBuf::from("/runtime"),
         node: Some(PathBuf::from("/usr/local/bin/node")),
@@ -2711,42 +2713,65 @@ fn a_named_device_that_is_not_booted_refuses() {
 
 #[test]
 fn boot_device_requires_ios_and_an_exact_uuid_before_any_preflight() {
-    for (platform, device, expected) in [
-        (
-            Platform::Android,
-            Some(UDID),
-            FailureCode::PlatformUnsupported,
-        ),
-        (Platform::Ios, None, FailureCode::DeviceUnavailable),
-        (
-            Platform::Ios,
-            Some("booted"),
-            FailureCode::DeviceUnavailable,
-        ),
-        (
-            Platform::Ios,
-            Some("qa-company-app"),
-            FailureCode::DeviceUnavailable,
-        ),
-        (
-            Platform::Ios,
-            Some("1DC408C4-51DA-4C4F-ACA1-39881C916FDG"),
-            FailureCode::DeviceUnavailable,
-        ),
+    for (boot, restart, shutdown_on_exit) in [
+        (true, false, false),
+        (false, true, false),
+        (false, false, true),
     ] {
-        let (repo, app) = app_repo();
-        let mut req = request(&repo, &app, 30);
-        req.platform = platform;
-        req.device = device.map(str::to_string);
-        req.boot_device = true;
-        let mut mock = MockRunner::new();
-        let receipt = run(&mut mock, &req);
-        assert_eq!(receipt.result, ReceiptResult::Refused);
-        assert_eq!(receipt.failure.unwrap().code, expected);
-        assert!(mock.calls.is_empty());
-        assert!(!req.lock_root.exists());
-        assert!(!req.runs_root.exists());
+        for (platform, device, expected) in [
+            (
+                Platform::Android,
+                Some(UDID),
+                FailureCode::PlatformUnsupported,
+            ),
+            (Platform::Ios, None, FailureCode::DeviceUnavailable),
+            (
+                Platform::Ios,
+                Some("booted"),
+                FailureCode::DeviceUnavailable,
+            ),
+            (
+                Platform::Ios,
+                Some("qa-company-app"),
+                FailureCode::DeviceUnavailable,
+            ),
+            (
+                Platform::Ios,
+                Some("1DC408C4-51DA-4C4F-ACA1-39881C916FDG"),
+                FailureCode::DeviceUnavailable,
+            ),
+        ] {
+            let (repo, app) = app_repo();
+            let mut req = request(&repo, &app, 30);
+            req.platform = platform;
+            req.device = device.map(str::to_string);
+            req.boot_device = boot;
+            req.restart_device = restart;
+            req.shutdown_device_on_exit = shutdown_on_exit;
+            let mut mock = MockRunner::new();
+            let receipt = run(&mut mock, &req);
+            assert_eq!(receipt.result, ReceiptResult::Refused);
+            assert_eq!(receipt.failure.unwrap().code, expected);
+            assert!(mock.calls.is_empty());
+            assert!(!req.lock_root.exists());
+            assert!(!req.runs_root.exists());
+        }
     }
+    let (repo, app) = app_repo();
+    let mut req = request(&repo, &app, 30);
+    req.device = Some(UDID.to_string());
+    req.boot_device = true;
+    req.restart_device = true;
+    let mut mock = MockRunner::new();
+    let receipt = run(&mut mock, &req);
+    assert_eq!(receipt.result, ReceiptResult::Refused);
+    assert_eq!(
+        receipt.failure.unwrap().code,
+        FailureCode::DeviceUnavailable
+    );
+    assert!(mock.calls.is_empty());
+    assert!(!req.lock_root.exists());
+    assert!(!req.runs_root.exists());
 }
 
 const ADB_CLIENT_41: &str = "Android Debug Bridge version 1.0.41\nVersion 36.0.0-13206524\nInstalled as /sdk/platform-tools/adb\n";
@@ -4214,6 +4239,9 @@ impl Runner for LeaseObservedRunner {
     fn commands_executed(&self) -> u64 {
         self.mock.commands_executed()
     }
+    fn cancellation(&self) -> Option<String> {
+        self.mock.cancellation()
+    }
 }
 
 fn script_admission(mock: &mut MockRunner) {
@@ -4815,41 +4843,45 @@ fn available_inventory(state: &str) -> String {
 #[test]
 fn boot_device_selection_refuses_unknown_inventory_without_claiming_or_falling_back() {
     let available = available_inventory("Shutdown");
-    for output in [
-        CmdOutput::failed(1, "unavailable"),
-        CmdOutput::success("not json"),
-        CmdOutput::success("{}"),
-        CmdOutput::success(&available.replace(UDID, &UDID.to_lowercase())),
-        CmdOutput::success(&available.replace(UDID, OTHER_UDID)),
-        CmdOutput::success(&available.replace(OTHER_UDID, UDID)),
-        CmdOutput::success(&available.replace("Shutdown", "Booting")),
-        CmdOutput::success(&available.replace("iOS-26-5", "watchOS-26-5")),
-        CmdOutput::success(&available.replace("\"isAvailable\":true", "\"isAvailable\":false")),
-        CmdOutput {
-            stderr: "incomplete".into(),
-            ..CmdOutput::success(&available)
-        },
-        CmdOutput {
-            timed_out: true,
-            ..CmdOutput::success(&available)
-        },
-    ] {
-        let (repo, app) = app_repo();
-        let mut req = request(&repo, &app, 30);
-        req.device = Some(UDID.into());
-        req.boot_device = true;
-        let mut mock = MockRunner::new();
-        mock.expect_run("node --version", CmdOutput::success("v26.8.1\n"));
-        script_plan(&mut mock, &repo);
-        mock.expect_run("simctl list devices -j", output);
-        let receipt = run(&mut mock, &req);
-        assert_eq!(
-            receipt.failure.unwrap().code,
-            FailureCode::DeviceUnavailable
-        );
-        assert_eq!(mock.remaining(), 0);
-        assert!(!req.lock_root.exists());
-        assert!(!req.runs_root.exists());
+    for restart in [false, true] {
+        for output in [
+            CmdOutput::failed(1, "unavailable"),
+            CmdOutput::success("not json"),
+            CmdOutput::success("{}"),
+            CmdOutput::success(&available.replace(UDID, &UDID.to_lowercase())),
+            CmdOutput::success(&available.replace(UDID, OTHER_UDID)),
+            CmdOutput::success(&available.replace(OTHER_UDID, UDID)),
+            CmdOutput::success(&available.replace("Shutdown", "Booting")),
+            CmdOutput::success(&available.replace("iOS-26-5", "watchOS-26-5")),
+            CmdOutput::success(&available.replace("\"isAvailable\":true", "\"isAvailable\":false")),
+            CmdOutput {
+                stderr: "incomplete".into(),
+                ..CmdOutput::success(&available)
+            },
+            CmdOutput {
+                timed_out: true,
+                ..CmdOutput::success(&available)
+            },
+        ] {
+            let (repo, app) = app_repo();
+            let mut req = request(&repo, &app, 30);
+            req.device = Some(UDID.into());
+            req.boot_device = !restart;
+            req.restart_device = restart;
+            let mut mock = MockRunner::new();
+            mock.expect_run("node --version", CmdOutput::success("v26.8.1\n"));
+            script_plan(&mut mock, &repo);
+            mock.expect_run("simctl list devices -j", output);
+            let receipt = run(&mut mock, &req);
+            assert_eq!(
+                receipt.failure.unwrap().code,
+                FailureCode::DeviceUnavailable,
+                "restart={restart}"
+            );
+            assert_eq!(mock.remaining(), 0);
+            assert!(!req.lock_root.exists());
+            assert!(!req.runs_root.exists());
+        }
     }
 }
 
@@ -5162,6 +5194,652 @@ fn boot_device_admission_boot_readback_and_walk_share_a_durable_borrowed_lease()
                 .join(qaren::lease::lock_name(Platform::Ios, UDID))
                 .exists());
         }
+    }
+}
+
+#[test]
+fn restart_device_shuts_down_boots_reads_back_and_walks_under_a_durable_borrowed_lease() {
+    for fresh in [false, true] {
+        for initial in ["Shutdown", "Booted"] {
+            let (repo, app) = app_repo();
+            let mut mock = MockRunner::new();
+            script_preflight_inventory(
+                &mut mock,
+                &repo,
+                "simctl list devices -j",
+                &available_inventory(initial),
+            );
+            script_admission(&mut mock);
+            common::script_ios_deps(&mut mock);
+            script_admission(&mut mock);
+            if initial == "Booted" {
+                mock.expect_run(
+                    "simctl list devices -j",
+                    CmdOutput::success(&available_inventory(initial)),
+                );
+                mock.expect_run(&format!("simctl shutdown {UDID}"), CmdOutput::success(""));
+                mock.expect_run(
+                    "simctl list devices -j",
+                    CmdOutput::success(&available_inventory("Shutdown")),
+                );
+            }
+            mock.expect_run(
+                &format!("simctl bootstatus {UDID} -b"),
+                CmdOutput::success(""),
+            );
+            mock.expect_run(
+                "simctl list devices -j",
+                CmdOutput::success(&available_inventory("Booted")),
+            );
+            if fresh {
+                script_app_presence(&mut mock, true);
+                mock.expect_run(
+                    &format!("simctl uninstall {UDID} com.rndevagent.testapp"),
+                    CmdOutput::success(""),
+                );
+                script_app_presence(&mut mock, false);
+            }
+            script_provision_after_deps(&mut mock);
+            script_drift_status(&mut mock);
+            script_host_probe(&mut mock, UDID, hosts_absent());
+            mock.expect_spawn_piped("walk.js", 9000, &pass_stdout(), Some(0));
+            script_core_identity(&mut mock);
+            script_teardown(&mut mock);
+            let mut runner = LeaseObservedRunner {
+                mock,
+                repo: repo.clone(),
+                wire: None,
+                observed: Vec::new(),
+                expect_fresh_install: fresh,
+            };
+            let mut req = request(&repo, &app, 30);
+            req.device = Some(UDID.to_lowercase());
+            req.restart_device = true;
+            req.fresh_install = fresh;
+            let receipt = run(&mut runner, &req);
+            assert_eq!(
+                receipt.result,
+                ReceiptResult::Pass,
+                "{initial} fresh={fresh}: {:?}",
+                receipt.failure
+            );
+            assert_eq!(runner.mock.remaining(), 0);
+            assert_eq!(receipt.cleanup["device_lease"], "removed");
+            assert_eq!(receipt.cleanup["simulator"], "kept");
+            let mut phases = vec![
+                "fresh-install-admission",
+                "pnpm-install",
+                "expo-ios-build-help",
+                "fresh-install-admission",
+            ];
+            if initial == "Booted" {
+                phases.extend(["simctl-list", "simctl-shutdown", "simctl-list"]);
+            }
+            phases.extend(["simctl-bootstatus", "simctl-list"]);
+            if fresh {
+                phases.extend(["simctl-listapps", "simctl-uninstall", "simctl-listapps"]);
+            }
+            phases.extend(["expo-run-ios", "metro-status", "core-walk", "kill-group"]);
+            assert_subsequence(&runner.observed, &phases);
+            assert_eq!(
+                runner
+                    .observed
+                    .iter()
+                    .filter(|l| *l == "simctl-shutdown")
+                    .count(),
+                usize::from(initial == "Booted")
+            );
+            assert_eq!(
+                runner
+                    .observed
+                    .iter()
+                    .filter(|l| *l == "simctl-bootstatus")
+                    .count(),
+                1
+            );
+            for spec in &runner.mock.calls {
+                assert!(!spec.rendered().contains(OTHER_UDID));
+                assert!(!matches!(
+                    spec.label.as_str(),
+                    "simctl-create" | "simctl-delete"
+                ));
+                if spec.label == "simctl-shutdown" {
+                    assert_eq!(spec.args, ["simctl", "shutdown", UDID]);
+                }
+            }
+            let record = RunRecord::load(&req.runs_root, &run_id()).unwrap();
+            assert!(record.resources.device_borrowed);
+            assert_eq!(
+                record.resources.borrowed_ios_stop(),
+                qaren::runrecord::BorrowedIosStop::NotArmed
+            );
+            assert!(record.resources.lease.is_none());
+        }
+    }
+}
+
+#[test]
+fn restart_device_shutdown_or_readback_failure_stops_before_boot_install_or_walk() {
+    for fault in [
+        "pre_list_failed",
+        "shutdown_failed",
+        "shutdown_timeout",
+        "readback_still_booted",
+        "readback_changed_runtime",
+    ] {
+        let (repo, app) = app_repo();
+        let mut mock = MockRunner::new();
+        script_preflight_inventory(
+            &mut mock,
+            &repo,
+            "simctl list devices -j",
+            &available_inventory("Booted"),
+        );
+        script_admission(&mut mock);
+        common::script_ios_deps(&mut mock);
+        script_admission(&mut mock);
+        match fault {
+            "pre_list_failed" => {
+                mock.expect_run("simctl list devices -j", CmdOutput::failed(1, "list error"));
+            }
+            "shutdown_failed" => {
+                mock.expect_run(
+                    "simctl list devices -j",
+                    CmdOutput::success(&available_inventory("Booted")),
+                );
+                mock.expect_run(
+                    &format!("simctl shutdown {UDID}"),
+                    CmdOutput::failed(1, "shutdown denied"),
+                );
+            }
+            "shutdown_timeout" => {
+                mock.expect_run(
+                    "simctl list devices -j",
+                    CmdOutput::success(&available_inventory("Booted")),
+                );
+                mock.expect_run(
+                    &format!("simctl shutdown {UDID}"),
+                    CmdOutput {
+                        timed_out: true,
+                        ..CmdOutput::success("")
+                    },
+                );
+            }
+            "readback_still_booted" => {
+                mock.expect_run(
+                    "simctl list devices -j",
+                    CmdOutput::success(&available_inventory("Booted")),
+                );
+                mock.expect_run(&format!("simctl shutdown {UDID}"), CmdOutput::success(""));
+                mock.expect_run(
+                    "simctl list devices -j",
+                    CmdOutput::success(&available_inventory("Booted")),
+                );
+            }
+            "readback_changed_runtime" => {
+                mock.expect_run(
+                    "simctl list devices -j",
+                    CmdOutput::success(&available_inventory("Booted")),
+                );
+                mock.expect_run(&format!("simctl shutdown {UDID}"), CmdOutput::success(""));
+                mock.expect_run(
+                    "simctl list devices -j",
+                    CmdOutput::success(
+                        &available_inventory("Shutdown").replace("iOS-26-5", "iOS-26-4"),
+                    ),
+                );
+            }
+            _ => unreachable!(),
+        }
+        let mut runner = LeaseObservedRunner {
+            mock,
+            repo: repo.clone(),
+            wire: None,
+            observed: Vec::new(),
+            expect_fresh_install: false,
+        };
+        let mut req = request(&repo, &app, 30);
+        req.device = Some(UDID.into());
+        req.restart_device = true;
+        let receipt = run(&mut runner, &req);
+        assert_eq!(receipt.result, ReceiptResult::Failed, "{fault}");
+        assert_eq!(
+            receipt.failure.unwrap().code,
+            FailureCode::SimulatorBootFailed,
+            "{fault}"
+        );
+        assert!(!runner.observed.iter().any(|l| matches!(
+            l.as_str(),
+            "simctl-bootstatus" | "simctl-install" | "simctl-launch" | "core-walk"
+        )));
+        assert_eq!(receipt.cleanup["device_lease"], "removed", "{fault}");
+        assert_eq!(receipt.cleanup["simulator"], "kept", "{fault}");
+        assert_eq!(runner.mock.remaining(), 0, "{fault}");
+    }
+}
+
+#[test]
+fn shutdown_device_on_exit_arms_after_admission_and_stops_simulator_before_releasing_lease() {
+    use qaren::runrecord::BorrowedIosStop;
+    for (mode, end_state) in [
+        ("booted_only", "Booted"),
+        ("booted_only", "Shutdown"),
+        ("with_boot_device", "Booted"),
+        ("with_restart_device", "Booted"),
+    ] {
+        let (repo, app) = app_repo();
+        let mut mock = MockRunner::new();
+        match mode {
+            "booted_only" => {
+                script_preflight_inventory(
+                    &mut mock,
+                    &repo,
+                    "simctl list devices booted",
+                    &booted_json_two(),
+                );
+            }
+            "with_boot_device" => {
+                script_preflight_inventory(
+                    &mut mock,
+                    &repo,
+                    "simctl list devices -j",
+                    &available_inventory("Shutdown"),
+                );
+            }
+            "with_restart_device" => {
+                script_preflight_inventory(
+                    &mut mock,
+                    &repo,
+                    "simctl list devices -j",
+                    &available_inventory("Booted"),
+                );
+            }
+            _ => unreachable!(),
+        }
+        script_admission(&mut mock);
+        common::script_ios_deps(&mut mock);
+        script_admission(&mut mock);
+        if mode == "with_boot_device" {
+            mock.expect_run(
+                &format!("simctl bootstatus {UDID} -b"),
+                CmdOutput::success(""),
+            );
+            mock.expect_run(
+                "simctl list devices -j",
+                CmdOutput::success(&available_inventory("Booted")),
+            );
+        } else if mode == "with_restart_device" {
+            mock.expect_run(
+                "simctl list devices -j",
+                CmdOutput::success(&available_inventory("Booted")),
+            );
+            mock.expect_run(&format!("simctl shutdown {UDID}"), CmdOutput::success(""));
+            mock.expect_run(
+                "simctl list devices -j",
+                CmdOutput::success(&available_inventory("Shutdown")),
+            );
+            mock.expect_run(
+                &format!("simctl bootstatus {UDID} -b"),
+                CmdOutput::success(""),
+            );
+            mock.expect_run(
+                "simctl list devices -j",
+                CmdOutput::success(&available_inventory("Booted")),
+            );
+        }
+        script_provision_after_deps(&mut mock);
+        script_drift_status(&mut mock);
+        script_host_probe(&mut mock, UDID, hosts_absent());
+        mock.expect_spawn_piped("walk.js", 9000, &pass_stdout(), Some(0));
+        script_core_identity(&mut mock);
+        script_teardown(&mut mock);
+        // Teardown's borrowed-iOS stop leg runs under the same lease!
+        script_admission(&mut mock);
+        mock.expect_run(
+            "simctl list devices -j",
+            CmdOutput::success(&available_inventory(end_state)),
+        );
+        if end_state == "Booted" {
+            mock.expect_run(&format!("simctl shutdown {UDID}"), CmdOutput::success(""));
+            mock.expect_run(
+                "simctl list devices -j",
+                CmdOutput::success(&available_inventory("Shutdown")),
+            );
+        }
+        let mut runner = LeaseObservedRunner {
+            mock,
+            repo: repo.clone(),
+            wire: None,
+            observed: Vec::new(),
+            expect_fresh_install: false,
+        };
+        let mut req = request(&repo, &app, 30);
+        req.device = Some(UDID.to_lowercase());
+        req.boot_device = mode == "with_boot_device";
+        req.restart_device = mode == "with_restart_device";
+        req.shutdown_device_on_exit = true;
+        let receipt = run(&mut runner, &req);
+        assert_eq!(
+            receipt.result,
+            ReceiptResult::Pass,
+            "{mode} {end_state}: {:?}",
+            receipt.failure
+        );
+        assert_eq!(
+            receipt.cleanup["simulator"],
+            if end_state == "Booted" {
+                "removed"
+            } else {
+                "absent"
+            },
+            "{mode} {end_state}"
+        );
+        assert_eq!(receipt.cleanup["device_lease"], "removed");
+        assert_eq!(runner.mock.remaining(), 0, "{mode} {end_state}");
+        assert_subsequence(
+            &runner.observed,
+            if end_state == "Booted" {
+                &[
+                    "core-walk",
+                    "kill-group",
+                    "fresh-install-admission",
+                    "simctl-list",
+                    "simctl-shutdown",
+                    "simctl-list",
+                ]
+            } else {
+                &[
+                    "core-walk",
+                    "kill-group",
+                    "fresh-install-admission",
+                    "simctl-list",
+                ]
+            },
+        );
+        for spec in &runner.mock.calls {
+            assert!(!spec.rendered().contains(OTHER_UDID));
+            assert!(!matches!(
+                spec.label.as_str(),
+                "simctl-create" | "simctl-delete"
+            ));
+        }
+        let record = RunRecord::load(&req.runs_root, &run_id()).unwrap();
+        assert_eq!(record.phase, Phase::Cleaned);
+        assert_eq!(
+            record.resources.borrowed_ios_stop(),
+            BorrowedIosStop::Completed
+        );
+        assert!(record.resources.lease.is_none());
+    }
+}
+
+#[test]
+fn shutdown_device_on_exit_keeps_simulator_when_cancelled_before_arm_and_stops_it_when_cancelled_after_arm(
+) {
+    use qaren::runrecord::BorrowedIosStop;
+    for stage in ["before_arm", "after_arm"] {
+        let (repo, app) = app_repo();
+        let mut mock = MockRunner::new();
+        script_preflight_inventory(
+            &mut mock,
+            &repo,
+            "simctl list devices -j",
+            &available_inventory("Shutdown"),
+        );
+        script_admission(&mut mock);
+        common::script_ios_deps(&mut mock);
+        if stage == "before_arm" {
+            mock.cancel_after = Some(("expo run:ios --help".into(), "received SIGINT".into()));
+        } else {
+            script_admission(&mut mock);
+            mock.expect_run(
+                &format!("simctl bootstatus {UDID} -b"),
+                CmdOutput::success(""),
+            );
+            mock.cancel_after = Some(("simctl bootstatus".into(), "received SIGINT".into()));
+            script_admission(&mut mock);
+            mock.expect_run(
+                "simctl list devices -j",
+                CmdOutput::success(&available_inventory("Booted")),
+            );
+            mock.expect_run(&format!("simctl shutdown {UDID}"), CmdOutput::success(""));
+            mock.expect_run(
+                "simctl list devices -j",
+                CmdOutput::success(&available_inventory("Shutdown")),
+            );
+        }
+        let mut runner = LeaseObservedRunner {
+            mock,
+            repo: repo.clone(),
+            wire: None,
+            observed: Vec::new(),
+            expect_fresh_install: false,
+        };
+        let mut req = request(&repo, &app, 30);
+        req.device = Some(UDID.into());
+        req.boot_device = true;
+        req.shutdown_device_on_exit = true;
+        let receipt = run(&mut runner, &req);
+        assert_eq!(receipt.result, ReceiptResult::Refused, "{stage}");
+        assert_eq!(
+            receipt.failure.unwrap().code,
+            FailureCode::RunCancelled,
+            "{stage}"
+        );
+        assert_eq!(
+            receipt.cleanup["simulator"],
+            if stage == "before_arm" {
+                "kept"
+            } else {
+                "removed"
+            },
+            "{stage}"
+        );
+        assert_eq!(receipt.cleanup["device_lease"], "removed", "{stage}");
+        assert_eq!(runner.mock.remaining(), 0, "{stage}");
+        let record = RunRecord::load(&req.runs_root, &run_id()).unwrap();
+        assert_eq!(
+            record.resources.borrowed_ios_stop(),
+            if stage == "before_arm" {
+                BorrowedIosStop::NotArmed
+            } else {
+                BorrowedIosStop::Completed
+            },
+            "{stage}"
+        );
+        assert!(record.resources.lease.is_none());
+    }
+
+    // Failed save when arming pending reverts borrowed_ios_stop before any simulator mutation.
+    struct BlockArmSave(MockRunner, PathBuf, usize);
+    impl Runner for BlockArmSave {
+        fn env_var(&self, name: &str) -> Option<String> {
+            self.0.env_var(name)
+        }
+        fn execute(&mut self, spec: &CmdSpec, interruptible: bool) -> CmdOutput {
+            let out = self.0.execute(spec, interruptible);
+            if spec.label == "fresh-install-admission" {
+                self.2 += 1;
+                if self.2 == 2 {
+                    std::fs::create_dir(
+                        RunRecord::run_dir(&self.1, &run_id())
+                            .join(format!(".run.json.tmp.{}", std::process::id())),
+                    )
+                    .unwrap();
+                }
+            }
+            out
+        }
+        fn execute_private(
+            &mut self,
+            spec: &CmdSpec,
+            input: &[u8],
+            interruptible: bool,
+        ) -> qaren::exec::PrivateOutput {
+            self.0.execute_private(spec, input, interruptible)
+        }
+        fn spawn_group_unchecked(
+            &mut self,
+            spec: &CmdSpec,
+            log: &Path,
+        ) -> std::io::Result<Spawned> {
+            self.0.spawn_group_unchecked(spec, log)
+        }
+        fn spawn_piped_unchecked(
+            &mut self,
+            spec: &CmdSpec,
+            log: &Path,
+        ) -> std::io::Result<PipedChild> {
+            self.0.spawn_piped_unchecked(spec, log)
+        }
+        fn sleep(&mut self, d: std::time::Duration) {
+            self.0.sleep(d)
+        }
+        fn now_epoch_ms(&self) -> u64 {
+            self.0.now_epoch_ms()
+        }
+        fn commands_executed(&self) -> u64 {
+            self.0.commands_executed()
+        }
+    }
+    let (repo, app) = app_repo();
+    let mut mock = MockRunner::new();
+    script_preflight_inventory(
+        &mut mock,
+        &repo,
+        "simctl list devices -j",
+        &available_inventory("Booted"),
+    );
+    script_admission(&mut mock);
+    common::script_ios_deps(&mut mock);
+    script_admission(&mut mock);
+    let mut req = request(&repo, &app, 30);
+    req.device = Some(UDID.into());
+    req.restart_device = true;
+    req.shutdown_device_on_exit = true;
+    let mut runner = BlockArmSave(mock, req.runs_root.clone(), 0);
+    let receipt = run(&mut runner, &req);
+    assert_eq!(receipt.result, ReceiptResult::Failed);
+    assert_eq!(
+        receipt.failure.unwrap().code,
+        FailureCode::RunRecordUpdateFailed
+    );
+    assert_eq!(receipt.cleanup["simulator"], "kept");
+    assert_eq!(receipt.cleanup["device_lease"], "removed");
+    assert!(!runner.0.calls.iter().any(|c| matches!(
+        c.label.as_str(),
+        "simctl-shutdown" | "simctl-bootstatus" | "core-walk"
+    )));
+    assert_eq!(runner.0.remaining(), 0);
+    std::fs::remove_dir(
+        RunRecord::run_dir(&req.runs_root, &run_id())
+            .join(format!(".run.json.tmp.{}", std::process::id())),
+    )
+    .unwrap();
+    let record = RunRecord::load(&req.runs_root, &run_id()).unwrap();
+    assert_eq!(
+        record.resources.borrowed_ios_stop(),
+        BorrowedIosStop::NotArmed
+    );
+}
+
+#[test]
+fn shutdown_device_on_exit_teardown_faults_retain_pending_stop_and_device_lease() {
+    use qaren::runrecord::BorrowedIosStop;
+    for fault in [
+        "admission_busy",
+        "admission_unknown",
+        "shutdown_failed",
+        "readback_still_booted",
+    ] {
+        let (repo, app) = app_repo();
+        let mut mock = MockRunner::new();
+        script_preflight_inventory(
+            &mut mock,
+            &repo,
+            "simctl list devices booted",
+            &booted_json_two(),
+        );
+        script_admission(&mut mock);
+        common::script_ios_deps(&mut mock);
+        script_admission(&mut mock);
+        script_provision_after_deps(&mut mock);
+        script_drift_status(&mut mock);
+        script_host_probe(&mut mock, UDID, hosts_absent());
+        mock.expect_spawn_piped("walk.js", 9000, &pass_stdout(), Some(0));
+        script_core_identity(&mut mock);
+        script_teardown(&mut mock);
+        match fault {
+            "admission_busy" | "admission_unknown" => {
+                let status = if fault == "admission_busy" {
+                    "busy"
+                } else {
+                    "unknown"
+                };
+                mock.expect_run(
+                    &format!("fresh-install-preflight.js --platform ios --device {UDID}"),
+                    CmdOutput {
+                        exit_code: Some(4),
+                        stdout: serde_json::json!({
+                            "v": 1, "platform": "ios", "deviceId": UDID, "status": status
+                        })
+                        .to_string(),
+                        ..Default::default()
+                    },
+                );
+            }
+            "shutdown_failed" => {
+                script_admission(&mut mock);
+                mock.expect_run(
+                    "simctl list devices -j",
+                    CmdOutput::success(&available_inventory("Booted")),
+                );
+                mock.expect_run(
+                    &format!("simctl shutdown {UDID}"),
+                    CmdOutput::failed(1, "shutdown denied"),
+                );
+            }
+            "readback_still_booted" => {
+                script_admission(&mut mock);
+                mock.expect_run(
+                    "simctl list devices -j",
+                    CmdOutput::success(&available_inventory("Booted")),
+                );
+                mock.expect_run(&format!("simctl shutdown {UDID}"), CmdOutput::success(""));
+                mock.expect_run(
+                    "simctl list devices -j",
+                    CmdOutput::success(&available_inventory("Booted")),
+                );
+            }
+            _ => unreachable!(),
+        }
+        let mut req = request(&repo, &app, 30);
+        req.device = Some(UDID.into());
+        req.shutdown_device_on_exit = true;
+        let receipt = run(&mut mock, &req);
+        assert_eq!(receipt.result, ReceiptResult::Pass, "{fault}");
+        assert!(
+            receipt.cleanup["simulator"].starts_with("unresolved:"),
+            "{fault}: {}",
+            receipt.cleanup["simulator"]
+        );
+        assert!(
+            receipt.cleanup["device_lease"].starts_with("unresolved: retained: simulator"),
+            "{fault}: {}",
+            receipt.cleanup["device_lease"]
+        );
+        assert_eq!(mock.remaining(), 0, "{fault}");
+        let record = RunRecord::load(&req.runs_root, &run_id()).unwrap();
+        assert_eq!(record.phase, Phase::Walking, "{fault}");
+        assert_eq!(
+            record.resources.borrowed_ios_stop(),
+            BorrowedIosStop::Pending,
+            "{fault}"
+        );
+        assert!(
+            record.resources.lease.as_ref().unwrap().lock_dir.exists(),
+            "{fault}"
+        );
     }
 }
 

@@ -931,6 +931,137 @@ fn selected_ios_simulator_requires_unique_canonical_available_stable_metadata() 
 }
 
 #[test]
+fn shutdown_selected_sim_proves_target_inventory_and_exact_shutdown_readback() {
+    use ios::SelectedSimShutdown::{
+        AlreadyShutdown, InventoryInvalid, ReadbackInvalid, ShutDown, ShutdownFailed,
+    };
+    let udid = "1DC408C4-51DA-4C4F-ACA1-39881C916FDD";
+    let other = "76709EFC-0104-4A66-8908-F4F85A76F025";
+    let runtime = "com.apple.CoreSimulator.SimRuntime.iOS-26-5";
+    let device_type = "com.apple.CoreSimulator.SimDeviceType.iPhone-17";
+    let inventory = |state: &str| {
+        serde_json::json!({
+            "devices": {
+                runtime: [
+                    {
+                        "udid": udid,
+                        "name": "selected",
+                        "state": state,
+                        "isAvailable": true,
+                        "deviceTypeIdentifier": device_type
+                    },
+                    {
+                        "udid": other,
+                        "name": "other",
+                        "state": "Booted",
+                        "isAvailable": true,
+                        "deviceTypeIdentifier": device_type
+                    }
+                ]
+            }
+        })
+        .to_string()
+    };
+
+    let mut already = qaren::exec::MockRunner::new();
+    already.expect_run(
+        "simctl list devices -j",
+        CmdOutput::success(&inventory("Shutdown")),
+    );
+    assert_eq!(
+        ios::shutdown_selected_sim(&mut already, udid, device_type, runtime),
+        AlreadyShutdown
+    );
+    assert_eq!(already.calls.len(), 1);
+    assert_eq!(already.remaining(), 0);
+
+    let mut stopped = qaren::exec::MockRunner::new();
+    stopped.expect_run(
+        "simctl list devices -j",
+        CmdOutput::success(&inventory("Booted")),
+    );
+    stopped.expect_run(&format!("simctl shutdown {udid}"), CmdOutput::success(""));
+    stopped.expect_run(
+        "simctl list devices -j",
+        CmdOutput::success(&inventory("Shutdown")),
+    );
+    assert_eq!(
+        ios::shutdown_selected_sim(&mut stopped, udid, device_type, runtime),
+        ShutDown
+    );
+    assert_eq!(stopped.calls[1].args, ["simctl", "shutdown", udid]);
+    assert_eq!(stopped.remaining(), 0);
+
+    for bad_pre in [
+        CmdOutput::failed(1, "simctl unavailable"),
+        CmdOutput {
+            stderr: "warning".into(),
+            ..CmdOutput::success(&inventory("Booted"))
+        },
+        CmdOutput::success("{}"),
+        CmdOutput::success(&inventory("Booted").replace("iPhone-17", "iPhone-16")),
+        CmdOutput::success(&inventory("Booted").replace("iOS-26-5", "iOS-26-4")),
+        CmdOutput::success(&inventory("Booting")),
+        CmdOutput::success(&inventory("Shutting Down")),
+    ] {
+        let mut mock = qaren::exec::MockRunner::new();
+        mock.expect_run("simctl list devices -j", bad_pre);
+        assert_eq!(
+            ios::shutdown_selected_sim(&mut mock, udid, device_type, runtime),
+            InventoryInvalid
+        );
+        assert_eq!(mock.calls.len(), 1);
+        assert_eq!(mock.remaining(), 0);
+    }
+
+    for bad_shutdown in [
+        CmdOutput::failed(1, "shutdown denied"),
+        CmdOutput {
+            timed_out: true,
+            ..CmdOutput::success("")
+        },
+    ] {
+        let mut mock = qaren::exec::MockRunner::new();
+        mock.expect_run(
+            "simctl list devices -j",
+            CmdOutput::success(&inventory("Booted")),
+        );
+        mock.expect_run(&format!("simctl shutdown {udid}"), bad_shutdown);
+        assert_eq!(
+            ios::shutdown_selected_sim(&mut mock, udid, device_type, runtime),
+            ShutdownFailed
+        );
+        assert_eq!(mock.calls.len(), 2);
+        assert_eq!(mock.remaining(), 0);
+    }
+
+    for bad_after in [
+        CmdOutput::failed(1, "readback failed"),
+        CmdOutput {
+            stderr: "incomplete".into(),
+            ..CmdOutput::success(&inventory("Shutdown"))
+        },
+        CmdOutput::success(&inventory("Booted")),
+        CmdOutput::success(&inventory("Shutdown").replace("iPhone-17", "iPhone-16")),
+        CmdOutput::success(&inventory("Shutdown").replace("iOS-26-5", "iOS-26-4")),
+    ] {
+        let mut mock = qaren::exec::MockRunner::new();
+        mock.expect_run(
+            "simctl list devices -j",
+            CmdOutput::success(&inventory("Booted")),
+        );
+        mock.expect_run(&format!("simctl shutdown {udid}"), CmdOutput::success(""));
+        mock.expect_run("simctl list devices -j", bad_after);
+        assert_eq!(
+            ios::shutdown_selected_sim(&mut mock, udid, device_type, runtime),
+            ReadbackInvalid
+        );
+        assert_eq!(mock.calls.len(), 3);
+        assert_eq!(mock.remaining(), 0);
+    }
+}
+
+#[test]
 fn launchctl_parsing_requires_live_pid_and_exact_label() {
     let running = "512\t0\tUIKitApplication:com.rndevagent.testapp[a1b2][rb-legacy]";
     assert!(ios::app_running_in_launchctl(
@@ -1547,7 +1678,13 @@ fn runner_forwards_matches_only_this_serial_and_port() {
 // Real `adb forward --list` bytes: a lone newline when empty, a trailing blank line otherwise.
 #[test]
 fn runner_forwards_survive_blank_and_short_lines() {
-    for empty in ["\n", "\n\n", "   \n", "emulator-5594\n", "emulator-5594 tcp:22089\n"] {
+    for empty in [
+        "\n",
+        "\n\n",
+        "   \n",
+        "emulator-5594\n",
+        "emulator-5594 tcp:22089\n",
+    ] {
         assert!(android::runner_forwards(empty, "emulator-5594").is_empty());
         assert!(!android::runner_forward_remains(empty, "emulator-5594"));
     }

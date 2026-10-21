@@ -2,7 +2,7 @@ use crate::candidate::Candidate;
 use crate::exec::{CmdSpec, Runner, Spawned};
 use crate::failure::{Failure, FailureCode};
 use crate::redact::OutputText;
-use crate::scenario::Scenario;
+use crate::scenario::{Platform, Scenario};
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 
@@ -281,6 +281,21 @@ pub enum BuildCompletionEvidence {
     },
 }
 
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum BorrowedIosStop {
+    #[default]
+    NotArmed,
+    Pending,
+    Completed,
+}
+
+impl BorrowedIosStop {
+    pub fn is_not_armed(&self) -> bool {
+        *self == Self::NotArmed
+    }
+}
+
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct Resources {
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -327,9 +342,11 @@ pub struct Resources {
     pub runner_drivers: Vec<RunnerDriverResource>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pr_worktree: Option<PrWorktreeResource>,
-    // A borrowed device (the booted simulator `check` walks on) is never shut down or deleted.
+    // A borrowed device is never deleted; iOS simulator stop requires an explicit bounded intent.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub device_borrowed: bool,
+    #[serde(default, skip_serializing_if = "BorrowedIosStop::is_not_armed")]
+    borrowed_ios_stop: BorrowedIosStop,
 }
 
 impl Resources {
@@ -401,6 +418,66 @@ impl Resources {
             FailureCode::RunRecordInvalid,
             "build process transition lacks matching state or proof",
             "retain build ownership and resolve the recorded process before retrying",
+        )
+    }
+
+    pub fn borrowed_ios_stop(&self) -> BorrowedIosStop {
+        self.borrowed_ios_stop
+    }
+
+    pub fn can_release_borrowed_ios_stop(&self) -> bool {
+        self.borrowed_ios_stop != BorrowedIosStop::Pending
+    }
+
+    pub(crate) fn ios_simulator_canonical(sim: &IosSimResource) -> bool {
+        crate::adapters::ios::canonical_udid(&sim.udid).as_deref() == Some(sim.udid.as_str())
+            && !sim.name.trim().is_empty()
+            && !sim.device_type.trim().is_empty()
+            && sim
+                .runtime
+                .strip_prefix("com.apple.CoreSimulator.SimRuntime.iOS-")
+                .is_some_and(|s| !s.is_empty())
+    }
+
+    pub fn arm_borrowed_ios_stop(&mut self) -> Result<(), Failure> {
+        if self.borrowed_ios_stop != BorrowedIosStop::NotArmed
+            || !self.device_borrowed
+            || self.lease.is_none()
+            || !self
+                .ios_simulator
+                .as_ref()
+                .is_some_and(Self::ios_simulator_canonical)
+        {
+            return Err(Self::invalid_borrowed_ios_stop_transition());
+        }
+        self.borrowed_ios_stop = BorrowedIosStop::Pending;
+        Ok(())
+    }
+
+    pub fn complete_borrowed_ios_stop(&mut self, udid: &str) -> Result<(), Failure> {
+        if self.borrowed_ios_stop != BorrowedIosStop::Pending
+            || !self.device_borrowed
+            || !self
+                .ios_simulator
+                .as_ref()
+                .is_some_and(|sim| Self::ios_simulator_canonical(sim) && sim.udid == udid)
+        {
+            return Err(Self::invalid_borrowed_ios_stop_transition());
+        }
+        self.borrowed_ios_stop = BorrowedIosStop::Completed;
+        Ok(())
+    }
+
+    pub fn revert_borrowed_ios_stop(&mut self, prev: BorrowedIosStop) {
+        self.borrowed_ios_stop = prev;
+    }
+
+    fn invalid_borrowed_ios_stop_transition() -> Failure {
+        Failure::new(
+            "device",
+            FailureCode::RunRecordInvalid,
+            "borrowed iOS simulator stop transition lacks matching state or canonical simulator identity",
+            "retain the device lease and resolve simulator stop state before retrying",
         )
     }
 
@@ -608,6 +685,25 @@ impl RunRecord {
                     "{} embeds run_id {:?}, expected {run_id:?}",
                     path.display(),
                     record.run_id
+                ),
+                "the record is inconsistent; resolve ownership manually before touching resources",
+            ));
+        }
+        if !record.resources.borrowed_ios_stop.is_not_armed()
+            && (record.scenario.platform != Platform::Ios
+                || !record.resources.device_borrowed
+                || !record
+                    .resources
+                    .ios_simulator
+                    .as_ref()
+                    .is_some_and(Resources::ios_simulator_canonical))
+        {
+            return Err(Failure::new(
+                "load",
+                FailureCode::RunRecordInvalid,
+                format!(
+                    "{} carries borrowed_ios_stop without a borrowed canonical iOS simulator resource",
+                    path.display()
                 ),
                 "the record is inconsistent; resolve ownership manually before touching resources",
             ));
