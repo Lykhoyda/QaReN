@@ -20,6 +20,7 @@ import {
   _setFastRunnerStateForTest,
   _setFetchForTest,
   ensureFastRunner,
+  observeRunnerRelaunches,
   getFastRunnerState,
   runIOS,
   resolveReadyTimeoutMs,
@@ -455,6 +456,7 @@ test('relaunch waits for alive readiness with platform presence after the listen
   await time.advance(500);
   assert.equal((await type).code, 'RUNNER_TIMEOUT');
   assert.equal(finished, true);
+  assert.equal((await type).meta.runnerTimeoutRecovery.relaunch.outcome, 'ready');
 });
 
 test(
@@ -652,3 +654,40 @@ for (const platformPresence of [true, false]) {
     });
   }
 }
+
+test('relaunch outcomes emit only fixed vocabulary and duration through the slot wire', async () => {
+  const { createWriter } = await import('../../../dist/qa/wire.js');
+  const { RunInputs, withInputs } = await import('../../../dist/qa/inputs.js');
+  const lines: string[] = [];
+  const writer = createWriter((line) => lines.push(line), 'fixture');
+  observeRunnerRelaunches({
+    now: () => 10,
+    observe: (event) => writer.diagnostic({ kind: 'metric', ...event }),
+  });
+  failLaunch = true;
+  await withInputs(new RunInputs({ PASSWORD: 'private-fixture-value' }, ['PASSWORD']), () =>
+    runIOS({ command: 'type', text: 'private-fixture-value' }),
+  );
+  const events = lines.map((line) => JSON.parse(line).payload);
+  assert.equal(events.length, 2);
+  assert.equal(events[0].relaunch, 'attempted');
+  assert.equal(events[1].relaunch, 'failed');
+  assert.equal(events[1].stage, 'relaunch');
+  assert.equal(events[1].reapDisposition, 'reaped');
+  assert.equal(typeof events[1].ms, 'number');
+  for (const event of events)
+    assert.deepEqual(
+      Object.keys(event).sort(),
+      [
+        'at',
+        'edge',
+        'kind',
+        'outcome',
+        'reapDisposition',
+        'relaunch',
+        'stage',
+        ...(event.ms === undefined ? [] : ['ms']),
+      ].sort(),
+    );
+  assert.ok(!lines.join('').includes('private-fixture-value'));
+});

@@ -240,3 +240,27 @@ test('private capture does not retry runner failures outside relaunch recovery',
     assert.equal(time.now(), 0);
   }
 });
+
+test('reader relaunch retries share the total capture deadline', async (t) => {
+  const time = clock(t);
+  const budgets: number[] = [];
+  const result = captureScreen({
+    requirePrivateInputs: true,
+    now: time.now,
+    native: async (budget) => {
+      budgets.push(budget);
+      if (budgets.length === 1) time.elapse(20_900);
+      throw new HandlerError('RN_FAST_RUNNER_DOWN', 'unavailable', {
+        runnerRelaunch: true,
+      });
+    },
+    react: async () => ({}),
+  }).catch((error: Error) => error);
+  await nextTurn();
+  await time.advance(500);
+  await time.advance(500);
+  await time.advance(100);
+  assert.ok((await result) instanceof NativeCaptureError);
+  assert.deepEqual(budgets, [20_000, 600, 100]);
+  assert.equal(time.now(), 22_000);
+});

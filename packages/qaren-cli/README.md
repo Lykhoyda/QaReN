@@ -1131,6 +1131,7 @@ The native snapshot is the privacy boundary before walking a screen. Capture
 refuses with `PRIVATE_INPUT_CAPTURE_UNKNOWN` unless native completeness is attested;
 the refusal reports only a value-free node count and fixed cause codes. Native
 acquisition failures also refuse without reinjection or a public-tree fallback.
+
 A required private capture re-reads a canonical empty snapshot (`nodes=[]`,
 verdict `degraded`, `nodeCount=0`, reasons exactly `empty-capture`, no truncation
 or dropped nodes), or an iOS `RN_FAST_RUNNER_DOWN` failure marked as pending
@@ -1139,13 +1140,17 @@ budget and remaining total capture budget. Both conditions share one retry
 deadline; re-reads on both ordinary and platform-presence routes, including
 readiness probes and snapshot transport, stop waiting at that deadline.
 After timeout containment relaunches the iOS reader, it waits for an `alive`
-probe with `PLATFORM_PRESENCE_V2` within the remaining `READY_TIMEOUT_MS`;
+probe with `PLATFORM_PRESENCE_V2` within the remaining `READY_TIMEOUT_MS`
+(30 seconds by default), shared with reader startup;
 the type call retains its existing result. Persistent runner unavailability
 refuses with `NATIVE_CAPTURE_UNAVAILABLE` after the capture retry budget.
 An empty snapshot's unchanged ref map and zero-node count
 diagnostics do not prevent this read-only retry; persistent emptiness still
 refuses with the same code and message, and other incomplete captures refuse
 immediately.
+Slot diagnostics retain the `relaunch` metric with `attempted`, `ready`, `failed`
+or `timeout`, its duration and the fixed reap disposition, without runner output
+or values.
 Native input classification follows the [screen projection](../qaren-core/src/qa/screen.ts),
 including Other or unknown nodes carrying nonempty values regardless of React evidence,
 with one exception: native `Other` elements matching the iOS system vertical or

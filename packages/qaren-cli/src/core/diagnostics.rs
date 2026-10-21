@@ -37,6 +37,7 @@ const STAGES: &[&str] = &[
     "expiry",
     "readback",
     "settle-readback",
+    "relaunch",
     "overflow",
 ];
 const CODES: &[&str] = &[
@@ -98,6 +99,8 @@ fn clean(value: &Value) -> Option<Value> {
                 "appliedBudgetMs",
                 "moved",
                 "maxDelta",
+                "relaunch",
+                "reapDisposition",
                 "readinessReason",
             ],
         ),
@@ -142,6 +145,10 @@ fn clean(value: &Value) -> Option<Value> {
         let words: Option<&[&str]> = match key.as_str() {
             "stage" if kind == "metric" => Some(STAGES),
             "stage" => Some(&["decision", "dispatch"]),
+            "relaunch" if kind == "metric" => Some(&["attempted", "ready", "failed", "timeout"]),
+            "reapDisposition" if kind == "metric" => {
+                Some(&["reaped", "already-absent", "replacement-preserved"])
+            }
             "edge" => Some(&["start", "end", "point"]),
             "outcome" if kind == "metric" => Some(&["ok", "failed", "unknown", "withheld"]),
             "outcome" => Some(&["pass", "fail", "refused"]),

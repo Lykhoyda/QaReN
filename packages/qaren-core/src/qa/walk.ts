@@ -39,7 +39,7 @@ import { foregroundSurfaceFromSnapshot } from '../handlers/expo-dev-menu.js';
 import { compileFlow, FlowCompileError } from '../flow/compile.js';
 import { foreignFlowGate } from '../lifecycle/foreign-flow-gate.js';
 import { androidForeignDriverMessage } from '../runners/external-runner-detect.js';
-import { observeRunnerDrivers } from '../runners/rn-fast-runner-client.js';
+import { observeRunnerDrivers, observeRunnerRelaunches } from '../runners/rn-fast-runner-client.js';
 import type { ToolResult } from '../utils.js';
 import { HandlerError, adapt, describeError, fillEvidence, unwrap } from './adapt.js';
 import {
@@ -386,6 +386,7 @@ async function openSession(
   let closing: Promise<void> | undefined;
   const close = (): Promise<void> =>
     (closing ??= withCancellation(undefined, async () => {
+      observeRunnerRelaunches(undefined);
       if (deviceOpen) await snapshot({ action: 'close' }).catch(() => undefined);
       await cdp.disconnect().catch(() => undefined);
     }));
@@ -472,6 +473,8 @@ async function openSession(
   log(
     `bundle proven: ${proof.scriptURL} (${proof.appModules} app modules under ${target.worktree}) on device ${JSON.stringify(devicePin ?? target.deviceId)}`,
   );
+
+  observeRunnerRelaunches({ now, observe: timing });
 
   const rawSnapshot = async (
     platformPresence = false,

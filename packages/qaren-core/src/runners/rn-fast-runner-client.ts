@@ -1,4 +1,5 @@
 import { systemModalDiagnostic } from '../domain/system-modal-diagnostic.js';
+import { SETTLE_DEFAULT_BUDGET_MS } from '../lifecycle/settle.js';
 import { currentInputs } from '../qa/inputs.js';
 import {
   diagnosticField,
@@ -228,6 +229,28 @@ let poisonReap: Promise<RunnerPostMortem> | null = null;
 let relaunchCapturePending = false;
 // Keep mutators poisoned until every concurrent containment has finished.
 let poisonHolders = 0;
+interface ReaderRelaunch {
+  outcome: 'attempted' | 'ready' | 'failed' | 'timeout';
+  ms: number;
+}
+let readerRelaunch: ReaderRelaunch | undefined;
+let readerRelaunchCompletedAt = -Infinity;
+let readerRelaunchState: FastRunnerState | null = null;
+let readerRelaunchTiming: TimingContext | undefined;
+
+export function observeRunnerRelaunches(timing: TimingContext | undefined): void {
+  readerRelaunchTiming = timing;
+}
+
+function currentReaderRelaunch(): ReaderRelaunch | undefined {
+  return readerRelaunch &&
+    (readerRelaunch.outcome === 'attempted' ||
+      (runnerState === readerRelaunchState &&
+        performance.now() - readerRelaunchCompletedAt <= SETTLE_DEFAULT_BUDGET_MS))
+    ? { ...readerRelaunch }
+    : undefined;
+}
+
 let runnerOutputTail = '';
 let lastRunnerCommand: string | null = null;
 export interface RunnerPostMortem {
@@ -285,6 +308,9 @@ export function _setFastRunnerStateForTest(state: FastRunnerState | null): void 
     : null;
   runnerProcess = null;
   lastRunnerPostMortem = null;
+  readerRelaunch = undefined;
+  readerRelaunchState = null;
+  readerRelaunchCompletedAt = -Infinity;
   relaunchCapturePending = false;
 }
 
@@ -793,7 +819,7 @@ export function resolveRunnerRequestedPort(explicitPort?: number): number {
 export async function ensureFastRunner(
   deviceId: string,
   bundleId: string,
-  opts: { forceLocalBuild?: boolean; attachOnly?: boolean } = {},
+  opts: { forceLocalBuild?: boolean; attachOnly?: boolean; readyDeadline?: number } = {},
 ): Promise<void> {
   const liveness = await probeFastRunnerLiveness();
   if (liveness === 'alive') return;
@@ -813,7 +839,7 @@ export async function startFastRunner(
   deviceId: string,
   bundleId: string,
   port?: number,
-  opts: { forceLocalBuild?: boolean; attachOnly?: boolean } = {},
+  opts: { forceLocalBuild?: boolean; attachOnly?: boolean; readyDeadline?: number } = {},
 ): Promise<FastRunnerState> {
   throwIfCancelled();
   adoptPersistedFastRunnerState(deviceId);
@@ -860,6 +886,8 @@ export async function startFastRunner(
   // shortcut: a hard-killed core leaves its bundle until the next launch here; move to CLI cleanup if that gap matters
   removeRunnerResultBundles();
   const signal = cancellationSignal();
+  const readyMs = Math.min(READY_TIMEOUT_MS, (opts.readyDeadline ?? Infinity) - performance.now());
+  if (!(readyMs > 0)) throw new Error('Fast runner readiness deadline elapsed');
   return new Promise((resolve, reject) => {
     const child = spawn('xcodebuild', launch.args, {
       env: {
@@ -893,7 +921,7 @@ export async function startFastRunner(
       }
       signalDriver(child, 'SIGTERM');
       reject(new Error(`Fast runner did not become ready within ${READY_TIMEOUT_MS / 1000}s`));
-    }, READY_TIMEOUT_MS);
+    }, readyMs);
 
     const handleChunk = (chunk: string, stream: 'stdout' | 'stderr'): void => {
       appendRunnerOutput(stream, chunk);
@@ -1989,19 +2017,57 @@ async function reapAndRelaunchFastRunner(state: FastRunnerState): Promise<Runner
     relaunchCapturePending = true;
     await reapStaleFastRunner();
     const postMortem = getRunnerPostMortem();
-    const deadline = performance.now() + READY_TIMEOUT_MS;
-    await ensureFastRunner(state.deviceId, state.bundleId, { attachOnly: true });
-    while (runnerState && performance.now() < deadline) {
-      const readiness = await probeFastRunnerLivenessDetailed({
-        clearState: () => {},
-        timeoutMs: Math.min(2000, deadline - performance.now()),
+    const started = performance.now();
+    const deadline = started + READY_TIMEOUT_MS;
+    const timing = readerRelaunchTiming;
+    const timingStarted = timing?.now() ?? 0;
+    readerRelaunch = { outcome: 'attempted', ms: 0 };
+    observeTiming(timing?.observe, {
+      stage: 'relaunch',
+      edge: 'start',
+      outcome: 'ok',
+      at: timingStarted,
+      relaunch: 'attempted',
+      reapDisposition: 'reaped',
+    });
+    try {
+      await ensureFastRunner(state.deviceId, state.bundleId, {
+        attachOnly: true,
+        readyDeadline: deadline,
       });
-      if (
-        readiness.liveness === 'alive' &&
-        readiness.capabilities?.includes('PLATFORM_PRESENCE_V2')
-      )
-        break;
-      await cancellableSleep(Math.min(500, Math.max(0, deadline - performance.now())));
+      const launched = runnerState;
+      let ready = false;
+      while (launched && runnerState === launched && performance.now() < deadline) {
+        const readiness = await probeFastRunnerLivenessDetailed({
+          clearState: () => {},
+          timeoutMs: Math.min(2000, deadline - performance.now()),
+        });
+        if (
+          runnerState === launched &&
+          readiness.liveness === 'alive' &&
+          readiness.capabilities?.includes('PLATFORM_PRESENCE_V2')
+        ) {
+          ready = true;
+          break;
+        }
+        await cancellableSleep(Math.min(500, Math.max(0, deadline - performance.now())));
+      }
+      readerRelaunch.outcome =
+        performance.now() >= deadline ? 'timeout' : ready ? 'ready' : 'failed';
+    } finally {
+      readerRelaunchCompletedAt = performance.now();
+      readerRelaunchState = runnerState;
+      if (readerRelaunch.outcome === 'attempted') readerRelaunch.outcome = 'failed';
+      readerRelaunch.ms = Math.max(0, readerRelaunchCompletedAt - started);
+      observeTiming(timing?.observe, {
+        stage: 'relaunch',
+        edge: 'end',
+        outcome: readerRelaunch.outcome === 'ready' ? 'ok' : 'failed',
+        at: timing?.now() ?? 0,
+        ms: readerRelaunch.ms,
+        relaunch: readerRelaunch.outcome,
+        reapDisposition: 'reaped',
+      });
     }
     return postMortem;
   })();
@@ -2049,6 +2115,7 @@ async function containTypeTimeout(
     poisoned: true,
     reaped: reapDisposition === 'reaped',
     reapDisposition,
+    ...(reapDisposition === 'reaped' ? { relaunch: currentReaderRelaunch() } : {}),
     verification: verification.matches ? 'exact-readback' : 'unverified',
     runner: {
       before: runnerBefore,
@@ -2128,6 +2195,7 @@ async function containRunnerTimeout(
       poisoned: true,
       reaped: reapDisposition === 'reaped',
       reapDisposition,
+      ...(reapDisposition === 'reaped' ? { relaunch: currentReaderRelaunch() } : {}),
       runner: {
         before: authorityBefore,
         afterReapPid: runnerState?.pid ?? null,
@@ -2281,6 +2349,7 @@ function presenceCaptureUnavailable(
       mutation: 'none',
       dispatched,
       ...(code === 'RN_FAST_RUNNER_DOWN' && relaunchCapturePending ? { runnerRelaunch: true } : {}),
+      ...(currentReaderRelaunch() ? { readerRelaunch: currentReaderRelaunch() } : {}),
     },
   );
 }

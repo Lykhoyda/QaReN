@@ -37,6 +37,7 @@ export const TIMING_STAGES = [
   'expiry',
   'readback',
   'settle-readback',
+  'relaunch',
   'overflow',
 ] as const;
 export type TimingStage = (typeof TIMING_STAGES)[number];
@@ -71,6 +72,8 @@ export interface TimingEvent {
   appliedBudgetMs?: number;
   moved?: number;
   maxDelta?: number;
+  relaunch?: 'attempted' | 'ready' | 'failed' | 'timeout';
+  reapDisposition?: 'reaped' | 'already-absent' | 'replacement-preserved';
   readinessReason?: NativeReadinessReason;
 }
 export type TimingObserver = (event: TimingEvent) => void;
@@ -128,6 +131,15 @@ export function cleanTimingEvent(value: unknown): TimingEvent | undefined {
     )
       return undefined;
     event[key] = number;
+  }
+  for (const [key, values] of [
+    ['relaunch', ['attempted', 'ready', 'failed', 'timeout']],
+    ['reapDisposition', ['reaped', 'already-absent', 'replacement-preserved']],
+  ] as const) {
+    if (input[key] === undefined) continue;
+    const value = values.find((word) => word === input[key]);
+    if (!value) return undefined;
+    Object.assign(event, { [key]: value });
   }
   return event;
 }

@@ -194,10 +194,11 @@ fn slot_diagnostics_retain_only_allowlisted_events_without_affecting_the_result(
     )]));
     with_input_scope(inputs, || {
         let payloads = [
-            r#"{"kind":"metric","stage":"capture","edge":"end","outcome":"ok","at":200,"ms":100}"#.to_string(),
+            r#"{"kind":"metric","stage":"relaunch","edge":"end","outcome":"failed","at":200,"ms":100,"relaunch":"timeout","reapDisposition":"reaped"}"#.to_string(),
             r#"{"kind":"timing","stage":"dispatch","code":"ACTION_INTERRUPTED","line":2,"at":220,"acquisitionMs":100,"observationAgeMs":120,"nativeCode":"RUNNER_TIMEOUT","nativeMutation":"possible"}"#.into(),
             r#"{"kind":"block-outcome","line":2,"outcome":"pass"}"#.into(),
             r#"{"kind":"login-outcome","outcome":"refused"}"#.into(),
+            format!(r#"{{"kind":"metric","stage":"relaunch","edge":"end","outcome":"failed","at":200,"relaunch":"{secret}"}}"#),
             format!(r#"{{"kind":"login-outcome","outcome":"{secret}"}}"#),
             format!(r#"{{"kind":"block-outcome","line":2,"outcome":"pass","title":"{secret}"}}"#),
             format!(r#"{{"kind":"timing","stage":"dispatch","code":"{secret}","line":2,"at":1,"acquisitionMs":0,"observationAgeMs":0}}"#),
@@ -208,7 +209,11 @@ fn slot_diagnostics_retain_only_allowlisted_events_without_affecting_the_result(
             stdout.push_str(&envelope(i as u64 + 2, "diagnostic", payload));
             stdout.push('\n');
         }
-        stdout.push_str(&envelope(10, "result", &pass_ledger(&[])));
+        stdout.push_str(&envelope(
+            payloads.len() as u64 + 2,
+            "result",
+            &pass_ledger(&[]),
+        ));
         stdout.push('\n');
         let mut mock = MockRunner::new();
         mock.expect_spawn_piped("walk.js", 9000, &stdout, Some(0));
