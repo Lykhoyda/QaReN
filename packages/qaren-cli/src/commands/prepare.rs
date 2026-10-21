@@ -1610,14 +1610,19 @@ pub(crate) fn run_reuse_path(ctx: &mut Ctx, plan: &BuildPlan, t: u64) -> Result<
                     .expect("scheme validated"),
             )
             .map_err(|reason| {
-                artifact_install_failure(&ctx.record.run_id, &artifact, reason, false)
+                artifact_install_failure(
+                    &ctx.record.run_id,
+                    &artifact,
+                    reason,
+                    ArtifactInstallFailure::ArtifactInvalid,
+                )
             })?;
             if verified.sha256 != artifact.sha256 || verified.kind != artifact.kind {
                 return Err(artifact_install_failure(
                     &ctx.record.run_id,
                     &artifact,
                     "artifact changed before install".into(),
-                    false,
+                    ArtifactInstallFailure::ArtifactInvalid,
                 ));
             }
             if ctx.record.resources.metro.is_none() {
@@ -1646,7 +1651,11 @@ pub(crate) fn run_reuse_path(ctx: &mut Ctx, plan: &BuildPlan, t: u64) -> Result<
                     &ctx.record.run_id,
                     &artifact,
                     installed.summary(),
-                    installed.timed_out,
+                    if installed.timed_out {
+                        ArtifactInstallFailure::InstallTimeout
+                    } else {
+                        ArtifactInstallFailure::InstallFailed
+                    },
                 ));
             }
             ctx.record.resources.app_install = Some(AppInstallResource {
@@ -1850,7 +1859,7 @@ fn install_cached_ios_app(
                     &ctx.record.run_id,
                     artifact,
                     installed.summary(),
-                    false,
+                    ArtifactInstallFailure::InstallFailed,
                 ));
             }
             ctx.runner.sleep(READY_TICK);
@@ -1876,7 +1885,7 @@ fn install_cached_ios_app(
         &ctx.record.run_id,
         artifact,
         summary,
-        true,
+        ArtifactInstallFailure::InstallTimeout,
     ))
 }
 
@@ -1889,30 +1898,50 @@ fn installed_bundle_matches(ctx: &mut Ctx, udid: &str, artifact: &CachedArtifact
             .is_ok_and(|sha256| sha256 == artifact.sha256)
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ArtifactInstallFailure {
+    ArtifactInvalid,
+    InstallTimeout,
+    InstallFailed,
+}
+
+impl ArtifactInstallFailure {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::ArtifactInvalid => "artifact-invalid",
+            Self::InstallTimeout => "install-timeout",
+            Self::InstallFailed => "install-failed",
+        }
+    }
+}
+
 fn artifact_install_failure(
     run_id: &str,
     artifact: &CachedArtifact,
     summary: String,
-    budget_spent: bool,
+    cause: ArtifactInstallFailure,
 ) -> Failure {
     Failure::new(
         "build",
         FailureCode::ArtifactInstallFailed,
         format!(
-            "cached dev client {} failed to install: {summary}",
-            artifact.path.display()
+            "cached dev client {} failed to install ({}): {summary}",
+            artifact.path.display(),
+            cause.as_str()
         ),
-        match artifact.kind {
-            // A rebuild re-enters this same install, so a spent budget keeps the artifact.
-            _ if budget_spent => format!(
-                "the install did not finish in time; keep the cached artifact, qaren cleanup {run_id} --json and re-run prepare"
-            ),
-            ArtifactKind::AppBundle => format!(
+        match (cause, artifact.kind) {
+            (ArtifactInstallFailure::ArtifactInvalid, ArtifactKind::AppBundle) => format!(
                 "delete the machine store entry {} to force a rebuild, then qaren cleanup {run_id} --json and re-run prepare",
                 artifact.path.parent().and_then(Path::parent).unwrap_or(&artifact.path).display()
             ),
-            ArtifactKind::Apk => format!(
+            (ArtifactInstallFailure::ArtifactInvalid, ArtifactKind::Apk) => format!(
                 "delete the cached artifact to force a rebuild, then qaren cleanup {run_id} --json and re-run prepare"
+            ),
+            (ArtifactInstallFailure::InstallTimeout, _) => format!(
+                "the install timed out; keep the cached artifact, run qaren cleanup {run_id} --json, and inspect the target device, package service, and transport state"
+            ),
+            (ArtifactInstallFailure::InstallFailed, _) => format!(
+                "the install failed after artifact verification; keep the cached artifact, run qaren cleanup {run_id} --json, and inspect the target device, package service, and transport state"
             ),
         },
     )
@@ -3238,18 +3267,100 @@ mod launch_tests {
     use crate::exec::CmdOutput;
 
     #[test]
-    fn only_a_timed_out_install_keeps_the_cached_artifact() {
-        let artifact = CachedArtifact {
+    fn artifact_install_failure_distinguishes_invalid_artifact_timeout_and_install_error() {
+        let app_bundle = CachedArtifact {
             path: PathBuf::from("/store/ios/fp/build/testapp.app"),
             sha256: "a".repeat(64),
             kind: ArtifactKind::AppBundle,
         };
-        let timed_out = artifact_install_failure("check-1", &artifact, "timed out".into(), true);
-        assert_eq!(timed_out.code, FailureCode::ArtifactInstallFailed);
-        assert!(!timed_out.next_action.contains("rebuild"));
-        assert!(timed_out.next_action.contains("re-run"));
-        let failed = artifact_install_failure("check-1", &artifact, "exit=1".into(), false);
-        assert!(failed.next_action.contains("force a rebuild"));
+        let apk = CachedArtifact {
+            path: PathBuf::from(
+                "/repo/.qaren/native-cache/artifacts/android/app-fp/run/app-debug.apk",
+            ),
+            sha256: "b".repeat(64),
+            kind: ArtifactKind::Apk,
+        };
+
+        let invalid_ios = artifact_install_failure(
+            "check-1",
+            &app_bundle,
+            "artifact changed before install".into(),
+            ArtifactInstallFailure::ArtifactInvalid,
+        );
+        assert_eq!(invalid_ios.code, FailureCode::ArtifactInstallFailed);
+        assert!(invalid_ios
+            .detail
+            .contains("(artifact-invalid): artifact changed before install"));
+        assert_eq!(
+            invalid_ios.next_action.as_str(),
+            "delete the machine store entry /store/ios/fp to force a rebuild, then qaren cleanup check-1 --json and re-run prepare"
+        );
+
+        let invalid_apk = artifact_install_failure(
+            "check-1",
+            &apk,
+            "artifact changed before install".into(),
+            ArtifactInstallFailure::ArtifactInvalid,
+        );
+        assert_eq!(invalid_apk.code, FailureCode::ArtifactInstallFailed);
+        assert!(invalid_apk
+            .detail
+            .contains("(artifact-invalid): artifact changed before install"));
+        assert_eq!(
+            invalid_apk.next_action.as_str(),
+            "delete the cached artifact to force a rebuild, then qaren cleanup check-1 --json and re-run prepare"
+        );
+
+        for artifact in [&app_bundle, &apk] {
+            for (cause, label, summary) in [
+                (
+                    ArtifactInstallFailure::InstallTimeout,
+                    "install-timeout",
+                    "[private output withheld]",
+                ),
+                (
+                    ArtifactInstallFailure::InstallFailed,
+                    "install-failed",
+                    "[private output withheld]",
+                ),
+            ] {
+                let failure = artifact_install_failure("check-1", artifact, summary.into(), cause);
+                assert_eq!(failure.code, FailureCode::ArtifactInstallFailed);
+                assert!(
+                    failure
+                        .detail
+                        .contains(&format!("({label}): [private output withheld]")),
+                    "{}",
+                    failure.detail
+                );
+                assert!(
+                    failure.next_action.contains("keep the cached artifact"),
+                    "{}",
+                    failure.next_action
+                );
+                assert!(
+                    failure
+                        .next_action
+                        .contains("run qaren cleanup check-1 --json"),
+                    "{}",
+                    failure.next_action
+                );
+                assert!(
+                    failure.next_action.contains(
+                        "inspect the target device, package service, and transport state"
+                    ),
+                    "{}",
+                    failure.next_action
+                );
+                for forbidden in ["delete", "rebuild", "re-run"] {
+                    assert!(
+                        !failure.next_action.contains(forbidden),
+                        "{forbidden} in {}",
+                        failure.next_action
+                    );
+                }
+            }
+        }
     }
 
     fn timed_out() -> CmdOutput {

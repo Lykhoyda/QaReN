@@ -1419,8 +1419,11 @@ or `metadata` (case-insensitive, with no required error code) skips container
 verification and retries after the existing five-second readiness tick within
 the same budget; all other definite install errors fail immediately.
 An unproven install with a spent budget fails with
-`ARTIFACT_INSTALL_FAILED`. For a spent budget, keep the cached artifact, clean
-up the run and retry as directed by `next_action`.
+`ARTIFACT_INSTALL_FAILED`. `failure.detail` carries `artifact-invalid`,
+`install-timeout`, or `install-failed`: only `artifact-invalid` advises
+deleting the cached build to force a rebuild, while `install-timeout` and
+`install-failed` keep the cached artifact, clean up the run, and direct
+inspection of the target device, package service, and transport state.
 Host load is diagnostic only. Other
 manifest and launch errors remain `BUILD_FAILED`. Cleanup retained resources
 before retrying.

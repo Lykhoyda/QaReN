@@ -492,6 +492,7 @@ fn ios_install_timeouts_fail_once_the_shared_budget_is_spent() {
 
     let failure = receipt.failure.as_ref().expect("budget spent must fail");
     assert_eq!(failure.code, FailureCode::ArtifactInstallFailed);
+    assert!(failure.detail.contains("(install-timeout):"), "{failure:?}");
     assert!(failure.detail.contains("1 attempts"), "{failure:?}");
     assert_eq!(receipt.outcomes["launch_ready_budget"], "spent");
     assert_eq!(receipt.timings_ms["simctl-install_attempt_1"], 150_000);
@@ -586,6 +587,7 @@ fn ios_install_error_fails_after_one_attempt() {
 
     let failure = receipt.failure.as_ref().expect("install error must fail");
     assert_eq!(failure.code, FailureCode::ArtifactInstallFailed);
+    assert!(failure.detail.contains("(install-failed):"), "{failure:?}");
     assert_eq!(
         mock.calls
             .iter()
