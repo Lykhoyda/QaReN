@@ -1,4 +1,5 @@
 import { createStop } from '../../../dist/qa/stop.js';
+import { admit } from '../../../dist/qa/admission.js';
 import assert from 'node:assert/strict';
 import childProcess from 'node:child_process';
 import { syncBuiltinESMExports } from 'node:module';
@@ -276,6 +277,86 @@ test('cancellation interrupts a bundle-pinned wait after a wrong-bundle response
   await assert.rejects(waiting, /RUN_CANCELLED/);
   assert.equal(reads.mock.callCount(), 1);
 });
+
+for (const [label, deviceName, candidates] of [
+  [
+    'wrong bundle on selected device',
+    'iPhone',
+    [target({ appId: 'com.foreign.app', title: 'com.foreign.app' })],
+  ],
+  [
+    'wrong bundle without device pin',
+    undefined,
+    [target({ appId: 'com.foreign.app', title: 'com.foreign.app' })],
+  ],
+  ['requested bundle on sibling device', 'iPhone', [target({ deviceName: 'sibling' })]],
+  ['no targets', 'iPhone', []],
+  ['malformed metadata', 'iPhone', [{ deviceName: 'iPhone', appId: null, title: 42 }]],
+] as const) {
+  test(`bundle readiness exhaustion refuses without admission recovery: ${label}`, async (t) => {
+    const clock = setup(t, async () => Response.json(candidates));
+    const calls: string[] = [];
+    let refused = false;
+    const waiting = assert.rejects(
+      admit(
+        {
+          metroPort: managedPort,
+          readinessMs: 1000,
+          remainingMs: () => 90_000,
+          attach: async () => {
+            calls.push('wait');
+            await waitForExactPortTargets(
+              managedPort,
+              1000,
+              500,
+              undefined,
+              deviceName,
+              filters.bundleId,
+            );
+            calls.push('connect_exact');
+          },
+          appAlive: async () => {
+            calls.push('app_alive');
+            return false;
+          },
+          relaunch: async () => {
+            calls.push('relaunch');
+          },
+          foreignDriver: async () => {
+            calls.push('foreign_driver');
+            return undefined;
+          },
+          open: async () => {
+            calls.push('open');
+          },
+          prove: async () => {
+            throw new Error('proof must not run');
+          },
+          close: async () => {
+            calls.push('close');
+          },
+          load: () => 1,
+        },
+        createStop(),
+      ),
+      (error: Error & { code?: string; meta?: Record<string, unknown> }) => {
+        assert.equal(error.code, 'CDP_NOT_CONNECTED');
+        assert.equal(error.meta?.inner, 'target_readiness_timeout');
+        assert.equal(error.meta?.attempt, 1);
+        assert.equal(error.meta?.relaunches, 0);
+        refused = true;
+        return true;
+      },
+    );
+    await setImmediate();
+    await clock.advance(500);
+    await clock.advance(500);
+    assert.equal(refused, true, 'admission must refuse at the readiness deadline');
+    await waiting;
+    assert.deepEqual(calls, ['wait', 'close']);
+    assert.deepEqual(clock.requested, [endpoint, endpoint]);
+  });
+}
 
 test('a non-array target response fails immediately instead of polling', async (t) => {
   const clock = setup(t, async () => Response.json({ length: 1 }));

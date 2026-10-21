@@ -134,6 +134,7 @@ export async function discoverAllMetroPorts(ports: number[], timeout: number): P
 
 export class TargetReadinessTimeoutError extends Error {}
 export class TargetListAttemptTimeoutError extends TargetReadinessTimeoutError {}
+export class BundleReadinessTimeoutError extends TargetReadinessTimeoutError {}
 
 export async function fetchTargets(
   port: number,
@@ -220,7 +221,9 @@ export async function waitForExactPortTargets(
     await sleep(Math.min(pollMs, remaining), signal);
     remaining = deadline - performance.now();
   }
-  throw new TargetReadinessTimeoutError(
+  const Timeout =
+    bundleId === undefined ? TargetReadinessTimeoutError : BundleReadinessTimeoutError;
+  throw new Timeout(
     deviceName === undefined
       ? `Timed out waiting for CDP targets on port ${port} after ${timeoutMs}ms`
       : `Timed out waiting for a CDP target from device ${JSON.stringify(deviceName)} on port ${port} after ${timeoutMs}ms`,

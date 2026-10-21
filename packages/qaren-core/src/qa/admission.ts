@@ -8,6 +8,7 @@ import {
   sleep,
 } from '../domain/cancellation.js';
 import {
+  BundleReadinessTimeoutError,
   TargetReadinessTimeoutError,
   TargetListAttemptTimeoutError,
   TargetSelectionError,
@@ -433,7 +434,12 @@ async function attach(steps: AdmissionSteps, signal: AbortSignal): Promise<Prove
           } catch (error) {
             if (isAbort(error)) throw error;
             const remaining = Math.min(deadline - performance.now(), steps.remainingMs());
-            if (!transientReadinessFailure(error) || remaining <= 0) throw error;
+            if (
+              error instanceof BundleReadinessTimeoutError ||
+              !transientReadinessFailure(error) ||
+              remaining <= 0
+            )
+              throw error;
             retried = error;
             const noTarget =
               error instanceof TargetReadinessTimeoutError &&
