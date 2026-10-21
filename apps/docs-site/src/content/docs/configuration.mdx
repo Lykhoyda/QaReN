@@ -29,6 +29,7 @@ loginMarker:
 | `loginMarker`     | object           | —       | What shows the login screen: exactly one non-empty `id` (a `testID`) or `text` (a label).     |
 | `ios`             | object           | —       | iOS settings, below.                                                                          |
 | `android`         | object           | —       | Android settings, below.                                                                      |
+| `deadlines`       | object           | See below | Preparation budgets; see [deadlines](#deadlines).                                           |
 
 `loginBlock` and `loginMarker` are set together. `loginBlock` must be an action slug: it
 starts with a letter or digit, then letters, digits, `_`, `.` or `-`, at most 64 characters,
@@ -72,19 +73,28 @@ ready for Xcode.
 ## deadlines
 
 Optional preparation budgets for `check` and `pr`: a native build time limit,
-a dependency-install time limit, and a simulator-boot time limit. Each limit
-is a whole number of seconds from 30 through 7200 inclusive. Defaults stay
-2400, 900, and 420. Omit the block, write `deadlines: {}`, or write a bare
+a dependency-install time limit, and a simulator-boot time limit.
+
+| Key                    | Default (seconds) |
+| ---------------------- | ----------------- |
+| `install_deps_seconds`  | `900`             |
+| `build_seconds`         | `2400`            |
+| `device_boot_seconds`  | `420`             |
+
+Each limit is a whole number of seconds from 30 through 7200 inclusive.
+Omit the block, write `deadlines: {}`, or write a bare
 `deadlines:` to keep every default. A field that is present overrides only
 that field.
 
-A value outside that range is `SCENARIO_INVALID` and is left unchanged. A null,
-tilde, blank, negative, fractional, quoted, boolean, list, or object value is a
-parse refusal, as is an unknown key, a camelCase alias, or a duplicate key.
+Out-of-range values are refused with `SCENARIO_INVALID`, rather than clamped.
+A null, tilde, blank, negative, fractional, quoted, boolean, list, or object
+field value is a parse refusal, as is an unknown key, a camelCase alias, or a
+duplicate key. Explicit `deadlines: null` and `deadlines: ~` are also refused.
 `check` and `pr` store the effective budgets at `scenario.deadlines` in
-`run.json`. `prepare` keeps the deadlines in its scenario file. The three
-exact key names are in the
-[CLI README](https://github.com/Lykhoyda/rn-dev-agent/blob/develop/packages/qaren-cli/README.md#check-a-plan).
+`run.json`. For `pr`, these budgets come from the operator-selected
+configuration, even if the candidate worktree contains different deadlines.
+`prepare` keeps the deadlines in its scenario file, independently of app
+configuration.
 
 ```yaml
 appId: com.example.testapp
