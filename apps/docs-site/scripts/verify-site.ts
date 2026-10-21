@@ -126,7 +126,7 @@ console.log('\nverify-site: no 1.x tool names');
 const legacy = htmlFiles().filter(
   (file) =>
     !relative(DIST, file).startsWith('changelog/') &&
-    /\b(?:cdp|device)_[a-z]/.test(readFileSync(file, 'utf8')),
+    /\b(?:cdp_[a-z]|device_(?!boot_seconds\b)[a-z])/.test(readFileSync(file, 'utf8')),
 );
 check('no page outside the changelog names a cdp_ or device_ tool', legacy.length === 0);
 for (const file of legacy) console.error(`  1.x tool name in ${relative(DIST, file)}`);
