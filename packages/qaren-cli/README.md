@@ -2443,11 +2443,11 @@ and temporary policy live in
 project instead of the workspace containing the scenario. The path must BE a
 git toplevel — a subdirectory of some larger repo is refused
 (`CANDIDATE_PATH_INVALID`) so a run can never bind to files outside the
-project it named. Project cache state lives under `<worktree>/.qaren/`, verified
-iOS dev-client builds share a private per-UID store independent of HOME on macOS (see
-[Native-fingerprint build selection](#native-fingerprint-build-selection)), and the
-fingerprint enumerates only that worktree. Run records remain host-level;
-`status`/`cleanup` load them by run id without requiring the app directory.
+project it named. Project cache state lives under `<worktree>/.qaren/`; see
+[Native-fingerprint build selection](#native-fingerprint-build-selection) for
+verified build storage and reuse. The fingerprint enumerates only that worktree.
+Run records remain host-level; `status`/`cleanup` load them by run id without
+requiring the app directory.
 qaren never discovers, enumerates, or couples other projects.
 `candidate.project_root: .` selects a project living at the worktree root.
 Because `.qaren/` is qaren's own state, it is excluded from the candidate
@@ -2581,17 +2581,25 @@ store, including a private SSD location; no UID suffix is appended to the overri
 The override is read as an OS string and rejects empty, relative, root-only, NUL
 and explicit dot/dot-dot components. Cache roots and derived artifact paths must
 be valid UTF-8 for the unchanged JSON schemas; non-UTF-8 roots fail with a
-value-free `PREREQ_MISSING` before cache reads or publication. This narrows the
-previous OS-path contract. It does not expand `~` or environment variables.
+value-free `PREREQ_MISSING` before cache reads or publication. The override does
+not expand `~` or environment variables, and invalid values never fall back to
+the default.
 Other platforms retain their HOME-derived default and validate explicit overrides;
 Android storage is unchanged.
 
 The cache is a same-UID trust boundary: its root and subdirectories must be owned
 by the effective UID with mode 0700, metadata is 0600, and copied bundle files
-retain owner execution permission while removing group/other permissions. Access
-walks trusted ancestry without following symlinks and rejects foreign writes,
-permissive roots, unsafe objects and uninspectable ACLs. macOS accepts only absent,
-empty or deny-only ACLs; allow/unknown ACLs are rejected. Unsafe root access yields
+retain owner execution permission while removing group/other permissions.
+`artifact.json` is read through the held entry directory as an owned private
+regular file, bounded to 64 KiB, with artifact paths relative to that entry. Access
+walks root-owned or current-UID ancestry without following symlinks and rejects
+foreign writes, permissive roots, unsafe objects and uninspectable ACLs. A
+root-owned sticky parent is allowed only before a private current-UID directory;
+for example, use `/private/var/tmp/<private-directory>` on macOS rather than the
+symlinked `/var/tmp` path. macOS accepts only absent, empty or deny-only ACLs;
+allow/unknown ACLs are rejected. Linux rejects present POSIX access/default ACL
+attributes and accepts only `ENODATA` as proof of absence; this supports guarded
+filesystem fixtures, not a Linux iOS backend. Unsafe root access yields
 `PREREQ_MISSING` (failed receipt, exit 1), including dry-run; unsafe entries are
 ignored for reuse and left unchanged. Publication checks the boundary again and
 skips optional caching on failure, retaining run-owned outputs. Root/setuid cache
