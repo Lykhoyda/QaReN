@@ -1989,6 +1989,21 @@ struct RecordProbeRunner {
 impl qaren::exec::Runner for RecordProbeRunner {
     fn cancellation(&self) -> Option<String> {
         if let Some(path) = &self.cancel_copy {
+            let candidate = path.borrow().clone();
+            if let Some(bucket) = candidate
+                .parent()
+                .and_then(|p| p.parent())
+                .and_then(|p| p.parent())
+            {
+                if let Ok(entries) = std::fs::read_dir(bucket) {
+                    if let Some(staging) = entries
+                        .flatten()
+                        .find(|e| e.file_name().to_string_lossy().starts_with(".staging-"))
+                    {
+                        *path.borrow_mut() = staging.path().join("testapp.app/binary");
+                    }
+                }
+            }
             let bytes = std::fs::metadata(&*path.borrow())
                 .map(|m| m.len())
                 .unwrap_or(0);
@@ -3490,24 +3505,35 @@ fn recording_a_build_cancelled_mid_copy_preserves_previous_cache() {
             let root = record.candidate.repo_root.clone();
             *copy_path.borrow_mut() =
                 qaren::buildplan::store_dir(&probe_store, "ios", "com.rndevagent.testapp", &fp)
-                    .join(format!(".staging-{}-{}", record.run_id, std::process::id()))
+                    .join(".pending")
                     .join("testapp.app/binary");
             std::fs::write(
                 run_dir.join("ios-build/testapp.app/binary"),
                 vec![7u8; 2 * 1024 * 1024],
             )
             .unwrap();
-            let old = copy_path
-                .borrow()
-                .parent()
+            let old_source = root.join("previous.app");
+            std::fs::create_dir(&old_source).unwrap();
+            std::fs::write(old_source.join("binary"), b"previous build").unwrap();
+            let store = qaren::buildplan::open_native_store_root(&probe_store, true)
                 .unwrap()
-                .parent()
+                .unwrap();
+            let bucket =
+                qaren::buildplan::store_dir(&probe_store, "ios", "com.rndevagent.testapp", &fp);
+            let entry = store
+                .entry(bucket.strip_prefix(&probe_store).unwrap(), true)
                 .unwrap()
-                .parent()
+                .unwrap();
+            let old = entry
+                .copy_app(
+                    &qaren::exec::MockRunner::new(),
+                    &old_source,
+                    std::ffi::OsStr::new("previous"),
+                    &qaren::buildplan::hash_artifact(&old_source).unwrap(),
+                )
                 .unwrap()
-                .join("testapp.app");
-            std::fs::create_dir_all(&old).unwrap();
-            std::fs::write(old.join("binary"), b"previous build").unwrap();
+                .retain()
+                .path;
             let state = qaren::buildplan::NativeCacheState {
                 schema: qaren::buildplan::CACHE_SCHEMA.into(),
                 fingerprint_parts: Default::default(),
@@ -4579,4 +4605,55 @@ fn borrowed_prepare_refuses_a_foreign_driver_before_dependencies_and_retains_the
         receipt.run_id
     );
     assert!(receipt.next_action.contains("qaren cleanup"));
+}
+
+#[test]
+fn unsafe_native_root_fails_normal_prepare_and_read_only_dry_run() {
+    use std::os::unix::fs::{DirBuilderExt, PermissionsExt};
+    for dry_run in [false, true] {
+        let repo = common::temp_repo();
+        let scenario = write_scenario(&repo, &ios_scenario_yaml(8791));
+        let args = prepare_args(&scenario, dry_run, None);
+        std::fs::DirBuilder::new()
+            .mode(0o755)
+            .create(&args.native_cache_root)
+            .unwrap();
+        let mut mock = MockRunner::new();
+        script_validation(&mut mock, &repo, IOS_TOOLS);
+        if dry_run {
+            mock.expect_run(
+                "expo run:ios --help",
+                CmdOutput::success(common::IOS_BUILD_HELP),
+            );
+            mock.expect_run("lsof", free_port());
+        } else {
+            mock.expect_run("lsof", free_port());
+            mock.expect_run("ps", CmdOutput::success("Wed Aug 12 15:59:00 2026\n"));
+            mock.expect_run("ps", CmdOutput::success("qaren prepare\n"));
+            common::script_ios_deps(&mut mock);
+        }
+        mock.expect_run("ls-files", CmdOutput::success(""));
+        common::script_xcode(&mut mock);
+        let receipt = prepare(&mut mock, &args);
+        assert_eq!(receipt.result, ReceiptResult::Failed);
+        assert_eq!(
+            receipt.failure.as_ref().unwrap().code,
+            FailureCode::PrereqMissing
+        );
+        assert!(!receipt.failure.as_ref().unwrap().code.is_refusal());
+        assert!(receipt.build.is_none());
+        assert_eq!(mock.remaining(), 0);
+        assert!(!mock.calls.iter().any(|c| c.label == "simctl-create"));
+        assert_eq!(
+            std::fs::metadata(&args.native_cache_root)
+                .unwrap()
+                .permissions()
+                .mode()
+                & 0o777,
+            0o755
+        );
+        if dry_run {
+            assert!(!repo.join(".qaren").exists());
+        }
+    }
 }

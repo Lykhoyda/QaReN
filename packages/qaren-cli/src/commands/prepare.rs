@@ -55,6 +55,7 @@ pub(crate) struct Ctx<'a> {
     pub(crate) runner: &'a mut dyn Runner,
     pub(crate) runs_root: PathBuf,
     pub(crate) native_cache_root: PathBuf,
+    pub(crate) native_store_entry: Option<buildplan::NativeStoreEntry>,
     pub(crate) record: RunRecord,
     pub(crate) started_ms: u64,
     pub(crate) timings: Vec<(String, u64)>,
@@ -317,7 +318,7 @@ fn prepare_validated(
     let run_id = format!("{}-{}", scenario.name, timefmt::compact_utc(started_ms));
 
     if args.dry_run {
-        return Ok(dry_run_receipt(
+        return dry_run_receipt(
             runner,
             &scenario,
             &cand,
@@ -328,7 +329,7 @@ fn prepare_validated(
             &args.native_cache_root,
             selected.as_ref(),
             args.boot_device,
-        ));
+        );
     }
 
     let run_dir = RunRecord::run_dir(&args.runs_root, &run_id);
@@ -449,6 +450,7 @@ fn prepare_validated(
         runner,
         runs_root: args.runs_root.clone(),
         native_cache_root: args.native_cache_root.clone(),
+        native_store_entry: None,
         record,
         started_ms,
         timings: Vec::new(),
@@ -1393,7 +1395,26 @@ pub(crate) fn plan_build(ctx: &mut Ctx) -> Result<BuildPlan, Failure> {
         &fp,
         &state,
         &mut ctx.notes,
-    );
+    )?;
+    ctx.native_store_entry = if store.is_some() && platform == "ios" {
+        let root = buildplan::open_native_store_root(&ctx.native_cache_root, false)
+            .map_err(cache_root_failure)?
+            .ok_or_else(|| cache_root_failure("native cache root: unavailable".into()))?;
+        let dir = buildplan::store_dir(
+            &ctx.native_cache_root,
+            platform,
+            &ctx.record.candidate.app_id,
+            &fp.value,
+        );
+        root.entry(
+            dir.strip_prefix(&ctx.native_cache_root)
+                .expect("store child"),
+            false,
+        )
+        .map_err(cache_root_failure)?
+    } else {
+        None
+    };
     let scheme = ctx.record.scenario.candidate.dev_client_scheme.clone();
     let native_dir_exists = project_root.join(platform).is_dir();
     let inputs = buildplan::DecisionInputs {
@@ -1415,8 +1436,15 @@ pub(crate) fn plan_build(ctx: &mut Ctx) -> Result<BuildPlan, Failure> {
     Ok(buildplan::decide(&inputs, &state, store))
 }
 
-// The cached artifact is content-verified only when it could authorize reuse. iOS reads the
-// machine store; Android keeps its build in this worktree's state.
+fn cache_root_failure(reason: String) -> Failure {
+    Failure::new(
+        "build_decision",
+        FailureCode::PrereqMissing,
+        reason,
+        "set QAREN_NATIVE_CACHE_ROOT to a supported private absolute directory",
+    )
+}
+
 fn cached_artifact(
     store_root: &Path,
     platform: &str,
@@ -1424,32 +1452,45 @@ fn cached_artifact(
     fp: &NativeFingerprint,
     state: &StateStatus,
     notes: &mut Vec<(String, String)>,
-) -> Option<(StoreRecord, ArtifactStatus)> {
+) -> Result<Option<(StoreRecord, ArtifactStatus)>, Failure> {
     if platform != "ios" {
         let StateStatus::Loaded(s) = state else {
-            return None;
+            return Ok(None);
         };
-        let artifact = s.artifact.clone().filter(|_| s.fingerprint == fp.value)?;
+        let Some(artifact) = s.artifact.clone().filter(|_| s.fingerprint == fp.value) else {
+            return Ok(None);
+        };
         let status = verify_artifact(&artifact);
-        let record = StoreRecord {
-            artifact,
-            built_at: s.built_at.clone(),
-            candidate_sha: s.candidate_sha.clone(),
-        };
-        return Some((record, status));
+        return Ok(Some((
+            StoreRecord {
+                artifact,
+                built_at: s.built_at.clone(),
+                candidate_sha: s.candidate_sha.clone(),
+            },
+            status,
+        )));
     }
-    if !fp.complete {
-        return None;
-    }
+    let root = buildplan::open_native_store_root(store_root, false).map_err(cache_root_failure)?;
+    let Some(root) = root.filter(|_| fp.complete) else {
+        return Ok(None);
+    };
     let dir = buildplan::store_dir(store_root, platform, app_id, &fp.value);
-    match buildplan::load_store_record(&dir) {
-        Ok(record) => record.map(|record| {
-            let status = verify_artifact(&record.artifact);
-            (record, status)
-        }),
+    let read: Result<Option<(StoreRecord, ArtifactStatus)>, String> = (|| {
+        let Some(entry) = root.entry(dir.strip_prefix(store_root).expect("store child"), false)?
+        else {
+            return Ok(None);
+        };
+        let Some(record) = buildplan::load_store_record(&entry)? else {
+            return Ok(None);
+        };
+        let status = entry.artifact_status(&record.artifact)?;
+        Ok(Some((record, status)))
+    })();
+    match read {
+        Ok(record) => Ok(record),
         Err(reason) => {
-            notes.push(("native_store".to_string(), format!("ignored: {reason}")));
-            None
+            notes.push(("native_store".into(), format!("ignored: {reason}")));
+            Ok(None)
         }
     }
 }
@@ -1931,6 +1972,27 @@ pub(crate) fn run_reuse_path(ctx: &mut Ctx, plan: &BuildPlan, t: u64) -> Result<
     let deadline = ctx.runner.monotonic_ms() + ctx.record.scenario.deadlines.build_seconds * 1000;
     match ctx.record.scenario.platform {
         Platform::Ios => {
+            if plan.decision == buildplan::BuildDecision::Reuse {
+                let entry = ctx.native_store_entry.as_ref().ok_or_else(|| {
+                    artifact_install_failure(
+                        &ctx.record.run_id,
+                        &artifact,
+                        "native cache entry: unavailable".into(),
+                        false,
+                    )
+                })?;
+                if entry.artifact_status(&artifact).map_err(|reason| {
+                    artifact_install_failure(&ctx.record.run_id, &artifact, reason, false)
+                })? != ArtifactStatus::Verified
+                {
+                    return Err(artifact_install_failure(
+                        &ctx.record.run_id,
+                        &artifact,
+                        "artifact changed before install".into(),
+                        false,
+                    ));
+                }
+            }
             let verified = ios::verify_app(
                 ctx.runner,
                 &artifact.path,
@@ -1962,6 +2024,15 @@ pub(crate) fn run_reuse_path(ctx: &mut Ctx, plan: &BuildPlan, t: u64) -> Result<
                 .ios_simulator
                 .clone()
                 .expect("ios allocated");
+            if plan.decision == buildplan::BuildDecision::Reuse {
+                ctx.native_store_entry
+                    .as_ref()
+                    .expect("selected entry")
+                    .recheck()
+                    .map_err(|reason| {
+                        artifact_install_failure(&ctx.record.run_id, &artifact, reason, false)
+                    })?;
+            }
             install_cached_ios_app(ctx, &sim.udid, &artifact, deadline)?;
         }
         Platform::Android => {
@@ -2385,7 +2456,6 @@ pub(crate) fn record_build_result(ctx: &mut Ctx, fp: &NativeFingerprint) -> Resu
             .join(platform)
             .join(format!("{app_id}-{fp_key}"))
     };
-    // Lanes share the iOS store, and run ids are only second-unique.
     let staging = bucket.join(format!(
         ".staging-{}-{}",
         ctx.record.run_id,
@@ -2394,19 +2464,44 @@ pub(crate) fn record_build_result(ctx: &mut Ctx, fp: &NativeFingerprint) -> Resu
     let dest_dir = bucket.join(&ctx.record.run_id);
     let staged = staging.join(src.file_name().unwrap_or_default());
     let dest = dest_dir.join(src.file_name().unwrap_or_default());
-    let copied = buildplan::copy_artifact(ctx.runner, &src, &staged)
-        .and_then(|()| buildplan::hash_artifact(&staged))
-        .and_then(|hash| {
-            if verified.as_ref().is_some_and(|a| a.sha256 != hash) {
-                Err("cache copy did not match the verified build artifact".into())
-            } else {
-                Ok(hash)
+    let mut private_copy = None;
+    let mut private_entry = None;
+    let copied = if ios {
+        (|| {
+            let root = buildplan::open_native_store_root(&ctx.native_cache_root, true)?
+                .ok_or("native cache root: unavailable")?;
+            let entry = root
+                .entry(
+                    bucket
+                        .strip_prefix(&ctx.native_cache_root)
+                        .expect("store child"),
+                    true,
+                )?
+                .ok_or("native cache entry: unavailable")?;
+            if let Some(existing) = buildplan::load_store_record(&entry)? {
+                entry.artifact_status(&existing.artifact)?;
             }
-        });
+            let expected = &verified.as_ref().expect("verified iOS artifact").sha256;
+            let copy = entry.copy_app(
+                ctx.runner,
+                &src,
+                std::ffi::OsStr::new(&ctx.record.run_id),
+                expected,
+            )?;
+            private_copy = Some(copy);
+            private_entry = Some(entry);
+            Ok(expected.clone())
+        })()
+    } else {
+        buildplan::copy_artifact(ctx.runner, &src, &staged)
+            .and_then(|()| buildplan::hash_artifact(&staged))
+    };
     let sha256 = match copied {
         Ok(hash) => hash,
         Err(reason) => {
-            let _ = std::fs::remove_dir_all(&staging);
+            if !ios {
+                let _ = std::fs::remove_dir_all(&staging);
+            }
             ensure_running(ctx.runner, "native_cache")?;
             ctx.notes
                 .push(("artifact_cache".into(), format!("skipped: {reason}")));
@@ -2445,22 +2540,35 @@ pub(crate) fn record_build_result(ctx: &mut Ctx, fp: &NativeFingerprint) -> Resu
     };
     let path = buildplan::state_path(&repo_root, platform, &app_id);
     if let Err(f) = ensure_running(ctx.runner, "native_cache") {
-        let _ = std::fs::remove_dir_all(&staging);
+        if !ios {
+            let _ = std::fs::remove_dir_all(&staging);
+        }
         return Err(f);
     }
-    if let Err(e) = std::fs::rename(&staging, &dest_dir) {
-        let _ = std::fs::remove_dir_all(&staging);
+    if let Err(e) = if ios {
+        Ok(())
+    } else {
+        std::fs::rename(&staging, &dest_dir)
+    } {
+        if !ios {
+            let _ = std::fs::remove_dir_all(&staging);
+        }
         ctx.notes
             .push(("artifact_cache".into(), format!("skipped: {e}")));
         return Ok(());
     }
     if let Err(e) = buildplan::save_json(&path, &state) {
-        let _ = std::fs::remove_dir_all(&dest_dir);
+        if !ios {
+            let _ = std::fs::remove_dir_all(&dest_dir);
+        }
         ctx.notes.push((
             "native_cache_state".to_string(),
             format!("could not persist {}: {e}", path.display()),
         ));
         return Ok(());
+    }
+    if let Some(copy) = private_copy.take() {
+        copy.retain();
     }
     // A run that installed by serial already recorded that install; only an expo install is recorded here.
     if let (ArtifactKind::Apk, Some((_, serial, server_port)), None) = (
@@ -2483,12 +2591,13 @@ pub(crate) fn record_build_result(ctx: &mut Ctx, fp: &NativeFingerprint) -> Resu
         built_at,
         candidate_sha: ctx.record.candidate.git_sha.clone(),
     };
+    let mut publication_failed = false;
     let published = match (ios, fp.complete) {
         (false, _) => {
             "cached the built dev client for fingerprint-matched reuse in this worktree".to_string()
         }
         (true, false) => "kept this run's copy; an incomplete fingerprint is never published for reuse".to_string(),
-        (true, true) => match buildplan::publish_store_record(&bucket, &record) {
+        (true, true) => match buildplan::publish_store_record(private_entry.as_ref().expect("private iOS entry"), &record) {
             Ok(true) => format!(
                 "published the built dev client to the machine store at {}",
                 bucket.display()
@@ -2497,10 +2606,17 @@ pub(crate) fn record_build_result(ctx: &mut Ctx, fp: &NativeFingerprint) -> Resu
                 "kept this run's copy; the machine store already holds a build of this fingerprint at {}",
                 bucket.display()
             ),
-            Err(e) => format!("kept this run's copy; could not publish to the machine store: {e}"),
+            Err(e) => {
+                publication_failed = true;
+                format!("kept this run's copy; could not publish to the machine store: {e}")
+            },
         },
     };
     ctx.notes.push(("artifact_cache".into(), published));
+    if publication_failed {
+        ensure_running(ctx.runner, "native_cache")?;
+        return Ok(());
+    }
     if !ios {
         let keep = bucket
             .file_name()
@@ -3143,7 +3259,7 @@ fn dry_run_receipt(
     native_cache_root: &Path,
     borrowed: Option<&ios::Simulator>,
     boot_device: bool,
-) -> Receipt {
+) -> Result<Receipt, Failure> {
     let now = runner.now_epoch_ms();
     let mut receipt = Receipt::new(
         "prepare",
@@ -3203,7 +3319,7 @@ fn dry_run_receipt(
             .insert("total".to_string(), now.saturating_sub(started_ms));
         receipt.next_action =
             "re-run without --dry-run to allocate and issue the handoff".to_string();
-        return receipt;
+        return Ok(receipt);
     }
     // The plan is read-only: the same fingerprint + cache-state decision the
     // real prepare would take, made visible without allocating anything.
@@ -3219,7 +3335,7 @@ fn dry_run_receipt(
                 &fp,
                 &state,
                 &mut notes,
-            );
+            )?;
             receipt.outcomes.extend(notes);
             let inputs = buildplan::DecisionInputs {
                 platform,
@@ -3496,7 +3612,7 @@ fn dry_run_receipt(
         runner.now_epoch_ms().saturating_sub(started_ms),
     );
     receipt.next_action = "re-run without --dry-run to allocate resources".to_string();
-    receipt
+    Ok(receipt)
 }
 
 fn run_launch_command(

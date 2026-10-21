@@ -1,3 +1,5 @@
+mod common;
+
 use std::path::Path;
 use std::process::Command;
 
@@ -17,6 +19,7 @@ fn dry_run_against_checked_in_ios_scenario_emits_parseable_receipt() {
             return;
         }
     }
+    let cache_fixture = common::temp_repo();
     let manifest_dir = Path::new(env!("CARGO_MANIFEST_DIR"));
     let scenario = manifest_dir.join("scenarios/ios-simulator.yaml");
     let toplevel = Command::new("git")
@@ -34,6 +37,7 @@ fn dry_run_against_checked_in_ios_scenario_emits_parseable_receipt() {
         }
     }
     let output = Command::new(env!("CARGO_BIN_EXE_qaren"))
+        .env("QAREN_NATIVE_CACHE_ROOT", cache_fixture.join("store"))
         .args(["prepare", scenario.to_str().unwrap(), "--json", "--dry-run"])
         .output()
         .unwrap();
@@ -458,4 +462,25 @@ fn prepare_accepts_only_an_exact_device_and_boot_permission_from_the_check_lifec
         assert_eq!(output.status.code(), Some(2), "{args:?}");
         assert!(output.stdout.is_empty(), "{args:?}");
     }
+}
+
+#[test]
+fn invalid_native_root_is_a_failed_receipt_with_exit_one_without_input_echo() {
+    let fixture = common::temp_repo();
+    let output = Command::new(env!("CARGO_BIN_EXE_qaren"))
+        .env("HOME", &fixture)
+        .env(
+            "QAREN_NATIVE_CACHE_ROOT",
+            "private-override-canary/../cache",
+        )
+        .args(["prepare", "missing-scenario", "--dry-run", "--json"])
+        .output()
+        .unwrap();
+    assert_eq!(output.status.code(), Some(1));
+    let receipt: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(receipt["result"], "failed");
+    assert_eq!(receipt["failure"]["code"], "PREREQ_MISSING");
+    assert!(!String::from_utf8_lossy(&output.stdout).contains("private-override-canary"));
+    assert!(!String::from_utf8_lossy(&output.stderr).contains("private-override-canary"));
+    assert_eq!(receipt["commands_executed"], 0);
 }

@@ -10,7 +10,7 @@ use std::sync::atomic::{AtomicU32, Ordering};
 static COUNTER: AtomicU32 = AtomicU32::new(0);
 
 pub fn temp_repo() -> PathBuf {
-    use std::os::unix::fs::PermissionsExt;
+    use std::os::unix::fs::{DirBuilderExt, PermissionsExt};
     // A recycled PID must not reopen a leftover tree that already contains runs.
     let nonce = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -22,6 +22,8 @@ pub fn temp_repo() -> PathBuf {
         COUNTER.fetch_add(1, Ordering::SeqCst),
         nonce
     ));
+    std::fs::DirBuilder::new().mode(0o700).create(&dir).unwrap();
+    let dir = dir.canonicalize().unwrap();
     std::fs::create_dir_all(dir.join("test-app")).unwrap();
     std::fs::write(dir.join("test-app").join("package.json"), "{}").unwrap();
     std::fs::create_dir_all(dir.join("test-app/node_modules/.bin")).unwrap();
@@ -77,7 +79,11 @@ pub fn stored_record(
 ) -> Option<qaren::buildplan::StoreRecord> {
     let dir =
         qaren::buildplan::store_dir(store_root, platform, "com.rndevagent.testapp", fingerprint);
-    qaren::buildplan::load_store_record(&dir).unwrap()
+    let root = qaren::buildplan::open_native_store_root(store_root, false).unwrap()?;
+    let entry = root
+        .entry(dir.strip_prefix(store_root).unwrap(), false)
+        .unwrap()?;
+    qaren::buildplan::load_store_record(&entry).unwrap()
 }
 
 pub fn seed_store(
@@ -88,22 +94,30 @@ pub fn seed_store(
     kind: qaren::buildplan::ArtifactKind,
 ) -> qaren::buildplan::CachedArtifact {
     use qaren::buildplan::{
-        copy_artifact, hash_artifact, publish_store_record, store_dir, CachedArtifact, StoreRecord,
+        hash_artifact, open_native_store_root, publish_store_record, store_dir, StoreRecord,
     };
+    assert_eq!(kind, qaren::buildplan::ArtifactKind::AppBundle);
     let dir = store_dir(store_root, platform, "com.rndevagent.testapp", fingerprint);
-    let path = dir.join("seed-run").join(src.file_name().unwrap());
-    copy_artifact(&MockRunner::new(), src, &path).unwrap();
-    let artifact = CachedArtifact {
-        sha256: hash_artifact(&path).unwrap(),
-        path,
-        kind,
-    };
+    let root = open_native_store_root(store_root, true).unwrap().unwrap();
+    let entry = root
+        .entry(dir.strip_prefix(store_root).unwrap(), true)
+        .unwrap()
+        .unwrap();
+    let artifact = entry
+        .copy_app(
+            &MockRunner::new(),
+            src,
+            std::ffi::OsStr::new("seed-run"),
+            &hash_artifact(src).unwrap(),
+        )
+        .unwrap()
+        .retain();
     let record = StoreRecord {
         artifact: artifact.clone(),
         built_at: "2026-10-11T00:00:00Z".to_string(),
         candidate_sha: "a".repeat(40),
     };
-    assert!(publish_store_record(&dir, &record).unwrap());
+    assert!(publish_store_record(&entry, &record).unwrap());
     artifact
 }
 
@@ -365,6 +379,7 @@ pub struct IosBuildRunner {
     pub inner: MockRunner,
     pub timeouts: std::collections::VecDeque<(String, u64)>,
     pub omit_app: bool,
+    pub cache_publication_fault: Option<PathBuf>,
     pub ambiguous_app: bool,
     pub workspace_mutation: Option<WorkspaceMutation>,
     pub build_log: Option<String>,
@@ -521,6 +536,11 @@ impl qaren::exec::Runner for IosBuildRunner {
     fn execute(&mut self, spec: &qaren::exec::CmdSpec, interruptible: bool) -> CmdOutput {
         if let Some(observe) = self.observe.as_mut() {
             observe(spec);
+        }
+        if spec.label == "simctl-launchctl" {
+            if let Some(path) = self.cache_publication_fault.take() {
+                std::fs::write(path, "block cache publication").unwrap();
+            }
         }
         if self
             .timeouts

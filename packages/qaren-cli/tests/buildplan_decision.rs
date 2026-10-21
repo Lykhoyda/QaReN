@@ -757,31 +757,53 @@ fn a_stored_build_needs_verification_completeness_and_a_scheme_to_reuse() {
 #[test]
 fn store_records_name_their_artifact_relative_to_the_entry_and_are_written_once() {
     use qaren::buildplan::{load_store_record, publish_store_record, store_dir, STORE_RECORD};
-    let root = temp_dir();
+    use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt};
+    let fixture = temp_dir().canonicalize().unwrap();
+    let root = fixture.join("store");
+    let store = qaren::buildplan::open_native_store_root(&root, true)
+        .unwrap()
+        .unwrap();
     let dir = store_dir(&root, "ios", "com.rndevagent.testapp", FP);
-    std::fs::create_dir_all(dir.join("run-1/testapp.app")).unwrap();
+    let entry = store
+        .entry(dir.strip_prefix(&root).unwrap(), true)
+        .unwrap()
+        .unwrap();
+    for path in [dir.join("run-1"), dir.join("run-1/testapp.app")] {
+        std::fs::DirBuilder::new().mode(0o700).create(path).unwrap();
+    }
     let mut record = stored(ArtifactStatus::Verified).unwrap().0;
     record.artifact.path = dir.join("run-1/testapp.app");
-    assert!(publish_store_record(&dir, &record).unwrap());
+    assert!(publish_store_record(&entry, &record).unwrap());
     let raw: serde_json::Value =
         serde_json::from_str(&std::fs::read_to_string(dir.join(STORE_RECORD)).unwrap()).unwrap();
     assert_eq!(raw["path"], "run-1/testapp.app");
-    assert_eq!(load_store_record(&dir).unwrap(), Some(record.clone()));
+    assert_eq!(load_store_record(&entry).unwrap(), Some(record.clone()));
     let mut second = record.clone();
     second.artifact.path = dir.join("run-2/testapp.app");
-    assert!(!publish_store_record(&dir, &second).unwrap());
-    assert_eq!(load_store_record(&dir).unwrap(), Some(record.clone()));
+    assert!(!publish_store_record(&entry, &second).unwrap());
+    assert_eq!(load_store_record(&entry).unwrap(), Some(record.clone()));
     let mut outside = record.clone();
     outside.artifact.path = root.join("elsewhere.app");
     let other = store_dir(&root, "ios", "com.rndevagent.testapp", "rnfp1:bbbb");
-    std::fs::create_dir_all(&other).unwrap();
-    assert!(publish_store_record(&other, &outside).is_err());
+    let other_entry = store
+        .entry(other.strip_prefix(&root).unwrap(), true)
+        .unwrap()
+        .unwrap();
+    assert!(publish_store_record(&other_entry, &outside).is_err());
     assert!(!other.join(STORE_RECORD).exists());
     for escaping in ["../escape.app", "/abs/testapp.app"] {
         let mut raw = raw.clone();
         raw["path"] = escaping.into();
-        std::fs::write(other.join(STORE_RECORD), raw.to_string()).unwrap();
-        assert!(load_store_record(&other).is_err(), "{escaping}");
+        use std::io::Write;
+        let mut file = std::fs::OpenOptions::new()
+            .write(true)
+            .create(true)
+            .truncate(true)
+            .mode(0o600)
+            .open(other.join(STORE_RECORD))
+            .unwrap();
+        file.write_all(raw.to_string().as_bytes()).unwrap();
+        assert!(load_store_record(&other_entry).is_err(), "{escaping}");
     }
 }
 

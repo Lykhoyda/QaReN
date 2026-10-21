@@ -62,60 +62,718 @@ pub fn store_dir(store_root: &Path, platform: &str, app_id: &str, fingerprint: &
         .join(fingerprint.replace(':', "-"))
 }
 
-// The record names its artifact relative to the entry, so it never points outside it.
-pub fn load_store_record(dir: &Path) -> Result<Option<StoreRecord>, String> {
-    let path = dir.join(STORE_RECORD);
-    let raw = match std::fs::read_to_string(&path) {
-        Ok(raw) => raw,
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
-        Err(e) => return Err(format!("cannot read {}: {e}", path.display())),
+pub fn resolve_native_cache_root(
+    explicit: Option<&std::ffi::OsStr>,
+    effective_uid: u32,
+) -> Result<PathBuf, String> {
+    use std::os::unix::ffi::OsStrExt;
+    let Some(value) = explicit else {
+        return Ok(PathBuf::from(format!(
+            "/private/var/tmp/qaren-native-cache-{effective_uid}"
+        )));
     };
-    let mut record: StoreRecord = serde_json::from_str(&raw)
-        .map_err(|e| format!("{} does not parse: {e}", path.display()))?;
+    let bytes = value.as_bytes();
+    if bytes.first() != Some(&b'/')
+        || bytes.contains(&0)
+        || !bytes.iter().any(|b| *b != b'/')
+        || bytes.split(|b| *b == b'/').any(|c| c == b"." || c == b"..")
+    {
+        return Err("native cache root: invalid absolute path".into());
+    }
+    Ok(PathBuf::from(value))
+}
+
+use std::ffi::{CStr, CString, OsStr, OsString};
+use std::fs::File;
+use std::io::{Read, Write};
+use std::os::fd::{AsRawFd, FromRawFd};
+use std::os::unix::ffi::{OsStrExt, OsStringExt};
+use std::sync::atomic::{AtomicU64, Ordering};
+
+static STORE_NONCE: AtomicU64 = AtomicU64::new(0);
+const ROOT_UNSAFE: &str = "native cache root: unsafe or uninspectable directory";
+const ENTRY_UNSAFE: &str = "native cache entry: unsafe or uninspectable object";
+const RECORD_INVALID: &str = "native cache entry: invalid record";
+const TREE_LIMIT: usize = 100_000;
+
+pub struct NativeStoreRoot {
+    dir: StoreDirectory,
+}
+
+pub struct NativeStoreEntry {
+    root: StoreDirectory,
+    dir: StoreDirectory,
+    relative: PathBuf,
+}
+
+struct StoreDirectory {
+    file: File,
+    path: PathBuf,
+}
+
+fn store_name(value: &OsStr) -> Result<CString, String> {
+    if value.is_empty() || value.as_bytes().contains(&b'/') || value == "." || value == ".." {
+        return Err(ENTRY_UNSAFE.into());
+    }
+    CString::new(value.as_bytes()).map_err(|_| ENTRY_UNSAFE.into())
+}
+
+fn descriptor_stat(file: &File) -> Result<libc::stat, String> {
+    let mut stat = std::mem::MaybeUninit::uninit();
+    if unsafe { libc::fstat(file.as_raw_fd(), stat.as_mut_ptr()) } != 0 {
+        return Err(ENTRY_UNSAFE.into());
+    }
+    Ok(unsafe { stat.assume_init() })
+}
+
+fn checked_object(file: &File, directory: bool, private: bool) -> Result<libc::stat, String> {
+    let stat = descriptor_stat(file)?;
+    let uid = unsafe { libc::geteuid() };
+    let mode = stat.st_mode as u32;
+    let expected = if directory {
+        libc::S_IFDIR
+    } else {
+        libc::S_IFREG
+    } as u32;
+    if mode & libc::S_IFMT as u32 != expected
+        || (stat.st_uid != uid && (private || stat.st_uid != 0))
+        || mode & 0o6000 != 0
+        || (private && (mode & 0o077 != 0 || mode & 0o1000 != 0))
+        || (private && directory && mode & 0o777 != 0o700)
+        || (private && !directory && mode & 0o400 == 0)
+        || (!private && mode & 0o022 != 0 && !(stat.st_uid == 0 && mode & 0o1000 != 0))
+    {
+        return Err(ENTRY_UNSAFE.into());
+    }
+    check_store_acl(file, directory)?;
+    Ok(stat)
+}
+
+#[cfg(target_os = "macos")]
+fn check_store_acl(file: &File, _directory: bool) -> Result<(), String> {
+    use libc::{c_int, c_void};
+    unsafe extern "C" {
+        fn acl_get_fd_np(fd: c_int, acl_type: c_int) -> *mut c_void;
+        fn acl_valid(acl: *mut c_void) -> c_int;
+        fn acl_get_entry(acl: *mut c_void, entry_id: c_int, entry: *mut *mut c_void) -> c_int;
+        fn acl_get_tag_type(entry: *mut c_void, tag: *mut c_int) -> c_int;
+        fn acl_free(object: *mut c_void) -> c_int;
+    }
+    struct Acl(*mut c_void);
+    impl Drop for Acl {
+        fn drop(&mut self) {
+            unsafe {
+                acl_free(self.0);
+            }
+        }
+    }
+    let raw = unsafe { acl_get_fd_np(file.as_raw_fd(), 0x100) };
+    if raw.is_null() {
+        return if std::io::Error::last_os_error().raw_os_error() == Some(libc::ENOENT) {
+            Ok(())
+        } else {
+            Err(ENTRY_UNSAFE.into())
+        };
+    }
+    let acl = Acl(raw);
+    if unsafe { acl_valid(acl.0) } != 0 {
+        return Err(ENTRY_UNSAFE.into());
+    }
+    for index in 0..=128 {
+        let mut entry = std::ptr::null_mut();
+        let result = unsafe { acl_get_entry(acl.0, if index == 0 { 0 } else { -1 }, &mut entry) };
+        if result == -1 && std::io::Error::last_os_error().raw_os_error() == Some(libc::EINVAL) {
+            return Ok(());
+        }
+        let mut tag = 0;
+        if result != 0
+            || index == 128
+            || entry.is_null()
+            || unsafe { acl_get_tag_type(entry, &mut tag) } != 0
+            || tag != 2
+        {
+            return Err(ENTRY_UNSAFE.into());
+        }
+    }
+    Err(ENTRY_UNSAFE.into())
+}
+
+#[cfg(target_os = "linux")]
+fn check_store_acl(file: &File, directory: bool) -> Result<(), String> {
+    for name in [c"system.posix_acl_access", c"system.posix_acl_default"] {
+        if !directory && name == c"system.posix_acl_default" {
+            continue;
+        }
+        let result =
+            unsafe { libc::fgetxattr(file.as_raw_fd(), name.as_ptr(), std::ptr::null_mut(), 0) };
+        if result != -1 || std::io::Error::last_os_error().raw_os_error() != Some(libc::ENODATA) {
+            return Err(ENTRY_UNSAFE.into());
+        }
+    }
+    Ok(())
+}
+
+#[cfg(not(any(target_os = "macos", target_os = "linux")))]
+fn check_store_acl(_file: &File, _directory: bool) -> Result<(), String> {
+    Err(ENTRY_UNSAFE.into())
+}
+
+fn store_mutation_allowed() -> Result<(), String> {
+    let uid = unsafe { libc::geteuid() };
+    if uid == 0 || uid != unsafe { libc::getuid() } {
+        Err("native cache root: privileged mutation unsupported".into())
+    } else {
+        Ok(())
+    }
+}
+
+impl StoreDirectory {
+    fn duplicate(&self) -> Result<Self, String> {
+        Ok(Self {
+            file: self.file.try_clone().map_err(|_| ENTRY_UNSAFE)?,
+            path: self.path.clone(),
+        })
+    }
+
+    fn child(&self, name: &OsStr, create: bool, private: bool) -> Result<Option<Self>, String> {
+        let name_c = store_name(name)?;
+        let open = || unsafe {
+            libc::openat(
+                self.file.as_raw_fd(),
+                name_c.as_ptr(),
+                libc::O_RDONLY | libc::O_DIRECTORY | libc::O_NOFOLLOW | libc::O_CLOEXEC,
+            )
+        };
+        let mut fd = open();
+        if fd < 0 && std::io::Error::last_os_error().raw_os_error() == Some(libc::ENOENT) {
+            if !create {
+                return Ok(None);
+            }
+            store_mutation_allowed()?;
+            if unsafe { libc::mkdirat(self.file.as_raw_fd(), name_c.as_ptr(), 0o700) } != 0
+                && std::io::Error::last_os_error().raw_os_error() != Some(libc::EEXIST)
+            {
+                return Err(ENTRY_UNSAFE.into());
+            }
+            fd = open();
+        }
+        if fd < 0 {
+            return Err(ENTRY_UNSAFE.into());
+        }
+        let file = unsafe { File::from_raw_fd(fd) };
+        checked_object(&file, true, private)?;
+        Ok(Some(Self {
+            file,
+            path: self.path.join(name),
+        }))
+    }
+
+    fn create_child(&self, name: &OsStr) -> Result<Self, String> {
+        store_mutation_allowed()?;
+        let name_c = store_name(name)?;
+        if unsafe { libc::mkdirat(self.file.as_raw_fd(), name_c.as_ptr(), 0o700) } != 0 {
+            return Err(ENTRY_UNSAFE.into());
+        }
+        self.child(name, false, true)?
+            .ok_or_else(|| ENTRY_UNSAFE.into())
+    }
+
+    fn open_file(&self, name: &OsStr, create: Option<u32>) -> Result<Option<File>, String> {
+        let name = store_name(name)?;
+        let flags = libc::O_NOFOLLOW | libc::O_CLOEXEC | libc::O_NONBLOCK;
+        let fd = if let Some(mode) = create {
+            store_mutation_allowed()?;
+            unsafe {
+                libc::openat(
+                    self.file.as_raw_fd(),
+                    name.as_ptr(),
+                    flags | libc::O_WRONLY | libc::O_CREAT | libc::O_EXCL,
+                    mode as libc::c_uint,
+                )
+            }
+        } else {
+            unsafe { libc::openat(self.file.as_raw_fd(), name.as_ptr(), flags | libc::O_RDONLY) }
+        };
+        if fd < 0 {
+            return if create.is_none()
+                && std::io::Error::last_os_error().raw_os_error() == Some(libc::ENOENT)
+            {
+                Ok(None)
+            } else {
+                Err(ENTRY_UNSAFE.into())
+            };
+        }
+        let file = unsafe { File::from_raw_fd(fd) };
+        checked_object(&file, false, true)?;
+        Ok(Some(file))
+    }
+
+    fn names(&self) -> Result<Vec<OsString>, String> {
+        struct Listing(*mut libc::DIR);
+        impl Drop for Listing {
+            fn drop(&mut self) {
+                unsafe {
+                    libc::closedir(self.0);
+                }
+            }
+        }
+        let fd = unsafe {
+            libc::openat(
+                self.file.as_raw_fd(),
+                c".".as_ptr(),
+                libc::O_RDONLY | libc::O_DIRECTORY | libc::O_CLOEXEC,
+            )
+        };
+        if fd < 0 {
+            return Err(ENTRY_UNSAFE.into());
+        }
+        let raw = unsafe { libc::fdopendir(fd) };
+        if raw.is_null() {
+            unsafe {
+                libc::close(fd);
+            }
+            return Err(ENTRY_UNSAFE.into());
+        }
+        let listing = Listing(raw);
+        let mut names = Vec::new();
+        loop {
+            #[cfg(target_os = "macos")]
+            unsafe {
+                *libc::__error() = 0;
+            }
+            #[cfg(target_os = "linux")]
+            unsafe {
+                *libc::__errno_location() = 0;
+            }
+            let entry = unsafe { libc::readdir(listing.0) };
+            if entry.is_null() {
+                if std::io::Error::last_os_error().raw_os_error() != Some(0) {
+                    return Err(ENTRY_UNSAFE.into());
+                }
+                break;
+            }
+            let bytes = unsafe { CStr::from_ptr((*entry).d_name.as_ptr()) }.to_bytes();
+            if bytes == b"." || bytes == b".." {
+                continue;
+            }
+            names.push(OsString::from_vec(bytes.to_vec()));
+            if names.len() > TREE_LIMIT {
+                return Err(ENTRY_UNSAFE.into());
+            }
+        }
+        names.sort();
+        Ok(names)
+    }
+
+    fn unlink(&self, name: &OsStr, directory: bool) -> Result<(), String> {
+        let name = store_name(name)?;
+        if unsafe {
+            libc::unlinkat(
+                self.file.as_raw_fd(),
+                name.as_ptr(),
+                if directory { libc::AT_REMOVEDIR } else { 0 },
+            )
+        } != 0
+        {
+            return Err(ENTRY_UNSAFE.into());
+        }
+        Ok(())
+    }
+
+    fn remove_owned_child(&self, name: &OsStr) -> Result<(), String> {
+        let child = self.child(name, false, true)?.ok_or(ENTRY_UNSAFE)?;
+        for name in child.names()? {
+            if child.child(&name, false, true).is_ok_and(|d| d.is_some()) {
+                child.remove_owned_child(&name)?;
+            } else {
+                child.open_file(&name, None)?.ok_or(ENTRY_UNSAFE)?;
+                child.unlink(&name, false)?;
+            }
+        }
+        self.unlink(name, true)
+    }
+}
+
+pub fn open_native_store_root(
+    path: &Path,
+    create: bool,
+) -> Result<Option<NativeStoreRoot>, String> {
+    resolve_native_cache_root(Some(path.as_os_str()), unsafe { libc::geteuid() })?;
+    if create {
+        store_mutation_allowed()?;
+    }
+    let file = File::open("/").map_err(|_| ROOT_UNSAFE)?;
+    checked_object(&file, true, false).map_err(|_| ROOT_UNSAFE)?;
+    let mut dir = StoreDirectory {
+        file,
+        path: PathBuf::from("/"),
+    };
+    let parts: Vec<_> = path
+        .components()
+        .filter_map(|c| match c {
+            std::path::Component::Normal(n) => Some(n),
+            _ => None,
+        })
+        .collect();
+    let mut sticky_parent = false;
+    for (index, name) in parts.iter().enumerate() {
+        let private = sticky_parent || index == parts.len() - 1;
+        let Some(next) = dir.child(name, create, private).map_err(|_| ROOT_UNSAFE)? else {
+            return Ok(None);
+        };
+        let stat = descriptor_stat(&next.file).map_err(|_| ROOT_UNSAFE)?;
+        sticky_parent = stat.st_mode as u32 & 0o1000 != 0;
+        dir = next;
+    }
+    Ok(Some(NativeStoreRoot { dir }))
+}
+
+impl NativeStoreRoot {
+    pub fn entry(&self, relative: &Path, create: bool) -> Result<Option<NativeStoreEntry>, String> {
+        if relative.as_os_str().is_empty()
+            || !relative
+                .components()
+                .all(|c| matches!(c, std::path::Component::Normal(_)))
+        {
+            return Err(ENTRY_UNSAFE.into());
+        }
+        let mut dir = self.dir.duplicate()?;
+        for name in relative.iter() {
+            let Some(child) = dir.child(name, create, true)? else {
+                return Ok(None);
+            };
+            dir = child;
+        }
+        Ok(Some(NativeStoreEntry {
+            root: self.dir.duplicate()?,
+            dir,
+            relative: relative.into(),
+        }))
+    }
+}
+
+impl NativeStoreEntry {
+    pub fn path(&self) -> &Path {
+        &self.dir.path
+    }
+
+    pub fn recheck(&self) -> Result<(), String> {
+        let root = open_native_store_root(&self.root.path, false)?.ok_or(ENTRY_UNSAFE)?;
+        let entry = root.entry(&self.relative, false)?.ok_or(ENTRY_UNSAFE)?;
+        for (a, b) in [
+            (&self.root.file, &root.dir.file),
+            (&self.dir.file, &entry.dir.file),
+        ] {
+            let a = descriptor_stat(a)?;
+            let b = descriptor_stat(b)?;
+            if a.st_dev != b.st_dev || a.st_ino != b.st_ino {
+                return Err(ENTRY_UNSAFE.into());
+            }
+        }
+        Ok(())
+    }
+
+    pub fn artifact_status(&self, artifact: &CachedArtifact) -> Result<ArtifactStatus, String> {
+        self.recheck()?;
+        let relative = artifact
+            .path
+            .strip_prefix(self.path())
+            .map_err(|_| ENTRY_UNSAFE)?;
+        if relative.extension() != Some(OsStr::new("app"))
+            || !relative
+                .components()
+                .all(|c| matches!(c, std::path::Component::Normal(_)))
+        {
+            return Err(ENTRY_UNSAFE.into());
+        }
+        let mut dir = self.dir.duplicate()?;
+        for name in relative.iter() {
+            let Some(child) = dir.child(name, false, true)? else {
+                return Ok(ArtifactStatus::MissingFile);
+            };
+            dir = child;
+        }
+        validate_private_tree(&dir, 0, &mut { TREE_LIMIT })?;
+        self.recheck()?;
+        match hash_artifact(&artifact.path) {
+            Ok(hash) if hash == artifact.sha256 => Ok(ArtifactStatus::Verified),
+            Ok(_) => Ok(ArtifactStatus::Mismatch),
+            Err(_) => Ok(ArtifactStatus::Mismatch),
+        }
+    }
+}
+
+fn validate_private_tree(
+    dir: &StoreDirectory,
+    depth: usize,
+    remaining: &mut usize,
+) -> Result<(), String> {
+    if depth > 128 {
+        return Err(ENTRY_UNSAFE.into());
+    }
+    for name in dir.names()? {
+        *remaining = remaining.checked_sub(1).ok_or(ENTRY_UNSAFE)?;
+        if let Ok(Some(child)) = dir.child(&name, false, true) {
+            validate_private_tree(&child, depth + 1, remaining)?;
+        } else {
+            dir.open_file(&name, None)?.ok_or(ENTRY_UNSAFE)?;
+        }
+    }
+    Ok(())
+}
+
+pub fn load_store_record(entry: &NativeStoreEntry) -> Result<Option<StoreRecord>, String> {
+    entry.recheck()?;
+    let Some(file) = entry.dir.open_file(OsStr::new(STORE_RECORD), None)? else {
+        return Ok(None);
+    };
+    let stat = descriptor_stat(&file)?;
+    if stat.st_size < 0 || stat.st_size > 65536 || stat.st_mode as u32 & 0o777 != 0o600 {
+        return Err(RECORD_INVALID.into());
+    }
+    let mut raw = Vec::new();
+    file.take(65537)
+        .read_to_end(&mut raw)
+        .map_err(|_| RECORD_INVALID)?;
+    if raw.len() > 65536 {
+        return Err(RECORD_INVALID.into());
+    }
+    let mut record: StoreRecord = serde_json::from_slice(&raw).map_err(|_| RECORD_INVALID)?;
     let relative = &record.artifact.path;
     if relative.as_os_str().is_empty()
         || !relative
             .components()
             .all(|c| matches!(c, std::path::Component::Normal(_)))
     {
-        return Err(format!(
-            "{} names an artifact outside its entry",
-            path.display()
-        ));
+        return Err(RECORD_INVALID.into());
     }
-    record.artifact.path = dir.join(relative);
+    record.artifact.path = entry.path().join(relative);
     Ok(Some(record))
 }
 
-// Create-new via hard link: readers never see a partial record and a second writer loses.
-pub fn publish_store_record(dir: &Path, record: &StoreRecord) -> std::io::Result<bool> {
+pub fn publish_store_record(
+    entry: &NativeStoreEntry,
+    record: &StoreRecord,
+) -> Result<bool, String> {
+    store_mutation_allowed()?;
+    entry.recheck()?;
+    if let Some(existing) = load_store_record(entry)? {
+        entry.artifact_status(&existing.artifact)?;
+        return Ok(false);
+    }
     let mut on_disk = record.clone();
-    on_disk.artifact.path = record
+    let relative = record
         .artifact
         .path
-        .strip_prefix(dir)
-        .map_err(|_| {
-            std::io::Error::new(
-                std::io::ErrorKind::InvalidInput,
-                "artifact is outside its store entry",
-            )
-        })?
-        .to_path_buf();
-    let tmp = dir.join(format!(
+        .strip_prefix(entry.path())
+        .map_err(|_| ENTRY_UNSAFE)?;
+    if relative.as_os_str().is_empty()
+        || !relative
+            .components()
+            .all(|c| matches!(c, std::path::Component::Normal(_)))
+    {
+        return Err(ENTRY_UNSAFE.into());
+    }
+    on_disk.artifact.path = relative.into();
+    let tmp = OsString::from(format!(
         ".{STORE_RECORD}.{}.{}",
         std::process::id(),
-        crate::timefmt::epoch_ms()
+        STORE_NONCE.fetch_add(1, Ordering::Relaxed)
     ));
-    let body = serde_json::to_string_pretty(&on_disk)
-        .map_err(|e| std::io::Error::other(format!("serialize: {e}")))?;
-    let linked =
-        std::fs::write(&tmp, body).and_then(|()| std::fs::hard_link(&tmp, dir.join(STORE_RECORD)));
-    let _ = std::fs::remove_file(&tmp);
-    match linked {
-        Ok(()) => Ok(true),
-        Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => Ok(false),
-        Err(e) => Err(e),
+    let body = serde_json::to_vec_pretty(&on_disk).map_err(|_| RECORD_INVALID)?;
+    if body.len() > 65536 {
+        return Err(RECORD_INVALID.into());
     }
+    let mut file = entry
+        .dir
+        .open_file(&tmp, Some(0o600))?
+        .ok_or(ENTRY_UNSAFE)?;
+    let result = (|| {
+        file.write_all(&body).map_err(|_| ENTRY_UNSAFE)?;
+        let from = store_name(&tmp)?;
+        let linked = unsafe {
+            libc::linkat(
+                entry.dir.file.as_raw_fd(),
+                from.as_ptr(),
+                entry.dir.file.as_raw_fd(),
+                c"artifact.json".as_ptr(),
+                0,
+            )
+        };
+        if linked == 0 {
+            return Ok(true);
+        }
+        if std::io::Error::last_os_error().raw_os_error() == Some(libc::EEXIST) {
+            let winner = load_store_record(entry)?.ok_or(ENTRY_UNSAFE)?;
+            entry.artifact_status(&winner.artifact)?;
+            return Ok(false);
+        }
+        Err(ENTRY_UNSAFE.into())
+    })();
+    let _ = entry.dir.unlink(&tmp, false);
+    result
+}
+
+pub struct NativeStoreCopy {
+    entry: NativeStoreEntry,
+    staging: OsString,
+    generation: OsString,
+    committed: bool,
+    pub artifact: CachedArtifact,
+}
+
+impl NativeStoreEntry {
+    pub fn copy_app(
+        &self,
+        runner: &dyn Runner,
+        src: &Path,
+        generation: &OsStr,
+        expected: &str,
+    ) -> Result<NativeStoreCopy, String> {
+        store_name(generation)?;
+        self.recheck()?;
+        let name = src
+            .file_name()
+            .filter(|_| src.extension() == Some(OsStr::new("app")))
+            .ok_or(ENTRY_UNSAFE)?;
+        let staging = OsString::from(format!(
+            ".staging-{}-{}",
+            std::process::id(),
+            STORE_NONCE.fetch_add(1, Ordering::Relaxed)
+        ));
+        let stage = self.dir.create_child(&staging)?;
+        let mut copy = NativeStoreCopy {
+            entry: NativeStoreEntry {
+                root: self.root.duplicate()?,
+                dir: self.dir.duplicate()?,
+                relative: self.relative.clone(),
+            },
+            staging,
+            generation: generation.into(),
+            committed: false,
+            artifact: CachedArtifact {
+                path: self.path().join(generation).join(name),
+                sha256: expected.into(),
+                kind: ArtifactKind::AppBundle,
+            },
+        };
+        let dest = stage.create_child(name)?;
+        let src_name = CString::new(src.as_os_str().as_bytes()).map_err(|_| ENTRY_UNSAFE)?;
+        let fd = unsafe {
+            libc::open(
+                src_name.as_ptr(),
+                libc::O_RDONLY | libc::O_DIRECTORY | libc::O_NOFOLLOW | libc::O_CLOEXEC,
+            )
+        };
+        if fd < 0 {
+            return Err(ENTRY_UNSAFE.into());
+        }
+        let source = StoreDirectory {
+            file: unsafe { File::from_raw_fd(fd) },
+            path: src.into(),
+        };
+        copy_app_tree(runner, &source, &dest, 0, &mut { TREE_LIMIT })?;
+        validate_private_tree(&dest, 0, &mut { TREE_LIMIT })?;
+        if hash_artifact(&dest.path).map_err(|_| ENTRY_UNSAFE)? != expected {
+            return Err("native cache entry: copy hash mismatch".into());
+        }
+        crate::cancel::ensure_running(runner, "native_cache").map_err(|e| e.detail.to_string())?;
+        let final_dir = self.dir.create_child(generation)?;
+        copy.committed = true;
+        let name_c = store_name(name)?;
+        if unsafe {
+            libc::renameat(
+                stage.file.as_raw_fd(),
+                name_c.as_ptr(),
+                final_dir.file.as_raw_fd(),
+                name_c.as_ptr(),
+            )
+        } != 0
+        {
+            return Err(ENTRY_UNSAFE.into());
+        }
+        Ok(copy)
+    }
+}
+
+impl NativeStoreCopy {
+    pub fn retain(mut self) -> CachedArtifact {
+        let artifact = self.artifact.clone();
+        self.committed = false;
+        artifact
+    }
+}
+
+impl Drop for NativeStoreCopy {
+    fn drop(&mut self) {
+        let _ = self.entry.dir.remove_owned_child(&self.staging);
+        if self.committed {
+            let _ = self.entry.dir.remove_owned_child(&self.generation);
+        }
+    }
+}
+
+fn copy_app_tree(
+    runner: &dyn Runner,
+    source: &StoreDirectory,
+    dest: &StoreDirectory,
+    depth: usize,
+    remaining: &mut usize,
+) -> Result<(), String> {
+    if depth > 128 {
+        return Err(ENTRY_UNSAFE.into());
+    }
+    for name in source.names()? {
+        *remaining = remaining.checked_sub(1).ok_or(ENTRY_UNSAFE)?;
+        crate::cancel::ensure_running(runner, "native_cache").map_err(|e| e.detail.to_string())?;
+        let name_c = store_name(&name)?;
+        let fd = unsafe {
+            libc::openat(
+                source.file.as_raw_fd(),
+                name_c.as_ptr(),
+                libc::O_RDONLY | libc::O_NOFOLLOW | libc::O_NONBLOCK | libc::O_CLOEXEC,
+            )
+        };
+        if fd < 0 {
+            return Err(ENTRY_UNSAFE.into());
+        }
+        let mut file = unsafe { File::from_raw_fd(fd) };
+        let stat = descriptor_stat(&file)?;
+        match stat.st_mode & libc::S_IFMT {
+            libc::S_IFDIR => {
+                let child = dest.create_child(&name)?;
+                copy_app_tree(
+                    runner,
+                    &StoreDirectory {
+                        file,
+                        path: source.path.join(&name),
+                    },
+                    &child,
+                    depth + 1,
+                    remaining,
+                )?;
+            }
+            libc::S_IFREG => {
+                let mut target = dest
+                    .open_file(&name, Some(0o600 | (stat.st_mode as u32 & 0o100)))?
+                    .ok_or(ENTRY_UNSAFE)?;
+                let mut buffer = [0; 65536];
+                loop {
+                    crate::cancel::ensure_running(runner, "native_cache")
+                        .map_err(|e| e.detail.to_string())?;
+                    let count = file.read(&mut buffer).map_err(|_| ENTRY_UNSAFE)?;
+                    if count == 0 {
+                        break;
+                    }
+                    target
+                        .write_all(&buffer[..count])
+                        .map_err(|_| ENTRY_UNSAFE)?;
+                }
+            }
+            _ => return Err(ENTRY_UNSAFE.into()),
+        }
+    }
+    Ok(())
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
