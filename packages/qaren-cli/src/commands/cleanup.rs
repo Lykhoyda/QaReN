@@ -192,13 +192,17 @@ pub fn cleanup_with_runtime(
     let owner_refusal =
         || Outcome::Refused("the run's qaren process is alive or unproven gone".to_string());
     let producers = record.resources.core.is_some() || !record.resources.runner_drivers.is_empty();
-    let pending_stop = !record.resources.can_release_borrowed_ios_stop();
-    let owner = match (producers || pending_stop, &record.prepare) {
+    let guarded_simulator = !record.resources.can_release_borrowed_ios_stop()
+        || (record.resources.device_borrowed
+            && record.resources.ios_simulator.is_some()
+            && record.resources.lease.is_some());
+    let owner = match (producers || guarded_simulator, &record.prepare) {
         (true, Some(prepare)) => Some(probe_pid_identity(runner, prepare)),
         _ => None,
     };
     if owner == Some(PidLiveness::AliveMatching)
-        || (pending_stop && !matches!(owner, Some(PidLiveness::Dead | PidLiveness::AliveForeign)))
+        || (guarded_simulator
+            && !matches!(owner, Some(PidLiveness::Dead | PidLiveness::AliveForeign)))
     {
         return finish_cleanup(
             runner,
@@ -207,7 +211,12 @@ pub fn cleanup_with_runtime(
             remove_app,
             &mut record,
             vec![(
-                if pending_stop { "simulator" } else { "core" }.to_string(),
+                if guarded_simulator {
+                    "simulator"
+                } else {
+                    "core"
+                }
+                .to_string(),
                 owner_refusal(),
             )],
             false,
@@ -254,7 +263,7 @@ pub fn cleanup_with_runtime(
         outcomes.push(("runner_host".to_string(), outcome));
     }
 
-    let owner_alive = !pending_stop
+    let owner_alive = !guarded_simulator
         && (record.resources.recorder.is_some() || record.resources.pr_worktree.is_some())
         && !record.prepare.as_ref().is_some_and(|owner| {
             matches!(

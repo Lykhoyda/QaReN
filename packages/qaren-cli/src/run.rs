@@ -1815,7 +1815,7 @@ fn resolve_device(
         Platform::Android => borrow_emulator(runner, device, android_home),
         Platform::Ios => {
             let strict_inventory = select_from_inventory || shutdown_device_on_exit;
-            let output = runner.run(&if select_from_inventory {
+            let output = runner.run(&if strict_inventory {
                 ios::list_devices_spec()
             } else {
                 ios::list_booted_spec()
@@ -1835,14 +1835,15 @@ fn resolve_device(
                 android: None,
                 needs_boot: sim.state == ios::SimState::Shutdown,
             };
-            if select_from_inventory {
+            if strict_inventory {
                 return device
                     .and_then(|udid| ios::parse_selected_sim(&output.stdout, udid))
+                    .filter(|sim| select_from_inventory || sim.state == ios::SimState::Booted)
                     .map(|sim| borrow(&sim))
                     .ok_or_else(|| Failure::new(
                         "device",
                         FailureCode::DeviceUnavailable,
-                        "selected UUID is not one available Booted or Shutdown iOS simulator with complete metadata",
+                        "selected UUID is not one available iOS simulator in the required power state with complete metadata",
                         "check the exact --device UUID and simulator inventory, then re-run",
                     ));
             }
@@ -1855,31 +1856,14 @@ fn resolve_device(
                 ));
             };
             if let Some(udid) = device {
-                let target = if shutdown_device_on_exit {
-                    ios::canonical_udid(udid).unwrap_or_else(|| udid.to_string())
-                } else {
-                    udid.to_string()
-                };
-                let matching: Vec<_> = sims.iter().filter(|sim| sim.udid == target).collect();
+                let matching: Vec<_> = sims.iter().filter(|sim| sim.udid == udid).collect();
                 return match matching.as_slice() {
-                    [sim]
-                        if !shutdown_device_on_exit
-                            || (ios::canonical_udid(&sim.udid).as_deref()
-                                == Some(sim.udid.as_str())
-                                && !sim.name.trim().is_empty()
-                                && !sim.device_type.trim().is_empty()
-                                && sim
-                                    .runtime
-                                    .strip_prefix("com.apple.CoreSimulator.SimRuntime.iOS-")
-                                    .is_some_and(|s| !s.is_empty())) =>
-                    {
-                        Ok(borrow(sim))
-                    }
+                    [sim] => Ok(borrow(sim)),
                     _ => Err(Failure::new(
                         "device",
                         FailureCode::DeviceUnavailable,
                         format!(
-                            "{target} is not a booted iOS simulator ({} booted)",
+                            "{udid} is not a booted iOS simulator ({} booted)",
                             sims.len()
                         ),
                         "boot the simulator named by --device, then re-run",

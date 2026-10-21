@@ -2008,8 +2008,13 @@ fn present_shared_runner_hosts_are_not_terminated_by_check_or_cleanup() {
             .any(|c| c.args.iter().any(|a| a == "terminate")));
         assert_eq!(mock.remaining(), 0);
         let record = RunRecord::load(&req.runs_root, &run_id()).unwrap();
+        let owner_pid = record.prepare.as_ref().unwrap().pid;
         let lease = record.resources.lease.unwrap();
         let mut cleanup = MockRunner::new();
+        cleanup.expect_run(
+            &format!("ps -p {owner_pid} -o lstart="),
+            CmdOutput::success(""),
+        );
         script_host_probe(&mut cleanup, UDID, present);
         let receipt = qaren::commands::cleanup::cleanup(&mut cleanup, &req.runs_root, &run_id());
         assert!(receipt.cleanup["runner_host"].starts_with("unresolved"));
@@ -2018,6 +2023,10 @@ fn present_shared_runner_hosts_are_not_terminated_by_check_or_cleanup() {
             .calls
             .iter()
             .all(|c| c.program != "/bin/kill" && !c.args.iter().any(|a| a == "terminate")));
+        cleanup.expect_run(
+            &format!("ps -p {owner_pid} -o lstart="),
+            CmdOutput::success(""),
+        );
         script_host_probe(&mut cleanup, UDID, hosts_absent());
         let receipt = qaren::commands::cleanup::cleanup(&mut cleanup, &req.runs_root, &run_id());
         assert_eq!(receipt.cleanup["runner_host"], "absent");
@@ -2047,6 +2056,7 @@ fn reclaiming_a_run_that_reached_the_walk_requires_scoped_host_absence() {
     let mut mock = MockRunner::new();
     script_preflight_until_lease(&mut mock, &repo);
     mock.expect_run("ps", CmdOutput::success(""));
+    mock.expect_run("ps -p 4242 -o lstart=", CmdOutput::success(""));
     script_host_probe(&mut mock, UDID, hosts_absent());
     mock.expect_run("lsof", free_port());
     mock.expect_run(
@@ -5313,6 +5323,118 @@ fn boot_device_admission_boot_readback_and_walk_share_a_durable_borrowed_lease()
 }
 
 #[test]
+fn external_cleanup_refuses_a_live_restart_only_run_during_dependency_install() {
+    struct CleanupDuringDeps {
+        mock: MockRunner,
+        runs_root: PathBuf,
+        checked: bool,
+    }
+    impl Runner for CleanupDuringDeps {
+        fn env_var(&self, name: &str) -> Option<String> {
+            self.mock.env_var(name)
+        }
+        fn execute(&mut self, spec: &CmdSpec, interruptible: bool) -> CmdOutput {
+            if spec.label == "pnpm-install" {
+                let record = RunRecord::load(&self.runs_root, &run_id()).unwrap();
+                assert_eq!(record.phase, Phase::Created);
+                assert_eq!(
+                    record.resources.borrowed_ios_stop(),
+                    qaren::runrecord::BorrowedIosStop::NotArmed
+                );
+                assert!(record.resources.core.is_none());
+                assert!(record.resources.runner_drivers.is_empty());
+                let owner = record.prepare.as_ref().unwrap();
+                let before = std::fs::read(RunRecord::path(&self.runs_root, &run_id())).unwrap();
+                let mut cleanup_runner = MockRunner::new();
+                cleanup_runner.expect_run(
+                    &format!("ps -p {} -o lstart=", owner.pid),
+                    CmdOutput::success(&owner.started_at),
+                );
+                cleanup_runner.expect_run(
+                    &format!("ps -p {} -o stat=", owner.pid),
+                    CmdOutput::success("S"),
+                );
+                let receipt = qaren::commands::cleanup::cleanup(
+                    &mut cleanup_runner,
+                    &self.runs_root,
+                    &run_id(),
+                );
+                assert_eq!(receipt.result, ReceiptResult::Refused);
+                assert!(receipt.cleanup["simulator"].starts_with("refused:"));
+                let lease = record.resources.lease.as_ref().unwrap();
+                let holder = qaren::buildplan::read_holder(&lease.lock_dir).unwrap();
+                assert_eq!(holder.run_id, record.run_id);
+                assert_eq!(holder.holder, lease.holder);
+                assert_eq!(
+                    std::fs::read(RunRecord::path(&self.runs_root, &run_id())).unwrap(),
+                    before
+                );
+                assert_eq!(cleanup_runner.calls.len(), 2);
+                assert_eq!(cleanup_runner.remaining(), 0);
+                assert!(!receipt.outcomes.contains_key("record_saved"));
+                self.checked = true;
+            }
+            self.mock.execute(spec, interruptible)
+        }
+        fn execute_private(
+            &mut self,
+            spec: &CmdSpec,
+            input: &[u8],
+            interruptible: bool,
+        ) -> qaren::exec::PrivateOutput {
+            self.mock.execute_private(spec, input, interruptible)
+        }
+        fn spawn_group_unchecked(
+            &mut self,
+            spec: &CmdSpec,
+            log: &Path,
+        ) -> std::io::Result<Spawned> {
+            self.mock.spawn_group_unchecked(spec, log)
+        }
+        fn spawn_piped_unchecked(
+            &mut self,
+            spec: &CmdSpec,
+            log: &Path,
+        ) -> std::io::Result<PipedChild> {
+            self.mock.spawn_piped_unchecked(spec, log)
+        }
+        fn sleep(&mut self, duration: std::time::Duration) {
+            self.mock.sleep(duration)
+        }
+        fn now_epoch_ms(&self) -> u64 {
+            self.mock.now_epoch_ms()
+        }
+        fn commands_executed(&self) -> u64 {
+            self.mock.commands_executed()
+        }
+    }
+    let (repo, app) = app_repo();
+    let mut mock = MockRunner::new();
+    script_preflight_inventory(
+        &mut mock,
+        &repo,
+        "simctl list devices -j",
+        &available_inventory("Booted"),
+    );
+    script_admission(&mut mock);
+    common::script_ios_deps(&mut mock);
+    script_unknown_admission(&mut mock);
+    let mut req = request(&repo, &app, 30);
+    req.device = Some(UDID.into());
+    req.restart_device = true;
+    let mut runner = CleanupDuringDeps {
+        mock,
+        runs_root: req.runs_root.clone(),
+        checked: false,
+    };
+    let receipt = run(&mut runner, &req);
+    assert!(runner.checked);
+    assert_eq!(receipt.result, ReceiptResult::Refused);
+    assert_eq!(receipt.cleanup["device_lease"], "removed");
+    assert_eq!(runner.mock.remaining(), 0);
+}
+
+#[test]
 fn restart_device_shuts_down_boots_reads_back_and_walks_under_a_durable_borrowed_lease() {
     for fresh in [false, true] {
         for initial in ["Shutdown", "Booted"] {
@@ -5558,6 +5680,55 @@ fn restart_device_shutdown_or_readback_failure_stops_before_boot_install_or_walk
 }
 
 #[test]
+fn shutdown_only_selection_refuses_unavailable_or_ambiguous_targets_before_claiming() {
+    for fault in ["missing", "false", "non_boolean", "duplicate", "shutdown"] {
+        let (repo, app) = app_repo();
+        let mut inventory: serde_json::Value =
+            serde_json::from_str(&available_inventory("Booted")).unwrap();
+        let sims = inventory["devices"]["com.apple.CoreSimulator.SimRuntime.iOS-26-5"]
+            .as_array_mut()
+            .unwrap();
+        match fault {
+            "missing" => {
+                sims[0].as_object_mut().unwrap().remove("isAvailable");
+            }
+            "false" => sims[0]["isAvailable"] = false.into(),
+            "non_boolean" => sims[0]["isAvailable"] = "true".into(),
+            "duplicate" => {
+                let mut duplicate = sims[0].clone();
+                duplicate["state"] = "Shutdown".into();
+                sims.push(duplicate);
+            }
+            "shutdown" => sims[0]["state"] = "Shutdown".into(),
+            _ => unreachable!(),
+        }
+        let mut mock = MockRunner::new();
+        mock.expect_run("node --version", CmdOutput::success("v26.8.1"));
+        script_plan(&mut mock, &repo);
+        mock.expect_run(
+            "simctl list devices -j",
+            CmdOutput::success(&inventory.to_string()),
+        );
+        let mut req = request(&repo, &app, 30);
+        req.device = Some(UDID.into());
+        req.shutdown_device_on_exit = true;
+        let receipt = run(&mut mock, &req);
+        assert_eq!(
+            receipt.failure.unwrap().code,
+            FailureCode::DeviceUnavailable,
+            "{fault}"
+        );
+        assert_eq!(mock.remaining(), 0);
+        assert!(!req.lock_root.exists(), "{fault}");
+        assert!(!req.runs_root.exists(), "{fault}");
+        assert!(!mock.calls.iter().any(|spec| matches!(
+            spec.label.as_str(),
+            "fresh-install-admission" | "pnpm-install" | "simctl-shutdown"
+        )));
+    }
+}
+
+#[test]
 fn shutdown_device_on_exit_arms_after_admission_and_stops_simulator_before_releasing_lease() {
     use qaren::runrecord::BorrowedIosStop;
     for (mode, end_state) in [
@@ -5573,8 +5744,8 @@ fn shutdown_device_on_exit_arms_after_admission_and_stops_simulator_before_relea
                 script_preflight_inventory(
                     &mut mock,
                     &repo,
-                    "simctl list devices booted",
-                    &booted_json_two(),
+                    "simctl list devices -j",
+                    &available_inventory("Booted"),
                 );
             }
             "with_boot_device" => {
@@ -5896,8 +6067,8 @@ fn shutdown_device_on_exit_teardown_faults_retain_pending_stop_and_device_lease(
         script_preflight_inventory(
             &mut mock,
             &repo,
-            "simctl list devices booted",
-            &booted_json_two(),
+            "simctl list devices -j",
+            &available_inventory("Booted"),
         );
         script_admission(&mut mock);
         common::script_ios_deps(&mut mock);

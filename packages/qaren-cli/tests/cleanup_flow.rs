@@ -773,16 +773,16 @@ fn a_live_walking_owner_refuses_the_whole_cleanup_without_commands_or_save() {
 }
 
 #[test]
-fn an_unknown_owner_refuses_only_the_core_and_other_legs_still_run() {
-    assert_core_only_refusal_with_metro(true);
+fn an_unknown_borrowed_ios_owner_refuses_all_cleanup() {
+    assert_borrowed_ios_owner_refusal_with_metro(true);
 }
 
 #[test]
-fn a_record_without_owner_identity_keeps_core_only_refusal() {
-    assert_core_only_refusal_with_metro(false);
+fn a_borrowed_ios_record_without_owner_identity_refuses_all_cleanup() {
+    assert_borrowed_ios_owner_refusal_with_metro(false);
 }
 
-fn assert_core_only_refusal_with_metro(with_owner: bool) {
+fn assert_borrowed_ios_owner_refusal_with_metro(with_owner: bool) {
     let repo = common::temp_repo();
     let mut record = core_record(&repo);
     record.resources.metro = ios_ready_record(&repo).resources.metro;
@@ -806,47 +806,17 @@ fn assert_core_only_refusal_with_metro(with_owner: bool) {
     if with_owner {
         mock.expect_run("ps -p 999 -o lstart=", CmdOutput::failed(1, "ps denied"));
     }
-    mock.expect_run("ps -p 5000 -o lstart=", CmdOutput::success(LSTART));
-    mock.expect_run("ps -p 5000 -o stat=", CmdOutput::success("S"));
-    mock.expect_run("lsof", free_port());
-    mock.expect_run("lstart=", CmdOutput::success(LSTART));
-    mock.expect_run("stat=", CmdOutput::success("S"));
-    mock.expect_run("/bin/kill -TERM -- -5000", CmdOutput::success(""));
-    mock.expect_run("lstart=", CmdOutput::success(LSTART));
-    mock.expect_run("stat=", CmdOutput::success("S"));
-    mock.expect_run("/bin/kill -KILL -- -5000", CmdOutput::success(""));
-    mock.expect_run("ps -p 5000 -o lstart=", CmdOutput::success(""));
-    mock.expect_run("lsof", free_port());
-    mock.expect_run("ps -A", CmdOutput::success("1 1 S\n"));
-
     let receipt = cleanup(&mut mock, &repo, "core-run");
 
     assert_eq!(receipt.result, ReceiptResult::Refused);
-    assert_eq!(
-        receipt.cleanup["core"],
-        "refused: the run's qaren process is alive or unproven gone"
-    );
-    assert_eq!(receipt.cleanup["metro"], "removed");
-    assert!(receipt.cleanup["runner_host"].starts_with("refused: core quiescence"));
-    assert!(!mock
-        .calls
-        .iter()
-        .any(|spec| spec.rendered().contains("simctl terminate")));
-    assert!(receipt.cleanup["device_lease"].starts_with("unresolved: retained"));
-    assert_eq!(mock.calls.len(), if with_owner { 13 } else { 12 });
-    assert_eq!(
-        mock.calls
-            .iter()
-            .filter(|spec| spec.rendered() == "ps -p 999 -o lstart=")
-            .count(),
-        usize::from(with_owner)
-    );
+    assert!(receipt.cleanup["simulator"].starts_with("refused:"));
+    assert_eq!(mock.calls.len(), usize::from(with_owner));
     assert_eq!(mock.remaining(), 0);
     let stored = RunRecord::load(&repo, "core-run").unwrap();
     assert_eq!(stored.resources.core.unwrap().pgid, 9000);
     assert!(stored.resources.core_cleanup.is_none());
-    assert_eq!(stored.history.len(), record.history.len() + 1);
-    assert_ne!(
+    assert_eq!(stored.history.len(), record.history.len());
+    assert_eq!(
         std::fs::read(RunRecord::run_dir(&repo, "core-run").join("run.json")).unwrap(),
         before
     );
@@ -1920,6 +1890,7 @@ fn cleanup_retains_the_device_lease_until_the_metro_group_is_proven_gone() {
 
     // Metro group: alive, TERM, KILL, and the leader survives both -> unresolved.
     let mut mock = MockRunner::new();
+    owner_gone(&mut mock);
     mock.expect_run("ps", CmdOutput::success(&format!("{LSTART}\n")));
     mock.expect_run("ps", CmdOutput::success("S\n"));
     mock.expect_run("lsof", CmdOutput::success("6001\n"));
@@ -1950,6 +1921,7 @@ fn cleanup_retains_the_device_lease_until_the_metro_group_is_proven_gone() {
 
     // Metro leader dead and the port free -> the lease is released.
     let mut mock2 = MockRunner::new();
+    owner_gone(&mut mock2);
     mock2.expect_run("ps", CmdOutput::failed(1, ""));
     mock2.expect_run(
         "lsof",
@@ -3061,12 +3033,13 @@ fn borrowed_ios_stop_in_cleanup_enforces_owner_lease_quiescence_admission_and_id
         let lock = record.resources.lease.as_ref().unwrap().lock_dir.clone();
         record.save(&repo).unwrap();
         let mut mock = MockRunner::new();
+        owner_gone(&mut mock);
         let receipt = cleanup(&mut mock, &repo, "borrowed-ios-run");
         assert_eq!(receipt.result, ReceiptResult::Cleaned);
         assert_eq!(receipt.cleanup["simulator"], "kept");
         assert_eq!(receipt.cleanup["device_lease"], "removed");
         assert!(!lock.exists());
-        assert!(mock.calls.is_empty());
+        assert_eq!(mock.calls.len(), 1);
     }
 
     // 2. Completed record never re-runs admission or shutdown even if the simulator is later Booted.
@@ -3081,6 +3054,7 @@ fn borrowed_ios_stop_in_cleanup_enforces_owner_lease_quiescence_admission_and_id
         let lock = record.resources.lease.as_ref().unwrap().lock_dir.clone();
         record.save(&repo).unwrap();
         let mut mock = MockRunner::new();
+        owner_gone(&mut mock);
         let receipt = cleanup_with_runtime(
             &mut mock,
             &repo,
@@ -3092,7 +3066,7 @@ fn borrowed_ios_stop_in_cleanup_enforces_owner_lease_quiescence_admission_and_id
         assert_eq!(receipt.cleanup["simulator"], "absent");
         assert_eq!(receipt.cleanup["device_lease"], "removed");
         assert!(!lock.exists());
-        assert!(mock.calls.is_empty());
+        assert_eq!(mock.calls.len(), 1);
     }
 
     // 3. Live or unknown owner refuses without touching the simulator or releasing the lease.
