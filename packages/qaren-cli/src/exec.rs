@@ -1,5 +1,6 @@
 use serde::{Deserialize, Serialize};
 use std::collections::VecDeque;
+use std::ffi::OsString;
 use std::io::{BufRead, BufReader, Read, Write};
 use std::os::fd::OwnedFd;
 use std::os::unix::net::UnixStream;
@@ -256,6 +257,9 @@ pub trait Runner {
     fn env_var(&self, name: &str) -> Option<String> {
         std::env::var(name).ok()
     }
+    fn env_var_os(&self, name: &str) -> Option<OsString> {
+        self.env_var(name).map(OsString::from)
+    }
     fn env_names(&self) -> Vec<String> {
         std::env::vars_os()
             .map(|(name, _)| name.to_string_lossy().into_owned())
@@ -330,6 +334,9 @@ pub(crate) struct CleanupRunner<'a>(pub(crate) &'a mut dyn Runner);
 impl Runner for CleanupRunner<'_> {
     fn env_var(&self, name: &str) -> Option<String> {
         self.0.env_var(name)
+    }
+    fn env_var_os(&self, name: &str) -> Option<OsString> {
+        self.0.env_var_os(name)
     }
     fn execute(&mut self, spec: &CmdSpec, _interruptible: bool) -> CmdOutput {
         self.0.execute(spec, false)
@@ -414,6 +421,9 @@ impl Default for RealRunner {
 }
 
 impl Runner for RealRunner {
+    fn env_var_os(&self, name: &str) -> Option<OsString> {
+        std::env::var_os(name)
+    }
     fn execute(&mut self, spec: &CmdSpec, interruptible: bool) -> CmdOutput {
         self.executed += 1;
         let started = Instant::now();

@@ -30,18 +30,14 @@ fn qaren_home() -> Result<PathBuf, String> {
     user_home().map(|home| home.join(".qaren"))
 }
 
-// Cross-project claims (devices, build serialization) live at a host-level
-// root so two worktrees sharing a device still contend; only an absolute path works.
+// Absolute QAREN_LOCK_ROOT wins. QAREN_MACHINE_LOCKS=1 selects the OS parent.
+// Otherwise the root stays $HOME/.qaren/locks.
 fn lock_root() -> Result<PathBuf, String> {
-    if let Some(explicit) = std::env::var_os("QAREN_LOCK_ROOT") {
-        let path = PathBuf::from(explicit);
-        return if path.is_absolute() {
-            Ok(path)
-        } else {
-            Err("QAREN_LOCK_ROOT must be an absolute path".to_string())
-        };
-    }
-    qaren_home().map(|home| home.join("locks"))
+    qaren::buildplan::configured_lock_root(
+        std::env::var_os("QAREN_LOCK_ROOT").as_deref(),
+        std::env::var_os(qaren::buildplan::MACHINE_LOCKS_OPT_IN).as_deref(),
+        std::env::var_os("HOME").as_deref(),
+    )
 }
 
 fn runs_root() -> Result<PathBuf, String> {
@@ -106,11 +102,17 @@ fn failed_receipt(verb: &str, failure: Failure, runner: &dyn Runner) -> Receipt 
 }
 
 fn roots_failure(detail: String) -> Failure {
+    let next_action =
+        if detail.contains("QAREN_LOCK_ROOT") || detail.contains("QAREN_MACHINE_LOCKS") {
+            "set an absolute QAREN_LOCK_ROOT, or leave QAREN_MACHINE_LOCKS unset"
+        } else {
+            "set HOME to an absolute path and QAREN_NATIVE_CACHE_ROOT to a supported private absolute directory"
+        };
     Failure::new(
         "validate",
         FailureCode::PrereqMissing,
         format!("no host-level state root is available: {detail}"),
-        "set HOME to an absolute path and QAREN_NATIVE_CACHE_ROOT to a supported private absolute directory",
+        next_action,
     )
 }
 

@@ -56,6 +56,10 @@ fn setup() -> (MockRunner, PathBuf) {
     runner
         .environment
         .insert("HOME".into(), home.display().to_string());
+    runner.environment.insert(
+        "QAREN_LOCK_ROOT".into(),
+        home.join(".qaren/locks").display().to_string(),
+    );
     (runner, home)
 }
 

@@ -53,17 +53,16 @@ fn roots(runner: &dyn Runner) -> Result<(PathBuf, PathBuf), String> {
     let home = runner
         .env_var("HOME")
         .map(PathBuf::from)
-        .filter(|p| p.is_absolute())
-        .ok_or("HOME must be absolute")?
-        .join(".qaren");
-    let locks = runner
-        .env_var("QAREN_LOCK_ROOT")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| home.join("locks"));
-    if !locks.is_absolute() {
-        return Err("QAREN_LOCK_ROOT must be an absolute path".into());
-    }
-    Ok((home.join("native-suites"), locks))
+        .filter(|path| path.is_absolute())
+        .ok_or("HOME must be absolute")?;
+    let locks = buildplan::configured_lock_root(
+        runner.env_var_os("QAREN_LOCK_ROOT").as_deref(),
+        runner
+            .env_var_os(buildplan::MACHINE_LOCKS_OPT_IN)
+            .as_deref(),
+        Some(home.as_os_str()),
+    )?;
+    Ok((home.join(".qaren").join("native-suites"), locks))
 }
 
 fn checkout() -> &'static Path {
@@ -297,10 +296,7 @@ pub fn run(runner: &mut dyn Runner, device: &str) -> Result<NativeSuite, String>
     let (suites, locks) = roots(runner)?;
     let owner =
         identity(runner, std::process::id() as i32).ok_or("suite owner identity is unknown")?;
-    std::fs::create_dir_all(&locks).map_err(|_| "cannot create lock root")?;
-    let locks = locks
-        .canonicalize()
-        .map_err(|_| "cannot resolve lock root")?;
+    let locks = buildplan::canonical_lock_root(&locks)?;
     let run_id = format!(
         "native-ios-{}-{}",
         runner.now_epoch_ms(),
@@ -316,12 +312,13 @@ pub fn run(runner: &mut dyn Runner, device: &str) -> Result<NativeSuite, String>
         .mode(0o700)
         .create(&dir)
         .map_err(|_| "cannot claim native suite run directory")?;
+    let lock_dir = buildplan::lock_dir(&locks, &lease::lock_name(Platform::Ios, &device_id));
     let mut record = NativeSuite {
         schema: "qaren-native-suite/1".into(),
         run_id,
         device_id,
         owner,
-        lock_dir: locks.join(lease::lock_name(Platform::Ios, &canonical_device(device)?)),
+        lock_dir,
         lease: None,
         process: SuiteProcess::NotSpawned,
         suite_exit: None,
@@ -360,10 +357,8 @@ pub fn recover(runner: &mut dyn Runner, run_id: &str) -> Result<NativeSuite, Str
         std::fs::read(dir.join("suite.json")).map_err(|_| "native suite record is unreadable")?;
     let mut record: NativeSuite =
         serde_json::from_slice(&raw).map_err(|_| "native suite record is invalid")?;
-    let expected = locks
-        .canonicalize()
-        .map_err(|_| "cannot resolve lock root")?
-        .join(lease::lock_name(Platform::Ios, &record.device_id));
+    let locks = buildplan::existing_lock_root(&locks)?;
+    let expected = buildplan::lock_dir(&locks, &lease::lock_name(Platform::Ios, &record.device_id));
     let holder_name = format!("qaren-{run_id}");
     if record.schema != "qaren-native-suite/1"
         || record.run_id != run_id
@@ -425,4 +420,67 @@ pub fn recover(runner: &mut dyn Runner, run_id: &str) -> Result<NativeSuite, Str
     }
     finish(runner, &dir, &mut record, None)?;
     Ok(record)
+}
+
+#[cfg(test)]
+mod lock_root_tests {
+    use super::roots;
+    use crate::exec::RealRunner;
+    use std::ffi::OsString;
+    use std::os::unix::ffi::{OsStrExt, OsStringExt};
+    use std::process::Command;
+
+    #[test]
+    fn non_utf8_lock_root_worker() {
+        if std::env::var_os("QAREN_NONUTF8_LOCK_WORKER").is_none() {
+            return;
+        }
+        let expected = std::env::var_os("QAREN_LOCK_ROOT").expect("lock root");
+        let runner = RealRunner::new();
+        let (_suites, via_suite) = roots(&runner).expect("suite root");
+        let via_resolver = crate::buildplan::configured_lock_root(
+            std::env::var_os("QAREN_LOCK_ROOT").as_deref(),
+            std::env::var_os(crate::buildplan::MACHINE_LOCKS_OPT_IN).as_deref(),
+            std::env::var_os("HOME").as_deref(),
+        )
+        .expect("resolver root");
+        assert_eq!(via_suite, via_resolver);
+        assert_eq!(via_suite.as_os_str(), expected.as_os_str());
+        println!("nonutf8-ok");
+    }
+
+    #[test]
+    fn non_utf8_absolute_lock_root_reaches_the_suite_and_the_resolver() {
+        let dir = std::env::temp_dir().join(format!(
+            "qaren-nonutf8-{}-{}",
+            std::process::id(),
+            crate::timefmt::epoch_ms()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let home = dir.join("home");
+        std::fs::create_dir(&home).unwrap();
+        let mut bytes = dir.join("locks").as_os_str().as_bytes().to_vec();
+        bytes.push(0xff);
+        let lock_root = OsString::from_vec(bytes);
+        let result = Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "native_suite::lock_root_tests::non_utf8_lock_root_worker",
+                "--nocapture",
+            ])
+            .env("HOME", &home)
+            .env("QAREN_LOCK_ROOT", &lock_root)
+            .env("QAREN_NONUTF8_LOCK_WORKER", "1")
+            .env_remove(crate::buildplan::MACHINE_LOCKS_OPT_IN)
+            .output()
+            .unwrap();
+        std::fs::remove_dir_all(&dir).unwrap();
+        assert!(
+            result.status.success(),
+            "{}{}",
+            String::from_utf8_lossy(&result.stdout),
+            String::from_utf8_lossy(&result.stderr)
+        );
+        assert!(String::from_utf8_lossy(&result.stdout).contains("nonutf8-ok"));
+    }
 }
