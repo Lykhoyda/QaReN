@@ -296,6 +296,9 @@ The configuration keys, defaults and validation are owned by
 `devClientScheme`; only `pnpm` is supported as the app package manager.
 `--config` selects another configuration file.
 
+For optional preparation budgets, see the
+[deadline configuration reference](../../apps/docs-site/src/content/docs/configuration.mdx#deadlines).
+
 For private registries whose credentials use other environment names, declare the
 names in the operator-selected configuration (empty by default):
 

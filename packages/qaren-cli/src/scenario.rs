@@ -270,6 +270,23 @@ impl Default for Deadlines {
     }
 }
 
+impl Deadlines {
+    pub(crate) fn validate(&self) -> Result<(), String> {
+        for (field, value) in [
+            ("deadlines.install_deps_seconds", self.install_deps_seconds),
+            ("deadlines.build_seconds", self.build_seconds),
+            ("deadlines.device_boot_seconds", self.device_boot_seconds),
+        ] {
+            if !(30..=7200).contains(&value) {
+                return Err(format!(
+                    "{field} = {value} must be within 30..=7200 seconds"
+                ));
+            }
+        }
+        Ok(())
+    }
+}
+
 impl Scenario {
     pub fn load(path: &Path) -> Result<(Scenario, String), Failure> {
         let raw = std::fs::read_to_string(path).map_err(|e| {
@@ -420,23 +437,7 @@ impl Scenario {
                 ));
             }
         }
-        for (field, value) in [
-            (
-                "deadlines.install_deps_seconds",
-                self.deadlines.install_deps_seconds,
-            ),
-            ("deadlines.build_seconds", self.deadlines.build_seconds),
-            (
-                "deadlines.device_boot_seconds",
-                self.deadlines.device_boot_seconds,
-            ),
-        ] {
-            if !(30..=7200).contains(&value) {
-                return Err(invalid(format!(
-                    "{field} = {value} must be within 30..=7200 seconds"
-                )));
-            }
-        }
+        self.deadlines.validate().map_err(invalid)?;
         match self.platform {
             Platform::Ios => {
                 let ios = self

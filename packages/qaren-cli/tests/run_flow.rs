@@ -5255,10 +5255,12 @@ struct PrRunner {
     app: PathBuf,
     recorder_persisted_before_spawn: Option<bool>,
     fail_core_spawn: bool,
+    planted_worktree_config: Option<String>,
+    worktree_config_planted: bool,
 }
 
 impl PrRunner {
-    fn materialize(&self, wt: &Path) {
+    fn materialize(&mut self, wt: &Path) {
         let app = wt.join("test-app");
         std::fs::create_dir_all(app.join("node_modules/.bin")).unwrap();
         for file in ["package.json", "pnpm-lock.yaml", "node_modules/.bin/expo"] {
@@ -5266,6 +5268,12 @@ impl PrRunner {
         }
         if self.app.join("App.tsx").is_file() {
             std::fs::copy(self.app.join("App.tsx"), app.join("App.tsx")).unwrap();
+        }
+        if let Some(yaml) = &self.planted_worktree_config {
+            let config = app.join(".qaren");
+            std::fs::create_dir_all(&config).unwrap();
+            std::fs::write(config.join("config.yaml"), yaml).unwrap();
+            self.worktree_config_planted = true;
         }
     }
 }
@@ -5466,6 +5474,8 @@ fn a_pr_run_with_runtime_inputs_never_starts_the_recorder_and_keeps_values_priva
             app: app.clone(),
             recorder_persisted_before_spawn: None,
             fail_core_spawn: false,
+            planted_worktree_config: None,
+            worktree_config_planted: false,
         };
         let mock = &mut runner.inner;
         script_pr_preflight_requiring(
@@ -5566,6 +5576,8 @@ fn recording_start_failures_remain_failed_through_cleanup_and_the_viewer() {
             app: app.clone(),
             recorder_persisted_before_spawn: None,
             fail_core_spawn: false,
+            planted_worktree_config: None,
+            worktree_config_planted: false,
         };
         let mock = &mut runner.inner;
         script_pr_preflight(mock, &repo, &wt);
@@ -5668,6 +5680,8 @@ fn cancelled_pr_walks_with_or_without_source_drift_cannot_publish() {
             app: app.clone(),
             recorder_persisted_before_spawn: None,
             fail_core_spawn: false,
+            planted_worktree_config: None,
+            worktree_config_planted: false,
         };
         let mock = &mut runner.inner;
         script_pr_preflight(mock, &repo, &wt);
@@ -5738,6 +5752,8 @@ fn pr_walk_result(candidate_drift: bool, collision: bool) {
         app: app.clone(),
         recorder_persisted_before_spawn: None,
         fail_core_spawn: false,
+        planted_worktree_config: None,
+        worktree_config_planted: false,
     };
     let mock = &mut runner.inner;
     script_pr_preflight(mock, &repo, &wt);
@@ -5887,6 +5903,8 @@ fn a_core_failure_on_a_pr_run_still_stops_the_recorder_and_removes_the_worktree(
         app: app.clone(),
         recorder_persisted_before_spawn: None,
         fail_core_spawn: true,
+        planted_worktree_config: None,
+        worktree_config_planted: false,
     };
     let mock = &mut runner.inner;
     script_pr_preflight(mock, &repo, &wt);
@@ -5944,6 +5962,8 @@ fn a_pr_run_retains_its_worktree_when_metro_cleanup_is_unproven() {
         app: app.clone(),
         recorder_persisted_before_spawn: None,
         fail_core_spawn: true,
+        planted_worktree_config: None,
+        worktree_config_planted: false,
     };
     let mock = &mut runner.inner;
     script_pr_preflight(mock, &repo, &wt);
@@ -5989,6 +6009,8 @@ fn a_pr_run_keeps_the_unbound_metros_surviving_child_worktree() {
         app: app.clone(),
         recorder_persisted_before_spawn: None,
         fail_core_spawn: true,
+        planted_worktree_config: None,
+        worktree_config_planted: false,
     };
     let mock = &mut runner.inner;
     script_pr_preflight(mock, &repo, &wt);
@@ -6065,6 +6087,8 @@ fn pr_receipt_reports_the_final_recorder_cleanup_retry() {
             app: app.clone(),
             recorder_persisted_before_spawn: None,
             fail_core_spawn: false,
+            planted_worktree_config: None,
+            worktree_config_planted: false,
         };
         let mock = &mut runner.inner;
         script_pr_preflight(mock, &repo, &wt);
@@ -6179,6 +6203,8 @@ fn cancelled_pr_startup_never_dispatches_the_core_and_cleans_up() {
             app: app.clone(),
             recorder_persisted_before_spawn: None,
             fail_core_spawn: false,
+            planted_worktree_config: None,
+            worktree_config_planted: false,
         };
         let mock = &mut runner.inner;
         script_pr_preflight(mock, &repo, &wt);
@@ -6268,6 +6294,8 @@ fn a_late_cancellation_is_the_terminal_result_and_publication_refuses() {
             app: app.clone(),
             recorder_persisted_before_spawn: None,
             fail_core_spawn: false,
+            planted_worktree_config: None,
+            worktree_config_planted: false,
         };
         let mock = &mut runner.inner;
         script_pr_preflight(mock, &repo, &wt);
@@ -6485,6 +6513,8 @@ fn a_playable_encode_reclaims_the_runs_raw_capture_and_reports_the_bytes() {
             app: app.clone(),
             recorder_persisted_before_spawn: None,
             fail_core_spawn: false,
+            planted_worktree_config: None,
+            worktree_config_planted: false,
         });
         let mock = &mut runner.0.inner;
         let admitted = mock.now_epoch_ms() + 4_100;
@@ -6621,6 +6651,8 @@ fn cancellation_during_terminal_save_withholds_the_publish_handoff() {
             app: app.clone(),
             recorder_persisted_before_spawn: None,
             fail_core_spawn: false,
+            planted_worktree_config: None,
+            worktree_config_planted: false,
         },
         repo.join("runs"),
     );
@@ -7093,6 +7125,8 @@ fn android_pr_video_flow(api: u16) {
         app: app.clone(),
         recorder_persisted_before_spawn: None,
         fail_core_spawn: false,
+        planted_worktree_config: None,
+        worktree_config_planted: false,
     };
     let mock = &mut runner.inner;
     script_android_pr_preflight(mock, &repo, &wt, api);
@@ -7175,4 +7209,201 @@ fn android_pr_video_flow(api: u16) {
     assert_eq!(receipt.cleanup["device_lease"], "removed");
     assert_eq!(runner.inner.remaining(), 0);
     no_ios_or_expo_android_build(&runner.inner);
+}
+
+struct DeadlineCase {
+    block: &'static str,
+    deps: u64,
+    build: u64,
+    boot: u64,
+}
+
+fn deadline_cases() -> [DeadlineCase; 3] {
+    [
+        DeadlineCase {
+            block: "",
+            deps: 900,
+            build: 2400,
+            boot: 420,
+        },
+        DeadlineCase {
+            block: "deadlines:\n  build_seconds: 5400\n",
+            deps: 900,
+            build: 5400,
+            boot: 420,
+        },
+        DeadlineCase {
+            block: "deadlines:\n  install_deps_seconds: 120\n  build_seconds: 5400\n  device_boot_seconds: 90\n",
+            deps: 120,
+            build: 5400,
+            boot: 90,
+        },
+    ]
+}
+
+fn write_operator_config(app: &Path, block: &str) -> String {
+    let yaml = format!(
+        "appId: com.rndevagent.testapp\nmetroPort: 8791\ndevClientScheme: rndatest\n{block}"
+    );
+    std::fs::write(app.join(".qaren/config.yaml"), &yaml).unwrap();
+    yaml
+}
+
+fn command_timeout(mock: &MockRunner, label: &str) -> u64 {
+    mock.calls
+        .iter()
+        .find(|call| call.label == label)
+        .unwrap_or_else(|| panic!("missing {label}"))
+        .timeout_seconds
+}
+
+fn record_from_receipt(receipt: &qaren::receipt::Receipt) -> RunRecord {
+    let path = &receipt.artifacts["run_record"];
+    serde_json::from_slice(&std::fs::read(path).unwrap()).unwrap()
+}
+
+fn assert_effective_deadlines(record: &RunRecord, case: &DeadlineCase, raw: &str) {
+    assert_eq!(record.scenario.deadlines.install_deps_seconds, case.deps);
+    assert_eq!(record.scenario.deadlines.build_seconds, case.build);
+    assert_eq!(record.scenario.deadlines.device_boot_seconds, case.boot);
+    assert_eq!(
+        record.scenario_sha256,
+        qaren::candidate::sha256_hex(raw.as_bytes())
+    );
+}
+
+fn script_check_with_boot(mock: &mut MockRunner, repo: &Path) {
+    script_preflight_inventory(
+        mock,
+        repo,
+        "simctl list devices -j",
+        &available_inventory("Shutdown"),
+    );
+    script_admission(mock);
+    common::script_ios_deps(mock);
+    script_admission(mock);
+    mock.expect_run(
+        &format!("simctl bootstatus {UDID} -b"),
+        CmdOutput::success(""),
+    );
+    mock.expect_run(
+        "simctl list devices -j",
+        CmdOutput::success(&available_inventory("Booted")),
+    );
+    script_provision_after_deps(mock);
+    script_drift_status(mock);
+    script_host_probe(mock, UDID, hosts_absent());
+    mock.expect_spawn_piped("walk.js", 9000, &pass_stdout(), Some(0));
+    script_core_identity(mock);
+    script_teardown(mock);
+}
+
+fn script_pr_pass(mock: &mut MockRunner, repo: &Path, wt: &Path) {
+    script_pr_preflight(mock, repo, wt);
+    script_provision(mock);
+    script_pr_provenance_recheck(mock);
+    script_drift_status(mock);
+    script_recorder_start(mock);
+    script_host_probe(mock, UDID, hosts_absent());
+    mock.expect_spawn_piped("walk.js", 9000, &pr_pass_stdout(), Some(0));
+    script_core_identity(mock);
+    script_drift_status(mock);
+    mock.expect_run("git", CmdOutput::success(&format!("{PR_HEAD}\n")));
+    mock.expect_run(
+        "git",
+        CmdOutput::success("?? test-app/.qaren/actions/tasks.yaml\0"),
+    );
+    script_recorder_stop(mock);
+    script_pr_teardown_after_drift(mock);
+    mock.expect_run("du -sk", CmdOutput::success("4\n"));
+    mock.expect_run("worktree remove --force", CmdOutput::success(""));
+    mock.expect_run("which ffmpeg", CmdOutput::failed(1, ""));
+    mock.expect_run(
+        "gh pr view https://github.com/o/r/pull/12",
+        pr_view_json(PR_MOVED),
+    );
+}
+
+#[test]
+fn check_persists_configured_deadlines_and_uses_them_as_command_budgets() {
+    for case in deadline_cases() {
+        let (repo, app) = app_repo();
+        let raw = write_operator_config(&app, case.block);
+        let mut mock = MockRunner::new();
+        script_check_with_boot(&mut mock, &repo);
+        let mut req = request(&repo, &app, 30);
+        req.device = Some(UDID.to_lowercase());
+        req.boot_device = true;
+        let receipt = run(&mut mock, &req);
+        assert_eq!(receipt.result, ReceiptResult::Pass, "{:?}", receipt.failure);
+        assert_eq!(mock.remaining(), 0);
+        assert_eq!(std::fs::read_to_string(&req.config_path).unwrap(), raw);
+        let record = record_from_receipt(&receipt);
+        assert_effective_deadlines(&record, &case, &raw);
+        assert_eq!(record.scenario_path, req.config_path);
+        assert_eq!(command_timeout(&mock, "pnpm-install"), case.deps);
+        assert_eq!(command_timeout(&mock, "expo-run-ios"), case.build);
+        assert_eq!(command_timeout(&mock, "simctl-bootstatus"), case.boot);
+    }
+}
+
+#[test]
+fn pr_uses_the_operator_config_deadlines_not_the_worktree_config() {
+    let conflicting = "appId: com.other.app\ndevClientScheme: other\ndeadlines:\n  install_deps_seconds: 30\n  build_seconds: 31\n  device_boot_seconds: 32\n";
+    for case in deadline_cases() {
+        let (repo, app) = app_repo();
+        let raw = write_operator_config(&app, case.block);
+        let wt = repo.join("runs").join(run_id()).join("wt");
+        let mut runner = PrRunner {
+            inner: MockRunner::new(),
+            app: app.clone(),
+            recorder_persisted_before_spawn: None,
+            fail_core_spawn: false,
+            planted_worktree_config: Some(conflicting.into()),
+            worktree_config_planted: false,
+        };
+        script_pr_pass(&mut runner.inner, &repo, &wt);
+        let receipt = run(&mut runner, &pr_request(&repo, &app));
+        assert_eq!(receipt.result, ReceiptResult::Pass, "{:?}", receipt.failure);
+        assert_eq!(runner.inner.remaining(), 0);
+        assert!(runner.worktree_config_planted);
+        assert_eq!(
+            std::fs::read_to_string(&app.join(".qaren/config.yaml")).unwrap(),
+            raw
+        );
+        let record = record_from_receipt(&receipt);
+        assert_effective_deadlines(&record, &case, &raw);
+        assert_eq!(record.scenario_path, app.join(".qaren/config.yaml"));
+        assert_eq!(command_timeout(&runner.inner, "pnpm-install"), case.deps);
+        assert_eq!(command_timeout(&runner.inner, "expo-run-ios"), case.build);
+    }
+}
+
+#[test]
+fn android_check_uses_configured_deadlines_for_dependency_install_and_build() {
+    let (repo, app) = app_repo();
+    let case = DeadlineCase {
+        block: "deadlines:\n  install_deps_seconds: 120\n  build_seconds: 5400\n  device_boot_seconds: 90\n",
+        deps: 120,
+        build: 5400,
+        boot: 90,
+    };
+    let raw = write_operator_config(&app, case.block);
+    let req = android_request(&repo, &app);
+    let mut mock = android_mock();
+    script_android_preflight(&mut mock, &repo, ONE_EMULATOR, EMULATOR);
+    mock.expect_run("pnpm install --frozen-lockfile", CmdOutput::success(""));
+    mock.expect_run("ls-files", CmdOutput::success(""));
+    mock.expect_run("check-ignore -q android/", CmdOutput::success(""));
+    script_android_finite_build(&mut mock, PREBUILD, 5000, 0);
+    script_android_finite_build(&mut mock, GRADLE, 5001, 0);
+    script_android_launch_walk_teardown(&mut mock);
+    let receipt = run(&mut mock, &req);
+    assert_eq!(receipt.result, ReceiptResult::Pass, "{:?}", receipt.failure);
+    assert_eq!(mock.remaining(), 0);
+    let record = record_from_receipt(&receipt);
+    assert_effective_deadlines(&record, &case, &raw);
+    assert_eq!(command_timeout(&mock, "pnpm-install"), case.deps);
+    assert_eq!(command_timeout(&mock, "expo-prebuild"), case.build);
+    assert_eq!(command_timeout(&mock, "gradle-assemble"), case.build);
 }
