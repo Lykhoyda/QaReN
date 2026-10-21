@@ -2231,7 +2231,7 @@ These scenario-based verbs retain the preparation receipt contract below;
 ### Usage
 
 ```sh
-qaren prepare <scenario.yaml> [--json] [--dry-run]
+qaren prepare <scenario.yaml> [--device <udid> [--boot-device]] [--json] [--dry-run]
 qaren prewarm <scenario.yaml> [--json]
 qaren status  <run-id> [--json]
 qaren complete <run-id> <build-log> [--json]   # cooperative handoff only
@@ -2285,6 +2285,34 @@ prepare ──► validate (scenario schema, candidate git sha, lockfile sha256)
 build+launch — prepare re-verifies the candidate, issues `handoff.json`, and
 finishes at phase `handed_off`; see the cooperative handoff section below.)
 ```
+
+### Existing iOS simulator
+
+`prepare --device <UUID>` borrows that exact existing simulator instead of
+creating `qaren-<run-id>`, for a `build.owner: cli` iOS scenario. The UUID must
+name one available simulator whose device type and runtime equal the
+scenario's `ios.device_type` and `ios.runtime`; names, `booted`, partial UUIDs
+and mismatched metadata refuse with `DEVICE_UNAVAILABLE` before anything is
+claimed. A Booted target is used as is. A Shutdown target refuses unless
+`--boot-device` authorizes booting it, with the same meaning as on `check`
+(see [iOS simulator lifecycle](#ios-simulator-lifecycle)); `--restart-device`
+and `--shutdown-device-on-exit` stay check and pr options. `--device` with an
+Android scenario refuses with `PLATFORM_UNSUPPORTED`, and with
+`build.owner: qaren` it fails validation with `SCENARIO_INVALID`, because the
+cooperative handoff carries no device-lease custody.
+
+The run takes the same device lease as `check`, reclaiming a dead holder only
+through that run's own cleanup, and records the borrowed simulator before
+dependencies, strict foreign-driver admission, boot, build, install or launch.
+It re-proves the lease and the exact target under custody, before booting and
+again before installing, and refuses rather than reboots a target that changed.
+Builds stay generic; only install, launch and probes address the UUID.
+`ready` keeps the lease, Metro and app for attached agents, and `status`
+reports ready only while the run still holds that lease and the target is
+Booted. `qaren cleanup <run-id> --json`, once the prepare process has exited,
+stops the run's own processes, keeps the simulator (never shut down, erased or
+deleted) and then releases the lease. `--dry-run` shows the exact UUID and no
+create command, and claims nothing.
 
 ## Scenarios
 

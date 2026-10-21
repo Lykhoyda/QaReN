@@ -618,3 +618,114 @@ fn android_borrowed_status_never_starts_or_restarts_the_adb_server() {
         assert_eq!(mock.remaining(), 0);
     }
 }
+
+const BORROWED: &str = "1DC408C4-51DA-4C4F-ACA1-39881C916FDD";
+
+fn borrowed_ready_record(repo: &std::path::Path, run_id: &str) -> RunRecord {
+    let mut record = ios_ready_record(repo, run_id);
+    record.resources.device_borrowed = true;
+    record.resources.ios_simulator = Some(IosSimResource {
+        udid: BORROWED.to_string(),
+        name: "qa-lane".to_string(),
+        device_type: "com.apple.CoreSimulator.SimDeviceType.iPhone-17-Pro".to_string(),
+        runtime: "com.apple.CoreSimulator.SimRuntime.iOS-26-4".to_string(),
+    });
+    record.resources.lease = Some(
+        qaren::lease::acquire(
+            &mut MockRunner::new(),
+            &repo.join(".locks"),
+            qaren::scenario::Platform::Ios,
+            BORROWED,
+            run_id,
+            Some(common::identity(999, "Wed Aug 12 15:00:00 2026")),
+        )
+        .unwrap(),
+    );
+    record
+}
+
+fn borrowed_inventory(state: &str, runtime: &str) -> String {
+    serde_json::json!({"devices": {format!("com.apple.CoreSimulator.SimRuntime.{runtime}"): [{
+        "udid": BORROWED,
+        "name": "renamed-by-the-lane-owner",
+        "state": state,
+        "isAvailable": true,
+        "deviceTypeIdentifier": "com.apple.CoreSimulator.SimDeviceType.iPhone-17-Pro",
+    }]}})
+    .to_string()
+}
+
+fn script_owned_metro(mock: &mut MockRunner) {
+    mock.expect_run("lsof", CmdOutput::success("5000\n"));
+    mock.expect_run("ps", CmdOutput::success("5000\n"));
+    mock.expect_run("curl", CmdOutput::success("packager-status:running"));
+}
+
+#[test]
+fn borrowed_ready_run_reports_ready_only_while_it_holds_the_lease_and_exact_target() {
+    let repo = common::temp_repo();
+    let record = borrowed_ready_record(&repo, "borrowed1");
+    record.save(&repo).unwrap();
+
+    let mut mock = MockRunner::new();
+    script_owned_metro(&mut mock);
+    mock.expect_run(
+        "simctl list devices -j",
+        CmdOutput::success(&borrowed_inventory("Booted", "iOS-26-4")),
+    );
+    mock.expect_run(
+        &format!("simctl get_app_container {BORROWED}"),
+        CmdOutput::success("/path/to/app\n"),
+    );
+    mock.expect_run(
+        "simctl spawn",
+        CmdOutput::success("512\t0\tUIKitApplication:com.rndevagent.testapp[abc]"),
+    );
+    let receipt = status(&mut mock, &repo, "borrowed1");
+    assert_eq!(
+        receipt.result,
+        ReceiptResult::Ready,
+        "{:?}",
+        receipt.outcomes
+    );
+    assert_eq!(receipt.outcomes["device_lease_held"], "pass");
+    assert_eq!(mock.remaining(), 0);
+
+    for inventory in [
+        borrowed_inventory("Shutdown", "iOS-26-4"),
+        borrowed_inventory("Booted", "iOS-26-5"),
+        "not json".to_string(),
+    ] {
+        let mut mock = MockRunner::new();
+        script_owned_metro(&mut mock);
+        mock.expect_run("simctl list devices -j", CmdOutput::success(&inventory));
+        let receipt = status(&mut mock, &repo, "borrowed1");
+        assert_ne!(receipt.result, ReceiptResult::Ready, "{inventory}");
+        assert_eq!(receipt.outcomes["app_probes"], "inconclusive");
+        assert_eq!(mock.remaining(), 0);
+    }
+
+    // Custody moved on: the lease now names another run, so a visible app is not Ready.
+    let lease = record.resources.lease.as_ref().unwrap();
+    assert_eq!(
+        qaren::lease::release(lease),
+        qaren::buildplan::ReleaseOutcome::Removed
+    );
+    qaren::lease::acquire(
+        &mut MockRunner::new(),
+        &repo.join(".locks"),
+        qaren::scenario::Platform::Ios,
+        BORROWED,
+        "check-later",
+        Some(common::identity(1234, "Thu Aug 13 09:00:00 2026")),
+    )
+    .unwrap();
+    let mut mock = MockRunner::new();
+    script_owned_metro(&mut mock);
+    let receipt = status(&mut mock, &repo, "borrowed1");
+    assert_eq!(receipt.result, ReceiptResult::Failed);
+    assert_eq!(receipt.outcomes["device_lease_held"], "fail");
+    assert_eq!(receipt.outcomes["app_probes"], "inconclusive");
+    assert_eq!(mock.remaining(), 0);
+    assert!(!mock.calls.iter().any(|c| c.rendered().contains("simctl")));
+}

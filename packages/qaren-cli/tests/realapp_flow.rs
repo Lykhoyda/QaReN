@@ -44,6 +44,8 @@ fn args(repo: &Path, scenario_path: &Path, android_home: Option<String>) -> Prep
         lock_root: repo.join(".locks"),
         native_cache_root: repo.join(".native-store"),
         runs_root: repo.to_path_buf(),
+        device: None,
+        boot_device: false,
     }
 }
 

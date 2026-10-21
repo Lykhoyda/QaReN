@@ -400,3 +400,62 @@ fn confirmed_removal_of_unknown_run_is_refused_with_receipt() {
     assert_eq!(value["result"], "refused");
     assert_eq!(value["failure"]["code"], "RUN_RECORD_UNAVAILABLE");
 }
+
+#[test]
+fn prepare_accepts_only_an_exact_device_and_boot_permission_from_the_check_lifecycle_flags() {
+    let uuid = "1DC408C4-51DA-4C4F-ACA1-39881C916FDD";
+    let lower = uuid.to_lowercase();
+    for args in [
+        vec!["prepare", "/nonexistent/scenario.yaml", "--device", uuid],
+        vec![
+            "prepare",
+            "/nonexistent/scenario.yaml",
+            "--device",
+            lower.as_str(),
+            "--boot-device",
+        ],
+        vec![
+            "prepare",
+            "/nonexistent/scenario.yaml",
+            "--device",
+            uuid,
+            "--dry-run",
+        ],
+    ] {
+        let output = Command::new(env!("CARGO_BIN_EXE_qaren"))
+            .args(&args)
+            .output()
+            .unwrap();
+        assert_ne!(output.status.code(), Some(2), "{args:?}");
+        let receipt: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+        assert_eq!(receipt["verb"], "prepare");
+        assert_eq!(receipt["commands_executed"], 0);
+    }
+    for args in [
+        vec!["prepare", "missing", "--device", "booted"],
+        vec!["prepare", "missing", "--device", "1DC408C4-51DA-4C4F-ACA1"],
+        vec!["prepare", "missing", "--device"],
+        vec!["prepare", "missing", "--boot-device"],
+        vec!["prepare", "missing", "--device", uuid, "--restart-device"],
+        vec![
+            "prepare",
+            "missing",
+            "--device",
+            uuid,
+            "--shutdown-device-on-exit",
+        ],
+        vec!["prepare", "missing", "--device", uuid, "--platform", "ios"],
+        vec!["prepare", "missing", "--device", uuid, "--fresh-install"],
+        vec!["prepare", "missing", "--device", uuid, "--config", "c.yaml"],
+        vec!["prewarm", "missing", "--device", uuid],
+        vec!["status", "missing", "--device", uuid],
+        vec!["cleanup", "missing", "--device", uuid],
+    ] {
+        let output = Command::new(env!("CARGO_BIN_EXE_qaren"))
+            .args(&args)
+            .output()
+            .unwrap();
+        assert_eq!(output.status.code(), Some(2), "{args:?}");
+        assert!(output.stdout.is_empty(), "{args:?}");
+    }
+}
