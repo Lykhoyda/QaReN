@@ -122,15 +122,10 @@ the walk and checks them again after it. A change in between fails the run with
 
 ## Leases, cancellation and cleanup
 
-One run holds a device at a time. Device leases default to `~/.qaren/locks`. An absolute
-`QAREN_LOCK_ROOT` selects a different directory, and a relative value fails the run; sessions
-must use the same root or they will not see each other's leases. `QAREN_MACHINE_LOCKS=1`
-uses the operating-system lock parent (`/private/var/tmp` on macOS, `/run/lock` on Linux).
-A missing or unsafe parent refuses the run and is not created. A lease owned by another
-user is left in place. Switching the shared parent on, or rolling it back, waits until
-existing leases have been cleaned up by the original owner; nothing scans homes or rewrites
-stored paths. Native suite recovery needs the original HOME and the original lock setting.
-A second run on the same device
+One run holds a device at a time within the
+[configured lock namespace](https://github.com/Lykhoyda/rn-dev-agent/blob/develop/packages/qaren-cli/README.md#ios-admission-and-cleanup),
+which owns root selection, the machine-wide opt-in, switching and recovery requirements.
+A second run on the same device in that namespace
 refuses `DEVICE_BUSY`; a lease whose holder has died is reclaimed by running that run's own
 cleanup.
 

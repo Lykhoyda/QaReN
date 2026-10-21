@@ -110,8 +110,8 @@ deadlines:
 | `TYPESAFE_API_KEY`    | Required by plans with phrase steps or phrase checks; see [Write a plan](../plans/#when-the-plan-needs-typesafe_api_key). |
 | `ANDROID_HOME`        | The Android SDK whose `platform-tools/adb` reaches the running adb server.      |
 | `QAREN_NODE`          | The Node binary to use; it takes precedence over `nodePath`.                    |
-| `QAREN_LOCK_ROOT`     | An absolute directory for device leases. Defaults to `~/.qaren/locks`. Different values do not share a lease. |
-| `QAREN_MACHINE_LOCKS` | Set to `1` to use the operating-system lock parent instead. Unset keeps the per-home default. A missing or unsafe parent is refused and not created. |
+| `QAREN_LOCK_ROOT`     | Explicit lock namespace; see the [lock-root contract](https://github.com/Lykhoyda/rn-dev-agent/blob/develop/packages/qaren-cli/README.md#ios-admission-and-cleanup) for precedence and validation. |
+| `QAREN_MACHINE_LOCKS` | Machine-wide lock opt-in; see the [lock-root contract](https://github.com/Lykhoyda/rn-dev-agent/blob/develop/packages/qaren-cli/README.md#ios-admission-and-cleanup) for accepted values, defaults and safe switching. |
 | `QAREN_NATIVE_CACHE_ROOT` | An exact private absolute directory for reusable iOS builds. Defaults on macOS to `/private/var/tmp/qaren-native-cache-<uid>`, shared across HOME values for that user. |
 | `QAREN_WALK_SECONDS`  | The walk budget in seconds. Defaults to `1200`.                                 |
 | `QAREN_STEP_SECONDS`  | The per-step budget in seconds. Defaults to `1200`.                             |

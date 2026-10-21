@@ -1702,16 +1702,39 @@ invalid or mismatched evidence is reported as `unavailable`, `invalid_evidence`,
 `envelope_mismatch` or `invalid_response`. These diagnostics do not relax
 admission: resolve the refusal and start a new run.
 
-Runs and evidence live under `~/.qaren/runs/<run-id>/`. Device leases default
-to `~/.qaren/locks`. An absolute `QAREN_LOCK_ROOT` selects another directory on
-purpose: sessions that do not use the same root do not see each other's leases.
-`QAREN_MACHINE_LOCKS=1` puts the same lock names directly in the operating-system
-parent (`/private/var/tmp` on macOS, `/run/lock` on Linux) so every home on the
-machine shares one lease. A missing or unsafe parent refuses the run and is not
-created. A lock owned by another user is not read, adopted, or removed. Turn the
-shared parent on, or roll it back, only after existing leases have been cleaned
-up by their original owner; nothing scans homes or rewrites stored paths. Native
-suite recovery needs the original HOME and the original override or opt-in.
+Runs and evidence live under `~/.qaren/runs/<run-id>/`; caches also stay under
+HOME. Device and native-build locks default to `~/.qaren/locks`.
+`QAREN_MACHINE_LOCKS` is off when unset or empty; `1` enables it, and any other
+value refuses. An absolute `QAREN_LOCK_ROOT` takes precedence in either mode:
+sessions using different roots do not share locks. Empty, relative and NUL
+overrides refuse; with the opt-in enabled, literal `.` or `..` path segments
+also refuse before normalization.
+
+With `QAREN_MACHINE_LOCKS=1` and no override, the shared CLI/native-suite resolver
+selects `/private/var/tmp` on macOS or `/run/lock` on Linux; other operating
+systems refuse. Selection performs no I/O and does not depend on HOME,
+QAREN_HOME, TMPDIR or XDG. Existing device, native-build and `usb-<serial>` lock
+names sit directly in that preexisting parent. A missing or unsafe system parent
+refuses: QaReN does not create, repair, chmod or chown it, or fall back elsewhere.
+The native suite still requires an absolute HOME for its records.
+
+Claim, read and release walk from `/` using no-follow descriptor opens with
+metadata and ACL checks. Only operating-system symlinks in trusted root-owned,
+nonwritable parents may be followed. Claims are published from private staging
+directories and holder files by atomic no-replace rename; unsupported rename
+refuses. Another user's claim blocks without reading its holder, probing or
+signaling its process, adopting, moving or deleting it. Same-user claims retain
+the caller's strict or adopt-dead policy. Deletion requires a verified owned lock
+containing only its holder record.
+
+Enable the shared parent, or roll it back, only after existing leases have been
+cleaned up by their original owner. Nothing scans homes, dual-claims roots,
+rewrites stored paths or retires old binaries. Processes using per-home roots,
+including older binaries, remain outside the shared namespace. Native suite
+recovery needs the original HOME and the original lock setting. The opt-in stays
+off by default pending retention, cross-user/sandbox sharing, Linux host behavior
+and old-binary retirement evidence.
+
 Checks, including `qaren pr`, claim a
 timestamped run directory atomically and retry with a numeric suffix when the
 name already exists, so same-second starts have separate run identities. Use the
@@ -2516,13 +2539,11 @@ allocation path (exactly one of `android:` / `android_usb:` per scenario).
 The serial must be a plain physical-device serial — `emulator-*` and
 loopback forms are rejected at validation, so the farm path's
 structural guarantees never weaken. At allocate time the device is claimed
-by an atomic host-level lock (`$QAREN_LOCK_ROOT`, `~/.qaren/locks`, or the
-operating-system parent when `QAREN_MACHINE_LOCKS=1`, `usb-<serial>`); any
+by an atomic host-level `usb-<serial>` lock in the
+[configured lock root](#ios-admission-and-cleanup); any
 existing claim — even one whose holder is provably dead — is a structured
-refusal (`DEVICE_CLAIM_CONTENDED`, exit 4), never an adoption. A claim owned
-by another user is left untouched. All qaren processes competing for a device
-must share the same lock root (the per-user default covers the single-operator
-dev-machine model; the machine parent is opt-in). A run-scoped `--one-device <serial>` adb server (host adb key
+refusal (`DEVICE_CLAIM_CONTENDED`, exit 4), never an adoption.
+A run-scoped `--one-device <serial>` adb server (host adb key
 pinned explicitly) is the only path to the phone; `expo run:android` routes
 through it via `ADB_SERVER_SOCKET` + `ANDROID_SERIAL`. An `unauthorized` or
 `offline` device is a structured `DEVICE_UNAVAILABLE` refusal (exit 4). Cleanup
