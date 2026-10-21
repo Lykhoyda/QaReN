@@ -1686,6 +1686,8 @@ export interface RunIOSArgs {
   qaTiming?: TimingContext;
   qaContext?: QaDispatchContext;
   qaReadOnly?: boolean;
+  /** Settle snapshots leave timeout recovery to the next real command. */
+  advisorySnapshot?: boolean;
   deviceId?: string;
   command:
     | 'snapshot'
@@ -2372,6 +2374,7 @@ async function requireQaFastRunner(
 }
 
 export async function runIOS(args: RunIOSArgs): Promise<ToolResult> {
+  const advisorySnapshot = args.command === 'snapshot' && args.advisorySnapshot === true;
   const qaReadOnly =
     (args.qaContext !== undefined || args.qaReadOnly === true) && !isMutatingCommand(args.command);
   if (args.qaReadOnly && isMutatingCommand(args.command)) {
@@ -2684,6 +2687,7 @@ export async function runIOS(args: RunIOSArgs): Promise<ToolResult> {
     }
     const m = err instanceof Error ? err.message : String(err);
     if (m.startsWith('RUNNER_TIMEOUT')) {
+      if (advisorySnapshot) return failResult(m, 'RUNNER_TIMEOUT');
       const result = await (args.command === 'type'
         ? containTypeTimeout(args, commandAuthorityBefore)
         : containRunnerTimeout(args.command, m, commandAuthorityBefore));
@@ -2739,6 +2743,7 @@ export async function runIOS(args: RunIOSArgs): Promise<ToolResult> {
       return presenceCaptureUnavailable(message, 'RN_FAST_RUNNER_DOWN', true);
     }
     if (code === 'RUNNER_TIMEOUT') {
+      if (advisorySnapshot) return failResult(message, 'RUNNER_TIMEOUT');
       const result = await (args.command === 'type'
         ? containTypeTimeout(args, commandAuthorityBefore)
         : containRunnerTimeout(args.command, message, commandAuthorityBefore));
