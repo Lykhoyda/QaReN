@@ -384,7 +384,7 @@ fn run_inner(
     {
         return Err(input_refused());
     }
-    let device = resolve_device(
+    let mut device = resolve_device(
         runner,
         req.platform,
         req.device.as_deref(),
@@ -579,14 +579,41 @@ fn run_inner(
     };
     let finish_failed =
         |ctx: Ctx, failure: Failure| finish_failed(ctx, &node, &req.runtime_dir, failure, false);
-    if let Some(earlier) = recovered {
-        ctx.notes.push(("recovered_run".to_string(), earlier));
+    if let Some(earlier) = &recovered {
+        ctx.notes
+            .push(("recovered_run".to_string(), earlier.clone()));
     }
     let t = ctx.mark("preflight", started_ms);
     events::stage("preflight", StageState::Passed, None, None);
     events::stage("deps", StageState::Running, None, None);
     if let Err(f) = ensure_running(&*ctx.runner, "deps") {
         return Ok(finish_failed(ctx, f));
+    }
+
+    if recovered.is_some() && req.platform == Platform::Ios {
+        let refreshed = match resolve_device(
+            ctx.runner,
+            req.platform,
+            Some(&device.id),
+            req.boot_device || req.restart_device,
+            req.shutdown_device_on_exit,
+            req.android_home.as_deref(),
+        ) {
+            Ok(refreshed) => refreshed,
+            Err(f) => return Ok(finish_failed(ctx, f)),
+        };
+        if refreshed.ios != device.ios {
+            return Ok(finish_failed(
+                ctx,
+                Failure::new(
+                    "device",
+                    FailureCode::DeviceUnavailable,
+                    "selected simulator runtime or device type changed during lease recovery",
+                    "check the exact --device UUID and simulator inventory, then re-run",
+                ),
+            ));
+        }
+        device.needs_boot = refreshed.needs_boot;
     }
 
     let ios_lifecycle = req.boot_device || req.restart_device || req.shutdown_device_on_exit;

@@ -2049,6 +2049,10 @@ fn reclaiming_a_run_that_reached_the_walk_requires_scoped_host_absence() {
     mock.expect_run("ps", CmdOutput::success(""));
     script_host_probe(&mut mock, UDID, hosts_absent());
     mock.expect_run("lsof", free_port());
+    mock.expect_run(
+        "simctl list devices booted",
+        CmdOutput::success(&booted_json()),
+    );
     script_unknown_admission(&mut mock);
     let mut req = request(&repo, &app, 30);
     req.fresh_install = true;
@@ -2235,6 +2239,10 @@ fn a_dead_holders_run_is_cleaned_up_and_its_lease_reclaimed_without_a_manual_ste
         script_preflight_until_lease(&mut mock, &repo);
         mock.expect_run("ps", CmdOutput::success(holder_ps));
         mock.expect_run("lsof", free_port());
+        mock.expect_run(
+            "simctl list devices booted",
+            CmdOutput::success(&booted_json()),
+        );
         script_unknown_admission(&mut mock);
         let mut req = request(&repo, &app, 30);
         req.fresh_install = true;
@@ -5059,6 +5067,113 @@ fn boot_device_readback_must_prove_exact_booted_target_and_unchanged_runtime_and
             }
         }
     }
+}
+
+#[test]
+fn boot_device_refreshes_the_selected_state_after_reclaim_shuts_down_the_simulator() {
+    use qaren::runrecord::{BorrowedIosStop, IosSimResource};
+    let (repo, app) = app_repo();
+    plant_holder(&repo, |record| {
+        record.phase = Phase::Ready;
+        record.scenario.ios = Some(qaren::scenario::IosSpec {
+            device_type: "com.apple.CoreSimulator.SimDeviceType.iPhone-17".into(),
+            runtime: "com.apple.CoreSimulator.SimRuntime.iOS-26-5".into(),
+        });
+        record.resources.ios_simulator = Some(IosSimResource {
+            udid: UDID.into(),
+            name: "qa-company-app".into(),
+            device_type: "com.apple.CoreSimulator.SimDeviceType.iPhone-17".into(),
+            runtime: "com.apple.CoreSimulator.SimRuntime.iOS-26-5".into(),
+        });
+        record.resources.arm_borrowed_ios_stop().unwrap();
+    });
+    let mut mock = MockRunner::new();
+    script_preflight_inventory_until_lease(
+        &mut mock,
+        &repo,
+        "simctl list devices -j",
+        &available_inventory("Booted"),
+    );
+    mock.expect_run("ps -p 4242 -o lstart=", CmdOutput::success(""));
+    mock.expect_run("ps -p 4242 -o lstart=", CmdOutput::success(""));
+    script_admission(&mut mock);
+    mock.expect_run(
+        "simctl list devices -j",
+        CmdOutput::success(&available_inventory("Booted")),
+    );
+    mock.expect_run(&format!("simctl shutdown {UDID}"), CmdOutput::success(""));
+    mock.expect_run(
+        "simctl list devices -j",
+        CmdOutput::success(&available_inventory("Shutdown")),
+    );
+    mock.expect_run("lsof", free_port());
+    mock.expect_run(
+        "simctl list devices -j",
+        CmdOutput::success(&available_inventory("Shutdown")),
+    );
+    script_admission(&mut mock);
+    common::script_ios_deps(&mut mock);
+    script_admission(&mut mock);
+    mock.expect_run(
+        &format!("simctl bootstatus {UDID} -b"),
+        CmdOutput::success(""),
+    );
+    mock.expect_run(
+        "simctl list devices -j",
+        CmdOutput::success(&available_inventory("Booted")),
+    );
+    script_provision_after_deps(&mut mock);
+    script_drift_status(&mut mock);
+    script_host_probe(&mut mock, UDID, hosts_absent());
+    mock.expect_spawn_piped("walk.js", 9000, &pass_stdout(), Some(0));
+    script_core_identity(&mut mock);
+    script_teardown(&mut mock);
+    let mut req = request(&repo, &app, 30);
+    req.device = Some(UDID.into());
+    req.boot_device = true;
+    let receipt = run(&mut mock, &req);
+    assert_eq!(receipt.result, ReceiptResult::Pass, "{:?}", receipt.failure);
+    assert_eq!(receipt.outcomes["recovered_run"], "check-earlier");
+    assert_eq!(receipt.cleanup["simulator"], "kept");
+    assert_eq!(receipt.cleanup["device_lease"], "removed");
+    assert_eq!(mock.remaining(), 0);
+    assert_subsequence(
+        &labels(&mock),
+        &[
+            "simctl-shutdown",
+            "simctl-list",
+            "simctl-list",
+            "simctl-bootstatus",
+            "simctl-list",
+            "core-walk",
+        ],
+    );
+    for label in ["simctl-shutdown", "simctl-bootstatus"] {
+        let calls: Vec<_> = mock
+            .calls
+            .iter()
+            .filter(|spec| spec.label == label)
+            .collect();
+        assert_eq!(calls.len(), 1);
+        assert!(calls[0].args.contains(&UDID.to_string()));
+    }
+    assert!(!mock
+        .calls
+        .iter()
+        .any(|spec| matches!(spec.label.as_str(), "simctl-delete" | "simctl-uninstall")));
+    let earlier = RunRecord::load(&req.runs_root, "check-earlier").unwrap();
+    assert_eq!(earlier.phase, Phase::Cleaned);
+    assert_eq!(
+        earlier.resources.borrowed_ios_stop(),
+        BorrowedIosStop::Completed
+    );
+    assert!(earlier.resources.lease.is_none());
+    let current = RunRecord::load(&req.runs_root, &run_id()).unwrap();
+    assert_eq!(
+        current.resources.borrowed_ios_stop(),
+        BorrowedIosStop::NotArmed
+    );
+    assert!(current.resources.lease.is_none());
 }
 
 #[test]
