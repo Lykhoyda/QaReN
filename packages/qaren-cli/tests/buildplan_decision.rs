@@ -758,7 +758,16 @@ fn a_stored_build_needs_verification_completeness_and_a_scheme_to_reuse() {
 fn store_records_name_their_artifact_relative_to_the_entry_and_are_written_once() {
     use qaren::buildplan::{load_store_record, publish_store_record, store_dir, STORE_RECORD};
     use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt};
-    let fixture = temp_dir().canonicalize().unwrap();
+    let fixture = std::env::temp_dir().join(format!(
+        "qaren-store-record-test-{}-{}",
+        std::process::id(),
+        COUNTER.fetch_add(1, Ordering::SeqCst)
+    ));
+    std::fs::DirBuilder::new()
+        .mode(0o700)
+        .create(&fixture)
+        .unwrap();
+    let fixture = fixture.canonicalize().unwrap();
     let root = fixture.join("store");
     let store = qaren::buildplan::open_native_store_root(&root, true)
         .unwrap()
