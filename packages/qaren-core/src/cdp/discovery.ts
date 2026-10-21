@@ -169,6 +169,7 @@ export async function waitForExactPortTargets(
   signal?: AbortSignal,
   // Simulators share host loopback: another device's runtime on this port is not the run's.
   deviceName?: string,
+  bundleId?: string,
 ): Promise<void> {
   if (!Number.isInteger(port) || port < 1 || port > 65535) {
     throw new RangeError('port must be an integer between 1 and 65535');
@@ -183,6 +184,7 @@ export async function waitForExactPortTargets(
   }
 
   signal = cancellationSignal(signal);
+  const pinnedDevice = deviceName?.trim();
   const deadline = performance.now() + timeoutMs;
   let remaining = deadline - performance.now();
   while (remaining > 0) {
@@ -204,9 +206,15 @@ export async function waitForExactPortTargets(
     remaining = deadline - performance.now();
     if (remaining <= 0) break;
     if (
-      deviceName === undefined
+      deviceName === undefined && bundleId === undefined
         ? raw.length > 0
-        : raw.some((target) => target?.deviceName?.trim() === deviceName)
+        : raw.some(
+            (target) =>
+              (pinnedDevice === undefined ||
+                (typeof target?.deviceName === 'string' &&
+                  target.deviceName.trim() === pinnedDevice)) &&
+              (bundleId === undefined || targetMatchesBundleId(target, bundleId)),
+          )
     )
       return;
     await sleep(Math.min(pollMs, remaining), signal);
@@ -262,6 +270,7 @@ export function parseSimctlListapps(stdout: string): Set<string> {
  * unproven and therefore fail closed rather than choosing the best-looking one.
  */
 export function targetBundleIdentity(target: HermesTarget): string | null {
+  if (!target || typeof target !== 'object') return null;
   const identities = new Map<string, string>();
   const add = (candidate: unknown) => {
     if (!isValidBundleId(candidate)) return;
@@ -271,7 +280,7 @@ export function targetBundleIdentity(target: HermesTarget): string | null {
   add(target.appId);
   add(target.description);
 
-  const title = target.title?.trim() ?? '';
+  const title = typeof target.title === 'string' ? target.title.trim() : '';
   add(title);
   const canonicalTitle = title.match(/^([^\s()]+)\s+\(.+\)$/);
   if (canonicalTitle) add(canonicalTitle[1]);
@@ -280,6 +289,7 @@ export function targetBundleIdentity(target: HermesTarget): string | null {
 }
 
 export function targetMatchesBundleId(target: HermesTarget, bundleId: string): boolean {
+  if (!isValidBundleId(bundleId)) return false;
   return targetBundleIdentity(target)?.toLowerCase() === bundleId.toLowerCase();
 }
 
@@ -760,10 +770,17 @@ export function inferPlatforms(
   };
 }
 
+export type TargetSelectionErrorCode =
+  | 'PLATFORM_TARGET_NOT_FOUND'
+  | 'TARGET_PLATFORM_CONFLICT'
+  | 'DEVICE_TARGET_NOT_FOUND'
+  | 'DEVICE_TARGET_AMBIGUOUS'
+  | 'BUNDLE_TARGET_NOT_FOUND';
+
 export interface SelectTargetResult {
   targets: HermesTarget[];
   warning?: string;
-  errorCode?: 'PLATFORM_TARGET_NOT_FOUND' | 'TARGET_PLATFORM_CONFLICT';
+  errorCode?: TargetSelectionErrorCode;
 }
 
 export function describeTarget(target: HermesTarget): string {
@@ -787,7 +804,7 @@ function metroPageNumber(id: string | undefined): number {
 
 export class TargetSelectionError extends Error {
   constructor(
-    readonly code: 'PLATFORM_TARGET_NOT_FOUND' | 'TARGET_PLATFORM_CONFLICT',
+    readonly code: TargetSelectionErrorCode,
     message: string,
     readonly candidates: readonly HermesTarget[],
     readonly inference?: PlatformInferenceSummary,
@@ -860,6 +877,7 @@ export function selectTarget(
     if (deviceMatched.length === 0) {
       return {
         targets: [],
+        errorCode: 'DEVICE_TARGET_NOT_FOUND',
         warning:
           `Pinned device "${pinnedDevice}" has no live CDP target on this Metro; refusing to silently bind a different device. ` +
           `Candidates: ${validTargets.map(describeTarget).join('; ')}. ` +
@@ -882,6 +900,7 @@ export function selectTarget(
       if (bundleConnections.size !== 1) {
         return {
           targets: [],
+          errorCode: 'DEVICE_TARGET_AMBIGUOUS',
           warning:
             `Pinned device name "${pinnedDevice}" matches ${devicePrefixes.size} live Metro device connections and ` +
             (filters.bundleId
@@ -989,6 +1008,7 @@ export function selectTarget(
     if (bundleMatched.length === 0) {
       return {
         targets: [],
+        errorCode: 'BUNDLE_TARGET_NOT_FOUND',
         warning: `bundleId "${filters.bundleId}" not found in proven live target metadata. Candidates: ${filteredTargets.map(describeTarget).join('; ')}`,
       };
     }
@@ -1107,7 +1127,7 @@ export interface DiscoveryResult {
   port: number;
   targets: HermesTarget[];
   warning?: string;
-  errorCode?: 'PLATFORM_TARGET_NOT_FOUND' | 'TARGET_PLATFORM_CONFLICT';
+  errorCode?: TargetSelectionErrorCode;
   candidates?: HermesTarget[];
   inference?: PlatformInferenceSummary;
 }
@@ -1136,7 +1156,9 @@ export async function discoverExactPort(
     inference.targets.forEach((entry, index) => {
       const target = validTargets[index]!;
       if (filters.deviceName)
-        entry.deviceMatch = target.deviceName?.trim() === filters.deviceName.trim();
+        entry.deviceMatch =
+          typeof target.deviceName === 'string' &&
+          target.deviceName.trim() === filters.deviceName.trim();
       if (filters.bundleId) entry.bundleMatch = targetMatchesBundleId(target, filters.bundleId);
     });
   }

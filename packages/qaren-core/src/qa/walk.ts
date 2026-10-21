@@ -413,6 +413,7 @@ async function openSession(
             REACT_READY_POLL_MS,
             stop.signal,
             devicePin,
+            appId,
           );
           attachStage = 'connect_exact';
           await cdp.connectExact(

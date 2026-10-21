@@ -7,6 +7,7 @@ import { setImmediate } from 'node:timers/promises';
 import { test, type TestContext } from 'node:test';
 import { CDPClient } from '../../../dist/cdp-client.js';
 import {
+  TargetSelectionError,
   discoverExactPort,
   listTargetsOnExactPort,
   waitForExactPortTargets,
@@ -141,6 +142,139 @@ test("a wait pinned to the run device times out when only a sibling's runtime re
   await clock.advance(500);
   await clock.advance(500);
   await waiting;
+});
+
+test('another bundle on the selected device does not satisfy readiness until the requested bundle registers', async (t) => {
+  const wrongBundle = target({
+    id: 'foreign-1',
+    title: 'com.foreign.app (iPhone)',
+    appId: 'com.foreign.app',
+  });
+  const siblingSameBundle = target({
+    id: 'sibling-1',
+    title: 'com.example.app (qaren-check)',
+    deviceName: 'qaren-check',
+    webSocketDebuggerUrl: `ws://127.0.0.1:${managedPort}/inspector/debug?device=sibling&page=1`,
+  });
+  let reads = 0;
+  const clock = setup(t, async () =>
+    Response.json(
+      ++reads === 1 ? [wrongBundle, siblingSameBundle] : [wrongBundle, siblingSameBundle, target()],
+    ),
+  );
+  let settled = false;
+  const waiting = waitForExactPortTargets(
+    managedPort,
+    30_000,
+    500,
+    undefined,
+    'iPhone',
+    'com.example.app',
+  ).then(() => {
+    settled = true;
+  });
+  await setImmediate();
+  assert.equal(
+    settled,
+    false,
+    'wrong bundle on selected device and same bundle on sibling must wait',
+  );
+  assert.deepEqual(clock.requested, [endpoint]);
+  assert.equal(clock.subprocess.mock.callCount(), 0);
+
+  await clock.advance(499);
+  assert.equal(settled, false);
+  assert.equal(reads, 1);
+  await clock.advance(1);
+  await waiting;
+  assert.equal(settled, true);
+  assert.equal(reads, 2);
+  assert.equal(clock.subprocess.mock.callCount(), 0);
+
+  const result = await discoverExactPort(managedPort, { ...filters, deviceName: 'iPhone' });
+  assert.deepEqual(
+    result.targets.map((entry) => entry.id),
+    ['owned-1'],
+  );
+  assert.deepEqual(clock.requested, [endpoint, endpoint, endpoint]);
+});
+
+for (const [label, candidates] of [
+  [
+    'wrong bundle forever on selected device',
+    [target({ id: 'foreign-1', appId: 'com.foreign.app', title: 'com.foreign.app (iPhone)' })],
+  ],
+  [
+    'requested bundle only on sibling simulator',
+    [
+      target({ id: 'foreign-1', appId: 'com.foreign.app', title: 'com.foreign.app (iPhone)' }),
+      target({
+        id: 'sibling-1',
+        deviceName: 'qaren-check',
+        title: 'com.example.app (qaren-check)',
+      }),
+    ],
+  ],
+  [
+    'conflicting bundle metadata on selected device',
+    [
+      target({
+        id: 'conflict-1',
+        appId: 'com.example.app',
+        description: 'com.foreign.app',
+        title: 'com.example.app (iPhone)',
+      }),
+      target({
+        id: 'conflict-2',
+        appId: 'com.example.app',
+        title: 'com.foreign.app (iPhone)',
+      }),
+    ],
+  ],
+  [
+    'unknown or malformed metadata on selected device',
+    [
+      null,
+      {},
+      { deviceName: 'iPhone' },
+      { deviceName: 'iPhone', appId: null, title: 42, description: 'React Native Bridgeless' },
+    ],
+  ],
+] as const) {
+  test(`a device and bundle wait times out on ${label}`, async (t) => {
+    const clock = setup(t, async () => Response.json(candidates));
+    const waiting = assert.rejects(
+      waitForExactPortTargets(managedPort, 1000, 500, undefined, 'iPhone', 'com.example.app'),
+      /Timed out waiting for a CDP target from device "iPhone" on port 8341 after 1000ms/,
+    );
+    await setImmediate();
+    await clock.advance(500);
+    await clock.advance(500);
+    await waiting;
+    assert.deepEqual(clock.requested, [endpoint, endpoint]);
+    assert.equal(clock.subprocess.mock.callCount(), 0);
+  });
+}
+
+test('cancellation interrupts a bundle-pinned wait after a wrong-bundle response', async (t) => {
+  const stop = createStop();
+  const reads = t.mock.method(globalThis, 'fetch', async () =>
+    Response.json([
+      target({ id: 'foreign-1', appId: 'com.foreign.app', title: 'com.foreign.app (iPhone)' }),
+    ]),
+  );
+  const waiting = waitForExactPortTargets(
+    managedPort,
+    30_000,
+    10_000,
+    stop.signal,
+    'iPhone',
+    'com.example.app',
+  );
+  await setImmediate();
+  stop.begin();
+  await assert.rejects(waiting, /RUN_CANCELLED/);
+  assert.equal(reads.mock.callCount(), 1);
 });
 
 test('a non-array target response fails immediately instead of polling', async (t) => {
@@ -402,6 +536,66 @@ for (const [label, candidate, refusal] of [
     assert.equal(client.connectedTarget, null);
     assert.equal(clock.now(), 10_000);
     assert.deepEqual(clock.requested, [endpoint, endpoint]);
+  });
+}
+
+for (const [label, devicePin, candidates, connectFilters, expectedCode, refusal] of [
+  [
+    'ambiguous same-name device connections',
+    'iPhone',
+    [
+      target({ id: 'conn-a-1' }),
+      target({
+        id: 'conn-b-1',
+        webSocketDebuggerUrl: `ws://127.0.0.1:${managedPort}/inspector/debug?device=conn-b&page=1`,
+      }),
+    ],
+    { ...filters, deviceName: 'iPhone' },
+    'DEVICE_TARGET_AMBIGUOUS',
+    /matches 2 live Metro device connections.*refusing an ambiguous bind/,
+  ],
+  [
+    'wrong platform after device and bundle readiness',
+    'Pixel 9',
+    [target({ deviceName: 'Pixel 9', title: 'com.example.app (Pixel 9)' })],
+    { ...filters, deviceName: 'Pixel 9' },
+    'PLATFORM_TARGET_NOT_FOUND',
+    /PLATFORM_TARGET_NOT_FOUND/,
+  ],
+  [
+    'foreign debugger port on matching device and bundle',
+    'iPhone',
+    [target({ webSocketDebuggerUrl: 'ws://127.0.0.1:8081/inspector/debug?page=1' })],
+    { ...filters, deviceName: 'iPhone' },
+    'DEVICE_TARGET_NOT_FOUND',
+    /Pinned device "iPhone" has no live CDP target/,
+  ],
+] as const) {
+  test(`device and bundle readiness is not connection authority on ${label}`, async (t) => {
+    const clock = setup(t, async () => Response.json(candidates));
+    const client = new CDPClient(managedPort);
+    t.after(() => client.disconnect());
+    assert.equal(
+      await waitForExactPortTargets(
+        managedPort,
+        30_000,
+        500,
+        undefined,
+        devicePin,
+        'com.example.app',
+      ),
+      undefined,
+    );
+    assert.equal(clock.subprocess.mock.callCount(), 0);
+
+    await assert.rejects(client.connectExact(managedPort, connectFilters), (error: unknown) => {
+      assert.ok(error instanceof TargetSelectionError);
+      assert.equal(error.code, expectedCode);
+      assert.match(error.message, refusal);
+      return true;
+    });
+    assert.equal(client.isConnected, false);
+    assert.equal(client.connectedTarget, null);
   });
 }
 

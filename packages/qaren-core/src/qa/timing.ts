@@ -70,6 +70,9 @@ export const ADMISSION_ATTACH_STAGES = ['wait_targets', 'connect_exact'] as cons
 export const ADMISSION_INNER_CLASSES = [
   'target_selection_platform_not_found',
   'target_selection_platform_conflict',
+  'target_selection_device_not_found',
+  'target_selection_device_ambiguous',
+  'target_selection_bundle_not_found',
   'target_list_attempt_timeout',
   'target_readiness_timeout',
   'cdp_probe_timeout',

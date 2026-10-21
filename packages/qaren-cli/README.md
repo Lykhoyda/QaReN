@@ -1994,9 +1994,11 @@ Launch admission shares the remaining walk deadline across target readiness,
 WebSocket handshakes, probes and retry sleeps. The connect-time dev-build check
 and helper injection wait for the runtime's answer until that deadline rather
 than a fixed request timeout; no answer by the deadline is a readiness timeout.
-On iOS, readiness and attachment accept only a runtime Metro reports under the
-run's simulator name, so another booted simulator running the same app on the
-same port is not attached. Metro identifies a simulator only by name: give each
+Target readiness and attachment accept only a runtime Metro reports with the
+requested `appId` bundle identity (and on iOS, under the run's simulator name on
+that same target), so another app on the selected device or another booted
+simulator running the same app on the same port does not satisfy readiness or
+get attached. Metro identifies a simulator only by name: give each
 booted simulator a distinct name, because a same-named one is refused as
 ambiguous only once both have registered.
 Transient target-list, WebSocket-handshake and runtime-probe timeouts, along with
