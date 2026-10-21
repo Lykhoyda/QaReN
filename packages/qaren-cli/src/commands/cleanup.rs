@@ -192,18 +192,24 @@ pub fn cleanup_with_runtime(
     let owner_refusal =
         || Outcome::Refused("the run's qaren process is alive or unproven gone".to_string());
     let producers = record.resources.core.is_some() || !record.resources.runner_drivers.is_empty();
-    let owner = match (producers, &record.prepare) {
+    let pending_stop = !record.resources.can_release_borrowed_ios_stop();
+    let owner = match (producers || pending_stop, &record.prepare) {
         (true, Some(prepare)) => Some(probe_pid_identity(runner, prepare)),
         _ => None,
     };
-    if owner == Some(PidLiveness::AliveMatching) {
+    if owner == Some(PidLiveness::AliveMatching)
+        || (pending_stop && !matches!(owner, Some(PidLiveness::Dead | PidLiveness::AliveForeign)))
+    {
         return finish_cleanup(
             runner,
             runs_root,
             run_id,
             remove_app,
             &mut record,
-            vec![("core".to_string(), owner_refusal())],
+            vec![(
+                if pending_stop { "simulator" } else { "core" }.to_string(),
+                owner_refusal(),
+            )],
             false,
         );
     }
@@ -248,19 +254,14 @@ pub fn cleanup_with_runtime(
         outcomes.push(("runner_host".to_string(), outcome));
     }
 
-    // A live `qaren pr` or pending simulator stop still belongs to its owner; only a dead owner's is reclaimed.
-    // Only positive evidence that the owner is gone admits reclaiming; unknown keeps them.
-    let owner_alive = (record.resources.recorder.is_some()
-        || record.resources.pr_worktree.is_some()
-        || !record.resources.can_release_borrowed_ios_stop())
+    let owner_alive = !pending_stop
+        && (record.resources.recorder.is_some() || record.resources.pr_worktree.is_some())
         && !record.prepare.as_ref().is_some_and(|owner| {
             matches!(
                 probe_pid_identity(runner, owner),
                 PidLiveness::Dead | PidLiveness::AliveForeign
             )
         });
-    let owner_refusal =
-        || Outcome::Refused("the run's qaren process is alive or unproven gone".to_string());
     if record.resources.recorder.is_some() {
         let outcome = if owner_alive {
             owner_refusal()

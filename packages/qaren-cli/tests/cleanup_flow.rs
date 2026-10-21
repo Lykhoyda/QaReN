@@ -2995,6 +2995,59 @@ fn script_borrowed_ios_admission(mock: &mut MockRunner, status: &str) {
 }
 
 #[test]
+fn pending_borrowed_ios_stop_refuses_build_cleanup_without_owner_death_or_save() {
+    for owner_case in ["alive", "unknown", "missing"] {
+        let repo = common::temp_repo();
+        let mut record = borrowed_ios_record(&repo);
+        record.resources.arm_borrowed_ios_stop().unwrap();
+        record.resources.begin_build().unwrap();
+        record
+            .resources
+            .record_build_spawned(5000, Some(common::identity(5000, LSTART)))
+            .unwrap();
+        if owner_case == "missing" {
+            record.prepare = None;
+        }
+        record.save(&repo).unwrap();
+        let before = std::fs::read(RunRecord::path(&repo, "borrowed-ios-run")).unwrap();
+        let mut mock = MockRunner::new();
+        match owner_case {
+            "alive" => {
+                mock.expect_run(
+                    "ps -p 999 -o lstart=",
+                    CmdOutput::success("Wed Aug 12 15:00:00 2026"),
+                );
+                mock.expect_run("ps -p 999 -o stat=", CmdOutput::success("S"));
+            }
+            "unknown" => {
+                mock.expect_run("ps -p 999 -o lstart=", CmdOutput::failed(1, "ps denied"));
+            }
+            _ => {}
+        }
+        let receipt = cleanup(&mut mock, &repo, "borrowed-ios-run");
+        assert_eq!(receipt.result, ReceiptResult::Refused, "{owner_case}");
+        assert_eq!(
+            std::fs::read(RunRecord::path(&repo, "borrowed-ios-run")).unwrap(),
+            before,
+            "{owner_case}"
+        );
+        let stored = RunRecord::load(&repo, "borrowed-ios-run").unwrap();
+        assert!(stored.resources.build_process().is_some());
+        assert!(stored.resources.lease.as_ref().unwrap().lock_dir.exists());
+        assert!(!receipt.outcomes.contains_key("record_saved"));
+        assert_eq!(
+            mock.calls.len(),
+            match owner_case {
+                "alive" => 2,
+                "unknown" => 1,
+                _ => 0,
+            }
+        );
+        assert_eq!(mock.remaining(), 0);
+    }
+}
+
+#[test]
 fn borrowed_ios_stop_in_cleanup_enforces_owner_lease_quiescence_admission_and_idempotence() {
     use qaren::commands::cleanup::cleanup_with_runtime;
     use qaren::runrecord::BorrowedIosStop;
@@ -3169,7 +3222,6 @@ fn borrowed_ios_stop_in_cleanup_enforces_owner_lease_quiescence_admission_and_id
                 });
                 owner_gone(&mut mock);
                 mock.expect_run("ps -A", CmdOutput::failed(1, "inventory denied"));
-                owner_gone(&mut mock);
             }
             "runner_driver_unproven" => {
                 record
@@ -3181,7 +3233,6 @@ fn borrowed_ios_stop_in_cleanup_enforces_owner_lease_quiescence_admission_and_id
                     });
                 owner_gone(&mut mock);
                 mock.expect_run("ps -A", CmdOutput::failed(1, "inventory denied"));
-                owner_gone(&mut mock);
             }
             "recorder_unproven" => {
                 record.resources.recorder = Some(qaren::runrecord::RecorderResource {
@@ -3195,6 +3246,7 @@ fn borrowed_ios_stop_in_cleanup_enforces_owner_lease_quiescence_admission_and_id
                 owner_gone(&mut mock);
             }
             "runner_host_present" => {
+                owner_gone(&mut mock);
                 record.phase = Phase::Walking;
                 record.resources.core_cleanup = Some(qaren::runrecord::CoreCleanupEvidence {
                     run_id: "borrowed-ios-run".into(),
@@ -3212,7 +3264,6 @@ fn borrowed_ios_stop_in_cleanup_enforces_owner_lease_quiescence_admission_and_id
                         "PID Status Label\n42 0 UIKitApplication:dev.lykhoyda.rndevagent.fastrunner[abc][rb-legacy]\n",
                     ),
                 );
-                owner_gone(&mut mock);
             }
             _ => unreachable!(),
         }

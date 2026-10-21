@@ -578,7 +578,7 @@ fn run_inner(
         verb: verb(req),
     };
     let finish_failed =
-        |ctx: Ctx, failure: Failure| finish_failed(ctx, &node, &req.runtime_dir, failure);
+        |ctx: Ctx, failure: Failure| finish_failed(ctx, &node, &req.runtime_dir, failure, false);
     if let Some(earlier) = recovered {
         ctx.notes.push(("recovered_run".to_string(), earlier));
     }
@@ -641,8 +641,20 @@ fn run_inner(
         }
     }
     if req.boot_device || req.restart_device {
-        if let Err(f) = boot_selected_device(&mut ctx, &device, req.restart_device) {
-            return Ok(finish_failed(ctx, f));
+        let mut restart_shutdown_unresolved = false;
+        if let Err(f) = boot_selected_device(
+            &mut ctx,
+            &device,
+            req.restart_device,
+            &mut restart_shutdown_unresolved,
+        ) {
+            return Ok(self::finish_failed(
+                ctx,
+                &node,
+                &req.runtime_dir,
+                f,
+                restart_shutdown_unresolved && !req.shutdown_device_on_exit,
+            ));
         }
     }
     if req.fresh_install {
@@ -983,8 +995,13 @@ fn run_inner(
         }
     }
 
-    let (mut cleanup, all_clean, ownership_proven) =
-        teardown(&mut ctx, &node, &req.runtime_dir, outcome.group_survived);
+    let (mut cleanup, all_clean, ownership_proven) = teardown(
+        &mut ctx,
+        &node,
+        &req.runtime_dir,
+        outcome.group_survived,
+        false,
+    );
     cleanup.splice(..0, early_cleanup);
     ctx.mark("teardown", t);
 
@@ -1431,7 +1448,12 @@ fn reset_app(
     Ok(())
 }
 
-fn boot_selected_device(ctx: &mut Ctx, device: &Device, restart: bool) -> Result<(), Failure> {
+fn boot_selected_device(
+    ctx: &mut Ctx,
+    device: &Device,
+    restart: bool,
+    restart_shutdown_unresolved: &mut bool,
+) -> Result<(), Failure> {
     ensure_running(ctx.runner, "boot_device")?;
     let failed = |detail| {
         Failure::new(
@@ -1449,6 +1471,10 @@ fn boot_selected_device(ctx: &mut Ctx, device: &Device, restart: bool) -> Result
     let mut needs_boot = device.needs_boot;
     if restart && !device.needs_boot {
         let shutdown = ios::shutdown_selected_sim(ctx.runner, &device.id, device_type, runtime);
+        *restart_shutdown_unresolved = matches!(
+            shutdown,
+            ios::SelectedSimShutdown::ShutdownFailed | ios::SelectedSimShutdown::ReadbackInvalid
+        );
         ensure_running(ctx.runner, "boot_device")?;
         match shutdown {
             ios::SelectedSimShutdown::ShutDown | ios::SelectedSimShutdown::AlreadyShutdown => {
@@ -1518,12 +1544,18 @@ pub fn runner_driver(
     })
 }
 
-fn finish_failed(mut ctx: Ctx, node: &Path, runtime_dir: &Path, failure: Failure) -> Receipt {
+fn finish_failed(
+    mut ctx: Ctx,
+    node: &Path,
+    runtime_dir: &Path,
+    failure: Failure,
+    retain_device_lease: bool,
+) -> Receipt {
     let failure = ensure_running(ctx.runner, &failure.phase)
         .err()
         .unwrap_or(failure);
     events::close_running(StageState::Failed, Some(&failure.code_str()), &[]);
-    let (cleanup, _, _) = teardown(&mut ctx, node, runtime_dir, false);
+    let (cleanup, _, _) = teardown(&mut ctx, node, runtime_dir, false, retain_device_lease);
     let mut receipt = ctx.fail(failure);
     for (name, rendered) in cleanup {
         receipt.cleanup.insert(name, rendered);
@@ -1537,6 +1569,7 @@ fn teardown(
     node: &Path,
     runtime_dir: &Path,
     wait_unresolved: bool,
+    retain_device_lease: bool,
 ) -> (Vec<(String, String)>, bool, bool) {
     events::stage("cleanup", StageState::Running, None, None);
     let mut outcomes: Vec<(String, Outcome)> = Vec::new();
@@ -1596,7 +1629,9 @@ fn teardown(
     ));
     if let Some(lease) = ctx.record.resources.lease.clone() {
         let unclean = unclean_legs(&outcomes);
-        let outcome = if ctx.record.resources.can_release_build_ownership()
+        let outcome = if retain_device_lease {
+            Outcome::Unresolved("restart shutdown is unresolved; device lease retained".into())
+        } else if ctx.record.resources.can_release_build_ownership()
             && ctx.record.resources.can_release_borrowed_ios_stop()
             && unclean.is_empty()
         {

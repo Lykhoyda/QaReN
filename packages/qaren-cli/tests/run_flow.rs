@@ -5412,7 +5412,31 @@ fn restart_device_shutdown_or_readback_failure_stops_before_boot_install_or_walk
             l.as_str(),
             "simctl-bootstatus" | "simctl-install" | "simctl-launch" | "core-walk"
         )));
-        assert_eq!(receipt.cleanup["device_lease"], "removed", "{fault}");
+        let record = RunRecord::load(&req.runs_root, &run_id()).unwrap();
+        assert_eq!(
+            record.resources.borrowed_ios_stop(),
+            qaren::runrecord::BorrowedIosStop::NotArmed,
+            "{fault}"
+        );
+        if fault == "pre_list_failed" {
+            assert_eq!(receipt.cleanup["device_lease"], "removed", "{fault}");
+            assert!(record.resources.lease.is_none());
+        } else {
+            assert!(
+                receipt.cleanup["device_lease"].starts_with("unresolved:"),
+                "{fault}"
+            );
+            assert!(record.resources.lease.as_ref().unwrap().lock_dir.exists());
+        }
+        assert_eq!(
+            runner
+                .observed
+                .iter()
+                .filter(|l| *l == "simctl-shutdown")
+                .count(),
+            usize::from(fault != "pre_list_failed"),
+            "{fault}"
+        );
         assert_eq!(receipt.cleanup["simulator"], "kept", "{fault}");
         assert_eq!(runner.mock.remaining(), 0, "{fault}");
     }
