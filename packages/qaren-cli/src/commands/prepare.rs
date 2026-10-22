@@ -1233,34 +1233,35 @@ fn pool_refusal(scan: &PoolScan, cap: u32, occupied: &[String]) -> Failure {
     )
 }
 
-// Read-only: the first matching Shutdown member that is free, or whose dead holder's run never reached ready.
+// Read-only, in the claim's order: a dead holder whose run never reached ready is reclaimed in any power state; a free member must be Shutdown.
 fn dry_run_pool_member(
     runner: &mut dyn Runner,
     scan: &PoolScan,
     lock_root: &Path,
     runs_root: &Path,
 ) -> Option<(ios::Simulator, Option<String>)> {
-    scan.candidates
-        .iter()
-        .filter(|(_, sim)| sim.state == ios::SimState::Shutdown)
-        .find_map(|(member, sim)| {
-            let Some(holder) = buildplan::read_holder(&buildplan::lock_dir(
-                lock_root,
-                &crate::lease::lock_name(Platform::Ios, &member.udid),
-            )) else {
-                return Some((sim.clone(), None));
-            };
-            let liveness = holder
-                .identity
-                .as_ref()
-                .map(|i| probe_pid_identity(runner, i));
-            (matches!(
-                liveness,
-                Some(PidLiveness::Dead | PidLiveness::AliveForeign)
-            ) && RunRecord::load(runs_root, &holder.run_id).is_ok()
-                && ready_holder(runs_root, Some(&holder), liveness).is_none())
-            .then(|| (sim.clone(), Some(holder.run_id)))
+    scan.candidates.iter().find_map(|(member, sim)| {
+        let Some(holder) = buildplan::read_holder(&buildplan::lock_dir(
+            lock_root,
+            &crate::lease::lock_name(Platform::Ios, &member.udid),
+        )) else {
+            return (sim.state == ios::SimState::Shutdown).then(|| (sim.clone(), None));
+        };
+        let liveness = holder
+            .identity
+            .as_ref()
+            .map(|i| probe_pid_identity(runner, i));
+        (matches!(
+            liveness,
+            Some(PidLiveness::Dead | PidLiveness::AliveForeign)
+        ) && RunRecord::load(runs_root, &holder.run_id).is_ok()
+            && ready_holder(runs_root, Some(&holder), liveness).is_none())
+        .then(|| {
+            let mut sim = sim.clone();
+            sim.state = ios::SimState::Shutdown;
+            (sim, Some(holder.run_id))
         })
+    })
 }
 
 enum PoolClaim {

@@ -5904,41 +5904,50 @@ fn pool_falls_back_to_a_temporary_simulator_when_a_short_form_does_not_resolve()
 
 #[test]
 fn pool_dry_run_reports_reclaiming_a_dead_holder_whose_run_never_reached_ready() {
-    let repo = common::temp_repo();
-    plant_member(&repo, BORROWED);
-    plant_pool_holder(&repo, BORROWED, Phase::Failed);
-    let scenario_path = write_scenario(&repo, &ios_scenario_yaml(8791));
-    let mut mock = MockRunner::new();
-    script_validation(&mut mock, &repo, IOS_TOOLS);
-    mock.expect_run("simctl list devices -j", member_inventory("Shutdown"));
-    mock.expect_run(
-        "expo run:ios --help",
-        CmdOutput::success(common::IOS_BUILD_HELP),
-    );
-    mock.expect_run("lsof", free_port());
-    mock.expect_run("ps", CmdOutput::success("")); // holder gone
-    mock.expect_run("ls-files", CmdOutput::success(""));
-    common::script_xcode(&mut mock);
-    let mut args = pool_args(&scenario_path);
-    args.dry_run = true;
+    for state in ["Shutdown", "Booted"] {
+        let repo = common::temp_repo();
+        plant_member(&repo, BORROWED);
+        plant_pool_holder(&repo, BORROWED, Phase::Failed);
+        let scenario_path = write_scenario(&repo, &ios_scenario_yaml(8791));
+        let mut mock = MockRunner::new();
+        script_validation(&mut mock, &repo, IOS_TOOLS);
+        mock.expect_run("simctl list devices -j", member_inventory(state));
+        mock.expect_run(
+            "expo run:ios --help",
+            CmdOutput::success(common::IOS_BUILD_HELP),
+        );
+        mock.expect_run("lsof", free_port());
+        mock.expect_run("ps", CmdOutput::success("")); // holder gone
+        mock.expect_run("ls-files", CmdOutput::success(""));
+        common::script_xcode(&mut mock);
+        let mut args = pool_args(&scenario_path);
+        args.dry_run = true;
 
-    let receipt = prepare(&mut mock, &args);
+        let receipt = prepare(&mut mock, &args);
 
-    assert_eq!(
-        receipt.result,
-        ReceiptResult::Planned,
-        "{:?}",
-        receipt.failure
-    );
-    assert_eq!(mock.remaining(), 0);
-    assert_eq!(
-        receipt.outcomes["device_pool"],
-        format!("would reuse {BORROWED} after reclaiming run check-earlier through its cleanup")
-    );
-    assert_eq!(
-        RunRecord::load(&repo, "check-earlier").unwrap().phase,
-        Phase::Failed
-    );
+        assert_eq!(
+            receipt.result,
+            ReceiptResult::Planned,
+            "{state}: {:?}",
+            receipt.failure
+        );
+        assert_eq!(mock.remaining(), 0);
+        assert_eq!(
+            receipt.outcomes["device_pool"],
+            format!(
+                "would reuse {BORROWED} after reclaiming run check-earlier through its cleanup"
+            )
+        );
+        let planned = receipt.planned_commands.join("\n");
+        assert!(
+            planned.contains(&format!("simctl bootstatus {BORROWED} -b")),
+            "{planned}"
+        );
+        assert_eq!(
+            RunRecord::load(&repo, "check-earlier").unwrap().phase,
+            Phase::Failed
+        );
+    }
 }
 
 #[test]
