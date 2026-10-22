@@ -58,3 +58,97 @@ test('readiness reason rejects arbitrary values and use outside native-readiness
   }
   assert.deepEqual(cleanDiagnostic(metric), metric, 'older metrics remain valid');
 });
+
+const healthDetails = [
+  'refused',
+  'reset',
+  'abort',
+  'http-4xx',
+  'http-5xx',
+  'body-not-ok',
+  'wedged',
+  'other',
+] as const;
+const health = { ...metric, readinessReason: 'health' } as const;
+const { kind: _kind, ...timed } = health;
+
+test('health details survive both cleaners only on a failed health readiness end event', () => {
+  for (const healthDetail of healthDetails) {
+    assert.deepEqual(cleanTimingEvent({ ...timed, healthDetail }), { ...timed, healthDetail });
+    assert.deepEqual(cleanDiagnostic({ ...health, healthDetail }), { ...health, healthDetail });
+  }
+  for (const healthDetail of ['PRIVATE-refused', {}, [], 1, null]) {
+    assert.equal(cleanTimingEvent({ ...health, healthDetail }), undefined);
+    assert.equal(cleanDiagnostic({ ...health, healthDetail }), undefined);
+  }
+  for (const changes of [
+    { readinessReason: 'dead' },
+    { readinessReason: undefined },
+    { stage: 'capture', readinessReason: undefined },
+    { edge: 'start', readinessReason: undefined },
+  ]) {
+    const event = { ...health, healthDetail: 'refused', ...changes };
+    assert.equal(cleanTimingEvent(event), undefined);
+    assert.equal(cleanDiagnostic(event), undefined);
+  }
+});
+
+const postMortem = {
+  kind: 'metric',
+  stage: 'runner-post-mortem',
+  edge: 'point',
+  outcome: 'failed',
+  at: 210,
+  line: 3,
+  observation: 7,
+  count: 1,
+  hostChild: 'exited',
+  exitCode: 0,
+  exitSignal: 'SIGKILL',
+  appProcess: 'changed',
+  markerReady: 1,
+  markerWaiting: 2,
+  markerWaitResult: 0,
+  markerListenerFailed: 0,
+  markerSendFailed: 1,
+} as const;
+
+test('a runner post-mortem keeps only fixed words and counts on its own stage', () => {
+  const { kind: _, ...event } = postMortem;
+  assert.deepEqual(cleanTimingEvent(postMortem), event);
+  assert.deepEqual(cleanDiagnostic({ ...postMortem, raw: 'PRIVATE-tail' }), postMortem);
+  for (const hostChild of ['alive', 'exited', 'unknown'])
+    assert.equal(cleanDiagnostic({ ...postMortem, hostChild })?.hostChild, hostChild);
+  for (const appProcess of ['same', 'changed', 'absent', 'unknown'])
+    assert.equal(cleanDiagnostic({ ...postMortem, appProcess })?.appProcess, appProcess);
+  for (const exitSignal of ['SIGTERM', 'SIGTRAP', 'other'])
+    assert.equal(cleanDiagnostic({ ...postMortem, exitSignal })?.exitSignal, exitSignal);
+  for (const [key, value] of [
+    ['hostChild', 'PRIVATE-alive'],
+    ['appProcess', 4242],
+    ['exitSignal', 'PRIVATE-SIG'],
+    ['exitCode', -1],
+    ['markerWaiting', 'PRIVATE-1'],
+  ] as const) {
+    assert.equal(cleanTimingEvent({ ...postMortem, [key]: value }), undefined);
+    assert.equal(cleanDiagnostic({ ...postMortem, [key]: value }), undefined);
+  }
+  for (const key of ['hostChild', 'exitCode', 'appProcess', 'markerWaiting'] as const) {
+    const misplaced = { ...metric, [key]: postMortem[key] };
+    assert.equal(cleanTimingEvent(misplaced), undefined);
+    assert.equal(cleanDiagnostic(misplaced), undefined);
+  }
+});
+
+test('dispatch phase spans survive both cleaners as ordinary timing stages', () => {
+  for (const stage of [
+    'dispatch-bind',
+    'dispatch-native',
+    'dispatch-settle',
+    'dispatch-health',
+    'dispatch-readback',
+  ]) {
+    const event = { kind: 'metric', stage, edge: 'end', outcome: 'ok', at: 300, ms: 17_600 };
+    assert.deepEqual(cleanDiagnostic(event), event);
+  }
+});

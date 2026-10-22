@@ -29,7 +29,11 @@ import {
   readReactInputValue,
 } from '../handlers/device-interact.js';
 import { captureQaScreenshot } from './screenshot.js';
-import { createDeviceSnapshotHandler, isAppRunning } from '../handlers/device-session.js';
+import {
+  createDeviceSnapshotHandler,
+  iosAppProcessId,
+  isAppRunning,
+} from '../handlers/device-session.js';
 import { relaunchIosDevClient } from '../handlers/app-lifecycle.js';
 import {
   createDeviceAcceptSystemDialogHandler,
@@ -39,7 +43,11 @@ import { foregroundSurfaceFromSnapshot } from '../handlers/expo-dev-menu.js';
 import { compileFlow, FlowCompileError } from '../flow/compile.js';
 import { foreignFlowGate } from '../lifecycle/foreign-flow-gate.js';
 import { androidForeignDriverMessage } from '../runners/external-runner-detect.js';
-import { observeRunnerDrivers, observeRunnerRelaunches } from '../runners/rn-fast-runner-client.js';
+import {
+  observeAppProcess,
+  observeRunnerDrivers,
+  observeRunnerRelaunches,
+} from '../runners/rn-fast-runner-client.js';
 import type { ToolResult } from '../utils.js';
 import { HandlerError, adapt, describeError, fillEvidence, unwrap } from './adapt.js';
 import {
@@ -54,7 +62,12 @@ import type { LedgerRow, StepStart } from './ledger.js';
 import { parsePlanWithJev, readPreparedPlan } from './plan.js';
 import { createJev } from './jev.js';
 import { isRecord } from './questions.js';
-import { createTimingObserver, formatTimingEvent, type TimingContext } from './timing.js';
+import {
+  createTimingObserver,
+  formatTimingEvent,
+  observeDispatchPhases,
+  type TimingContext,
+} from './timing.js';
 import { preflightPlan } from './preflight.js';
 import { summarizeJev } from './ledger.js';
 import { isSecretEnvName, redactApiKey, setRedactionKey } from '../util/redact.js';
@@ -388,6 +401,8 @@ async function openSession(
   const close = (): Promise<void> =>
     (closing ??= withCancellation(undefined, async () => {
       observeRunnerRelaunches(undefined);
+      observeDispatchPhases(undefined);
+      observeAppProcess(undefined);
       if (deviceOpen) await snapshot({ action: 'close' }).catch(() => undefined);
       await cdp.disconnect().catch(() => undefined);
     }));
@@ -477,6 +492,8 @@ async function openSession(
   );
 
   observeRunnerRelaunches({ now, observe: timing });
+  observeDispatchPhases({ now, observe: timing });
+  if (platform === 'ios') observeAppProcess(() => iosAppProcessId(appId, target.deviceId));
 
   const rawSnapshot = async (
     platformPresence = false,

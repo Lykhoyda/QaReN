@@ -1571,6 +1571,14 @@ that secret despite artifact redaction.
   codes and allowlisted native refusal codes. Native-readiness end metrics also retain the
   existing liveness classification as `readinessReason`, or `unknown` if the probe did not
   return a classification; `count` identifies the probe site, not a retry ordinal.
+  A `health` failure adds `healthDetail` (`refused`, `reset`, `abort`, `http-4xx`, `http-5xx`, `body-not-ok`,
+  `wedged` or `other`). Every failed readiness probe is followed by a `runner-post-mortem` point
+  with the runner host child (`alive`, `exited`, `unknown`), its exit code or signal name, counts of
+  the runner's fixed lifecycle markers (never output text), and `appProcess`: the app process found
+  on the simulator compared with the last good read (`same`, `changed`, `absent`, `unknown`).
+  Fills add `dispatch-bind` and `dispatch-readback` spans and iOS mutating dispatches add
+  `dispatch-native`, `dispatch-settle` and `dispatch-health` spans, each carrying the dispatching
+  plan row's `line` when known.
   Attachment emits an `admission` point metric at each retry decision and once on cancellation
   or a `CDP_NOT_CONNECTED` refusal, with the decision (`retry`, `cancelled` or `refused`),
   the attempt count, last started and completed boundary, attach stage (only when the last
