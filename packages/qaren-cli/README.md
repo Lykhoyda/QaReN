@@ -3169,7 +3169,7 @@ is shared.
 ### Existing iOS simulator
 
 `prepare --device <UUID>` borrows that exact existing simulator instead of
-creating `qaren-<run-id>`, for a `build.owner: cli` iOS scenario. The UUID must
+using the pool, for a `build.owner: cli` iOS scenario. The UUID must
 name one available simulator whose device type and runtime equal the
 scenario's `ios.device_type` and `ios.runtime`. Names, `booted` and partial
 UUIDs are usage errors (exit `2`, no receipt); unavailable, ambiguous or
