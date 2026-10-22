@@ -821,6 +821,25 @@ test('a value that is a prefix of a later value cannot expose the remainder', as
   assert.equal(dumped.includes('SECRET'), false, dumped);
 });
 
+test('a check that fails while a system dialog is in front is not a step failure', async () => {
+  for (const front of ['app', 'dialog'] as const) {
+    const outcome = await walkBlock(
+      block('✓ "Missing"\n'),
+      fake([screen(['Allow'], { front })]).deps,
+      0,
+      [],
+      undefined,
+      undefined,
+      { recover: false },
+    );
+    assert.match(
+      renderReason(outcome.failure?.seen ?? '', (text) => text),
+      /"Missing" is not satisfied on screen/,
+    );
+    assert.equal(outcome.failure?.kind, front === 'app' ? 'step' : undefined);
+  }
+});
+
 test('a failing literal check withholds a secure capture and preserves non-secure readability', async () => {
   for (const secure of [false, true]) {
     const captured = screen(['Welcome', 'Saved password: pf-s3cret-91']);
