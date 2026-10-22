@@ -8,6 +8,8 @@ import { setImmediate } from 'node:timers/promises';
 import { test, type TestContext } from 'node:test';
 import { CDPClient } from '../../../dist/cdp-client.js';
 import {
+  BundleReadinessTimeoutError,
+  TargetReadinessTimeoutError,
   TargetSelectionError,
   discoverExactPort,
   listTargetsOnExactPort,
@@ -278,85 +280,183 @@ test('cancellation interrupts a bundle-pinned wait after a wrong-bundle response
   assert.equal(reads.mock.callCount(), 1);
 });
 
-for (const [label, deviceName, candidates] of [
+for (const [label, deviceName, candidates, Expected] of [
   [
     'wrong bundle on selected device',
     'iPhone',
     [target({ appId: 'com.foreign.app', title: 'com.foreign.app' })],
+    BundleReadinessTimeoutError,
   ],
   [
     'wrong bundle without device pin',
     undefined,
     [target({ appId: 'com.foreign.app', title: 'com.foreign.app' })],
+    BundleReadinessTimeoutError,
   ],
-  ['requested bundle on sibling device', 'iPhone', [target({ deviceName: 'sibling' })]],
-  ['no targets', 'iPhone', []],
-  ['malformed metadata', 'iPhone', [{ deviceName: 'iPhone', appId: null, title: 42 }]],
+  [
+    'malformed metadata on selected device',
+    'iPhone',
+    [{ deviceName: 'iPhone', appId: null, title: 42 }],
+    BundleReadinessTimeoutError,
+  ],
+  ['no targets', 'iPhone', [], TargetReadinessTimeoutError],
+  [
+    'requested bundle only on sibling device',
+    'iPhone',
+    [target({ deviceName: 'sibling' })],
+    TargetReadinessTimeoutError,
+  ],
 ] as const) {
-  test(`bundle readiness exhaustion refuses without admission recovery: ${label}`, async (t) => {
+  test(`a bundle-pinned wait exhausts with ${Expected.name}: ${label}`, async (t) => {
     const clock = setup(t, async () => Response.json(candidates));
-    const calls: string[] = [];
-    let refused = false;
     const waiting = assert.rejects(
-      admit(
-        {
-          metroPort: managedPort,
-          readinessMs: 1000,
-          remainingMs: () => 90_000,
-          attach: async () => {
-            calls.push('wait');
-            await waitForExactPortTargets(
-              managedPort,
-              1000,
-              500,
-              undefined,
-              deviceName,
-              filters.bundleId,
-            );
-            calls.push('connect_exact');
-          },
-          appAlive: async () => {
-            calls.push('app_alive');
-            return false;
-          },
-          relaunch: async () => {
-            calls.push('relaunch');
-          },
-          foreignDriver: async () => {
-            calls.push('foreign_driver');
-            return undefined;
-          },
-          open: async () => {
-            calls.push('open');
-          },
-          prove: async () => {
-            throw new Error('proof must not run');
-          },
-          close: async () => {
-            calls.push('close');
-          },
-          load: () => 1,
-        },
-        createStop(),
-      ),
-      (error: Error & { code?: string; meta?: Record<string, unknown> }) => {
-        assert.equal(error.code, 'CDP_NOT_CONNECTED');
-        assert.equal(error.meta?.inner, 'target_readiness_timeout');
-        assert.equal(error.meta?.attempt, 1);
-        assert.equal(error.meta?.relaunches, 0);
-        refused = true;
+      waitForExactPortTargets(managedPort, 1000, 500, undefined, deviceName, filters.bundleId),
+      (error: unknown) => {
+        assert.equal((error as Error).constructor, Expected);
         return true;
       },
     );
     await setImmediate();
     await clock.advance(500);
     await clock.advance(500);
-    assert.equal(refused, true, 'admission must refuse at the readiness deadline');
     await waiting;
-    assert.deepEqual(calls, ['wait', 'close']);
-    assert.deepEqual(clock.requested, [endpoint, endpoint]);
   });
 }
+
+function admitThroughReadiness(
+  t: TestContext,
+  respond: (now: number, relaunched: boolean) => unknown[],
+  appAlive: boolean,
+) {
+  const calls: string[] = [];
+  let relaunched = false;
+  const clock = setup(t, async () => Response.json(respond(clock.now(), relaunched)));
+  const started = clock.now();
+  const budgetMs = 10_000;
+  const remainingMs = () => Math.max(0, budgetMs - (clock.now() - started));
+  let outcome:
+    | { proof?: unknown; error?: Error & { code?: string; meta?: Record<string, unknown> } }
+    | undefined;
+  admit(
+    {
+      metroPort: managedPort,
+      readinessMs: 1000,
+      remainingMs,
+      attach: async () => {
+        calls.push('wait');
+        await waitForExactPortTargets(
+          managedPort,
+          Math.max(1, Math.min(1000, remainingMs())),
+          500,
+          undefined,
+          'iPhone',
+          filters.bundleId,
+        );
+        calls.push('connect_exact');
+      },
+      appAlive: async () => {
+        calls.push('app_alive');
+        return appAlive;
+      },
+      relaunch: async () => {
+        calls.push('relaunch');
+        relaunched = true;
+      },
+      foreignDriver: async () => {
+        calls.push('foreign_driver');
+        return undefined;
+      },
+      open: async () => {
+        calls.push('open');
+      },
+      prove: async () => ({
+        ok: true,
+        scriptURL: 'http://127.0.0.1:8341/index.bundle',
+        appModules: 3,
+      }),
+      close: async () => {
+        calls.push('close');
+      },
+      load: () => 1,
+    },
+    createStop(),
+  ).then(
+    (proof) => (outcome = { proof }),
+    (error) => (outcome = { error }),
+  );
+  return {
+    calls,
+    elapsed: () => clock.now() - started,
+    async run() {
+      await setImmediate();
+      while (!outcome && clock.now() - started <= budgetMs + 1000) await clock.advance(500);
+      return outcome;
+    },
+  };
+}
+
+for (const [label, candidates] of [
+  [
+    'wrong bundle on selected device',
+    [target({ appId: 'com.foreign.app', title: 'com.foreign.app' })],
+  ],
+  ['malformed metadata on selected device', [{ deviceName: 'iPhone', appId: null, title: 42 }]],
+] as const) {
+  test(`exhausted readiness that saw only another bundle refuses without admission recovery: ${label}`, async (t) => {
+    const admission = admitThroughReadiness(t, () => [...candidates], false);
+    const outcome = await admission.run();
+    assert.equal(outcome?.error?.code, 'CDP_NOT_CONNECTED');
+    assert.equal(outcome?.error?.meta?.inner, 'target_readiness_timeout');
+    assert.equal(outcome?.error?.meta?.attempt, 1);
+    assert.equal(outcome?.error?.meta?.relaunches, 0);
+    assert.deepEqual(admission.calls, ['wait', 'close']);
+    assert.equal(admission.elapsed(), 1000);
+  });
+}
+
+for (const [label, missing] of [
+  ['no targets', []],
+  ['requested bundle only on sibling device', [target({ deviceName: 'sibling' })]],
+] as const) {
+  test(`exhausted readiness with no target on the device relaunches a dead app once: ${label}`, async (t) => {
+    const admission = admitThroughReadiness(
+      t,
+      (_now, relaunched) => (relaunched ? [target()] : [...missing]),
+      false,
+    );
+    const outcome = await admission.run();
+    assert.ok(outcome?.proof, `admission refused: ${outcome?.error?.message}`);
+    assert.deepEqual(admission.calls, [
+      'wait',
+      'foreign_driver',
+      'app_alive',
+      'relaunch',
+      'wait',
+      'connect_exact',
+      'foreign_driver',
+      'open',
+    ]);
+  });
+}
+
+test('a live app whose target registers after the readiness window keeps retrying within the walk budget', async (t) => {
+  let registeredAt: number | undefined;
+  const admission = admitThroughReadiness(
+    t,
+    (now) => {
+      registeredAt ??= now + 3500;
+      return now >= registeredAt ? [target()] : [];
+    },
+    true,
+  );
+  const outcome = await admission.run();
+  assert.ok(outcome?.proof, `admission refused: ${outcome?.error?.message}`);
+  assert.ok(admission.elapsed() > 3000, `admitted after ${admission.elapsed()}ms`);
+  assert.ok(!admission.calls.includes('relaunch'));
+  assert.equal(admission.calls.filter((call) => call === 'app_alive').length, 1);
+  assert.ok(admission.calls.filter((call) => call === 'wait').length > 2);
+  assert.deepEqual(admission.calls.slice(-3), ['connect_exact', 'foreign_driver', 'open']);
+});
 
 test('a non-array target response fails immediately instead of polling', async (t) => {
   const clock = setup(t, async () => Response.json({ length: 1 }));

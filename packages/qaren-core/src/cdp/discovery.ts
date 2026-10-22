@@ -188,6 +188,7 @@ export async function waitForExactPortTargets(
   const pinnedDevice = deviceName?.trim();
   const deadline = performance.now() + timeoutMs;
   let remaining = deadline - performance.now();
+  let otherBundleOnly = false;
   while (remaining > 0) {
     signal?.throwIfAborted();
     let raw: HermesTarget[];
@@ -204,25 +205,25 @@ export async function waitForExactPortTargets(
     if (!Array.isArray(raw)) {
       throw new Error(`Invalid CDP target list on port ${port}: expected an array`);
     }
+    const onDevice =
+      pinnedDevice === undefined
+        ? raw
+        : raw.filter(
+            (target) =>
+              typeof target?.deviceName === 'string' && target.deviceName.trim() === pinnedDevice,
+          );
+    const ready =
+      bundleId === undefined
+        ? onDevice.length > 0
+        : onDevice.some((target) => targetMatchesBundleId(target, bundleId));
+    otherBundleOnly = bundleId !== undefined && onDevice.length > 0 && !ready;
     remaining = deadline - performance.now();
     if (remaining <= 0) break;
-    if (
-      deviceName === undefined && bundleId === undefined
-        ? raw.length > 0
-        : raw.some(
-            (target) =>
-              (pinnedDevice === undefined ||
-                (typeof target?.deviceName === 'string' &&
-                  target.deviceName.trim() === pinnedDevice)) &&
-              (bundleId === undefined || targetMatchesBundleId(target, bundleId)),
-          )
-    )
-      return;
+    if (ready) return;
     await sleep(Math.min(pollMs, remaining), signal);
     remaining = deadline - performance.now();
   }
-  const Timeout =
-    bundleId === undefined ? TargetReadinessTimeoutError : BundleReadinessTimeoutError;
+  const Timeout = otherBundleOnly ? BundleReadinessTimeoutError : TargetReadinessTimeoutError;
   throw new Timeout(
     deviceName === undefined
       ? `Timed out waiting for CDP targets on port ${port} after ${timeoutMs}ms`
