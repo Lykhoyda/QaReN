@@ -371,6 +371,9 @@ test('a missing judge or target fails naming the line', async () => {
     /TARGET_NOT_FOUND/,
   );
   assert.equal(missing.rows[0].outcome, 'fail');
+  assert.equal(phrase.failure?.kind, undefined);
+  assert.equal(check.failure?.kind, undefined);
+  assert.equal(missing.failure?.kind, 'step');
 });
 
 test('an ambiguous quoted target without a judge is refused, not guessed', async () => {
@@ -830,6 +833,7 @@ test('a failing literal check withholds a secure capture and preserves non-secur
     const f = fake([captured]);
     const result = await runPlan([block('✓ "Missing"')], f.deps);
     assert.equal(result.verdict, 'FAIL');
+    assert.equal(result.failure?.kind, 'step');
     assert.equal(
       result.failure?.seen,
       secure

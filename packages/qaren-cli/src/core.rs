@@ -371,6 +371,19 @@ pub struct LedgerFailure {
     pub seen: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub screenshot: Option<String>,
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "passive"
+    )]
+    pub kind: Option<FailureKind>,
+}
+
+// Only a plan step's own judgment is a step failure; anything else, or an older core, has no kind.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum FailureKind {
+    Step,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -1226,6 +1239,7 @@ fn synthesized_failure(rows: &[Row], seen: &str) -> LedgerFailure {
         step: last.map_or(0, |row| row.line),
         seen: seen.to_string(),
         screenshot: last.and_then(|row| row.screenshot.clone()),
+        kind: None,
     }
 }
 

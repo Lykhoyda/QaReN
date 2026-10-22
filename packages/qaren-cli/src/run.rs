@@ -1215,12 +1215,14 @@ fn run_inner(
     let walk = match result {
         _ if terminal.is_none_or(|t| t.cancelled) => recipes::Walk::Other,
         ReceiptResult::Pass => recipes::Walk::Pass,
-        ReceiptResult::Fail
-            if outcome.failure.is_none()
-                && outcome.ledger.failure.is_some()
-                && terminal.is_some_and(|t| t.final_verification.matched) =>
-        {
-            recipes::Walk::StepFailure
+        ReceiptResult::Fail if terminal.is_some_and(|t| t.final_verification.matched) => {
+            let step = outcome.ledger.failure.as_ref().and_then(|f| f.kind)
+                == Some(crate::core::FailureKind::Step);
+            if outcome.failure.is_none() && step {
+                recipes::Walk::StepFailure
+            } else {
+                recipes::Walk::OtherFailure
+            }
         }
         _ => recipes::Walk::Other,
     };

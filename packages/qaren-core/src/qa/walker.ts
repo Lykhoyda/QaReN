@@ -882,6 +882,8 @@ async function walkBlockScoped(
       },
     };
   };
+  const judged = (outcome: WalkOutcome): WalkOutcome =>
+    outcome.failure ? { ...outcome, failure: { ...outcome.failure, kind: 'step' } } : outcome;
   const shoot = async (item: Item): Promise<string | undefined> => {
     assertActive();
     if (!privacy.canScreenshot()) {
@@ -1590,7 +1592,7 @@ async function walkBlockScoped(
             if (recovering === 'retry') continue attempts;
             if (recovering) return recovering;
           }
-          return failed(item, 1, reason, before.screen, shot);
+          return judged(failed(item, 1, reason, before.screen, shot));
         }
 
         if (item.kind === 'wait') {
@@ -1670,7 +1672,8 @@ async function walkBlockScoped(
             const recovering = await recovery(item, 1, reason);
             if (recovering === 'retry') continue attempts;
             if (recovering) return recovering;
-            if (unchanged) return failed(item, 1, reason, observation.screen, await shoot(item));
+            if (unchanged)
+              return judged(failed(item, 1, reason, observation.screen, await shoot(item)));
             usable(observation, item, deadline);
             throw new EvidenceExpired(true);
           }
@@ -1776,7 +1779,7 @@ async function walkBlockScoped(
             continue items;
           }
           const reason = `"${item.until.phrase}" did not come into view after ${SCROLL_ATTEMPTS} scrolls`;
-          return failed(item, Math.max(attempts, 1), reason, observation.screen, shot);
+          return judged(failed(item, Math.max(attempts, 1), reason, observation.screen, shot));
         }
 
         // press · fill · back · dialog: snapshot → resolve → act → read-back → snapshot → diff rule
@@ -2376,7 +2379,11 @@ async function walkBlockScoped(
             again = true;
             break;
           }
-          outcome = recovering ?? failed(item, attempt, unchanged, after.screen, shot, ref);
+          outcome =
+            recovering ??
+            (act!.error
+              ? failed(item, attempt, unchanged, after.screen, shot, ref)
+              : judged(failed(item, attempt, unchanged, after.screen, shot, ref)));
         }
         if (again) continue attempts;
         if (outcome) return outcome;
@@ -2465,8 +2472,19 @@ async function walkBlockScoped(
           error instanceof ResolutionError && error.code === 'APP_PROCESS_UNKNOWN'
             ? { code: error.code, message: error.message }
             : undefined;
+        const caughtOutcome = failed(
+          item,
+          currentAttempt,
+          error.message,
+          latest,
+          shot,
+          undefined,
+          miss,
+        );
         return {
-          ...failed(item, currentAttempt, error.message, latest, shot, undefined, miss),
+          ...(error instanceof ResolutionError && error.code === 'TARGET_NOT_FOUND'
+            ? judged(caughtOutcome)
+            : caughtOutcome),
           ...(refusal || unknownProcess ? { refusal: refusal ?? unknownProcess } : {}),
         };
       }
