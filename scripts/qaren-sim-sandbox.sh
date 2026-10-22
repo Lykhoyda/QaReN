@@ -15,7 +15,6 @@ FAKE_UDID="5A4DB0C5-0000-4000-8000-00000000F4CE"
 real_home="$HOME"
 real_xcrun="$(command -v xcrun || true)"
 real_xcodebuild="$(command -v xcodebuild || true)"
-real_maestro="$(command -v maestro || true)"
 dir="${QAREN_SANDBOX_DIR:-$(mktemp -d "${TMPDIR:-/tmp}/qaren-sim-sandbox.XXXXXX")}"
 mkdir -p "$dir/home" "$dir/bin" "$dir/android-sdk/platform-tools"
 dir="$(cd "$dir" && pwd -P)"
@@ -39,7 +38,7 @@ case "\${1:-}" in
   --find|-f)
     case "\${@: -1}" in simctl|devicectl|xcodebuild) echo "$dir/bin/\${@: -1}"; exit 0 ;; esac
     [ -n "$real_xcrun" ] && exec "$real_xcrun" "\${all[@]}" ;;
-  --show-sdk-*) [ -n "$real_xcrun" ] && exec "$real_xcrun" "\${all[@]}" ;;
+  --show-sdk-*|vtool|otool|nm|lipo) [ -n "$real_xcrun" ] && exec "$real_xcrun" "\${all[@]}" ;;
 esac
 echo "qaren-sim-sandbox: refused xcrun \${all[*]}" >&2
 exit 1
@@ -99,15 +98,11 @@ echo "qaren-sim-sandbox: refused devicectl $*" >&2
 exit 1
 EOF
 
-# Without a host maestro there is nothing to shield: leave it absent so callers see it uninstalled.
-if [ -n "$real_maestro" ]; then
-  shim maestro <<EOF
+shim maestro <<'EOF'
 #!/usr/bin/env bash
-case "\$#:\${@: -1}" in 1:--version|1:-v|1:--help|1:-h|2:--help|2:-h) exec "$real_maestro" "\$@" ;; esac
-echo "qaren-sim-sandbox: refused maestro \$*" >&2
-exit 1
+echo "qaren-sim-sandbox: maestro is not available" >&2
+exit 127
 EOF
-fi
 
 # Toolchains default under HOME; keep them on the real one so builds still work.
 export CARGO_HOME="${CARGO_HOME:-$real_home/.cargo}"

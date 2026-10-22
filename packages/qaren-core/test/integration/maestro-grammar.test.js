@@ -24,9 +24,11 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
 
+let maestroProbe;
 function maestroAvailable() {
-  const r = spawnSync('which', ['maestro'], { encoding: 'utf8' });
-  return r.status === 0 && r.stdout.trim().length > 0;
+  maestroProbe ??=
+    spawnSync('maestro', ['--version'], { encoding: 'utf8', timeout: 30_000 }).status === 0;
+  return maestroProbe;
 }
 
 function captureHelp() {

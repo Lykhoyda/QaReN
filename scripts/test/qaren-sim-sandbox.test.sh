@@ -67,9 +67,13 @@ check "the native iOS suite is refused" 1 $?
 run simctl boot "$FAKE_UDID"
 check "a direct simctl is refused" 1 $?
 run maestro test flow.yaml
-check "maestro is refused" 1 $?
-run maestro test flow.yaml --help
-check "maestro with a flow before --help is refused" 1 $?
+check "maestro is absent" 127 $?
+run maestro test --help
+check "maestro help is absent" 127 $?
+run maestro --version
+check "maestro version is absent" 127 $?
+run xcrun xctrace list devices
+check "an unlisted xcrun tool is refused" 1 $?
 check "xcrun --find simctl names the sandbox shim" "$tmp/sb/bin/simctl" "$(run xcrun --find simctl)"
 check "xcrun -f xcodebuild names the sandbox shim" "$tmp/sb/bin/xcodebuild" "$(run xcrun -f xcodebuild)"
 check "no device command reached the host tools" "" "$(forwarded)"
@@ -79,13 +83,13 @@ run xcodebuild build -scheme App -destination "generic/platform=iOS Simulator"
 run xcrun xcodebuild build -sdk iphonesimulator -destination "generic/platform=iOS Simulator"
 run xcodebuild -project App.xcodeproj -list
 run xcodebuild -scheme App -showBuildSettings
-run maestro test --help
-run maestro --version
-check "SDK queries, metadata, generic builds and maestro help reach the host tools" \
-  "xcrun --sdk macosx --show-sdk-path|xcodebuild -version|xcodebuild build -scheme App -destination generic/platform=iOS Simulator|xcodebuild build -sdk iphonesimulator -destination generic/platform=iOS Simulator|xcodebuild -project App.xcodeproj -list|xcodebuild -scheme App -showBuildSettings|maestro test --help|maestro --version" \
+run xcrun vtool -show-build App
+run xcrun otool -L App
+run xcrun nm -j -U App
+run xcrun lipo -info App
+check "SDK queries, binary inspectors, metadata and generic builds reach the host tools" \
+  "xcrun --sdk macosx --show-sdk-path|xcodebuild -version|xcodebuild build -scheme App -destination generic/platform=iOS Simulator|xcodebuild build -sdk iphonesimulator -destination generic/platform=iOS Simulator|xcodebuild -project App.xcodeproj -list|xcodebuild -scheme App -showBuildSettings|xcrun vtool -show-build App|xcrun otool -L App|xcrun nm -j -U App|xcrun lipo -info App" \
   "$(forwarded | tr '\n' '|' | sed 's/|$//')"
-check "without a host maestro the sandbox has none" "" \
-  "$(env PATH=/usr/bin:/bin QAREN_SANDBOX_DIR="$tmp/nomaestro" /bin/bash "$SANDBOX" sh -c 'command -v maestro' 2>/dev/null)"
 check "adb devices lists no device" "List of devices attached" "$(run adb devices | tr -d '\n')"
 check "ANDROID_HOME adb lists no device" "List of devices attached" "$(run sh -c '"$ANDROID_HOME/platform-tools/adb" devices' | tr -d '\n')"
 check "a relative sandbox dir links adb absolutely" "List of devices attached" \
@@ -99,7 +103,7 @@ for i in $(seq 1 24); do
 done
 wait
 check "concurrent first calls never fall through to the host tools" "" "$(forwarded)"
-check "every concurrent call hit a refusing shim" 24 "$(cat "$tmp"/race-* | grep -cx 1)"
+check "every concurrent call hit the absent maestro shim" 24 "$(cat "$tmp"/race-* | grep -cx 127)"
 
 bash "$SANDBOX" >/dev/null 2>&1
 check "no command is a usage error" 2 $?
