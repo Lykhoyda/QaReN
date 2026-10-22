@@ -195,12 +195,60 @@ const unverifiedFab = () =>
     'DEV_MENU_HIDE_UNVERIFIED',
   );
 
-test('overlays: an unverified floating-button hide refuses before any later action or step', async () => {
-  const { calls, done } = overlays({ hideDevMenuFab: unverifiedFab });
+const timedOutFab = () =>
+  failResult(
+    'The Expo dev-client floating button could not be confirmed hidden: the preferences call failed or timed out.',
+    'DEV_MENU_HIDE_UNVERIFIED',
+  );
+
+test('overlays: a timed-out floating-button hide is retried and the walk proceeds when the retry hides it', async () => {
+  let attempts = 0;
+  const { calls, done } = overlays({
+    hideDevMenuFab: () =>
+      attempts++ === 0 ? timedOutFab() : okResult({ action: 'hideDevMenuFab', executed: true }),
+  });
+  assert.equal(parseEnvelope(await done).ok, true);
+  assert.deepEqual(calls, [
+    'hideDevMenuFab',
+    'hideDevMenuFab',
+    'disableDevMenu',
+    'disableFastRefresh',
+    'hideDevMenu',
+    'read',
+  ]);
+});
+
+for (const [name, reads] of [
+  ['report the button hidden', [false]],
+  ['show the button', [true]],
+] as [string, boolean[]][]) {
+  test(`overlays: a floating-button hide that keeps failing refuses after the retries even when the reads ${name}`, async () => {
+    const { calls, done } = overlays({ hideDevMenuFab: unverifiedFab }, reads);
+    const env = parseEnvelope(await done);
+    assert.equal(env.ok, false);
+    assert.equal(env.code, 'DEV_MENU_HIDE_UNVERIFIED');
+    assert.match(env.error, /^The Expo dev-client floating button could not be confirmed hidden/);
+    assert.deepEqual(calls, ['hideDevMenuFab', 'hideDevMenuFab', 'hideDevMenuFab']);
+  });
+}
+
+test('overlays: a timed-out floating-button hide that keeps failing refuses with its reason', async () => {
+  const { calls, done } = overlays({ hideDevMenuFab: timedOutFab }, [false]);
   const env = parseEnvelope(await done);
   assert.equal(env.ok, false);
   assert.equal(env.code, 'DEV_MENU_HIDE_UNVERIFIED');
-  assert.deepEqual(calls, ['hideDevMenuFab']);
+  assert.match(
+    env.error,
+    /^The Expo dev-client floating button could not be confirmed hidden: .*the preferences call failed or timed out/,
+  );
+  assert.deepEqual(calls, ['hideDevMenuFab', 'hideDevMenuFab', 'hideDevMenuFab']);
+});
+
+test('overlays: the preserved timeout reason reaches the refusal', async () => {
+  const { done } = overlays({ hideDevMenuFab: timedOutFab }, [true]);
+  const env = parseEnvelope(await done);
+  assert.equal(env.code, 'DEV_MENU_HIDE_UNVERIFIED');
+  assert.match(env.error, /the preferences call failed or timed out/);
 });
 
 test('overlays: an app without the preferences module passes and is still verified natively', async () => {
@@ -316,8 +364,8 @@ for (const [name, result] of [
     },
   ],
 ] as [string, () => ToolResult][]) {
-  test(`overlays: ${name} during the floating-button hide refuses with the unverified code`, async () => {
-    const { calls, done } = overlays({ hideDevMenuFab: result });
+  test(`overlays: ${name} on every floating-button hide refuses with the unverified code`, async () => {
+    const { calls, done } = overlays({ hideDevMenuFab: result }, [false]);
     const env = parseEnvelope(await done);
     assert.equal(env.ok, false);
     assert.equal(env.code, 'DEV_MENU_HIDE_UNVERIFIED');
@@ -325,7 +373,7 @@ for (const [name, result] of [
       env.error,
       name === 'a lost connection' ? /CDP not connected/ : /WebSocket closed/,
     );
-    assert.deepEqual(calls, ['hideDevMenuFab']);
+    assert.deepEqual(calls, ['hideDevMenuFab', 'hideDevMenuFab', 'hideDevMenuFab']);
   });
 }
 

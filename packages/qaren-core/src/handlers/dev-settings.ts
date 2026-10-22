@@ -34,6 +34,8 @@ export const WALK_DEV_SETTINGS = [
 // The floating button fades out over ~0.3 s after its preference flips.
 const DEV_FAB_READS = 4;
 const DEV_FAB_READ_INTERVAL_MS = 250;
+// A loaded host can time out the preferences call once; a hide that keeps failing still refuses.
+const DEV_FAB_HIDE_ATTEMPTS = 3;
 
 // Android reloads the JS bundle whenever hot loading is set, so the walk must wait for the reloaded app.
 export interface FastRefreshReload {
@@ -71,27 +73,31 @@ async function clearOverlays(
 ): Promise<ToolResult> {
   const pause = deps.sleep ?? sleep;
   for (const action of actions) {
-    throwIfCancelled();
-    const reload = action === 'disableFastRefresh' ? deps.fastRefreshReload : undefined;
-    await reload?.mark();
-    const result = await deps.devSettings({ action }).catch((thrown: unknown) => {
-      if (isAbort(thrown)) throw thrown;
-      return thrown instanceof Error ? thrown.message : String(thrown);
-    });
-    const error =
-      typeof result === 'string' ? result : result.isError ? envelopeError(result) : undefined;
-    if (typeof result !== 'string' && !result.isError && envelopeData(result)?.executed === true)
-      await reload?.settled();
-    if (error === undefined) continue;
-    if (action !== 'hideDevMenuFab') {
-      deps.log(`${action}: ${error}`);
-      continue;
+    const attempts = action === 'hideDevMenuFab' ? DEV_FAB_HIDE_ATTEMPTS : 1;
+    let error: string | undefined;
+    for (let attempt = 0; attempt < attempts; attempt++) {
+      throwIfCancelled();
+      if (attempt > 0) await pause(DEV_FAB_READ_INTERVAL_MS);
+      const reload = action === 'disableFastRefresh' ? deps.fastRefreshReload : undefined;
+      await reload?.mark();
+      const result = await deps.devSettings({ action }).catch((thrown: unknown) => {
+        if (isAbort(thrown)) throw thrown;
+        return thrown instanceof Error ? thrown.message : String(thrown);
+      });
+      error =
+        typeof result === 'string' ? result : result.isError ? envelopeError(result) : undefined;
+      if (typeof result !== 'string' && !result.isError && envelopeData(result)?.executed === true)
+        await reload?.settled();
+      if (error === undefined) break;
     }
-    return failResult(
-      `The Expo dev-client floating button could not be confirmed hidden: ${error}`,
-      'DEV_MENU_HIDE_UNVERIFIED',
-      { action: 'clearDevOverlays', outcome: 'DEV_MENU_HIDE_UNVERIFIED' },
-    );
+    if (error === undefined) continue;
+    if (action === 'hideDevMenuFab')
+      return failResult(
+        `The Expo dev-client floating button could not be confirmed hidden: ${error}`,
+        'DEV_MENU_HIDE_UNVERIFIED',
+        { action: 'clearDevOverlays', outcome: 'DEV_MENU_HIDE_UNVERIFIED' },
+      );
+    deps.log(`${action}: ${error}`);
   }
   let readError: string | undefined;
   for (let read = 0; read < DEV_FAB_READS; read++) {
