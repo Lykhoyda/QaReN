@@ -162,7 +162,7 @@ impl Report {
     }
 }
 
-// Read-only: files are only opened for reading and the runner only runs version and list commands.
+// Read-only: files are only opened for reading and the runner only runs version, list and df commands.
 pub fn doctor(
     runner: &mut dyn Runner,
     home: &Path,
@@ -434,7 +434,9 @@ fn tool(
         return Check::pass(id, format!("{program} {version}"));
     }
     // Corepack's launcher downloads the binary on first use, which this offline probe forbids.
-    if format!("{}{}", output.stderr, output.stdout).contains("Network access is disabled") {
+    let output_text = format!("{}{}", output.stderr, output.stdout);
+    if output_text.contains("Network access") && output_text.contains("disabled by the environment")
+    {
         return Check::problem(
             id,
             missing,
@@ -1520,21 +1522,20 @@ mod tests {
 
     #[test]
     fn pnpm_awaiting_its_first_run_download_says_how_to_finish_it() {
-        let mut runner = MockRunner::new();
-        runner.expect_run(
-            "pnpm --version",
-            CmdOutput::failed(
-                1,
-                "Network access is disabled by the environment, so the pnpm binary cannot be downloaded.",
-            ),
-        );
-        let check = tool(&mut runner, "pnpm", "pnpm", Status::Fail, "unused");
-        assert_eq!(check.status, Status::Fail);
-        assert!(check.detail.contains("has not downloaded"), "{check:?}");
-        assert!(
-            check.fix.unwrap().contains("(cd / && pnpm --version)"),
-            "the fix finishes the download doctor's offline probe needs"
-        );
+        for refusal in [
+            "Network access is disabled by the environment, so the pnpm binary cannot be downloaded.",
+            "Internal Error: Network access disabled by the environment; can't reach https://registry.npmjs.org/pnpm",
+        ] {
+            let mut runner = MockRunner::new();
+            runner.expect_run("pnpm --version", CmdOutput::failed(1, refusal));
+            let check = tool(&mut runner, "pnpm", "pnpm", Status::Fail, "unused");
+            assert_eq!(check.status, Status::Fail);
+            assert!(check.detail.contains("has not downloaded"), "{check:?}");
+            assert!(
+                check.fix.unwrap().contains("(cd / && pnpm --version)"),
+                "the fix finishes the download doctor's offline probe needs"
+            );
+        }
 
         let mut runner = MockRunner::new();
         runner.expect_run(

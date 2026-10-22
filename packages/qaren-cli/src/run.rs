@@ -475,7 +475,7 @@ fn run_inner(
             "check the run directory permissions",
         )
     })?;
-    let (free_kb, free_path) = preflight_disk(runner, &req.runs_root, &project_root)?;
+    preflight_disk(runner, &req.runs_root, &project_root)?;
 
     if run_claim.is_none() {
         let claim = claim_run_dir(&req.runs_root, &run_id)?;
@@ -713,7 +713,11 @@ fn run_inner(
     };
     ctx.record.build = Some(plan_decision.clone());
     if plan_decision.decision == BuildDecision::Clean && req.platform == Platform::Ios {
-        if let Some(detail) = clean_ios_build_shortfall(free_kb, &free_path) {
+        let shortfall = match tightest_volume(ctx.runner, &[&req.runs_root, &project_root]) {
+            Ok((kb, path)) => clean_ios_build_shortfall(kb, path),
+            Err(f) => return Ok(finish_failed(ctx, f)),
+        };
+        if let Some(detail) = shortfall {
             // The receipt's next action becomes `qaren cleanup` once resources are owned, so the detail carries the remedy.
             let detail = format!("{detail}; {FREE_DISK_FIX}");
             let f = Failure::new(
@@ -1765,7 +1769,7 @@ fn preflight_disk(
     runner: &mut dyn Runner,
     runs_root: &Path,
     project_root: &Path,
-) -> Result<(u64, PathBuf), Failure> {
+) -> Result<(), Failure> {
     let (kb, path) = tightest_volume(runner, &[runs_root, project_root])?;
     if kb < MIN_FREE_DISK_KB {
         return Err(Failure::new(
@@ -1780,7 +1784,7 @@ fn preflight_disk(
             "free disk space, then re-run",
         ));
     }
-    Ok((kb, path.to_path_buf()))
+    Ok(())
 }
 
 pub(crate) const FREE_DISK_FIX: &str = "free space you own on that volume, such as old Xcode DerivedData under ~/Library/Developer/Xcode/DerivedData or `pnpm store prune`, then re-run";
