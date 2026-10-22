@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Run a command where no real simulator or emulator is reachable: an isolated
-# HOME plus xcrun, simctl, devicectl, xcodebuild and adb shims that report one
-# fake booted iPhone and no Android device and refuse every other device
+# HOME plus xcrun, simctl, devicectl, xcodebuild, idb and adb shims that report
+# one fake booted iPhone and no Android device and refuse every other device
 # command, and a maestro that reports itself unavailable. The no-mistakes
 # Test step routes device commands through this (see .no-mistakes.yaml).
 #
@@ -104,6 +104,14 @@ shim devicectl <<'EOF'
 echo "qaren-sim-sandbox: refused devicectl $*" >&2
 exit 1
 EOF
+
+for tool in idb idb_companion idb-companion; do
+  shim "$tool" <<EOF
+#!/usr/bin/env bash
+echo "qaren-sim-sandbox: refused $tool \$*" >&2
+exit 1
+EOF
+done
 
 shim maestro <<'EOF'
 #!/usr/bin/env bash

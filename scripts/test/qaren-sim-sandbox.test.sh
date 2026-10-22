@@ -23,7 +23,7 @@ tmp="$(cd "$(mktemp -d)" && pwd -P)"
 trap 'rm -rf "$tmp"' EXIT
 # Stand-in for the host xcrun: records what the sandbox forwards, never touches a simulator.
 mkdir -p "$tmp/host"
-for tool in xcrun xcodebuild simctl maestro; do
+for tool in xcrun xcodebuild simctl maestro idb idb_companion idb-companion; do
   printf '#!/usr/bin/env bash\necho "%s $*" >> "%s/host/calls"\n' "$tool" "$tmp" >"$tmp/host/$tool"
   chmod +x "$tmp/host/$tool"
 done
@@ -73,6 +73,14 @@ run xcodebuild -showBuildSettings -scheme App -destination "id=$FAKE_UDID"
 check "build settings for a device destination are refused" 1 $?
 run xcrun devicectl list devices
 check "xcrun devicectl is refused" 1 $?
+run idb list-targets
+check "idb is refused" 1 $?
+run idb ui tap 10 10 --udid "$FAKE_UDID"
+check "idb ui is refused" 1 $?
+run idb_companion --list 1
+check "idb_companion is refused" 1 $?
+run idb-companion --udid "$FAKE_UDID"
+check "idb-companion is refused" 1 $?
 RN_IOS_TEST_RESULTS="$tmp/native.xcresult" run bash "$(dirname "$SANDBOX")/test-native-ios.sh"
 check "the native iOS suite is refused" 1 $?
 run simctl boot "$FAKE_UDID"
