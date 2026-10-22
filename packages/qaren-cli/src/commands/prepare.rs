@@ -57,6 +57,8 @@ pub(crate) struct Ctx<'a> {
     pub(crate) timings: Vec<(String, u64)>,
     pub(crate) notes: Vec<(String, String)>,
     pub(crate) verb: &'static str,
+    // Metro's drained bundle-request count when the CLI launched the app.
+    pub(crate) bundle_requests_at_launch: Option<u64>,
 }
 
 impl<'a> Ctx<'a> {
@@ -374,6 +376,7 @@ fn prepare_validated(
         timings: Vec::new(),
         notes: Vec::new(),
         verb: "prepare",
+        bundle_requests_at_launch: None,
     };
     let t = ctx.mark("validate", started_ms);
 
@@ -1806,6 +1809,12 @@ pub(crate) fn run_reuse_path(ctx: &mut Ctx, plan: &BuildPlan, t: u64) -> Result<
             .udid
     });
     let app_id = ctx.record.candidate.app_id.clone();
+    ctx.bundle_requests_at_launch = ctx
+        .record
+        .resources
+        .metro
+        .as_ref()
+        .map(|metro| crate::exec::log::read_bundle_requests(&metro.log).unwrap_or(0));
     let launched = run_launch_command(ctx, &launch, deadline, &mut attempts, &mut |ctx| {
         proven = ios_udid
             .as_deref()

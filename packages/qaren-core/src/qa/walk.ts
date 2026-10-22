@@ -64,7 +64,9 @@ import {
   admissionMetric,
   admit,
   awaitBundleReady,
+  bundleRequestedSinceLaunch,
   createBundleReload,
+  devClientLaunchUrl,
   logAdmissionRefusal,
   metroDevicePin,
 } from './admission.js';
@@ -429,16 +431,23 @@ async function openSession(
         ...(platform === 'ios'
           ? {
               relaunch: () =>
-                relaunchIosDevClient(
-                  appId,
-                  target.deviceId,
-                  `${target.metroUrlForDevice}/?disableOnboarding=1`,
-                ),
+                relaunchIosDevClient(appId, target.deviceId, devClientLaunchUrl(target)),
               appAlive: async () => {
                 const alive = await isAppRunning('ios', appId, undefined, target.deviceId);
-                if (alive) log('relaunch skipped: app-alive');
+                if (alive) log('app alive without a target');
                 return alive;
               },
+              ...(target.metroBundleRequests
+                ? {
+                    bundleRequested: async () => {
+                      const requested = bundleRequestedSinceLaunch(target.metroBundleRequests!);
+                      log(
+                        `relaunch ${requested === false ? 'allowed: no bundle request since launch' : `skipped: bundle request ${requested ? 'seen' : 'unknown'}`}`,
+                      );
+                      return requested;
+                    },
+                  }
+                : {}),
             }
           : {}),
         // The lease coordinates qaren processes only; a foreign Maestro, XCUITest or UIAutomator driver is a probe.

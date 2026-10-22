@@ -576,6 +576,7 @@ fn run_inner(
         timings: Vec::new(),
         notes: Vec::new(),
         verb: verb(req),
+        bundle_requests_at_launch: None,
     };
     let finish_failed =
         |ctx: Ctx, failure: Failure| finish_failed(ctx, &node, &req.runtime_dir, failure, false);
@@ -861,6 +862,13 @@ fn run_inner(
             metro_port: config.metro_port,
             metro_url_for_device: format!("http://127.0.0.1:{}", config.metro_port),
             worktree: project_root.clone(),
+            metro_bundle_requests: ctx
+                .bundle_requests_at_launch
+                .zip(ctx.record.resources.metro.as_ref())
+                .map(|(at_launch, metro)| core::MetroBundleRequests {
+                    path: crate::exec::log::bundle_requests_path(&metro.log),
+                    at_launch,
+                }),
         },
     };
     let spec = core::spawn_spec(

@@ -2012,8 +2012,14 @@ client can be relaunched once if the remaining deadline still covers a full
 readiness wait. Individual target-list timeouts and inspector page closures do
 not trigger relaunch. Before a relaunch for a missing target, admission uses the
 [iOS app-job liveness rule](#check-a-plan). A live app skips that no-target
-relaunch, logs `relaunch skipped: app-alive`, and keeps waiting within the same
-deadline; an absent job or failed probe permits recovery as before. Skipping
+relaunch and keeps waiting within the same deadline, unless Metro has seen no
+bundle request since the CLI launched the app: then the dev client sits on its
+launcher and gets the one relaunch. The CLI counts Metro's bundle requests
+value-free inside its Metro log drain from Expo's `LOG_EVENTS` event log, even
+when that log is withheld; when that count is unavailable (an Expo CLI without
+the event log, or Metro owned by an `expo run:*` build) a live app keeps the
+skip. `core.log` records which way the decision went. An absent job or failed
+probe permits recovery as before. Skipping
 does not consume the one relaunch for persistent runtime-probe or
 WebSocket-handshake timeouts, and a target that registers late gets the same
 readiness window before a stalled handshake triggers the one relaunch. For retained admission facts,

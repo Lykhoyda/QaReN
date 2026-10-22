@@ -39,6 +39,8 @@ export interface WireTarget {
   metroPort: number;
   metroUrlForDevice: string;
   worktree: string;
+  // The CLI's Metro drain count of bundle requests, and its value when the app launched.
+  metroBundleRequests?: { path: string; atLaunch: number };
 }
 
 export interface WireRequest {
@@ -217,6 +219,11 @@ export function parsePublicRequest(line: string): WireRequest {
     (target.metroPort as number) > 65535 ||
     typeof target.metroUrlForDevice !== 'string' ||
     typeof target.worktree !== 'string' ||
+    (target.metroBundleRequests !== undefined &&
+      (typeof target.metroBundleRequests?.path !== 'string' ||
+        !isAbsolute(target.metroBundleRequests.path) ||
+        !Number.isSafeInteger(target.metroBundleRequests.atLaunch) ||
+        target.metroBundleRequests.atLaunch < 0)) ||
     (p.loginBlock !== undefined && (!isValidActionId(p.loginBlock) || !p.loginMarker)) ||
     (p.loginMarker !== undefined && !validMarker(p.loginMarker));
   if (bad) throw new WireError('the request payload is missing required fields');

@@ -148,6 +148,70 @@ fn a_log_without_a_private_key_keeps_every_line() {
     }
 }
 
+fn drained_bundle_requests(script: &str, events: bool) -> (Option<String>, String) {
+    let dir = common::temp_repo();
+    let log = dir.join("metro.log");
+    let mut spec = shell(&format!("{script}\nprintf 'tail line\\n'\n: > done"), &dir);
+    if events {
+        spec = spec.env(qaren::exec::log::EXPO_EVENTS_ENV, "2");
+    }
+    let mut runner = RealRunner::with_log_executable(env!("CARGO_BIN_EXE_qaren").into());
+    runner.spawn_group(&spec, &log).unwrap();
+    until(|| dir.join("done").exists());
+    until(|| {
+        runner.flush_logs().unwrap();
+        let stored = std::fs::read_to_string(&log).unwrap_or_default();
+        stored.contains("tail line") || stored.contains(PRIVATE_KEY_WITHHELD)
+    });
+    std::thread::sleep(Duration::from_millis(100));
+    runner.flush_logs().unwrap();
+    let count = std::fs::read_to_string(qaren::exec::log::bundle_requests_path(&log)).ok();
+    let stored = std::fs::read_to_string(&log).unwrap();
+    std::fs::remove_dir_all(dir).unwrap();
+    (count, stored)
+}
+
+const EVENT_INIT: &str = r#"{"_e":"root:init","_t":1,"format":"v0-jsonl","version":"57.0.32"}"#;
+const BUNDLE_STARTED: &str = r#"{"_e":"metro:bundling:started","_t":2,"id":"7","platform":"ios","environment":null,"entry":"index.ts"}"#;
+const SECOND_BUNDLE_STARTED: &str = r#"{"_e":"metro:bundling:started","_t":4,"id":"8","platform":"ios","environment":null,"entry":"index.ts"}"#;
+const BUNDLE_DONE: &str = r#"{"_e":"metro:bundling:done","_t":3,"id":"7","total":10,"ms":5}"#;
+
+#[test]
+fn the_metro_drain_counts_bundle_requests_value_free_even_when_its_log_is_withheld() {
+    let script = format!(
+        "printf '%s\\n' '{EVENT_INIT}' >&2\nprintf '%s\\n' '{BUNDLE_STARTED}' >&2\nprintf 'quoting a private key\\n'\nprintf '%s\\n' '{BUNDLE_DONE}' >&2\nprintf 'iOS Bundled 5ms index.ts (10 modules)\\n'\nprintf '%s\\n' '{SECOND_BUNDLE_STARTED}' >&2"
+    );
+    let (count, stored) = drained_bundle_requests(&script, true);
+    assert_eq!(count.as_deref(), Some("2\n"));
+    assert_eq!(stored, format!("{PRIVATE_KEY_WITHHELD}\n"));
+}
+
+#[test]
+fn the_bundle_request_count_exists_only_once_expo_announces_its_event_log() {
+    let (count, _) = drained_bundle_requests(&format!("printf '%s\\n' '{EVENT_INIT}' >&2"), true);
+    assert_eq!(
+        count.as_deref(),
+        Some("0\n"),
+        "an enabled event log with no request"
+    );
+    let (count, _) = drained_bundle_requests(
+        &format!("printf 'iOS Bundled 5ms index.ts (10 modules)\\n'\nprintf '%s\\n' '{BUNDLE_STARTED}' >&2"),
+        true,
+    );
+    assert_eq!(
+        count, None,
+        "an Expo without the event log leaves the signal unknown"
+    );
+    let (count, _) = drained_bundle_requests(
+        &format!("printf '%s\\n' '{EVENT_INIT}' >&2\nprintf '%s\\n' '{BUNDLE_STARTED}' >&2"),
+        false,
+    );
+    assert_eq!(
+        count, None,
+        "only a command that enabled the event log is counted"
+    );
+}
+
 #[test]
 fn an_evidence_tail_naming_a_private_key_never_reaches_run_json() {
     let dir = common::temp_repo();

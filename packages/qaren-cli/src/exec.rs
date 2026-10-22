@@ -478,6 +478,7 @@ impl Runner for RealRunner {
                 &self.log_executable,
                 log_path,
                 spec.withholds_registry_output(),
+                spec.env.iter().any(|(key, _)| key == log::EXPO_EVENTS_ENV),
             )?;
             let mut cmd = Command::new(&spec.program);
             cmd.args(&spec.args)
@@ -550,7 +551,7 @@ impl Runner for RealRunner {
             let withhold = spec.withholds_registry_output();
             let (log, stdout, stderr) = if withhold {
                 let (log, stdout, stderr) =
-                    log::LogDrain::spawn_paired(&self.log_executable, stderr_log, true)?;
+                    log::LogDrain::spawn_paired(&self.log_executable, stderr_log, true, false)?;
                 (log, Stdio::from(OwnedFd::from(stdout)), stderr)
             } else {
                 let (log, stderr) = log::LogDrain::spawn(&self.log_executable, stderr_log, false)?;

@@ -13,6 +13,8 @@ pub fn start_spec(project_root: &Path, port: u16) -> CmdSpec {
     .cwd(project_root)
     .env_remove("CI")
     .env("EXPO_NO_TELEMETRY", "1")
+    // Bundle starts reach only Expo's event log when its output is piped; fd 2 is the drained stderr.
+    .env(crate::exec::log::EXPO_EVENTS_ENV, "2")
 }
 
 // Metro answers this before launch so the dev client's own manifest request fits inside its timeout.

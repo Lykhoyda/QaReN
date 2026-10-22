@@ -1433,6 +1433,15 @@ fn metro_never_passes_ci_into_app_config_evaluation() {
 }
 
 #[test]
+fn metro_writes_its_event_log_to_the_drained_stderr() {
+    let spec = metro::start_spec(Path::new("/repo/app"), 8791);
+    assert!(spec.env.contains(&(
+        qaren::exec::log::EXPO_EVENTS_ENV.to_string(),
+        "2".to_string()
+    )));
+}
+
+#[test]
 fn an_unset_variable_wins_over_the_spec_and_the_parent_environment() {
     use qaren::exec::{CmdSpec, RealRunner, Runner};
     let spec = CmdSpec::new("env", "/usr/bin/env", &[], 10)

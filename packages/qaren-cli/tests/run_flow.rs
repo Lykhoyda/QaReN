@@ -1761,6 +1761,12 @@ fn check_runs_the_phases_in_order_and_ends_pass_with_a_report() {
         request_line["payload"]["target"]["deviceName"],
         "qa-company-app"
     );
+    let bundle_requests = &request_line["payload"]["target"]["metroBundleRequests"];
+    assert_eq!(bundle_requests["atLaunch"], 0, "{bundle_requests}");
+    assert!(bundle_requests["path"]
+        .as_str()
+        .unwrap()
+        .ends_with("/logs/metro.bundle-requests"));
     assert_eq!(
         request_line["payload"]["preflightCalls"],
         probe_json()["callDetails"]
