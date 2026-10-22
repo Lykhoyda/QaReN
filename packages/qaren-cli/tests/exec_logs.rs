@@ -190,6 +190,28 @@ fn a_bundle_request_counts_on_receipt_before_any_build_starts() {
 }
 
 #[test]
+fn bundle_suffixes_in_directories_and_queries_do_not_change_the_request_path() {
+    for suffix in [
+        "",
+        "?platform=ios&entry=other.bundle",
+        "//&platform=ios&entry=other.bundle",
+    ] {
+        for (path, expected) in [
+            ("/apps/app.bundle/index.bundle", "1\n"),
+            ("/apps/app.bundle/index.map", "0\n"),
+            ("/apps/app.bundle/index.assets", "0\n"),
+            ("/qaren-request-probe", "0\n"),
+        ] {
+            let line = format!(
+                "2026-10-22T08:46:09.200Z Metro:Server Handling request: {path}{suffix}"
+            );
+            let (count, _) = drained_bundle_requests(&[&line], true);
+            assert_eq!(count.as_deref(), Some(expected), "{path}{suffix}");
+        }
+    }
+}
+
+#[test]
 fn only_bundle_paths_count_including_metros_jsc_safe_form() {
     let (count, _) = drained_bundle_requests(&[PROBE, JSC_SAFE_BUNDLE, SOURCE_MAP, PROBE], true);
     assert_eq!(count.as_deref(), Some("1\n"));
