@@ -2307,8 +2307,9 @@ cooperative handoff carries no device-lease custody.
 The run takes the same device lease as `check`, reclaiming a dead holder only
 through that run's own cleanup, and records the borrowed simulator before
 dependencies, strict foreign-driver admission, boot, build, install or launch.
-It re-proves the lease and the exact target under custody, before booting and
-again before installing, and refuses rather than reboots a target that changed.
+It re-proves the lease and the exact target under custody before booting,
+before each install attempt, before launch and before publishing `ready`, and
+refuses rather than reboots a target that changed.
 Builds stay generic; only install, launch and probes address the UUID.
 `ready` keeps the lease, Metro and app for attached agents, and `status`
 reports ready only while the run still holds that lease and the target is
