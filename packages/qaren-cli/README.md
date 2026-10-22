@@ -2017,7 +2017,7 @@ bundle request since the CLI launched the app: then the dev client sits on its
 launcher and gets the one relaunch. The CLI enables Metro's `Metro:Server`
 request debug log and probes it once before launch; its Metro log drain counts
 bundle requests on receipt, before any dependency-graph wait, value-free and
-also when that log is withheld. Without a logged request (a failed probe, a
+also when that log is withheld. Without a logged request (a failed request probe, a
 Metro without that log, or Metro owned by an `expo run:*` build) the signal
 stays unknown and a live app keeps the skip. The count covers the whole
 Metro server, so another simulator's bundle request also keeps the skip.
