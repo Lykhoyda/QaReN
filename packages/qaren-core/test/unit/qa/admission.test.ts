@@ -1567,7 +1567,7 @@ for (const boundary of [
   'retry_wait',
 ] as const) {
   test(`stop.track writes cancelled admission facts before its result during ${boundary}`, async () => {
-    await withInputs(new RunInputs({ account: 'private-account' }, ['account']), async () => {
+    await withInputs(new RunInputs({ ACCOUNT: 'private-account' }, ['ACCOUNT']), async () => {
       const lines: string[] = [];
       const writer = createWriter((line) => void lines.push(line), 'cancel-admission');
       const entered = Promise.withResolvers<void>();
