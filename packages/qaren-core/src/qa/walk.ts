@@ -60,7 +60,7 @@ import {
 } from './capture.js';
 import { captureQaReact } from './react-capture.js';
 import type { LedgerRow, StepStart } from './ledger.js';
-import { parsePlanWithJev, readPreparedPlan } from './plan.js';
+import { parsePlanWithJev, planTitle, readPreparedPlan } from './plan.js';
 import { createJev } from './jev.js';
 import { isRecord } from './questions.js';
 import {
@@ -923,11 +923,17 @@ async function mainRequest(
   writer.admitted();
   try {
     const ledger = await stop.track(() =>
-      runPlan(blocks, opened.deps, request.preflightCalls, {
-        appRoot: request.appRoot,
-        platform: request.platform,
-        appId: request.appId,
-      }),
+      runPlan(
+        blocks,
+        opened.deps,
+        request.preflightCalls,
+        {
+          appRoot: request.appRoot,
+          platform: request.platform,
+          appId: request.appId,
+        },
+        planTitle(request.plan),
+      ),
     );
     return finish(
       resultForWalk(

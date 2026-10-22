@@ -195,10 +195,12 @@ pub fn porcelain_without_qaren_state(
     repo_root: &Path,
     project_root: &Path,
 ) -> String {
-    let actions = project_root
+    let app_qaren = project_root
         .strip_prefix(repo_root)
         .ok()
-        .map(|relative| relative.join(".qaren/actions"));
+        .map(|relative| relative.join(".qaren"));
+    let actions = app_qaren.as_ref().map(|qaren| qaren.join("actions"));
+    let plans = app_qaren.map(|qaren| qaren.join("plans"));
     let Some(entries) = parse_porcelain_z(porcelain_stdout) else {
         return porcelain_stdout.to_string();
     };
@@ -211,6 +213,12 @@ pub fn porcelain_without_qaren_state(
                         && path_ref
                             .extension()
                             .is_some_and(|extension| extension == "yaml" || extension == "yml")
+                })
+                || plans.as_deref().is_some_and(|plans| {
+                    path_ref.parent() == Some(plans)
+                        && path_ref
+                            .extension()
+                            .is_some_and(|extension| extension == "md")
                 })
         })
     }))
@@ -748,6 +756,31 @@ mod tests {
             (
                 " M test-app/.qaren/actions/source.ts\0",
                 " M test-app/.qaren/actions/source.ts\0",
+            ),
+        ] {
+            assert_eq!(
+                super::porcelain_without_qaren_state(
+                    porcelain,
+                    std::path::Path::new("repo"),
+                    std::path::Path::new("repo/test-app"),
+                ),
+                expected,
+            );
+        }
+    }
+
+    #[test]
+    fn saved_plans_of_a_nested_app_are_outputs() {
+        for (porcelain, expected) in [
+            ("?? test-app/.qaren/plans/add-a-task.md\0", ""),
+            (" M test-app/.qaren/plans/add-a-task.md\0", ""),
+            (
+                "?? test-app/.qaren/plans/notes.txt\0",
+                "?? test-app/.qaren/plans/notes.txt\0",
+            ),
+            (
+                "?? other-app/.qaren/plans/x.md\0",
+                "?? other-app/.qaren/plans/x.md\0",
             ),
         ] {
             assert_eq!(

@@ -221,6 +221,15 @@ function visibleLines(lines: string[]): string[] {
 
 const isSectionHeading = (text: string): boolean => /^##\s+/.test(text) && !text.startsWith('###');
 
+const titleOf = (visible: string[]): string | undefined =>
+  visible
+    .find((text) => /^#\s+/.test(text))
+    ?.replace(/^#\s+/, '')
+    .trim();
+
+export const planTitle = (markdown: string): string | undefined =>
+  titleOf(visibleLines(markdown.split(/\r?\n/)));
+
 export function parsePlan(markdown: string): ParsedPlan {
   return scanPlan(markdown, new Map());
 }
@@ -314,8 +323,7 @@ function scanPlan(
     const next = visible.findIndex((text, i) => i >= start && isSectionHeading(text));
     end = next >= 0 ? next : visible.length;
   }
-  const titleLine = visible.find((text) => /^#\s+/.test(text));
-  const title = titleLine ? titleLine.replace(/^#\s+/, '').trim() : 'plan';
+  const title = titleOf(visible) ?? 'plan';
 
   const blocks: Block[] = [];
   const refused: RefusedLine[] = [];
