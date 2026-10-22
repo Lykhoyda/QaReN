@@ -1719,8 +1719,9 @@ parent and proves no-replace rename with a private probe directory. Under the
 implicit default, an unsupported OS, a missing or unsafe parent, an unsupported
 rename or a privileged caller (root, setuid or Linux capabilities) selects
 `$HOME/.qaren/locks` with one stderr warning naming the reason;
-`QAREN_MACHINE_LOCKS=1` refuses instead. Per-home and explicit roots accept
-privileged callers. The native suite still requires an absolute HOME for its records.
+`QAREN_MACHINE_LOCKS=1` refuses instead. Any other probe failure on a trusted
+parent, such as a denied write, refuses in both modes. Per-home and explicit
+roots accept privileged callers. The native suite still requires an absolute HOME for its records.
 
 Claim, read and release walk from `/` using no-follow descriptor opens with
 metadata and ACL checks. Only operating-system symlinks in trusted root-owned,

@@ -71,31 +71,40 @@ pub fn host_lock_root(
     machine: Option<&OsStr>,
     home: Option<&OsStr>,
 ) -> Result<PathBuf, String> {
-    let (root, warning) =
-        select_lock_root(explicit, machine, home, machine_lock_parent(), caller_privileged())?;
+    let (root, warning) = select_lock_root(explicit, machine, home, || {
+        probe_machine_parent(machine_lock_parent(), caller_privileged())
+    })?;
     if let Some(warning) = warning {
         eprintln!("qaren: {warning}");
     }
     Ok(root)
 }
 
-// The implicit default degrades to per-home locks with a warning; QAREN_MACHINE_LOCKS=1 refuses instead.
+#[derive(Debug)]
+pub enum MachineParent {
+    Usable(PathBuf),
+    Unavailable(String),
+    Failed(String),
+}
+
+// Only an Unavailable parent lets the implicit default degrade to per-home locks; QAREN_MACHINE_LOCKS=1 always refuses.
 pub fn select_lock_root(
     explicit: Option<&OsStr>,
     machine: Option<&OsStr>,
     home: Option<&OsStr>,
-    parent: Result<&Path, String>,
-    privileged: bool,
+    probe: impl FnOnce() -> MachineParent,
 ) -> Result<(PathBuf, Option<String>), String> {
     if explicit.is_some() || !machine_locks_enabled(machine)? {
         return configured_lock_root(explicit, machine, home).map(|root| (root, None));
     }
-    let reason = match parent.and_then(|parent| usable_machine_parent(parent, privileged).map(|()| parent)) {
-        Ok(parent) => return Ok((parent.to_path_buf(), None)),
-        Err(reason) => reason,
+    let refuse = |detail: &str| format!("machine lock root is unusable: {detail}; {LOCK_ROOT_ADVICE}");
+    let reason = match probe() {
+        MachineParent::Usable(parent) => return Ok((parent, None)),
+        MachineParent::Failed(detail) => return Err(refuse(&detail)),
+        MachineParent::Unavailable(reason) => reason,
     };
     if machine.is_some_and(|raw| !raw.is_empty()) {
-        return Err(format!("machine lock root is unusable: {reason}; {LOCK_ROOT_ADVICE}"));
+        return Err(refuse(&reason));
     }
     let root = configured_lock_root(None, Some(OsStr::new("0")), home)
         .map_err(|error| format!("machine lock root is unusable ({reason}) and {error}"))?;
@@ -106,34 +115,49 @@ pub fn select_lock_root(
     Ok((root, Some(warning)))
 }
 
-fn usable_machine_parent(parent: &Path, privileged: bool) -> Result<(), String> {
+pub fn probe_machine_parent(parent: Result<&Path, String>, privileged: bool) -> MachineParent {
+    let parent = match parent {
+        Ok(parent) => parent,
+        Err(reason) => return MachineParent::Unavailable(reason),
+    };
     if privileged {
-        return Err("the caller is root, setuid or holds Linux capabilities".to_string());
+        return MachineParent::Unavailable(
+            "the caller is root, setuid or holds Linux capabilities".to_string(),
+        );
     }
-    let root = match open_lock_root(parent, false).map_err(WalkError::detail)? {
-        OpenRoot::Ready(root) => root,
-        OpenRoot::Missing { canonical } => {
-            return Err(format!("lock parent {} is missing", canonical.display()));
+    let root = match open_lock_root(parent, false) {
+        Ok(OpenRoot::Ready(root)) => root,
+        Ok(OpenRoot::Missing { canonical }) => {
+            return MachineParent::Unavailable(format!("lock parent {} is missing", canonical.display()));
         }
+        Err(WalkError::Missing(detail) | WalkError::Unsafe(detail)) => {
+            return MachineParent::Unavailable(detail);
+        }
+        Err(error) => return MachineParent::Failed(error.detail()),
     };
     let staging = fresh_name("probe", "rename");
     let probe = match mkdir_exclusive(&root, OsStr::new(&staging)) {
         Ok(probe) => probe,
         Err(MkdirExclusive::Exists) => {
-            return Err(format!("lock probe name {staging} already exists"));
+            return MachineParent::Failed(format!("lock probe name {staging} already exists"));
         }
-        Err(MkdirExclusive::Error(detail)) => return Err(detail),
+        Err(MkdirExclusive::Error(detail)) => return MachineParent::Failed(detail),
     };
     let renamed = fresh_name("probe", "renamed");
-    match rename_lock_noreplace(&root, &staging, &renamed) {
-        Ok(()) => {
-            let _ = unlink_same(&root, OsStr::new(&renamed), &probe);
-            Ok(())
-        }
-        Err(error) => {
-            let _ = unlink_same(&root, OsStr::new(&staging), &probe);
-            Err(rename_error(error))
-        }
+    let outcome = rename_lock_noreplace(&root, &staging, &renamed);
+    let left = if outcome.is_ok() { &renamed } else { &staging };
+    let _ = unlink_same(&root, OsStr::new(left), &probe);
+    match outcome {
+        Ok(()) => MachineParent::Usable(parent.to_path_buf()),
+        Err(error) => rename_probe_outcome(error),
+    }
+}
+
+fn rename_probe_outcome(error: i32) -> MachineParent {
+    if rename_is_unsupported(error) {
+        MachineParent::Unavailable(rename_error(error))
+    } else {
+        MachineParent::Failed(rename_error(error))
     }
 }
 
@@ -480,15 +504,17 @@ enum OpenRoot {
 enum WalkError {
     Unsafe(String),
     Denied(String),
+    Missing(String),
     Failed(String),
 }
 
 impl WalkError {
     fn detail(self) -> String {
         match self {
-            WalkError::Unsafe(detail) | WalkError::Denied(detail) | WalkError::Failed(detail) => {
-                detail
-            }
+            WalkError::Unsafe(detail)
+            | WalkError::Denied(detail)
+            | WalkError::Missing(detail)
+            | WalkError::Failed(detail) => detail,
         }
     }
 }
@@ -537,13 +563,13 @@ fn open_lock_root(path: &Path, create: bool) -> Result<OpenRoot, WalkError> {
                 let canonical = join_rest(&current.canonical, &pending[index..]);
                 if blocks_machine_parent(&current.canonical, &pending[index..]) {
                     let machine = machine_lock_parent().unwrap_or(Path::new(&canonical));
-                    return Err(WalkError::Failed(format!(
+                    return Err(WalkError::Missing(format!(
                         "lock parent {} is not available and was not created",
                         machine.display()
                     )));
                 }
                 if !parent_allows_private_create(&current, euid) {
-                    return Err(WalkError::Failed(format!(
+                    return Err(WalkError::Missing(format!(
                         "cannot create lock root {}",
                         canonical.display()
                     )));
@@ -885,7 +911,7 @@ fn classify_leaf(root: &OpenDir, name: &OsStr, euid: u32) -> Leaf {
         Ok(_) => Leaf::Untrusted,
         Err(WalkError::Denied(_)) => Leaf::Denied,
         Err(WalkError::Unsafe(_)) => Leaf::Untrusted,
-        Err(WalkError::Failed(detail)) => Leaf::Failed(detail),
+        Err(WalkError::Missing(detail) | WalkError::Failed(detail)) => Leaf::Failed(detail),
     }
 }
 
@@ -1655,6 +1681,7 @@ fn errno_message(raw: i32) -> String {
 mod lock_protocol_tests {
     use super::*;
     use std::os::unix::ffi::OsStringExt;
+    use std::os::unix::fs::DirBuilderExt;
 
     #[test]
     fn caller_privilege_and_rename_errno_stay_closed() {
@@ -1711,13 +1738,33 @@ mod lock_protocol_tests {
     }
 
     #[test]
+    fn only_an_unsupported_rename_lets_the_default_fall_back() {
+        let home = Some(OsStr::new("/tmp/qaren-rename-home"));
+        for errno in [libc::ENOTSUP, libc::ENOSYS, libc::EINVAL] {
+            let (root, warning) =
+                select_lock_root(None, None, home, || rename_probe_outcome(errno)).unwrap();
+            assert_eq!(root, PathBuf::from("/tmp/qaren-rename-home/.qaren/locks"));
+            assert!(warning.unwrap().contains("exclusive lock rename is unsupported"));
+            let refused =
+                select_lock_root(None, Some(OsStr::new("1")), home, || rename_probe_outcome(errno))
+                    .unwrap_err();
+            assert!(refused.contains("QAREN_MACHINE_LOCKS=0"), "{refused}");
+        }
+        for errno in [libc::EACCES, libc::EPERM, libc::EIO, libc::ENOSPC] {
+            let refused = select_lock_root(None, None, home, || rename_probe_outcome(errno)).unwrap_err();
+            assert!(refused.contains("cannot rename lock"), "{refused}");
+            assert!(refused.contains("QAREN_LOCK_ROOT"), "{refused}");
+        }
+    }
+
+    #[test]
     fn exclusive_mkdir_does_not_replace_an_existing_directory() {
         let root_path = std::env::temp_dir().join(format!(
             "qaren-mkdir-{}-{}",
             std::process::id(),
             crate::timefmt::epoch_ms()
         ));
-        std::fs::create_dir(&root_path).unwrap();
+        std::fs::DirBuilder::new().mode(0o700).create(&root_path).unwrap();
         let root = match open_lock_root(&root_path, false).unwrap() {
             OpenRoot::Ready(dir) => dir,
             OpenRoot::Missing { .. } => panic!("fixture directory is missing"),
