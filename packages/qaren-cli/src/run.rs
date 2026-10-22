@@ -1635,7 +1635,7 @@ fn app_presence(
     }
 }
 
-fn reset_app(
+pub(crate) fn reset_app(
     ctx: &mut Ctx,
     udid: &str,
     app_id: &str,
@@ -2432,6 +2432,7 @@ fn build_scenario(
         ios: device.ios.as_ref().map(|(device_type, runtime)| IosSpec {
             device_type: device_type.clone(),
             runtime: runtime.clone(),
+            max_devices: None,
         }),
         android: None,
         android_usb: None,

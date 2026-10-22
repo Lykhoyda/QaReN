@@ -322,6 +322,9 @@ pub struct Resources {
     pub android_emulator: Option<BorrowedEmulatorResource>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub build_lock: Option<BuildLockResource>,
+    // The per-home pool creation lock, persisted before the claim like build_lock.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pool_create_lock: Option<BuildLockResource>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub adb_reverse_port: Option<u16>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -491,6 +494,7 @@ impl Resources {
             || self.adb_vendor_key.is_some()
             || self.usb_device.is_some()
             || self.build_lock.is_some()
+            || self.pool_create_lock.is_some()
             || self.lease.is_some()
             || self.core.is_some()
             || !self.runner_drivers.is_empty()

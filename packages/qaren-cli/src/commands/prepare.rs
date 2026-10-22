@@ -10,6 +10,7 @@ use crate::exec::{CmdSpec, Runner};
 use crate::failure::{Failure, FailureCode};
 use crate::fingerprint::{self, NativeFingerprint};
 use crate::handoff::{self, ExpectedReceipt, HandoffDocument, HandoffState, HANDOFF_SCHEMA};
+use crate::pool::{self, PoolMember};
 use crate::receipt::{Receipt, ReceiptResult};
 use crate::redact::redact_secrets;
 use crate::runrecord::{
@@ -17,7 +18,7 @@ use crate::runrecord::{
     IosSimResource, MetroResource, Phase, PidLiveness, RunRecord, TunnelResource,
     UsbDeviceResource, RUN_SCHEMA,
 };
-use crate::scenario::{BuildOwner, BuildStrategy, DepsPolicy, Platform, Scenario};
+use crate::scenario::{BuildOwner, BuildStrategy, DepsPolicy, IosSpec, Platform, Scenario};
 use crate::timefmt;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
@@ -32,6 +33,10 @@ pub struct PrepareArgs {
     // Exact existing iOS simulator UUID to borrow under the device lease instead of creating one.
     pub device: Option<String>,
     pub boot_device: bool,
+    // Per-home records of QaReN-created iOS simulators that default prepare reuses.
+    pub pool_root: PathBuf,
+    // --new: a fresh temporary simulator deleted at cleanup, outside the pool.
+    pub new_device: bool,
 }
 
 fn platform_dir(platform: Platform) -> &'static str {
@@ -240,6 +245,13 @@ fn prepare_validated(
         ));
     }
     let borrowed = borrowed_udid(&scenario, args)?;
+    let pool_mode = scenario.platform == Platform::Ios
+        && scenario.build.owner == BuildOwner::Cli
+        && borrowed.is_none()
+        && !args.new_device;
+    if pool_mode {
+        require_pool_identifiers(&scenario)?;
+    }
     let scenario_sha256 = candidate::sha256_hex(raw.as_bytes());
     let scenario_dir = args
         .scenario_path
@@ -290,6 +302,16 @@ fn prepare_validated(
         }
         None => None,
     };
+    let pool_scan = match pool_mode {
+        true => Some(scan_pool(
+            runner,
+            &args.pool_root,
+            scenario.ios.as_ref().expect("validated ios scenario"),
+            !args.dry_run,
+        )?),
+        false => None,
+    };
+    let pool_cap = scenario.ios.as_ref().map(pool::default_cap).unwrap_or(1);
     if args.dry_run && scenario.platform == Platform::Ios && scenario.build.owner == BuildOwner::Cli
     {
         ios::require_build(
@@ -302,7 +324,7 @@ fn prepare_validated(
     if let Some(metro) = scenario
         .metro
         .as_ref()
-        .filter(|_| selected.is_none() || args.dry_run)
+        .filter(|_| (selected.is_none() && pool_scan.is_none()) || args.dry_run)
     {
         check_port_free(runner, metro.port)?;
     }
@@ -320,6 +342,16 @@ fn prepare_validated(
     let run_id = format!("{}-{}", scenario.name, timefmt::compact_utc(started_ms));
 
     if args.dry_run {
+        let (dry_selected, dry_boot, dry_name) = match &pool_scan {
+            Some(scan) => match dry_run_pool_member(scan, &args.lock_root) {
+                Some(sim) => (Some(sim), true, ios::sim_name(&run_id)),
+                None if scan.present.len() as u32 >= pool_cap => {
+                    return Err(pool_refusal(scan, pool_cap, &[]))
+                }
+                None => (None, false, ios::pool_sim_name(&run_id)),
+            },
+            None => (selected.clone(), args.boot_device, ios::sim_name(&run_id)),
+        };
         return dry_run_receipt(
             runner,
             &scenario,
@@ -329,8 +361,10 @@ fn prepare_validated(
             &run_id,
             started_ms,
             &args.native_cache_root,
-            selected.as_ref(),
-            args.boot_device,
+            dry_selected.as_ref(),
+            dry_boot,
+            &dry_name,
+            pool_scan.is_some(),
         );
     }
 
@@ -375,7 +409,7 @@ fn prepare_validated(
 
     let self_pid = std::process::id() as i32;
     let identity = capture_pid_identity(runner, self_pid);
-    if selected.is_some() && identity.is_none() {
+    if (selected.is_some() || pool_scan.is_some()) && identity.is_none() {
         // Like check's run-directory claim, an unrecorded claim is dropped on refusal.
         let _ = std::fs::remove_dir_all(&run_dir);
         return Err(Failure::new(
@@ -392,8 +426,10 @@ fn prepare_validated(
     let runtime_dir = crate::run::default_runtime_dir();
     let mut resources = crate::runrecord::Resources::default();
     let mut recovered = None;
-    if let Some(sim) = &selected {
-        let lease = match claim_borrowed_lease(
+    let mut pool_claimed = false;
+    let mut pool_create = false;
+    let custody = match (&selected, &pool_scan) {
+        (Some(sim), _) => claim_borrowed_lease(
             runner,
             args,
             &sim.udid,
@@ -401,19 +437,50 @@ fn prepare_validated(
             identity.clone(),
             (&node, &runtime_dir),
             &mut recovered,
+        )
+        .map(|lease| Some((lease, sim.clone()))),
+        (None, Some(scan)) => match claim_pool_member(
+            runner,
+            args,
+            scan,
+            scenario.ios.as_ref().expect("validated ios scenario"),
+            &run_id,
+            identity.clone(),
+            (&node, &runtime_dir),
+            &mut recovered,
         ) {
-            Ok(lease) => lease,
-            Err(f) => {
-                let _ = std::fs::remove_dir_all(&run_dir);
-                return Err(f);
+            Ok(PoolClaim::Claimed(lease, sim)) => {
+                pool_claimed = true;
+                Ok(Some((lease, sim)))
             }
-        };
-        if let Some(metro) = &scenario.metro {
-            if let Err(f) = check_port_free(runner, metro.port) {
-                let _ = std::fs::remove_dir_all(&run_dir);
-                return Err(crate::lease::release_or_annotate(&lease, f));
+            Ok(PoolClaim::Occupied(occupied)) if scan.present.len() as u32 >= pool_cap => {
+                Err(pool_refusal(scan, pool_cap, &occupied))
             }
+            Ok(PoolClaim::Occupied(_)) => {
+                pool_create = true;
+                Ok(None)
+            }
+            Err(f) => Err(f),
+        },
+        (None, None) => Ok(None),
+    };
+    let custody = match custody {
+        Ok(custody) => custody,
+        Err(f) => {
+            let _ = std::fs::remove_dir_all(&run_dir);
+            return Err(f);
         }
+    };
+    if let (Some(metro), true) = (&scenario.metro, custody.is_some() || pool_create) {
+        if let Err(f) = check_port_free(runner, metro.port) {
+            let _ = std::fs::remove_dir_all(&run_dir);
+            return Err(match &custody {
+                Some((lease, _)) => crate::lease::release_or_annotate(lease, f),
+                None => f,
+            });
+        }
+    }
+    if let Some((lease, sim)) = custody {
         resources.lease = Some(lease);
         resources.device_borrowed = true;
         resources.ios_simulator = Some(IosSimResource {
@@ -472,6 +539,21 @@ fn prepare_validated(
     }) {
         ctx.notes.push(("device_lease".to_string(), orphan));
     }
+    if args.new_device {
+        ctx.notes
+            .push(("device_pool".to_string(), "fresh".to_string()));
+    }
+    if pool_claimed {
+        let udid = ctx
+            .record
+            .resources
+            .ios_simulator
+            .clone()
+            .expect("claimed")
+            .udid;
+        ctx.notes
+            .push(("device_pool".to_string(), format!("reused {udid}")));
+    }
     let borrowed_admission = |ctx: &mut Ctx| {
         crate::core::fresh_install_admission(
             ctx.runner,
@@ -487,10 +569,12 @@ fn prepare_validated(
             None,
         )
     };
-    if selected.is_some() {
+    // A pool member is QaReN's to boot; a --device target only with --boot-device.
+    let may_boot = args.boot_device || pool_claimed;
+    if selected.is_some() || pool_claimed {
         // Recovery may have changed the target; the pre-lease observation is not authority.
-        if let Err(f) = reprove_borrowed_ios(&mut ctx, args.boot_device)
-            .and_then(|_| borrowed_admission(&mut ctx))
+        if let Err(f) =
+            reprove_borrowed_ios(&mut ctx, may_boot).and_then(|_| borrowed_admission(&mut ctx))
         {
             return Ok(ctx.fail(f));
         }
@@ -508,14 +592,24 @@ fn prepare_validated(
             return Ok(ctx.fail(f));
         }
     }
-    if selected.is_some() {
+    if selected.is_some() || pool_claimed {
         if let Err(f) = borrowed_admission(&mut ctx) {
             return Ok(ctx.fail(f));
         }
-        if args.boot_device {
+        if pool_claimed {
+            if let Err(f) = arm_pool_stop(&mut ctx) {
+                return Ok(ctx.fail(f));
+            }
+        }
+        if may_boot {
             if let Err(f) = reprove_borrowed_ios(&mut ctx, true)
                 .and_then(|needs_boot| boot_borrowed_ios(&mut ctx, needs_boot))
             {
+                return Ok(ctx.fail(f));
+            }
+        }
+        if pool_claimed {
+            if let Err(f) = reset_pool_member(&mut ctx) {
                 return Ok(ctx.fail(f));
             }
         }
@@ -544,7 +638,10 @@ fn prepare_validated(
 
     let allocate_result = match ctx.record.scenario.platform {
         Platform::Ios if ctx.record.resources.device_borrowed => Ok(()),
-        Platform::Ios => allocate_ios(&mut ctx),
+        Platform::Ios => allocate_ios(
+            &mut ctx,
+            pool_create.then_some((args.pool_root.as_path(), args.lock_root.as_path())),
+        ),
         Platform::Android => {
             if ctx.record.scenario.android_usb.is_some() {
                 allocate_usb(&mut ctx, args.android_home.as_deref(), &args.lock_root)
@@ -625,7 +722,7 @@ fn prepare_handoff(mut ctx: Ctx, args: &PrepareArgs, t: u64) -> Receipt {
     let t = ctx.mark("fingerprint", t);
 
     let allocate_result = match ctx.record.scenario.platform {
-        Platform::Ios => allocate_ios(&mut ctx),
+        Platform::Ios => allocate_ios(&mut ctx, None),
         Platform::Android => {
             let usb = ctx
                 .record
@@ -886,7 +983,8 @@ pub(crate) fn check_port_free(runner: &mut dyn Runner, port: u16) -> Result<(), 
     }
 }
 
-fn allocate_ios(ctx: &mut Ctx) -> Result<(), Failure> {
+// `pool` = (pool root, device lock root): create a pool member under the creation lock instead of a temporary.
+fn allocate_ios(ctx: &mut Ctx, pool: Option<(&Path, &Path)>) -> Result<(), Failure> {
     ensure_running(ctx.runner, "allocate")?;
     let ios = ctx
         .record
@@ -894,7 +992,23 @@ fn allocate_ios(ctx: &mut Ctx) -> Result<(), Failure> {
         .ios
         .clone()
         .expect("validated ios scenario");
-    let name = ios::sim_name(&ctx.record.run_id);
+    if let Some((pool_root, _)) = pool {
+        claim_pool_create_lock(ctx, pool_root)?;
+        let cap = pool::default_cap(&ios);
+        let refusal = match scan_pool(ctx.runner, pool_root, &ios, true) {
+            Err(f) => Some(f),
+            Ok(scan) if scan.present.len() as u32 >= cap => Some(pool_refusal(&scan, cap, &[])),
+            Ok(_) => None,
+        };
+        if let Some(f) = refusal {
+            release_pool_create_lock(ctx);
+            return Err(f);
+        }
+    }
+    let name = match pool {
+        Some(_) => ios::pool_sim_name(&ctx.record.run_id),
+        None => ios::sim_name(&ctx.record.run_id),
+    };
     // The pending allocation is durable before the external create: a crash
     // mid-create leaves the run-scoped name as cleanup's recovery key.
     ctx.record.resources.ios_simulator = Some(IosSimResource {
@@ -929,6 +1043,9 @@ fn allocate_ios(ctx: &mut Ctx) -> Result<(), Failure> {
         sim.udid = udid.clone();
     }
     ctx.save()?;
+    if let Some((pool_root, lock_root)) = pool {
+        enroll_pool_member(ctx, pool_root, lock_root, &ios)?;
+    }
 
     ensure_running(ctx.runner, "allocate")?;
     let boot = ctx.runner.run(&ios::bootstatus_spec(
@@ -946,6 +1063,409 @@ fn allocate_ios(ctx: &mut Ctx) -> Result<(), Failure> {
     Ok(())
 }
 
+fn require_pool_identifiers(scenario: &Scenario) -> Result<(), Failure> {
+    let ios = scenario.ios.as_ref().expect("validated ios scenario");
+    if ios
+        .device_type
+        .starts_with("com.apple.CoreSimulator.SimDeviceType.")
+        && ios
+            .runtime
+            .strip_prefix("com.apple.CoreSimulator.SimRuntime.iOS-")
+            .is_some_and(|v| !v.is_empty())
+    {
+        return Ok(());
+    }
+    Err(Failure::new(
+        "validate",
+        FailureCode::ScenarioInvalid,
+        "the iOS simulator pool matches simulators by full CoreSimulator identifiers, but ios.device_type or ios.runtime is a short form",
+        "set ios.device_type to com.apple.CoreSimulator.SimDeviceType.<type> and ios.runtime to com.apple.CoreSimulator.SimRuntime.iOS-<version>, or pass --new for a temporary simulator",
+    ))
+}
+
+// One strict inventory read: success, clean stderr and a bounded size, or no proof at all.
+fn strict_inventory(runner: &mut dyn Runner) -> Result<String, String> {
+    let output = runner.run(&ios::list_devices_spec());
+    if !output.ok() || !output.stderr.is_empty() || output.stdout.len() >= 1024 * 1024 {
+        return Err(format!("simctl list failed: {}", output.summary()));
+    }
+    Ok(output.stdout)
+}
+
+fn pool_inventory_failure(detail: String) -> Failure {
+    Failure::new(
+        "device",
+        FailureCode::DeviceUnavailable,
+        format!("the simulator inventory could not prove the QaReN pool: {detail}"),
+        "check `xcrun simctl list devices -j`, then re-run prepare",
+    )
+}
+
+#[derive(Default)]
+struct PoolScan {
+    // Members whose simulator still exists, of any device type or runtime: the cap's count.
+    present: Vec<PoolMember>,
+    // Present members proven to match the scenario, in UDID order.
+    candidates: Vec<(PoolMember, ios::Simulator)>,
+}
+
+fn scan_pool(
+    runner: &mut dyn Runner,
+    pool_root: &Path,
+    spec: &IosSpec,
+    prune: bool,
+) -> Result<PoolScan, Failure> {
+    let members = pool::load_all(pool_root)?;
+    if members.is_empty() {
+        return Ok(PoolScan::default());
+    }
+    let inventory = strict_inventory(runner).map_err(pool_inventory_failure)?;
+    let present = pool::present(&members, &inventory);
+    if prune {
+        pool::prune(pool_root, &members, &present)?;
+    }
+    let candidates = present
+        .iter()
+        .filter_map(|m| pool::proven(m, &inventory, spec).map(|sim| (m.clone(), sim)))
+        .collect();
+    Ok(PoolScan {
+        present,
+        candidates,
+    })
+}
+
+fn pool_refusal(scan: &PoolScan, cap: u32, occupied: &[String]) -> Failure {
+    let raise = "raise ios.max_devices, or pass --new for a temporary simulator";
+    if scan.candidates.is_empty() {
+        let members: Vec<String> = scan
+            .present
+            .iter()
+            .map(|m| format!("{} ({}, {}, {})", m.udid, m.name, m.device_type, m.runtime))
+            .collect();
+        return Failure::new(
+            "device",
+            FailureCode::DeviceUnavailable,
+            format!(
+                "the QaReN simulator pool is at ios.max_devices {cap} and no member matches the scenario's device type and runtime: {}",
+                members.join("; ")
+            ),
+            format!("delete an unused member with `xcrun simctl delete <UDID>`, {raise}"),
+        );
+    }
+    let detail = if occupied.is_empty() {
+        "no member is free".to_string()
+    } else {
+        occupied.join("; ")
+    };
+    Failure::new(
+        "device",
+        FailureCode::DeviceBusy,
+        format!("the QaReN simulator pool is at ios.max_devices {cap} and every matching member is occupied: {detail}"),
+        format!("wait for or clean up the holding run, {raise}"),
+    )
+}
+
+// Read-only: the first matching member whose device lease has no holder.
+fn dry_run_pool_member(scan: &PoolScan, lock_root: &Path) -> Option<ios::Simulator> {
+    scan.candidates
+        .iter()
+        .find(|(member, _)| {
+            buildplan::read_holder(&buildplan::lock_dir(
+                lock_root,
+                &crate::lease::lock_name(Platform::Ios, &member.udid),
+            ))
+            .is_none()
+        })
+        .map(|(_, sim)| sim.clone())
+}
+
+enum PoolClaim {
+    Claimed(crate::lease::Lease, ios::Simulator),
+    Occupied(Vec<String>),
+}
+
+// A dead holder's run that reached ready still owns the session its agents attach to.
+fn ready_holder(runs_root: &Path, busy: &crate::lease::Busy) -> Option<String> {
+    let holder = busy.holder.as_ref()?;
+    if !matches!(
+        busy.liveness,
+        Some(PidLiveness::Dead | PidLiveness::AliveForeign)
+    ) {
+        return None;
+    }
+    let record = RunRecord::load(runs_root, &holder.run_id).ok()?;
+    (matches!(
+        record.phase,
+        Phase::Ready | Phase::Walking | Phase::HandedOff
+    ) && record.terminal.is_none())
+    .then(|| holder.run_id.clone())
+}
+
+#[allow(clippy::too_many_arguments)]
+fn claim_pool_member(
+    runner: &mut dyn Runner,
+    args: &PrepareArgs,
+    scan: &PoolScan,
+    spec: &IosSpec,
+    run_id: &str,
+    identity: Option<crate::runrecord::PidIdentity>,
+    runtime_context: (&Path, &Path),
+    recovered: &mut Option<String>,
+) -> Result<PoolClaim, Failure> {
+    let mut occupied = Vec::new();
+    for (member, _) in &scan.candidates {
+        let udid = member.udid.as_str();
+        let lease = match crate::lease::try_acquire(
+            runner,
+            &args.lock_root,
+            Platform::Ios,
+            udid,
+            run_id,
+            identity.clone(),
+        ) {
+            Ok(lease) => lease,
+            Err(busy) if busy.failure.code == FailureCode::DeviceBusy => {
+                if let Some(holder) = ready_holder(&args.runs_root, &busy) {
+                    occupied.push(format!(
+                        "{udid} is held by run {holder}, which reached ready; release it with `qaren cleanup {holder}`"
+                    ));
+                    continue;
+                }
+                let reclaimed = super::cleanup::reclaim_dead_holder_with_runtime(
+                    runner,
+                    &args.runs_root,
+                    &busy,
+                    Some(runtime_context),
+                )
+                .and_then(|earlier| {
+                    crate::lease::acquire(
+                        runner,
+                        &args.lock_root,
+                        Platform::Ios,
+                        udid,
+                        run_id,
+                        identity.clone(),
+                    )
+                    .map(|lease| (earlier, lease))
+                });
+                match reclaimed {
+                    Ok((earlier, lease)) => {
+                        *recovered = Some(earlier);
+                        lease
+                    }
+                    Err(f) => {
+                        occupied.push(format!("{udid}: {}", f.detail));
+                        continue;
+                    }
+                }
+            }
+            Err(busy) => return Err(busy.failure),
+        };
+        let inventory = match strict_inventory(runner) {
+            Ok(inventory) => inventory,
+            Err(detail) => {
+                return Err(crate::lease::release_or_annotate(
+                    &lease,
+                    pool_inventory_failure(detail),
+                ))
+            }
+        };
+        let skipped = match pool::proven(member, &inventory, spec) {
+            Some(sim) if sim.state == ios::SimState::Shutdown => {
+                return Ok(PoolClaim::Claimed(lease, sim))
+            }
+            // Up without QaReN custody: a person, another lock root or a run that left it booted.
+            Some(_) => format!(
+                "{udid} is Booted with no QaReN run holding it; once nothing uses it, shut it down with `xcrun simctl shutdown {udid}`"
+            ),
+            None => format!("{udid} no longer matches its pool record under the lease"),
+        };
+        match crate::lease::release(&lease) {
+            buildplan::ReleaseOutcome::Removed
+            | buildplan::ReleaseOutcome::Absent
+            | buildplan::ReleaseOutcome::Foreign(_) => occupied.push(skipped),
+            _ => {
+                return Err(crate::lease::release_or_annotate(
+                    &lease,
+                    Failure::new(
+                        "lease",
+                        FailureCode::DeviceBusy,
+                        skipped,
+                        "resolve the pool simulator's state, then re-run prepare",
+                    ),
+                ))
+            }
+        }
+    }
+    Ok(PoolClaim::Occupied(occupied))
+}
+
+// Power changes need a durable pending stop: cleanup returns the member Shutdown.
+fn arm_pool_stop(ctx: &mut Ctx) -> Result<(), Failure> {
+    ensure_running(ctx.runner, "deps")?;
+    let prev = ctx.record.resources.borrowed_ios_stop();
+    ctx.record.resources.arm_borrowed_ios_stop()?;
+    if let Err(f) = ctx.save() {
+        ctx.record.resources.revert_borrowed_ios_stop(prev);
+        return Err(f);
+    }
+    Ok(())
+}
+
+// Uninstall clears the app container and privacy grants; the keychain is device-wide. Erase stays with --new.
+fn reset_pool_member(ctx: &mut Ctx) -> Result<(), Failure> {
+    let udid = ctx
+        .record
+        .resources
+        .ios_simulator
+        .clone()
+        .expect("claimed pool member")
+        .udid;
+    let app_id = ctx.record.candidate.app_id.clone();
+    crate::run::reset_app(ctx, &udid, &app_id, None)?;
+    for spec in [
+        ios::privacy_reset_spec(&udid, &app_id),
+        ios::keychain_reset_spec(&udid),
+    ] {
+        ensure_running(ctx.runner, "fresh_install")?;
+        if !ctx.runner.run(&spec).ok() {
+            return Err(Failure::new(
+                "fresh_install",
+                FailureCode::AppResetFailed,
+                format!("{} did not complete successfully on the pool simulator", spec.label),
+                format!(
+                    "inspect the simulator's health, run qaren cleanup {} --json, then re-run prepare",
+                    ctx.record.run_id
+                ),
+            ));
+        }
+        ensure_running(ctx.runner, "fresh_install")?;
+    }
+    Ok(())
+}
+
+fn claim_pool_create_lock(ctx: &mut Ctx, pool_root: &Path) -> Result<(), Failure> {
+    let name = pool::creation_lock_name();
+    let holder = lock_holder_for(ctx);
+    ctx.record.resources.pool_create_lock = Some(BuildLockResource {
+        lock_dir: buildplan::lock_dir(pool_root, name),
+        holder: holder.holder.clone(),
+    });
+    ctx.save()?;
+    ensure_running(ctx.runner, "allocate")?;
+    match buildplan::claim_lock(ctx.runner, pool_root, name, &holder, LockPolicy::Strict) {
+        LockOutcome::Claimed { .. } => Ok(()),
+        LockOutcome::Contended {
+            holder: existing,
+            detail,
+            ..
+        } => {
+            // Only this run can write its own holder, so contention proves the claim never succeeded.
+            ctx.record.resources.pool_create_lock = None;
+            ctx.save()?;
+            let (held, next) = match existing {
+                Some(h) => (
+                    format!(" (held for run {})", h.run_id),
+                    format!(
+                        "re-run once run {} finishes creating, or clean it up with {}",
+                        h.run_id,
+                        crate::lease::cleanup_command(&h.run_id)
+                    ),
+                ),
+                None => (
+                    String::new(),
+                    "re-run once the creating run finishes, or clean it up with `qaren cleanup <its-run-id>`".to_string(),
+                ),
+            };
+            Err(Failure::new(
+                "allocate",
+                FailureCode::DeviceBusy,
+                format!("another prepare is creating a QaReN pool simulator{held}: {detail}"),
+                next,
+            ))
+        }
+        LockOutcome::Error(detail) => Err(Failure::new(
+            "allocate",
+            FailureCode::RunRecordUpdateFailed,
+            format!("cannot operate the pool creation lock: {detail}"),
+            "fix the ~/.qaren/pool directory permissions, then re-run prepare",
+        )),
+    }
+}
+
+fn release_pool_create_lock(ctx: &mut Ctx) {
+    let Some(lock) = ctx.record.resources.pool_create_lock.clone() else {
+        return;
+    };
+    match buildplan::release_lock(&lock.lock_dir, &lock.holder, &ctx.record.run_id) {
+        buildplan::ReleaseOutcome::Removed
+        | buildplan::ReleaseOutcome::Absent
+        | buildplan::ReleaseOutcome::Foreign(_) => {
+            ctx.record.resources.pool_create_lock = None;
+            let _ = ctx.save();
+        }
+        buildplan::ReleaseOutcome::Refused(reason)
+        | buildplan::ReleaseOutcome::Unresolved(reason) => {
+            ctx.notes
+                .push(("pool_create_lock_release".to_string(), reason));
+        }
+    }
+}
+
+// Each step is durable before the next: lease, then the pool record, then borrowed custody with an armed stop.
+fn enroll_pool_member(
+    ctx: &mut Ctx,
+    pool_root: &Path,
+    lock_root: &Path,
+    ios: &IosSpec,
+) -> Result<(), Failure> {
+    ensure_running(ctx.runner, "allocate")?;
+    let sim = ctx
+        .record
+        .resources
+        .ios_simulator
+        .clone()
+        .expect("created simulator recorded");
+    let lease = crate::lease::acquire(
+        ctx.runner,
+        lock_root,
+        Platform::Ios,
+        &sim.udid,
+        &ctx.record.run_id,
+        ctx.record.prepare.clone(),
+    )?;
+    ctx.record.resources.lease = Some(lease);
+    ctx.save()?;
+    pool::write(
+        pool_root,
+        &PoolMember {
+            schema: pool::POOL_SCHEMA.to_string(),
+            udid: sim.udid.clone(),
+            name: sim.name.clone(),
+            device_type: ios.device_type.clone(),
+            runtime: ios.runtime.clone(),
+            created_by_run: ctx.record.run_id.clone(),
+            created_at: timefmt::iso8601_utc(ctx.runner.now_epoch_ms()),
+        },
+    )?;
+    let prev = ctx.record.resources.borrowed_ios_stop();
+    ctx.record.resources.device_borrowed = true;
+    let armed = ctx
+        .record
+        .resources
+        .arm_borrowed_ios_stop()
+        .and_then(|_| ctx.save());
+    if let Err(f) = armed {
+        ctx.record.resources.device_borrowed = false;
+        ctx.record.resources.revert_borrowed_ios_stop(prev);
+        return Err(f);
+    }
+    release_pool_create_lock(ctx);
+    ctx.notes
+        .push(("device_pool".to_string(), format!("created {}", sim.udid)));
+    Ok(())
+}
+
 fn borrowed_failure(detail: impl Into<String>) -> Failure {
     Failure::new(
         "device",
@@ -956,6 +1476,21 @@ fn borrowed_failure(detail: impl Into<String>) -> Failure {
 }
 
 fn borrowed_udid(scenario: &Scenario, args: &PrepareArgs) -> Result<Option<String>, Failure> {
+    if args.new_device {
+        if args.device.is_some() || args.boot_device {
+            return Err(borrowed_failure(
+                "--new creates a fresh simulator and cannot be combined with --device or --boot-device",
+            ));
+        }
+        if scenario.platform != Platform::Ios {
+            return Err(Failure::new(
+                "validate",
+                FailureCode::PlatformUnsupported,
+                "--new creates only a fresh iOS simulator for prepare",
+                "remove --new, or prepare an iOS scenario",
+            ));
+        }
+    }
     let Some(device) = args.device.as_deref() else {
         return match args.boot_device {
             true => Err(borrowed_failure(
@@ -3543,6 +4078,8 @@ fn dry_run_receipt(
     native_cache_root: &Path,
     borrowed: Option<&ios::Simulator>,
     boot_device: bool,
+    sim_name: &str,
+    pool_mode: bool,
 ) -> Result<Receipt, Failure> {
     let now = runner.now_epoch_ms();
     let mut receipt = Receipt::new(
@@ -3670,7 +4207,7 @@ fn dry_run_receipt(
             match borrowed {
                 None => {
                     planned.push(ios::create_spec(
-                        &ios::sim_name(run_id),
+                        sim_name,
                         &ios_spec.device_type,
                         &ios_spec.runtime,
                     ));
@@ -3680,6 +4217,20 @@ fn dry_run_receipt(
                     planned.push(ios::bootstatus_spec(udid, deadlines.device_boot_seconds));
                 }
                 Some(_) => {}
+            }
+            if pool_mode {
+                receipt.outcomes.insert(
+                    "device_pool".to_string(),
+                    match borrowed {
+                        Some(sim) => format!("would reuse {}", sim.udid),
+                        None => format!("would create {sim_name}"),
+                    },
+                );
+                if borrowed.is_some() {
+                    planned.push(ios::uninstall_app_spec(udid, &cand.app_id));
+                    planned.push(ios::privacy_reset_spec(udid, &cand.app_id));
+                    planned.push(ios::keychain_reset_spec(udid));
+                }
             }
             if let Some(sim) = borrowed {
                 receipt.device = Some(crate::receipt::DeviceIdentity {

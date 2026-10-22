@@ -18,6 +18,7 @@ pub mod host_capacity;
 pub mod lease;
 pub mod native;
 pub mod native_suite;
+pub mod pool;
 pub mod process_observation;
 pub mod progress;
 pub mod publish;
