@@ -56,6 +56,7 @@ class RnFastRunnerTests: XCTestCase {
   private var listenerStartupFailure: String?
 #if RN_FAST_RUNNER_TEST_FAULTS
   var testFaultConsumed = false
+  var beforeNextGesture: (() -> Void)?
 #endif
   let maxRequestBytes = 2 * 1024 * 1024
   let maxSnapshotElements = 600
@@ -155,6 +156,12 @@ class RnFastRunnerTests: XCTestCase {
 
   @discardableResult
   func gesture(_ body: () -> Void) -> Bool {
+#if RN_FAST_RUNNER_TEST_FAULTS
+    if let fault = beforeNextGesture {
+      beforeNextGesture = nil
+      fault()
+    }
+#endif
     let before = containedIssues
     body()
     let raised = containedIssues != before
