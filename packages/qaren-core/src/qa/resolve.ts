@@ -56,14 +56,22 @@ export const MAX_CANDIDATES = 30;
 export type Resolution =
   | { ref: string; element: Element }
   | { scroll: 'down' | 'up'; element?: Element; origin?: 'named-offscreen' }
-  | { refuse: string; reason: string; diagnostic?: VisibilityBlockerDiagnostic };
+  | {
+      refuse: string;
+      reason: string;
+      diagnostic?: VisibilityBlockerDiagnostic;
+      // The resolver found no element matching the named target.
+      missing?: true;
+    };
 
 export class ResolutionError extends Error {
   readonly code: string;
+  readonly missing: boolean;
 
-  constructor(refusal: { refuse: string; reason: string }) {
+  constructor(refusal: { refuse: string; reason: string; missing?: true }) {
     super(`${refusal.refuse}: ${refusal.reason}`);
     this.code = refusal.refuse;
+    this.missing = refusal.missing === true;
   }
 }
 
@@ -159,6 +167,7 @@ export function prepareTarget(step: Step, screen: Screen): Resolution | TargetQu
       return {
         refuse: 'TARGET_NOT_FOUND',
         reason: `no eligible element labelled or identified "${target.quoted}" is on screen`,
+        ...(only ? {} : { missing: true as const }),
       };
     }
     return only.offscreen ? scrollTo(only) : { ref: only.ref, element: only };
@@ -556,7 +565,7 @@ function offscreenTarget(candidates: Element[], phrase: string): Resolution {
     };
   return matching.length
     ? { ...scrollTo(matching[0]), origin: 'named-offscreen' }
-    : { refuse: 'TARGET_NOT_FOUND', reason: 'no candidate matches the target' };
+    : { refuse: 'TARGET_NOT_FOUND', reason: 'no candidate matches the target', missing: true };
 }
 
 export function decideTarget(prepared: TargetQuestion, answer: Answer | undefined): Resolution {

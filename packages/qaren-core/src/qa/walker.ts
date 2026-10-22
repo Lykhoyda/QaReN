@@ -883,7 +883,9 @@ async function walkBlockScoped(
     };
   };
   const judged = (outcome: WalkOutcome): WalkOutcome =>
-    outcome.failure ? { ...outcome, failure: { ...outcome.failure, kind: 'step' } } : outcome;
+    outcome.failure && latest.front === 'app'
+      ? { ...outcome, failure: { ...outcome.failure, kind: 'step' } }
+      : outcome;
   const shoot = async (item: Item): Promise<string | undefined> => {
     assertActive();
     if (!privacy.canScreenshot()) {
@@ -1592,7 +1594,8 @@ async function walkBlockScoped(
             if (recovering === 'retry') continue attempts;
             if (recovering) return recovering;
           }
-          return judged(failed(item, 1, reason, before.screen, shot));
+          const checkFailure = failed(item, 1, reason, before.screen, shot);
+          return decision.check === 'fail' ? judged(checkFailure) : checkFailure;
         }
 
         if (item.kind === 'wait') {
@@ -2381,9 +2384,9 @@ async function walkBlockScoped(
           }
           outcome =
             recovering ??
-            (act!.error
-              ? failed(item, attempt, unchanged, after.screen, shot, ref)
-              : judged(failed(item, attempt, unchanged, after.screen, shot, ref)));
+            (act!.ok && !act!.error
+              ? judged(failed(item, attempt, unchanged, after.screen, shot, ref))
+              : failed(item, attempt, unchanged, after.screen, shot, ref));
         }
         if (again) continue attempts;
         if (outcome) return outcome;
@@ -2482,7 +2485,7 @@ async function walkBlockScoped(
           miss,
         );
         return {
-          ...(error instanceof ResolutionError && error.code === 'TARGET_NOT_FOUND'
+          ...(error instanceof ResolutionError && error.missing
             ? judged(caughtOutcome)
             : caughtOutcome),
           ...(refusal || unknownProcess ? { refusal: refusal ?? unknownProcess } : {}),

@@ -1890,12 +1890,14 @@ A plan run from `.qaren/plans/` is never saved again, and `qaren pr` never saves
 
 A `check` of a file in `.qaren/plans/` flags or clears it only when the candidate has no local
 changes (`.qaren` excluded) and `HEAD` is the commit of the local `refs/remotes/origin/HEAD`, which
-is never fetched. Only a step failure flags: a check that did not hold, a waited or scrolled-to
-target that never appeared, a named target that is not on screen, or an action that left the screen
-unchanged without a dispatch error. It adds `<!-- qaren:broken <platform> -->` at the top. Any other
-FAIL, such as an unavailable judgment service, a dispatch, capture or runner error, a synthesized
-core failure or an older core's ledger, reports `not_marked` with `not a step failure`; refusals,
-candidate drift and cancelled runs never flag. A PASS removes that platform's marker. Markers are
+is never fetched. Only a definite step failure flags: a check judged `fail`, a waited or
+scrolled-to target that never appeared, a named target with no matching element, or an action that
+dispatched cleanly and left the screen unchanged. It adds `<!-- qaren:broken <platform> -->` at the
+top. Any other FAIL reports `not_marked` with `not a definite step failure`: an uncertain check
+(`CHECK_UNSURE`, or one bounded by privacy or missing evidence), an unverified mutation, a system
+dialog in front of the app, an empty screen, a target identity that no longer resolves, an
+unavailable judgment service, a dispatch, capture or runner error, a synthesized core failure or an
+older core's ledger. Refusals, candidate drift and cancelled runs never flag. A PASS removes that platform's marker. Markers are
 comments, so a flagged plan still runs. A bare
 `<!-- qaren:broken -->` counts as broken on every platform and is left for you to remove. A file
 edited during the run is left alone.
@@ -1905,7 +1907,7 @@ The receipt's `recipe` field reports `{outcome, path?, reason?}` and stderr prin
 `unchanged`, `flagged`, `cleared`, `not_saved` (`disabled`, `pull request run`, a privacy reason,
 `contains a runtime input value`, `unsafe .qaren/plans`, `could not write`, `too many variants`)
 and `not_marked` (`disabled`, `local changes`, `not the default-branch commit`,
-`default branch unknown`, `not a step failure`, `changed during the run`, `could not write`). A
+`default branch unknown`, `not a definite step failure`, `changed during the run`, `could not write`). A
 draft run that does not pass has no `recipe` field. Set `savePlans: false` in `.qaren/config.yaml` to turn off saving and
 flagging; listing still works. Saved files stay untracked until you commit them, and for an app
 nested in its repository they do not make the next run's candidate dirty.

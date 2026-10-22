@@ -334,6 +334,7 @@ test('V5: check, wait, scroll-until and replay share one rule on the same screen
       renderReason(row.failure?.seen ?? '', (text) => text),
       /CHECK_UNSURE/,
     );
+    assert.equal(row.failure?.kind, undefined);
     const c = await consumers(screen, 'Describe the issue');
     for (const consumer of [c.wait, c.scroll]) {
       assert.equal(consumer.verdict, 'FAIL');
@@ -350,6 +351,7 @@ test('V5: check, wait, scroll-until and replay share one rule on the same screen
       renderReason(row.failure?.seen ?? '', (text) => text),
       /"Row 25" is not satisfied on screen/,
     );
+    assert.equal(row.failure?.kind, 'step');
     const c = await consumers(screen, 'Row 25');
     assert.match(c.wait.seen, /"Row 25" did not appear within 15s; the screen did not change/);
     assert.match(c.scroll.seen, /did not come into view/);
@@ -375,6 +377,7 @@ test('an incomplete snapshot never turns a miss into a definite absence in any c
     renderReason(row.failure?.seen ?? '', (text) => text),
     /CHECK_UNSURE/,
   );
+  assert.equal(row.failure?.kind, undefined);
   const c = await consumers(partial, 'Nowhere to be found');
   for (const consumer of [c.wait, c.scroll]) {
     assert.equal(consumer.verdict, 'FAIL');

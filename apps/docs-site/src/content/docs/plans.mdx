@@ -197,9 +197,10 @@ their titles, blocks and the platforms they are flagged broken on. Pass a listed
 
 When a saved plan runs on a clean checkout whose `HEAD` is the default-branch commit
 (`origin/HEAD`), a step failure adds `<!-- qaren:broken ios -->` (or `android`) to its first line,
-and the next such PASS removes it. Only a step that did not hold or did not take effect flags the
-plan; an outage of the judgment service, a device or runner error, or a refusal leaves it
-unflagged. On any other commit or with local changes the file is left alone. The receipt's `recipe` field and the `plan:` line on stderr report what happened. Set
+and the next such PASS removes it. Only a definite failure flags the plan: a check judged to fail,
+or an action that demonstrably did not take effect. An uncertain check, an unverified action, a
+system dialog in front of the app, an outage of the judgment service, a device or runner error, or a
+refusal leaves it unflagged. On any other commit or with local changes the file is left alone. The receipt's `recipe` field and the `plan:` line on stderr report what happened. Set
 `savePlans: false` in [configuration](../configuration/) to turn saving and flagging off. The CLI
 guide's [saved plans](https://github.com/Lykhoyda/rn-dev-agent/blob/develop/packages/qaren-cli/README.md#saved-plans)
 section lists every outcome.

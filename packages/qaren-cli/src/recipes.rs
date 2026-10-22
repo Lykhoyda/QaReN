@@ -409,7 +409,7 @@ pub fn decide<'a>(
             Err(reason) => Decision::Report(RecipeOutcome::because(Outcome::NotMarked, reason)),
             Ok(()) if facts.walk == Walk::OtherFailure => Decision::Report(RecipeOutcome::because(
                 Outcome::NotMarked,
-                "not a step failure",
+                "not a definite step failure",
             )),
             Ok(()) => Decision::Mark {
                 broken: facts.walk == Walk::StepFailure,
@@ -754,7 +754,7 @@ mod tests {
                 &facts(false, true, true, OtherFailure, None, false),
                 on_base
             ),
-            not_marked("not a step failure")
+            not_marked("not a definite step failure")
         );
         assert_eq!(
             decide(&facts(false, true, true, OtherFailure, None, false), ahead),
