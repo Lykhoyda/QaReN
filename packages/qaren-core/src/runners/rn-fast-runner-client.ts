@@ -2476,6 +2476,7 @@ async function appProcessContinuity(): Promise<NonNullable<TimingEvent['appProce
     const observed = await appProcessProbe();
     return observed === undefined ? 'absent' : observed === expected ? 'same' : 'changed';
   } catch {
+    throwIfCancelled();
     return 'unknown';
   }
 }

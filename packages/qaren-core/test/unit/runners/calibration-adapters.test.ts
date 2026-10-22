@@ -471,3 +471,22 @@ test('a failed readiness probe is followed by a value-free post-mortem with app 
   const unobserved = await readThenFail(failedHealth('ECONNREFUSED'));
   assert.equal(unobserved.find((e) => e.stage === 'runner-post-mortem')?.appProcess, 'unknown');
 });
+
+test('a run cancelled during the app-process lookup raises the cancellation', async () => {
+  const controller = new AbortController();
+  const reason = new Error('PRIVATE-abort');
+  observeAppProcess(async () => {
+    controller.abort(reason);
+    throw reason;
+  });
+  const f = fixture({
+    health: (reply, count) => (count === 2 ? failedHealth('ECONNREFUSED')() : reply),
+  });
+  const snapshot = () =>
+    createDeviceSnapshotHandler()({ action: 'snapshot', qaReadOnly: true, qaTiming: f.qaTiming });
+  await withCancellation(controller.signal, async () => {
+    assert.equal((await snapshot()).isError, undefined);
+    await assert.rejects(snapshot(), (error) => error === reason);
+  });
+  assert.equal(f.events.filter((e) => e.stage === 'runner-post-mortem').length, 0);
+});
