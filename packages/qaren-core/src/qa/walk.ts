@@ -452,21 +452,21 @@ async function openSession(
                 if (alive) log('app alive without a target');
                 return alive;
               },
-              ...(target.metroBundleRequests
-                ? {
-                    bundleRequested: async () => {
-                      const requested = bundleRequestedSinceLaunch(target.metroBundleRequests!);
-                      log(
-                        requested === false
-                          ? 'relaunch allowed: Metro received no bundle request since launch'
-                          : requested
-                            ? 'relaunch skipped: Metro received a bundle request'
-                            : 'relaunch skipped: bundle request signal unknown',
-                      );
-                      return requested;
-                    },
-                  }
-                : {}),
+              bundleRequested: async () => {
+                if (!target.metroBundleRequests) {
+                  log('relaunch skipped: no bundle request signal');
+                  return undefined;
+                }
+                const requested = bundleRequestedSinceLaunch(target.metroBundleRequests);
+                log(
+                  requested === false
+                    ? 'relaunch allowed: Metro received no bundle request since launch'
+                    : requested
+                      ? 'relaunch skipped: Metro received a bundle request'
+                      : 'relaunch skipped: bundle request signal unknown',
+                );
+                return requested;
+              },
             }
           : {}),
         // The lease coordinates qaren processes only; a foreign Maestro, XCUITest or UIAutomator driver is a probe.
