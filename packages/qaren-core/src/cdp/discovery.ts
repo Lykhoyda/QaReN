@@ -191,16 +191,17 @@ export async function waitForExactPortTargets(
   let otherBundleOnly = false;
   while (remaining > 0) {
     signal?.throwIfAborted();
-    let raw: HermesTarget[];
+    let raw: HermesTarget[] = [];
+    let fetched = false;
     try {
       raw = await interruptible(
         () => fetchTargets(port, Math.min(DISCOVERY_TIMEOUT_MS * 2, remaining), signal),
         signal,
       );
+      fetched = true;
     } catch (error) {
       signal?.throwIfAborted();
       if (!(error instanceof TargetListAttemptTimeoutError)) throw error;
-      raw = [];
     }
     if (!Array.isArray(raw)) {
       throw new Error(`Invalid CDP target list on port ${port}: expected an array`);
@@ -216,7 +217,7 @@ export async function waitForExactPortTargets(
       bundleId === undefined
         ? onDevice.length > 0
         : onDevice.some((target) => targetMatchesBundleId(target, bundleId));
-    otherBundleOnly = bundleId !== undefined && onDevice.length > 0 && !ready;
+    if (fetched) otherBundleOnly = bundleId !== undefined && onDevice.length > 0 && !ready;
     remaining = deadline - performance.now();
     if (remaining <= 0) break;
     if (ready) return;

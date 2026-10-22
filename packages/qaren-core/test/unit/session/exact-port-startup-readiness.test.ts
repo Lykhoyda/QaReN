@@ -323,6 +323,31 @@ for (const [label, deviceName, candidates, Expected] of [
   });
 }
 
+test('a final read that times out keeps the wrong-bundle observation of the last answered read', async (t) => {
+  let reads = 0;
+  const clock = setup(t, (_url, options) =>
+    ++reads === 1
+      ? Promise.resolve(
+          Response.json([target({ appId: 'com.foreign.app', title: 'com.foreign.app' })]),
+        )
+      : new Promise<Response>((_resolve, reject) =>
+          options?.signal?.addEventListener('abort', () => reject(options.signal?.reason)),
+        ),
+  );
+  const waiting = assert.rejects(
+    waitForExactPortTargets(managedPort, 1000, 500, undefined, 'iPhone', filters.bundleId),
+    (error: unknown) => {
+      assert.equal((error as Error).constructor, BundleReadinessTimeoutError);
+      return true;
+    },
+  );
+  await setImmediate();
+  await clock.advance(500);
+  await clock.advance(500);
+  await waiting;
+  assert.equal(reads, 2);
+});
+
 function admitThroughReadiness(
   t: TestContext,
   respond: (now: number, relaunched: boolean) => unknown[],
