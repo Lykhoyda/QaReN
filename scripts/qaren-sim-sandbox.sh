@@ -38,7 +38,7 @@ case "\${1:-}" in
   --find|-f)
     case "\${@: -1}" in simctl|devicectl|xcodebuild) echo "$dir/bin/\${@: -1}"; exit 0 ;; esac
     [ -n "$real_xcrun" ] && exec "$real_xcrun" "\${all[@]}" ;;
-  --show-sdk-*|vtool|otool|nm|lipo) [ -n "$real_xcrun" ] && exec "$real_xcrun" "\${all[@]}" ;;
+  --show-sdk-*|vtool|otool|nm) [ -n "$real_xcrun" ] && exec "$real_xcrun" "\${all[@]}" ;;
 esac
 echo "qaren-sim-sandbox: refused xcrun \${all[*]}" >&2
 exit 1
@@ -47,12 +47,19 @@ EOF
 shim simctl <<EOF
 #!/usr/bin/env bash
 if [ "\${1:-}" = list ]; then
+  json=
+  case " \$* " in *" --json "*|*" -j "*) json=1 ;; esac
   case " \$* " in
-    *" --json "*|*" -j "*)
-      echo '{"devices":{"com.apple.CoreSimulator.SimRuntime.iOS-18-0":[{"udid":"$FAKE_UDID","name":"Sandbox iPhone","state":"Booted","isAvailable":true,"deviceTypeIdentifier":"com.apple.CoreSimulator.SimDeviceType.iPhone-16"}]}}' ;;
-    *) printf '== Devices ==\n-- iOS 18.0 --\n    Sandbox iPhone (%s) (Booted)\n' "$FAKE_UDID" ;;
+    *" runtimes "*)
+      [ -n "\$json" ] && { echo '{"runtimes":[{"name":"iOS 18.0","identifier":"com.apple.CoreSimulator.SimRuntime.iOS-18-0","platform":"iOS","version":"18.0","isAvailable":true}]}'; exit 0; } ;;
+    *" devices "*)
+      if [ -n "\$json" ]; then
+        echo '{"devices":{"com.apple.CoreSimulator.SimRuntime.iOS-18-0":[{"udid":"$FAKE_UDID","name":"Sandbox iPhone","state":"Booted","isAvailable":true,"deviceTypeIdentifier":"com.apple.CoreSimulator.SimDeviceType.iPhone-16"}]}}'
+      else
+        printf '== Devices ==\n-- iOS 18.0 --\n    Sandbox iPhone (%s) (Booted)\n' "$FAKE_UDID"
+      fi
+      exit 0 ;;
   esac
-  exit 0
 fi
 echo "qaren-sim-sandbox: refused simctl \$*" >&2
 exit 1
@@ -80,7 +87,7 @@ ok=
 prev=
 for a in "\$@"; do
   case "\$a" in
-    -version|-showsdks|-list|-help|-showBuildSettings|build|build-for-testing|archive|clean) ok=1 ;;
+    -version|-showsdks|-list|-showBuildSettings|build|build-for-testing) ok=1 ;;
     test|test-without-building|-xctestrun|-showdestinations) refuse "\$@" ;;
   esac
   [ "\$prev" = -destination ] && case "\$a" in generic/*) ;; *) refuse "\$@" ;; esac

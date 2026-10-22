@@ -42,6 +42,11 @@ check "that device is the fake UDID" 1 "$(printf '%s' "$json" | grep -c "$FAKE_U
 check "booted list names only the fake UDID" 1 "$(run xcrun simctl list devices booted | grep -c "$FAKE_UDID")"
 check "an --sdk simctl list names the fake UDID" 1 "$(run xcrun --sdk iphonesimulator simctl list devices -j | grep -c "$FAKE_UDID")"
 check "a direct simctl list names the fake UDID" 1 "$(run simctl list devices booted | grep -c "$FAKE_UDID")"
+runtimes="$(run xcrun simctl list runtimes --json)"
+check "simctl json runtimes are exactly the fake device's available iOS runtime" \
+  "com.apple.CoreSimulator.SimRuntime.iOS-18-0" \
+  "$(printf '%s' "$runtimes" | node -e 'const r=JSON.parse(require("fs").readFileSync(0,"utf8")).runtimes.filter(x=>x.platform==="iOS"&&x.isAvailable===true);console.log(r.map(x=>x.identifier).join(","))')"
+check "the fake device sits on that runtime" 1 "$(printf '%s' "$json" | grep -c '"com.apple.CoreSimulator.SimRuntime.iOS-18-0":\[{"udid":"'"$FAKE_UDID"'"')"
 
 run xcrun simctl boot "$FAKE_UDID"
 check "simctl boot is refused" 1 $?
@@ -49,6 +54,12 @@ run xcrun simctl install booted /nonexistent.app
 check "simctl install is refused" 1 $?
 run xcrun simctl launch booted com.example.app -f
 check "a trailing -f is refused" 1 $?
+run xcrun simctl list devicetypes -j
+check "simctl list devicetypes is refused" 1 $?
+run xcrun simctl list pairs --json
+check "simctl list pairs is refused" 1 $?
+run xcrun simctl list -j
+check "an unscoped simctl list is refused" 1 $?
 check "no device command reached the host xcrun" "" "$(forwarded)"
 run xcodebuild test -scheme App -destination "platform=iOS Simulator,name=iPhone 16"
 check "xcodebuild test is refused" 1 $?
@@ -74,6 +85,12 @@ run maestro --version
 check "maestro version is absent" 127 $?
 run xcrun xctrace list devices
 check "an unlisted xcrun tool is refused" 1 $?
+run xcrun lipo -info App
+check "xcrun lipo is refused" 1 $?
+for action in archive clean -help; do
+  run xcodebuild "$action" -scheme App
+  check "xcodebuild $action is refused" 1 $?
+done
 check "xcrun --find simctl names the sandbox shim" "$tmp/sb/bin/simctl" "$(run xcrun --find simctl)"
 check "xcrun -f xcodebuild names the sandbox shim" "$tmp/sb/bin/xcodebuild" "$(run xcrun -f xcodebuild)"
 check "no device command reached the host tools" "" "$(forwarded)"
@@ -86,9 +103,8 @@ run xcodebuild -scheme App -showBuildSettings
 run xcrun vtool -show-build App
 run xcrun otool -L App
 run xcrun nm -j -U App
-run xcrun lipo -info App
 check "SDK queries, binary inspectors, metadata and generic builds reach the host tools" \
-  "xcrun --sdk macosx --show-sdk-path|xcodebuild -version|xcodebuild build -scheme App -destination generic/platform=iOS Simulator|xcodebuild build -sdk iphonesimulator -destination generic/platform=iOS Simulator|xcodebuild -project App.xcodeproj -list|xcodebuild -scheme App -showBuildSettings|xcrun vtool -show-build App|xcrun otool -L App|xcrun nm -j -U App|xcrun lipo -info App" \
+  "xcrun --sdk macosx --show-sdk-path|xcodebuild -version|xcodebuild build -scheme App -destination generic/platform=iOS Simulator|xcodebuild build -sdk iphonesimulator -destination generic/platform=iOS Simulator|xcodebuild -project App.xcodeproj -list|xcodebuild -scheme App -showBuildSettings|xcrun vtool -show-build App|xcrun otool -L App|xcrun nm -j -U App" \
   "$(forwarded | tr '\n' '|' | sed 's/|$//')"
 check "adb devices lists no device" "List of devices attached" "$(run adb devices | tr -d '\n')"
 check "ANDROID_HOME adb lists no device" "List of devices attached" "$(run sh -c '"$ANDROID_HOME/platform-tools/adb" devices' | tr -d '\n')"
