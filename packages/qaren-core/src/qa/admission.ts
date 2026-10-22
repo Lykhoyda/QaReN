@@ -9,6 +9,7 @@ import {
   sleep,
 } from '../domain/cancellation.js';
 import {
+  BundleReadinessTimeoutError,
   TargetReadinessTimeoutError,
   TargetListAttemptTimeoutError,
   TargetSelectionError,
@@ -77,10 +78,20 @@ export type AdmissionRefusalFacts = {
 
 // Classified by type only; an error's message or name never reaches the record.
 export function admissionInnerClass(error: unknown): AdmissionInnerClass {
-  if (error instanceof TargetSelectionError)
-    return error.code === 'TARGET_PLATFORM_CONFLICT'
-      ? 'target_selection_platform_conflict'
-      : 'target_selection_platform_not_found';
+  if (error instanceof TargetSelectionError) {
+    switch (error.code) {
+      case 'TARGET_PLATFORM_CONFLICT':
+        return 'target_selection_platform_conflict';
+      case 'DEVICE_TARGET_NOT_FOUND':
+        return 'target_selection_device_not_found';
+      case 'DEVICE_TARGET_AMBIGUOUS':
+        return 'target_selection_device_ambiguous';
+      case 'BUNDLE_TARGET_NOT_FOUND':
+        return 'target_selection_bundle_not_found';
+      case 'PLATFORM_TARGET_NOT_FOUND':
+        return 'target_selection_platform_not_found';
+    }
+  }
   if (error instanceof TargetListAttemptTimeoutError) return 'target_list_attempt_timeout';
   if (error instanceof TargetReadinessTimeoutError) return 'target_readiness_timeout';
   if (error instanceof CDPProbeTimeoutError) return 'cdp_probe_timeout';
@@ -457,7 +468,12 @@ async function attach(steps: AdmissionSteps, signal: AbortSignal): Promise<Prove
           } catch (error) {
             if (isAbort(error)) throw error;
             const remaining = Math.min(deadline - performance.now(), steps.remainingMs());
-            if (!transientReadinessFailure(error) || remaining <= 0) throw error;
+            if (
+              error instanceof BundleReadinessTimeoutError ||
+              !transientReadinessFailure(error) ||
+              remaining <= 0
+            )
+              throw error;
             retried = error;
             const noTarget =
               error instanceof TargetReadinessTimeoutError &&

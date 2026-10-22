@@ -1368,6 +1368,50 @@ test('a platform selection refusal keeps the public refusal and records its clas
   assert.deepEqual(calls, ['close']);
 });
 
+for (const [code, inner, deviceMatch, bundleMatch] of [
+  ['DEVICE_TARGET_NOT_FOUND', 'target_selection_device_not_found', false, true],
+  ['DEVICE_TARGET_AMBIGUOUS', 'target_selection_device_ambiguous', true, false],
+  ['BUNDLE_TARGET_NOT_FOUND', 'target_selection_bundle_not_found', true, false],
+] as const) {
+  test(`a ${code} selection refusal records its finite class and bounded match booleans without candidate strings`, async () => {
+    const inference = {
+      readers: SUMMARY.readers,
+      targets: Array.from({ length: 10 }, () => ({
+        token: 'ios' as const,
+        name: 'not_reached' as const,
+        identity: 'present' as const,
+        packages: 'not_reached' as const,
+        confidence: 'probed' as const,
+        deviceMatch,
+        bundleMatch,
+      })),
+    };
+    const { calls, stop, steps } = harness({
+      attach: async () => {
+        throw new TargetSelectionError(
+          code,
+          `${code}: bundleId="com.private.app" title="com.private.app (PRIVATE-phone)" url="ws://127.0.0.1:8081/private"`,
+          [],
+          inference,
+        );
+      },
+    });
+    const error = await refusalOf(admit(steps, stop));
+    assert.equal(error.code, 'CDP_NOT_CONNECTED');
+    assert.deepEqual(calls, ['close']);
+    const formatted = formatAdmissionRefusal(error.meta, 'connect_exact');
+    for (const sentinel of ['com.private.app', 'PRIVATE-phone', 'ws://', '8081'])
+      assert.ok(!formatted.includes(sentinel), `${sentinel} leaked: ${formatted}`);
+    const parsed = JSON.parse(formatted);
+    assert.equal(parsed.inner, inner);
+    assert.equal(parsed.attachStage, 'connect_exact');
+    assert.equal(parsed.inference.targetsTotal, 10);
+    assert.equal(parsed.inference.targets.length, 8);
+    assert.equal(parsed.inference.targets[0].deviceMatch, deviceMatch);
+    assert.equal(parsed.inference.targets[0].bundleMatch, bundleMatch);
+  });
+}
+
 test('a deadline during origin proof after one transient attach records the stalled boundary', async (t) => {
   const clock = mockClock(t);
   let attempts = 0;

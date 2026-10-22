@@ -2007,20 +2007,29 @@ Launch admission shares the remaining walk deadline across target readiness,
 WebSocket handshakes, probes and retry sleeps. The connect-time dev-build check
 and helper injection wait for the runtime's answer until that deadline rather
 than a fixed request timeout; no answer by the deadline is a readiness timeout.
-On iOS, readiness and attachment accept only a runtime Metro reports under the
-run's simulator name, so another booted simulator running the same app on the
-same port is not attached. Metro identifies a simulator only by name: give each
+Target readiness and attachment accept only a runtime Metro reports with the
+requested `appId` bundle identity (and on iOS, under the run's simulator name on
+that same target), so another app on the selected device or another booted
+simulator running the same app on the same port does not satisfy readiness or
+get attached. Missing, malformed or conflicting bundle identity does not satisfy
+readiness. A readiness match is not connection authority: exact selection still
+enforces platform and ambiguity checks, and post-open origin proof remains
+required. Metro identifies a simulator only by name: give each
 booted simulator a distinct name, because a same-named one is refused as
 ambiguous only once both have registered.
 Transient target-list, WebSocket-handshake and runtime-probe timeouts, along with
 inspector page closure or replacement, retry within that same deadline regardless
 of host load, with bounded polling and exact-port rediscovery between attachment
-attempts. Exhausted readiness refuses `CDP_NOT_CONNECTED`; invalid
-metadata and deterministic attachment rejections refuse immediately. Host load
-is diagnostic and does not decide whether the app is ready.
-After an exhausted target-readiness wait, or persistent runtime-probe or
-WebSocket-handshake timeouts lasting a full readiness window from the first such
-timeout (never before the original readiness window ends), an iOS dev
+attempts. If a bounded discovery wait ends with only other-bundle targets (or
+targets with missing, malformed or conflicting bundle identity) on the selected
+device, admission refuses `CDP_NOT_CONNECTED` before liveness probing, relaunch or
+another attachment attempt. Exhausted readiness also refuses `CDP_NOT_CONNECTED`;
+malformed target-list responses and deterministic attachment rejections refuse
+immediately. Host load is diagnostic and does not decide whether the app is ready.
+After a target-readiness wait that saw no target on the selected device, or
+persistent runtime-probe or WebSocket-handshake timeouts lasting a full readiness
+window from the first such timeout (never before the original readiness window
+ends), an iOS dev
 client can be relaunched once if the remaining deadline still covers a full
 readiness wait. Individual target-list timeouts and inspector page closures do
 not trigger relaunch. Before a relaunch for a missing target, admission uses the
