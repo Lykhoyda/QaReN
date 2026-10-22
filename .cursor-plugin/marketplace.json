@@ -11,7 +11,7 @@
       "name": "rn-dev-agent",
       "source": "./packages/claude-plugin",
       "description": "AI agent that fully tests React Native features on simulator/emulator — navigates the app, verifies UI, walks user flows, and confirms internal state.",
-      "version": "1.0.14",
+      "version": "1.1.0",
       "homepage": "https://github.com/Lykhoyda/rn-dev-agent"
     }
   ]

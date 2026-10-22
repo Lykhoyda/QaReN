@@ -1,5 +1,28 @@
 # rn-dev-agent-plugin
 
+## 1.1.0
+
+### Minor Changes
+
+- ab18779: Pin maestro-runner 1.1.27; re-pin saved actions with `maestro-runner-pin.js migrate-actions --root <app>`.
+
+### Patch Changes
+
+- e8e37ce: Hide Expo's floating dev-menu button on iOS simulators alongside the existing dev-menu launch defaults.
+- 0b82136: Maestro replays now pass `--driver uiautomator2` on Android and `--driver wda` on iOS explicitly, so a maestro-runner release that changes its default driver (or an ambient `MAESTRO_DRIVER`) can no longer silently switch the replay driver.
+- e8e37ce: Managed Metro admission now matches any architecture slice of the attested executable, fixing shell-shim launches on macOS 27.
+- e8e37ce: Managed Metro now points `CACHE_DIR` at its private cache root, so apps whose Metro config loads Storybook (which creates `node_modules/.cache/storybook` on require) reach `managed-sandbox-v1` instead of failing config load with EPERM and falling back to `reported-v1`.
+- 26264b4: `maestro-runner-pin migrate-actions` and `diagnose-actions` now resolve a relative `--root` against the current directory, so `--root test-app` no longer refuses every action with "does not resolve to".
+- 3466a1a: A second session in the same worktree now stays connected read-only, refusing calls with `SAME_ROOT_OWNER_LIVE` naming the owner, and takes over in place once that owner exits, instead of failing with `Connection closed` until a restart.
+- Updated dependencies [e8e37ce]
+- Updated dependencies [0b82136]
+- Updated dependencies [ab18779]
+- Updated dependencies [e8e37ce]
+- Updated dependencies [e8e37ce]
+- Updated dependencies [26264b4]
+- Updated dependencies [3466a1a]
+  - rn-dev-agent-core@1.1.0
+
 ## 1.0.14
 
 ### Patch Changes
