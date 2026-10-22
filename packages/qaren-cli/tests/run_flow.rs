@@ -269,7 +269,7 @@ fn workspace_products_are_retained_when_cache_publication_fails() {
         let cache = qaren::buildplan::cache_dir(&repo);
         std::fs::create_dir_all(&cache).unwrap();
         if failure == "copy" {
-            std::fs::write(repo.join(".native-store"), "block cache copy").unwrap();
+            // Injected after the plan so admission still sees a safe absent root.
         } else {
             std::fs::create_dir(qaren::buildplan::state_path(
                 &repo,
@@ -279,6 +279,9 @@ fn workspace_products_are_retained_when_cache_publication_fails() {
             .unwrap();
         }
         let mut mock = MockRunner::new();
+        if failure == "copy" {
+            mock.cache_publication_fault = Some(repo.join(".native-store"));
+        }
         script_preflight(&mut mock, &repo);
         mock.expect_run("pnpm install --frozen-lockfile", CmdOutput::success(""));
         script_provision_build(&mut mock, "xcodebuild", common::IOS_NATIVE_FILES);
@@ -2992,6 +2995,39 @@ const GRADLE: &str =
     "./gradlew :app:assembleDebug -PreactNativeArchitectures=x86_64 --no-daemon --console=plain";
 
 #[test]
+fn android_check_does_not_cache_an_apk_replaced_after_install() {
+    let (repo, app) = app_repo();
+    let req = android_request(&repo, &app);
+    let mut mock = android_mock();
+    mock.apk_replacement_after_install = Some(b"replacement apk".to_vec());
+    script_android_preflight(&mut mock, &repo, ONE_EMULATOR, EMULATOR);
+    mock.expect_run("pnpm install --frozen-lockfile", CmdOutput::success(""));
+    mock.expect_run("ls-files", CmdOutput::success(""));
+    mock.expect_run("check-ignore -q android/", CmdOutput::success(""));
+    script_android_finite_build(&mut mock, PREBUILD, 5000, 0);
+    script_android_finite_build(&mut mock, GRADLE, 5001, 0);
+    script_android_launch_walk_teardown(&mut mock);
+
+    let receipt = run(&mut mock, &req);
+    assert_eq!(receipt.result, ReceiptResult::Pass, "{:?}", receipt.failure);
+    assert_eq!(mock.remaining(), 0);
+    assert!(mock.apk_replacement_after_install.is_none());
+    let record = RunRecord::load(&req.runs_root, &receipt.run_id).unwrap();
+    let installed = record.resources.app_install.unwrap().artifact;
+    assert_eq!(installed.sha256, qaren::candidate::sha256_hex(b"built apk"));
+    assert_eq!(std::fs::read(&installed.path).unwrap(), b"replacement apk");
+    assert!(receipt.outcomes["artifact_cache"].contains("differs from the verified build"));
+    assert!(!qaren::buildplan::state_path(&repo, "android", "com.rndevagent.testapp").exists());
+    let artifacts = qaren::buildplan::cache_dir(&repo).join("artifacts/android");
+    for bucket in std::fs::read_dir(artifacts).unwrap() {
+        assert_eq!(
+            std::fs::read_dir(bucket.unwrap().path()).unwrap().count(),
+            0
+        );
+    }
+}
+
+#[test]
 fn android_check_prebuilds_an_absent_android_dir_before_gradle() {
     let (repo, app) = app_repo();
     let mut req = android_request(&repo, &app);
@@ -3316,19 +3352,29 @@ fn android_never_reads_or_writes_the_machine_store() {
     let apk = repo.join("elsewhere/app-debug.apk");
     std::fs::create_dir_all(apk.parent().unwrap()).unwrap();
     std::fs::write(&apk, b"another clone's apk").unwrap();
-    common::seed_store(
-        &req.native_cache_root,
-        "android",
-        &fp.value,
-        &apk,
-        ArtifactKind::Apk,
-    );
     let entry = store_dir(
         &req.native_cache_root,
         "android",
         "com.rndevagent.testapp",
         &fp.value,
     );
+    std::fs::create_dir_all(&entry).unwrap();
+    std::fs::create_dir(entry.join("seed-run")).unwrap();
+    std::fs::copy(&apk, entry.join("seed-run/app-debug.apk")).unwrap();
+    std::fs::write(
+        entry.join(STORE_RECORD),
+        serde_json::to_vec(&qaren::buildplan::StoreRecord {
+            artifact: qaren::buildplan::CachedArtifact {
+                path: apk.clone(),
+                sha256: qaren::buildplan::hash_artifact(&apk).unwrap(),
+                kind: ArtifactKind::Apk,
+            },
+            built_at: "fixture".into(),
+            candidate_sha: "a".repeat(40),
+        })
+        .unwrap(),
+    )
+    .unwrap();
     let record = std::fs::read(entry.join(STORE_RECORD)).unwrap();
     let mut mock = android_mock();
     script_android_preflight(&mut mock, &repo, ONE_EMULATOR, EMULATOR);
@@ -8494,4 +8540,34 @@ fn android_check_uses_configured_deadlines_for_dependency_install_and_build() {
     assert_eq!(command_timeout(&mock, "pnpm-install"), case.deps);
     assert_eq!(command_timeout(&mock, "expo-prebuild"), case.build);
     assert_eq!(command_timeout(&mock, "gradle-assemble"), case.build);
+}
+
+#[test]
+fn unsafe_native_root_fails_check_and_releases_the_existing_device_lease() {
+    use std::os::unix::fs::DirBuilderExt;
+    let (repo, app) = app_repo();
+    common::write_ios_workspace(&app, "ios/Native.xcworkspace");
+    configure_workspace(&app, "ios/Native.xcworkspace", "Native");
+    let req = request(&repo, &app, 30);
+    std::fs::DirBuilder::new()
+        .mode(0o755)
+        .create(&req.native_cache_root)
+        .unwrap();
+    let mut mock = MockRunner::new();
+    script_preflight(&mut mock, &repo);
+    mock.expect_run("pnpm install --frozen-lockfile", CmdOutput::success(""));
+    mock.expect_run("ls-files", CmdOutput::success(common::IOS_NATIVE_FILES));
+    common::script_xcode(&mut mock);
+    let receipt = run(&mut mock, &req);
+    assert_eq!(
+        receipt.result,
+        ReceiptResult::Failed,
+        "{:?}",
+        receipt.failure
+    );
+    assert_eq!(receipt.failure.unwrap().code, FailureCode::PrereqMissing);
+    assert_eq!(receipt.cleanup["device_lease"], "removed");
+    assert!(receipt.build.is_none());
+    assert_eq!(mock.remaining(), 0);
+    assert!(!mock.calls.iter().any(|c| c.label == "simctl-install"));
 }

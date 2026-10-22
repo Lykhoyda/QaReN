@@ -2457,11 +2457,11 @@ and temporary policy live in
 project instead of the workspace containing the scenario. The path must BE a
 git toplevel — a subdirectory of some larger repo is refused
 (`CANDIDATE_PATH_INVALID`) so a run can never bind to files outside the
-project it named. Project cache state lives under `<worktree>/.qaren/`, verified
-iOS dev-client builds are shared per machine under `~/.qaren/native-cache/` (see
-[Native-fingerprint build selection](#native-fingerprint-build-selection)), and the
-fingerprint enumerates only that worktree. Run records remain host-level;
-`status`/`cleanup` load them by run id without requiring the app directory.
+project it named. Project cache state lives under `<worktree>/.qaren/`; see
+[Native-fingerprint build selection](#native-fingerprint-build-selection) for
+verified build storage and reuse. The fingerprint enumerates only that worktree.
+Run records remain host-level; `status`/`cleanup` load them by run id without
+requiring the app directory.
 qaren never discovers, enumerates, or couples other projects.
 `candidate.project_root: .` selects a project living at the worktree root.
 Because `.qaren/` is qaren's own state, it is excluded from the candidate
@@ -2586,10 +2586,52 @@ out-of-worktree targets make the fingerprint incomplete. The scanner is
 conservative, not a full JS parser.
 qaren is pnpm-only; other package managers' lockfiles are out of contract.
 
-**Decision.** Verified iOS dev-client builds live in a machine store,
-`~/.qaren/native-cache/ios/<app_id>/<fingerprint>/`, with `:` replaced by `-`
-in the fingerprint directory name, shared by every clone and `qaren pr`
-worktree on this machine. Per-worktree cache state lives at
+**Decision.** Verified iOS dev-client builds on macOS live under
+`/private/var/tmp/qaren-native-cache-<effective-uid>/ios/<app_id>/<fingerprint>/`,
+with `:` replaced by `-` in the fingerprint directory name. Isolated HOME values,
+clones and `qaren pr` worktrees under the same OS user share this store. Set
+`QAREN_NATIVE_CACHE_ROOT` to an exact private absolute directory to select another
+store, including a private SSD location; no UID suffix is appended to the override.
+The override is read as an OS string and rejects empty, relative, root-only, NUL
+and explicit dot/dot-dot components. Cache roots and derived artifact paths must
+be valid UTF-8 for the unchanged JSON schemas; non-UTF-8 roots fail with a
+value-free `PREREQ_MISSING` before cache reads or publication. The override does
+not expand `~` or environment variables, and invalid values never fall back to
+the default.
+Other platforms retain their HOME-derived default and validate explicit overrides;
+Android storage is unchanged.
+
+The cache is a same-UID trust boundary: its root and subdirectories must be owned
+by the effective UID with mode 0700, metadata is 0600, and copied bundle files
+retain owner execution permission while removing group/other permissions.
+`artifact.json` is read through the held entry directory as an owned private
+regular file, bounded to 64 KiB, with artifact paths relative to that entry. Access
+walks root-owned or current-UID ancestry without following symlinks and rejects
+foreign writes, permissive roots, unsafe objects and uninspectable ACLs. A
+root-owned sticky parent is allowed only before a private current-UID directory;
+for example, use `/private/var/tmp/<private-directory>` on macOS rather than the
+symlinked `/var/tmp` path. macOS accepts only absent, empty or deny-only ACLs;
+allow/unknown ACLs are rejected. Linux rejects present POSIX access/default ACL
+attributes and accepts only `ENODATA` as proof of absence; this supports guarded
+filesystem fixtures, not a Linux iOS backend. Unsafe root access yields
+`PREREQ_MISSING` (failed receipt, exit 1), including dry-run; unsafe entries are
+ignored for reuse and left unchanged. Publication checks the boundary again and
+skips optional caching on failure, retaining run-owned outputs. Root/setuid cache
+mutations are unsupported. Private app binaries are never shared across UIDs;
+content hashes do not authenticate a foreign-writable manifest. Owner/admin
+replacement during consumption is outside this boundary.
+
+Reads and `--dry-run` never create cache directories. The first run at the new
+default is cold; QaReN never scans, imports, repairs or deletes old HOME stores.
+An explicit override may select an existing store only if it passes the same
+private checks. Different overrides partition storage. Temporary storage may be
+purged between runs, causing a cold build; no retention guarantee or automatic
+pruning is added. Remove cache entries only when no active run consumes them.
+Run records keep recorded paths, and rollback can select a retained trusted old
+store. Cache configuration does not configure device or build locks: concurrent
+runs still need the same correctly configured `QAREN_LOCK_ROOT` independently.
+
+Per-worktree cache state lives at
 `<worktree>/.qaren/native-cache/<platform>-<app_id>.json`
 (`qaren-native-cache/2`; a state with an older schema is invalid), bound to the
 exact worktree, platform, app id, fingerprint, and building candidate sha; it
@@ -2642,7 +2684,8 @@ After a successful build the dev client (single `.app` bundle / debug apk)
 is copied and content-hashed in a staging directory inside its fingerprint's
 store entry (iOS) or under `.qaren/native-cache/artifacts/android/<app_id>-<fingerprint-key>/`
 (Android). Copying checks cancellation between entries and file chunks. A final
-cancellation check precedes renaming staging to a run-specific generation and
+cancellation check precedes moving the staged bundle into an exclusively created
+run-specific generation and
 atomically saving cache state with the readiness-rechecked fingerprint
 (native-input drift during the build fails the run as `CANDIDATE_DRIFTED`).
 Cancellation before that publication removes staging and preserves the previous
@@ -2653,7 +2696,7 @@ create-new: the first build of a fingerprint wins, a concurrent or later build o
 the same fingerprint keeps its own generation and never rewrites the record, and
 an incomplete fingerprint is never published. A stored build that fails
 verification is refused and left in place, so that fingerprint rebuilds until
-its store entry directory is deleted. Nothing in the store is pruned; every
+its owner removes the entry while it has no active consumers. Nothing in the store is pruned; every
 fingerprint keeps one generation per build until the store is cleaned by hand.
 Android prunes the same app's directories for older fingerprints after a saved
 state. An ambiguous artifact (zero or several bundles) skips caching with a recorded

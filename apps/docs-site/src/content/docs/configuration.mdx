@@ -111,5 +111,6 @@ deadlines:
 | `ANDROID_HOME`        | The Android SDK whose `platform-tools/adb` reaches the running adb server.      |
 | `QAREN_NODE`          | The Node binary to use; it takes precedence over `nodePath`.                    |
 | `QAREN_LOCK_ROOT`     | An absolute directory for device leases. Defaults to `~/.qaren/locks`.          |
+| `QAREN_NATIVE_CACHE_ROOT` | An exact private absolute directory for reusable iOS builds. Defaults on macOS to `/private/var/tmp/qaren-native-cache-<uid>`, shared across HOME values for that user. |
 | `QAREN_WALK_SECONDS`  | The walk budget in seconds. Defaults to `1200`.                                 |
 | `QAREN_STEP_SECONDS`  | The per-step budget in seconds. Defaults to `1200`.                             |

@@ -572,6 +572,7 @@ fn run_inner(
         runner,
         runs_root: req.runs_root.clone(),
         native_cache_root: req.native_cache_root.clone(),
+        native_store_entry: None,
         record,
         started_ms,
         timings: Vec::new(),

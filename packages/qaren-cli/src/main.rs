@@ -48,9 +48,24 @@ fn runs_root() -> Result<PathBuf, String> {
     qaren_home().map(|home| home.join("runs"))
 }
 
-// Verified iOS dev-client builds shared across worktrees, keyed by native fingerprint.
 fn native_cache_root() -> Result<PathBuf, String> {
-    qaren_home().map(|home| home.join("native-cache"))
+    let explicit = std::env::var_os("QAREN_NATIVE_CACHE_ROOT");
+    #[cfg(target_os = "macos")]
+    {
+        qaren::buildplan::resolve_native_cache_root(explicit.as_deref(), unsafe { libc::geteuid() })
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        match explicit {
+            Some(value) => qaren::buildplan::resolve_native_cache_root(Some(&value), unsafe {
+                libc::geteuid()
+            }),
+            None => qaren::buildplan::resolve_native_cache_root(
+                Some(qaren_home()?.join("native-cache").as_os_str()),
+                unsafe { libc::geteuid() },
+            ),
+        }
+    }
 }
 
 fn build_roots() -> Result<(PathBuf, PathBuf, PathBuf), String> {
@@ -95,7 +110,7 @@ fn roots_failure(detail: String) -> Failure {
         "validate",
         FailureCode::PrereqMissing,
         format!("no host-level state root is available: {detail}"),
-        "set HOME to an absolute path",
+        "set HOME to an absolute path and QAREN_NATIVE_CACHE_ROOT to a supported private absolute directory",
     )
 }
 
@@ -585,6 +600,224 @@ fn result_str(result: ReceiptResult) -> &'static str {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn native_cache_root_child() {
+        use qaren::buildplan::*;
+        let Some(role) = std::env::var_os("QAREN_TEST_CACHE_CHILD") else {
+            return;
+        };
+        let root = super::native_cache_root().unwrap();
+        let dir = store_dir(&root, "ios", "com.example.fixture", "rnfp1:abcd");
+        if role == "publish" {
+            let app =
+                std::path::PathBuf::from(std::env::var_os("HOME").unwrap()).join("fixture.app");
+            std::fs::create_dir_all(&app).unwrap();
+            std::fs::write(app.join("fixture"), "harmless fixture").unwrap();
+            let root = open_native_store_root(&root, true).unwrap().unwrap();
+            let entry = root
+                .entry(
+                    std::path::Path::new("ios/com.example.fixture/rnfp1-abcd"),
+                    true,
+                )
+                .unwrap()
+                .unwrap();
+            let copy = entry
+                .copy_app(
+                    &qaren::exec::MockRunner::new(),
+                    &app,
+                    std::ffi::OsStr::new("run"),
+                    &hash_artifact(&app).unwrap(),
+                )
+                .unwrap();
+            let record = StoreRecord {
+                artifact: copy.retain(),
+                built_at: "fixture".into(),
+                candidate_sha: "a".repeat(40),
+            };
+            assert!(publish_store_record(&entry, &record).unwrap());
+            std::fs::write(
+                std::env::var_os("QAREN_TEST_CACHE_BARRIER").unwrap(),
+                std::fs::read(dir.join(STORE_RECORD)).unwrap(),
+            )
+            .unwrap();
+        } else {
+            let before =
+                std::fs::read(std::env::var_os("QAREN_TEST_CACHE_BARRIER").unwrap()).unwrap();
+            let root = open_native_store_root(&root, false).unwrap().unwrap();
+            let entry = root
+                .entry(
+                    std::path::Path::new("ios/com.example.fixture/rnfp1-abcd"),
+                    false,
+                )
+                .unwrap()
+                .unwrap();
+            let record = load_store_record(&entry)
+                .unwrap()
+                .expect("second HOME must see the first publication");
+            assert_eq!(
+                hash_artifact(&record.artifact.path).unwrap(),
+                record.artifact.sha256
+            );
+            let parts = std::collections::BTreeMap::new();
+            let worktree =
+                std::path::PathBuf::from(std::env::var_os("QAREN_TEST_WORKTREE").unwrap());
+            assert!(!state_path(&worktree, "ios", "com.example.fixture").exists());
+            assert_eq!(
+                super::runs_root().unwrap(),
+                std::path::PathBuf::from(std::env::var_os("HOME").unwrap()).join(".qaren/runs")
+            );
+            let inputs = DecisionInputs {
+                platform: "ios",
+                app_id: "com.example.fixture",
+                worktree_root: &worktree,
+                candidate_sha: "bbbb",
+                fingerprint: "rnfp1:abcd",
+                fingerprint_parts: &parts,
+                fingerprint_complete: true,
+                incompleteness: &[],
+                expo_unavailable: None,
+                scheme: Some("fixture"),
+                force_clean: false,
+                native_dir_exists: false,
+                native_dir_in_candidate: false,
+            };
+            assert_eq!(
+                decide(
+                    &inputs,
+                    &StateStatus::Missing,
+                    Some((record, ArtifactStatus::Verified))
+                )
+                .decision,
+                BuildDecision::Reuse
+            );
+            assert_eq!(std::fs::read(dir.join(STORE_RECORD)).unwrap(), before);
+        }
+    }
+
+    #[test]
+    fn native_cache_root_reuses_across_home_processes() {
+        use std::os::unix::fs::DirBuilderExt;
+        let fixture =
+            std::env::temp_dir().join(format!("qaren-cache-process-{}", std::process::id()));
+        std::fs::DirBuilder::new()
+            .mode(0o700)
+            .create(&fixture)
+            .unwrap();
+        let fixture = fixture.canonicalize().unwrap();
+        for separate_worktrees in [false, true] {
+            let case = fixture.join(if separate_worktrees {
+                "separate"
+            } else {
+                "same"
+            });
+            std::fs::DirBuilder::new()
+                .mode(0o700)
+                .create(&case)
+                .unwrap();
+            for role in ["publish", "reuse"] {
+                let output = std::process::Command::new(std::env::current_exe().unwrap())
+                    .args(["--exact", "tests::native_cache_root_child", "--nocapture"])
+                    .env("HOME", case.join(role))
+                    .env("QAREN_NATIVE_CACHE_ROOT", case.join("store"))
+                    .env(
+                        "QAREN_TEST_WORKTREE",
+                        case.join(if separate_worktrees { role } else { "worktree" }),
+                    )
+                    .env("QAREN_TEST_CACHE_CHILD", role)
+                    .env("QAREN_TEST_CACHE_BARRIER", case.join("published"))
+                    .output()
+                    .unwrap();
+                assert!(
+                    output.status.success(),
+                    "{role}: {}{}",
+                    String::from_utf8_lossy(&output.stdout),
+                    String::from_utf8_lossy(&output.stderr)
+                );
+            }
+        }
+        std::fs::remove_dir_all(fixture).unwrap();
+    }
+
+    #[test]
+    fn native_cache_root_adapter_child() {
+        let Some(expected) = std::env::var_os("QAREN_TEST_EXPECT_CACHE") else {
+            return;
+        };
+        if expected == "invalid" || expected == "utf8" {
+            assert_eq!(
+                super::native_cache_root().unwrap_err(),
+                if expected == "utf8" {
+                    "native cache root: path must be valid UTF-8"
+                } else {
+                    "native cache root: invalid absolute path"
+                }
+            );
+        } else {
+            assert_eq!(super::native_cache_root().unwrap().as_os_str(), expected);
+        }
+    }
+
+    #[test]
+    fn native_cache_root_adapter_preserves_presence_os_strings_and_default() {
+        use std::os::unix::ffi::OsStringExt;
+        let mut cases = vec![
+            (
+                Some(std::ffi::OsString::from("")),
+                std::ffi::OsString::from("invalid"),
+            ),
+            (Some("relative".into()), "invalid".into()),
+            (Some("/".into()), "invalid".into()),
+            (Some("/private/./cache".into()), "invalid".into()),
+            (Some("/private/../cache".into()), "invalid".into()),
+            (
+                Some("/private/exact-cache".into()),
+                "/private/exact-cache".into(),
+            ),
+            (
+                Some(std::ffi::OsString::from_vec(
+                    b"/private/cache-\xff".to_vec(),
+                )),
+                "utf8".into(),
+            ),
+        ];
+        #[cfg(target_os = "macos")]
+        cases.push((
+            None,
+            qaren::buildplan::resolve_native_cache_root(None, unsafe { libc::geteuid() })
+                .unwrap()
+                .into_os_string(),
+        ));
+        #[cfg(not(target_os = "macos"))]
+        cases.push((None, "/home-fixture/.qaren/native-cache".into()));
+        for (explicit, expected) in cases {
+            let mut child = std::process::Command::new(std::env::current_exe().unwrap());
+            child
+                .args([
+                    "--exact",
+                    "tests::native_cache_root_adapter_child",
+                    "--nocapture",
+                ])
+                .env("HOME", "/home-fixture")
+                .env("QAREN_HOME", "/irrelevant-qaren")
+                .env("TMPDIR", "/irrelevant-temp")
+                .env("XDG_CACHE_HOME", "/irrelevant-xdg")
+                .env("QAREN_LOCK_ROOT", "/irrelevant-locks")
+                .env("QAREN_TEST_EXPECT_CACHE", expected);
+            if let Some(value) = explicit {
+                child.env("QAREN_NATIVE_CACHE_ROOT", value);
+            } else {
+                child.env_remove("QAREN_NATIVE_CACHE_ROOT");
+            }
+            let output = child.output().unwrap();
+            assert!(
+                output.status.success(),
+                "{}{}",
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr)
+            );
+        }
+    }
+
     #[test]
     fn check_uses_the_run_defaults_and_honors_a_small_step_override() {
         let names = ["QAREN_STEP_SECONDS", "QAREN_WALK_SECONDS"];
