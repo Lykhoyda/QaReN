@@ -1702,8 +1702,8 @@ invalid or mismatched evidence is reported as `unavailable`, `invalid_evidence`,
 `envelope_mismatch` or `invalid_response`. These diagnostics do not relax
 admission: resolve the refusal and start a new run.
 
-Runs and evidence live under `~/.qaren/runs/<run-id>/`; caches also stay under
-HOME. Device and native-build locks are machine-wide by default.
+Runs and evidence live under `~/.qaren/runs/<run-id>/`. Device and
+native-build locks are machine-wide by default.
 `QAREN_MACHINE_LOCKS` is on when unset, empty or `1`; `0` opts out to the
 per-home `~/.qaren/locks`, and any other value refuses. An absolute
 `QAREN_LOCK_ROOT` takes precedence in either mode: sessions using different
