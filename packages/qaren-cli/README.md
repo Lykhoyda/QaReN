@@ -559,6 +559,15 @@ a multi-gesture command reports mutation `possible` because earlier gestures
 may already have run. Take a fresh snapshot of the alert and explicitly tap
 the intended button.
 
+While it serves commands, the iOS runner contains XCTest UI automation issues,
+such as a read of an element that vanished, instead of letting XCTest end its
+test, and logs only the issue type. A tap, press, drag, swipe or typing gesture
+that raises one fails with `GESTURE_ISSUE_RAISED` and mutation `possible`, and a
+system-alert button tap fails `SYSTEM_ALERT_TAP_FAILED` the same way, so neither
+is reported as performed. Issues raised by reads before or after the gesture,
+such as the readback of a code field that vanished after its fill, do not
+change the result.
+
 Before dispatch, the walker also treats a press or fill target, including a
 keyboard-fallback wrapper before its tap, whose centre lies outside its trusted
 clipping viewport or covered by an observed keyboard frame
