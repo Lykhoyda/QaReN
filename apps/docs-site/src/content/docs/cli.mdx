@@ -113,10 +113,8 @@ qaren prepare <scenario.yaml> [--device <udid> [--boot-device]] [--json] [--dry-
 Validates the scenario and the checked-out candidate, allocates the device, prepares the
 app and owned Metro, and emits a `ready` receipt with the run's device and Metro
 endpoint. `--dry-run` validates and prints the planned commands without allocating anything.
-For an iOS scenario with `build.owner: cli`, `--device` borrows that exact existing simulator
-under the device lease instead of creating one; its device type and runtime must match the
-scenario, and a Shutdown target needs `--boot-device`. Cleanup keeps a borrowed simulator.
-See [Existing iOS simulator](https://github.com/Lykhoyda/rn-dev-agent/blob/develop/packages/qaren-cli/README.md#existing-ios-simulator).
+For `--device` selection, boot permission and cleanup, see the authoritative
+[existing iOS simulator contract](https://github.com/Lykhoyda/rn-dev-agent/blob/develop/packages/qaren-cli/README.md#existing-ios-simulator).
 See [CLI-owned iOS build routes](https://github.com/Lykhoyda/rn-dev-agent/blob/develop/packages/qaren-cli/README.md#cli-owned-ios-build-routes)
 for iOS startup ordering and failure cleanup.
 

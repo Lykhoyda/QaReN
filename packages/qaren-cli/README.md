@@ -2263,7 +2263,8 @@ prepare ──► validate (scenario schema, candidate git sha, lockfile sha256)
         ──► plan     native fingerprint + machine store + cache state ──► reuse | incremental | clean
                      (decision + evidence recorded; non-reuse takes the
                       host-level build serialization lock)
-        ──► allocate  iOS:  simctl create qaren-<run-id> + bootstatus -b
+        ──► allocate  iOS:  create + boot by default; with --device, borrow
+                            the exact simulator (see Existing iOS simulator)
                       NUC:  ssh <host> ~/bin/android-farm start <slot> qaren-<run-id>
                             ssh -N -L 127.0.0.1:<p>:127.0.0.1:<p>  (owned pid)
                             run-scoped adb server on adb_server_port with the
@@ -2278,7 +2279,7 @@ prepare ──► validate (scenario schema, candidate git sha, lockfile sha256)
                              (serial pinned via ANDROID_SERIAL + the
                              one-device server; CI=1)
         ──► verify   port owner pgid == spawned pgid, /status responds,
-                     app installed + running on the owned device
+                     app installed + running on the recorded device
         ──► ready    receipt + durable host-level run.json
 
 (With `build.owner: qaren` the chain branches after `allocate`: no
@@ -2291,12 +2292,14 @@ finishes at phase `handed_off`; see the cooperative handoff section below.)
 `prepare --device <UUID>` borrows that exact existing simulator instead of
 creating `qaren-<run-id>`, for a `build.owner: cli` iOS scenario. The UUID must
 name one available simulator whose device type and runtime equal the
-scenario's `ios.device_type` and `ios.runtime`; names, `booted`, partial UUIDs
-and mismatched metadata refuse with `DEVICE_UNAVAILABLE` before anything is
+scenario's `ios.device_type` and `ios.runtime`. Names, `booted` and partial
+UUIDs are usage errors (exit `2`, no receipt); unavailable, ambiguous or
+mismatched targets refuse with `DEVICE_UNAVAILABLE` before anything is
 claimed. A Booted target is used as is. A Shutdown target refuses unless
 `--boot-device` authorizes booting it, with the same meaning as on `check`
-(see [iOS simulator lifecycle](#ios-simulator-lifecycle)); `--restart-device`
-and `--shutdown-device-on-exit` stay check and pr options. `--device` with an
+(see [iOS simulator lifecycle](#ios-simulator-lifecycle)). `--boot-device`
+without `--device`, or either `--restart-device` or `--shutdown-device-on-exit`
+on `prepare`, is a usage error (exit `2`, no receipt). `--device` with an
 Android scenario refuses with `PLATFORM_UNSUPPORTED`, and with
 `build.owner: qaren` it fails validation with `SCENARIO_INVALID`, because the
 cooperative handoff carries no device-lease custody.
@@ -2309,7 +2312,8 @@ again before installing, and refuses rather than reboots a target that changed.
 Builds stay generic; only install, launch and probes address the UUID.
 `ready` keeps the lease, Metro and app for attached agents, and `status`
 reports ready only while the run still holds that lease and the target is
-Booted. `qaren cleanup <run-id> --json`, once the prepare process has exited,
+Booted with unchanged device type and runtime, alongside the other readiness
+probes. `qaren cleanup <run-id> --json`, once the prepare process has exited,
 stops the run's own processes, keeps the simulator (never shut down, erased or
 deleted) and then releases the lease. `--dry-run` shows the exact UUID and no
 create command, and claims nothing.
