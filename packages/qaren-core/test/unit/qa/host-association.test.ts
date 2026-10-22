@@ -3,7 +3,7 @@ import { test } from 'node:test';
 import vm from 'node:vm';
 import { captureScreen } from '../../../dist/qa/capture.js';
 import { parsePlan } from '../../../dist/qa/plan.js';
-import { decideScreen } from '../../../dist/qa/resolve.js';
+import { decideScreen, prepareTarget } from '../../../dist/qa/resolve.js';
 import { inputValues, isPossibleInput, ObservedPrivacy } from '../../../dist/qa/privacy.js';
 import { runPlan } from '../../../dist/qa/walker.js';
 import {
@@ -166,6 +166,51 @@ test('an exact structural match below the window associates without presence; an
   assert.equal(shown.pressEvidenceGap, '1 interactive React host unassociated');
   assert.equal(shown.pressGapCount, 1);
   assert.equal(shown.fillGapCount, 1);
+});
+
+test('an iOS row overlapping its list with its centre outside anchors as a scroll hint without a press gap', async () => {
+  const f = fixture();
+  const row = f.native.nodes[2];
+  row.index = 3;
+  row.ref = '@e3';
+  row.parentIndex = 2;
+  row.depth = 3;
+  row.rect.y = 481;
+  row.hittable = false;
+  row.presence = { ...f.native.nodes[0].presence, nodeIndex: 3 };
+  f.native.nodes.splice(2, 0, {
+    ...f.native.nodes[1],
+    ref: '@e2',
+    index: 2,
+    parentIndex: 1,
+    depth: 2,
+    type: 'ScrollView',
+    rect: { x: 20, y: 100, width: 400, height: 400 },
+    presence: { ...f.native.nodes[1].presence, nodeIndex: 2 },
+  });
+  f.native.snapshotVerdict.nodeCount = 4;
+  f.hostEvidence.typography!.nodes[0].rect!.y = 441;
+  const screen = await f.capture();
+  const element = screen.elements[3];
+  assert.equal(element.semantic?.visibility, 'offscreen');
+  assert.equal(element.semantic?.press, 'supported');
+  assert.equal(element.hittable, false);
+  assert.equal(screen.pressEvidenceGap, undefined);
+  assert.equal(screen.pressGapCount, 0);
+  assert.deepEqual(semanticActionView(screen, 'press'), { elements: [element] });
+  assert.deepEqual(visibilityView(screen), { elements: [], unknown: [], unassociatedReact: 0 });
+  assert.deepEqual(prepareTarget({ kind: 'press', target: { phrase: 'save' } }, screen), {
+    scroll: 'down',
+    element,
+    origin: 'named-offscreen',
+  });
+
+  row.rect.y = 479;
+  f.hostEvidence.typography!.nodes[0].rect!.y = 439;
+  const centreInside = await f.capture();
+  assert.equal(centreInside.elements[3].semantic?.visibility, 'unknown');
+  assert.equal(centreInside.pressGapCount, 1);
+  assert.equal(semanticActionView(centreInside, 'press').refuse, 'SCREEN_EVIDENCE_INCOMPLETE');
 });
 
 test('associated disabled and read-only facts block both operations without erasing positive capabilities', async () => {

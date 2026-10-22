@@ -386,14 +386,14 @@ function presenceOf(statuses: ('observed' | 'unknown')[]) {
   };
 }
 
-test('a verified node outside its scroll view or the window is offscreen; partial, empty and observed nodes are not', () => {
+test('a verified node outside its scroll view or window is offscreen; centre-inside, empty and observed nodes are not', () => {
   const nodes = [
     ...scrolled,
     { ref: '@shown', type: 'StaticText', label: 'Shown', parentIndex: 2, rect: band(200) },
     { ref: '@below', type: 'StaticText', label: 'Below', parentIndex: 2, rect: band(720) },
     { ref: '@sheet', type: 'StaticText', label: 'Sheet', parentIndex: 1, rect: band(800) },
     { ref: '@seen', type: 'StaticText', label: 'Seen', parentIndex: 2, rect: band(760) },
-    { ref: '@edge', type: 'StaticText', label: 'Edge', parentIndex: 2, rect: band(680) },
+    { ref: '@edge', type: 'StaticText', label: 'Edge', parentIndex: 2, rect: band(679) },
     { ref: '@empty', type: 'StaticText', label: 'Empty', parentIndex: 2, rect: band(720, 0) },
   ];
   const statuses = ['unknown', 'unknown', 'unknown', 'observed', 'unknown', 'unknown', 'observed'];

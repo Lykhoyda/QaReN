@@ -30,7 +30,7 @@ test('terminal clearance telemetry preserves public rows, screenshots and one-se
           index: 1,
           parentIndex: 0,
           type: 'ScrollView',
-          rect: { x: 0, y: 0, width: 400, height: 720 },
+          rect: { x: 0, y: 0, width: 400, height: 800 },
         },
         {
           ref: '@PRIVATE-target',
@@ -41,6 +41,13 @@ test('terminal clearance telemetry preserves public rows, screenshots and one-se
           label: 'PRIVATE-app-label',
           hittable: true,
           rect: { x: 20, y, width: 300, height: 44 },
+        },
+        {
+          ref: '@keyboard',
+          index: 3,
+          parentIndex: 0,
+          type: 'Keyboard',
+          rect: { x: 0, y: 500, width: 400, height: 300 },
         },
       ],
       [],

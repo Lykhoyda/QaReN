@@ -326,7 +326,8 @@ function scrollTo(element: Element): { scroll: 'up' | 'down'; element: Element }
   const frame = elementFrame(element);
   return {
     element,
-    scroll: frame && frame.y + frame.height <= (elementViewport(element)?.y ?? 0) ? 'up' : 'down',
+    scroll:
+      frame && frame.y + frame.height / 2 <= (elementViewport(element)?.y ?? 0) ? 'up' : 'down',
   };
 }
 

@@ -750,7 +750,7 @@ test('centre predicate diagnostics preserve short-circuit reads and explicit unk
   );
 });
 
-test('final centre refusal privately distinguishes viewport and keyboard without changing the failed walk', async () => {
+test('offscreen rows and keyboard clearance preserve refusal without exposing private diagnostics', async () => {
   for (const occluder of ['tabs', 'keyboard'] as const) {
     for (const sink of ['absent', 'record', 'throw'] as const) {
       const f = fake([clipped(700, 'Button', occluder), clipped(710, 'Button', occluder)], {});
@@ -771,12 +771,19 @@ test('final centre refusal privately distinguishes viewport and keyboard without
       assert.equal(result.block.outcome, 'fail');
       assert.match(
         renderReason(result.failure!.seen, (text) => text),
-        /stayed off screen after one scroll: its centre/,
+        /stayed off screen after one scroll/,
       );
-      assert.deepEqual(f.calls, ['capture', 'scroll down', 'capture', 'capture']);
+      assert.deepEqual(f.calls, [
+        'capture',
+        'scroll down',
+        'capture',
+        'capture',
+        ...(occluder === 'tabs' ? ['capture', 'capture'] : []),
+      ]);
       assert.equal(authorizations, 1);
       const terminal = events.filter((event) => event.code === 'CENTRE_COVERED');
-      if (sink !== 'absent') {
+      if (sink !== 'absent' && occluder === 'tabs') assert.equal(terminal.length, 0);
+      if (sink !== 'absent' && occluder === 'keyboard') {
         assert.equal(terminal.length, 1);
         assert.equal(terminal[0].stage, 'decision');
         assert.equal(terminal[0].observation, 3);
@@ -784,12 +791,12 @@ test('final centre refusal privately distinguishes viewport and keyboard without
           predicate: {
             framePresent: true,
             viewportPresent: true,
-            viewportOutside: occluder === 'tabs',
+            viewportOutside: false,
             keyboardVisible: null,
-            keyboardFramePresent: occluder === 'tabs' ? null : true,
-            keyboardCoverage: occluder === 'tabs' ? null : true,
-            centreInsideKeyboard: occluder === 'tabs' ? null : true,
-            branch: occluder === 'tabs' ? 'viewport' : 'keyboard',
+            keyboardFramePresent: true,
+            keyboardCoverage: true,
+            centreInsideKeyboard: true,
+            branch: 'keyboard',
           },
           scrollOrigin: 'centre-covered',
           requestedDirection: 'down',
@@ -808,8 +815,8 @@ test('terminal diagnostics preserve offscreen versus native-occlusion scroll ori
   for (const origin of ['offscreen-resolution', 'native-occlusion'] as const) {
     const f = fake(
       origin === 'offscreen-resolution'
-        ? [clipped(740), clipped(-30)]
-        : [clipped(80), clipped(710)],
+        ? [clipped(740), clipped(710, 'Button', 'keyboard')]
+        : [clipped(80), clipped(710, 'Button', 'keyboard')],
       origin === 'native-occlusion' ? { press: [OCCLUDED] } : {},
     );
     const events: WalkerTimingDiagnostic[] = [];
@@ -829,7 +836,7 @@ test('terminal diagnostics preserve offscreen versus native-occlusion scroll ori
 });
 
 test('O5: a press whose centre lies past its scroll clip scrolls before any dispatch', async () => {
-  const f = fake([clipped(700), clipped(400), clipped(400), done()], {});
+  const f = fake([clipped(700), ...Array.from({ length: 4 }, () => clipped(400)), done()], {});
   const seen = recordingClearance(f);
   const events: WalkerTimingDiagnostic[] = [];
   f.deps.diagnostic = (event) => events.push(event);
@@ -838,6 +845,8 @@ test('O5: a press whose centre lies past its scroll clip scrolls before any disp
   assert.deepEqual(f.calls, [
     'capture',
     'scroll down',
+    'capture',
+    'capture',
     'capture',
     'capture',
     'press @target',
@@ -850,6 +859,18 @@ test('O5: a press whose centre lies past its scroll clip scrolls before any disp
   assert.deepEqual(seen, [
     { clearance: 722 - 360, within: { x: 0, y: 0, width: 400, height: 720 } },
   ]);
+});
+
+test('a press on a row whose centre lies above its scroll clip scrolls up and presses it', async () => {
+  const f = fake([clipped(-30), ...Array.from({ length: 4 }, () => clipped(300)), done()], {});
+  const outcome = await walkBlock(block('1. Tap "go"\n'), f.deps);
+  assert.equal(outcome.block.outcome, 'pass');
+  assert.equal(f.calls[1], 'scroll up');
+  assert.ok(f.calls.includes('press @target'));
+  assert.equal(
+    f.calls.some((call) => call === 'scroll down'),
+    false,
+  );
 });
 
 test('O5: a fill whose centre lies under the keyboard scrolls before any dispatch', async () => {
@@ -1629,6 +1650,8 @@ test('a second press after clearance refuses keyboard auto-scroll before dispatc
   const f = fake(
     [
       clipped(700),
+      clipped(400),
+      clipped(400),
       clipped(400),
       clipped(400),
       clipped(380),

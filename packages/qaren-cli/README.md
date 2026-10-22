@@ -1016,7 +1016,10 @@ covered-target recovery instead of classifying it as scrolled out. Missing or in
 rectangles skip only that clip; Application and Window rectangles must have
 positive size.
 Missing Window ancestry does not create uncertainty when the Application clip
-is valid, including with the keyboard up. Partly overlapping nodes remain eligible.
+is valid, including with the keyboard up. A partly overlapping node remains
+eligible only while its centre lies inside the clip; a centre on the top or left
+edge counts as inside, one on the bottom or right edge as outside. A node whose
+centre lies outside is offscreen, a scroll hint rather than a tap target.
 A wholly offscreen ancestor with an independently on-screen descendant has
 contradicted geometry: it stops supplying its own clip, while other trusted
 ancestors still clip. Ordinary on-screen text rows beneath it remain visible;
@@ -1033,9 +1036,9 @@ proven hidden. A docked full-width keyboard covers from its frame's top to the
 screen bottom, because its chrome paints below the frame XCUI reports. The
 keyboard's own keys and the chrome in its window stay visible. Overlays are not
 occlusion evidence: see [Limitations](#limitations-recorded-not-papered-over).
-Quoted and phrase target resolution scrolls up when the target is wholly above
-its effective trusted clipping viewport, and down otherwise; without a known
-clip, the boundary remains screen y=0. Quoted scroll-until targets use that
+Quoted and phrase target resolution scrolls up when the target's centre lies at
+or above the top of its effective trusted clipping viewport, and down otherwise;
+without a known clip, the boundary remains screen y=0. Quoted scroll-until targets use that
 viewport when exactly one offscreen identity matches. A target wholly above
 the viewport scrolls up; one wholly below scrolls down. When its frame overlaps
 the viewport but it is reported not visible, as with an Android heading under
