@@ -1903,6 +1903,7 @@ fn absent_runner_hosts_release_the_lease_without_termination() {
     let receipt = run(&mut mock, &request(&repo, &app, 30));
 
     assert_eq!(receipt.cleanup["runner_host"], "absent");
+    assert!(!receipt.outcomes.contains_key("runner_host_probe"));
     assert!(!mock
         .calls
         .iter()
@@ -1923,6 +1924,7 @@ fn an_unknown_runner_host_inventory_keeps_the_lease_for_cleanup() {
 
     let receipt = run(&mut mock, &request(&repo, &app, 30));
 
+    assert_eq!(receipt.outcomes["runner_host_probe"], "unknown");
     assert!(receipt.cleanup["runner_host"].starts_with("unresolved"));
     assert!(receipt.cleanup["device_lease"].starts_with("unresolved"));
     assert_eq!(mock.remaining(), 0);

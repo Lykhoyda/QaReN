@@ -1,4 +1,6 @@
 import { randomUUID } from 'node:crypto';
+import childProcess from 'node:child_process';
+import { syncBuiltinESMExports } from 'node:module';
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
@@ -81,4 +83,25 @@ test('GH-588: attachOnly refuses a wrong UDID even when another simulator runs t
   assert.equal(body.code, 'NOT_CONNECTED');
   assert.match(body.error, /attachOnly=true.*not running/);
   assert.deepEqual(calls, [{ platform: 'ios', appId: APP_ID, deviceId: FOREIGN }]);
+});
+
+test('a failed or timed-out iOS liveness probe is reported as a failure, never as a dead app', async (t) => {
+  const original = childProcess.execFile;
+  t.after(() => {
+    childProcess.execFile = original;
+    syncBuiltinESMExports();
+  });
+  for (const failure of [
+    Object.assign(new Error('Command failed'), { code: 1 }),
+    Object.assign(new Error('Command failed'), { killed: true, signal: 'SIGTERM' }),
+  ]) {
+    let probed: unknown[] | undefined;
+    childProcess.execFile = ((...args: unknown[]) => {
+      probed = args;
+      (args.at(-1) as (error: Error) => void)(failure);
+    }) as typeof childProcess.execFile;
+    syncBuiltinESMExports();
+    await assert.rejects(isAppRunning('ios', APP_ID, undefined, EXACT), failure);
+    assert.deepEqual(probed?.slice(0, 2), ['xcrun', buildIosAppRunningArgs(EXACT)]);
+  }
 });

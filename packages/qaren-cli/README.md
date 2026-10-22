@@ -1561,6 +1561,11 @@ that secret despite artifact redaction.
   codes and allowlisted native refusal codes. Native-readiness end metrics also retain the
   existing liveness classification as `readinessReason`, or `unknown` if the probe did not
   return a classification; `count` identifies the probe site, not a retry ordinal.
+  Attachment emits an `admission` point metric at each retry decision and once when it is
+  cancelled or refused, with the decision (`retry`, `cancelled` or `refused`), the attempt count,
+  last started and completed boundary, attach stage, failure class (`none` before any retry),
+  relaunch count, whether the relaunch failed, app liveness (`probe_failed` when the iOS
+  app-job probe errors or times out) and elapsed, remaining and budget milliseconds.
   Each attempted block containing a slot fill emits
   `block-outcome` with its first plan line and existing `pass`/`fail`/`refused` result; only saved-login
   recovery emits `login-outcome`. A block passing is its existing block result, not a new assertion
@@ -1639,7 +1644,8 @@ process group and announces it; the CLI records that group with the driver's
 identity and signals it, before the host, only while that identity still
 matches. Refused or unresolved core or driver cleanup leaves the host untouched
 and retains the lease. A host that was already running, or any
-present or unknown host after that, retains the lease. External cleanup of a leased
+present or unknown host after that, retains the lease. When the pre-attach host
+probe cannot answer, the receipt records `runner_host_probe: unknown`. External cleanup of a leased
 borrowed iOS simulator refuses before producer mutation, lease release or saving unless
 the recorded qaren owner is proved gone, including restart-only and not-yet-armed runs.
 When `--shutdown-device-on-exit`

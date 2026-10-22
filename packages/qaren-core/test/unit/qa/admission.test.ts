@@ -4,14 +4,17 @@ import { TargetReadinessTimeoutError, TargetSelectionError } from '../../../dist
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
+  admissionMetric,
   admit,
   awaitBundleReady,
   createBundleReload,
   formatAdmissionRefusal,
   logAdmissionRefusal,
   metroDevicePin,
+  type AdmissionDecision,
   type AdmissionSteps,
 } from '../../../dist/qa/admission.js';
+import { cleanTimingEvent } from '../../../dist/qa/timing.js';
 import { REACT_READY_PROBE_JS } from '../../../dist/injected-helpers.js';
 import { HandlerError } from '../../../dist/qa/adapt.js';
 import { runInNewContext } from 'node:vm';
@@ -1467,4 +1470,181 @@ test('a refused admission writes exactly one value-free refusal line, and other 
   logAdmissionRefusal(refusal, undefined, () => {
     throw new Error('stderr closed');
   });
+});
+
+function observed(overrides: Partial<AdmissionSteps> = {}) {
+  const events: Array<{ decision: AdmissionDecision; facts: Record<string, unknown> }> = [];
+  const admission = harness({
+    observe: (decision, facts) => void events.push({ decision, facts: { ...facts } }),
+    ...overrides,
+  });
+  const facts = () => events.map(({ decision, facts }) => ({ decision, ...budget(facts).rest }));
+  return { ...admission, events, facts };
+}
+
+test('each retry decision is observed with its liveness and relaunch count', async () => {
+  let attempts = 0;
+  const { stop, steps, facts } = observed({
+    attach: async () => {
+      if (++attempts < 3) throw new TargetReadinessTimeoutError('PRIVATE bundle still building');
+    },
+    appAlive: async () => true,
+    relaunch: async () => assert.fail('a live app must not be relaunched'),
+  });
+  assert.deepEqual(await admit(steps, stop), PROVEN);
+  const retry = {
+    decision: 'retry',
+    inner: 'target_readiness_timeout',
+    relaunches: 0,
+    relaunchFailed: false,
+    liveness: 'alive',
+  };
+  assert.deepEqual(facts(), [
+    { ...retry, attempt: 1, lastStarted: 'foreign_driver', lastCompleted: 'foreign_driver' },
+    { ...retry, attempt: 2, lastStarted: 'attach', lastCompleted: 'retry_wait' },
+  ]);
+  assert.doesNotMatch(JSON.stringify(facts()), /PRIVATE/);
+});
+
+test('a cancelled admission is observed once with the facts of its last retry', async () => {
+  let attempts = 0;
+  const { calls, stop, steps, facts } = observed({
+    attach: async () => {
+      if (++attempts === 1) throw new TargetReadinessTimeoutError('PRIVATE launcher');
+      stop.begin();
+      await interruptible(() => new Promise(() => undefined));
+    },
+    appAlive: async () => true,
+    relaunch: async () => assert.fail('a live app must not be relaunched'),
+  });
+  const stopped = await refusalOf(admit(steps, stop));
+  assert.equal(stopped.code, 'RUN_CANCELLED');
+  assert.equal(stopped.meta, undefined);
+  assert.deepEqual(calls.slice(-1), ['close']);
+  assert.deepEqual(facts().slice(1), [
+    {
+      decision: 'cancelled',
+      attempt: 2,
+      lastStarted: 'attach',
+      lastCompleted: 'retry_wait',
+      inner: 'target_readiness_timeout',
+      relaunches: 0,
+      relaunchFailed: false,
+      liveness: 'alive',
+    },
+  ]);
+  assert.doesNotMatch(JSON.stringify(facts()), /PRIVATE/);
+});
+
+test('an admission cancelled before its first retry is observed with no inner failure', async () => {
+  const { stop, steps, facts } = observed();
+  stop.begin();
+  assert.equal((await refusalOf(admit(steps, stop))).code, 'RUN_CANCELLED');
+  assert.deepEqual(facts(), [
+    {
+      decision: 'cancelled',
+      attempt: 0,
+      lastStarted: 'attach',
+      lastCompleted: 'none',
+      inner: 'none',
+      relaunches: 0,
+      relaunchFailed: false,
+      liveness: 'not_probed',
+    },
+  ]);
+});
+
+test('a refused admission is observed with its refusal facts; its own codes are not', async () => {
+  let remaining = 90_000;
+  const { stop, steps, events } = observed({
+    remainingMs: () => remaining,
+    attach: async () => {
+      throw new TargetReadinessTimeoutError('no target');
+    },
+    appAlive: async () => {
+      remaining = 0;
+      return true;
+    },
+    relaunch: async () => assert.fail('a live app must not be relaunched'),
+  });
+  const error = await refusalOf(admit(steps, stop));
+  assert.deepEqual(
+    events.map(({ decision }) => decision),
+    ['retry', 'refused'],
+  );
+  assert.deepEqual(events.at(-1)!.facts, error.meta);
+
+  const own = observed({
+    prove: async () => ({ ok: false, code: 'METRO_ORIGIN_MISMATCH', message: 'foreign bundle' }),
+  });
+  await refusalOf(admit(own.steps, own.stop));
+  assert.deepEqual(own.events, []);
+});
+
+test('an observer that throws changes neither an admission nor its refusal', async () => {
+  let attempts = 0;
+  const throwing = () => {
+    throw new Error('stdout closed');
+  };
+  const admitted = harness({
+    observe: throwing,
+    attach: async () => {
+      if (++attempts < 2) throw new TargetReadinessTimeoutError('no target');
+    },
+  });
+  assert.deepEqual(await admit(admitted.steps, admitted.stop), PROVEN);
+  const refused = harness({
+    observe: throwing,
+    remainingMs: () => 20,
+    attach: async () => {
+      throw new TargetReadinessTimeoutError('no target');
+    },
+  });
+  assert.equal((await refusalOf(admit(refused.steps, refused.stop))).code, 'CDP_NOT_CONNECTED');
+});
+
+test('admission facts become a cleaned metric with only allowlisted words and numbers', () => {
+  const facts = {
+    attempt: 3,
+    lastStarted: 'attach',
+    lastCompleted: 'retry_wait',
+    inner: 'target_readiness_timeout',
+    relaunches: 0,
+    relaunchFailed: false,
+    liveness: 'alive',
+    elapsedMs: 61_000,
+    remainingMs: 1_138_000,
+    budgetMs: 1_199_000,
+    inference: SUMMARY,
+  } as const;
+  const metric = admissionMetric('cancelled', facts, 'wait_targets', 70_000);
+  const { inference: _inference, ...rest } = facts;
+  const expected = {
+    stage: 'admission',
+    edge: 'point',
+    outcome: 'failed',
+    at: 70_000,
+    admission: 'cancelled',
+    attachStage: 'wait_targets',
+    ...rest,
+  };
+  assert.deepEqual(metric, expected);
+  assert.deepEqual(cleanTimingEvent(metric), expected);
+  assert.equal(admissionMetric('retry', facts, undefined, 1).outcome, 'unknown');
+  assert.equal(
+    admissionMetric('retry', { ...facts, lastStarted: 'prove' }, 'connect_exact', 1).attachStage,
+    undefined,
+  );
+  for (const [key, value] of [
+    ['admission', 'PRIVATE'],
+    ['lastStarted', 'PRIVATE'],
+    ['inner', 'http://private.example'],
+    ['liveness', 1],
+    ['relaunchFailed', 'false'],
+    ['attempt', -1],
+    ['attachStage', 'PRIVATE'],
+  ] as const)
+    assert.equal(cleanTimingEvent({ ...expected, [key]: value }), undefined, key);
+  assert.equal(cleanTimingEvent({ ...expected, stage: 'capture' }), undefined);
+  assert.equal(cleanTimingEvent({ ...expected, edge: 'end' }), undefined);
 });

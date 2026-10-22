@@ -61,6 +61,7 @@ import { isSecretEnvName, redactApiKey, setRedactionKey } from '../util/redact.j
 import { createStop, watchOwnerPipe, watchParent } from './stop.js';
 import { prove } from './prove.js';
 import {
+  admissionMetric,
   admit,
   awaitBundleReady,
   createBundleReload,
@@ -464,6 +465,7 @@ async function openSession(
         // Opening the session may have relaunched the app: prove the bundle the walk will see.
         prove: () => prove({ evaluate: (expr) => cdp.evaluate(expr) }, target),
         close,
+        observe: (decision, facts) => timing(admissionMetric(decision, facts, attachStage, now())),
       },
       stop,
     ).catch(logRefusal),

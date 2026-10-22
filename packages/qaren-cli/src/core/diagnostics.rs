@@ -38,6 +38,7 @@ const STAGES: &[&str] = &[
     "readback",
     "settle-readback",
     "relaunch",
+    "admission",
     "overflow",
 ];
 const CODES: &[&str] = &[
@@ -80,6 +81,51 @@ const NATIVE_READINESS_REASONS: &[&str] = &[
     "unknown",
 ];
 
+const ADMISSION_BOUNDARIES: &[&str] = &[
+    "attach",
+    "bundle_ready",
+    "foreign_driver",
+    "open",
+    "prove",
+    "relaunch",
+    "retry_wait",
+];
+const ADMISSION_COMPLETED: &[&str] = &[
+    "attach",
+    "bundle_ready",
+    "foreign_driver",
+    "open",
+    "prove",
+    "relaunch",
+    "retry_wait",
+    "none",
+];
+const ADMISSION_INNER: &[&str] = &[
+    "target_selection_platform_not_found",
+    "target_selection_platform_conflict",
+    "target_list_attempt_timeout",
+    "target_readiness_timeout",
+    "cdp_probe_timeout",
+    "cdp_handshake_timeout",
+    "cdp_target_closed",
+    "cdp_request_timeout",
+    "untyped",
+    "none",
+];
+const ADMISSION_KEYS: &[&str] = &[
+    "admission",
+    "attempt",
+    "lastStarted",
+    "lastCompleted",
+    "attachStage",
+    "inner",
+    "relaunches",
+    "relaunchFailed",
+    "liveness",
+    "elapsedMs",
+    "remainingMs",
+];
+
 fn clean(value: &Value) -> Option<Value> {
     let fields = value.as_object()?;
     let kind = fields.get("kind")?.as_str()?;
@@ -102,6 +148,17 @@ fn clean(value: &Value) -> Option<Value> {
                 "relaunch",
                 "reapDisposition",
                 "readinessReason",
+                "admission",
+                "attempt",
+                "lastStarted",
+                "lastCompleted",
+                "attachStage",
+                "inner",
+                "relaunches",
+                "relaunchFailed",
+                "liveness",
+                "elapsedMs",
+                "remainingMs",
             ],
         ),
         "timing" => (
@@ -142,6 +199,16 @@ fn clean(value: &Value) -> Option<Value> {
         {
             return None;
         }
+        if ADMISSION_KEYS.contains(&key.as_str())
+            && (fields.get("stage")?.as_str()? != "admission"
+                || fields.get("edge")?.as_str()? != "point")
+        {
+            return None;
+        }
+        if key == "relaunchFailed" {
+            clean.insert(key.clone(), value.as_bool()?.into());
+            continue;
+        }
         let words: Option<&[&str]> = match key.as_str() {
             "stage" if kind == "metric" => Some(STAGES),
             "stage" => Some(&["decision", "dispatch"]),
@@ -156,6 +223,12 @@ fn clean(value: &Value) -> Option<Value> {
             "nativeCode" => Some(NATIVE_CODES),
             "nativeMutation" => Some(&["none", "observed", "possible"]),
             "readinessReason" => Some(NATIVE_READINESS_REASONS),
+            "admission" => Some(&["retry", "cancelled", "refused"]),
+            "lastStarted" => Some(ADMISSION_BOUNDARIES),
+            "lastCompleted" => Some(ADMISSION_COMPLETED),
+            "attachStage" => Some(&["wait_targets", "connect_exact"]),
+            "inner" => Some(ADMISSION_INNER),
+            "liveness" => Some(&["not_probed", "alive", "dead", "probe_failed"]),
             _ => None,
         };
         if let Some(words) = words {

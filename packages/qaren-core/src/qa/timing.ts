@@ -38,6 +38,7 @@ export const TIMING_STAGES = [
   'readback',
   'settle-readback',
   'relaunch',
+  'admission',
   'overflow',
 ] as const;
 export type TimingStage = (typeof TIMING_STAGES)[number];
@@ -55,6 +56,39 @@ const NATIVE_READINESS_REASONS = [
   'unknown',
 ] as const;
 export type NativeReadinessReason = (typeof NATIVE_READINESS_REASONS)[number];
+export const ADMISSION_DECISIONS = ['retry', 'cancelled', 'refused'] as const;
+export const ADMISSION_BOUNDARIES = [
+  'attach',
+  'bundle_ready',
+  'foreign_driver',
+  'open',
+  'prove',
+  'relaunch',
+  'retry_wait',
+] as const;
+export const ADMISSION_ATTACH_STAGES = ['wait_targets', 'connect_exact'] as const;
+export const ADMISSION_INNER_CLASSES = [
+  'target_selection_platform_not_found',
+  'target_selection_platform_conflict',
+  'target_list_attempt_timeout',
+  'target_readiness_timeout',
+  'cdp_probe_timeout',
+  'cdp_handshake_timeout',
+  'cdp_target_closed',
+  'cdp_request_timeout',
+  'untyped',
+  'none',
+] as const;
+export const ADMISSION_LIVENESS = ['not_probed', 'alive', 'dead', 'probe_failed'] as const;
+const ADMISSION_WORDS = {
+  admission: ADMISSION_DECISIONS,
+  lastStarted: ADMISSION_BOUNDARIES,
+  lastCompleted: [...ADMISSION_BOUNDARIES, 'none'],
+  attachStage: ADMISSION_ATTACH_STAGES,
+  inner: ADMISSION_INNER_CLASSES,
+  liveness: ADMISSION_LIVENESS,
+} as const;
+const ADMISSION_NUMBERS = ['attempt', 'relaunches', 'elapsedMs', 'remainingMs'] as const;
 export interface TimingEvent {
   stage: TimingStage;
   edge: 'start' | 'end' | 'point';
@@ -75,6 +109,17 @@ export interface TimingEvent {
   relaunch?: 'attempted' | 'ready' | 'failed' | 'timeout';
   reapDisposition?: 'reaped' | 'already-absent' | 'replacement-preserved';
   readinessReason?: NativeReadinessReason;
+  admission?: (typeof ADMISSION_DECISIONS)[number];
+  attempt?: number;
+  lastStarted?: (typeof ADMISSION_BOUNDARIES)[number];
+  lastCompleted?: (typeof ADMISSION_BOUNDARIES)[number] | 'none';
+  attachStage?: (typeof ADMISSION_ATTACH_STAGES)[number];
+  inner?: (typeof ADMISSION_INNER_CLASSES)[number];
+  relaunches?: number;
+  relaunchFailed?: boolean;
+  liveness?: (typeof ADMISSION_LIVENESS)[number];
+  elapsedMs?: number;
+  remainingMs?: number;
 }
 export type TimingObserver = (event: TimingEvent) => void;
 export interface TimingContext {
@@ -106,6 +151,18 @@ export function cleanTimingEvent(value: unknown): TimingEvent | undefined {
       return undefined;
     event.readinessReason = input.readinessReason as NativeReadinessReason;
   }
+  const admission = input.stage === 'admission' && input.edge === 'point';
+  for (const [key, values] of Object.entries(ADMISSION_WORDS)) {
+    if (input[key] === undefined) continue;
+    const value = (values as readonly string[]).find((word) => word === input[key]);
+    if (!admission || !value) return undefined;
+    Object.assign(event, { [key]: value });
+  }
+  if (input.relaunchFailed !== undefined) {
+    if (!admission || typeof input.relaunchFailed !== 'boolean') return undefined;
+    event.relaunchFailed = input.relaunchFailed;
+  }
+  if (!admission && ADMISSION_NUMBERS.some((key) => input[key] !== undefined)) return undefined;
   for (const key of [
     'at',
     'line',
@@ -120,6 +177,7 @@ export function cleanTimingEvent(value: unknown): TimingEvent | undefined {
     'appliedBudgetMs',
     'moved',
     'maxDelta',
+    ...ADMISSION_NUMBERS,
   ] as const) {
     const number = input[key];
     if (number === undefined && key !== 'at') continue;

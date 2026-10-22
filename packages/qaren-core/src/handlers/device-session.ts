@@ -115,17 +115,13 @@ export function iosAppJobRunning(launchctlList: string, bundleId: string): boole
   });
 }
 
+// A failed or timed-out probe rejects: an unanswered launchctl is not evidence that the app is gone.
 async function defaultIOSProbe(bundleId: string, deviceId: string): Promise<boolean> {
-  try {
-    const { stdout } = await execFile('xcrun', buildIosAppRunningArgs(deviceId), {
-      timeout: 5000,
-      encoding: 'utf8',
-    });
-    return iosAppJobRunning(stdout, bundleId);
-  } catch (error) {
-    if (isAbort(error)) throw error;
-    return false;
-  }
+  const { stdout } = await execFile('xcrun', buildIosAppRunningArgs(deviceId), {
+    timeout: 5000,
+    encoding: 'utf8',
+  });
+  return iosAppJobRunning(stdout, bundleId);
 }
 
 export function buildAndroidPidofArgs(bundleId: string, deviceId?: string): string[] {
@@ -206,7 +202,10 @@ export function createDeviceSnapshotHandler(
   const isAppRunningFn =
     deps.isAppRunning ??
     ((platform: string, appId: string, deviceId: string) =>
-      isAppRunning(platform, appId, undefined, deviceId));
+      isAppRunning(platform, appId, undefined, deviceId).catch((error: unknown) => {
+        if (isAbort(error)) throw error;
+        return false;
+      }));
   const startAndroidRunnerFn =
     deps.startAndroidRunner ??
     ((deviceId: string, appId: string) =>

@@ -1553,3 +1553,81 @@ fn the_android_core_is_pinned_to_the_borrowed_serial_server_and_platform_tools()
         .iter()
         .any(|(k, _)| k == "ANDROID_SERIAL" || k == "PATH"));
 }
+
+#[test]
+fn admission_facts_reach_private_diagnostics_only_as_allowlisted_admission_points() {
+    use qaren::redact::{with_input_scope, InputValues};
+    use serde_json::json;
+    use std::ffi::OsString;
+    use std::sync::Arc;
+    let repo = common::temp_repo();
+    let secret = "private-synthetic-value";
+    let inputs = Arc::new(InputValues::from_entries([(
+        OsString::from("QAREN_INPUT_PASSWORD"),
+        OsString::from(secret),
+    )]));
+    with_input_scope(inputs, || {
+        let cancelled = json!({
+            "kind": "metric", "stage": "admission", "edge": "point", "outcome": "failed",
+            "at": 611000, "admission": "cancelled", "attempt": 20, "lastStarted": "attach",
+            "lastCompleted": "retry_wait", "attachStage": "wait_targets",
+            "inner": "target_readiness_timeout", "relaunches": 0, "relaunchFailed": false,
+            "liveness": "alive", "elapsedMs": 610000, "remainingMs": 589000, "budgetMs": 1199000
+        });
+        let mut retry = cancelled.clone();
+        retry["outcome"] = json!("unknown");
+        retry["admission"] = json!("retry");
+        retry["lastStarted"] = json!("foreign_driver");
+        retry["lastCompleted"] = json!("foreign_driver");
+        retry["liveness"] = json!("probe_failed");
+        retry["relaunches"] = json!(1);
+        retry["relaunchFailed"] = json!(true);
+        retry.as_object_mut().unwrap().remove("attachStage");
+        let mut refused = cancelled.clone();
+        refused["admission"] = json!("refused");
+        refused["inner"] = json!("none");
+        let expected = vec![retry, cancelled.clone(), refused];
+        let mut payloads = expected.clone();
+        for (key, value) in [
+            ("admission", json!(secret)),
+            ("lastStarted", json!(secret)),
+            ("lastCompleted", json!(secret)),
+            ("attachStage", json!(secret)),
+            ("inner", json!(secret)),
+            ("liveness", json!(secret)),
+            ("relaunchFailed", json!(secret)),
+            ("relaunchFailed", json!(1)),
+            ("attempt", json!(secret)),
+            ("elapsedMs", json!(-1)),
+            ("stage", json!("capture")),
+            ("edge", json!("end")),
+            ("inference", json!({"targets": []})),
+        ] {
+            let mut invalid = cancelled.clone();
+            invalid[key] = value;
+            payloads.push(invalid);
+        }
+        let mut stdout = String::new();
+        for (i, value) in payloads.iter().enumerate() {
+            stdout.push_str(&envelope(i as u64 + 2, "diagnostic", &value.to_string()));
+            stdout.push('\n');
+        }
+        stdout.push_str(&envelope(
+            payloads.len() as u64 + 2,
+            "result",
+            &pass_ledger(&[]),
+        ));
+        stdout.push('\n');
+        let mut mock = MockRunner::new();
+        mock.expect_spawn_piped("walk.js", 9000, &stdout, Some(0));
+        let result = run_child(&mut mock, &repo.join("core.log"));
+        assert_eq!(result.verdict, Verdict::Pass);
+        let stored = std::fs::read_to_string(repo.join("core-diagnostics.jsonl")).unwrap();
+        assert!(!stored.contains(secret));
+        let got: Vec<serde_json::Value> = stored
+            .lines()
+            .map(|line| serde_json::from_str(line).unwrap())
+            .collect();
+        assert_eq!(got, expected);
+    });
+}
