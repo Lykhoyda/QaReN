@@ -1719,13 +1719,14 @@ pub(crate) fn run_reuse_path(ctx: &mut Ctx, plan: &BuildPlan, t: u64) -> Result<
     wait_metro_responding(ctx)?;
     let t = ctx.mark("metro_ready", t);
 
-    // A failed probe only leaves the bundle-request count unknown, which keeps a live app's relaunch skip.
-    run_budgeted_attempt(
-        ctx,
-        &metro::request_probe_spec(metro_port),
-        deadline,
-        &mut 0,
-    )?;
+    if matches!(ctx.record.scenario.platform, Platform::Ios) {
+        run_budgeted_attempt(
+            ctx,
+            &metro::request_probe_spec(metro_port),
+            deadline,
+            &mut 0,
+        )?;
+    }
     let manifest = metro::manifest_spec(metro_port, platform_dir(ctx.record.scenario.platform));
     let mut attempts = 0;
     let mut slow = None;
@@ -1816,12 +1817,14 @@ pub(crate) fn run_reuse_path(ctx: &mut Ctx, plan: &BuildPlan, t: u64) -> Result<
             .udid
     });
     let app_id = ctx.record.candidate.app_id.clone();
-    ctx.bundle_requests_at_launch = ctx
-        .record
-        .resources
-        .metro
-        .as_ref()
-        .map(|metro| crate::exec::log::read_bundle_requests(&metro.log).unwrap_or(0));
+    if matches!(ctx.record.scenario.platform, Platform::Ios) {
+        ctx.bundle_requests_at_launch = ctx
+            .record
+            .resources
+            .metro
+            .as_ref()
+            .map(|metro| crate::exec::log::read_bundle_requests(&metro.log).unwrap_or(0));
+    }
     let launched = run_launch_command(ctx, &launch, deadline, &mut attempts, &mut |ctx| {
         proven = ios_udid
             .as_deref()
@@ -3107,7 +3110,6 @@ fn dry_run_receipt(
                 ));
                 planned.push(android::adb_reverse_spec(adb, server_port, &serial, port));
                 planned.push(metro::start_spec(&cand.project_root, port));
-                planned.push(metro::request_probe_spec(port));
                 planned.push(metro::manifest_spec(port, "android"));
                 planned.push(android::am_start_deeplink_spec(
                     adb,

@@ -2922,7 +2922,6 @@ fn script_android_launch_walk_release(mock: &mut MockRunner, runner_running: boo
     mock.expect_run("lsof", CmdOutput::success("6001"));
     mock.expect_run("ps", CmdOutput::success("6000"));
     mock.expect_run("curl", CmdOutput::success("packager-status:running"));
-    mock.expect_run("qaren-request-probe", CmdOutput::success(""));
     mock.expect_run("expo-platform", CmdOutput::success(""));
     mock.expect_run("am start", CmdOutput::success("Starting: Intent"));
     mock.expect_run("ps", CmdOutput::success(&format!("{LSTART}\n")));
@@ -3488,6 +3487,11 @@ fn android_check_reuse_installs_the_cached_apk_by_serial() {
         .env
         .contains(&("ANDROID_SERIAL".to_string(), EMULATOR.to_string())));
     assert!(!mock.piped_stdin_text(0).contains("\"adb\""));
+    let request: serde_json::Value =
+        serde_json::from_str(mock.piped_stdin_text(0).trim()).unwrap();
+    assert!(request["payload"]["target"]
+        .get("metroBundleRequests")
+        .is_none());
     let record = RunRecord::load(&req.runs_root, &run_id()).unwrap();
     assert_eq!(record.resources.adb_reverse_port, Some(8791));
     let install = record.resources.app_install.as_ref().unwrap();
@@ -8087,7 +8091,6 @@ fn script_android_pr_ready(mock: &mut MockRunner) {
     mock.expect_run("lsof", CmdOutput::success("6001"));
     mock.expect_run("ps", CmdOutput::success("6000"));
     mock.expect_run("curl", CmdOutput::success("packager-status:running"));
-    mock.expect_run("qaren-request-probe", CmdOutput::success(""));
     mock.expect_run("expo-platform", CmdOutput::success(""));
     mock.expect_run("am start", CmdOutput::success("Starting: Intent"));
     mock.expect_run("ps", CmdOutput::success(&format!("{LSTART}\n")));
