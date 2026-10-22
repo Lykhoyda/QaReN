@@ -87,7 +87,7 @@ run xcrun xctrace list devices
 check "an unlisted xcrun tool is refused" 1 $?
 run xcrun lipo -info App
 check "xcrun lipo is refused" 1 $?
-for action in archive clean -help; do
+for action in archive clean -help -showsdks; do
   run xcodebuild "$action" -scheme App
   check "xcodebuild $action is refused" 1 $?
 done

@@ -87,7 +87,7 @@ ok=
 prev=
 for a in "\$@"; do
   case "\$a" in
-    -version|-showsdks|-list|-showBuildSettings|build|build-for-testing) ok=1 ;;
+    -version|-list|-showBuildSettings|build|build-for-testing) ok=1 ;;
     test|test-without-building|-xctestrun|-showdestinations) refuse "\$@" ;;
   esac
   [ "\$prev" = -destination ] && case "\$a" in generic/*) ;; *) refuse "\$@" ;; esac
