@@ -5808,18 +5808,137 @@ fn new_flag_refuses_android_and_an_explicit_device() {
     assert!(mock.calls.is_empty());
 }
 
+fn ios_runtimes(entries: &[(&str, &str)]) -> CmdOutput {
+    let runtimes: Vec<_> = entries
+        .iter()
+        .map(|(name, identifier)| {
+            serde_json::json!({"name": name, "identifier": identifier, "platform": "iOS", "isAvailable": true})
+        })
+        .collect();
+    CmdOutput::success(&serde_json::json!({ "runtimes": runtimes }).to_string())
+}
+
+fn script_pool_dry_run_tail(mock: &mut MockRunner) {
+    mock.expect_run(
+        "expo run:ios --help",
+        CmdOutput::success(common::IOS_BUILD_HELP),
+    );
+    mock.expect_run("lsof", free_port());
+    mock.expect_run("ls-files", CmdOutput::success(""));
+    common::script_xcode(mock);
+}
+
 #[test]
-fn pool_mode_refuses_short_simulator_identifiers_before_any_command() {
+fn pool_resolves_a_short_runtime_to_its_installed_identifier() {
     let repo = common::temp_repo();
-    let yaml =
-        ios_scenario_yaml(8791).replace("com.apple.CoreSimulator.SimRuntime.iOS-26-4", "iOS-26-4");
+    plant_member(&repo, BORROWED);
+    let yaml = ios_scenario_yaml(8791).replace(IOS_RUNTIME, "iOS26.4");
     let scenario_path = write_scenario(&repo, &yaml);
     let mut mock = MockRunner::new();
-    let receipt = prepare(&mut mock, &pool_args(&scenario_path));
-    let failure = receipt.failure.unwrap();
-    assert_eq!(failure.code, FailureCode::ScenarioInvalid);
-    assert!(failure.next_action.to_string().contains("--new"));
-    assert!(mock.calls.is_empty());
+    script_validation(&mut mock, &repo, IOS_TOOLS);
+    mock.expect_run(
+        "simctl list runtimes --json",
+        ios_runtimes(&[
+            ("iOS 26.4", IOS_RUNTIME),
+            ("iOS 26.5", "com.apple.CoreSimulator.SimRuntime.iOS-26-5"),
+        ]),
+    );
+    mock.expect_run("simctl list devices -j", member_inventory("Shutdown"));
+    script_pool_dry_run_tail(&mut mock);
+    let mut args = pool_args(&scenario_path);
+    args.dry_run = true;
+
+    let receipt = prepare(&mut mock, &args);
+
+    assert_eq!(
+        receipt.result,
+        ReceiptResult::Planned,
+        "{:?}",
+        receipt.failure
+    );
+    assert_eq!(mock.remaining(), 0);
+    assert_eq!(
+        receipt.outcomes["device_pool"],
+        format!("would reuse {BORROWED}")
+    );
+}
+
+#[test]
+fn pool_falls_back_to_a_temporary_simulator_when_a_short_form_does_not_resolve() {
+    for runtimes in [
+        ios_runtimes(&[]),
+        ios_runtimes(&[
+            ("iOS 26.4", IOS_RUNTIME),
+            ("iOS 26.4", "com.apple.CoreSimulator.SimRuntime.iOS-26-4-1"),
+        ]),
+    ] {
+        let repo = common::temp_repo();
+        plant_member(&repo, BORROWED);
+        let yaml = ios_scenario_yaml(8791).replace(IOS_RUNTIME, "iOS26.4");
+        let scenario_path = write_scenario(&repo, &yaml);
+        let mut mock = MockRunner::new();
+        script_validation(&mut mock, &repo, IOS_TOOLS);
+        mock.expect_run("simctl list runtimes --json", runtimes);
+        script_pool_dry_run_tail(&mut mock);
+        let mut args = pool_args(&scenario_path);
+        args.dry_run = true;
+
+        let receipt = prepare(&mut mock, &args);
+
+        assert_eq!(
+            receipt.result,
+            ReceiptResult::Planned,
+            "{:?}",
+            receipt.failure
+        );
+        assert_eq!(mock.remaining(), 0);
+        assert!(receipt.outcomes["device_pool"].starts_with("fresh: "));
+        let planned = receipt.planned_commands.join("\n");
+        assert!(
+            planned.contains(&format!("simctl create qaren-{} ", receipt.run_id)),
+            "{planned}"
+        );
+        assert!(planned.contains("iOS26.4"), "{planned}");
+    }
+}
+
+#[test]
+fn pool_dry_run_reports_reclaiming_a_dead_holder_whose_run_never_reached_ready() {
+    let repo = common::temp_repo();
+    plant_member(&repo, BORROWED);
+    plant_pool_holder(&repo, BORROWED, Phase::Failed);
+    let scenario_path = write_scenario(&repo, &ios_scenario_yaml(8791));
+    let mut mock = MockRunner::new();
+    script_validation(&mut mock, &repo, IOS_TOOLS);
+    mock.expect_run("simctl list devices -j", member_inventory("Shutdown"));
+    mock.expect_run(
+        "expo run:ios --help",
+        CmdOutput::success(common::IOS_BUILD_HELP),
+    );
+    mock.expect_run("lsof", free_port());
+    mock.expect_run("ps", CmdOutput::success("")); // holder gone
+    mock.expect_run("ls-files", CmdOutput::success(""));
+    common::script_xcode(&mut mock);
+    let mut args = pool_args(&scenario_path);
+    args.dry_run = true;
+
+    let receipt = prepare(&mut mock, &args);
+
+    assert_eq!(
+        receipt.result,
+        ReceiptResult::Planned,
+        "{:?}",
+        receipt.failure
+    );
+    assert_eq!(mock.remaining(), 0);
+    assert_eq!(
+        receipt.outcomes["device_pool"],
+        format!("would reuse {BORROWED} after reclaiming run check-earlier through its cleanup")
+    );
+    assert_eq!(
+        RunRecord::load(&repo, "check-earlier").unwrap().phase,
+        Phase::Failed
+    );
 }
 
 #[test]

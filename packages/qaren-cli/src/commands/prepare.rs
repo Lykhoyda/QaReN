@@ -235,7 +235,7 @@ fn prepare_validated(
     args: &PrepareArgs,
     started_ms: u64,
 ) -> Result<Receipt, Failure> {
-    let (scenario, raw) = Scenario::load(&args.scenario_path)?;
+    let (mut scenario, raw) = Scenario::load(&args.scenario_path)?;
     if scenario.android_emulator.is_some() {
         return Err(Failure::new(
             "validate",
@@ -249,9 +249,6 @@ fn prepare_validated(
         && scenario.build.owner == BuildOwner::Cli
         && borrowed.is_none()
         && !args.new_device;
-    if pool_mode {
-        require_pool_identifiers(&scenario)?;
-    }
     let scenario_sha256 = candidate::sha256_hex(raw.as_bytes());
     let scenario_dir = args
         .scenario_path
@@ -293,6 +290,12 @@ fn prepare_validated(
     }
 
     check_prereqs(runner, &scenario, args.android_home.as_deref())?;
+    let pool_fallback = pool_mode
+        && !resolve_pool_identifiers(
+            runner,
+            scenario.ios.as_mut().expect("validated ios scenario"),
+        );
+    let pool_mode = pool_mode && !pool_fallback;
     // An observation only: custody comes from the lease, and the target is re-proven under it.
     let selected = match borrowed.as_deref() {
         Some(udid) => {
@@ -342,9 +345,19 @@ fn prepare_validated(
     let run_id = format!("{}-{}", scenario.name, timefmt::compact_utc(started_ms));
 
     if args.dry_run {
+        let mut dry_outcome = pool_fallback.then(|| POOL_FALLBACK.to_string());
         let (dry_selected, dry_boot, dry_name) = match &pool_scan {
-            Some(scan) => match dry_run_pool_member(scan, &args.lock_root) {
-                Some(sim) => (Some(sim), true, ios::sim_name(&run_id)),
+            Some(scan) => match dry_run_pool_member(runner, scan, &args.lock_root, &args.runs_root)
+            {
+                Some((sim, reclaimed)) => {
+                    if let Some(earlier) = reclaimed {
+                        dry_outcome = Some(format!(
+                            "would reuse {} after reclaiming run {earlier} through its cleanup",
+                            sim.udid
+                        ));
+                    }
+                    (Some(sim), true, ios::sim_name(&run_id))
+                }
                 None if scan.present.len() as u32 >= pool_cap => {
                     return Err(pool_refusal(scan, pool_cap, &[]))
                 }
@@ -352,7 +365,7 @@ fn prepare_validated(
             },
             None => (selected.clone(), args.boot_device, ios::sim_name(&run_id)),
         };
-        return dry_run_receipt(
+        let mut receipt = dry_run_receipt(
             runner,
             &scenario,
             &cand,
@@ -365,7 +378,11 @@ fn prepare_validated(
             dry_boot,
             &dry_name,
             pool_scan.is_some(),
-        );
+        )?;
+        if let Some(outcome) = dry_outcome {
+            receipt.outcomes.insert("device_pool".to_string(), outcome);
+        }
+        return Ok(receipt);
     }
 
     let run_dir = RunRecord::run_dir(&args.runs_root, &run_id);
@@ -546,6 +563,9 @@ fn prepare_validated(
     if args.new_device {
         ctx.notes
             .push(("device_pool".to_string(), "fresh".to_string()));
+    } else if pool_fallback {
+        ctx.notes
+            .push(("device_pool".to_string(), POOL_FALLBACK.to_string()));
     }
     if pool_claimed {
         let udid = ctx
@@ -1067,24 +1087,68 @@ fn allocate_ios(ctx: &mut Ctx, pool: Option<(&Path, &Path)>) -> Result<(), Failu
     Ok(())
 }
 
-fn require_pool_identifiers(scenario: &Scenario) -> Result<(), Failure> {
-    let ios = scenario.ios.as_ref().expect("validated ios scenario");
-    if ios
-        .device_type
-        .starts_with("com.apple.CoreSimulator.SimDeviceType.")
-        && ios
-            .runtime
-            .strip_prefix("com.apple.CoreSimulator.SimRuntime.iOS-")
-            .is_some_and(|v| !v.is_empty())
+const POOL_FALLBACK: &str = "fresh: ios.device_type or ios.runtime does not name exactly one installed simulator identifier, so this run uses a temporary simulator";
+
+// A short form becomes the one installed identifier it names; false keeps this run on the temporary path.
+fn resolve_pool_identifiers(runner: &mut dyn Runner, spec: &mut IosSpec) -> bool {
+    const TYPE: &str = "com.apple.CoreSimulator.SimDeviceType.";
+    const RUNTIME: &str = "com.apple.CoreSimulator.SimRuntime.";
+    let device_type = match spec.device_type.starts_with(TYPE) {
+        true => Some(spec.device_type.clone()),
+        false => resolve_identifier(
+            runner,
+            &spec.device_type,
+            TYPE,
+            ios::list_devicetypes_spec(),
+            ios::parse_devicetypes,
+        ),
+    };
+    let Some(device_type) = device_type else {
+        return false;
+    };
+    let runtime = match spec
+        .runtime
+        .strip_prefix("com.apple.CoreSimulator.SimRuntime.iOS-")
+        .is_some_and(|v| !v.is_empty())
     {
-        return Ok(());
+        true => Some(spec.runtime.clone()),
+        false => resolve_identifier(
+            runner,
+            &spec.runtime,
+            RUNTIME,
+            ios::list_runtimes_spec(),
+            ios::parse_available_runtimes,
+        ),
+    };
+    let Some(runtime) = runtime else {
+        return false;
+    };
+    spec.device_type = device_type;
+    spec.runtime = runtime;
+    true
+}
+
+fn resolve_identifier(
+    runner: &mut dyn Runner,
+    value: &str,
+    prefix: &str,
+    list: CmdSpec,
+    parse: fn(&str) -> Vec<(String, String)>,
+) -> Option<String> {
+    let output = runner.run(&list);
+    if !output.ok() {
+        return None;
     }
-    Err(Failure::new(
-        "validate",
-        FailureCode::ScenarioInvalid,
-        "the iOS simulator pool matches simulators by full CoreSimulator identifiers, but ios.device_type or ios.runtime is a short form",
-        "set ios.device_type to com.apple.CoreSimulator.SimDeviceType.<type> and ios.runtime to com.apple.CoreSimulator.SimRuntime.iOS-<version>, or pass --new for a temporary simulator",
-    ))
+    let mut found: Vec<String> = parse(&output.stdout)
+        .into_iter()
+        .filter(|(name, id)| {
+            id == value || id.strip_prefix(prefix) == Some(value) || name.replace(' ', "") == value
+        })
+        .map(|(_, id)| id)
+        .collect();
+    found.sort();
+    found.dedup();
+    (found.len() == 1).then(|| found.remove(0))
 }
 
 // One strict inventory read: success, clean stderr and a bounded size, or no proof at all.
@@ -1169,19 +1233,34 @@ fn pool_refusal(scan: &PoolScan, cap: u32, occupied: &[String]) -> Failure {
     )
 }
 
-// Read-only: the first matching Shutdown member whose device lease has no holder.
-fn dry_run_pool_member(scan: &PoolScan, lock_root: &Path) -> Option<ios::Simulator> {
+// Read-only: the first matching Shutdown member that is free, or whose dead holder's run never reached ready.
+fn dry_run_pool_member(
+    runner: &mut dyn Runner,
+    scan: &PoolScan,
+    lock_root: &Path,
+    runs_root: &Path,
+) -> Option<(ios::Simulator, Option<String>)> {
     scan.candidates
         .iter()
-        .find(|(member, sim)| {
-            sim.state == ios::SimState::Shutdown
-                && buildplan::read_holder(&buildplan::lock_dir(
-                    lock_root,
-                    &crate::lease::lock_name(Platform::Ios, &member.udid),
-                ))
-                .is_none()
+        .filter(|(_, sim)| sim.state == ios::SimState::Shutdown)
+        .find_map(|(member, sim)| {
+            let Some(holder) = buildplan::read_holder(&buildplan::lock_dir(
+                lock_root,
+                &crate::lease::lock_name(Platform::Ios, &member.udid),
+            )) else {
+                return Some((sim.clone(), None));
+            };
+            let liveness = holder
+                .identity
+                .as_ref()
+                .map(|i| probe_pid_identity(runner, i));
+            (matches!(
+                liveness,
+                Some(PidLiveness::Dead | PidLiveness::AliveForeign)
+            ) && RunRecord::load(runs_root, &holder.run_id).is_ok()
+                && ready_holder(runs_root, Some(&holder), liveness).is_none())
+            .then(|| (sim.clone(), Some(holder.run_id)))
         })
-        .map(|(_, sim)| sim.clone())
 }
 
 enum PoolClaim {
@@ -1190,10 +1269,14 @@ enum PoolClaim {
 }
 
 // A dead holder's run that reached ready still owns the session its agents attach to.
-fn ready_holder(runs_root: &Path, busy: &crate::lease::Busy) -> Option<String> {
-    let holder = busy.holder.as_ref()?;
+fn ready_holder(
+    runs_root: &Path,
+    holder: Option<&buildplan::LockHolder>,
+    liveness: Option<PidLiveness>,
+) -> Option<String> {
+    let holder = holder?;
     if !matches!(
-        busy.liveness,
+        liveness,
         Some(PidLiveness::Dead | PidLiveness::AliveForeign)
     ) {
         return None;
@@ -1230,7 +1313,9 @@ fn claim_pool_member(
         ) {
             Ok(lease) => lease,
             Err(busy) if busy.failure.code == FailureCode::DeviceBusy => {
-                if let Some(holder) = ready_holder(&args.runs_root, &busy) {
+                if let Some(holder) =
+                    ready_holder(&args.runs_root, busy.holder.as_ref(), busy.liveness)
+                {
                     occupied.push(format!(
                         "{udid} is held by run {holder}, which reached ready; release it with `qaren cleanup {holder}`"
                     ));

@@ -102,6 +102,32 @@ pub fn list_runtimes_spec() -> CmdSpec {
     )
 }
 
+pub fn list_devicetypes_spec() -> CmdSpec {
+    CmdSpec::new(
+        "simctl-list-devicetypes",
+        "xcrun",
+        &["simctl", "list", "devicetypes", "--json"],
+        30,
+    )
+}
+
+// (name, identifier) of each installed device type.
+pub fn parse_devicetypes(list_json: &str) -> Vec<(String, String)> {
+    let parsed: serde_json::Value = serde_json::from_str(list_json).unwrap_or_default();
+    parsed
+        .get("devicetypes")
+        .and_then(serde_json::Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(|t| {
+            Some((
+                t.get("name")?.as_str()?.to_string(),
+                t.get("identifier")?.as_str()?.to_string(),
+            ))
+        })
+        .collect()
+}
+
 // (name, identifier) of each available iOS runtime; `simctl create` accepts either.
 pub fn parse_available_runtimes(list_json: &str) -> Vec<(String, String)> {
     let parsed: serde_json::Value = serde_json::from_str(list_json).unwrap_or_default();

@@ -3114,11 +3114,15 @@ one, pass it with `--device`.
 
 - **Matching.** One strict `simctl list devices -j` read must show the
   record's exact UUID, available, with the record's name and with device type
-  and runtime equal to both the record and the scenario. The pool therefore
-  needs full CoreSimulator identifiers
+  and runtime equal to both the record and the scenario. The pool matches
+  full CoreSimulator identifiers
   (`com.apple.CoreSimulator.SimDeviceType.<type>`,
-  `com.apple.CoreSimulator.SimRuntime.iOS-<version>`); a short form refuses
-  with `SCENARIO_INVALID` before any command. A record whose UUID the
+  `com.apple.CoreSimulator.SimRuntime.iOS-<version>`); a short form such as
+  `iOS26.4` is first resolved to the one installed identifier it names through
+  `simctl list devicetypes --json` or `simctl list runtimes --json`. A short
+  form that names no installed identifier, or more than one, keeps that run on
+  the temporary `qaren-<run-id>` simulator, and `device_pool` reports `fresh:`
+  with the reason. A record whose UUID the
   inventory proves absent is deleted. A malformed record refuses with
   `RUN_RECORD_INVALID`.
 - **Claim.** Candidates are tried in UUID order under the same device lease
