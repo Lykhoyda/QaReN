@@ -165,6 +165,7 @@ function overlays(
   results: Partial<Record<DevAction, () => ToolResult>>,
   overlayReads: Array<boolean | NativeObservation> = [false],
   stopAfter?: DevAction,
+  fabVisibleToReads = true,
 ) {
   const calls: string[] = [];
   const controller = new AbortController();
@@ -184,6 +185,7 @@ function overlays(
       },
       log: (message) => calls.push(`log ${message}`),
       sleep: async () => {},
+      fabVisibleToReads,
     }),
   );
   return { calls, done };
@@ -234,6 +236,18 @@ test('overlays: a floating-button hide that keeps failing refuses with its reaso
   assert.match(env.error, /^The Expo dev-client floating button could not be confirmed hidden/);
   assert.equal(calls.filter((call) => call === 'hideDevMenuFab').length, 3);
   assert.equal(calls.filter((call) => call === 'read').length, 4);
+});
+
+test('overlays: where the reads cannot see the floating button, a hide that keeps failing refuses after the retries', async () => {
+  const { calls, done } = overlays({ hideDevMenuFab: timedOutFab }, [false], undefined, false);
+  const env = parseEnvelope(await done);
+  assert.equal(env.ok, false);
+  assert.equal(env.code, 'DEV_MENU_HIDE_UNVERIFIED');
+  assert.match(
+    env.error,
+    /^The Expo dev-client floating button could not be confirmed hidden: .*the preferences call failed or timed out/,
+  );
+  assert.deepEqual(calls, ['hideDevMenuFab', 'hideDevMenuFab', 'hideDevMenuFab']);
 });
 
 test('overlays: the preserved timeout reason reaches the refusal', async () => {

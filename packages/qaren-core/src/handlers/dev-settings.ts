@@ -51,6 +51,8 @@ export interface DevOverlayDependencies {
   log(message: string): void;
   sleep?(ms: number): Promise<void>;
   fastRefreshReload?: FastRefreshReload;
+  // Only where the native reads can see the floating button may they stand in for a failed hide.
+  fabVisibleToReads?: boolean;
 }
 
 function envelopeError(result: ToolResult): string {
@@ -92,6 +94,12 @@ async function clearOverlays(
       if (error === undefined) break;
     }
     if (error === undefined) continue;
+    if (action === 'hideDevMenuFab' && deps.fabVisibleToReads !== true)
+      return failResult(
+        `The Expo dev-client floating button could not be confirmed hidden: ${error}`,
+        'DEV_MENU_HIDE_UNVERIFIED',
+        { action: 'clearDevOverlays', outcome: 'DEV_MENU_HIDE_UNVERIFIED' },
+      );
     deps.log(`${action}: ${error}`);
     if (action === 'hideDevMenuFab') fabError = error;
   }

@@ -593,6 +593,7 @@ async function openSession(
     devSettings,
     devOverlayUncleared,
     log,
+    fabVisibleToReads: platform === 'ios',
     ...(reload
       ? {
           fastRefreshReload: {
