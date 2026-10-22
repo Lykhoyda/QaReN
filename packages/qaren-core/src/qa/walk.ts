@@ -77,7 +77,9 @@ import {
   admissionMetric,
   admit,
   awaitBundleReady,
+  bundleRequestedSinceLaunch,
   createBundleReload,
+  devClientLaunchUrl,
   logAdmissionRefusal,
   metroDevicePin,
 } from './admission.js';
@@ -444,15 +446,26 @@ async function openSession(
         ...(platform === 'ios'
           ? {
               relaunch: () =>
-                relaunchIosDevClient(
-                  appId,
-                  target.deviceId,
-                  `${target.metroUrlForDevice}/?disableOnboarding=1`,
-                ),
+                relaunchIosDevClient(appId, target.deviceId, devClientLaunchUrl(target)),
               appAlive: async () => {
                 const alive = await isAppRunning('ios', appId, undefined, target.deviceId);
-                if (alive) log('relaunch skipped: app-alive');
+                if (alive) log('app alive without a target');
                 return alive;
+              },
+              bundleRequested: async () => {
+                if (!target.metroBundleRequests) {
+                  log('relaunch skipped: no bundle request signal');
+                  return undefined;
+                }
+                const requested = bundleRequestedSinceLaunch(target.metroBundleRequests);
+                log(
+                  requested === false
+                    ? 'relaunch allowed: Metro received no bundle request since launch'
+                    : requested
+                      ? 'relaunch skipped: Metro received a bundle request'
+                      : 'relaunch skipped: bundle request signal unknown',
+                );
+                return requested;
               },
             }
           : {}),

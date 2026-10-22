@@ -10,7 +10,9 @@ import {
   admissionMetric,
   admit,
   awaitBundleReady,
+  bundleRequestedSinceLaunch,
   createBundleReload,
+  devClientLaunchUrl,
   formatAdmissionRefusal,
   logAdmissionRefusal,
   metroDevicePin,
@@ -20,6 +22,7 @@ import {
 import { cleanTimingEvent } from '../../../dist/qa/timing.js';
 import { REACT_READY_PROBE_JS } from '../../../dist/injected-helpers.js';
 import { HandlerError } from '../../../dist/qa/adapt.js';
+import { buildIosRelaunchArgv } from '../../../dist/handlers/app-lifecycle.js';
 import { runInNewContext } from 'node:vm';
 import { setImmediate as nextTurn } from 'node:timers/promises';
 import { syncBuiltinESMExports } from 'node:module';
@@ -746,6 +749,139 @@ test('a dead app gets the one relaunch as before', async () => {
     'attach',
     'foreignDriver',
   ]);
+});
+
+function launcherStall(bundleRequested: AdmissionSteps['bundleRequested']) {
+  const order: string[] = [];
+  const deadlines: number[] = [];
+  let relaunched = 0;
+  let remaining = 90_000;
+  const { stop, steps } = harness({
+    remainingMs: () => remaining,
+    attach: async (deadline) => {
+      order.push('attach');
+      deadlines.push(deadline);
+      if (!relaunched) {
+        if (order.filter((step) => step === 'attach').length >= 3) remaining = 0;
+        throw new TargetReadinessTimeoutError('no target');
+      }
+    },
+    foreignDriver: async () => {
+      order.push('foreignDriver');
+      return undefined;
+    },
+    appAlive: async () => {
+      order.push('appAlive');
+      return true;
+    },
+    bundleRequested,
+    relaunch: async () => {
+      order.push('relaunch');
+      relaunched++;
+    },
+  });
+  return { order, deadlines, relaunches: () => relaunched, admitted: admit(steps, stop) };
+}
+
+test('a live app on its launcher with no bundle request gets the one relaunch', async () => {
+  const stall = launcherStall(async () => false);
+  assert.deepEqual(await stall.admitted, PROVEN);
+  assert.equal(stall.relaunches(), 1);
+  assert.deepEqual(stall.order, [
+    'attach',
+    'foreignDriver',
+    'appAlive',
+    'relaunch',
+    'attach',
+    'foreignDriver',
+  ]);
+  assert.equal(new Set(stall.deadlines).size, 1, 'relaunch must not renew the admission deadline');
+});
+
+test('a live app whose bundle request is in flight is never relaunched', async () => {
+  let probes = 0;
+  const stall = launcherStall(async () => {
+    probes++;
+    return true;
+  });
+  const error = await refusalOf(stall.admitted);
+  assert.equal(stall.relaunches(), 0, 'a slow bundle with a request in flight keeps its load');
+  assert.equal(probes, 1, 'the one relaunch is decided once');
+  const { rest } = budget(error.meta!);
+  assert.equal(rest.relaunches, 0);
+  assert.equal(rest.liveness, 'alive');
+});
+
+test('a live app whose bundle request was received before its build started is never relaunched', async () => {
+  let probes = 0;
+  const signal = { path: '/run/logs/metro.bundle-requests', atLaunch: 0 };
+  const stall = launcherStall(async () => {
+    probes++;
+    return bundleRequestedSinceLaunch(signal, () => '1\n');
+  });
+  await refusalOf(stall.admitted);
+  assert.equal(stall.relaunches(), 0, 'a cold dependency graph still has the request in flight');
+  assert.equal(probes, 1, 'the one relaunch is decided once');
+});
+
+for (const [name, bundleRequested] of [
+  ['an unknown bundle signal', async () => undefined],
+  ['a failing bundle signal', async () => assert.fail('signal unreadable')],
+  ['no bundle signal', undefined],
+] as const) {
+  test(`a live app with ${name} keeps the existing skip`, async () => {
+    const stall = launcherStall(bundleRequested);
+    await refusalOf(stall.admitted);
+    assert.equal(stall.relaunches(), 0);
+  });
+}
+
+test('a dead app relaunches without reading the bundle signal', async () => {
+  let relaunched = 0;
+  const { stop, steps } = harness({
+    attach: async () => {
+      if (!relaunched) throw new TargetReadinessTimeoutError('no target');
+    },
+    appAlive: async () => false,
+    bundleRequested: async () => assert.fail('a dead app needs no bundle signal'),
+    relaunch: async () => {
+      relaunched++;
+    },
+  });
+  assert.deepEqual(await admit(steps, stop), PROVEN);
+  assert.equal(relaunched, 1);
+});
+
+test('the bundle signal compares the drained count with the count at launch', () => {
+  const read = (content: string | Error) => () => {
+    if (content instanceof Error) throw content;
+    return content;
+  };
+  const signal = { path: '/run/logs/metro.bundle-requests', atLaunch: 2 };
+  assert.equal(bundleRequestedSinceLaunch(signal, read('2\n')), false);
+  assert.equal(bundleRequestedSinceLaunch(signal, read('3')), true);
+  assert.equal(
+    bundleRequestedSinceLaunch(signal, read('1')),
+    undefined,
+    'a reset count proves nothing',
+  );
+  assert.equal(bundleRequestedSinceLaunch(signal, read('two')), undefined);
+  assert.equal(bundleRequestedSinceLaunch(signal, read('')), undefined);
+  assert.equal(
+    bundleRequestedSinceLaunch(signal, read(Object.assign(new Error('gone'), { code: 'ENOENT' }))),
+    undefined,
+    'an absent count means Metro never logged a request',
+  );
+});
+
+test('the relaunch opens the run’s own Metro, never a launcher-remembered server', () => {
+  const argv = buildIosRelaunchArgv(
+    'com.example.app',
+    '00000000-0000-0000-0000-000000000001',
+    devClientLaunchUrl({ metroUrlForDevice: 'http://127.0.0.1:19341' }),
+  );
+  assert.deepEqual(argv.slice(-2), ['--initialUrl', 'http://127.0.0.1:19341/?disableOnboarding=1']);
+  assert.doesNotMatch(argv.join(' '), /8791/, 'a stale recent entry never reaches the relaunch');
 });
 
 test('a failing liveness probe relaunches and records the failure without its detail', async () => {

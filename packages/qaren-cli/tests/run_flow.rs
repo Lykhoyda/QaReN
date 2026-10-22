@@ -1761,6 +1761,12 @@ fn check_runs_the_phases_in_order_and_ends_pass_with_a_report() {
         request_line["payload"]["target"]["deviceName"],
         "qa-company-app"
     );
+    let bundle_requests = &request_line["payload"]["target"]["metroBundleRequests"];
+    assert_eq!(bundle_requests["atLaunch"], 0, "{bundle_requests}");
+    assert!(bundle_requests["path"]
+        .as_str()
+        .unwrap()
+        .ends_with("/logs/metro.bundle-requests"));
     assert_eq!(
         request_line["payload"]["preflightCalls"],
         probe_json()["callDetails"]
@@ -3481,6 +3487,11 @@ fn android_check_reuse_installs_the_cached_apk_by_serial() {
         .env
         .contains(&("ANDROID_SERIAL".to_string(), EMULATOR.to_string())));
     assert!(!mock.piped_stdin_text(0).contains("\"adb\""));
+    let request: serde_json::Value =
+        serde_json::from_str(mock.piped_stdin_text(0).trim()).unwrap();
+    assert!(request["payload"]["target"]
+        .get("metroBundleRequests")
+        .is_none());
     let record = RunRecord::load(&req.runs_root, &run_id()).unwrap();
     assert_eq!(record.resources.adb_reverse_port, Some(8791));
     let install = record.resources.app_install.as_ref().unwrap();
@@ -4516,6 +4527,7 @@ fn fresh_install_resets_or_proves_absence_before_cached_install_under_the_same_l
             mock.expect_run("ps", CmdOutput::success("6000"));
             mock.expect_run("curl", CmdOutput::success("packager-status:running"));
             if launch {
+                mock.expect_run("qaren-request-probe", CmdOutput::success(""));
                 mock.expect_run("expo-platform", CmdOutput::success(""));
                 common::script_devmenu_defaults(&mut mock, CmdOutput::success(""));
                 mock.expect_run(
@@ -7949,6 +7961,7 @@ fn a_cancel_during_a_cached_ios_install_names_the_substage() {
             mock.expect_run("lsof", CmdOutput::success("6001"));
             mock.expect_run("ps", CmdOutput::success("6000"));
             mock.expect_run("curl", CmdOutput::success("packager-status:running"));
+            mock.expect_run("qaren-request-probe", CmdOutput::success(""));
             mock.expect_run("expo-platform", CmdOutput::success(""));
         }
         if index == 2 {
@@ -8007,6 +8020,7 @@ fn script_warm_launch_after_one_metro_retry(mock: &mut MockRunner) {
             },
         );
     }
+    mock.expect_run("qaren-request-probe", CmdOutput::success(""));
     mock.expect_run("expo-platform", CmdOutput::success(""));
     common::script_devmenu_defaults(mock, CmdOutput::success(""));
     mock.expect_run(

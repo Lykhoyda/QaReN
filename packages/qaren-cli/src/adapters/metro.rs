@@ -13,6 +13,23 @@ pub fn start_spec(project_root: &Path, port: u16) -> CmdSpec {
     .cwd(project_root)
     .env_remove("CI")
     .env("EXPO_NO_TELEMETRY", "1")
+    // Metro logs each request on receipt here, before any dependency-graph wait; the drain counts bundle requests.
+    .env("DEBUG", crate::exec::log::METRO_REQUEST_LOG)
+}
+
+// Expo serves `/` and `/status` itself; only Metro's own handler logs this path, arming the drained count before launch.
+pub fn request_probe_spec(port: u16) -> CmdSpec {
+    CmdSpec::new(
+        "metro-request-probe",
+        "curl",
+        &[
+            "-s",
+            "-o",
+            "/dev/null",
+            &format!("http://127.0.0.1:{port}/qaren-request-probe"),
+        ],
+        15,
+    )
 }
 
 // Metro answers this before launch so the dev client's own manifest request fits inside its timeout.

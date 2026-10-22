@@ -136,6 +136,7 @@ fn request() -> CoreRequest {
             metro_port: 8791,
             metro_url_for_device: "http://127.0.0.1:8791".to_string(),
             worktree: PathBuf::from("/tmp/app"),
+            metro_bundle_requests: None,
         },
     }
 }

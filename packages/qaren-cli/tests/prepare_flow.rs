@@ -636,6 +636,7 @@ fn script_ios_prepare_before_manifest(mock: &mut MockRunner, repo: &std::path::P
     mock.expect_run("lsof", CmdOutput::success("6001"));
     mock.expect_run("ps", CmdOutput::success("6000"));
     mock.expect_run("curl", CmdOutput::success("packager-status:running"));
+    mock.expect_run("qaren-request-probe", CmdOutput::success(""));
 }
 
 fn manifest_answered_in(duration_ms: u64) -> CmdOutput {
@@ -2605,6 +2606,7 @@ fn ios_reuse_dry_run_lists_each_launch_step_once_in_execution_order() {
         ios::bootstatus_spec("<udid>", scenario.deadlines.device_boot_seconds),
         metro::start_spec(&project, 8791),
         ios::install_app_spec("<udid>", &artifact),
+        metro::request_probe_spec(8791),
         metro::manifest_spec(8791, "ios"),
     ];
     expected.extend(ios::devmenu_defaults_specs("<udid>", &cache.app_id));

@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto';
+import { readFileSync } from 'node:fs';
 import { loadavg } from 'node:os';
 import {
   interruptible,
@@ -42,6 +43,8 @@ export interface AdmissionSteps {
   relaunch?(): Promise<void>;
   // Before that one relaunch, when no target registered: a live app process makes the relaunch unnecessary.
   appAlive?(): Promise<boolean>;
+  // Unless Metro saw no bundle request since launch: the live app then sits on its launcher. Undefined is unknown.
+  bundleRequested?(): Promise<boolean | undefined>;
   foreignDriver(): Promise<string | undefined>;
   open(): Promise<void>;
   prove(): Promise<ProveOutcome>;
@@ -342,6 +345,37 @@ async function probeLiveness(steps: AdmissionSteps): Promise<AdmissionLiveness> 
   }
 }
 
+// A live app is relaunched only on proof that Metro never got its bundle request; a slow bundle has one in flight.
+async function launcherStalled(steps: AdmissionSteps): Promise<boolean> {
+  if (!steps.bundleRequested) return false;
+  try {
+    return (await interruptible(steps.bundleRequested)) === false;
+  } catch (error) {
+    if (isAbort(error)) throw error;
+    return false;
+  }
+}
+
+export function bundleRequestedSinceLaunch(
+  signal: { path: string; atLaunch: number },
+  read: (path: string) => string = (path) => readFileSync(path, 'utf8'),
+): boolean | undefined {
+  let text: string;
+  try {
+    text = read(signal.path).trim();
+  } catch {
+    return undefined;
+  }
+  if (!/^\d+$/.test(text)) return undefined;
+  const count = Number(text);
+  if (!Number.isSafeInteger(count) || count < signal.atLaunch) return undefined;
+  return count > signal.atLaunch;
+}
+
+// The dev client opens this run's own Metro, never a server its launcher remembers.
+export const devClientLaunchUrl = (target: { metroUrlForDevice: string }): string =>
+  `${target.metroUrlForDevice}/?disableOnboarding=1`;
+
 async function attach(steps: AdmissionSteps, signal: AbortSignal): Promise<Proven> {
   const started = performance.now();
   const deadline = started + steps.remainingMs();
@@ -449,7 +483,7 @@ async function attach(steps: AdmissionSteps, signal: AbortSignal): Promise<Prove
               lastCompleted = 'foreign_driver';
               relaunchDecided = true;
               if (noTarget) liveness = await probeLiveness(steps);
-              if (!noTarget || liveness !== 'alive') {
+              if (!noTarget || liveness !== 'alive' || (await launcherStalled(steps))) {
                 relaunched = true;
                 try {
                   lastStarted = 'relaunch';
