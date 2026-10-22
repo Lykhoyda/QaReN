@@ -4,6 +4,7 @@ import {
   _setFastRunnerStateForTest,
   _setFetchForTest,
   _setCapabilitiesForTest,
+  observeAppProcess,
   runIOS,
 } from '../../../dist/runners/rn-fast-runner-client.js';
 import { QaDispatchContext } from '../../../dist/domain/qa-dispatch.js';
@@ -26,6 +27,7 @@ afterEach(() => {
   _setFetchForTest(fetch);
   _setFastRunnerStateForTest(null);
   _setCapabilitiesForTest([]);
+  observeAppProcess(undefined);
   resetActiveSessionInMemoryForTest();
   clearRefMap();
 });
@@ -86,7 +88,8 @@ function fixture(
         deviceId: state.deviceId,
         appId: state.bundleId,
       };
-      return Response.json(options.health ? options.health(reply, ++healthCalls) : reply);
+      const health = options.health ? options.health(reply, ++healthCalls) : reply;
+      return health instanceof Response ? health : Response.json(health);
     }
     requests.push(JSON.parse(String(init?.body)));
     now += 7;
@@ -96,7 +99,7 @@ function fixture(
     const data =
       request.command === 'status'
         ? { commandId: request.commandId, state: 'completed' }
-        : nativeCapture();
+        : { ...nativeCapture(), appProcessIdentifier: 41 };
     const response = Response.json({ ok: true, v: 2, data });
     const json = response.json.bind(response);
     response.json = async () => {
@@ -386,4 +389,85 @@ test('an existing ordinary-read status probe and resend retain every transport a
     f.requests.every((r) => !Object.keys(r).some((key) => /timing|observe|now/i.test(key))),
   );
   assert.ok(!JSON.stringify(f.events).includes('PRIVATE'));
+});
+
+const failedHealth = (code: string) => () => {
+  throw Object.assign(new TypeError('PRIVATE-fetch failed'), {
+    cause: Object.assign(new Error('PRIVATE-connect'), { code }),
+  });
+};
+
+async function readThenFail(health: (reply: Record<string, unknown>) => unknown) {
+  const f = fixture({ health: (reply, count) => (count === 2 ? health(reply) : reply) });
+  const snapshot = () =>
+    createDeviceSnapshotHandler()({ action: 'snapshot', qaReadOnly: true, qaTiming: f.qaTiming });
+  assert.equal((await snapshot()).isError, undefined);
+  await assert.rejects(snapshot(), /ACTION_CONTEXT_CHANGED/);
+  assert.ok(!JSON.stringify(f.events).includes('PRIVATE'));
+  return f.events;
+}
+
+test('a failed health probe names its bounded failure kind on the readiness end row', async () => {
+  const cases = [
+    ['refused', failedHealth('ECONNREFUSED')],
+    ['reset', failedHealth('ECONNRESET')],
+    ['other', failedHealth('PRIVATE-CODE')],
+    [
+      'abort',
+      () => {
+        throw new DOMException('PRIVATE-timeout', 'AbortError');
+      },
+    ],
+    ['http-4xx', () => new Response('PRIVATE', { status: 401 })],
+    ['http-5xx', () => new Response('PRIVATE', { status: 503 })],
+    ['body-not-ok', (reply) => ({ ...reply, ok: false })],
+    ['wedged', () => ({ ok: false, reason: 'wedged' })],
+  ] satisfies [string, (reply: Record<string, unknown>) => unknown][];
+  for (const [healthDetail, health] of cases) {
+    const events = await readThenFail(health);
+    assert.deepEqual(
+      events
+        .filter((e) => e.stage === 'native-readiness' && e.edge === 'end')
+        .map((e) => [e.outcome, e.readinessReason, e.healthDetail]),
+      [
+        ['ok', 'alive', undefined],
+        ['failed', 'health', healthDetail],
+      ],
+    );
+  }
+});
+
+test('a failed readiness probe is followed by a value-free post-mortem with app continuity', async () => {
+  const cases = [
+    ['same', async () => 41],
+    ['changed', async () => 42],
+    ['absent', async () => undefined],
+    [
+      'unknown',
+      async () => {
+        throw new Error('PRIVATE-simctl');
+      },
+    ],
+  ] satisfies [string, () => Promise<number | undefined>][];
+  for (const [appProcess, probe] of cases) {
+    const lookups: number[] = [];
+    observeAppProcess(async () => {
+      lookups.push(1);
+      return probe();
+    });
+    const events = await readThenFail(failedHealth('ECONNREFUSED'));
+    const rows = events.filter((e) => e.stage === 'runner-post-mortem');
+    assert.deepEqual(
+      rows.map((e) => [e.edge, e.outcome, e.count, e.hostChild, e.appProcess]),
+      [['point', 'failed', 1, 'unknown', appProcess]],
+    );
+    assert.equal(lookups.length, 1, 'a healthy read never looks the app process up');
+    const failed = events.findIndex(
+      (e) => e.stage === 'native-readiness' && e.outcome === 'failed',
+    );
+    assert.ok(events.indexOf(rows[0]) > failed, 'the post-mortem cannot inflate readiness timing');
+  }
+  observeAppProcess(undefined);
+  const unobserved = await readThenFail(failedHealth('ECONNREFUSED'));
+  assert.equal(unobserved.find((e) => e.stage === 'runner-post-mortem')?.appProcess, 'unknown');
 });

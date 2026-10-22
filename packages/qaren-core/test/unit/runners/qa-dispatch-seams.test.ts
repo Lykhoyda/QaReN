@@ -26,6 +26,11 @@ import {
   performFocusedFill,
 } from '../../../dist/handlers/device-interact.js';
 import { createDeviceSnapshotHandler } from '../../../dist/handlers/device-session.js';
+import {
+  createTimingObserver,
+  observeDispatchPhases,
+  type TimingEvent,
+} from '../../../dist/qa/timing.js';
 import { createDeviceAcceptSystemDialogHandler } from '../../../dist/handlers/device-system-dialog.js';
 import { clearRefMap, updateRefMapFromFlat } from '../../../dist/fast-runner-ref-map.js';
 import {
@@ -803,4 +808,26 @@ test('focused proof cannot bypass expiry while awaiting its final read', async (
   );
   assert.deepEqual(sends, []);
   assert.equal(context.authorizations, 0);
+});
+
+test('a QA native dispatch times its send, settle and post-settle health as value-free phases', async () => {
+  session();
+  runner((body) =>
+    body.command === 'snapshot' ? { ok: true, data: { nodes: [] } } : { ok: true },
+  );
+  const events: TimingEvent[] = [];
+  observeDispatchPhases({ now: () => 0, observe: createTimingObserver((e) => events.push(e)) });
+  try {
+    await runNative(['back'], { qaContext: new QaDispatchContext(10, () => 1) });
+  } finally {
+    observeDispatchPhases(undefined);
+  }
+  assert.deepEqual(
+    events.filter((e) => e.edge === 'end').map((e) => [e.stage, e.ms]),
+    [
+      ['dispatch-native', 0],
+      ['dispatch-settle', 0],
+      ['dispatch-health', 0],
+    ],
+  );
 });
