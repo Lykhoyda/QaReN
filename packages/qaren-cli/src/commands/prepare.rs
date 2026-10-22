@@ -576,6 +576,9 @@ fn prepare_validated(
     }
     ctx.mark("cache_record", t);
 
+    if let Err(f) = reprove_borrowed_prepare(&mut ctx) {
+        return Ok(ctx.fail(f));
+    }
     ctx.record.phase = Phase::Ready;
     let at = timefmt::iso8601_utc(ctx.runner.now_epoch_ms());
     ctx.record.push_history(at, "ready");
@@ -1054,6 +1057,14 @@ fn reprove_borrowed_ios(ctx: &mut Ctx, boot_device: bool) -> Result<bool, Failur
     let sim = observe_borrowed_ios(ctx.runner, &ctx.record.scenario, &recorded.udid)?;
     ensure_running(ctx.runner, "device")?;
     require_borrowed_power(&sim, boot_device)
+}
+
+// A long build is no continuing authority: never install, launch or report Ready on a borrowed target that changed.
+fn reprove_borrowed_prepare(ctx: &mut Ctx) -> Result<(), Failure> {
+    if ctx.verb == "prepare" && ctx.record.resources.device_borrowed {
+        reprove_borrowed_ios(ctx, false)?;
+    }
+    Ok(())
 }
 
 // Boots (only when asked) and re-proves the recorded borrowed simulator Booted with unchanged identity.
@@ -1910,10 +1921,6 @@ pub(crate) fn run_reuse_path(ctx: &mut Ctx, plan: &BuildPlan, t: u64) -> Result<
             if ctx.record.resources.metro.is_none() {
                 spawn_metro_only(ctx)?;
             }
-            // A long build is no continuing authority: never install on a borrowed target that changed.
-            if ctx.verb == "prepare" && ctx.record.resources.device_borrowed {
-                reprove_borrowed_ios(ctx, false)?;
-            }
             let sim = ctx
                 .record
                 .resources
@@ -2037,6 +2044,7 @@ pub(crate) fn run_reuse_path(ctx: &mut Ctx, plan: &BuildPlan, t: u64) -> Result<
     }
     let launch = match ctx.record.scenario.platform {
         Platform::Ios => {
+            reprove_borrowed_prepare(ctx)?;
             let sim = ctx
                 .record
                 .resources
@@ -2131,7 +2139,11 @@ fn install_cached_ios_app(
     spec.timeout_seconds = deadline.saturating_sub(ctx.runner.monotonic_ms()) / 1000;
     let mut attempts = 0;
     let mut last = None;
-    while let Some(installed) = run_budgeted_attempt(ctx, &spec, deadline, &mut attempts)? {
+    loop {
+        reprove_borrowed_prepare(ctx)?;
+        let Some(installed) = run_budgeted_attempt(ctx, &spec, deadline, &mut attempts)? else {
+            break;
+        };
         if !installed.timed_out {
             if installed.ok() {
                 return Ok(());

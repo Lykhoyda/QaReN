@@ -3791,22 +3791,52 @@ fn script_borrowed_after_boot(mock: &mut MockRunner, before_install: &str) {
         common::script_xcode(m);
     };
     empty(mock);
-    let before_install = before_install.to_string();
-    common::script_finite_ios_build_launch(
-        mock,
-        "expo run:ios",
-        CmdOutput::success(""),
-        move |m| {
-            m.expect_run(
-                "simctl list devices -j",
-                CmdOutput::success(&before_install),
-            );
-            m.expect_run("simctl install", CmdOutput::success(""));
-        },
-        common::script_ios_launch,
+    script_borrowed_build(mock);
+    mock.expect_run("simctl list devices -j", CmdOutput::success(before_install));
+    mock.expect_run("simctl install", CmdOutput::success(""));
+    mock.expect_run("ps", CmdOutput::success("Wed Aug 12 16:01:00 2026"));
+    mock.expect_run("ps", CmdOutput::success("S"));
+    mock.expect_run("lsof", CmdOutput::success("6001"));
+    mock.expect_run("ps", CmdOutput::success("6000"));
+    mock.expect_run("curl", CmdOutput::success("packager-status:running"));
+    mock.expect_run("expo-platform", CmdOutput::success(""));
+    mock.expect_run(
+        "simctl list devices -j",
+        CmdOutput::success(&borrowed_inventory("Booted")),
     );
+    common::script_devmenu_defaults(mock, CmdOutput::success(""));
+    common::script_ios_launch(mock);
     script_ios_readiness(mock);
     empty(mock);
+    mock.expect_run(
+        "simctl list devices -j",
+        CmdOutput::success(&borrowed_inventory("Booted")),
+    );
+}
+
+fn script_borrowed_build(mock: &mut MockRunner) {
+    common::script_ios_metro_spawn(mock);
+    mock.expect_spawn_piped("expo run:ios", 5000, "", Some(0));
+    mock.expect_run("ps", CmdOutput::success("Wed Aug 12 16:00:00 2026"));
+    mock.expect_run("ps", CmdOutput::success("qaren-build"));
+    mock.expect_run("ps -A", CmdOutput::success("1 1 S\n"));
+    common::script_ios_app_verification(mock);
+    common::script_ios_app_verification(mock);
+}
+
+fn replace_borrowed_lease_on(mock: &mut MockRunner, repo: &std::path::Path, command: &'static str) {
+    let lock = repo.join(".locks").join(qaren::lease::lock_name(
+        qaren::scenario::Platform::Ios,
+        BORROWED,
+    ));
+    mock.observe = Some(Box::new(move |spec| {
+        if spec.rendered().contains(command) {
+            let mut holder = qaren::buildplan::read_holder(&lock).unwrap();
+            holder.run_id = "replacement-run".to_string();
+            holder.holder = "replacement-holder".to_string();
+            qaren::buildplan::save_json(&lock.join("holder.json"), &holder).unwrap();
+        }
+    }));
 }
 
 // Every device effect happens while the durable record names this run's lease and the borrowed target.
@@ -3889,13 +3919,23 @@ fn assert_borrowed_status_and_cleanup(repo: &std::path::Path, run_id: &str) {
         CmdOutput::success("512\t0\tUIKitApplication:com.rndevagent.testapp[abc]"),
     );
     let receipt = qaren::commands::status::status(&mut mock, repo, run_id);
-    assert_eq!(receipt.result, ReceiptResult::Ready, "{}", receipt.to_json());
+    assert_eq!(
+        receipt.result,
+        ReceiptResult::Ready,
+        "{}",
+        receipt.to_json()
+    );
     assert_eq!(mock.remaining(), 0);
 
     mock.expect_run("ps", CmdOutput::failed(1, "")); // prepare owner exited
     common::script_ios_metro_cleanup(&mut mock);
     let receipt = qaren::commands::cleanup::cleanup(&mut mock, repo, run_id);
-    assert_eq!(receipt.result, ReceiptResult::Cleaned, "{}", receipt.to_json());
+    assert_eq!(
+        receipt.result,
+        ReceiptResult::Cleaned,
+        "{}",
+        receipt.to_json()
+    );
     assert_eq!(receipt.cleanup["simulator"], "kept");
     assert_eq!(receipt.cleanup["device_lease"], "removed");
     assert!(!lock.exists());
@@ -4312,7 +4352,12 @@ fn borrowed_prepare_reaches_ready_after_dead_holder_recovery_and_cleanup_keeps_s
 
     let receipt = prepare(&mut mock, &borrowed_args(&scenario_path, false));
 
-    assert_eq!(receipt.result, ReceiptResult::Ready, "{}", receipt.to_json());
+    assert_eq!(
+        receipt.result,
+        ReceiptResult::Ready,
+        "{}",
+        receipt.to_json()
+    );
     assert_eq!(
         RunRecord::load(&repo, "check-earlier").unwrap().phase,
         Phase::Cleaned
@@ -4331,26 +4376,9 @@ fn borrowed_target_or_lease_changed_during_build_blocks_install_and_ready() {
         script_borrowed_until_boot(&mut mock, &repo, "Booted");
         mock.expect_run("ls-files", CmdOutput::success(""));
         common::script_xcode(&mut mock);
-        common::script_ios_metro_spawn(&mut mock);
-        mock.expect_spawn_piped("expo run:ios", 5000, "", Some(0));
-        mock.expect_run("ps", CmdOutput::success("Wed Aug 12 16:00:00 2026"));
-        mock.expect_run("ps", CmdOutput::success("qaren-build"));
-        mock.expect_run("ps -A", CmdOutput::success("1 1 S\n"));
-        common::script_ios_app_verification(&mut mock);
-        common::script_ios_app_verification(&mut mock);
+        script_borrowed_build(&mut mock);
         if change == "lease" {
-            let lock = repo.join(".locks").join(qaren::lease::lock_name(
-                qaren::scenario::Platform::Ios,
-                BORROWED,
-            ));
-            mock.observe = Some(Box::new(move |spec| {
-                if spec.rendered().contains("ps -A") {
-                    let mut holder = qaren::buildplan::read_holder(&lock).unwrap();
-                    holder.run_id = "replacement-run".to_string();
-                    holder.holder = "replacement-holder".to_string();
-                    qaren::buildplan::save_json(&lock.join("holder.json"), &holder).unwrap();
-                }
-            }));
+            replace_borrowed_lease_on(&mut mock, &repo, "ps -A");
         } else {
             let inventory = if change == "shutdown" {
                 borrowed_inventory("Shutdown")
@@ -4378,7 +4406,9 @@ fn borrowed_target_or_lease_changed_during_build_blocks_install_and_ready() {
         let lease = record.resources.lease.as_ref().unwrap();
         if change == "lease" {
             assert_eq!(
-                qaren::buildplan::read_holder(&lease.lock_dir).unwrap().run_id,
+                qaren::buildplan::read_holder(&lease.lock_dir)
+                    .unwrap()
+                    .run_id,
                 "replacement-run"
             );
         }
@@ -4386,6 +4416,63 @@ fn borrowed_target_or_lease_changed_during_build_blocks_install_and_ready() {
         assert_eq!(status.result, ReceiptResult::Refused);
         assert_no_simulator_power(&mock);
     }
+}
+
+#[test]
+fn borrowed_lease_replaced_between_install_attempts_blocks_retry_launch_and_ready() {
+    let repo = common::temp_repo();
+    let scenario_path = write_scenario(&repo, &ios_scenario_yaml(8791));
+    let mut mock = MockRunner::new();
+    script_borrowed_until_boot(&mut mock, &repo, "Booted");
+    mock.expect_run("ls-files", CmdOutput::success(""));
+    common::script_xcode(&mut mock);
+    script_borrowed_build(&mut mock);
+    mock.expect_run(
+        "simctl list devices -j",
+        CmdOutput::success(&borrowed_inventory("Booted")),
+    );
+    mock.expect_run(
+        "simctl install",
+        CmdOutput::failed(
+            1,
+            "An error was encountered processing the command (domain=IXErrorDomain, code=2):\nFailed to create promise.",
+        ),
+    );
+    replace_borrowed_lease_on(&mut mock, &repo, "simctl install");
+    common::script_ios_metro_cleanup(&mut mock);
+
+    let receipt = prepare(&mut mock, &borrowed_args(&scenario_path, false));
+
+    assert_eq!(
+        receipt.result,
+        ReceiptResult::Refused,
+        "{}",
+        receipt.to_json()
+    );
+    assert_eq!(
+        receipt.failure.unwrap().code,
+        FailureCode::DeviceUnavailable
+    );
+    assert_eq!(mock.remaining(), 0);
+    assert_eq!(
+        labels(&mock)
+            .iter()
+            .filter(|l| *l == "simctl-install")
+            .count(),
+        1
+    );
+    assert!(!labels(&mock)
+        .iter()
+        .any(|l| matches!(l.as_str(), "simctl-devmenu-defaults" | "simctl-launch")));
+    let record = RunRecord::load(&repo, &receipt.run_id).unwrap();
+    assert_eq!(record.phase, Phase::Failed);
+    assert_eq!(
+        qaren::buildplan::read_holder(&record.resources.lease.as_ref().unwrap().lock_dir)
+            .unwrap()
+            .run_id,
+        "replacement-run"
+    );
+    assert_no_simulator_power(&mock);
 }
 
 #[test]
