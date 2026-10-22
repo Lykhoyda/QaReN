@@ -2703,3 +2703,29 @@ test('fallback focus emits value-free keyboard proof even when the metric sink f
     }
   }
 });
+
+test('no-target fallback focus never times its keyboard proof from an earlier line dispatch', async () => {
+  const other = element('@other', 'Other', { testID: 'qa-other' });
+  const shown = [other, submit];
+  const fake = app({ initial: shown, initialKeyboard: true, reactFocused: true });
+  const press = fake.deps.press;
+  fake.deps.press = async (ref, context) => {
+    const result = await press(ref, context);
+    shown.push(element('@pressed', 'Pressed', { kind: 'text' }));
+    return result;
+  };
+  const events: Array<Record<string, unknown>> = [];
+  fake.deps.timing = (event) => {
+    events.push(event);
+  };
+  const outcome = await walkBlock(
+    blocks('## QA\n\n### Code\n\n1. Tap "qa-other"\n2. Fill "qa-otp-code" with "1234"\n')[0],
+    fake.deps,
+  );
+  assert.equal(outcome.block.outcome, 'pass', JSON.stringify(outcome.failure));
+  assert.deepEqual(mutations(fake.log), ['press @other', 'type qa-otp-code']);
+  const proofs = events.filter((event) => event.stage === 'keyboard');
+  assert.equal(proofs.length, 1);
+  assert.equal(proofs[0].proof, 'focused');
+  assert.equal(Object.hasOwn(proofs[0], 'ms'), false);
+});

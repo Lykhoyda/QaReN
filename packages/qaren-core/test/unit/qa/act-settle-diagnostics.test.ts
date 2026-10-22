@@ -391,7 +391,7 @@ test('post-settle dispatch refusal retains the measured settle metric with withh
     );
     assert.equal(context.authorizations, 1);
     assert.equal(context.refusalDiagnostic?.stage, 'settle');
-    assert.equal(context.refusalDiagnostic?.nativeCode, 'RUNNER_TIMEOUT');
+    assert.equal(context.refusalDiagnostic?.nativeCode, null);
     assert.equal(context.refusalDiagnostic?.mutating, true);
     assert.deepEqual(sends, ['type', 'snapshot', 'snapshot']);
     assert.deepEqual(

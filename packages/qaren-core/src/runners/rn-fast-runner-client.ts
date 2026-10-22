@@ -2348,7 +2348,11 @@ export async function verifyTypeResultAfterSettle(
   const context = args.qaContext;
   if (context)
     context.diagnoseRefusal(
-      () => ({ stage: 'settle', mutating: true, nativeCode: 'RUNNER_TIMEOUT' }),
+      () => ({
+        stage: 'settle',
+        mutating: true,
+        ...(sameAuthority ? {} : { nativeCode: 'RUNNER_OWNERSHIP_MISMATCH' }),
+      }),
       () => context.invalidate(),
     );
   return contained;

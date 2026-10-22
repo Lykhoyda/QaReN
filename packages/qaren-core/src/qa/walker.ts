@@ -982,7 +982,7 @@ async function walkBlockScoped(
       edge: 'point',
       outcome: focused ? 'ok' : 'failed',
       at,
-      ...(dispatchStarted !== undefined ? { ms: at - dispatchStarted } : {}),
+      ...(path === 'tap' && dispatchStarted !== undefined ? { ms: at - dispatchStarted } : {}),
       keyboard: true,
       proof: focused ? 'focused' : 'not-proven',
     });

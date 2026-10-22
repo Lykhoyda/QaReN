@@ -4,7 +4,6 @@ import { afterEach, test } from 'node:test';
 import assert from 'node:assert/strict';
 import { runPlan } from '../../../dist/qa/walker.js';
 import { parsePlan } from '../../../dist/qa/plan.js';
-import { createTimingObserver } from '../../../dist/qa/timing.js';
 import { element, screen, scriptedJudge, walker } from '../qa/judgment-fixtures.ts';
 import { QaDispatchContext } from '../../../dist/domain/qa-dispatch.js';
 import { buildIosProbes } from '../../../dist/lifecycle/settle.js';
@@ -13,6 +12,7 @@ import {
   _setFastRunnerStateForTest,
   fastSwipe,
   runIOS,
+  verifyTypeResultAfterSettle,
 } from '../../../dist/runners/rn-fast-runner-client.js';
 import {
   runAndroid,
@@ -31,6 +31,7 @@ import {
   createDeviceFillHandler,
   performFocusedFill,
 } from '../../../dist/handlers/device-interact.js';
+import { okResult } from '../../../dist/utils.js';
 import { createDeviceSnapshotHandler } from '../../../dist/handlers/device-session.js';
 import {
   createTimingObserver,
@@ -1121,7 +1122,7 @@ test('instant-submit authority loss retains refusal facts beside long typing and
     assert.equal(refusal?.line, 17);
     assert.equal(refusal?.authorizations, 1);
     assert.equal(refusal?.refusalStage, 'settle');
-    assert.equal(refusal?.nativeCode, 'RUNNER_TIMEOUT');
+    assert.equal(refusal?.nativeCode, 'RUNNER_OWNERSHIP_MISMATCH');
     assert.equal(refusal?.mutating, true);
     for (const token of [
       secret,
@@ -1134,3 +1135,46 @@ test('instant-submit authority loss retains refusal facts beside long typing and
   }
   assert.equal(outputs[0], outputs[1]);
 });
+
+for (const [name, pid, after, nativeCode] of [
+  ['cleared runner state', 111_111_111, null, 'RUNNER_OWNERSHIP_MISMATCH'],
+  ['replaced runner', 111_111_111, 222_222_222, 'RUNNER_OWNERSHIP_MISMATCH'],
+  ['dead runner health', 999_999_999, 999_999_999, undefined],
+] as const) {
+  test(`post-settle authority loss after a success-shaped type names the ${name} without a timeout`, async () => {
+    _setFastRunnerStateForTest(
+      after === null
+        ? null
+        : {
+            pid: after,
+            port: 12345,
+            deviceId: 'qa-post-settle-device',
+            bundleId: 'qa.app',
+            protocolVersion: RUNNER_PROTOCOL_VERSION,
+          },
+    );
+    const context = new QaDispatchContext(Infinity, () => 0);
+    await assert.rejects(
+      verifyTypeResultAfterSettle(
+        {
+          command: 'type',
+          text: 'private-value',
+          qaContext: context,
+          _verifyExactReadback: async () => ({ matches: false, actual: '' }),
+        },
+        okResult({ typed: true }),
+        {
+          pid,
+          port: 12345,
+          deviceId: 'qa-post-settle-device',
+          statePath: '/tmp/qa-post-settle-state.json',
+          provenance: 'adopted',
+        },
+      ),
+      /ACTION_CONTEXT_CHANGED/,
+    );
+    assert.equal(context.refusalDiagnostic?.stage, 'settle');
+    assert.equal(context.refusalDiagnostic?.mutating, true);
+    assert.equal(context.refusalDiagnostic?.nativeCode, nativeCode ?? null);
+  });
+}
