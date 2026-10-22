@@ -88,6 +88,11 @@ pub fn status(runner: &mut dyn Runner, runs_root: &Path, run_id: &str) -> Receip
         receipt.outcomes.insert(name, value.to_string());
     }
     receipt.failure = failure;
+    if let Some(substage) = &record.substage {
+        receipt
+            .outcomes
+            .insert("substage".to_string(), substage.clone());
+    }
     // Recorded state, distinct from the handoff_issued probe row: a run can
     // record `completed` while the live probe row independently fails.
     if let Some(handoff) = &record.handoff {

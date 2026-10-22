@@ -481,6 +481,7 @@ fn run_inner(
         scenario_sha256: sha256_hex(config_raw.as_bytes()),
         candidate: cand,
         phase: Phase::Created,
+        substage: None,
         prepare: identity,
         build: None,
         handoff: None,
