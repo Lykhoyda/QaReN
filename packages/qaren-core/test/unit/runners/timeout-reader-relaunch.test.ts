@@ -325,8 +325,31 @@ test('a presence capture main-thread timeout contains the wedged reader', async 
     await runIOS({ command: 'snapshot', platformPresence: true, presenceBudgetMs: 20_000 }),
   );
   assert.equal(capture.code, 'RN_FAST_RUNNER_DOWN', JSON.stringify(capture));
+  assert.equal(
+    capture.error,
+    'Platform presence capture unavailable: main thread execution timed out; runner timeout containment attempted.',
+  );
   assert.equal(capture.meta.capture, 'unknown');
   assert.equal(capture.meta.runnerRelaunch, true);
+  assert.equal(launches, 1);
+  assert.equal(getFastRunnerState()?.port, 22089);
+});
+
+test('a separate presence capture succeeds after its timeout is contained', async (t) => {
+  aliveReader(t);
+  presenceTimeouts = 1;
+  const refused = parseEnvelope(
+    await runIOS({ command: 'snapshot', platformPresence: true, presenceBudgetMs: 20_000 }),
+  );
+  assert.equal(refused.ok, false);
+  assert.equal(refused.code, 'RN_FAST_RUNNER_DOWN');
+  assert.equal(refused.meta.runnerRelaunch, true);
+  assert.equal(getFastRunnerState()?.port, 22089);
+  const capture = parseEnvelope(
+    await runIOS({ command: 'snapshot', platformPresence: true, presenceBudgetMs: 20_000 }),
+  );
+  assert.equal(capture.ok, true, JSON.stringify(capture));
+  assert.equal(snapshotRequests, 2);
   assert.equal(launches, 1);
   assert.equal(getFastRunnerState()?.port, 22089);
 });
