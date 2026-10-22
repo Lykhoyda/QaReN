@@ -872,15 +872,21 @@ fn run_inner(
         android_env.as_ref(),
     );
     // Ownership needs proven absence first: a host already up on this simulator is never the run's.
-    let runner_host = (req.platform == Platform::Ios
-        && ios::probe_runner_hosts(ctx.runner, &device.id) == ios::RunnerHostPresence::Absent)
-        .then(|| crate::runrecord::RunnerHostResource {
+    let presence =
+        (req.platform == Platform::Ios).then(|| ios::probe_runner_hosts(ctx.runner, &device.id));
+    if presence == Some(ios::RunnerHostPresence::Unknown) {
+        ctx.notes
+            .push(("runner_host_probe".to_string(), "unknown".to_string()));
+    }
+    let runner_host = (presence == Some(ios::RunnerHostPresence::Absent)).then(|| {
+        crate::runrecord::RunnerHostResource {
             udid: device.id.clone(),
             bundle_ids: vec![
                 ios::RUNNER_HOST_BUNDLE_ID.to_string(),
                 ios::RUNNER_TEST_HOST_BUNDLE_ID.to_string(),
             ],
-        });
+        }
+    });
     let core_log = run_dir.join("logs").join("core.log");
     events::core_t0(core_request.t0);
     events::stage("attach", StageState::Running, None, None);

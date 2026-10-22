@@ -1561,6 +1561,15 @@ that secret despite artifact redaction.
   codes and allowlisted native refusal codes. Native-readiness end metrics also retain the
   existing liveness classification as `readinessReason`, or `unknown` if the probe did not
   return a classification; `count` identifies the probe site, not a retry ordinal.
+  Attachment emits an `admission` point metric at each retry decision and once on cancellation
+  or a `CDP_NOT_CONNECTED` refusal, with the decision (`retry`, `cancelled` or `refused`),
+  the attempt count, last started and completed boundary, attach stage (only when the last
+  started boundary is `attach`), failure class,
+  relaunch count, whether the relaunch failed, app liveness (`probe_failed` when the iOS
+  app-job probe errors or times out) and elapsed, remaining and budget milliseconds.
+  The failure class describes the current retry or refusal; cancellation retains the most recent
+  retry's class, or `none` before any retry. Cancellation emits synchronously on abort before
+  the terminal result closes the diagnostic stream, subject to the event caps below.
   Each attempted block containing a slot fill emits
   `block-outcome` with its first plan line and existing `pass`/`fail`/`refused` result; only saved-login
   recovery emits `login-outcome`. A block passing is its existing block result, not a new assertion
@@ -1639,7 +1648,8 @@ process group and announces it; the CLI records that group with the driver's
 identity and signals it, before the host, only while that identity still
 matches. Refused or unresolved core or driver cleanup leaves the host untouched
 and retains the lease. A host that was already running, or any
-present or unknown host after that, retains the lease. External cleanup of a leased
+present or unknown host after that, retains the lease. When the pre-attach host
+probe cannot answer, the receipt records `runner_host_probe: unknown`. External cleanup of a leased
 borrowed iOS simulator refuses before producer mutation, lease release or saving unless
 the recorded qaren owner is proved gone, including restart-only and not-yet-armed runs.
 When `--shutdown-device-on-exit`
@@ -1996,8 +2006,8 @@ relaunch, logs `relaunch skipped: app-alive`, and keeps waiting within the same
 deadline; an absent job or failed probe permits recovery as before. Skipping
 does not consume the one relaunch for persistent runtime-probe or
 WebSocket-handshake timeouts, and a target that registers late gets the same
-readiness window before a stalled handshake triggers the one relaunch. The refusal record includes value-free `liveness`
-and the number of relaunches actually attempted. Before the liveness check or
+readiness window before a stalled handshake triggers the one relaunch. For retained admission facts,
+see [runtime-input diagnostics](#runtime-inputs). Before the liveness check or
 relaunch, admission checks for a foreign driver;
 a conflict refuses `BUSY_FOREIGN_FLOW`
 without relaunching. It relaunches on the exact simulator with the CLI's original
