@@ -2,4 +2,4 @@
 "qaren": patch
 ---
 
-Retain finite exception stages and finer health error classes in private native readiness diagnostics.
+Classify transport timeouts and HTTP protocol errors as finite health details in private native readiness diagnostics.

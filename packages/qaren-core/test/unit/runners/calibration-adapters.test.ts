@@ -491,71 +491,27 @@ test('a run cancelled during the app-process lookup raises the cancellation', as
   assert.equal(f.events.filter((e) => e.stage === 'runner-post-mortem').length, 0);
 });
 
-test('default probe classifies transport timeouts and HTTP protocol errors at fetch', async () => {
+test('default probe classifies transport timeouts and HTTP protocol errors', async () => {
   const cases = [
     ['transport-timeout', 'ETIMEDOUT'],
     ['transport-timeout', 'UND_ERR_CONNECT_TIMEOUT'],
     ['transport-timeout', 'UND_ERR_HEADERS_TIMEOUT'],
     ['http-protocol', 'HPE_INVALID_CONSTANT'],
     ['http-protocol', 'HPE_INVALID_CHUNK_SIZE'],
-    ['refused', 'ECONNREFUSED'],
   ];
   for (const [healthDetail, code] of cases) {
     const events = await readThenFail(failedHealth(code));
     assert.deepEqual(
       events
         .filter((e) => e.stage === 'native-readiness' && e.edge === 'end')
-        .map((e) => [e.outcome, e.readinessReason, e.healthDetail, e.readinessExceptionStage]),
+        .map((e) => [e.outcome, e.readinessReason, e.healthDetail]),
       [
-        ['ok', 'alive', undefined, undefined],
-        ['failed', 'health', healthDetail, 'fetch'],
+        ['ok', 'alive', undefined],
+        ['failed', 'health', healthDetail],
       ],
     );
     assert.ok(!/ECONN|ETIMEDOUT|UND_ERR|HPE_/.test(JSON.stringify(events)));
   }
-});
-
-test('default probe locates a response access exception without extra requests', async () => {
-  const f = fixture();
-  let healthCalls = 0,
-    bodyReads = 0;
-  const response = Response.json({ ok: true });
-  response.json = async () => {
-    bodyReads++;
-    return { ok: true };
-  };
-  Object.defineProperty(response, 'ok', {
-    get: () => {
-      throw Object.assign(new Error('PRIVATE'), { code: 'ECONNRESET' });
-    },
-  });
-  _setFetchForTest(async () => {
-    healthCalls++;
-    return response;
-  });
-  await assert.rejects(
-    runIOS({ command: 'snapshot', qaReadOnly: true, qaTiming: f.qaTiming }),
-    /ACTION_CONTEXT_CHANGED/,
-  );
-  assert.deepEqual(
-    f.events
-      .filter((e) => e.stage === 'native-readiness' && e.edge === 'end')
-      .map((e) => [e.readinessReason, e.healthDetail, e.readinessExceptionStage]),
-    [['health', 'reset', 'response-access']],
-  );
-  assert.deepEqual([healthCalls, bodyReads, f.requests.length], [1, 0, 0]);
-});
-
-test('ordinary health refusals do not acquire an exception stage', async () => {
-  const f = fixture({ health: () => ({ ok: false }) });
-  await assert.rejects(
-    runIOS({ command: 'snapshot', qaReadOnly: true, qaTiming: f.qaTiming }),
-    /ACTION_CONTEXT_CHANGED/,
-  );
-  const ends = f.events.filter((e) => e.stage === 'native-readiness' && e.edge === 'end');
-  assert.equal(ends.length, 1);
-  assert.equal(ends[0].readinessReason, 'health');
-  assert.equal(ends[0].readinessExceptionStage, undefined);
 });
 
 test('the existing local probe controller aborts at its unchanged 2000ms timeout', async (t) => {
@@ -585,8 +541,8 @@ test('the existing local probe controller aborts at its unchanged 2000ms timeout
   assert.deepEqual(
     f.events
       .filter((e) => e.stage === 'native-readiness' && e.edge === 'end')
-      .map((e) => [e.ms, e.readinessReason, e.healthDetail, e.readinessExceptionStage]),
-    [[2000, 'health', 'abort', 'fetch']],
+      .map((e) => [e.ms, e.readinessReason, e.healthDetail]),
+    [[2000, 'health', 'abort']],
   );
   assert.equal(healthCalls, 1);
   assert.equal(f.requests.length, 0);

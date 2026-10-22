@@ -17,7 +17,6 @@ import {
   type HealthDetail,
   type NativeReadinessReason,
   type RunnerMarkerCounts,
-  type ReadinessExceptionStage,
   type TimingContext,
   type TimingEvent,
 } from '../qa/timing.js';
@@ -1389,7 +1388,6 @@ async function defaultHttpProbe(
   port: number,
   timeoutMs: number,
   capabilityOverride?: string,
-  onException?: (stage: ReadinessExceptionStage) => void,
 ): Promise<HttpProbeResult> {
   // Use the same IPv4 loopback as the /command client (postCommand). The prior
   // [::1] here meant the health probe and the command channel could resolve to
@@ -1397,7 +1395,6 @@ async function defaultHttpProbe(
   const url = `http://127.0.0.1:${port}/health`;
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
-  let exceptionStage: ReadinessExceptionStage = 'fetch';
   try {
     // fetchImpl (not bare fetch) so the _setFetchForTest seam covers the health
     // probe like every other client call — production default is globalThis.fetch.
@@ -1407,7 +1404,6 @@ async function defaultHttpProbe(
       signal: controller.signal,
       headers: capability ? { authorization: `Bearer ${capability}` } : {},
     });
-    exceptionStage = 'response-access';
     if (!res.ok) return { ok: false, status: res.status };
     let bodyOk: boolean | undefined;
     let wedged = false;
@@ -1468,11 +1464,6 @@ async function defaultHttpProbe(
       ...(deviceId !== undefined ? { deviceId } : {}),
       ...(appId !== undefined ? { appId } : {}),
     };
-  } catch (error: unknown) {
-    try {
-      onException?.(exceptionStage);
-    } catch {}
-    throw error;
   } finally {
     clearTimeout(timer);
   }
@@ -1551,7 +1542,6 @@ export interface FastRunnerLivenessDetail {
   /** GH #656: set only when staleReason === 'missing-features'. */
   missingFeatures?: string[];
   healthDetail?: HealthDetail;
-  readinessExceptionStage?: ReadinessExceptionStage;
 }
 
 function healthDetailForReply(res: HttpProbeResult): HealthDetail {
@@ -1584,14 +1574,7 @@ export async function probeFastRunnerLivenessDetailed(
 ): Promise<FastRunnerLivenessDetail> {
   const getState = deps.getState ?? (() => runnerState);
   const processAlive = deps.processAlive ?? defaultProcessAlive;
-  let exceptionStage: ReadinessExceptionStage = 'http-probe';
-  let httpExceptionStage: ReadinessExceptionStage | undefined;
-  const httpProbe =
-    deps.httpProbe ??
-    ((port: number, timeoutMs: number) =>
-      defaultHttpProbe(port, timeoutMs, undefined, (stage) => {
-        httpExceptionStage = stage;
-      }));
+  const httpProbe = deps.httpProbe ?? defaultHttpProbe;
   const clearState = deps.clearState ?? clearStateFile;
   const timeoutMs = deps.timeoutMs ?? 2000;
 
@@ -1605,12 +1588,10 @@ export async function probeFastRunnerLivenessDetailed(
 
   try {
     const res = await httpProbe(state.port, timeoutMs);
-    exceptionStage = 'health-evaluation';
     if (!(res.ok && res.status === 200 && res.bodyOk === true)) {
       lastKnownCapabilities = [];
       return { liveness: 'stale', staleReason: 'health', healthDetail: healthDetailForReply(res) };
     }
-    exceptionStage = 'authority-evaluation';
     if (
       state.sessionId !== undefined &&
       (res.instanceId !== state.instanceId ||
@@ -1622,7 +1603,6 @@ export async function probeFastRunnerLivenessDetailed(
       lastKnownCapabilities = [];
       return { liveness: 'stale', staleReason: 'authority-mismatch' };
     }
-    exceptionStage = 'compatibility-evaluation';
     const plugin = deps.pluginVersion !== undefined ? deps.pluginVersion : getPluginVersion();
     const compat = classifyRunnerCompatibility(
       {
@@ -1652,7 +1632,6 @@ export async function probeFastRunnerLivenessDetailed(
         ...(res.runnerVersion !== undefined ? { runnerVersion: res.runnerVersion } : {}),
       };
     }
-    exceptionStage = 'state-update';
     lastKnownCapabilities = res.capabilities ?? [];
     noteStaleHittableArtifact(res.capabilities);
     // startFastRunner stamps the bridge's own RUNNER_PROTOCOL_VERSION optimistically;
@@ -1668,15 +1647,10 @@ export async function probeFastRunnerLivenessDetailed(
       ...(res.runnerVersion !== undefined ? { runnerVersion: res.runnerVersion } : {}),
       ...(res.capabilities !== undefined ? { capabilities: res.capabilities } : {}),
     };
-  } catch (error: unknown) {
+  } catch (error) {
     throwIfCancelled();
     lastKnownCapabilities = [];
-    return {
-      liveness: 'stale',
-      staleReason: 'health',
-      healthDetail: healthDetailForError(error),
-      readinessExceptionStage: httpExceptionStage ?? exceptionStage,
-    };
+    return { liveness: 'stale', staleReason: 'health', healthDetail: healthDetailForError(error) };
   }
 }
 
@@ -2451,7 +2425,6 @@ async function probeQaReadiness(
   let alive = false;
   let readinessReason: NativeReadinessReason = 'unknown';
   let healthDetail: HealthDetail | undefined;
-  let readinessExceptionStage: ReadinessExceptionStage | undefined;
   const readiness = await measureTiming(
     qaTiming &&
       ((event) =>
@@ -2459,12 +2432,7 @@ async function probeQaReadiness(
           ...event,
           count,
           ...(event.edge === 'end'
-            ? {
-                outcome: alive ? 'ok' : 'failed',
-                readinessReason,
-                healthDetail,
-                readinessExceptionStage,
-              }
+            ? { outcome: alive ? 'ok' : 'failed', readinessReason, healthDetail }
             : {}),
         })),
     qaTiming?.now ?? (() => performance.now()),
@@ -2472,7 +2440,6 @@ async function probeQaReadiness(
     async () => {
       const readiness = await probeFastRunnerLivenessDetailed({ clearState: () => {} });
       alive = readiness.liveness === 'alive';
-      readinessExceptionStage = readiness.readinessExceptionStage;
       readinessReason =
         readiness.liveness === 'stale' ? (readiness.staleReason ?? 'unknown') : readiness.liveness;
       healthDetail = readiness.healthDetail;

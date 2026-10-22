@@ -4,15 +4,6 @@ use std::io::Write;
 use std::path::Path;
 
 const MAX_NUMBER: f64 = 9_007_199_254_740_991.0;
-const READINESS_EXCEPTION_STAGES: &[&str] = &[
-    "http-probe",
-    "fetch",
-    "response-access",
-    "health-evaluation",
-    "authority-evaluation",
-    "compatibility-evaluation",
-    "state-update",
-];
 const STAGES: &[&str] = &[
     "walk",
     "capture",
@@ -211,7 +202,6 @@ fn clean(value: &Value) -> Option<Value> {
                 "markerWaitResult",
                 "markerListenerFailed",
                 "markerSendFailed",
-                "readinessExceptionStage",
             ],
         ),
         "timing" => (
@@ -235,15 +225,6 @@ fn clean(value: &Value) -> Option<Value> {
         _ => return None,
     };
     if required.iter().any(|key| !fields.contains_key(*key)) {
-        return None;
-    }
-    if fields.contains_key("readinessExceptionStage")
-        && (kind != "metric"
-            || fields.get("stage").and_then(Value::as_str) != Some("native-readiness")
-            || fields.get("edge").and_then(Value::as_str) != Some("end")
-            || fields.get("outcome").and_then(Value::as_str) != Some("failed")
-            || fields.get("readinessReason").and_then(Value::as_str) != Some("health"))
-    {
         return None;
     }
     let mut clean = Map::new();
@@ -307,7 +288,6 @@ fn clean(value: &Value) -> Option<Value> {
             "hostChild" => Some(&["alive", "exited", "unknown"]),
             "exitSignal" => Some(RUNNER_SIGNALS),
             "appProcess" => Some(&["same", "changed", "absent", "unknown"]),
-            "readinessExceptionStage" => Some(READINESS_EXCEPTION_STAGES),
             _ => None,
         };
         if let Some(words) = words {

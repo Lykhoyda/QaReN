@@ -145,16 +145,6 @@ export type DispatchPhase =
   | 'dispatch-settle'
   | 'dispatch-health'
   | 'dispatch-readback';
-export const READINESS_EXCEPTION_STAGES = [
-  'http-probe',
-  'fetch',
-  'response-access',
-  'health-evaluation',
-  'authority-evaluation',
-  'compatibility-evaluation',
-  'state-update',
-] as const;
-export type ReadinessExceptionStage = (typeof READINESS_EXCEPTION_STAGES)[number];
 export interface TimingEvent {
   stage: TimingStage;
   edge: 'start' | 'end' | 'point';
@@ -196,7 +186,6 @@ export interface TimingEvent {
   markerWaitResult?: number;
   markerListenerFailed?: number;
   markerSendFailed?: number;
-  readinessExceptionStage?: ReadinessExceptionStage;
 }
 export type TimingObserver = (event: TimingEvent) => void;
 export interface TimingContext {
@@ -255,18 +244,6 @@ export function cleanTimingEvent(value: unknown): TimingEvent | undefined {
     POST_MORTEM_KEYS.some((key) => input[key] !== undefined)
   )
     return undefined;
-  if (input.readinessExceptionStage !== undefined) {
-    const stage = READINESS_EXCEPTION_STAGES.find((word) => word === input.readinessExceptionStage);
-    if (
-      !stage ||
-      event.stage !== 'native-readiness' ||
-      event.edge !== 'end' ||
-      event.outcome !== 'failed' ||
-      event.readinessReason !== 'health'
-    )
-      return undefined;
-    event.readinessExceptionStage = stage;
-  }
   for (const key of [
     'at',
     'line',
