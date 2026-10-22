@@ -1490,10 +1490,15 @@ fn script_recipe_walk(mock: &mut MockRunner, repo: &Path, ledger: &str, exit: i3
     script_recipe_walk_after_preflight(mock, ledger, exit, UNTRACKED_PLAN);
 }
 
-fn script_recipe_walk_on_default_branch(mock: &mut MockRunner, repo: &Path, ledger: &str) {
+fn script_recipe_walk_on_default_branch(
+    mock: &mut MockRunner,
+    repo: &Path,
+    ledger: &str,
+    exit: i32,
+) {
     script_preflight_with_status(mock, repo, "simctl list devices booted", &booted_json(), "");
     mock.expect_run("lsof", free_port());
-    script_recipe_walk_after_preflight(mock, ledger, 1, "");
+    script_recipe_walk_after_preflight(mock, ledger, exit, "");
     mock.expect_run(
         "refs/remotes/origin/HEAD",
         CmdOutput::success(&format!("{}\n", "b".repeat(40))),
@@ -1540,7 +1545,7 @@ fn run_saved_plan_on_default_branch(
     let ledger = format!(
         r#"{{"verdict":"FAIL","path":"walk","blocks":[{{"key":"plan","outcome":"fail","source":"discovered"}}],"steps":[],"jev":{{"calls":0,"medianMs":0}},"llmTurns":0,"escapes":0,"recoveries":0,"failure":{failure}}}"#
     );
-    script_recipe_walk_on_default_branch(&mut mock, &repo, &ledger);
+    script_recipe_walk_on_default_branch(&mut mock, &repo, &ledger, 1);
     let mut req = request(&repo, &app, 30);
     req.plan_file = saved.clone();
 
@@ -1581,6 +1586,34 @@ fn a_saved_plan_that_fails_without_a_step_failure_on_the_default_branch_is_left_
         })
     );
     assert_eq!(std::fs::read_to_string(&saved).unwrap(), plan);
+}
+
+#[test]
+fn a_flagged_saved_plan_that_passes_on_the_default_branch_is_cleared_not_resaved() {
+    let (repo, app) = app_repo();
+    let book = app.join(".qaren/plans");
+    std::fs::create_dir_all(&book).unwrap();
+    let plan = "## QA\n\n### plan\n1. Tap \"Tasks\"\n";
+    let saved = book.join("tasks.md");
+    let flagged = format!("<!-- qaren:broken ios -->\n{plan}");
+    std::fs::write(&saved, &flagged).unwrap();
+    std::fs::write(app.join("plan.md"), &flagged).unwrap();
+    let mut mock = MockRunner::new();
+    let ledger = r###"{"verdict":"PASS","path":"walk","blocks":[{"key":"plan","outcome":"pass","source":"discovered"}],"steps":[],"jev":{"calls":0,"medianMs":0},"llmTurns":0,"escapes":0,"recoveries":0,"recipe":{"slug":"plan","markdown":"## QA\n\n### plan\n1. Tap \"Tasks\"\n"}}"###;
+    script_recipe_walk_on_default_branch(&mut mock, &repo, ledger, 0);
+    let mut req = request(&repo, &app, 30);
+    req.plan_file = saved.clone();
+
+    let receipt = run(&mut mock, &req);
+
+    assert_eq!(receipt.result, ReceiptResult::Pass, "{:?}", receipt.failure);
+    assert_eq!(mock.remaining(), 0);
+    assert_eq!(
+        receipt.recipe.map(|recipe| recipe.outcome),
+        Some(qaren::recipes::Outcome::Cleared)
+    );
+    assert_eq!(std::fs::read_to_string(&saved).unwrap(), plan);
+    assert!(!book.join("plan.md").exists());
 }
 
 #[test]

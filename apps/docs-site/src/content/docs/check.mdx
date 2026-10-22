@@ -83,6 +83,7 @@ The fields you read most:
 | `ledger`               | The verdict, the walk path, step and Jev counts, recoveries                |
 | `blocks_written`       | Blocks saved under `.qaren/actions/`                                       |
 | `blocks_not_saved`     | Blocks that passed but were not saved, each with a value-free reason       |
+| `recipe`               | Whether the plan was saved, flagged or cleared under `.qaren/plans/`; see [saved plans](../plans/#saved-plans) |
 | `worktree_drift`       | App files whose `git status` changed during the walk; never changes the verdict |
 
 See [Troubleshooting](../troubleshooting/) for the common codes.
