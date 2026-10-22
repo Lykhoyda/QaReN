@@ -76,7 +76,7 @@ extension RnFastRunnerTests {
     return .unsupported("\(action) is not supported on tvOS; move focus with swipe or scroll, then select the focused element")
 #else
     if element.isHittable {
-      element.tap()
+      gesture { element.tap() }
       return .performed
     }
     let frame = element.frame
@@ -120,7 +120,7 @@ extension RnFastRunnerTests {
 #else
     let buttons = app.navigationBars.buttons.allElementsBoundByIndex
     if let back = buttons.first(where: { $0.isHittable }) {
-      back.tap()
+      gesture { back.tap() }
       return true
     }
     return false
@@ -139,7 +139,7 @@ extension RnFastRunnerTests {
     let target = app.windows.firstMatch.exists ? app.windows.firstMatch : app
     let start = target.coordinate(withNormalizedOffset: CGVector(dx: 0.05, dy: 0.5))
     let end = target.coordinate(withNormalizedOffset: CGVector(dx: 0.8, dy: 0.5))
-    start.press(forDuration: 0.05, thenDragTo: end)
+    gesture { start.press(forDuration: 0.05, thenDragTo: end) }
 #endif
   }
 
@@ -169,7 +169,7 @@ extension RnFastRunnerTests {
     let target = app.windows.firstMatch.exists ? app.windows.firstMatch : app
     let start = target.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.99))
     let end = target.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.7))
-    start.press(forDuration: 0.6, thenDragTo: end)
+    gesture { start.press(forDuration: 0.6, thenDragTo: end) }
 #endif
   }
 
@@ -251,7 +251,7 @@ extension RnFastRunnerTests {
 #endif
     let count = estimatedDeleteCount(for: element)
     let deletes = String(repeating: XCUIKeyboardKey.delete.rawValue, count: count)
-    element.typeText(deletes)
+    gesture { element.typeText(deletes) }
   }
 
   // MARK: - Exact text-input targeting (GH #581)
@@ -830,9 +830,9 @@ extension RnFastRunnerTests {
       point: point
     ) else { return false }
     if let duration {
-      element.press(forDuration: duration)
+      gesture { element.press(forDuration: duration) }
     } else {
-      element.tap()
+      gesture { element.tap() }
     }
     return true
   }
@@ -852,7 +852,7 @@ extension RnFastRunnerTests {
           insideKeyboard: true
         )
       }) {
-        hittable.tap()
+        gesture { hittable.tap() }
         return true
       }
     }
@@ -867,14 +867,14 @@ extension RnFastRunnerTests {
 #else
     let frame = element.frame
     guard !frame.isEmpty else {
-      element.tap()
+      gesture { element.tap() }
       return
     }
     let origin = element.coordinate(withNormalizedOffset: CGVector(dx: 0, dy: 0))
     let target = origin.withOffset(
       CGVector(dx: max(2, frame.width - 4), dy: max(2, frame.height / 2))
     )
-    target.tap()
+    gesture { target.tap() }
 #endif
   }
 
@@ -933,9 +933,9 @@ extension RnFastRunnerTests {
     let coordinate = interactionCoordinate(app: app, x: x, y: y)
     switch button {
     case "primary":
-      coordinate.tap()
+      gesture { coordinate.tap() }
     case "secondary":
-      coordinate.rightClick()
+      gesture { coordinate.rightClick() }
     case "middle":
       throw NSError(
         domain: "RnFastRunner",
@@ -1122,10 +1122,10 @@ extension RnFastRunnerTests {
     let endPoint = target.coordinate(withNormalizedOffset: CGVector(dx: centerX, dy: max(0.1, min(0.9, endY))))
 
     // Tap first (first tap of double-tap)
-    center.tap()
+    gesture { center.tap() }
 
     // Immediately press and drag (second tap + drag)
-    center.press(forDuration: 0.05, thenDragTo: endPoint)
+    gesture { center.press(forDuration: 0.05, thenDragTo: endPoint) }
     return .performed
 #endif
   }
@@ -1142,7 +1142,8 @@ extension RnFastRunnerTests {
 #if os(tvOS)
     return .unsupported("coordinate tap is not supported on tvOS; move focus with swipe or scroll, then select the focused element")
 #else
-    interactionCoordinate(app: app, x: x, y: y, anchor: anchor).tap()
+    let coordinate = interactionCoordinate(app: app, x: x, y: y, anchor: anchor)
+    gesture { coordinate.tap() }
     return .performed
 #endif
   }
@@ -1151,7 +1152,8 @@ extension RnFastRunnerTests {
 #if os(tvOS)
     return .unsupported("coordinate double tap is not supported on tvOS; move focus with swipe or scroll, then select the focused element")
 #else
-    interactionCoordinate(app: app, x: x, y: y).doubleTap()
+    let coordinate = interactionCoordinate(app: app, x: x, y: y)
+    gesture { coordinate.doubleTap() }
     return .performed
 #endif
   }
@@ -1160,7 +1162,8 @@ extension RnFastRunnerTests {
 #if os(tvOS)
     return .unsupported("coordinate long press is not supported on tvOS; move focus with swipe or scroll, then long-select the focused element")
 #else
-    interactionCoordinate(app: app, x: x, y: y).press(forDuration: duration)
+    let coordinate = interactionCoordinate(app: app, x: x, y: y)
+    gesture { coordinate.press(forDuration: duration) }
     return .performed
 #endif
   }
@@ -1178,7 +1181,7 @@ extension RnFastRunnerTests {
 #else
     let start = interactionCoordinate(app: app, x: x, y: y)
     let end = interactionCoordinate(app: app, x: x2, y: y2)
-    start.press(forDuration: holdDuration, thenDragTo: end)
+    gesture { start.press(forDuration: holdDuration, thenDragTo: end) }
     return .performed
 #endif
   }
@@ -1219,7 +1222,7 @@ extension RnFastRunnerTests {
       return
     }
 #if !os(tvOS)
-    element.tap()
+    gesture { element.tap() }
 #endif
   }
 

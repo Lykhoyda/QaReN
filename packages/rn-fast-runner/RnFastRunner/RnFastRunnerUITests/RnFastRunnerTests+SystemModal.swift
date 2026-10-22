@@ -122,10 +122,12 @@ extension RnFastRunnerTests {
           systemModalSignature(front) == tapped else {
       return refuse("SYSTEM_ALERT_CHANGED", "the alert or its button changed before the tap")
     }
-    if let exception = RunnerObjCExceptionCatcher.catchException({ button.tap() }) {
+    var issueRaised = false
+    let exception = RunnerObjCExceptionCatcher.catchException({ issueRaised = gesture { button.tap() } })
+    if exception != nil || issueRaised {
       return Response(ok: false, error: ErrorPayload(
         code: "SYSTEM_ALERT_TAP_FAILED",
-        message: "SYSTEM_ALERT_TAP_FAILED: the alert button tap raised \(exception)",
+        message: "SYSTEM_ALERT_TAP_FAILED: the alert button tap raised \(exception ?? "an XCTest issue")",
         mutation: "possible"
       ))
     }

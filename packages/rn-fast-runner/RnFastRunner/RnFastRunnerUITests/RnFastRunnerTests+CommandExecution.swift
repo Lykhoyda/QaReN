@@ -53,9 +53,11 @@ extension RnFastRunnerTests {
     case .type:
       var synthesis: RunnerSynthesizedTextEntryResult?
       withTemporaryScrollIdleTimeoutIfSupported(app) {
-        synthesis = replace
-          ? RunnerSynthesizedTextEntry.replaceText(withApplication: app, text: text)
-          : RunnerSynthesizedTextEntry.synthesizeText(withApplication: app, text: text)
+        gesture {
+          synthesis = replace
+            ? RunnerSynthesizedTextEntry.replaceText(withApplication: app, text: text)
+            : RunnerSynthesizedTextEntry.synthesizeText(withApplication: app, text: text)
+        }
       }
       let result = synthesis!
       switch TypingRecipe.focusedTypeOutcome(
@@ -175,6 +177,7 @@ extension RnFastRunnerTests {
       var response: Response?
       var swiftError: Error?
       appAlertInterruptions = 0
+      gestureIssueRaised = false
       let exceptionMessage = RunnerObjCExceptionCatcher.catchException({
         do {
           response = try self.executeOnMain(command: command)
@@ -222,6 +225,13 @@ extension RnFastRunnerTests {
           code: RunnerErrorCode.commandReturnedNoResponse,
           userInfo: [NSLocalizedDescriptionKey: "command returned no response"]
         )
+      }
+      if response.ok, gestureIssueRaised {
+        return Response(ok: false, error: ErrorPayload(
+          code: "GESTURE_ISSUE_RAISED",
+          message: "GESTURE_ISSUE_RAISED: XCTest raised an issue during the \(command.command.rawValue) gesture; it may have been partly performed",
+          mutation: "possible"
+        ))
       }
       if command.qaReadOnly == true, !response.ok {
         return qaReadOnlyRefusal(appNotRunning: response.error?.reason == "app-not-running")
@@ -857,7 +867,7 @@ extension RnFastRunnerTests {
           // contract) wins over the two-burst recipe.
           let chunks = Array(text)
           for (index, character) in chunks.enumerated() {
-            target.typeText(String(character))
+            gesture { target.typeText(String(character)) }
             if index + 1 < chunks.count {
               Thread.sleep(forTimeInterval: delaySeconds)
             }
@@ -865,12 +875,12 @@ extension RnFastRunnerTests {
         } else if let bursts = TypingRecipe.bursts(for: text) {
           // Story 10 (#391): two-burst send — first character alone, sit out
           // the post-appearance drop window, then stream the remainder.
-          target.typeText(bursts.first)
+          gesture { target.typeText(bursts.first) }
           Thread.sleep(forTimeInterval: TypingRecipe.interBurstDelay)
-          target.typeText(bursts.remainder)
+          gesture { target.typeText(bursts.remainder) }
           usedBurst = true
         } else {
-          target.typeText(text)
+          gesture { target.typeText(text) }
         }
       }
       withTemporaryScrollIdleTimeoutIfSupported(activeApp) {
