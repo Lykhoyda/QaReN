@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # Run a command where no real simulator or emulator is reachable: an isolated
-# HOME plus xcrun, adb and xcodebuild shims that report one fake booted iPhone
-# and no Android device, and refuse every other device command. The no-mistakes
+# HOME plus xcrun, simctl, devicectl, xcodebuild, adb and maestro shims that
+# report one fake booted iPhone and no Android device, and refuse every other
+# device command. The no-mistakes
 # Test step routes device commands through this (see .no-mistakes.yaml).
 #
 # Usage: scripts/qaren-sim-sandbox.sh <command> [args...]
@@ -26,7 +27,10 @@ if [ ! -e "$dir/bin/xcrun" ]; then
 q="\${1:-}"
 case "\$q" in --sdk|-sdk) q="\${3:-}" ;; esac
 case "\$q" in
-  --show-sdk-*|--find|-f) [ -n "$real_xcrun" ] && exec "$real_xcrun" "\$@" ;;
+  --find|-f)
+    case "\${@: -1}" in simctl|devicectl|xcodebuild) echo "$dir/bin/\${@: -1}"; exit 0 ;; esac
+    [ -n "$real_xcrun" ] && exec "$real_xcrun" "\$@" ;;
+  --show-sdk-*) [ -n "$real_xcrun" ] && exec "$real_xcrun" "\$@" ;;
 esac
 if [ "\${1:-}" = simctl ] && [ "\${2:-}" = list ]; then
   case " \$* " in
@@ -59,19 +63,31 @@ ln -sf "$dir/bin/adb" "$dir/android-sdk/platform-tools/adb"
 if [ ! -e "$dir/bin/xcodebuild" ]; then
   cat >"$dir/bin/xcodebuild" <<EOF
 #!/usr/bin/env bash
+refuse() { echo "qaren-sim-sandbox: refused xcodebuild \$*" >&2; exit 1; }
+ok=
+case "\${1:-}" in -version|-showsdks|-list|-help) ok=1 ;; esac
 prev=
 for a in "\$@"; do
-  case "\$a" in test|test-without-building) prev=refuse ;; esac
-  [ "\$prev" = -destination ] && case "\$a" in generic/*) ;; *) prev=refuse ;; esac
-  [ "\$prev" = refuse ] && { echo "qaren-sim-sandbox: refused xcodebuild \$*" >&2; exit 1; }
+  case "\$a" in
+    build|build-for-testing|archive|clean) ok=1 ;;
+    test|test-without-building|-xctestrun|-showdestinations) refuse "\$@" ;;
+  esac
+  [ "\$prev" = -destination ] && case "\$a" in generic/*) ;; *) refuse "\$@" ;; esac
   prev="\$a"
 done
+[ -n "\$ok" ] || refuse "\$@"
 [ -n "$real_xcodebuild" ] && exec "$real_xcodebuild" "\$@"
 echo "qaren-sim-sandbox: no host xcodebuild" >&2
 exit 1
 EOF
   chmod +x "$dir/bin/xcodebuild"
 fi
+
+for tool in simctl devicectl maestro; do
+  [ -e "$dir/bin/$tool" ] && continue
+  printf '#!/usr/bin/env bash\necho "qaren-sim-sandbox: refused %s $*" >&2\nexit 1\n' "$tool" >"$dir/bin/$tool"
+  chmod +x "$dir/bin/$tool"
+done
 
 # Toolchains default under HOME; keep them on the real one so builds still work.
 export CARGO_HOME="${CARGO_HOME:-$real_home/.cargo}"
