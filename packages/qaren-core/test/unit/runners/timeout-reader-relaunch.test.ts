@@ -39,6 +39,7 @@ let failLaunch = false;
 let launchDelayMs = 0;
 let healthDelayMs = 0;
 let blockSnapshots = false;
+let presenceTimeouts = 0;
 let recoveryStage: 'status' | 'resend' | undefined;
 let snapshotRequests = 0;
 let appProcessIdentifier = 41;
@@ -56,6 +57,7 @@ beforeEach((t) => {
   launchDelayMs = 0;
   healthDelayMs = 0;
   blockSnapshots = false;
+  presenceTimeouts = 0;
   recoveryStage = undefined;
   snapshotRequests = 0;
   appProcessIdentifier = 41;
@@ -172,6 +174,20 @@ beforeEach((t) => {
         throw new Error('connection reset');
       }
       if (blockSnapshots) await new Promise(() => {});
+      if (request.platformPresence && presenceTimeouts > 0) {
+        presenceTimeouts--;
+        return Response.json(
+          {
+            ok: false,
+            error: {
+              code: 'RUNNER_TIMEOUT',
+              message: 'main thread execution timed out',
+              mutation: 'possible',
+            },
+          },
+          { status: 500 },
+        );
+      }
       assert.equal(new URL(String(url)).port, capturePort);
       const data = { ...nativeCapture(), appProcessIdentifier };
       if (emptySnapshots > 0) {
@@ -292,6 +308,27 @@ test('a non-type timeout keeps its verdict and restores presence capture', async
   );
   assert.equal(capture.ok, true, JSON.stringify(capture));
   assert.equal(launches, 1);
+});
+
+function aliveReader(t: TestContext) {
+  const kill = process.kill;
+  t.mock.method(process, 'kill', (pid, signal) => {
+    assert.equal(signal, 0, 'no process may be signalled by the fixture');
+    return pid === 999_999_999 || kill(pid, signal);
+  });
+}
+
+test('a presence capture main-thread timeout contains the wedged reader', async (t) => {
+  aliveReader(t);
+  presenceTimeouts = 1;
+  const capture = parseEnvelope(
+    await runIOS({ command: 'snapshot', platformPresence: true, presenceBudgetMs: 20_000 }),
+  );
+  assert.equal(capture.code, 'RN_FAST_RUNNER_DOWN', JSON.stringify(capture));
+  assert.equal(capture.meta.capture, 'unknown');
+  assert.equal(capture.meta.runnerRelaunch, true);
+  assert.equal(launches, 1);
+  assert.equal(getFastRunnerState()?.port, 22089);
 });
 
 test('an advisory snapshot marker cannot disable mutation timeout recovery', async () => {
@@ -548,6 +585,26 @@ test(
       NativeCaptureError,
     );
     assert.equal(reads, 3);
+  },
+);
+
+test(
+  'private presence capture re-reads after its own main-thread timeout is contained',
+  { timeout: 5_000 },
+  async (t) => {
+    const time = clock(t);
+    aliveReader(t);
+    presenceTimeouts = 1;
+    let reads = 0;
+    const capture = privateCapture(time.now, () => reads++).catch((error: Error) => error);
+    await nextTurn();
+    assert.equal(reads, 1);
+    await time.advance(500);
+    const screen = await capture;
+    assert.ok(!(screen instanceof Error), String(screen));
+    assert.equal(screen.captureCoverage?.native, 'complete');
+    assert.equal(reads, 2);
+    assert.equal(launches, 1);
   },
 );
 

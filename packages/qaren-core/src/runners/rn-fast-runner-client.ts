@@ -2809,6 +2809,12 @@ export async function runIOS(args: RunIOSArgs): Promise<ToolResult> {
     const message = resp.error?.message ?? 'runner returned !ok with no error';
     const code = resp.error?.code;
     if (presenceRequested && resp.error?.reason !== 'app-not-running') {
+      // The runner marks itself wedged on a main-thread timeout, so leaving it live poisons every later probe.
+      if (
+        !advisorySnapshot &&
+        (code === 'RUNNER_TIMEOUT' || message.includes('main thread execution timed out'))
+      )
+        await containRunnerTimeout(args.command, message, commandAuthorityBefore);
       return presenceCaptureUnavailable(message, 'RN_FAST_RUNNER_DOWN', true);
     }
     if (code === 'RUNNER_TIMEOUT') {
