@@ -7,6 +7,8 @@ use std::path::Component;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 pub const MACHINE_LOCKS_ENV: &str = "QAREN_MACHINE_LOCKS";
+pub const LOCK_ROOT_ADVICE: &str =
+    "set an absolute QAREN_LOCK_ROOT to a private directory, or set QAREN_MACHINE_LOCKS=0, then re-run";
 
 const HOLDER_LIMIT: usize = 64 * 1024;
 const LINK_BOUND: u32 = 40;
@@ -64,6 +66,77 @@ pub fn configured_lock_root(
     Ok(home.join(".qaren").join("locks"))
 }
 
+pub fn host_lock_root(
+    explicit: Option<&OsStr>,
+    machine: Option<&OsStr>,
+    home: Option<&OsStr>,
+) -> Result<PathBuf, String> {
+    let (root, warning) =
+        select_lock_root(explicit, machine, home, machine_lock_parent(), caller_privileged())?;
+    if let Some(warning) = warning {
+        eprintln!("qaren: {warning}");
+    }
+    Ok(root)
+}
+
+// The implicit default degrades to per-home locks with a warning; QAREN_MACHINE_LOCKS=1 refuses instead.
+pub fn select_lock_root(
+    explicit: Option<&OsStr>,
+    machine: Option<&OsStr>,
+    home: Option<&OsStr>,
+    parent: Result<&Path, String>,
+    privileged: bool,
+) -> Result<(PathBuf, Option<String>), String> {
+    if explicit.is_some() || !machine_locks_enabled(machine)? {
+        return configured_lock_root(explicit, machine, home).map(|root| (root, None));
+    }
+    let reason = match parent.and_then(|parent| usable_machine_parent(parent, privileged).map(|()| parent)) {
+        Ok(parent) => return Ok((parent.to_path_buf(), None)),
+        Err(reason) => reason,
+    };
+    if machine.is_some_and(|raw| !raw.is_empty()) {
+        return Err(format!("machine lock root is unusable: {reason}; {LOCK_ROOT_ADVICE}"));
+    }
+    let root = configured_lock_root(None, Some(OsStr::new("0")), home)
+        .map_err(|error| format!("machine lock root is unusable ({reason}) and {error}"))?;
+    let warning = format!(
+        "machine-wide device locks are unavailable ({reason}); using per-home locks at {}. Machine locks need an unprivileged caller and a root-owned sticky operating-system lock parent; QAREN_MACHINE_LOCKS=1 refuses instead of falling back",
+        root.display()
+    );
+    Ok((root, Some(warning)))
+}
+
+fn usable_machine_parent(parent: &Path, privileged: bool) -> Result<(), String> {
+    if privileged {
+        return Err("the caller is root, setuid or holds Linux capabilities".to_string());
+    }
+    let root = match open_lock_root(parent, false).map_err(WalkError::detail)? {
+        OpenRoot::Ready(root) => root,
+        OpenRoot::Missing { canonical } => {
+            return Err(format!("lock parent {} is missing", canonical.display()));
+        }
+    };
+    let staging = fresh_name("probe", "rename");
+    let probe = match mkdir_exclusive(&root, OsStr::new(&staging)) {
+        Ok(probe) => probe,
+        Err(MkdirExclusive::Exists) => {
+            return Err(format!("lock probe name {staging} already exists"));
+        }
+        Err(MkdirExclusive::Error(detail)) => return Err(detail),
+    };
+    let renamed = fresh_name("probe", "renamed");
+    match rename_lock_noreplace(&root, &staging, &renamed) {
+        Ok(()) => {
+            let _ = unlink_same(&root, OsStr::new(&renamed), &probe);
+            Ok(())
+        }
+        Err(error) => {
+            let _ = unlink_same(&root, OsStr::new(&staging), &probe);
+            Err(rename_error(error))
+        }
+    }
+}
+
 fn absolute_lock_override(raw: &OsStr, reject_dot_segments: bool) -> Result<PathBuf, String> {
     if raw.is_empty() || raw.as_bytes().contains(&0) {
         return Err("QAREN_LOCK_ROOT must be an absolute path".to_string());
@@ -108,10 +181,7 @@ pub fn claim_lock(
     holder: &LockHolder,
     policy: LockPolicy,
 ) -> LockOutcome {
-    let euid = match caller_ids() {
-        Ok((_, euid)) => euid,
-        Err(error) => return LockOutcome::Error(error),
-    };
+    let euid = effective_uid();
     let root = match open_lock_root(lock_root, true) {
         Ok(OpenRoot::Ready(dir)) => dir,
         Ok(OpenRoot::Missing { canonical }) => {
@@ -212,7 +282,7 @@ pub fn claim_lock(
 }
 
 pub fn read_holder(dir: &Path) -> Option<LockHolder> {
-    let (_, euid) = caller_ids().ok()?;
+    let euid = effective_uid();
     let parent = dir.parent()?;
     let name = dir.file_name()?;
     let OpenRoot::Ready(root) = open_lock_root(parent, false).ok()? else {
@@ -222,10 +292,7 @@ pub fn read_holder(dir: &Path) -> Option<LockHolder> {
 }
 
 pub fn release_lock(dir: &Path, expected_holder: &str, expected_run_id: &str) -> ReleaseOutcome {
-    let euid = match caller_ids() {
-        Ok((_, euid)) => euid,
-        Err(error) => return ReleaseOutcome::Refused(error),
-    };
+    let euid = effective_uid();
     let Some(parent) = dir.parent() else {
         return ReleaseOutcome::Refused(format!(
             "lock path {} has no parent directory; refusing",
@@ -355,14 +422,13 @@ fn contention_detail(
     }
 }
 
-fn caller_ids() -> Result<(u32, u32), String> {
+fn effective_uid() -> u32 {
+    unsafe { libc::geteuid() as u32 }
+}
+
+pub fn caller_privileged() -> bool {
     let uid = unsafe { libc::getuid() } as u32;
-    let euid = unsafe { libc::geteuid() } as u32;
-    if !caller_may_mutate(uid, euid) {
-        return Err("lock operations require an unprivileged caller".to_string());
-    }
-    capabilities_clear()?;
-    Ok((uid, euid))
+    !caller_may_mutate(uid, effective_uid()) || capabilities_clear().is_err()
 }
 
 fn caller_may_mutate(uid: u32, euid: u32) -> bool {
@@ -458,7 +524,7 @@ enum RemoveFault {
 }
 
 fn open_lock_root(path: &Path, create: bool) -> Result<OpenRoot, WalkError> {
-    let (_, euid) = caller_ids().map_err(WalkError::Failed)?;
+    let euid = effective_uid();
     let mut pending = components_of(path)?;
     let mut index = 0usize;
     let mut links = 0u32;
@@ -1108,7 +1174,7 @@ fn mkdir_exclusive(parent: &OpenDir, name: &OsStr) -> Result<OpenDir, MkdirExclu
     }
     match lookup(parent, name) {
         Ok(Lookup::Directory(dir))
-            if dir.uid == unsafe { libc::geteuid() } as u32 && dir.mode & 0o777 == 0o700 =>
+            if dir.uid == effective_uid() && dir.mode & 0o777 == 0o700 =>
         {
             Ok(dir)
         }
@@ -1139,8 +1205,7 @@ fn discard_created_directory(parent: &OpenDir, name: &OsStr) {
     let Ok(meta) = stat_at(parent.fd(), &c_name, true) else {
         return;
     };
-    let euid = unsafe { libc::geteuid() } as u32;
-    if !is_dir(meta.mode) || meta.uid != euid {
+    if !is_dir(meta.mode) || meta.uid != effective_uid() {
         return;
     }
     clear_errno();

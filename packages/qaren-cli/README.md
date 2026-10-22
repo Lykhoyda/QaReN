@@ -1711,12 +1711,16 @@ roots do not share locks. Empty, relative and NUL overrides refuse; unless
 opted out, literal `.` or `..` path segments also refuse before normalization.
 
 Without an override or opt-out, the shared CLI/native-suite resolver
-selects `/private/var/tmp` on macOS or `/run/lock` on Linux; other operating
-systems refuse. Selection performs no I/O and does not depend on HOME,
-QAREN_HOME, TMPDIR or XDG. Existing device, native-build and `usb-<serial>` lock
-names sit directly in that preexisting parent. A missing or unsafe system parent
-refuses: QaReN does not create, repair, chmod or chown it, or fall back elsewhere.
-The native suite still requires an absolute HOME for its records.
+selects `/private/var/tmp` on macOS or `/run/lock` on Linux, once per process.
+It does not read QAREN_HOME, TMPDIR or XDG. Existing device, native-build and
+`usb-<serial>` lock names sit directly in that preexisting parent. QaReN never
+creates, repairs, chmods or chowns it. Before using it, the resolver walks the
+parent and proves no-replace rename with a private probe directory. Under the
+implicit default, an unsupported OS, a missing or unsafe parent, an unsupported
+rename or a privileged caller (root, setuid or Linux capabilities) selects
+`$HOME/.qaren/locks` with one stderr warning naming the reason;
+`QAREN_MACHINE_LOCKS=1` refuses instead. Per-home and explicit roots accept
+privileged callers. The native suite still requires an absolute HOME for its records.
 
 Claim, read and release walk from `/` using no-follow descriptor opens with
 metadata and ACL checks. Only operating-system symlinks in trusted root-owned,

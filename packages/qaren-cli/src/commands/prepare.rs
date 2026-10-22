@@ -1577,7 +1577,7 @@ pub(crate) fn claim_build_lock(ctx: &mut Ctx, lock_root: &Path) -> Result<(), Fa
             "plan",
             FailureCode::RunRecordUpdateFailed,
             format!("cannot operate the build serialization lock: {detail}"),
-            "fix the lock directory permissions, then re-run prepare",
+            buildplan::LOCK_ROOT_ADVICE,
         )),
     }
 }
@@ -1644,7 +1644,7 @@ fn claim_usb_device(ctx: &mut Ctx, lock_root: &Path, serial: &str) -> Result<(),
             "allocate",
             FailureCode::RunRecordUpdateFailed,
             format!("cannot operate the device claim lock: {detail}"),
-            "fix the lock directory permissions, then re-run prepare",
+            buildplan::LOCK_ROOT_ADVICE,
         )),
     }
 }

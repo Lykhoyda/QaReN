@@ -10,6 +10,7 @@ use qaren::run::{
 use qaren::scenario::Platform;
 use std::path::PathBuf;
 use std::process::ExitCode;
+use std::sync::OnceLock;
 
 macro_rules! eprintln {
     ($($args:tt)*) => { std::eprintln!("{}", qaren::redact::redact_inputs(&format!($($args)*))) };
@@ -30,13 +31,17 @@ fn qaren_home() -> Result<PathBuf, String> {
     user_home().map(|home| home.join(".qaren"))
 }
 
-// Absolute QAREN_LOCK_ROOT wins. Otherwise the OS parent, or $HOME/.qaren/locks with QAREN_MACHINE_LOCKS=0.
+// Resolved once per process so every lock in one run shares a root.
 fn lock_root() -> Result<PathBuf, String> {
-    qaren::buildplan::configured_lock_root(
-        std::env::var_os("QAREN_LOCK_ROOT").as_deref(),
-        std::env::var_os(qaren::buildplan::MACHINE_LOCKS_ENV).as_deref(),
-        std::env::var_os("HOME").as_deref(),
-    )
+    static ROOT: OnceLock<Result<PathBuf, String>> = OnceLock::new();
+    ROOT.get_or_init(|| {
+        qaren::buildplan::host_lock_root(
+            std::env::var_os("QAREN_LOCK_ROOT").as_deref(),
+            std::env::var_os(qaren::buildplan::MACHINE_LOCKS_ENV).as_deref(),
+            std::env::var_os("HOME").as_deref(),
+        )
+    })
+    .clone()
 }
 
 fn runs_root() -> Result<PathBuf, String> {
@@ -105,7 +110,7 @@ fn roots_failure(detail: String) -> Failure {
         || detail.contains("QAREN_MACHINE_LOCKS")
         || detail.contains("machine lock root")
     {
-        "set an absolute QAREN_LOCK_ROOT, or set QAREN_MACHINE_LOCKS=0"
+        qaren::buildplan::LOCK_ROOT_ADVICE
     } else {
         "set HOME to an absolute path and QAREN_NATIVE_CACHE_ROOT to a supported private absolute directory"
     };

@@ -33,6 +33,7 @@ forwarded() { cat "$tmp/host/calls" 2>/dev/null; }
 check "xcrun resolves to the sandbox shim" "$tmp/sb/bin/xcrun" "$(run sh -c 'command -v xcrun')"
 check "adb resolves to the sandbox shim" "$tmp/sb/bin/adb" "$(run sh -c 'command -v adb')"
 check "HOME is isolated" "$tmp/sb/home" "$(run sh -c 'echo "$HOME"')"
+check "locks stay in the sandbox" "$tmp/sb/locks" "$(QAREN_LOCK_ROOT=/private/var/tmp run sh -c 'echo "$QAREN_LOCK_ROOT"')"
 check "ANDROID_HOME is the fake SDK" "$tmp/sb/android-sdk" "$(run sh -c 'echo "$ANDROID_HOME"')"
 check "CARGO_HOME stays on the real home" "${CARGO_HOME:-$HOME/.cargo}" "$(run sh -c 'echo "$CARGO_HOME"')"
 

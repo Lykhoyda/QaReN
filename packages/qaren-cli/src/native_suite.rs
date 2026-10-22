@@ -55,7 +55,7 @@ fn roots(runner: &dyn Runner) -> Result<(PathBuf, PathBuf), String> {
         .map(PathBuf::from)
         .filter(|path| path.is_absolute())
         .ok_or("HOME must be absolute")?;
-    let locks = buildplan::configured_lock_root(
+    let locks = buildplan::host_lock_root(
         runner.env_var_os("QAREN_LOCK_ROOT").as_deref(),
         runner.env_var_os(buildplan::MACHINE_LOCKS_ENV).as_deref(),
         Some(home.as_os_str()),

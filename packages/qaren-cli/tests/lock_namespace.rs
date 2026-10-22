@@ -283,6 +283,121 @@ fn unsafe_overrides_fail_closed_without_a_home_fallback() {
 }
 
 #[test]
+fn default_machine_root_falls_back_per_home_and_explicit_one_refuses() {
+    let fixture = Fixture::new("fallback");
+    let home = fixture.path().join("home");
+    let per_home = home.join(".qaren").join("locks");
+    let home = Some(home.as_os_str());
+    let unsafe_parent = fixture.child_dir("unsafe");
+    chmod(&unsafe_parent, &["775"]);
+    let missing = fixture.path().join("missing");
+    let usable = fixture.path().join("machine");
+    let on = Some(OsStr::new("1"));
+    let unsupported =
+        || Err("machine lock root is unsupported on this operating system".to_string());
+    for parent in [
+        Ok(unsafe_parent.as_path()),
+        Ok(missing.as_path()),
+        unsupported(),
+    ] {
+        for default in [None, Some(OsStr::new(""))] {
+            let (root, warning) =
+                buildplan::select_lock_root(None, default, home, parent.clone(), false).unwrap();
+            assert_eq!(root, per_home);
+            let warning = warning.expect("the fallback warns");
+            assert!(
+                warning.contains(&per_home.display().to_string()),
+                "{warning}"
+            );
+            assert!(warning.contains("QAREN_MACHINE_LOCKS=1"), "{warning}");
+            assert!(!warning.contains("chmod"), "{warning}");
+        }
+        let refused =
+            buildplan::select_lock_root(None, on, home, parent.clone(), false).unwrap_err();
+        assert!(refused.contains("QAREN_MACHINE_LOCKS=0"), "{refused}");
+        assert!(refused.contains("QAREN_LOCK_ROOT"), "{refused}");
+        assert!(!refused.contains("chmod"), "{refused}");
+        assert!(buildplan::select_lock_root(None, None, None, parent, false).is_err());
+    }
+    assert!(!missing.exists());
+    assert!(!per_home.exists());
+    for value in [None, on] {
+        assert_eq!(
+            buildplan::select_lock_root(None, value, home, Ok(usable.as_path()), false).unwrap(),
+            (usable.clone(), None)
+        );
+    }
+    assert_eq!(fs::read_dir(&usable).unwrap().count(), 0);
+    let failure = lease::acquire(
+        &mut RealRunner::new(),
+        &unsafe_parent,
+        Platform::Ios,
+        DEVICE_A,
+        "unsafe-root",
+        None,
+    )
+    .unwrap_err();
+    assert_eq!(failure.code, FailureCode::RunRecordUpdateFailed);
+    assert!(
+        failure.next_action.contains("QAREN_MACHINE_LOCKS=0"),
+        "{}",
+        failure.next_action.as_str()
+    );
+    assert!(
+        failure.next_action.contains("QAREN_LOCK_ROOT"),
+        "{}",
+        failure.next_action.as_str()
+    );
+    assert!(
+        !failure.next_action.contains("permissions"),
+        "{}",
+        failure.next_action.as_str()
+    );
+}
+
+#[test]
+fn privileged_callers_keep_private_roots_but_not_the_machine_root() {
+    let fixture = Fixture::new("privileged");
+    let home = fixture.path().join("home");
+    let per_home = home.join(".qaren").join("locks");
+    let home = Some(home.as_os_str());
+    let usable = fixture.path().join("machine");
+    let explicit = fixture.child_dir("explicit");
+    let (root, warning) =
+        buildplan::select_lock_root(None, None, home, Ok(usable.as_path()), true).unwrap();
+    assert_eq!(root, per_home);
+    assert!(warning
+        .unwrap()
+        .contains("root, setuid or holds Linux capabilities"));
+    let refused = buildplan::select_lock_root(
+        None,
+        Some(OsStr::new("1")),
+        home,
+        Ok(usable.as_path()),
+        true,
+    )
+    .unwrap_err();
+    assert!(refused.contains("QAREN_MACHINE_LOCKS=0"), "{refused}");
+    assert_eq!(fs::read_dir(&usable).unwrap().count(), 0);
+    let off = Some(OsStr::new("0"));
+    for (machine, explicit_root, expected) in [
+        (off, None, per_home.clone()),
+        (None, Some(explicit.as_os_str()), explicit.clone()),
+        (off, Some(explicit.as_os_str()), explicit.clone()),
+    ] {
+        let (root, warning) =
+            buildplan::select_lock_root(explicit_root, machine, home, Ok(usable.as_path()), true)
+                .unwrap();
+        assert_eq!((root.clone(), warning), (expected, None));
+        let lock = must_claim(&root, "device-ios-privileged", "privileged");
+        assert!(matches!(
+            buildplan::release_lock(&lock, "qaren-privileged", "privileged"),
+            ReleaseOutcome::Removed
+        ));
+    }
+}
+
+#[test]
 fn symlink_fifo_link_and_mode_attacks_do_not_mutate_the_victim() {
     let fixture = Fixture::new("attack");
     let real = fixture.child_dir("real");

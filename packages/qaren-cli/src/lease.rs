@@ -153,7 +153,7 @@ pub fn try_acquire(
                 "lease",
                 FailureCode::RunRecordUpdateFailed,
                 format!("cannot operate the device lease lock: {detail}"),
-                "fix the lock directory permissions, then re-run",
+                buildplan::LOCK_ROOT_ADVICE,
             ),
             holder: None,
             liveness: None,
