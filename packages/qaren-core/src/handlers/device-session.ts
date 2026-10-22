@@ -125,7 +125,7 @@ export async function iosAppProcessId(
   deviceId: string,
 ): Promise<number | undefined> {
   const { stdout } = await execFile('xcrun', buildIosAppRunningArgs(deviceId), {
-    timeout: 1_000,
+    timeout: 5000,
     encoding: 'utf8',
   });
   return iosAppJobPid(stdout, bundleId);
@@ -133,11 +133,7 @@ export async function iosAppProcessId(
 
 // A failed or timed-out probe rejects: an unanswered launchctl is not evidence that the app is gone.
 async function defaultIOSProbe(bundleId: string, deviceId: string): Promise<boolean> {
-  const { stdout } = await execFile('xcrun', buildIosAppRunningArgs(deviceId), {
-    timeout: 5000,
-    encoding: 'utf8',
-  });
-  return iosAppJobRunning(stdout, bundleId);
+  return (await iosAppProcessId(bundleId, deviceId)) !== undefined;
 }
 
 export function buildAndroidPidofArgs(bundleId: string, deviceId?: string): string[] {
