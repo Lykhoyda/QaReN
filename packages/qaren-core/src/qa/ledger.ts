@@ -42,6 +42,8 @@ export interface LedgerFailure {
   step: number;
   seen: string;
   screenshot?: string;
+  // Set only when a plan step's own judgment failed; no other failure may mark a saved plan broken.
+  kind?: 'step';
 }
 
 export interface BlockResult {

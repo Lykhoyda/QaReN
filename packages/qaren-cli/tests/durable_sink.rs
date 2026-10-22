@@ -383,6 +383,7 @@ fn evidence_documents_and_reports_still_withhold_opaque_output() {
             step: 1,
             seen: KEY.into(),
             screenshot: None,
+            kind: None,
         }),
     };
     let path = dir.join("ledger.json");

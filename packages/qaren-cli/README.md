@@ -1912,15 +1912,20 @@ sections are dropped; the kept lines are unchanged, so block slugs and plan hash
 blocks keep replaying. The name is the slug of the `#` title, else of the first block title. Every
 saved line passes the same privacy check as a [saved block](#saved-blocks); a hit, or a literal
 fill into a private input, withholds the whole file with a value-free reason, and the CLI also
-refuses a copy containing a `QAREN_INPUT_*` value. Writes are exclusive: identical bytes report
-`unchanged`, different bytes take the next free suffix (`-2` to `-99`), and no file is overwritten.
+refuses a copy containing a `QAREN_INPUT_*` value. Writes are exclusive: a file that matches once
+its `qaren:broken` marker lines are ignored reports `unchanged` and keeps its markers, a different
+plan takes the next free suffix (`-2` to `-99`), and no file is overwritten.
 A plan run from `.qaren/plans/` is never saved again, and `qaren pr` never saves.
 
 A `check` of a file in `.qaren/plans/` flags or clears it only when the candidate has no local
 changes (`.qaren` excluded) and `HEAD` is the commit of the local `refs/remotes/origin/HEAD`, which
-is never fetched. A step failure adds `<!-- qaren:broken <platform> -->` at the top; refusals,
-synthesized core failures, candidate drift and cancelled runs never flag. A PASS removes that
-platform's marker. Markers are comments, so a flagged plan still runs. A bare
+is never fetched. Only a step failure flags: a check that did not hold, a waited or scrolled-to
+target that never appeared, a named target that is not on screen, or an action that left the screen
+unchanged without a dispatch error. It adds `<!-- qaren:broken <platform> -->` at the top. Any other
+FAIL, such as an unavailable judgment service, a dispatch, capture or runner error, a synthesized
+core failure or an older core's ledger, reports `not_marked` with `not a step failure`; refusals,
+candidate drift and cancelled runs never flag. A PASS removes that platform's marker. Markers are
+comments, so a flagged plan still runs. A bare
 `<!-- qaren:broken -->` counts as broken on every platform and is left for you to remove. A file
 edited during the run is left alone.
 
@@ -1929,8 +1934,8 @@ The receipt's `recipe` field reports `{outcome, path?, reason?}` and stderr prin
 `unchanged`, `flagged`, `cleared`, `not_saved` (`disabled`, `pull request run`, a privacy reason,
 `contains a runtime input value`, `unsafe .qaren/plans`, `could not write`, `too many variants`)
 and `not_marked` (`disabled`, `local changes`, `not the default-branch commit`,
-`default branch unknown`, `changed during the run`, `could not write`). A draft run that does not
-pass has no `recipe` field. Set `savePlans: false` in `.qaren/config.yaml` to turn off saving and
+`default branch unknown`, `not a step failure`, `changed during the run`, `could not write`). A
+draft run that does not pass has no `recipe` field. Set `savePlans: false` in `.qaren/config.yaml` to turn off saving and
 flagging; listing still works. Saved files stay untracked until you commit them, and for an app
 nested in its repository they do not make the next run's candidate dirty.
 

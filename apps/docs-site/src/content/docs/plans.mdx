@@ -187,8 +187,9 @@ during the walk instead.
 After a fully passing `qaren check`, QaReN saves the plan into the app's `.qaren/plans/` as a
 canonical copy: the `#` title, `## QA`, and each block's `###` title and plan lines, with prose
 and comments dropped. A copy that would hold a private value is not saved. An existing file is
-never overwritten: identical bytes are left alone, and a different plan with the same name is
-saved as `<name>-2.md`, `<name>-3.md` and so on. `qaren pr` does not save plans.
+never overwritten: a file that matches apart from its `qaren:broken` marker lines is left alone,
+and a different plan with the same name is saved as `<name>-2.md`, `<name>-3.md` and so on.
+`qaren pr` does not save plans.
 
 `qaren plans` (or `qaren plans --json`), run from the app directory, lists the saved plans with
 their titles, blocks and the platforms they are flagged broken on. Pass a listed file to
@@ -196,8 +197,9 @@ their titles, blocks and the platforms they are flagged broken on. Pass a listed
 
 When a saved plan runs on a clean checkout whose `HEAD` is the default-branch commit
 (`origin/HEAD`), a step failure adds `<!-- qaren:broken ios -->` (or `android`) to its first line,
-and the next such PASS removes it. On any other commit or with local changes the file is left
-alone. The receipt's `recipe` field and the `plan:` line on stderr report what happened. Set
+and the next such PASS removes it. Only a step that did not hold or did not take effect flags the
+plan; an outage of the judgment service, a device or runner error, or a refusal leaves it
+unflagged. On any other commit or with local changes the file is left alone. The receipt's `recipe` field and the `plan:` line on stderr report what happened. Set
 `savePlans: false` in [configuration](../configuration/) to turn saving and flagging off. The CLI
 guide's [saved plans](https://github.com/Lykhoyda/rn-dev-agent/blob/develop/packages/qaren-cli/README.md#saved-plans)
 section lists every outcome.

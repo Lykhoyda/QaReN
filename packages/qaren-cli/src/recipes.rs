@@ -361,8 +361,10 @@ pub fn base_identity(runner: &mut dyn Runner, candidate: &Candidate) -> Result<(
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Walk {
     Pass,
-    // A genuine step failure: the core judged FAIL, the candidate held and the run was not cancelled.
+    // A genuine step failure: the core judged a plan step FAIL, the candidate held and the run was not cancelled.
     StepFailure,
+    // Any other FAIL with the candidate held and the run not cancelled.
+    OtherFailure,
     Other,
 }
 
@@ -404,10 +406,14 @@ pub fn decide<'a>(
             return Decision::Report(RecipeOutcome::because(Outcome::NotMarked, "disabled"));
         }
         return match base() {
+            Err(reason) => Decision::Report(RecipeOutcome::because(Outcome::NotMarked, reason)),
+            Ok(()) if facts.walk == Walk::OtherFailure => Decision::Report(RecipeOutcome::because(
+                Outcome::NotMarked,
+                "not a step failure",
+            )),
             Ok(()) => Decision::Mark {
                 broken: facts.walk == Walk::StepFailure,
             },
-            Err(reason) => Decision::Report(RecipeOutcome::because(Outcome::NotMarked, reason)),
         };
     }
     if facts.walk != Walk::Pass {
@@ -697,6 +703,14 @@ mod tests {
                 Decision::Nothing,
             ),
             (
+                facts(false, true, false, OtherFailure, None, false),
+                Decision::Nothing,
+            ),
+            (
+                facts(true, true, true, OtherFailure, None, false),
+                Decision::Nothing,
+            ),
+            (
                 facts(false, true, false, Pass, Some(&private), false),
                 not_saved("line 3: fills a private input"),
             ),
@@ -733,6 +747,17 @@ mod tests {
         );
         assert_eq!(
             decide(&facts(false, true, true, StepFailure, None, false), ahead),
+            not_marked("not the default-branch commit")
+        );
+        assert_eq!(
+            decide(
+                &facts(false, true, true, OtherFailure, None, false),
+                on_base
+            ),
+            not_marked("not a step failure")
+        );
+        assert_eq!(
+            decide(&facts(false, true, true, OtherFailure, None, false), ahead),
             not_marked("not the default-branch commit")
         );
     }
