@@ -1,5 +1,8 @@
 import { interruptible, withCancellation } from '../../../dist/domain/cancellation.js';
 import { createStop } from '../../../dist/qa/stop.js';
+import { RunInputs, withInputs } from '../../../dist/qa/inputs.js';
+import { createWriter } from '../../../dist/qa/wire.js';
+import { getEventListeners } from 'node:events';
 import { TargetReadinessTimeoutError, TargetSelectionError } from '../../../dist/cdp/discovery.js';
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
@@ -1552,6 +1555,79 @@ test('an admission cancelled before its first retry is observed with no inner fa
       liveness: 'not_probed',
     },
   ]);
+});
+
+for (const boundary of [
+  'attach',
+  'bundle_ready',
+  'foreign_driver',
+  'open',
+  'prove',
+  'relaunch',
+  'retry_wait',
+] as const) {
+  test(`stop.track writes cancelled admission facts before its result during ${boundary}`, async () => {
+    await withInputs(new RunInputs({ account: 'private-account' }, ['account']), async () => {
+      const lines: string[] = [];
+      const writer = createWriter((line) => void lines.push(line), 'cancel-admission');
+      const entered = Promise.withResolvers<void>();
+      const stall = () => {
+        entered.resolve();
+        return new Promise<never>(() => undefined);
+      };
+      const { stop, steps } = harness({
+        observe: (decision, facts) => {
+          writer.diagnostic({ kind: 'metric', ...admissionMetric(decision, facts, 'wait_targets', 0) });
+          if (boundary === 'retry_wait' && decision === 'retry') entered.resolve();
+        },
+      });
+      if (boundary === 'attach') steps.attach = stall;
+      if (boundary === 'bundle_ready') steps.bundleReady = stall;
+      if (boundary === 'foreign_driver') steps.foreignDriver = stall;
+      if (boundary === 'open') steps.open = stall;
+      if (boundary === 'prove') steps.prove = stall;
+      if (boundary === 'relaunch' || boundary === 'retry_wait') {
+        steps.attach = async () => {
+          throw new TargetReadinessTimeoutError('no target');
+        };
+        if (boundary === 'relaunch') steps.relaunch = stall;
+      }
+      const pending = stop.track(() => admit(steps, stop)).catch((error) => {
+        assert.equal(error.code, 'RUN_CANCELLED');
+        assert.equal(writer.result({
+          verdict: 'REFUSED',
+          code: error.code,
+          message: 'the run was cancelled',
+          lease: 'cancel-admission',
+        }), 4);
+      });
+      await entered.promise;
+      stop.begin();
+      await pending;
+      await stop.drained(100);
+      const envelopes = lines.map((line) => JSON.parse(line));
+      const cancelled = envelopes.filter((event) => event.payload.admission === 'cancelled');
+      assert.equal(cancelled.length, 1);
+      assert.equal(cancelled[0].type, 'diagnostic');
+      assert.equal(cancelled[0].payload.lastStarted, boundary);
+      assert.equal(envelopes.at(-1).type, 'result');
+      assert.equal(envelopes.at(-2), cancelled[0]);
+      assert.equal(getEventListeners(stop.signal, 'abort').length, 0);
+    });
+  });
+}
+
+test('settled admissions remove the cancellation observer', async () => {
+  for (const refused of [false, true]) {
+    const { stop, steps, events } = observed(refused ? {
+      attach: async () => { throw new Error('attach failed'); },
+    } : {});
+    await admit(steps, stop).catch(() => undefined);
+    const count = events.length;
+    assert.equal(getEventListeners(stop.signal, 'abort').length, 0);
+    stop.begin();
+    assert.equal(events.length, count);
+  }
 });
 
 test('a refused admission is observed with its refusal facts; its own codes are not', async () => {

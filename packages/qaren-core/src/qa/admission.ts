@@ -319,7 +319,7 @@ export async function admit(
   stop: { readonly signal: AbortSignal },
 ): Promise<Proven> {
   try {
-    return await withCancellation(stop.signal, () => attach(steps));
+    return await withCancellation(stop.signal, () => attach(steps, stop.signal));
   } catch (error) {
     await withCancellation(undefined, steps.close);
     stop.signal.throwIfAborted();
@@ -342,7 +342,7 @@ async function probeLiveness(steps: AdmissionSteps): Promise<AdmissionLiveness> 
   }
 }
 
-async function attach(steps: AdmissionSteps): Promise<Proven> {
+async function attach(steps: AdmissionSteps, signal: AbortSignal): Promise<Proven> {
   const started = performance.now();
   const deadline = started + steps.remainingMs();
   const relaunchAt = started + steps.readinessMs;
@@ -380,7 +380,15 @@ async function attach(steps: AdmissionSteps): Promise<Proven> {
       // Diagnostics cannot change the admission.
     }
   };
+  let cancellationObserved = false;
+  const observeCancellation = (): void => {
+    if (cancellationObserved) return;
+    cancellationObserved = true;
+    observe('cancelled', facts(retried === undefined ? 'none' : admissionInnerClass(retried)));
+  };
+  signal.addEventListener('abort', observeCancellation, { once: true });
   try {
+    if (signal.aborted) observeCancellation();
     return await withDeadline(
       deadline,
       new CDPProbeTimeoutError('CDP attach deadline exceeded'),
@@ -464,7 +472,7 @@ async function attach(steps: AdmissionSteps): Promise<Proven> {
     );
   } catch (error) {
     if (isAbort(error)) {
-      observe('cancelled', facts(retried === undefined ? 'none' : admissionInnerClass(retried)));
+      observeCancellation();
       throw error;
     }
     if (error instanceof HandlerError) throw error;
@@ -487,5 +495,7 @@ async function attach(steps: AdmissionSteps): Promise<Proven> {
       `cannot attach to the dev client through Metro ${steps.metroPort}: ${describeError(error).message} (host 1-minute load ${load.toFixed(1)}${relaunchFailure === undefined ? '' : `; relaunch failed: ${relaunchFailure}`})`,
       refusal,
     );
+  } finally {
+    signal.removeEventListener('abort', observeCancellation);
   }
 }
