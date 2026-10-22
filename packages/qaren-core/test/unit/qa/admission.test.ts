@@ -1577,7 +1577,10 @@ for (const boundary of [
       };
       const { stop, steps } = harness({
         observe: (decision, facts) => {
-          writer.diagnostic({ kind: 'metric', ...admissionMetric(decision, facts, 'wait_targets', 0) });
+          writer.diagnostic({
+            kind: 'metric',
+            ...admissionMetric(decision, facts, 'wait_targets', 0),
+          });
           if (boundary === 'retry_wait' && decision === 'retry') entered.resolve();
         },
       });
@@ -1592,15 +1595,20 @@ for (const boundary of [
         };
         if (boundary === 'relaunch') steps.relaunch = stall;
       }
-      const pending = stop.track(() => admit(steps, stop)).catch((error) => {
-        assert.equal(error.code, 'RUN_CANCELLED');
-        assert.equal(writer.result({
-          verdict: 'REFUSED',
-          code: error.code,
-          message: 'the run was cancelled',
-          lease: 'cancel-admission',
-        }), 4);
-      });
+      const pending = stop
+        .track(() => admit(steps, stop))
+        .catch((error) => {
+          assert.equal(error.code, 'RUN_CANCELLED');
+          assert.equal(
+            writer.result({
+              verdict: 'REFUSED',
+              code: error.code,
+              message: 'the run was cancelled',
+              lease: 'cancel-admission',
+            }),
+            4,
+          );
+        });
       await entered.promise;
       stop.begin();
       await pending;
@@ -1619,9 +1627,15 @@ for (const boundary of [
 
 test('settled admissions remove the cancellation observer', async () => {
   for (const refused of [false, true]) {
-    const { stop, steps, events } = observed(refused ? {
-      attach: async () => { throw new Error('attach failed'); },
-    } : {});
+    const { stop, steps, events } = observed(
+      refused
+        ? {
+            attach: async () => {
+              throw new Error('attach failed');
+            },
+          }
+        : {},
+    );
     await admit(steps, stop).catch(() => undefined);
     const count = events.length;
     assert.equal(getEventListeners(stop.signal, 'abort').length, 0);
