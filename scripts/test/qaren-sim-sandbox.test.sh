@@ -21,7 +21,12 @@ check() { # description expected actual
 
 tmp="$(cd "$(mktemp -d)" && pwd -P)"
 trap 'rm -rf "$tmp"' EXIT
-run() { env -u QAREN_PIPELINE_REAL_DEVICES QAREN_SANDBOX_DIR="$tmp/sb" bash "$SANDBOX" "$@" 2>/dev/null; }
+# Stand-in for the host xcrun: records what the sandbox forwards, never touches a simulator.
+mkdir -p "$tmp/host"
+printf '#!/usr/bin/env bash\necho "$*" >> "%s/host/calls"\n' "$tmp" >"$tmp/host/xcrun"
+chmod +x "$tmp/host/xcrun"
+run() { env -u QAREN_PIPELINE_REAL_DEVICES PATH="$tmp/host:$PATH" QAREN_SANDBOX_DIR="$tmp/sb" bash "$SANDBOX" "$@" 2>/dev/null; }
+forwarded() { cat "$tmp/host/calls" 2>/dev/null; }
 
 check "xcrun resolves to the sandbox shim" "$tmp/sb/bin/xcrun" "$(run sh -c 'command -v xcrun')"
 check "adb resolves to the sandbox shim" "$tmp/sb/bin/adb" "$(run sh -c 'command -v adb')"
@@ -39,7 +44,10 @@ check "simctl boot is refused" 1 $?
 run xcrun simctl install booted /nonexistent.app
 check "simctl install is refused" 1 $?
 run xcrun simctl launch booted com.example.app -f
-check "a trailing -f does not reach real xcrun" 1 $?
+check "a trailing -f is refused" 1 $?
+check "no device command reached the host xcrun" "" "$(forwarded)"
+run xcrun --sdk macosx --show-sdk-path
+check "SDK queries reach the host xcrun" "--sdk macosx --show-sdk-path" "$(forwarded)"
 check "adb devices lists no device" "List of devices attached" "$(run adb devices | tr -d '\n')"
 check "ANDROID_HOME adb lists no device" "List of devices attached" "$(run sh -c '"$ANDROID_HOME/platform-tools/adb" devices' | tr -d '\n')"
 check "a relative sandbox dir links adb absolutely" "List of devices attached" \
