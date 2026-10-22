@@ -40,6 +40,7 @@ import { reopenSessionForRecovery } from './device-session.js';
 import type { FlatNode } from '../fast-runner-ref-map.js';
 import type { CDPClient } from '../cdp-client.js';
 import { exactIdentities } from '../qa/identity.js';
+import { measureDispatchPhase } from '../qa/timing.js';
 import { join, type NativeNode } from '../qa/screen.js';
 import {
   getCachedSignature,
@@ -1166,7 +1167,9 @@ async function finalVerification(
   operationToken: string,
   qaContext?: QaDispatchContext,
 ): Promise<NativeVerification> {
-  const native = await runNativeVerifyInput(binding, text, operationToken, qaContext);
+  const native = await measureDispatchPhase('dispatch-readback', qaContext?.line, () =>
+    runNativeVerifyInput(binding, text, operationToken, qaContext),
+  );
   return classifyNativeVerification(native.verdict, native.stable);
 }
 
@@ -1279,7 +1282,9 @@ export async function performExactFill(
     cachedSignature && cachedRect ? { ...cachedSignature, rect: cachedRect } : cachedSignature;
 
   const snap = args.qaContext
-    ? await fetchSnapshotNodesForSameScreenProof(args.qaContext)
+    ? await measureDispatchPhase('dispatch-bind', args.qaContext.line, () =>
+        fetchSnapshotNodesForSameScreenProof(args.qaContext!),
+      )
     : await fetchSnapshotNodes(true);
   if (!snap.ok) {
     if (snap.reason === 'runner-leak-unrecovered') {
@@ -1640,7 +1645,9 @@ export async function performFocusedFill(
   if (initialBefore === null || !beforeFocused) return unverified();
   const expected = (args.clearFirst ? '' : initialBefore) + args.text;
   const readBack = () =>
-    awaitReactInputValue(() => readReactInputValue(client, oracleTestId), expected);
+    measureDispatchPhase('dispatch-readback', args.qaContext?.line, () =>
+      awaitReactInputValue(() => readReactInputValue(client, oracleTestId), expected),
+    );
   const verified = () =>
     verifiedFillResult('native', args.text.length, {
       textEntryPath: 'focused-synthesized',

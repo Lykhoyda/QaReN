@@ -119,6 +119,9 @@ impl<'a> Ctx<'a> {
             ));
             self.record.failure = Some(failure.clone());
         }
+        if let Some(substage) = self.record.substage.clone() {
+            self.notes.push(("substage".into(), substage));
+        }
         let mut receipt = finish_receipt(self, result, Some(failure));
         if let Some(outcome) = metro_cleanup {
             receipt.cleanup.insert("metro".into(), outcome);
@@ -357,6 +360,7 @@ fn prepare_validated(
         scenario_sha256,
         candidate: cand,
         phase: Phase::Created,
+        substage: None,
         prepare: capture_pid_identity(runner, self_pid),
         build: None,
         handoff: None,
@@ -1594,8 +1598,36 @@ fn wait_metro_responding(ctx: &mut Ctx) -> Result<(), Failure> {
     }
 }
 
+const IOS_SUBSTAGES: [&str; 6] = [
+    "install_cached",
+    "metro_ready",
+    "dev_client_manifest",
+    "dev_menu_defaults",
+    "app_launch",
+    "ready_probes",
+];
+
+// Saved for a separate `qaren status`, best effort: observation never changes the run's outcome.
+fn enter_substage(ctx: &mut Ctx, next: Option<&'static str>) {
+    if ctx.record.scenario.platform != Platform::Ios {
+        return;
+    }
+    if let Some(open) = IOS_SUBSTAGES
+        .into_iter()
+        .find(|s| ctx.record.substage.as_deref() == Some(*s))
+    {
+        crate::events::stage(open, StageState::Passed, None, None);
+    }
+    if let Some(next) = next {
+        crate::events::stage(next, StageState::Running, None, None);
+    }
+    ctx.record.substage = next.map(str::to_string);
+    let _ = ctx.save();
+}
+
 pub(crate) fn run_reuse_path(ctx: &mut Ctx, plan: &BuildPlan, t: u64) -> Result<(), Failure> {
     ensure_running(ctx.runner, "build")?;
+    enter_substage(ctx, Some("install_cached"));
     let artifact = plan.artifact.clone().expect("reuse carries an artifact");
     let metro_port = qaren_metro_port(&ctx.record.scenario);
     let deadline = ctx.runner.monotonic_ms() + ctx.record.scenario.deadlines.build_seconds * 1000;
@@ -1713,12 +1745,14 @@ pub(crate) fn run_reuse_path(ctx: &mut Ctx, plan: &BuildPlan, t: u64) -> Result<
     }
     let t = ctx.mark("install_cached", t);
 
+    enter_substage(ctx, Some("metro_ready"));
     if ctx.record.resources.metro.is_none() {
         spawn_metro_only(ctx)?;
     }
     wait_metro_responding(ctx)?;
     let t = ctx.mark("metro_ready", t);
 
+    enter_substage(ctx, Some("dev_client_manifest"));
     if matches!(ctx.record.scenario.platform, Platform::Ios) {
         run_budgeted_attempt(
             ctx,
@@ -1763,6 +1797,7 @@ pub(crate) fn run_reuse_path(ctx: &mut Ctx, plan: &BuildPlan, t: u64) -> Result<
                 .ios_simulator
                 .clone()
                 .expect("ios allocated");
+            enter_substage(ctx, Some("dev_menu_defaults"));
             let defaults = ios::devmenu_defaults_specs(&sim.udid, &ctx.record.candidate.app_id);
             let mut failed = 0;
             let mut attempts = 0;
@@ -1817,6 +1852,7 @@ pub(crate) fn run_reuse_path(ctx: &mut Ctx, plan: &BuildPlan, t: u64) -> Result<
             .udid
     });
     let app_id = ctx.record.candidate.app_id.clone();
+    enter_substage(ctx, Some("app_launch"));
     if matches!(ctx.record.scenario.platform, Platform::Ios) {
         ctx.bundle_requests_at_launch = ctx
             .record
@@ -1843,8 +1879,10 @@ pub(crate) fn run_reuse_path(ctx: &mut Ctx, plan: &BuildPlan, t: u64) -> Result<
     }
     let t = ctx.mark("app_launch", t);
 
+    enter_substage(ctx, Some("ready_probes"));
     wait_ready_until(ctx, deadline)?;
     ctx.mark("ready_probes", t);
+    enter_substage(ctx, None);
     Ok(())
 }
 

@@ -94,6 +94,11 @@ Preflight and dependencies pass when their work completes; verify runs after
 every build decision, including reuse. Reuse skips prebuild and native compile.
 On iOS and on a borrowed Android emulator, native compile (including any
 prebuild of an absent native directory) ends before install/launch/ready.
+On iOS, install/launch/ready streams its substages in order: `install_cached`,
+`metro_ready`, `dev_client_manifest`, `dev_menu_defaults`, `app_launch` and
+`ready_probes`. The run record keeps the one in flight, so `qaren status` and a
+cancel or failure receipt name it as the `substage` outcome; the watch view
+shows only the parent stage.
 Recording can overlap steps. Requested recording starts as running and
 stays failed after a startup failure, even if retained-resource cleanup succeeds;
 recording is skipped when it was not requested or is unavailable for the platform
@@ -1571,6 +1576,14 @@ that secret despite artifact redaction.
   codes and allowlisted native refusal codes. Native-readiness end metrics also retain the
   existing liveness classification as `readinessReason`, or `unknown` if the probe did not
   return a classification; `count` identifies the probe site, not a retry ordinal.
+  A `health` failure adds `healthDetail` (`refused`, `reset`, `abort`, `http-4xx`, `http-5xx`, `body-not-ok`,
+  `wedged` or `other`). Every failed readiness probe is followed by a `runner-post-mortem` point
+  with the runner host child (`alive`, `exited`, `unknown`), its exit code or signal name, counts of
+  the runner's fixed lifecycle markers (never output text), and `appProcess`: the app process found
+  on the simulator compared with the last good read (`same`, `changed`, `absent`, `unknown`).
+  Fills add `dispatch-bind` and `dispatch-readback` spans and iOS mutating dispatches add
+  `dispatch-native`, `dispatch-settle` and `dispatch-health` spans, each carrying the dispatching
+  plan row's `line` when known.
   Attachment emits an `admission` point metric at each retry decision and once on cancellation
   or a `CDP_NOT_CONNECTED` refusal, with the decision (`retry`, `cancelled` or `refused`),
   the attempt count, last started and completed boundary, attach stage (only when the last

@@ -39,6 +39,12 @@ const STAGES: &[&str] = &[
     "settle-readback",
     "relaunch",
     "admission",
+    "runner-post-mortem",
+    "dispatch-bind",
+    "dispatch-native",
+    "dispatch-settle",
+    "dispatch-health",
+    "dispatch-readback",
     "overflow",
 ];
 const CODES: &[&str] = &[
@@ -79,6 +85,31 @@ const NATIVE_READINESS_REASONS: &[&str] = &[
     "missing-commands",
     "missing-features",
     "unknown",
+];
+const HEALTH_DETAILS: &[&str] = &[
+    "refused",
+    "reset",
+    "abort",
+    "http-4xx",
+    "http-5xx",
+    "body-not-ok",
+    "wedged",
+    "other",
+];
+const RUNNER_SIGNALS: &[&str] = &[
+    "SIGTERM", "SIGKILL", "SIGINT", "SIGHUP", "SIGQUIT", "SIGABRT", "SIGTRAP", "SIGSEGV", "SIGBUS",
+    "SIGPIPE", "other",
+];
+const POST_MORTEM_FIELDS: &[&str] = &[
+    "hostChild",
+    "exitCode",
+    "exitSignal",
+    "appProcess",
+    "markerReady",
+    "markerWaiting",
+    "markerWaitResult",
+    "markerListenerFailed",
+    "markerSendFailed",
 ];
 
 const ADMISSION_BOUNDARIES: &[&str] = &[
@@ -159,6 +190,16 @@ fn clean(value: &Value) -> Option<Value> {
                 "liveness",
                 "elapsedMs",
                 "remainingMs",
+                "healthDetail",
+                "hostChild",
+                "exitCode",
+                "exitSignal",
+                "appProcess",
+                "markerReady",
+                "markerWaiting",
+                "markerWaitResult",
+                "markerListenerFailed",
+                "markerSendFailed",
             ],
         ),
         "timing" => (
@@ -199,6 +240,18 @@ fn clean(value: &Value) -> Option<Value> {
         {
             return None;
         }
+        if key == "healthDetail"
+            && (fields.get("stage")?.as_str()? != "native-readiness"
+                || fields.get("edge")?.as_str()? != "end"
+                || fields.get("readinessReason")?.as_str()? != "health")
+        {
+            return None;
+        }
+        if POST_MORTEM_FIELDS.contains(&key.as_str())
+            && fields.get("stage")?.as_str()? != "runner-post-mortem"
+        {
+            return None;
+        }
         if ADMISSION_KEYS.contains(&key.as_str())
             && (fields.get("stage")?.as_str()? != "admission"
                 || fields.get("edge")?.as_str()? != "point")
@@ -229,6 +282,10 @@ fn clean(value: &Value) -> Option<Value> {
             "attachStage" => Some(&["wait_targets", "connect_exact"]),
             "inner" => Some(ADMISSION_INNER),
             "liveness" => Some(&["not_probed", "alive", "dead", "probe_failed"]),
+            "healthDetail" => Some(HEALTH_DETAILS),
+            "hostChild" => Some(&["alive", "exited", "unknown"]),
+            "exitSignal" => Some(RUNNER_SIGNALS),
+            "appProcess" => Some(&["same", "changed", "absent", "unknown"]),
             _ => None,
         };
         if let Some(words) = words {

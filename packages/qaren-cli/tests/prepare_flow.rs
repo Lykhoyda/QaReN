@@ -494,6 +494,7 @@ fn ios_install_timeouts_fail_once_the_shared_budget_is_spent() {
     assert_eq!(failure.code, FailureCode::ArtifactInstallFailed);
     assert!(failure.detail.contains("1 attempts"), "{failure:?}");
     assert_eq!(receipt.outcomes["launch_ready_budget"], "spent");
+    assert_eq!(receipt.outcomes["substage"], "install_cached");
     assert_eq!(receipt.timings_ms["simctl-install_attempt_1"], 150_000);
     let installs: Vec<_> = mock
         .calls
@@ -560,6 +561,7 @@ fn ios_install_coordination_refusals_fail_once_the_shared_budget_is_spent() {
         "{failure:?}"
     );
     assert_eq!(receipt.outcomes["launch_ready_budget"], "spent");
+    assert_eq!(receipt.outcomes["substage"], "install_cached");
     assert_eq!(
         mock.calls
             .iter()
@@ -747,6 +749,7 @@ fn ios_prepare_refuses_when_the_manifest_never_answers_inside_the_dev_client_tim
     assert!(failure.detail.contains("after 4 attempts"), "{failure:?}");
     assert!(failure.detail.contains("host"), "{failure:?}");
     assert_eq!(receipt.outcomes["launch_ready_budget"], "spent");
+    assert_eq!(receipt.outcomes["substage"], "dev_client_manifest");
     for attempt in 1..=4 {
         assert_eq!(
             receipt.timings_ms[&format!("metro-manifest_attempt_{attempt}")],
@@ -801,6 +804,7 @@ fn ios_prepare_cancellation_preempts_a_slow_manifest_retry() {
         FailureCode::RunCancelled
     );
     assert_eq!(receipt.timings_ms["metro-manifest_attempt_1"], 12_000);
+    assert_eq!(receipt.outcomes["substage"], "dev_client_manifest");
     assert_eq!(
         mock.calls
             .iter()
@@ -876,6 +880,12 @@ fn ios_prepare_retries_timeouts_until_the_shared_budget_is_spent() {
             FailureCode::CoreRefused
         );
         assert_eq!(receipt.outcomes["launch_ready_budget"], "spent");
+        let substage = if label == "simctl-launch" {
+            "app_launch"
+        } else {
+            "dev_menu_defaults"
+        };
+        assert_eq!(receipt.outcomes["substage"], substage);
         for (index, duration) in durations.iter().enumerate() {
             let key = format!("{label}_attempt_{}", index + 1);
             assert_eq!(receipt.timings_ms[&key], *duration);

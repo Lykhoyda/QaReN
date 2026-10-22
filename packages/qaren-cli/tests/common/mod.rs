@@ -173,6 +173,7 @@ pub fn base_record(
             worktree_fingerprint: Some(qaren::candidate::worktree_fingerprint(repo_root, "").unwrap()),
         },
         phase,
+        substage: None,
         prepare: Some(identity(999, "Wed Aug 12 15:00:00 2026")),
         // Only phases reached after build planning carry a recorded plan,
         // matching what production records can actually contain.

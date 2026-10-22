@@ -322,6 +322,108 @@ fn readiness_reasons_reach_private_diagnostics_only_as_classified_end_events() {
 }
 
 #[test]
+fn runner_termination_diagnostics_reach_private_diagnostics_only_as_fixed_words_and_counts() {
+    use qaren::redact::{with_input_scope, InputValues};
+    use serde_json::json;
+    use std::ffi::OsString;
+    use std::sync::Arc;
+    let repo = common::temp_repo();
+    let secret = "private-synthetic-value";
+    let inputs = Arc::new(InputValues::from_entries([(
+        OsString::from("QAREN_INPUT_OTP"),
+        OsString::from(secret),
+    )]));
+    with_input_scope(inputs, || {
+        let readiness = json!({
+            "kind": "metric", "stage": "native-readiness", "edge": "end", "outcome": "failed",
+            "at": 200, "ms": 2, "count": 1, "readinessReason": "health"
+        });
+        let post_mortem = json!({
+            "kind": "metric", "stage": "runner-post-mortem", "edge": "point", "outcome": "failed",
+            "at": 201, "count": 1, "hostChild": "exited", "exitCode": 0, "exitSignal": "SIGKILL",
+            "appProcess": "changed", "markerReady": 1, "markerWaiting": 1, "markerWaitResult": 0,
+            "markerListenerFailed": 0, "markerSendFailed": 2
+        });
+        let mut expected = Vec::new();
+        for detail in [
+            "refused",
+            "reset",
+            "abort",
+            "http-4xx",
+            "http-5xx",
+            "body-not-ok",
+            "wedged",
+            "other",
+        ] {
+            let mut value = readiness.clone();
+            value["healthDetail"] = json!(detail);
+            expected.push(value);
+        }
+        expected.push(post_mortem.clone());
+        for stage in [
+            "dispatch-bind",
+            "dispatch-native",
+            "dispatch-settle",
+            "dispatch-health",
+            "dispatch-readback",
+        ] {
+            expected.push(json!({
+                "kind": "metric", "stage": stage, "edge": "end", "outcome": "ok", "at": 300, "line": 7, "ms": 17600
+            }));
+        }
+        let mut payloads = expected.clone();
+        for (key, value) in [
+            ("healthDetail", json!(secret)),
+            ("healthDetail", json!(1)),
+            ("readinessReason", json!("dead")),
+        ] {
+            let mut invalid = expected[0].clone();
+            invalid[key] = value;
+            payloads.push(invalid);
+        }
+        for (key, value) in [
+            ("hostChild", json!(secret)),
+            ("appProcess", json!(4242)),
+            ("exitSignal", json!(secret)),
+            ("exitCode", json!(-1)),
+            ("markerWaiting", json!(secret)),
+            ("tail", json!(secret)),
+        ] {
+            let mut invalid = post_mortem.clone();
+            invalid[key] = value;
+            payloads.push(invalid);
+        }
+        for key in ["hostChild", "exitCode", "appProcess", "markerWaiting"] {
+            let mut misplaced = readiness.clone();
+            misplaced[key] = post_mortem[key].clone();
+            payloads.push(misplaced);
+        }
+        let mut stdout = String::new();
+        for (i, value) in payloads.iter().enumerate() {
+            stdout.push_str(&envelope(i as u64 + 2, "diagnostic", &value.to_string()));
+            stdout.push('\n');
+        }
+        stdout.push_str(&envelope(
+            payloads.len() as u64 + 2,
+            "result",
+            &pass_ledger(&[]),
+        ));
+        stdout.push('\n');
+        let mut mock = MockRunner::new();
+        mock.expect_spawn_piped("walk.js", 9000, &stdout, Some(0));
+        let result = run_child(&mut mock, &repo.join("core.log"));
+        assert_eq!(result.verdict, Verdict::Pass);
+        let stored = std::fs::read_to_string(repo.join("core-diagnostics.jsonl")).unwrap();
+        assert!(!stored.contains(secret));
+        let got: Vec<serde_json::Value> = stored
+            .lines()
+            .map(|line| serde_json::from_str(line).unwrap())
+            .collect();
+        assert_eq!(got, expected);
+    });
+}
+
+#[test]
 fn a_real_slot_child_keeps_raw_logs_withheld_while_retaining_structured_diagnostics() {
     use qaren::exec::RealRunner;
     use qaren::redact::{with_input_scope, InputValues};
