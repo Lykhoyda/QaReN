@@ -6919,7 +6919,6 @@ fn every_build_decision_reports_fingerprint_completeness_and_reuse_reports_ready
     }
 }
 
-// Metro answers on the second poll, so the scripted clock advances inside reuse readiness.
 #[test]
 fn a_cancel_during_a_cached_ios_install_names_the_substage() {
     let (repo, app) = app_repo();
@@ -6992,6 +6991,7 @@ fn a_cancel_during_a_cached_ios_install_names_the_substage() {
     }
 }
 
+// Metro answers on the second poll, so the scripted clock advances inside reuse readiness.
 fn script_warm_launch_after_one_metro_retry(mock: &mut MockRunner) {
     common::script_ios_app_verification(mock);
     mock.expect_spawn(
