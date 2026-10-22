@@ -102,6 +102,12 @@ pub struct Ledger {
     pub speed: Option<LedgerSpeed>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub failure: Option<LedgerFailure>,
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "passive"
+    )]
+    pub recipe: Option<crate::recipes::RecipeCandidate>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -1241,6 +1247,7 @@ pub fn synthesized_ledger(rows: &[Row], verdict: &str, seen: &str) -> Ledger {
         escapes: 0,
         recoveries: 0,
         speed: None,
+        recipe: None,
     }
 }
 

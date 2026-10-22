@@ -378,6 +378,7 @@ fn evidence_documents_and_reports_still_withhold_opaque_output() {
         escapes: 0,
         recoveries: 0,
         speed: None,
+        recipe: None,
         failure: Some(qaren::core::LedgerFailure {
             step: 1,
             seen: KEY.into(),

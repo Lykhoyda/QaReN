@@ -21,7 +21,7 @@ import {
 import { parseM7Header, serializeM7Header } from '../domain/reusable-action.js';
 import { atomicWriter } from '../domain/atomic-writer.js';
 import type { Block, Item } from './plan.js';
-import { normalizedSlug, parseStep } from './plan.js';
+import { normalizedSlug, parseStep, slugify } from './plan.js';
 import type { LedgerRow, Selector } from './ledger.js';
 import { type PrivateSet, matchPrivate, planLineBody, projectPlanLine } from './privacy.js';
 
@@ -95,6 +95,63 @@ const needsSelector = (item: Item): boolean =>
   item.kind === 'wait' ||
   (item.kind === 'scroll' && item.until !== undefined);
 
+export function persistedItemHit(
+  item: Item,
+  selector: Selector | undefined,
+  privateSet: PrivateSet,
+): boolean {
+  return (
+    projectPlanLine(item.raw, privateSet, 'persisted').hit ||
+    [
+      ...(item.kind === 'fill'
+        ? [item.input ?? item.text]
+        : item.kind === 'echo'
+          ? [item.input]
+          : item.kind === 'check' && item.literal
+            ? [item.text]
+            : []),
+      selector?.id ?? selector?.text ?? '',
+    ].some((text) => matchPrivate(text, privateSet, 'persisted').hit)
+  );
+}
+
+// The canonical saved plan holds only the # title, block titles and raw plan lines, each checked like a block file.
+export function recipeMarkdown(
+  title: string | undefined,
+  blocks: readonly Block[],
+  privateSet: PrivateSet,
+): { slug: string; markdown: string } | { unsavable: string } {
+  const withheld = { unsavable: 'contains a protected plan-typed value' };
+  const hit = (text: string): boolean => matchPrivate(text, privateSet, 'persisted').hit;
+  if (
+    (title !== undefined && hit(title)) ||
+    blocks.some(
+      (block) =>
+        hit(block.title) ||
+        hit(block.slug) ||
+        block.items.some((item) => persistedItemHit(item, undefined, privateSet)),
+    )
+  )
+    return withheld;
+  let slug: string;
+  try {
+    slug = slugify(title ?? blocks[0].title);
+  } catch {
+    return withheld;
+  }
+  if (hit(slug)) return withheld;
+  const lines = title !== undefined ? [`# ${title}`, '', '## QA'] : ['## QA'];
+  for (const block of blocks)
+    lines.push('', `### ${block.title}`, ...block.items.map((i) => i.raw));
+  const admission = [
+    title ?? '',
+    ...blocks.flatMap((block) => [block.title, ...block.items.map((i) => planLineBody(i.raw))]),
+  ].join('\n');
+  return matchPrivate(admission, { values: privateSet.values }, 'persisted').hit
+    ? withheld
+    : { slug, markdown: `${lines.join('\n')}\n` };
+}
+
 export function serializeBlock(
   block: Block,
   rows: readonly Pick<LedgerRow, 'block' | 'line' | 'outcome' | 'selector'>[],
@@ -129,20 +186,7 @@ export function serializeBlock(
               : `line ${item.line}: element has no testID or label`,
         };
     }
-    if (
-      projectPlanLine(item.raw, privateSet, 'persisted').hit ||
-      protectedContent([
-        ...(item.kind === 'fill'
-          ? [item.input ?? item.text]
-          : item.kind === 'echo'
-            ? [item.input]
-            : item.kind === 'check' && item.literal
-              ? [item.text]
-              : []),
-        selector?.id ?? selector?.text ?? '',
-      ])
-    )
-      return withheld;
+    if (persistedItemHit(item, selector, privateSet)) return withheld;
     lines.push(`# ${item.raw}`, ...commandsFor(item, selector, meta.platform));
   }
   const serialized = `${lines.join('\n')}\n`;

@@ -217,6 +217,9 @@ and install 2.0 as a new product.
 | `.rn-agent/config.json` and `.rn-agent/actions/` learned actions in the app | `.qaren/config.yaml` and `.qaren/actions/` saved blocks written from passing plan blocks |
 | `~/.cache/rn-dev-agent/` (maestro-runner pin cache), `~/.rn-dev-agent/` (action database, device helper state), `~/.claude/rn-agent/` | `~/.qaren/runtime/`, `~/.qaren/state/`, `~/.qaren/runs/`, `~/.qaren/locks/` |
 
+A `.qaren/config.yaml` carrying `savePlans` needs a 2.0 CLI; an earlier CLI refuses it as an
+unknown key. Existing `.qaren/plans/*.md` files are listed and run as [saved plans](#saved-plans).
+
 1. **Remove the 1.x plugin and its MCP registration.** The MCP server ships
    inside the plugin, so uninstalling the plugin removes its registration.
 
@@ -1866,6 +1869,41 @@ captures (a crash or restart), or a snapshot or platform-presence capture report
 `NATIVE_CAPTURE_UNAVAILABLE` refusal. An initial capture that does not report the process
 refuses `APP_PROCESS_UNKNOWN`; a runner built from an older checkout needs a rebuild
 (`RN_RUNNER_BUILD=local`).
+
+### Saved plans
+
+`qaren check` keeps a fully passing plan in the app's `.qaren/plans/`, and `qaren plans [--json]`,
+run from the app directory, lists each `.qaren/plans/*.md` file with its `#` title, `###` block
+titles and the platforms it is flagged broken on. Listing skips symlinked files, refuses a symlinked
+`.qaren` or `.qaren/plans`, and masks `QAREN_INPUT_*` values.
+
+The saved file is a canonical copy built by the core, not the draft's bytes: the `#` title if any,
+`## QA`, then each block's `###` title and raw plan lines in order. Prose, comments and other
+sections are dropped; the kept lines are unchanged, so block slugs and plan hashes match and saved
+blocks keep replaying. The name is the slug of the `#` title, else of the first block title. Every
+saved line passes the same privacy check as a [saved block](#saved-blocks); a hit, or a literal
+fill into a private input, withholds the whole file with a value-free reason, and the CLI also
+refuses a copy containing a `QAREN_INPUT_*` value. Writes are exclusive: identical bytes report
+`unchanged`, different bytes take the next free suffix (`-2` to `-99`), and no file is overwritten.
+A plan run from `.qaren/plans/` is never saved again, and `qaren pr` never saves.
+
+A `check` of a file in `.qaren/plans/` flags or clears it only when the candidate has no local
+changes (`.qaren` excluded) and `HEAD` is the commit of the local `refs/remotes/origin/HEAD`, which
+is never fetched. A step failure adds `<!-- qaren:broken <platform> -->` at the top; refusals,
+synthesized core failures, candidate drift and cancelled runs never flag. A PASS removes that
+platform's marker. Markers are comments, so a flagged plan still runs. A bare
+`<!-- qaren:broken -->` counts as broken on every platform and is left for you to remove. A file
+edited during the run is left alone.
+
+The receipt's `recipe` field reports `{outcome, path?, reason?}` and stderr prints
+`plan: <outcome> <path or reason>`; neither changes the result or exit code. Outcomes are `saved`,
+`unchanged`, `flagged`, `cleared`, `not_saved` (`disabled`, `pull request run`, a privacy reason,
+`contains a runtime input value`, `unsafe .qaren/plans`, `could not write`, `too many variants`)
+and `not_marked` (`disabled`, `local changes`, `not the default-branch commit`,
+`default branch unknown`, `changed during the run`, `could not write`). A draft run that does not
+pass has no `recipe` field. Set `savePlans: false` in `.qaren/config.yaml` to turn off saving and
+flagging; listing still works. Saved files stay untracked until you commit them, and for an app
+nested in its repository they do not make the next run's candidate dirty.
 
 ### Step recovery
 

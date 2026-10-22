@@ -1461,6 +1461,84 @@ fn assert_direct_ios_launch(mock: &MockRunner) {
     );
 }
 
+fn script_recipe_walk(mock: &mut MockRunner, repo: &Path, ledger: &str, exit: i32) {
+    script_preflight(mock, repo);
+    script_provision(mock);
+    mock.expect_run("(exclude).qaren/actions", CmdOutput::success(""));
+    script_host_probe(mock, UDID, hosts_absent());
+    mock.expect_spawn_piped(
+        "walk.js",
+        9000,
+        &format!("{}\n", envelope(2, "result", ledger)),
+        Some(exit),
+    );
+    script_core_identity(mock);
+    mock.expect_run("(exclude).qaren/actions", CmdOutput::success(""));
+    script_teardown_after_drift(
+        mock,
+        CmdOutput::success("1 1 S\n6000 6000 S\n"),
+        false,
+        UDID,
+        Some(hosts_absent()),
+    );
+}
+
+#[test]
+fn a_fully_passing_draft_is_saved_into_the_plan_book_and_kept_out_of_run_evidence() {
+    let (repo, app) = app_repo();
+    let mut mock = MockRunner::new();
+    let ledger = r###"{"verdict":"PASS","path":"walk","blocks":[{"key":"plan","outcome":"pass","source":"discovered"}],"steps":[],"jev":{"calls":0,"medianMs":0},"llmTurns":0,"escapes":0,"recoveries":0,"recipe":{"slug":"plan","markdown":"## QA\n\n### plan\n1. Tap \"Tasks\"\n"}}"###;
+    script_recipe_walk(&mut mock, &repo, ledger, 0);
+
+    let receipt = run(&mut mock, &request(&repo, &app, 30));
+
+    assert_eq!(receipt.result, ReceiptResult::Pass, "{:?}", receipt.failure);
+    assert_eq!(mock.remaining(), 0);
+    let saved = app.canonicalize().unwrap().join(".qaren/plans/plan.md");
+    assert_eq!(
+        receipt.recipe,
+        Some(qaren::recipes::RecipeOutcome {
+            outcome: qaren::recipes::Outcome::Saved,
+            path: Some(saved.clone()),
+            reason: None,
+        })
+    );
+    assert_eq!(
+        std::fs::read_to_string(&saved).unwrap(),
+        "## QA\n\n### plan\n1. Tap \"Tasks\"\n"
+    );
+    let evidence = std::fs::read_to_string(&receipt.artifacts["ledger"]).unwrap();
+    assert!(!evidence.contains("recipe"), "{evidence}");
+}
+
+#[test]
+fn a_saved_plan_that_fails_on_local_changes_is_left_unmarked() {
+    let (repo, app) = app_repo();
+    let book = app.join(".qaren/plans");
+    std::fs::create_dir_all(&book).unwrap();
+    let plan = "1. Tap \"Tasks\"\n✓ \"Tasks\"\n";
+    std::fs::write(book.join("tasks.md"), plan).unwrap();
+    let mut mock = MockRunner::new();
+    let ledger = r#"{"verdict":"FAIL","path":"walk","blocks":[{"key":"plan","outcome":"fail","source":"discovered"}],"steps":[],"jev":{"calls":0,"medianMs":0},"llmTurns":0,"escapes":0,"recoveries":0,"failure":{"step":2,"seen":"no Tasks"}}"#;
+    script_recipe_walk(&mut mock, &repo, ledger, 1);
+    let mut req = request(&repo, &app, 30);
+    req.plan_file = book.join("tasks.md");
+
+    let receipt = run(&mut mock, &req);
+
+    assert_eq!(receipt.result, ReceiptResult::Fail, "{:?}", receipt.failure);
+    assert_eq!(mock.remaining(), 0);
+    assert_eq!(
+        receipt.recipe,
+        Some(qaren::recipes::RecipeOutcome {
+            outcome: qaren::recipes::Outcome::NotMarked,
+            path: None,
+            reason: Some("local changes".into()),
+        })
+    );
+    assert_eq!(std::fs::read_to_string(book.join("tasks.md")).unwrap(), plan);
+}
+
 #[test]
 fn the_receipt_names_written_blocks_and_paths_the_walk_changed_outside_them() {
     let (repo, app) = app_repo();

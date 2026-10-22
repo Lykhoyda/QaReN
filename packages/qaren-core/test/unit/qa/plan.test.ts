@@ -420,3 +420,16 @@ test('named fixture grammar is finite and literal fill shapes remain unchanged',
     assert.equal(planNeedsJev(`1. ${text}`), false);
   }
 });
+
+test('broken markers are comments: a flagged plan parses to the same blocks', () => {
+  const plan = '# Login\n\n## QA\n\n### Login\n1. Tap "Sign in"\n✓ "Welcome"\n';
+  const shape = (markdown: string) =>
+    parsePlan(markdown).blocks?.map(({ slug, title, planHash, items }) => ({
+      slug,
+      title,
+      planHash,
+      raw: items.map((item) => item.raw),
+    }));
+  for (const marker of ['<!-- qaren:broken ios -->', '<!-- qaren:broken -->'])
+    assert.deepEqual(shape(`${marker}\n${plan}`), shape(plan));
+});

@@ -267,6 +267,7 @@ for (const label of [
     const f = fake([screen([label])]);
     const ledger = await runPlan([block('✓ "Missing"\n')], f.deps);
     assert.equal(ledger.verdict, 'FAIL');
+    assert.equal(ledger.recipe, undefined);
     assert.equal(ledger.jev.calls, 0);
     const seen = ledger.failure?.seen ?? '';
     assert.match(
@@ -284,6 +285,7 @@ test('a passing literal plan has no app text frames in its ledger', async () => 
   const f = fake([screen(['Welcome'])]);
   const ledger = await runPlan([block('✓ "Welcome"\n')], f.deps);
   assert.equal(ledger.verdict, 'PASS');
+  assert.deepEqual(ledger.recipe, { slug: 'plan', markdown: '## QA\n\n### plan\n✓ "Welcome"\n' });
   assert.doesNotMatch(JSON.stringify(ledger), /<\/?app-text\b/);
   assert.doesNotMatch(JSON.stringify(ledger), /[\uE0F0\uE0F1]/u);
 });

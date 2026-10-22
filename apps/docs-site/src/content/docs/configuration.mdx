@@ -27,6 +27,7 @@ loginMarker:
 | `registryAuthEnv` | list of strings  | `[]`    | Names, never values, of extra environment variables kept for private-registry auth during dependency install and Expo prebuild, whose output is then withheld; see the [registry-auth policy](https://github.com/Lykhoyda/rn-dev-agent/blob/develop/packages/qaren-cli/README.md#check-a-plan). |
 | `loginBlock`      | string           | —       | The slug of a saved block that signs in; see [login recovery](../saved-blocks/#login-recovery). |
 | `loginMarker`     | object           | —       | What shows the login screen: exactly one non-empty `id` (a `testID`) or `text` (a label).     |
+| `savePlans`       | boolean          | `true`  | Whether `check` saves fully passing plans into `.qaren/plans/` and flags or clears saved plans; see [saved plans](../plans/#saved-plans). |
 | `ios`             | object           | —       | iOS settings, below.                                                                          |
 | `android`         | object           | —       | Android settings, below.                                                                      |
 | `deadlines`       | object           | See below | Preparation budgets; see [deadlines](#deadlines).                                           |

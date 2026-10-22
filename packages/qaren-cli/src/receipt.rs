@@ -135,6 +135,8 @@ pub struct Receipt {
     pub blocks_not_saved: Vec<BlockNotSaved>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub worktree_drift: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub recipe: Option<crate::recipes::RecipeOutcome>,
     pub next_action: String,
 }
 
@@ -173,6 +175,7 @@ impl Receipt {
             blocks_written: Vec::new(),
             blocks_not_saved: Vec::new(),
             worktree_drift: Vec::new(),
+            recipe: None,
             next_action: String::new(),
         }
     }

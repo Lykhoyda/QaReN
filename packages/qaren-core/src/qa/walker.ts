@@ -46,6 +46,7 @@ import {
   type StoredBlock,
   loadBlock,
   readBlock,
+  recipeMarkdown,
   serializeBlock,
   storedFits,
   writeBlock,
@@ -2610,6 +2611,7 @@ export async function runPlan(
   deps: WalkerDeps,
   preflightCalls: readonly JevCall[] = [],
   store?: BlockStore,
+  title?: string,
 ): Promise<WalkResult> {
   return measureTiming(deps.timing, deps.now, 'walk', async () => {
     const walking = withRowTiming(deps);
@@ -2627,6 +2629,7 @@ export async function runPlan(
       deps.login?.block?.items.flatMap((i) => (i.kind === 'fill' ? [fillText(i)] : [])) ?? [],
     );
     let recoveries = 0;
+    const privateFills: number[] = [];
     // A login replay before any plan pass opens the publishable window.
     const videoPublication = (): NonNullable<WalkResult['videoPublication']> =>
       currentInputs()?.hasInputs ||
@@ -2664,6 +2667,7 @@ export async function runPlan(
         operations,
       );
       recoveries += outcome.recoveries ?? 0;
+      privateFills.push(...(outcome.privateFills ?? []));
       return outcome;
     };
     const path = (): LedgerPath =>
@@ -2719,6 +2723,10 @@ export async function runPlan(
           sequence.publicationInterrupted || deps.publicationInterrupted?.() === true,
       };
       if (store) ledger.blocksWritten = written;
+      if (ledger.verdict === 'PASS' && !outcome?.refusal && !deps.cancelled?.())
+        ledger.recipe = privateFills.length
+          ? { unsavable: `line ${Math.min(...privateFills)}: fills a private input` }
+          : recipeMarkdown(title, blocks, privacy.privateSet('persisted'));
       return outcome?.refusal
         ? {
             ...ledger,

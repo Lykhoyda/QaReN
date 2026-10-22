@@ -68,6 +68,7 @@ export interface Ledger {
   recoveries: number;
   speed?: LedgerSpeed;
   failure?: LedgerFailure;
+  recipe?: { slug: string; markdown: string } | { unsavable: string };
 }
 
 export interface RefusedLedger extends Omit<Ledger, 'verdict'> {

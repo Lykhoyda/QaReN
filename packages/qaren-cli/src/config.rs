@@ -32,6 +32,8 @@ pub struct CheckConfig {
     pub login_block: Option<String>,
     #[serde(default)]
     pub login_marker: Option<LoginMarker>,
+    #[serde(default)]
+    pub save_plans: Option<bool>,
     // Nested keys stay snake_case; this block does not inherit camelCase.
     #[serde(default)]
     pub deadlines: Deadlines,
@@ -106,7 +108,7 @@ impl CheckConfig {
                 "config",
                 FailureCode::ScenarioInvalid,
                 format!("{} does not parse as check configuration", path.display()),
-                "fix .qaren/config.yaml (keys: appId, packageManager, metroPort, ios, android, nodePath, devClientScheme, loginBlock, loginMarker, registryAuthEnv, deadlines)",
+                "fix .qaren/config.yaml (keys: appId, packageManager, metroPort, ios, android, nodePath, devClientScheme, loginBlock, loginMarker, savePlans, registryAuthEnv, deadlines)",
             )
         })?;
         config.validate(path)?;
