@@ -1634,7 +1634,7 @@ fn a_saved_plan_that_fails_without_a_step_failure_on_the_default_branch_is_left_
         Some(qaren::recipes::RecipeOutcome {
             outcome: qaren::recipes::Outcome::NotMarked,
             path: None,
-            reason: Some("not a step failure".into()),
+            reason: Some("not a definite step failure".into()),
         })
     );
     assert_eq!(std::fs::read_to_string(&saved).unwrap(), plan);
