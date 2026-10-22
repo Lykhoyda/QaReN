@@ -416,7 +416,11 @@ fn prepare_validated(
             "lease",
             FailureCode::OwnershipUnproven,
             "this prepare process's birth identity could not be proven, so it cannot hold a device lease",
-            "ensure ps can read this process's start time, then re-run",
+            if pool_scan.is_some() {
+                "ensure ps can read this process's start time, then re-run, or pass --new for a temporary simulator"
+            } else {
+                "ensure ps can read this process's start time, then re-run"
+            },
         ));
     }
     let node = std::env::var_os("QAREN_NODE")

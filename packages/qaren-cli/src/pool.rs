@@ -107,7 +107,8 @@ pub fn write(pool_root: &Path, member: &PoolMember) -> Result<(), Failure> {
             )?;
             file.sync_all()
         })
-        .and_then(|_| std::fs::rename(&tmp, &path));
+        .and_then(|_| std::fs::rename(&tmp, &path))
+        .and_then(|_| std::fs::File::open(ios_dir(pool_root))?.sync_all());
     result.map_err(|e| {
         let _ = std::fs::remove_file(&tmp);
         Failure::new(
@@ -121,6 +122,9 @@ pub fn write(pool_root: &Path, member: &PoolMember) -> Result<(), Failure> {
 
 // Members whose UDID the inventory still shows; `inventory_json` must come from a clean strict read.
 pub fn present(members: &[PoolMember], inventory_json: &str) -> Vec<PoolMember> {
+    if !inventory_complete(inventory_json) {
+        return members.to_vec();
+    }
     members
         .iter()
         .filter(|m| {
@@ -131,6 +135,29 @@ pub fn present(members: &[PoolMember], inventory_json: &str) -> Vec<PoolMember> 
         })
         .cloned()
         .collect()
+}
+
+// Absence is proof only when every listed device carries a canonical UUID.
+fn inventory_complete(inventory_json: &str) -> bool {
+    let Ok(parsed) = serde_json::from_str::<serde_json::Value>(inventory_json) else {
+        return false;
+    };
+    parsed
+        .get("devices")
+        .and_then(|d| d.as_object())
+        .is_some_and(|devices| {
+            devices.values().all(|list| {
+                list.as_array().is_some_and(|list| {
+                    list.iter().all(|device| {
+                        device
+                            .get("udid")
+                            .and_then(|u| u.as_str())
+                            .and_then(ios::canonical_udid)
+                            .is_some()
+                    })
+                })
+            })
+        })
 }
 
 // UDIDs are never reissued, so a record whose simulator is proven gone can be dropped.
@@ -254,6 +281,12 @@ mod tests {
         assert_eq!(
             unparseable, members,
             "an unreadable inventory proves nothing"
+        );
+        let incomplete = r#"{"devices":{"com.apple.CoreSimulator.SimRuntime.iOS-26-4":[{}]}}"#;
+        assert_eq!(
+            present(&members, incomplete),
+            members,
+            "an entry without a UUID proves nothing"
         );
         prune(&root, &members, &unparseable).unwrap();
         assert!(record_path(&root, A).exists());
