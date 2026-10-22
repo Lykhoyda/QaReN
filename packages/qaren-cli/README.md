@@ -1723,7 +1723,9 @@ metadata and ACL checks. Only operating-system symlinks in trusted root-owned,
 nonwritable parents may be followed. Claims are published from private staging
 directories and holder files by atomic no-replace rename; unsupported rename
 refuses. Another user's claim blocks without reading its holder, probing or
-signaling its process, adopting, moving or deleting it. Same-user claims retain
+signaling its process, adopting, moving or deleting it, so on a machine shared
+with other users their entry can hold a device until `QAREN_MACHINE_LOCKS=0` or a
+private `QAREN_LOCK_ROOT` is used. Same-user claims retain
 the caller's strict or adopt-dead policy. Deletion requires a verified owned lock
 containing only its holder record.
 

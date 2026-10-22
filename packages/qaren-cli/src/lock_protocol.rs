@@ -325,7 +325,10 @@ fn contended_untrusted(leaf: &Path) -> LockOutcome {
     LockOutcome::Contended {
         holder: None,
         liveness: None,
-        detail: format!("lock {} is not a trusted same-user claim", leaf.display()),
+        detail: format!(
+            "lock {} is not a trusted same-user claim; QAREN_MACHINE_LOCKS=0 or an absolute QAREN_LOCK_ROOT selects a private root",
+            leaf.display()
+        ),
     }
 }
 
