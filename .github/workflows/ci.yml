@@ -74,7 +74,9 @@ jobs:
         run: node --test scripts/test/check-document-ownership.test.ts
 
       - name: QaReN device-gate and native-command unit tests
-        run: node --test scripts/test/assert-qaren-check.test.ts scripts/test/gate-qaren-check.test.ts scripts/test/native-ios-command.test.ts
+        run: |
+          node --test scripts/test/assert-qaren-check.test.ts scripts/test/gate-qaren-check.test.ts scripts/test/native-ios-command.test.ts
+          bash scripts/test/qaren-sim-sandbox.test.sh
 
       - name: qaren tarball, SessionStart hook and install unit tests
         run: |
