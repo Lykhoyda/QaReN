@@ -1631,3 +1631,51 @@ fn admission_facts_reach_private_diagnostics_only_as_allowlisted_admission_point
         assert_eq!(got, expected);
     });
 }
+
+#[test]
+fn exact_selection_refusal_classes_survive_private_diagnostics() {
+    use qaren::redact::{with_input_scope, InputValues};
+    use serde_json::json;
+    use std::ffi::OsString;
+    use std::sync::Arc;
+    let repo = common::temp_repo();
+    let inputs = Arc::new(InputValues::from_entries([(
+        OsString::from("QAREN_INPUT_PASSWORD"),
+        OsString::from("private-synthetic-value"),
+    )]));
+    let expected: Vec<serde_json::Value> = [
+        "target_selection_device_not_found",
+        "target_selection_device_ambiguous",
+        "target_selection_bundle_not_found",
+    ]
+    .iter()
+    .map(|inner| {
+        json!({
+            "kind": "metric", "stage": "admission", "edge": "point", "outcome": "failed",
+            "at": 1000, "admission": "refused", "attempt": 1, "lastStarted": "attach",
+            "lastCompleted": "none", "attachStage": "connect_exact", "inner": inner,
+            "relaunches": 0, "relaunchFailed": false, "liveness": "not_probed",
+            "elapsedMs": 900, "remainingMs": 100, "budgetMs": 1000
+        })
+    })
+    .collect();
+    let mut stdout = String::new();
+    for (i, value) in expected.iter().enumerate() {
+        stdout.push_str(&envelope(i as u64 + 2, "diagnostic", &value.to_string()));
+        stdout.push('\n');
+    }
+    stdout.push_str(&envelope(expected.len() as u64 + 2, "result", &pass_ledger(&[])));
+    stdout.push('\n');
+    with_input_scope(inputs, || {
+        let mut mock = MockRunner::new();
+        mock.expect_spawn_piped("walk.js", 9000, &stdout, Some(0));
+        let result = run_child(&mut mock, &repo.join("core.log"));
+        assert_eq!(result.verdict, Verdict::Pass);
+        let stored = std::fs::read_to_string(repo.join("core-diagnostics.jsonl")).unwrap();
+        let got: Vec<serde_json::Value> = stored
+            .lines()
+            .map(|line| serde_json::from_str(line).unwrap())
+            .collect();
+        assert_eq!(got, expected);
+    });
+}
