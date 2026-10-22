@@ -812,6 +812,18 @@ test('a live app whose bundle request is in flight is never relaunched', async (
   assert.equal(rest.liveness, 'alive');
 });
 
+test('a live app whose bundle request was received before its build started is never relaunched', async () => {
+  let probes = 0;
+  const signal = { path: '/run/logs/metro.bundle-requests', atLaunch: 0 };
+  const stall = launcherStall(async () => {
+    probes++;
+    return bundleRequestedSinceLaunch(signal, () => '1\n');
+  });
+  await refusalOf(stall.admitted);
+  assert.equal(stall.relaunches(), 0, 'a cold dependency graph still has the request in flight');
+  assert.equal(probes, 1, 'the one relaunch is decided once');
+});
+
 for (const [name, bundleRequested] of [
   ['an unknown bundle signal', async () => undefined],
   ['a failing bundle signal', async () => assert.fail('signal unreadable')],
@@ -858,7 +870,7 @@ test('the bundle signal compares the drained count with the count at launch', ()
   assert.equal(
     bundleRequestedSinceLaunch(signal, read(Object.assign(new Error('gone'), { code: 'ENOENT' }))),
     undefined,
-    'an absent count means Metro never enabled its event log',
+    'an absent count means Metro never logged a request',
   );
 });
 

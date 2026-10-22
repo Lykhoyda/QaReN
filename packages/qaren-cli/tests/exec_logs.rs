@@ -148,12 +148,16 @@ fn a_log_without_a_private_key_keeps_every_line() {
     }
 }
 
-fn drained_bundle_requests(script: &str, events: bool) -> (Option<String>, String) {
+fn drained_bundle_requests(lines: &[&str], counted: bool) -> (Option<String>, String) {
     let dir = common::temp_repo();
     let log = dir.join("metro.log");
-    let mut spec = shell(&format!("{script}\nprintf 'tail line\\n'\n: > done"), &dir);
-    if events {
-        spec = spec.env(qaren::exec::log::EXPO_EVENTS_ENV, "2");
+    let script: String = lines
+        .iter()
+        .map(|line| format!("printf '%s\\n' '{line}' >&2\n"))
+        .collect();
+    let mut spec = shell(&format!("{script}printf 'tail line\\n'\n: > done"), &dir);
+    if counted {
+        spec = spec.env("DEBUG", qaren::exec::log::METRO_REQUEST_LOG);
     }
     let mut runner = RealRunner::with_log_executable(env!("CARGO_BIN_EXE_qaren").into());
     runner.spawn_group(&spec, &log).unwrap();
@@ -171,44 +175,59 @@ fn drained_bundle_requests(script: &str, events: bool) -> (Option<String>, Strin
     (count, stored)
 }
 
-const EVENT_INIT: &str = r#"{"_e":"root:init","_t":1,"format":"v0-jsonl","version":"57.0.32"}"#;
-const BUNDLE_STARTED: &str = r#"{"_e":"metro:bundling:started","_t":2,"id":"7","platform":"ios","environment":null,"entry":"index.ts"}"#;
-const SECOND_BUNDLE_STARTED: &str = r#"{"_e":"metro:bundling:started","_t":4,"id":"8","platform":"ios","environment":null,"entry":"index.ts"}"#;
-const BUNDLE_DONE: &str = r#"{"_e":"metro:bundling:done","_t":3,"id":"7","total":10,"ms":5}"#;
+const PROBE: &str = "2026-10-22T08:46:08.100Z Metro:Server Handling request: /qaren-request-probe";
+const BUNDLE: &str =
+    "2026-10-22T08:46:09.200Z Metro:Server Handling request: /index.bundle?platform=ios&dev=true";
+const JSC_SAFE_BUNDLE: &str =
+    "2026-10-22T08:46:10.300Z Metro:Server Handling request: /index.bundle//&platform=ios&dev=true";
+const SOURCE_MAP: &str =
+    "2026-10-22T08:46:11.400Z Metro:Server Handling request: /index.map?platform=ios&dev=true";
+
+#[test]
+fn a_bundle_request_counts_on_receipt_before_any_build_starts() {
+    let (count, _) = drained_bundle_requests(&[PROBE, BUNDLE], true);
+    assert_eq!(count.as_deref(), Some("1\n"));
+}
+
+#[test]
+fn only_bundle_paths_count_including_metros_jsc_safe_form() {
+    let (count, _) = drained_bundle_requests(&[PROBE, JSC_SAFE_BUNDLE, SOURCE_MAP, PROBE], true);
+    assert_eq!(count.as_deref(), Some("1\n"));
+    let (count, _) = drained_bundle_requests(&[PROBE, SOURCE_MAP], true);
+    assert_eq!(
+        count.as_deref(),
+        Some("0\n"),
+        "a logged request arms the count"
+    );
+}
 
 #[test]
 fn the_metro_drain_counts_bundle_requests_value_free_even_when_its_log_is_withheld() {
-    let script = format!(
-        "printf '%s\\n' '{EVENT_INIT}' >&2\nprintf '%s\\n' '{BUNDLE_STARTED}' >&2\nprintf 'quoting a private key\\n'\nprintf '%s\\n' '{BUNDLE_DONE}' >&2\nprintf 'iOS Bundled 5ms index.ts (10 modules)\\n'\nprintf '%s\\n' '{SECOND_BUNDLE_STARTED}' >&2"
+    let (count, stored) = drained_bundle_requests(
+        &[
+            PROBE,
+            BUNDLE,
+            "quoting a private key",
+            "iOS Bundled 5ms index.ts (10 modules)",
+            JSC_SAFE_BUNDLE,
+        ],
+        true,
     );
-    let (count, stored) = drained_bundle_requests(&script, true);
     assert_eq!(count.as_deref(), Some("2\n"));
     assert_eq!(stored, format!("{PRIVATE_KEY_WITHHELD}\n"));
 }
 
 #[test]
-fn the_bundle_request_count_exists_only_once_expo_announces_its_event_log() {
-    let (count, _) = drained_bundle_requests(&format!("printf '%s\\n' '{EVENT_INIT}' >&2"), true);
-    assert_eq!(
-        count.as_deref(),
-        Some("0\n"),
-        "an enabled event log with no request"
-    );
-    let (count, _) = drained_bundle_requests(
-        &format!("printf 'iOS Bundled 5ms index.ts (10 modules)\\n'\nprintf '%s\\n' '{BUNDLE_STARTED}' >&2"),
-        true,
-    );
+fn the_bundle_request_count_exists_only_once_metro_logs_a_request() {
+    let (count, _) = drained_bundle_requests(&["iOS Bundled 5ms index.ts (10 modules)"], true);
     assert_eq!(
         count, None,
-        "an Expo without the event log leaves the signal unknown"
+        "a Metro that never logged a request leaves the signal unknown"
     );
-    let (count, _) = drained_bundle_requests(
-        &format!("printf '%s\\n' '{EVENT_INIT}' >&2\nprintf '%s\\n' '{BUNDLE_STARTED}' >&2"),
-        false,
-    );
+    let (count, _) = drained_bundle_requests(&[PROBE, BUNDLE], false);
     assert_eq!(
         count, None,
-        "only a command that enabled the event log is counted"
+        "only a command that enabled the request log is counted"
     );
 }
 

@@ -1433,12 +1433,29 @@ fn metro_never_passes_ci_into_app_config_evaluation() {
 }
 
 #[test]
-fn metro_writes_its_event_log_to_the_drained_stderr() {
+fn metro_logs_each_request_on_receipt_to_the_drained_stderr() {
     let spec = metro::start_spec(Path::new("/repo/app"), 8791);
     assert!(spec.env.contains(&(
-        qaren::exec::log::EXPO_EVENTS_ENV.to_string(),
-        "2".to_string()
+        "DEBUG".to_string(),
+        qaren::exec::log::METRO_REQUEST_LOG.to_string()
     )));
+    assert!(!spec.env.iter().any(|(k, _)| k == "LOG_EVENTS"));
+}
+
+#[test]
+fn the_request_probe_hits_a_non_bundle_path_on_the_runs_metro() {
+    let spec = metro::request_probe_spec(8791);
+    assert_eq!(spec.label, "metro-request-probe");
+    assert_eq!(
+        spec.args,
+        [
+            "-s",
+            "-o",
+            "/dev/null",
+            "http://127.0.0.1:8791/qaren-request-probe"
+        ],
+        "a 404 from the unhandled path is the expected answer"
+    );
 }
 
 #[test]

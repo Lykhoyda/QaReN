@@ -2014,11 +2014,14 @@ not trigger relaunch. Before a relaunch for a missing target, admission uses the
 [iOS app-job liveness rule](#check-a-plan). A live app skips that no-target
 relaunch and keeps waiting within the same deadline, unless Metro has seen no
 bundle request since the CLI launched the app: then the dev client sits on its
-launcher and gets the one relaunch. The CLI counts Metro's bundle requests
-value-free inside its Metro log drain from Expo's `LOG_EVENTS` event log, even
-when that log is withheld; when that count is unavailable (an Expo CLI without
-the event log, or Metro owned by an `expo run:*` build) a live app keeps the
-skip. `core.log` records which way the decision went. An absent job or failed
+launcher and gets the one relaunch. The CLI enables Metro's `Metro:Server`
+request debug log and probes it once before launch; its Metro log drain counts
+bundle requests on receipt, before any dependency-graph wait, value-free and
+also when that log is withheld. Without a logged request (a failed probe, a
+Metro without that log, or Metro owned by an `expo run:*` build) the signal
+stays unknown and a live app keeps the skip. The count covers the whole
+Metro server, so another simulator's bundle request also keeps the skip.
+`core.log` records which way the decision went. An absent job or failed
 probe permits recovery as before. Skipping
 does not consume the one relaunch for persistent runtime-probe or
 WebSocket-handshake timeouts, and a target that registers late gets the same

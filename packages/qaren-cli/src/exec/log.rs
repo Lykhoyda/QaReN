@@ -12,10 +12,9 @@ pub const WITHHOLD_ARG: &str = "--private-output-withheld";
 pub const PAIRED_ARG: &str = "--stderr-fd3";
 const KEY_CONTROL_ARG: &str = "--redaction-key-control";
 const BUNDLE_REQUESTS_ARG: &str = "--bundle-requests";
-// Expo writes its JSONL event log where this names; a command that sets it gets its bundle requests counted.
-pub const EXPO_EVENTS_ENV: &str = "LOG_EVENTS";
-const EVENT_LOG_STARTED: &[u8] = br#"{"_e":"root:init""#;
-const BUNDLE_REQUESTED: &[u8] = br#"{"_e":"metro:bundling:started""#;
+// A command whose DEBUG names this namespace gets its bundle requests counted.
+pub const METRO_REQUEST_LOG: &str = "Metro:Server";
+const REQUEST_RECEIVED: &str = "Metro:Server Handling request: ";
 const DRAIN_TIMEOUT: Duration = Duration::from_secs(5);
 const MAX_LINE: usize = 64 * 1024;
 
@@ -180,7 +179,7 @@ pub fn read_bundle_requests(log: &Path) -> Option<u64> {
         .ok()
 }
 
-// A value-free count, present only once Expo's event log announced itself, so an absent file means unknown.
+// A value-free count, present only once Metro logged a request, so an absent file means unknown.
 struct BundleRequests {
     path: PathBuf,
     count: Option<u64>,
@@ -188,11 +187,21 @@ struct BundleRequests {
 
 impl BundleRequests {
     fn observe(&mut self, line: &[u8]) -> io::Result<()> {
-        let count = match self.count {
-            None if line.starts_with(EVENT_LOG_STARTED) => 0,
-            Some(count) if line.starts_with(BUNDLE_REQUESTED) => count + 1,
-            _ => return Ok(()),
+        let line = String::from_utf8_lossy(line);
+        let Some((_, request)) = line.split_once(REQUEST_RECEIVED) else {
+            return Ok(());
         };
+        let bundle = request
+            .split_whitespace()
+            .next()
+            .and_then(|url| url.split_once(".bundle"))
+            .is_some_and(|(_, rest)| {
+                rest.is_empty() || rest.starts_with('?') || rest.starts_with("//&")
+            });
+        let count = self.count.unwrap_or(0) + u64::from(bundle);
+        if self.count == Some(count) {
+            return Ok(());
+        }
         let partial = self.path.with_extension("bundle-requests.partial");
         std::fs::write(&partial, format!("{count}\n"))?;
         std::fs::rename(&partial, &self.path)?;

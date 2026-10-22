@@ -442,7 +442,11 @@ async function openSession(
                     bundleRequested: async () => {
                       const requested = bundleRequestedSinceLaunch(target.metroBundleRequests!);
                       log(
-                        `relaunch ${requested === false ? 'allowed: no bundle request since launch' : `skipped: bundle request ${requested ? 'seen' : 'unknown'}`}`,
+                        requested === false
+                          ? 'relaunch allowed: Metro received no bundle request since launch'
+                          : requested
+                            ? 'relaunch skipped: Metro received a bundle request'
+                            : 'relaunch skipped: bundle request signal unknown',
                       );
                       return requested;
                     },

@@ -1719,6 +1719,13 @@ pub(crate) fn run_reuse_path(ctx: &mut Ctx, plan: &BuildPlan, t: u64) -> Result<
     wait_metro_responding(ctx)?;
     let t = ctx.mark("metro_ready", t);
 
+    // A failed probe only leaves the bundle-request count unknown, which keeps a live app's relaunch skip.
+    run_budgeted_attempt(
+        ctx,
+        &metro::request_probe_spec(metro_port),
+        deadline,
+        &mut 0,
+    )?;
     let manifest = metro::manifest_spec(metro_port, platform_dir(ctx.record.scenario.platform));
     let mut attempts = 0;
     let mut slow = None;
@@ -2934,6 +2941,7 @@ fn dry_run_receipt(
                 "<udid>",
                 Path::new("<run_dir>/ios-build/<verified-app>.app"),
             ));
+            planned.push(metro::request_probe_spec(port));
             planned.push(metro::manifest_spec(port, "ios"));
             planned.extend(ios::devmenu_defaults_specs("<udid>", &cand.app_id));
             planned.push(ios::launch_spec("<udid>", &cand.app_id, port));
@@ -3060,6 +3068,7 @@ fn dry_run_receipt(
                     | "simctl-install"
                     | "simctl-launch"
                     | "expo-start"
+                    | "metro-request-probe"
                     | "metro-manifest"
                     | "simctl-devmenu-defaults"
                     | "simctl-app-container"
@@ -3070,6 +3079,7 @@ fn dry_run_receipt(
             Platform::Ios => {
                 planned.push(metro::start_spec(&cand.project_root, port));
                 planned.push(ios::install_app_spec("<udid>", &artifact_path));
+                planned.push(metro::request_probe_spec(port));
                 planned.push(metro::manifest_spec(port, "ios"));
                 planned.extend(ios::devmenu_defaults_specs("<udid>", &cand.app_id));
                 planned.push(ios::launch_spec("<udid>", &cand.app_id, port));
@@ -3097,6 +3107,7 @@ fn dry_run_receipt(
                 ));
                 planned.push(android::adb_reverse_spec(adb, server_port, &serial, port));
                 planned.push(metro::start_spec(&cand.project_root, port));
+                planned.push(metro::request_probe_spec(port));
                 planned.push(metro::manifest_spec(port, "android"));
                 planned.push(android::am_start_deeplink_spec(
                     adb,

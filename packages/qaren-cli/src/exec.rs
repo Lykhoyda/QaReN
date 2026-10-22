@@ -478,7 +478,9 @@ impl Runner for RealRunner {
                 &self.log_executable,
                 log_path,
                 spec.withholds_registry_output(),
-                spec.env.iter().any(|(key, _)| key == log::EXPO_EVENTS_ENV),
+                spec.env
+                    .iter()
+                    .any(|(key, value)| key == "DEBUG" && value == log::METRO_REQUEST_LOG),
             )?;
             let mut cmd = Command::new(&spec.program);
             cmd.args(&spec.args)
