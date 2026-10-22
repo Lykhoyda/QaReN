@@ -6,7 +6,7 @@ use std::os::unix::ffi::OsStrExt;
 use std::path::Component;
 use std::sync::atomic::{AtomicU64, Ordering};
 
-pub const MACHINE_LOCKS_OPT_IN: &str = "QAREN_MACHINE_LOCKS";
+pub const MACHINE_LOCKS_ENV: &str = "QAREN_MACHINE_LOCKS";
 
 const HOLDER_LIMIT: usize = 64 * 1024;
 const LINK_BOUND: u32 = 40;
@@ -34,12 +34,12 @@ pub fn resolve_lock_root(explicit: Option<&OsStr>) -> Result<PathBuf, String> {
     absolute_lock_override(raw, true)
 }
 
-pub fn machine_locks_requested(value: Option<&OsStr>) -> Result<bool, String> {
+pub fn machine_locks_enabled(value: Option<&OsStr>) -> Result<bool, String> {
     match value {
-        None => Ok(false),
-        Some(raw) if raw.is_empty() => Ok(false),
-        Some(raw) if raw == OsStr::new("1") => Ok(true),
-        Some(_) => Err("QAREN_MACHINE_LOCKS must be unset or 1".to_string()),
+        None => Ok(true),
+        Some(raw) if raw.is_empty() || raw == OsStr::new("1") => Ok(true),
+        Some(raw) if raw == OsStr::new("0") => Ok(false),
+        Some(_) => Err("QAREN_MACHINE_LOCKS must be unset, 1 or 0".to_string()),
     }
 }
 
@@ -48,7 +48,7 @@ pub fn configured_lock_root(
     machine: Option<&OsStr>,
     home: Option<&OsStr>,
 ) -> Result<PathBuf, String> {
-    if machine_locks_requested(machine)? {
+    if machine_locks_enabled(machine)? {
         return resolve_lock_root(explicit);
     }
     if let Some(raw) = explicit {
@@ -1607,37 +1607,30 @@ mod lock_protocol_tests {
     }
 
     #[test]
-    fn opt_in_keeps_per_home_roots_until_explicitly_enabled() {
+    fn machine_root_is_the_default_and_zero_keeps_per_home_roots() {
         let home = OsStr::new("/tmp/qaren-home-a");
         let other = OsStr::new("/tmp/qaren-home-b");
-        let legacy = configured_lock_root(None, None, Some(home)).unwrap();
+        let off = Some(OsStr::new("0"));
+        let legacy = configured_lock_root(None, off, Some(home)).unwrap();
         assert_eq!(legacy, PathBuf::from("/tmp/qaren-home-a/.qaren/locks"));
-        assert_ne!(
-            legacy,
-            configured_lock_root(None, None, Some(other)).unwrap()
-        );
-        assert_eq!(
-            configured_lock_root(None, Some(OsStr::new("")), Some(home)).unwrap(),
-            legacy
-        );
+        assert_ne!(legacy, configured_lock_root(None, off, Some(other)).unwrap());
         let machine = machine_lock_parent().unwrap().to_path_buf();
         assert_eq!(resolve_lock_root(None).unwrap(), machine);
-        assert_eq!(
-            configured_lock_root(None, Some(OsStr::new("1")), Some(home)).unwrap(),
-            machine
-        );
-        assert_eq!(
-            configured_lock_root(None, Some(OsStr::new("1")), None).unwrap(),
-            machine
-        );
+        for value in [None, Some(OsStr::new("")), Some(OsStr::new("1"))] {
+            assert_eq!(configured_lock_root(None, value, Some(home)).unwrap(), machine);
+            assert_eq!(configured_lock_root(None, value, None).unwrap(), machine);
+        }
         assert!(configured_lock_root(None, Some(OsStr::new("true")), Some(home)).is_err());
+        assert!(configured_lock_root(None, off, None).is_err());
+        assert!(configured_lock_root(Some(OsStr::new("relative/locks")), off, Some(home)).is_err());
         assert!(configured_lock_root(Some(OsStr::new("relative/locks")), None, Some(home)).is_err());
-        assert!(configured_lock_root(Some(OsStr::new("")), Some(OsStr::new("1")), Some(home)).is_err());
+        assert!(configured_lock_root(Some(OsStr::new("")), None, Some(home)).is_err());
         let dotted = OsStr::new("/tmp/../tmp/locks");
         assert_eq!(
-            configured_lock_root(Some(dotted), None, Some(home)).unwrap(),
+            configured_lock_root(Some(dotted), off, Some(home)).unwrap(),
             PathBuf::from(dotted)
         );
+        assert!(configured_lock_root(Some(dotted), None, Some(home)).is_err());
         assert!(configured_lock_root(Some(dotted), Some(OsStr::new("1")), Some(home)).is_err());
         let mut nul = b"/tmp/locks".to_vec();
         nul.insert(4, 0);

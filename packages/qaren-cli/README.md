@@ -228,7 +228,7 @@ and install 2.0 as a new product.
 |---|---|
 | Plugin `rn-dev-agent@rn-dev-agent` from marketplace `rn-dev-agent`, with its bundled MCP server (`cdp_*`, `device_*` tools) | Plugin `qaren@qaren` from marketplace `qaren`, and the `qaren` CLI; no MCP server |
 | `.rn-agent/config.json` and `.rn-agent/actions/` learned actions in the app | `.qaren/config.yaml` and `.qaren/actions/` saved blocks written from passing plan blocks |
-| `~/.cache/rn-dev-agent/` (maestro-runner pin cache), `~/.rn-dev-agent/` (action database, device helper state), `~/.claude/rn-agent/` | `~/.qaren/runtime/`, `~/.qaren/state/`, `~/.qaren/runs/`, `~/.qaren/locks/` |
+| `~/.cache/rn-dev-agent/` (maestro-runner pin cache), `~/.rn-dev-agent/` (action database, device helper state), `~/.claude/rn-agent/` | `~/.qaren/runtime/`, `~/.qaren/state/`, `~/.qaren/runs/`, and device locks in the [machine lock root](#ios-admission-and-cleanup) |
 
 1. **Remove the 1.x plugin and its MCP registration.** The MCP server ships
    inside the plugin, so uninstalling the plugin removes its registration.
@@ -1703,14 +1703,14 @@ invalid or mismatched evidence is reported as `unavailable`, `invalid_evidence`,
 admission: resolve the refusal and start a new run.
 
 Runs and evidence live under `~/.qaren/runs/<run-id>/`; caches also stay under
-HOME. Device and native-build locks default to `~/.qaren/locks`.
-`QAREN_MACHINE_LOCKS` is off when unset or empty; `1` enables it, and any other
-value refuses. An absolute `QAREN_LOCK_ROOT` takes precedence in either mode:
-sessions using different roots do not share locks. Empty, relative and NUL
-overrides refuse; with the opt-in enabled, literal `.` or `..` path segments
-also refuse before normalization.
+HOME. Device and native-build locks are machine-wide by default.
+`QAREN_MACHINE_LOCKS` is on when unset, empty or `1`; `0` opts out to the
+per-home `~/.qaren/locks`, and any other value refuses. An absolute
+`QAREN_LOCK_ROOT` takes precedence in either mode: sessions using different
+roots do not share locks. Empty, relative and NUL overrides refuse; unless
+opted out, literal `.` or `..` path segments also refuse before normalization.
 
-With `QAREN_MACHINE_LOCKS=1` and no override, the shared CLI/native-suite resolver
+Without an override or opt-out, the shared CLI/native-suite resolver
 selects `/private/var/tmp` on macOS or `/run/lock` on Linux; other operating
 systems refuse. Selection performs no I/O and does not depend on HOME,
 QAREN_HOME, TMPDIR or XDG. Existing device, native-build and `usb-<serial>` lock
@@ -1727,13 +1727,12 @@ signaling its process, adopting, moving or deleting it. Same-user claims retain
 the caller's strict or adopt-dead policy. Deletion requires a verified owned lock
 containing only its holder record.
 
-Enable the shared parent, or roll it back, only after existing leases have been
+Upgrade to this default, or opt out, only after existing leases have been
 cleaned up by their original owner. Nothing scans homes, dual-claims roots,
 rewrites stored paths or retires old binaries. Processes using per-home roots,
-including older binaries, remain outside the shared namespace. Native suite
-recovery needs the original HOME and the original lock setting. The opt-in stays
-off by default pending retention, cross-user/sandbox sharing, Linux host behavior
-and old-binary retirement evidence.
+including older binaries and `QAREN_MACHINE_LOCKS=0` sessions, remain outside
+the shared namespace. Native suite recovery needs the original HOME and the
+original lock setting.
 
 Checks, including `qaren pr`, claim a
 timestamped run directory atomically and retry with a numeric suffix when the

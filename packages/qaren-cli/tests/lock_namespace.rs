@@ -28,7 +28,7 @@ fn lock_namespace_worker() {
 }
 
 #[test]
-fn opt_in_off_isolated_homes_both_acquire() {
+fn opt_out_isolated_homes_both_acquire() {
     let fixture = Fixture::new("off");
     let held = fixture.hold(false, None, "ios", DEVICE_A, "", "strict", "live");
     let rows = held.rows();
@@ -42,7 +42,7 @@ fn opt_in_off_isolated_homes_both_acquire() {
 }
 
 #[test]
-fn opted_in_isolated_homes_share_one_device_lease() {
+fn default_isolated_homes_share_one_device_lease() {
     let fixture = Fixture::new("device");
     let held = fixture.hold(true, None, "ios", DEVICE_A, "", "strict", "live");
     let rows = held.rows();
@@ -86,7 +86,7 @@ fn opted_in_isolated_homes_share_one_device_lease() {
 }
 
 #[test]
-fn opted_in_host_locks_serialize_one_platform() {
+fn default_host_locks_serialize_one_platform() {
     let fixture = Fixture::new("host");
     for (name, policy, identity, needle) in [
         ("native-build-ios", "strict", "live", "holder process alive"),
@@ -262,16 +262,19 @@ fn unsafe_overrides_fail_closed_without_a_home_fallback() {
     let raw = OsString::from_vec(nul);
     assert!(buildplan::configured_lock_root(Some(&raw), None, Some(home)).is_err());
     let dotted = OsStr::new("/tmp/../tmp/locks");
+    let off = Some(OsStr::new("0"));
     assert_eq!(
-        buildplan::configured_lock_root(Some(dotted), None, Some(home)).unwrap(),
+        buildplan::configured_lock_root(Some(dotted), off, Some(home)).unwrap(),
         PathBuf::from(dotted)
     );
-    assert!(
-        buildplan::configured_lock_root(Some(dotted), Some(OsStr::new("1")), Some(home)).is_err()
+    assert!(buildplan::configured_lock_root(Some(dotted), None, Some(home)).is_err());
+    assert_eq!(
+        buildplan::configured_lock_root(None, off, Some(home)).unwrap(),
+        PathBuf::from("/tmp/qaren-lock-home/.qaren/locks")
     );
     assert_eq!(
         buildplan::configured_lock_root(None, None, Some(home)).unwrap(),
-        PathBuf::from("/tmp/qaren-lock-home/.qaren/locks")
+        machine_parent()
     );
     assert_eq!(
         buildplan::configured_lock_root(None, Some(OsStr::new("1")), Some(home)).unwrap(),
@@ -535,12 +538,12 @@ impl Fixture {
             .env("QAREN_LOCK_RUN", format!("run-{id}"))
             .env("QAREN_LOCK_IDENTITY", identity)
             .env_remove("QAREN_LOCK_ROOT")
-            .env_remove(buildplan::MACHINE_LOCKS_OPT_IN)
+            .env_remove(buildplan::MACHINE_LOCKS_ENV)
             .stdin(Stdio::null())
             .stdout(Stdio::null())
             .stderr(Stdio::piped());
-        if machine {
-            command.env(buildplan::MACHINE_LOCKS_OPT_IN, "1");
+        if !machine {
+            command.env(buildplan::MACHINE_LOCKS_ENV, "0");
         }
         if let Some(root) = lock_root {
             command.env("QAREN_LOCK_ROOT", root);
@@ -708,7 +711,7 @@ fn claim_line() -> Result<String, String> {
     let fixture = PathBuf::from(std::env::var_os("QAREN_LOCK_FIXTURE").ok_or("fixture missing")?);
     let resolved = buildplan::configured_lock_root(
         std::env::var_os("QAREN_LOCK_ROOT").as_deref(),
-        std::env::var_os(buildplan::MACHINE_LOCKS_OPT_IN).as_deref(),
+        std::env::var_os(buildplan::MACHINE_LOCKS_ENV).as_deref(),
         Some(home.as_ref()),
     )?;
     let machine = buildplan::machine_lock_parent()?;
@@ -859,7 +862,7 @@ fn umask_child(root: &Path, mask: u32) -> String {
         .env("QAREN_LOCK_WORKER_ROLE", "umask")
         .env("QAREN_LOCK_ROOT", root)
         .env("QAREN_LOCK_UMASK", mask.to_string())
-        .env_remove(buildplan::MACHINE_LOCKS_OPT_IN)
+        .env_remove(buildplan::MACHINE_LOCKS_ENV)
         .output()
         .unwrap();
     assert!(

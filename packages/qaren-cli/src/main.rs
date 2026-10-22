@@ -30,12 +30,11 @@ fn qaren_home() -> Result<PathBuf, String> {
     user_home().map(|home| home.join(".qaren"))
 }
 
-// Absolute QAREN_LOCK_ROOT wins. QAREN_MACHINE_LOCKS=1 selects the OS parent.
-// Otherwise the root stays $HOME/.qaren/locks.
+// Absolute QAREN_LOCK_ROOT wins. Otherwise the OS parent, or $HOME/.qaren/locks with QAREN_MACHINE_LOCKS=0.
 fn lock_root() -> Result<PathBuf, String> {
     qaren::buildplan::configured_lock_root(
         std::env::var_os("QAREN_LOCK_ROOT").as_deref(),
-        std::env::var_os(qaren::buildplan::MACHINE_LOCKS_OPT_IN).as_deref(),
+        std::env::var_os(qaren::buildplan::MACHINE_LOCKS_ENV).as_deref(),
         std::env::var_os("HOME").as_deref(),
     )
 }
@@ -102,12 +101,14 @@ fn failed_receipt(verb: &str, failure: Failure, runner: &dyn Runner) -> Receipt 
 }
 
 fn roots_failure(detail: String) -> Failure {
-    let next_action =
-        if detail.contains("QAREN_LOCK_ROOT") || detail.contains("QAREN_MACHINE_LOCKS") {
-            "set an absolute QAREN_LOCK_ROOT, or leave QAREN_MACHINE_LOCKS unset"
-        } else {
-            "set HOME to an absolute path and QAREN_NATIVE_CACHE_ROOT to a supported private absolute directory"
-        };
+    let next_action = if detail.contains("QAREN_LOCK_ROOT")
+        || detail.contains("QAREN_MACHINE_LOCKS")
+        || detail.contains("machine lock root")
+    {
+        "set an absolute QAREN_LOCK_ROOT, or set QAREN_MACHINE_LOCKS=0"
+    } else {
+        "set HOME to an absolute path and QAREN_NATIVE_CACHE_ROOT to a supported private absolute directory"
+    };
     Failure::new(
         "validate",
         FailureCode::PrereqMissing,

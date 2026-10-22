@@ -57,9 +57,7 @@ fn roots(runner: &dyn Runner) -> Result<(PathBuf, PathBuf), String> {
         .ok_or("HOME must be absolute")?;
     let locks = buildplan::configured_lock_root(
         runner.env_var_os("QAREN_LOCK_ROOT").as_deref(),
-        runner
-            .env_var_os(buildplan::MACHINE_LOCKS_OPT_IN)
-            .as_deref(),
+        runner.env_var_os(buildplan::MACHINE_LOCKS_ENV).as_deref(),
         Some(home.as_os_str()),
     )?;
     Ok((home.join(".qaren").join("native-suites"), locks))
@@ -440,7 +438,7 @@ mod lock_root_tests {
         let (_suites, via_suite) = roots(&runner).expect("suite root");
         let via_resolver = crate::buildplan::configured_lock_root(
             std::env::var_os("QAREN_LOCK_ROOT").as_deref(),
-            std::env::var_os(crate::buildplan::MACHINE_LOCKS_OPT_IN).as_deref(),
+            std::env::var_os(crate::buildplan::MACHINE_LOCKS_ENV).as_deref(),
             std::env::var_os("HOME").as_deref(),
         )
         .expect("resolver root");
@@ -471,7 +469,7 @@ mod lock_root_tests {
             .env("HOME", &home)
             .env("QAREN_LOCK_ROOT", &lock_root)
             .env("QAREN_NONUTF8_LOCK_WORKER", "1")
-            .env_remove(crate::buildplan::MACHINE_LOCKS_OPT_IN)
+            .env_remove(crate::buildplan::MACHINE_LOCKS_ENV)
             .output()
             .unwrap();
         std::fs::remove_dir_all(&dir).unwrap();
