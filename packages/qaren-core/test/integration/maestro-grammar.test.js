@@ -17,7 +17,8 @@
 // this test fails loudly and we can adjust the dispatch's buildArgs
 // BEFORE shipping a broken release.
 //
-// Gracefully skips when `maestro` is not installed — CI machines without
+// Gracefully skips when `maestro --version` fails (not installed, or the
+// simulator sandbox's unavailable shim) — CI machines without
 // the JDK-based CLI should not be forced to install it just to run this
 // guard. Local dev machines that ship Maestro flows will exercise it.
 import { test } from 'node:test';
