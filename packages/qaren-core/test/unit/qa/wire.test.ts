@@ -236,6 +236,27 @@ test('malformed envelopes and requests are rejected', () => {
     );
 });
 
+test('the target may carry the value-free Metro bundle-request signal', () => {
+  const line = (metroBundleRequests: unknown) =>
+    JSON.stringify({
+      v: 1,
+      runId: 'check-1',
+      seq: 1,
+      type: 'request',
+      payload: { ...request, target: { ...request.target, metroBundleRequests } },
+    });
+  const signal = { path: '/tmp/qaren/runs/check-1/logs/metro.bundle-requests', atLaunch: 0 };
+  assert.deepEqual(parseRequest(line(signal)).target.metroBundleRequests, signal);
+  for (const bad of [
+    null,
+    { path: 'relative', atLaunch: 0 },
+    { path: signal.path, atLaunch: -1 },
+    { path: signal.path, atLaunch: 1.5 },
+    { atLaunch: 0 },
+  ])
+    assert.throws(() => parseRequest(line(bad)), /missing required fields/);
+});
+
 test('a multibyte character split across chunks still decodes', async () => {
   const line = `${JSON.stringify({ v: 1, runId: 'check-1', seq: 1, type: 'request', payload: { ...request, plan: '✓ "Tasks"\n' } })}\n`;
   const bytes = Buffer.from(line, 'utf8');

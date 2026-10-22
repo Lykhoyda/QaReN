@@ -496,6 +496,7 @@ fn ios_install_timeouts_fail_once_the_shared_budget_is_spent() {
     assert_eq!(failure.code, FailureCode::ArtifactInstallFailed);
     assert!(failure.detail.contains("1 attempts"), "{failure:?}");
     assert_eq!(receipt.outcomes["launch_ready_budget"], "spent");
+    assert_eq!(receipt.outcomes["substage"], "install_cached");
     assert_eq!(receipt.timings_ms["simctl-install_attempt_1"], 150_000);
     let installs: Vec<_> = mock
         .calls
@@ -562,6 +563,7 @@ fn ios_install_coordination_refusals_fail_once_the_shared_budget_is_spent() {
         "{failure:?}"
     );
     assert_eq!(receipt.outcomes["launch_ready_budget"], "spent");
+    assert_eq!(receipt.outcomes["substage"], "install_cached");
     assert_eq!(
         mock.calls
             .iter()
@@ -636,6 +638,7 @@ fn script_ios_prepare_before_manifest(mock: &mut MockRunner, repo: &std::path::P
     mock.expect_run("lsof", CmdOutput::success("6001"));
     mock.expect_run("ps", CmdOutput::success("6000"));
     mock.expect_run("curl", CmdOutput::success("packager-status:running"));
+    mock.expect_run("qaren-request-probe", CmdOutput::success(""));
 }
 
 fn manifest_answered_in(duration_ms: u64) -> CmdOutput {
@@ -748,6 +751,7 @@ fn ios_prepare_refuses_when_the_manifest_never_answers_inside_the_dev_client_tim
     assert!(failure.detail.contains("after 4 attempts"), "{failure:?}");
     assert!(failure.detail.contains("host"), "{failure:?}");
     assert_eq!(receipt.outcomes["launch_ready_budget"], "spent");
+    assert_eq!(receipt.outcomes["substage"], "dev_client_manifest");
     for attempt in 1..=4 {
         assert_eq!(
             receipt.timings_ms[&format!("metro-manifest_attempt_{attempt}")],
@@ -802,6 +806,7 @@ fn ios_prepare_cancellation_preempts_a_slow_manifest_retry() {
         FailureCode::RunCancelled
     );
     assert_eq!(receipt.timings_ms["metro-manifest_attempt_1"], 12_000);
+    assert_eq!(receipt.outcomes["substage"], "dev_client_manifest");
     assert_eq!(
         mock.calls
             .iter()
@@ -877,6 +882,12 @@ fn ios_prepare_retries_timeouts_until_the_shared_budget_is_spent() {
             FailureCode::CoreRefused
         );
         assert_eq!(receipt.outcomes["launch_ready_budget"], "spent");
+        let substage = if label == "simctl-launch" {
+            "app_launch"
+        } else {
+            "dev_menu_defaults"
+        };
+        assert_eq!(receipt.outcomes["substage"], substage);
         for (index, duration) in durations.iter().enumerate() {
             let key = format!("{label}_attempt_{}", index + 1);
             assert_eq!(receipt.timings_ms[&key], *duration);
@@ -2597,6 +2608,7 @@ fn ios_reuse_dry_run_lists_each_launch_step_once_in_execution_order() {
         ios::bootstatus_spec("<udid>", scenario.deadlines.device_boot_seconds),
         metro::start_spec(&project, 8791),
         ios::install_app_spec("<udid>", &artifact),
+        metro::request_probe_spec(8791),
         metro::manifest_spec(8791, "ios"),
     ];
     expected.extend(ios::devmenu_defaults_specs("<udid>", &cache.app_id));
@@ -3799,6 +3811,7 @@ fn script_borrowed_after_boot(mock: &mut MockRunner, before_install: &str) {
     mock.expect_run("lsof", CmdOutput::success("6001"));
     mock.expect_run("ps", CmdOutput::success("6000"));
     mock.expect_run("curl", CmdOutput::success("packager-status:running"));
+    mock.expect_run("qaren-request-probe", CmdOutput::success(""));
     mock.expect_run("expo-platform", CmdOutput::success(""));
     mock.expect_run(
         "simctl list devices -j",

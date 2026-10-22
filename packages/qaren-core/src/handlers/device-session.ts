@@ -107,25 +107,33 @@ export function buildIosAppRunningArgs(deviceId: string): string[] {
 }
 
 // launchctl list rows are "PID Status Label"; a loaded-but-dead job shows "-" as PID.
-export function iosAppJobRunning(launchctlList: string, bundleId: string): boolean {
+export function iosAppJobPid(launchctlList: string, bundleId: string): number | undefined {
   const label = `UIKitApplication:${bundleId}[`;
-  return launchctlList.split('\n').some((line) => {
+  for (const line of launchctlList.split('\n')) {
     const [pid, , job] = line.trim().split(/\s+/);
-    return /^\d+$/.test(pid ?? '') && job?.startsWith(label) === true;
-  });
+    if (/^\d+$/.test(pid ?? '') && job?.startsWith(label) === true) return Number(pid);
+  }
+  return undefined;
 }
 
+export function iosAppJobRunning(launchctlList: string, bundleId: string): boolean {
+  return iosAppJobPid(launchctlList, bundleId) !== undefined;
+}
+
+export async function iosAppProcessId(
+  bundleId: string,
+  deviceId: string,
+): Promise<number | undefined> {
+  const { stdout } = await execFile('xcrun', buildIosAppRunningArgs(deviceId), {
+    timeout: 5000,
+    encoding: 'utf8',
+  });
+  return iosAppJobPid(stdout, bundleId);
+}
+
+// A failed or timed-out probe rejects: an unanswered launchctl is not evidence that the app is gone.
 async function defaultIOSProbe(bundleId: string, deviceId: string): Promise<boolean> {
-  try {
-    const { stdout } = await execFile('xcrun', buildIosAppRunningArgs(deviceId), {
-      timeout: 5000,
-      encoding: 'utf8',
-    });
-    return iosAppJobRunning(stdout, bundleId);
-  } catch (error) {
-    if (isAbort(error)) throw error;
-    return false;
-  }
+  return (await iosAppProcessId(bundleId, deviceId)) !== undefined;
 }
 
 export function buildAndroidPidofArgs(bundleId: string, deviceId?: string): string[] {
@@ -206,7 +214,10 @@ export function createDeviceSnapshotHandler(
   const isAppRunningFn =
     deps.isAppRunning ??
     ((platform: string, appId: string, deviceId: string) =>
-      isAppRunning(platform, appId, undefined, deviceId));
+      isAppRunning(platform, appId, undefined, deviceId).catch((error: unknown) => {
+        if (isAbort(error)) throw error;
+        return false;
+      }));
   const startAndroidRunnerFn =
     deps.startAndroidRunner ??
     ((deviceId: string, appId: string) =>

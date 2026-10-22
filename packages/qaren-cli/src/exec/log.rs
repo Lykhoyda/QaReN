@@ -2,7 +2,7 @@ use std::io::{self, Read, Write};
 use std::os::fd::{AsFd, AsRawFd, FromRawFd, OwnedFd};
 use std::os::unix::net::UnixStream;
 use std::os::unix::process::CommandExt;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::time::{Duration, Instant};
 
@@ -11,6 +11,10 @@ pub const HELPER_ARG: &str = "--internal-redact-log";
 pub const WITHHOLD_ARG: &str = "--private-output-withheld";
 pub const PAIRED_ARG: &str = "--stderr-fd3";
 const KEY_CONTROL_ARG: &str = "--redaction-key-control";
+const BUNDLE_REQUESTS_ARG: &str = "--bundle-requests";
+// A command whose DEBUG names this namespace gets its bundle requests counted.
+pub const METRO_REQUEST_LOG: &str = "Metro:Server";
+const REQUEST_RECEIVED: &str = "Metro:Server Handling request: ";
 const DRAIN_TIMEOUT: Duration = Duration::from_secs(5);
 const MAX_LINE: usize = 64 * 1024;
 
@@ -25,7 +29,7 @@ impl LogDrain {
         path: &Path,
         withhold: bool,
     ) -> io::Result<(Self, UnixStream)> {
-        let (drain, output, _) = Self::start(executable, path, false, withhold)?;
+        let (drain, output, _) = Self::start(executable, path, false, withhold, false)?;
         Ok((drain, output))
     }
 
@@ -34,8 +38,10 @@ impl LogDrain {
         executable: &Path,
         path: &Path,
         withhold: bool,
+        count_bundle_requests: bool,
     ) -> io::Result<(Self, UnixStream, UnixStream)> {
-        let (drain, output, error) = Self::start(executable, path, true, withhold)?;
+        let (drain, output, error) =
+            Self::start(executable, path, true, withhold, count_bundle_requests)?;
         Ok((
             drain,
             output,
@@ -48,6 +54,7 @@ impl LogDrain {
         path: &Path,
         paired: bool,
         withhold: bool,
+        count_bundle_requests: bool,
     ) -> io::Result<(Self, UnixStream, Option<UnixStream>)> {
         let log = std::fs::OpenOptions::new()
             .create(true)
@@ -97,6 +104,11 @@ impl LogDrain {
         }
         if withhold || crate::redact::private_output_mode() {
             command.arg(WITHHOLD_ARG);
+        }
+        if count_bundle_requests {
+            command
+                .arg(BUNDLE_REQUESTS_ARG)
+                .arg(bundle_requests_path(path));
         }
         crate::redact::scrub_secret_env(&mut command, "", &[]);
         let child = command.spawn()?;
@@ -155,11 +167,56 @@ impl Drop for LogDrain {
     }
 }
 
+pub fn bundle_requests_path(log: &Path) -> PathBuf {
+    log.with_extension("bundle-requests")
+}
+
+pub fn read_bundle_requests(log: &Path) -> Option<u64> {
+    std::fs::read_to_string(bundle_requests_path(log))
+        .ok()?
+        .trim()
+        .parse()
+        .ok()
+}
+
+// A value-free count, present only once Metro logged a request, so an absent file means unknown.
+struct BundleRequests {
+    path: PathBuf,
+    count: Option<u64>,
+}
+
+impl BundleRequests {
+    fn observe(&mut self, line: &[u8]) -> io::Result<()> {
+        let line = String::from_utf8_lossy(line);
+        let Some((_, request)) = line.split_once(REQUEST_RECEIVED) else {
+            return Ok(());
+        };
+        let bundle = request
+            .split_whitespace()
+            .next()
+            .is_some_and(|url| {
+                let path = url.split('?').next().unwrap_or(url);
+                let path = path.split("//&").next().unwrap_or(path);
+                path.ends_with(".bundle")
+            });
+        let count = self.count.unwrap_or(0) + u64::from(bundle);
+        if self.count == Some(count) {
+            return Ok(());
+        }
+        let partial = self.path.with_extension("bundle-requests.partial");
+        std::fs::write(&partial, format!("{count}\n"))?;
+        std::fs::rename(&partial, &self.path)?;
+        self.count = Some(count);
+        Ok(())
+    }
+}
+
 // The whole command's output is withheld once either stream names a private key.
 struct Sink {
     file: std::fs::File,
     start: u64,
     withheld: bool,
+    bundles: Option<BundleRequests>,
 }
 
 impl Sink {
@@ -172,6 +229,13 @@ impl Sink {
     }
 
     fn line(&mut self, bytes: &[u8]) -> io::Result<()> {
+        if let Some(bundles) = &mut self.bundles {
+            // A count that may lag reads as no request, so a failed write retires the signal instead.
+            if bundles.observe(bytes).is_err() {
+                let _ = std::fs::remove_file(&bundles.path);
+                self.bundles = None;
+            }
+        }
         if self.withheld {
             return Ok(());
         }
@@ -190,14 +254,15 @@ impl Lines {
     // Checked per byte, so a mention still waiting for its newline withholds before any checkpoint.
     fn write(&mut self, bytes: &[u8], sink: &mut Sink) -> io::Result<()> {
         for &byte in bytes {
-            if sink.withheld {
+            if sink.withheld && sink.bundles.is_none() {
                 return Ok(());
             }
             self.pending.push(byte);
-            if self.pending.len() >= 11
+            if !sink.withheld
+                && self.pending.len() >= 11
                 && self.pending[self.pending.len() - 11..].eq_ignore_ascii_case(b"private key")
             {
-                return sink.withhold();
+                sink.withhold()?;
             }
             if self.pending.len() == MAX_LINE {
                 if !std::mem::replace(&mut self.oversized, true) {
@@ -254,10 +319,20 @@ pub fn run_helper(paired: bool) -> io::Result<()> {
     }
     control.set_nonblocking(true)?;
     let file = std::fs::File::from(std::io::stderr().as_fd().try_clone_to_owned()?);
+    let args: Vec<String> = std::env::args().collect();
+    let bundles = args
+        .iter()
+        .position(|arg| arg == BUNDLE_REQUESTS_ARG)
+        .and_then(|at| args.get(at + 1))
+        .map(|path| BundleRequests {
+            path: PathBuf::from(path),
+            count: None,
+        });
     let mut log = Sink {
         start: file.metadata()?.len(),
         file,
         withheld: false,
+        bundles,
     };
     if std::env::args().any(|arg| arg == WITHHOLD_ARG) {
         log.withheld = true;

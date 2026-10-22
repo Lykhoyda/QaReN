@@ -29,7 +29,11 @@ import {
   readReactInputValue,
 } from '../handlers/device-interact.js';
 import { captureQaScreenshot } from './screenshot.js';
-import { createDeviceSnapshotHandler, isAppRunning } from '../handlers/device-session.js';
+import {
+  createDeviceSnapshotHandler,
+  iosAppProcessId,
+  isAppRunning,
+} from '../handlers/device-session.js';
 import { relaunchIosDevClient } from '../handlers/app-lifecycle.js';
 import {
   createDeviceAcceptSystemDialogHandler,
@@ -39,7 +43,11 @@ import { foregroundSurfaceFromSnapshot } from '../handlers/expo-dev-menu.js';
 import { compileFlow, FlowCompileError } from '../flow/compile.js';
 import { foreignFlowGate } from '../lifecycle/foreign-flow-gate.js';
 import { androidForeignDriverMessage } from '../runners/external-runner-detect.js';
-import { observeRunnerDrivers, observeRunnerRelaunches } from '../runners/rn-fast-runner-client.js';
+import {
+  observeAppProcess,
+  observeRunnerDrivers,
+  observeRunnerRelaunches,
+} from '../runners/rn-fast-runner-client.js';
 import type { ToolResult } from '../utils.js';
 import { HandlerError, adapt, describeError, fillEvidence, unwrap } from './adapt.js';
 import {
@@ -54,16 +62,24 @@ import type { LedgerRow, StepStart } from './ledger.js';
 import { parsePlanWithJev, readPreparedPlan } from './plan.js';
 import { createJev } from './jev.js';
 import { isRecord } from './questions.js';
-import { createTimingObserver, formatTimingEvent, type TimingContext } from './timing.js';
+import {
+  createTimingObserver,
+  formatTimingEvent,
+  observeDispatchPhases,
+  type TimingContext,
+} from './timing.js';
 import { preflightPlan } from './preflight.js';
 import { summarizeJev } from './ledger.js';
 import { isSecretEnvName, redactApiKey, setRedactionKey } from '../util/redact.js';
 import { createStop, watchOwnerPipe, watchParent } from './stop.js';
 import { prove } from './prove.js';
 import {
+  admissionMetric,
   admit,
   awaitBundleReady,
+  bundleRequestedSinceLaunch,
   createBundleReload,
+  devClientLaunchUrl,
   logAdmissionRefusal,
   metroDevicePin,
 } from './admission.js';
@@ -387,6 +403,8 @@ async function openSession(
   const close = (): Promise<void> =>
     (closing ??= withCancellation(undefined, async () => {
       observeRunnerRelaunches(undefined);
+      observeDispatchPhases(undefined);
+      observeAppProcess(undefined);
       if (deviceOpen) await snapshot({ action: 'close' }).catch(() => undefined);
       await cdp.disconnect().catch(() => undefined);
     }));
@@ -412,6 +430,7 @@ async function openSession(
             REACT_READY_POLL_MS,
             stop.signal,
             devicePin,
+            appId,
           );
           attachStage = 'connect_exact';
           await cdp.connectExact(
@@ -428,15 +447,26 @@ async function openSession(
         ...(platform === 'ios'
           ? {
               relaunch: () =>
-                relaunchIosDevClient(
-                  appId,
-                  target.deviceId,
-                  `${target.metroUrlForDevice}/?disableOnboarding=1`,
-                ),
+                relaunchIosDevClient(appId, target.deviceId, devClientLaunchUrl(target)),
               appAlive: async () => {
                 const alive = await isAppRunning('ios', appId, undefined, target.deviceId);
-                if (alive) log('relaunch skipped: app-alive');
+                if (alive) log('app alive without a target');
                 return alive;
+              },
+              bundleRequested: async () => {
+                if (!target.metroBundleRequests) {
+                  log('relaunch skipped: no bundle request signal');
+                  return undefined;
+                }
+                const requested = bundleRequestedSinceLaunch(target.metroBundleRequests);
+                log(
+                  requested === false
+                    ? 'relaunch allowed: Metro received no bundle request since launch'
+                    : requested
+                      ? 'relaunch skipped: Metro received a bundle request'
+                      : 'relaunch skipped: bundle request signal unknown',
+                );
+                return requested;
               },
             }
           : {}),
@@ -464,6 +494,7 @@ async function openSession(
         // Opening the session may have relaunched the app: prove the bundle the walk will see.
         prove: () => prove({ evaluate: (expr) => cdp.evaluate(expr) }, target),
         close,
+        observe: (decision, facts) => timing(admissionMetric(decision, facts, attachStage, now())),
       },
       stop,
     ).catch(logRefusal),
@@ -475,6 +506,8 @@ async function openSession(
   );
 
   observeRunnerRelaunches({ now, observe: timing });
+  observeDispatchPhases({ now, observe: timing });
+  if (platform === 'ios') observeAppProcess(() => iosAppProcessId(appId, target.deviceId));
 
   const rawSnapshot = async (
     platformPresence = false,

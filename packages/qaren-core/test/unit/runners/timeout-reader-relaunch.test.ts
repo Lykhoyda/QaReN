@@ -14,6 +14,8 @@ import {
   postAdmissionSnapshots,
 } from '../../../dist/qa/capture.js';
 import { unwrap } from '../../../dist/qa/adapt.js';
+import { RunInputs, withInputs } from '../../../dist/qa/inputs.js';
+import { createTimingObserver, type TimingEvent } from '../../../dist/qa/timing.js';
 import { okResult } from '../../../dist/utils.js';
 import { nativeCapture } from '../qa/platform-presence-fixtures.ts';
 import {
@@ -32,13 +34,17 @@ import {
 } from '../../../dist/runners/protocol.js';
 import { parseEnvelope } from '../../helpers/result-helpers.js';
 
-let healthReplies: ('down' | 'missing-presence' | 'alive')[] = [];
+let healthReplies: ('down' | 'refused' | 'missing-presence' | 'alive')[] = [];
+let spawned: (EventEmitter & { stdout: PassThrough; stderr: PassThrough })[] = [];
 let emptySnapshots = 0;
 let launches = 0;
 let failLaunch = false;
 let launchDelayMs = 0;
 let healthDelayMs = 0;
 let blockSnapshots = false;
+let presenceTimeouts = 0;
+let presenceTimeoutCode = 'RUNNER_TIMEOUT';
+let presenceTimeoutDelayMs = 0;
 let recoveryStage: 'status' | 'resend' | undefined;
 let snapshotRequests = 0;
 let appProcessIdentifier = 41;
@@ -50,12 +56,16 @@ let capturePort: string;
 
 beforeEach((t) => {
   healthReplies = [];
+  spawned = [];
   emptySnapshots = 0;
   launches = 0;
   failLaunch = false;
   launchDelayMs = 0;
   healthDelayMs = 0;
   blockSnapshots = false;
+  presenceTimeouts = 0;
+  presenceTimeoutCode = 'RUNNER_TIMEOUT';
+  presenceTimeoutDelayMs = 0;
   recoveryStage = undefined;
   snapshotRequests = 0;
   appProcessIdentifier = 41;
@@ -107,10 +117,13 @@ beforeEach((t) => {
     launchEnv = options.env;
     const child = Object.assign(new EventEmitter(), {
       pid: process.pid,
+      exitCode: null,
+      signalCode: null,
       stdout: new PassThrough(),
       stderr: new PassThrough(),
       kill: () => assert.fail('fixture runner must never be signalled'),
     });
+    spawned.push(child);
     const ready = () => {
       if (failLaunch) child.emit('error', new Error('fixture launch failed'));
       else child.stdout.write('RN_FAST_RUNNER_LISTENER_READY\nRN_FAST_RUNNER_PORT=22089\n');
@@ -135,6 +148,8 @@ beforeEach((t) => {
       if (healthDelayMs > 0) await new Promise((resolve) => setTimeout(resolve, healthDelayMs));
       const health = healthReplies.shift() ?? 'alive';
       if (health === 'down') return Response.json({ ok: false });
+      if (health === 'refused')
+        throw new TypeError('fetch failed', { cause: { code: 'ECONNREFUSED' } });
       return Response.json({
         ok: true,
         protocolVersion: 2,
@@ -172,6 +187,22 @@ beforeEach((t) => {
         throw new Error('connection reset');
       }
       if (blockSnapshots) await new Promise(() => {});
+      if (request.platformPresence && presenceTimeouts > 0) {
+        presenceTimeouts--;
+        if (presenceTimeoutDelayMs > 0)
+          await new Promise((resolve) => setTimeout(resolve, presenceTimeoutDelayMs));
+        return Response.json(
+          {
+            ok: false,
+            error: {
+              code: presenceTimeoutCode,
+              message: 'main thread execution timed out',
+              mutation: 'possible',
+            },
+          },
+          { status: 500 },
+        );
+      }
       assert.equal(new URL(String(url)).port, capturePort);
       const data = { ...nativeCapture(), appProcessIdentifier };
       if (emptySnapshots > 0) {
@@ -292,6 +323,85 @@ test('a non-type timeout keeps its verdict and restores presence capture', async
   );
   assert.equal(capture.ok, true, JSON.stringify(capture));
   assert.equal(launches, 1);
+});
+
+function aliveReader(t: TestContext) {
+  const kill = process.kill;
+  t.mock.method(process, 'kill', (pid, signal) => {
+    assert.equal(signal, 0, 'no process may be signalled by the fixture');
+    return pid === 999_999_999 || kill(pid, signal);
+  });
+}
+
+test('a presence capture main-thread timeout contains the wedged reader', async (t) => {
+  aliveReader(t);
+  presenceTimeouts = 1;
+  const capture = parseEnvelope(
+    await runIOS({ command: 'snapshot', platformPresence: true, presenceBudgetMs: 20_000 }),
+  );
+  assert.equal(capture.code, 'RN_FAST_RUNNER_DOWN', JSON.stringify(capture));
+  assert.equal(
+    capture.error,
+    'Platform presence capture unavailable: main thread execution timed out; runner timeout containment attempted.',
+  );
+  assert.equal(capture.meta.capture, 'unknown');
+  assert.equal(capture.meta.runnerRelaunch, true);
+  assert.equal(launches, 1);
+  assert.equal(getFastRunnerState()?.port, 22089);
+});
+
+test('a separate presence capture succeeds after its timeout is contained', async (t) => {
+  aliveReader(t);
+  presenceTimeouts = 1;
+  const refused = parseEnvelope(
+    await runIOS({ command: 'snapshot', platformPresence: true, presenceBudgetMs: 20_000 }),
+  );
+  assert.equal(refused.ok, false);
+  assert.equal(refused.code, 'RN_FAST_RUNNER_DOWN');
+  assert.equal(refused.meta.runnerRelaunch, true);
+  assert.equal(getFastRunnerState()?.port, 22089);
+  const capture = parseEnvelope(
+    await runIOS({ command: 'snapshot', platformPresence: true, presenceBudgetMs: 20_000 }),
+  );
+  assert.equal(capture.ok, true, JSON.stringify(capture));
+  assert.equal(snapshotRequests, 2);
+  assert.equal(launches, 1);
+  assert.equal(getFastRunnerState()?.port, 22089);
+});
+
+test('a presence main-thread timeout message triggers containment without RUNNER_TIMEOUT', async (t) => {
+  aliveReader(t);
+  presenceTimeouts = 1;
+  presenceTimeoutCode = 'MAIN_THREAD_TIMEOUT';
+  const capture = parseEnvelope(
+    await runIOS({ command: 'snapshot', platformPresence: true, presenceBudgetMs: 20_000 }),
+  );
+  assert.equal(capture.ok, false);
+  assert.equal(capture.code, 'RN_FAST_RUNNER_DOWN');
+  assert.equal(capture.meta.capture, 'unknown');
+  assert.equal(capture.meta.runnerRelaunch, true);
+  assert.equal(launches, 1);
+  assert.equal(getFastRunnerState()?.port, 22089);
+});
+
+test('an advisory presence timeout preserves the reader without containment', async (t) => {
+  aliveReader(t);
+  presenceTimeouts = 1;
+  const initial = getFastRunnerState();
+  const capture = parseEnvelope(
+    await runIOS({
+      command: 'snapshot',
+      platformPresence: true,
+      presenceBudgetMs: 20_000,
+      advisorySnapshot: true,
+    }),
+  );
+  assert.equal(capture.ok, false);
+  assert.equal(capture.code, 'RN_FAST_RUNNER_DOWN');
+  assert.match(capture.error, /no recovery attempted/);
+  assert.equal(capture.meta.runnerRelaunch, undefined);
+  assert.equal(launches, 0);
+  assert.equal(getFastRunnerState(), initial);
 });
 
 test('an advisory snapshot marker cannot disable mutation timeout recovery', async () => {
@@ -552,6 +662,46 @@ test(
 );
 
 test(
+  'private presence capture re-reads after its own main-thread timeout is contained',
+  { timeout: 5_000 },
+  async (t) => {
+    const time = clock(t);
+    aliveReader(t);
+    presenceTimeouts = 1;
+    let reads = 0;
+    const capture = privateCapture(time.now, () => reads++).catch((error: Error) => error);
+    await nextTurn();
+    assert.equal(reads, 1);
+    await time.advance(500);
+    const screen = await capture;
+    assert.ok(!(screen instanceof Error), String(screen));
+    assert.equal(screen.captureCoverage?.native, 'complete');
+    assert.equal(reads, 2);
+    assert.equal(launches, 1);
+  },
+);
+
+test('a 30-second presence timeout refuses this capture and permits the next capture', async (t) => {
+  const time = clock(t);
+  aliveReader(t);
+  presenceTimeouts = 1;
+  presenceTimeoutDelayMs = 30_000;
+  let reads = 0;
+  const capture = privateCapture(time.now, () => reads++).catch((error: Error) => error);
+  await nextTurn();
+  assert.equal(reads, 1);
+  await time.advance(30_000);
+  assert.ok((await capture) instanceof NativeCaptureError);
+  assert.equal(reads, 1, 'the expired capture must not re-read');
+  assert.equal(launches, 1);
+  assert.equal(getFastRunnerState()?.port, 22089);
+  const next = await privateCapture(time.now, () => reads++);
+  assert.equal(next.captureCoverage?.native, 'complete');
+  assert.equal(reads, 2);
+  assert.equal(launches, 1);
+});
+
+test(
   'an empty read retains relaunch retry eligibility through the private capture',
   { timeout: 5_000 },
   async (t) => {
@@ -690,4 +840,51 @@ test('relaunch outcomes emit only fixed vocabulary and duration through the slot
       ].sort(),
     );
   assert.ok(!lines.join('').includes('private-fixture-value'));
+});
+
+test('a vanished reader leaves a post-mortem of host state and marker counts, never output text', async () => {
+  const secret = 'PRIVATE-runner-output';
+  const events: TimingEvent[] = [];
+  const qaTiming = { now: () => 0, observe: createTimingObserver((e) => events.push(e)) };
+  const postMortem = () => {
+    const row = events.find((e) => e.stage === 'runner-post-mortem');
+    return Object.fromEntries(
+      Object.entries(row ?? {}).filter(([key]) => /^(hostChild|exit|marker)/.test(key)),
+    );
+  };
+  const markers = {
+    markerReady: 1,
+    markerWaiting: 1,
+    markerWaitResult: 0,
+    markerListenerFailed: 0,
+    markerSendFailed: 2,
+  };
+  await withInputs(new RunInputs({ OTP: secret }, ['OTP'], undefined, ['OTP']), async () => {
+    await ensureFastRunner('fixture-ios', 'dev.fixture');
+    const child = spawned.at(-1)!;
+    child.stderr.write(
+      `x RN_FAST_RUNNER_WAITING\nRN_FAST_RUNNER_SEND_FAILED=${secret}\nRN_FAST_RU`,
+    );
+    child.stderr.write(`NNER_SEND_FAILED=${secret}\n`);
+    await nextTurn();
+    healthReplies = ['refused'];
+    await assert.rejects(
+      runIOS({ command: 'snapshot', qaReadOnly: true, qaTiming }),
+      /ACTION_CONTEXT_CHANGED/,
+    );
+    assert.deepEqual(postMortem(), { hostChild: 'alive', ...markers });
+
+    events.length = 0;
+    child.emit('exit', null, 'SIGKILL');
+    await assert.rejects(
+      runIOS({ command: 'snapshot', qaReadOnly: true, qaTiming }),
+      /ACTION_CONTEXT_CHANGED/,
+    );
+    assert.equal(
+      events.find((e) => e.stage === 'native-readiness' && e.edge === 'end')?.readinessReason,
+      'dead',
+    );
+    assert.deepEqual(postMortem(), { hostChild: 'exited', exitSignal: 'SIGKILL', ...markers });
+  });
+  assert.ok(!JSON.stringify(events).includes(secret));
 });

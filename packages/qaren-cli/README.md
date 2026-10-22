@@ -94,6 +94,11 @@ Preflight and dependencies pass when their work completes; verify runs after
 every build decision, including reuse. Reuse skips prebuild and native compile.
 On iOS and on a borrowed Android emulator, native compile (including any
 prebuild of an absent native directory) ends before install/launch/ready.
+On iOS, install/launch/ready streams its substages in order: `install_cached`,
+`metro_ready`, `dev_client_manifest`, `dev_menu_defaults`, `app_launch` and
+`ready_probes`. The run record keeps the one in flight, so `qaren status` and a
+cancel or failure receipt name it as the `substage` outcome; the watch view
+shows only the parent stage.
 Recording can overlap steps. Requested recording starts as running and
 stays failed after a startup failure, even if retained-resource cleanup succeeds;
 recording is skipped when it was not requested or is unavailable for the platform
@@ -1152,6 +1157,16 @@ An empty snapshot's unchanged ref map and zero-node count
 diagnostics do not prevent this read-only retry; persistent emptiness still
 refuses with the same code and message, and other incomplete captures refuse
 immediately.
+
+A non-advisory platform-presence response with `RUNNER_TIMEOUT` or a message
+containing `main thread execution timed out` now attempts the same poisoning,
+reaping and reader relaunch. The failed read remains `RN_FAST_RUNNER_DOWN` with
+capture `unknown`; a pending relaunch adds `runnerRelaunch` for the bounded retry
+above. A real 30-second Swift main-thread timeout exceeds the 22-second total
+capture budget, so that capture stays refused without re-reading; recovery
+allows the following separate capture to use the healthy relaunched reader.
+Advisory timeouts and unrelated presence failures do not trigger this containment.
+
 Slot diagnostics retain the `relaunch` metric with `attempted`, `ready`, `failed`
 or `timeout`, its duration and the fixed reap disposition, without runner output
 or values.
@@ -1561,6 +1576,23 @@ that secret despite artifact redaction.
   codes and allowlisted native refusal codes. Native-readiness end metrics also retain the
   existing liveness classification as `readinessReason`, or `unknown` if the probe did not
   return a classification; `count` identifies the probe site, not a retry ordinal.
+  A `health` failure adds `healthDetail` (`refused`, `reset`, `abort`, `http-4xx`, `http-5xx`, `body-not-ok`,
+  `wedged` or `other`). Every failed readiness probe is followed by a `runner-post-mortem` point
+  with the runner host child (`alive`, `exited`, `unknown`), its exit code or signal name, counts of
+  the runner's fixed lifecycle markers (never output text), and `appProcess`: the app process found
+  on the simulator compared with the last good read (`same`, `changed`, `absent`, `unknown`).
+  Fills add `dispatch-bind` and `dispatch-readback` spans and iOS mutating dispatches add
+  `dispatch-native`, `dispatch-settle` and `dispatch-health` spans, each carrying the dispatching
+  plan row's `line` when known.
+  Attachment emits an `admission` point metric at each retry decision and once on cancellation
+  or a `CDP_NOT_CONNECTED` refusal, with the decision (`retry`, `cancelled` or `refused`),
+  the attempt count, last started and completed boundary, attach stage (only when the last
+  started boundary is `attach`), failure class,
+  relaunch count, whether the relaunch failed, app liveness (`probe_failed` when the iOS
+  app-job probe errors or times out) and elapsed, remaining and budget milliseconds.
+  The failure class describes the current retry or refusal; cancellation retains the most recent
+  retry's class, or `none` before any retry. Cancellation emits synchronously on abort before
+  the terminal result closes the diagnostic stream, subject to the event caps below.
   Each attempted block containing a slot fill emits
   `block-outcome` with its first plan line and existing `pass`/`fail`/`refused` result; only saved-login
   recovery emits `login-outcome`. A block passing is its existing block result, not a new assertion
@@ -1639,7 +1671,8 @@ process group and announces it; the CLI records that group with the driver's
 identity and signals it, before the host, only while that identity still
 matches. Refused or unresolved core or driver cleanup leaves the host untouched
 and retains the lease. A host that was already running, or any
-present or unknown host after that, retains the lease. External cleanup of a leased
+present or unknown host after that, retains the lease. When the pre-attach host
+probe cannot answer, the receipt records `runner_host_probe: unknown`. External cleanup of a leased
 borrowed iOS simulator refuses before producer mutation, lease release or saving unless
 the recorded qaren owner is proved gone, including restart-only and not-yet-armed runs.
 When `--shutdown-device-on-exit`
@@ -1974,30 +2007,48 @@ Launch admission shares the remaining walk deadline across target readiness,
 WebSocket handshakes, probes and retry sleeps. The connect-time dev-build check
 and helper injection wait for the runtime's answer until that deadline rather
 than a fixed request timeout; no answer by the deadline is a readiness timeout.
-On iOS, readiness and attachment accept only a runtime Metro reports under the
-run's simulator name, so another booted simulator running the same app on the
-same port is not attached. Metro identifies a simulator only by name: give each
+Target readiness and attachment accept only a runtime Metro reports with the
+requested `appId` bundle identity (and on iOS, under the run's simulator name on
+that same target), so another app on the selected device or another booted
+simulator running the same app on the same port does not satisfy readiness or
+get attached. Missing, malformed or conflicting bundle identity does not satisfy
+readiness. A readiness match is not connection authority: exact selection still
+enforces platform and ambiguity checks, and post-open origin proof remains
+required. Metro identifies a simulator only by name: give each
 booted simulator a distinct name, because a same-named one is refused as
 ambiguous only once both have registered.
 Transient target-list, WebSocket-handshake and runtime-probe timeouts, along with
 inspector page closure or replacement, retry within that same deadline regardless
 of host load, with bounded polling and exact-port rediscovery between attachment
-attempts. Exhausted readiness refuses `CDP_NOT_CONNECTED`; invalid
-metadata and deterministic attachment rejections refuse immediately. Host load
-is diagnostic and does not decide whether the app is ready.
-After an exhausted target-readiness wait, or persistent runtime-probe or
-WebSocket-handshake timeouts lasting a full readiness window from the first such
-timeout (never before the original readiness window ends), an iOS dev
+attempts. If a bounded discovery wait ends with only other-bundle targets (or
+targets with missing, malformed or conflicting bundle identity) on the selected
+device, admission refuses `CDP_NOT_CONNECTED` before liveness probing, relaunch or
+another attachment attempt. Exhausted readiness also refuses `CDP_NOT_CONNECTED`;
+malformed target-list responses and deterministic attachment rejections refuse
+immediately. Host load is diagnostic and does not decide whether the app is ready.
+After a target-readiness wait that saw no target on the selected device, or
+persistent runtime-probe or WebSocket-handshake timeouts lasting a full readiness
+window from the first such timeout (never before the original readiness window
+ends), an iOS dev
 client can be relaunched once if the remaining deadline still covers a full
 readiness wait. Individual target-list timeouts and inspector page closures do
 not trigger relaunch. Before a relaunch for a missing target, admission uses the
 [iOS app-job liveness rule](#check-a-plan). A live app skips that no-target
-relaunch, logs `relaunch skipped: app-alive`, and keeps waiting within the same
-deadline; an absent job or failed probe permits recovery as before. Skipping
+relaunch and keeps waiting within the same deadline, unless Metro has seen no
+bundle request since the CLI launched the app: then the dev client sits on its
+launcher and gets the one relaunch. The CLI enables Metro's `Metro:Server`
+request debug log and probes it once before launch; its Metro log drain counts
+bundle requests on receipt, before any dependency-graph wait, value-free and
+also when that log is withheld. Without a logged request (a failed request probe, a
+Metro without that log, or Metro owned by an `expo run:*` build) the signal
+stays unknown and a live app keeps the skip. The count covers the whole
+Metro server, so another simulator's bundle request also keeps the skip.
+`core.log` records which way the decision went. An absent job or failed
+probe permits recovery as before. Skipping
 does not consume the one relaunch for persistent runtime-probe or
 WebSocket-handshake timeouts, and a target that registers late gets the same
-readiness window before a stalled handshake triggers the one relaunch. The refusal record includes value-free `liveness`
-and the number of relaunches actually attempted. Before the liveness check or
+readiness window before a stalled handshake triggers the one relaunch. For retained admission facts,
+see [runtime-input diagnostics](#runtime-inputs). Before the liveness check or
 relaunch, admission checks for a foreign driver;
 a conflict refuses `BUSY_FOREIGN_FLOW`
 without relaunching. It relaunches on the exact simulator with the CLI's original

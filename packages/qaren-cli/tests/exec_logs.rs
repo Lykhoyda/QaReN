@@ -148,6 +148,111 @@ fn a_log_without_a_private_key_keeps_every_line() {
     }
 }
 
+fn drained_bundle_requests(lines: &[&str], counted: bool) -> (Option<String>, String) {
+    let dir = common::temp_repo();
+    let log = dir.join("metro.log");
+    let script: String = lines
+        .iter()
+        .map(|line| format!("printf '%s\\n' '{line}' >&2\n"))
+        .collect();
+    let mut spec = shell(&format!("{script}printf 'tail line\\n'\n: > done"), &dir);
+    if counted {
+        spec = spec.env("DEBUG", qaren::exec::log::METRO_REQUEST_LOG);
+    }
+    let mut runner = RealRunner::with_log_executable(env!("CARGO_BIN_EXE_qaren").into());
+    runner.spawn_group(&spec, &log).unwrap();
+    until(|| dir.join("done").exists());
+    until(|| {
+        runner.flush_logs().unwrap();
+        let stored = std::fs::read_to_string(&log).unwrap_or_default();
+        stored.contains("tail line") || stored.contains(PRIVATE_KEY_WITHHELD)
+    });
+    std::thread::sleep(Duration::from_millis(100));
+    runner.flush_logs().unwrap();
+    let count = std::fs::read_to_string(qaren::exec::log::bundle_requests_path(&log)).ok();
+    let stored = std::fs::read_to_string(&log).unwrap();
+    std::fs::remove_dir_all(dir).unwrap();
+    (count, stored)
+}
+
+const PROBE: &str = "2026-10-22T08:46:08.100Z Metro:Server Handling request: /qaren-request-probe";
+const BUNDLE: &str =
+    "2026-10-22T08:46:09.200Z Metro:Server Handling request: /index.bundle?platform=ios&dev=true";
+const JSC_SAFE_BUNDLE: &str =
+    "2026-10-22T08:46:10.300Z Metro:Server Handling request: /index.bundle//&platform=ios&dev=true";
+const SOURCE_MAP: &str =
+    "2026-10-22T08:46:11.400Z Metro:Server Handling request: /index.map?platform=ios&dev=true";
+
+#[test]
+fn a_bundle_request_counts_on_receipt_before_any_build_starts() {
+    let (count, _) = drained_bundle_requests(&[PROBE, BUNDLE], true);
+    assert_eq!(count.as_deref(), Some("1\n"));
+}
+
+#[test]
+fn bundle_suffixes_in_directories_and_queries_do_not_change_the_request_path() {
+    for suffix in [
+        "",
+        "?platform=ios&entry=other.bundle",
+        "//&platform=ios&entry=other.bundle",
+    ] {
+        for (path, expected) in [
+            ("/apps/app.bundle/index.bundle", "1\n"),
+            ("/apps/app.bundle/index.map", "0\n"),
+            ("/apps/app.bundle/index.assets", "0\n"),
+            ("/qaren-request-probe", "0\n"),
+        ] {
+            let line = format!(
+                "2026-10-22T08:46:09.200Z Metro:Server Handling request: {path}{suffix}"
+            );
+            let (count, _) = drained_bundle_requests(&[&line], true);
+            assert_eq!(count.as_deref(), Some(expected), "{path}{suffix}");
+        }
+    }
+}
+
+#[test]
+fn only_bundle_paths_count_including_metros_jsc_safe_form() {
+    let (count, _) = drained_bundle_requests(&[PROBE, JSC_SAFE_BUNDLE, SOURCE_MAP, PROBE], true);
+    assert_eq!(count.as_deref(), Some("1\n"));
+    let (count, _) = drained_bundle_requests(&[PROBE, SOURCE_MAP], true);
+    assert_eq!(
+        count.as_deref(),
+        Some("0\n"),
+        "a logged request arms the count"
+    );
+}
+
+#[test]
+fn the_metro_drain_counts_bundle_requests_value_free_even_when_its_log_is_withheld() {
+    let (count, stored) = drained_bundle_requests(
+        &[
+            PROBE,
+            BUNDLE,
+            "quoting a private key",
+            "iOS Bundled 5ms index.ts (10 modules)",
+            JSC_SAFE_BUNDLE,
+        ],
+        true,
+    );
+    assert_eq!(count.as_deref(), Some("2\n"));
+    assert_eq!(stored, format!("{PRIVATE_KEY_WITHHELD}\n"));
+}
+
+#[test]
+fn the_bundle_request_count_exists_only_once_metro_logs_a_request() {
+    let (count, _) = drained_bundle_requests(&["iOS Bundled 5ms index.ts (10 modules)"], true);
+    assert_eq!(
+        count, None,
+        "a Metro that never logged a request leaves the signal unknown"
+    );
+    let (count, _) = drained_bundle_requests(&[PROBE, BUNDLE], false);
+    assert_eq!(
+        count, None,
+        "only a command that enabled the request log is counted"
+    );
+}
+
 #[test]
 fn an_evidence_tail_naming_a_private_key_never_reaches_run_json() {
     let dir = common::temp_repo();

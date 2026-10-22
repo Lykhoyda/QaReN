@@ -173,6 +173,7 @@ pub fn base_record(
             worktree_fingerprint: Some(qaren::candidate::worktree_fingerprint(repo_root, "").unwrap()),
         },
         phase,
+        substage: None,
         prepare: Some(identity(999, "Wed Aug 12 15:00:00 2026")),
         // Only phases reached after build planning carry a recorded plan,
         // matching what production records can actually contain.
@@ -353,6 +354,7 @@ pub fn script_ios_metro_wait_and_launch_with(
     mock.expect_run("lsof", CmdOutput::success("6001"));
     mock.expect_run("ps", CmdOutput::success("6000"));
     mock.expect_run("curl", CmdOutput::success("packager-status:running"));
+    mock.expect_run("qaren-request-probe", CmdOutput::success(""));
     mock.expect_run("expo-platform", CmdOutput::success(""));
     script_devmenu_defaults(mock, defaults);
     launch(mock);

@@ -136,6 +136,7 @@ fn request() -> CoreRequest {
             metro_port: 8791,
             metro_url_for_device: "http://127.0.0.1:8791".to_string(),
             worktree: PathBuf::from("/tmp/app"),
+            metro_bundle_requests: None,
         },
     }
 }
@@ -317,6 +318,108 @@ fn readiness_reasons_reach_private_diagnostics_only_as_classified_end_events() {
             .map(|line| serde_json::from_str(line).unwrap())
             .collect();
         assert_eq!(got, [expected, vec![metric]].concat());
+    });
+}
+
+#[test]
+fn runner_termination_diagnostics_reach_private_diagnostics_only_as_fixed_words_and_counts() {
+    use qaren::redact::{with_input_scope, InputValues};
+    use serde_json::json;
+    use std::ffi::OsString;
+    use std::sync::Arc;
+    let repo = common::temp_repo();
+    let secret = "private-synthetic-value";
+    let inputs = Arc::new(InputValues::from_entries([(
+        OsString::from("QAREN_INPUT_OTP"),
+        OsString::from(secret),
+    )]));
+    with_input_scope(inputs, || {
+        let readiness = json!({
+            "kind": "metric", "stage": "native-readiness", "edge": "end", "outcome": "failed",
+            "at": 200, "ms": 2, "count": 1, "readinessReason": "health"
+        });
+        let post_mortem = json!({
+            "kind": "metric", "stage": "runner-post-mortem", "edge": "point", "outcome": "failed",
+            "at": 201, "count": 1, "hostChild": "exited", "exitCode": 0, "exitSignal": "SIGKILL",
+            "appProcess": "changed", "markerReady": 1, "markerWaiting": 1, "markerWaitResult": 0,
+            "markerListenerFailed": 0, "markerSendFailed": 2
+        });
+        let mut expected = Vec::new();
+        for detail in [
+            "refused",
+            "reset",
+            "abort",
+            "http-4xx",
+            "http-5xx",
+            "body-not-ok",
+            "wedged",
+            "other",
+        ] {
+            let mut value = readiness.clone();
+            value["healthDetail"] = json!(detail);
+            expected.push(value);
+        }
+        expected.push(post_mortem.clone());
+        for stage in [
+            "dispatch-bind",
+            "dispatch-native",
+            "dispatch-settle",
+            "dispatch-health",
+            "dispatch-readback",
+        ] {
+            expected.push(json!({
+                "kind": "metric", "stage": stage, "edge": "end", "outcome": "ok", "at": 300, "line": 7, "ms": 17600
+            }));
+        }
+        let mut payloads = expected.clone();
+        for (key, value) in [
+            ("healthDetail", json!(secret)),
+            ("healthDetail", json!(1)),
+            ("readinessReason", json!("dead")),
+        ] {
+            let mut invalid = expected[0].clone();
+            invalid[key] = value;
+            payloads.push(invalid);
+        }
+        for (key, value) in [
+            ("hostChild", json!(secret)),
+            ("appProcess", json!(4242)),
+            ("exitSignal", json!(secret)),
+            ("exitCode", json!(-1)),
+            ("markerWaiting", json!(secret)),
+            ("tail", json!(secret)),
+        ] {
+            let mut invalid = post_mortem.clone();
+            invalid[key] = value;
+            payloads.push(invalid);
+        }
+        for key in ["hostChild", "exitCode", "appProcess", "markerWaiting"] {
+            let mut misplaced = readiness.clone();
+            misplaced[key] = post_mortem[key].clone();
+            payloads.push(misplaced);
+        }
+        let mut stdout = String::new();
+        for (i, value) in payloads.iter().enumerate() {
+            stdout.push_str(&envelope(i as u64 + 2, "diagnostic", &value.to_string()));
+            stdout.push('\n');
+        }
+        stdout.push_str(&envelope(
+            payloads.len() as u64 + 2,
+            "result",
+            &pass_ledger(&[]),
+        ));
+        stdout.push('\n');
+        let mut mock = MockRunner::new();
+        mock.expect_spawn_piped("walk.js", 9000, &stdout, Some(0));
+        let result = run_child(&mut mock, &repo.join("core.log"));
+        assert_eq!(result.verdict, Verdict::Pass);
+        let stored = std::fs::read_to_string(repo.join("core-diagnostics.jsonl")).unwrap();
+        assert!(!stored.contains(secret));
+        let got: Vec<serde_json::Value> = stored
+            .lines()
+            .map(|line| serde_json::from_str(line).unwrap())
+            .collect();
+        assert_eq!(got, expected);
     });
 }
 
@@ -1552,4 +1655,130 @@ fn the_android_core_is_pinned_to_the_borrowed_serial_server_and_platform_tools()
         .env
         .iter()
         .any(|(k, _)| k == "ANDROID_SERIAL" || k == "PATH"));
+}
+
+#[test]
+fn admission_facts_reach_private_diagnostics_only_as_allowlisted_admission_points() {
+    use qaren::redact::{with_input_scope, InputValues};
+    use serde_json::json;
+    use std::ffi::OsString;
+    use std::sync::Arc;
+    let repo = common::temp_repo();
+    let secret = "private-synthetic-value";
+    let inputs = Arc::new(InputValues::from_entries([(
+        OsString::from("QAREN_INPUT_PASSWORD"),
+        OsString::from(secret),
+    )]));
+    with_input_scope(inputs, || {
+        let cancelled = json!({
+            "kind": "metric", "stage": "admission", "edge": "point", "outcome": "failed",
+            "at": 611000, "admission": "cancelled", "attempt": 20, "lastStarted": "attach",
+            "lastCompleted": "retry_wait", "attachStage": "wait_targets",
+            "inner": "target_readiness_timeout", "relaunches": 0, "relaunchFailed": false,
+            "liveness": "alive", "elapsedMs": 610000, "remainingMs": 589000, "budgetMs": 1199000
+        });
+        let mut retry = cancelled.clone();
+        retry["outcome"] = json!("unknown");
+        retry["admission"] = json!("retry");
+        retry["lastStarted"] = json!("foreign_driver");
+        retry["lastCompleted"] = json!("foreign_driver");
+        retry["liveness"] = json!("probe_failed");
+        retry["relaunches"] = json!(1);
+        retry["relaunchFailed"] = json!(true);
+        retry.as_object_mut().unwrap().remove("attachStage");
+        let mut refused = cancelled.clone();
+        refused["admission"] = json!("refused");
+        refused["inner"] = json!("none");
+        let expected = vec![retry, cancelled.clone(), refused];
+        let mut payloads = expected.clone();
+        for (key, value) in [
+            ("admission", json!(secret)),
+            ("lastStarted", json!(secret)),
+            ("lastCompleted", json!(secret)),
+            ("attachStage", json!(secret)),
+            ("inner", json!(secret)),
+            ("liveness", json!(secret)),
+            ("relaunchFailed", json!(secret)),
+            ("relaunchFailed", json!(1)),
+            ("attempt", json!(secret)),
+            ("elapsedMs", json!(-1)),
+            ("stage", json!("capture")),
+            ("edge", json!("end")),
+            ("inference", json!({"targets": []})),
+        ] {
+            let mut invalid = cancelled.clone();
+            invalid[key] = value;
+            payloads.push(invalid);
+        }
+        let mut stdout = String::new();
+        for (i, value) in payloads.iter().enumerate() {
+            stdout.push_str(&envelope(i as u64 + 2, "diagnostic", &value.to_string()));
+            stdout.push('\n');
+        }
+        stdout.push_str(&envelope(
+            payloads.len() as u64 + 2,
+            "result",
+            &pass_ledger(&[]),
+        ));
+        stdout.push('\n');
+        let mut mock = MockRunner::new();
+        mock.expect_spawn_piped("walk.js", 9000, &stdout, Some(0));
+        let result = run_child(&mut mock, &repo.join("core.log"));
+        assert_eq!(result.verdict, Verdict::Pass);
+        let stored = std::fs::read_to_string(repo.join("core-diagnostics.jsonl")).unwrap();
+        assert!(!stored.contains(secret));
+        let got: Vec<serde_json::Value> = stored
+            .lines()
+            .map(|line| serde_json::from_str(line).unwrap())
+            .collect();
+        assert_eq!(got, expected);
+    });
+}
+
+#[test]
+fn exact_selection_refusal_classes_survive_private_diagnostics() {
+    use qaren::redact::{with_input_scope, InputValues};
+    use serde_json::json;
+    use std::ffi::OsString;
+    use std::sync::Arc;
+    let repo = common::temp_repo();
+    let inputs = Arc::new(InputValues::from_entries([(
+        OsString::from("QAREN_INPUT_PASSWORD"),
+        OsString::from("private-synthetic-value"),
+    )]));
+    let expected: Vec<serde_json::Value> = [
+        "target_selection_device_not_found",
+        "target_selection_device_ambiguous",
+        "target_selection_bundle_not_found",
+    ]
+    .iter()
+    .map(|inner| {
+        json!({
+            "kind": "metric", "stage": "admission", "edge": "point", "outcome": "failed",
+            "at": 1000, "admission": "refused", "attempt": 1, "lastStarted": "attach",
+            "lastCompleted": "none", "attachStage": "connect_exact", "inner": inner,
+            "relaunches": 0, "relaunchFailed": false, "liveness": "not_probed",
+            "elapsedMs": 900, "remainingMs": 100, "budgetMs": 1000
+        })
+    })
+    .collect();
+    let mut stdout = String::new();
+    for (i, value) in expected.iter().enumerate() {
+        stdout.push_str(&envelope(i as u64 + 2, "diagnostic", &value.to_string()));
+        stdout.push('\n');
+    }
+    stdout.push_str(&envelope(expected.len() as u64 + 2, "result", &pass_ledger(&[])));
+    stdout.push('\n');
+    with_input_scope(inputs, || {
+        let mut mock = MockRunner::new();
+        mock.expect_spawn_piped("walk.js", 9000, &stdout, Some(0));
+        let result = run_child(&mut mock, &repo.join("core.log"));
+        assert_eq!(result.verdict, Verdict::Pass);
+        let stored = std::fs::read_to_string(repo.join("core-diagnostics.jsonl")).unwrap();
+        let got: Vec<serde_json::Value> = stored
+            .lines()
+            .map(|line| serde_json::from_str(line).unwrap())
+            .collect();
+        assert_eq!(got, expected);
+    });
 }

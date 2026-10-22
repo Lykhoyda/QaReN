@@ -38,6 +38,13 @@ export const TIMING_STAGES = [
   'readback',
   'settle-readback',
   'relaunch',
+  'admission',
+  'runner-post-mortem',
+  'dispatch-bind',
+  'dispatch-native',
+  'dispatch-settle',
+  'dispatch-health',
+  'dispatch-readback',
   'overflow',
 ] as const;
 export type TimingStage = (typeof TIMING_STAGES)[number];
@@ -55,6 +62,90 @@ const NATIVE_READINESS_REASONS = [
   'unknown',
 ] as const;
 export type NativeReadinessReason = (typeof NATIVE_READINESS_REASONS)[number];
+export const ADMISSION_DECISIONS = ['retry', 'cancelled', 'refused'] as const;
+export const ADMISSION_BOUNDARIES = [
+  'attach',
+  'bundle_ready',
+  'foreign_driver',
+  'open',
+  'prove',
+  'relaunch',
+  'retry_wait',
+] as const;
+export const ADMISSION_ATTACH_STAGES = ['wait_targets', 'connect_exact'] as const;
+export const ADMISSION_INNER_CLASSES = [
+  'target_selection_platform_not_found',
+  'target_selection_platform_conflict',
+  'target_selection_device_not_found',
+  'target_selection_device_ambiguous',
+  'target_selection_bundle_not_found',
+  'target_list_attempt_timeout',
+  'target_readiness_timeout',
+  'cdp_probe_timeout',
+  'cdp_handshake_timeout',
+  'cdp_target_closed',
+  'cdp_request_timeout',
+  'untyped',
+  'none',
+] as const;
+export const ADMISSION_LIVENESS = ['not_probed', 'alive', 'dead', 'probe_failed'] as const;
+const ADMISSION_WORDS = {
+  admission: ADMISSION_DECISIONS,
+  lastStarted: ADMISSION_BOUNDARIES,
+  lastCompleted: [...ADMISSION_BOUNDARIES, 'none'],
+  attachStage: ADMISSION_ATTACH_STAGES,
+  inner: ADMISSION_INNER_CLASSES,
+  liveness: ADMISSION_LIVENESS,
+} as const;
+const ADMISSION_NUMBERS = ['attempt', 'relaunches', 'elapsedMs', 'remainingMs'] as const;
+const HEALTH_DETAILS = [
+  'refused',
+  'reset',
+  'abort',
+  'http-4xx',
+  'http-5xx',
+  'body-not-ok',
+  'wedged',
+  'other',
+] as const;
+export type HealthDetail = (typeof HEALTH_DETAILS)[number];
+export const RUNNER_SIGNALS = [
+  'SIGTERM',
+  'SIGKILL',
+  'SIGINT',
+  'SIGHUP',
+  'SIGQUIT',
+  'SIGABRT',
+  'SIGTRAP',
+  'SIGSEGV',
+  'SIGBUS',
+  'SIGPIPE',
+  'other',
+] as const;
+export const RUNNER_MARKERS = {
+  markerReady: 'RN_FAST_RUNNER_LISTENER_READY',
+  markerWaiting: 'RN_FAST_RUNNER_WAITING',
+  markerWaitResult: 'RN_FAST_RUNNER_WAIT_RESULT',
+  markerListenerFailed: 'RN_FAST_RUNNER_LISTENER_FAILED',
+  markerSendFailed: 'RN_FAST_RUNNER_SEND_FAILED',
+} as const;
+export type RunnerMarkerCounts = Record<keyof typeof RUNNER_MARKERS, number>;
+const POST_MORTEM_WORDS = {
+  hostChild: ['alive', 'exited', 'unknown'],
+  exitSignal: RUNNER_SIGNALS,
+  appProcess: ['same', 'changed', 'absent', 'unknown'],
+} as const;
+const POST_MORTEM_NUMBERS = ['exitCode', ...Object.keys(RUNNER_MARKERS)] as (
+  | 'exitCode'
+  | keyof RunnerMarkerCounts
+)[];
+const POST_MORTEM_KEYS = [...Object.keys(POST_MORTEM_WORDS), ...POST_MORTEM_NUMBERS];
+export type DispatchPhase =
+  | 'dispatch-bind'
+  | 'dispatch-native'
+  | 'dispatch-settle'
+  | 'dispatch-health'
+  | 'dispatch-readback';
 export interface TimingEvent {
   stage: TimingStage;
   edge: 'start' | 'end' | 'point';
@@ -75,6 +166,27 @@ export interface TimingEvent {
   relaunch?: 'attempted' | 'ready' | 'failed' | 'timeout';
   reapDisposition?: 'reaped' | 'already-absent' | 'replacement-preserved';
   readinessReason?: NativeReadinessReason;
+  admission?: (typeof ADMISSION_DECISIONS)[number];
+  attempt?: number;
+  lastStarted?: (typeof ADMISSION_BOUNDARIES)[number];
+  lastCompleted?: (typeof ADMISSION_BOUNDARIES)[number] | 'none';
+  attachStage?: (typeof ADMISSION_ATTACH_STAGES)[number];
+  inner?: (typeof ADMISSION_INNER_CLASSES)[number];
+  relaunches?: number;
+  relaunchFailed?: boolean;
+  liveness?: (typeof ADMISSION_LIVENESS)[number];
+  elapsedMs?: number;
+  remainingMs?: number;
+  healthDetail?: HealthDetail;
+  hostChild?: 'alive' | 'exited' | 'unknown';
+  exitCode?: number;
+  exitSignal?: (typeof RUNNER_SIGNALS)[number];
+  appProcess?: 'same' | 'changed' | 'absent' | 'unknown';
+  markerReady?: number;
+  markerWaiting?: number;
+  markerWaitResult?: number;
+  markerListenerFailed?: number;
+  markerSendFailed?: number;
 }
 export type TimingObserver = (event: TimingEvent) => void;
 export interface TimingContext {
@@ -106,6 +218,33 @@ export function cleanTimingEvent(value: unknown): TimingEvent | undefined {
       return undefined;
     event.readinessReason = input.readinessReason as NativeReadinessReason;
   }
+  const admission = input.stage === 'admission' && input.edge === 'point';
+  for (const [key, values] of Object.entries(ADMISSION_WORDS)) {
+    if (input[key] === undefined) continue;
+    const value = (values as readonly string[]).find((word) => word === input[key]);
+    if (!admission || !value) return undefined;
+    Object.assign(event, { [key]: value });
+  }
+  if (input.relaunchFailed !== undefined) {
+    if (!admission || typeof input.relaunchFailed !== 'boolean') return undefined;
+    event.relaunchFailed = input.relaunchFailed;
+  }
+  if (!admission && ADMISSION_NUMBERS.some((key) => input[key] !== undefined)) return undefined;
+  if (input.healthDetail !== undefined) {
+    if (
+      event.stage !== 'native-readiness' ||
+      event.edge !== 'end' ||
+      event.readinessReason !== 'health' ||
+      !HEALTH_DETAILS.includes(input.healthDetail as HealthDetail)
+    )
+      return undefined;
+    event.healthDetail = input.healthDetail as HealthDetail;
+  }
+  if (
+    event.stage !== 'runner-post-mortem' &&
+    POST_MORTEM_KEYS.some((key) => input[key] !== undefined)
+  )
+    return undefined;
   for (const key of [
     'at',
     'line',
@@ -120,6 +259,8 @@ export function cleanTimingEvent(value: unknown): TimingEvent | undefined {
     'appliedBudgetMs',
     'moved',
     'maxDelta',
+    ...ADMISSION_NUMBERS,
+    ...POST_MORTEM_NUMBERS,
   ] as const) {
     const number = input[key];
     if (number === undefined && key !== 'at') continue;
@@ -135,6 +276,7 @@ export function cleanTimingEvent(value: unknown): TimingEvent | undefined {
   for (const [key, values] of [
     ['relaunch', ['attempted', 'ready', 'failed', 'timeout']],
     ['reapDisposition', ['reaped', 'already-absent', 'replacement-preserved']],
+    ...Object.entries(POST_MORTEM_WORDS),
   ] as const) {
     if (input[key] === undefined) continue;
     const value = values.find((word) => word === input[key]);
@@ -167,6 +309,26 @@ export function createTimingObserver(write: (event: RecordedTimingEvent) => void
       );
     }, event);
   };
+}
+
+let dispatchTiming: TimingContext | undefined;
+
+export function observeDispatchPhases(timing: TimingContext | undefined): void {
+  dispatchTiming = timing;
+}
+
+export function measureDispatchPhase<T>(
+  phase: DispatchPhase,
+  line: number | undefined,
+  work: () => Promise<T>,
+): Promise<T> {
+  const observe = dispatchTiming?.observe;
+  return measureTiming(
+    observe && line !== undefined ? (event) => observe({ ...event, line }) : observe,
+    dispatchTiming?.now ?? (() => 0),
+    phase,
+    work,
+  );
 }
 
 export async function measureTiming<T>(

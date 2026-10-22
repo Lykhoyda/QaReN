@@ -1,19 +1,28 @@
 import { interruptible, withCancellation } from '../../../dist/domain/cancellation.js';
 import { createStop } from '../../../dist/qa/stop.js';
+import { RunInputs, withInputs } from '../../../dist/qa/inputs.js';
+import { createWriter } from '../../../dist/qa/wire.js';
+import { getEventListeners } from 'node:events';
 import { TargetReadinessTimeoutError, TargetSelectionError } from '../../../dist/cdp/discovery.js';
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
+  admissionMetric,
   admit,
   awaitBundleReady,
+  bundleRequestedSinceLaunch,
   createBundleReload,
+  devClientLaunchUrl,
   formatAdmissionRefusal,
   logAdmissionRefusal,
   metroDevicePin,
+  type AdmissionDecision,
   type AdmissionSteps,
 } from '../../../dist/qa/admission.js';
+import { cleanTimingEvent } from '../../../dist/qa/timing.js';
 import { REACT_READY_PROBE_JS } from '../../../dist/injected-helpers.js';
 import { HandlerError } from '../../../dist/qa/adapt.js';
+import { buildIosRelaunchArgv } from '../../../dist/handlers/app-lifecycle.js';
 import { runInNewContext } from 'node:vm';
 import { setImmediate as nextTurn } from 'node:timers/promises';
 import { syncBuiltinESMExports } from 'node:module';
@@ -742,6 +751,139 @@ test('a dead app gets the one relaunch as before', async () => {
   ]);
 });
 
+function launcherStall(bundleRequested: AdmissionSteps['bundleRequested']) {
+  const order: string[] = [];
+  const deadlines: number[] = [];
+  let relaunched = 0;
+  let remaining = 90_000;
+  const { stop, steps } = harness({
+    remainingMs: () => remaining,
+    attach: async (deadline) => {
+      order.push('attach');
+      deadlines.push(deadline);
+      if (!relaunched) {
+        if (order.filter((step) => step === 'attach').length >= 3) remaining = 0;
+        throw new TargetReadinessTimeoutError('no target');
+      }
+    },
+    foreignDriver: async () => {
+      order.push('foreignDriver');
+      return undefined;
+    },
+    appAlive: async () => {
+      order.push('appAlive');
+      return true;
+    },
+    bundleRequested,
+    relaunch: async () => {
+      order.push('relaunch');
+      relaunched++;
+    },
+  });
+  return { order, deadlines, relaunches: () => relaunched, admitted: admit(steps, stop) };
+}
+
+test('a live app on its launcher with no bundle request gets the one relaunch', async () => {
+  const stall = launcherStall(async () => false);
+  assert.deepEqual(await stall.admitted, PROVEN);
+  assert.equal(stall.relaunches(), 1);
+  assert.deepEqual(stall.order, [
+    'attach',
+    'foreignDriver',
+    'appAlive',
+    'relaunch',
+    'attach',
+    'foreignDriver',
+  ]);
+  assert.equal(new Set(stall.deadlines).size, 1, 'relaunch must not renew the admission deadline');
+});
+
+test('a live app whose bundle request is in flight is never relaunched', async () => {
+  let probes = 0;
+  const stall = launcherStall(async () => {
+    probes++;
+    return true;
+  });
+  const error = await refusalOf(stall.admitted);
+  assert.equal(stall.relaunches(), 0, 'a slow bundle with a request in flight keeps its load');
+  assert.equal(probes, 1, 'the one relaunch is decided once');
+  const { rest } = budget(error.meta!);
+  assert.equal(rest.relaunches, 0);
+  assert.equal(rest.liveness, 'alive');
+});
+
+test('a live app whose bundle request was received before its build started is never relaunched', async () => {
+  let probes = 0;
+  const signal = { path: '/run/logs/metro.bundle-requests', atLaunch: 0 };
+  const stall = launcherStall(async () => {
+    probes++;
+    return bundleRequestedSinceLaunch(signal, () => '1\n');
+  });
+  await refusalOf(stall.admitted);
+  assert.equal(stall.relaunches(), 0, 'a cold dependency graph still has the request in flight');
+  assert.equal(probes, 1, 'the one relaunch is decided once');
+});
+
+for (const [name, bundleRequested] of [
+  ['an unknown bundle signal', async () => undefined],
+  ['a failing bundle signal', async () => assert.fail('signal unreadable')],
+  ['no bundle signal', undefined],
+] as const) {
+  test(`a live app with ${name} keeps the existing skip`, async () => {
+    const stall = launcherStall(bundleRequested);
+    await refusalOf(stall.admitted);
+    assert.equal(stall.relaunches(), 0);
+  });
+}
+
+test('a dead app relaunches without reading the bundle signal', async () => {
+  let relaunched = 0;
+  const { stop, steps } = harness({
+    attach: async () => {
+      if (!relaunched) throw new TargetReadinessTimeoutError('no target');
+    },
+    appAlive: async () => false,
+    bundleRequested: async () => assert.fail('a dead app needs no bundle signal'),
+    relaunch: async () => {
+      relaunched++;
+    },
+  });
+  assert.deepEqual(await admit(steps, stop), PROVEN);
+  assert.equal(relaunched, 1);
+});
+
+test('the bundle signal compares the drained count with the count at launch', () => {
+  const read = (content: string | Error) => () => {
+    if (content instanceof Error) throw content;
+    return content;
+  };
+  const signal = { path: '/run/logs/metro.bundle-requests', atLaunch: 2 };
+  assert.equal(bundleRequestedSinceLaunch(signal, read('2\n')), false);
+  assert.equal(bundleRequestedSinceLaunch(signal, read('3')), true);
+  assert.equal(
+    bundleRequestedSinceLaunch(signal, read('1')),
+    undefined,
+    'a reset count proves nothing',
+  );
+  assert.equal(bundleRequestedSinceLaunch(signal, read('two')), undefined);
+  assert.equal(bundleRequestedSinceLaunch(signal, read('')), undefined);
+  assert.equal(
+    bundleRequestedSinceLaunch(signal, read(Object.assign(new Error('gone'), { code: 'ENOENT' }))),
+    undefined,
+    'an absent count means Metro never logged a request',
+  );
+});
+
+test('the relaunch opens the run’s own Metro, never a launcher-remembered server', () => {
+  const argv = buildIosRelaunchArgv(
+    'com.example.app',
+    '00000000-0000-0000-0000-000000000001',
+    devClientLaunchUrl({ metroUrlForDevice: 'http://127.0.0.1:19341' }),
+  );
+  assert.deepEqual(argv.slice(-2), ['--initialUrl', 'http://127.0.0.1:19341/?disableOnboarding=1']);
+  assert.doesNotMatch(argv.join(' '), /8791/, 'a stale recent entry never reaches the relaunch');
+});
+
 test('a failing liveness probe relaunches and records the failure without its detail', async () => {
   let remaining = 90_000;
   const { stop, steps } = harness({
@@ -1226,6 +1368,50 @@ test('a platform selection refusal keeps the public refusal and records its clas
   assert.deepEqual(calls, ['close']);
 });
 
+for (const [code, inner, deviceMatch, bundleMatch] of [
+  ['DEVICE_TARGET_NOT_FOUND', 'target_selection_device_not_found', false, true],
+  ['DEVICE_TARGET_AMBIGUOUS', 'target_selection_device_ambiguous', true, false],
+  ['BUNDLE_TARGET_NOT_FOUND', 'target_selection_bundle_not_found', true, false],
+] as const) {
+  test(`a ${code} selection refusal records its finite class and bounded match booleans without candidate strings`, async () => {
+    const inference = {
+      readers: SUMMARY.readers,
+      targets: Array.from({ length: 10 }, () => ({
+        token: 'ios' as const,
+        name: 'not_reached' as const,
+        identity: 'present' as const,
+        packages: 'not_reached' as const,
+        confidence: 'probed' as const,
+        deviceMatch,
+        bundleMatch,
+      })),
+    };
+    const { calls, stop, steps } = harness({
+      attach: async () => {
+        throw new TargetSelectionError(
+          code,
+          `${code}: bundleId="com.private.app" title="com.private.app (PRIVATE-phone)" url="ws://127.0.0.1:8081/private"`,
+          [],
+          inference,
+        );
+      },
+    });
+    const error = await refusalOf(admit(steps, stop));
+    assert.equal(error.code, 'CDP_NOT_CONNECTED');
+    assert.deepEqual(calls, ['close']);
+    const formatted = formatAdmissionRefusal(error.meta, 'connect_exact');
+    for (const sentinel of ['com.private.app', 'PRIVATE-phone', 'ws://', '8081'])
+      assert.ok(!formatted.includes(sentinel), `${sentinel} leaked: ${formatted}`);
+    const parsed = JSON.parse(formatted);
+    assert.equal(parsed.inner, inner);
+    assert.equal(parsed.attachStage, 'connect_exact');
+    assert.equal(parsed.inference.targetsTotal, 10);
+    assert.equal(parsed.inference.targets.length, 8);
+    assert.equal(parsed.inference.targets[0].deviceMatch, deviceMatch);
+    assert.equal(parsed.inference.targets[0].bundleMatch, bundleMatch);
+  });
+}
+
 test('a deadline during origin proof after one transient attach records the stalled boundary', async (t) => {
   const clock = mockClock(t);
   let attempts = 0;
@@ -1467,4 +1653,268 @@ test('a refused admission writes exactly one value-free refusal line, and other 
   logAdmissionRefusal(refusal, undefined, () => {
     throw new Error('stderr closed');
   });
+});
+
+function observed(overrides: Partial<AdmissionSteps> = {}) {
+  const events: Array<{ decision: AdmissionDecision; facts: Record<string, unknown> }> = [];
+  const admission = harness({
+    observe: (decision, facts) => void events.push({ decision, facts: { ...facts } }),
+    ...overrides,
+  });
+  const facts = () => events.map(({ decision, facts }) => ({ decision, ...budget(facts).rest }));
+  return { ...admission, events, facts };
+}
+
+test('each retry decision is observed with its liveness and relaunch count', async () => {
+  let attempts = 0;
+  const { stop, steps, facts } = observed({
+    attach: async () => {
+      if (++attempts < 3) throw new TargetReadinessTimeoutError('PRIVATE bundle still building');
+    },
+    appAlive: async () => true,
+    relaunch: async () => assert.fail('a live app must not be relaunched'),
+  });
+  assert.deepEqual(await admit(steps, stop), PROVEN);
+  const retry = {
+    decision: 'retry',
+    inner: 'target_readiness_timeout',
+    relaunches: 0,
+    relaunchFailed: false,
+    liveness: 'alive',
+  };
+  assert.deepEqual(facts(), [
+    { ...retry, attempt: 1, lastStarted: 'foreign_driver', lastCompleted: 'foreign_driver' },
+    { ...retry, attempt: 2, lastStarted: 'attach', lastCompleted: 'retry_wait' },
+  ]);
+  assert.doesNotMatch(JSON.stringify(facts()), /PRIVATE/);
+});
+
+test('a cancelled admission is observed once with the facts of its last retry', async () => {
+  let attempts = 0;
+  const { calls, stop, steps, facts } = observed({
+    attach: async () => {
+      if (++attempts === 1) throw new TargetReadinessTimeoutError('PRIVATE launcher');
+      stop.begin();
+      await interruptible(() => new Promise(() => undefined));
+    },
+    appAlive: async () => true,
+    relaunch: async () => assert.fail('a live app must not be relaunched'),
+  });
+  const stopped = await refusalOf(admit(steps, stop));
+  assert.equal(stopped.code, 'RUN_CANCELLED');
+  assert.equal(stopped.meta, undefined);
+  assert.deepEqual(calls.slice(-1), ['close']);
+  assert.deepEqual(facts().slice(1), [
+    {
+      decision: 'cancelled',
+      attempt: 2,
+      lastStarted: 'attach',
+      lastCompleted: 'retry_wait',
+      inner: 'target_readiness_timeout',
+      relaunches: 0,
+      relaunchFailed: false,
+      liveness: 'alive',
+    },
+  ]);
+  assert.doesNotMatch(JSON.stringify(facts()), /PRIVATE/);
+});
+
+test('an admission cancelled before its first retry is observed with no inner failure', async () => {
+  const { stop, steps, facts } = observed();
+  stop.begin();
+  assert.equal((await refusalOf(admit(steps, stop))).code, 'RUN_CANCELLED');
+  assert.deepEqual(facts(), [
+    {
+      decision: 'cancelled',
+      attempt: 0,
+      lastStarted: 'attach',
+      lastCompleted: 'none',
+      inner: 'none',
+      relaunches: 0,
+      relaunchFailed: false,
+      liveness: 'not_probed',
+    },
+  ]);
+});
+
+for (const boundary of [
+  'attach',
+  'bundle_ready',
+  'foreign_driver',
+  'open',
+  'prove',
+  'relaunch',
+  'retry_wait',
+] as const) {
+  test(`stop.track writes cancelled admission facts before its result during ${boundary}`, async () => {
+    await withInputs(new RunInputs({ ACCOUNT: 'private-account' }, ['ACCOUNT']), async () => {
+      const lines: string[] = [];
+      const writer = createWriter((line) => void lines.push(line), 'cancel-admission');
+      const entered = Promise.withResolvers<void>();
+      const stall = () => {
+        entered.resolve();
+        return new Promise<never>(() => undefined);
+      };
+      const { stop, steps } = harness({
+        observe: (decision, facts) => {
+          writer.diagnostic({
+            kind: 'metric',
+            ...admissionMetric(decision, facts, 'wait_targets', 0),
+          });
+          if (boundary === 'retry_wait' && decision === 'retry') entered.resolve();
+        },
+      });
+      if (boundary === 'attach') steps.attach = stall;
+      if (boundary === 'bundle_ready') steps.bundleReady = stall;
+      if (boundary === 'foreign_driver') steps.foreignDriver = stall;
+      if (boundary === 'open') steps.open = stall;
+      if (boundary === 'prove') steps.prove = stall;
+      if (boundary === 'relaunch' || boundary === 'retry_wait') {
+        steps.attach = async () => {
+          throw new TargetReadinessTimeoutError('no target');
+        };
+        if (boundary === 'relaunch') steps.relaunch = stall;
+      }
+      const pending = stop
+        .track(() => admit(steps, stop))
+        .catch((error) => {
+          assert.equal(error.code, 'RUN_CANCELLED');
+          assert.equal(
+            writer.result({
+              verdict: 'REFUSED',
+              code: error.code,
+              message: 'the run was cancelled',
+              lease: 'cancel-admission',
+            }),
+            4,
+          );
+        });
+      await entered.promise;
+      stop.begin();
+      await pending;
+      await stop.drained(100);
+      const envelopes = lines.map((line) => JSON.parse(line));
+      const cancelled = envelopes.filter((event) => event.payload.admission === 'cancelled');
+      assert.equal(cancelled.length, 1);
+      assert.equal(cancelled[0].type, 'diagnostic');
+      assert.equal(cancelled[0].payload.lastStarted, boundary);
+      assert.equal(envelopes.at(-1).type, 'result');
+      assert.equal(envelopes.at(-2), cancelled[0]);
+      assert.equal(getEventListeners(stop.signal, 'abort').length, 0);
+    });
+  });
+}
+
+test('settled admissions remove the cancellation observer', async () => {
+  for (const refused of [false, true]) {
+    const { stop, steps, events } = observed(
+      refused
+        ? {
+            attach: async () => {
+              throw new Error('attach failed');
+            },
+          }
+        : {},
+    );
+    await admit(steps, stop).catch(() => undefined);
+    const count = events.length;
+    assert.equal(getEventListeners(stop.signal, 'abort').length, 0);
+    stop.begin();
+    assert.equal(events.length, count);
+  }
+});
+
+test('a refused admission is observed with its refusal facts; its own codes are not', async () => {
+  let remaining = 90_000;
+  const { stop, steps, events } = observed({
+    remainingMs: () => remaining,
+    attach: async () => {
+      throw new TargetReadinessTimeoutError('no target');
+    },
+    appAlive: async () => {
+      remaining = 0;
+      return true;
+    },
+    relaunch: async () => assert.fail('a live app must not be relaunched'),
+  });
+  const error = await refusalOf(admit(steps, stop));
+  assert.deepEqual(
+    events.map(({ decision }) => decision),
+    ['retry', 'refused'],
+  );
+  assert.deepEqual(events.at(-1)!.facts, error.meta);
+
+  const own = observed({
+    prove: async () => ({ ok: false, code: 'METRO_ORIGIN_MISMATCH', message: 'foreign bundle' }),
+  });
+  await refusalOf(admit(own.steps, own.stop));
+  assert.deepEqual(own.events, []);
+});
+
+test('an observer that throws changes neither an admission nor its refusal', async () => {
+  let attempts = 0;
+  const throwing = () => {
+    throw new Error('stdout closed');
+  };
+  const admitted = harness({
+    observe: throwing,
+    attach: async () => {
+      if (++attempts < 2) throw new TargetReadinessTimeoutError('no target');
+    },
+  });
+  assert.deepEqual(await admit(admitted.steps, admitted.stop), PROVEN);
+  const refused = harness({
+    observe: throwing,
+    remainingMs: () => 20,
+    attach: async () => {
+      throw new TargetReadinessTimeoutError('no target');
+    },
+  });
+  assert.equal((await refusalOf(admit(refused.steps, refused.stop))).code, 'CDP_NOT_CONNECTED');
+});
+
+test('admission facts become a cleaned metric with only allowlisted words and numbers', () => {
+  const facts = {
+    attempt: 3,
+    lastStarted: 'attach',
+    lastCompleted: 'retry_wait',
+    inner: 'target_readiness_timeout',
+    relaunches: 0,
+    relaunchFailed: false,
+    liveness: 'alive',
+    elapsedMs: 61_000,
+    remainingMs: 1_138_000,
+    budgetMs: 1_199_000,
+    inference: SUMMARY,
+  } as const;
+  const metric = admissionMetric('cancelled', facts, 'wait_targets', 70_000);
+  const { inference: _inference, ...rest } = facts;
+  const expected = {
+    stage: 'admission',
+    edge: 'point',
+    outcome: 'failed',
+    at: 70_000,
+    admission: 'cancelled',
+    attachStage: 'wait_targets',
+    ...rest,
+  };
+  assert.deepEqual(metric, expected);
+  assert.deepEqual(cleanTimingEvent(metric), expected);
+  assert.equal(admissionMetric('retry', facts, undefined, 1).outcome, 'unknown');
+  assert.equal(
+    admissionMetric('retry', { ...facts, lastStarted: 'prove' }, 'connect_exact', 1).attachStage,
+    undefined,
+  );
+  for (const [key, value] of [
+    ['admission', 'PRIVATE'],
+    ['lastStarted', 'PRIVATE'],
+    ['inner', 'http://private.example'],
+    ['liveness', 1],
+    ['relaunchFailed', 'false'],
+    ['attempt', -1],
+    ['attachStage', 'PRIVATE'],
+  ] as const)
+    assert.equal(cleanTimingEvent({ ...expected, [key]: value }), undefined, key);
+  assert.equal(cleanTimingEvent({ ...expected, stage: 'capture' }), undefined);
+  assert.equal(cleanTimingEvent({ ...expected, edge: 'end' }), undefined);
 });

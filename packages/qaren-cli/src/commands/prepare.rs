@@ -60,6 +60,8 @@ pub(crate) struct Ctx<'a> {
     pub(crate) timings: Vec<(String, u64)>,
     pub(crate) notes: Vec<(String, String)>,
     pub(crate) verb: &'static str,
+    // Metro's drained bundle-request count when the CLI launched the app.
+    pub(crate) bundle_requests_at_launch: Option<u64>,
 }
 
 impl<'a> Ctx<'a> {
@@ -119,6 +121,9 @@ impl<'a> Ctx<'a> {
                 failure.detail, save_failure.detail
             ));
             self.record.failure = Some(failure.clone());
+        }
+        if let Some(substage) = self.record.substage.clone() {
+            self.notes.push(("substage".into(), substage));
         }
         let mut receipt = finish_receipt(self, result, Some(failure));
         if let Some(outcome) = metro_cleanup {
@@ -424,6 +429,7 @@ fn prepare_validated(
         scenario_sha256,
         candidate: cand,
         phase: Phase::Created,
+        substage: None,
         prepare: identity,
         build: None,
         handoff: None,
@@ -448,6 +454,7 @@ fn prepare_validated(
         timings: Vec::new(),
         notes: Vec::new(),
         verb: "prepare",
+        bundle_requests_at_launch: None,
     };
     let t = ctx.mark("validate", started_ms);
     if let Some(earlier) = recovered {
@@ -1889,8 +1896,36 @@ fn wait_metro_responding(ctx: &mut Ctx) -> Result<(), Failure> {
     }
 }
 
+const IOS_SUBSTAGES: [&str; 6] = [
+    "install_cached",
+    "metro_ready",
+    "dev_client_manifest",
+    "dev_menu_defaults",
+    "app_launch",
+    "ready_probes",
+];
+
+// Saved for a separate `qaren status`, best effort: observation never changes the run's outcome.
+fn enter_substage(ctx: &mut Ctx, next: Option<&'static str>) {
+    if ctx.record.scenario.platform != Platform::Ios {
+        return;
+    }
+    if let Some(open) = IOS_SUBSTAGES
+        .into_iter()
+        .find(|s| ctx.record.substage.as_deref() == Some(*s))
+    {
+        crate::events::stage(open, StageState::Passed, None, None);
+    }
+    if let Some(next) = next {
+        crate::events::stage(next, StageState::Running, None, None);
+    }
+    ctx.record.substage = next.map(str::to_string);
+    let _ = ctx.save();
+}
+
 pub(crate) fn run_reuse_path(ctx: &mut Ctx, plan: &BuildPlan, t: u64) -> Result<(), Failure> {
     ensure_running(ctx.runner, "build")?;
+    enter_substage(ctx, Some("install_cached"));
     let artifact = plan.artifact.clone().expect("reuse carries an artifact");
     let metro_port = qaren_metro_port(&ctx.record.scenario);
     let deadline = ctx.runner.monotonic_ms() + ctx.record.scenario.deadlines.build_seconds * 1000;
@@ -2008,12 +2043,22 @@ pub(crate) fn run_reuse_path(ctx: &mut Ctx, plan: &BuildPlan, t: u64) -> Result<
     }
     let t = ctx.mark("install_cached", t);
 
+    enter_substage(ctx, Some("metro_ready"));
     if ctx.record.resources.metro.is_none() {
         spawn_metro_only(ctx)?;
     }
     wait_metro_responding(ctx)?;
     let t = ctx.mark("metro_ready", t);
 
+    enter_substage(ctx, Some("dev_client_manifest"));
+    if matches!(ctx.record.scenario.platform, Platform::Ios) {
+        run_budgeted_attempt(
+            ctx,
+            &metro::request_probe_spec(metro_port),
+            deadline,
+            &mut 0,
+        )?;
+    }
     let manifest = metro::manifest_spec(metro_port, platform_dir(ctx.record.scenario.platform));
     let mut attempts = 0;
     let mut slow = None;
@@ -2051,6 +2096,7 @@ pub(crate) fn run_reuse_path(ctx: &mut Ctx, plan: &BuildPlan, t: u64) -> Result<
                 .ios_simulator
                 .clone()
                 .expect("ios allocated");
+            enter_substage(ctx, Some("dev_menu_defaults"));
             let defaults = ios::devmenu_defaults_specs(&sim.udid, &ctx.record.candidate.app_id);
             let mut failed = 0;
             let mut attempts = 0;
@@ -2105,6 +2151,15 @@ pub(crate) fn run_reuse_path(ctx: &mut Ctx, plan: &BuildPlan, t: u64) -> Result<
             .udid
     });
     let app_id = ctx.record.candidate.app_id.clone();
+    enter_substage(ctx, Some("app_launch"));
+    if matches!(ctx.record.scenario.platform, Platform::Ios) {
+        ctx.bundle_requests_at_launch = ctx
+            .record
+            .resources
+            .metro
+            .as_ref()
+            .map(|metro| crate::exec::log::read_bundle_requests(&metro.log).unwrap_or(0));
+    }
     let launched = run_launch_command(ctx, &launch, deadline, &mut attempts, &mut |ctx| {
         proven = ios_udid
             .as_deref()
@@ -2123,8 +2178,10 @@ pub(crate) fn run_reuse_path(ctx: &mut Ctx, plan: &BuildPlan, t: u64) -> Result<
     }
     let t = ctx.mark("app_launch", t);
 
+    enter_substage(ctx, Some("ready_probes"));
     wait_ready_until(ctx, deadline)?;
     ctx.mark("ready_probes", t);
+    enter_substage(ctx, None);
     Ok(())
 }
 
@@ -3244,6 +3301,7 @@ fn dry_run_receipt(
                 udid,
                 Path::new("<run_dir>/ios-build/<verified-app>.app"),
             ));
+            planned.push(metro::request_probe_spec(port));
             planned.push(metro::manifest_spec(port, "ios"));
             planned.extend(ios::devmenu_defaults_specs(udid, &cand.app_id));
             planned.push(ios::launch_spec(udid, &cand.app_id, port));
@@ -3370,6 +3428,7 @@ fn dry_run_receipt(
                     | "simctl-install"
                     | "simctl-launch"
                     | "expo-start"
+                    | "metro-request-probe"
                     | "metro-manifest"
                     | "simctl-devmenu-defaults"
                     | "simctl-app-container"
@@ -3381,6 +3440,7 @@ fn dry_run_receipt(
                 let udid = borrowed.map_or("<udid>", |sim| sim.udid.as_str());
                 planned.push(metro::start_spec(&cand.project_root, port));
                 planned.push(ios::install_app_spec(udid, &artifact_path));
+                planned.push(metro::request_probe_spec(port));
                 planned.push(metro::manifest_spec(port, "ios"));
                 planned.extend(ios::devmenu_defaults_specs(udid, &cand.app_id));
                 planned.push(ios::launch_spec(udid, &cand.app_id, port));

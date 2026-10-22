@@ -554,6 +554,7 @@ fn run_inner(
         scenario_sha256: sha256_hex(config_raw.as_bytes()),
         candidate: cand,
         phase: Phase::Created,
+        substage: None,
         prepare: identity,
         build: None,
         handoff: None,
@@ -576,6 +577,7 @@ fn run_inner(
         timings: Vec::new(),
         notes: Vec::new(),
         verb: verb(req),
+        bundle_requests_at_launch: None,
     };
     let finish_failed =
         |ctx: Ctx, failure: Failure| finish_failed(ctx, &node, &req.runtime_dir, failure, false);
@@ -861,6 +863,13 @@ fn run_inner(
             metro_port: config.metro_port,
             metro_url_for_device: format!("http://127.0.0.1:{}", config.metro_port),
             worktree: project_root.clone(),
+            metro_bundle_requests: ctx
+                .bundle_requests_at_launch
+                .zip(ctx.record.resources.metro.as_ref())
+                .map(|(at_launch, metro)| core::MetroBundleRequests {
+                    path: crate::exec::log::bundle_requests_path(&metro.log),
+                    at_launch,
+                }),
         },
     };
     let spec = core::spawn_spec(
@@ -872,15 +881,21 @@ fn run_inner(
         android_env.as_ref(),
     );
     // Ownership needs proven absence first: a host already up on this simulator is never the run's.
-    let runner_host = (req.platform == Platform::Ios
-        && ios::probe_runner_hosts(ctx.runner, &device.id) == ios::RunnerHostPresence::Absent)
-        .then(|| crate::runrecord::RunnerHostResource {
+    let presence =
+        (req.platform == Platform::Ios).then(|| ios::probe_runner_hosts(ctx.runner, &device.id));
+    if presence == Some(ios::RunnerHostPresence::Unknown) {
+        ctx.notes
+            .push(("runner_host_probe".to_string(), "unknown".to_string()));
+    }
+    let runner_host = (presence == Some(ios::RunnerHostPresence::Absent)).then(|| {
+        crate::runrecord::RunnerHostResource {
             udid: device.id.clone(),
             bundle_ids: vec![
                 ios::RUNNER_HOST_BUNDLE_ID.to_string(),
                 ios::RUNNER_TEST_HOST_BUNDLE_ID.to_string(),
             ],
-        });
+        }
+    });
     let core_log = run_dir.join("logs").join("core.log");
     events::core_t0(core_request.t0);
     events::stage("attach", StageState::Running, None, None);

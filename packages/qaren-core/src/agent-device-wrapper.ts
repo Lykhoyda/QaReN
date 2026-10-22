@@ -2,7 +2,7 @@ import { throwIfInputPrivacyRefused } from './qa/inputs.js';
 import { throwIfCancelled } from './domain/cancellation.js';
 import { unlinkSync, rmSync } from 'node:fs';
 import { QaDispatchError, type QaDispatchContext } from './domain/qa-dispatch.js';
-import type { TimingContext } from './qa/timing.js';
+import { measureDispatchPhase, type DispatchPhase, type TimingContext } from './qa/timing.js';
 import { join } from 'node:path';
 import { createHash } from 'node:crypto';
 import type { ToolResult } from './utils.js';
@@ -1978,7 +1978,11 @@ export async function runNative(
       };
     }
     const runnerAuthorityBefore = captureFastRunnerCommandAuthority();
-    let result = await runIOS(ios);
+    const phase = <T>(stage: DispatchPhase, work: () => Promise<T>): Promise<T> =>
+      opts.qaContext && SNAPSHOT_MUTATING_VERBS.has(cliArgs[0])
+        ? measureDispatchPhase(stage, opts.qaContext.line, work)
+        : work();
+    let result = await phase('dispatch-native', () => runIOS(ios));
     const iosPolicy = tapRetryPolicy(
       cliArgs,
       ios.command,
@@ -1986,20 +1990,26 @@ export async function runNative(
       ios.y,
       opts.retryIfNoChange !== undefined ? { retryIfNoChange: opts.retryIfNoChange } : {},
     );
-    result = await settleWithRetryIfNoChange(
-      result,
-      () => runIOS(ios),
-      {
-        platform: 'ios',
-        qaContext: opts.qaContext,
-        verb: cliArgs[0],
-        ...(appId ? { appId } : {}),
-        ...(opts.settle ? { settle: opts.settle } : {}),
-      },
-      iosPolicy,
+    const dispatched = result;
+    result = await phase('dispatch-settle', () =>
+      settleWithRetryIfNoChange(
+        dispatched,
+        () => runIOS(ios),
+        {
+          platform: 'ios',
+          qaContext: opts.qaContext,
+          verb: cliArgs[0],
+          ...(appId ? { appId } : {}),
+          ...(opts.settle ? { settle: opts.settle } : {}),
+        },
+        iosPolicy,
+      ),
     );
     opts.qaContext?.assertComplete();
-    result = await verifyTypeResultAfterSettle(ios, result, runnerAuthorityBefore);
+    const settled = result;
+    result = await phase('dispatch-health', () =>
+      verifyTypeResultAfterSettle(ios, settled, runnerAuthorityBefore),
+    );
     if (healMeta) result = attachMeta(result, healMeta);
     return upgradeNote ? attachMetaNote(result, upgradeNote) : result;
   }

@@ -229,3 +229,48 @@ test('timing volume cannot suppress block and login outcomes, and ordinary runs 
   assert.equal(JSON.parse(lines.at(-2)!).payload.kind, 'block-outcome');
   assert.equal(JSON.parse(lines.at(-1)!).payload.kind, 'login-outcome');
 });
+
+test('runner termination diagnostics cross the slot wire as fixed words and counts only', () => {
+  const secret = 'private-otp-123456';
+  const lines: string[] = [];
+  const writer = createWriter((line) => lines.push(line), 'run');
+  const rows = [
+    {
+      kind: 'metric',
+      stage: 'native-readiness',
+      edge: 'end',
+      outcome: 'failed',
+      at: 200,
+      ms: 2,
+      count: 1,
+      readinessReason: 'health',
+      healthDetail: 'refused',
+    },
+    {
+      kind: 'metric',
+      stage: 'runner-post-mortem',
+      edge: 'point',
+      outcome: 'failed',
+      at: 201,
+      count: 1,
+      hostChild: 'alive',
+      appProcess: 'same',
+      markerReady: 1,
+      markerWaiting: 1,
+      markerWaitResult: 0,
+      markerListenerFailed: 0,
+      markerSendFailed: 0,
+    },
+    { kind: 'metric', stage: 'dispatch-native', edge: 'end', outcome: 'ok', at: 190, ms: 17_600 },
+  ];
+  withInputs(new RunInputs({ OTP: secret }, ['OTP'], undefined, ['OTP']), () => {
+    for (const row of rows) writer.diagnostic({ ...row, tail: secret, text: secret });
+    writer.diagnostic({ ...rows[1], hostChild: secret });
+    writer.diagnostic({ ...rows[0], healthDetail: secret });
+  });
+  assert.deepEqual(
+    lines.map((line) => JSON.parse(line).payload),
+    rows,
+  );
+  assert.ok(!lines.join('').includes(secret));
+});

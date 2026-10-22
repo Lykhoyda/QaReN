@@ -48,6 +48,15 @@ pub struct CoreTarget {
     pub metro_port: u16,
     pub metro_url_for_device: String,
     pub worktree: PathBuf,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub metro_bundle_requests: Option<MetroBundleRequests>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MetroBundleRequests {
+    pub path: PathBuf,
+    pub at_launch: u64,
 }
 
 // The borrowed emulator the core's adb calls are pinned to.

@@ -1761,6 +1761,12 @@ fn check_runs_the_phases_in_order_and_ends_pass_with_a_report() {
         request_line["payload"]["target"]["deviceName"],
         "qa-company-app"
     );
+    let bundle_requests = &request_line["payload"]["target"]["metroBundleRequests"];
+    assert_eq!(bundle_requests["atLaunch"], 0, "{bundle_requests}");
+    assert!(bundle_requests["path"]
+        .as_str()
+        .unwrap()
+        .ends_with("/logs/metro.bundle-requests"));
     assert_eq!(
         request_line["payload"]["preflightCalls"],
         probe_json()["callDetails"]
@@ -1903,6 +1909,7 @@ fn absent_runner_hosts_release_the_lease_without_termination() {
     let receipt = run(&mut mock, &request(&repo, &app, 30));
 
     assert_eq!(receipt.cleanup["runner_host"], "absent");
+    assert!(!receipt.outcomes.contains_key("runner_host_probe"));
     assert!(!mock
         .calls
         .iter()
@@ -1923,6 +1930,7 @@ fn an_unknown_runner_host_inventory_keeps_the_lease_for_cleanup() {
 
     let receipt = run(&mut mock, &request(&repo, &app, 30));
 
+    assert_eq!(receipt.outcomes["runner_host_probe"], "unknown");
     assert!(receipt.cleanup["runner_host"].starts_with("unresolved"));
     assert!(receipt.cleanup["device_lease"].starts_with("unresolved"));
     assert_eq!(mock.remaining(), 0);
@@ -3479,6 +3487,11 @@ fn android_check_reuse_installs_the_cached_apk_by_serial() {
         .env
         .contains(&("ANDROID_SERIAL".to_string(), EMULATOR.to_string())));
     assert!(!mock.piped_stdin_text(0).contains("\"adb\""));
+    let request: serde_json::Value =
+        serde_json::from_str(mock.piped_stdin_text(0).trim()).unwrap();
+    assert!(request["payload"]["target"]
+        .get("metroBundleRequests")
+        .is_none());
     let record = RunRecord::load(&req.runs_root, &run_id()).unwrap();
     assert_eq!(record.resources.adb_reverse_port, Some(8791));
     let install = record.resources.app_install.as_ref().unwrap();
@@ -4514,6 +4527,7 @@ fn fresh_install_resets_or_proves_absence_before_cached_install_under_the_same_l
             mock.expect_run("ps", CmdOutput::success("6000"));
             mock.expect_run("curl", CmdOutput::success("packager-status:running"));
             if launch {
+                mock.expect_run("qaren-request-probe", CmdOutput::success(""));
                 mock.expect_run("expo-platform", CmdOutput::success(""));
                 common::script_devmenu_defaults(&mut mock, CmdOutput::success(""));
                 mock.expect_run(
@@ -7812,6 +7826,18 @@ fn every_build_decision_reports_fingerprint_completeness_and_reuse_reports_ready
         expected.extend(
             [
                 "install_launch_ready running",
+                "install_cached running",
+                "install_cached passed",
+                "metro_ready running",
+                "metro_ready passed",
+                "dev_client_manifest running",
+                "dev_client_manifest passed",
+                "dev_menu_defaults running",
+                "dev_menu_defaults passed",
+                "app_launch running",
+                "app_launch passed",
+                "ready_probes running",
+                "ready_probes passed",
                 "install_launch_ready passed",
                 "verify running",
                 "verify passed",
@@ -7895,6 +7921,79 @@ fn every_build_decision_reports_fingerprint_completeness_and_reuse_reports_ready
     }
 }
 
+#[test]
+fn a_cancel_during_a_cached_ios_install_names_the_substage() {
+    let (repo, app) = app_repo();
+    common::write_ios_workspace(&app, "ios/First.xcworkspace");
+    configure_workspace(&app, "ios/First.xcworkspace", "Debug");
+    let files = common::IOS_NATIVE_FILES;
+    let mut seed = MockRunner::new();
+    script_preflight(&mut seed, &repo);
+    seed.expect_run("pnpm install --frozen-lockfile", CmdOutput::success(""));
+    script_provision_build(&mut seed, "xcodebuild", files);
+    script_drift_status(&mut seed);
+    script_host_probe(&mut seed, UDID, hosts_absent());
+    seed.expect_spawn_piped("walk.js", 9000, &pass_stdout(), Some(0));
+    script_core_identity(&mut seed);
+    script_teardown(&mut seed);
+    let mut req = request(&repo, &app, 30);
+    req.runs_root = repo.join("runs-seed");
+    assert_eq!(run(&mut seed, &req).result, ReceiptResult::Pass);
+
+    let cases = [
+        ("simctl install", "install_cached"),
+        ("expo-platform", "dev_client_manifest"),
+        ("defaults write", "dev_menu_defaults"),
+        ("simctl launch", "app_launch"),
+    ];
+    for (index, (hint, substage)) in cases.into_iter().enumerate() {
+        let mut mock = MockRunner::new();
+        script_preflight(&mut mock, &repo);
+        mock.expect_run("pnpm install --frozen-lockfile", CmdOutput::success(""));
+        mock.expect_run("ls-files", CmdOutput::success(files));
+        common::script_xcode(&mut mock);
+        common::script_ios_app_verification(&mut mock);
+        common::script_ios_metro_spawn(&mut mock);
+        mock.expect_run("simctl install", CmdOutput::success(""));
+        if index > 0 {
+            mock.expect_run("ps", CmdOutput::success(LSTART));
+            mock.expect_run("ps", CmdOutput::success("S"));
+            mock.expect_run("lsof", CmdOutput::success("6001"));
+            mock.expect_run("ps", CmdOutput::success("6000"));
+            mock.expect_run("curl", CmdOutput::success("packager-status:running"));
+            mock.expect_run("qaren-request-probe", CmdOutput::success(""));
+            mock.expect_run("expo-platform", CmdOutput::success(""));
+        }
+        if index == 2 {
+            mock.expect_run("defaults write", CmdOutput::success(""));
+        }
+        if index == 3 {
+            common::script_devmenu_defaults(&mut mock, CmdOutput::success(""));
+            common::script_ios_launch(&mut mock);
+        }
+        common::script_ios_metro_cleanup(&mut mock);
+        mock.cancel_after = Some((hint.into(), "received SIGTERM".into()));
+        req.runs_root = repo.join(format!("runs-{index}"));
+
+        let (receipt, events) = run_with_events(&mut mock, &req);
+
+        assert_eq!(receipt.result, ReceiptResult::Refused, "{substage}");
+        let failure = receipt.failure.as_ref().unwrap();
+        assert_eq!(failure.code, FailureCode::RunCancelled, "{substage}");
+        assert_eq!(failure.phase, "build");
+        assert_eq!(receipt.outcomes["substage"], substage);
+        let trail = stage_trail(&events);
+        assert!(
+            trail.contains(&format!("{substage} failed RUN_CANCELLED")),
+            "{trail:?}"
+        );
+        assert!(!trail.iter().any(|s| s == "install_launch_ready passed"));
+        let record = RunRecord::load(&req.runs_root, &receipt.run_id).unwrap();
+        assert_eq!(record.substage.as_deref(), Some(substage));
+        assert_eq!(mock.remaining(), 0, "{substage}");
+    }
+}
+
 // Metro answers on the second poll, so the scripted clock advances inside reuse readiness.
 fn script_warm_launch_after_one_metro_retry(mock: &mut MockRunner) {
     common::script_ios_app_verification(mock);
@@ -7921,6 +8020,7 @@ fn script_warm_launch_after_one_metro_retry(mock: &mut MockRunner) {
             },
         );
     }
+    mock.expect_run("qaren-request-probe", CmdOutput::success(""));
     mock.expect_run("expo-platform", CmdOutput::success(""));
     common::script_devmenu_defaults(mock, CmdOutput::success(""));
     mock.expect_run(

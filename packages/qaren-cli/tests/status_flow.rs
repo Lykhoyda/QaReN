@@ -207,6 +207,27 @@ fn live_prepare_reports_working() {
     mock.expect_run("ps", CmdOutput::success("S\n")); // not a zombie
     let receipt = status(&mut mock, &repo, "run7");
     assert_eq!(receipt.result, ReceiptResult::Working);
+    assert!(!receipt.outcomes.contains_key("substage"));
+}
+
+#[test]
+fn live_building_status_names_the_substage_in_flight() {
+    let repo = common::temp_repo();
+    let mut record = common::base_record(
+        &repo,
+        &common::ios_scenario_yaml(8791),
+        "run7b",
+        Phase::Building,
+    );
+    record.substage = Some("metro_ready".to_string());
+    record.save(&repo).unwrap();
+    let mut mock = MockRunner::new();
+    mock.expect_run("ps", CmdOutput::success("Wed Aug 12 15:00:00 2026\n"));
+    mock.expect_run("ps", CmdOutput::success("S\n")); // not a zombie
+    let receipt = status(&mut mock, &repo, "run7b");
+    assert_eq!(receipt.result, ReceiptResult::Working);
+    assert_eq!(receipt.phase, "building");
+    assert_eq!(receipt.outcomes["substage"], "metro_ready");
 }
 
 #[test]

@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto';
+import { readFileSync } from 'node:fs';
 import { loadavg } from 'node:os';
 import {
   interruptible,
@@ -8,6 +9,7 @@ import {
   sleep,
 } from '../domain/cancellation.js';
 import {
+  BundleReadinessTimeoutError,
   TargetReadinessTimeoutError,
   TargetListAttemptTimeoutError,
   TargetSelectionError,
@@ -23,6 +25,13 @@ import { CDPRequestTimeoutError } from '../cdp/transport.js';
 import { REACT_READY_PROBE_JS } from '../injected-helpers.js';
 import { HandlerError, describeError } from './adapt.js';
 import type { ProveOutcome } from './prove.js';
+import {
+  ADMISSION_BOUNDARIES,
+  ADMISSION_DECISIONS,
+  ADMISSION_INNER_CLASSES,
+  ADMISSION_LIVENESS,
+  type TimingEvent,
+} from './timing.js';
 
 export interface AdmissionSteps {
   metroPort: number;
@@ -35,41 +44,23 @@ export interface AdmissionSteps {
   relaunch?(): Promise<void>;
   // Before that one relaunch, when no target registered: a live app process makes the relaunch unnecessary.
   appAlive?(): Promise<boolean>;
+  // Unless Metro saw no bundle request since launch: the live app then sits on its launcher. Undefined is unknown.
+  bundleRequested?(): Promise<boolean | undefined>;
   foreignDriver(): Promise<string | undefined>;
   open(): Promise<void>;
   prove(): Promise<ProveOutcome>;
   close(): Promise<void>;
   load?(): number;
+  // Value-free facts at each retry decision and when admission ends without a proof.
+  observe?(decision: AdmissionDecision, facts: AdmissionRefusalFacts): void;
 }
 
 type Proven = Extract<ProveOutcome, { ok: true }>;
 
-const BOUNDARIES = [
-  'attach',
-  'bundle_ready',
-  'foreign_driver',
-  'open',
-  'prove',
-  'relaunch',
-  'retry_wait',
-] as const;
-export type AdmissionBoundary = (typeof BOUNDARIES)[number];
-
-const INNER_CLASSES = [
-  'target_selection_platform_not_found',
-  'target_selection_platform_conflict',
-  'target_list_attempt_timeout',
-  'target_readiness_timeout',
-  'cdp_probe_timeout',
-  'cdp_handshake_timeout',
-  'cdp_target_closed',
-  'cdp_request_timeout',
-  'untyped',
-] as const;
-export type AdmissionInnerClass = (typeof INNER_CLASSES)[number];
-
-const LIVENESS = ['not_probed', 'alive', 'dead', 'probe_failed'] as const;
-export type AdmissionLiveness = (typeof LIVENESS)[number];
+export type AdmissionBoundary = (typeof ADMISSION_BOUNDARIES)[number];
+export type AdmissionInnerClass = (typeof ADMISSION_INNER_CLASSES)[number];
+export type AdmissionLiveness = (typeof ADMISSION_LIVENESS)[number];
+export type AdmissionDecision = (typeof ADMISSION_DECISIONS)[number];
 
 export type AdmissionRefusalFacts = {
   attempt: number;
@@ -87,10 +78,20 @@ export type AdmissionRefusalFacts = {
 
 // Classified by type only; an error's message or name never reaches the record.
 export function admissionInnerClass(error: unknown): AdmissionInnerClass {
-  if (error instanceof TargetSelectionError)
-    return error.code === 'TARGET_PLATFORM_CONFLICT'
-      ? 'target_selection_platform_conflict'
-      : 'target_selection_platform_not_found';
+  if (error instanceof TargetSelectionError) {
+    switch (error.code) {
+      case 'TARGET_PLATFORM_CONFLICT':
+        return 'target_selection_platform_conflict';
+      case 'DEVICE_TARGET_NOT_FOUND':
+        return 'target_selection_device_not_found';
+      case 'DEVICE_TARGET_AMBIGUOUS':
+        return 'target_selection_device_ambiguous';
+      case 'BUNDLE_TARGET_NOT_FOUND':
+        return 'target_selection_bundle_not_found';
+      case 'PLATFORM_TARGET_NOT_FOUND':
+        return 'target_selection_platform_not_found';
+    }
+  }
   if (error instanceof TargetListAttemptTimeoutError) return 'target_list_attempt_timeout';
   if (error instanceof TargetReadinessTimeoutError) return 'target_readiness_timeout';
   if (error instanceof CDPProbeTimeoutError) return 'cdp_probe_timeout';
@@ -131,18 +132,18 @@ export function formatAdmissionRefusal(
   attachStage?: 'wait_targets' | 'connect_exact',
 ): string {
   const facts = isObject(meta) ? meta : {};
-  const lastStarted = member(facts.lastStarted, BOUNDARIES);
+  const lastStarted = member(facts.lastStarted, ADMISSION_BOUNDARIES);
   const record: Record<string, unknown> = {
     attempt: count(facts.attempt),
     lastStarted,
-    lastCompleted: member(facts.lastCompleted, [...BOUNDARIES, 'none']),
+    lastCompleted: member(facts.lastCompleted, [...ADMISSION_BOUNDARIES, 'none']),
     ...(lastStarted === 'attach' && attachStage !== undefined
       ? { attachStage: member(attachStage, ['wait_targets', 'connect_exact']) }
       : {}),
-    inner: member(facts.inner, INNER_CLASSES),
+    inner: member(facts.inner, ADMISSION_INNER_CLASSES),
     relaunches: count(facts.relaunches),
     relaunchFailed: flag(facts.relaunchFailed),
-    liveness: member(facts.liveness, LIVENESS),
+    liveness: member(facts.liveness, ADMISSION_LIVENESS),
     elapsedMs: count(facts.elapsedMs),
     remainingMs: count(facts.remainingMs),
     budgetMs: count(facts.budgetMs),
@@ -184,6 +185,24 @@ export function logAdmissionRefusal(
   } catch {
     // Diagnostics cannot change the refusal.
   }
+}
+
+export function admissionMetric(
+  decision: AdmissionDecision,
+  facts: AdmissionRefusalFacts,
+  attachStage: 'wait_targets' | 'connect_exact' | undefined,
+  at: number,
+): TimingEvent {
+  const { inference: _inference, ...rest } = facts;
+  return {
+    stage: 'admission',
+    edge: 'point',
+    outcome: decision === 'retry' ? 'unknown' : 'failed',
+    at,
+    admission: decision,
+    ...(facts.lastStarted === 'attach' && attachStage !== undefined ? { attachStage } : {}),
+    ...rest,
+  };
 }
 
 function transientReadinessFailure(error: unknown): boolean {
@@ -314,7 +333,7 @@ export async function admit(
   stop: { readonly signal: AbortSignal },
 ): Promise<Proven> {
   try {
-    return await withCancellation(stop.signal, () => attach(steps));
+    return await withCancellation(stop.signal, () => attach(steps, stop.signal));
   } catch (error) {
     await withCancellation(undefined, steps.close);
     stop.signal.throwIfAborted();
@@ -337,7 +356,38 @@ async function probeLiveness(steps: AdmissionSteps): Promise<AdmissionLiveness> 
   }
 }
 
-async function attach(steps: AdmissionSteps): Promise<Proven> {
+// A live app is relaunched only on proof that Metro never got its bundle request; a slow bundle has one in flight.
+async function launcherStalled(steps: AdmissionSteps): Promise<boolean> {
+  if (!steps.bundleRequested) return false;
+  try {
+    return (await interruptible(steps.bundleRequested)) === false;
+  } catch (error) {
+    if (isAbort(error)) throw error;
+    return false;
+  }
+}
+
+export function bundleRequestedSinceLaunch(
+  signal: { path: string; atLaunch: number },
+  read: (path: string) => string = (path) => readFileSync(path, 'utf8'),
+): boolean | undefined {
+  let text: string;
+  try {
+    text = read(signal.path).trim();
+  } catch {
+    return undefined;
+  }
+  if (!/^\d+$/.test(text)) return undefined;
+  const count = Number(text);
+  if (!Number.isSafeInteger(count) || count < signal.atLaunch) return undefined;
+  return count > signal.atLaunch;
+}
+
+// The dev client opens this run's own Metro, never a server its launcher remembers.
+export const devClientLaunchUrl = (target: { metroUrlForDevice: string }): string =>
+  `${target.metroUrlForDevice}/?disableOnboarding=1`;
+
+async function attach(steps: AdmissionSteps, signal: AbortSignal): Promise<Proven> {
   const started = performance.now();
   const deadline = started + steps.remainingMs();
   const relaunchAt = started + steps.readinessMs;
@@ -352,7 +402,38 @@ async function attach(steps: AdmissionSteps): Promise<Proven> {
   let attempt = 0;
   let lastStarted: AdmissionBoundary = 'attach';
   let lastCompleted: AdmissionBoundary | 'none' = 'none';
+  let retried: unknown;
+  const facts = (inner: AdmissionInnerClass): AdmissionRefusalFacts => {
+    const now = performance.now();
+    return {
+      attempt,
+      lastStarted,
+      lastCompleted,
+      inner,
+      relaunches: relaunched ? 1 : 0,
+      relaunchFailed: relaunchFailure !== undefined,
+      liveness,
+      elapsedMs: Math.round(now - started),
+      remainingMs: Math.max(0, Math.round(deadline - now)),
+      budgetMs: Math.round(deadline - started),
+    };
+  };
+  const observe = (decision: AdmissionDecision, recorded: AdmissionRefusalFacts): void => {
+    try {
+      steps.observe?.(decision, recorded);
+    } catch {
+      // Diagnostics cannot change the admission.
+    }
+  };
+  let cancellationObserved = false;
+  const observeCancellation = (): void => {
+    if (cancellationObserved) return;
+    cancellationObserved = true;
+    observe('cancelled', facts(retried === undefined ? 'none' : admissionInnerClass(retried)));
+  };
+  signal.addEventListener('abort', observeCancellation, { once: true });
   try {
+    if (signal.aborted) observeCancellation();
     return await withDeadline(
       deadline,
       new CDPProbeTimeoutError('CDP attach deadline exceeded'),
@@ -387,7 +468,13 @@ async function attach(steps: AdmissionSteps): Promise<Proven> {
           } catch (error) {
             if (isAbort(error)) throw error;
             const remaining = Math.min(deadline - performance.now(), steps.remainingMs());
-            if (!transientReadinessFailure(error) || remaining <= 0) throw error;
+            if (
+              error instanceof BundleReadinessTimeoutError ||
+              !transientReadinessFailure(error) ||
+              remaining <= 0
+            )
+              throw error;
+            retried = error;
             const noTarget =
               error instanceof TargetReadinessTimeoutError &&
               !(error instanceof TargetListAttemptTimeoutError);
@@ -412,7 +499,7 @@ async function attach(steps: AdmissionSteps): Promise<Proven> {
               lastCompleted = 'foreign_driver';
               relaunchDecided = true;
               if (noTarget) liveness = await probeLiveness(steps);
-              if (!noTarget || liveness !== 'alive') {
+              if (!noTarget || liveness !== 'alive' || (await launcherStalled(steps))) {
                 relaunched = true;
                 try {
                   lastStarted = 'relaunch';
@@ -425,6 +512,7 @@ async function attach(steps: AdmissionSteps): Promise<Proven> {
                 }
               }
             }
+            observe('retry', facts(admissionInnerClass(error)));
             lastStarted = 'retry_wait';
             await sleep(Math.min(REACT_READY_POLL_MS, remaining));
             lastCompleted = 'retry_wait';
@@ -433,34 +521,31 @@ async function attach(steps: AdmissionSteps): Promise<Proven> {
       },
     );
   } catch (error) {
-    if (isAbort(error) || error instanceof HandlerError) throw error;
+    if (isAbort(error)) {
+      observeCancellation();
+      throw error;
+    }
+    if (error instanceof HandlerError) throw error;
     if (!attaching && !transientReadinessFailure(error)) throw error;
     const load = (steps.load ?? (() => loadavg()[0]))();
-    let facts: AdmissionRefusalFacts | undefined;
+    let refusal: AdmissionRefusalFacts | undefined;
     try {
-      const now = performance.now();
-      facts = {
-        attempt,
-        lastStarted,
-        lastCompleted,
-        inner: admissionInnerClass(error),
-        relaunches: relaunched ? 1 : 0,
-        relaunchFailed: relaunchFailure !== undefined,
-        liveness,
-        elapsedMs: Math.round(now - started),
-        remainingMs: Math.max(0, Math.round(deadline - now)),
-        budgetMs: Math.round(deadline - started),
+      refusal = {
+        ...facts(admissionInnerClass(error)),
         ...(error instanceof TargetSelectionError && error.inference
           ? { inference: error.inference }
           : {}),
       };
+      observe('refused', refusal);
     } catch {
       // Diagnostics cannot change the refusal.
     }
     throw new HandlerError(
       'CDP_NOT_CONNECTED',
       `cannot attach to the dev client through Metro ${steps.metroPort}: ${describeError(error).message} (host 1-minute load ${load.toFixed(1)}${relaunchFailure === undefined ? '' : `; relaunch failed: ${relaunchFailure}`})`,
-      facts,
+      refusal,
     );
+  } finally {
+    signal.removeEventListener('abort', observeCancellation);
   }
 }

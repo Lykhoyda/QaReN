@@ -38,6 +38,13 @@ const STAGES: &[&str] = &[
     "readback",
     "settle-readback",
     "relaunch",
+    "admission",
+    "runner-post-mortem",
+    "dispatch-bind",
+    "dispatch-native",
+    "dispatch-settle",
+    "dispatch-health",
+    "dispatch-readback",
     "overflow",
 ];
 const CODES: &[&str] = &[
@@ -79,6 +86,79 @@ const NATIVE_READINESS_REASONS: &[&str] = &[
     "missing-features",
     "unknown",
 ];
+const HEALTH_DETAILS: &[&str] = &[
+    "refused",
+    "reset",
+    "abort",
+    "http-4xx",
+    "http-5xx",
+    "body-not-ok",
+    "wedged",
+    "other",
+];
+const RUNNER_SIGNALS: &[&str] = &[
+    "SIGTERM", "SIGKILL", "SIGINT", "SIGHUP", "SIGQUIT", "SIGABRT", "SIGTRAP", "SIGSEGV", "SIGBUS",
+    "SIGPIPE", "other",
+];
+const POST_MORTEM_FIELDS: &[&str] = &[
+    "hostChild",
+    "exitCode",
+    "exitSignal",
+    "appProcess",
+    "markerReady",
+    "markerWaiting",
+    "markerWaitResult",
+    "markerListenerFailed",
+    "markerSendFailed",
+];
+
+const ADMISSION_BOUNDARIES: &[&str] = &[
+    "attach",
+    "bundle_ready",
+    "foreign_driver",
+    "open",
+    "prove",
+    "relaunch",
+    "retry_wait",
+];
+const ADMISSION_COMPLETED: &[&str] = &[
+    "attach",
+    "bundle_ready",
+    "foreign_driver",
+    "open",
+    "prove",
+    "relaunch",
+    "retry_wait",
+    "none",
+];
+const ADMISSION_INNER: &[&str] = &[
+    "target_selection_platform_not_found",
+    "target_selection_platform_conflict",
+    "target_selection_device_not_found",
+    "target_selection_device_ambiguous",
+    "target_selection_bundle_not_found",
+    "target_list_attempt_timeout",
+    "target_readiness_timeout",
+    "cdp_probe_timeout",
+    "cdp_handshake_timeout",
+    "cdp_target_closed",
+    "cdp_request_timeout",
+    "untyped",
+    "none",
+];
+const ADMISSION_KEYS: &[&str] = &[
+    "admission",
+    "attempt",
+    "lastStarted",
+    "lastCompleted",
+    "attachStage",
+    "inner",
+    "relaunches",
+    "relaunchFailed",
+    "liveness",
+    "elapsedMs",
+    "remainingMs",
+];
 
 fn clean(value: &Value) -> Option<Value> {
     let fields = value.as_object()?;
@@ -102,6 +182,27 @@ fn clean(value: &Value) -> Option<Value> {
                 "relaunch",
                 "reapDisposition",
                 "readinessReason",
+                "admission",
+                "attempt",
+                "lastStarted",
+                "lastCompleted",
+                "attachStage",
+                "inner",
+                "relaunches",
+                "relaunchFailed",
+                "liveness",
+                "elapsedMs",
+                "remainingMs",
+                "healthDetail",
+                "hostChild",
+                "exitCode",
+                "exitSignal",
+                "appProcess",
+                "markerReady",
+                "markerWaiting",
+                "markerWaitResult",
+                "markerListenerFailed",
+                "markerSendFailed",
             ],
         ),
         "timing" => (
@@ -142,6 +243,28 @@ fn clean(value: &Value) -> Option<Value> {
         {
             return None;
         }
+        if key == "healthDetail"
+            && (fields.get("stage")?.as_str()? != "native-readiness"
+                || fields.get("edge")?.as_str()? != "end"
+                || fields.get("readinessReason")?.as_str()? != "health")
+        {
+            return None;
+        }
+        if POST_MORTEM_FIELDS.contains(&key.as_str())
+            && fields.get("stage")?.as_str()? != "runner-post-mortem"
+        {
+            return None;
+        }
+        if ADMISSION_KEYS.contains(&key.as_str())
+            && (fields.get("stage")?.as_str()? != "admission"
+                || fields.get("edge")?.as_str()? != "point")
+        {
+            return None;
+        }
+        if key == "relaunchFailed" {
+            clean.insert(key.clone(), value.as_bool()?.into());
+            continue;
+        }
         let words: Option<&[&str]> = match key.as_str() {
             "stage" if kind == "metric" => Some(STAGES),
             "stage" => Some(&["decision", "dispatch"]),
@@ -156,6 +279,16 @@ fn clean(value: &Value) -> Option<Value> {
             "nativeCode" => Some(NATIVE_CODES),
             "nativeMutation" => Some(&["none", "observed", "possible"]),
             "readinessReason" => Some(NATIVE_READINESS_REASONS),
+            "admission" => Some(&["retry", "cancelled", "refused"]),
+            "lastStarted" => Some(ADMISSION_BOUNDARIES),
+            "lastCompleted" => Some(ADMISSION_COMPLETED),
+            "attachStage" => Some(&["wait_targets", "connect_exact"]),
+            "inner" => Some(ADMISSION_INNER),
+            "liveness" => Some(&["not_probed", "alive", "dead", "probe_failed"]),
+            "healthDetail" => Some(HEALTH_DETAILS),
+            "hostChild" => Some(&["alive", "exited", "unknown"]),
+            "exitSignal" => Some(RUNNER_SIGNALS),
+            "appProcess" => Some(&["same", "changed", "absent", "unknown"]),
             _ => None,
         };
         if let Some(words) = words {

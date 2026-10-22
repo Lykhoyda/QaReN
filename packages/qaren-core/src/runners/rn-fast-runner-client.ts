@@ -12,8 +12,13 @@ import { QaDispatchError, type QaDispatchContext } from '../domain/qa-dispatch.j
 import {
   measureTiming,
   observeTiming,
+  RUNNER_MARKERS,
+  RUNNER_SIGNALS,
+  type HealthDetail,
   type NativeReadinessReason,
+  type RunnerMarkerCounts,
   type TimingContext,
+  type TimingEvent,
 } from '../qa/timing.js';
 import { QA_READ_ONLY_CAPABILITY, checkQaNativeOutcome } from './qa-native-policy.js';
 import {
@@ -252,6 +257,22 @@ function currentReaderRelaunch(): ReaderRelaunch | undefined {
 }
 
 let runnerOutputTail = '';
+const noRunnerMarkers = (): RunnerMarkerCounts => ({
+  markerReady: 0,
+  markerWaiting: 0,
+  markerWaitResult: 0,
+  markerListenerFailed: 0,
+  markerSendFailed: 0,
+});
+let runnerMarkers = noRunnerMarkers();
+let runnerMarkerLines = { stdout: '', stderr: '' };
+let appProcessProbe: (() => Promise<number | undefined>) | undefined;
+let lastReadAppProcess: number | undefined;
+
+export function observeAppProcess(probe: (() => Promise<number | undefined>) | undefined): void {
+  appProcessProbe = probe;
+  lastReadAppProcess = undefined;
+}
 let lastRunnerCommand: string | null = null;
 export interface RunnerPostMortem {
   available: boolean;
@@ -264,6 +285,15 @@ export interface RunnerPostMortem {
 let lastRunnerPostMortem: RunnerPostMortem | null = null;
 
 function appendRunnerOutput(stream: 'stdout' | 'stderr', chunk: string): void {
+  // Markers are counted before withholding so private runs keep value-free evidence.
+  const lines = `${runnerMarkerLines[stream]}${chunk}`.split('\n');
+  runnerMarkerLines[stream] = lines.pop()!.slice(0, 512);
+  for (const line of lines)
+    for (const [key, marker] of Object.entries(RUNNER_MARKERS) as [
+      keyof RunnerMarkerCounts,
+      string,
+    ][])
+      if (line.includes(marker)) runnerMarkers[key] += 1;
   if (currentInputs()?.hasInputs) {
     runnerOutputTail = '[private output withheld]';
     return;
@@ -908,6 +938,8 @@ export async function startFastRunner(
     if (child.pid !== undefined) runnerDriverObserver?.(child.pid);
     runnerLaunchCount += 1;
     runnerOutputTail = '';
+    runnerMarkers = noRunnerMarkers();
+    runnerMarkerLines = { stdout: '', stderr: '' };
     lastRunnerCommand = null;
     lastRunnerPostMortem = null;
     const parser = createReadySignalParser();
@@ -1280,6 +1312,7 @@ export interface HttpProbeResult {
   ok: boolean;
   status: number;
   bodyOk?: boolean;
+  wedged?: boolean;
   protocolVersion?: number;
   runnerVersion?: string;
   capabilities?: string[];
@@ -1373,6 +1406,7 @@ async function defaultHttpProbe(
     });
     if (!res.ok) return { ok: false, status: res.status };
     let bodyOk: boolean | undefined;
+    let wedged = false;
     let protocolVersion: number | undefined;
     let runnerVersion: string | undefined;
     let capabilities: string[] | undefined;
@@ -1385,6 +1419,7 @@ async function defaultHttpProbe(
     try {
       const body = (await res.json()) as {
         ok?: boolean;
+        reason?: unknown;
         protocolVersion?: number;
         runnerVersion?: string;
         capabilities?: unknown;
@@ -1396,6 +1431,7 @@ async function defaultHttpProbe(
         appId?: string;
       };
       bodyOk = body.ok === true;
+      wedged = body.reason === 'wedged';
       if (typeof body.protocolVersion === 'number') protocolVersion = body.protocolVersion;
       if (typeof body.runnerVersion === 'string') runnerVersion = body.runnerVersion;
       if (Array.isArray(body.capabilities)) {
@@ -1417,6 +1453,7 @@ async function defaultHttpProbe(
       ok: true,
       status: res.status,
       bodyOk,
+      ...(wedged ? { wedged } : {}),
       ...(protocolVersion !== undefined ? { protocolVersion } : {}),
       ...(runnerVersion !== undefined ? { runnerVersion } : {}),
       ...(capabilities !== undefined ? { capabilities } : {}),
@@ -1504,6 +1541,25 @@ export interface FastRunnerLivenessDetail {
   missingCommands?: string[];
   /** GH #656: set only when staleReason === 'missing-features'. */
   missingFeatures?: string[];
+  healthDetail?: HealthDetail;
+}
+
+function healthDetailForReply(res: HttpProbeResult): HealthDetail {
+  if (!res.ok) return res.status >= 500 ? 'http-5xx' : 'http-4xx';
+  return res.wedged ? 'wedged' : 'body-not-ok';
+}
+
+function healthDetailForError(error: unknown): HealthDetail {
+  try {
+    const failure = error as { name?: unknown; code?: unknown; cause?: { code?: unknown } };
+    if (failure?.name === 'AbortError' || failure?.name === 'TimeoutError') return 'abort';
+    const code = failure?.code ?? failure?.cause?.code;
+    if (code === 'ECONNREFUSED') return 'refused';
+    if (code === 'ECONNRESET' || code === 'UND_ERR_SOCKET' || code === 'EPIPE') return 'reset';
+  } catch {
+    // Diagnostics cannot change readiness.
+  }
+  return 'other';
 }
 
 export async function probeFastRunnerLivenessDetailed(
@@ -1527,7 +1583,7 @@ export async function probeFastRunnerLivenessDetailed(
     const res = await httpProbe(state.port, timeoutMs);
     if (!(res.ok && res.status === 200 && res.bodyOk === true)) {
       lastKnownCapabilities = [];
-      return { liveness: 'stale', staleReason: 'health' };
+      return { liveness: 'stale', staleReason: 'health', healthDetail: healthDetailForReply(res) };
     }
     if (
       state.sessionId !== undefined &&
@@ -1584,10 +1640,10 @@ export async function probeFastRunnerLivenessDetailed(
       ...(res.runnerVersion !== undefined ? { runnerVersion: res.runnerVersion } : {}),
       ...(res.capabilities !== undefined ? { capabilities: res.capabilities } : {}),
     };
-  } catch {
+  } catch (error) {
     throwIfCancelled();
     lastKnownCapabilities = [];
-    return { liveness: 'stale', staleReason: 'health' };
+    return { liveness: 'stale', staleReason: 'health', healthDetail: healthDetailForError(error) };
   }
 }
 
@@ -2340,9 +2396,10 @@ function presenceCaptureUnavailable(
   reason: string,
   code: ToolErrorCode = 'RN_FAST_RUNNER_DOWN',
   dispatched = false,
+  containmentAttempted = false,
 ): ToolResult {
   return failResult(
-    `Platform presence capture unavailable: ${reason}; no recovery attempted.`,
+    `Platform presence capture unavailable: ${reason}; ${containmentAttempted ? 'runner timeout containment attempted' : 'no recovery attempted'}.`,
     code,
     {
       capture: 'unknown',
@@ -2360,13 +2417,16 @@ async function probeQaReadiness(
 ): Promise<FastRunnerLivenessDetail> {
   let alive = false;
   let readinessReason: NativeReadinessReason = 'unknown';
-  return measureTiming(
+  let healthDetail: HealthDetail | undefined;
+  const readiness = await measureTiming(
     qaTiming &&
       ((event) =>
         observeTiming(qaTiming.observe, {
           ...event,
           count,
-          ...(event.edge === 'end' ? { outcome: alive ? 'ok' : 'failed', readinessReason } : {}),
+          ...(event.edge === 'end'
+            ? { outcome: alive ? 'ok' : 'failed', readinessReason, healthDetail }
+            : {}),
         })),
     qaTiming?.now ?? (() => performance.now()),
     'native-readiness',
@@ -2375,9 +2435,50 @@ async function probeQaReadiness(
       alive = readiness.liveness === 'alive';
       readinessReason =
         readiness.liveness === 'stale' ? (readiness.staleReason ?? 'unknown') : readiness.liveness;
+      healthDetail = readiness.healthDetail;
       return readiness;
     },
   );
+  if (!alive && qaTiming)
+    observeTiming(qaTiming.observe, {
+      stage: 'runner-post-mortem',
+      edge: 'point',
+      outcome: 'failed',
+      count,
+      ...runnerHostPostMortem(),
+      // A relaunch reread expects failed probes; its retry window must not pay for a host lookup.
+      appProcess: relaunchCapturePending ? 'unknown' : await appProcessContinuity(),
+      at: qaTiming.now(),
+    });
+  return readiness;
+}
+
+function runnerHostPostMortem(): Partial<TimingEvent> {
+  const child = runnerProcess;
+  if (child && child.exitCode === null && child.signalCode === null)
+    return { hostChild: 'alive', ...runnerMarkers };
+  const exit = lastRunnerPostMortem;
+  if (!exit?.available) return { hostChild: 'unknown' };
+  return {
+    hostChild: 'exited',
+    ...(typeof exit.exitCode === 'number' ? { exitCode: exit.exitCode } : {}),
+    ...(exit.signal
+      ? { exitSignal: RUNNER_SIGNALS.find((signal) => signal === exit.signal) ?? 'other' }
+      : {}),
+    ...runnerMarkers,
+  };
+}
+
+async function appProcessContinuity(): Promise<NonNullable<TimingEvent['appProcess']>> {
+  const expected = lastReadAppProcess;
+  if (!appProcessProbe || expected === undefined) return 'unknown';
+  try {
+    const observed = await appProcessProbe();
+    return observed === undefined ? 'absent' : observed === expected ? 'same' : 'changed';
+  } catch {
+    throwIfCancelled();
+    return 'unknown';
+  }
 }
 
 function attestQaReadOnly(
@@ -2809,6 +2910,13 @@ export async function runIOS(args: RunIOSArgs): Promise<ToolResult> {
     const message = resp.error?.message ?? 'runner returned !ok with no error';
     const code = resp.error?.code;
     if (presenceRequested && resp.error?.reason !== 'app-not-running') {
+      if (
+        !advisorySnapshot &&
+        (code === 'RUNNER_TIMEOUT' || message.includes('main thread execution timed out'))
+      ) {
+        await containRunnerTimeout(args.command, message, commandAuthorityBefore);
+        return presenceCaptureUnavailable(message, 'RN_FAST_RUNNER_DOWN', true, true);
+      }
       return presenceCaptureUnavailable(message, 'RN_FAST_RUNNER_DOWN', true);
     }
     if (code === 'RUNNER_TIMEOUT') {
@@ -2894,6 +3002,8 @@ export async function runIOS(args: RunIOSArgs): Promise<ToolResult> {
         data.nodes.length === flat.length
       )
         relaunchCapturePending = false;
+      if (Number.isSafeInteger(data.appProcessIdentifier) && (data.appProcessIdentifier ?? 0) > 0)
+        lastReadAppProcess = data.appProcessIdentifier;
       const systemModal = systemModalDiagnostic(data.systemModal);
       return okResult(
         {

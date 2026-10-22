@@ -74,7 +74,7 @@ test('gh-383 gate: version check is fail-open when plugin version unknown', asyn
 
 test('gh-383 gate: health failure stays stale/health', async () => {
   const d = await probeFastRunnerLivenessDetailed(deps({ ok: false, status: 500 }));
-  assert.deepEqual(d, { liveness: 'stale', staleReason: 'health' });
+  assert.deepEqual(d, { liveness: 'stale', staleReason: 'health', healthDetail: 'http-5xx' });
 });
 
 test('iOS authority mismatch has a rebuild-eligible stale reason', async () => {

@@ -90,6 +90,7 @@ export class QaDispatchContext {
     readonly deadline: number,
     private readonly now: () => number,
     private readonly cancelled: () => boolean = () => false,
+    readonly line?: number,
   ) {}
 
   get authorizations(): number {
