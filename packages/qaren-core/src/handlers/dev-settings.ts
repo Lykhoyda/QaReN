@@ -34,7 +34,7 @@ export const WALK_DEV_SETTINGS = [
 // The floating button fades out over ~0.3 s after its preference flips.
 const DEV_FAB_READS = 4;
 const DEV_FAB_READ_INTERVAL_MS = 250;
-// A loaded host can time out the preferences call; the reads below stay the proof.
+// A loaded host can time out the preferences call once; a hide that keeps failing still refuses.
 const DEV_FAB_HIDE_ATTEMPTS = 3;
 
 // Android reloads the JS bundle whenever hot loading is set, so the walk must wait for the reloaded app.
@@ -51,8 +51,6 @@ export interface DevOverlayDependencies {
   log(message: string): void;
   sleep?(ms: number): Promise<void>;
   fastRefreshReload?: FastRefreshReload;
-  // Only where the native reads can see the floating button may they stand in for a failed hide.
-  fabVisibleToReads?: boolean;
 }
 
 function envelopeError(result: ToolResult): string {
@@ -74,7 +72,6 @@ async function clearOverlays(
   actions: readonly (typeof WALK_DEV_SETTINGS)[number][],
 ): Promise<ToolResult> {
   const pause = deps.sleep ?? sleep;
-  let fabError: string | undefined;
   for (const action of actions) {
     const attempts = action === 'hideDevMenuFab' ? DEV_FAB_HIDE_ATTEMPTS : 1;
     let error: string | undefined;
@@ -94,14 +91,13 @@ async function clearOverlays(
       if (error === undefined) break;
     }
     if (error === undefined) continue;
-    if (action === 'hideDevMenuFab' && deps.fabVisibleToReads !== true)
+    if (action === 'hideDevMenuFab')
       return failResult(
         `The Expo dev-client floating button could not be confirmed hidden: ${error}`,
         'DEV_MENU_HIDE_UNVERIFIED',
         { action: 'clearDevOverlays', outcome: 'DEV_MENU_HIDE_UNVERIFIED' },
       );
     deps.log(`${action}: ${error}`);
-    if (action === 'hideDevMenuFab') fabError = error;
   }
   let readError: string | undefined;
   for (let read = 0; read < DEV_FAB_READS; read++) {
@@ -115,12 +111,6 @@ async function clearOverlays(
     if (read + 1 < DEV_FAB_READS) await pause(DEV_FAB_READ_INTERVAL_MS);
   }
   throwIfCancelled();
-  if (fabError !== undefined)
-    return failResult(
-      `The Expo dev-client floating button could not be confirmed hidden: ${fabError}${readError ? `; ${readError}` : ''}`,
-      'DEV_MENU_HIDE_UNVERIFIED',
-      { action: 'clearDevOverlays', outcome: 'DEV_MENU_HIDE_UNVERIFIED' },
-    );
   return failResult(
     `The Expo dev overlays could not be proven gone${readError ? `: ${readError}` : '.'}`,
     'DEV_MENU_HIDE_UNVERIFIED',

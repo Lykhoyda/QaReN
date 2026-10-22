@@ -1519,10 +1519,8 @@ Apps without the preferences module skip the floating-button setting change but 
 native clearance evidence. The shared clearance mechanism accepts only a complete
 native snapshot with neither a floating button nor an open dev menu in front,
 briefly re-reading while overlays settle. A failed or unconfirmed floating-button
-hide is attempted up to three times. If every attempt fails, Android refuses
-with `DEV_MENU_HIDE_UNVERIFIED` at once, because its native snapshot cannot see
-the floating button; iOS lets those clearance reads decide. Failure to obtain
-complete clearance evidence within the reads also refuses the walk with
+hide is attempted up to three times; if every attempt fails, or complete
+clearance evidence is not obtained within the reads, the walk refuses with
 `DEV_MENU_HIDE_UNVERIFIED` before the first step.
 
 ### Runtime inputs
