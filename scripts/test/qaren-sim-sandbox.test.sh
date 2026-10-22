@@ -96,6 +96,12 @@ check "a relative sandbox dir links adb absolutely" "List of devices attached" \
   "$(cd "$tmp" && env QAREN_SANDBOX_DIR=rel bash "$SANDBOX" sh -c 'cd / && "$ANDROID_HOME/platform-tools/adb" devices' 2>/dev/null | tr -d '\n')"
 run adb -s emulator-5554 shell true
 check "adb shell is refused" 1 $?
+check "a caller's adb server socket is dropped" "unset" \
+  "$(ADB_SERVER_SOCKET=tcp:127.0.0.1:5037 run sh -c 'echo "${ADB_SERVER_SOCKET-unset}"')"
+port="$(ANDROID_ADB_SERVER_PORT=5037 run sh -c 'echo "$ANDROID_ADB_SERVER_PORT"')"
+check "the adb server port is not the host default" 1 "$([ "$port" = 5037 ]; echo $?)"
+(exec 3<>"/dev/tcp/127.0.0.1/$port") 2>/dev/null
+check "no adb server listens on the sandbox port" 1 $?
 
 : >"$tmp/host/calls"
 for i in $(seq 1 24); do

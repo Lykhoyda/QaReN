@@ -112,6 +112,9 @@ export COREPACK_HOME="${COREPACK_HOME:-$real_home/.cache/node/corepack}"
 export HOME="$dir/home"
 export ANDROID_HOME="$dir/android-sdk"
 export ANDROID_SDK_ROOT="$dir/android-sdk"
+# qaren dials the adb server over TCP, past the adb shim; point it at a port nothing serves.
+unset ADB_SERVER_SOCKET
+export ANDROID_ADB_SERVER_PORT=1
 export PATH="$dir/bin:$PATH"
 export QAREN_SANDBOX_DIR="$dir"
 unset QAREN_LOCK_ROOT
