@@ -4126,8 +4126,10 @@ fn borrowed_selection_refuses_any_target_it_cannot_prove_exactly() {
 
 #[test]
 fn borrowed_selector_refuses_android_and_cooperative_scenarios_before_any_command() {
-    let cooperative =
-        ios_scenario_yaml(8791).replace("metro:\n", "build:\n  owner: qaren\nmetro:\n");
+    let cooperative = ios_scenario_yaml(8791)
+        .replace("metro:\n  port: 8791\n", "build:\n  owner: qaren\n")
+        .replace("  dev_client_scheme: rndatest\n", "");
+    common::scenario_from(&cooperative);
     for (yaml, code) in [
         (
             common::android_scenario_yaml(8792),
