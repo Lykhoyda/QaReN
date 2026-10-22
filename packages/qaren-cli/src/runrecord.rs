@@ -516,6 +516,9 @@ pub struct RunRecord {
     pub scenario_sha256: String,
     pub candidate: Candidate,
     pub phase: Phase,
+    // The install/launch substage in flight, kept after a failure so receipts and status name it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub substage: Option<String>,
     pub prepare: Option<PidIdentity>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub build: Option<crate::buildplan::BuildPlan>,

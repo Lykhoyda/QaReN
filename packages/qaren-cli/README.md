@@ -94,6 +94,11 @@ Preflight and dependencies pass when their work completes; verify runs after
 every build decision, including reuse. Reuse skips prebuild and native compile.
 On iOS and on a borrowed Android emulator, native compile (including any
 prebuild of an absent native directory) ends before install/launch/ready.
+On iOS, install/launch/ready streams its substages in order: `install_cached`,
+`metro_ready`, `dev_client_manifest`, `dev_menu_defaults`, `app_launch` and
+`ready_probes`. The run record keeps the one in flight, so `qaren status` and a
+cancel or failure receipt name it as the `substage` outcome; the watch view
+shows only the parent stage.
 Recording can overlap steps. Requested recording starts as running and
 stays failed after a startup failure, even if retained-resource cleanup succeeds;
 recording is skipped when it was not requested or is unavailable for the platform
