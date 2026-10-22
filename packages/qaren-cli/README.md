@@ -1577,7 +1577,7 @@ that secret despite artifact redaction.
   the runner's fixed lifecycle markers (never output text), and `appProcess`: the app process found
   on the simulator compared with the last good read (`same`, `changed`, `absent`, `unknown`).
   iOS dispatches add `dispatch-bind`, `dispatch-native`, `dispatch-settle`, `dispatch-health` and
-  `dispatch-readback` spans.
+  `dispatch-readback` spans carrying the dispatching plan row's `line`.
   Attachment emits an `admission` point metric at each retry decision and once on cancellation
   or a `CDP_NOT_CONNECTED` refusal, with the decision (`retry`, `cancelled` or `refused`),
   the attempt count, last started and completed boundary, attach stage (only when the last

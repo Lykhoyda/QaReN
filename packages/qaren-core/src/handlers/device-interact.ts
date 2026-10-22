@@ -1167,7 +1167,7 @@ async function finalVerification(
   operationToken: string,
   qaContext?: QaDispatchContext,
 ): Promise<NativeVerification> {
-  const native = await measureDispatchPhase('dispatch-readback', () =>
+  const native = await measureDispatchPhase('dispatch-readback', qaContext?.line, () =>
     runNativeVerifyInput(binding, text, operationToken, qaContext),
   );
   return classifyNativeVerification(native.verdict, native.stable);
@@ -1282,7 +1282,7 @@ export async function performExactFill(
     cachedSignature && cachedRect ? { ...cachedSignature, rect: cachedRect } : cachedSignature;
 
   const snap = args.qaContext
-    ? await measureDispatchPhase('dispatch-bind', () =>
+    ? await measureDispatchPhase('dispatch-bind', args.qaContext.line, () =>
         fetchSnapshotNodesForSameScreenProof(args.qaContext!),
       )
     : await fetchSnapshotNodes(true);
@@ -1645,7 +1645,7 @@ export async function performFocusedFill(
   if (initialBefore === null || !beforeFocused) return unverified();
   const expected = (args.clearFirst ? '' : initialBefore) + args.text;
   const readBack = () =>
-    measureDispatchPhase('dispatch-readback', () =>
+    measureDispatchPhase('dispatch-readback', args.qaContext?.line, () =>
       awaitReactInputValue(() => readReactInputValue(client, oracleTestId), expected),
     );
   const verified = () =>

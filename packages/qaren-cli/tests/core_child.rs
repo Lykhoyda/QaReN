@@ -367,7 +367,7 @@ fn runner_termination_diagnostics_reach_private_diagnostics_only_as_fixed_words_
             "dispatch-readback",
         ] {
             expected.push(json!({
-                "kind": "metric", "stage": stage, "edge": "end", "outcome": "ok", "at": 300, "ms": 17600
+                "kind": "metric", "stage": stage, "edge": "end", "outcome": "ok", "at": 300, "line": 7, "ms": 17600
             }));
         }
         let mut payloads = expected.clone();

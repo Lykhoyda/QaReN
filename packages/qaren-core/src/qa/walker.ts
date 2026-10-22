@@ -739,7 +739,7 @@ async function walkBlockScoped(
           });
         super.check();
       }
-    })(observationDeadline(observation.timing, deadline), deps.now, deps.cancelled);
+    })(observationDeadline(observation.timing, deadline), deps.now, deps.cancelled, item.line);
     try {
       context.check();
       if (item.kind === 'fill') privacy.didFill(fillText(item));

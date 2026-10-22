@@ -818,16 +818,19 @@ test('a QA native dispatch times its send, settle and post-settle health as valu
   const events: TimingEvent[] = [];
   observeDispatchPhases({ now: () => 0, observe: createTimingObserver((e) => events.push(e)) });
   try {
-    await runNative(['back'], { qaContext: new QaDispatchContext(10, () => 1) });
+    await runNative(['back'], { qaContext: new QaDispatchContext(10, () => 1, undefined, 7) });
   } finally {
     observeDispatchPhases(undefined);
   }
   assert.deepEqual(
-    events.filter((e) => e.edge === 'end').map((e) => [e.stage, e.ms]),
+    events.map((e) => [e.stage, e.edge, e.line, e.ms]),
     [
-      ['dispatch-native', 0],
-      ['dispatch-settle', 0],
-      ['dispatch-health', 0],
+      ['dispatch-native', 'start', 7, undefined],
+      ['dispatch-native', 'end', 7, 0],
+      ['dispatch-settle', 'start', 7, undefined],
+      ['dispatch-settle', 'end', 7, 0],
+      ['dispatch-health', 'start', 7, undefined],
+      ['dispatch-health', 'end', 7, 0],
     ],
   );
 });

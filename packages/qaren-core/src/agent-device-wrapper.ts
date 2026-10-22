@@ -1980,7 +1980,7 @@ export async function runNative(
     const runnerAuthorityBefore = captureFastRunnerCommandAuthority();
     const phase = <T>(stage: DispatchPhase, work: () => Promise<T>): Promise<T> =>
       opts.qaContext && SNAPSHOT_MUTATING_VERBS.has(cliArgs[0])
-        ? measureDispatchPhase(stage, work)
+        ? measureDispatchPhase(stage, opts.qaContext.line, work)
         : work();
     let result = await phase('dispatch-native', () => runIOS(ios));
     const iosPolicy = tapRetryPolicy(

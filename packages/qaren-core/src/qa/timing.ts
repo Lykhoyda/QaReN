@@ -314,8 +314,18 @@ export function observeDispatchPhases(timing: TimingContext | undefined): void {
   dispatchTiming = timing;
 }
 
-export function measureDispatchPhase<T>(phase: DispatchPhase, work: () => Promise<T>): Promise<T> {
-  return measureTiming(dispatchTiming?.observe, dispatchTiming?.now ?? (() => 0), phase, work);
+export function measureDispatchPhase<T>(
+  phase: DispatchPhase,
+  line: number | undefined,
+  work: () => Promise<T>,
+): Promise<T> {
+  const observe = dispatchTiming?.observe;
+  return measureTiming(
+    observe && line !== undefined ? (event) => observe({ ...event, line }) : observe,
+    dispatchTiming?.now ?? (() => 0),
+    phase,
+    work,
+  );
 }
 
 export async function measureTiming<T>(
