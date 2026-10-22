@@ -1169,16 +1169,17 @@ fn pool_refusal(scan: &PoolScan, cap: u32, occupied: &[String]) -> Failure {
     )
 }
 
-// Read-only: the first matching member whose device lease has no holder.
+// Read-only: the first matching Shutdown member whose device lease has no holder.
 fn dry_run_pool_member(scan: &PoolScan, lock_root: &Path) -> Option<ios::Simulator> {
     scan.candidates
         .iter()
-        .find(|(member, _)| {
-            buildplan::read_holder(&buildplan::lock_dir(
-                lock_root,
-                &crate::lease::lock_name(Platform::Ios, &member.udid),
-            ))
-            .is_none()
+        .find(|(member, sim)| {
+            sim.state == ios::SimState::Shutdown
+                && buildplan::read_holder(&buildplan::lock_dir(
+                    lock_root,
+                    &crate::lease::lock_name(Platform::Ios, &member.udid),
+                ))
+                .is_none()
         })
         .map(|(_, sim)| sim.clone())
 }
@@ -1327,25 +1328,23 @@ fn reset_pool_member(ctx: &mut Ctx) -> Result<(), Failure> {
         .udid;
     let app_id = ctx.record.candidate.app_id.clone();
     crate::run::reset_app(ctx, &udid, &app_id, None)?;
-    for spec in [
-        ios::privacy_reset_spec(&udid, &app_id),
-        ios::keychain_reset_spec(&udid),
-    ] {
-        ensure_running(ctx.runner, "fresh_install")?;
-        if !ctx.runner.run(&spec).ok() {
-            return Err(Failure::new(
-                "fresh_install",
-                FailureCode::AppResetFailed,
-                format!("{} did not complete successfully on the pool simulator", spec.label),
-                format!(
-                    "inspect the simulator's health, run qaren cleanup {} --json, then re-run prepare",
-                    ctx.record.run_id
-                ),
-            ));
-        }
-        ensure_running(ctx.runner, "fresh_install")?;
+    let spec = ios::keychain_reset_spec(&udid);
+    ensure_running(ctx.runner, "fresh_install")?;
+    if !ctx.runner.run(&spec).ok() {
+        return Err(Failure::new(
+            "fresh_install",
+            FailureCode::AppResetFailed,
+            format!(
+                "{} did not complete successfully on the pool simulator",
+                spec.label
+            ),
+            format!(
+                "inspect the simulator's health, run qaren cleanup {} --json, then re-run prepare",
+                ctx.record.run_id
+            ),
+        ));
     }
-    Ok(())
+    ensure_running(ctx.runner, "fresh_install")
 }
 
 fn claim_pool_create_lock(ctx: &mut Ctx, pool_root: &Path) -> Result<(), Failure> {
@@ -4232,7 +4231,6 @@ fn dry_run_receipt(
                 );
                 if borrowed.is_some() {
                     planned.push(ios::uninstall_app_spec(udid, &cand.app_id));
-                    planned.push(ios::privacy_reset_spec(udid, &cand.app_id));
                     planned.push(ios::keychain_reset_spec(udid));
                 }
             }

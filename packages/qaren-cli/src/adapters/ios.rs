@@ -136,15 +136,6 @@ pub fn pool_sim_name(run_id: &str) -> String {
     format!("qaren-pool-{run_id}")
 }
 
-pub fn privacy_reset_spec(udid: &str, app_id: &str) -> CmdSpec {
-    CmdSpec::new(
-        "simctl-privacy-reset",
-        "xcrun",
-        &["simctl", "privacy", udid, "reset", "all", app_id],
-        30,
-    )
-}
-
 pub fn keychain_reset_spec(udid: &str) -> CmdSpec {
     CmdSpec::new(
         "simctl-keychain-reset",

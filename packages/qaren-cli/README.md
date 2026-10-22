@@ -3130,9 +3130,9 @@ one, pass it with `--device`.
   a refusal names `xcrun simctl shutdown <UUID>`.
 - **Reset.** A claimed member is booted after dependencies, strict
   foreign-driver admission and a durable pending stop, and is then reset:
-  the app is uninstalled and proven absent, then
-  `simctl privacy <UUID> reset all <app-id>` and `simctl keychain <UUID> reset`
-  run. An uninstall or reset command that fails refuses `APP_RESET_FAILED`. The reset does
+  the app is uninstalled and proven absent, which clears its container and
+  privacy grants, then `simctl keychain <UUID> reset` runs. An uninstall or
+  reset command that fails refuses `APP_RESET_FAILED`. The reset does
   not erase: trusted root certificates, device-level defaults, other apps,
   Safari and WebKit data, the pasteboard, photos, location and other
   device-wide settings survive. Use `--new` when a run needs factory state.

@@ -5312,10 +5312,6 @@ fn pool_reuses_a_free_member_under_the_lease_and_resets_the_app() {
     );
     script_app_presence(&mut mock, false);
     mock.expect_run(
-        &format!("simctl privacy {BORROWED} reset all com.rndevagent.testapp"),
-        CmdOutput::success(""),
-    );
-    mock.expect_run(
         &format!("simctl keychain {BORROWED} reset"),
         CmdOutput::success(""),
     );
@@ -5333,7 +5329,7 @@ fn pool_reuses_a_free_member_under_the_lease_and_resets_the_app() {
     assert!(!labels(&mock).iter().any(|l| l == "simctl-create"));
     let position = |label: &str| labels(&mock).iter().position(|l| l == label).unwrap();
     assert!(position("simctl-bootstatus") < position("simctl-uninstall"));
-    assert!(position("simctl-uninstall") < position("simctl-privacy-reset"));
+    assert!(position("simctl-uninstall") < position("simctl-keychain-reset"));
     assert!(position("simctl-keychain-reset") < position("simctl-install"));
     assert_eq!(
         receipt.outcomes["device_pool"],
@@ -5870,7 +5866,6 @@ fn pool_dry_run_names_the_member_or_the_creation_and_writes_nothing() {
             for command in [
                 format!("simctl bootstatus {BORROWED} -b"),
                 format!("simctl uninstall {BORROWED} com.rndevagent.testapp"),
-                format!("simctl privacy {BORROWED} reset all com.rndevagent.testapp"),
                 format!("simctl keychain {BORROWED} reset"),
             ] {
                 assert!(planned.contains(&command), "{planned}");
@@ -5883,6 +5878,32 @@ fn pool_dry_run_names_the_member_or_the_creation_and_writes_nothing() {
             );
         }
     }
+}
+
+#[test]
+fn pool_dry_run_skips_a_booted_member_like_the_claim() {
+    let repo = common::temp_repo();
+    plant_member(&repo, BORROWED);
+    let scenario_path = write_scenario(&repo, &ios_scenario_yaml(8791));
+    let mut mock = MockRunner::new();
+    script_validation(&mut mock, &repo, IOS_TOOLS);
+    mock.expect_run("simctl list devices -j", member_inventory("Booted"));
+    mock.expect_run(
+        "expo run:ios --help",
+        CmdOutput::success(common::IOS_BUILD_HELP),
+    );
+    mock.expect_run("lsof", free_port());
+    mock.expect_run("ls-files", CmdOutput::success(""));
+    common::script_xcode(&mut mock);
+    let mut args = pool_args(&scenario_path);
+    args.dry_run = true;
+
+    let receipt = prepare(&mut mock, &args);
+
+    assert_eq!(receipt.result, ReceiptResult::Refused);
+    let failure = receipt.failure.unwrap();
+    assert_eq!(failure.code, FailureCode::DeviceBusy, "{failure:?}");
+    assert!(no_run_dir(&repo));
 }
 
 #[test]
