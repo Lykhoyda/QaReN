@@ -1551,7 +1551,11 @@ function healthDetailForReply(res: HttpProbeResult): HealthDetail {
 
 function healthDetailForError(error: unknown): HealthDetail {
   try {
-    const failure = error as { name?: unknown; code?: unknown; cause?: { code?: unknown } };
+    const failure = error as {
+      name?: unknown;
+      code?: unknown;
+      cause?: { name?: unknown; code?: unknown };
+    };
     if (failure?.name === 'AbortError' || failure?.name === 'TimeoutError') return 'abort';
     const code = failure?.code ?? failure?.cause?.code;
     if (code === 'ECONNREFUSED') return 'refused';
@@ -1562,7 +1566,8 @@ function healthDetailForError(error: unknown): HealthDetail {
       code === 'UND_ERR_HEADERS_TIMEOUT'
     )
       return 'transport-timeout';
-    if (typeof code === 'string' && code.startsWith('HPE_')) return 'http-protocol';
+    // fetch's parser error carries no code, only its class name.
+    if (failure?.cause?.name === 'HTTPParserError') return 'http-protocol';
   } catch {
     // Diagnostics cannot change readiness.
   }

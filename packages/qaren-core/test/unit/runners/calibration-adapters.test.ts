@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { createServer } from 'node:net';
 import { afterEach, test } from 'node:test';
 import {
   _setFastRunnerStateForTest,
@@ -491,16 +492,35 @@ test('a run cancelled during the app-process lookup raises the cancellation', as
   assert.equal(f.events.filter((e) => e.stage === 'runner-post-mortem').length, 0);
 });
 
+async function malformedReplyError(): Promise<unknown> {
+  const server = createServer((socket) => socket.end('HTTP/1.1 2X0 bad\r\n\r\n'));
+  await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+  try {
+    const { port } = server.address() as { port: number };
+    return await fetch(`http://127.0.0.1:${port}/health`).then(
+      () => assert.fail('a malformed status line must fail fetch'),
+      (error: unknown) => error,
+    );
+  } finally {
+    server.close();
+  }
+}
+
 test('default probe classifies transport timeouts and HTTP protocol errors', async () => {
+  const parserError = await malformedReplyError();
   const cases = [
-    ['transport-timeout', 'ETIMEDOUT'],
-    ['transport-timeout', 'UND_ERR_CONNECT_TIMEOUT'],
-    ['transport-timeout', 'UND_ERR_HEADERS_TIMEOUT'],
-    ['http-protocol', 'HPE_INVALID_CONSTANT'],
-    ['http-protocol', 'HPE_INVALID_CHUNK_SIZE'],
-  ];
-  for (const [healthDetail, code] of cases) {
-    const events = await readThenFail(failedHealth(code));
+    ['transport-timeout', failedHealth('ETIMEDOUT')],
+    ['transport-timeout', failedHealth('UND_ERR_CONNECT_TIMEOUT')],
+    ['transport-timeout', failedHealth('UND_ERR_HEADERS_TIMEOUT')],
+    [
+      'http-protocol',
+      () => {
+        throw parserError;
+      },
+    ],
+  ] satisfies [string, () => never][];
+  for (const [healthDetail, health] of cases) {
+    const events = await readThenFail(health);
     assert.deepEqual(
       events
         .filter((e) => e.stage === 'native-readiness' && e.edge === 'end')
