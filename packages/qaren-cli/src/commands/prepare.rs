@@ -1981,10 +1981,9 @@ pub(crate) fn run_reuse_path(ctx: &mut Ctx, plan: &BuildPlan, t: u64) -> Result<
                         false,
                     )
                 })?;
-                if entry.artifact_status(&artifact).map_err(|reason| {
+                if !entry.check_artifact(&artifact).map_err(|reason| {
                     artifact_install_failure(&ctx.record.run_id, &artifact, reason, false)
-                })? != ArtifactStatus::Verified
-                {
+                })? {
                     return Err(artifact_install_failure(
                         &ctx.record.run_id,
                         &artifact,
@@ -2479,7 +2478,7 @@ pub(crate) fn record_build_result(ctx: &mut Ctx, fp: &NativeFingerprint) -> Resu
                 )?
                 .ok_or("native cache entry: unavailable")?;
             if let Some(existing) = buildplan::load_store_record(&entry)? {
-                entry.artifact_status(&existing.artifact)?;
+                entry.check_artifact(&existing.artifact)?;
             }
             let expected = &verified.as_ref().expect("verified iOS artifact").sha256;
             let copy = entry.copy_app(

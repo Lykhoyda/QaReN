@@ -480,6 +480,17 @@ impl NativeStoreEntry {
     }
 
     pub fn artifact_status(&self, artifact: &CachedArtifact) -> Result<ArtifactStatus, String> {
+        if !self.check_artifact(artifact)? {
+            return Ok(ArtifactStatus::MissingFile);
+        }
+        match hash_artifact(&artifact.path) {
+            Ok(hash) if hash == artifact.sha256 => Ok(ArtifactStatus::Verified),
+            Ok(_) => Ok(ArtifactStatus::Mismatch),
+            Err(_) => Ok(ArtifactStatus::Mismatch),
+        }
+    }
+
+    pub fn check_artifact(&self, artifact: &CachedArtifact) -> Result<bool, String> {
         self.recheck()?;
         let relative = artifact
             .path
@@ -495,17 +506,13 @@ impl NativeStoreEntry {
         let mut dir = self.dir.duplicate()?;
         for name in relative.iter() {
             let Some(child) = dir.child(name, false, true)? else {
-                return Ok(ArtifactStatus::MissingFile);
+                return Ok(false);
             };
             dir = child;
         }
         validate_private_tree(&dir, 0, &mut { TREE_LIMIT })?;
         self.recheck()?;
-        match hash_artifact(&artifact.path) {
-            Ok(hash) if hash == artifact.sha256 => Ok(ArtifactStatus::Verified),
-            Ok(_) => Ok(ArtifactStatus::Mismatch),
-            Err(_) => Ok(ArtifactStatus::Mismatch),
-        }
+        Ok(true)
     }
 }
 
@@ -567,7 +574,7 @@ pub fn publish_store_record(
     store_mutation_allowed()?;
     entry.recheck()?;
     if let Some(existing) = load_store_record(entry)? {
-        entry.artifact_status(&existing.artifact)?;
+        entry.check_artifact(&existing.artifact)?;
         return Ok(false);
     }
     let mut on_disk = record.clone();
@@ -614,7 +621,7 @@ pub fn publish_store_record(
         }
         if std::io::Error::last_os_error().raw_os_error() == Some(libc::EEXIST) {
             let winner = load_store_record(entry)?.ok_or(ENTRY_UNSAFE)?;
-            entry.artifact_status(&winner.artifact)?;
+            entry.check_artifact(&winner.artifact)?;
             return Ok(false);
         }
         Err(ENTRY_UNSAFE.into())

@@ -238,6 +238,7 @@ fn private_bundle_checks_reject_links_special_files_and_permissive_descendants()
                 symlink(e.path().join("moved"), &run).unwrap();
             }
         }
+        assert!(e.check_artifact(&record.artifact).is_err(), "{case}");
         assert!(e.artifact_status(&record.artifact).is_err(), "{case}");
     }
 }
@@ -259,6 +260,7 @@ fn corruption_removal_and_generation_collisions_never_replace_the_winner() {
         )
         .is_err());
     std::fs::write(record.artifact.path.join("binary"), "changed").unwrap();
+    assert!(e.check_artifact(&record.artifact).unwrap());
     assert_eq!(
         e.artifact_status(&record.artifact).unwrap(),
         ArtifactStatus::Mismatch
@@ -267,6 +269,7 @@ fn corruption_removal_and_generation_collisions_never_replace_the_winner() {
     assert!(!publish_store_record(&e, &other).unwrap());
     assert_eq!(std::fs::read(e.path().join(STORE_RECORD)).unwrap(), bytes);
     std::fs::remove_dir_all(&record.artifact.path).unwrap();
+    assert!(!e.check_artifact(&record.artifact).unwrap());
     assert_eq!(
         e.artifact_status(&record.artifact).unwrap(),
         ArtifactStatus::MissingFile
