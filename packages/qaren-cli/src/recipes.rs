@@ -140,6 +140,15 @@ fn broken(text: &str) -> Vec<String> {
         .collect()
 }
 
+fn unmarked(text: &str) -> String {
+    text.split_inclusive('\n')
+        .filter(|line| {
+            let line = line.trim();
+            line != BARE_MARKER && PLATFORMS.iter().all(|platform| line != marker(platform))
+        })
+        .collect()
+}
+
 pub fn list(app_root: &Path) -> Result<Vec<PlanEntry>, String> {
     let dir = plans_dir(app_root)?;
     let entries = match std::fs::read_dir(&dir) {
@@ -258,10 +267,9 @@ pub fn save(app_root: &Path, slug: &str, markdown: &str) -> RecipeOutcome {
             };
             match std::fs::hard_link(&temp, &target) {
                 Ok(()) => Some(RecipeOutcome::at(Outcome::Saved, &target)),
-                Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
-                    (read_regular(&target).as_deref() == Some(markdown))
-                        .then(|| RecipeOutcome::at(Outcome::Unchanged, &target))
-                }
+                Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => read_regular(&target)
+                    .is_some_and(|existing| unmarked(&existing) == markdown)
+                    .then(|| RecipeOutcome::at(Outcome::Unchanged, &target)),
                 Err(_) => Some(RecipeOutcome::because(Outcome::NotSaved, "could not write")),
             }
         })
@@ -552,6 +560,21 @@ mod tests {
             2
         );
         assert_eq!(save(&app, "../escape", PLAN).outcome, Outcome::NotSaved);
+    }
+
+    #[test]
+    fn save_treats_a_flagged_copy_of_the_same_plan_as_unchanged() {
+        let app = app("save-flagged");
+        let path = app.join(".qaren/plans/add-a-task.md");
+        assert_eq!(save(&app, "add-a-task", PLAN).outcome, Outcome::Saved);
+        assert_eq!(flag(&path, "android", PLAN).outcome, Outcome::Flagged);
+        let flagged = std::fs::read_to_string(&path).unwrap();
+        assert_eq!(
+            save(&app, "add-a-task", PLAN),
+            RecipeOutcome::at(Outcome::Unchanged, &path)
+        );
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), flagged);
+        assert!(!app.join(".qaren/plans/add-a-task-2.md").exists());
     }
 
     #[test]
