@@ -103,6 +103,8 @@ const HEALTH_DETAILS = [
   'http-5xx',
   'body-not-ok',
   'wedged',
+  'transport-timeout',
+  'http-protocol',
   'other',
 ] as const;
 export type HealthDetail = (typeof HEALTH_DETAILS)[number];
@@ -145,26 +147,14 @@ export type DispatchPhase =
   | 'dispatch-readback';
 export const READINESS_EXCEPTION_STAGES = [
   'http-probe',
-  'http-setup',
   'fetch',
   'response-access',
-  'http-cleanup',
   'health-evaluation',
   'authority-evaluation',
   'compatibility-evaluation',
   'state-update',
 ] as const;
 export type ReadinessExceptionStage = (typeof READINESS_EXCEPTION_STAGES)[number];
-export const READINESS_EXCEPTION_KINDS = [
-  'local-signal-aborted',
-  'connection-refused',
-  'connection-reset',
-  'socket-closed',
-  'transport-timeout',
-  'http-protocol',
-  'other',
-] as const;
-export type ReadinessExceptionKind = (typeof READINESS_EXCEPTION_KINDS)[number];
 export interface TimingEvent {
   stage: TimingStage;
   edge: 'start' | 'end' | 'point';
@@ -207,7 +197,6 @@ export interface TimingEvent {
   markerListenerFailed?: number;
   markerSendFailed?: number;
   readinessExceptionStage?: ReadinessExceptionStage;
-  readinessExceptionKind?: ReadinessExceptionKind;
 }
 export type TimingObserver = (event: TimingEvent) => void;
 export interface TimingContext {
@@ -266,14 +255,10 @@ export function cleanTimingEvent(value: unknown): TimingEvent | undefined {
     POST_MORTEM_KEYS.some((key) => input[key] !== undefined)
   )
     return undefined;
-  const exceptionStage = input.readinessExceptionStage;
-  const exceptionKind = input.readinessExceptionKind;
-  if (exceptionStage !== undefined || exceptionKind !== undefined) {
-    const stage = READINESS_EXCEPTION_STAGES.find((word) => word === exceptionStage);
-    const kind = READINESS_EXCEPTION_KINDS.find((word) => word === exceptionKind);
+  if (input.readinessExceptionStage !== undefined) {
+    const stage = READINESS_EXCEPTION_STAGES.find((word) => word === input.readinessExceptionStage);
     if (
       !stage ||
-      !kind ||
       event.stage !== 'native-readiness' ||
       event.edge !== 'end' ||
       event.outcome !== 'failed' ||
@@ -281,7 +266,6 @@ export function cleanTimingEvent(value: unknown): TimingEvent | undefined {
     )
       return undefined;
     event.readinessExceptionStage = stage;
-    event.readinessExceptionKind = kind;
   }
   for (const key of [
     'at',

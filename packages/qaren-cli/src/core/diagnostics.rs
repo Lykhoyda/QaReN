@@ -6,23 +6,12 @@ use std::path::Path;
 const MAX_NUMBER: f64 = 9_007_199_254_740_991.0;
 const READINESS_EXCEPTION_STAGES: &[&str] = &[
     "http-probe",
-    "http-setup",
     "fetch",
     "response-access",
-    "http-cleanup",
     "health-evaluation",
     "authority-evaluation",
     "compatibility-evaluation",
     "state-update",
-];
-const READINESS_EXCEPTION_KINDS: &[&str] = &[
-    "local-signal-aborted",
-    "connection-refused",
-    "connection-reset",
-    "socket-closed",
-    "transport-timeout",
-    "http-protocol",
-    "other",
 ];
 const STAGES: &[&str] = &[
     "walk",
@@ -114,6 +103,8 @@ const HEALTH_DETAILS: &[&str] = &[
     "http-5xx",
     "body-not-ok",
     "wedged",
+    "transport-timeout",
+    "http-protocol",
     "other",
 ];
 const RUNNER_SIGNALS: &[&str] = &[
@@ -221,7 +212,6 @@ fn clean(value: &Value) -> Option<Value> {
                 "markerListenerFailed",
                 "markerSendFailed",
                 "readinessExceptionStage",
-                "readinessExceptionKind",
             ],
         ),
         "timing" => (
@@ -247,15 +237,12 @@ fn clean(value: &Value) -> Option<Value> {
     if required.iter().any(|key| !fields.contains_key(*key)) {
         return None;
     }
-    if (fields.contains_key("readinessExceptionStage")
-        || fields.contains_key("readinessExceptionKind"))
+    if fields.contains_key("readinessExceptionStage")
         && (kind != "metric"
             || fields.get("stage").and_then(Value::as_str) != Some("native-readiness")
             || fields.get("edge").and_then(Value::as_str) != Some("end")
             || fields.get("outcome").and_then(Value::as_str) != Some("failed")
-            || fields.get("readinessReason").and_then(Value::as_str) != Some("health")
-            || !fields.contains_key("readinessExceptionStage")
-            || !fields.contains_key("readinessExceptionKind"))
+            || fields.get("readinessReason").and_then(Value::as_str) != Some("health"))
     {
         return None;
     }
@@ -321,7 +308,6 @@ fn clean(value: &Value) -> Option<Value> {
             "exitSignal" => Some(RUNNER_SIGNALS),
             "appProcess" => Some(&["same", "changed", "absent", "unknown"]),
             "readinessExceptionStage" => Some(READINESS_EXCEPTION_STAGES),
-            "readinessExceptionKind" => Some(READINESS_EXCEPTION_KINDS),
             _ => None,
         };
         if let Some(words) = words {

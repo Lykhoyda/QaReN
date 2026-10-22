@@ -1572,7 +1572,7 @@ that secret despite artifact redaction.
   existing liveness classification as `readinessReason`, or `unknown` if the probe did not
   return a classification; `count` identifies the probe site, not a retry ordinal.
   A `health` failure adds `healthDetail` (`refused`, `reset`, `abort`, `http-4xx`, `http-5xx`, `body-not-ok`,
-  `wedged` or `other`). Every failed readiness probe is followed by a `runner-post-mortem` point
+  `wedged`, `transport-timeout`, `http-protocol` or `other`). Every failed readiness probe is followed by a `runner-post-mortem` point
   with the runner host child (`alive`, `exited`, `unknown`), its exit code or signal name, counts of
   the runner's fixed lifecycle markers (never output text), and `appProcess`: the app process found
   on the simulator compared with the last good read (`same`, `changed`, `absent`, `unknown`).
@@ -1588,9 +1588,8 @@ that secret despite artifact redaction.
   The failure class describes the current retry or refusal; cancellation retains the most recent
   retry's class, or `none` before any retry. Cancellation emits synchronously on abort before
   the terminal result closes the diagnostic stream, subject to the event caps below.
-  Caught probe exceptions add a complete finite `readinessExceptionStage` and
-  `readinessExceptionKind` pair only to failed `health` end metrics. The pair identifies
-  the operation and bounded error class without retaining raw errors or changing readiness policy.
+  Caught probe exceptions add a finite `readinessExceptionStage` only to failed `health` end
+  metrics. It identifies the operation that threw without retaining raw errors or changing readiness policy.
   Each attempted block containing a slot fill emits
   `block-outcome` with its first plan line and existing `pass`/`fail`/`refused` result; only saved-login
   recovery emits `login-outcome`. A block passing is its existing block result, not a new assertion

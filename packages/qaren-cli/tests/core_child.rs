@@ -274,30 +274,17 @@ fn readiness_reasons_reach_private_diagnostics_only_as_classified_end_events() {
             .collect();
         for stage in [
             "http-probe",
-            "http-setup",
             "fetch",
             "response-access",
-            "http-cleanup",
             "health-evaluation",
             "authority-evaluation",
             "compatibility-evaluation",
             "state-update",
         ] {
-            for kind in [
-                "local-signal-aborted",
-                "connection-refused",
-                "connection-reset",
-                "socket-closed",
-                "transport-timeout",
-                "http-protocol",
-                "other",
-            ] {
-                let mut value = metric.clone();
-                value["readinessReason"] = json!("health");
-                value["readinessExceptionStage"] = json!(stage);
-                value["readinessExceptionKind"] = json!(kind);
-                expected.push(value);
-            }
+            let mut value = metric.clone();
+            value["readinessReason"] = json!("health");
+            value["readinessExceptionStage"] = json!(stage);
+            expected.push(value);
         }
         let mut payloads = expected.clone();
         payloads.push(metric.clone());
@@ -322,11 +309,12 @@ fn readiness_reasons_reach_private_diagnostics_only_as_classified_end_events() {
             invalid[key] = json!(value);
             payloads.push(invalid);
         }
-        let pair = expected.last().unwrap();
+        let exception = expected.last().unwrap();
         for (key, value) in [
             ("readinessExceptionStage", json!("private-synthetic-value")),
-            ("readinessExceptionKind", json!("private-synthetic-value")),
-            ("readinessExceptionKind", json!({})),
+            ("readinessExceptionStage", json!("http-setup")),
+            ("readinessExceptionStage", json!({})),
+            ("readinessExceptionKind", json!("other")),
             ("readinessReason", json!("unknown")),
             ("readinessReason", json!("probe-exception")),
             ("outcome", json!("ok")),
@@ -334,13 +322,8 @@ fn readiness_reasons_reach_private_diagnostics_only_as_classified_end_events() {
             ("edge", json!("start")),
             ("raw", json!("private-synthetic-value")),
         ] {
-            let mut invalid = pair.clone();
+            let mut invalid = exception.clone();
             invalid[key] = value;
-            payloads.push(invalid);
-        }
-        for key in ["readinessExceptionStage", "readinessExceptionKind"] {
-            let mut invalid = pair.clone();
-            invalid.as_object_mut().unwrap().remove(key);
             payloads.push(invalid);
         }
         let mut stdout = String::new();
@@ -400,6 +383,8 @@ fn runner_termination_diagnostics_reach_private_diagnostics_only_as_fixed_words_
             "http-5xx",
             "body-not-ok",
             "wedged",
+            "transport-timeout",
+            "http-protocol",
             "other",
         ] {
             let mut value = readiness.clone();
@@ -496,7 +481,7 @@ fn a_real_slot_child_keeps_raw_logs_withheld_while_retaining_structured_diagnost
             send('diagnostic', {kind: 'timing', stage: 'dispatch', code: 'COMPLETED', line: 2, at: 220, acquisitionMs: 100, observationAgeMs: 120});
             send('diagnostic', {kind: 'block-outcome', line: 2, outcome: 'pass'});
             send('diagnostic', {kind: 'login-outcome', outcome: 'pass'});
-            send('diagnostic', {kind: 'metric', stage: 'native-readiness', edge: 'end', outcome: 'failed', at: 250, readinessReason: 'health', readinessExceptionStage: 'fetch', readinessExceptionKind: 'connection-refused'});
+            send('diagnostic', {kind: 'metric', stage: 'native-readiness', edge: 'end', outcome: 'failed', at: 250, readinessReason: 'health', healthDetail: 'transport-timeout', readinessExceptionStage: 'fetch'});
             send('diagnostic', {kind: 'login-outcome', outcome: payload.inputs.PASSWORD});
             send('result', {verdict: 'PASS', path: 'walk', blocks: [], steps: [], jev: {calls: 0, medianMs: 0}, llmTurns: 0, escapes: 0, recoveries: 0});
             reader.close();
@@ -525,14 +510,14 @@ fn a_real_slot_child_keeps_raw_logs_withheld_while_retaining_structured_diagnost
         );
         let retained = std::fs::read_to_string(repo.join("core-diagnostics.jsonl")).unwrap();
         assert_eq!(retained.lines().count(), 5);
-        let pair: serde_json::Value =
+        let exception: serde_json::Value =
             serde_json::from_str(retained.lines().last().unwrap()).unwrap();
         assert_eq!(
-            pair,
+            exception,
             serde_json::json!({
                 "kind": "metric", "stage": "native-readiness", "edge": "end", "outcome": "failed",
-                "at": 250, "readinessReason": "health", "readinessExceptionStage": "fetch",
-                "readinessExceptionKind": "connection-refused"
+                "at": 250, "readinessReason": "health", "healthDetail": "transport-timeout",
+                "readinessExceptionStage": "fetch"
             })
         );
         assert!(!retained.contains(secret));

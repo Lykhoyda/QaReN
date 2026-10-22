@@ -34,7 +34,6 @@ test('an injected health exception keeps the existing stale result and clears on
     staleReason: 'health',
     healthDetail: 'refused',
     readinessExceptionStage: 'http-probe',
-    readinessExceptionKind: 'connection-refused',
   });
   assert.deepEqual([processes, health, clears], [1, 1, 0]);
   assert.deepEqual(getFastRunnerCapabilities(), []);
@@ -98,7 +97,6 @@ test('exceptions after health identify their existing operation without weakenin
       staleReason: 'health',
       healthDetail: 'other',
       readinessExceptionStage: stage,
-      readinessExceptionKind: 'other',
     });
     assert.deepEqual([health, clears], [1, 0]);
     assert.deepEqual(getFastRunnerCapabilities(), []);
