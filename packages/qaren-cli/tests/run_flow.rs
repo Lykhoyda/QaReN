@@ -642,6 +642,70 @@ fn invalid_ios_launch_scheme_refuses_before_any_command_without_echoing_input() 
 }
 
 #[test]
+fn a_clean_ios_build_refuses_before_building_when_its_volume_is_short_of_space() {
+    let (repo, app) = app_repo();
+    let req = request(&repo, &app, 30);
+    let mut mock = MockRunner::new();
+    mock.expect_run("node --version", CmdOutput::success("v26.8.1\n"));
+    script_plan(&mut mock, &repo);
+    mock.expect_run(
+        "simctl list devices booted",
+        CmdOutput::success(&booted_json()),
+    );
+    mock.expect_run("git", CmdOutput::success(&format!("{}\n", repo.display())));
+    mock.expect_run("git", CmdOutput::success(&format!("{}\n", repo.display())));
+    mock.expect_run("git", CmdOutput::success(&format!("{}\n", "b".repeat(40))));
+    mock.expect_run(
+        "git",
+        CmdOutput::success("?? test-app/.qaren/config.yaml\0?? test-app/plan.md\0"),
+    );
+    for tool in IOS_TOOLS {
+        mock.expect_run("which", CmdOutput::success(&format!("/usr/bin/{tool}\n")));
+    }
+    mock.expect_run(
+        "df",
+        CmdOutput::success(
+            "Filesystem 1024-blocks Used Available Capacity Mounted on\n/dev/disk3 976490576 1 500000000 1% /\n/dev/disk4 976490576 1 4194304 99% /Volumes/apps\n",
+        ),
+    );
+    mock.expect_run("ps", CmdOutput::success("Wed Aug 12 15:59:00 2026\n"));
+    mock.expect_run("ps", CmdOutput::success("qaren check\n"));
+    mock.expect_run("lsof", free_port());
+    common::script_ios_deps(&mut mock);
+    mock.expect_run("ls-files", CmdOutput::success(""));
+    common::script_xcode(&mut mock);
+
+    let receipt = run(&mut mock, &req);
+
+    assert_eq!(receipt.result, ReceiptResult::Refused);
+    let failure = receipt.failure.as_ref().unwrap();
+    assert_eq!(failure.code, FailureCode::DiskBudgetExceeded);
+    assert!(
+        failure
+            .detail
+            .starts_with("4.0 GiB free on the volume holding")
+            && failure
+                .detail
+                .contains("a clean iOS build needs about 10 GiB"),
+        "{}",
+        failure.detail
+    );
+    assert!(
+        failure.detail.ends_with("then re-run"),
+        "{}",
+        failure.detail
+    );
+    assert!(failure.detail.contains("DerivedData"), "{}", failure.detail);
+    assert_eq!(receipt.cleanup["device_lease"], "removed");
+    assert!(!mock
+        .calls
+        .iter()
+        .any(|c| c.rendered().contains("expo prebuild") || c.rendered().contains("expo start")));
+    assert!(!req.lock_root.join("native-build-ios").exists());
+    assert_eq!(mock.remaining(), 0);
+}
+
+#[test]
 fn pre_spawn_build_error_retires_pending_before_releasing_ownership() {
     let (repo, app) = app_repo();
     let req = request(&repo, &app, 30);

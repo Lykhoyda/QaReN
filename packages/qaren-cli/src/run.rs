@@ -36,6 +36,8 @@ pub const DEFAULT_WALK_SECONDS: u64 = 1200;
 // Seven 150s judgment schedules during scroll-until, plus 150s for screen work.
 pub const DEFAULT_STEP_SECONDS: u64 = 1200;
 const MIN_FREE_DISK_KB: u64 = 1024 * 1024;
+// One measured cold iOS build (DerivedData, Pods, CocoaPods and native caches) used about 8 GiB.
+pub(crate) const CLEAN_IOS_BUILD_FREE_KB: u64 = 10 * 1024 * 1024;
 
 // `check` borrows a simulator against the working tree at project_root.
 pub struct RunRequest {
@@ -473,7 +475,7 @@ fn run_inner(
             "check the run directory permissions",
         )
     })?;
-    preflight_disk(runner, &req.runs_root)?;
+    let (free_kb, free_path) = preflight_disk(runner, &req.runs_root, &project_root)?;
 
     if run_claim.is_none() {
         let claim = claim_run_dir(&req.runs_root, &run_id)?;
@@ -710,6 +712,19 @@ fn run_inner(
         Err(f) => return Ok(finish_failed(ctx, f)),
     };
     ctx.record.build = Some(plan_decision.clone());
+    if plan_decision.decision == BuildDecision::Clean && req.platform == Platform::Ios {
+        if let Some(detail) = clean_ios_build_shortfall(free_kb, &free_path) {
+            // The receipt's next action becomes `qaren cleanup` once resources are owned, so the detail carries the remedy.
+            let detail = format!("{detail}; {FREE_DISK_FIX}");
+            let f = Failure::new(
+                "build",
+                FailureCode::DiskBudgetExceeded,
+                detail,
+                FREE_DISK_FIX,
+            );
+            return Ok(finish_failed(ctx, f));
+        }
+    }
     if plan_decision.decision != BuildDecision::Reuse {
         if let Err(f) = prepare::claim_build_lock(&mut ctx, &req.lock_root) {
             return Ok(finish_failed(ctx, f));
@@ -1745,54 +1760,86 @@ pub(crate) fn preflight_node(runner: &mut dyn Runner, node: &Path) -> Result<Str
     }
 }
 
-fn preflight_disk(runner: &mut dyn Runner, runs_root: &Path) -> Result<(), Failure> {
-    let output = runner.run(&CmdSpec::new(
-        "df",
-        "df",
-        &["-Pk", &runs_root.to_string_lossy()],
-        10,
-    ));
-    if !output.ok() {
+// Run storage sits on the home volume with Xcode's DerivedData; the app's Pods sit under the project.
+fn preflight_disk(
+    runner: &mut dyn Runner,
+    runs_root: &Path,
+    project_root: &Path,
+) -> Result<(u64, PathBuf), Failure> {
+    let (kb, path) = tightest_volume(runner, &[runs_root, project_root])?;
+    if kb < MIN_FREE_DISK_KB {
         return Err(Failure::new(
-            "preflight",
-            FailureCode::PrereqMissing,
-            format!(
-                "df could not report free space under {}: {}",
-                runs_root.display(),
-                output.summary()
-            ),
-            "make df available on PATH and the run directory readable, then re-run",
-        ));
-    }
-    let available_kb = output
-        .stdout
-        .lines()
-        .last()
-        .and_then(|line| line.split_whitespace().nth(3))
-        .and_then(|kb| kb.parse::<u64>().ok());
-    match available_kb {
-        Some(kb) if kb < MIN_FREE_DISK_KB => Err(Failure::new(
             "preflight",
             FailureCode::DiskBudgetExceeded,
             format!(
                 "only {} MiB free under {}; a run needs at least {} MiB",
                 kb / 1024,
-                runs_root.display(),
+                path.display(),
                 MIN_FREE_DISK_KB / 1024
             ),
             "free disk space, then re-run",
-        )),
-        Some(_) => Ok(()),
-        None => Err(Failure::new(
+        ));
+    }
+    Ok((kb, path.to_path_buf()))
+}
+
+pub(crate) const FREE_DISK_FIX: &str = "free space you own on that volume, such as old Xcode DerivedData under ~/Library/Developer/Xcode/DerivedData or `pnpm store prune`, then re-run";
+
+pub(crate) fn clean_ios_build_shortfall(kb: u64, path: &Path) -> Option<String> {
+    (kb < CLEAN_IOS_BUILD_FREE_KB).then(|| {
+        format!(
+            "{:.1} GiB free on the volume holding {}; a clean iOS build needs about {} GiB",
+            kb as f64 / (1024.0 * 1024.0),
+            path.display(),
+            CLEAN_IOS_BUILD_FREE_KB / (1024 * 1024)
+        )
+    })
+}
+
+// The least free volume among `paths` from one `df -Pk`: (available KiB, its path).
+pub(crate) fn tightest_volume<'a>(
+    runner: &mut dyn Runner,
+    paths: &[&'a Path],
+) -> Result<(u64, &'a Path), Failure> {
+    let shown = paths
+        .iter()
+        .map(|path| path.display().to_string())
+        .collect::<Vec<_>>()
+        .join(", ");
+    let mut args = vec!["-Pk".to_string()];
+    args.extend(paths.iter().map(|path| path.to_string_lossy().into_owned()));
+    let args: Vec<&str> = args.iter().map(String::as_str).collect();
+    let output = runner.run(&CmdSpec::new("df", "df", &args, 10));
+    if !output.ok() {
+        return Err(Failure::new(
             "preflight",
             FailureCode::PrereqMissing,
             format!(
-                "df -Pk output for {} had no readable available-space column",
-                runs_root.display()
+                "df could not report free space under {shown}: {}",
+                output.summary()
             ),
-            "check that df prints the POSIX table for the run directory, then re-run",
-        )),
+            "make df available on PATH and the run directory readable, then re-run",
+        ));
     }
+    output
+        .stdout
+        .lines()
+        .skip(1)
+        .zip(paths)
+        .map(|(line, path)| {
+            let kb = line.split_whitespace().nth(3)?.parse::<u64>().ok()?;
+            Some((kb, *path))
+        })
+        .collect::<Option<Vec<_>>>()
+        .and_then(|volumes| volumes.into_iter().min_by_key(|(kb, _)| *kb))
+        .ok_or_else(|| {
+            Failure::new(
+                "preflight",
+                FailureCode::PrereqMissing,
+                format!("df -Pk output for {shown} had no readable available-space column"),
+                "check that df prints the POSIX table for the run directory, then re-run",
+            )
+        })
 }
 
 fn resolve_device(

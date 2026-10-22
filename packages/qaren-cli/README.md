@@ -22,7 +22,7 @@ qaren doctor [--json] [--config .qaren/config.yaml]
 
 Doctor prints the running binary's version, path, build and runtime, then one
 `PASS`, `WARN`, `FAIL` or `SKIP` row per check, each problem with its manual fix.
-It only reads files and runs version and list commands: it never writes, deletes,
+It only reads files and runs version, list and `df` commands: it never writes, deletes,
 spawns a session or uses the network. In text and JSON output, Doctor never prints
 file contents, environment variable values, credentials or any other config value;
 it may name the configured iOS runtime and Android AVD. It also prints diagnostic
@@ -38,6 +38,7 @@ that can conflict with a session or is hygiene; `SKIP` is not applicable.
 | `xcode`, `ios-runtime` | `xcodebuild -version`; an available iOS simulator runtime, and the configured `ios.runtime` by name or identifier |
 | `node`, `pnpm` | `QAREN_NODE` or `node` on `PATH` is 24 or newer; a configured `nodePath` is only checked to be an executable file, never run; `pnpm` runs |
 | `corepack`, `cocoapods` | `corepack` and `pod` run (warnings) |
+| `disk` | The volumes holding the current directory and your home have the roughly 10 GiB free a clean iOS build needs (warning) |
 | `android-sdk`, `android-avd` | When `android` is configured: `ANDROID_HOME`, an executable `adb` file (never run; its version is not checked), the emulator binary and the configured AVD via `emulator -list-avds` |
 | `qaren-path` | The first `qaren` on `PATH` is this binary and the installed build; later copies warn |
 | `installed-build` | The runtime under `~/.qaren/runtime/<version>/` and the runtime `check` would use (`QAREN_RUNTIME` when set) are complete; a binary outside it that `PATH` runs instead of an install fails |
@@ -53,7 +54,19 @@ Config failures report the file path and failure category; inspect the file loca
 against the [configuration schema](src/config.rs). A `VERSION` mismatch reports
 the binary's expected version without echoing the file's contents.
 
-Detected 1.x leftovers produce warnings with manual fixes. Follow the
+The probes run outside any project with Corepack's network access disabled, so a
+pnpm that Corepack enabled but has not yet downloaded fails until you run
+`(cd / && pnpm --version)` once with network access; the fix line says so.
+
+A cold first `check` builds the app from scratch. One measured cold iOS build
+used about 8 GiB for Xcode DerivedData (under
+`~/Library/Developer/Xcode/DerivedData`, even when `HOME` is redirected), the
+app's Pods, the CocoaPods cache and QaReN's native cache; with `node_modules` and
+the pnpm store, setting up an app from nothing used about 11 GiB.
+
+Detected 1.x leftovers produce warnings with manual fixes. QaReN ignores the
+files `1x-project` reports, so its fix applies only to an app repository you
+maintain; elsewhere, leave them in place. Follow the
 [upgrade guide](#upgrading-from-rn-dev-agent-1x-1014-to-20) before retiring state
 that may contain your only copy of learned actions.
 Doctor has no `--fix`: each removal deletes user data or edits host
@@ -2810,7 +2823,8 @@ caller-maintained simulator can already be borrowed instead; see
   deletion reports its measured data-directory bytes, or an unknown byte count
   if measurement was unavailable, including pending-allocation recovery.
   Borrowed simulators are kept. `check`/`pr` refuse `DISK_BUDGET_EXCEEDED` before
-  installation when the run storage has less than 1 GiB free. Worktree and
+  installation when the run storage or the app's volume has less than 1 GiB
+  free, and before a clean iOS build when either has less than about 10 GiB. Worktree and
   recording retirement follow the [PR teardown contract](#test-a-pull-request).
 - **App removal is opt-in, confirmed, and bound to the run record.** Plain
   Android `cleanup` never touches the installed app: stopping the farm AVD
