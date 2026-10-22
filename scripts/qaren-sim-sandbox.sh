@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # Run a command where no real simulator or emulator is reachable: an isolated
-# HOME plus xcrun and adb shims that report one fake booted iPhone and no
-# Android device, and refuse every other device command. The no-mistakes Test
-# step routes qaren, xcrun and adb through this (see .no-mistakes.yaml).
+# HOME plus xcrun, adb and xcodebuild shims that report one fake booted iPhone
+# and no Android device, and refuse every other device command. The no-mistakes
+# Test step routes device commands through this (see .no-mistakes.yaml).
 #
 # Usage: scripts/qaren-sim-sandbox.sh <command> [args...]
 #   QAREN_SANDBOX_DIR=<dir>         reuse one sandbox across calls (default: new mktemp dir)
@@ -15,6 +15,7 @@ set -euo pipefail
 FAKE_UDID="5A4DB0C5-0000-4000-8000-00000000F4CE"
 real_home="$HOME"
 real_xcrun="$(command -v xcrun || true)"
+real_xcodebuild="$(command -v xcodebuild || true)"
 dir="${QAREN_SANDBOX_DIR:-$(mktemp -d "${TMPDIR:-/tmp}/qaren-sim-sandbox.XXXXXX")}"
 mkdir -p "$dir/home" "$dir/bin" "$dir/android-sdk/platform-tools"
 dir="$(cd "$dir" && pwd -P)"
@@ -54,6 +55,23 @@ EOF
   chmod +x "$dir/bin/adb"
 fi
 ln -sf "$dir/bin/adb" "$dir/android-sdk/platform-tools/adb"
+
+if [ ! -e "$dir/bin/xcodebuild" ]; then
+  cat >"$dir/bin/xcodebuild" <<EOF
+#!/usr/bin/env bash
+prev=
+for a in "\$@"; do
+  case "\$a" in test|test-without-building) prev=refuse ;; esac
+  [ "\$prev" = -destination ] && case "\$a" in generic/*) ;; *) prev=refuse ;; esac
+  [ "\$prev" = refuse ] && { echo "qaren-sim-sandbox: refused xcodebuild \$*" >&2; exit 1; }
+  prev="\$a"
+done
+[ -n "$real_xcodebuild" ] && exec "$real_xcodebuild" "\$@"
+echo "qaren-sim-sandbox: no host xcodebuild" >&2
+exit 1
+EOF
+  chmod +x "$dir/bin/xcodebuild"
+fi
 
 # Toolchains default under HOME; keep them on the real one so builds still work.
 export CARGO_HOME="${CARGO_HOME:-$real_home/.cargo}"
