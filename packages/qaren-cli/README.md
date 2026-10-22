@@ -1151,6 +1151,16 @@ An empty snapshot's unchanged ref map and zero-node count
 diagnostics do not prevent this read-only retry; persistent emptiness still
 refuses with the same code and message, and other incomplete captures refuse
 immediately.
+
+A non-advisory platform-presence response with `RUNNER_TIMEOUT` or a message
+containing `main thread execution timed out` now attempts the same poisoning,
+reaping and reader relaunch. The failed read remains `RN_FAST_RUNNER_DOWN` with
+capture `unknown`; a pending relaunch adds `runnerRelaunch` for the bounded retry
+above. A real 30-second Swift main-thread timeout exceeds the 22-second total
+capture budget, so that capture stays refused without re-reading; recovery
+allows the following separate capture to use the healthy relaunched reader.
+Advisory timeouts and unrelated presence failures do not trigger this containment.
+
 Slot diagnostics retain the `relaunch` metric with `attempted`, `ready`, `failed`
 or `timeout`, its duration and the fixed reap disposition, without runner output
 or values.

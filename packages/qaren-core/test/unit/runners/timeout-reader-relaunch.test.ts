@@ -40,6 +40,8 @@ let launchDelayMs = 0;
 let healthDelayMs = 0;
 let blockSnapshots = false;
 let presenceTimeouts = 0;
+let presenceTimeoutCode = 'RUNNER_TIMEOUT';
+let presenceTimeoutDelayMs = 0;
 let recoveryStage: 'status' | 'resend' | undefined;
 let snapshotRequests = 0;
 let appProcessIdentifier = 41;
@@ -58,6 +60,8 @@ beforeEach((t) => {
   healthDelayMs = 0;
   blockSnapshots = false;
   presenceTimeouts = 0;
+  presenceTimeoutCode = 'RUNNER_TIMEOUT';
+  presenceTimeoutDelayMs = 0;
   recoveryStage = undefined;
   snapshotRequests = 0;
   appProcessIdentifier = 41;
@@ -176,11 +180,13 @@ beforeEach((t) => {
       if (blockSnapshots) await new Promise(() => {});
       if (request.platformPresence && presenceTimeouts > 0) {
         presenceTimeouts--;
+        if (presenceTimeoutDelayMs > 0)
+          await new Promise((resolve) => setTimeout(resolve, presenceTimeoutDelayMs));
         return Response.json(
           {
             ok: false,
             error: {
-              code: 'RUNNER_TIMEOUT',
+              code: presenceTimeoutCode,
               message: 'main thread execution timed out',
               mutation: 'possible',
             },
@@ -352,6 +358,41 @@ test('a separate presence capture succeeds after its timeout is contained', asyn
   assert.equal(snapshotRequests, 2);
   assert.equal(launches, 1);
   assert.equal(getFastRunnerState()?.port, 22089);
+});
+
+test('a presence main-thread timeout message triggers containment without RUNNER_TIMEOUT', async (t) => {
+  aliveReader(t);
+  presenceTimeouts = 1;
+  presenceTimeoutCode = 'MAIN_THREAD_TIMEOUT';
+  const capture = parseEnvelope(
+    await runIOS({ command: 'snapshot', platformPresence: true, presenceBudgetMs: 20_000 }),
+  );
+  assert.equal(capture.ok, false);
+  assert.equal(capture.code, 'RN_FAST_RUNNER_DOWN');
+  assert.equal(capture.meta.capture, 'unknown');
+  assert.equal(capture.meta.runnerRelaunch, true);
+  assert.equal(launches, 1);
+  assert.equal(getFastRunnerState()?.port, 22089);
+});
+
+test('an advisory presence timeout preserves the reader without containment', async (t) => {
+  aliveReader(t);
+  presenceTimeouts = 1;
+  const initial = getFastRunnerState();
+  const capture = parseEnvelope(
+    await runIOS({
+      command: 'snapshot',
+      platformPresence: true,
+      presenceBudgetMs: 20_000,
+      advisorySnapshot: true,
+    }),
+  );
+  assert.equal(capture.ok, false);
+  assert.equal(capture.code, 'RN_FAST_RUNNER_DOWN');
+  assert.match(capture.error, /no recovery attempted/);
+  assert.equal(capture.meta.runnerRelaunch, undefined);
+  assert.equal(launches, 0);
+  assert.equal(getFastRunnerState(), initial);
 });
 
 test('an advisory snapshot marker cannot disable mutation timeout recovery', async () => {
@@ -630,6 +671,26 @@ test(
     assert.equal(launches, 1);
   },
 );
+
+test('a 30-second presence timeout refuses this capture and permits the next capture', async (t) => {
+  const time = clock(t);
+  aliveReader(t);
+  presenceTimeouts = 1;
+  presenceTimeoutDelayMs = 30_000;
+  let reads = 0;
+  const capture = privateCapture(time.now, () => reads++).catch((error: Error) => error);
+  await nextTurn();
+  assert.equal(reads, 1);
+  await time.advance(30_000);
+  assert.ok((await capture) instanceof NativeCaptureError);
+  assert.equal(reads, 1, 'the expired capture must not re-read');
+  assert.equal(launches, 1);
+  assert.equal(getFastRunnerState()?.port, 22089);
+  const next = await privateCapture(time.now, () => reads++);
+  assert.equal(next.captureCoverage?.native, 'complete');
+  assert.equal(reads, 2);
+  assert.equal(launches, 1);
+});
 
 test(
   'an empty read retains relaunch retry eligibility through the private capture',
