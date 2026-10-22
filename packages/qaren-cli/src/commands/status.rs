@@ -302,6 +302,9 @@ fn probe_ios_simulator(
         outcomes.push(("simulator_recorded".to_string(), Probe::Fail));
         return false;
     };
+    if record.resources.device_borrowed {
+        return probe_borrowed_ios_simulator(runner, record, sim, outcomes);
+    }
     let list = runner.run(&ios::list_devices_spec());
     let sim_probe = if !list.ok() {
         Probe::Inconclusive
@@ -311,6 +314,37 @@ fn probe_ios_simulator(
                 Probe::Pass
             }
             ios::SimPresence::Unparseable => Probe::Inconclusive,
+            _ => Probe::Fail,
+        }
+    };
+    outcomes.push(("simulator_booted".to_string(), sim_probe));
+    sim_probe == Probe::Pass
+}
+
+// A borrowed simulator is ours only while this run holds its lease; app visibility alone is not custody.
+fn probe_borrowed_ios_simulator(
+    runner: &mut dyn Runner,
+    record: &RunRecord,
+    sim: &crate::runrecord::IosSimResource,
+    outcomes: &mut Vec<(String, Probe)>,
+) -> bool {
+    if !record.holds_device_lease() {
+        outcomes.push(("device_lease_held".to_string(), Probe::Fail));
+        return false;
+    }
+    outcomes.push(("device_lease_held".to_string(), Probe::Pass));
+    let list = runner.run(&ios::list_devices_spec());
+    let sim_probe = if !list.ok() || !list.stderr.is_empty() || list.stdout.len() >= 1024 * 1024 {
+        Probe::Inconclusive
+    } else {
+        match ios::parse_selected_sim(&list.stdout, &sim.udid) {
+            Some(observed)
+                if observed.state == ios::SimState::Booted
+                    && observed.device_type == sim.device_type
+                    && observed.runtime == sim.runtime =>
+            {
+                Probe::Pass
+            }
             _ => Probe::Fail,
         }
     };

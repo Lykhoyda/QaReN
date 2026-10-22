@@ -29,6 +29,9 @@ pub struct PrepareArgs {
     pub lock_root: PathBuf,
     pub runs_root: PathBuf,
     pub native_cache_root: PathBuf,
+    // Exact existing iOS simulator UUID to borrow under the device lease instead of creating one.
+    pub device: Option<String>,
+    pub boot_device: bool,
 }
 
 fn platform_dir(platform: Platform) -> &'static str {
@@ -233,6 +236,7 @@ fn prepare_validated(
             "remove android_emulator from the scenario; prepare allocates through `android:` or `android_usb:`",
         ));
     }
+    let borrowed = borrowed_udid(&scenario, args)?;
     let scenario_sha256 = candidate::sha256_hex(raw.as_bytes());
     let scenario_dir = args
         .scenario_path
@@ -274,6 +278,15 @@ fn prepare_validated(
     }
 
     check_prereqs(runner, &scenario, args.android_home.as_deref())?;
+    // An observation only: custody comes from the lease, and the target is re-proven under it.
+    let selected = match borrowed.as_deref() {
+        Some(udid) => {
+            let sim = observe_borrowed_ios(runner, &scenario, udid)?;
+            require_borrowed_power(&sim, args.boot_device)?;
+            Some(sim)
+        }
+        None => None,
+    };
     if args.dry_run && scenario.platform == Platform::Ios && scenario.build.owner == BuildOwner::Cli
     {
         ios::require_build(
@@ -282,7 +295,12 @@ fn prepare_validated(
             scenario.build.ios_workspace.as_ref(),
         )?;
     }
-    if let Some(metro) = &scenario.metro {
+    // A borrowed run checks its Metro port under the lease, after a dead holder's own cleanup.
+    if let Some(metro) = scenario
+        .metro
+        .as_ref()
+        .filter(|_| selected.is_none() || args.dry_run)
+    {
         check_port_free(runner, metro.port)?;
     }
     if let Some(android) = &scenario.android {
@@ -308,6 +326,8 @@ fn prepare_validated(
             &run_id,
             started_ms,
             &args.native_cache_root,
+            selected.as_ref(),
+            args.boot_device,
         ));
     }
 
@@ -351,6 +371,55 @@ fn prepare_validated(
     })?;
 
     let self_pid = std::process::id() as i32;
+    let identity = capture_pid_identity(runner, self_pid);
+    if selected.is_some() && identity.is_none() {
+        // Like check's run-directory claim, an unrecorded claim is dropped on refusal.
+        let _ = std::fs::remove_dir_all(&run_dir);
+        return Err(Failure::new(
+            "lease",
+            FailureCode::OwnershipUnproven,
+            "this prepare process's birth identity could not be proven, so it cannot hold a device lease",
+            "ensure ps can read this process's start time, then re-run",
+        ));
+    }
+    let node = std::env::var_os("QAREN_NODE")
+        .filter(|v| !v.is_empty())
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from("node"));
+    let runtime_dir = crate::run::default_runtime_dir();
+    let mut resources = crate::runrecord::Resources::default();
+    let mut recovered = None;
+    if let Some(sim) = &selected {
+        let lease = match claim_borrowed_lease(
+            runner,
+            args,
+            &sim.udid,
+            &run_id,
+            identity.clone(),
+            (&node, &runtime_dir),
+            &mut recovered,
+        ) {
+            Ok(lease) => lease,
+            Err(f) => {
+                let _ = std::fs::remove_dir_all(&run_dir);
+                return Err(f);
+            }
+        };
+        if let Some(metro) = &scenario.metro {
+            if let Err(f) = check_port_free(runner, metro.port) {
+                let _ = std::fs::remove_dir_all(&run_dir);
+                return Err(crate::lease::release_or_annotate(&lease, f));
+            }
+        }
+        resources.lease = Some(lease);
+        resources.device_borrowed = true;
+        resources.ios_simulator = Some(IosSimResource {
+            udid: sim.udid.clone(),
+            name: sim.name.clone(),
+            device_type: sim.device_type.clone(),
+            runtime: sim.runtime.clone(),
+        });
+    }
     let record = RunRecord {
         schema: RUN_SCHEMA.to_string(),
         run_id: run_id.clone(),
@@ -361,15 +430,20 @@ fn prepare_validated(
         candidate: cand,
         phase: Phase::Created,
         substage: None,
-        prepare: capture_pid_identity(runner, self_pid),
+        prepare: identity,
         build: None,
         handoff: None,
-        resources: Default::default(),
+        resources,
         failure: None,
         history: Vec::new(),
         terminal: None,
     };
-    record.save(&args.runs_root)?;
+    if let Err(f) = record.save(&args.runs_root) {
+        return Err(match &record.resources.lease {
+            Some(lease) => crate::lease::release_or_annotate(lease, f),
+            None => f,
+        });
+    }
 
     let mut ctx = Ctx {
         runner,
@@ -383,6 +457,32 @@ fn prepare_validated(
         bundle_requests_at_launch: None,
     };
     let t = ctx.mark("validate", started_ms);
+    if let Some(earlier) = recovered {
+        ctx.notes.push(("recovered_run".to_string(), earlier));
+    }
+    let borrowed_admission = |ctx: &mut Ctx| {
+        crate::core::fresh_install_admission(
+            ctx.runner,
+            &node,
+            &runtime_dir,
+            &ctx.record.candidate.project_root.clone(),
+            &ctx.record
+                .resources
+                .ios_simulator
+                .clone()
+                .expect("borrowed")
+                .udid,
+            None,
+        )
+    };
+    if selected.is_some() {
+        // Recovery may have changed the target; the pre-lease observation is not authority.
+        if let Err(f) = reprove_borrowed_ios(&mut ctx, args.boot_device)
+            .and_then(|_| borrowed_admission(&mut ctx))
+        {
+            return Ok(ctx.fail(f));
+        }
+    }
 
     if let Err(f) = install_deps(&mut ctx) {
         return Ok(ctx.fail(f));
@@ -394,6 +494,18 @@ fn prepare_validated(
             scenario.build.ios_workspace.as_ref(),
         ) {
             return Ok(ctx.fail(f));
+        }
+    }
+    if selected.is_some() {
+        if let Err(f) = borrowed_admission(&mut ctx) {
+            return Ok(ctx.fail(f));
+        }
+        if args.boot_device {
+            if let Err(f) = reprove_borrowed_ios(&mut ctx, true)
+                .and_then(|needs_boot| boot_borrowed_ios(&mut ctx, needs_boot))
+            {
+                return Ok(ctx.fail(f));
+            }
         }
     }
     let t = ctx.mark("deps", t);
@@ -419,6 +531,7 @@ fn prepare_validated(
     }
 
     let allocate_result = match ctx.record.scenario.platform {
+        Platform::Ios if ctx.record.resources.device_borrowed => Ok(()),
         Platform::Ios => allocate_ios(&mut ctx),
         Platform::Android => {
             if ctx.record.scenario.android_usb.is_some() {
@@ -470,6 +583,9 @@ fn prepare_validated(
     }
     ctx.mark("cache_record", t);
 
+    if let Err(f) = reprove_borrowed_prepare(&mut ctx) {
+        return Ok(ctx.fail(f));
+    }
     ctx.record.phase = Phase::Ready;
     let at = timefmt::iso8601_utc(ctx.runner.now_epoch_ms());
     ctx.record.push_history(at, "ready");
@@ -816,6 +932,188 @@ fn allocate_ios(ctx: &mut Ctx) -> Result<(), Failure> {
         ));
     }
     Ok(())
+}
+
+fn borrowed_failure(detail: impl Into<String>) -> Failure {
+    Failure::new(
+        "device",
+        FailureCode::DeviceUnavailable,
+        detail.into(),
+        "check the exact --device UUID, its power state and the scenario's ios.device_type and ios.runtime, then re-run",
+    )
+}
+
+fn borrowed_udid(scenario: &Scenario, args: &PrepareArgs) -> Result<Option<String>, Failure> {
+    let Some(device) = args.device.as_deref() else {
+        return match args.boot_device {
+            true => Err(borrowed_failure(
+                "--boot-device requires --device with an exact iOS simulator UUID",
+            )),
+            false => Ok(None),
+        };
+    };
+    if scenario.platform != Platform::Ios {
+        return Err(Failure::new(
+            "validate",
+            FailureCode::PlatformUnsupported,
+            "--device selects only an existing iOS simulator for prepare",
+            "remove --device, or prepare an iOS scenario",
+        ));
+    }
+    // Cooperative handoff carries no device-lease custody to the session that builds.
+    if scenario.build.owner == BuildOwner::Qaren {
+        return Err(Failure::new(
+            "validate",
+            FailureCode::ScenarioInvalid,
+            "--device is not supported with build.owner: qaren",
+            "remove --device to prepare on a temporary simulator, or use build.owner: cli",
+        ));
+    }
+    ios::canonical_udid(device)
+        .map(Some)
+        .ok_or_else(|| borrowed_failure("--device must be an exact iOS simulator UUID"))
+}
+
+// Strict read-only proof of the exact simulator, matching the scenario's device type and runtime.
+fn observe_borrowed_ios(
+    runner: &mut dyn Runner,
+    scenario: &Scenario,
+    udid: &str,
+) -> Result<ios::Simulator, Failure> {
+    let output = runner.run(&ios::list_devices_spec());
+    if !output.ok() || !output.stderr.is_empty() || output.stdout.len() >= 1024 * 1024 {
+        return Err(borrowed_failure(format!(
+            "simctl list failed: {}",
+            output.summary()
+        )));
+    }
+    let spec = scenario.ios.as_ref().expect("validated ios scenario");
+    ios::parse_selected_sim(&output.stdout, udid)
+        .filter(|sim| sim.device_type == spec.device_type && sim.runtime == spec.runtime)
+        .ok_or_else(|| {
+            borrowed_failure("selected UUID is not one available iOS simulator with the scenario's device type and runtime")
+        })
+}
+
+// Returns whether the target needs booting; a Shutdown target without boot permission refuses.
+fn require_borrowed_power(sim: &ios::Simulator, boot_device: bool) -> Result<bool, Failure> {
+    match sim.state {
+        ios::SimState::Booted => Ok(false),
+        ios::SimState::Shutdown if boot_device => Ok(true),
+        ios::SimState::Shutdown => Err(Failure::new(
+            "device",
+            FailureCode::DeviceUnavailable,
+            "selected simulator is Shutdown and booting it was not authorized",
+            "boot it yourself or pass --boot-device, then re-run",
+        )),
+    }
+}
+
+fn claim_borrowed_lease(
+    runner: &mut dyn Runner,
+    args: &PrepareArgs,
+    udid: &str,
+    run_id: &str,
+    identity: Option<crate::runrecord::PidIdentity>,
+    runtime_context: (&Path, &Path),
+    recovered: &mut Option<String>,
+) -> Result<crate::lease::Lease, Failure> {
+    match crate::lease::try_acquire(
+        runner,
+        &args.lock_root,
+        Platform::Ios,
+        udid,
+        run_id,
+        identity.clone(),
+    ) {
+        Ok(lease) => Ok(lease),
+        Err(busy) if busy.failure.code == FailureCode::DeviceBusy => {
+            *recovered = Some(super::cleanup::reclaim_dead_holder_with_runtime(
+                runner,
+                &args.runs_root,
+                &busy,
+                Some(runtime_context),
+            )?);
+            crate::lease::acquire(
+                runner,
+                &args.lock_root,
+                Platform::Ios,
+                udid,
+                run_id,
+                identity,
+            )
+        }
+        Err(busy) => Err(busy.failure),
+    }
+}
+
+// Before each device effect: the lease is still this run's and the recorded target is unchanged.
+fn reprove_borrowed_ios(ctx: &mut Ctx, boot_device: bool) -> Result<bool, Failure> {
+    ensure_running(ctx.runner, "device")?;
+    if !ctx.record.holds_device_lease() {
+        return Err(borrowed_failure(
+            "the device lease is no longer held by this run",
+        ));
+    }
+    let recorded = ctx
+        .record
+        .resources
+        .ios_simulator
+        .clone()
+        .expect("borrowed simulator recorded");
+    let sim = observe_borrowed_ios(ctx.runner, &ctx.record.scenario, &recorded.udid)?;
+    ensure_running(ctx.runner, "device")?;
+    require_borrowed_power(&sim, boot_device)
+}
+
+// A long build is no continuing authority: never install, launch or report Ready on a borrowed target that changed.
+fn reprove_borrowed_prepare(ctx: &mut Ctx) -> Result<(), Failure> {
+    if ctx.verb == "prepare" && ctx.record.resources.device_borrowed {
+        reprove_borrowed_ios(ctx, false)?;
+    }
+    Ok(())
+}
+
+// Boots (only when asked) and re-proves the recorded borrowed simulator Booted with unchanged identity.
+pub(crate) fn boot_borrowed_ios(ctx: &mut Ctx, needs_boot: bool) -> Result<(), Failure> {
+    let failed = |detail| {
+        Failure::new(
+            "boot_device",
+            FailureCode::SimulatorBootFailed,
+            detail,
+            "check the selected simulator's health and inventory, then re-run",
+        )
+    };
+    let Some(sim) = ctx.record.resources.ios_simulator.clone() else {
+        return Err(failed(
+            "selected simulator lacks recorded runtime and device type",
+        ));
+    };
+    if needs_boot {
+        let output = ctx.runner.run(&ios::bootstatus_spec(
+            &sim.udid,
+            ctx.record.scenario.deadlines.device_boot_seconds,
+        ));
+        ensure_running(ctx.runner, "boot_device")?;
+        if !output.ok() {
+            return Err(failed(
+                "bootstatus did not complete successfully for the selected simulator",
+            ));
+        }
+    }
+    let output = ctx.runner.run(&ios::list_devices_spec());
+    ensure_running(ctx.runner, "boot_device")?;
+    if output.ok() && output.stderr.is_empty() && output.stdout.len() < 1024 * 1024 {
+        if let Some(observed) = ios::parse_selected_sim(&output.stdout, &sim.udid) {
+            if observed.state == ios::SimState::Booted
+                && observed.device_type == sim.device_type
+                && observed.runtime == sim.runtime
+            {
+                return Ok(());
+            }
+        }
+    }
+    Err(failed("inventory did not prove the exact selected simulator Booted with unchanged runtime and device type"))
 }
 
 fn allocate_android(ctx: &mut Ctx, android_home: Option<&str>) -> Result<(), Failure> {
@@ -1791,6 +2089,7 @@ pub(crate) fn run_reuse_path(ctx: &mut Ctx, plan: &BuildPlan, t: u64) -> Result<
     }
     let launch = match ctx.record.scenario.platform {
         Platform::Ios => {
+            reprove_borrowed_prepare(ctx)?;
             let sim = ctx
                 .record
                 .resources
@@ -1897,7 +2196,11 @@ fn install_cached_ios_app(
     spec.timeout_seconds = deadline.saturating_sub(ctx.runner.monotonic_ms()) / 1000;
     let mut attempts = 0;
     let mut last = None;
-    while let Some(installed) = run_budgeted_attempt(ctx, &spec, deadline, &mut attempts)? {
+    loop {
+        reprove_borrowed_prepare(ctx)?;
+        let Some(installed) = run_budgeted_attempt(ctx, &spec, deadline, &mut attempts)? else {
+            break;
+        };
         if !installed.timed_out {
             if installed.ok() {
                 return Ok(());
@@ -2838,6 +3141,8 @@ fn dry_run_receipt(
     run_id: &str,
     started_ms: u64,
     native_cache_root: &Path,
+    borrowed: Option<&ios::Simulator>,
+    boot_device: bool,
 ) -> Receipt {
     let now = runner.now_epoch_ms();
     let mut receipt = Receipt::new(
@@ -2961,16 +3266,30 @@ fn dry_run_receipt(
     match scenario.platform {
         Platform::Ios => {
             let ios_spec = scenario.ios.as_ref().expect("validated");
-            let name = ios::sim_name(run_id);
-            planned.push(ios::create_spec(
-                &name,
-                &ios_spec.device_type,
-                &ios_spec.runtime,
-            ));
-            planned.push(ios::bootstatus_spec(
-                "<udid>",
-                deadlines.device_boot_seconds,
-            ));
+            let udid = borrowed.map_or("<udid>", |sim| sim.udid.as_str());
+            match borrowed {
+                None => {
+                    planned.push(ios::create_spec(
+                        &ios::sim_name(run_id),
+                        &ios_spec.device_type,
+                        &ios_spec.runtime,
+                    ));
+                    planned.push(ios::bootstatus_spec(udid, deadlines.device_boot_seconds));
+                }
+                Some(sim) if boot_device && sim.state == ios::SimState::Shutdown => {
+                    planned.push(ios::bootstatus_spec(udid, deadlines.device_boot_seconds));
+                }
+                Some(_) => {}
+            }
+            if let Some(sim) = borrowed {
+                receipt.device = Some(crate::receipt::DeviceIdentity {
+                    ios_udid: Some(sim.udid.clone()),
+                    ios_name: Some(sim.name.clone()),
+                    ios_device_type: Some(sim.device_type.clone()),
+                    ios_runtime: Some(sim.runtime.clone()),
+                    ..Default::default()
+                });
+            }
             planned.push(metro::start_spec(&cand.project_root, port));
             planned.push(ios::build_spec(
                 &cand.project_root,
@@ -2979,15 +3298,15 @@ fn dry_run_receipt(
                 scenario.build.ios_workspace.as_ref(),
             ));
             planned.push(ios::install_app_spec(
-                "<udid>",
+                udid,
                 Path::new("<run_dir>/ios-build/<verified-app>.app"),
             ));
             planned.push(metro::request_probe_spec(port));
             planned.push(metro::manifest_spec(port, "ios"));
-            planned.extend(ios::devmenu_defaults_specs("<udid>", &cand.app_id));
-            planned.push(ios::launch_spec("<udid>", &cand.app_id, port));
-            planned.push(ios::app_container_spec("<udid>", &cand.app_id));
-            planned.push(ios::launchctl_list_spec("<udid>"));
+            planned.extend(ios::devmenu_defaults_specs(udid, &cand.app_id));
+            planned.push(ios::launch_spec(udid, &cand.app_id, port));
+            planned.push(ios::app_container_spec(udid, &cand.app_id));
+            planned.push(ios::launchctl_list_spec(udid));
         }
         Platform::Android if scenario.android_usb.is_some() => {
             let usb = scenario.android_usb.as_ref().expect("checked");
@@ -3118,14 +3437,15 @@ fn dry_run_receipt(
         });
         match scenario.platform {
             Platform::Ios => {
+                let udid = borrowed.map_or("<udid>", |sim| sim.udid.as_str());
                 planned.push(metro::start_spec(&cand.project_root, port));
-                planned.push(ios::install_app_spec("<udid>", &artifact_path));
+                planned.push(ios::install_app_spec(udid, &artifact_path));
                 planned.push(metro::request_probe_spec(port));
                 planned.push(metro::manifest_spec(port, "ios"));
-                planned.extend(ios::devmenu_defaults_specs("<udid>", &cand.app_id));
-                planned.push(ios::launch_spec("<udid>", &cand.app_id, port));
-                planned.push(ios::app_container_spec("<udid>", &cand.app_id));
-                planned.push(ios::launchctl_list_spec("<udid>"));
+                planned.extend(ios::devmenu_defaults_specs(udid, &cand.app_id));
+                planned.push(ios::launch_spec(udid, &cand.app_id, port));
+                planned.push(ios::app_container_spec(udid, &cand.app_id));
+                planned.push(ios::launchctl_list_spec(udid));
             }
             Platform::Android => {
                 let adb = Path::new("<android_home>/platform-tools/adb");

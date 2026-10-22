@@ -1539,31 +1539,7 @@ fn boot_selected_device(
             }
         }
     }
-    if needs_boot {
-        let output = ctx.runner.run(&ios::bootstatus_spec(
-            &device.id,
-            ctx.record.scenario.deadlines.device_boot_seconds,
-        ));
-        ensure_running(ctx.runner, "boot_device")?;
-        if !output.ok() {
-            return Err(failed(
-                "bootstatus did not complete successfully for the selected simulator",
-            ));
-        }
-    }
-    let output = ctx.runner.run(&ios::list_devices_spec());
-    ensure_running(ctx.runner, "boot_device")?;
-    if output.ok() && output.stderr.is_empty() && output.stdout.len() < 1024 * 1024 {
-        if let Some(sim) = ios::parse_selected_sim(&output.stdout, &device.id) {
-            if sim.state == ios::SimState::Booted
-                && sim.device_type == *device_type
-                && sim.runtime == *runtime
-            {
-                return Ok(());
-            }
-        }
-    }
-    Err(failed("inventory did not prove the exact selected simulator Booted with unchanged runtime and device type"))
+    prepare::boot_borrowed_ios(ctx, needs_boot)
 }
 
 // A driver is recorded only as the leader of its own group, running the runner test for this simulator.

@@ -372,6 +372,8 @@ pub struct IosBuildRunner {
     pub symlink_build_root: Option<&'static str>,
     // Answers the next app-container probe with the last installed bundle path.
     pub container_is_installed_app: bool,
+    // Called before each run command, e.g. to inspect the durable record at the moment of an effect.
+    pub observe: Option<Box<dyn FnMut(&qaren::exec::CmdSpec) + Send>>,
 }
 
 #[derive(Clone)]
@@ -446,7 +448,7 @@ impl std::io::Write for BuildStart {
                 .run_id,
             record.run_id
         );
-        if record.scenario.name == "check" {
+        if record.scenario.name == "check" || record.resources.device_borrowed {
             let lease = record
                 .resources
                 .lease
@@ -517,6 +519,9 @@ impl qaren::exec::Runner for IosBuildRunner {
         self.inner.adb_server_version(port)
     }
     fn execute(&mut self, spec: &qaren::exec::CmdSpec, interruptible: bool) -> CmdOutput {
+        if let Some(observe) = self.observe.as_mut() {
+            observe(spec);
+        }
         if self
             .timeouts
             .front()

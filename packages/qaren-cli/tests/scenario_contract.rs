@@ -369,6 +369,8 @@ fn prepare_refuses_a_borrowed_emulator_scenario_before_any_command() {
             lock_root: dir.join(".locks"),
             native_cache_root: dir.join(".native-store"),
             runs_root: dir.clone(),
+            device: None,
+            boot_device: false,
         },
     );
     let failure = receipt.failure.unwrap();

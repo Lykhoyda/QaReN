@@ -40,6 +40,8 @@ fn prepare_args(scenario_path: &Path, android_home: Option<String>) -> PrepareAr
         lock_root: scenario_path.parent().unwrap().join(".locks"),
         native_cache_root: scenario_path.parent().unwrap().join(".native-store"),
         runs_root: scenario_path.parent().unwrap().to_path_buf(),
+        device: None,
+        boot_device: false,
     }
 }
 
@@ -1403,6 +1405,8 @@ fn handoff_dry_run_plans_allocation_only() {
         lock_root: repo.join(".locks"),
         native_cache_root: repo.join(".native-store"),
         runs_root: repo.to_path_buf(),
+        device: None,
+        boot_device: false,
     };
     let receipt = prepare(&mut mock, &args);
     assert_eq!(receipt.result, ReceiptResult::Planned);
