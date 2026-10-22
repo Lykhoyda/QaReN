@@ -2672,7 +2672,9 @@ cached (the 2026-08-17 clean run spent 5m 42s building vs 5m 25s
 allocating) and a persistent simulator weakens the "no resource outlives
 its run" cleanup story. Once compile is short the balance flips — the
 incremental run spent 1m 31s in allocate against 1m 03s in
-build_and_ready — so revisit this once live reuse is measurable.
+build_and_ready — so revisit this once live reuse is measurable. A
+caller-maintained simulator can already be borrowed instead; see
+[Existing iOS simulator](#existing-ios-simulator).
 
 ## Preparation ownership and safety rules
 
