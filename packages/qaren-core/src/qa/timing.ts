@@ -125,6 +125,9 @@ export const RUNNER_MARKERS = {
   markerWaitResult: 'RN_FAST_RUNNER_WAIT_RESULT',
   markerListenerFailed: 'RN_FAST_RUNNER_LISTENER_FAILED',
   markerSendFailed: 'RN_FAST_RUNNER_SEND_FAILED',
+  markerIssueContained: 'RN_FAST_RUNNER_ISSUE_CONTAINED',
+  markerTestIssue: ': error: -[RnFastRunnerUITests.RnFastRunnerTests testCommand]',
+  markerTestFailed: "-[RnFastRunnerUITests.RnFastRunnerTests testCommand]' failed",
 } as const;
 export type RunnerMarkerCounts = Record<keyof typeof RUNNER_MARKERS, number>;
 const POST_MORTEM_WORDS = {
@@ -184,6 +187,9 @@ export interface TimingEvent {
   markerWaitResult?: number;
   markerListenerFailed?: number;
   markerSendFailed?: number;
+  markerIssueContained?: number;
+  markerTestIssue?: number;
+  markerTestFailed?: number;
 }
 export type TimingObserver = (event: TimingEvent) => void;
 export interface TimingContext {

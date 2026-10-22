@@ -111,6 +111,9 @@ const postMortem = {
   markerWaitResult: 0,
   markerListenerFailed: 0,
   markerSendFailed: 1,
+  markerIssueContained: 2,
+  markerTestIssue: 1,
+  markerTestFailed: 1,
 } as const;
 
 test('a runner post-mortem keeps only fixed words and counts on its own stage', () => {

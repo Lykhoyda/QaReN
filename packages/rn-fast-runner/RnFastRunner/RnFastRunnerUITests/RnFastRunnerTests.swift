@@ -77,6 +77,8 @@ class RnFastRunnerTests: XCTestCase {
   // The live element the latest target check resolved with the retained frame.
   var lastLiveTarget: XCUIElement?
   var appAlertInterruptions = 0
+  var servingCommands = false
+  var containedIssues = 0
   var lastExactTypeTarget: RecordedExactTypeTarget?
   var needsFirstInteractionDelay = false
   let interactiveTypes: Set<XCUIElement.ElementType> = [
@@ -141,6 +143,13 @@ class RnFastRunnerTests: XCTestCase {
       self.appAlertInterruptions += 1
       return true
     }
+  }
+
+  // XCTest interrupts the test after a UI automation issue even with continueAfterFailure, ending the listener.
+  override func record(_ issue: XCTIssue) {
+    guard servingCommands else { return super.record(issue) }
+    containedIssues += 1
+    NSLog("RN_FAST_RUNNER_ISSUE_CONTAINED=%ld", issue.type.rawValue)
   }
 
   func isTargetAppAlert(_ element: XCUIElement) -> Bool {
@@ -213,7 +222,9 @@ class RnFastRunnerTests: XCTestCase {
       return
     }
     NSLog("RN_FAST_RUNNER_WAITING")
+    servingCommands = true
     let result = XCTWaiter.wait(for: [expectation], timeout: 24 * 60 * 60)
+    servingCommands = false
     NSLog("RN_FAST_RUNNER_WAIT_RESULT=%@", String(describing: result))
     if let failure = runnerListenerWaitFailure(
       listenerError: currentListenerStartupFailure(),

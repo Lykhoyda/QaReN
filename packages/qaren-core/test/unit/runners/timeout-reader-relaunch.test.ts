@@ -858,6 +858,9 @@ test('a vanished reader leaves a post-mortem of host state and marker counts, ne
     markerWaitResult: 0,
     markerListenerFailed: 0,
     markerSendFailed: 2,
+    markerIssueContained: 1,
+    markerTestIssue: 1,
+    markerTestFailed: 1,
   };
   await withInputs(new RunInputs({ OTP: secret }, ['OTP'], undefined, ['OTP']), async () => {
     await ensureFastRunner('fixture-ios', 'dev.fixture');
@@ -865,7 +868,11 @@ test('a vanished reader leaves a post-mortem of host state and marker counts, ne
     child.stderr.write(
       `x RN_FAST_RUNNER_WAITING\nRN_FAST_RUNNER_SEND_FAILED=${secret}\nRN_FAST_RU`,
     );
-    child.stderr.write(`NNER_SEND_FAILED=${secret}\n`);
+    child.stderr.write(`NNER_SEND_FAILED=${secret}\nx RN_FAST_RUNNER_ISSUE_CONTAINED=0\n`);
+    child.stdout.write(
+      `/x/RnFastRunnerTests+Interaction.swift:320: error: -[RnFastRunnerUITests.RnFastRunnerTests testCommand] : Failed to get matching snapshot: ${secret}\n` +
+        `Test Case '-[RnFastRunnerUITests.RnFastRunnerTests testCommand]' failed (73.554 seconds).\n`,
+    );
     await nextTurn();
     healthReplies = ['refused'];
     await assert.rejects(
