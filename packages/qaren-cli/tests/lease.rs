@@ -165,3 +165,140 @@ fn a_rollback_release_that_fails_names_the_lock_in_the_failure() {
     );
     assert_eq!(clean.detail, "x", "an absent lock adds nothing");
 }
+
+#[test]
+fn dead_holder_reclaim_completes_pending_borrowed_ios_stop_before_releasing_lease() {
+    use qaren::commands::cleanup::reclaim_dead_holder_with_runtime;
+    use qaren::runrecord::{BorrowedIosStop, IosSimResource, Phase, RunRecord};
+    let repo = common::temp_repo();
+    let lock_root = repo.join("locks");
+    let runs_root = repo.join("runs");
+    let owner = common::identity(4242, "Wed Aug 12 15:00:00 2026");
+    let lease = acquire(
+        &mut MockRunner::new(),
+        &lock_root,
+        Platform::Ios,
+        UDID,
+        "check-1",
+        Some(owner.clone()),
+    )
+    .unwrap();
+    let runtime = "com.apple.CoreSimulator.SimRuntime.iOS-26-5";
+    let device_type = "com.apple.CoreSimulator.SimDeviceType.iPhone-17";
+    let mut record = common::base_record(
+        &repo,
+        &common::ios_scenario_yaml(8791),
+        "check-1",
+        Phase::Ready,
+    );
+    record.prepare = Some(owner);
+    record.scenario.ios = Some(qaren::scenario::IosSpec {
+        device_type: device_type.into(),
+        runtime: runtime.into(),
+    });
+    record.resources.device_borrowed = true;
+    record.resources.ios_simulator = Some(IosSimResource {
+        udid: UDID.into(),
+        name: "selected".into(),
+        device_type: device_type.into(),
+        runtime: runtime.into(),
+    });
+    record.resources.lease = Some(lease.clone());
+    record.resources.arm_borrowed_ios_stop().unwrap();
+    record.save(&runs_root).unwrap();
+
+    let node = std::path::Path::new("/usr/local/bin/node");
+    let runtime_dir = std::path::Path::new("/runtime");
+    let inventory = |state: &str| {
+        serde_json::json!({
+            "devices": {
+                runtime: [{
+                    "udid": UDID,
+                    "name": "selected",
+                    "state": state,
+                    "isAvailable": true,
+                    "deviceTypeIdentifier": device_type
+                }]
+            }
+        })
+        .to_string()
+    };
+
+    // Unresolved strict admission retains the lease and pending stop.
+    let mut busy_runner = MockRunner::new();
+    busy_runner.expect_run("ps -p 4242 -o lstart=", CmdOutput::failed(1, ""));
+    let busy = qaren::lease::try_acquire(
+        &mut busy_runner,
+        &lock_root,
+        Platform::Ios,
+        UDID,
+        "check-2",
+        None,
+    )
+    .unwrap_err();
+    busy_runner.expect_run("ps -p 4242 -o lstart=", CmdOutput::failed(1, ""));
+    busy_runner.expect_run(
+        &format!("fresh-install-preflight.js --platform ios --device {UDID}"),
+        CmdOutput {
+            exit_code: Some(4),
+            stdout: serde_json::json!({
+                "v": 1, "platform": "ios", "deviceId": UDID, "status": "busy"
+            })
+            .to_string(),
+            ..Default::default()
+        },
+    );
+    assert!(reclaim_dead_holder_with_runtime(
+        &mut busy_runner,
+        &runs_root,
+        &busy,
+        Some((node, runtime_dir)),
+    )
+    .is_err());
+    assert!(lease.lock_dir.exists());
+    assert_eq!(
+        RunRecord::load(&runs_root, "check-1")
+            .unwrap()
+            .resources
+            .borrowed_ios_stop(),
+        BorrowedIosStop::Pending
+    );
+    assert_eq!(busy_runner.remaining(), 0);
+
+    // Clear admission and verified shutdown complete the stop and release the lease.
+    let mut ok = MockRunner::new();
+    ok.expect_run("ps -p 4242 -o lstart=", CmdOutput::failed(1, ""));
+    let busy = qaren::lease::try_acquire(&mut ok, &lock_root, Platform::Ios, UDID, "check-2", None)
+        .unwrap_err();
+    ok.expect_run("ps -p 4242 -o lstart=", CmdOutput::failed(1, ""));
+    ok.expect_run(
+        &format!("fresh-install-preflight.js --platform ios --device {UDID}"),
+        CmdOutput::success(
+            &serde_json::json!({
+                "v": 1, "platform": "ios", "deviceId": UDID, "status": "clear"
+            })
+            .to_string(),
+        ),
+    );
+    ok.expect_run(
+        "simctl list devices -j",
+        CmdOutput::success(&inventory("Booted")),
+    );
+    ok.expect_run(&format!("simctl shutdown {UDID}"), CmdOutput::success(""));
+    ok.expect_run(
+        "simctl list devices -j",
+        CmdOutput::success(&inventory("Shutdown")),
+    );
+    let recovered =
+        reclaim_dead_holder_with_runtime(&mut ok, &runs_root, &busy, Some((node, runtime_dir)))
+            .unwrap();
+    assert_eq!(recovered, "check-1");
+    assert!(!lease.lock_dir.exists());
+    let stored = RunRecord::load(&runs_root, "check-1").unwrap();
+    assert_eq!(
+        stored.resources.borrowed_ios_stop(),
+        BorrowedIosStop::Completed
+    );
+    assert!(stored.resources.lease.is_none());
+    assert_eq!(ok.remaining(), 0);
+}

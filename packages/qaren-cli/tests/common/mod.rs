@@ -11,10 +11,16 @@ static COUNTER: AtomicU32 = AtomicU32::new(0);
 
 pub fn temp_repo() -> PathBuf {
     use std::os::unix::fs::PermissionsExt;
+    // A recycled PID must not reopen a leftover tree that already contains runs.
+    let nonce = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_nanos();
     let dir = std::env::temp_dir().join(format!(
-        "qaren-test-{}-{}",
+        "qaren-test-{}-{}-{}",
         std::process::id(),
-        COUNTER.fetch_add(1, Ordering::SeqCst)
+        COUNTER.fetch_add(1, Ordering::SeqCst),
+        nonce
     ));
     std::fs::create_dir_all(dir.join("test-app")).unwrap();
     std::fs::write(dir.join("test-app").join("package.json"), "{}").unwrap();

@@ -519,6 +519,60 @@ pub fn shutdown_spec(udid: &str) -> CmdSpec {
     )
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SelectedSimShutdown {
+    AlreadyShutdown,
+    ShutDown,
+    InventoryInvalid,
+    ShutdownFailed,
+    ReadbackInvalid,
+}
+
+pub fn shutdown_selected_sim(
+    runner: &mut dyn Runner,
+    udid: &str,
+    device_type: &str,
+    runtime: &str,
+) -> SelectedSimShutdown {
+    if canonical_udid(udid).as_deref() != Some(udid)
+        || device_type.trim().is_empty()
+        || runtime
+            .strip_prefix("com.apple.CoreSimulator.SimRuntime.iOS-")
+            .is_none_or(str::is_empty)
+    {
+        return SelectedSimShutdown::InventoryInvalid;
+    }
+    let before = runner.run(&list_devices_spec());
+    if !before.ok() || !before.stderr.is_empty() || before.stdout.len() >= 1024 * 1024 {
+        return SelectedSimShutdown::InventoryInvalid;
+    }
+    let Some(sim) = parse_selected_sim(&before.stdout, udid)
+        .filter(|sim| sim.device_type == device_type && sim.runtime == runtime)
+    else {
+        return SelectedSimShutdown::InventoryInvalid;
+    };
+    if sim.state == SimState::Shutdown {
+        return SelectedSimShutdown::AlreadyShutdown;
+    }
+    if !runner.run(&shutdown_spec(udid)).ok() {
+        return SelectedSimShutdown::ShutdownFailed;
+    }
+    let after = runner.run(&list_devices_spec());
+    if !after.ok() || !after.stderr.is_empty() || after.stdout.len() >= 1024 * 1024 {
+        return SelectedSimShutdown::ReadbackInvalid;
+    }
+    match parse_selected_sim(&after.stdout, udid) {
+        Some(sim)
+            if sim.state == SimState::Shutdown
+                && sim.device_type == device_type
+                && sim.runtime == runtime =>
+        {
+            SelectedSimShutdown::ShutDown
+        }
+        _ => SelectedSimShutdown::ReadbackInvalid,
+    }
+}
+
 pub fn delete_spec(udid: &str) -> CmdSpec {
     CmdSpec::new("simctl-delete", "xcrun", &["simctl", "delete", udid], 120)
 }

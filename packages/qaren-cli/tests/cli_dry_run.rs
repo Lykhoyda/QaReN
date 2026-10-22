@@ -205,8 +205,138 @@ fn boot_device_usage_requires_check_ios_and_an_exact_device_uuid() {
         .unwrap();
     assert!(output.status.success());
     let help = String::from_utf8_lossy(&output.stderr);
-    assert!(help.contains("[--boot-device]"));
+    assert!(help.contains("[--boot-device | --restart-device]"));
+    assert!(help.contains("[--shutdown-device-on-exit]"));
     assert!(help.contains("exact iOS simulator UUID"));
+}
+
+#[test]
+fn restart_device_and_shutdown_device_on_exit_require_check_or_pr_ios_exact_uuid_and_reject_redundant_boot(
+) {
+    let udid = "1DC408C4-51DA-4C4F-ACA1-39881C916FDD";
+    for flag in ["--restart-device", "--shutdown-device-on-exit"] {
+        for args in [
+            vec!["prepare", "missing", flag],
+            vec!["prewarm", "missing", flag],
+            vec!["status", "missing", flag],
+            vec!["cleanup", "missing", flag],
+            vec!["complete", "missing", "log", flag],
+            vec!["publish", "missing", flag],
+            vec!["check", "--plan-file", "missing", flag],
+            vec![
+                "check",
+                "--plan-file",
+                "missing",
+                flag,
+                "--device",
+                "booted",
+            ],
+            vec![
+                "check",
+                "--plan-file",
+                "missing",
+                flag,
+                "--device",
+                "qa-company-app",
+            ],
+            vec![
+                "check",
+                "--plan-file",
+                "missing",
+                flag,
+                "--device",
+                udid,
+                "--platform",
+                "android",
+            ],
+            vec!["pr", "12", flag],
+            vec!["pr", "12", flag, "--device", "booted"],
+            vec!["pr", "12", flag, "--device", udid, "--platform", "android"],
+        ] {
+            let output = Command::new(env!("CARGO_BIN_EXE_qaren"))
+                .args(&args)
+                .output()
+                .unwrap();
+            assert_eq!(output.status.code(), Some(2), "{args:?}");
+            assert!(output.stdout.is_empty());
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            assert!(stderr.contains(flag), "{args:?}: {stderr}");
+            assert!(!stderr.contains("unknown flag"), "{stderr}");
+        }
+    }
+    for args in [
+        vec![
+            "check",
+            "--plan-file",
+            "missing",
+            "--boot-device",
+            "--restart-device",
+            "--device",
+            udid,
+        ],
+        vec![
+            "pr",
+            "12",
+            "--boot-device",
+            "--restart-device",
+            "--device",
+            udid,
+        ],
+    ] {
+        let output = Command::new(env!("CARGO_BIN_EXE_qaren"))
+            .args(&args)
+            .output()
+            .unwrap();
+        assert_eq!(output.status.code(), Some(2), "{args:?}");
+        assert!(output.stdout.is_empty());
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(stderr.contains("redundant"), "{stderr}");
+    }
+    for candidate_udid in [udid, "1dc408c4-51da-4c4f-aca1-39881c916fdd"] {
+        for extra in [
+            vec!["--restart-device"],
+            vec!["--shutdown-device-on-exit"],
+            vec!["--boot-device", "--shutdown-device-on-exit"],
+            vec!["--restart-device", "--shutdown-device-on-exit"],
+        ] {
+            let mut check_args = vec![
+                "check",
+                "--plan-file",
+                "missing",
+                "--device",
+                candidate_udid,
+                "--config",
+                "/nonexistent/qaren-config",
+            ];
+            check_args.extend_from_slice(&extra);
+            let output = Command::new(env!("CARGO_BIN_EXE_qaren"))
+                .args(&check_args)
+                .output()
+                .unwrap();
+            assert_eq!(output.status.code(), Some(1), "{check_args:?}");
+            let receipt: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+            assert_eq!(receipt["commands_executed"], 0);
+
+            let mut pr_args = vec![
+                "pr",
+                "12",
+                "--plan-file",
+                "missing",
+                "--device",
+                candidate_udid,
+                "--config",
+                "/nonexistent/qaren-config",
+            ];
+            pr_args.extend_from_slice(&extra);
+            let output = Command::new(env!("CARGO_BIN_EXE_qaren"))
+                .args(&pr_args)
+                .output()
+                .unwrap();
+            assert_eq!(output.status.code(), Some(1), "{pr_args:?}");
+            let receipt: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+            assert_eq!(receipt["commands_executed"], 0);
+        }
+    }
 }
 
 #[test]

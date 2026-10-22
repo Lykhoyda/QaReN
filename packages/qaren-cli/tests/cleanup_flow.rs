@@ -773,16 +773,16 @@ fn a_live_walking_owner_refuses_the_whole_cleanup_without_commands_or_save() {
 }
 
 #[test]
-fn an_unknown_owner_refuses_only_the_core_and_other_legs_still_run() {
-    assert_core_only_refusal_with_metro(true);
+fn an_unknown_borrowed_ios_owner_refuses_all_cleanup() {
+    assert_borrowed_ios_owner_refusal_with_metro(true);
 }
 
 #[test]
-fn a_record_without_owner_identity_keeps_core_only_refusal() {
-    assert_core_only_refusal_with_metro(false);
+fn a_borrowed_ios_record_without_owner_identity_refuses_all_cleanup() {
+    assert_borrowed_ios_owner_refusal_with_metro(false);
 }
 
-fn assert_core_only_refusal_with_metro(with_owner: bool) {
+fn assert_borrowed_ios_owner_refusal_with_metro(with_owner: bool) {
     let repo = common::temp_repo();
     let mut record = core_record(&repo);
     record.resources.metro = ios_ready_record(&repo).resources.metro;
@@ -806,47 +806,17 @@ fn assert_core_only_refusal_with_metro(with_owner: bool) {
     if with_owner {
         mock.expect_run("ps -p 999 -o lstart=", CmdOutput::failed(1, "ps denied"));
     }
-    mock.expect_run("ps -p 5000 -o lstart=", CmdOutput::success(LSTART));
-    mock.expect_run("ps -p 5000 -o stat=", CmdOutput::success("S"));
-    mock.expect_run("lsof", free_port());
-    mock.expect_run("lstart=", CmdOutput::success(LSTART));
-    mock.expect_run("stat=", CmdOutput::success("S"));
-    mock.expect_run("/bin/kill -TERM -- -5000", CmdOutput::success(""));
-    mock.expect_run("lstart=", CmdOutput::success(LSTART));
-    mock.expect_run("stat=", CmdOutput::success("S"));
-    mock.expect_run("/bin/kill -KILL -- -5000", CmdOutput::success(""));
-    mock.expect_run("ps -p 5000 -o lstart=", CmdOutput::success(""));
-    mock.expect_run("lsof", free_port());
-    mock.expect_run("ps -A", CmdOutput::success("1 1 S\n"));
-
     let receipt = cleanup(&mut mock, &repo, "core-run");
 
     assert_eq!(receipt.result, ReceiptResult::Refused);
-    assert_eq!(
-        receipt.cleanup["core"],
-        "refused: the run's qaren process is alive or unproven gone"
-    );
-    assert_eq!(receipt.cleanup["metro"], "removed");
-    assert!(receipt.cleanup["runner_host"].starts_with("refused: core quiescence"));
-    assert!(!mock
-        .calls
-        .iter()
-        .any(|spec| spec.rendered().contains("simctl terminate")));
-    assert!(receipt.cleanup["device_lease"].starts_with("unresolved: retained"));
-    assert_eq!(mock.calls.len(), if with_owner { 13 } else { 12 });
-    assert_eq!(
-        mock.calls
-            .iter()
-            .filter(|spec| spec.rendered() == "ps -p 999 -o lstart=")
-            .count(),
-        usize::from(with_owner)
-    );
+    assert!(receipt.cleanup["simulator"].starts_with("refused:"));
+    assert_eq!(mock.calls.len(), usize::from(with_owner));
     assert_eq!(mock.remaining(), 0);
     let stored = RunRecord::load(&repo, "core-run").unwrap();
     assert_eq!(stored.resources.core.unwrap().pgid, 9000);
     assert!(stored.resources.core_cleanup.is_none());
-    assert_eq!(stored.history.len(), record.history.len() + 1);
-    assert_ne!(
+    assert_eq!(stored.history.len(), record.history.len());
+    assert_eq!(
         std::fs::read(RunRecord::run_dir(&repo, "core-run").join("run.json")).unwrap(),
         before
     );
@@ -1920,6 +1890,7 @@ fn cleanup_retains_the_device_lease_until_the_metro_group_is_proven_gone() {
 
     // Metro group: alive, TERM, KILL, and the leader survives both -> unresolved.
     let mut mock = MockRunner::new();
+    owner_gone(&mut mock);
     mock.expect_run("ps", CmdOutput::success(&format!("{LSTART}\n")));
     mock.expect_run("ps", CmdOutput::success("S\n"));
     mock.expect_run("lsof", CmdOutput::success("6001\n"));
@@ -1950,6 +1921,7 @@ fn cleanup_retains_the_device_lease_until_the_metro_group_is_proven_gone() {
 
     // Metro leader dead and the port free -> the lease is released.
     let mut mock2 = MockRunner::new();
+    owner_gone(&mut mock2);
     mock2.expect_run("ps", CmdOutput::failed(1, ""));
     mock2.expect_run(
         "lsof",
@@ -2912,5 +2884,615 @@ fn android_recorder_cleanup_recovers_after_device_rm_before_retirement_is_saved(
             std::fs::read(runner.record_path.parent().unwrap().join("media/raw.mp4")).unwrap(),
             b"complete recording"
         );
+    }
+}
+
+const BORROWED_IOS_UDID: &str = "1DC408C4-51DA-4C4F-ACA1-39881C916FDD";
+const BORROWED_IOS_OTHER_UDID: &str = "76709EFC-0104-4A66-8908-F4F85A76F025";
+const BORROWED_IOS_RUNTIME: &str = "com.apple.CoreSimulator.SimRuntime.iOS-26-5";
+const BORROWED_IOS_TYPE: &str = "com.apple.CoreSimulator.SimDeviceType.iPhone-17";
+
+fn borrowed_ios_inventory(state: &str) -> String {
+    serde_json::json!({
+        "devices": {
+            BORROWED_IOS_RUNTIME: [
+                {
+                    "udid": BORROWED_IOS_UDID,
+                    "name": "qa-company-app",
+                    "state": state,
+                    "isAvailable": true,
+                    "deviceTypeIdentifier": BORROWED_IOS_TYPE
+                },
+                {
+                    "udid": BORROWED_IOS_OTHER_UDID,
+                    "name": "other",
+                    "state": "Booted",
+                    "isAvailable": true,
+                    "deviceTypeIdentifier": BORROWED_IOS_TYPE
+                }
+            ]
+        }
+    })
+    .to_string()
+}
+
+fn borrowed_ios_record(repo: &std::path::Path) -> RunRecord {
+    let mut record = common::base_record(
+        repo,
+        &common::ios_scenario_yaml(8791),
+        "borrowed-ios-run",
+        Phase::Ready,
+    );
+    record.scenario.ios = Some(qaren::scenario::IosSpec {
+        device_type: BORROWED_IOS_TYPE.into(),
+        runtime: BORROWED_IOS_RUNTIME.into(),
+    });
+    record.resources.device_borrowed = true;
+    record.resources.ios_simulator = Some(IosSimResource {
+        udid: BORROWED_IOS_UDID.into(),
+        name: "qa-company-app".into(),
+        device_type: BORROWED_IOS_TYPE.into(),
+        runtime: BORROWED_IOS_RUNTIME.into(),
+    });
+    record.resources.lease = Some(
+        qaren::lease::acquire(
+            &mut MockRunner::new(),
+            &repo.join("locks"),
+            qaren::scenario::Platform::Ios,
+            BORROWED_IOS_UDID,
+            "borrowed-ios-run",
+            None,
+        )
+        .unwrap(),
+    );
+    record
+}
+
+fn script_borrowed_ios_admission(mock: &mut MockRunner, status: &str) {
+    let exit_code = if status == "clear" { Some(0) } else { Some(4) };
+    mock.expect_run(
+        &format!("fresh-install-preflight.js --platform ios --device {BORROWED_IOS_UDID}"),
+        CmdOutput {
+            exit_code,
+            stdout: serde_json::json!({
+                "v": 1,
+                "platform": "ios",
+                "deviceId": BORROWED_IOS_UDID,
+                "status": status
+            })
+            .to_string(),
+            ..Default::default()
+        },
+    );
+}
+
+#[test]
+fn pending_borrowed_ios_stop_refuses_build_cleanup_without_owner_death_or_save() {
+    for owner_case in ["alive", "unknown", "missing"] {
+        let repo = common::temp_repo();
+        let mut record = borrowed_ios_record(&repo);
+        record.resources.arm_borrowed_ios_stop().unwrap();
+        record.resources.begin_build().unwrap();
+        record
+            .resources
+            .record_build_spawned(5000, Some(common::identity(5000, LSTART)))
+            .unwrap();
+        if owner_case == "missing" {
+            record.prepare = None;
+        }
+        record.save(&repo).unwrap();
+        let before = std::fs::read(RunRecord::path(&repo, "borrowed-ios-run")).unwrap();
+        let mut mock = MockRunner::new();
+        match owner_case {
+            "alive" => {
+                mock.expect_run(
+                    "ps -p 999 -o lstart=",
+                    CmdOutput::success("Wed Aug 12 15:00:00 2026"),
+                );
+                mock.expect_run("ps -p 999 -o stat=", CmdOutput::success("S"));
+            }
+            "unknown" => {
+                mock.expect_run("ps -p 999 -o lstart=", CmdOutput::failed(1, "ps denied"));
+            }
+            _ => {}
+        }
+        let receipt = cleanup(&mut mock, &repo, "borrowed-ios-run");
+        assert_eq!(receipt.result, ReceiptResult::Refused, "{owner_case}");
+        assert_eq!(
+            std::fs::read(RunRecord::path(&repo, "borrowed-ios-run")).unwrap(),
+            before,
+            "{owner_case}"
+        );
+        let stored = RunRecord::load(&repo, "borrowed-ios-run").unwrap();
+        assert!(stored.resources.build_process().is_some());
+        assert!(stored.resources.lease.as_ref().unwrap().lock_dir.exists());
+        assert!(!receipt.outcomes.contains_key("record_saved"));
+        assert_eq!(
+            mock.calls.len(),
+            match owner_case {
+                "alive" => 2,
+                "unknown" => 1,
+                _ => 0,
+            }
+        );
+        assert_eq!(mock.remaining(), 0);
+    }
+}
+
+#[test]
+fn borrowed_ios_stop_in_cleanup_enforces_owner_lease_quiescence_admission_and_idempotence() {
+    use qaren::commands::cleanup::cleanup_with_runtime;
+    use qaren::runrecord::BorrowedIosStop;
+    let node = std::path::Path::new("/usr/local/bin/node");
+    let runtime = std::path::Path::new("/runtime");
+
+    // 1. Default NotArmed borrowed record keeps simulator and releases lease without admission or shutdown.
+    {
+        let repo = common::temp_repo();
+        let record = borrowed_ios_record(&repo);
+        let lock = record.resources.lease.as_ref().unwrap().lock_dir.clone();
+        record.save(&repo).unwrap();
+        let mut mock = MockRunner::new();
+        owner_gone(&mut mock);
+        let receipt = cleanup(&mut mock, &repo, "borrowed-ios-run");
+        assert_eq!(receipt.result, ReceiptResult::Cleaned);
+        assert_eq!(receipt.cleanup["simulator"], "kept");
+        assert_eq!(receipt.cleanup["device_lease"], "removed");
+        assert!(!lock.exists());
+        assert_eq!(mock.calls.len(), 1);
+    }
+
+    // 2. Completed record never re-runs admission or shutdown even if the simulator is later Booted.
+    {
+        let repo = common::temp_repo();
+        let mut record = borrowed_ios_record(&repo);
+        record.resources.arm_borrowed_ios_stop().unwrap();
+        record
+            .resources
+            .complete_borrowed_ios_stop(BORROWED_IOS_UDID)
+            .unwrap();
+        let lock = record.resources.lease.as_ref().unwrap().lock_dir.clone();
+        record.save(&repo).unwrap();
+        let mut mock = MockRunner::new();
+        owner_gone(&mut mock);
+        let receipt = cleanup_with_runtime(
+            &mut mock,
+            &repo,
+            "borrowed-ios-run",
+            None,
+            Some((node, runtime)),
+        );
+        assert_eq!(receipt.result, ReceiptResult::Cleaned);
+        assert_eq!(receipt.cleanup["simulator"], "absent");
+        assert_eq!(receipt.cleanup["device_lease"], "removed");
+        assert!(!lock.exists());
+        assert_eq!(mock.calls.len(), 1);
+    }
+
+    // 3. Live or unknown owner refuses without touching the simulator or releasing the lease.
+    for owner_case in ["alive", "unknown_ps", "missing_prepare"] {
+        let repo = common::temp_repo();
+        let mut record = borrowed_ios_record(&repo);
+        record.resources.arm_borrowed_ios_stop().unwrap();
+        if owner_case == "missing_prepare" {
+            record.prepare = None;
+        }
+        let lock = record.resources.lease.as_ref().unwrap().lock_dir.clone();
+        record.save(&repo).unwrap();
+        let mut mock = MockRunner::new();
+        match owner_case {
+            "alive" => {
+                mock.expect_run(
+                    "ps -p 999 -o lstart=",
+                    CmdOutput::success("Wed Aug 12 15:00:00 2026\n"),
+                );
+                mock.expect_run("ps -p 999 -o stat=", CmdOutput::success("S\n"));
+            }
+            "unknown_ps" => {
+                mock.expect_run("ps -p 999 -o lstart=", CmdOutput::failed(1, "ps denied"));
+            }
+            "missing_prepare" => {}
+            _ => unreachable!(),
+        }
+        let receipt = cleanup_with_runtime(
+            &mut mock,
+            &repo,
+            "borrowed-ios-run",
+            None,
+            Some((node, runtime)),
+        );
+        assert_eq!(receipt.result, ReceiptResult::Refused, "{owner_case}");
+        if owner_case != "alive" {
+            assert!(
+                receipt.cleanup["simulator"].starts_with("refused:"),
+                "{owner_case}: {:?}",
+                receipt.cleanup
+            );
+        }
+        assert!(lock.exists(), "{owner_case}");
+        assert_eq!(
+            RunRecord::load(&repo, "borrowed-ios-run")
+                .unwrap()
+                .resources
+                .borrowed_ios_stop(),
+            BorrowedIosStop::Pending,
+            "{owner_case}"
+        );
+        assert!(!mock.calls.iter().any(|c| matches!(
+            c.label.as_str(),
+            "fresh-install-admission" | "simctl-shutdown"
+        )));
+        assert_eq!(mock.remaining(), 0, "{owner_case}");
+    }
+
+    // 4. Missing or foreign lease refuses without calling admission or shutdown.
+    for lease_case in ["missing_lock", "foreign_holder"] {
+        let repo = common::temp_repo();
+        let mut record = borrowed_ios_record(&repo);
+        record.resources.arm_borrowed_ios_stop().unwrap();
+        let lock = record.resources.lease.as_ref().unwrap().lock_dir.clone();
+        if lease_case == "missing_lock" {
+            std::fs::remove_dir_all(&lock).unwrap();
+        } else {
+            qaren::buildplan::save_json(
+                &lock.join("holder.json"),
+                &qaren::buildplan::LockHolder {
+                    holder: "qaren-other".into(),
+                    run_id: "other-run".into(),
+                    identity: None,
+                    at: "now".into(),
+                },
+            )
+            .unwrap();
+        }
+        record.save(&repo).unwrap();
+        let mut mock = MockRunner::new();
+        owner_gone(&mut mock);
+        let receipt = cleanup_with_runtime(
+            &mut mock,
+            &repo,
+            "borrowed-ios-run",
+            None,
+            Some((node, runtime)),
+        );
+        assert_eq!(receipt.result, ReceiptResult::Refused, "{lease_case}");
+        assert!(receipt.cleanup["simulator"].starts_with("refused:"));
+        assert_eq!(
+            RunRecord::load(&repo, "borrowed-ios-run")
+                .unwrap()
+                .resources
+                .borrowed_ios_stop(),
+            BorrowedIosStop::Pending
+        );
+        assert!(!mock.calls.iter().any(|c| matches!(
+            c.label.as_str(),
+            "fresh-install-admission" | "simctl-shutdown"
+        )));
+        assert_eq!(mock.remaining(), 0);
+    }
+
+    // 5. Surviving build, core, driver, host, or recorder retains pending stop and lease without shutting down.
+    for blocker in [
+        "build_pending",
+        "core_alive",
+        "runner_driver_unproven",
+        "runner_host_present",
+        "recorder_unproven",
+    ] {
+        let repo = common::temp_repo();
+        let mut record = borrowed_ios_record(&repo);
+        record.resources.arm_borrowed_ios_stop().unwrap();
+        let mut mock = MockRunner::new();
+        match blocker {
+            "build_pending" => {
+                record.resources.begin_build().unwrap();
+                owner_gone(&mut mock);
+            }
+            "core_alive" => {
+                record.phase = Phase::Walking;
+                record.resources.core = Some(qaren::runrecord::CoreResource {
+                    pgid: 9000,
+                    identity: Some(common::identity(9000, LSTART)),
+                });
+                owner_gone(&mut mock);
+                mock.expect_run("ps -A", CmdOutput::failed(1, "inventory denied"));
+            }
+            "runner_driver_unproven" => {
+                record
+                    .resources
+                    .runner_drivers
+                    .push(qaren::runrecord::RunnerDriverResource {
+                        pgid: 7000,
+                        identity: common::identity(7000, LSTART),
+                    });
+                owner_gone(&mut mock);
+                mock.expect_run("ps -A", CmdOutput::failed(1, "inventory denied"));
+            }
+            "recorder_unproven" => {
+                record.resources.recorder = Some(qaren::runrecord::RecorderResource {
+                    pid: None,
+                    birth: None,
+                    pulled_sha256: None,
+                    kind: qaren::runrecord::RecorderKind::IosSimulator,
+                    device: BORROWED_IOS_UDID.into(),
+                    output: repo.join("clip.mov"),
+                });
+                owner_gone(&mut mock);
+            }
+            "runner_host_present" => {
+                owner_gone(&mut mock);
+                record.phase = Phase::Walking;
+                record.resources.core_cleanup = Some(qaren::runrecord::CoreCleanupEvidence {
+                    run_id: "borrowed-ios-run".into(),
+                    pgid: 9000,
+                    at: "2026-08-12T16:05:00Z".into(),
+                    outcome: qaren::runrecord::GroupCleanupResult::Absent,
+                });
+                mock.expect_run(
+                    "simctl list devices -j",
+                    CmdOutput::success(&borrowed_ios_inventory("Booted")),
+                );
+                mock.expect_run(
+                    &format!("simctl spawn {BORROWED_IOS_UDID} launchctl list"),
+                    CmdOutput::success(
+                        "PID Status Label\n42 0 UIKitApplication:dev.lykhoyda.rndevagent.fastrunner[abc][rb-legacy]\n",
+                    ),
+                );
+            }
+            _ => unreachable!(),
+        }
+        let lock = record.resources.lease.as_ref().unwrap().lock_dir.clone();
+        record.save(&repo).unwrap();
+        let receipt = cleanup_with_runtime(
+            &mut mock,
+            &repo,
+            "borrowed-ios-run",
+            None,
+            Some((node, runtime)),
+        );
+        assert_eq!(
+            receipt.result,
+            if blocker == "core_alive" {
+                ReceiptResult::Refused
+            } else {
+                ReceiptResult::Failed
+            },
+            "{blocker}"
+        );
+        assert!(
+            receipt.cleanup["simulator"].starts_with("unresolved:"),
+            "{blocker}: {}",
+            receipt.cleanup["simulator"]
+        );
+        assert!(
+            receipt.cleanup["device_lease"].starts_with("unresolved: retained:"),
+            "{blocker}: {}",
+            receipt.cleanup["device_lease"]
+        );
+        assert!(lock.exists(), "{blocker}");
+        assert_eq!(
+            RunRecord::load(&repo, "borrowed-ios-run")
+                .unwrap()
+                .resources
+                .borrowed_ios_stop(),
+            BorrowedIosStop::Pending,
+            "{blocker}"
+        );
+        assert!(!mock.calls.iter().any(|c| matches!(
+            c.label.as_str(),
+            "fresh-install-admission" | "simctl-shutdown"
+        )));
+        assert_eq!(mock.remaining(), 0, "{blocker}");
+    }
+
+    // Missing candidate directory or runtime context stays unresolved and issues no shutdown.
+    for gap in ["missing_directory", "empty_runtime"] {
+        let repo = common::temp_repo();
+        let mut record = borrowed_ios_record(&repo);
+        record.resources.arm_borrowed_ios_stop().unwrap();
+        if gap == "missing_directory" {
+            record.candidate.project_root = repo.join("missing-app");
+        }
+        let lock = record.resources.lease.as_ref().unwrap().lock_dir.clone();
+        record.save(&repo).unwrap();
+        let mut mock = MockRunner::new();
+        owner_gone(&mut mock);
+        let runtime_context = if gap == "empty_runtime" {
+            Some((std::path::Path::new(""), runtime))
+        } else {
+            Some((node, runtime))
+        };
+        let receipt =
+            cleanup_with_runtime(&mut mock, &repo, "borrowed-ios-run", None, runtime_context);
+        assert_eq!(receipt.result, ReceiptResult::Failed, "{gap}");
+        assert!(
+            receipt.cleanup["simulator"].starts_with("unresolved:"),
+            "{gap}: {}",
+            receipt.cleanup["simulator"]
+        );
+        assert!(lock.exists(), "{gap}");
+        assert_eq!(
+            RunRecord::load(&repo, "borrowed-ios-run")
+                .unwrap()
+                .resources
+                .borrowed_ios_stop(),
+            BorrowedIosStop::Pending,
+            "{gap}"
+        );
+        assert!(!mock.calls.iter().any(|c| matches!(
+            c.label.as_str(),
+            "fresh-install-admission" | "simctl-shutdown"
+        )));
+        assert_eq!(mock.remaining(), 0, "{gap}");
+    }
+
+    // 6. Strict admission failure, shutdown failure, readback failure, or save failure retains pending + lease + pr_worktree, then recovers cleanly on retry.
+    for fault in [
+        "admission_busy",
+        "admission_unknown",
+        "shutdown_failed",
+        "readback_booted",
+        "save_failed",
+    ] {
+        let repo = common::temp_repo();
+        let mut record = borrowed_ios_record(&repo);
+        record.resources.arm_borrowed_ios_stop().unwrap();
+        let wt = RunRecord::run_dir(&repo, "borrowed-ios-run").join("wt");
+        std::fs::create_dir_all(&wt).unwrap();
+        record.resources.pr_worktree = Some(qaren::runrecord::PrWorktreeResource {
+            repo_root: repo.clone(),
+            path: wt.clone(),
+        });
+        let lock = record.resources.lease.as_ref().unwrap().lock_dir.clone();
+        record.save(&repo).unwrap();
+        let blocked_save = RunRecord::run_dir(&repo, "borrowed-ios-run")
+            .join(format!(".run.json.tmp.{}", std::process::id()));
+
+        let mut mock = MockRunner::new();
+        owner_gone(&mut mock);
+        match fault {
+            "admission_busy" => script_borrowed_ios_admission(&mut mock, "busy"),
+            "admission_unknown" => script_borrowed_ios_admission(&mut mock, "unknown"),
+            "shutdown_failed" => {
+                script_borrowed_ios_admission(&mut mock, "clear");
+                mock.expect_run(
+                    "simctl list devices -j",
+                    CmdOutput::success(&borrowed_ios_inventory("Booted")),
+                );
+                mock.expect_run(
+                    &format!("simctl shutdown {BORROWED_IOS_UDID}"),
+                    CmdOutput::failed(1, "shutdown failed"),
+                );
+            }
+            "readback_booted" => {
+                script_borrowed_ios_admission(&mut mock, "clear");
+                mock.expect_run(
+                    "simctl list devices -j",
+                    CmdOutput::success(&borrowed_ios_inventory("Booted")),
+                );
+                mock.expect_run(
+                    &format!("simctl shutdown {BORROWED_IOS_UDID}"),
+                    CmdOutput::success(""),
+                );
+                mock.expect_run(
+                    "simctl list devices -j",
+                    CmdOutput::success(&borrowed_ios_inventory("Booted")),
+                );
+            }
+            "save_failed" => {
+                std::fs::create_dir(&blocked_save).unwrap();
+                script_borrowed_ios_admission(&mut mock, "clear");
+                mock.expect_run(
+                    "simctl list devices -j",
+                    CmdOutput::success(&borrowed_ios_inventory("Booted")),
+                );
+                mock.expect_run(
+                    &format!("simctl shutdown {BORROWED_IOS_UDID}"),
+                    CmdOutput::success(""),
+                );
+                mock.expect_run(
+                    "simctl list devices -j",
+                    CmdOutput::success(&borrowed_ios_inventory("Shutdown")),
+                );
+            }
+            _ => unreachable!(),
+        }
+        let receipt = cleanup_with_runtime(
+            &mut mock,
+            &repo,
+            "borrowed-ios-run",
+            None,
+            Some((node, runtime)),
+        );
+        assert_eq!(receipt.result, ReceiptResult::Failed, "{fault}");
+        assert!(
+            receipt.cleanup["simulator"].starts_with("unresolved:"),
+            "{fault}: {}",
+            receipt.cleanup["simulator"]
+        );
+        assert!(
+            receipt.cleanup["device_lease"].starts_with("unresolved: retained: simulator"),
+            "{fault}: {}",
+            receipt.cleanup["device_lease"]
+        );
+        assert!(
+            receipt.cleanup["pr_worktree"].starts_with("unresolved:")
+                && receipt.cleanup["pr_worktree"].contains("retained"),
+            "{fault}: {}",
+            receipt.cleanup["pr_worktree"]
+        );
+        assert!(lock.exists(), "{fault}");
+        assert!(wt.exists(), "{fault}");
+        assert_eq!(
+            RunRecord::load(&repo, "borrowed-ios-run")
+                .unwrap()
+                .resources
+                .borrowed_ios_stop(),
+            BorrowedIosStop::Pending,
+            "{fault}"
+        );
+        assert_eq!(mock.remaining(), 0, "{fault}");
+        if fault == "save_failed" {
+            std::fs::remove_dir(&blocked_save).unwrap();
+        }
+
+        // Retry succeeds (testing both Booted -> ShutDown and AlreadyShutdown recovery).
+        let mut retry = MockRunner::new();
+        owner_gone(&mut retry);
+        script_borrowed_ios_admission(&mut retry, "clear");
+        let already_shutdown = fault == "save_failed";
+        retry.expect_run(
+            "simctl list devices -j",
+            CmdOutput::success(&borrowed_ios_inventory(if already_shutdown {
+                "Shutdown"
+            } else {
+                "Booted"
+            })),
+        );
+        if !already_shutdown {
+            retry.expect_run(
+                &format!("simctl shutdown {BORROWED_IOS_UDID}"),
+                CmdOutput::success(""),
+            );
+            retry.expect_run(
+                "simctl list devices -j",
+                CmdOutput::success(&borrowed_ios_inventory("Shutdown")),
+            );
+        }
+        std::fs::remove_dir_all(&wt).unwrap();
+        retry.expect_run("worktree prune", CmdOutput::success(""));
+        let recovered = cleanup_with_runtime(
+            &mut retry,
+            &repo,
+            "borrowed-ios-run",
+            None,
+            Some((node, runtime)),
+        );
+        assert_eq!(
+            recovered.result,
+            ReceiptResult::Cleaned,
+            "{fault}: {:?}",
+            recovered.failure
+        );
+        assert_eq!(
+            recovered.cleanup["simulator"],
+            if already_shutdown {
+                "absent"
+            } else {
+                "removed"
+            },
+            "{fault}"
+        );
+        assert_eq!(recovered.cleanup["device_lease"], "removed", "{fault}");
+        assert_eq!(recovered.cleanup["pr_worktree"], "absent", "{fault}");
+        assert!(!lock.exists(), "{fault}");
+        let stored = RunRecord::load(&repo, "borrowed-ios-run").unwrap();
+        assert_eq!(
+            stored.resources.borrowed_ios_stop(),
+            BorrowedIosStop::Completed
+        );
+        assert!(stored.resources.lease.is_none());
+        assert!(stored.resources.pr_worktree.is_none());
+        assert_eq!(retry.remaining(), 0, "{fault}");
     }
 }

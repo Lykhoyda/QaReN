@@ -348,8 +348,9 @@ recheck compatibility as described below. Automatic selection counts only emulat
 Exactly one must qualify; otherwise selection refuses `DEVICE_UNAVAILABLE`
 (exit 4). With several boot-completed emulators, `--device emulator-NNNN`
 chooses one; an explicitly selected emulator still booting refuses without
-waiting or switching devices. Physical devices are not supported, and
-`--boot-device` refuses on Android; see [Fresh install](#fresh-install) for app reset.
+waiting or switching devices. Physical devices are not supported.
+See [iOS simulator lifecycle](#ios-simulator-lifecycle) for power options and
+[Fresh install](#fresh-install) for app reset.
 `ANDROID_HOME` must name
 the SDK whose `platform-tools/adb` reaches that server. The build is a Gradle
 `:app:assembleDebug` limited to the emulator's ABI, preceded by
@@ -1380,10 +1381,34 @@ error, timeout or empty output refuses `FRESH_INSTALL_ADMISSION_UNKNOWN`.
 Both refusals occur before uninstall. This flow never boots, wipes or restarts
 the emulator. For iOS, see [iOS admission and cleanup](#ios-admission-and-cleanup).
 
-On iOS, `check` borrows the only booted simulator, or the booted target
+### iOS simulator lifecycle
+
+On iOS, `check` and `pr` borrow the only booted simulator, or the booted target
 selected by `--device`. `--boot-device --device <simulator-UUID>` opts into
 booting that exact iOS simulator under the lease, with strict admission before mutation.
-Cleanup leaves the borrowed simulator running and keeps the installed app.
+`--restart-device --device <simulator-UUID>` shuts down a booted target (with exact
+`Shutdown` readback) before booting it and reading back `Booted` with unchanged runtime
+and device type; an already `Shutdown` target is booted directly. Restart preserves app
+data and does not imply `--fresh-install`. A failed or timed-out restart shutdown, or
+invalid shutdown readback, stops before boot, install or walk and retains the device
+lease for recovery; restart alone never authorizes exit shutdown.
+
+All three lifecycle flags are iOS-only and require an exact `--device` UUID, not a name
+or alias; invalid combinations or arguments exit 2. Combining `--boot-device` and
+`--restart-device` is refused as redundant. Lifecycle selection requires one available
+simulator with complete runtime and device-type metadata in `Booted` or `Shutdown`;
+unknown, transitional, absent or ambiguous inventory is refused without an alternate
+device. `--shutdown-device-on-exit` alone requires a `Booted` target; combine it with
+`--boot-device` or `--restart-device` to accept a `Shutdown` target.
+
+Default cleanup leaves the borrowed simulator running and keeps the installed app.
+`--shutdown-device-on-exit --device <simulator-UUID>` independently opts into shutdown
+during teardown, including post-arm cancellation and dead-owner recovery. After strict
+admission, the pending stop must be durably saved before lifecycle mutation; a failed
+save or cancellation before arming leaves simulator power unchanged. Shutdown preserves
+the simulator and its installed app and data. See [iOS admission and cleanup](#ios-admission-and-cleanup)
+for stop guards, unresolved ownership and recovery.
+
 iOS preparation follows the
 [CLI-owned iOS build routes](#cli-owned-ios-build-routes) and their startup
 ordering. If finite-build cleanup is unknown, the build lock and
@@ -1614,7 +1639,19 @@ process group and announces it; the CLI records that group with the driver's
 identity and signals it, before the host, only while that identity still
 matches. Refused or unresolved core or driver cleanup leaves the host untouched
 and retains the lease. A host that was already running, or any
-present or unknown host after that, retains the lease. A dead lease
+present or unknown host after that, retains the lease. External cleanup of a leased
+borrowed iOS simulator refuses before producer mutation, lease release or saving unless
+the recorded qaren owner is proved gone, including restart-only and not-yet-armed runs.
+When `--shutdown-device-on-exit`
+armed a pending borrowed-simulator stop, teardown and dead-owner cleanup require the
+run's current device lease, proven build/core/Metro/runner-driver/runner-host/recorder
+quiescence, matching canonical simulator UUID/runtime/device type, fresh strict
+foreign-driver admission, and verified `Shutdown` readback before persisting completion
+and releasing the lease (and any `pr` worktree); an already `Shutdown` target completes
+idempotently, and a completed record never re-issues `simctl shutdown`. Unresolved stop
+admission, shutdown, readback or persistence retains the pending state and lease. Missing
+runtime or candidate-directory evidence also leaves the stop unresolved. Exit shutdown
+cannot be added afterward to a released run. A dead lease
 holder is reclaimed only through that run's cleanup; a live or unprovable holder
 refuses `DEVICE_BUSY`. Recover a retained run with `qaren cleanup <run-id>`;
 do not delete locks to bypass unresolved ownership.

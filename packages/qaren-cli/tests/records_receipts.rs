@@ -261,3 +261,133 @@ fn failure_receipts_carry_bounded_codes_and_next_action() {
     assert_eq!(value["failure"]["next_action"], "resolve manually");
     assert_eq!(value["next_action"], "resolve manually");
 }
+
+#[test]
+fn borrowed_ios_stop_transitions_and_load_validation_require_canonical_borrowed_ios_target() {
+    use qaren::runrecord::{BorrowedIosStop, IosSimResource, Resources};
+    let udid = "1DC408C4-51DA-4C4F-ACA1-39881C916FDD";
+    let sim = IosSimResource {
+        udid: udid.into(),
+        name: "selected".into(),
+        device_type: "com.apple.CoreSimulator.SimDeviceType.iPhone-17".into(),
+        runtime: "com.apple.CoreSimulator.SimRuntime.iOS-26-5".into(),
+    };
+    let mut resources = Resources::default();
+    assert_eq!(resources.borrowed_ios_stop(), BorrowedIosStop::NotArmed);
+    assert!(resources.can_release_borrowed_ios_stop());
+    assert!(resources.arm_borrowed_ios_stop().is_err());
+    assert!(resources.complete_borrowed_ios_stop(udid).is_err());
+
+    resources.device_borrowed = true;
+    assert!(resources.arm_borrowed_ios_stop().is_err());
+    resources.ios_simulator = Some(IosSimResource {
+        udid: udid.to_lowercase(),
+        ..sim.clone()
+    });
+    assert!(resources.arm_borrowed_ios_stop().is_err());
+
+    resources.ios_simulator = Some(sim.clone());
+    assert!(resources.arm_borrowed_ios_stop().is_err());
+    resources.lease = Some(qaren::lease::Lease {
+        run_id: "borrowed-stop".into(),
+        token: "token".into(),
+        lock_dir: std::path::PathBuf::from("/tmp/qaren-borrowed-stop"),
+        holder: "holder".into(),
+    });
+    resources.arm_borrowed_ios_stop().unwrap();
+    assert_eq!(resources.borrowed_ios_stop(), BorrowedIosStop::Pending);
+    assert!(!resources.can_release_borrowed_ios_stop());
+    assert!(resources.arm_borrowed_ios_stop().is_err());
+    assert!(resources
+        .complete_borrowed_ios_stop("76709EFC-0104-4A66-8908-F4F85A76F025")
+        .is_err());
+    assert_eq!(resources.borrowed_ios_stop(), BorrowedIosStop::Pending);
+
+    resources.complete_borrowed_ios_stop(udid).unwrap();
+    assert_eq!(resources.borrowed_ios_stop(), BorrowedIosStop::Completed);
+    assert!(resources.can_release_borrowed_ios_stop());
+    assert!(resources.complete_borrowed_ios_stop(udid).is_err());
+    assert!(resources.arm_borrowed_ios_stop().is_err());
+
+    resources.revert_borrowed_ios_stop(BorrowedIosStop::Pending);
+    assert_eq!(resources.borrowed_ios_stop(), BorrowedIosStop::Pending);
+
+    let repo = common::temp_repo();
+    let mut record = common::base_record(
+        &repo,
+        &common::ios_scenario_yaml(8791),
+        "borrowed-stop",
+        Phase::Ready,
+    );
+    record.resources.device_borrowed = true;
+    record.resources.ios_simulator = Some(sim.clone());
+    record.resources.lease = Some(qaren::lease::Lease {
+        run_id: "borrowed-stop".into(),
+        token: "token".into(),
+        lock_dir: repo.join("locks"),
+        holder: "holder".into(),
+    });
+    record.save(&repo).unwrap();
+    let default_json: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(RunRecord::path(&repo, "borrowed-stop")).unwrap())
+            .unwrap();
+    assert!(default_json["resources"].get("borrowed_ios_stop").is_none());
+    let loaded = RunRecord::load(&repo, "borrowed-stop").unwrap();
+    assert_eq!(
+        loaded.resources.borrowed_ios_stop(),
+        BorrowedIosStop::NotArmed
+    );
+
+    record.resources.arm_borrowed_ios_stop().unwrap();
+    record.save(&repo).unwrap();
+    let pending_json: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(RunRecord::path(&repo, "borrowed-stop")).unwrap())
+            .unwrap();
+    assert_eq!(pending_json["resources"]["borrowed_ios_stop"], "pending");
+    assert_eq!(
+        RunRecord::load(&repo, "borrowed-stop")
+            .unwrap()
+            .resources
+            .borrowed_ios_stop(),
+        BorrowedIosStop::Pending
+    );
+
+    for mutation in [
+        "not_borrowed",
+        "missing_sim",
+        "lowercase_udid",
+        "empty_runtime",
+        "android_platform",
+    ] {
+        let mut bad = pending_json.clone();
+        match mutation {
+            "not_borrowed" => bad["resources"]["device_borrowed"] = false.into(),
+            "missing_sim" => {
+                bad["resources"]
+                    .as_object_mut()
+                    .unwrap()
+                    .remove("ios_simulator");
+            }
+            "lowercase_udid" => {
+                bad["resources"]["ios_simulator"]["udid"] = udid.to_lowercase().into();
+            }
+            "empty_runtime" => {
+                bad["resources"]["ios_simulator"]["runtime"] = "".into();
+            }
+            "android_platform" => {
+                bad["scenario"]["platform"] = "android".into();
+            }
+            _ => unreachable!(),
+        }
+        std::fs::write(
+            RunRecord::path(&repo, "borrowed-stop"),
+            serde_json::to_vec(&bad).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(
+            RunRecord::load(&repo, "borrowed-stop").unwrap_err().code,
+            FailureCode::RunRecordInvalid,
+            "{mutation}"
+        );
+    }
+}

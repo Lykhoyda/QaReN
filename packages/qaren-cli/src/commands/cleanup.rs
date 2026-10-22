@@ -61,6 +61,15 @@ pub fn reclaim_dead_holder(
     runs_root: &Path,
     busy: &crate::lease::Busy,
 ) -> Result<String, Failure> {
+    reclaim_dead_holder_with_runtime(runner, runs_root, busy, None)
+}
+
+pub fn reclaim_dead_holder_with_runtime(
+    runner: &mut dyn Runner,
+    runs_root: &Path,
+    busy: &crate::lease::Busy,
+    runtime_context: Option<(&Path, &Path)>,
+) -> Result<String, Failure> {
     let mut cleanup_runner = crate::exec::CleanupRunner(runner);
     let runner: &mut dyn Runner = &mut cleanup_runner;
     let (Some(holder), Some(PidLiveness::Dead | PidLiveness::AliveForeign)) =
@@ -95,7 +104,7 @@ pub fn reclaim_dead_holder(
             "its run record does not name the lease holder's process; nothing was cleaned".into(),
         ));
     }
-    let receipt = cleanup_with(runner, runs_root, &run_id, None);
+    let receipt = cleanup_with_runtime(runner, runs_root, &run_id, None, runtime_context);
     if receipt.result != ReceiptResult::Cleaned {
         let unproven: Vec<String> = receipt
             .cleanup
@@ -120,6 +129,16 @@ pub fn cleanup_with(
     runs_root: &Path,
     run_id: &str,
     remove_app: Option<&str>,
+) -> Receipt {
+    cleanup_with_runtime(runner, runs_root, run_id, remove_app, None)
+}
+
+pub fn cleanup_with_runtime(
+    runner: &mut dyn Runner,
+    runs_root: &Path,
+    run_id: &str,
+    remove_app: Option<&str>,
+    runtime_context: Option<(&Path, &Path)>,
 ) -> Receipt {
     let mut cleanup_runner = crate::exec::CleanupRunner(runner);
     let runner: &mut dyn Runner = &mut cleanup_runner;
@@ -173,18 +192,33 @@ pub fn cleanup_with(
     let owner_refusal =
         || Outcome::Refused("the run's qaren process is alive or unproven gone".to_string());
     let producers = record.resources.core.is_some() || !record.resources.runner_drivers.is_empty();
-    let owner = match (producers, &record.prepare) {
+    let guarded_simulator = !record.resources.can_release_borrowed_ios_stop()
+        || (record.resources.device_borrowed
+            && record.resources.ios_simulator.is_some()
+            && record.resources.lease.is_some());
+    let owner = match (producers || guarded_simulator, &record.prepare) {
         (true, Some(prepare)) => Some(probe_pid_identity(runner, prepare)),
         _ => None,
     };
-    if owner == Some(PidLiveness::AliveMatching) {
+    if owner == Some(PidLiveness::AliveMatching)
+        || (guarded_simulator
+            && !matches!(owner, Some(PidLiveness::Dead | PidLiveness::AliveForeign)))
+    {
         return finish_cleanup(
             runner,
             runs_root,
             run_id,
             remove_app,
             &mut record,
-            vec![("core".to_string(), owner_refusal())],
+            vec![(
+                if guarded_simulator {
+                    "simulator"
+                } else {
+                    "core"
+                }
+                .to_string(),
+                owner_refusal(),
+            )],
             false,
         );
     }
@@ -229,18 +263,14 @@ pub fn cleanup_with(
         outcomes.push(("runner_host".to_string(), outcome));
     }
 
-    // A live `qaren pr` still owns its recorder and worktree; only a dead owner's are reclaimed.
-    // Only positive evidence that the owner is gone admits reclaiming; unknown keeps them.
-    let owner_alive = (record.resources.recorder.is_some()
-        || record.resources.pr_worktree.is_some())
+    let owner_alive = !guarded_simulator
+        && (record.resources.recorder.is_some() || record.resources.pr_worktree.is_some())
         && !record.prepare.as_ref().is_some_and(|owner| {
             matches!(
                 probe_pid_identity(runner, owner),
                 PidLiveness::Dead | PidLiveness::AliveForeign
             )
         });
-    let owner_refusal =
-        || Outcome::Refused("the run's qaren process is alive or unproven gone".to_string());
     if record.resources.recorder.is_some() {
         let outcome = if owner_alive {
             owner_refusal()
@@ -254,7 +284,14 @@ pub fn cleanup_with(
         Platform::Ios => {
             if let Some(sim) = record.resources.ios_simulator.clone() {
                 let outcome = if record.resources.device_borrowed {
-                    Outcome::Kept
+                    cleanup_borrowed_ios(
+                        runner,
+                        &mut record,
+                        runs_root,
+                        &outcomes,
+                        owner_alive,
+                        runtime_context,
+                    )
                 } else if !record.resources.can_release_build_ownership() {
                     Outcome::Unresolved(
                         "build process cleanup is unproven; simulator retained".into(),
@@ -484,7 +521,10 @@ pub fn cleanup_with(
 
     if let Some(lease) = record.resources.lease.clone() {
         let unclean = unclean_legs(&outcomes);
-        let outcome = if record.resources.can_release_build_ownership() && unclean.is_empty() {
+        let outcome = if record.resources.can_release_build_ownership()
+            && record.resources.can_release_borrowed_ios_stop()
+            && unclean.is_empty()
+        {
             release_lease_outcome(crate::lease::release(&lease))
         } else {
             retained_lease_outcome(&unclean, &record.run_id)
@@ -501,6 +541,8 @@ pub fn cleanup_with(
             owner_refusal()
         } else if !producers_quiescent(&outcomes) {
             Outcome::Unresolved("producer cleanup is unproven; PR worktree retained".into())
+        } else if !record.resources.can_release_borrowed_ios_stop() {
+            Outcome::Unresolved("simulator stop is incomplete; PR worktree retained".into())
         } else if wt.path != expected {
             Outcome::Refused(format!(
                 "recorded worktree {} is not this run's; not removing it",
@@ -1742,6 +1784,138 @@ pub(crate) fn cleanup_process_group(
             Outcome::Unresolved("process-group inventory is unknown".into())
         }
     }
+}
+
+pub(crate) fn cleanup_borrowed_ios(
+    runner: &mut dyn Runner,
+    record: &mut RunRecord,
+    runs_root: &Path,
+    outcomes: &[(String, Outcome)],
+    external_owner_alive: bool,
+    runtime_context: Option<(&Path, &Path)>,
+) -> Outcome {
+    let mut cleanup_runner = crate::exec::CleanupRunner(runner);
+    let runner: &mut dyn Runner = &mut cleanup_runner;
+    match record.resources.borrowed_ios_stop() {
+        crate::runrecord::BorrowedIosStop::NotArmed => return Outcome::Kept,
+        crate::runrecord::BorrowedIosStop::Completed => return Outcome::Absent,
+        crate::runrecord::BorrowedIosStop::Pending => {}
+    }
+    if external_owner_alive {
+        return Outcome::Refused("the run's qaren process is alive or unproven gone".into());
+    }
+    if !record.holds_device_lease() {
+        return Outcome::Refused("the device lease is not held by this run".into());
+    }
+    if !record.resources.can_release_build_ownership() {
+        return Outcome::Unresolved("build process cleanup is unproven; simulator retained".into());
+    }
+    if !producers_quiescent(outcomes)
+        || record.resources.core.is_some()
+        || !record.resources.runner_drivers.is_empty()
+        || record.resources.recorder.is_some()
+    {
+        return Outcome::Unresolved("producer cleanup is unproven; simulator retained".into());
+    }
+    let Some(sim) = record
+        .resources
+        .ios_simulator
+        .clone()
+        .filter(crate::runrecord::Resources::ios_simulator_canonical)
+    else {
+        return Outcome::Refused(
+            "recorded simulator resource is missing or lacks canonical identity".into(),
+        );
+    };
+    if record
+        .scenario
+        .ios
+        .as_ref()
+        .is_some_and(|spec| spec.device_type != sim.device_type || spec.runtime != sim.runtime)
+    {
+        return Outcome::Refused(
+            "recorded simulator resource does not match scenario runtime or device type".into(),
+        );
+    }
+    if !record.candidate.project_root.is_dir() {
+        return Outcome::Unresolved(
+            "candidate working directory is unavailable for strict foreign-driver admission; simulator retained"
+                .into(),
+        );
+    }
+    let default_ctx;
+    let resolved_ctx = match runtime_context {
+        Some((node, runtime_dir)) => Some((node, runtime_dir)),
+        None => {
+            default_ctx = (
+                crate::run::resolve_node_for_record(record),
+                crate::run::default_runtime_dir(),
+            );
+            Some((default_ctx.0.as_path(), default_ctx.1.as_path()))
+        }
+    };
+    let Some((node, runtime_dir)) =
+        resolved_ctx.filter(|(n, r)| !n.as_os_str().is_empty() && !r.as_os_str().is_empty())
+    else {
+        return Outcome::Unresolved(
+            "CLI runtime context is unavailable for strict foreign-driver admission; simulator retained"
+                .into(),
+        );
+    };
+    if let Err(failure) = crate::core::fresh_install_admission(
+        runner,
+        node,
+        runtime_dir,
+        &record.candidate.project_root,
+        &sim.udid,
+        None,
+    ) {
+        return Outcome::Unresolved(format!(
+            "strict foreign-driver admission did not clear simulator stop: {}",
+            failure.detail
+        ));
+    }
+    let outcome = match ios::shutdown_selected_sim(
+        runner,
+        &sim.udid,
+        &sim.device_type,
+        &sim.runtime,
+    ) {
+        ios::SelectedSimShutdown::ShutDown => Outcome::Removed,
+        ios::SelectedSimShutdown::AlreadyShutdown => Outcome::Absent,
+        ios::SelectedSimShutdown::InventoryInvalid => Outcome::Unresolved(
+            "simulator inventory did not prove the exact selected simulator before shutdown; simulator retained"
+                .into(),
+        ),
+        ios::SelectedSimShutdown::ShutdownFailed => Outcome::Unresolved(
+            "simctl shutdown did not complete successfully for the selected simulator".into(),
+        ),
+        ios::SelectedSimShutdown::ReadbackInvalid => Outcome::Unresolved(
+            "inventory did not prove the exact selected simulator Shutdown with unchanged runtime and device type"
+                .into(),
+        ),
+    };
+    if !matches!(outcome, Outcome::Removed | Outcome::Absent) {
+        return outcome;
+    }
+    let prev = record.resources.borrowed_ios_stop();
+    if record
+        .resources
+        .complete_borrowed_ios_stop(&sim.udid)
+        .is_err()
+    {
+        return Outcome::Unresolved(
+            "simulator stop completion transition is invalid; simulator stop state retained".into(),
+        );
+    }
+    if let Err(failure) = record.save(runs_root) {
+        record.resources.revert_borrowed_ios_stop(prev);
+        return Outcome::Unresolved(format!(
+            "simulator stop completed but the run record could not be persisted: {}",
+            failure.detail
+        ));
+    }
+    outcome
 }
 
 fn cleanup_simulator(runner: &mut dyn Runner, udid: &str, expected_name: &str) -> Outcome {
