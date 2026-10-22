@@ -6,33 +6,48 @@
 # Test step routes device commands through this (see .no-mistakes.yaml).
 #
 # Usage: scripts/qaren-sim-sandbox.sh <command> [args...]
-#   QAREN_SANDBOX_DIR=<dir>         reuse one sandbox across calls (default: new mktemp dir)
-#   QAREN_PIPELINE_REAL_DEVICES=1   opt in to real devices: run the command untouched
+#   QAREN_SANDBOX_DIR=<dir>   reuse one sandbox across calls (default: new mktemp dir)
 set -euo pipefail
 
 [ "$#" -gt 0 ] || { echo "usage: $0 <command> [args...]" >&2; exit 2; }
-[ "${QAREN_PIPELINE_REAL_DEVICES:-}" = "1" ] && exec "$@"
 
 FAKE_UDID="5A4DB0C5-0000-4000-8000-00000000F4CE"
 real_home="$HOME"
 real_xcrun="$(command -v xcrun || true)"
 real_xcodebuild="$(command -v xcodebuild || true)"
+real_maestro="$(command -v maestro || true)"
 dir="${QAREN_SANDBOX_DIR:-$(mktemp -d "${TMPDIR:-/tmp}/qaren-sim-sandbox.XXXXXX")}"
 mkdir -p "$dir/home" "$dir/bin" "$dir/android-sdk/platform-tools"
 dir="$(cd "$dir" && pwd -P)"
 
-if [ ! -e "$dir/bin/xcrun" ]; then
-  cat >"$dir/bin/xcrun" <<EOF
+# Concurrent calls may share one sandbox: publish each shim complete and executable.
+shim() {
+  [ -e "$dir/bin/$1" ] && { cat >/dev/null; return; }
+  local tmp
+  tmp="$(mktemp "$dir/bin/.$1.XXXXXX")"
+  cat >"$tmp"
+  chmod +x "$tmp"
+  mv -f "$tmp" "$dir/bin/$1"
+}
+
+shim xcrun <<EOF
 #!/usr/bin/env bash
-q="\${1:-}"
-case "\$q" in --sdk|-sdk) q="\${3:-}" ;; esac
-case "\$q" in
+all=("\$@")
+case "\${1:-}" in --sdk|-sdk) shift 2 ;; esac
+case "\${1:-}" in
+  simctl|devicectl|xcodebuild) exec "$dir/bin/\$1" "\${@:2}" ;;
   --find|-f)
     case "\${@: -1}" in simctl|devicectl|xcodebuild) echo "$dir/bin/\${@: -1}"; exit 0 ;; esac
-    [ -n "$real_xcrun" ] && exec "$real_xcrun" "\$@" ;;
-  --show-sdk-*) [ -n "$real_xcrun" ] && exec "$real_xcrun" "\$@" ;;
+    [ -n "$real_xcrun" ] && exec "$real_xcrun" "\${all[@]}" ;;
+  --show-sdk-*) [ -n "$real_xcrun" ] && exec "$real_xcrun" "\${all[@]}" ;;
 esac
-if [ "\${1:-}" = simctl ] && [ "\${2:-}" = list ]; then
+echo "qaren-sim-sandbox: refused xcrun \${all[*]}" >&2
+exit 1
+EOF
+
+shim simctl <<EOF
+#!/usr/bin/env bash
+if [ "\${1:-}" = list ]; then
   case " \$* " in
     *" --json "*|*" -j "*)
       echo '{"devices":{"com.apple.CoreSimulator.SimRuntime.iOS-18-0":[{"udid":"$FAKE_UDID","name":"Sandbox iPhone","state":"Booted","isAvailable":true,"deviceTypeIdentifier":"com.apple.CoreSimulator.SimDeviceType.iPhone-16"}]}}' ;;
@@ -40,14 +55,11 @@ if [ "\${1:-}" = simctl ] && [ "\${2:-}" = list ]; then
   esac
   exit 0
 fi
-echo "qaren-sim-sandbox: refused xcrun \$*" >&2
+echo "qaren-sim-sandbox: refused simctl \$*" >&2
 exit 1
 EOF
-  chmod +x "$dir/bin/xcrun"
-fi
 
-if [ ! -e "$dir/bin/adb" ]; then
-  cat >"$dir/bin/adb" <<'EOF'
+shim adb <<'EOF'
 #!/usr/bin/env bash
 case "${1:-}" in
   devices) echo "List of devices attached"; echo; exit 0 ;;
@@ -56,20 +68,20 @@ esac
 echo "qaren-sim-sandbox: refused adb $*" >&2
 exit 1
 EOF
-  chmod +x "$dir/bin/adb"
+if [ ! -e "$dir/android-sdk/platform-tools/adb" ]; then
+  link="$(mktemp "$dir/android-sdk/platform-tools/.adb.XXXXXX")"
+  ln -sf "$dir/bin/adb" "$link"
+  mv -f "$link" "$dir/android-sdk/platform-tools/adb"
 fi
-ln -sf "$dir/bin/adb" "$dir/android-sdk/platform-tools/adb"
 
-if [ ! -e "$dir/bin/xcodebuild" ]; then
-  cat >"$dir/bin/xcodebuild" <<EOF
+shim xcodebuild <<EOF
 #!/usr/bin/env bash
 refuse() { echo "qaren-sim-sandbox: refused xcodebuild \$*" >&2; exit 1; }
 ok=
-case "\${1:-}" in -version|-showsdks|-list|-help) ok=1 ;; esac
 prev=
 for a in "\$@"; do
   case "\$a" in
-    build|build-for-testing|archive|clean) ok=1 ;;
+    -version|-showsdks|-list|-help|-showBuildSettings|build|build-for-testing|archive|clean) ok=1 ;;
     test|test-without-building|-xctestrun|-showdestinations) refuse "\$@" ;;
   esac
   [ "\$prev" = -destination ] && case "\$a" in generic/*) ;; *) refuse "\$@" ;; esac
@@ -80,14 +92,22 @@ done
 echo "qaren-sim-sandbox: no host xcodebuild" >&2
 exit 1
 EOF
-  chmod +x "$dir/bin/xcodebuild"
-fi
 
-for tool in simctl devicectl maestro; do
-  [ -e "$dir/bin/$tool" ] && continue
-  printf '#!/usr/bin/env bash\necho "qaren-sim-sandbox: refused %s $*" >&2\nexit 1\n' "$tool" >"$dir/bin/$tool"
-  chmod +x "$dir/bin/$tool"
-done
+shim devicectl <<'EOF'
+#!/usr/bin/env bash
+echo "qaren-sim-sandbox: refused devicectl $*" >&2
+exit 1
+EOF
+
+# Without a host maestro there is nothing to shield: leave it absent so callers see it uninstalled.
+if [ -n "$real_maestro" ]; then
+  shim maestro <<EOF
+#!/usr/bin/env bash
+case "\$#:\${@: -1}" in 1:--version|1:-v|1:--help|1:-h|2:--help|2:-h) exec "$real_maestro" "\$@" ;; esac
+echo "qaren-sim-sandbox: refused maestro \$*" >&2
+exit 1
+EOF
+fi
 
 # Toolchains default under HOME; keep them on the real one so builds still work.
 export CARGO_HOME="${CARGO_HOME:-$real_home/.cargo}"
