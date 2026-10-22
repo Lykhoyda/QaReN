@@ -1524,7 +1524,6 @@ fn android_reuse_path_records_install_provenance_after_a_successful_adb_install(
     mock.expect_run("lsof", CmdOutput::success("6001\n"));
     mock.expect_run("ps", CmdOutput::success("6000\n"));
     mock.expect_run("curl", CmdOutput::success("packager-status:running"));
-    mock.expect_run("qaren-request-probe", CmdOutput::success(""));
     mock.expect_run("expo-platform", CmdOutput::success(""));
     mock.expect_run("am start", CmdOutput::success("Starting: Intent\n"));
     // wait_ready
