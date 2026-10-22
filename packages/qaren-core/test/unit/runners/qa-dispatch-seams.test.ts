@@ -1,5 +1,10 @@
+import { createWriter } from '../../../dist/qa/wire.js';
+import { RunInputs, withInputs } from '../../../dist/qa/inputs.js';
 import { afterEach, test } from 'node:test';
 import assert from 'node:assert/strict';
+import { runPlan } from '../../../dist/qa/walker.js';
+import { parsePlan } from '../../../dist/qa/plan.js';
+import { element, screen, scriptedJudge, walker } from '../qa/judgment-fixtures.ts';
 import { QaDispatchContext } from '../../../dist/domain/qa-dispatch.js';
 import { buildIosProbes } from '../../../dist/lifecycle/settle.js';
 import {
@@ -7,6 +12,7 @@ import {
   _setFastRunnerStateForTest,
   fastSwipe,
   runIOS,
+  verifyTypeResultAfterSettle,
 } from '../../../dist/runners/rn-fast-runner-client.js';
 import {
   runAndroid,
@@ -25,6 +31,7 @@ import {
   createDeviceFillHandler,
   performFocusedFill,
 } from '../../../dist/handlers/device-interact.js';
+import { okResult } from '../../../dist/utils.js';
 import { createDeviceSnapshotHandler } from '../../../dist/handlers/device-session.js';
 import {
   createTimingObserver,
@@ -834,3 +841,340 @@ test('a QA native dispatch times its send, settle and post-settle health as valu
     ],
   );
 });
+
+test('typing HTTP timeout names its refusal stage and native code with passive durations', async () => {
+  let now = 0;
+  const metrics: Array<Record<string, unknown>> = [];
+  const lines: string[] = [];
+  const writer = createWriter((line) => lines.push(line), 'run');
+  runner((body) => {
+    if (body.command === 'type') {
+      now += 10000;
+      _setFastRunnerStateForTest(null);
+      throw new Error('RUNNER_TIMEOUT: private-value');
+    }
+    return { ok: true, data: { commandId: body.commandId, state: 'unknown' } };
+  });
+  const context = new QaDispatchContext(20000, () => now);
+  await withInputs(new RunInputs({ PASSWORD: 'private-value' }, ['PASSWORD']), async () => {
+    await assert.rejects(
+      runIOS({
+        command: 'type',
+        text: 'private-value',
+        bundleId: 'qa.app',
+        qaContext: context,
+        qaTiming: {
+          now: () => now,
+          observe: (event) => {
+            metrics.push(event);
+            writer.diagnostic({ kind: 'metric', ...event });
+          },
+        },
+        _verifyExactReadback: async () => {
+          now += 25;
+          return { matches: false, actual: 'private-value' };
+        },
+      }),
+      /ACTION_OUTCOME_UNCERTAIN/,
+    );
+    writer.diagnostic({
+      kind: 'timing',
+      stage: 'dispatch',
+      code: 'ACTION_INTERRUPTED',
+      line: 17,
+      at: now,
+      acquisitionMs: 1,
+      observationAgeMs: now,
+      authorizations: context.authorizations,
+      refusalDiagnostic: context.refusalDiagnostic,
+    });
+  });
+  assert.equal(context.refusalDiagnostic?.stage, 'dispatch-error');
+  assert.equal(context.refusalDiagnostic?.nativeCode, 'RUNNER_TIMEOUT');
+  assert.equal(context.refusalDiagnostic?.mutating, true);
+  assert.ok(
+    metrics.some(
+      (event) =>
+        event.stage === 'type-call' &&
+        event.edge === 'end' &&
+        event.ms === 10000 &&
+        event.outcome === 'failed',
+    ),
+  );
+  assert.ok(
+    metrics.some(
+      (event) =>
+        event.stage === 'type-readback' &&
+        event.edge === 'end' &&
+        event.ms === 25 &&
+        event.outcome === 'failed',
+    ),
+  );
+  assert.ok(
+    !JSON.stringify({ metrics, diagnostic: context.refusalDiagnostic }).includes('private-value'),
+  );
+  const record = lines.map((line) => JSON.parse(line).payload);
+  assert.ok(record.some((event) => event.stage === 'type-call' && event.ms === 10000));
+  assert.ok(
+    record.some(
+      (event) =>
+        event.stage === 'dispatch' &&
+        event.refusalStage === 'dispatch-error' &&
+        event.nativeCode === 'RUNNER_TIMEOUT' &&
+        event.mutating === true,
+    ),
+  );
+  assert.ok(!lines.join('').includes('private-value'));
+});
+
+test('type success has the same result with metrics enabled, disabled or a failing sink', async () => {
+  const results: unknown[] = [];
+  for (const sink of ['absent', 'working', 'throwing']) {
+    let now = 0;
+    const events: Array<Record<string, unknown>> = [];
+    runner(() => {
+      now += 40;
+      return { ok: true, data: { typed: true } };
+    });
+    const context = new QaDispatchContext(20000, () => now);
+    results.push(
+      await runIOS({
+        command: 'type',
+        text: 'private-value',
+        qaContext: context,
+        ...(sink !== 'absent'
+          ? {
+              qaTiming: {
+                now: () => now,
+                observe: (event) => {
+                  events.push(event);
+                  if (sink === 'throwing') throw Error('private-value');
+                },
+              },
+            }
+          : {}),
+      }),
+    );
+    assert.equal(context.authorizations, 1);
+    assert.equal(context.refusal, undefined);
+    if (sink !== 'absent')
+      assert.ok(
+        events.some(
+          (event) =>
+            event.stage === 'type-call' &&
+            event.edge === 'end' &&
+            event.ms === 40 &&
+            event.outcome === 'ok',
+        ),
+      );
+  }
+  assert.deepEqual(results[0], results[1]);
+  assert.deepEqual(results[1], results[2]);
+});
+
+for (const guard of ['not_occluded', 'auto_dismissed', 'no_keyboard', 'private-value']) {
+  test(`keyboard guard ${guard} emits only finite keyboard facts`, async () => {
+    const events: Array<Record<string, unknown>> = [];
+    runner(() => ({ ok: true, data: { tapped: true, keyboardGuard: guard } }));
+    await runIOS({
+      command: 'tap',
+      x: 1,
+      y: 2,
+      qaTiming: { now: () => 10, observe: (event) => events.push(event) },
+    });
+    const keyboard = events.filter((event) => event.stage === 'keyboard');
+    if (guard === 'private-value') assert.deepEqual(keyboard, []);
+    else
+      assert.deepEqual(keyboard, [
+        {
+          stage: 'keyboard',
+          edge: 'point',
+          outcome: 'ok',
+          at: 10,
+          ms: 0,
+          event: guard === 'not_occluded' ? 'shown' : 'hidden',
+        },
+      ]);
+  });
+}
+
+test('relayout metrics bracket the existing refresh and retap without changing its result', async () => {
+  let now = 0;
+  let taps = 0;
+  const events: Array<Record<string, unknown>> = [];
+  const sends = runner(() => {
+    now += 10;
+    return ++taps === 1
+      ? { ok: false, error: { code: 'KEYBOARD_RELAYOUT_REQUIRED', message: 'private-value' } }
+      : { ok: true, data: { tapped: true } };
+  });
+  const result = await runIOS({
+    command: 'tap',
+    x: 1,
+    y: 2,
+    qaTiming: { now: () => now, observe: (event) => events.push(event) },
+  });
+  assert.equal(result.isError, undefined);
+  assert.deepEqual(sends, ['tap', 'tap']);
+  assert.ok(
+    events.some(
+      (event) => event.stage === 'keyboard' && event.event === 'relayout' && event.ms === 10,
+    ),
+  );
+  assert.ok(
+    events.some(
+      (event) =>
+        event.stage === 'relayout-retap' &&
+        event.edge === 'end' &&
+        event.ms === 10 &&
+        event.outcome === 'ok',
+    ),
+  );
+  assert.ok(!JSON.stringify(events).includes('private-value'));
+});
+
+test('QA relayout refusal keeps the native code and keyboard event before declining repair', async () => {
+  const events: Array<Record<string, unknown>> = [];
+  const sends = runner(() => ({
+    ok: false,
+    error: { code: 'KEYBOARD_RELAYOUT_REQUIRED', message: 'private-value', mutation: 'none' },
+  }));
+  const context = new QaDispatchContext(1000, () => 10);
+  await assert.rejects(
+    runIOS({
+      command: 'tap',
+      x: 1,
+      y: 2,
+      qaContext: context,
+      qaTiming: { now: () => 10, observe: (event) => events.push(event) },
+    }),
+    /ACTION_OUTCOME_UNCERTAIN/,
+  );
+  assert.equal(context.refusalDiagnostic?.nativeCode, 'KEYBOARD_RELAYOUT_REQUIRED');
+  assert.equal(context.refusalDiagnostic?.stage, 'native-response');
+  assert.deepEqual(sends, ['tap']);
+  assert.ok(events.some((event) => event.stage === 'keyboard' && event.event === 'relayout'));
+  assert.ok(!events.some((event) => event.stage === 'relayout-retap'));
+});
+
+test('instant-submit authority loss retains refusal facts beside long typing and unavailable readback', async () => {
+  const outputs: string[] = [];
+  for (const secret of ['private-code-one', 'private-code-two']) {
+    session();
+    let now = 0;
+    const lines: string[] = [];
+    const writer = createWriter((line) => lines.push(line), 'run');
+    const sends = runner(() => {
+      now += 12532;
+      _setFastRunnerStateForTest(null);
+      return { ok: true, data: { typed: true } };
+    });
+    const f = walker(
+      [screen([element('@field', 'Code', { kind: 'input', testID: 'field' })])],
+      scriptedJudge(() => ({})),
+    );
+    f.deps.now = () => now;
+    f.deps.timing = createTimingObserver((event) =>
+      writer.diagnostic({ kind: 'metric', ...event, line: 17 }),
+    );
+    f.deps.diagnostic = (event) => writer.diagnostic({ kind: 'timing', ...event });
+    f.deps.fill = async (_ref, text, context) => {
+      await runNative(['fill', '@field', text, '--clear-first'], {
+        qaContext: context,
+        qaTiming: { now: () => now, observe: f.deps.timing! },
+        focusedType: true,
+        focusedProof: async () => true,
+        settle: { enabled: false },
+      });
+      assert.fail('lost authority must retain its existing refusal');
+    };
+    const result = await withInputs(new RunInputs({ CODE: secret }, ['CODE']), () =>
+      runPlan(parsePlan('\n'.repeat(16) + '1. Fill "field" with input CODE').blocks!, f.deps),
+    );
+    const record = lines.map((line) => JSON.parse(line).payload);
+    assert.equal(result.verdict, 'FAIL');
+    assert.match(result.failure!.seen, /ACTION_OUTCOME_UNCERTAIN/);
+    assert.deepEqual(sends, ['type']);
+    assert.ok(
+      record.some(
+        (event) =>
+          event.stage === 'type-call' &&
+          event.edge === 'end' &&
+          event.ms === 12532 &&
+          event.outcome === 'ok',
+      ),
+    );
+    assert.ok(
+      record.some(
+        (event) =>
+          event.stage === 'type-readback' &&
+          event.edge === 'end' &&
+          event.ms === 0 &&
+          event.outcome === 'unavailable',
+      ),
+    );
+    const refusal = record.find(
+      (event) =>
+        event.kind === 'timing' &&
+        event.stage === 'dispatch' &&
+        event.code === 'ACTION_INTERRUPTED',
+    );
+    assert.equal(refusal?.line, 17);
+    assert.equal(refusal?.authorizations, 1);
+    assert.equal(refusal?.refusalStage, 'settle');
+    assert.equal(refusal?.nativeCode, 'RUNNER_OWNERSHIP_MISMATCH');
+    assert.equal(refusal?.mutating, true);
+    for (const token of [
+      secret,
+      Buffer.from(secret).toString('hex'),
+      Buffer.from(secret).toString('base64'),
+      encodeURIComponent(secret),
+    ])
+      assert.ok(!lines.join('').includes(token));
+    outputs.push(lines.join(''));
+  }
+  assert.equal(outputs[0], outputs[1]);
+});
+
+for (const [name, pid, after, nativeCode] of [
+  ['cleared runner state', 111_111_111, null, 'RUNNER_OWNERSHIP_MISMATCH'],
+  ['replaced runner', 111_111_111, 222_222_222, 'RUNNER_OWNERSHIP_MISMATCH'],
+  ['dead runner health', 999_999_999, 999_999_999, undefined],
+] as const) {
+  test(`post-settle authority loss after a success-shaped type names the ${name} without a timeout`, async () => {
+    _setFastRunnerStateForTest(
+      after === null
+        ? null
+        : {
+            pid: after,
+            port: 12345,
+            deviceId: 'qa-post-settle-device',
+            bundleId: 'qa.app',
+            protocolVersion: RUNNER_PROTOCOL_VERSION,
+          },
+    );
+    const context = new QaDispatchContext(Infinity, () => 0);
+    await assert.rejects(
+      verifyTypeResultAfterSettle(
+        {
+          command: 'type',
+          text: 'private-value',
+          qaContext: context,
+          _verifyExactReadback: async () => ({ matches: false, actual: '' }),
+        },
+        okResult({ typed: true }),
+        {
+          pid,
+          port: 12345,
+          deviceId: 'qa-post-settle-device',
+          statePath: '/tmp/qa-post-settle-state.json',
+          provenance: 'adopted',
+        },
+      ),
+      /ACTION_CONTEXT_CHANGED/,
+    );
+    assert.equal(context.refusalDiagnostic?.stage, 'settle');
+    assert.equal(context.refusalDiagnostic?.mutating, true);
+    assert.equal(context.refusalDiagnostic?.nativeCode, nativeCode ?? null);
+  });
+}

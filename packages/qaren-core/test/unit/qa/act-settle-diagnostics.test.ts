@@ -1,12 +1,29 @@
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { test } from 'node:test';
+import { QaDispatchContext, QaDispatchError } from '../../../dist/domain/qa-dispatch.js';
+import {
+  runNative,
+  setActiveSessionInMemoryForTest,
+  resetActiveSessionInMemoryForTest,
+} from '../../../dist/agent-device-wrapper.js';
+import {
+  _setFastRunnerStateForTest,
+  _setFetchForTest,
+} from '../../../dist/runners/rn-fast-runner-client.js';
+import {
+  REQUIRED_IOS_COMMANDS,
+  REQUIRED_IOS_FEATURES,
+  RUNNER_PROTOCOL_VERSION,
+  getPluginVersion,
+} from '../../../dist/runners/protocol.js';
 import { runInNewContext } from 'node:vm';
 import { extractMutationDisposition } from '../../../dist/handlers/device-interact.js';
 import { HandlerError, describeError, fillEvidence, unwrap } from '../../../dist/qa/adapt.js';
 import { classifyNativeVerification } from '../../../dist/handlers/fill-verify.js';
 import { isRecord } from '../../../dist/qa/questions.js';
 import { recover } from '../../../dist/qa/recover.js';
+import { observeTiming, type TimingContext, type TimingEvent } from '../../../dist/qa/timing.js';
 import { createStop } from '../../../dist/qa/stop.js';
 import type { ActResult } from '../../../dist/qa/walker.js';
 import type { ToolResult } from '../../../dist/utils.js';
@@ -19,20 +36,25 @@ function fixture(throwSink = false) {
   const logs: string[] = [];
   const stop = createStop();
   // Execute the built action adapter without starting the wire, CDP, or a device session.
-  const act: (handler: () => Promise<ToolResult>, proven: boolean) => Promise<ActResult> =
-    runInNewContext(`${source.slice(from, to)}; act`, {
-      HandlerError,
-      extractMutationDisposition,
-      describeError,
-      fillEvidence,
-      unwrap,
-      isRecord,
-      stop,
-      log: (line: string) => {
-        logs.push(line);
-        if (throwSink) throw new Error('PRIVATE-log-sink');
-      },
-    });
+  const act: (
+    handler: () => Promise<ToolResult>,
+    proven: boolean,
+    timing?: TimingContext,
+  ) => Promise<ActResult> = runInNewContext(`${source.slice(from, to)}; act`, {
+    observeTiming,
+    QaDispatchError,
+    HandlerError,
+    extractMutationDisposition,
+    describeError,
+    fillEvidence,
+    unwrap,
+    isRecord,
+    stop,
+    log: (line: string) => {
+      logs.push(line);
+      if (throwSink) throw new Error('PRIVATE-log-sink');
+    },
+  });
   return { act, logs, stop };
 }
 
@@ -228,4 +250,267 @@ test('act carries the keyboard a tap reported, on success and refusal, logged va
     assert.equal(outcome.keyboardShown, undefined);
     assert.deepEqual(f.logs, [`action-settle=${JSON.stringify(unknown)}`]);
   }
+});
+
+test('settle metrics survive withheld logs and preserve action outcomes when the sink throws', async () => {
+  for (const throwing of [false, true]) {
+    for (const ok of [false, true]) {
+      const f = fixture(true);
+      const events: TimingEvent[] = [];
+      const outcome = await f.act(
+        async () =>
+          result(
+            {
+              settle: { method: 'timeout', settled: false, hierarchyChanged: true },
+              timings_ms: { settle: 30 },
+            },
+            ok,
+          ),
+        true,
+        {
+          now: () => 100,
+          observe: (event) => {
+            events.push(event);
+            if (throwing) throw Error('private-sink');
+          },
+        },
+      );
+      assert.equal(outcome.ok, ok);
+      assert.deepEqual(JSON.parse(JSON.stringify(events)), [
+        {
+          stage: 'settle',
+          edge: 'end',
+          outcome: 'failed',
+          at: 100,
+          ms: 30,
+          method: 'timeout',
+          settled: false,
+          hierarchyChanged: true,
+        },
+      ]);
+    }
+  }
+  const events: TimingEvent[] = [];
+  await fixture().act(
+    async () =>
+      result({
+        settle: {
+          method: 'private-canary',
+          settled: 'private-canary',
+          hierarchyChanged: 'private-canary',
+        },
+        timings_ms: { settle: 'private-canary' },
+      }),
+    true,
+    { now: () => 100, observe: (event) => events.push(event) },
+  );
+  assert.deepEqual(JSON.parse(JSON.stringify(events)), [
+    {
+      stage: 'settle',
+      edge: 'end',
+      outcome: 'unknown',
+      at: 100,
+      method: 'unknown',
+      settled: 'unknown',
+      hierarchyChanged: 'unknown',
+    },
+  ]);
+});
+
+test('post-settle dispatch refusal retains the measured settle metric with withheld logs', async (t) => {
+  let now = 0;
+  let snapshots = 0;
+  const sends: string[] = [];
+  const events: TimingEvent[] = [];
+  t.mock.method(Date, 'now', () => now);
+  setActiveSessionInMemoryForTest({
+    name: 'qa',
+    platform: 'ios',
+    appId: 'qa.app',
+    deviceId: 'qa-device',
+  });
+  _setFastRunnerStateForTest({
+    pid: process.pid,
+    port: 12345,
+    deviceId: 'qa-device',
+    bundleId: 'qa.app',
+    capability: 'test-capability',
+    protocolVersion: RUNNER_PROTOCOL_VERSION,
+  });
+  _setFetchForTest(async (url, init) => {
+    if (String(url).endsWith('/health')) {
+      if (snapshots >= 2) {
+        _setFastRunnerStateForTest(null);
+        return Response.json({ ok: false }, { status: 503 });
+      }
+      return Response.json({
+        ok: true,
+        protocolVersion: RUNNER_PROTOCOL_VERSION,
+        runnerVersion: getPluginVersion(),
+        commands: REQUIRED_IOS_COMMANDS,
+        capabilities: REQUIRED_IOS_FEATURES,
+      });
+    }
+    const body = JSON.parse(String(init?.body));
+    sends.push(body.command);
+    if (body.command === 'snapshot') {
+      snapshots++;
+      now += 17;
+      return Response.json({ ok: true, data: { nodes: [] } });
+    }
+    assert.equal(body.command, 'type');
+    now += 12847;
+    return Response.json({ ok: true, data: { typed: true } });
+  });
+  try {
+    const context = new QaDispatchContext(100000, () => now);
+    let thrown: unknown;
+    const outcome = await fixture(true).act(
+      async () => {
+        try {
+          return await runNative(['fill', '@field', 'private-code', '--clear-first'], {
+            qaContext: context,
+            qaTiming: { now: () => now, observe: (event) => events.push(event) },
+            focusedType: true,
+            focusedProof: async () => true,
+          });
+        } catch (error) {
+          thrown = error;
+          throw error;
+        }
+      },
+      true,
+      { now: () => 900000, observe: (event) => events.push(event) },
+    );
+    assert.equal(outcome.ok, false);
+    assert.equal(context.authorizations, 1);
+    assert.equal(thrown, context.refusal);
+    assert.throws(
+      () => context.assertComplete(),
+      (error) => error === thrown,
+    );
+    assert.equal(context.authorizations, 1);
+    assert.equal(context.refusalDiagnostic?.stage, 'settle');
+    assert.equal(context.refusalDiagnostic?.nativeCode, null);
+    assert.equal(context.refusalDiagnostic?.mutating, true);
+    assert.deepEqual(sends, ['type', 'snapshot', 'snapshot']);
+    assert.deepEqual(
+      events.filter((event) => event.stage === 'settle'),
+      [
+        {
+          stage: 'settle',
+          edge: 'end',
+          outcome: 'ok',
+          at: 900000,
+          ms: 34,
+          method: 'snapshot-eq',
+          settled: true,
+          hierarchyChanged: 'unknown',
+        },
+      ],
+    );
+    assert.ok(!JSON.stringify(events).includes('private-code'));
+  } finally {
+    _setFastRunnerStateForTest(null);
+    _setFetchForTest(fetch);
+    resetActiveSessionInMemoryForTest();
+  }
+});
+
+test('retained settle metadata admits only measured finite facts without replacing a refusal', async () => {
+  for (const ms of [0, 12.5, Number.MAX_SAFE_INTEGER]) {
+    for (const throwing of [false, true]) {
+      const secret = 'private/settle-canary';
+      const error = new QaDispatchError('ACTION_CONTEXT_CHANGED');
+      error.retainSettle({
+        settle: {
+          method: 'timeout',
+          settled: false,
+          hierarchyChanged: true,
+          label: secret,
+          hash: secret,
+        },
+        timings_ms: { settle: ms, text: secret },
+        text: secret,
+      });
+      const events: TimingEvent[] = [];
+      const outcome = await fixture(true).act(
+        async () => {
+          throw error;
+        },
+        true,
+        {
+          now: () => 900000,
+          observe: (event) => {
+            events.push(event);
+            if (throwing) throw Error(secret);
+          },
+        },
+      );
+      assert.equal(outcome.ok, false);
+      assert.equal(outcome.mutation, 'possible');
+      assert.deepEqual(events, [
+        {
+          stage: 'settle',
+          edge: 'end',
+          outcome: 'failed',
+          at: 900000,
+          ms,
+          method: 'timeout',
+          settled: false,
+          hierarchyChanged: true,
+        },
+      ]);
+      for (const token of [
+        secret,
+        encodeURIComponent(secret),
+        Buffer.from(secret).toString('hex'),
+        Buffer.from(secret).toString('base64'),
+      ])
+        assert.ok(!JSON.stringify({ events, meta: error.settleMeta }).includes(token));
+    }
+  }
+  for (const ms of [
+    undefined,
+    null,
+    'private-canary',
+    -1,
+    Infinity,
+    NaN,
+    Number.MAX_SAFE_INTEGER + 1,
+    true,
+    {},
+    [],
+  ]) {
+    const error = new QaDispatchError('ACTION_CONTEXT_CHANGED');
+    error.retainSettle({
+      settle: { method: 'timeout', settled: false },
+      timings_ms: { settle: ms },
+    });
+    assert.equal(error.settleMeta, undefined);
+  }
+  const error = new QaDispatchError('ACTION_CONTEXT_CHANGED');
+  error.retainSettle({
+    settle: {
+      method: 'private-canary',
+      settled: 'private-canary',
+      hierarchyChanged: 'private-canary',
+    },
+    timings_ms: { settle: 0 },
+  });
+  assert.deepEqual(error.settleMeta, {
+    settle: { method: null, settled: null, hierarchyChanged: null },
+    timings_ms: { settle: 0 },
+  });
+  let getterCalls = 0;
+  const hostile = Object.defineProperty({}, 'timings_ms', {
+    get() {
+      getterCalls++;
+      throw Error('private-canary');
+    },
+  });
+  const unmeasured = new QaDispatchError('ACTION_CONTEXT_CHANGED');
+  unmeasured.retainSettle(hostile);
+  assert.equal(getterCalls, 0);
+  assert.equal(unmeasured.settleMeta, undefined);
 });

@@ -2680,3 +2680,52 @@ test('annotated wrapper and focused slots replay current fixtures with symbolic 
     assert.equal(f.typed[0].text, 'third-fixture');
   }
 });
+
+test('fallback focus emits value-free keyboard proof even when the metric sink fails', async () => {
+  for (const focused of [false, true]) {
+    for (const throwing of [false, true]) {
+      const fake = app({ initialKeyboard: true, reactFocused: focused });
+      const events: Array<Record<string, unknown>> = [];
+      fake.deps.timing = (event) => {
+        events.push(event);
+        if (throwing) throw Error('private-sink');
+      };
+      const outcome = await walkBlock(blocks(plan())[0], fake.deps);
+      assert.equal(outcome.block.outcome, focused ? 'pass' : 'fail');
+      const proofs = events.filter((event) => event.stage === 'keyboard');
+      assert.equal(proofs.length, 1);
+      assert.equal(proofs[0].keyboard, true);
+      assert.equal(proofs[0].proof, focused ? 'focused' : 'not-proven');
+      assert.equal(typeof proofs[0].ms, 'number');
+      assert.equal(Object.hasOwn(proofs[0], 'path'), false);
+      assert.equal(JSON.stringify(proofs).includes('qa-hidden-email'), false);
+      assert.equal(JSON.stringify(proofs).includes(EMAIL), false);
+    }
+  }
+});
+
+test('no-target fallback focus never times its keyboard proof from an earlier line dispatch', async () => {
+  const other = element('@other', 'Other', { testID: 'qa-other' });
+  const shown = [other, submit];
+  const fake = app({ initial: shown, initialKeyboard: true, reactFocused: true });
+  const press = fake.deps.press;
+  fake.deps.press = async (ref, context) => {
+    const result = await press(ref, context);
+    shown.push(element('@pressed', 'Pressed', { kind: 'text' }));
+    return result;
+  };
+  const events: Array<Record<string, unknown>> = [];
+  fake.deps.timing = (event) => {
+    events.push(event);
+  };
+  const outcome = await walkBlock(
+    blocks('## QA\n\n### Code\n\n1. Tap "qa-other"\n2. Fill "qa-otp-code" with "1234"\n')[0],
+    fake.deps,
+  );
+  assert.equal(outcome.block.outcome, 'pass', JSON.stringify(outcome.failure));
+  assert.deepEqual(mutations(fake.log), ['press @other', 'type qa-otp-code']);
+  const proofs = events.filter((event) => event.stage === 'keyboard');
+  assert.equal(proofs.length, 1);
+  assert.equal(proofs[0].proof, 'focused');
+  assert.equal(Object.hasOwn(proofs[0], 'ms'), false);
+});

@@ -424,6 +424,80 @@ fn runner_termination_diagnostics_reach_private_diagnostics_only_as_fixed_words_
 }
 
 #[test]
+fn slot_failure_path_diagnostics_keep_only_ruled_fields() {
+    use qaren::redact::{with_input_scope, InputValues};
+    use std::ffi::OsString;
+    use std::sync::Arc;
+    let repo = common::temp_repo();
+    let secret = "private-synthetic-value";
+    let inputs = Arc::new(InputValues::from_entries([(
+        OsString::from("QAREN_INPUT_PASSWORD"),
+        OsString::from(secret),
+    )]));
+    with_input_scope(inputs, || {
+        let mut valid = Vec::new();
+        for stage in [
+            "type-call",
+            "type-readback",
+            "relayout-retap",
+            "settle",
+            "keyboard",
+        ] {
+            valid.push(serde_json::json!({"kind":"metric", "stage":stage, "edge":"end", "outcome":"failed", "at":16000, "ms":10000}));
+        }
+        valid.push(serde_json::json!({"kind":"metric", "stage":"settle", "edge":"end", "outcome":"ok", "at":16000, "ms":25, "method":"timeout", "settled":false, "hierarchyChanged":"unknown"}));
+        valid.push(serde_json::json!({"kind":"metric", "stage":"keyboard", "edge":"point", "outcome":"ok", "at":16000, "ms":25, "event":"relayout", "proof":"not-proven", "keyboard":true}));
+        valid.push(serde_json::json!({"kind":"metric", "stage":"type-readback", "edge":"end", "outcome":"unavailable", "at":16000, "ms":25}));
+        valid.push(serde_json::json!({"kind":"timing", "stage":"dispatch", "code":"ACTION_INTERRUPTED", "line":17, "at":16000, "acquisitionMs":1, "observationAgeMs":16000, "authorizations":1, "refusalStage":"dispatch-error", "mutating":true, "nativeCode":"RUNNER_TIMEOUT"}));
+        let mut settle_refusal = valid.last().unwrap().clone();
+        settle_refusal["refusalStage"] = "settle".into();
+        settle_refusal["nativeMutation"] = "possible".into();
+        valid.push(settle_refusal);
+        let mut invalid = Vec::new();
+        for (index, key) in [
+            (0, "stage"),
+            (5, "method"),
+            (5, "settled"),
+            (5, "hierarchyChanged"),
+            (6, "event"),
+            (6, "proof"),
+            (6, "keyboard"),
+            (8, "refusalStage"),
+            (8, "mutating"),
+            (8, "nativeCode"),
+        ] {
+            let mut event = valid[index].clone();
+            event[key] = secret.into();
+            invalid.push(event);
+        }
+        let mut stdout = String::new();
+        for (i, event) in valid.iter().chain(&invalid).enumerate() {
+            stdout.push_str(&envelope(i as u64 + 2, "diagnostic", &event.to_string()));
+            stdout.push('\n');
+        }
+        stdout.push_str(&envelope(
+            (valid.len() + invalid.len() + 2) as u64,
+            "result",
+            &pass_ledger(&[]),
+        ));
+        stdout.push('\n');
+        let mut mock = MockRunner::new();
+        mock.expect_spawn_piped("walk.js", 9000, &stdout, Some(0));
+        assert_eq!(
+            run_child(&mut mock, &repo.join("core.log")).verdict,
+            Verdict::Pass
+        );
+        let stored = std::fs::read_to_string(repo.join("core-diagnostics.jsonl")).unwrap();
+        assert!(!stored.contains(secret));
+        let got: Vec<serde_json::Value> = stored
+            .lines()
+            .map(|line| serde_json::from_str(line).unwrap())
+            .collect();
+        assert_eq!(got, valid);
+    });
+}
+
+#[test]
 fn a_real_slot_child_keeps_raw_logs_withheld_while_retaining_structured_diagnostics() {
     use qaren::exec::RealRunner;
     use qaren::redact::{with_input_scope, InputValues};

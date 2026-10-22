@@ -37,6 +37,11 @@ export const TIMING_STAGES = [
   'expiry',
   'readback',
   'settle-readback',
+  'type-call',
+  'type-readback',
+  'relayout-retap',
+  'settle',
+  'keyboard',
   'relaunch',
   'admission',
   'runner-post-mortem',
@@ -149,7 +154,7 @@ export type DispatchPhase =
 export interface TimingEvent {
   stage: TimingStage;
   edge: 'start' | 'end' | 'point';
-  outcome: 'ok' | 'failed' | 'unknown' | 'withheld';
+  outcome: 'ok' | 'failed' | 'unknown' | 'withheld' | 'unavailable';
   at: number;
   line?: number;
   observation?: number;
@@ -163,6 +168,12 @@ export interface TimingEvent {
   appliedBudgetMs?: number;
   moved?: number;
   maxDelta?: number;
+  method?: 'window-gate' | 'screen-static' | 'snapshot-eq' | 'timeout' | 'unknown';
+  settled?: boolean | 'unknown';
+  hierarchyChanged?: boolean | 'unknown';
+  event?: 'shown' | 'hidden' | 'relayout';
+  proof?: 'focused' | 'not-proven';
+  keyboard?: boolean;
   relaunch?: 'attempted' | 'ready' | 'failed' | 'timeout';
   reapDisposition?: 'reaped' | 'already-absent' | 'replacement-preserved';
   readinessReason?: NativeReadinessReason;
@@ -205,7 +216,7 @@ export function cleanTimingEvent(value: unknown): TimingEvent | undefined {
   if (
     !TIMING_STAGES.includes(input.stage as TimingStage) ||
     !['start', 'end', 'point'].includes(input.edge as string) ||
-    !['ok', 'failed', 'unknown', 'withheld'].includes(input.outcome as string)
+    !['ok', 'failed', 'unknown', 'withheld', 'unavailable'].includes(input.outcome as string)
   )
     return undefined;
   const event = { stage: input.stage, edge: input.edge, outcome: input.outcome } as TimingEvent;
@@ -273,6 +284,20 @@ export function cleanTimingEvent(value: unknown): TimingEvent | undefined {
       return undefined;
     event[key] = number;
   }
+  if (
+    ['window-gate', 'screen-static', 'snapshot-eq', 'timeout', 'unknown'].includes(
+      input.method as string,
+    )
+  )
+    event.method = input.method as TimingEvent['method'];
+  for (const key of ['settled', 'hierarchyChanged'] as const) {
+    if (typeof input[key] === 'boolean' || input[key] === 'unknown') event[key] = input[key];
+  }
+  if (['shown', 'hidden', 'relayout'].includes(input.event as string))
+    event.event = input.event as TimingEvent['event'];
+  if (['focused', 'not-proven'].includes(input.proof as string))
+    event.proof = input.proof as TimingEvent['proof'];
+  if (typeof input.keyboard === 'boolean') event.keyboard = input.keyboard;
   for (const [key, values] of [
     ['relaunch', ['attempted', 'ready', 'failed', 'timeout']],
     ['reapDisposition', ['reaped', 'already-absent', 'replacement-preserved']],
@@ -336,6 +361,7 @@ export async function measureTiming<T>(
   now: () => number,
   stage: TimingStage,
   work: () => Promise<T>,
+  outcomeOf: (result: T) => TimingEvent['outcome'] = () => 'ok',
 ): Promise<T> {
   if (!observer) return work();
   const started = now();
@@ -343,7 +369,7 @@ export async function measureTiming<T>(
   let outcome: TimingEvent['outcome'] = 'failed';
   try {
     const result = await work();
-    outcome = 'ok';
+    outcome = outcomeOf(result);
     return result;
   } finally {
     const at = now();

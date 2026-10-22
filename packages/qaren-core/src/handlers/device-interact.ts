@@ -1,5 +1,6 @@
 import { sleep as cancellableSleep } from '../domain/cancellation.js';
 import { randomUUID } from 'node:crypto';
+import { measureDispatchPhase, measureTiming, type TimingContext } from '../qa/timing.js';
 import type { QaDispatchContext } from '../domain/qa-dispatch.js';
 import { execFile as execFileCb } from '../domain/cancellation.js';
 import { promisify } from 'node:util';
@@ -40,7 +41,6 @@ import { reopenSessionForRecovery } from './device-session.js';
 import type { FlatNode } from '../fast-runner-ref-map.js';
 import type { CDPClient } from '../cdp-client.js';
 import { exactIdentities } from '../qa/identity.js';
-import { measureDispatchPhase } from '../qa/timing.js';
 import { join, type NativeNode } from '../qa/screen.js';
 import {
   getCachedSignature,
@@ -825,6 +825,7 @@ export function bindExactFillTarget(
 // --- Press (enhanced with doubleTap, count, holdMs, waitForFocusMs) ---
 
 interface PressArgs {
+  qaTiming?: TimingContext;
   qaContext?: QaDispatchContext;
   ref?: string;
   x?: number;
@@ -838,11 +839,17 @@ interface PressArgs {
 }
 
 // Story 04 (#385): thread a caller-supplied settle budget into runNative.
-function settleOpts(args: { settleTimeoutMs?: number; qaContext?: QaDispatchContext }): {
+function settleOpts(args: {
+  settleTimeoutMs?: number;
+  qaContext?: QaDispatchContext;
+  qaTiming?: TimingContext;
+}): {
+  qaTiming?: TimingContext;
   qaContext?: QaDispatchContext;
   settle?: { timeoutMs: number };
 } {
   return {
+    ...(args.qaTiming ? { qaTiming: args.qaTiming } : {}),
     ...(args.qaContext ? { qaContext: args.qaContext } : {}),
     ...(args.settleTimeoutMs !== undefined ? { settle: { timeoutMs: args.settleTimeoutMs } } : {}),
   };
@@ -853,8 +860,10 @@ function interactOpts(args: {
   settleTimeoutMs?: number;
   retryIfNoChange?: boolean;
   qaContext?: QaDispatchContext;
+  qaTiming?: TimingContext;
 }): {
   qaContext?: QaDispatchContext;
+  qaTiming?: TimingContext;
   settle?: { timeoutMs: number };
   retryIfNoChange?: boolean;
 } {
@@ -1011,6 +1020,7 @@ export function createDeviceLongPressHandler(
 // --- Fill (exact target + final verification — GH #581) ---
 
 export interface FillArgs {
+  qaTiming?: TimingContext;
   qaContext?: QaDispatchContext;
   ref: string;
   text: string;
@@ -1166,11 +1176,21 @@ async function finalVerification(
   text: string,
   operationToken: string,
   qaContext?: QaDispatchContext,
+  qaTiming?: TimingContext,
 ): Promise<NativeVerification> {
-  const native = await measureDispatchPhase('dispatch-readback', qaContext?.line, () =>
-    runNativeVerifyInput(binding, text, operationToken, qaContext),
+  return measureTiming(
+    qaTiming?.observe,
+    qaTiming?.now ?? (() => performance.now()),
+    'type-readback',
+    async () => {
+      const native = await measureDispatchPhase('dispatch-readback', qaContext?.line, () =>
+        runNativeVerifyInput(binding, text, operationToken, qaContext),
+      );
+      return classifyNativeVerification(native.verdict, native.stable);
+    },
+    (result) =>
+      result.verified ? 'ok' : result.evidence === 'unavailable' ? 'unavailable' : 'failed',
   );
-  return classifyNativeVerification(native.verdict, native.stable);
 }
 
 type FillMethod = 'native';
@@ -1370,6 +1390,7 @@ export async function performExactFill(
           args.text,
           operationToken,
           args.qaContext,
+          args.qaTiming,
         );
         if (verification.verified) {
           return verifiedFillResult('native', args.text.length, {
@@ -1410,6 +1431,7 @@ export async function performExactFill(
       args.text,
       operationToken,
       args.qaContext,
+      args.qaTiming,
     );
     if (verification.verified) {
       return verifiedFillResult('native', args.text.length, {
@@ -1428,7 +1450,13 @@ export async function performExactFill(
   mutationSeen = 'observed';
   const primarySettle = extractSettleMeta(primary);
   const primaryTyping = extractTypingMeta(primary);
-  const verification = await finalVerification(binding, args.text, operationToken, args.qaContext);
+  const verification = await finalVerification(
+    binding,
+    args.text,
+    operationToken,
+    args.qaContext,
+    args.qaTiming,
+  );
   if (verification.verified) {
     return verifiedFillResult('native', args.text.length, {
       textEntryPath: 'native',
@@ -1599,7 +1627,13 @@ export async function performFocusedFill(
   // clearFirst requests one select-all and text sequence in the runner.
   const native = await runNative(
     ['fill', args.ref, args.text, ...(args.clearFirst ? ['--clear-first'] : [])],
-    { qaContext: args.qaContext, focusedType: true, focusedProof, settle: { enabled: false } },
+    {
+      qaContext: args.qaContext,
+      qaTiming: args.qaTiming,
+      focusedType: true,
+      focusedProof,
+      settle: { enabled: false },
+    },
   );
   if (native.isError) {
     const mutation = extractMutationDisposition(native);
@@ -1642,11 +1676,32 @@ export async function performFocusedFill(
       'Typed into the focused field; the value could not be confirmed. Confirm with device_screenshot or expect_text before relying on it.',
     );
   const initialBefore = before;
-  if (initialBefore === null || !beforeFocused) return unverified();
+  if (initialBefore === null || !beforeFocused) {
+    await measureTiming(
+      args.qaTiming?.observe,
+      args.qaTiming?.now ?? (() => performance.now()),
+      'type-readback',
+      async () => undefined,
+      () => 'unavailable',
+    );
+    return unverified();
+  }
   const expected = (args.clearFirst ? '' : initialBefore) + args.text;
   const readBack = () =>
-    measureDispatchPhase('dispatch-readback', args.qaContext?.line, () =>
-      awaitReactInputValue(() => readReactInputValue(client, oracleTestId), expected),
+    measureTiming(
+      args.qaTiming?.observe,
+      args.qaTiming?.now ?? (() => performance.now()),
+      'type-readback',
+      () =>
+        measureDispatchPhase('dispatch-readback', args.qaContext?.line, () =>
+          awaitReactInputValue(() => readReactInputValue(client, oracleTestId), expected),
+        ),
+      (result) =>
+        result.verdict === 'exact'
+          ? 'ok'
+          : result.verdict === 'unreadable'
+            ? 'unavailable'
+            : 'failed',
     );
   const verified = () =>
     verifiedFillResult('native', args.text.length, {
@@ -1703,6 +1758,7 @@ export async function performFocusedFill(
   if (args.qaContext?.expired) return lost(first, '; no step time remained to retype');
   const retyped = await runNative(['fill', args.ref, args.text, '--clear-first'], {
     qaContext: args.qaContext,
+    qaTiming: args.qaTiming,
     focusedType: true,
     focusedProof,
     settle: { enabled: false },

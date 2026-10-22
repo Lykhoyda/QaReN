@@ -274,3 +274,105 @@ test('runner termination diagnostics cross the slot wire as fixed words and coun
   );
   assert.ok(!lines.join('').includes(secret));
 });
+
+test('failure-path diagnostics retain finite stages and scrub adversarial values', () => {
+  const outputs = ['private-one/"\\', 'private-two+@example.test'].map((secret) => {
+    const lines: string[] = [];
+    const writer = createWriter((line) => lines.push(line), 'run');
+    withInputs(new RunInputs({ PASSWORD: secret }, ['PASSWORD']), () => {
+      for (const stage of ['type-call', 'type-readback', 'relayout-retap', 'settle', 'keyboard']) {
+        writer.diagnostic({
+          kind: 'metric',
+          stage,
+          edge: 'end',
+          outcome: 'failed',
+          at: 16000,
+          ms: 10000,
+          method: 'timeout',
+          settled: false,
+          hierarchyChanged: 'unknown',
+          event: 'relayout',
+          proof: 'not-proven',
+          keyboard: true,
+          path: secret,
+          hash: Buffer.from(secret).toString('hex'),
+        });
+      }
+      for (const stage of ['dispatch-error', 'native-response']) {
+        writer.diagnostic({
+          kind: 'timing',
+          stage: 'dispatch',
+          code: 'ACTION_INTERRUPTED',
+          line: 17,
+          at: 16000,
+          acquisitionMs: 1,
+          observationAgeMs: 16000,
+          authorizations: 1,
+          refusalDiagnostic: {
+            stage,
+            mutating: true,
+            nativeCode: 'RUNNER_TIMEOUT',
+            nativeMutation: 'possible',
+            message: secret,
+          },
+        });
+      }
+      writer.diagnostic({
+        kind: 'metric',
+        stage: 'type-readback',
+        edge: 'end',
+        outcome: 'unavailable',
+        at: 16000,
+        ms: 0,
+      });
+      writer.diagnostic({ kind: 'metric', stage: secret, edge: 'end', outcome: 'ok', at: 1 });
+      writer.diagnostic({
+        kind: 'metric',
+        stage: 'settle',
+        edge: 'end',
+        outcome: 'ok',
+        at: 1,
+        method: secret,
+        settled: secret,
+        hierarchyChanged: secret,
+        event: secret,
+        proof: secret,
+        keyboard: secret,
+      });
+    });
+    const events = lines.map((line) => JSON.parse(line).payload);
+    assert.equal(events.length, 9);
+    assert.deepEqual(
+      events.slice(0, 5).map((event) => event.stage),
+      ['type-call', 'type-readback', 'relayout-retap', 'settle', 'keyboard'],
+    );
+    assert.equal(events[3].method, 'timeout');
+    assert.equal(events[3].settled, false);
+    assert.equal(events[3].hierarchyChanged, 'unknown');
+    assert.equal(events[4].event, 'relayout');
+    assert.equal(events[4].proof, 'not-proven');
+    assert.equal(events[4].keyboard, true);
+    assert.equal(events[5].refusalStage, 'dispatch-error');
+    assert.equal(events[6].refusalStage, 'native-response');
+    assert.equal(events[5].mutating, true);
+    assert.equal(events[5].nativeCode, 'RUNNER_TIMEOUT');
+    assert.equal(events[7].outcome, 'unavailable');
+    assert.deepEqual(events[8], {
+      kind: 'metric',
+      stage: 'settle',
+      edge: 'end',
+      outcome: 'ok',
+      at: 1,
+    });
+    for (const token of [
+      secret,
+      JSON.stringify(secret).slice(1, -1),
+      Buffer.from(secret).toString('hex'),
+      Buffer.from(secret).toString('base64'),
+      encodeURIComponent(secret),
+    ])
+      assert.ok(!lines.join('').includes(token));
+    return lines.join('');
+  });
+  assert.equal(outputs[0], outputs[1]);
+});

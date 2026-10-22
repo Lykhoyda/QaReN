@@ -37,6 +37,11 @@ const STAGES: &[&str] = &[
     "expiry",
     "readback",
     "settle-readback",
+    "type-call",
+    "type-readback",
+    "relayout-retap",
+    "settle",
+    "keyboard",
     "relaunch",
     "admission",
     "runner-post-mortem",
@@ -179,6 +184,12 @@ fn clean(value: &Value) -> Option<Value> {
                 "appliedBudgetMs",
                 "moved",
                 "maxDelta",
+                "method",
+                "settled",
+                "hierarchyChanged",
+                "event",
+                "proof",
+                "keyboard",
                 "relaunch",
                 "reapDisposition",
                 "readinessReason",
@@ -219,6 +230,8 @@ fn clean(value: &Value) -> Option<Value> {
                 "observation",
                 "nativeCode",
                 "nativeMutation",
+                "refusalStage",
+                "mutating",
             ],
         ),
         "block-outcome" => (&["line", "outcome"], &[]),
@@ -273,10 +286,23 @@ fn clean(value: &Value) -> Option<Value> {
                 Some(&["reaped", "already-absent", "replacement-preserved"])
             }
             "edge" => Some(&["start", "end", "point"]),
-            "outcome" if kind == "metric" => Some(&["ok", "failed", "unknown", "withheld"]),
+            "outcome" if kind == "metric" => {
+                Some(&["ok", "failed", "unknown", "withheld", "unavailable"])
+            }
             "outcome" => Some(&["pass", "fail", "refused"]),
             "code" => Some(CODES),
             "nativeCode" => Some(NATIVE_CODES),
+            "refusalStage" => Some(&["dispatch-error", "native-response", "settle"]),
+            "method" => Some(&[
+                "window-gate",
+                "screen-static",
+                "snapshot-eq",
+                "timeout",
+                "unknown",
+            ]),
+            "event" => Some(&["shown", "hidden", "relayout"]),
+            "proof" => Some(&["focused", "not-proven"]),
+            "settled" | "hierarchyChanged" if !value.is_boolean() => Some(&["unknown"]),
             "nativeMutation" => Some(&["none", "observed", "possible"]),
             "readinessReason" => Some(NATIVE_READINESS_REASONS),
             "admission" => Some(&["retry", "cancelled", "refused"]),
@@ -294,6 +320,8 @@ fn clean(value: &Value) -> Option<Value> {
         if let Some(words) = words {
             let word = words.iter().find(|&&word| value.as_str() == Some(word))?;
             clean.insert(key.clone(), (*word).into());
+        } else if ["settled", "hierarchyChanged", "keyboard", "mutating"].contains(&key.as_str()) {
+            clean.insert(key.clone(), value.as_bool()?.into());
         } else {
             let number = value.as_f64()?;
             if !number.is_finite()

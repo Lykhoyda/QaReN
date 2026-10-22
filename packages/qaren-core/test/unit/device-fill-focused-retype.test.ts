@@ -24,6 +24,7 @@ interface Options {
   valueAfter: (dispatches: number) => string;
   refuseRetype?: boolean;
   expireAfterFirst?: boolean;
+  metrics?: Array<Record<string, unknown>>;
   text?: string;
 }
 
@@ -67,6 +68,9 @@ async function run(options: Options) {
         skipFinalValidation: true,
         clearFirst: true,
         qaContext: context,
+        ...(options.metrics
+          ? { qaTiming: { now: () => clock, observe: (event) => options.metrics!.push(event) } }
+          : {}),
       },
       client,
     );
@@ -167,4 +171,31 @@ test('an empty read-back is not dropped keystrokes and is not retyped', async ()
   assert.equal(env.ok, true, JSON.stringify(env));
   assert.equal(env.data?.verified, false);
   assert.deepEqual(dispatched, [REPLACE]);
+});
+
+test('each fallback readback records only its verdict and duration through retyping', async () => {
+  const metrics: Array<Record<string, unknown>> = [];
+  const { env, dispatched } = await run({
+    valueAfter: (dispatches) => (dispatches === 1 ? 'SYNTH' : TEXT),
+    metrics,
+  });
+  assert.equal(env.ok, true);
+  assert.equal(dispatched.length, 2);
+  const readbacks = metrics.filter((event) => event.stage === 'type-readback');
+  assert.deepEqual(
+    readbacks.map((event) => [event.edge, event.outcome]),
+    [
+      ['start', 'ok'],
+      ['end', 'failed'],
+      ['start', 'ok'],
+      ['end', 'ok'],
+    ],
+  );
+  assert.ok(
+    readbacks
+      .filter((event) => event.edge === 'end')
+      .every((event) => typeof event.ms === 'number'),
+  );
+  assert.equal(JSON.stringify(metrics).includes(TEXT), false);
+  assert.equal(JSON.stringify(metrics).includes('SYNTH'), false);
 });

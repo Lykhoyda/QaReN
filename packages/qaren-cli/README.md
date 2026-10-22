@@ -1573,7 +1573,13 @@ that secret despite artifact redaction.
   that requires inputs skips recording and screenshots.
 - Slot runs retain value-free structured events in `core-diagnostics.jsonl` beside `core.log`:
   `metric` has measured stage timings, and `timing` has decision/dispatch timing, finite outcome
-  codes and allowlisted native refusal codes. Native-readiness end metrics also retain the
+  codes and allowlisted native refusal codes. Dispatch refusals retain `refusalStage` and
+  `mutating`; typing records `type-call` and `type-readback` durations (including unavailable
+  readback), keyboard refresh/retry records `relayout-retap`, and structured `settle` and
+  `keyboard` events retain only finite methods, proofs, booleans and elapsed times.
+  A dispatch refusal after settlement preserves measured settle facts; unavailable settle
+  facts are `unknown`, and an unmeasured duration is omitted from the structured event.
+  Native-readiness end metrics also retain the
   existing liveness classification as `readinessReason`, or `unknown` if the probe did not
   return a classification; `count` identifies the probe site, not a retry ordinal.
   A `health` failure adds `healthDetail` (`refused`, `reset`, `abort`, `http-4xx`, `http-5xx`, `body-not-ok`,

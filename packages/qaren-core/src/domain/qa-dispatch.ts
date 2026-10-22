@@ -20,6 +20,7 @@ export const NATIVE_CODES = [
   'RUNNER_TIMEOUT',
   'RUNNER_PROTOCOL_MISMATCH',
 ] as const satisfies readonly (ToolErrorCode | QaDispatchRefusal | 'KEYBOARD_RELAYOUT_REQUIRED')[];
+export const REFUSAL_STAGES = ['dispatch-error', 'native-response', 'settle'] as const;
 const NATIVE_REASONS = [
   'app-window-unavailable',
   'exact-target-unresolved',
@@ -56,7 +57,7 @@ function refusalDiagnostic(refusal: QaDispatchRefusal, facts: unknown) {
       'ACTION_OUTCOME_UNCERTAIN',
       'TARGET_MOVED_BEFORE_DISPATCH',
     ] as const),
-    stage: allowed(fact(facts, 'stage'), ['dispatch-error', 'native-response'] as const),
+    stage: allowed(fact(facts, 'stage'), REFUSAL_STAGES),
     mutating: typeof mutating === 'boolean' ? mutating : null,
     responseOk: typeof responseOk === 'boolean' ? responseOk : null,
     nativeCode: allowed(fact(facts, 'nativeCode'), NATIVE_CODES),
@@ -71,9 +72,41 @@ function refusalDiagnostic(refusal: QaDispatchRefusal, facts: unknown) {
   });
 }
 
+function measuredSettle(meta: unknown) {
+  const ms = fact(fact(meta, 'timings_ms'), 'settle');
+  if (typeof ms !== 'number' || !Number.isFinite(ms) || ms < 0 || ms > Number.MAX_SAFE_INTEGER)
+    return undefined;
+  const settle = fact(meta, 'settle');
+  const settled = fact(settle, 'settled');
+  const hierarchyChanged = fact(settle, 'hierarchyChanged');
+  return Object.freeze({
+    settle: Object.freeze({
+      method: allowed(fact(settle, 'method'), [
+        'window-gate',
+        'screen-static',
+        'snapshot-eq',
+        'timeout',
+      ] as const),
+      settled: typeof settled === 'boolean' ? settled : null,
+      hierarchyChanged: typeof hierarchyChanged === 'boolean' ? hierarchyChanged : null,
+    }),
+    timings_ms: Object.freeze({ settle: ms }),
+  });
+}
+
 export type QaDispatchDiagnostic = ReturnType<typeof refusalDiagnostic>;
 
 export class QaDispatchError extends Error {
+  private measuredSettle?: ReturnType<typeof measuredSettle>;
+
+  get settleMeta() {
+    return this.measuredSettle;
+  }
+
+  retainSettle(meta: unknown): void {
+    this.measuredSettle ??= measuredSettle(meta);
+  }
+
   constructor(readonly code: QaDispatchRefusal) {
     super(code);
     this.name = 'QaDispatchError';

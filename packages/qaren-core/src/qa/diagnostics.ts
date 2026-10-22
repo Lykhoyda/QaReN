@@ -1,4 +1,4 @@
-import { NATIVE_CODES } from '../domain/qa-dispatch.js';
+import { NATIVE_CODES, REFUSAL_STAGES } from '../domain/qa-dispatch.js';
 import { cleanTimingEvent } from './timing.js';
 import { isRecord } from './questions.js';
 
@@ -63,6 +63,8 @@ export function cleanDiagnostic(value: unknown): Record<string, unknown> | undef
     event[key] = value[key];
   }
   const refusal = isRecord(value.refusalDiagnostic) ? value.refusalDiagnostic : {};
+  if (REFUSAL_STAGES.some((stage) => stage === refusal.stage)) event.refusalStage = refusal.stage;
+  if (typeof refusal.mutating === 'boolean') event.mutating = refusal.mutating;
   if (NATIVE_CODES.some((code) => code === refusal.nativeCode))
     event.nativeCode = refusal.nativeCode;
   if (['none', 'observed', 'possible'].includes(refusal.nativeMutation as string))
