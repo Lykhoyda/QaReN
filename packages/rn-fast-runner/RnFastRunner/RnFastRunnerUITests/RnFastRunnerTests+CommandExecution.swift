@@ -161,6 +161,14 @@ extension RnFastRunnerTests {
     return target
   }
 
+  private func gestureIssueResponse(_ command: Command) -> Response {
+    Response(ok: false, error: ErrorPayload(
+      code: "GESTURE_ISSUE_RAISED",
+      message: "GESTURE_ISSUE_RAISED: XCTest raised an issue during the \(command.command.rawValue) gesture; it may have been partly performed",
+      mutation: "possible"
+    ))
+  }
+
   private func executeOnMainSafely(command: Command) throws -> Response {
 #if RN_FAST_RUNNER_TEST_FAULTS
     // Deterministic, test-only wedge. The branch is compile-time absent from
@@ -185,12 +193,14 @@ extension RnFastRunnerTests {
           swiftError = error
         }
       })
+      inGesture = false
 
       if let exceptionMessage {
         // XCTest aborts the gesture before synthesizing it when our monitor claimed an app alert.
         if appAlertInterruptions > 0 {
           return Self.appAlertInterruptionResponse(singleGesture: [.tap, .longPress, .drag].contains(command.command))
         }
+        if gestureIssueRaised { return gestureIssueResponse(command) }
         if command.qaReadOnly == true { return qaReadOnlyRefusal() }
         if command.platformPresence == true {
           return platformPresenceFailure()
@@ -226,13 +236,7 @@ extension RnFastRunnerTests {
           userInfo: [NSLocalizedDescriptionKey: "command returned no response"]
         )
       }
-      if response.ok, gestureIssueRaised {
-        return Response(ok: false, error: ErrorPayload(
-          code: "GESTURE_ISSUE_RAISED",
-          message: "GESTURE_ISSUE_RAISED: XCTest raised an issue during the \(command.command.rawValue) gesture; it may have been partly performed",
-          mutation: "possible"
-        ))
-      }
+      if response.ok, gestureIssueRaised { return gestureIssueResponse(command) }
       if command.qaReadOnly == true, !response.ok {
         return qaReadOnlyRefusal(appNotRunning: response.error?.reason == "app-not-running")
       }

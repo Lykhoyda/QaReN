@@ -81,6 +81,7 @@ class RnFastRunnerTests: XCTestCase {
   var servingCommands = false
   var containedIssues = 0
   var gestureIssueRaised = false
+  var inGesture = false
   var lastExactTypeTarget: RecordedExactTypeTarget?
   var needsFirstInteractionDelay = false
   let interactiveTypes: Set<XCUIElement.ElementType> = [
@@ -151,6 +152,7 @@ class RnFastRunnerTests: XCTestCase {
   override func record(_ issue: XCTIssue) {
     guard servingCommands else { return super.record(issue) }
     containedIssues += 1
+    if inGesture { gestureIssueRaised = true }
     NSLog("RN_FAST_RUNNER_ISSUE_CONTAINED=%ld", issue.type.rawValue)
   }
 
@@ -163,10 +165,10 @@ class RnFastRunnerTests: XCTestCase {
     }
 #endif
     let before = containedIssues
+    inGesture = true
     body()
-    let raised = containedIssues != before
-    if raised { gestureIssueRaised = true }
-    return raised
+    inGesture = false
+    return containedIssues != before
   }
 
   func isTargetAppAlert(_ element: XCUIElement) -> Bool {

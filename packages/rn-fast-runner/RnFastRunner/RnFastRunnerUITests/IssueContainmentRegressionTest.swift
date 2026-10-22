@@ -74,11 +74,8 @@ final class IssueContainmentRegressionTest: RnFastRunnerTests {
     XCTAssertTrue(alert.waitForExistence(timeout: 10), "fixture alert should be presented")
     let discard = alert.buttons["Discard"].frame
     beforeNextGesture = { alert.buttons["Keep editing"].tap() }
-    // XCTest cannot place a coordinate on a vanished anchor and throws after recording the issue.
-    XCTAssertThrowsError(try serve(#"{"command":"tap","x":\#(discard.midX),"y":\#(discard.midY)}"#)) { error in
-      XCTAssertEqual((error as NSError).domain, RunnerErrorDomain.exception)
-    }
-    XCTAssertNil(beforeNextGesture, "the tap should run through the gesture helper")
+    let response = try serve(#"{"command":"tap","x":\#(discard.midX),"y":\#(discard.midY)}"#)
+    assertTapOnVanishedTarget(response)
     XCTAssertEqual(app.staticTexts["alert-fixture-result"].label, "kept", "the vanished Discard button must not be pressed")
     XCTAssertTrue(try serve(#"{"command":"uptime"}"#).ok, "the runner should keep serving after the failed tap")
 #endif
