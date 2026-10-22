@@ -56,6 +56,7 @@ class RnFastRunnerTests: XCTestCase {
   private var listenerStartupFailure: String?
 #if RN_FAST_RUNNER_TEST_FAULTS
   var testFaultConsumed = false
+  var beforeNextGesture: (() -> Void)?
 #endif
   let maxRequestBytes = 2 * 1024 * 1024
   let maxSnapshotElements = 600
@@ -77,6 +78,10 @@ class RnFastRunnerTests: XCTestCase {
   // The live element the latest target check resolved with the retained frame.
   var lastLiveTarget: XCUIElement?
   var appAlertInterruptions = 0
+  var servingCommands = false
+  var containedIssues = 0
+  var gestureIssueRaised = false
+  var inGesture = false
   var lastExactTypeTarget: RecordedExactTypeTarget?
   var needsFirstInteractionDelay = false
   let interactiveTypes: Set<XCUIElement.ElementType> = [
@@ -141,6 +146,29 @@ class RnFastRunnerTests: XCTestCase {
       self.appAlertInterruptions += 1
       return true
     }
+  }
+
+  // XCTest interrupts the test after a UI automation issue even with continueAfterFailure, ending the listener.
+  override func record(_ issue: XCTIssue) {
+    guard servingCommands else { return super.record(issue) }
+    containedIssues += 1
+    if inGesture { gestureIssueRaised = true }
+    NSLog("RN_FAST_RUNNER_ISSUE_CONTAINED=%ld", issue.type.rawValue)
+  }
+
+  @discardableResult
+  func gesture(_ body: () -> Void) -> Bool {
+#if RN_FAST_RUNNER_TEST_FAULTS
+    if let fault = beforeNextGesture {
+      beforeNextGesture = nil
+      fault()
+    }
+#endif
+    let before = containedIssues
+    inGesture = true
+    body()
+    inGesture = false
+    return containedIssues != before
   }
 
   func isTargetAppAlert(_ element: XCUIElement) -> Bool {
@@ -213,7 +241,9 @@ class RnFastRunnerTests: XCTestCase {
       return
     }
     NSLog("RN_FAST_RUNNER_WAITING")
+    servingCommands = true
     let result = XCTWaiter.wait(for: [expectation], timeout: 24 * 60 * 60)
+    servingCommands = false
     NSLog("RN_FAST_RUNNER_WAIT_RESULT=%@", String(describing: result))
     if let failure = runnerListenerWaitFailure(
       listenerError: currentListenerStartupFailure(),

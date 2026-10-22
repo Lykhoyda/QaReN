@@ -115,6 +115,9 @@ const POST_MORTEM_FIELDS: &[&str] = &[
     "markerWaitResult",
     "markerListenerFailed",
     "markerSendFailed",
+    "markerIssueContained",
+    "markerTestIssue",
+    "markerTestFailed",
 ];
 
 const ADMISSION_BOUNDARIES: &[&str] = &[
@@ -214,6 +217,9 @@ fn clean(value: &Value) -> Option<Value> {
                 "markerWaitResult",
                 "markerListenerFailed",
                 "markerSendFailed",
+                "markerIssueContained",
+                "markerTestIssue",
+                "markerTestFailed",
             ],
         ),
         "timing" => (

@@ -263,6 +263,9 @@ const noRunnerMarkers = (): RunnerMarkerCounts => ({
   markerWaitResult: 0,
   markerListenerFailed: 0,
   markerSendFailed: 0,
+  markerIssueContained: 0,
+  markerTestIssue: 0,
+  markerTestFailed: 0,
 });
 let runnerMarkers = noRunnerMarkers();
 let runnerMarkerLines = { stdout: '', stderr: '' };

@@ -342,7 +342,8 @@ fn runner_termination_diagnostics_reach_private_diagnostics_only_as_fixed_words_
             "kind": "metric", "stage": "runner-post-mortem", "edge": "point", "outcome": "failed",
             "at": 201, "count": 1, "hostChild": "exited", "exitCode": 0, "exitSignal": "SIGKILL",
             "appProcess": "changed", "markerReady": 1, "markerWaiting": 1, "markerWaitResult": 0,
-            "markerListenerFailed": 0, "markerSendFailed": 2
+            "markerListenerFailed": 0, "markerSendFailed": 2, "markerIssueContained": 2,
+            "markerTestIssue": 1, "markerTestFailed": 1
         });
         let mut expected = Vec::new();
         for detail in [

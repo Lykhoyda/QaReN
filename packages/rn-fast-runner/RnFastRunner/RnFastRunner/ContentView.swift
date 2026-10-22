@@ -21,6 +21,9 @@ struct ContentView: View {
             if AlertFixture.enabled {
                 AlertFixtureControls()
             }
+            if let length = VanishFixture.length {
+                VanishFixtureControls(length: length)
+            }
 #endif
             Spacer()
             Text("XCUITest bridge")

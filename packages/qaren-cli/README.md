@@ -559,6 +559,15 @@ a multi-gesture command reports mutation `possible` because earlier gestures
 may already have run. Take a fresh snapshot of the alert and explicitly tap
 the intended button.
 
+While it serves commands, the iOS runner contains XCTest UI automation issues,
+such as a read of an element that vanished, instead of letting XCTest end its
+test, and logs only the issue type. A tap, press, drag, swipe or typing gesture
+that raises one fails with `GESTURE_ISSUE_RAISED` and mutation `possible`, and a
+system-alert button tap fails `SYSTEM_ALERT_TAP_FAILED` the same way, so neither
+is reported as performed. Issues raised by reads before or after the gesture,
+such as the readback of a code field that vanished after its fill, do not
+change the result.
+
 Before dispatch, the walker also treats a press or fill target, including a
 keyboard-fallback wrapper before its tap, whose centre lies outside its trusted
 clipping viewport or covered by an observed keyboard frame
@@ -1586,7 +1595,8 @@ that secret despite artifact redaction.
   A `health` failure adds `healthDetail` (`refused`, `reset`, `abort`, `http-4xx`, `http-5xx`, `body-not-ok`,
   `wedged` or `other`). Every failed readiness probe is followed by a `runner-post-mortem` point
   with the runner host child (`alive`, `exited`, `unknown`), its exit code or signal name, counts of
-  the runner's fixed lifecycle markers (never output text), and `appProcess`: the app process found
+  the runner's fixed lifecycle markers, of contained XCTest issues, and of XCTest issue and
+  test-failed lines for the runner's test (never output text), and `appProcess`: the app process found
   on the simulator compared with the last good read (`same`, `changed`, `absent`, `unknown`).
   Fills add `dispatch-bind` and `dispatch-readback` spans and iOS mutating dispatches add
   `dispatch-native`, `dispatch-settle` and `dispatch-health` spans, each carrying the dispatching

@@ -79,6 +79,8 @@ class Harness {
   var refuseRead = false
   var throwRead = false
   var appAlertInterruptions = 0
+  var gestureIssueRaised = false
+  var inGesture = false
   static func appAlertInterruptionResponse(singleGesture: Bool = true) -> Response { Response(ok: false) }
   func sleepFor(_ seconds: Double) { sleeps += 1 }
   func shouldRetryException(_ command: Command, message: String) -> Bool { true }
