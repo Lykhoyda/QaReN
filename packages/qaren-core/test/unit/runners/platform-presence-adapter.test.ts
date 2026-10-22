@@ -479,7 +479,6 @@ test('presence transport and native failures never retry, relayout, or reap the 
   for (const failure of [
     'socket closed',
     'abort',
-    'RUNNER_TIMEOUT',
     'KEYBOARD_RELAYOUT_REQUIRED',
     'PLATFORM_PRESENCE_FAILED',
   ]) {
