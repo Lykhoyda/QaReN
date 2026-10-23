@@ -175,6 +175,11 @@ fn visible_lines(text: &str) -> Vec<String> {
         .collect()
 }
 
+fn heading<'a>(line: &'a str, hashes: &str) -> Option<&'a str> {
+    let rest = line.strip_prefix(hashes)?;
+    rest.starts_with(char::is_whitespace).then(|| rest.trim())
+}
+
 pub fn list(app_root: &Path) -> Result<Vec<PlanEntry>, String> {
     let dir = plans_dir(app_root)?;
     let entries = match std::fs::read_dir(&dir) {
@@ -199,16 +204,30 @@ pub fn list(app_root: &Path) -> Result<Vec<PlanEntry>, String> {
         }
         let text = read_regular(&path).ok_or_else(|| format!("cannot read {}", path.display()))?;
         let visible = visible_lines(&text);
+        let section = match visible
+            .iter()
+            .position(|line| heading(line, "##").is_some_and(|t| t.eq_ignore_ascii_case("qa")))
+        {
+            Some(qa) => {
+                let rest = &visible[qa + 1..];
+                let end = rest
+                    .iter()
+                    .position(|line| heading(line, "##").is_some())
+                    .unwrap_or(rest.len());
+                &rest[..end]
+            }
+            None => &visible[..],
+        };
         plans.push(PlanEntry {
             file: format!(".qaren/plans/{name}"),
             title: visible
                 .iter()
                 .find_map(|line| line.strip_prefix("# "))
                 .map(|title| title.trim().to_string()),
-            blocks: visible
+            blocks: section
                 .iter()
-                .filter_map(|line| line.strip_prefix("### "))
-                .map(|title| title.trim().to_string())
+                .filter_map(|line| heading(line, "###"))
+                .map(str::to_string)
                 .collect(),
             broken: broken(&text),
         });
@@ -630,6 +649,38 @@ mod tests {
                 blocks: vec!["Block".into()],
                 broken: vec!["ios".into()],
             }]
+        );
+    }
+
+    #[test]
+    fn listing_reads_blocks_only_from_the_qa_section_when_present() {
+        let app = app("list-section");
+        recipe(
+            &app,
+            "x.md",
+            "# Tasks\n\n### Setup\n\n## qa\n\n###\tAdd one\n1. Tap \"Add\"\n\n## Notes\n\n### Follow-ups\n",
+        );
+        recipe(
+            &app,
+            "y.md",
+            "# Loose\n\n### First\n1. Tap \"Add\"\n\n## Notes\n\n### Second\n",
+        );
+        assert_eq!(
+            list(&app).unwrap(),
+            vec![
+                PlanEntry {
+                    file: ".qaren/plans/x.md".into(),
+                    title: Some("Tasks".into()),
+                    blocks: vec!["Add one".into()],
+                    broken: vec![],
+                },
+                PlanEntry {
+                    file: ".qaren/plans/y.md".into(),
+                    title: Some("Loose".into()),
+                    blocks: vec!["First".into(), "Second".into()],
+                    broken: vec![],
+                },
+            ]
         );
     }
 
