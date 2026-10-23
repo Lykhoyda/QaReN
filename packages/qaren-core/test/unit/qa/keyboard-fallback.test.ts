@@ -573,6 +573,9 @@ test('U8: the block of an unverified fill is never saved and video stays withhel
     },
   ]);
   assert.deepEqual(result.blocksWritten, []);
+  assert.deepEqual(result.recipe, {
+    unsavable: `line ${fake.rows[0].line}: fills a private input`,
+  });
   assert.equal(result.videoPublication, 'withheld-fill');
   assert.equal(existsSync(join(dir, '.qaren', 'actions', 'hidden-email.yaml')), false);
 });

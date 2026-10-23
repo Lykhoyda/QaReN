@@ -3,7 +3,7 @@ title: CLI
 description: Every qaren verb, its arguments and its flags.
 ---
 
-Every verb except `watch`, `actions`, `update` and `doctor` prints one `qaren/1` JSON receipt on stdout and its
+Every verb except `watch`, `actions`, `plans`, `update` and `doctor` prints one `qaren/1` JSON receipt on stdout and its
 narration on stderr. A usage error exits `2` with help on stderr and nothing on stdout.
 `qaren --help` prints the usage.
 
@@ -51,6 +51,15 @@ qaren actions show <slug>
 
 Lists the saved blocks in the current directory's `.qaren/actions/`, or prints one. See
 [Saved blocks](../saved-blocks/#inspecting-blocks).
+
+## qaren plans
+
+```sh
+qaren plans [--json]
+```
+
+Lists the saved plans in the current directory's `.qaren/plans/` with their blocks and the
+platforms they are flagged broken on. See [Saved plans](../plans/#saved-plans).
 
 ## qaren cleanup
 

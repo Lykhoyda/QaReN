@@ -5,7 +5,7 @@ import { JevError } from '../../../dist/qa/questions.js';
 import { join } from '../../../dist/qa/screen.js';
 import { runPlan, WAIT_POLL_MS } from '../../../dist/qa/walker.js';
 import type { WalkerTimingDiagnostic } from '../../../dist/qa/walker.js';
-import { choice, scriptedJudge, walker } from './judgment-fixtures.ts';
+import { choice, element, screen, scriptedJudge, walker } from './judgment-fixtures.ts';
 
 const refusal = 'SCREEN_EVIDENCE_INCOMPLETE: no established assertion contribution is available';
 
@@ -161,9 +161,20 @@ test('failed and uncertain checks never execute their positive batched target or
         result.steps[0].reason!,
         probability === 0.5 ? /^CHECK_UNSURE:/ : /is not satisfied on screen/,
       );
+      assert.equal(result.failure?.kind, probability === 0.5 ? undefined : 'step');
       assert.equal(f.captures(), probability === 0.5 ? 2 : 1);
       assert.equal(f.deps.now(), probability === 0.5 ? WAIT_POLL_MS : 0);
       assert.deepEqual(f.actions, []);
     }
   }
+});
+
+test('a check left uncertain by a private input is not a step failure', async () => {
+  const judge = scriptedJudge(() => ({}));
+  const f = walker([screen([element('@pw', 'Password', { kind: 'input', secure: true })])], judge);
+  const result = await runPlan(parsePlan('✓ The Password field is filled').blocks!, f.deps);
+  assert.equal(result.verdict, 'FAIL');
+  assert.match(result.failure?.seen ?? '', /^CHECK_UNSURE:/);
+  assert.equal(result.failure?.kind, undefined);
+  assert.equal(judge.requests.length, 0);
 });

@@ -16,7 +16,7 @@ macro_rules! eprintln {
     ($($args:tt)*) => { std::eprintln!("{}", qaren::redact::redact_inputs(&format!($($args)*))) };
 }
 
-const USAGE: &str = "usage: qaren check --plan-file <plan.md> [--platform ios|android] [--device <udid>] [--config .qaren/config.yaml] [--fresh-install] [--boot-device | --restart-device] [--shutdown-device-on-exit] [--json]\n       qaren pr <number|url> --plan-file <plan.md> [--platform ios|android] [--device <udid>] [--config .qaren/config.yaml] [--fresh-install] [--boot-device | --restart-device] [--shutdown-device-on-exit] [--json]\n       qaren publish <run-id> [--json]\n       qaren prepare <scenario.yaml> [--device <udid> [--boot-device]] [--json] [--dry-run]\n       qaren prewarm <scenario.yaml> [--json]\n       qaren watch [<run-id> | --latest] [--plain] [--json]\n       qaren status  <run-id> [--json]\n       qaren complete <run-id> <build-log> [--json]\n       qaren cleanup <run-id> [--json] [--remove-app --confirm-remove-app <run-id>/<remote-serial>/<app-id>]\n       qaren actions list [--json]\n       qaren actions show <slug>\n       qaren update\n       qaren doctor [--json] [--config .qaren/config.yaml]\n       qaren --version\n\ncheck walks the plan on the booted simulator against the working tree; runs land in ~/.qaren/runs/<run-id>/.\npr walks the plan on a detached worktree at the pull request head, recording the screen; publish posts the reviewer comment and saves discovered blocks to the PR branch.\nupdate, run from the rn-dev-agent checkout root, fast-forwards it, rebuilds and reinstalls qaren, and says whether the build changed.\ndoctor checks this host, the installed build and the app config, and lists rn-dev-agent 1.x leftovers; it changes nothing.\n--fresh-install opts into removing the selected app and its data under the check device lease before installation.\n--boot-device opts into booting an exact iOS simulator UUID selected by --device under the check lease; cleanup leaves it running.\nprepare --device borrows that exact existing iOS simulator under the same lease instead of creating one; cleanup keeps it.\n--restart-device opts into restarting (or booting if Shutdown) an exact iOS simulator UUID selected by --device under the check lease.\n--shutdown-device-on-exit opts into shutting down the exact iOS simulator UUID selected by --device during teardown while this run holds its lease.\n--remove-app also uninstalls the app (and its data) this run installed on its leased Android emulator;\nthe confirmation must name exactly this run, its recorded emulator serial and its app id.";
+const USAGE: &str = "usage: qaren check --plan-file <plan.md> [--platform ios|android] [--device <udid>] [--config .qaren/config.yaml] [--fresh-install] [--boot-device | --restart-device] [--shutdown-device-on-exit] [--json]\n       qaren pr <number|url> --plan-file <plan.md> [--platform ios|android] [--device <udid>] [--config .qaren/config.yaml] [--fresh-install] [--boot-device | --restart-device] [--shutdown-device-on-exit] [--json]\n       qaren publish <run-id> [--json]\n       qaren prepare <scenario.yaml> [--device <udid> [--boot-device]] [--json] [--dry-run]\n       qaren prewarm <scenario.yaml> [--json]\n       qaren watch [<run-id> | --latest] [--plain] [--json]\n       qaren status  <run-id> [--json]\n       qaren complete <run-id> <build-log> [--json]\n       qaren cleanup <run-id> [--json] [--remove-app --confirm-remove-app <run-id>/<remote-serial>/<app-id>]\n       qaren actions list [--json]\n       qaren actions show <slug>\n       qaren plans [--json]\n       qaren update\n       qaren doctor [--json] [--config .qaren/config.yaml]\n       qaren --version\n\ncheck walks the plan on the booted simulator against the working tree; runs land in ~/.qaren/runs/<run-id>/.\npr walks the plan on a detached worktree at the pull request head, recording the screen; publish posts the reviewer comment and saves discovered blocks to the PR branch.\nupdate, run from the rn-dev-agent checkout root, fast-forwards it, rebuilds and reinstalls qaren, and says whether the build changed.\ndoctor checks this host, the installed build and the app config, and lists rn-dev-agent 1.x leftovers; it changes nothing.\nplans lists the saved plans in the current app's .qaren/plans with their blocks and the platforms they are flagged broken on.\n--fresh-install opts into removing the selected app and its data under the check device lease before installation.\n--boot-device opts into booting an exact iOS simulator UUID selected by --device under the check lease; cleanup leaves it running.\nprepare --device borrows that exact existing iOS simulator under the same lease instead of creating one; cleanup keeps it.\n--restart-device opts into restarting (or booting if Shutdown) an exact iOS simulator UUID selected by --device under the check lease.\n--shutdown-device-on-exit opts into shutting down the exact iOS simulator UUID selected by --device during teardown while this run holds its lease.\n--remove-app also uninstalls the app (and its data) this run installed on its leased Android emulator;\nthe confirmation must name exactly this run, its recorded emulator serial and its app id.";
 
 fn user_home() -> Result<PathBuf, String> {
     match std::env::var_os("HOME") {
@@ -150,6 +150,29 @@ fn actions(args: &[String], json: bool) -> ExitCode {
     }
 }
 
+// Saved plans under the current app's .qaren/plans; read-only.
+fn plans(json: bool) -> ExitCode {
+    let app_root = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+    match qaren::recipes::list(&app_root) {
+        Ok(entries) => {
+            let text = if json {
+                format!(
+                    "{}\n",
+                    serde_json::to_string_pretty(&entries).unwrap_or_else(|_| "[]".to_string())
+                )
+            } else {
+                qaren::recipes::render(&entries)
+            };
+            print!("{}", qaren::redact::redact_inputs(&text));
+            ExitCode::from(0)
+        }
+        Err(detail) => {
+            eprintln!("qaren plans: {detail}");
+            ExitCode::from(1)
+        }
+    }
+}
+
 fn main() -> ExitCode {
     let raw_args: Vec<_> = std::env::args_os().skip(1).collect();
     if raw_args
@@ -246,7 +269,7 @@ fn main_inner(args: Vec<String>) -> ExitCode {
         return ExitCode::from(2);
     };
     let expected_positionals = match verb.as_str() {
-        "check" | "update" | "doctor" => 1,
+        "check" | "update" | "doctor" | "plans" => 1,
         "pr" | "publish" => 2,
         "complete" => 3,
         "actions" if positional.get(1).is_some_and(|sub| sub == "show") => 3,
@@ -300,6 +323,9 @@ fn main_inner(args: Vec<String>) -> ExitCode {
     }
     if verb == "actions" {
         return actions(&positional[1..], json);
+    }
+    if verb == "plans" {
+        return plans(json);
     }
     if verb == "update" {
         if json {
@@ -514,6 +540,9 @@ fn main_inner(args: Vec<String>) -> ExitCode {
     }
     if let Some(report) = receipt.artifacts.get("report") {
         eprintln!("report: {}", report.display());
+    }
+    if let Some(recipe) = &receipt.recipe {
+        eprintln!("plan: {}", recipe.render());
     }
 
     ExitCode::from(receipt_exit_code(receipt.result))

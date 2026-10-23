@@ -103,6 +103,12 @@ pub struct Ledger {
     pub speed: Option<LedgerSpeed>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub failure: Option<LedgerFailure>,
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "passive"
+    )]
+    pub recipe: Option<crate::recipes::RecipeCandidate>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -366,6 +372,19 @@ pub struct LedgerFailure {
     pub seen: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub screenshot: Option<String>,
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "passive"
+    )]
+    pub kind: Option<FailureKind>,
+}
+
+// Only a plan step's own judgment is a step failure; anything else, or an older core, has no kind.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum FailureKind {
+    Step,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -1221,6 +1240,7 @@ fn synthesized_failure(rows: &[Row], seen: &str) -> LedgerFailure {
         step: last.map_or(0, |row| row.line),
         seen: seen.to_string(),
         screenshot: last.and_then(|row| row.screenshot.clone()),
+        kind: None,
     }
 }
 
@@ -1242,6 +1262,7 @@ pub fn synthesized_ledger(rows: &[Row], verdict: &str, seen: &str) -> Ledger {
         escapes: 0,
         recoveries: 0,
         speed: None,
+        recipe: None,
     }
 }
 

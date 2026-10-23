@@ -12,12 +12,13 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fork } from 'node:child_process';
 import { setTimeout as delay } from 'node:timers/promises';
-import { parsePlan, slugify } from '../../../dist/qa/plan.js';
+import { parsePlan, planTitle, slugify } from '../../../dist/qa/plan.js';
 import type { Block } from '../../../dist/qa/plan.js';
 import type { LedgerRow, Selector } from '../../../dist/qa/ledger.js';
 import {
   loadBlock,
   readBlock,
+  recipeMarkdown,
   serializeBlock,
   storedMatches,
   storedFits,
@@ -785,4 +786,80 @@ test('a declared echo saves as its plan line and a name-only marker', () => {
   for (const marker of ['# qaren: echo email', '# qaren: echo OTP']) {
     assert.ok('invalid' in readBlock(yaml.replace('# qaren: echo EMAIL', marker)), marker);
   }
+});
+
+const recipeSource = [
+  '# Add a task',
+  '',
+  'Prose the walk never reads: "Hunter2" stays out.',
+  '<!-- reviewer note -->',
+  '',
+  '## QA',
+  '',
+  '### Open tasks',
+  'starts on: "Home"',
+  '1. Tap "Tasks"',
+  '✓ "Tasks"',
+  '',
+  '### Add one',
+  '1. Type "Milk" into "New task"',
+  '2. Fill "Password" with input PASSWORD',
+  '✓ "Milk"',
+  '',
+  '## Notes',
+  'anything',
+  '',
+].join('\n');
+
+function recipeOf(markdown: string, set: PrivateSet = { values: [] }) {
+  const parsed = parsePlan(markdown);
+  assert.ok(parsed.blocks, JSON.stringify(parsed.refused));
+  return recipeMarkdown(planTitle(markdown), parsed.blocks, set);
+}
+
+test('a recipe keeps only the title, block titles and raw plan lines', () => {
+  assert.deepEqual(recipeOf(recipeSource), {
+    slug: 'add-a-task',
+    markdown: [
+      '# Add a task',
+      '',
+      '## QA',
+      '',
+      '### Open tasks',
+      'starts on: "Home"',
+      '1. Tap "Tasks"',
+      '✓ "Tasks"',
+      '',
+      '### Add one',
+      '1. Type "Milk" into "New task"',
+      '2. Fill "Password" with input PASSWORD',
+      '✓ "Milk"',
+      '',
+    ].join('\n'),
+  });
+});
+
+test('a recipe re-parses to the same blocks, slugs and plan hashes', () => {
+  for (const source of [recipeSource, '# Login\n1. Tap "Sign in"\n✓ "Welcome"\n']) {
+    const recipe = recipeOf(source);
+    assert.ok('markdown' in recipe);
+    const again = parsePlan(recipe.markdown);
+    assert.ok(again.blocks);
+    assert.deepEqual(
+      again.blocks.map(({ slug, title, planHash }) => ({ slug, title, planHash })),
+      parsePlan(source).blocks!.map(({ slug, title, planHash }) => ({ slug, title, planHash })),
+    );
+  }
+  assert.deepEqual(recipeOf('# Login\n1. Tap "Sign in"\n'), {
+    slug: 'login',
+    markdown: '# Login\n\n## QA\n\n### Login\n1. Tap "Sign in"\n',
+  });
+});
+
+test('a recipe with a protected value anywhere is withheld', () => {
+  const withheld = { unsavable: 'contains a protected plan-typed value' };
+  for (const value of ['Add a task', 'Open tasks', 'Milk', 'Tasks']) {
+    assert.deepEqual(recipeOf(recipeSource, secrets(value)), withheld, value);
+  }
+  assert.ok('markdown' in recipeOf(recipeSource, secrets('Hunter2')));
 });

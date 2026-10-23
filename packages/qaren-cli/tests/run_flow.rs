@@ -1160,16 +1160,25 @@ fn script_preflight_inventory_until_lease(
     command: &str,
     inventory: &str,
 ) {
+    script_preflight_with_status(mock, repo, command, inventory, UNTRACKED_PLAN);
+}
+
+const UNTRACKED_PLAN: &str = "?? test-app/.qaren/config.yaml\0?? test-app/plan.md\0";
+
+fn script_preflight_with_status(
+    mock: &mut MockRunner,
+    repo: &Path,
+    command: &str,
+    inventory: &str,
+    status: &str,
+) {
     mock.expect_run("node --version", CmdOutput::success("v26.8.1\n"));
     script_plan(mock, repo);
     mock.expect_run(command, CmdOutput::success(inventory));
     mock.expect_run("git", CmdOutput::success(&format!("{}\n", repo.display()))); // toplevel of cwd
     mock.expect_run("git", CmdOutput::success(&format!("{}\n", repo.display()))); // explicit worktree
     mock.expect_run("git", CmdOutput::success(&format!("{}\n", "b".repeat(40))));
-    mock.expect_run(
-        "git",
-        CmdOutput::success("?? test-app/.qaren/config.yaml\0?? test-app/plan.md\0"),
-    );
+    mock.expect_run("git", CmdOutput::success(status));
     for tool in IOS_TOOLS {
         mock.expect_run("which", CmdOutput::success(&format!("/usr/bin/{tool}\n")));
     }
@@ -1381,11 +1390,26 @@ fn script_teardown_after_drift(
     udid: &str,
     runner_host: Option<CmdOutput>,
 ) {
-    mock.expect_run("git", CmdOutput::success(&format!("{}\n", "b".repeat(40))));
-    mock.expect_run(
-        "git",
-        CmdOutput::success("?? test-app/.qaren/config.yaml\0?? test-app/plan.md\0"),
+    script_teardown_with_status(
+        mock,
+        UNTRACKED_PLAN,
+        inventory,
+        probe_dead_leader,
+        udid,
+        runner_host,
     );
+}
+
+fn script_teardown_with_status(
+    mock: &mut MockRunner,
+    status: &str,
+    inventory: CmdOutput,
+    probe_dead_leader: bool,
+    udid: &str,
+    runner_host: Option<CmdOutput>,
+) {
+    mock.expect_run("git", CmdOutput::success(&format!("{}\n", "b".repeat(40))));
+    mock.expect_run("git", CmdOutput::success(status));
     script_teardown_resources(mock, inventory, probe_dead_leader, udid, runner_host);
 }
 
@@ -1516,6 +1540,196 @@ fn assert_direct_ios_launch(mock: &MockRunner) {
             "simctl-launchctl",
             "core-walk",
         ],
+    );
+}
+
+fn script_recipe_walk(mock: &mut MockRunner, repo: &Path, ledger: &str, exit: i32) {
+    script_preflight(mock, repo);
+    script_recipe_walk_after_preflight(mock, ledger, exit, UNTRACKED_PLAN);
+}
+
+fn script_recipe_walk_on_default_branch(
+    mock: &mut MockRunner,
+    repo: &Path,
+    ledger: &str,
+    exit: i32,
+) {
+    script_preflight_with_status(mock, repo, "simctl list devices booted", &booted_json(), "");
+    mock.expect_run("lsof", free_port());
+    script_recipe_walk_after_preflight(mock, ledger, exit, "");
+    mock.expect_run(
+        "refs/remotes/origin/HEAD",
+        CmdOutput::success(&format!("{}\n", "b".repeat(40))),
+    );
+}
+
+fn script_recipe_walk_after_preflight(
+    mock: &mut MockRunner,
+    ledger: &str,
+    exit: i32,
+    status: &str,
+) {
+    script_provision(mock);
+    mock.expect_run("(exclude).qaren/actions", CmdOutput::success(""));
+    script_host_probe(mock, UDID, hosts_absent());
+    mock.expect_spawn_piped(
+        "walk.js",
+        9000,
+        &format!("{}\n", envelope(2, "result", ledger)),
+        Some(exit),
+    );
+    script_core_identity(mock);
+    mock.expect_run("(exclude).qaren/actions", CmdOutput::success(""));
+    script_teardown_with_status(
+        mock,
+        status,
+        CmdOutput::success("1 1 S\n6000 6000 S\n"),
+        false,
+        UDID,
+        Some(hosts_absent()),
+    );
+}
+
+fn run_saved_plan_on_default_branch(
+    failure: &str,
+) -> (qaren::receipt::Receipt, PathBuf, &'static str) {
+    let (repo, app) = app_repo();
+    let book = app.join(".qaren/plans");
+    std::fs::create_dir_all(&book).unwrap();
+    let plan = "1. Tap \"Tasks\"\n✓ \"Tasks\"\n";
+    let saved = book.join("tasks.md");
+    std::fs::write(&saved, plan).unwrap();
+    let mut mock = MockRunner::new();
+    let ledger = format!(
+        r#"{{"verdict":"FAIL","path":"walk","blocks":[{{"key":"plan","outcome":"fail","source":"discovered"}}],"steps":[],"jev":{{"calls":0,"medianMs":0}},"llmTurns":0,"escapes":0,"recoveries":0,"failure":{failure}}}"#
+    );
+    script_recipe_walk_on_default_branch(&mut mock, &repo, &ledger, 1);
+    let mut req = request(&repo, &app, 30);
+    req.plan_file = saved.clone();
+
+    let receipt = run(&mut mock, &req);
+
+    assert_eq!(receipt.result, ReceiptResult::Fail, "{:?}", receipt.failure);
+    assert_eq!(mock.remaining(), 0);
+    (receipt, saved, plan)
+}
+
+#[test]
+fn a_saved_plan_whose_step_fails_on_the_default_branch_is_flagged_for_that_platform() {
+    let (receipt, saved, plan) =
+        run_saved_plan_on_default_branch(r#"{"step":2,"seen":"no Tasks","kind":"step"}"#);
+
+    assert_eq!(
+        receipt.recipe.map(|recipe| recipe.outcome),
+        Some(qaren::recipes::Outcome::Flagged)
+    );
+    assert_eq!(
+        std::fs::read_to_string(&saved).unwrap(),
+        format!("<!-- qaren:broken ios -->\n{plan}")
+    );
+}
+
+#[test]
+fn a_saved_plan_that_fails_without_a_step_failure_on_the_default_branch_is_left_unmarked() {
+    let (receipt, saved, plan) = run_saved_plan_on_default_branch(
+        r#"{"step":1,"seen":"JEV_UNAVAILABLE: the judgment service is unavailable"}"#,
+    );
+
+    assert_eq!(
+        receipt.recipe,
+        Some(qaren::recipes::RecipeOutcome {
+            outcome: qaren::recipes::Outcome::NotMarked,
+            path: None,
+            reason: Some("not a definite step failure".into()),
+        })
+    );
+    assert_eq!(std::fs::read_to_string(&saved).unwrap(), plan);
+}
+
+#[test]
+fn a_flagged_saved_plan_that_passes_on_the_default_branch_is_cleared_not_resaved() {
+    let (repo, app) = app_repo();
+    let book = app.join(".qaren/plans");
+    std::fs::create_dir_all(&book).unwrap();
+    let plan = "## QA\n\n### plan\n1. Tap \"Tasks\"\n";
+    let saved = book.join("tasks.md");
+    let flagged = format!("<!-- qaren:broken ios -->\n{plan}");
+    std::fs::write(&saved, &flagged).unwrap();
+    std::fs::write(app.join("plan.md"), &flagged).unwrap();
+    let mut mock = MockRunner::new();
+    let ledger = r###"{"verdict":"PASS","path":"walk","blocks":[{"key":"plan","outcome":"pass","source":"discovered"}],"steps":[],"jev":{"calls":0,"medianMs":0},"llmTurns":0,"escapes":0,"recoveries":0,"recipe":{"slug":"plan","markdown":"## QA\n\n### plan\n1. Tap \"Tasks\"\n"}}"###;
+    script_recipe_walk_on_default_branch(&mut mock, &repo, ledger, 0);
+    let mut req = request(&repo, &app, 30);
+    req.plan_file = saved.clone();
+
+    let receipt = run(&mut mock, &req);
+
+    assert_eq!(receipt.result, ReceiptResult::Pass, "{:?}", receipt.failure);
+    assert_eq!(mock.remaining(), 0);
+    assert_eq!(
+        receipt.recipe.map(|recipe| recipe.outcome),
+        Some(qaren::recipes::Outcome::Cleared)
+    );
+    assert_eq!(std::fs::read_to_string(&saved).unwrap(), plan);
+    assert!(!book.join("plan.md").exists());
+}
+
+#[test]
+fn a_fully_passing_draft_is_saved_into_the_plan_book_and_kept_out_of_run_evidence() {
+    let (repo, app) = app_repo();
+    let mut mock = MockRunner::new();
+    let ledger = r###"{"verdict":"PASS","path":"walk","blocks":[{"key":"plan","outcome":"pass","source":"discovered"}],"steps":[],"jev":{"calls":0,"medianMs":0},"llmTurns":0,"escapes":0,"recoveries":0,"recipe":{"slug":"plan","markdown":"## QA\n\n### plan\n1. Tap \"Tasks\"\n"}}"###;
+    script_recipe_walk(&mut mock, &repo, ledger, 0);
+
+    let receipt = run(&mut mock, &request(&repo, &app, 30));
+
+    assert_eq!(receipt.result, ReceiptResult::Pass, "{:?}", receipt.failure);
+    assert_eq!(mock.remaining(), 0);
+    let saved = app.canonicalize().unwrap().join(".qaren/plans/plan.md");
+    assert_eq!(
+        receipt.recipe,
+        Some(qaren::recipes::RecipeOutcome {
+            outcome: qaren::recipes::Outcome::Saved,
+            path: Some(saved.clone()),
+            reason: None,
+        })
+    );
+    assert_eq!(
+        std::fs::read_to_string(&saved).unwrap(),
+        "## QA\n\n### plan\n1. Tap \"Tasks\"\n"
+    );
+    let evidence = std::fs::read_to_string(&receipt.artifacts["ledger"]).unwrap();
+    assert!(!evidence.contains("recipe"), "{evidence}");
+}
+
+#[test]
+fn a_saved_plan_that_fails_on_local_changes_is_left_unmarked() {
+    let (repo, app) = app_repo();
+    let book = app.join(".qaren/plans");
+    std::fs::create_dir_all(&book).unwrap();
+    let plan = "1. Tap \"Tasks\"\n✓ \"Tasks\"\n";
+    std::fs::write(book.join("tasks.md"), plan).unwrap();
+    let mut mock = MockRunner::new();
+    let ledger = r#"{"verdict":"FAIL","path":"walk","blocks":[{"key":"plan","outcome":"fail","source":"discovered"}],"steps":[],"jev":{"calls":0,"medianMs":0},"llmTurns":0,"escapes":0,"recoveries":0,"failure":{"step":2,"seen":"no Tasks"}}"#;
+    script_recipe_walk(&mut mock, &repo, ledger, 1);
+    let mut req = request(&repo, &app, 30);
+    req.plan_file = book.join("tasks.md");
+
+    let receipt = run(&mut mock, &req);
+
+    assert_eq!(receipt.result, ReceiptResult::Fail, "{:?}", receipt.failure);
+    assert_eq!(mock.remaining(), 0);
+    assert_eq!(
+        receipt.recipe,
+        Some(qaren::recipes::RecipeOutcome {
+            outcome: qaren::recipes::Outcome::NotMarked,
+            path: None,
+            reason: Some("local changes".into()),
+        })
+    );
+    assert_eq!(
+        std::fs::read_to_string(book.join("tasks.md")).unwrap(),
+        plan
     );
 }
 

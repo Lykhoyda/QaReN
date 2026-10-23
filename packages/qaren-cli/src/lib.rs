@@ -20,6 +20,7 @@ pub mod process_observation;
 pub mod progress;
 pub mod publish;
 pub mod receipt;
+pub mod recipes;
 pub mod record;
 pub mod redact;
 pub mod report;

@@ -42,6 +42,8 @@ export interface LedgerFailure {
   step: number;
   seen: string;
   screenshot?: string;
+  // Set only when a plan step's own judgment failed; no other failure may mark a saved plan broken.
+  kind?: 'step';
 }
 
 export interface BlockResult {
@@ -68,6 +70,7 @@ export interface Ledger {
   recoveries: number;
   speed?: LedgerSpeed;
   failure?: LedgerFailure;
+  recipe?: { slug: string; markdown: string } | { unsavable: string };
 }
 
 export interface RefusedLedger extends Omit<Ledger, 'verdict'> {

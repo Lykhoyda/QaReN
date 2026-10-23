@@ -47,6 +47,7 @@ import {
   type StoredBlock,
   loadBlock,
   readBlock,
+  recipeMarkdown,
   serializeBlock,
   storedFits,
   writeBlock,
@@ -882,6 +883,11 @@ async function walkBlockScoped(
       },
     };
   };
+  // The judged screen and any post-recovery capture must both show the app.
+  const judged = (outcome: WalkOutcome, screen: Screen): WalkOutcome =>
+    outcome.failure && screen.front === 'app' && latest.front === 'app'
+      ? { ...outcome, failure: { ...outcome.failure, kind: 'step' } }
+      : outcome;
   const shoot = async (item: Item): Promise<string | undefined> => {
     assertActive();
     if (!privacy.canScreenshot()) {
@@ -1590,7 +1596,8 @@ async function walkBlockScoped(
             if (recovering === 'retry') continue attempts;
             if (recovering) return recovering;
           }
-          return failed(item, 1, reason, before.screen, shot);
+          const checkFailure = failed(item, 1, reason, before.screen, shot);
+          return decision.check === 'fail' ? judged(checkFailure, before.screen) : checkFailure;
         }
 
         if (item.kind === 'wait') {
@@ -1672,12 +1679,15 @@ async function walkBlockScoped(
             if (recovering) return recovering;
             if (unchanged) {
               const miss = presenceMiss(item.target, observation.screen);
-              return failed(
-                item,
-                1,
-                miss ? `${reason}; ${miss}` : reason,
+              return judged(
+                failed(
+                  item,
+                  1,
+                  miss ? `${reason}; ${miss}` : reason,
+                  observation.screen,
+                  await shoot(item),
+                ),
                 observation.screen,
-                await shoot(item),
               );
             }
             usable(observation, item, deadline);
@@ -1785,7 +1795,10 @@ async function walkBlockScoped(
             continue items;
           }
           const reason = `"${item.until.phrase}" did not come into view after ${SCROLL_ATTEMPTS} scrolls`;
-          return failed(item, Math.max(attempts, 1), reason, observation.screen, shot);
+          return judged(
+            failed(item, Math.max(attempts, 1), reason, observation.screen, shot),
+            observation.screen,
+          );
         }
 
         // press · fill · back · dialog: snapshot → resolve → act → read-back → snapshot → diff rule
@@ -2385,7 +2398,11 @@ async function walkBlockScoped(
             again = true;
             break;
           }
-          outcome = recovering ?? failed(item, attempt, unchanged, after.screen, shot, ref);
+          outcome =
+            recovering ??
+            (act!.ok && !act!.error
+              ? judged(failed(item, attempt, unchanged, after.screen, shot, ref), after.screen)
+              : failed(item, attempt, unchanged, after.screen, shot, ref));
         }
         if (again) continue attempts;
         if (outcome) return outcome;
@@ -2474,8 +2491,19 @@ async function walkBlockScoped(
           error instanceof ResolutionError && error.code === 'APP_PROCESS_UNKNOWN'
             ? { code: error.code, message: error.message }
             : undefined;
+        const caughtOutcome = failed(
+          item,
+          currentAttempt,
+          error.message,
+          latest,
+          shot,
+          undefined,
+          miss,
+        );
         return {
-          ...failed(item, currentAttempt, error.message, latest, shot, undefined, miss),
+          ...(error instanceof ResolutionError && error.missing
+            ? judged(caughtOutcome, latest)
+            : caughtOutcome),
           ...(refusal || unknownProcess ? { refusal: refusal ?? unknownProcess } : {}),
         };
       }
@@ -2620,6 +2648,7 @@ export async function runPlan(
   deps: WalkerDeps,
   preflightCalls: readonly JevCall[] = [],
   store?: BlockStore,
+  title?: string,
 ): Promise<WalkResult> {
   return measureTiming(deps.timing, deps.now, 'walk', async () => {
     const walking = withRowTiming(deps);
@@ -2637,6 +2666,7 @@ export async function runPlan(
       deps.login?.block?.items.flatMap((i) => (i.kind === 'fill' ? [fillText(i)] : [])) ?? [],
     );
     let recoveries = 0;
+    const privateFills: number[] = [];
     // A login replay before any plan pass opens the publishable window.
     const videoPublication = (): NonNullable<WalkResult['videoPublication']> =>
       currentInputs()?.hasInputs ||
@@ -2674,6 +2704,7 @@ export async function runPlan(
         operations,
       );
       recoveries += outcome.recoveries ?? 0;
+      privateFills.push(...(outcome.privateFills ?? []));
       return outcome;
     };
     const path = (): LedgerPath =>
@@ -2729,6 +2760,10 @@ export async function runPlan(
           sequence.publicationInterrupted || deps.publicationInterrupted?.() === true,
       };
       if (store) ledger.blocksWritten = written;
+      if (ledger.verdict === 'PASS' && !outcome?.refusal && !deps.cancelled?.())
+        ledger.recipe = privateFills.length
+          ? { unsavable: `line ${Math.min(...privateFills)}: fills a private input` }
+          : recipeMarkdown(title, blocks, privacy.privateSet('persisted'));
       return outcome?.refusal
         ? {
             ...ledger,

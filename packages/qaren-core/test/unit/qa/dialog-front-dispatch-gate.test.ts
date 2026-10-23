@@ -192,5 +192,6 @@ test('a first attempt under a dialog leaves it to the next dialog step and fails
     renderReason(outcome.failure?.seen ?? '', (text) => text),
     /TARGET_NOT_FOUND/,
   );
+  assert.equal(outcome.failure?.kind, undefined);
   assert.equal(outcome.recoveries, undefined);
 });

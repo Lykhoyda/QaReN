@@ -16,6 +16,7 @@ use crate::github::{self, PrInfo};
 use crate::lease;
 use crate::publish::PrRunRecord;
 use crate::receipt::{Receipt, ReceiptResult};
+use crate::recipes;
 use crate::record::{self, VideoStatus};
 use crate::report::{self, ReportInput};
 use crate::runrecord::{
@@ -1029,6 +1030,8 @@ fn run_inner(
             ctx.notes.push(("candidate_drift".to_string(), detail));
         }
     }
+    // The canonical plan copy goes to .qaren/plans only, never into run evidence.
+    let recipe = outcome.ledger.recipe.take();
     let ledger_path = run_dir.join("ledger.json");
     if let Err(e) = std::fs::write(
         &ledger_path,
@@ -1245,7 +1248,49 @@ fn run_inner(
             }
         }
     }
+    let terminal = ctx.record.terminal.as_ref();
+    let walk = match result {
+        _ if terminal.is_none_or(|t| t.cancelled) => recipes::Walk::Other,
+        ReceiptResult::Pass => recipes::Walk::Pass,
+        ReceiptResult::Fail if terminal.is_some_and(|t| t.final_verification.matched) => {
+            let step = outcome.ledger.failure.as_ref().and_then(|f| f.kind)
+                == Some(crate::core::FailureKind::Step);
+            if outcome.failure.is_none() && step {
+                recipes::Walk::StepFailure
+            } else {
+                recipes::Walk::OtherFailure
+            }
+        }
+        _ => recipes::Walk::Other,
+    };
+    let facts = recipes::RunFacts {
+        pr: pr_state.is_some(),
+        save_plans: config.save_plans != Some(false),
+        in_book: recipes::in_book(&app_root, &req.plan_file),
+        walk,
+        recipe: recipe.as_ref(),
+        has_input_values: matches!(&recipe, Some(recipes::RecipeCandidate::Markdown { markdown, .. })
+            if crate::redact::redact_inputs(markdown) != *markdown),
+    };
+    let candidate = ctx.record.candidate.clone();
+    let platform = platform_str(req.platform);
+    let recipe = match recipes::decide(&facts, || {
+        recipes::base_identity(&mut *ctx.runner, &candidate)
+    }) {
+        recipes::Decision::Nothing => None,
+        recipes::Decision::Report(outcome) => Some(outcome),
+        recipes::Decision::Save { slug, markdown } => {
+            Some(recipes::save(&app_root, slug, markdown))
+        }
+        recipes::Decision::Mark { broken: true } => {
+            Some(recipes::flag(&req.plan_file, platform, &plan))
+        }
+        recipes::Decision::Mark { broken: false } => {
+            Some(recipes::clear(&req.plan_file, platform, &plan))
+        }
+    };
     let mut receipt = finish_receipt(ctx, result, failure);
+    receipt.recipe = recipe;
     receipt.tested_older_commit = tested_older_commit;
     receipt.ledger = Some(report::summarize(&outcome.ledger));
     receipt.blocks_written = outcome.ledger.blocks_written.clone().unwrap_or_default();

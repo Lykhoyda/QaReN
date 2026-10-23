@@ -300,3 +300,15 @@ fn registry_auth_env_refuses_invalid_lists_without_echoing_content() {
         );
     }
 }
+
+#[test]
+fn save_plans_is_an_optional_boolean() {
+    assert_eq!(load("appId: com.test.app\n").unwrap().save_plans, None);
+    assert_eq!(
+        load("appId: com.test.app\nsavePlans: false\n")
+            .unwrap()
+            .save_plans,
+        Some(false)
+    );
+    assert!(load("appId: com.test.app\nsavePlans: maybe\n").is_err());
+}

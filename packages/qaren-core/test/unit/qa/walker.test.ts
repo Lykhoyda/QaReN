@@ -267,6 +267,7 @@ for (const label of [
     const f = fake([screen([label])]);
     const ledger = await runPlan([block('✓ "Missing"\n')], f.deps);
     assert.equal(ledger.verdict, 'FAIL');
+    assert.equal(ledger.recipe, undefined);
     assert.equal(ledger.jev.calls, 0);
     const seen = ledger.failure?.seen ?? '';
     assert.match(
@@ -284,6 +285,7 @@ test('a passing literal plan has no app text frames in its ledger', async () => 
   const f = fake([screen(['Welcome'])]);
   const ledger = await runPlan([block('✓ "Welcome"\n')], f.deps);
   assert.equal(ledger.verdict, 'PASS');
+  assert.deepEqual(ledger.recipe, { slug: 'plan', markdown: '## QA\n\n### plan\n✓ "Welcome"\n' });
   assert.doesNotMatch(JSON.stringify(ledger), /<\/?app-text\b/);
   assert.doesNotMatch(JSON.stringify(ledger), /[\uE0F0\uE0F1]/u);
 });
@@ -369,6 +371,9 @@ test('a missing judge or target fails naming the line', async () => {
     /TARGET_NOT_FOUND/,
   );
   assert.equal(missing.rows[0].outcome, 'fail');
+  assert.equal(phrase.failure?.kind, undefined);
+  assert.equal(check.failure?.kind, undefined);
+  assert.equal(missing.failure?.kind, 'step');
 });
 
 test('an ambiguous quoted target without a judge is refused, not guessed', async () => {
@@ -816,6 +821,33 @@ test('a value that is a prefix of a later value cannot expose the remainder', as
   assert.equal(dumped.includes('SECRET'), false, dumped);
 });
 
+test('a check that fails while a system dialog is in front is not a step failure', async () => {
+  for (const front of ['app', 'dialog'] as const) {
+    const outcome = await walkBlock(
+      block('✓ "Missing"\n'),
+      fake([screen(['Allow'], { front })]).deps,
+      0,
+      [],
+      undefined,
+      undefined,
+      { recover: false },
+    );
+    assert.match(
+      renderReason(outcome.failure?.seen ?? '', (text) => text),
+      /"Missing" is not satisfied on screen/,
+    );
+    assert.equal(outcome.failure?.kind, front === 'app' ? 'step' : undefined);
+  }
+});
+
+test('a check judged while a dialog was in front stays non-step after the dialog clears', async () => {
+  const f = fake([screen(['Allow'], { front: 'dialog' }), ...Array(6).fill(screen(['Home']))]);
+  f.deps.hideDevMenu = async () => {};
+  const outcome = await walkBlock(block('✓ "Missing"\n'), f.deps);
+  assert.ok(outcome.failure, 'the check fails');
+  assert.equal(outcome.failure.kind, undefined);
+});
+
 test('a failing literal check withholds a secure capture and preserves non-secure readability', async () => {
   for (const secure of [false, true]) {
     const captured = screen(['Welcome', 'Saved password: pf-s3cret-91']);
@@ -828,6 +860,7 @@ test('a failing literal check withholds a secure capture and preserves non-secur
     const f = fake([captured]);
     const result = await runPlan([block('✓ "Missing"')], f.deps);
     assert.equal(result.verdict, 'FAIL');
+    assert.equal(result.failure?.kind, 'step');
     assert.equal(
       result.failure?.seen,
       secure
