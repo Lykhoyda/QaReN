@@ -7,7 +7,7 @@ import { scriptedJudge, walker } from './judgment-fixtures.ts';
 
 const app = { x: 0, y: 0, width: 400, height: 800 };
 
-function wizard(alert: boolean, title = 'New task', behind = true): Screen {
+function wizard(alert: boolean, title = 'New task', behind = true, keyboard = false): Screen {
   const nodes = [
     { ref: '@app', index: 0, type: 'Application', rect: app },
     { ref: '@win', index: 1, parentIndex: 0, type: 'Window', rect: app },
@@ -66,6 +66,35 @@ function wizard(alert: boolean, title = 'New task', behind = true): Screen {
           },
         ]
       : []),
+    ...(keyboard
+      ? [
+          { ref: '@kbWin', index: 9, parentIndex: 0, type: 'Window', rect: app },
+          {
+            ref: '@suggestion',
+            index: 10,
+            parentIndex: 9,
+            type: 'StaticText',
+            label: 'Groceries',
+            rect: { x: 0, y: 460, width: 130, height: 40 },
+          },
+          {
+            ref: '@kb',
+            index: 11,
+            parentIndex: 9,
+            type: 'Keyboard',
+            rect: { x: 0, y: 500, width: 400, height: 300 },
+          },
+          {
+            ref: '@q',
+            index: 12,
+            parentIndex: 11,
+            type: 'Key',
+            label: 'q',
+            hittable: true,
+            rect: { x: 0, y: 520, width: 40, height: 50 },
+          },
+        ]
+      : []),
   ];
   const kept = behind ? nodes : nodes.filter((n) => n.parentIndex !== 1);
   const position = new Map(kept.map((n, i) => [n.index, i]));
@@ -117,6 +146,17 @@ test('an ordinary press that changes the screen still passes without a mark', as
 
 test('an in-app alert that hid the app behind it leaves its button press unverified', async () => {
   const f = walker([wizard(true, 'New task', false), wizard(false, 'Tasks')], noJudge, {
+    ok: true,
+    proven: false,
+  });
+  const outcome = await walkBlock(plan('1. Tap "Discard"'), f.deps);
+  const row = outcome.rows.find((r) => r.line === 1);
+  assert.equal(row?.outcome, 'pass');
+  assert.match(row?.reason ?? '', /^UNVERIFIED_PRESS: /);
+});
+
+test('a keyboard returning after the alert closes does not prove its button press', async () => {
+  const f = walker([wizard(true), wizard(false, 'New task', true, true)], noJudge, {
     ok: true,
     proven: false,
   });

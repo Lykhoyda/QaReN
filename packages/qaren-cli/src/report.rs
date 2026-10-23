@@ -27,8 +27,17 @@ pub struct LedgerSummary {
     // Passing fills whose final value was not verified, with the ledger row's value-free reason.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub unverified_fills: Vec<UnverifiedFill>,
+    // Passing presses on an in-app alert button whose closure alone did not prove which button ran.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub unverified_presses: Vec<UnverifiedPress>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub dialogs: Vec<DialogEvidence>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct UnverifiedPress {
+    pub line: u64,
+    pub reason: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -80,6 +89,20 @@ pub fn summarize(ledger: &Ledger) -> LedgerSummary {
                         kept: row.kept.clone(),
                         case_normalized: row.case_normalized.clone(),
                         detail: row.fill_detail(),
+                    })
+            })
+            .collect(),
+        unverified_presses: ledger
+            .steps
+            .iter()
+            .filter(|row| row.outcome == "pass")
+            .filter_map(|row| {
+                let reason = row.reason.as_deref()?;
+                reason
+                    .starts_with("UNVERIFIED_PRESS:")
+                    .then(|| UnverifiedPress {
+                        line: row.line,
+                        reason: reason.to_string(),
                     })
             })
             .collect(),
@@ -471,6 +494,48 @@ mod tests {
         .unwrap();
         let json = serde_json::to_value(summarize(&clean)).unwrap();
         assert!(json.get("unverified_fills").is_none());
+        assert!(json.get("unverified_presses").is_none());
+    }
+
+    #[test]
+    fn summary_lists_passing_unverified_presses_apart_from_fills() {
+        let press = "UNVERIFIED_PRESS: the in-app alert closed but nothing behind it changed; any of its buttons closes it, so the press was not verified";
+        let row = |line: u64, outcome: &str, reason: Option<&str>| {
+            serde_json::json!({
+                "block": "b", "line": line, "attempt": 1, "kind": "step",
+                "resolvedBy": "exact", "t": 0, "outcome": outcome, "reason": reason,
+            })
+        };
+        let ledger: Ledger = serde_json::from_value(serde_json::json!({
+            "verdict": "PASS", "path": "walk", "blocks": [],
+            "steps": [
+                row(2, "pass", Some(press)),
+                row(3, "retry", Some(press)),
+                row(4, "pass", Some("UNVERIFIED_FILL: the field's final value could not be read back, so the fill was not verified")),
+            ],
+            "jev": { "calls": 0, "medianMs": 0 },
+            "llmTurns": 0, "escapes": 0, "recoveries": 0,
+        }))
+        .unwrap();
+        let summary = summarize(&ledger);
+        assert_eq!(
+            summary.unverified_presses,
+            [UnverifiedPress {
+                line: 2,
+                reason: press.to_string()
+            }]
+        );
+        assert_eq!(
+            summary
+                .unverified_fills
+                .iter()
+                .map(|fill| fill.line)
+                .collect::<Vec<_>>(),
+            [4]
+        );
+        let json = serde_json::to_value(&summary).unwrap();
+        assert_eq!(json["unverified_presses"][0]["line"], 2);
+        assert_eq!(json["unverified_presses"][0]["reason"], press);
     }
 
     #[test]

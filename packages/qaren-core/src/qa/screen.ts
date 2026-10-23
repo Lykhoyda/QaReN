@@ -121,6 +121,7 @@ const keyboardCoveredElements = new WeakSet<Element>();
 const scrollContainers = new WeakMap<Element, string>();
 const windows = new WeakSet<Element>();
 const alerts = new WeakSet<Element>();
+const keyboards = new WeakSet<Element>();
 // Press/fill from the element's own React evidence, without the screen-wide capability gaps.
 const localCapabilities = new WeakMap<
   Element,
@@ -1097,6 +1098,8 @@ export function join(
     if (isScrollContainerType(n.type)) scrollContainers.set(elements[i], n.type!);
     if (n.type === 'Window') windows.add(elements[i]);
     if (n.type === 'Alert') alerts.add(elements[i]);
+    if (n.type === 'Keyboard' || (ownWindow && windowOf(i) === keyboardWindow))
+      keyboards.add(elements[i]);
     if (duplicates.has(i) || elements[i].kind !== 'text') return;
     for (let p = n.parentIndex; p !== undefined && p >= 0 && p < i; p = nodes[p].parentIndex)
       textDescendants.set(p, [...(textDescendants.get(p) ?? []), i]);
@@ -1460,10 +1463,11 @@ export function insideAlert(element: Element): boolean {
   return ancestorsOf(element).some((ancestor) => alerts.has(ancestor));
 }
 
-// The app content outside every alert, without hittability; undefined when none was captured.
+// The app content outside every alert and the keyboard, without hittability; undefined when none was captured.
 export function contentBehindAlerts(screen: Screen): string | undefined {
   const content = screen.elements
     .filter((e) => !alerts.has(e) && !insideAlert(e))
+    .filter((e) => !keyboards.has(e) && !ancestorsOf(e).some((a) => keyboards.has(a)))
     .filter((e) => e.label !== undefined || e.testID !== undefined || e.value !== undefined)
     .map((e) => [
       e.kind,

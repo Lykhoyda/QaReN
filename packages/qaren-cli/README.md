@@ -590,8 +590,10 @@ the intended button.
 Any button of an app alert closes it, so the alert's closure alone never proves
 which button ran. An unproven press on a button inside a native `Alert` passes
 with reason `UNVERIFIED_PRESS` when the labels, identifiers and values outside
-every alert are unchanged, or were not captured while the alert was open. A
-later plan check still decides whether the intended screen followed.
+every alert and the keyboard are unchanged, or were not captured while the
+alert was open. The receipt's `ledger.unverified_presses` lists each such
+passing press with its line and reason, and is omitted when empty. A later plan
+check still decides whether the intended screen followed.
 
 While it serves commands, the iOS runner contains XCTest UI automation issues,
 such as a read of an element that vanished, instead of letting XCTest end its
