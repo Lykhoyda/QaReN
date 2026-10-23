@@ -7,6 +7,8 @@ use std::time::Duration;
 
 const GIB: f64 = (1024 * 1024 * 1024) as f64;
 const SERVICE_FIX: &str = "ask the device owner to shut down the affected simulator, then re-run doctor; restarting CoreSimulatorService stops every simulator on this machine";
+pub(super) const SIMCTL_FIX: &str =
+    "run `sudo xcodebuild -runFirstLaunch` or update Xcode, then re-run doctor";
 
 fn probe(runner: &mut dyn Runner, program: &str, args: &[&str], seconds: u64) -> CmdOutput {
     runner.run(
@@ -34,21 +36,12 @@ pub(super) fn checks(runner: &mut dyn Runner, os: &str) -> Vec<Check> {
         )
     };
     let devices = device_row(sims.as_deref(), android.as_deref());
-    let booted = sims
-        .as_ref()
-        .zip(android.as_ref())
-        .map(|(s, a)| s.len() + a.len());
     let (memory, cpu) = if os == "macos" {
         macos(runner)
     } else {
         linux(runner)
     };
-    vec![
-        service,
-        devices,
-        memory_row(memory, booted, os),
-        cpu_row(cpu),
-    ]
+    vec![service, devices, memory_row(memory, os), cpu_row(cpu)]
 }
 
 fn simulator_service(
@@ -84,21 +77,28 @@ fn simulator_service(
             stuck.join(", ")
         )
     };
-    let detail = format!(
-        "simctl list devices {}; {evidence}",
-        if output.timed_out {
-            "did not respond within 5s"
-        } else {
-            "could not provide a valid inventory"
-        }
-    );
+    let detail = if output.timed_out {
+        format!("simctl list devices did not respond within 5s; {evidence}")
+    } else if output.ok() {
+        format!("simctl list devices returned an unreadable inventory; {evidence}")
+    } else {
+        format!(
+            "simctl list devices failed ({}); {evidence}",
+            output.summary()
+        )
+    };
     let status = if output.timed_out && !stuck.is_empty() {
         Status::Fail
     } else {
         Status::Warn
     };
+    let fix = if output.timed_out || !stuck.is_empty() {
+        SERVICE_FIX
+    } else {
+        SIMCTL_FIX
+    };
     (
-        Check::problem("simulator-service", status, detail, SERVICE_FIX),
+        Check::problem("simulator-service", status, detail, fix),
         None,
     )
 }
@@ -176,7 +176,7 @@ fn device_row(sims: Option<&[String]>, android: Option<&[String]>) -> Check {
     }
 }
 
-fn memory_row(memory: Option<Memory>, booted: Option<usize>, os: &str) -> Check {
+fn memory_row(memory: Option<Memory>, os: &str) -> Check {
     let Some(memory) = memory else {
         return Check::warn("host-memory", "memory probe unavailable or malformed; lane capacity unknown", "inspect host memory in Activity Monitor (macOS) or free -h (Linux), then re-run doctor");
     };
@@ -186,7 +186,7 @@ fn memory_row(memory: Option<Memory>, booted: Option<usize>, os: &str) -> Check 
         None => "unknown",
     };
     let basis = if os == "macos" {
-        "free + speculative"
+        "free + speculative + inactive"
     } else {
         "MemAvailable"
     };
@@ -194,13 +194,9 @@ fn memory_row(memory: Option<Memory>, booted: Option<usize>, os: &str) -> Check 
         format!(", {:.1} GiB compressed", bytes as f64 / GIB)
     });
     let capacity = memory.lanes();
-    let detail = format!("{:.1} GiB free, {:.1} GiB headroom ({basis}){compressed}; memory pressure {pressure}; conservative headroom supports {capacity} concurrent lanes (2 GiB host reserve + 4 GiB per lane)", memory.free as f64 / GIB, memory.available as f64 / GIB);
-    if memory.constrained(booted.unwrap_or(1)) || booted.is_none() || memory.pressure.is_none() {
-        let close = booted
-            .map(|count| (count as u64).saturating_sub(capacity))
-            .filter(|count| *count > 0)
-            .map_or(String::new(), |count| format!("; close at least {count} owned lane(s) to meet this snapshot's headroom budget"));
-        Check::warn("host-memory", detail, format!("use fewer concurrent lanes and close unneeded apps{close}; re-run doctor after pressure returns to normal; coordinate borrowed devices with their owners"))
+    let detail = format!("{:.1} GiB free, {:.1} GiB headroom ({basis}){compressed}; memory pressure {pressure}; headroom for {capacity} more concurrent lane(s) beyond those booted (2 GiB host reserve + 4 GiB per lane)", memory.free as f64 / GIB, memory.available as f64 / GIB);
+    if memory.constrained() || memory.pressure.is_none() {
+        Check::warn("host-memory", detail, "use fewer concurrent lanes and close unneeded apps; re-run doctor after pressure returns to normal; coordinate borrowed devices with their owners")
     } else {
         Check::pass("host-memory", detail)
     }
@@ -284,6 +280,7 @@ fn macos(runner: &mut dyn Runner) -> (Option<Memory>, Option<Cpu>) {
             .filter(|p| *p > 0)?;
         let free = field(vm, "Pages free")?.checked_mul(page)?;
         let available = field(vm, "Pages speculative")?
+            .checked_add(field(vm, "Pages inactive")?)?
             .checked_mul(page)?
             .checked_add(free)?;
         let pressure =
@@ -390,7 +387,7 @@ mod tests {
     use crate::exec::MockRunner;
 
     const UDID: &str = "AAAAAAAA-BBBB-CCCC-DDDD-EEEEEEEEEEEE";
-    const VM: &str = "Mach Virtual Memory Statistics: (page size of 16384 bytes)\nPages free: 655360.\nPages speculative: 0.\nPages occupied by compressor: 786432.\n";
+    const VM: &str = "Mach Virtual Memory Statistics: (page size of 16384 bytes)\nPages free: 655360.\nPages inactive: 0.\nPages speculative: 0.\nPages occupied by compressor: 786432.\n";
     const SYS: &str =
         "hw.logicalcpu: 8\nvm.loadavg: { 1.0 2.0 3.0 }\nkern.memorystatus_vm_pressure_level: 1\n";
 
@@ -433,7 +430,7 @@ mod tests {
             .contains("Android emulators: 1 [Pixel]"));
         let memory = &row(&rows, "host-memory").detail;
         assert!(memory.contains("12.0 GiB compressed"));
-        assert!(memory.contains("supports 2 concurrent lanes"));
+        assert!(memory.contains("headroom for 2 more concurrent lane(s)"));
         assert!(row(&rows, "host-load").detail.contains("95.0% CPU idle"));
         assert_eq!(runner.remaining(), 0);
         assert!(runner
@@ -465,12 +462,7 @@ mod tests {
             .contains("pressure elevated"));
         assert!(row(&rows, "host-memory")
             .detail
-            .contains("supports 0 concurrent lanes"));
-        assert!(row(&rows, "host-memory")
-            .fix
-            .as_deref()
-            .unwrap()
-            .contains("close at least 2"));
+            .contains("headroom for 0 more concurrent lane(s)"));
         assert_eq!(row(&rows, "host-load").status, Status::Warn);
         assert!(row(&rows, "host-load")
             .detail
@@ -494,12 +486,52 @@ mod tests {
                 .unwrap()
                 .contains("stops every simulator"));
             assert_eq!(row(&rows, "host-devices").status, Status::Warn);
-            assert_eq!(row(&rows, "host-memory").status, Status::Warn);
+            assert_eq!(row(&rows, "host-memory").status, Status::Pass);
             assert!(runner.calls.iter().all(|c| !c
                 .args
                 .iter()
                 .any(|a| ["shutdown", "boot", "erase", "kill"].contains(&a.as_str()))));
         }
+    }
+
+    #[test]
+    fn a_failing_simctl_without_a_timeout_names_its_error_and_the_xcode_fix() {
+        let mut runner = MockRunner::new();
+        script_mac(
+            &mut runner,
+            "",
+            CmdOutput::failed(1, "CoreSimulator is out of date"),
+            VM,
+            SYS,
+            "CPU usage: 2% user, 3% sys, 95% idle\n",
+        );
+        let rows = checks(&mut runner, "macos");
+        let service = row(&rows, "simulator-service");
+        assert_eq!(service.status, Status::Warn);
+        assert!(service.detail.contains("CoreSimulator is out of date"));
+        assert_eq!(service.fix.as_deref(), Some(SIMCTL_FIX));
+    }
+
+    #[test]
+    fn inactive_pages_count_as_headroom_on_a_mac_at_normal_pressure() {
+        let mut runner = MockRunner::new();
+        script_mac(
+            &mut runner,
+            "",
+            inventory(),
+            "Mach Virtual Memory Statistics: (page size of 16384 bytes)\nPages free: 9868.\nPages active: 549432.\nPages inactive: 531155.\nPages speculative: 6261.\nPages purgeable: 132.\n",
+            SYS,
+            "CPU usage: 2% user, 3% sys, 95% idle\n",
+        );
+        let rows = checks(&mut runner, "macos");
+        let memory = row(&rows, "host-memory");
+        assert_eq!(memory.status, Status::Pass, "{memory:?}");
+        assert!(memory
+            .detail
+            .contains("8.4 GiB headroom (free + speculative + inactive)"));
+        assert!(memory
+            .detail
+            .contains("headroom for 1 more concurrent lane(s)"));
     }
 
     #[test]

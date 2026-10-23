@@ -14,8 +14,8 @@ impl Memory {
         self.available.saturating_sub(HOST_RESERVE) / LANE_HEADROOM
     }
 
-    pub fn constrained(&self, booted: usize) -> bool {
-        self.pressure == Some(true) || self.lanes() < booted.max(1) as u64
+    pub fn constrained(&self) -> bool {
+        self.pressure == Some(true) || self.lanes() == 0
     }
 }
 
@@ -44,13 +44,12 @@ mod tests {
             pressure: Some(false),
         };
         assert_eq!(memory.lanes(), 0);
-        assert!(memory.constrained(0));
+        assert!(memory.constrained());
         memory.available = HOST_RESERVE + LANE_HEADROOM;
         assert_eq!(memory.lanes(), 1);
-        assert!(!memory.constrained(1));
-        assert!(memory.constrained(2));
+        assert!(!memory.constrained());
         memory.pressure = Some(true);
-        assert!(memory.constrained(1));
+        assert!(memory.constrained());
     }
 
     #[test]

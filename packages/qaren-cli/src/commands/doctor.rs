@@ -346,11 +346,18 @@ fn xcode(runner: &mut dyn Runner) -> Check {
 
 fn ios_runtimes(runner: &mut dyn Runner, configured: Option<&str>) -> Check {
     let output = runner.run(&ios::list_runtimes_spec());
-    if !output.ok() {
+    if output.timed_out {
         return Check::warn(
             "ios-runtime",
-            "simctl could not read the runtime inventory; availability is unknown",
+            "simctl did not read the runtime inventory in time; availability is unknown",
             "check the simulator-service row, then re-run doctor after the inventory responds",
+        );
+    }
+    if !output.ok() {
+        return Check::fail(
+            "ios-runtime",
+            format!("simctl could not list runtimes: {}", output.summary()),
+            host::SIMCTL_FIX,
         );
     }
     let available = ios::parse_available_runtimes(&output.stdout);
@@ -2072,6 +2079,19 @@ mod tests {
         assert_eq!(row.status, Status::Warn);
         assert!(row.detail.contains("availability is unknown"));
         assert!(row.fix.unwrap().contains("simulator-service"));
+    }
+
+    #[test]
+    fn a_failing_runtime_inventory_fails_with_simctl_error_and_the_xcode_fix() {
+        let mut runner = MockRunner::new();
+        runner.expect_run(
+            "simctl list runtimes --json",
+            CmdOutput::failed(1, "CoreSimulator is out of date"),
+        );
+        let row = ios_runtimes(&mut runner, None);
+        assert_eq!(row.status, Status::Fail);
+        assert!(row.detail.contains("CoreSimulator is out of date"));
+        assert!(row.fix.unwrap().contains("xcodebuild -runFirstLaunch"));
     }
 
     #[test]

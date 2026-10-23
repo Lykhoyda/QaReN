@@ -74,16 +74,14 @@ pnpm that Corepack enabled but has not yet downloaded fails until you run
 Setup runs Doctor before its smoke run. Host capacity is a conservative snapshot,
 not a hardware guarantee: reserve 2 GiB for the host, then budget 4 GiB of remaining
 memory headroom per concurrent simulator/emulator lane. The recommendation is
-`floor(max(headroom - 2 GiB, 0) / 4 GiB)`. This is free headroom for ongoing work,
-not an estimate of memory already consumed by a booted device. Fewer than one
-lane's headroom warns even before a device is booted; exceeding the recommendation
-warns and gives the minimum number of owned lanes to close for that snapshot.
-Recheck after closing lanes or apps: memory usage changes during builds.
+`floor(max(headroom - 2 GiB, 0) / 4 GiB)` more lanes beyond those already booted,
+whose memory is already in use. Elevated pressure or fewer than one lane's headroom
+warns. Recheck after closing lanes or apps: memory usage changes during builds.
 
-On macOS, headroom counts `vm_stat` free and speculative pages, using its reported
-page size; inactive and compressed pages are excluded conservatively. Doctor also
-reports compressed bytes and the kernel memory-pressure level (normal, elevated or
-unknown). On Linux it uses `/proc/meminfo`'s `MemAvailable`, which includes reclaimable
+On macOS, headroom is available memory: `vm_stat` free, speculative and inactive
+pages, using its reported page size; purgeable pages already sit on those queues
+and compressed pages are excluded. Doctor also reports compressed bytes and the
+kernel memory-pressure level (normal, elevated for warn or critical, or unknown). On Linux it uses `/proc/meminfo`'s `MemAvailable`, which includes reclaimable
 memory, and labels pressure elevated below 10% of `MemTotal`. These pressure signals
 are platform-specific; either elevated signal warns regardless of lane count.
 
@@ -104,7 +102,9 @@ Host commands have three-second budgets, except `top` and the simulator inventor
 which have five seconds each; subprocess termination can add up to five seconds
 per timeout. Missing, malformed or timed-out host statistics warn with a manual
 next step. A simulator inventory timeout alone warns: it does not identify a
-wedged device. A timeout together with an uninterruptible `launchd_sim` whose argv
+wedged device. Any other `simctl` failure shows its error and points to
+`sudo xcodebuild -runFirstLaunch` or an Xcode update; `ios-runtime` fails on it and
+warns on a timeout. A timeout together with an uninterruptible `launchd_sim` whose argv
 names a simulator UUID fails and reports that UUID as observed evidence. Ask the
 device owner to shut down that simulator and recheck; restarting CoreSimulatorService
 stops **every simulator on the machine**. Doctor and setup perform neither action.
