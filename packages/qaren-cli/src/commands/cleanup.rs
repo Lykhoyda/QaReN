@@ -180,9 +180,11 @@ fn release_orphan_locks(
     let Ok(entries) = std::fs::read_dir(lock_root) else {
         return Vec::new();
     };
+    // Probe in name order so the receipt and the probe sequence never depend on readdir order.
+    let mut dirs: Vec<_> = entries.flatten().map(|entry| entry.path()).collect();
+    dirs.sort();
     let mut outcomes = Vec::new();
-    for entry in entries.flatten() {
-        let dir = entry.path();
+    for dir in dirs {
         let Some(held) = crate::buildplan::read_holder(&dir).filter(|held| held.run_id == run_id)
         else {
             continue;
@@ -196,12 +198,9 @@ fn release_orphan_locks(
         } else {
             Outcome::Refused(crate::lease::contended_advice(&dir, Some(&held)))
         };
-        outcomes.push((
-            format!("lock:{}", entry.file_name().to_string_lossy()),
-            outcome,
-        ));
+        let name = dir.file_name().unwrap_or_default().to_string_lossy();
+        outcomes.push((format!("lock:{name}"), outcome));
     }
-    outcomes.sort_by(|a, b| a.0.cmp(&b.0));
     outcomes
 }
 
