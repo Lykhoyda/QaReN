@@ -9192,15 +9192,28 @@ fn unsafe_native_root_fails_check_and_releases_the_existing_device_lease() {
 
 #[test]
 fn saved_login_hints_use_names_and_the_first_screen_without_publishing_them() {
-    for (written, configured, label, signs_out, foreign, linked) in [
-        (true, false, false, false, false, false),
-        (true, false, false, false, false, true),
-        (false, false, true, false, false, false),
-        (true, true, false, false, false, false),
-        (true, true, false, true, false, false),
-        (true, false, false, false, true, false),
+    for (written, configured, label, signs_out, foreign, linked, nested) in [
+        (true, false, false, false, false, false, false),
+        (true, false, false, false, false, true, false),
+        (false, false, true, false, false, false, false),
+        (true, true, false, false, false, false, false),
+        (true, true, false, true, false, false, false),
+        (true, false, false, false, true, false, false),
+        (true, false, false, false, false, true, true),
     ] {
-        let (repo, app) = app_repo();
+        let (repo, project) = app_repo();
+        let app = if nested {
+            let app = project.join("mobile");
+            std::fs::create_dir_all(app.join(".qaren")).unwrap();
+            std::fs::copy(
+                project.join(".qaren/config.yaml"),
+                app.join(".qaren/config.yaml"),
+            )
+            .unwrap();
+            app
+        } else {
+            project.clone()
+        };
         if configured {
             use std::io::Write;
             std::fs::OpenOptions::new()
@@ -9269,10 +9282,22 @@ fn saved_login_hints_use_names_and_the_first_screen_without_publishing_them() {
             "QAREN_INPUT_PASSWORD".into(),
             "sentinel-value-123".into(),
         )]));
-        let receipt =
-            qaren::redact::with_input_scope(inputs, || run(&mut mock, &request(&repo, &app, 30)));
+        let mut req = request(&repo, &project, 30);
+        req.config_path = app.join(".qaren/config.yaml");
+        let receipt = qaren::redact::with_input_scope(inputs, || run(&mut mock, &req));
         assert_eq!(receipt.result, ReceiptResult::Pass, "{:?}", receipt.failure);
         assert_eq!(mock.remaining(), 0);
+        if written {
+            let corpus = mock
+                .calls
+                .iter()
+                .find(|call| call.args.iter().any(|arg| arg == "--git-common-dir"))
+                .unwrap();
+            assert_eq!(
+                corpus.cwd.as_ref().unwrap().canonicalize().unwrap(),
+                app.canonicalize().unwrap()
+            );
+        }
         let json = receipt.to_json();
         assert!(!json.contains("sentinel-value-123"));
         if foreign || (configured && !signs_out) {
@@ -9283,7 +9308,7 @@ fn saved_login_hints_use_names_and_the_first_screen_without_publishing_them() {
         } else {
             assert_eq!(receipt.hints[0].code, "LOGIN_BLOCK_CANDIDATE");
             assert_eq!(receipt.hints[0].text, format!(
-                "▸ login: block \"sign-in\" signs in with runtime inputs USERNAME, PASSWORD.\n  To replay it whenever its first screen appears, add to .qaren/config.yaml:\n    loginBlock: sign-in\n    loginMarker:\n      {marker}\n  Every run then needs QAREN_INPUT_USERNAME and QAREN_INPUT_PASSWORD set."
+                "▸ login: block \"sign-in\" is a likely login block with runtime inputs USERNAME, PASSWORD.\n  Confirm it signs in; then, to replay it whenever its first screen appears, add to .qaren/config.yaml:\n    loginBlock: sign-in\n    loginMarker:\n      {marker}\n  Every run then needs QAREN_INPUT_USERNAME and QAREN_INPUT_PASSWORD set."
             ));
         }
         if linked {

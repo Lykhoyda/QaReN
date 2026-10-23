@@ -243,8 +243,10 @@ pub fn doctor(
     checks.push(runtime_dirs(&runtime_root));
     checks.push(source_checkout(runner, cwd));
     checks.push(config_row);
-    checks.extend(login_checks(cwd, config.as_ref()));
-    checks.push(saved_blocks_check(runner, cwd));
+    let app_root =
+        crate::run::app_root_for(&config_file, cwd).unwrap_or_else(|_| cwd.to_path_buf());
+    checks.extend(login_checks(&app_root, config.as_ref()));
+    checks.push(saved_blocks_check(runner, &app_root));
     checks.extend(leftover_rows(
         home,
         &codex_home,
@@ -838,60 +840,43 @@ fn login_checks(root: &Path, config: Option<&CheckConfig>) -> Vec<Check> {
     let Some(config) = config else {
         return vec![Check::skip("login", "no app config")];
     };
-    let platforms = if config.android.is_some() {
-        if config.ios.is_some() {
-            vec!["ios", "android"]
-        } else {
-            vec!["android"]
-        }
-    } else {
-        vec!["ios"]
-    };
+    let mut platforms = vec!["ios"];
+    if config.android.is_some() {
+        platforms.push("android");
+    }
     platforms
         .into_iter()
         .map(|platform| {
-            let candidates = || {
-                crate::actions::list(root)
-                    .unwrap_or_default()
-                    .into_iter()
-                    .filter_map(|entry| {
-                        crate::actions::login_for(root, &entry.slug, platform, &config.app_id)
-                            .map(|candidate| (entry.slug, candidate))
-                    })
-                    .collect::<Vec<_>>()
-            };
             if let Some(slug) = &config.login_block {
-                let text = crate::actions::show_for(root, slug, platform, &config.app_id);
-                if text.is_none() {
+                let Some(text) = crate::actions::show_for(root, slug, platform, &config.app_id)
+                else {
                     return Check::warn(
                         "login",
                         format!("loginBlock {slug} is not saved for {platform}"),
                         "run the plan that holds its `### Sign in` block once",
                     );
-                }
-                let candidate = text.as_deref().and_then(crate::actions::login_candidate);
-                if let Some(hint) = candidate
-                    .as_ref()
-                    .filter(|c| c.signs_out_at.is_some())
-                    .and_then(|c| c.hint(slug))
-                {
+                };
+                if let Some(hint) = crate::actions::login_hint(root, slug, platform, config) {
                     return Check::warn(
                         "login",
-                        format!("loginBlock {slug} for {platform} starts signed in"),
+                        format!("loginBlock {slug} for {platform} cannot replay as login"),
                         hint.text,
                     );
                 }
-                let inputs = candidate
+                let inputs = crate::actions::login_block(&text)
                     .map(|c| c.inputs.join(", "))
-                    .unwrap_or_else(|| "none".into());
+                    .unwrap_or_default();
                 Check::pass(
                     "login",
                     format!("loginBlock {slug} is saved for {platform} (inputs {inputs})"),
                 )
             } else {
-                let hints: Vec<_> = candidates()
+                let hints: Vec<_> = crate::actions::list(root)
+                    .unwrap_or_default()
                     .into_iter()
-                    .filter_map(|(slug, candidate)| candidate.hint(&slug))
+                    .filter_map(|entry| {
+                        crate::actions::login_hint(root, &entry.slug, platform, config)
+                    })
                     .collect();
                 if hints.is_empty() {
                     Check::skip(
@@ -901,7 +886,7 @@ fn login_checks(root: &Path, config: Option<&CheckConfig>) -> Vec<Check> {
                 } else {
                     Check::warn(
                         "login",
-                        format!("saved sign-in candidate for {platform}"),
+                        format!("likely login block saved for {platform}"),
                         hints
                             .into_iter()
                             .map(|hint| hint.text)
@@ -2451,6 +2436,7 @@ mod tests {
             serde_yaml::from_str("appId: com.example.app\ndevClientScheme: exp+example\n").unwrap();
         assert_eq!(login_checks(&s.0, Some(&config))[0].status, Status::Skip);
         config.login_block = Some("sign-in".into());
+        config.login_marker = Some(serde_yaml::from_str("text: Email\n").unwrap());
         let missing = login_checks(&s.0, Some(&config));
         assert_eq!(missing[0].status, Status::Warn);
         assert_eq!(
@@ -2468,11 +2454,10 @@ mod tests {
         config.login_block = None;
         let candidate = login_checks(&s.0, Some(&config));
         assert_eq!(candidate[0].status, Status::Warn);
-        assert!(candidate[0]
-            .fix
-            .as_ref()
-            .unwrap()
-            .contains("text: \"Email\""));
+        let fix = candidate[0].fix.as_ref().unwrap();
+        assert!(fix.contains("is a likely login block"), "{fix}");
+        assert!(fix.contains("Confirm it signs in"), "{fix}");
+        assert!(fix.contains("text: \"Email\""), "{fix}");
         s.file(
             ".qaren/actions/sign-in.yaml",
             &block.replace("# 1. Fill email", "# 1. SignOut first"),
@@ -2492,9 +2477,107 @@ mod tests {
         );
         assert_eq!(login_checks(&s.0, Some(&config))[0].status, Status::Warn);
         config.android = Some(serde_yaml::from_str("{}\n").unwrap());
-        assert_eq!(login_checks(&s.0, Some(&config))[0].status, Status::Pass);
+        assert_eq!(login_checks(&s.0, Some(&config))[1].status, Status::Pass);
         config.app_id = "com.other.app".into();
-        assert_eq!(login_checks(&s.0, Some(&config))[0].status, Status::Warn);
+        assert_eq!(login_checks(&s.0, Some(&config))[1].status, Status::Warn);
+    }
+
+    #[test]
+    fn login_rows_check_the_configured_marker_and_runtime_inputs() {
+        let s = Scratch::new("login-marker");
+        let mut config: CheckConfig = serde_yaml::from_str(
+            "appId: com.example.app\ndevClientScheme: exp+example\nloginBlock: sign-in\nloginMarker:\n  id: home-tab\n",
+        )
+        .unwrap();
+        let block = "appId: com.example.app\n---\n# id: sign-in\n# intent: Sign in\n# appId: com.example.app\n# platform: ios\n\n# 1. Fill email\n- tapOn: { id: login-email }\n- inputText: { input: USERNAME }\n";
+        s.file(".qaren/actions/sign-in.yaml", block);
+        let mismatch = &login_checks(&s.0, Some(&config))[0];
+        assert_eq!(mismatch.status, Status::Warn);
+        let fix = mismatch.fix.as_ref().unwrap();
+        assert!(fix.contains("loginMarker does not match"), "{fix}");
+        assert!(
+            fix.contains("loginMarker:\n      id: \"login-email\""),
+            "{fix}"
+        );
+        assert!(!fix.contains("home-tab"), "{fix}");
+        config.login_marker = None;
+        let unset = &login_checks(&s.0, Some(&config))[0];
+        assert_eq!(unset.status, Status::Warn);
+        assert!(unset.fix.as_ref().unwrap().contains("id: \"login-email\""));
+        config.login_marker = Some(serde_yaml::from_str("id: login-email\n").unwrap());
+        assert_eq!(login_checks(&s.0, Some(&config))[0].status, Status::Pass);
+        s.file(
+            ".qaren/actions/sign-in.yaml",
+            &block.replace(
+                "- inputText: { input: USERNAME }",
+                "- inputText: \"someone\"",
+            ),
+        );
+        let no_inputs = &login_checks(&s.0, Some(&config))[0];
+        assert_eq!(no_inputs.status, Status::Warn);
+        assert!(no_inputs
+            .fix
+            .as_ref()
+            .unwrap()
+            .contains("fills no runtime inputs"));
+        assert!(!no_inputs.fix.as_ref().unwrap().contains("someone"));
+    }
+
+    #[test]
+    fn login_rows_inspect_default_ios_when_android_is_also_configured() {
+        let s = Scratch::new("login-ios-default");
+        let config: CheckConfig = serde_yaml::from_str(
+            "appId: com.example.app\ndevClientScheme: exp+example\nandroid:\n  avd: Pixel\nloginBlock: sign-in\nloginMarker:\n  text: Email\n",
+        )
+        .unwrap();
+        s.file(".qaren/actions/sign-in.yaml", "appId: com.example.app\n---\n# id: sign-in\n# intent: Sign in\n# appId: com.example.app\n# platform: ios\n\n# 1. Fill email\n- tapOn: { text: Email }\n- inputText: { input: USERNAME }\n");
+        let rows = login_checks(&s.0, Some(&config));
+        assert_eq!(rows.len(), 2);
+        assert_eq!(rows[0].status, Status::Pass);
+        assert_eq!(
+            rows[0].detail,
+            "loginBlock sign-in is saved for ios (inputs USERNAME)"
+        );
+        assert_eq!(
+            rows[1].detail,
+            "loginBlock sign-in is not saved for android"
+        );
+    }
+
+    #[test]
+    fn doctor_reads_saved_blocks_beside_an_app_relative_config() {
+        let s = Scratch::new("login-app-root");
+        s.file(
+            "apps/mobile/.qaren/config.yaml",
+            "appId: com.example.app\ndevClientScheme: exp+example\n",
+        );
+        s.file("apps/mobile/.qaren/actions/sign-in.yaml", "appId: com.example.app\n---\n# id: sign-in\n# intent: Sign in\n# appId: com.example.app\n# platform: ios\n\n# 1. Fill email\n- tapOn: { id: login-email }\n- inputText: { input: USERNAME }\n");
+        let mut runner = MockRunner::new();
+        script_toolchain(&mut runner, Some("v24.1.0\n"), RUNTIMES);
+        runner.expect_run(
+            "--git-common-dir",
+            CmdOutput::failed(128, "not a git checkout"),
+        );
+        let report = doctor(
+            &mut runner,
+            &s.0,
+            &s.0,
+            None,
+            PathBuf::from("/runtime"),
+            Some(Path::new("apps/mobile/.qaren/config.yaml")),
+        );
+        let login = row(&report, "login");
+        assert_eq!(login.status, Status::Warn, "{login:?}");
+        assert!(login.fix.as_ref().unwrap().contains("id: \"login-email\""));
+        let git = runner
+            .calls
+            .iter()
+            .find(|call| call.args.iter().any(|arg| arg == "--git-common-dir"))
+            .unwrap();
+        assert!(
+            git.cwd.as_ref().unwrap().ends_with("apps/mobile"),
+            "{git:?}"
+        );
     }
 
     #[test]

@@ -2268,15 +2268,20 @@ supported React TextInput; a label alone does not establish private-fill admissi
    local receipt and stderr show:
 
    ```text
-   ▸ login: block "sign-in" signs in with runtime inputs USERNAME, PASSWORD.
-     To replay it whenever its first screen appears, add to .qaren/config.yaml:
+   ▸ login: block "sign-in" is a likely login block with runtime inputs USERNAME, PASSWORD.
+     Confirm it signs in; then, to replay it whenever its first screen appears, add to .qaren/config.yaml:
        loginBlock: sign-in
        loginMarker:
          id: "login-email"
      Every run then needs QAREN_INPUT_USERNAME and QAREN_INPUT_PASSWORD set.
    ```
 
-4. Paste those printed lines into `.qaren/config.yaml`:
+   A saved block is a likely login block when its heading names sign-in (sign in,
+   log in, login or authenticate) or its first strict runtime-input fill comes
+   before any tap or back step. A `### Change password` block that taps
+   `Settings` first is not suggested.
+
+4. After confirming the block signs in, paste those printed lines into `.qaren/config.yaml`:
 
    ```yaml
    loginBlock: sign-in
@@ -2288,6 +2293,10 @@ supported React TextInput; a label alone does not establish private-fill admissi
    instead. Use the first screen's actual selector; keep exactly one marker key.
    Run `qaren doctor` to check the saved block and its platform. A block must be
    saved for the platform being checked; an iOS block is not an Android block.
+   Doctor and later runs print `LOGIN_MARKER_MISMATCH` with the expected
+   `loginMarker` lines when the configured marker is not the block's first-screen
+   selector, and `LOGIN_BLOCK_NO_INPUTS` when the configured block fills no
+   runtime inputs.
 
 5. Keep the named inputs exported and run a later feature plan. When its step
    meets the configured sign-in marker, QaReN replays `sign-in` from its first

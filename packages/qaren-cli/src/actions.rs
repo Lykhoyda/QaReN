@@ -10,9 +10,22 @@ pub struct LoginCandidate {
     pub inputs: Vec<String>,
     pub marker: Option<crate::core::Selector>,
     pub signs_out_at: Option<usize>,
+    likely: bool,
 }
 
 fn signs_out(text: &str) -> bool {
+    joins(text, "out")
+}
+
+fn names_sign_in(text: &str) -> bool {
+    joins(text, "in")
+        || text
+            .to_lowercase()
+            .split(|c: char| !(c.is_alphanumeric() || c == '_'))
+            .any(|word| word == "authenticate")
+}
+
+fn joins(text: &str, tail: &str) -> bool {
     let text = text.to_lowercase();
     let word = |c: char| c.is_alphanumeric() || c == '_';
     text.char_indices().any(|(at, _)| {
@@ -26,23 +39,32 @@ fn signs_out(text: &str) -> bool {
             let rest = rest
                 .strip_prefix(|c: char| c.is_whitespace() || c == '_' || c == '-')
                 .unwrap_or(rest);
-            rest.strip_prefix("out")
+            rest.strip_prefix(tail)
                 .is_some_and(|tail| !tail.chars().next().is_some_and(word))
         })
     })
 }
 
 pub fn login_candidate(text: &str) -> Option<LoginCandidate> {
+    login_block(text).filter(|candidate| candidate.likely)
+}
+
+pub fn login_block(text: &str) -> Option<LoginCandidate> {
     let (_, body) = text.split_once("\n---\n")?;
-    let (_, body) = body.split_once("\n\n")?;
+    let (head, body) = body.split_once("\n\n")?;
     let mut candidate = LoginCandidate {
         inputs: Vec::new(),
         marker: None,
         signs_out_at: None,
+        likely: header(head, "-").is_some_and(|fields| names_sign_in(&fields["intent"])),
     };
     let mut step = 0;
+    let mut navigated_at = None;
     for line in body.lines() {
         if let Some(comment) = line.strip_prefix("# ") {
+            if comment == "qaren: back" {
+                navigated_at.get_or_insert(step);
+            }
             if !comment.starts_with("qaren:") {
                 step += 1;
                 if candidate.inputs.is_empty() && signs_out(comment) {
@@ -55,6 +77,9 @@ pub fn login_candidate(text: &str) -> Option<LoginCandidate> {
             continue;
         };
         let value: serde_yaml::Value = serde_yaml::from_str(command).ok()?;
+        if value.get("tapOn").is_some() || value.as_str() == Some("back") {
+            navigated_at.get_or_insert(step);
+        }
         let selector = value
             .get("tapOn")
             .or_else(|| value.get("extendedWaitUntil")?.get("visible"))
@@ -90,30 +115,26 @@ pub fn login_candidate(text: &str) -> Option<LoginCandidate> {
                 .and_then(serde_yaml::Value::as_str)
                 .filter(|name| crate::redact::valid_input_name(name))
             {
+                if candidate.inputs.is_empty() && navigated_at.is_none_or(|at| at == step) {
+                    candidate.likely = true;
+                }
                 if !candidate.inputs.iter().any(|input| input == name) {
                     candidate.inputs.push(name.to_string());
                 }
             }
         }
     }
-    (!candidate.inputs.is_empty()).then_some(candidate)
+    candidate.likely &= !candidate.inputs.is_empty();
+    Some(candidate)
 }
 
 impl LoginCandidate {
     pub fn hint(&self, slug: &str) -> Option<crate::receipt::Hint> {
         let slug_quoted = serde_json::to_string(slug).ok()?;
-        if let Some(step) = self.signs_out_at {
-            return Some(crate::receipt::Hint {
-                code: "LOGIN_BLOCK_SIGNS_OUT".into(),
-                text: format!("▸ login: block {slug_quoted} signs out (step {step}) before it signs in, so it starts signed in.\n  Login recovery replays a block from the sign-in screen: move the sign-out steps into\n  their own block above it and start the sign-in block on the sign-in screen."),
-            });
+        if let Some(hint) = self.signs_out_hint(&slug_quoted) {
+            return Some(hint);
         }
-        let marker = self.marker.as_ref()?;
-        let (key, value) = marker
-            .id
-            .as_ref()
-            .map(|id| ("id", id))
-            .or_else(|| marker.text.as_ref().map(|text| ("text", text)))?;
+        let marker = self.marker_line()?;
         let envs = self
             .inputs
             .iter()
@@ -126,18 +147,75 @@ impl LoginCandidate {
         };
         Some(crate::receipt::Hint {
             code: "LOGIN_BLOCK_CANDIDATE".into(),
-            text: format!("▸ login: block {slug_quoted} signs in with runtime inputs {}.\n  To replay it whenever its first screen appears, add to .qaren/config.yaml:\n    loginBlock: {config_slug}\n    loginMarker:\n      {key}: {}\n  Every run then needs {envs} set.", self.inputs.join(", "), serde_json::to_string(value).ok()?),
+            text: format!("▸ login: block {slug_quoted} is a likely login block with runtime inputs {}.\n  Confirm it signs in; then, to replay it whenever its first screen appears, add to .qaren/config.yaml:\n    loginBlock: {config_slug}\n    loginMarker:\n      {marker}\n  Every run then needs {envs} set.", self.inputs.join(", ")),
         })
+    }
+
+    pub fn config_hint(
+        &self,
+        slug: &str,
+        configured: Option<&crate::config::LoginMarker>,
+    ) -> Option<crate::receipt::Hint> {
+        let slug_quoted = serde_json::to_string(slug).ok()?;
+        if let Some(hint) = self.signs_out_hint(&slug_quoted) {
+            return Some(hint);
+        }
+        if self.inputs.is_empty() {
+            return Some(crate::receipt::Hint {
+                code: "LOGIN_BLOCK_NO_INPUTS".into(),
+                text: format!("▸ login: loginBlock {slug_quoted} fills no runtime inputs, so login recovery replays it without credentials.\n  Re-save it from a `### Sign in` block that fills `input USERNAME` and `input PASSWORD`."),
+            });
+        }
+        if configured.is_some_and(|marker| {
+            self.marker
+                .as_ref()
+                .is_some_and(|first| marker.id == first.id && marker.text == first.text)
+        }) {
+            return None;
+        }
+        let text = match self.marker_line() {
+            Some(marker) => format!("▸ login: loginMarker does not match the first screen of loginBlock {slug_quoted}, so login recovery\n  never replays it there. Set in .qaren/config.yaml:\n    loginMarker:\n      {marker}"),
+            None => format!("▸ login: loginBlock {slug_quoted} has no first-screen testID or label to use as loginMarker.\n  Start it with a fill or wait on the sign-in screen and run its plan again."),
+        };
+        Some(crate::receipt::Hint {
+            code: "LOGIN_MARKER_MISMATCH".into(),
+            text,
+        })
+    }
+
+    fn signs_out_hint(&self, slug_quoted: &str) -> Option<crate::receipt::Hint> {
+        let step = self.signs_out_at?;
+        Some(crate::receipt::Hint {
+            code: "LOGIN_BLOCK_SIGNS_OUT".into(),
+            text: format!("▸ login: block {slug_quoted} signs out (step {step}) before it signs in, so it starts signed in.\n  Login recovery replays a block from the sign-in screen: move the sign-out steps into\n  their own block above it and start the sign-in block on the sign-in screen."),
+        })
+    }
+
+    fn marker_line(&self) -> Option<String> {
+        let marker = self.marker.as_ref()?;
+        let (key, value) = marker
+            .id
+            .as_ref()
+            .map(|id| ("id", id))
+            .or_else(|| marker.text.as_ref().map(|text| ("text", text)))?;
+        Some(format!("{key}: {}", serde_json::to_string(value).ok()?))
     }
 }
 
-pub fn login_for(
+pub fn login_hint(
     app_root: &Path,
     slug: &str,
     platform: &str,
-    app_id: &str,
-) -> Option<LoginCandidate> {
-    login_candidate(&show_for(app_root, slug, platform, app_id)?)
+    config: &crate::config::CheckConfig,
+) -> Option<crate::receipt::Hint> {
+    let text = show_for(app_root, slug, platform, &config.app_id)?;
+    match config.login_block.as_deref() {
+        Some(block) if block == slug => {
+            login_block(&text)?.config_hint(slug, config.login_marker.as_ref())
+        }
+        Some(_) => login_candidate(&text)?.signs_out_hint(&serde_json::to_string(slug).ok()?),
+        None => login_candidate(&text)?.hint(slug),
+    }
 }
 
 pub fn show_for(app_root: &Path, slug: &str, platform: &str, app_id: &str) -> Option<String> {
@@ -551,6 +629,82 @@ mod tests {
         let hint = candidate.hint("123").unwrap();
         assert!(hint.text.contains("loginBlock: \"123\""));
         assert!(hint.text.contains("text: \"Email \\\"primary\\\"\""));
+    }
+
+    #[test]
+    fn login_candidates_need_a_sign_in_title_or_a_fill_on_the_starting_screen() {
+        let titled = |intent: &str, commands: &str| {
+            block(commands).replace("# intent: Sign in", &format!("# intent: {intent}"))
+        };
+        let change_password = titled(
+            "Change password",
+            "# 1. Tap \"Settings\"\n- tapOn: { text: Settings }\n# 2. Fill \"New password\" with input NEW_PASSWORD\n- tapOn: { id: new-password }\n- inputText: { input: NEW_PASSWORD }\n",
+        );
+        assert!(login_candidate(&change_password).is_none());
+        assert_eq!(
+            login_block(&change_password).unwrap().inputs,
+            ["NEW_PASSWORD"]
+        );
+        for intent in [
+            "Sign in",
+            "Log in as admin",
+            "Login",
+            "Authenticate the user",
+        ] {
+            assert!(login_candidate(&titled(intent, "# 1. Open account\n- tapOn: { text: Account }\n# 2. Fill email\n- tapOn: { id: email }\n- inputText: { input: USERNAME }\n")).is_some(), "{intent}");
+        }
+        let fill_first = titled(
+            "Reach the dashboard",
+            "# 1. Wait for \"Email\"\n- extendedWaitUntil: { visible: { text: Email }, timeout: 15000 }\n# 2. Fill \"Email\" with input USERNAME\n- tapOn: { text: Email }\n- inputText: { input: USERNAME }\n# 3. Tap \"Continue\"\n- tapOn: { text: Continue }\n",
+        );
+        let candidate = login_candidate(&fill_first).unwrap();
+        assert_eq!(candidate.marker.unwrap().text.as_deref(), Some("Email"));
+        let hint = login_candidate(&block(
+            "# 1. Fill email\n- tapOn: { id: email }\n- inputText: { input: USERNAME }\n",
+        ))
+        .unwrap()
+        .hint("sign-in")
+        .unwrap();
+        assert!(
+            hint.text.contains("is a likely login block"),
+            "{}",
+            hint.text
+        );
+        assert!(hint.text.contains("Confirm it signs in"), "{}", hint.text);
+    }
+
+    #[test]
+    fn configured_login_blocks_need_a_matching_marker_and_runtime_inputs() {
+        let saved = login_block(&block(
+            "# 1. Fill email\n- tapOn: { id: login-email }\n- inputText: { input: USERNAME }\n",
+        ))
+        .unwrap();
+        let marker = |yaml: &str| serde_yaml::from_str::<crate::config::LoginMarker>(yaml).unwrap();
+        assert!(saved
+            .config_hint("sign-in", Some(&marker("id: login-email\n")))
+            .is_none());
+        for configured in [
+            Some(marker("id: home-tab\n")),
+            Some(marker("text: login-email\n")),
+            None,
+        ] {
+            let hint = saved.config_hint("sign-in", configured.as_ref()).unwrap();
+            assert_eq!(hint.code, "LOGIN_MARKER_MISMATCH");
+            assert!(
+                hint.text
+                    .ends_with("loginMarker:\n      id: \"login-email\""),
+                "{}",
+                hint.text
+            );
+        }
+        let hint = login_block(&block(
+            "# 1. Fill email\n- tapOn: { id: login-email }\n- inputText: \"someone\"\n",
+        ))
+        .unwrap()
+        .config_hint("sign-in", Some(&marker("id: login-email\n")))
+        .unwrap();
+        assert_eq!(hint.code, "LOGIN_BLOCK_NO_INPUTS");
+        assert!(!hint.text.contains("someone"));
     }
 
     #[test]

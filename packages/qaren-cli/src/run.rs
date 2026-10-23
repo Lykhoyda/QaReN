@@ -1056,21 +1056,15 @@ fn run_inner(
         )
         .collect();
     for slug in slugs {
-        if let Some(hint) = crate::actions::login_for(
-            &project_root,
-            slug,
-            platform_str(req.platform),
-            &config.app_id,
-        )
-        .filter(|candidate| config.login_block.is_none() || candidate.signs_out_at.is_some())
-        .and_then(|candidate| candidate.hint(slug))
+        if let Some(hint) =
+            crate::actions::login_hint(&app_root, slug, platform_str(req.platform), &config)
         {
             hints.push(hint);
         }
     }
     if pr_state.is_none()
         && !written.is_empty()
-        && crate::actions::corpus_location(ctx.runner, &project_root)
+        && crate::actions::corpus_location(ctx.runner, &app_root)
             == (crate::actions::CorpusLocation::Linked { local: true })
     {
         hints.push(crate::actions::corpus_hint(written.len()));
