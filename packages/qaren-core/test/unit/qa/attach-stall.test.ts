@@ -5,6 +5,7 @@ import { setImmediate as nextTurn } from 'node:timers/promises';
 import {
   admissionMetric,
   admit,
+  launchBundleRequests,
   type AdmissionRefusalFacts,
   type AdmissionSteps,
 } from '../../../dist/qa/admission.js';
@@ -146,6 +147,44 @@ test('an app that dies after its relaunch refuses despite its bundle request', a
   assert.equal(error.meta.relaunches, 1);
   refusedAt(error);
 });
+
+for (const [name, atRelaunch, afterRelaunch, expected] of [
+  ['makes no request of its own refuses at the attach budget', '1', '1', 'refused'],
+  ['requests its bundle keeps the walk budget', '1', '2', 'waiting'],
+  ['cannot rebase an unreadable request count keeps the walk budget', 'gone', '1', 'waiting'],
+] as const) {
+  test(`a relaunched app that ${name}`, async (t) => {
+    let count = '1';
+    let probes = 0;
+    let relaunched = false;
+    const requests = launchBundleRequests(
+      { path: '/run/logs/metro.bundle-requests', atLaunch: 0 },
+      () => count,
+    );
+    const fixture = stalled(t, {
+      appAlive: async () => ++probes === 1 || relaunched,
+      bundleRequested: async () => requests.requested(),
+      relaunch: async () => {
+        count = atRelaunch;
+        requests.relaunching();
+        relaunched = true;
+        count = afterRelaunch;
+      },
+    });
+    if (expected === 'waiting') {
+      await fixture.waiting();
+      assert.equal(relaunched, true);
+      return;
+    }
+    const error = await fixture.run();
+    assert.equal(error.code, 'CDP_NOT_CONNECTED');
+    assert.equal(error.meta.bundleRequest, 'not_received');
+    assert.equal(error.meta.liveness, 'alive');
+    assert.equal(error.meta.relaunches, 1);
+    assert.ok(fixture.elapsed() >= 120_000);
+    refusedAt(error);
+  });
+}
 
 test('the attach budget is the configured one', async (t) => {
   const fixture = stalled(t, { attachBudgetMs: 60_000, bundleRequested: async () => false });

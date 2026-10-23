@@ -381,20 +381,45 @@ async function probeBundleRequest(steps: AdmissionSteps): Promise<BundleRequest>
   }
 }
 
-export function bundleRequestedSinceLaunch(
-  signal: { path: string; atLaunch: number },
-  read: (path: string) => string = (path) => readFileSync(path, 'utf8'),
-): boolean | undefined {
+type ReadCount = (path: string) => string;
+const readCountFile: ReadCount = (path) => readFileSync(path, 'utf8');
+
+function bundleRequestCount(path: string, read: ReadCount): number | undefined {
   let text: string;
   try {
-    text = read(signal.path).trim();
+    text = read(path).trim();
   } catch {
     return undefined;
   }
   if (!/^\d+$/.test(text)) return undefined;
   const count = Number(text);
-  if (!Number.isSafeInteger(count) || count < signal.atLaunch) return undefined;
+  return Number.isSafeInteger(count) ? count : undefined;
+}
+
+export function bundleRequestedSinceLaunch(
+  signal: { path: string; atLaunch: number },
+  read: ReadCount = readCountFile,
+): boolean | undefined {
+  const count = bundleRequestCount(signal.path, read);
+  if (count === undefined || count < signal.atLaunch) return undefined;
   return count > signal.atLaunch;
+}
+
+// Request evidence belongs to the latest launch; an unreadable count at relaunch leaves it unknown.
+export function launchBundleRequests(
+  signal: { path: string; atLaunch: number },
+  read: ReadCount = readCountFile,
+): { requested(): boolean | undefined; relaunching(): void } {
+  let atLaunch: number | undefined = signal.atLaunch;
+  return {
+    requested: () =>
+      atLaunch === undefined
+        ? undefined
+        : bundleRequestedSinceLaunch({ path: signal.path, atLaunch }, read),
+    relaunching: () => {
+      atLaunch = bundleRequestCount(signal.path, read);
+    },
+  };
 }
 
 // The dev client opens this run's own Metro, never a server its launcher remembers.
@@ -526,6 +551,7 @@ async function attach(steps: AdmissionSteps, signal: AbortSignal): Promise<Prove
                 lastStarted = 'relaunch';
                 await interruptible(steps.relaunch);
                 lastCompleted = 'relaunch';
+                bundleRequest = 'not_probed';
               } catch (relaunchError) {
                 if (isAbort(relaunchError)) throw relaunchError;
                 relaunchFailure = describeError(relaunchError).message;

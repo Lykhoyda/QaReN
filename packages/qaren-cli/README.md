@@ -2035,9 +2035,10 @@ renew it. A stall without progress refuses earlier, once `deadlines.attach_secon
 (default 120; see the [deadline configuration reference](../../apps/docs-site/src/content/docs/configuration.mdx#deadlines)) has passed since admission began:
 a target-list wait that saw no target on the selected device, or whose list
 requests went unanswered, ends admission when the app job is proven dead or Metro
-has received no bundle request since the CLI launched the app. Liveness and the
-request signal are re-read at that point, so a request from an earlier launch does
-not keep a dead app waiting. The refusal follows the first readiness window ending
+has received no bundle request since the latest launch. The one relaunch rebases
+the request count on Metro's count just before it (an unreadable count leaves the
+signal unknown), and liveness and the request signal are re-read at that point, so
+a request from an earlier launch keeps neither a dead nor a relaunched app waiting. The refusal follows the first readiness window ending
 after that limit, and a relaunch made just before it still gets its full window. A
 received request, an unknown or unreadable request signal (including Metro owned by
 an `expo run:*` build and platforms without the signal), a registered target whose
