@@ -303,7 +303,7 @@ fn macos(runner: &mut dyn Runner) -> (Option<Memory>, Option<Cpu>) {
             let cores = usize::try_from(field(sys, "hw.logicalcpu")?)
                 .ok()
                 .filter(|c| *c > 0)?;
-            let line = top.lines().filter(|l| l.starts_with("CPU usage:")).last()?;
+            let line = top.lines().rfind(|l| l.starts_with("CPU usage:"))?;
             let idle = line
                 .split(',')
                 .find_map(|s| s.trim().strip_suffix("% idle"))?
