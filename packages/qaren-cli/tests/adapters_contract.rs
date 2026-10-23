@@ -1107,7 +1107,25 @@ fn crash_report_yields_only_tokens_for_this_app_on_this_simulator() {
             exception: Some("EXC_CRASH".into()),
             termination: Some("DYLD Library missing".into()),
             missing_library: Some("libMissing.dylib".into()),
+            missing_library_embedded: false,
         })
+    );
+    let library = |reason: &str| {
+        let facts =
+            ios::parse_crash_report(&report(app, udid, "EXC_CRASH", reason), app, udid).unwrap();
+        (facts.missing_library, facts.missing_library_embedded)
+    };
+    assert_eq!(
+        library("Library not loaded: @rpath/hermes.framework/hermes\n  Referenced from: /x"),
+        (Some("hermes.framework".into()), true)
+    );
+    assert_eq!(
+        library("Library not loaded: @executable_path/Frameworks/libPod.dylib"),
+        (Some("libPod.dylib".into()), true)
+    );
+    assert_eq!(
+        library("Library not loaded: /System/Library/Frameworks/ActivityKit.framework/ActivityKit"),
+        (Some("ActivityKit.framework".into()), false)
     );
     let leaky = ios::parse_crash_report(
         &report(
@@ -1121,8 +1139,12 @@ fn crash_report_yields_only_tokens_for_this_app_on_this_simulator() {
     )
     .unwrap();
     assert_eq!(
-        (leaky.exception, leaky.missing_library),
-        (None, Some("My SDK.framework".into()))
+        (
+            leaky.exception,
+            leaky.missing_library,
+            leaky.missing_library_embedded
+        ),
+        (None, Some("My SDK.framework".into()), true)
     );
     assert_eq!(
         ios::parse_crash_report(&report("other.app", udid, "EXC_CRASH", dylib), app, udid),

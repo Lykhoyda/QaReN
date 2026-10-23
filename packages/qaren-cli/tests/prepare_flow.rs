@@ -450,18 +450,27 @@ fn ios_app_seen_alive_once_then_gone_after_the_launch_settle_fails_as_exited() {
     let repo = common::temp_repo();
     let scenario = write_scenario(&repo, &ios_scenario_yaml(8791));
     let home = repo.join("home");
-    write_dyld_crash_report(
-        &home,
-        UDID,
-        "@rpath/ReactNativeDependencies.framework/ReactNativeDependencies",
-    );
     let mut mock = MockRunner::new();
     mock.inner
         .environment
         .insert("HOME".into(), home.to_string_lossy().into_owned());
+    let mut launchctl_probes = 0;
+    mock.observe = Some(Box::new(move |spec| {
+        if spec.label == "simctl-launchctl" {
+            launchctl_probes += 1;
+            if launchctl_probes == 3 {
+                write_dyld_crash_report(
+                    &home,
+                    UDID,
+                    "@rpath/ReactNativeDependencies.framework/ReactNativeDependencies",
+                );
+            }
+        }
+    }));
     script_ios_launched(&mut mock, &repo);
     script_ios_app_tick(&mut mock, common::APP_RUNNING);
     mock.expect_run("simctl spawn", CmdOutput::success(APP_EXITED));
+    script_ios_app_tick(&mut mock, APP_EXITED);
     common::script_ios_metro_cleanup(&mut mock);
 
     let receipt = prepare(&mut mock, &prepare_args(&scenario, false, None));
@@ -480,7 +489,11 @@ fn ios_app_seen_alive_once_then_gone_after_the_launch_settle_fails_as_exited() {
         "{detail}"
     );
     let count = |label: &str| mock.calls.iter().filter(|c| c.label == label).count();
-    assert_eq!(count("simctl-launchctl"), 2, "first sighting, then settle");
+    assert_eq!(
+        count("simctl-launchctl"),
+        3,
+        "first sighting, settle, then the confirming tick"
+    );
     assert_eq!(mock.remaining(), 0);
 }
 
@@ -509,7 +522,11 @@ fn ios_missing_system_library_gets_the_crash_report_remedy_not_the_pods_one() {
     let repo = common::temp_repo();
     let scenario = write_scenario(&repo, &ios_scenario_yaml(8791));
     let home = repo.join("home");
-    write_dyld_crash_report(&home, UDID, "/usr/lib/swift/libswift_Concurrency.dylib");
+    write_dyld_crash_report(
+        &home,
+        UDID,
+        "/System/Library/Frameworks/ActivityKit.framework/ActivityKit",
+    );
     let mut mock = MockRunner::new();
     mock.inner
         .environment
@@ -525,7 +542,7 @@ fn ios_missing_system_library_gets_the_crash_report_remedy_not_the_pods_one() {
     assert_eq!(failure.code, FailureCode::AppExitedAtLaunch);
     let detail = failure.detail.to_string();
     assert!(
-        detail.contains("missing library libswift_Concurrency.dylib")
+        detail.contains("missing library ActivityKit.framework")
             && detail.contains("read the newest com.rndevagent.testapp crash report")
             && !detail.contains("Pods"),
         "{detail}"

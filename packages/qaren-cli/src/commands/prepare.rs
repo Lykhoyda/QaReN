@@ -3252,7 +3252,8 @@ fn wait_ready_until(
         }
         match ready_probes(ctx, &metro_resource) {
             Readiness::Ready(pid) => {
-                if let (Some(watch), Some(pid)) = (watch.take(), pid) {
+                let mut settled = true;
+                if let (Some(mut launch), Some(pid)) = (watch.take(), pid) {
                     ctx.runner.sleep(IOS_LAUNCH_SETTLE);
                     let udid = ctx
                         .record
@@ -3263,15 +3264,27 @@ fn wait_ready_until(
                         .udid;
                     let app_id = ctx.record.candidate.app_id.clone();
                     let launchctl = ctx.runner.run(&ios::launchctl_list_spec(&udid));
-                    if launchctl.ok()
-                        && ios::app_pid_in_launchctl(&launchctl.stdout, &app_id) != Some(pid)
+                    match launchctl
+                        .ok()
+                        .then(|| ios::app_pid_in_launchctl(&launchctl.stdout, &app_id))
                     {
-                        let since = ctx.runner.monotonic_ms().saturating_sub(watch.launched_ms);
-                        return Err(app_exited_failure(ctx, &watch, since));
+                        Some(None) => {
+                            launch.downs = 1;
+                            watch = Some(launch);
+                            settled = false;
+                        }
+                        Some(Some(now)) if now != pid => {
+                            let since =
+                                ctx.runner.monotonic_ms().saturating_sub(launch.launched_ms);
+                            return Err(app_exited_failure(ctx, &launch, since));
+                        }
+                        _ => {}
                     }
                 }
-                ensure_running(ctx.runner, "build")?;
-                return Ok(());
+                if settled {
+                    ensure_running(ctx.runner, "build")?;
+                    return Ok(());
+                }
             }
             Readiness::AppDown => {
                 if let Some(watch) = watch.as_mut() {
@@ -3407,6 +3420,7 @@ fn app_exited_failure(ctx: &mut Ctx, watch: &AppWatch, since_ms: u64) -> Failure
                 None => detail.push_str("; no crash report for this simulator was found"),
             }
             match facts
+                .filter(|f| f.missing_library_embedded)
                 .and_then(|f| f.missing_library)
                 .filter(|l| l.ends_with(".framework"))
             {

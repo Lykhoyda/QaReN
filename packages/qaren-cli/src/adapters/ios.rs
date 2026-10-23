@@ -969,6 +969,7 @@ pub struct CrashFacts {
     pub exception: Option<String>,
     pub termination: Option<String>,
     pub missing_library: Option<String>,
+    pub missing_library_embedded: bool,
 }
 
 const CRASH_REPORT_MAX_BYTES: u64 = 8 * 1024 * 1024;
@@ -1012,7 +1013,8 @@ pub fn parse_crash_report(text: &str, app_id: &str, udid: &str) -> Option<CrashF
     Some(CrashFacts {
         exception: text_at("/exception/type").and_then(crash_token),
         termination: (!termination_text.is_empty()).then_some(termination_text),
-        missing_library,
+        missing_library_embedded: missing_library.as_ref().is_some_and(|(_, e)| *e),
+        missing_library: missing_library.map(|(name, _)| name),
     })
 }
 
@@ -1025,14 +1027,17 @@ fn crash_token(raw: &str) -> Option<String> {
     ok.then(|| raw.to_string())
 }
 
-fn missing_library_name(reason: &str) -> Option<String> {
+fn missing_library_name(reason: &str) -> Option<(String, bool)> {
     let (_, rest) = reason.split_once("Library not loaded: ")?;
     let path = rest.lines().next()?.trim();
     let name = path
         .split('/')
         .find(|c| c.ends_with(".framework"))
         .or_else(|| path.rsplit('/').next())?;
-    crash_token(name)
+    let embedded = ["@rpath/", "@executable_path/", "@loader_path/"]
+        .iter()
+        .any(|prefix| path.starts_with(prefix));
+    crash_token(name).map(|name| (name, embedded))
 }
 
 // The newest report for this app on this simulator written at or after `since`.

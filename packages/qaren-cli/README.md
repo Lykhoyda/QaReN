@@ -1496,10 +1496,11 @@ An unproven install with a spent budget fails with
 readiness polling fails `APP_EXITED_AT_LAUNCH` once the app process is twice
 seen gone instead of waiting out the deadline (on Android, only after 60 seconds
 without a first PID). On iOS the first live sighting must keep the same PID
-about a second later, so an exit during dyld load is caught too. On iOS the
-detail names the exception, dyld termination and missing library from the
-matching simulator crash report, never its paths; only a missing framework gets
-the CocoaPods remedy.
+about a second later, so an exit during dyld load is caught too; a vanished
+process is confirmed on the next tick, once the crash report has landed. On iOS
+the detail names the exception, dyld termination and missing library from the
+matching simulator crash report, never its paths; only a missing framework the
+app embeds gets the CocoaPods remedy.
 Other manifest and launch errors remain `BUILD_FAILED`; clean up retained
 resources before retrying those errors.
 
