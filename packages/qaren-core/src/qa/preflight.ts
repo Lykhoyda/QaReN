@@ -3,7 +3,8 @@ import { type JevRollup, summarizeJev } from './ledger.js';
 import {
   type PreparedPlan,
   type RefusedLine,
-  maskQuotedValues,
+  type PlanDiagnostic,
+  planDiagnostics,
   parsePlan,
   parsePlanWithJev,
   planNeedsJev,
@@ -16,7 +17,7 @@ export type PreflightResult =
       ok: false;
       code: 'JEV_UNREACHABLE' | 'PLAN_UNPARSEABLE';
       message: string;
-      refused?: RefusedLine[];
+      refused?: PlanDiagnostic[];
       jev: JevRollup;
     };
 
@@ -24,7 +25,7 @@ const unparseable = (refused: RefusedLine[], judge: Judge): PreflightResult => (
   ok: false,
   code: 'PLAN_UNPARSEABLE',
   message: 'the plan does not parse',
-  refused: refused.map((r) => ({ ...r, text: maskQuotedValues(r.text) })),
+  refused: planDiagnostics(refused),
   jev: summarizeJev(judge.calls),
 });
 

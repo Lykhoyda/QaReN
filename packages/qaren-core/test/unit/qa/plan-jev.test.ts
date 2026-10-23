@@ -396,8 +396,13 @@ test('parser and preflight refusals project planned values in heading text and r
     for (const refused of [parsed.refused, preflight.refused]) {
       const duplicate = refused.find((entry) => entry.reason.includes('already named'));
       assert.ok(duplicate);
-      assert.equal(duplicate.text, '### •••');
-      assert.equal(duplicate.reason, 'another block is already named "•••"');
+      if ('text' in duplicate) {
+        assert.equal(duplicate.text, '### •••');
+        assert.equal(duplicate.reason, 'another block is already named "•••"');
+      } else {
+        assert.equal(duplicate.reason, 'another block is already named');
+        assert.equal(duplicate.nextAction, 'give each block a distinct heading');
+      }
       assert.equal(JSON.stringify(refused).includes(canary), false);
     }
   }
@@ -415,7 +420,12 @@ test('parser and preflight withhold private heading slugs while preserving opera
       for (const refused of [parsed.refused, preflight.refused]) {
         const collision = refused.find((entry) => entry.reason.includes('already named'));
         assert.ok(collision);
-        assert.equal(collision.reason, 'another block is already named "•••"');
+        assert.equal(
+          collision.reason,
+          'text' in collision
+            ? 'another block is already named "•••"'
+            : 'another block is already named',
+        );
         assert.equal(JSON.stringify(refused).includes(canary), false);
         assert.equal(JSON.stringify(refused).includes('alice-example-com'), false);
       }

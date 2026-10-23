@@ -54,6 +54,12 @@ Config failures report the file path and failure category; inspect the file loca
 against the [configuration schema](src/config.rs). A `VERSION` mismatch reports
 the binary's expected version without echoing the file's contents.
 
+With `CLAUDE_CONFIG_DIR` set to a non-empty path, Doctor reads Claude's settings,
+plugins and legacy state there, and its user MCP configuration from
+`$CLAUDE_CONFIG_DIR/.claude.json`; an unset or empty variable uses the default
+locations above. A missing custom directory is treated as having no leftovers
+and is never created. Project-local `.mcp.json` remains relative to the app.
+
 The probes run outside any project with Corepack's network access disabled, so a
 pnpm that Corepack enabled but has not yet downloaded fails until you run
 `(cd / && pnpm --version)` once with network access; the fix line says so.
@@ -301,6 +307,11 @@ and install 2.0 as a new product.
      `~/.qaren/runs/` completes the upgrade.
 
 ## Check a plan
+
+Malformed plans refuse with `PLAN_UNPARSEABLE` before device access. The refusal
+names the plan file, source line and problem, then gives the edit needed before
+re-running `qaren check`; an empty plan points to line 1. Diagnostics omit source
+text and user-supplied block names.
 
 From the app's directory, supply `.qaren/config.yaml` and a Markdown plan:
 

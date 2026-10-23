@@ -303,6 +303,7 @@ fn run_inner(
         &node,
         &req.runtime_dir,
         &plan,
+        &req.plan_file,
         &config,
         req.platform,
         &login_source,
@@ -316,6 +317,7 @@ fn run_inner(
             &node,
             &req.runtime_dir,
             &plan,
+            &req.plan_file,
             &config,
             req.platform,
             &owned,
@@ -354,6 +356,7 @@ fn run_inner(
         &node,
         &req.runtime_dir,
         &plan,
+        &req.plan_file,
         &config,
         req.platform,
         &inventory,
@@ -379,6 +382,7 @@ fn run_inner(
             &node,
             &req.runtime_dir,
             &plan,
+            &req.plan_file,
             &config,
             req.platform,
             &login_source,
@@ -446,6 +450,7 @@ fn run_inner(
             &node,
             &req.runtime_dir,
             &plan,
+            &req.plan_file,
             &config,
             req.platform,
             &actual_source,
@@ -2374,11 +2379,45 @@ fn non_secret_names(value: &Value, required: &[String]) -> Result<Vec<String>, F
     Ok(names)
 }
 
+fn plan_unparseable(value: &Value, plan_file: &Path) -> Option<Failure> {
+    let entries = value.get("refused")?.as_array()?;
+    if entries.is_empty() {
+        return None;
+    }
+    let mut problems = Vec::new();
+    let mut repairs = Vec::new();
+    for entry in entries {
+        let line = entry.get("line")?.as_u64()?.max(1);
+        let reason = entry.get("reason")?.as_str()?;
+        if reason.trim().is_empty() {
+            return None;
+        }
+        let action = entry
+            .get("nextAction")
+            .and_then(Value::as_str)
+            .filter(|action| !action.trim().is_empty())
+            .unwrap_or("rewrite this line using a supported QA operation");
+        problems.push(format!("{}: line {line}: {reason}", plan_file.display()));
+        repairs.push(format!(
+            "edit {} at line {line}: {action}",
+            plan_file.display()
+        ));
+    }
+    Some(Failure::new(
+        "preflight",
+        FailureCode::PlanUnparseable,
+        problems.join("; "),
+        format!("{}; then re-run qaren check", repairs.join("; ")),
+    ))
+}
+
+#[allow(clippy::too_many_arguments)]
 fn input_inventory(
     runner: &mut dyn Runner,
     node: &Path,
     runtime: &Path,
     plan: &str,
+    plan_file: &Path,
     config: &CheckConfig,
     platform: Platform,
     source: &Value,
@@ -2390,13 +2429,18 @@ fn input_inventory(
     let mut bytes = serde_json::to_vec(&request).map_err(|_| input_refused())?;
     bytes.push(b'\n');
     let output = runner.run_private(&core::private_preflight_spec(node, runtime), &bytes);
-    if output.exit_code() != Some(0)
-        || output.timed_out()
-        || output.stdout().len() > PRIVATE_REPLY_MAX
-    {
+    if output.timed_out() || output.stdout().len() > PRIVATE_REPLY_MAX {
         return Err(input_refused());
     }
     let value: Value = serde_json::from_str(output.stdout().trim()).map_err(|_| input_refused())?;
+    if output.exit_code() == Some(4)
+        && value.get("code").and_then(Value::as_str) == Some("PLAN_UNPARSEABLE")
+    {
+        return Err(plan_unparseable(&value, plan_file).unwrap_or_else(input_refused));
+    }
+    if output.exit_code() != Some(0) {
+        return Err(input_refused());
+    }
     inventory_names(&value)?;
     let fields = value.as_object().ok_or_else(input_refused)?;
     if fields.keys().any(|key| {
@@ -2430,6 +2474,7 @@ fn preflight_inputs(
     node: &Path,
     runtime: &Path,
     plan: &str,
+    plan_file: &Path,
     config: &CheckConfig,
     platform: Platform,
     inventory: &Value,
@@ -2510,32 +2555,8 @@ fn preflight_inputs(
         output.exit_code(),
         value.get("code").and_then(Value::as_str),
     ) {
-        (Some(4), Some("PLAN_UNPARSEABLE")) => {
-            let refused = value
-                .get("refused")
-                .and_then(Value::as_array)
-                .map(|entries| {
-                    entries
-                        .iter()
-                        .map(|e| {
-                            format!(
-                                "line {}: {}",
-                                e.get("line").and_then(Value::as_u64).unwrap_or(0),
-                                e.get("reason")
-                                    .and_then(Value::as_str)
-                                    .unwrap_or("unreadable")
-                            )
-                        })
-                        .collect::<Vec<_>>()
-                        .join("; ")
-                })
-                .unwrap_or_else(|| "unreadable plan".to_string());
-            Err(Failure::new(
-                "preflight",
-                FailureCode::PlanUnparseable,
-                format!("the plan does not parse: {refused}"),
-                "rewrite the named lines with the verb grammar (Tap \"X\", Type \"t\" into \"X\", Scroll down, Wait for \"X\", Go back, Accept the dialog, ✓ \"text\")",
-            ))
+        (Some(4), Some("PLAN_UNPARSEABLE")) if !output.timed_out() => {
+            Err(plan_unparseable(&value, plan_file).unwrap_or_else(input_refused))
         }
         (Some(4), Some("CORE_REFUSED")) => Err(
             if value.get("message").and_then(Value::as_str) == Some("runtime input privacy refused")
