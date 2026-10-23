@@ -266,7 +266,11 @@ fn ios_launch_timeout_with_the_app_job_present_is_accepted_as_the_launch() {
     assert_eq!(receipt.outcomes["launch_proof"], "launchctl-job");
     let count = |label: &str| mock.calls.iter().filter(|c| c.label == label).count();
     assert_eq!(count("simctl-launch"), 1);
-    assert_eq!(count("simctl-launchctl"), 2, "receipt, then readiness");
+    assert_eq!(
+        count("simctl-launchctl"),
+        3,
+        "receipt, readiness, then launch settle"
+    );
     assert_eq!(mock.remaining(), 0);
 }
 
@@ -328,6 +332,384 @@ fn ios_launch_error_stays_a_build_failure_without_a_receipt() {
     let count = |label: &str| mock.calls.iter().filter(|c| c.label == label).count();
     assert_eq!(count("simctl-launch"), 1);
     assert_eq!(count("simctl-launchctl"), 0);
+    assert_eq!(mock.remaining(), 0);
+}
+
+const APP_EXITED: &str = "-\t0\tUIKitApplication:com.rndevagent.testapp[abc]";
+
+fn script_ios_app_tick(mock: &mut qaren::exec::MockRunner, launchctl: &str) {
+    mock.expect_run("ps", CmdOutput::success(&format!("{LSTART}\n")));
+    mock.expect_run("ps", CmdOutput::success("S\n"));
+    mock.expect_run("lsof", CmdOutput::success("6001\n"));
+    mock.expect_run("ps", CmdOutput::success("6000\n"));
+    mock.expect_run("curl", CmdOutput::success("packager-status:running"));
+    mock.expect_run(
+        "simctl get_app_container",
+        CmdOutput::success("/containers/app\n"),
+    );
+    mock.expect_run("simctl spawn", CmdOutput::success(launchctl));
+}
+
+// Metro does not answer, so only the watched app is probed.
+fn script_ios_metro_busy_tick(mock: &mut qaren::exec::MockRunner, launchctl: CmdOutput) {
+    mock.expect_run("ps", CmdOutput::success(&format!("{LSTART}\n")));
+    mock.expect_run("ps", CmdOutput::success("S\n"));
+    mock.expect_run("lsof", CmdOutput::success("6001\n"));
+    mock.expect_run("ps", CmdOutput::success("6000\n"));
+    mock.expect_run("curl", CmdOutput::failed(7, ""));
+    mock.expect_run(
+        "simctl get_app_container",
+        CmdOutput::success("/containers/app\n"),
+    );
+    mock.expect_run("simctl spawn", launchctl);
+}
+
+fn script_ios_launched(mock: &mut MockRunner, repo: &std::path::Path) {
+    script_ios_prepare_before_devmenu(mock, repo);
+    common::script_devmenu_defaults(mock, CmdOutput::success(""));
+    common::script_ios_launch(mock);
+}
+
+// A synthetic dyld launch crash in the simulator .ips shape: header line, then body.
+fn write_dyld_crash_report(home: &std::path::Path, udid: &str, library: &str) {
+    let name = library.rsplit('/').next().unwrap();
+    let reports = home.join("Library/Logs/DiagnosticReports");
+    std::fs::create_dir_all(&reports).unwrap();
+    let header = serde_json::json!({"bundleID": "com.rndevagent.testapp", "bug_type": "309"});
+    let body = serde_json::json!({
+        "procPath": format!("/Users/someone/Library/Developer/CoreSimulator/Devices/{udid}/data/Containers/Bundle/Application/X/testapp.app/testapp"),
+        "exception": {"type": "EXC_CRASH", "signal": "SIGABRT"},
+        "termination": {
+            "namespace": "DYLD",
+            "indicator": "Library missing",
+            "details": ["(terminated at launch; ignore backtrace)"],
+            "reasons": [
+                format!("Library not loaded: {library}"),
+                "Referenced from: <UUID> /Users/someone/secret-project/testapp.app/testapp",
+            ],
+        },
+    });
+    std::fs::write(
+        reports.join(format!("testapp-{udid}-{name}.ips")),
+        format!("{header}\n{body}"),
+    )
+    .unwrap();
+}
+
+#[test]
+fn ios_app_exiting_at_launch_fails_within_seconds_citing_the_crash_report() {
+    let repo = common::temp_repo();
+    let scenario = write_scenario(&repo, &ios_scenario_yaml(8791));
+    let home = repo.join("home");
+    write_dyld_crash_report(
+        &home,
+        UDID,
+        "@rpath/ReactNativeDependencies.framework/ReactNativeDependencies",
+    );
+    write_dyld_crash_report(
+        &home,
+        "FFFFFFFF-0000-0000-0000-000000000000",
+        "@rpath/OtherDevice.framework/OtherDevice",
+    );
+    let mut mock = MockRunner::new();
+    mock.inner
+        .environment
+        .insert("HOME".into(), home.to_string_lossy().into_owned());
+    script_ios_launched(&mut mock, &repo);
+    script_ios_app_tick(&mut mock, APP_EXITED);
+    script_ios_app_tick(&mut mock, "");
+    common::script_ios_metro_cleanup(&mut mock);
+
+    let receipt = prepare(&mut mock, &prepare_args(&scenario, false, None));
+
+    let failure = receipt.failure.as_ref().expect("an exited app fails");
+    assert_eq!(
+        failure.code,
+        FailureCode::AppExitedAtLaunch,
+        "{}",
+        receipt.to_json()
+    );
+    assert_eq!(receipt.result, ReceiptResult::Failed);
+    let detail = failure.detail.to_string();
+    assert!(detail.contains("was not running 5s after"), "{detail}");
+    assert!(
+        detail.contains("crash report: exception EXC_CRASH, termination DYLD Library missing, missing library ReactNativeDependencies.framework"),
+        "{detail}"
+    );
+    assert!(!detail.contains("/Users/") && !detail.contains("Referenced"));
+    assert!(
+        detail.contains("delete ios/Pods and reinstall the pods"),
+        "{detail}"
+    );
+    // prepare leaves its simulator owned, so cleanup comes first; check carries the remedy.
+    assert_eq!(
+        failure.next_action.to_string(),
+        format!("qaren cleanup {} --json", receipt.run_id)
+    );
+    let count = |label: &str| mock.calls.iter().filter(|c| c.label == label).count();
+    assert_eq!(count("simctl-launchctl"), 2);
+    assert_eq!(mock.remaining(), 0);
+}
+
+#[test]
+fn ios_app_seen_alive_once_then_gone_after_the_launch_settle_fails_as_exited() {
+    let repo = common::temp_repo();
+    let scenario = write_scenario(&repo, &ios_scenario_yaml(8791));
+    let home = repo.join("home");
+    let mut mock = MockRunner::new();
+    mock.inner
+        .environment
+        .insert("HOME".into(), home.to_string_lossy().into_owned());
+    let mut launchctl_probes = 0;
+    mock.observe = Some(Box::new(move |spec| {
+        if spec.label == "simctl-launchctl" {
+            launchctl_probes += 1;
+            if launchctl_probes == 3 {
+                write_dyld_crash_report(
+                    &home,
+                    UDID,
+                    "@rpath/ReactNativeDependencies.framework/ReactNativeDependencies",
+                );
+            }
+        }
+    }));
+    script_ios_launched(&mut mock, &repo);
+    script_ios_app_tick(&mut mock, common::APP_RUNNING);
+    mock.expect_run("simctl spawn", CmdOutput::success(APP_EXITED));
+    script_ios_app_tick(&mut mock, APP_EXITED);
+    common::script_ios_metro_cleanup(&mut mock);
+
+    let receipt = prepare(&mut mock, &prepare_args(&scenario, false, None));
+
+    let failure = receipt.failure.as_ref().expect("an exited app fails");
+    assert_eq!(
+        failure.code,
+        FailureCode::AppExitedAtLaunch,
+        "{}",
+        receipt.to_json()
+    );
+    let detail = failure.detail.to_string();
+    assert!(
+        detail.contains("missing library ReactNativeDependencies.framework")
+            && detail.contains("delete ios/Pods"),
+        "{detail}"
+    );
+    let count = |label: &str| mock.calls.iter().filter(|c| c.label == label).count();
+    assert_eq!(
+        count("simctl-launchctl"),
+        3,
+        "first sighting, settle, then the confirming tick"
+    );
+    assert_eq!(mock.remaining(), 0);
+}
+
+#[test]
+fn ios_unreadable_launch_settle_probe_never_accepts_a_crashed_app() {
+    let repo = common::temp_repo();
+    let scenario = write_scenario(&repo, &ios_scenario_yaml(8791));
+    let mut mock = MockRunner::new();
+    script_ios_launched(&mut mock, &repo);
+    script_ios_app_tick(&mut mock, common::APP_RUNNING);
+    mock.expect_run(
+        "simctl spawn",
+        CmdOutput::failed(1, "launchctl unavailable"),
+    );
+    script_ios_app_tick(&mut mock, APP_EXITED);
+    script_ios_app_tick(&mut mock, APP_EXITED);
+    common::script_ios_metro_cleanup(&mut mock);
+
+    let receipt = prepare(&mut mock, &prepare_args(&scenario, false, None));
+
+    let failure = receipt
+        .failure
+        .as_ref()
+        .expect("an unconfirmed launch is not ready");
+    assert_eq!(
+        failure.code,
+        FailureCode::AppExitedAtLaunch,
+        "{}",
+        receipt.to_json()
+    );
+    assert_eq!(mock.remaining(), 0);
+}
+
+#[test]
+fn ios_unreadable_launch_settle_probe_settles_again_on_the_next_sighting() {
+    let repo = common::temp_repo();
+    let scenario = write_scenario(&repo, &ios_scenario_yaml(8791));
+    let mut mock = MockRunner::new();
+    script_ios_prepare_launch(&mut mock, &repo, |m| {
+        common::script_ios_launch(m);
+        script_ios_app_tick(m, common::APP_RUNNING);
+        m.expect_run(
+            "simctl spawn",
+            CmdOutput::failed(1, "launchctl unavailable"),
+        );
+    });
+
+    let receipt = prepare(&mut mock, &prepare_args(&scenario, false, None));
+
+    assert_eq!(
+        receipt.result,
+        ReceiptResult::Ready,
+        "{}",
+        receipt.to_json()
+    );
+    let count = |label: &str| mock.calls.iter().filter(|c| c.label == label).count();
+    assert_eq!(
+        count("simctl-launchctl"),
+        4,
+        "sighting, failed settle, sighting, settle"
+    );
+    assert_eq!(mock.remaining(), 0);
+}
+
+#[test]
+fn ios_app_exiting_while_metro_stalls_fails_without_waiting_for_metro() {
+    let repo = common::temp_repo();
+    let scenario = write_scenario(&repo, &ios_scenario_yaml(8791));
+    let mut mock = MockRunner::new();
+    script_ios_launched(&mut mock, &repo);
+    script_ios_metro_busy_tick(&mut mock, CmdOutput::success(APP_EXITED));
+    script_ios_metro_busy_tick(&mut mock, CmdOutput::success(APP_EXITED));
+    common::script_ios_metro_cleanup(&mut mock);
+
+    let receipt = prepare(&mut mock, &prepare_args(&scenario, false, None));
+
+    let failure = receipt
+        .failure
+        .as_ref()
+        .expect("a stalled Metro cannot hide the exit");
+    assert_eq!(
+        failure.code,
+        FailureCode::AppExitedAtLaunch,
+        "{}",
+        receipt.to_json()
+    );
+    assert!(failure.detail.to_string().contains("5s after"));
+    assert_eq!(mock.remaining(), 0);
+}
+
+#[test]
+fn ios_app_relaunched_under_a_new_pid_during_the_launch_settle_fails_as_exited() {
+    let repo = common::temp_repo();
+    let scenario = write_scenario(&repo, &ios_scenario_yaml(8791));
+    let mut mock = MockRunner::new();
+    script_ios_launched(&mut mock, &repo);
+    script_ios_app_tick(&mut mock, common::APP_RUNNING);
+    mock.expect_run(
+        "simctl spawn",
+        CmdOutput::success("513\t0\tUIKitApplication:com.rndevagent.testapp[abc]"),
+    );
+    common::script_ios_metro_cleanup(&mut mock);
+
+    let receipt = prepare(&mut mock, &prepare_args(&scenario, false, None));
+
+    let failure = receipt.failure.as_ref().expect("a replaced process fails");
+    assert_eq!(failure.code, FailureCode::AppExitedAtLaunch);
+    assert_eq!(mock.remaining(), 0);
+}
+
+#[test]
+fn ios_missing_system_library_gets_the_crash_report_remedy_not_the_pods_one() {
+    let repo = common::temp_repo();
+    let scenario = write_scenario(&repo, &ios_scenario_yaml(8791));
+    let home = repo.join("home");
+    write_dyld_crash_report(
+        &home,
+        UDID,
+        "/System/Library/Frameworks/ActivityKit.framework/ActivityKit",
+    );
+    let mut mock = MockRunner::new();
+    mock.inner
+        .environment
+        .insert("HOME".into(), home.to_string_lossy().into_owned());
+    script_ios_launched(&mut mock, &repo);
+    script_ios_app_tick(&mut mock, APP_EXITED);
+    script_ios_app_tick(&mut mock, APP_EXITED);
+    common::script_ios_metro_cleanup(&mut mock);
+
+    let receipt = prepare(&mut mock, &prepare_args(&scenario, false, None));
+
+    let failure = receipt.failure.as_ref().expect("an exited app fails");
+    assert_eq!(failure.code, FailureCode::AppExitedAtLaunch);
+    let detail = failure.detail.to_string();
+    assert!(
+        detail.contains("missing library ActivityKit.framework")
+            && detail.contains("read the newest com.rndevagent.testapp crash report")
+            && !detail.contains("Pods"),
+        "{detail}"
+    );
+    assert_eq!(mock.remaining(), 0);
+}
+
+#[test]
+fn ios_app_exiting_during_readiness_fails_without_a_crash_report() {
+    let repo = common::temp_repo();
+    let scenario = write_scenario(&repo, &ios_scenario_yaml(8791));
+    let mut mock = MockRunner::new();
+    script_ios_launched(&mut mock, &repo);
+    script_ios_metro_busy_tick(&mut mock, CmdOutput::success(common::APP_RUNNING));
+    script_ios_metro_busy_tick(&mut mock, CmdOutput::success(common::APP_RUNNING));
+    script_ios_app_tick(&mut mock, APP_EXITED);
+    script_ios_app_tick(&mut mock, APP_EXITED);
+    common::script_ios_metro_cleanup(&mut mock);
+
+    let receipt = prepare(&mut mock, &prepare_args(&scenario, false, None));
+
+    let failure = receipt.failure.as_ref().expect("an exited app fails");
+    assert_eq!(failure.code, FailureCode::AppExitedAtLaunch);
+    let detail = failure.detail.to_string();
+    assert!(
+        detail.contains("15s after")
+            && detail.contains("no crash report")
+            && detail.contains("~/Library/Logs/DiagnosticReports"),
+        "{detail}"
+    );
+    assert_eq!(mock.remaining(), 0);
+}
+
+#[test]
+fn ios_slow_but_alive_app_is_never_refused_for_a_single_missed_probe() {
+    let repo = common::temp_repo();
+    let scenario = write_scenario(&repo, &ios_scenario_yaml(8791));
+    let mut mock = MockRunner::new();
+    script_ios_prepare_launch(&mut mock, &repo, |m| {
+        common::script_ios_launch(m);
+        for _ in 0..6 {
+            script_ios_metro_busy_tick(m, CmdOutput::success(common::APP_RUNNING));
+        }
+        script_ios_app_tick(m, APP_EXITED);
+        // Seen alive again, so the next single miss starts a fresh count.
+        script_ios_metro_busy_tick(m, CmdOutput::success(common::APP_RUNNING));
+        script_ios_app_tick(m, APP_EXITED);
+        let launchctl_failed = CmdOutput::failed(1, "launchctl unavailable");
+        m.expect_run("ps", CmdOutput::success(&format!("{LSTART}\n")));
+        m.expect_run("ps", CmdOutput::success("S\n"));
+        m.expect_run("lsof", CmdOutput::success("6001\n"));
+        m.expect_run("ps", CmdOutput::success("6000\n"));
+        m.expect_run("curl", CmdOutput::success("packager-status:running"));
+        m.expect_run(
+            "simctl get_app_container",
+            CmdOutput::success("/containers/app\n"),
+        );
+        m.expect_run("simctl spawn", launchctl_failed);
+    });
+
+    let receipt = prepare(&mut mock, &prepare_args(&scenario, false, None));
+
+    assert_eq!(
+        receipt.result,
+        ReceiptResult::Ready,
+        "{}",
+        receipt.to_json()
+    );
+    let count = |label: &str| mock.calls.iter().filter(|c| c.label == label).count();
+    assert_eq!(
+        count("simctl-launchctl"),
+        12,
+        "six alive with Metro busy, missed, alive, missed, unknown, running, then launch settle"
+    );
     assert_eq!(mock.remaining(), 0);
 }
 
@@ -585,8 +967,8 @@ fn ios_install_invalid_cached_bundle_preserves_rebuild_and_cleanup_advice() {
     let mut fp_runner = qaren::exec::MockRunner::new();
     fp_runner.expect_run("ls-files", CmdOutput::success(""));
     common::script_xcode(&mut fp_runner);
-    let fp = qaren::fingerprint::compute(&mut fp_runner, &repo, &repo.join("test-app"), "ios")
-        .unwrap();
+    let fp =
+        qaren::fingerprint::compute(&mut fp_runner, &repo, &repo.join("test-app"), "ios").unwrap();
     let artifact = common::seed_store(
         &repo.join(".native-store"),
         "ios",
@@ -609,10 +991,18 @@ fn ios_install_invalid_cached_bundle_preserves_rebuild_and_cleanup_advice() {
 
     let receipt = prepare(&mut mock, &prepare_args(&scenario, false, None));
 
-    assert_eq!(receipt.result, ReceiptResult::Failed, "{}", receipt.to_json());
+    assert_eq!(
+        receipt.result,
+        ReceiptResult::Failed,
+        "{}",
+        receipt.to_json()
+    );
     let failure = receipt.failure.as_ref().unwrap();
     assert_eq!(failure.code, FailureCode::ArtifactInstallFailed);
-    assert!(failure.detail.contains("(artifact-invalid):"), "{failure:?}");
+    assert!(
+        failure.detail.contains("(artifact-invalid):"),
+        "{failure:?}"
+    );
     let expected = format!(
         "delete the machine store entry {} to force a rebuild, then qaren cleanup {} --json and re-run prepare",
         artifact.path.parent().unwrap().parent().unwrap().display(),
@@ -1147,6 +1537,7 @@ fn script_ios_readiness(mock: &mut MockRunner) {
         "simctl spawn",
         CmdOutput::success("512\t0\tUIKitApplication:com.rndevagent.testapp[abc]"),
     );
+    mock.expect_run("simctl spawn", CmdOutput::success(common::APP_RUNNING));
     // Provenance recheck immediately before ready: unchanged sha, still clean.
     mock.expect_run("git", CmdOutput::success(&format!("{}\n", "b".repeat(40))));
     mock.expect_run("git", CmdOutput::success(""));
@@ -2285,6 +2676,7 @@ fn candidate_drift_during_build_fails_prepare() {
         "simctl spawn",
         CmdOutput::success("512\t0\tUIKitApplication:com.rndevagent.testapp[abc]"),
     );
+    mock.expect_run("simctl spawn", CmdOutput::success(common::APP_RUNNING));
     // Provenance recheck: HEAD moved during the build.
     mock.expect_run("git", CmdOutput::success(&format!("{}\n", "d".repeat(40))));
 
@@ -2379,6 +2771,7 @@ fn candidate_dirty_drift_during_build_fails_prepare() {
         "simctl spawn",
         CmdOutput::success("512\t0\tUIKitApplication:com.rndevagent.testapp[abc]"),
     );
+    mock.expect_run("simctl spawn", CmdOutput::success(common::APP_RUNNING));
     // Provenance recheck: HEAD unchanged, but the worktree went dirty.
     mock.expect_run("git", CmdOutput::success(&format!("{}\n", "b".repeat(40))));
     mock.expect_run("git", CmdOutput::success(" M test-app/App.tsx\0"));
@@ -2424,6 +2817,7 @@ fn candidate_dirty_content_drift_during_build_fails_prepare() {
         "simctl spawn",
         CmdOutput::success("512\t0\tUIKitApplication:com.rndevagent.testapp[abc]"),
     );
+    mock.expect_run("simctl spawn", CmdOutput::success(common::APP_RUNNING));
     // Provenance recheck: still dirty, but a different set of modifications.
     mock.expect_run("git", CmdOutput::success(&format!("{}\n", "b".repeat(40))));
     mock.expect_run("git", CmdOutput::success(" M test-app/Other.tsx\0"));
@@ -2475,6 +2869,7 @@ fn script_prepare_to_recheck(
         "simctl spawn",
         CmdOutput::success("512\t0\tUIKitApplication:com.rndevagent.testapp[abc]"),
     );
+    mock.expect_run("simctl spawn", CmdOutput::success(common::APP_RUNNING));
     mock.expect_run("git", CmdOutput::success(&format!("{}\n", "b".repeat(40))));
     mock.expect_run("git", CmdOutput::success(porcelain_at_recheck));
 }
@@ -3011,6 +3406,7 @@ fn recording_a_build_retires_run_output_and_publishes_to_the_machine_store_witho
         "simctl spawn",
         CmdOutput::success("512\t0\tUIKitApplication:com.rndevagent.testapp[abc]"),
     );
+    mock.expect_run("simctl spawn", CmdOutput::success(common::APP_RUNNING));
     mock.expect_run("git", CmdOutput::success(&format!("{}\n", "b".repeat(40))));
     mock.expect_run("git", CmdOutput::success(""));
     mock.expect_run("ls-files", CmdOutput::success(""));

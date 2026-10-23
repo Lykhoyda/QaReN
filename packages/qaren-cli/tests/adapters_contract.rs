@@ -1078,6 +1078,83 @@ fn launchctl_parsing_requires_live_pid_and_exact_label() {
         other_app,
         "com.rndevagent.testapp"
     ));
+    assert_eq!(
+        ios::app_pid_in_launchctl(
+            &format!("{dead}\n{other_app}\n{running}"),
+            "com.rndevagent.testapp"
+        ),
+        Some(512)
+    );
+}
+
+#[test]
+fn crash_report_yields_only_tokens_for_this_app_on_this_simulator() {
+    let udid = "AAAABBBB-1111-2222-3333-444455556666";
+    let report = |bundle: &str, device: &str, exception: &str, reason: &str| {
+        let body = serde_json::json!({
+            "procPath": format!("/Users/someone/Library/Developer/CoreSimulator/Devices/{device}/data/App.app/App"),
+            "exception": {"type": exception},
+            "termination": {"namespace": "DYLD", "indicator": "Library missing", "reasons": [reason]},
+        });
+        format!("{{\"bundleID\":\"{bundle}\"}}\n{body}")
+    };
+    let app = "com.rndevagent.testapp";
+    let dylib =
+        "Library not loaded: /usr/lib/libMissing.dylib\n  Referenced from: /Users/someone/App";
+    assert_eq!(
+        ios::parse_crash_report(&report(app, udid, "EXC_CRASH", dylib), app, udid),
+        Some(ios::CrashFacts {
+            exception: Some("EXC_CRASH".into()),
+            termination: Some("DYLD Library missing".into()),
+            missing_library: Some("libMissing.dylib".into()),
+            missing_library_embedded: false,
+        })
+    );
+    let library = |reason: &str| {
+        let facts =
+            ios::parse_crash_report(&report(app, udid, "EXC_CRASH", reason), app, udid).unwrap();
+        (facts.missing_library, facts.missing_library_embedded)
+    };
+    assert_eq!(
+        library("Library not loaded: @rpath/hermes.framework/hermes\n  Referenced from: /x"),
+        (Some("hermes.framework".into()), true)
+    );
+    assert_eq!(
+        library("Library not loaded: @executable_path/Frameworks/libPod.dylib"),
+        (Some("libPod.dylib".into()), true)
+    );
+    assert_eq!(
+        library("Library not loaded: /System/Library/Frameworks/ActivityKit.framework/ActivityKit"),
+        (Some("ActivityKit.framework".into()), false)
+    );
+    let leaky = ios::parse_crash_report(
+        &report(
+            app,
+            udid,
+            "/Users/someone/secret",
+            "Library not loaded: @rpath/My SDK.framework/My SDK\n  Referenced from: /Users/someone/App",
+        ),
+        app,
+        udid,
+    )
+    .unwrap();
+    assert_eq!(
+        (
+            leaky.exception,
+            leaky.missing_library,
+            leaky.missing_library_embedded
+        ),
+        (None, Some("My SDK.framework".into()), true)
+    );
+    assert_eq!(
+        ios::parse_crash_report(&report("other.app", udid, "EXC_CRASH", dylib), app, udid),
+        None
+    );
+    assert_eq!(
+        ios::parse_crash_report(&report(app, "FFFF", "EXC_CRASH", dylib), app, udid),
+        None
+    );
+    assert_eq!(ios::parse_crash_report("not json", app, udid), None);
 }
 
 #[test]

@@ -17,7 +17,6 @@ import {
   getPluginVersion,
 } from '../../../dist/runners/protocol.js';
 import { clearRefMap } from '../../../dist/fast-runner-ref-map.js';
-import { SETTLE_DEFAULT_BUDGET_MS } from '../../../dist/lifecycle/settle.js';
 import { QA_READ_ONLY_CAPABILITY } from '../../../dist/runners/qa-native-policy.js';
 import { parseEnvelope } from '../../helpers/result-helpers.js';
 import { scriptedJudge, walker } from './judgment-fixtures.ts';
@@ -72,12 +71,9 @@ async function capture(data: unknown) {
     assert.equal(JSON.parse(String(init?.body)).command, 'snapshot');
     return Response.json({ ok: true, data });
   });
-  // Each read spends one settle budget, so an empty-capture retry ends without a wall-clock race.
-  let now = 0;
   return captureScreen({
     appId: 'com.test',
     requirePrivateInputs: true,
-    now: () => now,
     native: async () => {
       const result = parseEnvelope(
         await runAndroid({
@@ -87,7 +83,6 @@ async function capture(data: unknown) {
           qaReadOnly: true,
         }),
       );
-      now += SETTLE_DEFAULT_BUDGET_MS;
       assert.equal(result.ok, true);
       return { ...result.data, snapshotVerdict: result.meta.snapshotVerdict };
     },

@@ -1511,9 +1511,19 @@ or `metadata` (case-insensitive, with no required error code) skips container
 verification and retries after the existing five-second readiness tick within
 the same budget; all other definite install errors fail immediately.
 An unproven install with a spent budget fails with
-`ARTIFACT_INSTALL_FAILED`. Host load is diagnostic only. Other
-manifest and launch errors remain `BUILD_FAILED`; clean up retained resources
-before retrying those errors.
+`ARTIFACT_INSTALL_FAILED`. Host load is diagnostic only. After its own launch,
+readiness polling fails `APP_EXITED_AT_LAUNCH` once the app process is twice
+seen gone with no live sighting between, even while Metro is not ready yet,
+instead of waiting out the deadline (on Android, only after 60 seconds without
+a first PID). On iOS the first live sighting must keep the same PID
+about a second later, so an exit during dyld load is caught too; a vanished
+process is confirmed on the next tick, once the crash report has landed, and an
+unreadable confirmation is retried at the next live sighting. On iOS
+the detail names the exception, dyld termination and missing library from the
+matching simulator crash report, never its paths; only a missing framework the
+app embeds gets the CocoaPods remedy.
+Other manifest and launch errors remain `BUILD_FAILED`; clean up retained
+resources before retrying those errors.
 
 Cached dev-client verification and installation failures on either platform
 use `ARTIFACT_INSTALL_FAILED`. `failure.detail` carries `artifact-invalid`,
