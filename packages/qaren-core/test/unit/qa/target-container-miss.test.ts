@@ -1,0 +1,285 @@
+import assert from 'node:assert/strict';
+import { test } from 'node:test';
+import { join, type NativeNode } from '../../../dist/qa/screen.js';
+import { prepareTarget } from '../../../dist/qa/resolve.js';
+import { parsePlan } from '../../../dist/qa/plan.js';
+import { runPlan } from '../../../dist/qa/walker.js';
+import { captureScreen } from '../../../dist/qa/capture.js';
+import { scriptedJudge, walker } from './judgment-fixtures.ts';
+import { attested } from './platform-presence-fixtures.ts';
+import { targetMissDiagnostic } from '../../../dist/qa/target-miss.js';
+import { ObservedPrivacy } from '../../../dist/qa/privacy.js';
+import { createWriter } from '../../../dist/qa/wire.js';
+
+const frame = { x: 0, y: 0, width: 402, height: 874 };
+const target = { phrase: 'Add coverage', quoted: 'Add coverage' };
+
+function nodes(android: boolean, siblings = 1): NativeNode[] {
+  return [
+    { ref: '@app', type: 'Application', rect: frame },
+    { ref: '@win', parentIndex: 0, type: 'Window', rect: frame },
+    {
+      ref: '@scroll',
+      parentIndex: 1,
+      type: android ? 'android.widget.ScrollView' : 'ScrollView',
+      identifier: 'coverage-list',
+      label: 'Your coverage, Add coverage, Details',
+      hittable: true,
+      rect: frame,
+    },
+    ...Array.from({ length: siblings }, (_, i) => ({
+      ref: `@card${i}`,
+      parentIndex: 2,
+      type: android ? 'android.view.ViewGroup' : 'Other',
+      label: 'Add coverage, Details',
+      hittable: true,
+      rect: { x: 21, y: 311 + i * 100, width: 360, height: 64 },
+    })),
+  ];
+}
+
+for (const android of [false, true]) {
+  const platform = android ? 'Android' : 'iOS';
+  test(`${platform}: an identified aggregated scroll container does not compete with its unidentified card`, () => {
+    const result = prepareTarget({ kind: 'press', target }, join(nodes(android), []));
+    assert.ok('ref' in result, JSON.stringify(result));
+    assert.equal(result.ref, '@card0');
+  });
+
+  test(`${platform}: two distinct cards still refuse as ambiguous`, () => {
+    const result = prepareTarget({ kind: 'press', target }, join(nodes(android, 2), []));
+    assert.ok('refuse' in result && result.refuse === 'TARGET_AMBIGUOUS', JSON.stringify(result));
+  });
+
+  test(`${platform}: the innermost bare card wins when both full labels equal the target`, () => {
+    const tree = nodes(android);
+    tree[2].label = tree[3].label = target.quoted;
+    const result = prepareTarget({ kind: 'press', target }, join(tree, []));
+    assert.ok('ref' in result, JSON.stringify(result));
+    assert.equal(result.ref, '@card0');
+  });
+
+  test(`${platform}: explicit scroll identifiers remain selectable`, () => {
+    const result = prepareTarget(
+      { kind: 'press', target: { phrase: 'coverage-list', quoted: 'coverage-list', exact: 'id' } },
+      join(nodes(android), []),
+    );
+    assert.ok('ref' in result);
+    assert.equal(result.ref, '@scroll');
+  });
+
+  for (const shape of [
+    'sibling',
+    'outside',
+    'unhittable',
+    'missing-frame',
+    'invalid-frame',
+  ] as const) {
+    test(`${platform}: ${shape} evidence cannot prove a container echo`, () => {
+      const tree = nodes(android);
+      if (shape === 'sibling') tree[3].parentIndex = 1;
+      if (shape === 'outside') tree[3].rect!.x = 450;
+      if (shape === 'unhittable') tree[3].hittable = false;
+      if (shape === 'missing-frame') delete tree[3].rect;
+      if (shape === 'invalid-frame') tree[3].rect!.width = NaN;
+      const result = prepareTarget({ kind: 'press', target }, join(tree, []));
+      assert.ok(!('ref' in result) || result.ref !== '@card0', JSON.stringify(result));
+      if (shape === 'sibling')
+        assert.ok('refuse' in result && result.refuse === 'TARGET_AMBIGUOUS');
+    });
+  }
+
+  test(`${platform}: failed scroll distinguishes a target only inside a larger label`, async () => {
+    const screen = join(nodes(android), []);
+    const f = walker(
+      [screen],
+      scriptedJudge(() => assert.fail('quoted target must be model-free')),
+    );
+    const diagnostics: unknown[] = [];
+    f.deps.targetMiss = (event) => diagnostics.push(event);
+    f.deps.captureScreen = () =>
+      captureScreen({
+        requirePrivateInputs: true,
+        now: () => 0,
+        native: async () => attested(nodes(android)),
+        react: async () => ({ interactive: [] }),
+      });
+    const result = await runPlan(parsePlan('1. Scroll down until "Add coverage"').blocks!, f.deps);
+    assert.equal(result.verdict, 'FAIL');
+    assert.match(JSON.stringify(result), /only-in-aggregated-label/);
+    assert.equal(diagnostics.length, 1);
+    assert.match(JSON.stringify(diagnostics), /Your coverage, Add coverage, Details/);
+    assert.doesNotMatch(JSON.stringify(result), /Your coverage, Add coverage, Details/);
+  });
+
+  for (const kind of ['wait', 'scroll'] as const) {
+    for (const expected of ['absent', 'not-scrollable', 'only-in-aggregated-label'] as const) {
+      if (kind === 'wait' && expected === 'not-scrollable') continue;
+      test(`${platform}: failed ${kind} classifies ${expected}`, async () => {
+        const tree = nodes(android);
+        if (expected !== 'only-in-aggregated-label')
+          tree.forEach((node) => {
+            delete node.label;
+          });
+        if (expected === 'not-scrollable')
+          tree[2].type = android ? 'android.view.ViewGroup' : 'Other';
+        const f = walker(
+          [],
+          scriptedJudge(() => assert.fail('quoted target must be model-free')),
+        );
+        const diagnostics: unknown[] = [];
+        f.deps.targetMiss = (event) => diagnostics.push(event);
+        f.deps.captureScreen = () =>
+          captureScreen({
+            requirePrivateInputs: true,
+            now: () => 0,
+            native: async () => attested(tree),
+            react: async () => ({ interactive: [] }),
+          });
+        const result = await runPlan(
+          parsePlan(
+            kind === 'wait' ? '1. Wait for "Add coverage"' : '1. Scroll down until "Add coverage"',
+          ).blocks!,
+          f.deps,
+        );
+        assert.equal(result.verdict, 'FAIL');
+        assert.equal(diagnostics.length, 1);
+        assert.equal((diagnostics[0] as { reason: string }).reason, expected);
+        assert.match(JSON.stringify(result), new RegExp(`target visibility: ${expected}`));
+      });
+    }
+  }
+}
+
+test('private miss candidates mask runtime inputs and observed input values before truncation', () => {
+  const secret = 'synthetic-sensitive-name';
+  const observedValue = 'synthetic-observed-value';
+  const tree = nodes(false);
+  tree[3].label = `Add coverage, ${secret}, ${observedValue}, ${'x'.repeat(500)}`;
+  tree[3].identifier = `card-${secret}`;
+  tree.push({
+    ref: '@input',
+    parentIndex: 1,
+    type: 'TextField',
+    value: observedValue,
+    rect: { x: 0, y: 0, width: 40, height: 20 },
+  });
+  const screen = join(tree, [], 'app', { native: 'complete', react: 'complete' });
+  const privacy = new ObservedPrivacy();
+  privacy.classifyInputs([secret]);
+  privacy.observe(screen);
+  const diagnostic = targetMissDiagnostic(target, screen, 1, true, privacy);
+  assert.doesNotMatch(JSON.stringify(diagnostic), new RegExp(`${secret}|${observedValue}`));
+  assert.ok(diagnostic.candidates.every((candidate) => (candidate.label?.length ?? 0) <= 256));
+  assert.match(JSON.stringify(diagnostic), /•••/);
+});
+
+test('miss diagnostics bound candidates and never infer absence after a truncated scan', () => {
+  const tree = nodes(false);
+  for (let i = 0; i < 2100; i++)
+    tree.push({ ...tree[3], ref: `@extra${i}`, label: 'Add another coverage' });
+  const screen = join(tree, [], 'app', { native: 'complete', react: 'complete' });
+  const diagnostic = targetMissDiagnostic(target, screen, 1, true, new ObservedPrivacy());
+  assert.equal(diagnostic.candidates.length, 20);
+  assert.equal(diagnostic.truncated, true);
+  assert.equal(
+    diagnostic.reason,
+    'evidence-incomplete',
+    'an exact label could be outside the scan',
+  );
+  const missing = targetMissDiagnostic(
+    { phrase: 'Missing', quoted: 'Missing' },
+    screen,
+    1,
+    true,
+    new ObservedPrivacy(),
+  );
+  assert.equal(missing.reason, 'evidence-incomplete');
+});
+
+test('target miss diagnostics use the private wire even without runtime inputs and reject unbounded fields', () => {
+  const lines: string[] = [];
+  const writer = createWriter((line) => lines.push(line), 'check-1');
+  const diagnostic = {
+    kind: 'target-miss',
+    line: 1,
+    reason: 'absent',
+    truncated: false,
+    candidates: [
+      { identifier: 'card', label: 'Coverage details', match: 'near', aggregated: false },
+    ],
+  };
+  writer.diagnostic(diagnostic);
+  writer.diagnostic({
+    ...diagnostic,
+    candidates: [{ ...diagnostic.candidates[0], value: 'unallowed' }],
+  });
+  writer.diagnostic({ ...diagnostic, candidates: Array(21).fill(diagnostic.candidates[0]) });
+  writer.diagnostic({
+    ...diagnostic,
+    candidates: [{ ...diagnostic.candidates[0], label: 'x'.repeat(257) }],
+  });
+  writer.diagnostic({ ...diagnostic, reason: 'unallowed' });
+  assert.equal(lines.length, 1);
+  assert.deepEqual(JSON.parse(lines[0]).payload, diagnostic);
+});
+
+test('bounded diagnostic labels remain well-formed at a surrogate boundary', () => {
+  const tree = nodes(false);
+  tree[3].label = `Add coverage ${'x'.repeat(242)}😀`;
+  const screen = join(tree, [], 'app', { native: 'complete', react: 'complete' });
+  const diagnostic = targetMissDiagnostic(target, screen, 1, true, new ObservedPrivacy());
+  const label = diagnostic.candidates[1].label!;
+  assert.equal(label.length, 256);
+  assert.doesNotMatch(label, /[\uD800-\uDFFF]/u);
+});
+
+test('a secure screen withholds diagnostic labels and oversized targets cannot match only a prefix', () => {
+  const tree = nodes(false);
+  tree.push({
+    ref: '@secret',
+    parentIndex: 1,
+    type: 'SecureTextField',
+    secure: true,
+    label: 'sensitive',
+    rect: { x: 0, y: 0, width: 40, height: 20 },
+  });
+  const screen = join(tree, [], 'app', { native: 'complete', react: 'complete' });
+  const privacy = new ObservedPrivacy();
+  privacy.observe(screen);
+  const diagnostic = targetMissDiagnostic(target, screen, 1, true, privacy);
+  assert.ok(diagnostic.candidates.every((candidate) => candidate.label === '•••'));
+  const oversized = {
+    phrase: 'Add coverage',
+    quoted: 'Add coverage' + ' '.repeat(4100) + 'missing',
+  };
+  assert.equal(
+    targetMissDiagnostic(oversized, screen, 1, true, privacy).reason,
+    'evidence-incomplete',
+  );
+});
+
+test('a successful wait emits no target miss diagnostic', async () => {
+  const tree = nodes(false);
+  tree[2].label = undefined;
+  tree[3].type = 'StaticText';
+  tree[3].label = 'Add coverage';
+  const f = walker(
+    [],
+    scriptedJudge(() => assert.fail('quoted target must be model-free')),
+  );
+  const diagnostics: unknown[] = [];
+  f.deps.targetMiss = (event) => diagnostics.push(event);
+  f.deps.captureScreen = () =>
+    captureScreen({
+      requirePrivateInputs: true,
+      now: () => 0,
+      native: async () => attested(tree),
+      react: async () => ({ interactive: [] }),
+    });
+  assert.equal(
+    (await runPlan(parsePlan('1. Wait for "Add coverage"').blocks!, f.deps)).verdict,
+    'PASS',
+  );
+  assert.deepEqual(diagnostics, []);
+});

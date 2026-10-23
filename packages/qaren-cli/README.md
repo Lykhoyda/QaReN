@@ -1235,6 +1235,16 @@ missing cards. Successful step attempts and literal checks emit no such failure 
 diagnostic errors do not change the failed step's outcome. The
 [capture implementation](../qaren-core/src/qa/capture.ts) owns the field layout.
 
+Failed waits and scroll-until steps also retain a `target-miss` event in the private
+`logs/core-diagnostics.jsonl`, including runs without runtime inputs. It contains
+at most 20 nearby candidate labels and identifiers, each limited to 256 characters
+after input masking; secure-screen labels are withheld. The refusal names the
+likely reason: `absent`, `only-in-aggregated-label`, or `not-scrollable`, with
+`present-but-unavailable` and `evidence-incomplete` preserving uncertainty. These
+candidate strings are never copied into the public ledger or publication output.
+The [target-miss implementation](../qaren-core/src/qa/target-miss.ts) owns matching
+and bounds; this diagnostic does not change visibility acceptance.
+
 Phrase presses require complete native and React coverage and proven React-to-native
 associations. Native text, images and plain views are excluded from press candidates
 only when complete React host evidence accounts for every interactive host and no

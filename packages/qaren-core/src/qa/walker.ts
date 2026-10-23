@@ -64,6 +64,7 @@ import {
 } from './questions.js';
 import { type LoginMarker, dismissCandidate, recover } from './recover.js';
 import type { BlockOutcome, BlockOutcomeDiagnostic } from './diagnostics.js';
+import { targetMissDiagnostic, type TargetMissDiagnostic } from './target-miss.js';
 import {
   concealsScreen,
   isPrivateInput,
@@ -174,6 +175,7 @@ export interface WalkerDeps {
   start?(start: StepStart): void;
   cancelled?(): boolean;
   diagnostic?(event: WalkerTimingDiagnostic): void;
+  targetMiss?(event: TargetMissDiagnostic): void;
   blockOutcome?(event: BlockOutcomeDiagnostic): void;
   loginOutcome?(outcome: BlockOutcome): void;
   timing?: TimingObserver;
@@ -880,6 +882,28 @@ async function walkBlockScoped(
   ): WalkOutcome => {
     const quoted = item.kind === 'check' ? undefined : stepTarget(item)?.quoted;
     if (quoted !== undefined) emitQuotedTargetDiagnostic(screen, quoted, item.line);
+    if ((item.kind === 'wait' || item.kind === 'scroll') && stepTarget(item)) {
+      try {
+        const diagnostic = targetMissDiagnostic(
+          stepTarget(item)!,
+          screen,
+          item.line,
+          item.kind === 'scroll',
+          privacy,
+        );
+        if (
+          !miss &&
+          !(item.kind === 'wait' && item.precondition) &&
+          diagnostic.reason !== 'evidence-incomplete'
+        ) {
+          const detail = `; target visibility: ${diagnostic.reason}`;
+          reason = typeof reason === 'string' ? reason + detail : [...segments(reason), detail];
+        }
+        deps.targetMiss?.(diagnostic);
+      } catch {
+        // Diagnostics cannot change the failed step's outcome.
+      }
+    }
     emit({
       ...base(item, attempt),
       ...(ref ? { ref } : {}),
