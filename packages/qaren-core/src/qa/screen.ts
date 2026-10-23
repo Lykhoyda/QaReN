@@ -120,6 +120,9 @@ const keyboardCoveredElements = new WeakSet<Element>();
 // Native scroll containers (iOS names, Android class suffixes); only native-backed elements are ever members.
 const scrollContainers = new WeakMap<Element, string>();
 const windows = new WeakSet<Element>();
+const alerts = new WeakSet<Element>();
+const keyboards = new WeakSet<Element>();
+const applications = new WeakSet<Element>();
 // Press/fill from the element's own React evidence, without the screen-wide capability gaps.
 const localCapabilities = new WeakMap<
   Element,
@@ -1095,6 +1098,10 @@ export function join(
     if (bounds) elementViewports.set(elements[i], bounds);
     if (isScrollContainerType(n.type)) scrollContainers.set(elements[i], n.type!);
     if (n.type === 'Window') windows.add(elements[i]);
+    if (n.type === 'Application') applications.add(elements[i]);
+    if (isAppAlertType(n.type)) alerts.add(elements[i]);
+    if (n.type === 'Keyboard' || (ownWindow && windowOf(i) === keyboardWindow))
+      keyboards.add(elements[i]);
     if (duplicates.has(i) || elements[i].kind !== 'text') return;
     for (let p = n.parentIndex; p !== undefined && p >= 0 && p < i; p = nodes[p].parentIndex)
       textDescendants.set(p, [...(textDescendants.get(p) ?? []), i]);
@@ -1451,6 +1458,67 @@ export function screenSignature(screen: Screen): string {
         e.side ?? null,
       ]),
   });
+}
+
+// The iOS runner sends an app's alert and action sheet as raw XCUIElement types 7 and 5.
+function isAppAlertType(type: string | undefined): boolean {
+  return type === 'Alert' || type === 'Element(7)' || type === 'Element(5)';
+}
+
+// An app-owned alert closes on any of its buttons, so its closure alone never proves which one fired.
+export function insideAlert(element: Element): boolean {
+  return ancestorsOf(element).some((ancestor) => alerts.has(ancestor));
+}
+
+// Native content rows of a screen, and the rows that belong to its alerts, keyboard, roots and windows.
+function behindAlertRows(screen: Screen): { rows: string[]; overlay: Set<string> } {
+  // Roots, windows and the containers holding an alert or the keyboard carry labels copied from them.
+  const holders = new Set(
+    screen.elements.filter((e) => alerts.has(e) || keyboards.has(e)).flatMap(ancestorsOf),
+  );
+  const labelled = screen.elements
+    .filter((e) => !e.ref.startsWith('react:'))
+    .filter((e) => e.label !== undefined || e.testID !== undefined || e.value !== undefined);
+  const row = (e: Element) =>
+    JSON.stringify([
+      e.kind,
+      e.secure && nativeLabelMayBeValue(e) ? null : (e.label ?? null),
+      e.testID ?? null,
+      e.secure ? null : (e.value ?? null),
+    ]);
+  const overlay = labelled.filter(
+    (e) =>
+      applications.has(e) ||
+      windows.has(e) ||
+      holders.has(e) ||
+      alerts.has(e) ||
+      insideAlert(e) ||
+      keyboards.has(e) ||
+      ancestorsOf(e).some((a) => keyboards.has(a)),
+  );
+  return { rows: labelled.map(row), overlay: new Set(overlay.map(row)) };
+}
+
+// What an alert or sheet press did to the native content behind it, without hittability.
+export function alertPressEffect(
+  before: Screen,
+  after: Screen,
+): 'uncaptured' | 'unchanged' | 'changed' {
+  const was = behindAlertRows(before);
+  const now = behindAlertRows(after);
+  // Overlay rows from either screen are dropped from both, so a keyboard or alert on one side alone never differs.
+  const skip = new Set([...was.overlay, ...now.overlay]);
+  const behind = was.rows.filter((r) => !skip.has(r));
+  if (!behind.length) return 'uncaptured';
+  const left = new Map<string, number>();
+  for (const r of now.rows) if (!skip.has(r)) left.set(r, (left.get(r) ?? 0) + 1);
+  // Content that only appears, such as a returning keyboard's suggestion rows, never proves the press.
+  for (const r of behind) {
+    const n = left.get(r) ?? 0;
+    if (n === 0) return 'changed';
+    left.set(r, n - 1);
+  }
+  return 'unchanged';
 }
 
 export function frontFromSurface(surface: string | undefined, nodes: NativeNode[]): Front {

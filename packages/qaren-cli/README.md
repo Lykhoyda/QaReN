@@ -590,6 +590,19 @@ a multi-gesture command reports mutation `possible` because earlier gestures
 may already have run. Take a fresh snapshot of the alert and explicitly tap
 the intended button.
 
+Any button of an app alert or action sheet closes it, so its closure alone
+never proves which button ran. An unproven press on a button inside an app
+alert or action sheet passes with reason `UNVERIFIED_PRESS` when none of the
+native labels, identifiers and values behind it left or changed, or none were
+captured while the alert was open. Rows of the alerts, the keyboard, the app
+root, windows and the containers holding an alert or the keyboard are left out
+of both captures, and content that only appears, such as the keyboard and its
+suggestion rows returning to a focused field, never counts; React-only elements
+are not compared. The receipt's `ledger.unverified_presses` lists each such
+passing press with its line and reason, and is omitted when empty. The row's
+`unverifiedPress` flag preserves this status even when privacy redacts the
+reason. A later plan check still decides whether the intended screen followed.
+
 While it serves commands, the iOS runner contains XCTest UI automation issues,
 such as a read of an element that vanished, instead of letting XCTest end its
 test, and logs only the issue type. A tap, press, drag, swipe or typing gesture
