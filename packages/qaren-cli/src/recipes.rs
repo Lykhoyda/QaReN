@@ -213,10 +213,9 @@ pub fn list(app_root: &Path) -> Result<Vec<PlanEntry>, String> {
         if name.starts_with('.') || path.extension().is_none_or(|ext| ext != "md") {
             continue;
         }
-        if !std::fs::symlink_metadata(&path).is_ok_and(|meta| meta.is_file()) {
+        let Some(text) = read_regular(&path) else {
             continue;
-        }
-        let text = read_regular(&path).ok_or_else(|| format!("cannot read {}", path.display()))?;
+        };
         let visible = visible_lines(&text);
         let section = match visible
             .iter()
@@ -746,6 +745,26 @@ mod tests {
                 ),
                 (some("Tasks"), vec!["Add one".to_string()]),
             ]
+        );
+    }
+
+    #[test]
+    fn listing_skips_a_file_that_is_not_utf8() {
+        let app = app("list-latin1");
+        recipe(&app, "a.md", PLAN);
+        std::fs::write(
+            app.join(".qaren/plans/b.md"),
+            b"# Caf\xe9\n1. Tap \"Add\"\n",
+        )
+        .unwrap();
+        assert_eq!(
+            list(&app).unwrap(),
+            vec![PlanEntry {
+                file: ".qaren/plans/a.md".into(),
+                title: Some("Add a task".into()),
+                blocks: vec!["Add one".into()],
+                broken: vec![],
+            }]
         );
     }
 
