@@ -2223,9 +2223,16 @@ readiness window before a stalled handshake triggers the one relaunch. For retai
 see [runtime-input diagnostics](#runtime-inputs). Before the liveness check or
 relaunch, admission checks for a foreign driver;
 a conflict refuses `BUSY_FOREIGN_FLOW`
-without relaunching. It relaunches on the exact simulator with the CLI's original
-`initialUrl` using `simctl launch --terminate-running-process`, then waits again
-within the original deadline. A failed relaunch refuses without another wait.
+without relaunching. Like the CLI's launch, the relaunch first waits until Metro
+answers the dev client's manifest request in under 10 s: the dev client gives
+each manifest request 10 s, then stays on its launcher without requesting a
+bundle. It retries slow answers until the attach limit (or one readiness window,
+if that limit has passed); a manifest error, an unreachable Metro or no answer in
+time fails the relaunch. It relaunches on the exact simulator with the CLI's
+original `initialUrl` using `simctl launch --terminate-running-process` within
+the CLI launch's 60 s bound, then waits again within the original deadline; the
+relaunched app is never terminated again. A failed relaunch refuses without
+another wait.
 If the CLI's walk deadline expires before the core reports admission, the CLI
 also returns `CDP_NOT_CONNECTED` with measured host load (or an explicit
 unavailable measurement), regardless of load. After admission, deadline
