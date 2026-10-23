@@ -23,7 +23,14 @@ The plugin root is two directories above this skill's base directory. Resolve on
 
 4. Any other refusal: stop and quote the installer's message.
 
-`<qaren path> doctor` lists what is missing before setup continues.
+Run `<qaren path> doctor` before setup continues. Stop on a `FAIL` and give its fix.
+Present `host-memory`, `host-devices`, `simulator-service` and `host-load` warnings
+with their next steps before the smoke run; use the conservative lane recommendation
+in the [host budget](https://github.com/Lykhoyda/rn-dev-agent/blob/develop/packages/qaren-cli/README.md#host-budget).
+If memory or CPU is constrained, recommend fewer concurrent lanes and closing
+unneeded apps. Ask the owner to shut down an affected borrowed device; restarting
+CoreSimulatorService stops every simulator on the machine. Setup never performs
+either action. A warning permits setup to continue; an unknown probe is not a healthy host.
 
 ## 2. App
 

@@ -22,8 +22,9 @@ qaren doctor [--json] [--config .qaren/config.yaml]
 
 Doctor prints the running binary's version, path, build and runtime, then one
 `PASS`, `WARN`, `FAIL` or `SKIP` row per check, each problem with its manual fix.
-It only reads files and runs version, list and `df` commands: it never writes, deletes,
-spawns a session or uses the network. In text and JSON output, Doctor never prints
+It only reads files and runs bounded version, inventory and host-statistics probes:
+it never writes, deletes, starts a device or restarts a service. It does not run ADB
+or start an ADB server. In text and JSON output, Doctor never prints
 file contents, environment variable values, credentials or any other config value;
 it may name the configured iOS runtime and Android AVD. It also prints diagnostic
 paths, key names and environment variable names. It exits 1 when any row fails,
@@ -39,6 +40,9 @@ that can conflict with a session or is hygiene; `SKIP` is not applicable.
 | `node`, `pnpm` | `QAREN_NODE` or `node` on `PATH` is 24 or newer; a configured `nodePath` is only checked to be an executable file, never run; `pnpm` runs |
 | `corepack`, `cocoapods` | `corepack` and `pod` run (warnings) |
 | `disk` | The volumes holding the current directory and your home have the roughly 10 GiB free a clean iOS build needs (warning) |
+| `host-memory`, `host-devices` | Free memory, memory pressure, booted simulators and running Android emulators; conservative concurrent lane headroom on macOS and Linux |
+| `simulator-service` | A five-second `simctl list devices -j` probe on macOS; attributable uninterruptible simulator process evidence when unresponsive |
+| `host-load` | One-, five- and fifteen-minute load averages, logical CPU count and sampled CPU idle; warns about readiness deadlines under load |
 | `android-sdk`, `android-avd` | When `android` is configured: `ANDROID_HOME`, an executable `adb` file (never run; its version is not checked), the emulator binary and the configured AVD via `emulator -list-avds` |
 | `qaren-path` | The first `qaren` on `PATH` is this binary and the installed build; later copies warn |
 | `installed-build` | The runtime under `~/.qaren/runtime/<version>/` and the runtime `check` would use (`QAREN_RUNTIME` when set) are complete; a binary outside it that `PATH` runs instead of an install fails |
@@ -64,6 +68,46 @@ and is never created. Project-local `.mcp.json` remains relative to the app.
 The probes run outside any project with Corepack's network access disabled, so a
 pnpm that Corepack enabled but has not yet downloaded fails until you run
 `(cd / && pnpm --version)` once with network access; the fix line says so.
+
+### Host budget
+
+Setup runs Doctor before its smoke run. Host capacity is a conservative snapshot,
+not a hardware guarantee: reserve 2 GiB for the host, then budget 4 GiB of remaining
+memory headroom per concurrent simulator/emulator lane. The recommendation is
+`floor(max(headroom - 2 GiB, 0) / 4 GiB)`. This is free headroom for ongoing work,
+not an estimate of memory already consumed by a booted device. Fewer than one
+lane's headroom warns even before a device is booted; exceeding the recommendation
+warns and gives the minimum number of owned lanes to close for that snapshot.
+Recheck after closing lanes or apps: memory usage changes during builds.
+
+On macOS, headroom counts `vm_stat` free and speculative pages, using its reported
+page size; inactive and compressed pages are excluded conservatively. Doctor also
+reports compressed bytes and the kernel memory-pressure level (normal, elevated or
+unknown). On Linux it uses `/proc/meminfo`'s `MemAvailable`, which includes reclaimable
+memory, and labels pressure elevated below 10% of `MemTotal`. These pressure signals
+are platform-specific; either elevated signal warns regardless of lane count.
+
+All booted Apple simulators count, including other simulator platforms. Android
+inventory counts local `qemu-system-*` processes with `-avd`, including starting
+emulators, without contacting ADB; custom emulator launchers that omit `-avd` and
+remote emulator hosts are outside this inventory. A failed inventory probe reports
+unknown and warns instead of treating it as zero devices.
+
+Load warns when the one-minute load is at least the logical CPU count or sampled
+CPU idle is below 10%: readiness deadlines may expire, so use fewer concurrent
+lanes and wait for CPU-heavy work to finish. macOS uses the second one-second `top`
+sample; Linux computes idle from two `/proc/stat` samples one second apart, excluding
+guest counters from the total and treating I/O wait as busy. Historical five- and
+fifteen-minute load is reported without independently triggering a warning.
+
+Host commands have three-second budgets, except `top` and the simulator inventory
+which have five seconds each; subprocess termination can add up to five seconds
+per timeout. Missing, malformed or timed-out host statistics warn with a manual
+next step. A simulator inventory timeout alone warns: it does not identify a
+wedged device. A timeout together with an uninterruptible `launchd_sim` whose argv
+names a simulator UUID fails and reports that UUID as observed evidence. Ask the
+device owner to shut down that simulator and recheck; restarting CoreSimulatorService
+stops **every simulator on the machine**. Doctor and setup perform neither action.
 
 A cold first `check` builds the app from scratch. One measured cold iOS build
 used about 8 GiB for Xcode DerivedData (under
@@ -268,14 +312,18 @@ unknown key. Existing `.qaren/plans/*.md` files are listed and run as [saved pla
    If `rmdir` reports the folder is not empty, stop and inspect it rather than
    deleting it. If you registered the 1.x MCP server by hand, delete that entry
    from the host's MCP configuration as well.
-2. **Archive, then retire the 1.x state.** No 2.0 QA run uses
+2. **Preserve project files; optionally archive unused 1.x user state.** No 2.0 QA run uses
    `~/.cache/rn-dev-agent/`, `~/.rn-dev-agent/`, `~/.claude/rn-agent/` or an
    app's `.rn-agent/` directory, and learned actions are not converted: QaReN
-   saves its own blocks as plans pass. Archive each app's `.rn-agent/actions/`
+   saves its own blocks as plans pass. Leave tracked `.rn-agent/` files and 1.x
+   instruction/configuration references in app repositories in place; removing
+   them is not required to upgrade. Only maintainers should choose to remove
+   those files in a separate repository change. Archive each app's `.rn-agent/actions/`
    and the action database `~/.rn-dev-agent/actions.db` first if those flows
    matter to you, since they may be their only copy. Unset
    any `RN_DEV_AGENT_*` environment variables from your shell profile, and delete
-   the 1.x directories once step 4 passes.
+   unused 1.x directories under your home once step 4 passes, if you want to
+   reclaim that space. Keep app repository files unchanged during the upgrade.
 3. **Install 2.0.** Until a QaReN release asset is published, use the
    [source build](#build). Once it is, add the marketplace, install the plugin
    and run the [runtime installer](#plugin-runtime-installation) from the
