@@ -86,7 +86,7 @@ fn holder_records(home: &Path, run_id: &str) -> Option<PathBuf> {
     Some(home.join(".qaren").join(kind).join(run_id))
 }
 
-fn records_gone(held: &LockHolder) -> bool {
+pub fn records_gone(held: &LockHolder) -> bool {
     held.home
         .as_deref()
         .and_then(|home| holder_records(home, &held.run_id))

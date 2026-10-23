@@ -77,6 +77,10 @@ pub fn reclaim_dead_holder_with_runtime(
     else {
         return Err(busy.failure.clone());
     };
+    // No cleanup can run without the holder's records; keep the lease's own release advice.
+    if crate::lease::records_gone(holder) {
+        return Err(busy.failure.clone());
+    }
     let run_id = holder.run_id.clone();
     let refuse = |detail: String| {
         Failure::new(

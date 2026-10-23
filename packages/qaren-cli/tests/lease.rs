@@ -302,3 +302,53 @@ fn dead_holder_reclaim_completes_pending_borrowed_ios_stop_before_releasing_leas
     assert!(stored.resources.lease.is_none());
     assert_eq!(ok.remaining(), 0);
 }
+
+#[test]
+fn reclaim_of_a_records_gone_holder_with_a_live_group_keeps_the_release_advice() {
+    use qaren::buildplan::{claim_lock, LockHolder, LockOutcome, LockPolicy};
+    use qaren::commands::cleanup::reclaim_dead_holder_with_runtime;
+    let repo = common::temp_repo();
+    let lock_root = repo.join("locks");
+    let deleted_home = repo.join("deleted-home");
+    let held = LockHolder {
+        holder: "qaren-old-run".into(),
+        run_id: "old-run".into(),
+        identity: Some(common::identity(4242, "Wed Aug 12 15:00:00 2026")),
+        at: "2026-10-23T00:00:00Z".into(),
+        home: Some(deleted_home.clone()),
+        group: Some(777),
+    };
+    let name = lock_name(Platform::Ios, UDID);
+    assert!(matches!(
+        claim_lock(&mut MockRunner::new(), &lock_root, &name, &held, LockPolicy::Strict),
+        LockOutcome::Claimed { .. }
+    ));
+
+    let mut runner = MockRunner::new();
+    runner.expect_run("ps -p 4242 -o lstart=", CmdOutput::failed(1, ""));
+    runner.expect_run(
+        "ps -A -o pid= -o pgid= -o stat=",
+        CmdOutput::success("  777   777 S\n"),
+    );
+    let busy = qaren::lease::try_acquire(
+        &mut runner,
+        &lock_root,
+        Platform::Ios,
+        UDID,
+        "new-run",
+        None,
+    )
+    .unwrap_err();
+    let failure =
+        reclaim_dead_holder_with_runtime(&mut runner, &repo.join("runs"), &busy, None).unwrap_err();
+    assert_eq!(failure.code, FailureCode::DeviceBusy);
+    let next = failure.next_action.as_str();
+    assert!(next.contains("pgrep -g 777"), "{next}");
+    assert!(
+        next.contains(&lock_root.join(&name).display().to_string()),
+        "{next}"
+    );
+    assert!(!next.contains("qaren cleanup"), "{next}");
+    assert_eq!(read_holder(&lock_root.join(&name)).unwrap().run_id, "old-run");
+    assert_eq!(runner.remaining(), 0);
+}
