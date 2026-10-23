@@ -14,7 +14,7 @@ import {
   type NativeNode,
   type VisibilityBlockerDiagnostic,
   screenSignature,
-  contentBehindAlerts,
+  alertPressEffect,
   insideAlert,
   elementFrame,
   isNativeInput,
@@ -2276,14 +2276,11 @@ async function walkBlockScoped(
           const noMutationRefusal = !act!.ok && act!.mutation === 'none';
           // A refused dialog tap may have pressed something else, so a changed screen never stands in for its proof.
           const dialogRefused = item.kind === 'dialog' && !act!.ok;
-          const behind =
-            item.kind === 'press' && element && insideAlert(element)
-              ? { before: contentBehindAlerts(before.screen) }
+          const alertEffect =
+            item.kind === 'press' && element && insideAlert(element) && !act!.proven
+              ? alertPressEffect(before.screen, after.screen)
               : undefined;
-          const alertOnly =
-            behind !== undefined &&
-            !act!.proven &&
-            (behind.before === undefined || behind.before === contentBehindAlerts(after.screen));
+          const alertOnly = alertEffect !== undefined && alertEffect !== 'changed';
           if (
             !noMutationRefusal &&
             !dialogRefused &&
@@ -2322,7 +2319,7 @@ async function walkBlockScoped(
                   : alertOnly
                     ? {
                         reason: redact(
-                          behind.before === undefined
+                          alertEffect === 'uncaptured'
                             ? 'UNVERIFIED_PRESS: nothing behind the alert or sheet was captured while it was open; any of its buttons closes it, so the press was not verified'
                             : 'UNVERIFIED_PRESS: the alert or sheet closed and nothing behind it changed; any of its buttons closes it, so the press was not verified',
                         ),

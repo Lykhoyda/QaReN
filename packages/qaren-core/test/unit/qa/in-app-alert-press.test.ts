@@ -206,3 +206,101 @@ test('an action sheet button whose tap only closes the sheet is not proven', asy
   assert.equal(row?.outcome, 'pass');
   assert.match(row?.reason ?? '', /^UNVERIFIED_PRESS: /);
 });
+
+// Title filled, the Discard alert open (iOS hides the keyboard), then Keep editing brings the keyboard back inside the app.
+function editing(alert: boolean): Screen {
+  const nodes = [
+    { ref: '@app', index: 0, type: 'Application', label: 'Tasks app', rect: app },
+    { ref: '@win', index: 1, parentIndex: 0, type: 'Window', rect: app },
+    { ref: '@root', index: 2, parentIndex: 1, type: 'Other', label: 'New task', rect: app },
+    {
+      ref: '@field',
+      index: 3,
+      parentIndex: 2,
+      type: 'TextField',
+      label: 'Title',
+      value: 'Buy milk',
+      rect: { x: 20, y: 120, width: 360, height: 44 },
+    },
+    {
+      ref: '@close',
+      index: 4,
+      parentIndex: 2,
+      type: 'Button',
+      label: 'Close',
+      hittable: !alert,
+      rect: { x: 20, y: 40, width: 60, height: 44 },
+    },
+    ...(alert
+      ? [
+          { ref: '@alertWin', index: 5, parentIndex: 0, type: 'Window', rect: app },
+          {
+            ref: '@alert',
+            index: 6,
+            parentIndex: 5,
+            type: 'Element(7)',
+            label: 'Discard changes?',
+            rect: { x: 60, y: 300, width: 280, height: 160 },
+          },
+          {
+            ref: '@keep',
+            index: 7,
+            parentIndex: 6,
+            type: 'Button',
+            label: 'Keep editing',
+            hittable: true,
+            rect: { x: 60, y: 400, width: 140, height: 44 },
+          },
+          {
+            ref: '@discard',
+            index: 8,
+            parentIndex: 6,
+            type: 'Button',
+            label: 'Discard',
+            hittable: true,
+            rect: { x: 200, y: 400, width: 140, height: 44 },
+          },
+        ]
+      : [
+          {
+            ref: '@prediction',
+            index: 5,
+            parentIndex: 2,
+            type: 'Button',
+            label: 'milkshake',
+            hittable: true,
+            rect: { x: 0, y: 456, width: 130, height: 44 },
+          },
+          {
+            ref: '@kb',
+            index: 6,
+            parentIndex: 2,
+            type: 'Keyboard',
+            rect: { x: 0, y: 500, width: 400, height: 300 },
+          },
+          {
+            ref: '@q',
+            index: 7,
+            parentIndex: 6,
+            type: 'Key',
+            label: 'q',
+            hittable: true,
+            rect: { x: 0, y: 520, width: 40, height: 50 },
+          },
+        ]),
+  ];
+  const captured = joinScreen(nodes, [{ role: 'text', testID: 'task-title', label: 'Title' }]);
+  return { ...captured, coverage: { native: 'complete', react: 'complete' } };
+}
+
+test('Keep editing after a title fill is not proven by the keyboard coming back', async () => {
+  const f = walker([editing(true), editing(false)], noJudge, { ok: true, proven: false });
+  const outcome = await walkBlock(plan('1. Tap "Keep editing"'), f.deps);
+  assert.deepEqual(f.actions, ['press @keep']);
+  const row = outcome.rows.find((r) => r.line === 1);
+  assert.equal(row?.outcome, 'pass');
+  assert.match(
+    row?.reason ?? '',
+    /^UNVERIFIED_PRESS: the alert or sheet closed and nothing behind it changed/,
+  );
+});

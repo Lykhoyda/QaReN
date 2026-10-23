@@ -589,9 +589,12 @@ the intended button.
 
 Any button of an app alert or action sheet closes it, so its closure alone
 never proves which button ran. An unproven press on a button inside an app
-alert or action sheet passes with reason `UNVERIFIED_PRESS` when the native
-labels, identifiers and values outside every alert and the keyboard are
-unchanged, or none were captured while the alert was open; React-only elements
+alert or action sheet passes with reason `UNVERIFIED_PRESS` when none of the
+native labels, identifiers and values behind it left or changed, or none were
+captured while the alert was open. Rows of the alerts, the keyboard, the app
+root, windows and the containers holding an alert or the keyboard are left out
+of both captures, and content that only appears, such as the keyboard and its
+suggestion rows returning to a focused field, never counts; React-only elements
 are not compared. The receipt's `ledger.unverified_presses` lists each such
 passing press with its line and reason, and is omitted when empty. A later plan
 check still decides whether the intended screen followed.
