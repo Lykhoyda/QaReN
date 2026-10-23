@@ -35,12 +35,12 @@ test('runner manifest candidates include the source root and the installed runti
   );
 });
 
-test('plugin manifest candidates include the qaren-plugin manifest and the core package.json', () => {
+test('plugin manifest candidates use the release package instead of the private core version', () => {
   const candidates = candidatePluginManifestFiles(sourceBase);
   assert.ok(
     candidates.includes(join('/repo', 'packages', 'qaren-plugin', '.claude-plugin', 'plugin.json')),
   );
-  assert.ok(candidates.includes(join('/repo', 'packages', 'qaren-core', 'package.json')));
+  assert.ok(!candidates.includes(join('/repo', 'packages', 'qaren-core', 'package.json')));
 });
 
 test('a bundled entry in the installed tarball finds the runtime files the tarball ships', () => {

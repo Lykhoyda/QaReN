@@ -1,6 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { join, dirname, basename } from 'node:path';
+import { ensureRunnerForCommand } from '../../dist/agent-device-wrapper.js';
 import {
   resolveArtifactDecision,
   assertNoTraversal,
@@ -82,19 +83,19 @@ test('verifyChecksums: flags mismatch and missing', () => {
 
 test('releaseAssetUrl: builds a v-prefixed release download URL', () => {
   assert.equal(
-    releaseAssetUrl('Lykhoyda/rn-dev-agent', '0.62.3', 'rn-fast-runner-0.62.3-sim.zip'),
-    'https://github.com/Lykhoyda/rn-dev-agent/releases/download/v0.62.3/rn-fast-runner-0.62.3-sim.zip',
+    releaseAssetUrl('Lykhoyda/rn-dev-agent', '2.0.0-beta.3', 'rn-fast-runner-2.0.0-beta.3-sim.zip'),
+    'https://github.com/Lykhoyda/rn-dev-agent/releases/download/v2.0.0-beta.3/rn-fast-runner-2.0.0-beta.3-sim.zip',
   );
 });
 
 test('cacheDirFor: every platform caches runners under ~/.qaren/runtime', () => {
   assert.equal(
-    cacheDirFor('/Users/x', 'darwin', '0.62.3', 'ios'),
-    '/Users/x/.qaren/runtime/runners/0.62.3/ios',
+    cacheDirFor('/Users/x', 'darwin', '2.0.0-beta.3', 'ios'),
+    '/Users/x/.qaren/runtime/runners/2.0.0-beta.3/ios',
   );
   assert.equal(
-    cacheDirFor('/home/x', 'linux', '0.62.3', 'android'),
-    '/home/x/.qaren/runtime/runners/0.62.3/android',
+    cacheDirFor('/home/x', 'linux', '2.0.0-beta.3', 'android'),
+    '/home/x/.qaren/runtime/runners/2.0.0-beta.3/android',
   );
 });
 
@@ -151,10 +152,10 @@ function makeDeps(cfg = {}) {
 }
 
 const IOS_MANIFEST = {
-  version: '0.62.3',
+  version: '2.0.0-beta.3',
   assets: {
-    ios: [{ name: 'rn-fast-runner-0.62.3-sim.zip', sha256: 'GOOD', bytes: 4_200_000 }],
-    android: [{ name: 'rn-android-runner-0.62.3.zip', sha256: 'GOOD', bytes: 5_100_000 }],
+    ios: [{ name: 'rn-fast-runner-2.0.0-beta.3-sim.zip', sha256: 'GOOD', bytes: 4_200_000 }],
+    android: [{ name: 'rn-android-runner-2.0.0-beta.3.zip', sha256: 'GOOD', bytes: 5_100_000 }],
   },
 };
 // Paths are relative to the extraction (products) dir the fake unzip receives.
@@ -165,11 +166,132 @@ const LOCAL_APKS = {
   testApk: '/plugin/.../app-debug-androidTest.apk',
 };
 
+for (const cached of [false, true]) {
+  test(`a colliding 1.x runtime version never ${cached ? 'adopts a cached' : 'downloads a published'} 1.x runner`, async () => {
+    const legacy = {
+      version: '1.0.13',
+      assets: {
+        ios: [{ name: 'rn-fast-runner-1.0.13-sim.zip', sha256: 'GOOD', bytes: 1 }],
+        android: [],
+      },
+    };
+    const zip = '/cache/1.0.13/ios/rn-fast-runner-1.0.13-sim.zip';
+    const { deps, calls } = makeDeps({
+      manifest: legacy,
+      extractProduces: IOS_EXTRACT,
+      files: cached
+        ? [zip, '/cache/1.0.13/ios/products/Build/Products/RnFastRunner.xctestrun']
+        : [],
+      shas: { [zip]: 'GOOD' },
+    });
+    const result = await resolveIosRunnerArtifacts('1.0.13', LOCAL_DD, deps);
+    assert.equal(result.provenance, 'build-local');
+    assert.match(result.note ?? '', /legacy.*1\.x|1\.x.*legacy/i);
+    assert.deepEqual(calls.fetch, []);
+    assert.deepEqual(calls.unzip, []);
+  });
+}
+
+for (const version of ['2.0.0', '2.0.0-rc.1']) {
+  test(`a matching ${version} runner is downloaded and then reused`, async () => {
+    const { deps, calls } = makeDeps({
+      manifest: {
+        version,
+        assets: {
+          ios: [{ name: `rn-fast-runner-${version}-sim.zip`, sha256: 'GOOD', bytes: 1 }],
+          android: [],
+        },
+      },
+      extractProduces: IOS_EXTRACT,
+    });
+    assert.equal(
+      (await resolveIosRunnerArtifacts(version, LOCAL_DD, deps)).provenance,
+      'downloaded',
+    );
+    assert.equal((await resolveIosRunnerArtifacts(version, LOCAL_DD, deps)).provenance, 'cache');
+    assert.equal(calls.fetch.length, 1);
+    assert.match(calls.fetch[0].url, new RegExp(`/v${version}/`));
+  });
+}
+
+test('a 2.0 checkout with a lagging legacy manifest builds shipped source without touching cache or network', async () => {
+  const zip = '/cache/1.0.13/ios/rn-fast-runner-1.0.13-sim.zip';
+  const { deps, calls } = makeDeps({
+    manifest: {
+      version: '1.0.13',
+      assets: {
+        ios: [{ name: 'rn-fast-runner-1.0.13-sim.zip', sha256: 'GOOD', bytes: 1 }],
+        android: [],
+      },
+    },
+    files: [zip, '/cache/1.0.13/ios/products/Build/Products/RnFastRunner.xctestrun'],
+    shas: { [zip]: 'GOOD' },
+  });
+  const r = await resolveIosRunnerArtifacts('2.0.0', LOCAL_DD, deps);
+  assert.equal(r.provenance, 'build-local');
+  assert.equal(r.derivedDataPath, LOCAL_DD);
+  assert.match(r.note ?? '', /2\.0\.0.*1\.0\.13.*locally/);
+  assert.deepEqual(calls.fetch, []);
+  assert.deepEqual(calls.unzip, []);
+});
+
+test('runner startup surfaces an artifact mismatch as a typed refusal without retrying', async () => {
+  const { deps, calls } = makeDeps({
+    manifest: {
+      ...IOS_MANIFEST,
+      assets: {
+        ...IOS_MANIFEST.assets,
+        ios: [{ name: 'rn-fast-runner-1.0.13-sim.zip', sha256: 'GOOD', bytes: 1 }],
+      },
+    },
+  });
+  let probes = 0;
+  const result = await ensureRunnerForCommand('synthetic-device', 'com.example.app', {
+    adopt: () => {},
+    probe: async () => {
+      probes++;
+      return { liveness: 'dead' };
+    },
+    prebuilt: () => true,
+    ensure: async () => {
+      await resolveIosRunnerArtifacts(IOS_MANIFEST.version, LOCAL_DD, deps);
+    },
+  });
+  assert.equal(result.ok, false);
+  assert.equal(result.code, 'RUNNER_VERSION_MISMATCH');
+  assert.match(result.message, /2\.0\.0-beta\.3.*rn-fast-runner-1\.0\.13-sim\.zip/);
+  assert.equal(probes, 1);
+  assert.deepEqual(calls.fetch, []);
+  assert.deepEqual(calls.unzip, []);
+});
+
+for (const name of [
+  'rn-fast-runner-1.0.13-sim.zip',
+  'rn-fast-runner-2.0.0-sim.zip',
+  'rn-fast-runner-2.0.0-beta.2-sim.zip',
+  '../rn-fast-runner-2.0.0-beta.3-sim.zip',
+]) {
+  test(`iOS: a matching manifest version cannot name another release's asset: ${name}`, async () => {
+    const { deps, calls } = makeDeps({
+      manifest: {
+        ...IOS_MANIFEST,
+        assets: { ...IOS_MANIFEST.assets, ios: [{ name, sha256: 'GOOD', bytes: 1 }] },
+      },
+    });
+    await assert.rejects(
+      resolveIosRunnerArtifacts(IOS_MANIFEST.version, LOCAL_DD, deps),
+      /RUNNER_VERSION_MISMATCH.*manifest names/,
+    );
+    assert.deepEqual(calls.fetch, []);
+    assert.deepEqual(calls.unzip, []);
+  });
+}
+
 // --- iOS orchestrator ---
 
 test('iOS: RN_RUNNER_BUILD=local -> build-local, uses local DD, no network', async () => {
   const { deps, calls } = makeDeps({ env: { RN_RUNNER_BUILD: 'local' }, manifest: IOS_MANIFEST });
-  const r = await resolveIosRunnerArtifacts('0.62.3', LOCAL_DD, deps);
+  const r = await resolveIosRunnerArtifacts('2.0.0-beta.3', LOCAL_DD, deps);
   assert.equal(r.provenance, 'build-local');
   assert.equal(r.derivedDataPath, LOCAL_DD);
   assert.equal(calls.fetch.length, 0);
@@ -183,35 +305,37 @@ test('iOS: null version -> build-local', async () => {
   assert.equal(calls.fetch.length, 0);
 });
 
-test('iOS: manifest version mismatch -> build-local', async () => {
-  const { deps } = makeDeps({ manifest: { ...IOS_MANIFEST, version: '0.61.0' } });
-  const r = await resolveIosRunnerArtifacts('0.62.3', LOCAL_DD, deps);
+test('iOS: manifest for another prerelease -> build-local, no network', async () => {
+  const { deps, calls } = makeDeps({ manifest: { ...IOS_MANIFEST, version: '2.0.0-beta.2' } });
+  const r = await resolveIosRunnerArtifacts('2.0.0-beta.3', LOCAL_DD, deps);
   assert.equal(r.provenance, 'build-local');
+  assert.equal(r.derivedDataPath, LOCAL_DD);
+  assert.equal(calls.fetch.length, 0);
 });
 
 test('iOS: no manifest at all -> build-local', async () => {
   const { deps } = makeDeps({ manifest: null });
-  const r = await resolveIosRunnerArtifacts('0.62.3', LOCAL_DD, deps);
+  const r = await resolveIosRunnerArtifacts('2.0.0-beta.3', LOCAL_DD, deps);
   assert.equal(r.provenance, 'build-local');
 });
 
 test('iOS: valid cache -> cache, uses cached DD, no network', async () => {
-  const cacheDir = join('/cache', '0.62.3', 'ios');
-  const zip = join(cacheDir, 'rn-fast-runner-0.62.3-sim.zip');
+  const cacheDir = join('/cache', '2.0.0-beta.3', 'ios');
+  const zip = join(cacheDir, 'rn-fast-runner-2.0.0-beta.3-sim.zip');
   const { deps, calls } = makeDeps({
     manifest: IOS_MANIFEST,
     files: [zip, join(cacheDir, 'products/Build/Products/RnFastRunner.xctestrun')],
     shas: { [zip]: 'GOOD' },
   });
-  const r = await resolveIosRunnerArtifacts('0.62.3', LOCAL_DD, deps);
+  const r = await resolveIosRunnerArtifacts('2.0.0-beta.3', LOCAL_DD, deps);
   assert.equal(r.provenance, 'cache');
   assert.equal(r.derivedDataPath, join(cacheDir, 'products'));
   assert.equal(calls.fetch.length, 0);
 });
 
 test('iOS: corrupt cache (wrong sha) -> falls to download', async () => {
-  const cacheDir = join('/cache', '0.62.3', 'ios');
-  const zip = join(cacheDir, 'rn-fast-runner-0.62.3-sim.zip');
+  const cacheDir = join('/cache', '2.0.0-beta.3', 'ios');
+  const zip = join(cacheDir, 'rn-fast-runner-2.0.0-beta.3-sim.zip');
   const { deps, calls } = makeDeps({
     manifest: IOS_MANIFEST,
     files: [zip, join(cacheDir, 'products/Build/Products/RnFastRunner.xctestrun')],
@@ -219,7 +343,7 @@ test('iOS: corrupt cache (wrong sha) -> falls to download', async () => {
     downloadSha: 'GOOD',
     extractProduces: IOS_EXTRACT,
   });
-  const r = await resolveIosRunnerArtifacts('0.62.3', LOCAL_DD, deps);
+  const r = await resolveIosRunnerArtifacts('2.0.0-beta.3', LOCAL_DD, deps);
   assert.equal(r.provenance, 'downloaded');
   assert.equal(calls.fetch.length, 1);
 });
@@ -230,14 +354,14 @@ test('iOS: download ok -> downloaded, cached DD, fetch+unzip called, size-cap pa
     downloadSha: 'GOOD',
     extractProduces: IOS_EXTRACT,
   });
-  const r = await resolveIosRunnerArtifacts('0.62.3', LOCAL_DD, deps);
+  const r = await resolveIosRunnerArtifacts('2.0.0-beta.3', LOCAL_DD, deps);
   assert.equal(r.provenance, 'downloaded');
-  assert.equal(r.derivedDataPath, join('/cache', '0.62.3', 'ios', 'products'));
+  assert.equal(r.derivedDataPath, join('/cache', '2.0.0-beta.3', 'ios', 'products'));
   assert.match(r.note ?? '', /~4 MB/);
   assert.equal(calls.fetch.length, 1);
   assert.equal(
     calls.fetch[0].url,
-    'https://github.com/Lykhoyda/rn-dev-agent/releases/download/v0.62.3/rn-fast-runner-0.62.3-sim.zip',
+    'https://github.com/Lykhoyda/rn-dev-agent/releases/download/v2.0.0-beta.3/rn-fast-runner-2.0.0-beta.3-sim.zip',
   );
   assert.ok(calls.fetch[0].opts.maxBytes >= 4_200_000);
   assert.ok(calls.fetch[0].opts.timeoutMs > 0);
@@ -251,7 +375,7 @@ test('iOS: download 404/offline (fetch throws) -> build-local with note', async 
       throw new Error('HTTP 404');
     },
   });
-  const r = await resolveIosRunnerArtifacts('0.62.3', LOCAL_DD, deps);
+  const r = await resolveIosRunnerArtifacts('2.0.0-beta.3', LOCAL_DD, deps);
   assert.equal(r.provenance, 'build-local');
   assert.equal(r.derivedDataPath, LOCAL_DD);
   assert.match(r.note ?? '', /404|unavailable|local/i);
@@ -264,7 +388,7 @@ test('iOS: bad checksum after download -> build-local, note mentions checksum', 
     downloadSha: 'TAMPERED',
     extractProduces: IOS_EXTRACT,
   });
-  const r = await resolveIosRunnerArtifacts('0.62.3', LOCAL_DD, deps);
+  const r = await resolveIosRunnerArtifacts('2.0.0-beta.3', LOCAL_DD, deps);
   assert.equal(r.provenance, 'build-local');
   assert.equal(r.derivedDataPath, LOCAL_DD);
   assert.match(r.note ?? '', /checksum|local/i);
@@ -279,7 +403,7 @@ test('iOS: corrupt/unsafe zip (unzip throws) -> build-local, partial cache clean
       throw new Error('path traversal detected');
     },
   });
-  const r = await resolveIosRunnerArtifacts('0.62.3', LOCAL_DD, deps);
+  const r = await resolveIosRunnerArtifacts('2.0.0-beta.3', LOCAL_DD, deps);
   assert.equal(r.provenance, 'build-local');
   assert.match(r.note ?? '', /traversal|local/i);
   assert.ok(calls.rm.length >= 1);
@@ -291,7 +415,7 @@ test('iOS: unzip leaves no xctestrun -> build-local', async () => {
     downloadSha: 'GOOD',
     extractProduces: [], // nothing usable extracted
   });
-  const r = await resolveIosRunnerArtifacts('0.62.3', LOCAL_DD, deps);
+  const r = await resolveIosRunnerArtifacts('2.0.0-beta.3', LOCAL_DD, deps);
   assert.equal(r.provenance, 'build-local');
 });
 
@@ -307,14 +431,14 @@ test('Android always uses the runner built from the shipped source, never a publ
 // --- forceLocalBuild: recovery must bypass prebuilt (Codex P1: stale-artifact heal) ---
 
 test('iOS: forceLocalBuild bypasses a valid cache -> build-local, no network', async () => {
-  const cacheDir = join('/cache', '0.62.3', 'ios');
-  const zip = join(cacheDir, 'rn-fast-runner-0.62.3-sim.zip');
+  const cacheDir = join('/cache', '2.0.0-beta.3', 'ios');
+  const zip = join(cacheDir, 'rn-fast-runner-2.0.0-beta.3-sim.zip');
   const { deps, calls } = makeDeps({
     manifest: IOS_MANIFEST,
     files: [zip, join(cacheDir, 'products/Build/Products/RnFastRunner.xctestrun')],
     shas: { [zip]: 'GOOD' },
   });
-  const r = await resolveIosRunnerArtifacts('0.62.3', LOCAL_DD, deps, true);
+  const r = await resolveIosRunnerArtifacts('2.0.0-beta.3', LOCAL_DD, deps, true);
   assert.equal(r.provenance, 'build-local');
   assert.equal(r.derivedDataPath, LOCAL_DD);
   assert.equal(calls.fetch.length, 0);
@@ -341,7 +465,7 @@ test('the iOS artifact resolver stops ambient cancellation before mutation and a
       };
       if (phase === 'before') controller.abort(reason);
       const pending = withCancellation(controller.signal, () =>
-        resolveIosRunnerArtifacts('0.62.3', LOCAL_DD, deps),
+        resolveIosRunnerArtifacts('2.0.0-beta.3', LOCAL_DD, deps),
       );
       await assert.rejects(pending, (error) => error === reason);
       assert.equal(mutations, phase === 'before' ? 0 : 1);

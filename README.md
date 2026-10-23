@@ -360,12 +360,13 @@ instructions.
 
 <a id="prebuilt-runners"></a>
 
-**Prebuilt iOS runner:** on a released version, the iOS runner installs from a verified prebuilt
-artifact (SHA-256-checked local cache, then the GitHub Release asset for your exact plugin
-version), so the first `device_snapshot action=open` skips the cold build. Resolution is fail-open
-— offline, a checksum mismatch, or a dev checkout falls back transparently to the on-machine build
-(the host's `doctor` workflow reports which one you got). Force local builds with
-`RN_RUNNER_BUILD=local`.
+**Prebuilt iOS runner:** QaReN accepts only artifacts for its exact runtime version,
+including the prerelease suffix, downloaded from that version's release tag and matching the
+manifest's SHA-256. A matching manifest that names another release's archive refuses with
+`RUNNER_VERSION_MISMATCH`. Legacy 1.x release versions always select the shipped source, so an
+unreleased QaReN build that still reports a 1.x version cannot download or reuse a published 1.x
+runner. A manifest for another version, offline downloads, checksum failures and checkouts
+without a runner manifest fall back to building locally. Force local builds with `RN_RUNNER_BUILD=local`.
 
 For Android, see [Android runner provisioning](packages/qaren-cli/README.md#android-runner-provisioning).
 

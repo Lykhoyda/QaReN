@@ -1,5 +1,6 @@
 import { throwIfInputPrivacyRefused } from './qa/inputs.js';
 import { throwIfCancelled } from './domain/cancellation.js';
+import { RunnerArtifactMismatchError } from './domain/runner-artifact-identity.js';
 import { unlinkSync, rmSync } from 'node:fs';
 import { QaDispatchError, type QaDispatchContext } from './domain/qa-dispatch.js';
 import { measureDispatchPhase, type DispatchPhase, type TimingContext } from './qa/timing.js';
@@ -1247,7 +1248,14 @@ export async function ensureRunnerForCommand(
   const spawnOpts = deps.attachOnly === true ? { attachOnly: true } : {};
   const launchCount = deps.launchCount ?? getRunnerLaunchCount;
   const launchesBefore = launchCount();
-  await ensure(spawnDeviceId, bundleId, spawnOpts);
+  try {
+    await ensure(spawnDeviceId, bundleId, spawnOpts);
+  } catch (err) {
+    if (err instanceof RunnerArtifactMismatchError) {
+      return { ok: false, code: 'RUNNER_VERSION_MISMATCH', message: err.message };
+    }
+    throw err;
+  }
   let after = await probe();
   // GH #629: a fresh simulator's first XCTest bootstrap predictably overruns
   // the warm READY window and primes the next spawn — absorb it with exactly
