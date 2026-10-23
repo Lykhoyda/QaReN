@@ -57,14 +57,92 @@ fn fresh_token(fallback_seed: &str) -> String {
 }
 
 // Native-suite runs keep their records outside the check runs root.
-pub fn cleanup_command(run_id: &str) -> String {
+pub fn cleanup_command(run_id: &str, home: Option<&Path>) -> String {
+    let env = home
+        .map(|home| format!("HOME='{}' ", home.display()))
+        .unwrap_or_default();
     if run_id.starts_with("native-ios-") {
         format!(
-            "`cargo run --manifest-path packages/qaren-cli/Cargo.toml --locked --example native-ios-suite -- recover --run-id {run_id}` from the repository root"
+            "`{env}cargo run --manifest-path packages/qaren-cli/Cargo.toml --locked --example native-ios-suite -- recover --run-id {run_id}` from the repository root"
         )
     } else {
-        format!("`qaren cleanup {run_id}`")
+        format!("`{env}qaren cleanup {run_id}`")
     }
+}
+
+fn holder_records(home: &Path, run_id: &str) -> Option<PathBuf> {
+    let mut parts = Path::new(run_id).components();
+    if !home.is_absolute()
+        || !matches!(parts.next(), Some(std::path::Component::Normal(_)))
+        || parts.next().is_some()
+    {
+        return None;
+    }
+    let kind = if run_id.starts_with("native-ios-") {
+        "native-suites"
+    } else {
+        "runs"
+    };
+    Some(home.join(".qaren").join(kind).join(run_id))
+}
+
+// No cleanup can ever run for a proven-dead holder whose records are gone, so only its owned lock is released.
+fn release_orphan(lock_dir: &Path, held: &LockHolder, liveness: Option<PidLiveness>) -> bool {
+    if !matches!(
+        liveness,
+        Some(PidLiveness::Dead | PidLiveness::AliveForeign)
+    ) {
+        return false;
+    }
+    let Some(records) = held
+        .home
+        .as_deref()
+        .and_then(|home| holder_records(home, &held.run_id))
+    else {
+        return false;
+    };
+    if !matches!(std::fs::symlink_metadata(&records), Err(error) if error.kind() == std::io::ErrorKind::NotFound)
+    {
+        return false;
+    }
+    matches!(
+        buildplan::release_lock(lock_dir, &held.holder, &held.run_id),
+        ReleaseOutcome::Removed | ReleaseOutcome::Absent
+    )
+}
+
+pub fn claim_reclaiming_orphan(
+    runner: &mut dyn Runner,
+    lock_root: &Path,
+    name: &str,
+    holder: &LockHolder,
+    policy: LockPolicy,
+) -> LockOutcome {
+    let outcome = buildplan::claim_lock(runner, lock_root, name, holder, policy);
+    let LockOutcome::Contended {
+        holder: Some(held),
+        liveness,
+        ..
+    } = &outcome
+    else {
+        return outcome;
+    };
+    if !release_orphan(&buildplan::lock_dir(lock_root, name), held, *liveness) {
+        return outcome;
+    }
+    match buildplan::claim_lock(runner, lock_root, name, holder, policy) {
+        LockOutcome::Claimed { .. } => LockOutcome::Claimed {
+            adopted_stale: true,
+        },
+        other => other,
+    }
+}
+
+pub fn holder_home(runner: &dyn Runner) -> Option<PathBuf> {
+    runner
+        .env_var("HOME")
+        .map(PathBuf::from)
+        .filter(|home| home.is_absolute())
 }
 
 // A refused claim, with the holder and the liveness the claim already observed.
@@ -109,9 +187,10 @@ pub fn try_acquire(
         run_id: run_id.to_string(),
         identity,
         at: timefmt::iso8601_utc(now_ms),
+        home: holder_home(runner),
     };
     let name = lock_name(platform, device_id);
-    match buildplan::claim_lock(runner, lock_root, &name, &holder, LockPolicy::Strict) {
+    match claim_reclaiming_orphan(runner, lock_root, &name, &holder, LockPolicy::Strict) {
         LockOutcome::Claimed { .. } => Ok(Lease {
             run_id: run_id.to_string(),
             token,
@@ -129,7 +208,7 @@ pub fn try_acquire(
                     format!(
                         "wait for run {} to finish, or clean it up with {}; a live holder is never stolen",
                         h.run_id,
-                        cleanup_command(&h.run_id)
+                        cleanup_command(&h.run_id, h.home.as_deref())
                     ),
                 ),
                 None => (

@@ -1533,6 +1533,18 @@ fn lock_holder_for(ctx: &mut Ctx) -> LockHolder {
         run_id: ctx.record.run_id.clone(),
         identity: ctx.record.prepare.clone(),
         at: timefmt::iso8601_utc(ctx.runner.now_epoch_ms()),
+        home: crate::lease::holder_home(ctx.runner),
+    }
+}
+
+fn holder_advice(existing: &Option<LockHolder>) -> String {
+    match existing {
+        Some(held) => format!(
+            "wait for run {} to finish, or clean it up with {}; a live or unproven holder is never taken",
+            held.run_id,
+            crate::lease::cleanup_command(&held.run_id, held.home.as_deref())
+        ),
+        None => "wait for the holding run to finish, or clean it up with `qaren cleanup <its-run-id>`; a live or unproven holder is never taken".to_string(),
     }
 }
 
@@ -1557,7 +1569,7 @@ pub(crate) fn claim_build_lock(ctx: &mut Ctx, lock_root: &Path) -> Result<(), Fa
     } else {
         LockPolicy::AdoptDead
     };
-    match buildplan::claim_lock(ctx.runner, lock_root, &name, &holder, policy) {
+    match crate::lease::claim_reclaiming_orphan(ctx.runner, lock_root, &name, &holder, policy) {
         LockOutcome::Claimed { adopted_stale } => {
             if adopted_stale {
                 ctx.notes.push((
@@ -1567,11 +1579,15 @@ pub(crate) fn claim_build_lock(ctx: &mut Ctx, lock_root: &Path) -> Result<(), Fa
             }
             Ok(())
         }
-        LockOutcome::Contended { detail, .. } => Err(Failure::new(
+        LockOutcome::Contended {
+            holder: existing,
+            detail,
+            ..
+        } => Err(Failure::new(
             "plan",
             FailureCode::BuildContended,
             format!("a concurrent native build holds the serialization lock: {detail}"),
-            "native builds are deliberately serialized; wait for the other build (or clean up its run), then re-run prepare",
+            format!("native builds are serialized; {}", holder_advice(&existing)),
         )),
         LockOutcome::Error(detail) => Err(Failure::new(
             "plan",
@@ -1615,7 +1631,7 @@ fn claim_usb_device(ctx: &mut Ctx, lock_root: &Path, serial: &str) -> Result<(),
         holder: holder.holder.clone(),
     });
     ctx.save()?;
-    match buildplan::claim_lock(
+    match crate::lease::claim_reclaiming_orphan(
         ctx.runner,
         lock_root,
         &lock_name,
@@ -1629,6 +1645,7 @@ fn claim_usb_device(ctx: &mut Ctx, lock_root: &Path, serial: &str) -> Result<(),
             ..
         } => {
             let described = existing
+                .as_ref()
                 .map(|h| format!(" (held for run {})", h.run_id))
                 .unwrap_or_default();
             Err(Failure::new(
@@ -1637,7 +1654,7 @@ fn claim_usb_device(ctx: &mut Ctx, lock_root: &Path, serial: &str) -> Result<(),
                 format!(
                     "physical device {serial} is exclusively claimed elsewhere{described}: {detail}"
                 ),
-                "wait for the holding run to clean up (qaren cleanup <its-run-id>); qaren never adopts a device claim, even a stale one",
+                holder_advice(&existing),
             ))
         }
         LockOutcome::Error(detail) => Err(Failure::new(

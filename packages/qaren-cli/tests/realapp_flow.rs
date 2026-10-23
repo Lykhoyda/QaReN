@@ -1100,6 +1100,7 @@ fn usb_status_probes_claim_server_and_app() {
                 run_id: run_id.to_string(),
                 identity: None,
                 at: "2026-08-13T00:00:00Z".to_string(),
+                home: None,
             },
             buildplan::LockPolicy::Strict,
         ),
@@ -1284,6 +1285,7 @@ fn usb_claim_is_retained_while_the_build_process_group_is_unresolved() {
             run_id: "usbrun1".to_string(),
             identity: None,
             at: "2026-08-12T16:00:00Z".to_string(),
+            home: None,
         },
     )
     .unwrap();

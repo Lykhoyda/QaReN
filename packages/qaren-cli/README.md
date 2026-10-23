@@ -1707,8 +1707,8 @@ native-build locks are machine-wide by default.
 `QAREN_MACHINE_LOCKS` is on when unset, empty or `1`; `0` opts out to the
 per-home `~/.qaren/locks`, and any other value refuses. An absolute
 `QAREN_LOCK_ROOT` takes precedence in either mode: sessions using different
-roots do not share locks. Empty, relative and NUL overrides refuse; unless
-opted out, literal `.` or `..` path segments also refuse before normalization.
+roots do not share locks. Empty, relative, NUL and literal `.` or `..` path
+segments refuse before normalization in every mode, as does a HOME with them.
 
 Without an override or opt-out, the shared CLI/native-suite resolver
 selects `/private/var/tmp` on macOS or `/run/lock` on Linux, once per process.
@@ -1772,8 +1772,12 @@ admission, shutdown, readback or persistence retains the pending state and lease
 runtime or candidate-directory evidence also leaves the stop unresolved. Exit shutdown
 cannot be added afterward to a released run. A dead lease
 holder is reclaimed only through that run's cleanup; a live or unprovable holder
-refuses `DEVICE_BUSY`. Recover a retained run with `qaren cleanup <run-id>`;
-do not delete locks to bypass unresolved ownership.
+refuses `DEVICE_BUSY`. Every holder records its HOME, and the refusal names
+`HOME='<holder home>' qaren cleanup <run-id>`, which recovers it from any session.
+A device, native-build or USB lock whose holder is proven dead (its process gone or
+replaced, as after a reboot) and whose run records under that HOME no longer exist
+is released by the next claim, since no cleanup can run for it.
+Do not delete locks to bypass unresolved ownership.
 
 The iOS runner's XCTest result bundles under `Logs/Test` in both its local
 DerivedData and current-version prebuilt cache are removed after successful

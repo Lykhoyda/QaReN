@@ -45,6 +45,7 @@ fn interrupted_finite_build_retains_ownership_until_group_absence_is_proven() {
                 run_id: "core-run".into(),
                 identity: None,
                 at: "now".into(),
+                home: None,
             },
         )
         .unwrap();
@@ -3141,6 +3142,7 @@ fn borrowed_ios_stop_in_cleanup_enforces_owner_lease_quiescence_admission_and_id
                     run_id: "other-run".into(),
                     identity: None,
                     at: "now".into(),
+                    home: None,
                 },
             )
             .unwrap();

@@ -236,17 +236,33 @@ fn literal_dot_segments_refuse_before_lock_root_normalization() {
         );
         assert!(buildplan::canonical_lock_root(Path::new(raw)).is_err());
     }
+    for (machine, root, advice) in [
+        ("1", "/private/var/tmp/./", "QAREN_MACHINE_LOCKS=0"),
+        ("0", "/tmp/../tmp/locks", "QAREN_LOCK_ROOT"),
+        ("true", "/tmp/locks", "set it to 1 or 0"),
+    ] {
+        let receipt =
+            prepare_receipt(&[("QAREN_MACHINE_LOCKS", machine), ("QAREN_LOCK_ROOT", root)]);
+        assert_eq!(receipt["failure"]["code"], "PREREQ_MISSING");
+        assert_eq!(receipt["failure"]["phase"], "validate");
+        let next = receipt["failure"]["next_action"].as_str().unwrap();
+        assert!(next.contains(advice), "{next}");
+    }
+    let receipt = prepare_receipt(&[("QAREN_MACHINE_LOCKS", "true")]);
+    let next = receipt["failure"]["next_action"].as_str().unwrap();
+    assert!(!next.contains("QAREN_LOCK_ROOT"), "{next}");
+}
+
+fn prepare_receipt(env: &[(&str, &str)]) -> serde_json::Value {
     let output = Command::new(env!("CARGO_BIN_EXE_qaren"))
         .args(["prepare", "missing-scenario.yaml", "--json"])
         .env("HOME", std::env::current_dir().unwrap())
-        .env("QAREN_MACHINE_LOCKS", "1")
-        .env("QAREN_LOCK_ROOT", "/private/var/tmp/./")
+        .env_remove("QAREN_LOCK_ROOT")
+        .envs(env.iter().copied())
         .output()
         .unwrap();
     assert_eq!(output.status.code(), Some(1));
-    let receipt: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
-    assert_eq!(receipt["failure"]["code"], "PREREQ_MISSING");
-    assert_eq!(receipt["failure"]["phase"], "validate");
+    serde_json::from_slice(&output.stdout).unwrap()
 }
 
 #[test]
@@ -263,10 +279,7 @@ fn unsafe_overrides_fail_closed_without_a_home_fallback() {
     assert!(buildplan::configured_lock_root(Some(&raw), None, Some(home)).is_err());
     let dotted = OsStr::new("/tmp/../tmp/locks");
     let off = Some(OsStr::new("0"));
-    assert_eq!(
-        buildplan::configured_lock_root(Some(dotted), off, Some(home)).unwrap(),
-        PathBuf::from(dotted)
-    );
+    assert!(buildplan::configured_lock_root(Some(dotted), off, Some(home)).is_err());
     assert!(buildplan::configured_lock_root(Some(dotted), None, Some(home)).is_err());
     assert_eq!(
         buildplan::configured_lock_root(None, off, Some(home)).unwrap(),
@@ -315,8 +328,10 @@ fn default_machine_root_falls_back_per_home_and_explicit_one_refuses() {
         }
         let refused = buildplan::select_lock_root(None, on, home, || probe(parent.clone(), false))
             .unwrap_err();
-        assert!(refused.contains("QAREN_MACHINE_LOCKS=0"), "{refused}");
-        assert!(refused.contains("QAREN_LOCK_ROOT"), "{refused}");
+        assert!(
+            refused.starts_with("machine lock root is unusable"),
+            "{refused}"
+        );
         assert!(!refused.contains("chmod"), "{refused}");
         assert!(buildplan::select_lock_root(None, None, None, || probe(parent, false)).is_err());
     }
@@ -369,11 +384,104 @@ fn a_trusted_parent_that_refuses_the_probe_never_falls_back() {
             buildplan::select_lock_root(None, machine, home, || probe(Ok(&readonly), false))
                 .unwrap_err();
         assert!(refused.contains("Permission denied"), "{refused}");
-        assert!(refused.contains("QAREN_MACHINE_LOCKS=0"), "{refused}");
+        assert!(
+            refused.starts_with("machine lock root is unusable"),
+            "{refused}"
+        );
     }
     assert!(!per_home.exists());
     chmod(&readonly, &["700"]);
     assert_eq!(fs::read_dir(&readonly).unwrap().count(), 0);
+}
+
+#[test]
+fn a_proven_dead_holder_without_run_records_is_reclaimed() {
+    use qaren::exec::{CmdOutput, MockRunner};
+    const BIRTH: &str = "Mon Oct 19 09:00:00 2026";
+    let fixture = Fixture::new("orphan");
+    let deleted = fixture.path().join("deleted-home");
+    let kept = fixture.child_dir("kept-home");
+    fs::create_dir_all(kept.join(".qaren/runs/old-run")).unwrap();
+    let rebooted = "Fri Oct 23 07:00:00 2026";
+    for (case, home, lstart, reclaimed) in [
+        ("deleted-home", Some(&deleted), "", true),
+        ("rebooted", Some(&deleted), rebooted, true),
+        ("records-kept", Some(&kept), "", false),
+        ("live", Some(&deleted), BIRTH, false),
+        ("unrecorded-home", None, "", false),
+    ] {
+        let root = fixture.child_dir(&format!("root-{case}"));
+        let mut old = sample_holder("old-run");
+        old.identity = Some(qaren::runrecord::PidIdentity {
+            pid: 4242,
+            started_at: BIRTH.to_string(),
+            command: qaren::redact::OutputText::from_output("qaren check"),
+        });
+        old.home = home.cloned();
+        let name = lease::lock_name(Platform::Ios, DEVICE_A);
+        let mut setup = MockRunner::new();
+        assert!(matches!(
+            buildplan::claim_lock(&mut setup, &root, &name, &old, LockPolicy::Strict),
+            LockOutcome::Claimed { .. }
+        ));
+        let mut mock = MockRunner::new();
+        mock.environment.insert(
+            "HOME".into(),
+            fixture.path().join("new-home").display().to_string(),
+        );
+        mock.expect_run("ps -p 4242 -o lstart=", CmdOutput::success(lstart));
+        if lstart == BIRTH {
+            mock.expect_run("ps -p 4242 -o stat=", CmdOutput::success("S"));
+        }
+        let outcome =
+            lease::try_acquire(&mut mock, &root, Platform::Ios, DEVICE_A, "new-run", None);
+        let held = buildplan::read_holder(&root.join(&name)).unwrap();
+        if reclaimed {
+            assert!(outcome.is_ok(), "{case}");
+            assert_eq!(held.run_id, "new-run", "{case}");
+            assert_eq!(held.home, Some(fixture.path().join("new-home")), "{case}");
+        } else {
+            let busy = outcome
+                .err()
+                .unwrap_or_else(|| panic!("{case} was reclaimed"));
+            assert_eq!(busy.failure.code, FailureCode::DeviceBusy, "{case}");
+            assert_eq!(held.run_id, "old-run", "{case}");
+            if case == "records-kept" {
+                let next = busy.failure.next_action.as_str();
+                let command = format!("HOME='{}' qaren cleanup old-run", kept.display());
+                assert!(next.contains(&command), "{next}");
+            }
+        }
+    }
+    let root = fixture.child_dir("build");
+    let mut old = sample_holder("old-build");
+    old.identity = Some(qaren::runrecord::PidIdentity {
+        pid: 4343,
+        started_at: BIRTH.to_string(),
+        command: qaren::redact::OutputText::from_output("qaren prepare"),
+    });
+    old.home = Some(deleted.clone());
+    let mut setup = MockRunner::new();
+    must_claim_with(&mut setup, &root, "native-build-ios", &old);
+    let mut mock = MockRunner::new();
+    mock.expect_run("ps -p 4343 -o lstart=", CmdOutput::success(""));
+    let outcome = lease::claim_reclaiming_orphan(
+        &mut mock,
+        &root,
+        "native-build-ios",
+        &sample_holder("new-build"),
+        LockPolicy::Strict,
+    );
+    assert!(
+        matches!(
+            outcome,
+            LockOutcome::Claimed {
+                adopted_stale: true
+            }
+        ),
+        "{outcome:?}"
+    );
+    assert!(!deleted.exists());
 }
 
 #[test]
@@ -394,7 +502,10 @@ fn privileged_callers_keep_private_roots_but_not_the_machine_root() {
         probe(Ok(&usable), true)
     })
     .unwrap_err();
-    assert!(refused.contains("QAREN_MACHINE_LOCKS=0"), "{refused}");
+    assert!(
+        refused.starts_with("machine lock root is unusable"),
+        "{refused}"
+    );
     assert_eq!(fs::read_dir(&usable).unwrap().count(), 0);
     let off = Some(OsStr::new("0"));
     for (machine, explicit_root, expected) in [
@@ -818,12 +929,26 @@ fn must_claim(root: &Path, name: &str, run: &str) -> PathBuf {
     }
 }
 
+fn must_claim_with(
+    runner: &mut qaren::exec::MockRunner,
+    root: &Path,
+    name: &str,
+    holder: &LockHolder,
+) {
+    let outcome = buildplan::claim_lock(runner, root, name, holder, LockPolicy::Strict);
+    assert!(
+        matches!(outcome, LockOutcome::Claimed { .. }),
+        "{outcome:?}"
+    );
+}
+
 fn sample_holder(run: &str) -> LockHolder {
     LockHolder {
         holder: format!("qaren-{run}"),
         run_id: run.to_string(),
         identity: None,
         at: "2026-10-21T00:00:00Z".to_string(),
+        home: None,
     }
 }
 

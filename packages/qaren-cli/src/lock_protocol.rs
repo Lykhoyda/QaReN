@@ -27,7 +27,7 @@ pub fn resolve_lock_root(explicit: Option<&OsStr>) -> Result<PathBuf, String> {
     let Some(raw) = explicit else {
         return machine_lock_parent().map(Path::to_path_buf);
     };
-    absolute_lock_override(raw, true)
+    absolute_lock_override(raw)
 }
 
 pub fn machine_locks_enabled(value: Option<&OsStr>) -> Result<bool, String> {
@@ -48,16 +48,18 @@ pub fn configured_lock_root(
         return resolve_lock_root(explicit);
     }
     if let Some(raw) = explicit {
-        return absolute_lock_override(raw, false);
+        return absolute_lock_override(raw);
     }
     let Some(home) = home.filter(|raw| !raw.is_empty() && !raw.as_bytes().contains(&0)) else {
         return Err("HOME is not an absolute path".to_string());
     };
-    let home = PathBuf::from(home);
-    if !home.is_absolute() {
+    if !Path::new(home).is_absolute() {
         return Err("HOME is not an absolute path".to_string());
     }
-    Ok(home.join(".qaren").join("locks"))
+    if has_dot_segment(home) {
+        return Err("HOME must not contain . or .. path segments".to_string());
+    }
+    Ok(PathBuf::from(home).join(".qaren").join("locks"))
 }
 
 pub fn host_lock_root(
@@ -91,7 +93,7 @@ pub fn select_lock_root(
     if explicit.is_some() || !machine_locks_enabled(machine)? {
         return configured_lock_root(explicit, machine, home).map(|root| (root, None));
     }
-    let refuse = |detail: &str| format!("machine lock root is unusable: {detail}; {LOCK_ROOT_ADVICE}");
+    let refuse = |detail: &str| format!("machine lock root is unusable: {detail}");
     let reason = match probe() {
         MachineParent::Usable(parent) => return Ok((parent, None)),
         MachineParent::Failed(detail) => return Err(refuse(&detail)),
@@ -155,7 +157,7 @@ fn rename_probe_outcome(error: i32) -> MachineParent {
     }
 }
 
-fn absolute_lock_override(raw: &OsStr, reject_dot_segments: bool) -> Result<PathBuf, String> {
+fn absolute_lock_override(raw: &OsStr) -> Result<PathBuf, String> {
     if raw.is_empty() || raw.as_bytes().contains(&0) {
         return Err("QAREN_LOCK_ROOT must be an absolute path".to_string());
     }
@@ -163,15 +165,16 @@ fn absolute_lock_override(raw: &OsStr, reject_dot_segments: bool) -> Result<Path
     if !path.is_absolute() {
         return Err("QAREN_LOCK_ROOT must be an absolute path".to_string());
     }
-    if reject_dot_segments
-        && raw
-            .as_bytes()
-            .split(|byte| *byte == b'/')
-            .any(|segment| segment == b"." || segment == b"..")
-    {
+    if has_dot_segment(raw) {
         return Err("QAREN_LOCK_ROOT must not contain . or ..".to_string());
     }
     Ok(path)
+}
+
+fn has_dot_segment(raw: &OsStr) -> bool {
+    raw.as_bytes()
+        .split(|byte| *byte == b'/')
+        .any(|segment| segment == b"." || segment == b"..")
 }
 
 pub fn canonical_lock_root(path: &Path) -> Result<PathBuf, String> {
@@ -1584,7 +1587,7 @@ impl AclGuard {
         let acl = unsafe { acl_get_fd_np(fd, ACL_TYPE_EXTENDED) };
         if acl.is_null() {
             let raw = last_errno();
-            if raw == libc::ENOENT {
+            if raw == libc::ENOENT || raw == libc::ENOTSUP || raw == libc::EOPNOTSUPP {
                 return Ok(None);
             }
             return Err("ACL is not acceptable".to_string());
@@ -1644,7 +1647,8 @@ fn xattr_absent(fd: i32, name: &str) -> Result<(), String> {
     if rc >= 0 {
         return Err("ACL is not acceptable".to_string());
     }
-    if last_errno() == libc::ENODATA {
+    let raw = last_errno();
+    if raw == libc::ENODATA || raw == libc::ENOTSUP || raw == libc::EOPNOTSUPP {
         return Ok(());
     }
     Err("ACL is not acceptable".to_string())
@@ -1715,10 +1719,8 @@ mod lock_protocol_tests {
         assert!(configured_lock_root(Some(OsStr::new("relative/locks")), None, Some(home)).is_err());
         assert!(configured_lock_root(Some(OsStr::new("")), None, Some(home)).is_err());
         let dotted = OsStr::new("/tmp/../tmp/locks");
-        assert_eq!(
-            configured_lock_root(Some(dotted), off, Some(home)).unwrap(),
-            PathBuf::from(dotted)
-        );
+        assert!(configured_lock_root(Some(dotted), off, Some(home)).is_err());
+        assert!(configured_lock_root(None, off, Some(OsStr::new("/tmp/./home"))).is_err());
         assert!(configured_lock_root(Some(dotted), None, Some(home)).is_err());
         assert!(configured_lock_root(Some(dotted), Some(OsStr::new("1")), Some(home)).is_err());
         let mut nul = b"/tmp/locks".to_vec();
@@ -1742,12 +1744,11 @@ mod lock_protocol_tests {
             let refused =
                 select_lock_root(None, Some(OsStr::new("1")), home, || rename_probe_outcome(errno))
                     .unwrap_err();
-            assert!(refused.contains("QAREN_MACHINE_LOCKS=0"), "{refused}");
+            assert!(refused.starts_with("machine lock root is unusable"), "{refused}");
         }
         for errno in [libc::EACCES, libc::EPERM, libc::EIO, libc::ENOSPC] {
             let refused = select_lock_root(None, None, home, || rename_probe_outcome(errno)).unwrap_err();
             assert!(refused.contains("cannot rename lock"), "{refused}");
-            assert!(refused.contains("QAREN_LOCK_ROOT"), "{refused}");
         }
     }
 

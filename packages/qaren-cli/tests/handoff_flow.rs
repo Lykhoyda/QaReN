@@ -770,6 +770,7 @@ fn cleanup_of_interrupted_usb_handoff_releases_only_the_owned_claim() {
         run_id: "coop-8".to_string(),
         identity: None,
         at: "2026-08-30T10:00:00Z".to_string(),
+        home: None,
     };
     std::fs::write(
         lock_dir.join("holder.json"),
@@ -815,6 +816,7 @@ fn cleanup_of_usb_handoff_run_never_releases_a_foreign_claim() {
         run_id: "other-run".to_string(),
         identity: None,
         at: "2026-08-30T10:00:00Z".to_string(),
+        home: None,
     };
     std::fs::write(
         lock_dir.join("holder.json"),
