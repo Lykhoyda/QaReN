@@ -2899,9 +2899,8 @@ export async function runPlan(
           results.push({ ...rewalked.block, source: 'patched' });
           return finish(rewalked);
         }
-        const kept = replayed.rows.filter((row) => row.line < k && row.outcome === 'pass');
         results.push(
-          save(block, [...kept, ...rewalked.rows], 'patched', store, [
+          save(block, [...replayed.rows, ...rewalked.rows], 'patched', store, [
             ...(replayed.privateFills ?? []).filter((line) => line < k),
             ...(rewalked.privateFills ?? []),
           ]),

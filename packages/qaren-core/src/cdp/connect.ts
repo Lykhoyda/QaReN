@@ -266,10 +266,9 @@ export async function discoverAndConnect(
 
   if (ctx.isDisposed()) throw new ConnectionSetupSupersededError();
 
-  const generation = ctx.incrementConnectionGeneration();
   logger.info(
     'CDP',
-    `Connected to target ${connectedTarget!.id} (${connectedTarget!.title}) on port ${metroPort}, generation=${generation}`,
+    `Connected to target ${connectedTarget!.id} (${connectedTarget!.title}) on port ${metroPort}`,
   );
 
   // GH #59 #5: persist the resolved platform into _connectFilters when the
@@ -551,6 +550,7 @@ export function connectWebSocket(
             return;
           }
           ctx.setWs(ws);
+          ctx.incrementConnectionGeneration();
           ctx.setState('connected');
           resolve(ws);
         });

@@ -14,6 +14,7 @@ import {
 import { inputValues } from '../../../dist/qa/privacy.js';
 import type { NativeNode } from '../../../dist/qa/screen.js';
 import { attested, nativeCapture } from './platform-presence-fixtures.ts';
+import { startFakeCDP } from '../../helpers/fake-cdp-server.js';
 
 const sentinel = 'PRIVATE_TEST_INPUT_7abf';
 const id = '1abcd';
@@ -956,3 +957,75 @@ test('a reconnect is marked once, and a helper world still missing after re-inje
   await assert.rejects(capture(), classified('tree-too-large'));
   assert.equal(state.reinjected, 2);
 });
+
+test('a final capture during replacement socket setup refuses unavailable helpers', async (t) => {
+  const fake = await startFakeCDP(0, {
+    targets: [
+      {
+        id: 'owned',
+        title: 'com.example.app (iPhone)',
+        appId: 'com.example.app',
+        type: 'node',
+        vm: 'Hermes',
+        deviceName: 'iPhone',
+        description: 'React Native Bridgeless [C++ connection]',
+      },
+    ],
+  });
+  const client = new CDPClient(fake.port);
+  const setupEntered = Promise.withResolvers<void>();
+  const setupRelease = Promise.withResolvers<void>();
+  let reconnect: Promise<string> | undefined;
+  t.after(async () => {
+    setupRelease.resolve();
+    await reconnect?.catch(() => {});
+    await client.disconnect();
+    await fake.close();
+  });
+  await client.connectExact(fake.port, { platform: 'ios', bundleId: 'com.example.app' });
+  const capture = createQaReactCapture(client);
+  const generation = client.connectionGeneration;
+  t.mock.method(client, 'setup', async () => {
+    setupEntered.resolve();
+    await setupRelease.promise;
+  });
+  const reinjection = t.mock.method(client, 'reinjectHelpers', async () => false);
+  reconnect = client.softReconnect();
+  await Promise.race([setupEntered.promise, reconnect]);
+  assert.equal(client.isConnected, true);
+  await assert.rejects(capture(), classified('disconnected'));
+  assert.equal(client.connectionGeneration, generation + 1);
+  assert.equal(reinjection.mock.callCount(), 1);
+});
+
+for (const recovered of [false, true]) {
+  test(`a connection change during capture is observed when recovered=${recovered}`, async () => {
+    let generation = 1;
+    let captures = 0;
+    let reinjections = 0;
+    const client: Parameters<typeof createQaReactCapture>[0] = {
+      isConnected: true,
+      get connectionGeneration() {
+        return generation;
+      },
+      async reinjectHelpers() {
+        reinjections++;
+        return false;
+      },
+      async withPrivateHelperWorld(operation) {
+        captures++;
+        if (captures === 1) generation++;
+        if (!recovered) throw new Error('helper world unavailable');
+        return operation(async () => ready());
+      },
+    };
+    const capture = createQaReactCapture(client);
+    if (recovered) {
+      assert.equal((await capture()).reconnected, true);
+      assert.equal((await capture()).reconnected, undefined);
+    } else {
+      await assert.rejects(capture(), classified('disconnected'));
+      assert.equal(reinjections, 1);
+    }
+  });
+}

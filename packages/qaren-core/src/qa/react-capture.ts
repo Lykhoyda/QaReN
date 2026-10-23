@@ -290,14 +290,13 @@ export function createQaReactCapture(
 ): (typography?: boolean) => Promise<ReactObservation> {
   let generation = client.connectionGeneration;
   return async (typography = false) => {
-    const reconnected = client.connectionGeneration !== generation;
-    generation = client.connectionGeneration;
+    const reconnected = () => client.connectionGeneration !== generation;
     try {
       const observation = await captureQaReact(client, typography);
-      return reconnected ? { ...observation, reconnected: true } : observation;
+      return reconnected() ? { ...observation, reconnected: true } : observation;
     } catch (error) {
       if (
-        !reconnected ||
+        !reconnected() ||
         !(error instanceof ReactCaptureIncomplete) ||
         error.reason === 'disconnected'
       )
@@ -318,6 +317,8 @@ export function createQaReactCapture(
         }
       }
       throw new ReactCaptureIncomplete('reconnected', failure.counters);
+    } finally {
+      generation = client.connectionGeneration;
     }
   };
 }
