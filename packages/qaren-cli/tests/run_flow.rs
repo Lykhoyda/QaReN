@@ -1930,6 +1930,13 @@ fn an_unknown_runner_host_inventory_keeps_the_lease_for_cleanup() {
         &repo,
         CmdOutput::failed(1, "CoreSimulatorService connection interrupted"),
     );
+    for _ in 0..2 {
+        script_host_probe(
+            &mut mock,
+            UDID,
+            CmdOutput::failed(1, "CoreSimulatorService connection interrupted"),
+        );
+    }
 
     let receipt = run(&mut mock, &request(&repo, &app, 30));
 
@@ -1953,9 +1960,9 @@ fn host_present() -> CmdOutput {
 // The host was absent when the core started, so the one that survives a cancelled walk is the run's.
 #[test]
 fn a_cancelled_walk_terminates_the_runner_host_it_launched_then_releases_the_lease() {
-    for (after, runner_host, lease) in [
-        (hosts_absent(), "removed", "removed"),
-        (host_present(), "unresolved", "unresolved"),
+    for (after, reads, runner_host, lease) in [
+        (hosts_absent(), 1, "removed", "removed"),
+        (host_present(), 3, "unresolved", "unresolved"),
     ] {
         let (repo, app) = app_repo();
         let mut mock = MockRunner::new();
@@ -1982,7 +1989,9 @@ fn a_cancelled_walk_terminates_the_runner_host_it_launched_then_releases_the_lea
                 CmdOutput::success(""),
             );
         }
-        script_host_probe(&mut mock, UDID, after);
+        for _ in 0..reads {
+            script_host_probe(&mut mock, UDID, after.clone());
+        }
         mock.cancel_after = Some(("-p 9000".into(), "received SIGTERM".into()));
 
         let receipt = run(&mut mock, &request(&repo, &app, 30));
