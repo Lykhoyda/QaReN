@@ -294,56 +294,6 @@ pub fn corpus_hint(written: usize) -> crate::receipt::Hint {
     }
 }
 
-pub fn corpus_link_is_main_copy(runner: &mut dyn crate::exec::Runner, root: &Path) -> bool {
-    let link = root.join(".qaren/actions");
-    if !std::fs::symlink_metadata(&link).is_ok_and(|meta| meta.is_symlink())
-        || !std::fs::symlink_metadata(root.join(".qaren")).is_ok_and(|meta| meta.is_dir())
-    {
-        return false;
-    }
-    let top = crate::worktree::git(
-        runner,
-        "git-corpus-root",
-        root,
-        &["rev-parse", "--show-toplevel"],
-        10,
-    );
-    let worktrees = crate::worktree::git(
-        runner,
-        "git-corpus-main",
-        root,
-        &["worktree", "list", "--porcelain", "-z"],
-        10,
-    );
-    let Some(record) = worktrees.stdout.split("\0\0").next() else {
-        return false;
-    };
-    if !top.ok() || !worktrees.ok() || record.split('\0').any(|field| field == "bare") {
-        return false;
-    }
-    let Some(main) = record
-        .split('\0')
-        .next()
-        .and_then(|field| field.strip_prefix("worktree "))
-    else {
-        return false;
-    };
-    let Ok(root) = root.canonicalize() else {
-        return false;
-    };
-    let Ok(relative) = root.strip_prefix(top.stdout.trim()) else {
-        return false;
-    };
-    let target = Path::new(main).join(relative).join(".qaren/actions");
-    let Ok(link_target) = std::fs::read_link(&link) else {
-        return false;
-    };
-    let link_target = link.parent().unwrap().join(link_target);
-    std::fs::symlink_metadata(&target).is_ok_and(|meta| meta.is_dir())
-        && std::fs::symlink_metadata(&link_target).is_ok_and(|meta| meta.is_dir())
-        && link_target.canonicalize().ok() == target.canonicalize().ok()
-}
-
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ActionEntry {

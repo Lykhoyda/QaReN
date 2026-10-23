@@ -919,7 +919,9 @@ fn saved_blocks_check(runner: &mut dyn Runner, root: &Path) -> Check {
     match corpus_location(runner, root) {
         CorpusLocation::NotGit => Check::skip("saved-blocks", "not a Git checkout"),
         CorpusLocation::Primary => Check::pass("saved-blocks", "primary checkout"),
-        CorpusLocation::Linked { local: true } => {
+        CorpusLocation::Linked { local: true }
+            if crate::actions::actions_dir(runner, root).is_ok() =>
+        {
             let status = crate::worktree::git(
                 runner,
                 "git-corpus-status",
@@ -955,9 +957,12 @@ fn saved_blocks_check(runner: &mut dyn Runner, root: &Path) -> Check {
                 ),
             }
         }
-        CorpusLocation::Linked { local: false } if crate::actions::corpus_link_is_main_copy(runner, root) =>
-            Check::pass("saved-blocks", "saved blocks are linked to the main copy"),
-        CorpusLocation::Linked { local: false } => Check::warn("saved-blocks",
+        CorpusLocation::Linked { local: false }
+            if crate::actions::actions_dir(runner, root).is_ok_and(|dir| dir.is_dir()) =>
+        {
+            Check::pass("saved-blocks", "saved blocks are linked to the main copy")
+        }
+        CorpusLocation::Linked { .. } => Check::warn("saved-blocks",
             "no shared saved-block corpus in this linked worktree",
             "commit saved blocks for other checkouts, or use the main-copy link described in the saved-block contract"),
     }
@@ -1442,6 +1447,11 @@ mod tests {
             "--git-common-dir",
             CmdOutput::failed(128, "not a git checkout"),
         );
+        script_host(runner);
+        doctor(runner, &scratch.0, cwd, exe, runtime, None)
+    }
+
+    fn script_host(runner: &mut MockRunner) {
         runner.expect_run("ps -axww", CmdOutput::failed(1, "unavailable"));
         if cfg!(target_os = "macos") {
             runner.expect_run(
@@ -1456,8 +1466,6 @@ mod tests {
                 runner.expect_run(command, CmdOutput::failed(1, "unavailable"));
             }
         }
-
-        doctor(runner, &scratch.0, cwd, exe, runtime, None)
     }
 
     #[test]
@@ -2175,7 +2183,6 @@ mod tests {
                 || arg == "-version"
                 || arg == "list"
                 || arg == "rev-parse")));
-
         assert_eq!(s.tree(), before);
         assert_eq!(
             report.exit_code(),
@@ -2200,7 +2207,6 @@ mod tests {
             }
         );
         assert_eq!(parsed["checks"].as_array().unwrap().len(), 27);
-
     }
 
     #[test]
@@ -2692,6 +2698,7 @@ mod tests {
             "--git-common-dir",
             CmdOutput::failed(128, "not a git checkout"),
         );
+        script_host(&mut runner);
         let report = doctor(
             &mut runner,
             &s.0,
@@ -2801,12 +2808,37 @@ mod tests {
         let target = primary.join(".qaren/actions");
         std::fs::create_dir_all(&target).unwrap();
         std::os::unix::fs::symlink(&target, linked.join(".qaren/actions")).unwrap();
+        assert!(crate::actions::list(&mut runner, &linked).is_ok());
+        assert_eq!(
+            saved_blocks_check(&mut runner, &linked).status,
+            Status::Pass
+        );
+        let private_root = s.path("private-corpus-canary");
+        std::fs::rename(primary.join(".qaren"), &private_root).unwrap();
+        std::os::unix::fs::symlink(&private_root, primary.join(".qaren")).unwrap();
+        assert!(crate::actions::list(&mut runner, &linked).is_err());
+        let rejected = saved_blocks_check(&mut runner, &linked);
+        assert_eq!(rejected.status, Status::Warn);
+        assert!(!rejected.detail.contains("private-corpus-canary"));
+        assert!(!rejected.fix.unwrap().contains("private-corpus-canary"));
+        std::fs::remove_file(primary.join(".qaren")).unwrap();
+        std::fs::rename(&private_root, primary.join(".qaren")).unwrap();
+        assert!(crate::actions::list(&mut runner, &linked).is_ok());
         assert_eq!(
             saved_blocks_check(&mut runner, &linked).status,
             Status::Pass
         );
         std::fs::remove_file(linked.join(".qaren/actions")).unwrap();
         std::os::unix::fs::symlink(s.dir("unrelated"), linked.join(".qaren/actions")).unwrap();
+        assert!(crate::actions::list(&mut runner, &linked).is_err());
+        assert_eq!(
+            saved_blocks_check(&mut runner, &linked).status,
+            Status::Warn
+        );
+        std::fs::remove_file(linked.join(".qaren/actions")).unwrap();
+        std::fs::remove_dir(linked.join(".qaren")).unwrap();
+        std::os::unix::fs::symlink(primary.join(".qaren"), linked.join(".qaren")).unwrap();
+        assert!(crate::actions::list(&mut runner, &linked).is_err());
         assert_eq!(
             saved_blocks_check(&mut runner, &linked).status,
             Status::Warn
