@@ -1250,7 +1250,8 @@ cover indicators, lookalikes and adjacent protected fields.
 iOS fast snapshots retain nodes with distinct readable values even when their type,
 label, identifier and origin match; deduplication compares those fields separately.
 The React digest adds semantics: a deadline, malformed-payload, validation or
-transport failure degrades React coverage to unknown without retrying capture.
+transport failure degrades React coverage to unknown; capture is retried only after
+re-injecting helpers on a newer CDP connection.
 Operations requiring complete React evidence still refuse when that coverage is
 unavailable. Each affected row records `reactCoverage` as `unknown` or `incomplete`
 for a capture limit, `reconnected` for the first capture on a newer CDP connection
