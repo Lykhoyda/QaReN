@@ -37,8 +37,8 @@ for start waits and refusal behavior.
 | A check fails after any eligible recovery                        | FAIL; the block is never walked again or rewritten               |
 
 When a re-walked block passes, only the commands from the re-walked line on are rewritten,
-and every `✓` comment stays byte-identical. A failing block is never saved; blocks that passed
-earlier in the same run stay saved.
+and every `✓` comment stays byte-identical. A failing block is never saved; earlier passing
+blocks remain subject to the [persistence conditions below](#when-a-block-is-not-saved).
 
 The ledger's `path` is `walk`, `replay` or `replay→walk@<line>`, and each block reports its
 `source` as `discovered`, `replayed` or `patched`. The receipt lists `blocks_written`.

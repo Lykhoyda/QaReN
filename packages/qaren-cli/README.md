@@ -1896,8 +1896,8 @@ a mutation, its selector failure is terminal; recovered selector misses follow
 line and later ones are rewritten, and every `✓` comment stays byte-identical. A failing check is a FAIL and
 is never re-walked or rewritten. Timeout recovery remains deferred (see
 [Step recovery](#step-recovery)); app-process changes stay terminal. A failing block is never saved;
-blocks that passed earlier in the run remain saved. A step without a `testID`
-or label, a phrase wait, or a literal fill into a secure or private input or through
+earlier passing blocks remain subject to the [React coverage contract](#check-a-plan).
+A step without a `testID` or label, a phrase wait, or a literal fill into a secure or private input or through
 [keyboard fallback](#fill-verification-and-keyboard-fallback) leaves the block
 unsaved and the ledger says why without naming any value. A [runtime input](#runtime-inputs)
 fill can be saved in those private or fallback paths when it has a stored selector,

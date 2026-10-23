@@ -47,8 +47,9 @@ Run it from the app's directory:
 qaren check --plan-file plan.md --json
 ```
 
-The receipt says `pass` or `fail`, names the run, and gives the next action when something
-went wrong. A passing block is saved under `.qaren/actions/` and replayed on the next run.
+The receipt reports the outcome, names the run, and gives the next action when something
+went wrong. A passing block eligible for [persistence](saved-blocks/#when-a-block-is-not-saved)
+is saved under `.qaren/actions/` and replayed on the next run.
 
 - [Write a plan](plans/): the plan grammar and what a check reads.
 - [Check a plan](check/): devices, flags, the receipt and exit codes.
