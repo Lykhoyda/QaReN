@@ -43,7 +43,6 @@ function prebuiltCache() {
     cacheDir: (v: string, p: string) => join('/cache', v, p),
     existsSync: (p: string) => files.has(p) || [...files].some((f) => f.startsWith(p + '/')),
     sha256File: () => 'GOOD',
-    readArchiveIdentity: () => ({ schemaVersion: 1, version: V, platform: 'ios' }),
     listFiles: (d: string) =>
       [...files].filter((f) => f.startsWith(d + '/')).map((f) => f.slice(d.length + 1)),
     fetchToFile: async () => {

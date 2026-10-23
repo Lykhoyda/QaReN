@@ -12,11 +12,8 @@ import { homedir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { candidateRunnerManifestFiles, firstExistingFile } from './runtime-paths.js';
 import {
-  assertRunnerArchiveIdentity,
   assertRunnerAssetName,
   isQarenRunnerRelease,
-  RunnerArtifactMismatchError,
-  RUNNER_IDENTITY_FILE,
   type RunnerPlatform,
 } from '../domain/runner-artifact-identity.js';
 
@@ -62,7 +59,6 @@ export interface ArtifactDeps {
   cacheDir(version: string, platform: RunnerPlatform): string;
   existsSync(p: string): boolean;
   sha256File(p: string): string;
-  readArchiveIdentity(zipPath: string): unknown;
   listFiles(dir: string): string[];
   fetchToFile(
     url: string,
@@ -191,11 +187,10 @@ async function acquireArtifact(
   const manifest = deps.readManifest();
   if (!manifest) return { provenance: 'build-local' };
   if (manifest.version !== version) {
-    throw new RunnerArtifactMismatchError(
-      version,
-      platform,
-      `manifest version is ${manifest.version}`,
-    );
+    return {
+      provenance: 'build-local',
+      note: `no published ${platform} runner for ${version} (manifest version is ${manifest.version}); building shipped source locally`,
+    };
   }
 
   const assets = manifest.assets?.[platform] ?? [];
@@ -223,17 +218,8 @@ async function acquireArtifact(
       allZipsPresent = false;
     }
   }
-  const archivesValid = allZipsPresent && verifyChecksums(assets, actualByName).ok;
-  if (archivesValid) {
-    for (const asset of assets) {
-      assertRunnerArchiveIdentity(
-        deps.readArchiveIdentity(join(cacheDir, asset.name)),
-        version,
-        platform,
-      );
-    }
-  }
-  const cacheValid = archivesValid && extractedOk(productsDir);
+  const cacheValid =
+    allZipsPresent && verifyChecksums(assets, actualByName).ok && extractedOk(productsDir);
 
   const decision = resolveArtifactDecision({
     envOverride: false,
@@ -258,7 +244,6 @@ async function acquireArtifact(
       if (got !== a.sha256) {
         throw new Error(`checksum mismatch for ${a.name} (expected ${a.sha256}, got ${got})`);
       }
-      assertRunnerArchiveIdentity(deps.readArchiveIdentity(zp), version, platform);
       throwIfCancelled();
       deps.unzip(zp, productsDir);
     }
@@ -280,7 +265,6 @@ async function acquireArtifact(
     }
     throwIfCancelled();
     if (isAbort(err)) throw err;
-    if (err instanceof RunnerArtifactMismatchError) throw err;
     const msg = err instanceof Error ? err.message : String(err);
     return {
       provenance: 'build-local',
@@ -394,20 +378,6 @@ export function defaultArtifactDeps(): ArtifactDeps {
     cacheDir: (version, platform) => cacheDirFor(homedir(), process.platform, version, platform),
     existsSync,
     sha256File,
-    readArchiveIdentity: (zipPath) => {
-      try {
-        return JSON.parse(
-          execFileSync('unzip', ['-p', zipPath, RUNNER_IDENTITY_FILE], {
-            encoding: 'utf8',
-            stdio: ['ignore', 'pipe', 'pipe'],
-            maxBuffer: 16_384,
-            timeout: 10_000,
-          }),
-        );
-      } catch {
-        return null;
-      }
-    },
     listFiles: (dir) => {
       try {
         return readdirSync(dir);

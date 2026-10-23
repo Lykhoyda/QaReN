@@ -361,13 +361,12 @@ instructions.
 <a id="prebuilt-runners"></a>
 
 **Prebuilt iOS runner:** QaReN accepts only artifacts for its exact runtime version,
-including the prerelease suffix. Both cached and downloaded archives must match the
-manifest's SHA-256 and carry a matching `qaren-runner.json` build identity before use.
-Manifest, asset-name and archive-identity mismatches refuse with `RUNNER_VERSION_MISMATCH`.
-Legacy 1.x release versions always select the shipped source, so an unreleased QaReN build
-that still reports a 1.x version cannot download or reuse a published 1.x runner.
-Offline downloads, checksum failures and checkouts without a runner manifest fall back
-to building locally. Force local builds with `RN_RUNNER_BUILD=local`.
+including the prerelease suffix, downloaded from that version's release tag and matching the
+manifest's SHA-256. A matching manifest that names another release's archive refuses with
+`RUNNER_VERSION_MISMATCH`. Legacy 1.x release versions always select the shipped source, so an
+unreleased QaReN build that still reports a 1.x version cannot download or reuse a published 1.x
+runner. A manifest for another version, offline downloads, checksum failures and checkouts
+without a runner manifest fall back to building locally. Force local builds with `RN_RUNNER_BUILD=local`.
 
 For Android, see [Android runner provisioning](packages/qaren-cli/README.md#android-runner-provisioning).
 

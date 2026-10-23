@@ -2,4 +2,4 @@
 'qaren': patch
 ---
 
-Exclude legacy runner releases and verify exact runtime and archive build identities, including prerelease versions, before using prebuilt runners.
+Exclude legacy runner releases and use a prebuilt runner only when its manifest, archive name and checksum match the exact runtime version, including prerelease versions.
