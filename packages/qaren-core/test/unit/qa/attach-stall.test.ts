@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { createServer, type RequestListener } from 'node:http';
+import { createServer, type RequestListener, type ServerResponse } from 'node:http';
 import type { AddressInfo } from 'node:net';
 import { syncBuiltinESMExports } from 'node:module';
 import { test, type TestContext } from 'node:test';
@@ -8,6 +8,7 @@ import {
   admissionMetric,
   admit,
   awaitDevClientManifest,
+  devClientManifestInTime,
   launchBundleRequests,
   type AdmissionRefusalFacts,
   type AdmissionSteps,
@@ -24,6 +25,8 @@ import {
 } from '../../../dist/cdp/connect.js';
 import { CDPRequestTimeoutError } from '../../../dist/cdp/transport.js';
 import { createStop } from '../../../dist/qa/stop.js';
+
+const late = { manifestInTime: false };
 
 function stalled(t: TestContext, overrides: Partial<AdmissionSteps> = {}) {
   let now = 0;
@@ -45,6 +48,7 @@ function stalled(t: TestContext, overrides: Partial<AdmissionSteps> = {}) {
     bundleRequested: async () => true,
     relaunch: async () => {
       relaunches++;
+      return late;
     },
     foreignDriver: async () => undefined,
     open: async () => assert.fail('no session without a target'),
@@ -143,6 +147,7 @@ test('an app that dies after its relaunch refuses despite its bundle request', a
     bundleRequested: async () => relaunched,
     relaunch: async () => {
       relaunched = true;
+      return late;
     },
   });
   const error = await fixture.run();
@@ -173,6 +178,7 @@ for (const [name, atRelaunch, afterRelaunch, expected] of [
         requests.relaunching();
         relaunched = true;
         count = afterRelaunch;
+        return late;
       },
     });
     if (expected === 'waiting') {
@@ -203,6 +209,7 @@ test('a bundle request after a relaunch keeps the walk budget', async (t) => {
     bundleRequested: async () => relaunched,
     relaunch: async () => {
       relaunched = true;
+      return late;
     },
   });
   await fixture.waiting();
@@ -305,6 +312,7 @@ for (const change of ['dead_app', 'no_request'] as const) {
       bundleRequested: async () => (probes === 1 ? undefined : false),
       relaunch: async () => {
         launched = true;
+        return late;
       },
       open: async () => undefined,
       prove: async () => ({
@@ -332,19 +340,44 @@ const proven = async () => ({
   appModules: 3,
 });
 
-test('a dev client still on its launcher after a relaunch is relaunched until it loads', async (t) => {
+test('a dev client whose launcher gave up on a late manifest is relaunched until it loads', async (t) => {
   const deadlines: number[] = [];
   const fixture = stalled(t, {
     attach: async () => {
       if (deadlines.length < 2) throw new TargetReadinessTimeoutError('no target', 'empty');
     },
     bundleRequested: async () => false,
-    relaunch: async (deadline) => void deadlines.push(deadline),
+    relaunch: async (deadline) => (deadlines.push(deadline), late),
     open: async () => undefined,
     prove: proven,
   });
   assert.equal((await fixture.run()).ok, true);
   assert.deepEqual(deadlines, [120_000, 120_000]);
+});
+
+test('a relaunched dev client answered in time is never killed while it boots slowly', async (t) => {
+  let relaunches = 0;
+  const fixture = stalled(t, {
+    attach: async () => {
+      if (performance.now() < 100_000) throw new TargetReadinessTimeoutError('no target', 'empty');
+    },
+    bundleRequested: async () => performance.now() >= 70_000,
+    relaunch: async () => (relaunches++, { manifestInTime: true }),
+    open: async () => undefined,
+    prove: proven,
+  });
+  assert.equal((await fixture.run()).ok, true);
+  assert.equal(relaunches, 1);
+});
+
+test('a relaunched dev client answered in time keeps the walk budget without a bundle request', async (t) => {
+  let relaunches = 0;
+  const fixture = stalled(t, {
+    bundleRequested: async () => false,
+    relaunch: async () => (relaunches++, { manifestInTime: true }),
+  });
+  await fixture.waiting();
+  assert.equal(relaunches, 1);
 });
 
 test('a failed liveness probe never relaunches an app again once it requested its bundle', async (t) => {
@@ -354,7 +387,7 @@ test('a failed liveness probe never relaunches an app again once it requested it
       throw new Error('launchctl timed out');
     },
     bundleRequested: async () => relaunches > 0,
-    relaunch: async () => void relaunches++,
+    relaunch: async () => (relaunches++, late),
   });
   await fixture.waiting();
   assert.equal(relaunches, 1);
@@ -378,7 +411,7 @@ test('a first relaunch after the attach budget still gets a readiness window to 
   const deadlines: number[] = [];
   const fixture = stalled(t, {
     appAlive: async () => performance.now() < 150_000,
-    relaunch: async (deadline) => void deadlines.push(deadline),
+    relaunch: async (deadline) => (deadlines.push(deadline), late),
   });
   const error = await fixture.run(200_000);
   assert.equal(error.meta.liveness, 'dead');
@@ -450,4 +483,16 @@ test('a manifest error or an unreachable Metro fails the relaunch at once', asyn
     awaitDevClientManifest(`http://127.0.0.1:${port}/`, performance.now() + 60_000),
     /dev client manifest request failed/,
   );
+});
+
+test('a launch manifest is in time only when Metro answers it before the dev client gives up', async (t) => {
+  let clock = 0;
+  t.mock.method(performance, 'now', () => clock);
+  let answer = (res: ServerResponse) => ((clock += 1_000), res.end('{}'));
+  const url = await metro(t, (_req, res) => answer(res));
+  assert.equal(await devClientManifestInTime(url), true);
+  answer = (res) => ((clock += 12_000), res.end('{}'));
+  assert.equal(await devClientManifestInTime(url), false);
+  answer = (res) => ((res.statusCode = 500), res.end());
+  assert.equal(await devClientManifestInTime(url), false);
 });

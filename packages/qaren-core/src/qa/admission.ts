@@ -38,14 +38,14 @@ import {
 export interface AdmissionSteps {
   metroPort: number;
   readinessMs: number;
-  // After this long, a stall from a dead app or with no bundle request since launch refuses.
+  // After this long, a stall from a dead app or with no bundle request since a launch not answered in time refuses.
   attachBudgetMs: number;
   remainingMs(): number;
   attach(deadline: number): Promise<void>;
   // Inside the attach deadline: the attached client must have run its bundle before anything reads it.
   bundleReady?(deadline: number): Promise<void>;
-  // A no-target stall relaunches each readiness window until the attach budget, any other stall once; it may wait until the deadline.
-  relaunch?(deadline: number): Promise<void>;
+  // Any stall relaunches once; a no-target stall again only while its launch had no bundle request and a late manifest. It may wait until the deadline.
+  relaunch?(deadline: number): Promise<{ manifestInTime: boolean }>;
   // Before relaunching without a target, preserve a live app with a bundle request.
   appAlive?(): Promise<boolean>;
   // No request permits relaunch; a received request does not prove that a bundle finished loading.
@@ -463,12 +463,24 @@ export async function awaitDevClientManifest(
   );
 }
 
+// Right after a launch: whether its dev client's manifest request is answered before it gives up.
+export async function devClientManifestInTime(url: string): Promise<boolean> {
+  try {
+    await awaitDevClientManifest(url, performance.now() + DEV_CLIENT_REQUEST_TIMEOUT_MS);
+    return true;
+  } catch (error) {
+    if (isAbort(error)) throw error;
+    return false;
+  }
+}
+
 async function attach(steps: AdmissionSteps, signal: AbortSignal): Promise<Proven> {
   const started = performance.now();
   const deadline = started + steps.remainingMs();
   const refuseStalledAt = started + steps.attachBudgetMs;
   const relaunchAt = started + steps.readinessMs;
   let relaunches = 0;
+  let manifestInTime: boolean | undefined;
   let nextNoTargetProbe = started;
   // first probe/handshake timeout against a registered target; it gets a full readiness window before a relaunch
   let stallSeenAt: number | undefined;
@@ -586,15 +598,16 @@ async function attach(steps: AdmissionSteps, signal: AbortSignal): Promise<Prove
             if (
               !noTarget ||
               liveness === 'dead' ||
-              bundleRequest === 'not_received' ||
-              (relaunches === 0 && liveness !== 'alive')
+              (relaunches === 0
+                ? liveness !== 'alive' || bundleRequest === 'not_received'
+                : bundleRequest === 'not_received' && manifestInTime === false)
             ) {
               relaunches++;
               try {
                 lastStarted = 'relaunch';
                 const relaunch = steps.relaunch;
                 const until = Math.max(refuseStalledAt, performance.now() + steps.readinessMs);
-                await interruptible(() => relaunch(until));
+                ({ manifestInTime } = await interruptible(() => relaunch(until)));
                 lastCompleted = 'relaunch';
                 bundleRequest = 'not_probed';
                 nextNoTargetProbe = performance.now() + steps.readinessMs;
@@ -614,7 +627,11 @@ async function attach(steps: AdmissionSteps, signal: AbortSignal): Promise<Prove
               if (liveness !== 'dead' && bundleRequest !== 'received' && steps.bundleRequested)
                 bundleRequest = await probeBundleRequest(steps);
             }
-            if (liveness === 'dead' || bundleRequest === 'not_received') throw error;
+            if (
+              liveness === 'dead' ||
+              (bundleRequest === 'not_received' && manifestInTime !== true)
+            )
+              throw error;
           }
           observe('retry', facts(admissionInnerClass(error)));
           lastStarted = 'retry_wait';
