@@ -8165,6 +8165,89 @@ fn android_teardown_releases_before_the_lease() {
 }
 
 #[test]
+fn android_check_install_failure_and_timeout_keep_verified_apk_and_release_only_the_lease() {
+    for (label, installed) in [
+        (
+            "install-failed",
+            CmdOutput::failed(
+                1,
+                "adb: failed to install app-debug.apk: Write failed: Broken pipe",
+            ),
+        ),
+        (
+            "install-timeout",
+            CmdOutput {
+                timed_out: true,
+                duration_ms: 300_000,
+                ..Default::default()
+            },
+        ),
+    ] {
+        let (repo, app) = app_repo();
+        let apk = seed_cached_apk(&repo, &app);
+        let req = android_request(&repo, &app);
+        let mut mock = android_mock();
+        script_android_preflight(&mut mock, &repo, ONE_EMULATOR, EMULATOR);
+        mock.expect_run("pnpm install --frozen-lockfile", CmdOutput::success(""));
+        mock.expect_run("ls-files", CmdOutput::success(""));
+        mock.expect_run("install -r -d", installed);
+
+        let receipt = run(&mut mock, &req);
+
+        assert_eq!(receipt.result, ReceiptResult::Failed, "{label}");
+        let failure = receipt.failure.as_ref().expect("install must fail");
+        assert_eq!(failure.code, FailureCode::ArtifactInstallFailed, "{label}");
+        assert!(
+            failure.detail.contains(&format!("({label}):")),
+            "{label}: {}",
+            failure.detail
+        );
+        assert!(
+            failure.next_action.contains("keep the cached artifact"),
+            "{label}: {}",
+            failure.next_action
+        );
+        assert!(
+            failure
+                .next_action
+                .contains("inspect the target device, package service, and transport state"),
+            "{label}: {}",
+            failure.next_action
+        );
+        for forbidden in ["delete", "rebuild", "re-run"] {
+            assert!(
+                !failure.next_action.contains(forbidden),
+                "{label}: {forbidden} in {}",
+                failure.next_action
+            );
+        }
+        assert!(apk.is_file(), "{label}");
+        assert_eq!(receipt.cleanup["device_lease"], "removed", "{label}");
+        for leg in [
+            "adb_reverse",
+            "android_runner",
+            "app_install",
+            "adb_server",
+            "adb_connection",
+        ] {
+            assert!(!receipt.cleanup.contains_key(leg), "{label}: {leg}");
+        }
+        assert!(
+            !adb_calls(&mock).iter().any(|c| c.contains("reverse")
+                || c.contains("uninstall")
+                || c.contains("kill-server")
+                || c.contains("force-stop")),
+            "{label}"
+        );
+        assert_eq!(mock.remaining(), 0, "{label}");
+        let record = RunRecord::load(&req.runs_root, &run_id()).unwrap();
+        assert!(record.resources.app_install.is_none(), "{label}");
+        assert_eq!(record.resources.adb_reverse_port, None, "{label}");
+        assert!(record.resources.lease.is_none(), "{label}");
+    }
+}
+
+#[test]
 fn android_check_refuses_a_metro_port_already_reversed_on_the_emulator() {
     let (repo, app) = app_repo();
     seed_cached_apk(&repo, &app);

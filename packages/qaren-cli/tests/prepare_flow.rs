@@ -494,6 +494,7 @@ fn ios_install_timeouts_fail_once_the_shared_budget_is_spent() {
 
     let failure = receipt.failure.as_ref().expect("budget spent must fail");
     assert_eq!(failure.code, FailureCode::ArtifactInstallFailed);
+    assert!(failure.detail.contains("(install-timeout):"), "{failure:?}");
     assert!(failure.detail.contains("1 attempts"), "{failure:?}");
     assert_eq!(receipt.outcomes["launch_ready_budget"], "spent");
     assert_eq!(receipt.outcomes["substage"], "install_cached");
@@ -575,6 +576,59 @@ fn ios_install_coordination_refusals_fail_once_the_shared_budget_is_spent() {
 }
 
 #[test]
+fn ios_install_invalid_cached_bundle_preserves_rebuild_and_cleanup_advice() {
+    let repo = common::temp_repo();
+    let scenario = write_scenario(&repo, &ios_scenario_yaml(8791));
+    let source = repo.join("cached.app");
+    std::fs::create_dir(&source).unwrap();
+    std::fs::write(source.join("binary"), b"cached app").unwrap();
+    let mut fp_runner = qaren::exec::MockRunner::new();
+    fp_runner.expect_run("ls-files", CmdOutput::success(""));
+    common::script_xcode(&mut fp_runner);
+    let fp = qaren::fingerprint::compute(&mut fp_runner, &repo, &repo.join("test-app"), "ios")
+        .unwrap();
+    let artifact = common::seed_store(
+        &repo.join(".native-store"),
+        "ios",
+        &fp.value,
+        &source,
+        qaren::buildplan::ArtifactKind::AppBundle,
+    );
+
+    let mut mock = MockRunner::new();
+    script_validation(&mut mock, &repo, IOS_TOOLS);
+    mock.expect_run("lsof", free_port());
+    mock.expect_run("ps", CmdOutput::success("Wed Aug 12 15:59:00 2026\n"));
+    mock.expect_run("ps", CmdOutput::success("qaren prepare\n"));
+    common::script_ios_deps(&mut mock);
+    mock.expect_run("ls-files", CmdOutput::success(""));
+    common::script_xcode(&mut mock);
+    mock.expect_run("simctl create", CmdOutput::success(&format!("{UDID}\n")));
+    mock.expect_run("simctl bootstatus", CmdOutput::success("finished"));
+    mock.expect_run("plutil", CmdOutput::success("{}"));
+
+    let receipt = prepare(&mut mock, &prepare_args(&scenario, false, None));
+
+    assert_eq!(receipt.result, ReceiptResult::Failed, "{}", receipt.to_json());
+    let failure = receipt.failure.as_ref().unwrap();
+    assert_eq!(failure.code, FailureCode::ArtifactInstallFailed);
+    assert!(failure.detail.contains("(artifact-invalid):"), "{failure:?}");
+    let expected = format!(
+        "delete the machine store entry {} to force a rebuild, then qaren cleanup {} --json and re-run prepare",
+        artifact.path.parent().unwrap().parent().unwrap().display(),
+        receipt.run_id
+    );
+    assert_eq!(receipt.next_action, expected);
+    assert_eq!(failure.next_action.as_str(), expected);
+    let record = RunRecord::load(&repo, &receipt.run_id).unwrap();
+    assert_eq!(record.failure.unwrap().next_action.as_str(), expected);
+    assert!(record.resources.ios_simulator.is_some());
+    assert!(artifact.path.exists());
+    assert!(!mock.calls.iter().any(|call| call.label == "simctl-install"));
+    assert_eq!(mock.remaining(), 0);
+}
+
+#[test]
 fn ios_install_error_fails_after_one_attempt() {
     let repo = common::temp_repo();
     let scenario = write_scenario(&repo, &ios_scenario_yaml(8791));
@@ -590,6 +644,7 @@ fn ios_install_error_fails_after_one_attempt() {
 
     let failure = receipt.failure.as_ref().expect("install error must fail");
     assert_eq!(failure.code, FailureCode::ArtifactInstallFailed);
+    assert!(failure.detail.contains("(install-failed):"), "{failure:?}");
     assert_eq!(
         mock.calls
             .iter()
