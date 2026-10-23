@@ -1900,7 +1900,8 @@ unavailable judgment service, a dispatch, capture or runner error, a synthesized
 older core's ledger. Refusals, candidate drift and cancelled runs never flag. A PASS removes that platform's marker. Markers are
 comments, so a flagged plan still runs. A bare
 `<!-- qaren:broken -->` counts as broken on every platform and is left for you to remove. A file
-edited during the run is left alone.
+whose plan lines were edited during the run is left alone; marker lines another platform's run
+added meanwhile are kept, so concurrent iOS and Android runs both keep their marker.
 
 The receipt's `recipe` field reports `{outcome, path?, reason?}` and stderr prints
 `plan: <outcome> <path or reason>`; neither changes the result or exit code. Outcomes are `saved`,
