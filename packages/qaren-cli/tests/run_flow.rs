@@ -2401,6 +2401,67 @@ fn a_holder_with_unknown_liveness_is_never_cleaned_up() {
 }
 
 #[test]
+fn every_plan_problem_names_the_file_line_and_repair_before_device_access() {
+    let cases: serde_json::Value = serde_json::from_str(include_str!(
+        "../../qaren-core/test/fixtures/plan-errors.json"
+    ))
+    .unwrap();
+    for entry in cases.as_array().unwrap() {
+        for phase in ["input-inventory", "plan-preflight"] {
+            let (repo, app) = app_repo();
+            let req = request(&repo, &app, 30);
+            std::fs::write(&req.plan_file, entry["plan"].as_str().unwrap()).unwrap();
+            let mut mock = MockRunner::new();
+            mock.expect_run("node --version", CmdOutput::success("v26.8.1\n"));
+            if phase == "plan-preflight" {
+                script_inventory(&mut mock);
+            }
+            mock.expect_run("walk.js --preflight-stdin", CmdOutput {
+                exit_code: Some(4),
+                stdout: serde_json::json!({"ok":false,"code":"PLAN_UNPARSEABLE","refused":[{
+                    "line":entry["line"],"reason":entry["reason"],"nextAction":entry["nextAction"]
+                }]}).to_string(),
+                ..Default::default()
+            });
+            let receipt = run(&mut mock, &req);
+            assert_eq!(receipt.result, ReceiptResult::Refused, "{entry} {phase}");
+            let failure = receipt.failure.unwrap();
+            assert_eq!(
+                failure.code,
+                FailureCode::PlanUnparseable,
+                "{entry} {phase}"
+            );
+            assert!(
+                failure.detail.contains(&format!(
+                    "{}: line {}: {}",
+                    req.plan_file.display(),
+                    entry["line"],
+                    entry["reason"].as_str().unwrap()
+                )),
+                "{}",
+                failure.detail
+            );
+            assert!(
+                failure
+                    .next_action
+                    .contains(entry["nextAction"].as_str().unwrap()),
+                "{}",
+                failure.next_action
+            );
+            assert!(failure
+                .next_action
+                .contains(&req.plan_file.display().to_string()));
+            assert!(failure.next_action.contains("re-run qaren check"));
+            assert_eq!(mock.remaining(), 0);
+            assert!(mock
+                .calls
+                .iter()
+                .all(|c| Path::new(&c.program) == req.node.as_deref().unwrap()));
+        }
+    }
+}
+
+#[test]
 fn an_unparseable_plan_refuses_before_the_device_is_touched() {
     let (repo, app) = app_repo();
     let mut mock = MockRunner::new();
@@ -3533,8 +3594,7 @@ fn android_check_reuse_installs_the_cached_apk_by_serial() {
         .env
         .contains(&("ANDROID_SERIAL".to_string(), EMULATOR.to_string())));
     assert!(!mock.piped_stdin_text(0).contains("\"adb\""));
-    let request: serde_json::Value =
-        serde_json::from_str(mock.piped_stdin_text(0).trim()).unwrap();
+    let request: serde_json::Value = serde_json::from_str(mock.piped_stdin_text(0).trim()).unwrap();
     assert!(request["payload"]["target"]
         .get("metroBundleRequests")
         .is_none());

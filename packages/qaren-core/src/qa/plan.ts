@@ -46,6 +46,57 @@ export interface RefusedLine {
   reason: string;
 }
 
+export interface PlanDiagnostic {
+  line: number;
+  reason: string;
+  nextAction: string;
+}
+
+const PLAN_REPAIRS: Record<string, string> = {
+  'another block is already named': 'give each block a distinct heading',
+  'distinct block titles produce the same action ID':
+    'rename one block so its action ID is distinct',
+  'this block has no steps': 'add a numbered step or a ✓ check to the block',
+  "starts on must come before the block's steps":
+    'move starts on: before the first step in the block',
+  'not a numbered step or a ✓ line':
+    'prefix the step with a number such as 1. or use ✓ for a check',
+  'fill needs a target and a valid input name':
+    'use Fill "field" with input NAME, where NAME matches [A-Z][A-Z0-9_]{0,31}',
+  'invalid runtime input declaration':
+    'remove the invalid annotation; declare runtime inputs with Fill "field" with input NAME, optionally followed by (non-secret)',
+  'fill needs a target and the text in quotes': 'use Fill "field" with "text"',
+  'fill needs the text in quotes': 'put the fill text in quotes: Type "text" into "field"',
+  'fill needs a target after the quoted text':
+    'add the target after the text: Type "text" into "field"',
+  'expect input needs a declared input name and "on screen"':
+    'use Expect input NAME on screen with a name declared by a fill step',
+  'expect input names an input no fill step in this plan uses':
+    'add a Fill "field" with input NAME step for this input, or use an already declared name',
+  'conflicting runtime input declarations':
+    'use the same sensitivity annotation for every fill of this input',
+  'dialog needs one explicit accept or dismiss action without conditions or negation':
+    'use Accept the dialog or Dismiss the dialog without conditions or negation',
+  'the plan has no steps': 'add a numbered step such as 1. Tap "target"',
+  'the line is unsupported or the verb judgment is unsure':
+    'rewrite as one supported operation: Tap, Type, Scroll, Wait, Go back, Accept or Dismiss the dialog',
+  'no verb the grammar knows (tap, type, scroll, wait, back, accept or dismiss the dialog)':
+    'rewrite as one supported operation: Tap, Type, Scroll, Wait, Go back, Accept or Dismiss the dialog',
+  'fill fallback needs Verb "text" into/in target or target with text/value "text"; use Type "text" into target otherwise':
+    'use Type "text" into "field"',
+  'scroll fallback needs an explicit until target or a bare direction':
+    'use Scroll down, Scroll up, or Scroll down until "target"',
+};
+
+export function planDiagnostics(refused: RefusedLine[]): PlanDiagnostic[] {
+  return refused.map((entry) => {
+    const reason =
+      Object.keys(PLAN_REPAIRS).find((problem) => entry.reason.startsWith(problem)) ??
+      'the line is unsupported or the verb judgment is unsure';
+    return { line: Math.max(1, entry.line), reason, nextAction: PLAN_REPAIRS[reason] };
+  });
+}
+
 export type ParsedPlan =
   | { blocks: Block[]; refused?: undefined }
   | { blocks?: undefined; refused: RefusedLine[] };

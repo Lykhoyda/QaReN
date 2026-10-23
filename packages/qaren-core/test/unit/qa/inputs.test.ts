@@ -402,13 +402,13 @@ test('input policy inventory refuses conflicts and malformed annotations without
     '1. Please fill "field" with input SLOT_A (non-secret)',
   ]) {
     assert.ok(parsePlan(plan).refused, plan);
-    await assert.rejects(
-      parseInputPreflight(
-        { v: 1, phase: 'input-inventory', plan, platform: 'ios', appId: 'com.test' },
-        judge,
-      ),
-      /runtime input inventory refused/,
+    const result = await parseInputPreflight(
+      { v: 1, phase: 'input-inventory', plan, platform: 'ios', appId: 'com.test' },
+      judge,
     );
+    assert.equal(result.ok, false);
+    assert.equal(result.code, 'PLAN_UNPARSEABLE');
+    assert.ok(result.refused.every((entry) => entry.line >= 1 && entry.nextAction));
   }
   const valid = `outside\n## QA\n<!-- 1. Fill "hidden" with input SLOT_A -->\n${source}\n2. Fill "again" with input SLOT_A\n## Other\n1. Fill "outside" with input SLOT_A (non-secret)`;
   assert.deepEqual(requiredInputs(valid), ['SLOT_A']);

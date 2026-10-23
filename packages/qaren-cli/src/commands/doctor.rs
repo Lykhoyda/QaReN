@@ -182,6 +182,7 @@ pub fn doctor(
     let codex_home = set("CODEX_HOME")
         .map(PathBuf::from)
         .unwrap_or_else(|| home.join(".codex"));
+    let claude_config_dir = set("CLAUDE_CONFIG_DIR").map(PathBuf::from);
     let xdg_state = set("XDG_STATE_HOME").map(PathBuf::from);
     let android_home = set("ANDROID_HOME");
     let configured_node = config.as_ref().and_then(|c| c.node_path.clone());
@@ -236,6 +237,7 @@ pub fn doctor(
     checks.extend(leftover_rows(
         home,
         &codex_home,
+        claude_config_dir.as_deref(),
         xdg_state.as_deref(),
         cwd,
         &path_dirs,
@@ -806,28 +808,31 @@ fn dirs_present(dirs: impl IntoIterator<Item = PathBuf>) -> Vec<PathBuf> {
 fn leftover_rows(
     home: &Path,
     codex_home: &Path,
+    claude_config_dir: Option<&Path>,
     xdg_state: Option<&Path>,
     cwd: &Path,
     path_dirs: &[PathBuf],
     env_names: &[String],
 ) -> Vec<Check> {
+    let claude_dir = claude_config_dir.map_or_else(|| home.join(".claude"), Path::to_path_buf);
+    let claude_config = claude_config_dir.unwrap_or(home).join(".claude.json");
     vec![
-        claude_plugin(home),
+        claude_plugin(&claude_dir),
         codex_plugin(home, codex_home),
-        mcp_servers(home, codex_home, cwd),
+        mcp_servers(home, codex_home, cwd, &claude_config),
         binaries(path_dirs),
-        home_dirs(home, xdg_state),
+        home_dirs(home, &claude_dir, xdg_state),
         project(cwd),
         environment(env_names),
     ]
 }
 
-fn claude_plugin(home: &Path) -> Check {
-    let plugins = home.join(".claude").join("plugins");
+fn claude_plugin(claude_dir: &Path) -> Check {
+    let plugins = claude_dir.join("plugins");
     let mut found = Vec::new();
     for file in [
         plugins.join("installed_plugins.json"),
-        home.join(".claude").join("settings.json"),
+        claude_dir.join("settings.json"),
     ] {
         if read(&file).contains("rn-dev-agent@rn-dev-agent") {
             found.push(format!("rn-dev-agent@rn-dev-agent in {}", file.display()));
@@ -984,11 +989,11 @@ fn toml_mcp_headers(text: &str) -> Vec<McpHeader> {
     headers
 }
 
-fn mcp_servers(home: &Path, codex_home: &Path, cwd: &Path) -> Check {
+fn mcp_servers(home: &Path, codex_home: &Path, cwd: &Path, claude_config: &Path) -> Check {
     let mut found = Vec::new();
     let mut fixes = Vec::new();
     for (file, claude) in [
-        (home.join(".claude.json"), true),
+        (claude_config.to_path_buf(), true),
         (cwd.join(".mcp.json"), true),
         (home.join(".cursor").join("mcp.json"), false),
     ] {
@@ -1044,7 +1049,7 @@ fn binaries(path_dirs: &[PathBuf]) -> Check {
     )
 }
 
-fn home_dirs(home: &Path, xdg_state: Option<&Path>) -> Check {
+fn home_dirs(home: &Path, claude_dir: &Path, xdg_state: Option<&Path>) -> Check {
     let actions_home = home.join(".rn-dev-agent");
     let candidates = [
         actions_home.clone(),
@@ -1053,7 +1058,7 @@ fn home_dirs(home: &Path, xdg_state: Option<&Path>) -> Check {
         home.join("Library")
             .join("Application Support")
             .join("rn-dev-agent"),
-        home.join(".claude").join("rn-agent"),
+        claude_dir.join("rn-agent"),
     ]
     .into_iter()
     .chain(xdg_state.map(|state| state.join("rn-dev-agent")));
@@ -1415,6 +1420,123 @@ mod tests {
     }
 
     #[test]
+    fn doctor_uses_the_effective_claude_directory_for_every_user_config_read() {
+        for mode in ["default", "empty", "custom", "missing", "explicit-default"] {
+            let s = Scratch::new(mode);
+            let app = s.dir("app");
+            let mut runner = MockRunner::new();
+            let custom = match mode {
+                "custom" | "missing" => Some(s.path("custom config")),
+                "explicit-default" => Some(s.path(".claude")),
+                _ => None,
+            };
+            let config = custom.clone().unwrap_or_else(|| s.path(".claude"));
+            if mode == "empty" {
+                runner
+                    .environment
+                    .insert("CLAUDE_CONFIG_DIR".into(), String::new());
+            } else if let Some(path) = &custom {
+                runner
+                    .environment
+                    .insert("CLAUDE_CONFIG_DIR".into(), path.display().to_string());
+            }
+            for dir in [s.path(".claude"), config.clone()] {
+                if mode == "missing" && dir == config {
+                    continue;
+                }
+                std::fs::create_dir_all(dir.join("plugins/cache/rn-dev-agent")).unwrap();
+                std::fs::create_dir_all(dir.join("plugins/marketplaces/rn-dev-agent")).unwrap();
+                std::fs::create_dir_all(dir.join("rn-agent")).unwrap();
+                std::fs::write(
+                    dir.join("plugins/installed_plugins.json"),
+                    r#"{"rn-dev-agent@rn-dev-agent":true}"#,
+                )
+                .unwrap();
+                std::fs::write(
+                    dir.join("plugins/known_marketplaces.json"),
+                    r#"{"rn-dev-agent":{}}"#,
+                )
+                .unwrap();
+                std::fs::write(
+                    dir.join("settings.json"),
+                    r#"{"rn-dev-agent@rn-dev-agent":true}"#,
+                )
+                .unwrap();
+            }
+            let mcp = r#"{"mcpServers":{"rn-agent":{"command":"cdp-supervisor"}}}"#;
+            s.file(".claude.json", mcp);
+            if custom.is_some() && mode != "missing" {
+                std::fs::write(config.join(".claude.json"), mcp).unwrap();
+            }
+            let before = s.tree();
+            script_toolchain(&mut runner, Some("v24.1.0\n"), RUNTIMES);
+            let report = run_doctor(&mut runner, &s, &app, None);
+            for id in ["1x-claude-plugin", "1x-mcp", "1x-home-dirs"] {
+                let check = row(&report, id);
+                assert_eq!(
+                    check.status,
+                    if mode == "missing" {
+                        Status::Pass
+                    } else {
+                        Status::Warn
+                    },
+                    "{mode} {check:?}"
+                );
+                if mode != "missing" {
+                    let expected = if id == "1x-mcp" {
+                        custom.as_deref().unwrap_or(&s.0).join(".claude.json")
+                    } else {
+                        config.clone()
+                    };
+                    assert!(
+                        check.detail.contains(&expected.display().to_string()),
+                        "{mode} {check:?}"
+                    );
+                }
+                if mode == "custom" {
+                    assert!(
+                        !check
+                            .detail
+                            .contains(&s.path(".claude").display().to_string()),
+                        "{check:?}"
+                    );
+                    assert!(
+                        !check
+                            .fix
+                            .as_deref()
+                            .unwrap_or("")
+                            .contains(&s.path(".claude").display().to_string()),
+                        "{check:?}"
+                    );
+                }
+            }
+            let plugins = row(&report, "1x-claude-plugin");
+            if mode != "missing" {
+                for rel in [
+                    "plugins/installed_plugins.json",
+                    "plugins/known_marketplaces.json",
+                    "plugins/cache/rn-dev-agent",
+                    "plugins/marketplaces/rn-dev-agent",
+                    "settings.json",
+                ] {
+                    assert!(
+                        plugins
+                            .detail
+                            .contains(&config.join(rel).display().to_string()),
+                        "{mode} {plugins:?}"
+                    );
+                }
+            }
+            assert_eq!(
+                s.tree(),
+                before,
+                "doctor must not create even a missing config directory"
+            );
+            assert_eq!(runner.remaining(), 0);
+        }
+    }
+
+    #[test]
     fn every_leftover_kind_warns_with_its_removal_command() {
         let s = Scratch::new("leftovers");
         fabricate_leftovers(&s);
@@ -1422,6 +1544,7 @@ mod tests {
         let rows = leftover_rows(
             &s.0,
             &s.path(".codex"),
+            None,
             None,
             &s.path("app"),
             &[s.path("npm/bin")],
@@ -1455,6 +1578,7 @@ mod tests {
         let rows = leftover_rows(
             &s.0,
             &s.path(".codex"),
+            None,
             None,
             &s.0,
             &[],
@@ -1563,7 +1687,12 @@ mod tests {
                     build: None,
                     runtime: s.0.clone(),
                 },
-                checks: vec![mcp_servers(&s.0, &s.path(".codex"), &s.0)],
+                checks: vec![mcp_servers(
+                    &s.0,
+                    &s.path(".codex"),
+                    &s.0,
+                    &s.path(".claude.json"),
+                )],
             };
             let text = report.render();
             let fix = text
@@ -1604,7 +1733,7 @@ mod tests {
             r#"{"mcpServers":{"x; rm -rf ~":{"command":"cdp-supervisor"}}}"#,
         );
         let support = s.dir("Library/Application Support/rn-dev-agent");
-        let mcp = mcp_servers(&s.0, &s.path(".codex"), &s.0);
+        let mcp = mcp_servers(&s.0, &s.path(".codex"), &s.0, &s.path(".claude.json"));
         assert!(
             mcp.fix
                 .as_deref()
@@ -1612,7 +1741,7 @@ mod tests {
                 .contains("claude mcp remove 'x; rm -rf ~'"),
             "{mcp:?}"
         );
-        let dirs = home_dirs(&s.0, None);
+        let dirs = home_dirs(&s.0, &s.path(".claude"), None);
         assert!(
             dirs.fix
                 .as_deref()
@@ -1659,7 +1788,7 @@ mod tests {
             [mcp_servers.other\ncommand = \"other\"\n\
             [mcp_servers.rn-dev-agent-core # TOKEN=private-value\n",
         );
-        let mcp = mcp_servers(&s.0, &s.path(".codex"), &s.0);
+        let mcp = mcp_servers(&s.0, &s.path(".codex"), &s.0, &s.path(".claude.json"));
         assert_eq!(mcp.status, Status::Warn, "{mcp:?}");
         let fix = mcp.fix.clone().unwrap();
         let shown = format!("{} {fix}", mcp.detail);
