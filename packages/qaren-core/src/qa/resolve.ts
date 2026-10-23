@@ -97,9 +97,14 @@ export function stepTarget(step: Step): Target | undefined {
 
 // Stored IDs name native targets; React-only twins cannot receive the runner's tap.
 function replayIdentities(identities: Identity[], target: Target, kind: Step['kind']): Identity[] {
-  if (target.exact !== 'id' || kind === 'fill') return identities;
+  if (target.exact === 'text' || kind === 'fill') return identities;
   const native = identities.filter(({ tag }) => tag !== 'react-only');
-  return native.length >= 1 ? native : identities;
+  if (target.exact === 'id') return native.length >= 1 ? native : identities;
+  // A quoted name drops only React-only twins of a native element carrying that identifier.
+  const twinned = native.some(({ element }) => element.testID === target.quoted);
+  return identities.filter(
+    ({ tag, element }) => !twinned || tag !== 'react-only' || element.testID !== target.quoted,
+  );
 }
 
 export function prepareTarget(step: Step, screen: Screen): Resolution | TargetQuestion {

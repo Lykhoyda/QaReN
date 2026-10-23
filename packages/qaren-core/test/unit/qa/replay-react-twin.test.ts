@@ -116,9 +116,36 @@ test('a stored id with only a React-only match keeps its scroll and fails a wait
   assert.equal(targetEvidence(exactId('close'), screen), 'fail');
 });
 
-test('a phrase naming the id keeps the React-only twin ambiguous', () => {
+test('a quoted press resolves to its native element beside a React-only twin', () => {
   const phrase = { quoted: 'close', phrase: 'close' };
-  assert.equal(outcome(prepareTarget(press(phrase), twin)), 'TARGET_AMBIGUOUS');
+  assert.equal(outcome(prepareTarget(press(phrase), twin)), '@n1');
+  const avatar = joined(
+    [{ id: 'profile_button', label: 'Profile', y: 40 }],
+    [button('profile_button'), button('profile_button')],
+  );
+  const quoted = { quoted: 'profile_button', phrase: 'profile_button' };
+  assert.equal(outcome(prepareTarget(press(quoted), avatar)), '@n1');
+});
+
+test('two native elements sharing a quoted id stay ambiguous for a press', () => {
+  const screen = joined(
+    [
+      { id: 'close', y: 100 },
+      { id: 'close', y: 300 },
+    ],
+    [button('close'), button('close')],
+  );
+  const phrase = { quoted: 'close', phrase: 'close' };
+  assert.equal(outcome(prepareTarget(press(phrase), screen)), 'TARGET_AMBIGUOUS');
+});
+
+test('a quoted fill keeps counting a React-only input twin', () => {
+  const screen = joined(
+    [{ id: 'notes', type: 'TextField', y: 100 }],
+    [input('notes'), input('notes')],
+  );
+  const fill: Step = { kind: 'fill', target: { quoted: 'notes', phrase: 'notes' }, text: 'x' };
+  assert.equal(outcome(prepareTarget(fill, screen)), 'TARGET_AMBIGUOUS');
 });
 
 test('a stored-id fill keeps counting a React-only input twin', () => {
