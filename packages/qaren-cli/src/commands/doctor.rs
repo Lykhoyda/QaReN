@@ -2569,31 +2569,55 @@ mod tests {
         .unwrap();
         let canary = "private-login-canary";
         for platform in ["ios", "android"] {
-            s.file(".qaren/actions/sign-in.yaml", &format!("appId: com.example.app\n---\n# id: sign-in\n# intent: Sign in\n# appId: com.example.app\n# platform: {platform}\n\n# 1. Fill email\n- tapOn: {{ id: login-email }}\n- inputText: {{ input: USERNAME, text: \"{canary}\"\n"));
+            let valid = format!("appId: com.example.app\n---\n# id: sign-in\n# intent: Sign in\n# appId: com.example.app\n# platform: {platform}\n\n# 1. Fill email\n- tapOn: {{ id: login-email }}\n- inputText: {{ input: USERNAME }}\n");
+            s.file(".qaren/actions/sign-in.yaml", &valid);
             let rows = login_checks(&s.0, Some(&config));
-            let row = rows
-                .iter()
-                .find(|row| row.detail.contains(platform))
-                .unwrap();
-            assert_eq!(row.status, Status::Fail, "{row:?}");
             assert_eq!(
-                row.detail,
-                format!("loginBlock sign-in for {platform} is not a readable saved block")
+                rows.iter()
+                    .find(|row| row.detail.contains(platform))
+                    .unwrap()
+                    .status,
+                Status::Pass
             );
-            assert!(row.fix.as_ref().unwrap().contains("save it again"));
-            let report = Report {
-                identity: Identity {
-                    exe: None,
-                    version: VERSION,
-                    build: None,
-                    runtime: s.0.clone(),
-                },
-                checks: rows,
-            };
-            assert_eq!(report.exit_code(), 1);
-            for out in [report.render(), report.to_json()] {
-                assert!(!out.contains(canary), "{out}");
-                assert!(!out.contains("USERNAME"), "{out}");
+            for malformed in [
+                valid.replace(
+                    "input: USERNAME }",
+                    &format!("input: USERNAME, text: \"{canary}\""),
+                ),
+                format!("{valid}broken: [{canary}\n"),
+                format!("{valid}---\nbroken: [{canary}\n"),
+                valid.replacen("appId: com.example.app", &format!("appId: [{canary}"), 1),
+            ] {
+                s.file(".qaren/actions/sign-in.yaml", &malformed);
+                assert!(crate::actions::login_candidate(&malformed).is_none());
+                assert!(
+                    crate::actions::login_hint(&s.0, "sign-in", platform, &config, true).is_none()
+                );
+                let rows = login_checks(&s.0, Some(&config));
+                let row = rows
+                    .iter()
+                    .find(|row| row.detail.contains(platform))
+                    .unwrap();
+                assert_eq!(row.status, Status::Fail, "{row:?}");
+                assert_eq!(
+                    row.detail,
+                    format!("loginBlock sign-in for {platform} is not a readable saved block")
+                );
+                assert!(row.fix.as_ref().unwrap().contains("save it again"));
+                let report = Report {
+                    identity: Identity {
+                        exe: None,
+                        version: VERSION,
+                        build: None,
+                        runtime: s.0.clone(),
+                    },
+                    checks: rows,
+                };
+                assert_eq!(report.exit_code(), 1);
+                for out in [report.render(), report.to_json()] {
+                    assert!(!out.contains(canary), "{out}");
+                    assert!(!out.contains("USERNAME"), "{out}");
+                }
             }
         }
     }

@@ -1,5 +1,5 @@
 use crate::exec::{CmdSpec, Runner};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::io::Read;
 use std::os::unix::fs::OpenOptionsExt;
@@ -50,6 +50,9 @@ pub fn login_candidate(text: &str) -> Option<LoginCandidate> {
 }
 
 pub fn login_block(text: &str) -> Option<LoginCandidate> {
+    for document in serde_yaml::Deserializer::from_str(text) {
+        serde_yaml::Value::deserialize(document).ok()?;
+    }
     let (_, body) = text.split_once("\n---\n")?;
     let (head, body) = body.split_once("\n\n")?;
     let mut candidate = LoginCandidate {
