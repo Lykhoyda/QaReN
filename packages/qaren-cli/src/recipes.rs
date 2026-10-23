@@ -278,57 +278,70 @@ pub fn save(app_root: &Path, slug: &str, markdown: &str) -> RecipeOutcome {
     outcome
 }
 
-// Rewrites only if the file still holds the bytes the run read at plan intake.
-fn rewrite(path: &Path, preimage: &str, next: &str, outcome: Outcome) -> RecipeOutcome {
+fn with_marker(text: &str, platform: &str) -> String {
+    let line = marker(platform);
+    if text.lines().any(|existing| existing.trim() == line) {
+        text.to_string()
+    } else {
+        format!("{line}\n{text}")
+    }
+}
+
+// A bare marker is the user's to remove; only this platform's marker is cleared.
+fn without_marker(text: &str, platform: &str) -> String {
+    let line = marker(platform);
+    text.split_inclusive('\n')
+        .filter(|existing| existing.trim() != line)
+        .collect()
+}
+
+// Applies one platform's marker edit to the current bytes, under a lock on the plans directory,
+// so concurrent iOS and Android runs keep both markers; any non-marker change since intake refuses.
+fn update(
+    path: &Path,
+    platform: &str,
+    preimage: &str,
+    edit: fn(&str, &str) -> String,
+    outcome: Outcome,
+) -> RecipeOutcome {
     let Some(dir) = path.parent() else {
         return RecipeOutcome::because(Outcome::NotMarked, "could not write");
     };
+    let Ok(lock) = std::fs::File::open(dir) else {
+        return RecipeOutcome::because(Outcome::NotMarked, "could not write");
+    };
+    if unsafe { libc::flock(std::os::fd::AsRawFd::as_raw_fd(&lock), libc::LOCK_EX) } != 0 {
+        return RecipeOutcome::because(Outcome::NotMarked, "could not write");
+    }
+    let Some(current) = read_regular(path).filter(|current| unmarked(current) == unmarked(preimage))
+    else {
+        return RecipeOutcome::because(Outcome::NotMarked, "changed during the run");
+    };
+    let next = edit(&current, platform);
+    if next == current {
+        return RecipeOutcome::at(Outcome::Unchanged, path);
+    }
     let stem = path
         .file_name()
         .map(|name| name.to_string_lossy().into_owned())
         .unwrap_or_default();
     let temp = temp_path(dir, &stem);
-    let written = write_new(&temp, next).and_then(|()| {
-        let permissions = std::fs::metadata(path)?.permissions();
-        std::fs::set_permissions(&temp, permissions)
-    });
-    let result = if written.is_err() {
-        RecipeOutcome::because(Outcome::NotMarked, "could not write")
-    } else if read_regular(path).as_deref() != Some(preimage) {
-        RecipeOutcome::because(Outcome::NotMarked, "changed during the run")
-    } else if std::fs::rename(&temp, path).is_err() {
-        RecipeOutcome::because(Outcome::NotMarked, "could not write")
-    } else {
-        return RecipeOutcome::at(outcome, path);
-    };
-    let _ = std::fs::remove_file(&temp);
-    result
+    let replaced = write_new(&temp, &next)
+        .and_then(|()| std::fs::set_permissions(&temp, std::fs::metadata(path)?.permissions()))
+        .and_then(|()| std::fs::rename(&temp, path));
+    if replaced.is_err() {
+        let _ = std::fs::remove_file(&temp);
+        return RecipeOutcome::because(Outcome::NotMarked, "could not write");
+    }
+    RecipeOutcome::at(outcome, path)
 }
 
 pub fn flag(path: &Path, platform: &str, preimage: &str) -> RecipeOutcome {
-    let line = marker(platform);
-    if preimage.lines().any(|existing| existing.trim() == line) {
-        return RecipeOutcome::at(Outcome::Unchanged, path);
-    }
-    rewrite(
-        path,
-        preimage,
-        &format!("{line}\n{preimage}"),
-        Outcome::Flagged,
-    )
+    update(path, platform, preimage, with_marker, Outcome::Flagged)
 }
 
-// A bare marker is the user's to remove; only this platform's marker is cleared.
 pub fn clear(path: &Path, platform: &str, preimage: &str) -> RecipeOutcome {
-    let line = marker(platform);
-    let kept: String = preimage
-        .split_inclusive('\n')
-        .filter(|existing| existing.trim() != line)
-        .collect();
-    if kept == preimage {
-        return RecipeOutcome::at(Outcome::Unchanged, path);
-    }
-    rewrite(path, preimage, &kept, Outcome::Cleared)
+    update(path, platform, preimage, without_marker, Outcome::Cleared)
 }
 
 // The run tested the default branch itself: no local change and HEAD at origin's default-branch commit.
@@ -480,6 +493,40 @@ mod tests {
             format!("<!-- qaren:broken android -->\n<!-- qaren:broken -->\n{PLAN}")
         );
         assert_eq!(clear(&path, "ios", &cleared).outcome, Outcome::Unchanged);
+    }
+
+    #[test]
+    fn concurrent_platform_flags_keep_both_markers() {
+        let app = app("both-platforms");
+        let path = recipe(&app, "x.md", PLAN);
+        let threads: Vec<_> = ["ios", "android", "ios", "android"]
+            .into_iter()
+            .map(|platform| {
+                let path = path.clone();
+                std::thread::spawn(move || flag(&path, platform, PLAN).outcome)
+            })
+            .collect();
+        for thread in threads {
+            assert_ne!(thread.join().unwrap(), Outcome::NotMarked);
+        }
+        let text = std::fs::read_to_string(&path).unwrap();
+        assert_eq!(broken(&text), vec!["ios".to_string(), "android".to_string()]);
+        assert_eq!(unmarked(&text), PLAN);
+    }
+
+    #[test]
+    fn another_runs_marker_since_intake_does_not_block_this_platform() {
+        let app = app("marker-since-intake");
+        let android = format!("<!-- qaren:broken android -->\n{PLAN}");
+        let path = recipe(&app, "x.md", &android);
+        assert_eq!(flag(&path, "ios", PLAN).outcome, Outcome::Flagged);
+        let both = std::fs::read_to_string(&path).unwrap();
+        assert_eq!(broken(&both), vec!["ios".to_string(), "android".to_string()]);
+        assert_eq!(clear(&path, "android", PLAN).outcome, Outcome::Cleared);
+        assert_eq!(
+            std::fs::read_to_string(&path).unwrap(),
+            format!("<!-- qaren:broken ios -->\n{PLAN}")
+        );
     }
 
     #[test]

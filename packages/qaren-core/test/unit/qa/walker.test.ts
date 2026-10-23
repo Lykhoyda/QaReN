@@ -840,6 +840,14 @@ test('a check that fails while a system dialog is in front is not a step failure
   }
 });
 
+test('a check judged while a dialog was in front stays non-step after the dialog clears', async () => {
+  const f = fake([screen(['Allow'], { front: 'dialog' }), ...Array(6).fill(screen(['Home']))]);
+  f.deps.hideDevMenu = async () => {};
+  const outcome = await walkBlock(block('✓ "Missing"\n'), f.deps);
+  assert.ok(outcome.failure, 'the check fails');
+  assert.equal(outcome.failure.kind, undefined);
+});
+
 test('a failing literal check withholds a secure capture and preserves non-secure readability', async () => {
   for (const secure of [false, true]) {
     const captured = screen(['Welcome', 'Saved password: pf-s3cret-91']);

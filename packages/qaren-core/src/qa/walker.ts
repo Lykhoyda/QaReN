@@ -882,8 +882,9 @@ async function walkBlockScoped(
       },
     };
   };
-  const judged = (outcome: WalkOutcome): WalkOutcome =>
-    outcome.failure && latest.front === 'app'
+  // The judged screen and any post-recovery capture must both show the app.
+  const judged = (outcome: WalkOutcome, screen: Screen): WalkOutcome =>
+    outcome.failure && screen.front === 'app' && latest.front === 'app'
       ? { ...outcome, failure: { ...outcome.failure, kind: 'step' } }
       : outcome;
   const shoot = async (item: Item): Promise<string | undefined> => {
@@ -1595,7 +1596,7 @@ async function walkBlockScoped(
             if (recovering) return recovering;
           }
           const checkFailure = failed(item, 1, reason, before.screen, shot);
-          return decision.check === 'fail' ? judged(checkFailure) : checkFailure;
+          return decision.check === 'fail' ? judged(checkFailure, before.screen) : checkFailure;
         }
 
         if (item.kind === 'wait') {
@@ -1676,7 +1677,10 @@ async function walkBlockScoped(
             if (recovering === 'retry') continue attempts;
             if (recovering) return recovering;
             if (unchanged)
-              return judged(failed(item, 1, reason, observation.screen, await shoot(item)));
+              return judged(
+                failed(item, 1, reason, observation.screen, await shoot(item)),
+                observation.screen,
+              );
             usable(observation, item, deadline);
             throw new EvidenceExpired(true);
           }
@@ -1782,7 +1786,10 @@ async function walkBlockScoped(
             continue items;
           }
           const reason = `"${item.until.phrase}" did not come into view after ${SCROLL_ATTEMPTS} scrolls`;
-          return judged(failed(item, Math.max(attempts, 1), reason, observation.screen, shot));
+          return judged(
+            failed(item, Math.max(attempts, 1), reason, observation.screen, shot),
+            observation.screen,
+          );
         }
 
         // press · fill · back · dialog: snapshot → resolve → act → read-back → snapshot → diff rule
@@ -2385,7 +2392,7 @@ async function walkBlockScoped(
           outcome =
             recovering ??
             (act!.ok && !act!.error
-              ? judged(failed(item, attempt, unchanged, after.screen, shot, ref))
+              ? judged(failed(item, attempt, unchanged, after.screen, shot, ref), after.screen)
               : failed(item, attempt, unchanged, after.screen, shot, ref));
         }
         if (again) continue attempts;
@@ -2486,7 +2493,7 @@ async function walkBlockScoped(
         );
         return {
           ...(error instanceof ResolutionError && error.missing
-            ? judged(caughtOutcome)
+            ? judged(caughtOutcome, latest)
             : caughtOutcome),
           ...(refusal || unknownProcess ? { refusal: refusal ?? unknownProcess } : {}),
         };
