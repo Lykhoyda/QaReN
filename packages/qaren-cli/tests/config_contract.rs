@@ -127,6 +127,15 @@ fn assert_deadline_values(config: &CheckConfig, deps: u64, build: u64, boot: u64
 }
 
 #[test]
+fn attach_deadline_defaults_to_two_minutes_and_is_configurable() {
+    let (config, _) = load_raw(&config_yaml("")).unwrap();
+    assert_eq!(config.deadlines.attach_seconds, 120);
+    let (config, _) = load_raw(&config_yaml("deadlines:\n  attach_seconds: 300\n")).unwrap();
+    assert_eq!(config.deadlines.attach_seconds, 300);
+    assert_deadline_values(&config, 900, 2400, 420);
+}
+
+#[test]
 fn load_accepts_a_configured_build_deadline() {
     let yaml = config_yaml("deadlines:\n  build_seconds: 5400\n");
     let (config, raw) = load_raw(&yaml).expect("deadlines are part of check configuration");
@@ -192,6 +201,8 @@ fn deadline_values_outside_30_through_7200_are_invalid() {
         ("device_boot_seconds", 29),
         ("device_boot_seconds", 7201),
         ("device_boot_seconds", u64::MAX),
+        ("attach_seconds", 29),
+        ("attach_seconds", 7201),
     ] {
         let yaml = config_yaml(&format!("deadlines:\n  {field}: {value}\n"));
         let failure = load(&yaml).unwrap_err();

@@ -2006,6 +2006,53 @@ fn a_dead_owners_runner_host_is_terminated_on_its_simulator_and_the_lease_releas
     assert_eq!(mock.remaining(), 0);
 }
 
+#[test]
+fn a_transient_runner_host_read_releases_the_lease_on_the_first_cleanup() {
+    const UDID: &str = "1DC408C4-51DA-4C4F-ACA1-39881C916FDD";
+    let repo = common::temp_repo();
+    let mut record = core_record(&repo);
+    record.resources.device_borrowed = true;
+    record.resources.ios_simulator = Some(IosSimResource {
+        udid: UDID.into(),
+        name: "borrowed".into(),
+        device_type: "dt".into(),
+        runtime: "rt".into(),
+    });
+    let lock = record.resources.lease.as_ref().unwrap().lock_dir.clone();
+    record.save(&repo).unwrap();
+    let inventory = serde_json::json!({"devices":{
+        "com.apple.CoreSimulator.SimRuntime.iOS-27-0":[{
+            "udid": UDID, "name":"borrowed", "state":"Booted", "isAvailable":true,
+            "deviceTypeIdentifier":"com.apple.CoreSimulator.SimDeviceType.iPhone-17"
+        }]
+    }})
+    .to_string();
+    let mut mock = MockRunner::new();
+    owner_gone(&mut mock);
+    mock.expect_run("ps -A", CmdOutput::success("1 1 S\n"));
+    mock.expect_run("simctl list devices -j", CmdOutput::success(&inventory));
+    mock.expect_run(
+        "launchctl list",
+        CmdOutput::failed(1, "temporarily unavailable"),
+    );
+    mock.expect_run("simctl list devices -j", CmdOutput::success(&inventory));
+    mock.expect_run(
+        "launchctl list",
+        CmdOutput::success("PID Status Label\n1 0 com.apple.SpringBoard\n"),
+    );
+    let receipt = cleanup(&mut mock, &repo, "core-run");
+    assert_eq!(
+        receipt.result,
+        ReceiptResult::Cleaned,
+        "{:?}",
+        receipt.cleanup
+    );
+    assert_eq!(receipt.cleanup["runner_host"], "absent");
+    assert_eq!(receipt.cleanup["device_lease"], "removed");
+    assert!(!lock.exists());
+    assert_eq!(mock.remaining(), 0);
+}
+
 fn driver_record(repo: &std::path::Path) -> RunRecord {
     let mut record = core_record(repo);
     record

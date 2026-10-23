@@ -73,13 +73,16 @@ ready for Xcode.
 ## deadlines
 
 Optional preparation budgets for `check` and `pr`: a native build time limit,
-a dependency-install time limit, and a simulator-boot time limit.
+a dependency-install time limit, a simulator-boot time limit, and a dev-client
+attach limit after which an attach without a target is refused when the app has
+exited or Metro has received no bundle request since launch.
 
 | Key                    | Default (seconds) |
 | ---------------------- | ----------------- |
 | `install_deps_seconds`  | `900`             |
 | `build_seconds`         | `2400`            |
 | `device_boot_seconds`  | `420`             |
+| `attach_seconds`       | `120`             |
 
 Each limit is a whole number of seconds from 30 through 7200 inclusive.
 Omit the block, write `deadlines: {}`, or write a bare

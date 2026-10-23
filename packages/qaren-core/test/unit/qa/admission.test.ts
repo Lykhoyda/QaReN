@@ -715,6 +715,7 @@ test('a skipped relaunch is recorded value-free with zero relaunches', async () 
     relaunches: 0,
     relaunchFailed: false,
     liveness: 'alive',
+    bundleRequest: 'unknown',
   });
 });
 
@@ -1459,7 +1460,7 @@ test('a deadline during the retry pause records the pause, not the attach', asyn
   const error = await admitted;
   const { rest, remainingMs } = budget(error.meta!);
   assert.equal(rest.lastStarted, 'retry_wait');
-  assert.equal(rest.inner, 'cdp_probe_timeout');
+  assert.equal(rest.inner, 'cdp_handshake_timeout');
   assert.equal(rest.attempt, 2);
   assert.equal(remainingMs, 0);
 });
@@ -1524,7 +1525,7 @@ test('refusals with their own code carry no admission record', async () => {
   assert.equal(stopped.meta, undefined);
 });
 
-test('the deterministic attach refusal message is unchanged', async () => {
+test('the deterministic attach refusal names its observed state', async () => {
   const { stop, steps } = harness({
     load: () => 3,
     attach: async () => {
@@ -1534,7 +1535,7 @@ test('the deterministic attach refusal message is unchanged', async () => {
   const error = await refusalOf(admit(steps, stop));
   assert.equal(
     error.message,
-    'cannot attach to the dev client through Metro 8081: no target (host 1-minute load 3.0)',
+    'cannot attach to the dev client through Metro 8081: no target (observed attach: untyped; app not_probed; bundle request not_probed; host 1-minute load 3.0)',
   );
 });
 
@@ -1681,9 +1682,10 @@ test('each retry decision is observed with its liveness and relaunch count', asy
     relaunches: 0,
     relaunchFailed: false,
     liveness: 'alive',
+    bundleRequest: 'unknown',
   };
   assert.deepEqual(facts(), [
-    { ...retry, attempt: 1, lastStarted: 'foreign_driver', lastCompleted: 'foreign_driver' },
+    { ...retry, attempt: 1, lastStarted: 'attach', lastCompleted: 'none' },
     { ...retry, attempt: 2, lastStarted: 'attach', lastCompleted: 'retry_wait' },
   ]);
   assert.doesNotMatch(JSON.stringify(facts()), /PRIVATE/);
@@ -1714,6 +1716,7 @@ test('a cancelled admission is observed once with the facts of its last retry', 
       relaunches: 0,
       relaunchFailed: false,
       liveness: 'alive',
+      bundleRequest: 'unknown',
     },
   ]);
   assert.doesNotMatch(JSON.stringify(facts()), /PRIVATE/);
@@ -1882,6 +1885,7 @@ test('admission facts become a cleaned metric with only allowlisted words and nu
     relaunches: 0,
     relaunchFailed: false,
     liveness: 'alive',
+    bundleRequest: 'received',
     elapsedMs: 61_000,
     remainingMs: 1_138_000,
     budgetMs: 1_199_000,
@@ -1910,6 +1914,7 @@ test('admission facts become a cleaned metric with only allowlisted words and nu
     ['lastStarted', 'PRIVATE'],
     ['inner', 'http://private.example'],
     ['liveness', 1],
+    ['bundleRequest', 'PRIVATE'],
     ['relaunchFailed', 'false'],
     ['attempt', -1],
     ['attachStage', 'PRIVATE'],

@@ -120,6 +120,7 @@ fn request() -> CoreRequest {
         run_id: RUN.to_string(),
         t0: 1_770_000_000_000,
         walk_budget_ms: 300_000,
+        attach_budget_ms: 120_000,
         plan: "1. Tap \"Tasks\"\n✓ \"Tasks\"\n".to_string(),
         prepared: serde_json::json!({"hash":"test","blocks":[]}),
         preflight_calls: vec![],
@@ -1752,7 +1753,7 @@ fn admission_facts_reach_private_diagnostics_only_as_allowlisted_admission_point
             "at": 611000, "admission": "cancelled", "attempt": 20, "lastStarted": "attach",
             "lastCompleted": "retry_wait", "attachStage": "wait_targets",
             "inner": "target_readiness_timeout", "relaunches": 0, "relaunchFailed": false,
-            "liveness": "alive", "elapsedMs": 610000, "remainingMs": 589000, "budgetMs": 1199000
+            "liveness": "alive", "bundleRequest": "received", "elapsedMs": 610000, "remainingMs": 589000, "budgetMs": 1199000
         });
         let mut retry = cancelled.clone();
         retry["outcome"] = json!("unknown");
@@ -1775,6 +1776,7 @@ fn admission_facts_reach_private_diagnostics_only_as_allowlisted_admission_point
             ("attachStage", json!(secret)),
             ("inner", json!(secret)),
             ("liveness", json!(secret)),
+            ("bundleRequest", json!(secret)),
             ("relaunchFailed", json!(secret)),
             ("relaunchFailed", json!(1)),
             ("attempt", json!(secret)),
@@ -1844,7 +1846,11 @@ fn exact_selection_refusal_classes_survive_private_diagnostics() {
         stdout.push_str(&envelope(i as u64 + 2, "diagnostic", &value.to_string()));
         stdout.push('\n');
     }
-    stdout.push_str(&envelope(expected.len() as u64 + 2, "result", &pass_ledger(&[])));
+    stdout.push_str(&envelope(
+        expected.len() as u64 + 2,
+        "result",
+        &pass_ledger(&[]),
+    ));
     stdout.push('\n');
     with_input_scope(inputs, || {
         let mut mock = MockRunner::new();

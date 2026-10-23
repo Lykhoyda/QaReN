@@ -1116,7 +1116,7 @@ fn remove_app_install(
 pub(crate) fn cleanup_scoped_runner_hosts(runner: &mut dyn Runner, udid: &str) -> Outcome {
     let mut cleanup_runner = crate::exec::CleanupRunner(runner);
     let runner: &mut dyn Runner = &mut cleanup_runner;
-    match ios::probe_runner_hosts(runner, udid) {
+    match settled_runner_hosts(runner, udid, false) {
         ios::RunnerHostPresence::Absent => Outcome::Absent,
         ios::RunnerHostPresence::Present => Outcome::Unresolved(
             "runner host present without exact process ownership; left untouched".into(),
@@ -1127,6 +1127,26 @@ pub(crate) fn cleanup_scoped_runner_hosts(runner: &mut dyn Runner, udid: &str) -
     }
 }
 
+fn settled_runner_hosts(
+    runner: &mut dyn Runner,
+    udid: &str,
+    after_terminate: bool,
+) -> ios::RunnerHostPresence {
+    let mut presence = ios::RunnerHostPresence::Unknown;
+    for attempt in 0..3 {
+        presence = ios::probe_runner_hosts(runner, udid);
+        if presence == ios::RunnerHostPresence::Absent
+            || (presence == ios::RunnerHostPresence::Present && !after_terminate)
+        {
+            return presence;
+        }
+        if attempt < 2 {
+            runner.sleep(std::time::Duration::from_millis(200));
+        }
+    }
+    presence
+}
+
 // The owned host is terminated by bundle id on its exact simulator; absence is then re-proven.
 fn cleanup_owned_runner_host(
     runner: &mut dyn Runner,
@@ -1134,7 +1154,7 @@ fn cleanup_owned_runner_host(
 ) -> Outcome {
     let mut cleanup_runner = crate::exec::CleanupRunner(runner);
     let runner: &mut dyn Runner = &mut cleanup_runner;
-    match ios::probe_runner_hosts(runner, &host.udid) {
+    match settled_runner_hosts(runner, &host.udid, false) {
         ios::RunnerHostPresence::Absent => return Outcome::Absent,
         ios::RunnerHostPresence::Unknown => {
             return Outcome::Unresolved(
@@ -1146,9 +1166,14 @@ fn cleanup_owned_runner_host(
     for bundle_id in &host.bundle_ids {
         runner.run(&ios::terminate_spec(&host.udid, bundle_id));
     }
-    match ios::probe_runner_hosts(runner, &host.udid) {
+    match settled_runner_hosts(runner, &host.udid, true) {
         ios::RunnerHostPresence::Absent => Outcome::Removed,
-        _ => Outcome::Unresolved("the run's runner host is still present after terminate".into()),
+        ios::RunnerHostPresence::Present => {
+            Outcome::Unresolved("the run's runner host is still present after terminate".into())
+        }
+        ios::RunnerHostPresence::Unknown => {
+            Outcome::Unresolved("runner host absence is unknown after terminate".into())
+        }
     }
 }
 
@@ -2041,6 +2066,97 @@ mod integrity_tests {
     use crate::exec::MockRunner;
 
     const BIRTH: &str = "Wed Aug 12 16:01:00 2026";
+
+    const HOST_UDID: &str = "AAAABBBB-1111-2222-3333-444455556666";
+
+    fn host_probe(runner: &mut MockRunner, output: CmdOutput) {
+        let inventory = serde_json::json!({"devices":{
+            "com.apple.CoreSimulator.SimRuntime.iOS-27-0":[{
+                "udid": HOST_UDID, "state":"Booted", "isAvailable":true,
+                "name":"owned", "deviceTypeIdentifier":"com.apple.CoreSimulator.SimDeviceType.iPhone-17"
+            }]
+        }});
+        runner.expect_run(
+            "simctl list devices -j",
+            CmdOutput::success(&inventory.to_string()),
+        );
+        runner.expect_run("launchctl list", output);
+    }
+
+    #[test]
+    fn runner_host_transient_unknown_is_reproven_in_the_same_cleanup() {
+        let mut runner = MockRunner::new();
+        host_probe(&mut runner, CmdOutput::failed(1, "temporarily unavailable"));
+        host_probe(
+            &mut runner,
+            CmdOutput::success("PID Status Label\n1 0 com.apple.SpringBoard\n"),
+        );
+        assert!(matches!(
+            cleanup_scoped_runner_hosts(&mut runner, HOST_UDID),
+            Outcome::Absent
+        ));
+        assert_eq!(runner.remaining(), 0);
+        assert!(!runner
+            .calls
+            .iter()
+            .any(|spec| spec.label == "simctl-terminate"));
+        assert!(runner.calls.iter().all(|spec| match spec.label.as_str() {
+            "simctl-list" => spec.timeout_seconds == 30,
+            "simctl-launchctl" => spec.timeout_seconds == 20,
+            _ => false,
+        }));
+    }
+
+    #[test]
+    fn runner_host_unknown_stays_unresolved_after_bounded_reads() {
+        let mut runner = MockRunner::new();
+        for _ in 0..3 {
+            host_probe(&mut runner, CmdOutput::success("incomplete\n"));
+        }
+        assert!(matches!(
+            cleanup_scoped_runner_hosts(&mut runner, HOST_UDID),
+            Outcome::Unresolved(_)
+        ));
+        assert_eq!(runner.remaining(), 0);
+        assert_eq!(runner.calls.len(), 6);
+    }
+
+    #[test]
+    fn owned_runner_host_exit_settles_after_terminate_without_more_signals() {
+        for transient in [
+            "PID Status Label\n42 0 dev.lykhoyda.rndevagent.fastrunner\n",
+            "incomplete\n",
+        ] {
+            let mut runner = MockRunner::new();
+            host_probe(
+                &mut runner,
+                CmdOutput::success("PID Status Label\n42 0 dev.lykhoyda.rndevagent.fastrunner\n"),
+            );
+            runner.expect_run("simctl terminate", CmdOutput::success(""));
+            host_probe(&mut runner, CmdOutput::success(transient));
+            host_probe(
+                &mut runner,
+                CmdOutput::success("PID Status Label\n1 0 com.apple.SpringBoard\n"),
+            );
+            let host = crate::runrecord::RunnerHostResource {
+                udid: HOST_UDID.into(),
+                bundle_ids: vec![ios::RUNNER_HOST_BUNDLE_ID.into()],
+            };
+            assert!(matches!(
+                cleanup_owned_runner_host(&mut runner, &host),
+                Outcome::Removed
+            ));
+            assert_eq!(runner.remaining(), 0);
+            assert_eq!(
+                runner
+                    .calls
+                    .iter()
+                    .filter(|spec| spec.label == "simctl-terminate")
+                    .count(),
+                1
+            );
+        }
+    }
 
     #[test]
     fn every_signal_rechecks_identity_with_and_without_a_port() {

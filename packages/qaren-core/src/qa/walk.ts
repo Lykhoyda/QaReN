@@ -80,7 +80,7 @@ import {
   admissionMetric,
   admit,
   awaitBundleReady,
-  bundleRequestedSinceLaunch,
+  launchBundleRequests,
   createBundleReload,
   devClientLaunchUrl,
   logAdmissionRefusal,
@@ -444,6 +444,8 @@ async function openSession(
   onClose(close);
   const devicePin = metroDevicePin(platform, target.deviceName);
   const remainingMs = () => Math.max(0, request.walkBudgetMs - now() - 1000);
+  const bundleRequests =
+    target.metroBundleRequests && launchBundleRequests(target.metroBundleRequests);
   let attachStage: 'wait_targets' | 'connect_exact' | undefined;
   const logRefusal = (error: unknown): never => {
     logAdmissionRefusal(error, attachStage, log);
@@ -454,6 +456,7 @@ async function openSession(
       {
         metroPort: target.metroPort,
         readinessMs: REACT_READY_TIMEOUT_MS,
+        attachBudgetMs: request.attachBudgetMs,
         remainingMs,
         attach: async (deadline) => {
           attachStage = 'wait_targets';
@@ -479,25 +482,27 @@ async function openSession(
         // Same launch the CLI made: terminate, then open the dev client on its Metro.
         ...(platform === 'ios'
           ? {
-              relaunch: () =>
-                relaunchIosDevClient(appId, target.deviceId, devClientLaunchUrl(target)),
+              relaunch: () => {
+                bundleRequests?.relaunching();
+                return relaunchIosDevClient(appId, target.deviceId, devClientLaunchUrl(target));
+              },
               appAlive: async () => {
                 const alive = await isAppRunning('ios', appId, undefined, target.deviceId);
                 if (alive) log('app alive without a target');
                 return alive;
               },
               bundleRequested: async () => {
-                if (!target.metroBundleRequests) {
-                  log('relaunch skipped: no bundle request signal');
+                if (!bundleRequests) {
+                  log('no bundle request signal');
                   return undefined;
                 }
-                const requested = bundleRequestedSinceLaunch(target.metroBundleRequests);
+                const requested = bundleRequests.requested();
                 log(
                   requested === false
-                    ? 'relaunch allowed: Metro received no bundle request since launch'
+                    ? 'Metro received no bundle request since launch'
                     : requested
-                      ? 'relaunch skipped: Metro received a bundle request'
-                      : 'relaunch skipped: bundle request signal unknown',
+                      ? 'Metro received a bundle request'
+                      : 'bundle request signal unknown',
                 );
                 return requested;
               },

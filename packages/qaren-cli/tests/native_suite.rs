@@ -310,12 +310,12 @@ fn old_retained_suite_recovers_with_fresh_scoped_proof_and_preserves_exit_65() {
 
 #[test]
 fn scoped_hosts_present_or_unknown_retain_old_suite_without_signals() {
-    for output in [
-        CmdOutput::success("PID Status Label\n42 0 UIKitApplication:dev.lykhoyda.rndevagent.fastrunner[abc][rb-legacy]\n"),
-        CmdOutput::success("PID Status Label\n43 0 UIKitApplication:dev.lykhoyda.rndevagent.fastrunner.uitests.xctrunner[abc]\n"),
-        CmdOutput::failed(1, "unreadable inventory"),
-        CmdOutput::success("PID Status Label\n42 0\n"),
-        CmdOutput::success("PID Status Label\n1 0 com.apple.SpringBoard"),
+    for (output, reads) in [
+        (CmdOutput::success("PID Status Label\n42 0 UIKitApplication:dev.lykhoyda.rndevagent.fastrunner[abc][rb-legacy]\n"), 1),
+        (CmdOutput::success("PID Status Label\n43 0 UIKitApplication:dev.lykhoyda.rndevagent.fastrunner.uitests.xctrunner[abc]\n"), 1),
+        (CmdOutput::failed(1, "unreadable inventory"), 3),
+        (CmdOutput::success("PID Status Label\n42 0\n"), 3),
+        (CmdOutput::success("PID Status Label\n1 0 com.apple.SpringBoard"), 3),
     ] {
         let (mut runner, home, record) = abandoned();
         let mut old = serde_json::to_value(&record).unwrap();
@@ -323,7 +323,9 @@ fn scoped_hosts_present_or_unknown_retain_old_suite_without_signals() {
         qaren::buildplan::save_json(&record_path(&home), &old).unwrap();
         runner.expect_run("lstart=", CmdOutput::failed(1, ""));
         absent_group(&mut runner);
-        scoped_hosts(&mut runner, output);
+        for _ in 0..reads {
+            scoped_hosts(&mut runner, output.clone());
+        }
         assert!(native_suite::recover(&mut runner, &record.run_id).is_err());
         assert!(record.lock_dir.exists());
         assert!(runner.calls.iter().all(|c| c.program != "/bin/kill" && !c.args.iter().any(|a| a == "terminate")));
@@ -348,7 +350,9 @@ fn scoped_cleanup_requires_exact_readable_supported_simulator_inventory() {
         let (mut runner, _, record) = abandoned();
         runner.expect_run("lstart=", CmdOutput::failed(1, ""));
         absent_group(&mut runner);
-        runner.expect_run("simctl list devices -j", output);
+        for _ in 0..3 {
+            runner.expect_run("simctl list devices -j", output.clone());
+        }
         assert!(native_suite::recover(&mut runner, &record.run_id).is_err());
         assert!(record.lock_dir.exists());
         assert_eq!(runner.remaining(), 0);
@@ -556,17 +560,22 @@ fn live_and_dead_check_leases_cannot_be_stolen_even_with_a_clear_driver_scan() {
 
 #[test]
 fn absent_group_still_requires_fresh_scoped_host_absence() {
-    for output in [
-        CmdOutput::success(
-            "PID Status Label\n42 0 UIKitApplication:dev.lykhoyda.rndevagent.fastrunner[abc]\n",
+    for (output, reads) in [
+        (
+            CmdOutput::success(
+                "PID Status Label\n42 0 UIKitApplication:dev.lykhoyda.rndevagent.fastrunner[abc]\n",
+            ),
+            1,
         ),
-        CmdOutput::failed(1, "inventory unknown"),
+        (CmdOutput::failed(1, "inventory unknown"), 3),
     ] {
         let (mut runner, home) = setup();
         preflight(&mut runner, "Booted");
         suite(&mut runner, Some(0));
         absent_group(&mut runner);
-        scoped_hosts(&mut runner, output);
+        for _ in 0..reads {
+            scoped_hosts(&mut runner, output.clone());
+        }
         assert!(native_suite::run(&mut runner, DEVICE).is_err());
         let record: native_suite::NativeSuite =
             serde_json::from_slice(&std::fs::read(record_path(&home)).unwrap()).unwrap();

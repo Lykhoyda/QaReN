@@ -47,6 +47,7 @@ export interface WireRequest {
   runId: string;
   t0: number;
   walkBudgetMs: number;
+  attachBudgetMs: number;
   plan: string;
   prepared?: PreparedPlan;
   preflightCalls?: JevCall[];
@@ -201,6 +202,8 @@ export function parsePublicRequest(line: string): WireRequest {
     !Number.isSafeInteger(p.t0) ||
     !Number.isSafeInteger(p.walkBudgetMs) ||
     (p.walkBudgetMs as number) < 1 ||
+    !Number.isSafeInteger(p.attachBudgetMs) ||
+    (p.attachBudgetMs as number) < 1 ||
     typeof p.plan !== 'string' ||
     (p.preflightCalls !== undefined &&
       (!Array.isArray(p.preflightCalls) || !p.preflightCalls.every(validCall))) ||
@@ -237,6 +240,7 @@ export function parsePublicRequest(line: string): WireRequest {
     'runId',
     't0',
     'walkBudgetMs',
+    'attachBudgetMs',
     'plan',
     'prepared',
     'preflightCalls',

@@ -58,7 +58,7 @@ The screen layer's own codes appear at the start of `failure.detail` or in the r
 | `VISIBILITY_UNSURE`          | A wait ended with the target's visibility still unsure                        |
 | `SCREEN_EVIDENCE_INCOMPLETE` | The captured screen was not complete enough to act on safely                  |
 | `APP_PROCESS_CHANGED`        | On iOS, the app crashed or restarted between captures                         |
-| `CDP_NOT_CONNECTED`          | The app's JavaScript runtime did not attach in time; the detail carries the host load |
+| `CDP_NOT_CONNECTED`          | The app's JavaScript runtime did not attach in time, or a target wait made no progress past [`deadlines.attach_seconds`](../configuration/#deadlines); the detail names the stalled boundary, app liveness, bundle request and host load |
 
 ## Teardown, cleanup and publish
 
