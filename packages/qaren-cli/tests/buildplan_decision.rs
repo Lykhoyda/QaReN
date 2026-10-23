@@ -345,6 +345,8 @@ fn holder(name: &str, run_id: &str, identity: Option<PidIdentity>) -> LockHolder
         run_id: run_id.to_string(),
         identity,
         at: "2026-08-13T00:00:00Z".to_string(),
+        home: None,
+        group: None,
     }
 }
 

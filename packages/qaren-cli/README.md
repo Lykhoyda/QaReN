@@ -235,7 +235,7 @@ and install 2.0 as a new product.
 |---|---|
 | Plugin `rn-dev-agent@rn-dev-agent` from marketplace `rn-dev-agent`, with its bundled MCP server (`cdp_*`, `device_*` tools) | Plugin `qaren@qaren` from marketplace `qaren`, and the `qaren` CLI; no MCP server |
 | `.rn-agent/config.json` and `.rn-agent/actions/` learned actions in the app | `.qaren/config.yaml` and `.qaren/actions/` saved blocks written from passing plan blocks |
-| `~/.cache/rn-dev-agent/` (maestro-runner pin cache), `~/.rn-dev-agent/` (action database, device helper state), `~/.claude/rn-agent/` | `~/.qaren/runtime/`, `~/.qaren/state/`, `~/.qaren/runs/`, `~/.qaren/locks/` |
+| `~/.cache/rn-dev-agent/` (maestro-runner pin cache), `~/.rn-dev-agent/` (action database, device helper state), `~/.claude/rn-agent/` | `~/.qaren/runtime/`, `~/.qaren/state/`, `~/.qaren/runs/`, and device locks in the [machine lock root](#ios-admission-and-cleanup) |
 
 1. **Remove the 1.x plugin and its MCP registration.** The MCP server ships
    inside the plugin, so uninstalling the plugin removes its registration.
@@ -1725,8 +1725,46 @@ invalid or mismatched evidence is reported as `unavailable`, `invalid_evidence`,
 `envelope_mismatch` or `invalid_response`. These diagnostics do not relax
 admission: resolve the refusal and start a new run.
 
-Runs and evidence live under `~/.qaren/runs/<run-id>/`; device leases use
-`QAREN_LOCK_ROOT` or `~/.qaren/locks`. Checks, including `qaren pr`, claim a
+Runs and evidence live under `~/.qaren/runs/<run-id>/`. Device and
+native-build locks are machine-wide by default.
+`QAREN_MACHINE_LOCKS` is on when unset, empty or `1`; `0` opts out to the
+per-home `~/.qaren/locks`, and any other value refuses. An absolute
+`QAREN_LOCK_ROOT` takes precedence in either mode: sessions using different
+roots do not share locks. Empty, relative, NUL and literal `.` or `..` path
+segments refuse before normalization in every mode, as does a HOME with them.
+
+Without an override or opt-out, the shared CLI/native-suite resolver
+selects `/private/var/tmp` on macOS or `/run/lock` on Linux, once per process.
+It does not read QAREN_HOME, TMPDIR or XDG. Existing device, native-build and
+`usb-<serial>` lock names sit directly in that preexisting parent. QaReN never
+creates, repairs, chmods or chowns it. Before using it, the resolver walks the
+parent and proves no-replace rename with a private probe directory. Under the
+implicit default, an unsupported OS, a missing or unsafe parent, an unsupported
+rename or a privileged caller (root, setuid or Linux capabilities) selects
+`$HOME/.qaren/locks` with one stderr warning naming the reason;
+`QAREN_MACHINE_LOCKS=1` refuses instead. Any other probe failure on a trusted
+parent, such as a denied write, refuses in both modes. Per-home and explicit
+roots accept privileged callers. The native suite still requires an absolute HOME for its records.
+
+Claim, read and release walk from `/` using no-follow descriptor opens with
+metadata and ACL checks. Only operating-system symlinks in trusted root-owned,
+nonwritable parents may be followed. Claims are published from private staging
+directories and holder files by atomic no-replace rename; unsupported rename
+refuses. Another user's claim blocks without reading its holder, probing or
+signaling its process, adopting, moving or deleting it, so on a machine shared
+with other users their entry can hold a device until `QAREN_MACHINE_LOCKS=0` or a
+private `QAREN_LOCK_ROOT` is used. Same-user claims retain
+the caller's strict or adopt-dead policy. Deletion requires a verified owned lock
+containing only its holder record.
+
+Upgrade to this default, or opt out, only after existing leases have been
+cleaned up by their original owner. Nothing scans homes, dual-claims roots,
+rewrites stored paths or retires old binaries. Processes using per-home roots,
+including older binaries and `QAREN_MACHINE_LOCKS=0` sessions, remain outside
+the shared namespace. Native suite recovery needs the original HOME and the
+original lock setting.
+
+Checks, including `qaren pr`, claim a
 timestamped run directory atomically and retry with a numeric suffix when the
 name already exists, so same-second starts have separate run identities. Use the
 complete run ID printed by the receipt or watch hint for subsequent commands.
@@ -1762,8 +1800,21 @@ admission, shutdown, readback or persistence retains the pending state and lease
 runtime or candidate-directory evidence also leaves the stop unresolved. Exit shutdown
 cannot be added afterward to a released run. A dead lease
 holder is reclaimed only through that run's cleanup; a live or unprovable holder
-refuses `DEVICE_BUSY`. Recover a retained run with `qaren cleanup <run-id>`;
-do not delete locks to bypass unresolved ownership.
+refuses `DEVICE_BUSY`. Every holder records its HOME, and the refusal names
+`HOME='<holder home>' qaren cleanup <run-id>`, which recovers it from any session.
+A device, native-build or USB lock whose holder is proven dead (its process gone or
+replaced, as after a reboot) and whose run record (`run.json`, or a native suite's
+`suite.json`) under that HOME does not exist is released by the next claim, since no
+cleanup can run for it; a run directory without its record, such as one claimed just
+before the holder died or re-created by an orphaned build writing its output, does not
+count. Before a native build or native suite is let past its start gate, its process
+group is recorded in the holder, as is a `qaren` process's own group when it leads
+one; that group must also have no live members, otherwise the refusal names the lock
+and the `pgrep -g` check to wait on. A `qaren` group whose leader pid now belongs to
+another process is not checked, since a reused pid proves its old group is gone. `qaren cleanup <run-id>` for a run with no
+`run.json` releases that run's locks under the same proof, and the receipt of a run
+that released an orphaned lock notes it.
+Do not delete locks to bypass unresolved ownership.
 
 The iOS runner's XCTest result bundles under `Logs/Test` in both its local
 DerivedData and current-version prebuilt cache are removed after successful
@@ -2557,12 +2608,12 @@ allocation path (exactly one of `android:` / `android_usb:` per scenario).
 The serial must be a plain physical-device serial — `emulator-*` and
 loopback forms are rejected at validation, so the farm path's
 structural guarantees never weaken. At allocate time the device is claimed
-by an atomic host-level lock (`$QAREN_LOCK_ROOT` or `~/.qaren/locks`,
-`usb-<serial>`); any existing claim — even one whose holder is provably
-dead — is a structured refusal (`DEVICE_CLAIM_CONTENDED`, exit 4), never an
-adoption. All qaren processes competing for a device must share the same
-lock root (the per-user default covers the single-operator dev-machine
-model). A run-scoped `--one-device <serial>` adb server (host adb key
+by an atomic host-level `usb-<serial>` lock in the
+[configured lock root](#ios-admission-and-cleanup); any
+existing claim — even one whose holder is provably dead — is a structured
+refusal (`DEVICE_CLAIM_CONTENDED`, exit 4), never an adoption; only an
+[orphaned lock](#ios-admission-and-cleanup) whose run record is gone is released.
+A run-scoped `--one-device <serial>` adb server (host adb key
 pinned explicitly) is the only path to the phone; `expo run:android` routes
 through it via `ADB_SERVER_SOCKET` + `ANDROID_SERIAL`. An `unauthorized` or
 `offline` device is a structured `DEVICE_UNAVAILABLE` refusal (exit 4). Cleanup
@@ -2785,7 +2836,9 @@ reason, never a guess. Only a saved state permits ownership rebinding.
 host-level `native-build-<platform>` lock before allocation. A live holder
 is a structured refusal (`BUILD_CONTENDED`, exit 4). Android can adopt a
 provably dead holder's lock. iOS refuses an existing lock until its run's
-cleanup proves the finite build group retired; a dead CLI alone is insufficient.
+cleanup proves the finite build group retired, or until an
+[orphaned lock](#ios-admission-and-cleanup)'s recorded group has no live members;
+a dead CLI alone is insufficient.
 The lock is released after preparation or by cleanup only when owned build
 authority is retired.
 

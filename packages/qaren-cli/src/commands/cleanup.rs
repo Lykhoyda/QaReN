@@ -77,6 +77,10 @@ pub fn reclaim_dead_holder_with_runtime(
     else {
         return Err(busy.failure.clone());
     };
+    // No cleanup can run without the holder's records; keep the lease's own release advice.
+    if crate::lease::records_gone(holder) {
+        return Err(busy.failure.clone());
+    }
     let run_id = holder.run_id.clone();
     let refuse = |detail: String| {
         Failure::new(
@@ -84,8 +88,8 @@ pub fn reclaim_dead_holder_with_runtime(
             FailureCode::DeviceBusy,
             format!("the device lease is held by run {run_id}, whose qaren process is gone, but {detail}"),
             format!(
-                "run {} against that run's records once its resources are accounted for",
-                crate::lease::cleanup_command(&run_id)
+                "run {} once its resources are accounted for",
+                crate::lease::cleanup_command(&run_id, holder.home.as_deref())
             ),
         )
     };
@@ -121,6 +125,83 @@ pub fn reclaim_dead_holder_with_runtime(
         )));
     }
     Ok(run_id)
+}
+
+// A run that never wrote run.json, or whose records were deleted, can still hold locks; only the orphan gate may release them.
+pub fn cleanup_with_orphan_locks(
+    runner: &mut dyn Runner,
+    runs_root: &Path,
+    lock_root: Option<&Path>,
+    run_id: &str,
+    remove_app: Option<&str>,
+) -> Receipt {
+    let mut receipt = cleanup_with(runner, runs_root, run_id, remove_app);
+    let unavailable = receipt
+        .failure
+        .as_ref()
+        .is_some_and(|f| f.code == FailureCode::RunRecordUnavailable);
+    let Some(lock_root) = lock_root.filter(|_| unavailable && remove_app.is_none()) else {
+        return receipt;
+    };
+    let mut cleanup_runner = crate::exec::CleanupRunner(runner);
+    let runner: &mut dyn Runner = &mut cleanup_runner;
+    let outcomes = release_orphan_locks(runner, lock_root, run_id);
+    if outcomes.is_empty() {
+        return receipt;
+    }
+    let refused: Vec<&str> = outcomes
+        .iter()
+        .filter_map(|(_, outcome)| match outcome {
+            Outcome::Refused(reason) => Some(reason.as_str()),
+            _ => None,
+        })
+        .collect();
+    if refused.is_empty() {
+        receipt.result = ReceiptResult::Cleaned;
+        receipt.failure = None;
+        receipt.next_action = String::new();
+    } else {
+        receipt.next_action = refused.join("; ");
+    }
+    receipt.cleanup.extend(
+        outcomes
+            .iter()
+            .map(|(leg, outcome)| (leg.clone(), outcome.render())),
+    );
+    receipt.commands_executed = runner.commands_executed();
+    receipt
+}
+
+fn release_orphan_locks(
+    runner: &mut dyn Runner,
+    lock_root: &Path,
+    run_id: &str,
+) -> Vec<(String, Outcome)> {
+    let Ok(entries) = std::fs::read_dir(lock_root) else {
+        return Vec::new();
+    };
+    // Probe in name order so the receipt and the probe sequence never depend on readdir order.
+    let mut dirs: Vec<_> = entries.flatten().map(|entry| entry.path()).collect();
+    dirs.sort();
+    let mut outcomes = Vec::new();
+    for dir in dirs {
+        let Some(held) = crate::buildplan::read_holder(&dir).filter(|held| held.run_id == run_id)
+        else {
+            continue;
+        };
+        let liveness = held
+            .identity
+            .as_ref()
+            .map(|identity| probe_pid_identity(runner, identity));
+        let outcome = if crate::lease::release_orphan(runner, &dir, &held, liveness) {
+            Outcome::Removed
+        } else {
+            Outcome::Refused(crate::lease::contended_advice(&dir, Some(&held)))
+        };
+        let name = dir.file_name().unwrap_or_default().to_string_lossy();
+        outcomes.push((format!("lock:{name}"), outcome));
+    }
+    outcomes
 }
 
 // `remove_app` confirms "<run-id>/<remote-serial>/<app-id>"; None skips uninstall.

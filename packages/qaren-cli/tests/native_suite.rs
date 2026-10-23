@@ -56,6 +56,10 @@ fn setup() -> (MockRunner, PathBuf) {
     runner
         .environment
         .insert("HOME".into(), home.display().to_string());
+    runner.environment.insert(
+        "QAREN_LOCK_ROOT".into(),
+        home.join(".qaren/locks").display().to_string(),
+    );
     (runner, home)
 }
 
@@ -915,7 +919,13 @@ fn relative_lock_override_is_refused_instead_of_using_the_default() {
         "simctl list devices -j",
         CmdOutput::success(&inventory("Booted")),
     );
-    assert!(native_suite::run(&mut runner, DEVICE).is_err());
+    let refused = native_suite::run(&mut runner, DEVICE).unwrap_err();
+    assert!(
+        refused.contains(
+            "set QAREN_LOCK_ROOT to an absolute path without . or .. segments, or unset it"
+        ),
+        "{refused}"
+    );
     assert_eq!(runner.remaining(), 0);
     assert!(!home.join(".qaren/locks").exists());
 }

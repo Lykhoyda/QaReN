@@ -114,6 +114,7 @@ fn release_refuses_a_foreign_holder() {
         token: ours.token.clone(),
         lock_dir: ours.lock_dir.clone(),
         holder: "qaren-check-9".to_string(),
+        released_orphan: None,
     };
     assert!(matches!(release(&foreign), ReleaseOutcome::Foreign(_)));
     assert!(ours.lock_dir.exists());
@@ -301,4 +302,201 @@ fn dead_holder_reclaim_completes_pending_borrowed_ios_stop_before_releasing_leas
     );
     assert!(stored.resources.lease.is_none());
     assert_eq!(ok.remaining(), 0);
+}
+
+#[test]
+fn reclaim_of_a_records_gone_holder_with_a_live_group_keeps_the_release_advice() {
+    use qaren::buildplan::{claim_lock, LockHolder, LockOutcome, LockPolicy};
+    use qaren::commands::cleanup::reclaim_dead_holder_with_runtime;
+    let repo = common::temp_repo();
+    let lock_root = repo.join("locks");
+    let deleted_home = repo.join("deleted-home");
+    let held = LockHolder {
+        holder: "qaren-old-run".into(),
+        run_id: "old-run".into(),
+        identity: Some(common::identity(4242, "Wed Aug 12 15:00:00 2026")),
+        at: "2026-10-23T00:00:00Z".into(),
+        home: Some(deleted_home.clone()),
+        group: Some(777),
+    };
+    let name = lock_name(Platform::Ios, UDID);
+    assert!(matches!(
+        claim_lock(
+            &mut MockRunner::new(),
+            &lock_root,
+            &name,
+            &held,
+            LockPolicy::Strict
+        ),
+        LockOutcome::Claimed { .. }
+    ));
+
+    let mut runner = MockRunner::new();
+    runner.expect_run("ps -p 4242 -o lstart=", CmdOutput::failed(1, ""));
+    runner.expect_run(
+        "ps -A -o pid= -o pgid= -o stat=",
+        CmdOutput::success("  777   777 S\n"),
+    );
+    let busy = qaren::lease::try_acquire(
+        &mut runner,
+        &lock_root,
+        Platform::Ios,
+        UDID,
+        "new-run",
+        None,
+    )
+    .unwrap_err();
+    let failure =
+        reclaim_dead_holder_with_runtime(&mut runner, &repo.join("runs"), &busy, None).unwrap_err();
+    assert_eq!(failure.code, FailureCode::DeviceBusy);
+    let next = failure.next_action.as_str();
+    assert!(next.contains("pgrep -g 777"), "{next}");
+    assert!(
+        next.contains(&lock_root.join(&name).display().to_string()),
+        "{next}"
+    );
+    assert!(!next.contains("qaren cleanup"), "{next}");
+    assert_eq!(
+        read_holder(&lock_root.join(&name)).unwrap().run_id,
+        "old-run"
+    );
+    assert_eq!(runner.remaining(), 0);
+}
+
+#[test]
+fn a_reused_holder_pid_leading_its_own_group_does_not_keep_an_orphaned_lease() {
+    use qaren::buildplan::{claim_lock, LockHolder, LockOutcome, LockPolicy};
+    let repo = common::temp_repo();
+    let lock_root = repo.join("locks");
+    let held = LockHolder {
+        holder: "qaren-old-run".into(),
+        run_id: "old-run".into(),
+        identity: Some(common::identity(4242, "Wed Aug 12 15:00:00 2026")),
+        at: "2026-10-23T00:00:00Z".into(),
+        home: Some(repo.join("deleted-home")),
+        group: Some(4242),
+    };
+    let name = lock_name(Platform::Ios, UDID);
+    assert!(matches!(
+        claim_lock(
+            &mut MockRunner::new(),
+            &lock_root,
+            &name,
+            &held,
+            LockPolicy::Strict
+        ),
+        LockOutcome::Claimed { .. }
+    ));
+
+    let mut runner = MockRunner::new();
+    runner.expect_run(
+        "ps -p 4242 -o lstart=",
+        CmdOutput::success("Thu Oct 22 09:00:00 2026\n"),
+    );
+    let lease = qaren::lease::try_acquire(
+        &mut runner,
+        &lock_root,
+        Platform::Ios,
+        UDID,
+        "new-run",
+        None,
+    )
+    .unwrap();
+    assert_eq!(lease.released_orphan.as_deref(), Some("old-run"));
+    assert_eq!(
+        read_holder(&lock_root.join(&name)).unwrap().run_id,
+        "new-run"
+    );
+    assert_eq!(runner.remaining(), 0);
+}
+
+#[test]
+fn cleanup_of_a_run_without_run_json_releases_only_its_orphaned_locks() {
+    use qaren::buildplan::{claim_lock, LockHolder, LockOutcome, LockPolicy};
+    use qaren::commands::cleanup::cleanup_with_orphan_locks;
+    use qaren::receipt::ReceiptResult;
+    let repo = common::temp_repo();
+    let lock_root = repo.join("locks");
+    let runs_root = repo.join("runs");
+    let holder_home = repo.join("holder-home");
+    std::fs::create_dir_all(holder_home.join(".qaren/runs/old-run/ios-build")).unwrap();
+    let held = |run_id: &str, pid: i32, group: Option<i32>| LockHolder {
+        holder: format!("qaren-{run_id}"),
+        run_id: run_id.into(),
+        identity: Some(common::identity(pid, "Wed Aug 12 15:00:00 2026")),
+        at: "2026-10-23T00:00:00Z".into(),
+        home: Some(holder_home.clone()),
+        group,
+    };
+    let device = lock_name(Platform::Ios, UDID);
+    for (name, holder) in [
+        (device.as_str(), held("old-run", 4242, None)),
+        ("native-build-ios", held("old-run", 4242, Some(777))),
+        ("native-build-android", held("other-run", 4343, None)),
+    ] {
+        assert!(matches!(
+            claim_lock(
+                &mut MockRunner::new(),
+                &lock_root,
+                name,
+                &holder,
+                LockPolicy::Strict
+            ),
+            LockOutcome::Claimed { .. }
+        ));
+    }
+
+    let mut busy = MockRunner::new();
+    for _ in 0..2 {
+        busy.expect_run("ps -p 4242 -o lstart=", CmdOutput::failed(1, ""));
+    }
+    busy.expect_run(
+        "ps -A -o pid= -o pgid= -o stat=",
+        CmdOutput::success("  777   777 S\n"),
+    );
+    let refused =
+        cleanup_with_orphan_locks(&mut busy, &runs_root, Some(&lock_root), "old-run", None);
+    assert_eq!(refused.result, ReceiptResult::Refused);
+    assert_eq!(
+        refused.cleanup["lock:native-build-ios"].split(':').next(),
+        Some("refused")
+    );
+    assert_eq!(refused.cleanup[&format!("lock:{device}")], "removed");
+    assert!(
+        refused.next_action.contains("pgrep -g 777"),
+        "{}",
+        refused.next_action
+    );
+    assert!(lock_root.join("native-build-ios").exists());
+    assert!(!lock_root.join(&device).exists());
+
+    let mut gone = MockRunner::new();
+    gone.expect_run("ps -p 4242 -o lstart=", CmdOutput::failed(1, ""));
+    gone.expect_run(
+        "ps -A -o pid= -o pgid= -o stat=",
+        CmdOutput::success("    1     1 Ss\n"),
+    );
+    let cleaned =
+        cleanup_with_orphan_locks(&mut gone, &runs_root, Some(&lock_root), "old-run", None);
+    assert_eq!(
+        cleaned.result,
+        ReceiptResult::Cleaned,
+        "{:?}",
+        cleaned.failure
+    );
+    assert_eq!(cleaned.cleanup["lock:native-build-ios"], "removed");
+    assert!(cleaned.failure.is_none());
+    assert!(!lock_root.join("native-build-ios").exists());
+    assert_eq!(
+        read_holder(&lock_root.join("native-build-android"))
+            .unwrap()
+            .run_id,
+        "other-run"
+    );
+    assert_eq!(gone.remaining(), 0);
+
+    let untouched =
+        cleanup_with_orphan_locks(&mut MockRunner::new(), &runs_root, None, "other-run", None);
+    assert_eq!(untouched.result, ReceiptResult::Refused);
+    assert!(lock_root.join("native-build-android").exists());
 }

@@ -293,6 +293,7 @@ fn borrowed_ios_stop_transitions_and_load_validation_require_canonical_borrowed_
         token: "token".into(),
         lock_dir: std::path::PathBuf::from("/tmp/qaren-borrowed-stop"),
         holder: "holder".into(),
+        released_orphan: None,
     });
     resources.arm_borrowed_ios_stop().unwrap();
     assert_eq!(resources.borrowed_ios_stop(), BorrowedIosStop::Pending);
@@ -326,6 +327,7 @@ fn borrowed_ios_stop_transitions_and_load_validation_require_canonical_borrowed_
         token: "token".into(),
         lock_dir: repo.join("locks"),
         holder: "holder".into(),
+        released_orphan: None,
     });
     record.save(&repo).unwrap();
     let default_json: serde_json::Value =

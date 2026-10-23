@@ -122,9 +122,10 @@ the walk and checks them again after it. A change in between fails the run with
 
 ## Leases, cancellation and cleanup
 
-One run holds a device at a time. Device leases live under `~/.qaren/locks`, or under
-`QAREN_LOCK_ROOT` when it is set; it must be an absolute path, and a relative value fails the
-run. A second run on the same device
+One run holds a device at a time within the
+[configured lock namespace](https://github.com/Lykhoyda/rn-dev-agent/blob/develop/packages/qaren-cli/README.md#ios-admission-and-cleanup),
+which owns root selection, the machine-wide default and its opt-out, switching and recovery requirements.
+A second run on the same device in that namespace
 refuses `DEVICE_BUSY`; a lease whose holder has died is reclaimed by running that run's own
 cleanup.
 

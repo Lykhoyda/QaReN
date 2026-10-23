@@ -10,6 +10,7 @@ use qaren::run::{
 use qaren::scenario::Platform;
 use std::path::PathBuf;
 use std::process::ExitCode;
+use std::sync::OnceLock;
 
 macro_rules! eprintln {
     ($($args:tt)*) => { std::eprintln!("{}", qaren::redact::redact_inputs(&format!($($args)*))) };
@@ -30,18 +31,17 @@ fn qaren_home() -> Result<PathBuf, String> {
     user_home().map(|home| home.join(".qaren"))
 }
 
-// Cross-project claims (devices, build serialization) live at a host-level
-// root so two worktrees sharing a device still contend; only an absolute path works.
+// Resolved once per process so every lock in one run shares a root.
 fn lock_root() -> Result<PathBuf, String> {
-    if let Some(explicit) = std::env::var_os("QAREN_LOCK_ROOT") {
-        let path = PathBuf::from(explicit);
-        return if path.is_absolute() {
-            Ok(path)
-        } else {
-            Err("QAREN_LOCK_ROOT must be an absolute path".to_string())
-        };
-    }
-    qaren_home().map(|home| home.join("locks"))
+    static ROOT: OnceLock<Result<PathBuf, String>> = OnceLock::new();
+    ROOT.get_or_init(|| {
+        qaren::buildplan::host_lock_root(
+            std::env::var_os("QAREN_LOCK_ROOT").as_deref(),
+            std::env::var_os(qaren::buildplan::MACHINE_LOCKS_ENV).as_deref(),
+            std::env::var_os("HOME").as_deref(),
+        )
+    })
+    .clone()
 }
 
 fn runs_root() -> Result<PathBuf, String> {
@@ -106,11 +106,14 @@ fn failed_receipt(verb: &str, failure: Failure, runner: &dyn Runner) -> Receipt 
 }
 
 fn roots_failure(detail: String) -> Failure {
+    let next_action = qaren::buildplan::lock_root_next_action(&detail).unwrap_or(
+        "set HOME to an absolute path and QAREN_NATIVE_CACHE_ROOT to a supported private absolute directory",
+    );
     Failure::new(
         "validate",
         FailureCode::PrereqMissing,
         format!("no host-level state root is available: {detail}"),
-        "set HOME to an absolute path and QAREN_NATIVE_CACHE_ROOT to a supported private absolute directory",
+        next_action,
     )
 }
 
@@ -447,9 +450,10 @@ fn main_inner(args: Vec<String>) -> ExitCode {
             match runs_root() {
                 Ok(runs_root) => match verb.as_str() {
                     "status" => status::status(&mut runner, &runs_root, target),
-                    "cleanup" => cleanup::cleanup_with(
+                    "cleanup" => cleanup::cleanup_with_orphan_locks(
                         &mut runner,
                         &runs_root,
+                        lock_root().ok().as_deref(),
                         target,
                         confirm_remove_app.as_deref(),
                     ),

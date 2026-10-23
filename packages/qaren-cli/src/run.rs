@@ -593,6 +593,12 @@ fn run_inner(
         ctx.notes
             .push(("recovered_run".to_string(), earlier.clone()));
     }
+    if let Some(run_id) = &lease.released_orphan {
+        ctx.notes.push((
+            "device_lease".to_string(),
+            lease::orphan_note(&lease.lock_dir, run_id),
+        ));
+    }
     let t = ctx.mark("preflight", started_ms);
     events::stage("preflight", StageState::Passed, None, None);
     events::stage("deps", StageState::Running, None, None);

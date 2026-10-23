@@ -82,4 +82,6 @@ qaren cleanup <run-id> --json
 ```
 
 It finishes the teardown from the run's own records and releases the lease once every resource
-is accounted for. Do not delete lock files under `~/.qaren/locks` to get around it.
+is accounted for. Do not delete locks in the
+[configured namespace](https://github.com/Lykhoyda/rn-dev-agent/blob/develop/packages/qaren-cli/README.md#ios-admission-and-cleanup)
+to get around it.
