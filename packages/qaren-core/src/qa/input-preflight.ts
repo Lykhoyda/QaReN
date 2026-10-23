@@ -1,6 +1,6 @@
 import { isAbsolute } from 'node:path';
 import { loadBlock, readBlock } from './blocks.js';
-import { collectInputInventory, planHash } from './plan.js';
+import { collectInputInventory, planDiagnostics, planHash, type RefusedLine } from './plan.js';
 import { RunInputs, withInputs } from './inputs.js';
 import { ObservedPrivacy } from './privacy.js';
 import { isRecord, type Judge } from './questions.js';
@@ -9,6 +9,12 @@ import { preflightPlan } from './preflight.js';
 export interface LoginSnapshot {
   slug: string;
   content: string | null;
+}
+
+class UnparseablePlan extends Error {
+  constructor(readonly refused: RefusedLine[]) {
+    super('the plan does not parse');
+  }
 }
 
 export function eligibleLogin(
@@ -46,7 +52,7 @@ export function inputInventory(
 ): { requiredInputs: string[]; nonSecretInputs?: string[] } {
   const invalid = () => new Error('CORE_REFUSED: runtime input inventory refused');
   const scanned = collectInputInventory(plan);
-  if (scanned.refused.length) throw invalid();
+  if (scanned.refused.length) throw new UnparseablePlan(scanned.refused);
   const declarations = new Map(
     scanned.names.map((name) => [name, scanned.nonSecretInputs.includes(name)]),
   );
@@ -90,6 +96,15 @@ export function assertLoginPolicy(login: LoginSnapshot | undefined, inputs: RunI
 }
 
 export async function parseInputPreflight(value: unknown, judge: Judge): Promise<object> {
+  try {
+    return await inputPreflight(value, judge);
+  } catch (error) {
+    if (!(error instanceof UnparseablePlan)) throw error;
+    return { ok: false, code: 'PLAN_UNPARSEABLE', refused: planDiagnostics(error.refused) };
+  }
+}
+
+async function inputPreflight(value: unknown, judge: Judge): Promise<object> {
   const invalid = () => new Error('CORE_REFUSED: runtime input preflight refused');
   if (
     !isRecord(value) ||
