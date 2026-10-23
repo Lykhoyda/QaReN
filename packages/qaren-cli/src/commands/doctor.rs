@@ -856,19 +856,26 @@ fn login_checks(root: &Path, config: Option<&CheckConfig>) -> Vec<Check> {
                         "run the plan that holds its `### Sign in` block once",
                     );
                 };
-                if let Some(hint) = crate::actions::login_hint(root, slug, platform, config, true) {
+                let Some(block) = crate::actions::login_block(&text) else {
+                    return Check::fail(
+                        "login",
+                        format!("loginBlock {slug} for {platform} is not a readable saved block"),
+                        "run the plan that holds its `### Sign in` block once to save it again",
+                    );
+                };
+                if let Some(hint) = block.config_hint(slug, config.login_marker.as_ref()) {
                     return Check::warn(
                         "login",
                         format!("loginBlock {slug} for {platform} cannot replay as login"),
                         hint.text,
                     );
                 }
-                let inputs = crate::actions::login_block(&text)
-                    .map(|c| c.inputs.join(", "))
-                    .unwrap_or_default();
                 Check::pass(
                     "login",
-                    format!("loginBlock {slug} is saved for {platform} (inputs {inputs})"),
+                    format!(
+                        "loginBlock {slug} is saved for {platform} (inputs {})",
+                        block.inputs.join(", ")
+                    ),
                 )
             } else {
                 let hints: Vec<_> = crate::actions::list(root)
@@ -2485,7 +2492,10 @@ mod tests {
         assert!(fix.contains("text: \"Email\""), "{fix}");
         s.file(
             ".qaren/actions/sign-in.yaml",
-            &block.replace("# 1. Fill email", "# 1. SignOut first"),
+            &block.replace(
+                "# 1. Fill email",
+                "# 1. Tap \"Sign out\"\n- tapOn: { text: \"Sign out\" }\n# 2. Fill email",
+            ),
         );
         let warning = login_checks(&s.0, Some(&config));
         assert!(warning[0]
@@ -2547,6 +2557,44 @@ mod tests {
             .unwrap()
             .contains("fills no runtime inputs"));
         assert!(!no_inputs.fix.as_ref().unwrap().contains("someone"));
+    }
+
+    #[test]
+    fn unreadable_configured_login_blocks_fail_without_printing_their_body() {
+        let s = Scratch::new("login-malformed");
+        let config: CheckConfig = serde_yaml::from_str(
+            "appId: com.example.app\ndevClientScheme: exp+example\nandroid:\n  avd: Pixel\nloginBlock: sign-in\nloginMarker:\n  id: login-email\n",
+        )
+        .unwrap();
+        let canary = "private-login-canary";
+        for platform in ["ios", "android"] {
+            s.file(".qaren/actions/sign-in.yaml", &format!("appId: com.example.app\n---\n# id: sign-in\n# intent: Sign in\n# appId: com.example.app\n# platform: {platform}\n\n# 1. Fill email\n- tapOn: {{ id: login-email }}\n- inputText: {{ input: USERNAME, text: \"{canary}\"\n"));
+            let rows = login_checks(&s.0, Some(&config));
+            let row = rows
+                .iter()
+                .find(|row| row.detail.contains(platform))
+                .unwrap();
+            assert_eq!(row.status, Status::Fail, "{row:?}");
+            assert_eq!(
+                row.detail,
+                format!("loginBlock sign-in for {platform} is not a readable saved block")
+            );
+            assert!(row.fix.as_ref().unwrap().contains("save it again"));
+            let report = Report {
+                identity: Identity {
+                    exe: None,
+                    version: VERSION,
+                    build: None,
+                    runtime: s.0.clone(),
+                },
+                checks: rows,
+            };
+            assert_eq!(report.exit_code(), 1);
+            for out in [report.render(), report.to_json()] {
+                assert!(!out.contains(canary), "{out}");
+                assert!(!out.contains("USERNAME"), "{out}");
+            }
+        }
     }
 
     #[test]

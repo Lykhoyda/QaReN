@@ -59,18 +59,18 @@ pub fn login_block(text: &str) -> Option<LoginCandidate> {
         likely: header(head, "-").is_some_and(|fields| names_sign_in(&fields["intent"])),
     };
     let mut step = 0;
+    let mut step_text = "";
     let mut navigated_at = None;
     let mut strict_filled = false;
-    for line in body.lines() {
+    let mut lines = body.lines().peekable();
+    while let Some(line) = lines.next() {
         if let Some(comment) = line.strip_prefix("# ") {
             if comment == "qaren: back" {
                 navigated_at.get_or_insert(step);
             }
             if !comment.starts_with("qaren:") {
                 step += 1;
-                if candidate.inputs.is_empty() && signs_out(comment) {
-                    candidate.signs_out_at.get_or_insert(step);
-                }
+                step_text = comment;
             }
             continue;
         }
@@ -81,22 +81,25 @@ pub fn login_block(text: &str) -> Option<LoginCandidate> {
         if value.get("tapOn").is_some() || value.as_str() == Some("back") {
             navigated_at.get_or_insert(step);
         }
+        if let Some(tap) = value.get("tapOn") {
+            let presses = !lines
+                .peek()
+                .is_some_and(|next| next.starts_with("- inputText:"));
+            if presses
+                && candidate.inputs.is_empty()
+                && (signs_out(step_text)
+                    || ["id", "text"]
+                        .iter()
+                        .filter_map(|key| tap.get(key)?.as_str())
+                        .any(signs_out))
+            {
+                candidate.signs_out_at.get_or_insert(step.max(1));
+            }
+        }
         let selector = value
             .get("tapOn")
             .or_else(|| value.get("extendedWaitUntil")?.get("visible"))
             .or_else(|| value.get("scrollUntilVisible")?.get("element"));
-        if candidate.inputs.is_empty()
-            && selector
-                .or_else(|| value.get("assertVisible"))
-                .is_some_and(|selector| {
-                    ["id", "text"]
-                        .iter()
-                        .filter_map(|key| selector.get(key)?.as_str())
-                        .any(signs_out)
-                })
-        {
-            candidate.signs_out_at.get_or_insert(step.max(1));
-        }
         if let Some(selector) = selector {
             let id = selector.get("id").and_then(serde_yaml::Value::as_str);
             let text = selector.get("text").and_then(serde_yaml::Value::as_str);
@@ -745,6 +748,33 @@ mod tests {
         .unwrap();
         assert_eq!(hint.code, "LOGIN_BLOCK_NO_INPUTS");
         assert!(!hint.text.contains("someone"));
+    }
+
+    #[test]
+    fn only_sign_out_presses_flag_the_block_not_checks_waits_or_fills() {
+        let fill = "# 2. Fill email\n- tapOn: { id: email }\n- inputText: { input: USERNAME }\n";
+        for first in [
+            "# 1. Check \"Log out\" is not visible\n",
+            "# 1. Check \"Log out\" is visible\n- assertVisible: { text: \"Log out\" }\n",
+            "# 1. Wait for \"Sign out\"\n- extendedWaitUntil: { visible: { text: \"Sign out\" }, timeout: 15000 }\n",
+            "# 1. Scroll down until \"Logout\" is visible\n- scrollUntilVisible: { element: { id: logout }, direction: DOWN }\n",
+        ] {
+            let candidate = login_candidate(&block(&format!("{first}{fill}"))).unwrap();
+            assert_eq!(candidate.signs_out_at, None, "{first}");
+            assert_eq!(candidate.hint("sign-in").unwrap().code, "LOGIN_BLOCK_CANDIDATE");
+        }
+        let sign_out_reason = login_block(&block("# 1. Fill \"Sign out reason\" with input REASON\n- tapOn: { id: sign-out-reason }\n- inputText: { input: REASON }\n")).unwrap();
+        assert_eq!(sign_out_reason.signs_out_at, None);
+        let tapped = login_candidate(&block(&format!(
+            "# 1. Check \"Log out\" is visible\n- assertVisible: {{ text: \"Log out\" }}\n# 2. Tap \"Log out\"\n- tapOn: {{ text: \"Log out\" }}\n{}",
+            fill.replace("# 2.", "# 3.")
+        )))
+        .unwrap();
+        assert_eq!(tapped.signs_out_at, Some(2));
+        assert_eq!(
+            tapped.hint("sign-in").unwrap().code,
+            "LOGIN_BLOCK_SIGNS_OUT"
+        );
     }
 
     #[test]
