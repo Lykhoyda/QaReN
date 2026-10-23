@@ -68,6 +68,21 @@ test('a present optional pop-up is declined once before retrying the missing tar
   assert.ok(row?.screenshot);
 });
 
+test('a recovery revalidation that rejects the screen still records its React coverage gap', async () => {
+  const f = app(promo());
+  const acquire = f.deps.captureScreen;
+  let captures = 0;
+  f.deps.captureScreen = async (options) => {
+    const observed = await acquire(options);
+    if (++captures !== 3) return observed;
+    return { ...home(), captureCoverage: { native: 'complete', react: 'unknown' } };
+  };
+  const result = await runPlan(plan(), f.deps);
+  assert.equal(result.verdict, 'FAIL');
+  assert.deepEqual(f.actions, []);
+  assert.ok(result.steps.some((row) => row.reactCoverage === 'unknown'));
+});
+
 test('a permission alert behind a phrase target reaches default decline without asking Jev about it', async () => {
   const f = app({
     ...screen([element('@allow', 'Allow')]),

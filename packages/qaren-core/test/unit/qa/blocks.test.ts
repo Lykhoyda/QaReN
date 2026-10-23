@@ -56,6 +56,18 @@ function passRows(block: Block, selectors: Record<number, Selector>): LedgerRow[
 }
 
 const ios = { appId: 'com.example.app', platform: 'ios' as const };
+
+test('serialization refuses any degraded row even after a healthy successful retry', () => {
+  const block = blockOf('### Confirm\n1. Tap "Save"');
+  const healthy = passRows(block, { [block.items[0].line]: { id: 'save' } });
+  for (const reactCoverage of ['unknown', 'incomplete'] as const) {
+    const degraded = { ...healthy[0], outcome: 'retry' as const, reactCoverage };
+    const result = serializeBlock(block, [degraded, ...healthy], ios);
+    assert.ok('unsavable' in result);
+    assert.match(result.unsavable, /React coverage/);
+  }
+  assert.ok('yaml' in serializeBlock(block, healthy, ios));
+});
 const literalSelectors: Record<number, Selector> = {
   9: { id: 'onboarding-skip' },
   10: { id: 'onboarding-done' },

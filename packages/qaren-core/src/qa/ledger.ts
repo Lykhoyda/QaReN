@@ -21,6 +21,7 @@ export interface LedgerRow {
   outcome: RowOutcome;
   reason?: string;
   unverifiedPress?: true;
+  reactCoverage?: 'unknown' | 'incomplete';
   timing?: RowTiming;
   selector?: Selector;
   // Typed and held character counts of an unverified fill, kept out of the masked reason.
@@ -43,8 +44,6 @@ export interface LedgerFailure {
   step: number;
   seen: string;
   screenshot?: string;
-  // Set only when a plan step's own judgment failed; no other failure may mark a saved plan broken.
-  kind?: 'step';
 }
 
 export interface BlockResult {
@@ -71,7 +70,6 @@ export interface Ledger {
   recoveries: number;
   speed?: LedgerSpeed;
   failure?: LedgerFailure;
-  recipe?: { slug: string; markdown: string } | { unsavable: string };
 }
 
 export interface RefusedLedger extends Omit<Ledger, 'verdict'> {
@@ -90,7 +88,7 @@ export function buildLedger(
   calls: readonly JevCall[] = [],
   path: LedgerPath = 'walk',
   recoveries = 0,
-): Ledger {
+): WalkResult {
   const failedRow = [...steps].reverse().find((r) => r.outcome === 'fail');
   const failedBlock = blocks.find((b) => b.outcome === 'fail');
   if (!failure && (failedRow || failedBlock)) {
@@ -113,6 +111,18 @@ export function buildLedger(
   const speed = summarizeSpeed(steps);
   if (speed) ledger.speed = speed;
   if (failure) ledger.failure = failure;
+  const gap = steps.find((row) => row.reactCoverage !== undefined);
+  if (!failure && gap) {
+    const message =
+      'React coverage was lost during the walk; native evidence alone cannot verify the run.';
+    return {
+      ...ledger,
+      verdict: 'REFUSED',
+      code: 'REACT_COVERAGE_LOST',
+      message,
+      failure: { step: gap.line, seen: message },
+    };
+  }
   return ledger;
 }
 
@@ -147,7 +157,7 @@ export function ledgerWithoutResult(steps: LedgerRow[], seen: string, inFlight?:
     seen,
     ...(last?.screenshot ? { screenshot: last.screenshot } : {}),
   });
-  return ledger;
+  return { ...ledger, verdict: 'FAIL' };
 }
 
 export function screenshotName(index: number, line: number): string {

@@ -756,6 +756,66 @@ fn a_typed_refusal_needs_exit_four() {
 }
 
 #[test]
+fn react_coverage_loss_survives_the_child_receipt_and_report() {
+    use qaren::receipt::{Receipt, ReceiptResult};
+    use qaren::report::{self, ReportInput};
+
+    for coverage in ["unknown", "incomplete"] {
+        let repo = common::temp_repo();
+        let mut step: serde_json::Value = serde_json::from_str(&row(2, 1, "pass")).unwrap();
+        step["reactCoverage"] = coverage.into();
+        let message =
+            "React coverage was lost during the walk; native evidence alone cannot verify the run.";
+        let result = serde_json::json!({
+            "verdict": "REFUSED", "code": "REACT_COVERAGE_LOST", "message": message,
+            "lease": request().lease, "path": "walk", "blocks": [], "steps": [step],
+            "failure": {"step": 2, "seen": message},
+            "jev": {"calls": 0, "medianMs": 0}, "llmTurns": 0, "escapes": 0, "recoveries": 0,
+        });
+        let stdout = format!(
+            "{}\n{}\n",
+            envelope(2, "row", &step.to_string()),
+            envelope(3, "result", &result.to_string()),
+        );
+        let mut mock = MockRunner::new();
+        mock.expect_spawn_piped("walk.js", 9000, &stdout, Some(4));
+        let outcome = run_child(&mut mock, &repo.join("core.log"));
+        assert_eq!(
+            outcome.verdict,
+            Verdict::Refused {
+                code: "REACT_COVERAGE_LOST".into(),
+                message: message.into(),
+            }
+        );
+        assert_eq!(
+            outcome.ledger.steps[0].react_coverage.unwrap().as_str(),
+            coverage
+        );
+
+        let mut receipt = Receipt::new("check", RUN, ReceiptResult::Refused, "walk", "now".into());
+        receipt.ledger = Some(report::summarize(&outcome.ledger));
+        let json: serde_json::Value = serde_json::from_str(&receipt.to_json()).unwrap();
+        assert_eq!(json["ledger"]["verdict"], "REFUSED");
+        assert_eq!(
+            json["ledger"]["react_coverage_gaps"],
+            serde_json::json!([
+                {"line": 2, "coverage": coverage}
+            ])
+        );
+        let rendered = report::render(&ReportInput {
+            run_id: RUN,
+            platform: "ios",
+            app_id: "com.test",
+            device: "test-device",
+            ledger: &outcome.ledger,
+        });
+        assert!(rendered.contains("QaReN check: REFUSED"));
+        assert!(rendered.contains(&format!("React coverage {coverage}")));
+        assert!(rendered.contains(message));
+    }
+}
+
+#[test]
 fn a_typed_refusal_keeps_its_walk_speed_and_drops_a_malformed_one() {
     for (speed, expected) in [
         (

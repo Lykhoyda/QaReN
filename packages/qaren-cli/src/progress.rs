@@ -207,6 +207,7 @@ mod tests {
             text: Some(text.into()),
             reason: None,
             unverified_press: false,
+            react_coverage: None,
             timing: None,
             selector: None,
             kept: None,

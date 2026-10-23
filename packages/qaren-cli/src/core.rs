@@ -221,6 +221,8 @@ pub struct Row {
     pub reason: Option<String>,
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub unverified_press: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub react_coverage: Option<ReactCoverage>,
     #[serde(
         default,
         skip_serializing_if = "Option::is_none",
@@ -235,6 +237,22 @@ pub struct Row {
     pub case_normalized: Option<CaseNormalized>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub dialog: Option<DialogTap>,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum ReactCoverage {
+    Unknown,
+    Incomplete,
+}
+
+impl ReactCoverage {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Unknown => "unknown",
+            Self::Incomplete => "incomplete",
+        }
+    }
 }
 
 fn is_zero(value: &u64) -> bool {
@@ -374,19 +392,6 @@ pub struct LedgerFailure {
     pub seen: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub screenshot: Option<String>,
-    #[serde(
-        default,
-        skip_serializing_if = "Option::is_none",
-        deserialize_with = "passive"
-    )]
-    pub kind: Option<FailureKind>,
-}
-
-// Only a plan step's own judgment is a step failure; anything else, or an older core, has no kind.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum FailureKind {
-    Step,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -1242,7 +1247,6 @@ fn synthesized_failure(rows: &[Row], seen: &str) -> LedgerFailure {
         step: last.map_or(0, |row| row.line),
         seen: seen.to_string(),
         screenshot: last.and_then(|row| row.screenshot.clone()),
-        kind: None,
     }
 }
 
@@ -1264,7 +1268,6 @@ pub fn synthesized_ledger(rows: &[Row], verdict: &str, seen: &str) -> Ledger {
         escapes: 0,
         recoveries: 0,
         speed: None,
-        recipe: None,
     }
 }
 

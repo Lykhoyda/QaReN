@@ -34,6 +34,14 @@ pub struct LedgerSummary {
     pub unverified_presses: Vec<UnverifiedPress>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub dialogs: Vec<DialogEvidence>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub react_coverage_gaps: Vec<ReactCoverageGap>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct ReactCoverageGap {
+    pub line: u64,
+    pub coverage: crate::core::ReactCoverage,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -94,6 +102,16 @@ pub fn summarize(ledger: &Ledger) -> LedgerSummary {
         escapes: ledger.escapes,
         recoveries: ledger.recoveries,
         failed_step: ledger.failure.as_ref().map(|f| f.step),
+        react_coverage_gaps: ledger
+            .steps
+            .iter()
+            .filter_map(|row| {
+                row.react_coverage.map(|coverage| ReactCoverageGap {
+                    line: row.line,
+                    coverage,
+                })
+            })
+            .collect(),
         unverified_fills: ledger
             .steps
             .iter()
@@ -216,7 +234,14 @@ fn row_line_with(row: &Row, prose: &dyn Fn(&str) -> String) -> String {
         .fill_detail()
         .map(|detail| format!("; {detail}"))
         .unwrap_or_default();
-    format!("- {mark} line {}{text}{retry}{reason}{kept}\n", row.line)
+    let coverage = row
+        .react_coverage
+        .map(|coverage| format!("; React coverage {}", coverage.as_str()))
+        .unwrap_or_default();
+    format!(
+        "- {mark} line {}{text}{retry}{reason}{kept}{coverage}\n",
+        row.line
+    )
 }
 
 pub fn render(input: &ReportInput<'_>) -> String {

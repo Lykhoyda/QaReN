@@ -365,6 +365,7 @@ async function walkBlockScoped(
 ): Promise<WalkOutcome> {
   const replay = opts.mode === 'replay';
   const rows: WalkRow[] = [];
+  const reactGaps = new Map<number, NonNullable<LedgerRow['reactCoverage']>>();
   const privateFills: number[] = [];
   for (const item of block.items)
     if (item.kind === 'fill' && !typed.includes(fillText(item))) typed.push(fillText(item));
@@ -376,6 +377,13 @@ async function walkBlockScoped(
   let mutationStarted = false;
   let latestObservation = 0;
   let recoveries = 0;
+  const captureScreen: WalkerDeps['captureScreen'] = async (options) => {
+    const screen = await deps.captureScreen(options);
+    const react = screen.captureCoverage?.react;
+    if (react === 'unknown' || react === 'incomplete')
+      reactGaps.set(line, reactGaps.get(line) === 'incomplete' ? 'incomplete' : react);
+    return screen;
+  };
   // The interruption a step's first decline answered; null once no further recovery is allowed.
   const recovered = new Map<Item, string | null>();
   const metric = (
@@ -434,7 +442,7 @@ async function walkBlockScoped(
     let admitted = false;
     try {
       try {
-        latest = await deps.captureScreen({
+        latest = await captureScreen({
           observation: id,
           ...(platformPresence ? { platformPresence: true } : {}),
           ...(timingObserver ? { timing: timingObserver } : {}),
@@ -807,7 +815,12 @@ async function walkBlockScoped(
     return operationId;
   };
   const emit = (row: WalkRow): void => {
-    row = { ...row, operationId: operationFor(row.line) };
+    const reactCoverage = reactGaps.get(row.line);
+    row = {
+      ...row,
+      operationId: operationFor(row.line),
+      ...(reactCoverage ? { reactCoverage } : {}),
+    };
     let timing: RowTiming | undefined;
     try {
       timing = deps.rowTiming?.(row.t);
@@ -1417,7 +1430,7 @@ async function walkBlockScoped(
             {
               ...deps,
               captureScreen: async (options) => {
-                const screen = await deps.captureScreen({ ...options, platformPresence: true });
+                const screen = await captureScreen({ ...options, platformPresence: true });
                 if (!dispatched) {
                   const candidate = dismissCandidate(screen, planTargets, (record) => {
                     try {
@@ -2541,7 +2554,18 @@ class RenderError extends Error {
 
 // The streamed row channel cannot be retracted, so it carries no text, reason, selector or app identifier.
 function valueFree(row: Omit<LedgerRow, 'reason'>): LedgerRow {
-  const { operationId, line, attempt, kind, resolvedBy, t, outcome, screenshot, timing } = row;
+  const {
+    operationId,
+    line,
+    attempt,
+    kind,
+    resolvedBy,
+    t,
+    outcome,
+    screenshot,
+    timing,
+    reactCoverage,
+  } = row;
   return {
     block: '',
     operationId,
@@ -2555,6 +2579,7 @@ function valueFree(row: Omit<LedgerRow, 'reason'>): LedgerRow {
     ...(row.unverifiedPress ? { unverifiedPress: true } : {}),
     ...(screenshot ? { screenshot } : {}),
     ...(timing ? { timing } : {}),
+    ...(reactCoverage ? { reactCoverage } : {}),
   };
 }
 
@@ -2781,10 +2806,12 @@ export async function runPlan(
         ledger.recipe = privateFills.length
           ? { unsavable: `line ${Math.min(...privateFills)}: fills a private input` }
           : recipeMarkdown(title, blocks, privacy.privateSet('persisted'));
-      return outcome?.refusal
+      const refusal = outcome?.refusal ?? (ledger.verdict === 'REFUSED' ? ledger : undefined);
+      return refusal
         ? {
             ...ledger,
-            ...outcome.refusal,
+            code: refusal.code,
+            message: refusal.message,
             verdict: 'REFUSED',
             videoPublication:
               ledger.videoPublication === 'eligible' ? 'unknown' : ledger.videoPublication,
@@ -2821,6 +2848,8 @@ export async function runPlan(
     ): BlockResult => {
       const result = withPrivateFills({ key: block.slug, outcome: 'pass', source }, privateFills);
       if (result.saved === false) return result;
+      if (steps.some((row) => row.reactCoverage !== undefined))
+        return { ...result, saved: false, unsavable: 'React coverage was lost during the walk' };
       const serialized = serializeBlock(block, rows, store, privacy.privateSet('persisted'));
       if ('unsavable' in serialized)
         return { ...result, saved: false, unsavable: serialized.unsavable };
