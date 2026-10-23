@@ -311,7 +311,7 @@ and install 2.0 as a new product.
 
 Malformed plans refuse with `PLAN_UNPARSEABLE` before device access. The refusal
 names the plan file, source line and problem, then gives the edit needed before
-re-running `qaren check`; an empty plan points to line 1. Diagnostics omit source
+re-running `qaren check` or `qaren pr`; an empty plan points to line 1. Diagnostics omit source
 text and user-supplied block names.
 
 From the app's directory, supply `.qaren/config.yaml` and a Markdown plan:
