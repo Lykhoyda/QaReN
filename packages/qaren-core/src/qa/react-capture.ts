@@ -293,7 +293,9 @@ export function createQaReactCapture(
     const reconnected = () => client.connectionGeneration !== generation;
     try {
       const observation = await captureQaReact(client, typography);
-      return reconnected() ? { ...observation, reconnected: true } : observation;
+      const result = reconnected() ? { ...observation, reconnected: true as const } : observation;
+      generation = client.connectionGeneration;
+      return result;
     } catch (error) {
       if (
         !reconnected() ||
@@ -308,7 +310,9 @@ export function createQaReactCapture(
           return false;
         });
         try {
-          return { ...(await captureQaReact(client, typography)), reconnected: true };
+          const observation = await captureQaReact(client, typography);
+          generation = client.connectionGeneration;
+          return { ...observation, reconnected: true };
         } catch (retry) {
           if (!(retry instanceof ReactCaptureIncomplete)) throw retry;
           if (retry.reason === 'evaluate-error' || retry.reason === 'disconnected')
@@ -316,9 +320,8 @@ export function createQaReactCapture(
           failure = retry;
         }
       }
-      throw new ReactCaptureIncomplete('reconnected', failure.counters);
-    } finally {
       generation = client.connectionGeneration;
+      throw new ReactCaptureIncomplete('reconnected', failure.counters);
     }
   };
 }

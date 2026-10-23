@@ -950,6 +950,11 @@ test('a reconnect is marked once, and a helper world still missing after re-inje
   await assert.rejects(capture(), classified('disconnected'));
   assert.equal(state.reinjected, 2);
 
+  state.helpers = true;
+  assert.equal((await capture()).reconnected, true);
+  assert.equal((await capture()).reconnected, undefined);
+  assert.equal(state.reinjected, 2);
+
   state.generation = 5;
   state.helpers = true;
   state.tree = { ...ready(), tree: 'x'.repeat(1_000_000) };

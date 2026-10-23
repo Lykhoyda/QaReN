@@ -13,7 +13,7 @@ import type { TimingEvent } from '../../../dist/qa/timing.js';
 import { parsePlan } from '../../../dist/qa/plan.js';
 import { runPlan } from '../../../dist/qa/walker.js';
 import { createWriter, resultForWalk } from '../../../dist/qa/wire.js';
-import { scriptedJudge, walker } from './judgment-fixtures.ts';
+import { element, screen, scriptedJudge, walker } from './judgment-fixtures.ts';
 import { nativeCapture } from './platform-presence-fixtures.ts';
 import { loadBlock } from '../../../dist/qa/blocks.js';
 import { buildLedger, type LedgerRow } from '../../../dist/qa/ledger.js';
@@ -200,9 +200,10 @@ test('coverage gaps preserve an existing failed row instead of replacing its fai
 });
 
 test('Metro stop and restart preserves same-step and later recovery; renewed or permanent loss refuses', async () => {
-  for (const { restartAt, relapseAt } of [
+  for (const { restartAt, relapseAt, helpersAt } of [
     { restartAt: 3 },
     { restartAt: 4 },
+    { restartAt: 3, helpersAt: 4 },
     { restartAt: 3, relapseAt: 4 },
     { restartAt: undefined },
   ]) {
@@ -223,10 +224,12 @@ test('Metro stop and restart preserves same-step and later recovery; renewed or 
           return generation;
         },
         async reinjectHelpers() {
-          return true;
+          return helpersAt === undefined || reads >= helpersAt;
         },
         async withPrivateHelperWorld(operation) {
           if (!connected) throw new Error('Metro transport closed');
+          if (helpersAt !== undefined && reads >= restartAt! && reads < helpersAt)
+            throw new Error('Private helper world unavailable');
           return operation(async () => ({
             v: 1,
             id: '1abcd',
@@ -273,8 +276,10 @@ test('Metro stop and restart preserves same-step and later recovery; renewed or 
       assert.equal(result.steps[1].reactCoverage, 'lost');
       assert.deepEqual(
         result.steps[1].reactConnections,
-        restartAt === 3 ? ['lost', 'reconnected'] : ['lost'],
+        restartAt === 3 && helpersAt === undefined ? ['lost', 'reconnected'] : ['lost'],
       );
+      if (helpersAt !== undefined)
+        assert.deepEqual(result.steps[2].reactConnections, ['reconnected']);
       assert.deepEqual(f.rows[1].reactConnections, result.steps[1].reactConnections);
       assert.deepEqual(result.blocksWritten, []);
       assert.deepEqual(readdirSync(appRoot), []);
@@ -287,6 +292,59 @@ test('Metro stop and restart preserves same-step and later recovery; renewed or 
         JSON.parse(output[0]).payload.steps[1].reactConnections,
         result.steps[1].reactConnections,
       );
+    } finally {
+      rmSync(appRoot, { recursive: true, force: true });
+    }
+  }
+});
+
+test('nested login recovery preserves connection chronology, block withholding and product failures', async () => {
+  for (const failPlan of [false, true]) {
+    const appRoot = mkdtempSync(join(tmpdir(), 'react-login-recovery-'));
+    try {
+      const f = walker(
+        [],
+        scriptedJudge(() => assert.fail('literal plan needs no model')),
+      );
+      let loggedIn = false;
+      let reads = 0;
+      f.deps.captureScreen = async () => ({
+        ...screen([loggedIn ? element('@save', 'Save') : element('@login', 'Sign in')]),
+        ...(++reads === 1
+          ? { reactConnection: 'lost' as const }
+          : reads === 3
+            ? { reactConnection: 'reconnected' as const }
+            : {}),
+      });
+      f.deps.press = async (ref, context) => {
+        context.authorize();
+        f.actions.push(`press ${ref}`);
+        loggedIn = true;
+        return { ok: true, proven: true };
+      };
+      f.deps.hideDevMenu = async () => ({ ok: true, proven: true });
+      f.deps.login = {
+        marker: { text: 'Sign in' },
+        block: parsePlan('### Login\n1. Tap "Sign in"').blocks![0],
+      };
+      const result = await runPlan(
+        parsePlan(`1. Tap "Save"${failPlan ? '\n✓ "Missing"' : ''}`).blocks!,
+        f.deps,
+        [],
+        { appRoot, appId: 'com.test', platform: 'ios' },
+      );
+      assert.equal(result.verdict, failPlan ? 'FAIL' : 'PASS');
+      assert.deepEqual(f.actions, ['press @login', 'press @save']);
+      assert.deepEqual(result.steps[0].reactConnections, ['reconnected']);
+      const retry = result.steps.find((row) => row.outcome === 'retry')!;
+      assert.equal(retry.reactCoverage, 'lost');
+      assert.deepEqual(retry.reactConnections, ['lost', 'reconnected']);
+      if (failPlan) {
+        assert.equal(result.steps.at(-1)?.outcome, 'fail');
+        assert.match(result.failure!.seen, /Missing/);
+      }
+      assert.deepEqual(result.blocksWritten, []);
+      assert.deepEqual(readdirSync(appRoot), []);
     } finally {
       rmSync(appRoot, { recursive: true, force: true });
     }

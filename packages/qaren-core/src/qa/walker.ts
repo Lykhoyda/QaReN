@@ -1277,6 +1277,7 @@ async function walkBlockScoped(
     let taken = 0;
     const counted: WalkerDeps = {
       ...deps,
+      captureScreen,
       screenshot: (name) => {
         taken += 1;
         return deps.screenshot(name);
