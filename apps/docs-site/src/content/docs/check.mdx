@@ -88,10 +88,8 @@ The fields you read most:
 
 See [Troubleshooting](../troubleshooting/) for the common codes.
 
-The local report prints `Replayed 1 of 3 blocks (33%); patched 1; walked 1.`
-The percentage rounds down. On failure, the total counts only blocks reached,
-including the failed block. The PR comment's Run details shows only
-`blocks replayed 1/3`, without block names. Empty block lists print no replay figure.
+The local report and PR comment show how many blocks were replayed; see the
+[saved-block contract](https://github.com/Lykhoyda/rn-dev-agent/blob/develop/packages/qaren-cli/README.md#saved-blocks).
 
 For interpreting app-derived failure evidence, follow the
 [app-derived failure text contract](https://github.com/Lykhoyda/rn-dev-agent/blob/develop/packages/qaren-cli/README.md#app-derived-failure-text).

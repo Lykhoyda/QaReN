@@ -42,13 +42,8 @@ see the authoritative [saved-block contract](https://github.com/Lykhoyda/rn-dev-
 The block ID is the heading in lowercase, with every run of characters outside `a-z` and
 `0-9` replaced by a hyphen. It names the [saved block](../saved-blocks/) file.
 
-Each `###` block maps to `.qaren/actions/<slug>.yaml` (existing `.yml` files keep
-their extension). Editing a plan line re-walks only its block; a title edit starts
-a new block. A checkout keeps one platform's copy per block, and shared titles
-share one file. Linked Git worktrees can share saved steps through a direct
-`.qaren/actions` link to the main copy at the same app-relative path; separate
-clones cannot. Create that link manually as described in the
-[saved-block contract](https://github.com/Lykhoyda/rn-dev-agent/blob/develop/packages/qaren-cli/README.md#saved-blocks).
+Linked Git worktrees can share saved steps through a `.qaren/actions` link to the main
+copy; see the [saved-block contract](https://github.com/Lykhoyda/rn-dev-agent/blob/develop/packages/qaren-cli/README.md#saved-blocks).
 
 ## Steps
 
