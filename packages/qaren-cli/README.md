@@ -1494,10 +1494,12 @@ the same budget; all other definite install errors fail immediately.
 An unproven install with a spent budget fails with
 `ARTIFACT_INSTALL_FAILED`. Host load is diagnostic only. After its own launch,
 readiness polling fails `APP_EXITED_AT_LAUNCH` once the app process is twice
-seen gone instead of waiting out the deadline (on Android, only after 60 seconds
-without a first PID). On iOS the first live sighting must keep the same PID
+seen gone with no live sighting between, even while Metro is not ready yet,
+instead of waiting out the deadline (on Android, only after 60 seconds without
+a first PID). On iOS the first live sighting must keep the same PID
 about a second later, so an exit during dyld load is caught too; a vanished
-process is confirmed on the next tick, once the crash report has landed. On iOS
+process is confirmed on the next tick, once the crash report has landed, and an
+unreadable confirmation is retried at the next live sighting. On iOS
 the detail names the exception, dyld termination and missing library from the
 matching simulator crash report, never its paths; only a missing framework the
 app embeds gets the CocoaPods remedy.
