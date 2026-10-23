@@ -382,8 +382,13 @@ fn workspace_cache_persistence_reuses_only_the_same_workspace_and_scheme() {
             common::script_xcode(&mut mock);
             common::script_ios_install_and_launch(&mut mock);
             script_ready_recheck(&mut mock, common::IOS_NATIVE_FILES);
-        } else {
+        } else if index == 0 {
             script_provision_build(&mut mock, "xcodebuild", common::IOS_NATIVE_FILES);
+        } else {
+            mock.expect_run("ls-files", CmdOutput::success(common::IOS_NATIVE_FILES));
+            common::script_xcode(&mut mock);
+            common::script_finite_ios_build_with(&mut mock, "xcodebuild");
+            script_ready_recheck(&mut mock, common::IOS_NATIVE_FILES);
         }
         script_drift_status(&mut mock);
         script_host_probe(&mut mock, UDID, hosts_absent());
@@ -642,6 +647,52 @@ fn invalid_ios_launch_scheme_refuses_before_any_command_without_echoing_input() 
 }
 
 #[test]
+fn a_clean_ios_build_refuses_before_building_when_its_volume_is_short_of_space() {
+    let (repo, app) = app_repo();
+    let req = request(&repo, &app, 30);
+    let mut mock = MockRunner::new();
+    script_preflight(&mut mock, &repo);
+    common::script_ios_deps(&mut mock);
+    mock.expect_run("ls-files", CmdOutput::success(""));
+    common::script_xcode(&mut mock);
+    mock.expect_run(
+        "df",
+        CmdOutput::success(
+            "Filesystem 1024-blocks Used Available Capacity Mounted on\n/dev/disk3 976490576 1 500000000 1% /\n/dev/disk4 976490576 1 4194304 99% /Volumes/apps\n",
+        ),
+    );
+
+    let receipt = run(&mut mock, &req);
+
+    assert_eq!(receipt.result, ReceiptResult::Refused);
+    let failure = receipt.failure.as_ref().unwrap();
+    assert_eq!(failure.code, FailureCode::DiskBudgetExceeded);
+    assert!(
+        failure
+            .detail
+            .starts_with("4.0 GiB free on the volume holding")
+            && failure
+                .detail
+                .contains("a clean iOS build needs about 10 GiB"),
+        "{}",
+        failure.detail
+    );
+    assert!(
+        failure.detail.ends_with("then re-run"),
+        "{}",
+        failure.detail
+    );
+    assert!(failure.detail.contains("DerivedData"), "{}", failure.detail);
+    assert_eq!(receipt.cleanup["device_lease"], "removed");
+    assert!(!mock
+        .calls
+        .iter()
+        .any(|c| c.rendered().contains("expo prebuild") || c.rendered().contains("expo start")));
+    assert!(!req.lock_root.join("native-build-ios").exists());
+    assert_eq!(mock.remaining(), 0);
+}
+
+#[test]
 fn pre_spawn_build_error_retires_pending_before_releasing_ownership() {
     let (repo, app) = app_repo();
     let req = request(&repo, &app, 30);
@@ -650,7 +701,7 @@ fn pre_spawn_build_error_retires_pending_before_releasing_ownership() {
     script_preflight(&mut mock, &repo);
     common::script_ios_deps(&mut mock);
     mock.expect_run("ls-files", CmdOutput::success(""));
-    common::script_xcode(&mut mock);
+    script_clean_build_plan(&mut mock);
     common::script_ios_metro_spawn(&mut mock);
 
     common::script_ios_metro_cleanup(&mut mock);
@@ -696,7 +747,7 @@ fn unproven_early_metro_refuses_to_start_a_native_build_and_retains_its_lease() 
                 ""
             }),
         );
-        common::script_xcode(&mut mock);
+        script_clean_build_plan(&mut mock);
         mock.expect_spawn(
             "expo start",
             Spawned {
@@ -739,7 +790,7 @@ fn metro_exit_during_a_native_build_prevents_launch_and_cleans_up_both_stages() 
     script_preflight(&mut mock, &repo);
     common::script_ios_deps(&mut mock);
     mock.expect_run("ls-files", CmdOutput::success(""));
-    common::script_xcode(&mut mock);
+    script_clean_build_plan(&mut mock);
     common::script_ios_metro_spawn(&mut mock);
     mock.expect_spawn_piped("expo run:ios", 5000, "", Some(0));
     mock.expect_run("ps", CmdOutput::success(LSTART));
@@ -779,7 +830,7 @@ fn invalid_spawned_build_group_retains_pending_and_both_locks_without_starting()
     script_preflight(&mut mock, &repo);
     common::script_ios_deps(&mut mock);
     mock.expect_run("ls-files", CmdOutput::success(""));
-    common::script_xcode(&mut mock);
+    script_clean_build_plan(&mut mock);
     common::script_ios_metro_spawn(&mut mock);
     mock.expect_spawn_piped("expo run:ios", 1, "", Some(0));
     mock.expect_run("ps", CmdOutput::success(LSTART));
@@ -825,7 +876,7 @@ fn failed_spawn_retirement_save_or_interruption_retains_pending_and_both_locks()
         script_preflight(&mut mock, &repo);
         common::script_ios_deps(&mut mock);
         mock.expect_run("ls-files", CmdOutput::success(""));
-        common::script_xcode(&mut mock);
+        script_clean_build_plan(&mut mock);
         common::script_ios_metro_spawn(&mut mock);
         if !matches!(fault, BuildSpawnFault::Interrupted) {
             common::script_ios_metro_cleanup(&mut mock);
@@ -894,7 +945,7 @@ fn finite_build_failures_never_install_or_walk_and_unproven_groups_retain_both_l
                 ""
             }),
         );
-        common::script_xcode(&mut mock);
+        script_clean_build_plan(&mut mock);
         common::script_ios_metro_spawn(&mut mock);
         mock.expect_spawn_piped(
             if workspace {
@@ -1037,7 +1088,7 @@ fn workspace_changed_by_clean_prebuild_refuses_before_creating_output_or_buildin
         script_preflight(&mut mock, &repo);
         mock.expect_run("pnpm install --frozen-lockfile", CmdOutput::success(""));
         mock.expect_run("ls-files", CmdOutput::success(""));
-        common::script_xcode(&mut mock);
+        script_clean_build_plan(&mut mock);
         mock.expect_spawn_piped("expo prebuild", 5000, "", Some(0));
         mock.expect_run("ps", CmdOutput::success(LSTART));
         mock.expect_run("ps", CmdOutput::success("qaren-build"));
@@ -1244,9 +1295,15 @@ fn script_provision_after_deps(mock: &mut MockRunner) {
 
 fn script_provision_build(mock: &mut MockRunner, command: &str, native_files: &str) {
     mock.expect_run("ls-files", CmdOutput::success(native_files));
-    common::script_xcode(mock);
+    script_clean_build_plan(mock);
     common::script_finite_ios_build_with(mock, command);
     script_ready_recheck(mock, native_files);
+}
+
+// A clean iOS build re-reads free disk after the build plan.
+fn script_clean_build_plan(mock: &mut MockRunner) {
+    common::script_xcode(mock);
+    mock.expect_run("df", df_ok());
 }
 
 fn script_ready_recheck(mock: &mut MockRunner, native_files: &str) {
@@ -2093,7 +2150,7 @@ fn a_cancel_during_the_build_stops_it_with_proof_and_releases_both_locks() {
     script_preflight(&mut mock, &repo);
     common::script_ios_deps(&mut mock);
     mock.expect_run("ls-files", CmdOutput::success(""));
-    common::script_xcode(&mut mock);
+    script_clean_build_plan(&mut mock);
     common::script_ios_metro_spawn(&mut mock);
     mock.expect_spawn_piped("expo run:ios", 5000, "", None);
     mock.expect_run("ps", CmdOutput::success(LSTART));

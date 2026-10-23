@@ -79,7 +79,7 @@ This plan needs no `TYPESAFE_API_KEY`.
 
 ## 6. Run
 
-The first run builds and installs the app; a cold native build can take longer than 10 minutes, and Claude Code stops both foreground and background commands at that limit. Start the check detached from the host, with `sh` staying resident as its parent: qaren cancels a run whose calling process exits, so never background `qaren` itself with `&` or `nohup`.
+The first run builds and installs the app; a cold iOS build needs about 10 GiB free on the home and app volumes (`check` refuses `DISK_BUDGET_EXCEEDED` with less) and can take longer than 10 minutes, and Claude Code stops both foreground and background commands at that limit. Start the check detached from the host, with `sh` staying resident as its parent: qaren cancels a run whose calling process exits, so never background `qaren` itself with `&` or `nohup`.
 
 First create the output directory and note the path it prints as `<dir>`:
 

@@ -162,7 +162,7 @@ impl Report {
     }
 }
 
-// Read-only: files are only opened for reading and the runner only runs version and list commands.
+// Read-only: files are only opened for reading and the runner only runs version, list and df commands.
 pub fn doctor(
     runner: &mut dyn Runner,
     home: &Path,
@@ -199,7 +199,7 @@ pub fn doctor(
             "pnpm",
             "pnpm",
             Status::Fail,
-            "enable it: `corepack enable && corepack prepare pnpm@latest --activate`",
+            "enable it: `corepack enable && corepack prepare pnpm@latest --activate && (cd / && pnpm --version)`",
         ),
         tool(
             runner,
@@ -215,6 +215,7 @@ pub fn doctor(
             Status::Warn,
             "`brew install cocoapods`; expo run:ios installs pods on the first iOS build",
         ),
+        disk(runner, cwd, home),
     ];
     checks.extend(android_checks(
         runner,
@@ -432,12 +433,36 @@ fn tool(
         let version = output.stdout.trim().lines().next().unwrap_or_default();
         return Check::pass(id, format!("{program} {version}"));
     }
+    // Corepack's launcher downloads the binary on first use, which this offline probe forbids.
+    let output_text = format!("{}{}", output.stderr, output.stdout);
+    if output_text.contains("Network access") && output_text.contains("disabled by the environment")
+    {
+        return Check::problem(
+            id,
+            missing,
+            format!("{program} is enabled but has not downloaded its binary yet"),
+            format!("finish the first-run download with network access: `(cd / && {program} --version)`"),
+        );
+    }
     Check::problem(
         id,
         missing,
         format!("{program} --version did not run: {}", output.summary()),
         fix,
     )
+}
+
+fn disk(runner: &mut dyn Runner, cwd: &Path, home: &Path) -> Check {
+    match crate::run::tightest_volume(runner, &[cwd, home]) {
+        Ok((kb, path)) => match crate::run::clean_ios_build_shortfall(kb, path) {
+            Some(detail) => Check::warn("disk", detail, crate::run::FREE_DISK_FIX),
+            None => Check::pass(
+                "disk",
+                format!("{:.1} GiB free", kb as f64 / (1024.0 * 1024.0)),
+            ),
+        },
+        Err(failure) => Check::skip("disk", failure.detail.to_string()),
+    }
 }
 
 fn android_checks(
@@ -1093,7 +1118,9 @@ fn project(cwd: &Path) -> Check {
         } else {
             format!("{} ({})", agent.display(), parts.join(", "))
         });
-        fixes.push("archive .rn-agent/actions/, then git rm -r .rn-agent".to_string());
+        fixes.push(
+            "archive .rn-agent/actions/ if those flows matter, then retire .rn-agent/".to_string(),
+        );
     }
     for name in ["CLAUDE.md", "AGENTS.md"] {
         let file = cwd.join(name);
@@ -1103,15 +1130,20 @@ fn project(cwd: &Path) -> Check {
             .any(|sentinel| text.contains(sentinel))
         {
             found.push(format!("rn-dev-agent template block in {}", file.display()));
-            fixes.push(format!(
-                "delete the block between the rn-dev-agent sentinels in {name}"
-            ));
+            fixes.push(format!("remove the rn-dev-agent block from {name}"));
         }
     }
     let tsconfig = cwd.join("tsconfig.json");
     if read(&tsconfig).contains(".rn-agent/dev-bridge.ts") {
         found.push(format!(".rn-agent/dev-bridge.ts in {}", tsconfig.display()));
         fixes.push("remove .rn-agent/dev-bridge.ts from tsconfig.json".to_string());
+    }
+    if !fixes.is_empty() {
+        // The app repository may not be the user's to change, and QaReN never reads these files.
+        fixes = vec![format!(
+            "QaReN ignores these 1.x files, so leave them unless you maintain this repository; if you do, {}",
+            fixes.join(", then ")
+        )];
     }
     leftover("1x-project", found, fixes)
 }
@@ -1237,6 +1269,13 @@ mod tests {
         runner.expect_run("pnpm --version", CmdOutput::success("10.0.0\n"));
         runner.expect_run("corepack --version", CmdOutput::success("0.34.0\n"));
         runner.expect_run("pod --version", CmdOutput::success("1.16.2\n"));
+        runner.expect_run("df -Pk", df(500_000_000));
+    }
+
+    fn df(available_kb: u64) -> CmdOutput {
+        CmdOutput::success(&format!(
+            "Filesystem 1024-blocks Used Available Capacity Mounted on\n/dev/disk3 976490576 1 {available_kb} 45% /\n"
+        ))
     }
 
     fn run_doctor(
@@ -1439,7 +1478,7 @@ mod tests {
             ("1x-mcp", "claude mcp remove rn-agent"),
             ("1x-binaries", "npm rm -g rn-dev-agent-core"),
             ("1x-home-dirs", "actions.db if those flows matter"),
-            ("1x-project", "git rm -r .rn-agent"),
+            ("1x-project", "unless you maintain this repository"),
             ("1x-env", "unset RN_DEV_AGENT_SESSION_ID"),
         ];
         assert_eq!(rows.len(), expected.len());
@@ -1464,6 +1503,85 @@ mod tests {
             rows.iter().all(|row| row.status == Status::Pass),
             "{rows:?}"
         );
+    }
+
+    #[test]
+    fn project_leftover_advice_never_deletes_tracked_files() {
+        let s = Scratch::new("project-advice");
+        s.dir(".rn-agent/actions");
+        s.file(".rn-agent/dev-bridge.ts", "");
+        s.file("AGENTS.md", "<!-- rn-dev-agent:codex-template-start -->\n");
+        let check = project(&s.0);
+        assert_eq!(check.status, Status::Warn);
+        let fix = check.fix.unwrap();
+        assert!(!fix.contains("git rm") && !fix.contains("rm -r"), "{fix}");
+        assert!(fix.starts_with("QaReN ignores these 1.x files"), "{fix}");
+        assert!(fix.contains("archive .rn-agent/actions/"), "{fix}");
+        assert!(fix.contains("block from AGENTS.md"), "{fix}");
+    }
+
+    #[test]
+    fn pnpm_awaiting_its_first_run_download_says_how_to_finish_it() {
+        for refusal in [
+            "Network access is disabled by the environment, so the pnpm binary cannot be downloaded.",
+            "Internal Error: Network access disabled by the environment; can't reach https://registry.npmjs.org/pnpm",
+        ] {
+            let mut runner = MockRunner::new();
+            runner.expect_run("pnpm --version", CmdOutput::failed(1, refusal));
+            let check = tool(&mut runner, "pnpm", "pnpm", Status::Fail, "unused");
+            assert_eq!(check.status, Status::Fail);
+            assert!(check.detail.contains("has not downloaded"), "{check:?}");
+            assert!(
+                check.fix.unwrap().contains("(cd / && pnpm --version)"),
+                "the fix finishes the download doctor's offline probe needs"
+            );
+        }
+    }
+
+    #[test]
+    fn the_suggested_pnpm_fix_ends_by_running_the_probe_once_online() {
+        let s = Scratch::new("pnpm-fix");
+        let mut runner = MockRunner::new();
+        runner.expect_run("xcodebuild -version", CmdOutput::success("Xcode 26.0\n"));
+        runner.expect_run("simctl list runtimes --json", CmdOutput::success(RUNTIMES));
+        runner.expect_run("node --version", CmdOutput::success("v24.1.0\n"));
+        runner.expect_run("pnpm --version", CmdOutput::failed(1, "boom"));
+        runner.expect_run("corepack --version", CmdOutput::success("0.34.0\n"));
+        runner.expect_run("pod --version", CmdOutput::success("1.16.2\n"));
+        runner.expect_run("df -Pk", df(500_000_000));
+        let report = run_doctor(&mut runner, &s, &s.0, None);
+        assert!(row(&report, "pnpm")
+            .fix
+            .as_deref()
+            .unwrap()
+            .ends_with("&& (cd / && pnpm --version)`"));
+    }
+
+    #[test]
+    fn disk_warns_below_a_clean_ios_build_and_names_the_tight_volume() {
+        let s = Scratch::new("disk");
+        let home = s.dir("home");
+        let mut runner = MockRunner::new();
+        runner.expect_run(
+            "df -Pk",
+            CmdOutput::success(
+                "Filesystem 1024-blocks Used Available Capacity Mounted on\n/dev/a 1 1 50000000 1% /\n/dev/b 1 1 4194304 99% /home\n",
+            ),
+        );
+        let check = disk(&mut runner, &s.0, &home);
+        assert_eq!(check.status, Status::Warn, "{check:?}");
+        assert!(check.detail.starts_with("4.0 GiB free"), "{check:?}");
+        assert!(check.detail.contains(&home.display().to_string()));
+        assert!(check.detail.contains("about 10 GiB"), "{check:?}");
+        assert!(check.fix.unwrap().contains("DerivedData"));
+
+        let mut runner = MockRunner::new();
+        runner.expect_run("df -Pk", df(20 * 1024 * 1024));
+        assert_eq!(disk(&mut runner, &s.0, &home).status, Status::Pass);
+
+        let mut runner = MockRunner::new();
+        runner.expect_run("df -Pk", CmdOutput::failed(1, "df: nope"));
+        assert_eq!(disk(&mut runner, &s.0, &home).status, Status::Skip);
     }
 
     #[test]
@@ -1530,6 +1648,7 @@ mod tests {
             runner.expect_run("pnpm --version", CmdOutput::success("10.0.0\n"));
             runner.expect_run("corepack --version", CmdOutput::success("0.34.0\n"));
             runner.expect_run("pod --version", CmdOutput::success("1.16.2\n"));
+            runner.expect_run("df -Pk", df(500_000_000));
             let report = run_doctor(&mut runner, &s, &s.0, None);
             let node = row(&report, "node");
             assert!(
@@ -1743,17 +1862,18 @@ mod tests {
         }
         assert_eq!(runner.remaining(), 0);
         assert!(runner.spawned_logs.is_empty());
-        assert!(runner.calls.iter().all(|call| call
-            .args
-            .iter()
-            .any(|arg| arg == "--version" || arg == "-version" || arg == "list")));
+        assert!(runner.calls.iter().all(|call| call.program == "df"
+            || call
+                .args
+                .iter()
+                .any(|arg| arg == "--version" || arg == "-version" || arg == "list")));
         assert_eq!(s.tree(), before);
         assert_eq!(report.exit_code(), 0, "{text}");
         assert!(text.starts_with(&format!("qaren {VERSION} at ")));
         assert!(text.contains("(build abababab)"));
         let parsed: serde_json::Value = serde_json::from_str(&json).unwrap();
         assert_eq!(parsed["verdict"], "pass");
-        assert_eq!(parsed["checks"].as_array().unwrap().len(), 20);
+        assert_eq!(parsed["checks"].as_array().unwrap().len(), 21);
     }
 
     #[test]
