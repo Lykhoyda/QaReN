@@ -18,14 +18,17 @@ const window: NativeNode = {
   rect: { x: 0, y: 0, width: 390, height: 844 },
 };
 
-function joined(natives: Array<{ id: string; type?: string; y: number }>, digest: DigestEntry[]) {
-  const nodes = natives.map(({ id, type = 'Button', y }, i) => ({
+function joined(
+  natives: Array<{ id: string; type?: string; label?: string; y: number }>,
+  digest: DigestEntry[],
+) {
+  const nodes = natives.map(({ id, type = 'Button', label = id, y }, i) => ({
     ref: `@n${i + 1}`,
     index: i + 1,
     parentIndex: 0,
     type,
     identifier: id,
-    label: id,
+    label,
     hittable: true,
     rect: { x: 20, y, width: 300, height: 44 },
   }));
@@ -61,10 +64,14 @@ test('a stored id wait passes on the visible native element beside a React-only 
 });
 
 test('a quoted wait passes on the visible native element beside a React-only twin', () => {
-  const quoted = { quoted: 'close', phrase: 'close' };
-  assert.equal(targetEvidence(quoted, twin), 'pass');
-  assert.deepEqual(visibleSelector(quoted, twin), { id: 'close' });
-  assert.equal(presenceMiss(quoted, twin), undefined);
+  const avatar = joined(
+    [{ id: 'profile_button', label: 'Profile', y: 40 }],
+    [button('profile_button'), button('profile_button')],
+  );
+  const quoted = { quoted: 'profile_button', phrase: 'profile_button' };
+  assert.equal(targetEvidence(quoted, avatar), 'pass');
+  assert.deepEqual(visibleSelector(quoted, avatar), { id: 'profile_button' });
+  assert.equal(presenceMiss(quoted, avatar), undefined);
 });
 
 test('a missed quoted wait says whether its id was absent or rejected', () => {
@@ -84,12 +91,8 @@ test('a missed quoted wait says whether its id was absent or rejected', () => {
     presenceMiss(quoted('close'), shared)!,
     /^2 elements carry the identifier "close": /,
   );
-  assert.match(
-    presenceMiss(quoted('profile_button'), joined([{ id: 'header-profileButton', y: 40 }], []))!,
-    /^no captured element carries the identifier "profile_button"; nearest identifiers: button id=header-profileButton /,
-  );
   assert.equal(
-    presenceMiss(quoted('profile_button'), joined([{ id: 'settings', y: 40 }], [])),
+    presenceMiss(quoted('profile_button'), joined([{ id: 'header-profileButton', y: 40 }], [])),
     'no captured element carries the identifier "profile_button"',
   );
 });

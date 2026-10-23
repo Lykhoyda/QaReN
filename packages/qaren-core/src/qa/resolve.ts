@@ -732,8 +732,6 @@ function idIdentities(id: string, screen: Screen): Identity[] {
   return replayIdentities(exactIdentities(screen, target, 'wait'), target, 'wait');
 }
 
-const looseId = (id: string) => id.toLowerCase().replace(/[^a-z0-9]/g, '');
-
 // Why a quoted wait saw no match, from identifiers and frames only, never labels or text.
 export function presenceMiss(target: Target, screen: Screen): string | undefined {
   const quoted = target.quoted;
@@ -755,16 +753,7 @@ export function presenceMiss(target: Target, screen: Screen): string | undefined
           : undefined;
     return why && `the element carrying the identifier "${quoted}" ${why}: ${list(ids)}`;
   }
-  const loose = looseId(quoted);
-  const near = loose
-    ? screen.elements
-        .filter(
-          (e) =>
-            e.testID && (looseId(e.testID).includes(loose) || loose.includes(looseId(e.testID))),
-        )
-        .slice(0, 3)
-    : [];
-  return `no captured element carries the identifier "${quoted}"${near.length ? `; nearest identifiers: ${list(near)}` : ''}`;
+  return `no captured element carries the identifier "${quoted}"`;
 }
 
 export function targetVisible(target: Target, screen: Screen): boolean {
