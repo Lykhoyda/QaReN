@@ -1264,8 +1264,8 @@ existing failure stays a failure. Ordered `reactConnections` events retain loss
 and recovery independently of each row's worst coverage, including recovery during
 the same step or nested login recovery. If helpers remain unavailable after the
 retry, a later healthy capture on that same connection still records recovery.
-A recovered connection does not by itself refuse the run. Receipts
-carry each affected line once, with its most severe coverage, in
+A recovered connection or a capture limit with a healthy connection does not by
+itself refuse the run. Receipts carry each affected line once, with its most severe coverage, in
 `ledger.react_coverage_gaps` and reconnect lines in `ledger.react_reconnections`.
 Reports show both facts beside each row and name reconnects on the report and
 pull-request verdict lines. A `lost` row withholds every new or patched block of the
@@ -1294,14 +1294,15 @@ inactive routes or hosts with `display: none` (`pruned`) and elapsed millisecond
 and pruned counts are lower bounds observed by the bounded walk, not tree totals.
 These distinguish capture limits, the
 typography sites that leave evidence incomplete, deadlines, renderer coverage,
-malformed evidence and CDP evaluation failures; they exclude app text, labels,
-identifiers and raw errors. Unclassified
+malformed evidence, CDP evaluation failures and connection loss or recovery; they
+exclude app text, labels, identifiers and raw errors. Unclassified
 failures retain the generic warning. The
 [React capture adapter](../qaren-core/src/qa/react-capture.ts) owns classification;
 [ReactCaptureIncomplete](../qaren-core/src/qa/private-input.ts) owns the allowed
 codes, counters and warning detail format. This diagnostic identifies the capture
-failure category; it does not establish the underlying app or host cause or change
-refusal and privacy behavior.
+failure category; it does not establish the underlying app or host cause. Verdict
+and persistence follow the React coverage rules above; privacy protections remain
+unchanged.
 
 On composite components, the digest omits non-string `title`,
 `accessibilityLabel` and `placeholder` props without coercing or serializing them;
