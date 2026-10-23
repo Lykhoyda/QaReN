@@ -1776,7 +1776,10 @@ refuses `DEVICE_BUSY`. Every holder records its HOME, and the refusal names
 `HOME='<holder home>' qaren cleanup <run-id>`, which recovers it from any session.
 A device, native-build or USB lock whose holder is proven dead (its process gone or
 replaced, as after a reboot) and whose run records under that HOME no longer exist
-is released by the next claim, since no cleanup can run for it.
+is released by the next claim, since no cleanup can run for it. Before a native
+build or native suite is let past its start gate, its process group is recorded in
+the holder; that group must also have no live members, otherwise the refusal names
+the lock and the `pgrep -g` check to wait on.
 Do not delete locks to bypass unresolved ownership.
 
 The iOS runner's XCTest result bundles under `Logs/Test` in both its local

@@ -59,7 +59,11 @@ fn roots(runner: &dyn Runner) -> Result<(PathBuf, PathBuf), String> {
         runner.env_var_os("QAREN_LOCK_ROOT").as_deref(),
         runner.env_var_os(buildplan::MACHINE_LOCKS_ENV).as_deref(),
         Some(home.as_os_str()),
-    )?;
+    )
+    .map_err(|error| match buildplan::lock_root_next_action(&error) {
+        Some(advice) => format!("{error}; {advice}"),
+        None => error,
+    })?;
     Ok((home.join(".qaren").join("native-suites"), locks))
 }
 
@@ -209,7 +213,12 @@ fn execute(runner: &mut dyn Runner, dir: &Path, record: &mut NativeSuite) -> Res
         identity,
     };
     save(dir, record)?;
+    let grouped = record.lease.as_ref().is_some_and(|lease| {
+        buildplan::record_holder_group(&lease.lock_dir, &lease.holder, &lease.run_id, child.pid)
+            .is_ok()
+    });
     let started = known
+        && grouped
         && runner.cancellation().is_none()
         && child
             .stdin

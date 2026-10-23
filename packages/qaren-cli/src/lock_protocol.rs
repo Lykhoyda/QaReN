@@ -8,6 +8,18 @@ const HOLDER_LIMIT: usize = 64 * 1024;
 const LINK_BOUND: u32 = 40;
 static STAGING_NONCE: AtomicU64 = AtomicU64::new(1);
 
+pub fn lock_root_next_action(detail: &str) -> Option<&'static str> {
+    if detail.contains("QAREN_MACHINE_LOCKS must be") {
+        Some("unset QAREN_MACHINE_LOCKS or set it to 1 or 0")
+    } else if detail.contains("machine lock root") && detail.contains("HOME") {
+        Some("set HOME to an absolute path, or set an absolute QAREN_LOCK_ROOT to a private directory")
+    } else if detail.contains("QAREN_LOCK_ROOT") || detail.contains("machine lock root") {
+        Some(LOCK_ROOT_ADVICE)
+    } else {
+        None
+    }
+}
+
 pub fn machine_lock_parent() -> Result<&'static Path, String> {
     #[cfg(target_os = "macos")]
     {
@@ -927,7 +939,7 @@ fn publish_claim(root: &OpenDir, name: &str, holder: &LockHolder, euid: u32) -> 
         }
         Err(MkdirExclusive::Error(detail)) => return Err(PublishFault::Error(detail)),
     };
-    if let Err(error) = write_holder(&created, holder, euid) {
+    if let Err(error) = write_holder(&created, "holder.json", holder, euid) {
         let _ = remove_owned_lock(root, &staging, &created);
         return Err(PublishFault::Error(error));
     }
@@ -1151,10 +1163,49 @@ fn read_owned_holder(claim: &OpenDir, euid: u32) -> Option<LockHolder> {
     serde_json::from_slice(&buffer).ok()
 }
 
-fn write_holder(dir: &OpenDir, holder: &LockHolder, euid: u32) -> Result<(), String> {
+// The gated work starts only after this, so a holder without a group proves none ever ran.
+pub fn record_holder_group(
+    dir: &Path,
+    expected_holder: &str,
+    expected_run_id: &str,
+    pgid: i32,
+) -> Result<(), String> {
+    let euid = effective_uid();
+    let (Some(parent), Some(name)) = (dir.parent(), dir.file_name()) else {
+        return Err(format!("lock path {} has no parent directory", dir.display()));
+    };
+    let root = match open_lock_root(parent, false).map_err(WalkError::detail)? {
+        OpenRoot::Ready(root) => root,
+        OpenRoot::Missing { .. } => return Err(format!("lock {} is missing", dir.display())),
+    };
+    let Leaf::Owned(claim) = classify_leaf(&root, name, euid) else {
+        return Err(format!("lock {} is not a trusted same-user claim", dir.display()));
+    };
+    let mut held = read_owned_holder(&claim, euid)
+        .filter(|held| held.holder == expected_holder && held.run_id == expected_run_id)
+        .ok_or_else(|| format!("lock {} is not held by run {expected_run_id}", dir.display()))?;
+    held.group = Some(pgid);
+    let staged = fresh_name("holder", "json");
+    let c_staged = c_component(OsStr::new(&staged))?;
+    let c_holder = c_component(OsStr::new("holder.json"))?;
+    let written = write_holder(&claim, &staged, &held, euid).and_then(|()| {
+        clear_errno();
+        if unsafe { libc::renameat(claim.fd(), c_staged.as_ptr(), claim.fd(), c_holder.as_ptr()) } == 0 {
+            Ok(())
+        } else {
+            Err(format!("cannot record lock holder group: {}", errno_message(last_errno())))
+        }
+    });
+    if written.is_err() {
+        unsafe { libc::unlinkat(claim.fd(), c_staged.as_ptr(), 0) };
+    }
+    written
+}
+
+fn write_holder(dir: &OpenDir, name: &str, holder: &LockHolder, euid: u32) -> Result<(), String> {
     let bytes = serde_json::to_vec_pretty(holder)
         .map_err(|error| format!("cannot record lock holder: {error}"))?;
-    let c_name = c_component(OsStr::new("holder.json"))?;
+    let c_name = c_component(OsStr::new(name))?;
     clear_errno();
     let fd = unsafe {
         libc::openat(
@@ -1750,6 +1801,31 @@ mod lock_protocol_tests {
             let refused = select_lock_root(None, None, home, || rename_probe_outcome(errno)).unwrap_err();
             assert!(refused.contains("cannot rename lock"), "{refused}");
         }
+    }
+
+    #[test]
+    fn every_lock_root_refusal_names_a_working_next_action() {
+        let home = Some(OsStr::new("/tmp/qaren-advice-home"));
+        let on = Some(OsStr::new("1"));
+        for probe in [
+            MachineParent::Failed("cannot stage lock: Permission denied".into()),
+            MachineParent::Unavailable("the caller is root, setuid or holds Linux capabilities".into()),
+        ] {
+            let refused = select_lock_root(None, on, home, || probe).unwrap_err();
+            let advice = lock_root_next_action(&refused).unwrap();
+            assert!(advice.contains("QAREN_MACHINE_LOCKS=0") && advice.contains("QAREN_LOCK_ROOT"));
+        }
+        let invalid = configured_lock_root(None, Some(OsStr::new("true")), home).unwrap_err();
+        assert_eq!(
+            lock_root_next_action(&invalid),
+            Some("unset QAREN_MACHINE_LOCKS or set it to 1 or 0")
+        );
+        let homeless = select_lock_root(None, None, None, || {
+            MachineParent::Unavailable("lock parent /run/lock is missing".into())
+        })
+        .unwrap_err();
+        assert!(lock_root_next_action(&homeless).unwrap().starts_with("set HOME"));
+        assert_eq!(lock_root_next_action("cannot create native cache root"), None);
     }
 
     #[test]

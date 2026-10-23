@@ -910,7 +910,11 @@ fn relative_lock_override_is_refused_instead_of_using_the_default() {
         "simctl list devices -j",
         CmdOutput::success(&inventory("Booted")),
     );
-    assert!(native_suite::run(&mut runner, DEVICE).is_err());
+    let refused = native_suite::run(&mut runner, DEVICE).unwrap_err();
+    assert!(
+        refused.contains("set an absolute QAREN_LOCK_ROOT"),
+        "{refused}"
+    );
     assert_eq!(runner.remaining(), 0);
     assert!(!home.join(".qaren/locks").exists());
 }

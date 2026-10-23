@@ -86,28 +86,60 @@ fn holder_records(home: &Path, run_id: &str) -> Option<PathBuf> {
     Some(home.join(".qaren").join(kind).join(run_id))
 }
 
-// No cleanup can ever run for a proven-dead holder whose records are gone, so only its owned lock is released.
-fn release_orphan(lock_dir: &Path, held: &LockHolder, liveness: Option<PidLiveness>) -> bool {
+fn records_gone(held: &LockHolder) -> bool {
+    held.home
+        .as_deref()
+        .and_then(|home| holder_records(home, &held.run_id))
+        .is_some_and(|records| {
+            matches!(std::fs::symlink_metadata(records), Err(error) if error.kind() == std::io::ErrorKind::NotFound)
+        })
+}
+
+// No cleanup can ever run for a proven-dead holder whose records are gone, so once its gated work group is gone too only its owned lock is released.
+fn release_orphan(
+    runner: &mut dyn Runner,
+    lock_dir: &Path,
+    held: &LockHolder,
+    liveness: Option<PidLiveness>,
+) -> bool {
     if !matches!(
         liveness,
         Some(PidLiveness::Dead | PidLiveness::AliveForeign)
-    ) {
+    ) || !records_gone(held)
+    {
         return false;
     }
-    let Some(records) = held
-        .home
-        .as_deref()
-        .and_then(|home| holder_records(home, &held.run_id))
-    else {
-        return false;
-    };
-    if !matches!(std::fs::symlink_metadata(&records), Err(error) if error.kind() == std::io::ErrorKind::NotFound)
-    {
+    if held.group.is_some_and(|pgid| {
+        crate::adapters::metro::group_presence(runner, pgid)
+            != crate::adapters::metro::GroupPresence::Absent
+    }) {
         return false;
     }
     matches!(
         buildplan::release_lock(lock_dir, &held.holder, &held.run_id),
         ReleaseOutcome::Removed | ReleaseOutcome::Absent
+    )
+}
+
+pub fn contended_advice(lock_dir: &Path, existing: Option<&LockHolder>) -> String {
+    let Some(held) = existing else {
+        return "wait for the holding run to finish, or clean it up with `qaren cleanup <its-run-id>`; a live or unproven holder is never taken".to_string();
+    };
+    if !records_gone(held) {
+        return format!(
+            "wait for run {} to finish, or clean it up with {}; a live or unproven holder is never taken",
+            held.run_id,
+            cleanup_command(&held.run_id, held.home.as_deref())
+        );
+    }
+    let work = held
+        .group
+        .map(|pgid| format!(" and `pgrep -g {pgid}` prints nothing"))
+        .unwrap_or_default();
+    format!(
+        "run {} left no records; once its process has exited{work}, re-run to release {}",
+        held.run_id,
+        lock_dir.display()
     )
 }
 
@@ -127,7 +159,12 @@ pub fn claim_reclaiming_orphan(
     else {
         return outcome;
     };
-    if !release_orphan(&buildplan::lock_dir(lock_root, name), held, *liveness) {
+    if !release_orphan(
+        runner,
+        &buildplan::lock_dir(lock_root, name),
+        held,
+        *liveness,
+    ) {
         return outcome;
     }
     match buildplan::claim_lock(runner, lock_root, name, holder, policy) {
@@ -188,6 +225,7 @@ pub fn try_acquire(
         identity,
         at: timefmt::iso8601_utc(now_ms),
         home: holder_home(runner),
+        group: None,
     };
     let name = lock_name(platform, device_id);
     match claim_reclaiming_orphan(runner, lock_root, &name, &holder, LockPolicy::Strict) {
@@ -202,20 +240,12 @@ pub fn try_acquire(
             liveness,
             detail,
         } => {
-            let (described, next_action) = match &existing {
-                Some(h) => (
-                    format!(" (held for run {})", h.run_id),
-                    format!(
-                        "wait for run {} to finish, or clean it up with {}; a live holder is never stolen",
-                        h.run_id,
-                        cleanup_command(&h.run_id, h.home.as_deref())
-                    ),
-                ),
-                None => (
-                    String::new(),
-                    "wait for the holding run to finish, or clean it up with `qaren cleanup <its-run-id>`; a live holder is never stolen".to_string(),
-                ),
-            };
+            let described = existing
+                .as_ref()
+                .map(|h| format!(" (held for run {})", h.run_id))
+                .unwrap_or_default();
+            let next_action =
+                contended_advice(&buildplan::lock_dir(lock_root, &name), existing.as_ref());
             Err(Box::new(Busy {
                 failure: Failure::new(
                     "lease",

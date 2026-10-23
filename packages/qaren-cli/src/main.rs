@@ -106,15 +106,9 @@ fn failed_receipt(verb: &str, failure: Failure, runner: &dyn Runner) -> Receipt 
 }
 
 fn roots_failure(detail: String) -> Failure {
-    let next_action = if detail.contains("QAREN_MACHINE_LOCKS must be") {
-        "unset QAREN_MACHINE_LOCKS or set it to 1 or 0"
-    } else if detail.contains("machine lock root") && detail.contains("HOME") {
-        "set HOME to an absolute path, or set an absolute QAREN_LOCK_ROOT to a private directory"
-    } else if detail.contains("QAREN_LOCK_ROOT") || detail.contains("machine lock root") {
-        qaren::buildplan::LOCK_ROOT_ADVICE
-    } else {
-        "set HOME to an absolute path and QAREN_NATIVE_CACHE_ROOT to a supported private absolute directory"
-    };
+    let next_action = qaren::buildplan::lock_root_next_action(&detail).unwrap_or(
+        "set HOME to an absolute path and QAREN_NATIVE_CACHE_ROOT to a supported private absolute directory",
+    );
     Failure::new(
         "validate",
         FailureCode::PrereqMissing,

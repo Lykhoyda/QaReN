@@ -1534,17 +1534,7 @@ fn lock_holder_for(ctx: &mut Ctx) -> LockHolder {
         identity: ctx.record.prepare.clone(),
         at: timefmt::iso8601_utc(ctx.runner.now_epoch_ms()),
         home: crate::lease::holder_home(ctx.runner),
-    }
-}
-
-fn holder_advice(existing: &Option<LockHolder>) -> String {
-    match existing {
-        Some(held) => format!(
-            "wait for run {} to finish, or clean it up with {}; a live or unproven holder is never taken",
-            held.run_id,
-            crate::lease::cleanup_command(&held.run_id, held.home.as_deref())
-        ),
-        None => "wait for the holding run to finish, or clean it up with `qaren cleanup <its-run-id>`; a live or unproven holder is never taken".to_string(),
+        group: None,
     }
 }
 
@@ -1587,7 +1577,13 @@ pub(crate) fn claim_build_lock(ctx: &mut Ctx, lock_root: &Path) -> Result<(), Fa
             "plan",
             FailureCode::BuildContended,
             format!("a concurrent native build holds the serialization lock: {detail}"),
-            format!("native builds are serialized; {}", holder_advice(&existing)),
+            format!(
+                "native builds are serialized; {}",
+                crate::lease::contended_advice(
+                    &buildplan::lock_dir(lock_root, &name),
+                    existing.as_ref()
+                )
+            ),
         )),
         LockOutcome::Error(detail) => Err(Failure::new(
             "plan",
@@ -1654,7 +1650,7 @@ fn claim_usb_device(ctx: &mut Ctx, lock_root: &Path, serial: &str) -> Result<(),
                 format!(
                     "physical device {serial} is exclusively claimed elsewhere{described}: {detail}"
                 ),
-                holder_advice(&existing),
+                crate::lease::contended_advice(&lock_dir, existing.as_ref()),
             ))
         }
         LockOutcome::Error(detail) => Err(Failure::new(
@@ -2966,7 +2962,21 @@ fn run_finite_build(ctx: &mut Ctx, spec: &CmdSpec) -> Result<(), Failure> {
         .resources
         .record_build_spawned(child.pid, identity)?;
     ctx.save()?;
+    let grouped = match ctx.record.resources.build_lock.as_ref() {
+        Some(lock) => buildplan::record_holder_group(
+            &lock.lock_dir,
+            &lock.holder,
+            &ctx.record.run_id,
+            child.pid,
+        ),
+        None => Ok(()),
+    };
+    if let Err(detail) = &grouped {
+        ctx.notes
+            .push(("build_lock_group".to_string(), detail.clone()));
+    }
     let started = known
+        && grouped.is_ok()
         && ctx.runner.cancellation().is_none()
         && child
             .stdin

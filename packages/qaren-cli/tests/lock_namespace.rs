@@ -485,6 +485,82 @@ fn a_proven_dead_holder_without_run_records_is_reclaimed() {
 }
 
 #[test]
+fn a_killed_owner_with_a_live_build_group_keeps_the_build_lock() {
+    use std::os::unix::process::CommandExt;
+    let fixture = Fixture::new("build-group");
+    let root = fixture.child_dir("locks");
+    let mut runner = RealRunner::new();
+    let mut owner = Command::new("/bin/sleep").arg("60").spawn().unwrap();
+    let mut build = Command::new("/bin/sleep")
+        .arg("60")
+        .process_group(0)
+        .spawn()
+        .unwrap();
+    let pgid = build.id() as i32;
+    let mut held = sample_holder("killed-build");
+    held.identity = Some(
+        qaren::runrecord::capture_pid_identity(&mut runner, owner.id() as i32)
+            .expect("ps identity"),
+    );
+    held.home = Some(fixture.path().join("deleted-home"));
+    let claimed = buildplan::claim_lock(
+        &mut runner,
+        &root,
+        "native-build-ios",
+        &held,
+        LockPolicy::Strict,
+    );
+    assert!(
+        matches!(claimed, LockOutcome::Claimed { .. }),
+        "{claimed:?}"
+    );
+    let lock = root.join("native-build-ios");
+    buildplan::record_holder_group(&lock, "qaren-killed-build", "killed-build", pgid).unwrap();
+    assert_eq!(buildplan::read_holder(&lock).unwrap().group, Some(pgid));
+    owner.kill().unwrap();
+    owner.wait().unwrap();
+    let second = lease::claim_reclaiming_orphan(
+        &mut runner,
+        &root,
+        "native-build-ios",
+        &sample_holder("second-build"),
+        LockPolicy::Strict,
+    );
+    let LockOutcome::Contended {
+        holder: Some(existing),
+        ..
+    } = &second
+    else {
+        panic!("a second build could start: {second:?}");
+    };
+    let advice = lease::contended_advice(&lock, Some(existing));
+    assert!(advice.contains(&format!("pgrep -g {pgid}")), "{advice}");
+    assert!(advice.contains(&lock.display().to_string()), "{advice}");
+    assert_eq!(
+        buildplan::read_holder(&lock).unwrap().run_id,
+        "killed-build"
+    );
+    build.kill().unwrap();
+    build.wait().unwrap();
+    let after = lease::claim_reclaiming_orphan(
+        &mut runner,
+        &root,
+        "native-build-ios",
+        &sample_holder("second-build"),
+        LockPolicy::Strict,
+    );
+    assert!(
+        matches!(
+            after,
+            LockOutcome::Claimed {
+                adopted_stale: true
+            }
+        ),
+        "{after:?}"
+    );
+}
+
+#[test]
 fn privileged_callers_keep_private_roots_but_not_the_machine_root() {
     let fixture = Fixture::new("privileged");
     let home = fixture.path().join("home");
@@ -949,6 +1025,7 @@ fn sample_holder(run: &str) -> LockHolder {
         identity: None,
         at: "2026-10-21T00:00:00Z".to_string(),
         home: None,
+        group: None,
     }
 }
 
