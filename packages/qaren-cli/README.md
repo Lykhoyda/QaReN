@@ -1782,7 +1782,8 @@ before the holder died or re-created by an orphaned build writing its output, do
 count. Before a native build or native suite is let past its start gate, its process
 group is recorded in the holder, as is a `qaren` process's own group when it leads
 one; that group must also have no live members, otherwise the refusal names the lock
-and the `pgrep -g` check to wait on. `qaren cleanup <run-id>` for a run with no
+and the `pgrep -g` check to wait on. A `qaren` group whose leader pid now belongs to
+another process is not checked, since a reused pid proves its old group is gone. `qaren cleanup <run-id>` for a run with no
 `run.json` releases that run's locks under the same proof, and the receipt of a run
 that released an orphaned lock notes it.
 Do not delete locks to bypass unresolved ownership.
