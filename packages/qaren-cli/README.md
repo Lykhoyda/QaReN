@@ -1874,7 +1874,8 @@ refuses `APP_PROCESS_UNKNOWN`; a runner built from an older checkout needs a reb
 
 `qaren check` keeps a fully passing plan in the app's `.qaren/plans/`, and `qaren plans [--json]`,
 run from the app directory, lists each `.qaren/plans/*.md` file with its `#` title, `###` block
-titles and the platforms it is flagged broken on. Listing skips symlinked files, refuses a symlinked
+titles and the platforms it is flagged broken on. Titles are read as a run reads them: HTML
+comments are ignored, and blocks come only from the `## QA` section when the file has one. Listing skips symlinked files, refuses a symlinked
 `.qaren` or `.qaren/plans`, and masks `QAREN_INPUT_*` values.
 
 The saved file is a canonical copy built by the core, not the draft's bytes: the `#` title if any,
