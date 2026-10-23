@@ -912,7 +912,9 @@ fn relative_lock_override_is_refused_instead_of_using_the_default() {
     );
     let refused = native_suite::run(&mut runner, DEVICE).unwrap_err();
     assert!(
-        refused.contains("set an absolute QAREN_LOCK_ROOT"),
+        refused.contains(
+            "set QAREN_LOCK_ROOT to an absolute path without . or .. segments, or unset it"
+        ),
         "{refused}"
     );
     assert_eq!(runner.remaining(), 0);

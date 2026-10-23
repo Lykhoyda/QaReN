@@ -11,6 +11,8 @@ static STAGING_NONCE: AtomicU64 = AtomicU64::new(1);
 pub fn lock_root_next_action(detail: &str) -> Option<&'static str> {
     if detail.contains("QAREN_MACHINE_LOCKS must be") {
         Some("unset QAREN_MACHINE_LOCKS or set it to 1 or 0")
+    } else if detail.contains("QAREN_LOCK_ROOT must") {
+        Some("set QAREN_LOCK_ROOT to an absolute path without . or .. segments, or unset it")
     } else if detail.contains("machine lock root") && detail.contains("HOME") {
         Some("set HOME to an absolute path, or set an absolute QAREN_LOCK_ROOT to a private directory")
     } else if detail.contains("QAREN_LOCK_ROOT") || detail.contains("machine lock root") {

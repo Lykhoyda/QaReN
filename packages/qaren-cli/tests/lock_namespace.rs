@@ -237,8 +237,9 @@ fn literal_dot_segments_refuse_before_lock_root_normalization() {
         assert!(buildplan::canonical_lock_root(Path::new(raw)).is_err());
     }
     for (machine, root, advice) in [
-        ("1", "/private/var/tmp/./", "QAREN_MACHINE_LOCKS=0"),
-        ("0", "/tmp/../tmp/locks", "QAREN_LOCK_ROOT"),
+        ("1", "/private/var/tmp/./", "or unset it"),
+        ("0", "/tmp/../tmp/locks", "or unset it"),
+        ("", "relative/locks", "or unset it"),
         ("true", "/tmp/locks", "set it to 1 or 0"),
     ] {
         let receipt =
@@ -247,6 +248,7 @@ fn literal_dot_segments_refuse_before_lock_root_normalization() {
         assert_eq!(receipt["failure"]["phase"], "validate");
         let next = receipt["failure"]["next_action"].as_str().unwrap();
         assert!(next.contains(advice), "{next}");
+        assert!(!next.contains("QAREN_MACHINE_LOCKS=0"), "{next}");
     }
     let receipt = prepare_receipt(&[("QAREN_MACHINE_LOCKS", "true")]);
     let next = receipt["failure"]["next_action"].as_str().unwrap();
