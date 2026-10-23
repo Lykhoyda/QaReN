@@ -444,12 +444,12 @@ fn tool(
             format!("finish the first-run download with network access: `(cd / && {program} --version)`"),
         );
     }
-    let detail = if output.exit_code.is_none() && output.stderr.contains("os error 2") {
-        format!("{program} not found on PATH")
-    } else {
-        format!("{program} --version did not run: {}", output.summary())
-    };
-    Check::problem(id, missing, detail, fix)
+    Check::problem(
+        id,
+        missing,
+        format!("{program} --version did not run: {}", output.summary()),
+        fix,
+    )
 }
 
 fn disk(runner: &mut dyn Runner, cwd: &Path, home: &Path) -> Check {
@@ -1536,19 +1536,6 @@ mod tests {
                 "the fix finishes the download doctor's offline probe needs"
             );
         }
-
-        let mut runner = MockRunner::new();
-        runner.expect_run(
-            "pnpm --version",
-            CmdOutput {
-                exit_code: None,
-                stderr: "pnpm-version: No such file or directory (os error 2)".into(),
-                ..Default::default()
-            },
-        );
-        let check = tool(&mut runner, "pnpm", "pnpm", Status::Fail, "enable it");
-        assert_eq!(check.detail, "pnpm not found on PATH");
-        assert_eq!(check.fix.as_deref(), Some("enable it"));
     }
 
     #[test]
