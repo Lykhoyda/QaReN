@@ -1918,7 +1918,7 @@ plan takes the next free suffix (`-2` to `-99`), and no file is overwritten.
 A plan run from `.qaren/plans/` is never saved again, and `qaren pr` never saves.
 
 A `check` of a file in `.qaren/plans/` flags or clears it only when the candidate has no local
-changes (`.qaren` excluded) and `HEAD` is the commit of the local `refs/remotes/origin/HEAD`, which
+changes (saved blocks and saved plans excluded) and `HEAD` is the commit of the local `refs/remotes/origin/HEAD`, which
 is never fetched. Only a definite step failure flags: a check judged `fail`, a waited or
 scrolled-to target that never appeared, a named target with no matching element, or an action that
 dispatched cleanly and left the screen unchanged. It adds `<!-- qaren:broken <platform> -->` at the

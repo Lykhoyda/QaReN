@@ -196,7 +196,7 @@ their titles, blocks and the platforms they are flagged broken on. Pass a listed
 `--plan-file` to run it again.
 
 When a saved plan runs on a clean checkout whose `HEAD` is the default-branch commit
-(`origin/HEAD`), a step failure adds `<!-- qaren:broken ios -->` (or `android`) to its first line,
+(`origin/HEAD`), a step failure inserts `<!-- qaren:broken ios -->` (or `android`) as a new first line,
 and the next such PASS removes it. Only a definite failure flags the plan: a check judged to fail,
 or an action that demonstrably did not take effect. An uncertain check, an unverified action, a
 system dialog in front of the app, an outage of the judgment service, a device or runner error, or a
