@@ -960,6 +960,113 @@ pub fn app_running_in_launchctl(launchctl_output: &str, app_id: &str) -> bool {
     })
 }
 
+// Only short single-field tokens leave a crash report; paths and free-text reasons never do.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CrashFacts {
+    pub exception: Option<String>,
+    pub termination: Option<String>,
+    pub missing_library: Option<String>,
+}
+
+const CRASH_REPORT_MAX_BYTES: u64 = 8 * 1024 * 1024;
+
+// A simulator .ips report: a JSON header line, then a JSON body whose procPath names the device.
+pub fn parse_crash_report(text: &str, app_id: &str, udid: &str) -> Option<CrashFacts> {
+    let (header, body) = text.split_once('\n')?;
+    let header: serde_json::Value = serde_json::from_str(header).ok()?;
+    let body: serde_json::Value = serde_json::from_str(body).ok()?;
+    let bundle = header
+        .get("bundleID")
+        .or_else(|| body.pointer("/bundleInfo/CFBundleIdentifier"))
+        .and_then(|b| b.as_str());
+    let on_device = body
+        .get("procPath")
+        .and_then(|p| p.as_str())
+        .is_some_and(|p| p.contains(&format!("/Devices/{udid}/")));
+    if bundle != Some(app_id) || !on_device {
+        return None;
+    }
+    let text_at = |pointer: &str| body.pointer(pointer).and_then(|v| v.as_str());
+    let termination = body.get("termination");
+    let termination_text = [
+        text_at("/termination/namespace"),
+        text_at("/termination/indicator"),
+    ]
+    .into_iter()
+    .flatten()
+    .filter_map(crash_token)
+    .collect::<Vec<_>>()
+    .join(" ");
+    let missing_library = termination
+        .into_iter()
+        .flat_map(|t| ["reasons", "details"].map(|k| t.get(k)))
+        .flatten()
+        .filter_map(|v| v.as_array())
+        .flatten()
+        .chain(termination.and_then(|t| t.get("description")))
+        .filter_map(|v| v.as_str())
+        .find_map(missing_library_name);
+    Some(CrashFacts {
+        exception: text_at("/exception/type").and_then(crash_token),
+        termination: (!termination_text.is_empty()).then_some(termination_text),
+        missing_library,
+    })
+}
+
+fn crash_token(raw: &str) -> Option<String> {
+    let ok = !raw.is_empty()
+        && raw.len() <= 64
+        && raw
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || " ._+-".contains(c));
+    ok.then(|| raw.to_string())
+}
+
+fn missing_library_name(reason: &str) -> Option<String> {
+    let (_, rest) = reason.split_once("Library not loaded: ")?;
+    let path = rest.split_whitespace().next()?;
+    let name = path
+        .split('/')
+        .find(|c| c.ends_with(".framework"))
+        .or_else(|| path.rsplit('/').next())?;
+    crash_token(name).filter(|n| !n.contains(' '))
+}
+
+// The newest report for this app on this simulator written at or after `since`.
+pub fn recent_crash_facts(
+    reports_dir: &Path,
+    app_id: &str,
+    udid: &str,
+    since: std::time::SystemTime,
+) -> Option<CrashFacts> {
+    let mut newest: Option<(std::time::SystemTime, CrashFacts)> = None;
+    for entry in std::fs::read_dir(reports_dir).ok()?.flatten() {
+        let path = entry.path();
+        if path.extension().is_none_or(|ext| ext != "ips") {
+            continue;
+        }
+        let Ok(meta) = entry.metadata() else {
+            continue;
+        };
+        let Ok(modified) = meta.modified() else {
+            continue;
+        };
+        if !meta.is_file() || modified < since || meta.len() > CRASH_REPORT_MAX_BYTES {
+            continue;
+        }
+        let Some(facts) = std::fs::read_to_string(&path)
+            .ok()
+            .and_then(|text| parse_crash_report(&text, app_id, udid))
+        else {
+            continue;
+        };
+        if newest.as_ref().is_none_or(|(at, _)| modified > *at) {
+            newest = Some((modified, facts));
+        }
+    }
+    newest.map(|(_, facts)| facts)
+}
+
 #[cfg(test)]
 mod tests {
     use super::filtered_probe;

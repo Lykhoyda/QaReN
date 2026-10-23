@@ -1081,6 +1081,54 @@ fn launchctl_parsing_requires_live_pid_and_exact_label() {
 }
 
 #[test]
+fn crash_report_yields_only_tokens_for_this_app_on_this_simulator() {
+    let udid = "AAAABBBB-1111-2222-3333-444455556666";
+    let report = |bundle: &str, device: &str, exception: &str, reason: &str| {
+        let body = serde_json::json!({
+            "procPath": format!("/Users/someone/Library/Developer/CoreSimulator/Devices/{device}/data/App.app/App"),
+            "exception": {"type": exception},
+            "termination": {"namespace": "DYLD", "indicator": "Library missing", "reasons": [reason]},
+        });
+        format!("{{\"bundleID\":\"{bundle}\"}}\n{body}")
+    };
+    let app = "com.rndevagent.testapp";
+    let dylib =
+        "Library not loaded: /usr/lib/libMissing.dylib\n  Referenced from: /Users/someone/App";
+    assert_eq!(
+        ios::parse_crash_report(&report(app, udid, "EXC_CRASH", dylib), app, udid),
+        Some(ios::CrashFacts {
+            exception: Some("EXC_CRASH".into()),
+            termination: Some("DYLD Library missing".into()),
+            missing_library: Some("libMissing.dylib".into()),
+        })
+    );
+    let leaky = ios::parse_crash_report(
+        &report(
+            app,
+            udid,
+            "/Users/someone/secret",
+            "Library not loaded: @rpath/a b/x",
+        ),
+        app,
+        udid,
+    )
+    .unwrap();
+    assert_eq!(
+        (leaky.exception, leaky.missing_library),
+        (None, Some("a".into()))
+    );
+    assert_eq!(
+        ios::parse_crash_report(&report("other.app", udid, "EXC_CRASH", dylib), app, udid),
+        None
+    );
+    assert_eq!(
+        ios::parse_crash_report(&report(app, "FFFF", "EXC_CRASH", dylib), app, udid),
+        None
+    );
+    assert_eq!(ios::parse_crash_report("not json", app, udid), None);
+}
+
+#[test]
 fn install_refusal_is_transient_only_for_the_install_coordination_signature() {
     let refusal = "An error was encountered processing the command (domain=IXErrorDomain, code=2):\nSimulator device failed to install the application.\nFailed to locate promise.\nUnderlying error (domain=IXErrorDomain, code=2):\n\tFailed to set metadata for <bundle>\n\tFailed to create promise.";
     assert!(ios::install_refusal_is_transient(refusal));

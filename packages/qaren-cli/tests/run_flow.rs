@@ -2960,6 +2960,13 @@ fn script_android_launch_walk_teardown(mock: &mut MockRunner) {
 }
 
 fn script_android_launch_walk_release(mock: &mut MockRunner, runner_running: bool) {
+    script_android_launch(mock, 0);
+    script_android_app_tick(mock, CmdOutput::success("4242\n"));
+    script_android_walk_release(mock, runner_running);
+}
+
+// Install, reverse, Metro and the deeplink, then `no_pid_ticks` readiness ticks without the app process.
+fn script_android_launch(mock: &mut MockRunner, no_pid_ticks: usize) {
     mock.expect_run(
         "install -r -d",
         CmdOutput::success("Performing Streamed Install\nSuccess\n"),
@@ -2984,6 +2991,12 @@ fn script_android_launch_walk_release(mock: &mut MockRunner, runner_running: boo
     mock.expect_run("curl", CmdOutput::success("packager-status:running"));
     mock.expect_run("expo-platform", CmdOutput::success(""));
     mock.expect_run("am start", CmdOutput::success("Starting: Intent"));
+    for _ in 0..no_pid_ticks {
+        script_android_app_tick(mock, CmdOutput::failed(1, ""));
+    }
+}
+
+fn script_android_app_tick(mock: &mut MockRunner, pidof: CmdOutput) {
     mock.expect_run("ps", CmdOutput::success(&format!("{LSTART}\n")));
     mock.expect_run("ps", CmdOutput::success("S\n"));
     mock.expect_run("lsof", CmdOutput::success("6001\n"));
@@ -2993,7 +3006,10 @@ fn script_android_launch_walk_release(mock: &mut MockRunner, runner_running: boo
         "pm path com.rndevagent.testapp",
         CmdOutput::success("package:/data/app/~~x/com.rndevagent.testapp/base.apk\n"),
     );
-    mock.expect_run("pidof com.rndevagent.testapp", CmdOutput::success("4242\n"));
+    mock.expect_run("pidof com.rndevagent.testapp", pidof);
+}
+
+fn script_android_walk_release(mock: &mut MockRunner, runner_running: bool) {
     mock.expect_run("ls-files", CmdOutput::success(""));
     script_drift_status(mock);
     mock.expect_spawn_piped("walk.js", 9000, &pass_stdout(), Some(0));
@@ -3590,8 +3606,7 @@ fn android_check_reuse_installs_the_cached_apk_by_serial() {
         .env
         .contains(&("ANDROID_SERIAL".to_string(), EMULATOR.to_string())));
     assert!(!mock.piped_stdin_text(0).contains("\"adb\""));
-    let request: serde_json::Value =
-        serde_json::from_str(mock.piped_stdin_text(0).trim()).unwrap();
+    let request: serde_json::Value = serde_json::from_str(mock.piped_stdin_text(0).trim()).unwrap();
     assert!(request["payload"]["target"]
         .get("metroBundleRequests")
         .is_none());
@@ -8097,6 +8112,97 @@ fn a_cancel_during_a_cached_ios_install_names_the_substage() {
     }
 }
 
+#[test]
+fn check_fails_fast_when_the_launched_ios_app_exits_and_names_the_missing_framework() {
+    let (repo, app) = app_repo();
+    common::write_ios_workspace(&app, "ios/First.xcworkspace");
+    configure_workspace(&app, "ios/First.xcworkspace", "Debug");
+    let files = common::IOS_NATIVE_FILES;
+    let mut seed = MockRunner::new();
+    script_preflight(&mut seed, &repo);
+    seed.expect_run("pnpm install --frozen-lockfile", CmdOutput::success(""));
+    script_provision_build(&mut seed, "xcodebuild", files);
+    script_drift_status(&mut seed);
+    script_host_probe(&mut seed, UDID, hosts_absent());
+    seed.expect_spawn_piped("walk.js", 9000, &pass_stdout(), Some(0));
+    script_core_identity(&mut seed);
+    script_teardown(&mut seed);
+    let mut req = request(&repo, &app, 30);
+    req.runs_root = repo.join("runs-seed");
+    assert_eq!(run(&mut seed, &req).result, ReceiptResult::Pass);
+
+    let home = repo.join("home");
+    let reports = home.join("Library/Logs/DiagnosticReports");
+    std::fs::create_dir_all(&reports).unwrap();
+    let body = serde_json::json!({
+        "procPath": format!("/Users/someone/Library/Developer/CoreSimulator/Devices/{UDID}/data/Containers/Bundle/Application/X/testapp.app/testapp"),
+        "exception": {"type": "EXC_CRASH"},
+        "termination": {"namespace": "DYLD", "indicator": "Library missing", "reasons": ["Library not loaded: @rpath/ReactNativeDependencies.framework/ReactNativeDependencies"]},
+    });
+    std::fs::write(
+        reports.join("testapp.ips"),
+        format!("{{\"bundleID\":\"com.rndevagent.testapp\"}}\n{body}"),
+    )
+    .unwrap();
+    let mut mock = MockRunner::new();
+    mock.environment
+        .insert("HOME".into(), home.to_string_lossy().into_owned());
+    script_preflight(&mut mock, &repo);
+    mock.expect_run("pnpm install --frozen-lockfile", CmdOutput::success(""));
+    mock.expect_run("ls-files", CmdOutput::success(files));
+    common::script_xcode(&mut mock);
+    common::script_ios_app_verification(&mut mock);
+    common::script_ios_metro_spawn(&mut mock);
+    mock.expect_run("simctl install", CmdOutput::success(""));
+    mock.expect_run("ps", CmdOutput::success(LSTART));
+    mock.expect_run("ps", CmdOutput::success("S"));
+    mock.expect_run("lsof", CmdOutput::success("6001"));
+    mock.expect_run("ps", CmdOutput::success("6000"));
+    mock.expect_run("curl", CmdOutput::success("packager-status:running"));
+    mock.expect_run("qaren-request-probe", CmdOutput::success(""));
+    mock.expect_run("expo-platform", CmdOutput::success(""));
+    common::script_devmenu_defaults(&mut mock, CmdOutput::success(""));
+    common::script_ios_launch(&mut mock);
+    for _ in 0..2 {
+        mock.expect_run("ps", CmdOutput::success(LSTART));
+        mock.expect_run("ps", CmdOutput::success("S"));
+        mock.expect_run("lsof", CmdOutput::success("6001"));
+        mock.expect_run("ps", CmdOutput::success("6000"));
+        mock.expect_run("curl", CmdOutput::success("packager-status:running"));
+        mock.expect_run("simctl get_app_container", CmdOutput::success("/c/app"));
+        mock.expect_run(
+            "simctl spawn",
+            CmdOutput::success("-\t0\tUIKitApplication:com.rndevagent.testapp[abc]"),
+        );
+    }
+    common::script_ios_metro_cleanup(&mut mock);
+    req.runs_root = repo.join("runs-exit");
+
+    let (receipt, events) = run_with_events(&mut mock, &req);
+
+    assert_eq!(receipt.result, ReceiptResult::Failed);
+    let failure = receipt.failure.as_ref().unwrap();
+    assert_eq!(failure.code, FailureCode::AppExitedAtLaunch);
+    assert_eq!(receipt.outcomes["substage"], "ready_probes");
+    assert!(failure
+        .detail
+        .to_string()
+        .contains("missing library ReactNativeDependencies.framework"));
+    let detail = failure.detail.to_string();
+    assert!(
+        detail.contains("cannot load ReactNativeDependencies.framework")
+            && detail.contains("prebuilt React Native pods mixed with source pods")
+            && detail.ends_with("then re-run"),
+        "{detail}"
+    );
+    assert_eq!(
+        failure.next_action.to_string(),
+        format!("qaren cleanup {} --json", receipt.run_id)
+    );
+    assert!(stage_trail(&events).contains(&"ready_probes failed APP_EXITED_AT_LAUNCH".to_string()));
+    assert_eq!(mock.remaining(), 0);
+}
+
 // Metro answers on the second poll, so the scripted clock advances inside reuse readiness.
 fn script_warm_launch_after_one_metro_retry(mock: &mut MockRunner) {
     common::script_ios_app_verification(mock);
@@ -8130,6 +8236,54 @@ fn script_warm_launch_after_one_metro_retry(mock: &mut MockRunner) {
         "simctl launch --terminate-running-process",
         CmdOutput::success(""),
     );
+}
+
+#[test]
+fn android_check_waits_out_a_slow_first_app_process() {
+    let (repo, app) = app_repo();
+    seed_cached_apk(&repo, &app);
+    let req = android_request(&repo, &app);
+    let mut mock = android_mock();
+    script_android_preflight(&mut mock, &repo, ONE_EMULATOR, EMULATOR);
+    mock.expect_run("pnpm install --frozen-lockfile", CmdOutput::success(""));
+    mock.expect_run("ls-files", CmdOutput::success(""));
+    // Twelve ticks span 55s without a PID, inside the first-PID grace.
+    script_android_launch(&mut mock, 12);
+    script_android_app_tick(&mut mock, CmdOutput::success("4242\n"));
+    script_android_walk_release(&mut mock, false);
+
+    let receipt = run(&mut mock, &req);
+
+    assert_eq!(receipt.result, ReceiptResult::Pass, "{:?}", receipt.failure);
+    assert_eq!(mock.remaining(), 0);
+}
+
+#[test]
+fn android_check_fails_when_the_launched_app_never_shows_a_process() {
+    let (repo, app) = app_repo();
+    seed_cached_apk(&repo, &app);
+    let req = android_request(&repo, &app);
+    let mut mock = android_mock();
+    script_android_preflight(&mut mock, &repo, ONE_EMULATOR, EMULATOR);
+    mock.expect_run("pnpm install --frozen-lockfile", CmdOutput::success(""));
+    mock.expect_run("ls-files", CmdOutput::success(""));
+    script_android_launch(&mut mock, 13);
+    script_metro_teardown(&mut mock, EMULATOR, None);
+    mock.expect_run("adb version", CmdOutput::success(ADB_CLIENT_41));
+    mock.expect_run("reverse --remove tcp:8791", CmdOutput::success(""));
+    mock.expect_run("reverse --list", CmdOutput::success(""));
+
+    let receipt = run(&mut mock, &req);
+
+    assert_eq!(receipt.result, ReceiptResult::Failed);
+    let failure = receipt.failure.as_ref().unwrap();
+    assert_eq!(failure.code, FailureCode::AppExitedAtLaunch);
+    let detail = failure.detail.to_string();
+    assert!(
+        detail.contains("was not running 60s after") && detail.contains("adb logcat"),
+        "{detail}"
+    );
+    assert_eq!(mock.remaining(), 0);
 }
 
 #[test]

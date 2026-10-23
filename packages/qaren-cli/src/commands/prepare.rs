@@ -2240,6 +2240,17 @@ pub(crate) fn run_reuse_path(ctx: &mut Ctx, plan: &BuildPlan, t: u64) -> Result<
             .udid
     });
     let app_id = ctx.record.candidate.app_id.clone();
+    let watch = AppWatch {
+        launched_ms: ctx.runner.monotonic_ms(),
+        launched_epoch_ms: ctx.runner.now_epoch_ms(),
+        // simctl launch returns only once the process exists; am start returns before it does.
+        first_pid_grace_ms: if ios_udid.is_some() {
+            0
+        } else {
+            ANDROID_FIRST_PID_GRACE_MS
+        },
+        downs: 0,
+    };
     enter_substage(ctx, Some("app_launch"));
     if matches!(ctx.record.scenario.platform, Platform::Ios) {
         ctx.bundle_requests_at_launch = ctx
@@ -2268,7 +2279,7 @@ pub(crate) fn run_reuse_path(ctx: &mut Ctx, plan: &BuildPlan, t: u64) -> Result<
     let t = ctx.mark("app_launch", t);
 
     enter_substage(ctx, Some("ready_probes"));
-    wait_ready_until(ctx, deadline)?;
+    wait_ready_until(ctx, deadline, Some(watch))?;
     ctx.mark("ready_probes", t);
     enter_substage(ctx, None);
     Ok(())
@@ -3191,12 +3202,33 @@ pub(crate) fn build_and_ready(ctx: &mut Ctx) -> Result<(), Failure> {
 
 pub(crate) fn wait_ready(ctx: &mut Ctx) -> Result<(), Failure> {
     let deadline = ctx.runner.monotonic_ms() + ctx.record.scenario.deadlines.build_seconds * 1000;
-    wait_ready_until(ctx, deadline)
+    wait_ready_until(ctx, deadline, None)
 }
 
 const READY_TICK: Duration = Duration::from_secs(5);
+const APP_DOWN_CONFIRMATIONS: u32 = 2;
+// shortcut: on Android a PID still missing this long after am start counts as the exit; switch to am start -W if slow emulators need longer.
+const ANDROID_FIRST_PID_GRACE_MS: u64 = 60_000;
 
-fn wait_ready_until(ctx: &mut Ctx, deadline: u64) -> Result<(), Failure> {
+// Watches the launch qaren itself issued; a build-owned launch is not watched.
+struct AppWatch {
+    launched_ms: u64,
+    launched_epoch_ms: u64,
+    first_pid_grace_ms: u64,
+    downs: u32,
+}
+
+enum Readiness {
+    Ready,
+    Pending,
+    AppDown,
+}
+
+fn wait_ready_until(
+    ctx: &mut Ctx,
+    deadline: u64,
+    mut watch: Option<AppWatch>,
+) -> Result<(), Failure> {
     let metro_resource = ctx.record.resources.metro.clone().expect("metro spawned");
     let identity = metro_resource.identity.clone().expect("identity captured");
     loop {
@@ -3216,9 +3248,21 @@ fn wait_ready_until(ctx: &mut Ctx, deadline: u64) -> Result<(), Failure> {
             )
             .with_evidence(vec![super::log_tail(&metro_resource.log, 25)]));
         }
-        if ready_probes_pass(ctx, &metro_resource) {
-            ensure_running(ctx.runner, "build")?;
-            return Ok(());
+        match ready_probes(ctx, &metro_resource) {
+            Readiness::Ready => {
+                ensure_running(ctx.runner, "build")?;
+                return Ok(());
+            }
+            Readiness::AppDown => {
+                if let Some(watch) = watch.as_mut() {
+                    watch.downs += 1;
+                    let since = ctx.runner.monotonic_ms().saturating_sub(watch.launched_ms);
+                    if watch.downs >= APP_DOWN_CONFIRMATIONS && since >= watch.first_pid_grace_ms {
+                        return Err(app_exited_failure(ctx, watch, since));
+                    }
+                }
+            }
+            Readiness::Pending => {}
         }
         if ctx.runner.monotonic_ms() >= deadline {
             return Err(Failure::new(
@@ -3240,7 +3284,7 @@ fn wait_ready_until(ctx: &mut Ctx, deadline: u64) -> Result<(), Failure> {
     }
 }
 
-fn ready_probes_pass(ctx: &mut Ctx, metro_resource: &MetroResource) -> bool {
+fn ready_probes(ctx: &mut Ctx, metro_resource: &MetroResource) -> Readiness {
     let port_output = ctx.runner.run(&metro::port_owner_spec(metro_resource.port));
     let port_ours = match metro::parse_port_owner(&port_output) {
         metro::PortOwners::Owned(pid) => {
@@ -3249,7 +3293,7 @@ fn ready_probes_pass(ctx: &mut Ctx, metro_resource: &MetroResource) -> bool {
         _ => false,
     };
     if !port_ours || !metro::metro_responding(ctx.runner, metro_resource.port) {
-        return false;
+        return Readiness::Pending;
     }
     let app_id = ctx.record.candidate.app_id.clone();
     match ctx.record.scenario.platform {
@@ -3262,30 +3306,100 @@ fn ready_probes_pass(ctx: &mut Ctx, metro_resource: &MetroResource) -> bool {
                 .expect("ios allocated");
             let container = ctx.runner.run(&ios::app_container_spec(&sim.udid, &app_id));
             if !container.ok() {
-                return false;
+                return Readiness::Pending;
             }
-            ios_app_running(ctx, &sim.udid, &app_id)
+            let launchctl = ctx.runner.run(&ios::launchctl_list_spec(&sim.udid));
+            if !launchctl.ok() {
+                Readiness::Pending
+            } else if ios::app_running_in_launchctl(&launchctl.stdout, &app_id) {
+                Readiness::Ready
+            } else {
+                Readiness::AppDown
+            }
         }
         Platform::Android => {
             let Some((adb, serial, server_port)) = ctx.record.resources.adb_endpoint() else {
-                return false;
+                return Readiness::Pending;
             };
             let installed =
                 ctx.runner
                     .run(&android::pm_path_spec(&adb, server_port, &serial, &app_id));
             if !installed.ok() || !installed.stdout.contains("package:") {
-                return false;
+                return Readiness::Pending;
             }
             let running = ctx
                 .runner
                 .run(&android::pidof_spec(&adb, server_port, &serial, &app_id));
-            running.ok()
-                && running
-                    .stdout
-                    .split_whitespace()
-                    .any(|t| t.parse::<u32>().is_ok())
+            let pid = running
+                .stdout
+                .split_whitespace()
+                .any(|t| t.parse::<u32>().is_ok());
+            // pidof exits 1 with no output when no process matches; anything else is an adb fault.
+            let no_process = !running.timed_out
+                && (running.ok() || running.exit_code == Some(1))
+                && running.stdout.trim().is_empty()
+                && running.stderr.trim().is_empty();
+            if running.ok() && pid {
+                Readiness::Ready
+            } else if no_process {
+                Readiness::AppDown
+            } else {
+                Readiness::Pending
+            }
         }
     }
+}
+
+fn app_exited_failure(ctx: &mut Ctx, watch: &AppWatch, since_ms: u64) -> Failure {
+    let app_id = ctx.record.candidate.app_id.clone();
+    let mut detail = format!(
+        "{app_id} was not running {}s after qaren launched it; the app exited instead of starting",
+        since_ms / 1000
+    );
+    let retry = "then re-run";
+    let next_action = match ctx.record.resources.ios_simulator.clone() {
+        Some(sim) => {
+            let reports = ctx
+                .runner
+                .env_var("HOME")
+                .map(|home| Path::new(&home).join("Library/Logs/DiagnosticReports"));
+            let since = std::time::UNIX_EPOCH
+                + Duration::from_millis(watch.launched_epoch_ms.saturating_sub(5_000));
+            let facts = reports
+                .as_deref()
+                .and_then(|dir| ios::recent_crash_facts(dir, &app_id, &sim.udid, since));
+            match &facts {
+                Some(facts) => {
+                    let parts = [
+                        facts.exception.as_ref().map(|e| format!("exception {e}")),
+                        facts
+                            .termination
+                            .as_ref()
+                            .map(|t| format!("termination {t}")),
+                        facts
+                            .missing_library
+                            .as_ref()
+                            .map(|l| format!("missing library {l}")),
+                    ];
+                    let parts: Vec<_> = parts.into_iter().flatten().collect();
+                    detail.push_str(&format!("; crash report: {}", parts.join(", ")));
+                }
+                None => detail.push_str("; no crash report for this simulator was found"),
+            }
+            match facts.and_then(|f| f.missing_library) {
+                Some(library) => format!(
+                    "the installed build cannot load {library}, which usually means an inconsistent CocoaPods install (for example prebuilt React Native pods mixed with source pods); delete ios/Pods and reinstall the pods, or run expo prebuild --clean for a generated ios dir, {retry}"
+                ),
+                None => format!(
+                    "read the newest {app_id} crash report in ~/Library/Logs/DiagnosticReports, fix the crash, {retry}"
+                ),
+            }
+        }
+        None => format!("read adb logcat for the {app_id} crash, fix it, {retry}"),
+    };
+    // Failing with owned resources replaces next_action with cleanup, so the remedy rides in detail too.
+    detail.push_str(&format!("; {next_action}"));
+    Failure::new("build", FailureCode::AppExitedAtLaunch, detail, next_action)
 }
 
 fn ios_app_running(ctx: &mut Ctx, udid: &str, app_id: &str) -> bool {

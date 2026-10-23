@@ -36,6 +36,7 @@ pub enum FailureCode {
     ArtifactInstallFailed,
     BuildFailed,
     ReadyDeadlineExceeded,
+    AppExitedAtLaunch,
     OwnershipUnproven,
     AppRemovalNotConfirmed,
     CleanupIncomplete,
