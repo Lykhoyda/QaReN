@@ -144,7 +144,7 @@ fn stuck_simulators(text: &str) -> Vec<String> {
     for line in text.lines() {
         let mut words = line.split_whitespace();
         let Some(state) = words.next() else { continue };
-        if !state.starts_with('U') || !line.contains("/launchd_sim ") {
+        if !state.starts_with('U') || words.next() != Some("launchd_sim") {
             continue;
         }
         for path in line.split_whitespace() {
@@ -504,9 +504,14 @@ mod tests {
 
     #[test]
     fn only_timeout_with_attributable_uninterruptible_simulator_evidence_fails() {
-        for (state, expected) in [("U", Status::Fail), ("S", Status::Warn)] {
+        for (state, process_name, argv0, expected) in [
+            ("U", "launchd_sim", "launchd_sim", Status::Fail),
+            ("U", "launchd_sim", "/runtime/launchd_sim", Status::Fail),
+            ("S", "launchd_sim", "launchd_sim", Status::Warn),
+            ("U", "sh", "/runtime/launchd_sim", Status::Warn),
+        ] {
             let mut runner = MockRunner::new();
-            script_mac(&mut runner, &format!("{state} launchd_sim /runtime/launchd_sim /Users/example/Library/Developer/CoreSimulator/Devices/{UDID}/data\n"), CmdOutput { timed_out: true, ..Default::default() }, VM, SYS, "CPU usage: 2% user, 3% sys, 95% idle\n");
+            script_mac(&mut runner, &format!("{state} {process_name} {argv0} /Users/example/Library/Developer/CoreSimulator/Devices/{UDID}/data\n"), CmdOutput { timed_out: true, ..Default::default() }, VM, SYS, "CPU usage: 2% user, 3% sys, 95% idle\n");
             let rows = checks(&mut runner, "macos");
             let service = row(&rows, "simulator-service");
             assert_eq!(service.status, expected);
