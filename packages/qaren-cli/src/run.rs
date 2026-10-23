@@ -1057,6 +1057,7 @@ fn run_inner(
         .collect();
     for slug in slugs {
         if let Some(hint) = crate::actions::login_hint(
+            ctx.runner,
             &app_root,
             slug,
             platform_str(req.platform),

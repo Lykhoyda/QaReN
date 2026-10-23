@@ -208,13 +208,14 @@ impl LoginCandidate {
 }
 
 pub fn login_hint(
+    runner: &mut dyn Runner,
     app_root: &Path,
     slug: &str,
     platform: &str,
     config: &crate::config::CheckConfig,
     kept: bool,
 ) -> Option<crate::receipt::Hint> {
-    let text = show_for(app_root, slug, platform, &config.app_id)?;
+    let text = show_for(runner, app_root, slug, platform, &config.app_id)?;
     let slug_quoted = serde_json::to_string(slug).ok()?;
     match config.login_block.as_deref() {
         Some(block) if block == slug => {
@@ -232,8 +233,14 @@ pub fn login_hint(
     }
 }
 
-pub fn show_for(app_root: &Path, slug: &str, platform: &str, app_id: &str) -> Option<String> {
-    let text = show(app_root, slug).ok()?;
+pub fn show_for(
+    runner: &mut dyn Runner,
+    app_root: &Path,
+    slug: &str,
+    platform: &str,
+    app_id: &str,
+) -> Option<String> {
+    let text = show(runner, app_root, slug).ok()?;
     let fields = header(&text, slug)?;
     if fields.get("platform").map(String::as_str) != Some(platform)
         || fields.get("appId").map(String::as_str) != Some(app_id)
