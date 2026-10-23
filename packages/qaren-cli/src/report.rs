@@ -27,7 +27,7 @@ pub struct LedgerSummary {
     // Passing fills whose final value was not verified, with the ledger row's value-free reason.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub unverified_fills: Vec<UnverifiedFill>,
-    // Passing presses on an in-app alert button whose closure alone did not prove which button ran.
+    // Passing presses on an in-app alert or sheet button whose closure alone did not prove which button ran.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub unverified_presses: Vec<UnverifiedPress>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
