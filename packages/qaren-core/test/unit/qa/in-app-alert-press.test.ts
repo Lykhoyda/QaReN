@@ -7,7 +7,13 @@ import { scriptedJudge, walker } from './judgment-fixtures.ts';
 
 const app = { x: 0, y: 0, width: 400, height: 800 };
 
-function wizard(alert: boolean, title = 'New task', behind = true, keyboard = false): Screen {
+function wizard(
+  alert: boolean,
+  title = 'New task',
+  behind = true,
+  keyboard = false,
+  alertType = 'Element(7)',
+): Screen {
   const nodes = [
     { ref: '@app', index: 0, type: 'Application', label: 'Tasks app', rect: app },
     { ref: '@win', index: 1, parentIndex: 0, type: 'Window', rect: app },
@@ -42,7 +48,8 @@ function wizard(alert: boolean, title = 'New task', behind = true, keyboard = fa
             ref: '@alert',
             index: 5,
             parentIndex: 4,
-            type: 'Alert',
+            type: alertType,
+            label: 'Discard changes?',
             rect: { x: 60, y: 300, width: 280, height: 160 },
           },
           {
@@ -179,4 +186,16 @@ test('a proven in-app alert button press passes without a mark', async () => {
   const row = outcome.rows.find((r) => r.line === 1);
   assert.equal(row?.outcome, 'pass');
   assert.equal(row?.reason, undefined);
+});
+
+test('an action sheet button whose tap only closes the sheet is not proven', async () => {
+  const f = walker([wizard(true, 'New task', true, false, 'Element(5)'), wizard(false)], noJudge, {
+    ok: true,
+    proven: false,
+  });
+  const outcome = await walkBlock(plan('1. Tap "Discard"'), f.deps);
+  assert.deepEqual(f.actions, ['press @discard']);
+  const row = outcome.rows.find((r) => r.line === 1);
+  assert.equal(row?.outcome, 'pass');
+  assert.match(row?.reason ?? '', /^UNVERIFIED_PRESS: /);
 });

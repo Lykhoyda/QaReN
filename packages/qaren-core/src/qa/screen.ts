@@ -1099,7 +1099,7 @@ export function join(
     if (isScrollContainerType(n.type)) scrollContainers.set(elements[i], n.type!);
     if (n.type === 'Window') windows.add(elements[i]);
     if (n.type === 'Application') applications.add(elements[i]);
-    if (n.type === 'Alert') alerts.add(elements[i]);
+    if (isAppAlertType(n.type)) alerts.add(elements[i]);
     if (n.type === 'Keyboard' || (ownWindow && windowOf(i) === keyboardWindow))
       keyboards.add(elements[i]);
     if (duplicates.has(i) || elements[i].kind !== 'text') return;
@@ -1458,6 +1458,11 @@ export function screenSignature(screen: Screen): string {
         e.side ?? null,
       ]),
   });
+}
+
+// The iOS runner sends an app's alert and action sheet as raw XCUIElement types 7 and 5.
+function isAppAlertType(type: string | undefined): boolean {
+  return type === 'Alert' || type === 'Element(7)' || type === 'Element(5)';
 }
 
 // An app-owned alert closes on any of its buttons, so its closure alone never proves which one fired.

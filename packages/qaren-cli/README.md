@@ -587,11 +587,11 @@ a multi-gesture command reports mutation `possible` because earlier gestures
 may already have run. Take a fresh snapshot of the alert and explicitly tap
 the intended button.
 
-Any button of an app alert closes it, so the alert's closure alone never proves
-which button ran. An unproven press on a button inside a native `Alert` passes
-with reason `UNVERIFIED_PRESS` when the labels, identifiers and values outside
-every alert and the keyboard are unchanged, or were not captured while the
-alert was open. The receipt's `ledger.unverified_presses` lists each such
+Any button of an app alert or action sheet closes it, so its closure alone
+never proves which button ran. An unproven press on a button inside an app
+alert or action sheet passes with reason `UNVERIFIED_PRESS` when the labels,
+identifiers and values outside every alert and the keyboard are unchanged, or
+were not captured while the alert was open. The receipt's `ledger.unverified_presses` lists each such
 passing press with its line and reason, and is omitted when empty. A later plan
 check still decides whether the intended screen followed.
 
