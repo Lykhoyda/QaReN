@@ -106,6 +106,7 @@ import {
   type LedgerRow,
   type Selector,
   type StepStart,
+  REACT_GAPS,
   buildLedger,
   screenshotName,
 } from './ledger.js';
@@ -379,9 +380,12 @@ async function walkBlockScoped(
   let recoveries = 0;
   const captureScreen: WalkerDeps['captureScreen'] = async (options) => {
     const screen = await deps.captureScreen(options);
-    const react = screen.captureCoverage?.react;
-    if (react === 'unknown' || react === 'incomplete')
-      reactGaps.set(line, reactGaps.get(line) === 'incomplete' ? 'incomplete' : react);
+    const react = screen.reactLost ? 'lost' : screen.captureCoverage?.react;
+    if (react && react !== 'complete') {
+      const prior = reactGaps.get(line);
+      if (!prior || REACT_GAPS.indexOf(react) > REACT_GAPS.indexOf(prior))
+        reactGaps.set(line, react);
+    }
     return screen;
   };
   // The interruption a step's first decline answered; null once no further recovery is allowed.
@@ -2849,7 +2853,11 @@ export async function runPlan(
       const result = withPrivateFills({ key: block.slug, outcome: 'pass', source }, privateFills);
       if (result.saved === false) return result;
       if (steps.some((row) => row.reactCoverage !== undefined))
-        return { ...result, saved: false, unsavable: 'React coverage was lost during the walk' };
+        return {
+          ...result,
+          saved: false,
+          unsavable: 'React coverage was degraded during the walk',
+        };
       const serialized = serializeBlock(block, rows, store, privacy.privateSet('persisted'));
       if ('unsavable' in serialized)
         return { ...result, saved: false, unsavable: serialized.unsavable };

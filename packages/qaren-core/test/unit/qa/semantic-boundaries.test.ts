@@ -304,8 +304,7 @@ test('observed private values stay masked after a fill, a screen change and a bl
     const f = walker([before, after, confirmation], judge);
     const markdown = `### Form\n1. Type "new-secret" into "Password"${boundary}✓ The saved confirmation is visible`;
     const result = await runPlan(parsePlan(markdown).blocks!, f.deps);
-    assert.equal(result.verdict, 'REFUSED');
-    assert.ok(result.steps.every((row) => row.outcome === 'pass'));
+    assert.equal(result.verdict, 'PASS');
     assert.deepEqual(f.actions, ['fill @password new-secret']);
     assert.ok(!JSON.stringify(result).includes('Password'));
     assert.ok(!JSON.stringify(judge.requests).includes('Password'));
@@ -464,13 +463,12 @@ const noLiteralModel = () =>
     throw new Error('literal assertions and quoted targets must be model-free');
   });
 
-test('native-only Android text proves a local literal while the redacted run refuses lost React', async () => {
+test('local literal Anton passes on native-only Android input text while the ledger stays redacted', async () => {
   const observed = nativeLiteralScreen('Anton');
   const judge = noLiteralModel();
   const f = walker([observed], judge);
   const result = await runPlan(parsePlan('✓ "Anton"\n1. Tap "Done"').blocks!, f.deps);
-  assert.equal(result.verdict, 'REFUSED');
-  assert.equal(result.steps[0].outcome, 'pass');
+  assert.equal(result.verdict, 'PASS');
   assert.deepEqual(assertionView(observed), ['Anton', 'Done']);
   assert.deepEqual(f.actions, ['press @done']);
   assert.equal(result.steps[0].text, '✓ "•••"');
@@ -504,8 +502,7 @@ test('local literal and quoted wait still match actual visible bullets', async (
     parsePlan('✓ "•••"\n1. Wait for "•••"\n2. Tap "Done"').blocks!,
     f.deps,
   );
-  assert.equal(result.verdict, 'REFUSED');
-  assert.ok(result.steps.every((row) => row.outcome === 'pass'));
+  assert.equal(result.verdict, 'PASS');
   assert.deepEqual(f.actions, ['press @done']);
   assert.ok(!JSON.stringify(result).includes('hidden-secret'));
   assert.equal(result.jev.calls, 0);

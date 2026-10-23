@@ -239,11 +239,12 @@ pub struct Row {
     pub dialog: Option<DialogTap>,
 }
 
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord)]
 #[serde(rename_all = "lowercase")]
 pub enum ReactCoverage {
     Unknown,
     Incomplete,
+    Lost,
 }
 
 impl ReactCoverage {
@@ -251,6 +252,7 @@ impl ReactCoverage {
         match self {
             Self::Unknown => "unknown",
             Self::Incomplete => "incomplete",
+            Self::Lost => "lost",
         }
     }
 }

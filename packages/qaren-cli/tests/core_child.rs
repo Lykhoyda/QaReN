@@ -760,7 +760,7 @@ fn react_coverage_loss_survives_the_child_receipt_and_report() {
     use qaren::receipt::{Receipt, ReceiptResult};
     use qaren::report::{self, ReportInput};
 
-    for coverage in ["unknown", "incomplete"] {
+    for coverage in ["unknown", "incomplete", "lost"] {
         let repo = common::temp_repo();
         let mut step: serde_json::Value = serde_json::from_str(&row(2, 1, "pass")).unwrap();
         step["reactCoverage"] = coverage.into();

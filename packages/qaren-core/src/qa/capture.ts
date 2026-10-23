@@ -577,9 +577,11 @@ async function capture(deps: CaptureDeps): Promise<Screen> {
   }
   let react: ReactObservation = {};
   let reactWarning: string | undefined;
+  let reactLost = false;
   try {
     react = await measureTiming(deps.timing, now, 'react-private', () => deps.react());
   } catch (error) {
+    reactLost = error instanceof ReactCaptureIncomplete && error.reason === 'disconnected';
     // The native snapshot carries privacy, so a missing digest only loses semantics.
     const detail = error instanceof ReactCaptureIncomplete ? ` (${error.detail})` : '';
     reactWarning = `interactive digest unavailable${detail}; React coverage is unknown`;
@@ -642,6 +644,7 @@ async function capture(deps: CaptureDeps): Promise<Screen> {
         ),
         captureCoverage,
         ...(react.renderError === true ? { renderError: true } : {}),
+        ...(reactLost ? { reactLost: true as const } : {}),
       },
       nodes,
     );

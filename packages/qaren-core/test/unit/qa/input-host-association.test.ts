@@ -635,6 +635,7 @@ function privateCapture(mode: string) {
       react: async () => {
         const observation = await captureQaReact(
           {
+            isConnected: true,
             async withPrivateHelperWorld(run) {
               return run(async (expression) => vm.runInContext(expression, sandbox));
             },

@@ -105,12 +105,17 @@ pub fn summarize(ledger: &Ledger) -> LedgerSummary {
         react_coverage_gaps: ledger
             .steps
             .iter()
-            .filter_map(|row| {
-                row.react_coverage.map(|coverage| ReactCoverageGap {
-                    line: row.line,
-                    coverage,
-                })
-            })
+            .filter_map(|row| row.react_coverage.map(|coverage| (row.line, coverage)))
+            .fold(
+                std::collections::BTreeMap::<u64, crate::core::ReactCoverage>::new(),
+                |mut gaps, (line, coverage)| {
+                    let worst = gaps.entry(line).or_insert(coverage);
+                    *worst = (*worst).max(coverage);
+                    gaps
+                },
+            )
+            .into_iter()
+            .map(|(line, coverage)| ReactCoverageGap { line, coverage })
             .collect(),
         unverified_fills: ledger
             .steps
@@ -700,6 +705,38 @@ mod tests {
         let json = serde_json::to_value(&summary).unwrap();
         assert_eq!(json["unverified_presses"][0]["line"], 2);
         assert_eq!(json["unverified_presses"][0]["reason"], press);
+    }
+
+    #[test]
+    fn summary_lists_each_react_gap_line_once_with_its_most_severe_coverage() {
+        let row = |line: u64, outcome: &str, coverage: &str| {
+            serde_json::json!({
+                "block": "b", "line": line, "attempt": 1, "kind": "step",
+                "resolvedBy": "exact", "t": 0, "outcome": outcome, "reactCoverage": coverage,
+            })
+        };
+        let ledger: Ledger = serde_json::from_value(serde_json::json!({
+            "verdict": "PASS", "path": "walk", "blocks": [],
+            "steps": [
+                row(4, "retry", "incomplete"),
+                row(4, "pass", "unknown"),
+                row(2, "retry", "unknown"),
+                row(2, "pass", "unknown"),
+                row(6, "retry", "unknown"),
+                row(6, "pass", "lost"),
+            ],
+            "jev": { "calls": 0, "medianMs": 0 },
+            "llmTurns": 0, "escapes": 0, "recoveries": 0,
+        }))
+        .unwrap();
+        assert_eq!(
+            serde_json::to_value(summarize(&ledger)).unwrap()["react_coverage_gaps"],
+            serde_json::json!([
+                {"line": 2, "coverage": "unknown"},
+                {"line": 4, "coverage": "incomplete"},
+                {"line": 6, "coverage": "lost"},
+            ])
+        );
     }
 
     #[test]

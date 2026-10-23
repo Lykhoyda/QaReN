@@ -7,6 +7,9 @@ export interface Selector {
 
 export type LedgerPath = 'walk' | 'replay' | `replay→walk@${number}`;
 
+// Ordered least severe first; only a lost connection refuses the run.
+export const REACT_GAPS = ['unknown', 'incomplete', 'lost'] as const;
+
 export interface LedgerRow {
   block: string;
   operationId?: number;
@@ -21,7 +24,7 @@ export interface LedgerRow {
   outcome: RowOutcome;
   reason?: string;
   unverifiedPress?: true;
-  reactCoverage?: 'unknown' | 'incomplete';
+  reactCoverage?: (typeof REACT_GAPS)[number];
   timing?: RowTiming;
   selector?: Selector;
   // Typed and held character counts of an unverified fill, kept out of the masked reason.
@@ -111,7 +114,7 @@ export function buildLedger(
   const speed = summarizeSpeed(steps);
   if (speed) ledger.speed = speed;
   if (failure) ledger.failure = failure;
-  const gap = steps.find((row) => row.reactCoverage !== undefined);
+  const gap = steps.find((row) => row.reactCoverage === 'lost');
   if (!failure && gap) {
     const message =
       'React coverage was lost during the walk; native evidence alone cannot verify the run.';

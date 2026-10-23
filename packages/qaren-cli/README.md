@@ -1252,16 +1252,17 @@ label, identifier and origin match; deduplication compares those fields separate
 The React digest adds semantics: a deadline, malformed-payload, validation or
 transport failure degrades React coverage to unknown without retrying capture.
 Operations requiring complete React evidence still refuse when that coverage is
-unavailable. Each affected row records `reactCoverage` as `unknown` or `incomplete`,
-including loss before an action, during its readback, or before a later reconnect.
-Native proofs can still pass their rows, but an otherwise passing run returns
-`REFUSED` with `REACT_COVERAGE_LOST` (exit 4); an existing failure stays a failure.
-Receipts carry the affected lines in `ledger.react_coverage_gaps`, and reports show
-their coverage beside each row. No new or patched block is saved from a walk with
-such a gap, even when later captures recover. Strict private React capture can scan
-up to 5,000 fibers across renderer roots, including a single-root screen. Existing
-capture and item deadlines, host-evidence and interactive-node limits still apply; incomplete
-evidence is refused.
+unavailable. Each affected row records `reactCoverage` as `unknown` or `incomplete`
+for a capture limit, or `lost` when the JS/React connection was down, including
+loss before an action, during its readback, or before a later reconnect. Native
+proofs can still pass their rows; only a `lost` row makes an otherwise passing run
+`REFUSED` with `REACT_COVERAGE_LOST` (exit 4), and an existing failure stays a
+failure. Receipts carry each affected line once, with its most severe coverage, in
+`ledger.react_coverage_gaps`, and reports show the coverage beside each row. No new
+or patched block is saved from a walk with any gap, even when later captures recover.
+Strict private React capture can scan up to 5,000 fibers across renderer roots,
+including a single-root screen. Existing capture and item deadlines, host-evidence and
+interactive-node limits still apply; incomplete evidence is refused.
 
 On composite components, the digest omits non-string `title`,
 `accessibilityLabel` and `placeholder` props without coercing or serializing them;

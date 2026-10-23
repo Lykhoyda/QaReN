@@ -177,7 +177,7 @@ test('hidden and uncertain private input contents are never proved by a model', 
   assert.equal(judge.requests.length, 0);
 });
 
-test('an incomplete native capture is never usable and missing React refuses despite native proofs', async () => {
+test('an incomplete native capture is never usable, while a missing React digest only degrades', async () => {
   const withWelcome = () =>
     observedNative([field(secret), { ref: '@welcome', type: 'StaticText', label: 'Welcome' }]);
   const incomplete = [
@@ -228,9 +228,7 @@ test('an incomplete native capture is never usable and missing React refuses des
   const plan = parsePlan(`✓ "Welcome"\n✓ "Field: ${secret}"`);
   assert.ok(plan.blocks);
   const result = await runPlan(plan.blocks, f.deps);
-  assert.equal(result.verdict, 'REFUSED', JSON.stringify(result));
-  assert.equal('code' in result && result.code, 'REACT_COVERAGE_LOST');
-  assert.ok(result.steps.every((row) => row.outcome === 'pass'));
+  assert.equal(result.verdict, 'PASS', JSON.stringify(result));
   assert.ok(reads > 0);
   assert.equal(JSON.stringify({ result, rows: f.rows }).includes(secret), false);
   const degraded = await captureScreen({

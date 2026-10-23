@@ -907,7 +907,7 @@ test('literal mutations refuse incomplete native acquisition before sends and be
   }
 });
 
-test('native literal actions still work when React acquisition is missing, but the run refuses', async () => {
+test('literal policy does not confuse missing semantic support with incomplete acquisition', async () => {
   for (const native of ['incomplete', 'unknown'] as const) {
     const observed = screen([element('@one', 'Save')]);
     observed.captureCoverage = { native: 'complete', react: 'unknown' };
@@ -918,8 +918,8 @@ test('native literal actions still work when React acquisition is missing, but t
       scriptedJudge(() => assert.fail('literal actions stay model-free')),
     );
     const result = await runPlan(parsePlan('1. Tap "Save"').blocks!, f.deps);
-    assert.equal(result.verdict, 'REFUSED');
-    assert.equal('code' in result && result.code, 'REACT_COVERAGE_LOST');
+    assert.equal(result.verdict, 'PASS');
+    assert.equal(result.steps[0].reactCoverage, 'unknown');
     assert.deepEqual(f.actions, ['press @one']);
   }
 });

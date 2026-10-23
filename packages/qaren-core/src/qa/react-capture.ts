@@ -206,7 +206,7 @@ function publicObservation(tree: unknown): ReactObservation {
 }
 
 export async function captureQaReact(
-  client: Pick<CDPClient, 'withPrivateHelperWorld'>,
+  client: Pick<CDPClient, 'withPrivateHelperWorld' | 'isConnected'>,
   typography = false,
 ): Promise<ReactObservation> {
   const started = performance.now();
@@ -265,6 +265,7 @@ export async function captureQaReact(
     return observation;
   } catch (error) {
     const ms = Math.round(performance.now() - started);
+    if (!client.isConnected) throw new ReactCaptureIncomplete('disconnected', { ms });
     const classified = error instanceof ReactCaptureIncomplete ? error : refusal;
     if (classified)
       throw new ReactCaptureIncomplete(classified.reason, { ...classified.counters, ms });

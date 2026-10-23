@@ -4,7 +4,10 @@ import { mkdtempSync, readdirSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { captureScreen, NativeCaptureError } from '../../../dist/qa/capture.js';
-import { PrivateInputCaptureError } from '../../../dist/qa/private-input.js';
+import {
+  PrivateInputCaptureError,
+  ReactCaptureIncomplete,
+} from '../../../dist/qa/private-input.js';
 import { ObservedPrivacy } from '../../../dist/qa/privacy.js';
 import type { TimingEvent } from '../../../dist/qa/timing.js';
 import { parsePlan } from '../../../dist/qa/plan.js';
@@ -36,6 +39,7 @@ function withField() {
 test('a React digest failure degrades coverage without a retry or a refusal', async () => {
   for (const failure of [
     new PrivateInputCaptureError(),
+    new ReactCaptureIncomplete('disconnected'),
     new Error('transport closed'),
     new Error('malformed digest'),
   ]) {
@@ -57,6 +61,7 @@ test('a React digest failure degrades coverage without a retry or a refusal', as
     });
     assert.deepEqual({ natives, reads }, { natives: 1, reads: 1 });
     assert.equal(screen.coverage?.react, 'unknown');
+    assert.equal(screen.reactLost, failure instanceof ReactCaptureIncomplete || undefined);
     assert.equal(events.filter((event) => event.stage === 'refresh').length, 0);
     const privacy = new ObservedPrivacy();
     privacy.observe(screen);
@@ -66,9 +71,15 @@ test('a React digest failure degrades coverage without a retry or a refusal', as
 });
 
 test('reconnected React cannot erase a pre-act or post-act gap or teach blocks from that walk', async () => {
+  const gaps = [
+    ['unknown', () => new ReactCaptureIncomplete('deadline')],
+    ['unknown', () => new Error('helper failed: private detail')],
+    ['incomplete', undefined],
+    ['lost', () => new ReactCaptureIncomplete('disconnected')],
+  ] as const;
   for (const platform of ['ios', 'android'] as const) {
     for (const mode of ['walk', 'replay'] as const) {
-      for (const gap of ['unknown', 'incomplete'] as const) {
+      for (const [gap, failure] of gaps) {
         for (const lostAt of [2, 3]) {
           const appRoot = mkdtempSync(join(tmpdir(), 'react-reconnect-'));
           try {
@@ -88,7 +99,7 @@ test('reconnected React cannot erase a pre-act or post-act gap or teach blocks f
                 react: async () => {
                   reads += 1;
                   if (lose && reads === lostAt) {
-                    if (gap === 'unknown') throw new Error('transport closed: private detail');
+                    if (failure) throw failure();
                     return { interactive: [], verdict: { state: 'degraded', complete: false } };
                   }
                   return {
@@ -107,7 +118,7 @@ test('reconnected React cannot erase a pre-act or post-act gap or teach blocks f
             reads = 0;
             lose = true;
             const result = await runPlan(blocks, f.deps, [], store);
-            assert.equal(result.verdict, 'REFUSED');
+            assert.equal(result.verdict, gap === 'lost' ? 'REFUSED' : 'PASS');
             assert.equal(result.path, mode);
             assert.deepEqual(
               result.steps.map((row) => row.reactCoverage),
@@ -145,7 +156,7 @@ test('coverage gaps preserve an existing failed row instead of replacing its fai
         resolvedBy: 'exact',
         t: 0,
         outcome: 'fail',
-        reactCoverage: 'unknown',
+        reactCoverage: 'lost',
       },
     ],
     failure,
@@ -167,49 +178,56 @@ test('a native snapshot failure still refuses', async () => {
   );
 });
 
-test('a post-act React disconnect refuses the run and cannot save a native-proven block', async () => {
-  const appRoot = mkdtempSync(join(tmpdir(), 'react-coverage-'));
-  try {
-    let reads = 0;
-    const f = walker(
-      [],
-      scriptedJudge(() => assert.fail('a quoted tap needs no model')),
-    );
-    f.deps.captureScreen = (options) =>
-      captureScreen({
-        timing: options?.timing,
-        native: async () => ({ ...nativeCapture(), presenceCapture: undefined }),
-        react: async () => {
-          reads += 1;
-          if (reads === 2) throw new PrivateInputCaptureError();
-          return {
-            interactive: [
-              { role: 'button', testID: 'save', capabilities: { press: true, fill: false } },
-            ],
-            verdict: { state: 'ok', path: 'interactive', complete: true },
-            hostEvidence: { complete: true, hosts: [] },
-          };
-        },
+test('only a post-act React disconnect refuses; a capture limit passes; neither saves a block', async () => {
+  for (const [failure, coverage, verdict, exit] of [
+    [new ReactCaptureIncomplete('disconnected'), 'lost', 'REFUSED', 4],
+    [new ReactCaptureIncomplete('interactive-cap'), 'unknown', 'PASS', 0],
+    [new ReactCaptureIncomplete('verdict-reasons:scan-budget-exhausted'), 'unknown', 'PASS', 0],
+    [new PrivateInputCaptureError(), 'unknown', 'PASS', 0],
+  ] as const) {
+    const appRoot = mkdtempSync(join(tmpdir(), 'react-coverage-'));
+    try {
+      let reads = 0;
+      const f = walker(
+        [],
+        scriptedJudge(() => assert.fail('a quoted tap needs no model')),
+      );
+      f.deps.captureScreen = (options) =>
+        captureScreen({
+          timing: options?.timing,
+          native: async () => ({ ...nativeCapture(), presenceCapture: undefined }),
+          react: async () => {
+            reads += 1;
+            if (reads === 2) throw failure;
+            return {
+              interactive: [
+                { role: 'button', testID: 'save', capabilities: { press: true, fill: false } },
+              ],
+              verdict: { state: 'ok', path: 'interactive', complete: true },
+              hostEvidence: { complete: true, hosts: [] },
+            };
+          },
+        });
+      const result = await runPlan(parsePlan('1. Tap "save"').blocks!, f.deps, [], {
+        appRoot,
+        appId: 'com.test',
+        platform: 'ios',
       });
-    const result = await runPlan(parsePlan('1. Tap "save"').blocks!, f.deps, [], {
-      appRoot,
-      appId: 'com.test',
-      platform: 'ios',
-    });
-    assert.equal(result.verdict, 'REFUSED', JSON.stringify(result));
-    assert.equal('code' in result && result.code, 'REACT_COVERAGE_LOST');
-    assert.equal(result.steps[0].reactCoverage, 'unknown');
-    assert.equal(f.rows[0].reactCoverage, 'unknown');
-    assert.deepEqual(result.blocksWritten, []);
-    assert.equal(result.blocks[0].saved, false);
-    assert.match(result.blocks[0].unsavable!, /React coverage/);
-    assert.deepEqual(readdirSync(appRoot), []);
-    const output: string[] = [];
-    const writer = createWriter((line) => output.push(line), 'react-loss');
-    assert.equal(writer.result(resultForWalk(result, 'lease')), 4);
-    assert.equal(JSON.parse(output[0]).payload.steps[0].reactCoverage, 'unknown');
-    assert.deepEqual(f.actions, ['press @e1']);
-  } finally {
-    rmSync(appRoot, { recursive: true, force: true });
+      assert.equal(result.verdict, verdict, JSON.stringify(result));
+      assert.equal('code' in result && result.code, verdict === 'REFUSED' && 'REACT_COVERAGE_LOST');
+      assert.equal(result.steps[0].reactCoverage, coverage);
+      assert.equal(f.rows[0].reactCoverage, coverage);
+      assert.deepEqual(result.blocksWritten, []);
+      assert.equal(result.blocks[0].saved, false);
+      assert.match(result.blocks[0].unsavable!, /React coverage/);
+      assert.deepEqual(readdirSync(appRoot), []);
+      const output: string[] = [];
+      const writer = createWriter((line) => output.push(line), 'react-loss');
+      assert.equal(writer.result(resultForWalk(result, 'lease')), exit);
+      assert.equal(JSON.parse(output[0]).payload.steps[0].reactCoverage, coverage);
+      assert.deepEqual(f.actions, ['press @e1']);
+    } finally {
+      rmSync(appRoot, { recursive: true, force: true });
+    }
   }
 });

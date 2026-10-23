@@ -223,7 +223,8 @@ for (const typography of [false, true]) {
 function mockClient(responses: unknown[]) {
   const calls: Array<{ expression: string; timeoutMs: number }> = [];
   let operations = 0;
-  const client: Pick<CDPClient, 'withPrivateHelperWorld'> = {
+  const client: Pick<CDPClient, 'withPrivateHelperWorld' | 'isConnected'> = {
+    isConnected: true,
     async withPrivateHelperWorld(operation) {
       operations++;
       return operation(async (expression, timeoutMs) => {
@@ -336,7 +337,8 @@ test('ordinary public tree content is not claimed to be private-channel redacted
 });
 
 test('missing API or transport exceptions become constant refusals with no fallback', async () => {
-  const client: Pick<CDPClient, 'withPrivateHelperWorld'> = {
+  const client: Pick<CDPClient, 'withPrivateHelperWorld' | 'isConnected'> = {
+    isConnected: true,
     async withPrivateHelperWorld() {
       throw new Error(`beginQaCapture is not a function: ${sentinel}`);
     },
@@ -422,7 +424,8 @@ test('monotonic overall deadline includes freshness and prevents begin after tim
   t.mock.method(performance, 'now', () => now);
   let release!: () => void;
   let calls = 0;
-  const client: Pick<CDPClient, 'withPrivateHelperWorld'> = {
+  const client: Pick<CDPClient, 'withPrivateHelperWorld' | 'isConnected'> = {
+    isConnected: true,
     async withPrivateHelperWorld(operation) {
       await new Promise<void>((resolve) => {
         release = resolve;
@@ -451,7 +454,8 @@ test('each call receives only remaining budget and polling sleeps are bounded', 
   let now = 0;
   t.mock.method(performance, 'now', () => now);
   const timeouts: number[] = [];
-  const client: Pick<CDPClient, 'withPrivateHelperWorld'> = {
+  const client: Pick<CDPClient, 'withPrivateHelperWorld' | 'isConnected'> = {
+    isConnected: true,
     async withPrivateHelperWorld(operation) {
       now = 400;
       return operation(async (_, timeout) => {
@@ -480,7 +484,8 @@ test('hung begin and late completion cannot bypass the overall deadline', async 
   t.mock.method(performance, 'now', () => now);
   let release!: (value: unknown) => void;
   let calls = 0;
-  const client: Pick<CDPClient, 'withPrivateHelperWorld'> = {
+  const client: Pick<CDPClient, 'withPrivateHelperWorld' | 'isConnected'> = {
+    isConnected: true,
     async withPrivateHelperWorld(operation) {
       return operation(async () => {
         calls++;
@@ -506,7 +511,8 @@ test('hung begin and late completion cannot bypass the overall deadline', async 
 test('port completion after the monotonic deadline cannot return an observation', async (t) => {
   let now = 0;
   t.mock.method(performance, 'now', () => now);
-  const client: Pick<CDPClient, 'withPrivateHelperWorld'> = {
+  const client: Pick<CDPClient, 'withPrivateHelperWorld' | 'isConnected'> = {
+    isConnected: true,
     async withPrivateHelperWorld(operation) {
       const observation = await operation(async () => ({ ...ready() }));
       now = 1501;
@@ -529,7 +535,8 @@ test('malformed ready tree processing across the deadline remains a permanent re
     now = 1501;
     return parse(text);
   });
-  const client: Pick<CDPClient, 'withPrivateHelperWorld'> = {
+  const client: Pick<CDPClient, 'withPrivateHelperWorld' | 'isConnected'> = {
+    isConnected: true,
     async withPrivateHelperWorld(operation) {
       return operation(async () => {
         now = 1499;
@@ -553,7 +560,8 @@ test('a transport error after the deadline remains a permanent refusal', async (
   t.mock.timers.enable({ apis: ['setTimeout'] });
   let now = 0;
   t.mock.method(performance, 'now', () => now);
-  const client: Pick<CDPClient, 'withPrivateHelperWorld'> = {
+  const client: Pick<CDPClient, 'withPrivateHelperWorld' | 'isConnected'> = {
+    isConnected: true,
     async withPrivateHelperWorld() {
       now = 1501;
       throw new Error(sentinel);
@@ -831,18 +839,21 @@ test('a producer refusal forwards its fixed cause and counters, and anything els
 });
 
 test('deadline, transport and helper-world failures are told apart', async () => {
-  const pending: Pick<CDPClient, 'withPrivateHelperWorld'> = {
+  const pending: Pick<CDPClient, 'withPrivateHelperWorld' | 'isConnected'> = {
+    isConnected: true,
     withPrivateHelperWorld: () => new Promise(() => {}),
   };
   await assert.rejects(captureQaReact(pending), classified('deadline'));
-  const broken: Pick<CDPClient, 'withPrivateHelperWorld'> = {
+  const broken: Pick<CDPClient, 'withPrivateHelperWorld' | 'isConnected'> = {
+    isConnected: true,
     async withPrivateHelperWorld() {
       throw new Error(`Private helper world unavailable ${sentinel}`);
     },
   };
   await assert.rejects(captureQaReact(broken), classified('evaluate-error'));
   // The real helper world rewraps operation errors, so the classified refusal must survive it.
-  const rewrapping: Pick<CDPClient, 'withPrivateHelperWorld'> = {
+  const rewrapping: Pick<CDPClient, 'withPrivateHelperWorld' | 'isConnected'> = {
+    isConnected: true,
     async withPrivateHelperWorld(operation) {
       try {
         return await operation(async () => ({ ...ready(), tree: `{${sentinel}` }));
@@ -852,6 +863,27 @@ test('deadline, transport and helper-world failures are told apart', async () =>
     },
   };
   await assert.rejects(captureQaReact(rewrapping), classified('tree-shape'));
+});
+
+test('a dropped connection is told apart from a capture limit, even past the deadline', async () => {
+  const dropped = { isConnected: true };
+  const pending: Pick<CDPClient, 'withPrivateHelperWorld' | 'isConnected'> = {
+    get isConnected() {
+      return dropped.isConnected;
+    },
+    withPrivateHelperWorld: () => {
+      dropped.isConnected = false;
+      return new Promise(() => {});
+    },
+  };
+  await assert.rejects(captureQaReact(pending), classified('disconnected'));
+  const broken: Pick<CDPClient, 'withPrivateHelperWorld' | 'isConnected'> = {
+    isConnected: false,
+    async withPrivateHelperWorld() {
+      throw new Error(`Private helper world unavailable ${sentinel}`);
+    },
+  };
+  await assert.rejects(captureQaReact(broken), classified('disconnected'));
 });
 
 test('the real producer refusal reaches the warning as a value-free cause with counters', async () => {

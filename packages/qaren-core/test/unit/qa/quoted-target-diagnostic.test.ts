@@ -135,13 +135,11 @@ test('a failed quoted press reports matches inside the trusted viewport', async 
   ]);
 });
 
-test('a native-proven quoted wait emits no target-failure diagnostic despite lost React', async () => {
+test('a successful quoted wait emits no failure diagnostic', async () => {
   const native = nodes();
   native[4].rect = { x: 20, y: 200, width: 160, height: 60 };
   native[4].type = 'StaticText';
   const { result, logs } = await walk('1. Wait for "Card"', native);
-  assert.equal(result.verdict, 'REFUSED');
-  assert.equal(result.steps[0].outcome, 'pass');
-  assert.equal(result.steps[0].reactCoverage, 'unknown');
+  assert.equal(result.verdict, 'PASS');
   assert.equal(logs.filter((line) => line.startsWith('quoted-target=')).length, 0);
 });
