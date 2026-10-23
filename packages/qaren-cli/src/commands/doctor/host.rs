@@ -194,7 +194,7 @@ fn memory_row(memory: Option<Memory>, os: &str) -> Check {
         format!(", {:.1} GiB compressed", bytes as f64 / GIB)
     });
     let capacity = memory.lanes();
-    let detail = format!("{:.1} GiB free, {:.1} GiB headroom ({basis}){compressed}; memory pressure {pressure}; headroom for {capacity} more concurrent lane(s) beyond those booted (2 GiB host reserve + 4 GiB per lane)", memory.free as f64 / GIB, memory.available as f64 / GIB);
+    let detail = format!("{:.1} GiB free, {:.1} GiB headroom ({basis}){compressed}; memory pressure {pressure}; headroom for {capacity} more concurrent lane(s) beyond those booted (4 GiB per lane: simulator, app and Metro share)", memory.free as f64 / GIB, memory.available as f64 / GIB);
     if memory.constrained() || memory.pressure.is_none() {
         Check::warn("host-memory", detail, "use fewer concurrent lanes and close unneeded apps; re-run doctor after pressure returns to normal; coordinate borrowed devices with their owners")
     } else {
@@ -531,7 +531,7 @@ mod tests {
             .contains("8.4 GiB headroom (free + speculative + inactive)"));
         assert!(memory
             .detail
-            .contains("headroom for 1 more concurrent lane(s)"));
+            .contains("headroom for 2 more concurrent lane(s)"));
     }
 
     #[test]

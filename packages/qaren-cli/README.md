@@ -72,9 +72,9 @@ pnpm that Corepack enabled but has not yet downloaded fails until you run
 ### Host budget
 
 Setup runs Doctor before its smoke run. Host capacity is a conservative snapshot,
-not a hardware guarantee: reserve 2 GiB for the host, then budget 4 GiB of remaining
-memory headroom per concurrent simulator/emulator lane. The recommendation is
-`floor(max(headroom - 2 GiB, 0) / 4 GiB)` more lanes beyond those already booted,
+not a hardware guarantee: each concurrent simulator/emulator lane needs about 4 GiB
+of headroom for the device, the app and its share of Metro. The recommendation is
+`floor(headroom / 4 GiB)` more lanes beyond those already booted,
 whose memory is already in use. Elevated pressure or fewer than one lane's headroom
 warns. Recheck after closing lanes or apps: memory usage changes during builds.
 

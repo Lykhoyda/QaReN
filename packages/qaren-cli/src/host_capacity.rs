@@ -1,5 +1,4 @@
 const GIB: u64 = 1024 * 1024 * 1024;
-pub const HOST_RESERVE: u64 = 2 * GIB;
 pub const LANE_HEADROOM: u64 = 4 * GIB;
 
 pub struct Memory {
@@ -11,7 +10,7 @@ pub struct Memory {
 
 impl Memory {
     pub fn lanes(&self) -> u64 {
-        self.available.saturating_sub(HOST_RESERVE) / LANE_HEADROOM
+        self.available / LANE_HEADROOM
     }
 
     pub fn constrained(&self) -> bool {
@@ -36,16 +35,16 @@ mod tests {
     use super::*;
 
     #[test]
-    fn headroom_reserves_the_host_before_budgeting_lanes() {
+    fn each_lane_needs_its_full_headroom() {
         let mut memory = Memory {
             free: 0,
-            available: HOST_RESERVE - 1,
+            available: LANE_HEADROOM - 1,
             compressed: None,
             pressure: Some(false),
         };
         assert_eq!(memory.lanes(), 0);
         assert!(memory.constrained());
-        memory.available = HOST_RESERVE + LANE_HEADROOM;
+        memory.available = LANE_HEADROOM;
         assert_eq!(memory.lanes(), 1);
         assert!(!memory.constrained());
         memory.pressure = Some(true);
