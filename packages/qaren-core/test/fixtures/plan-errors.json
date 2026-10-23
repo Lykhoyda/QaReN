@@ -117,6 +117,23 @@
     "phase": "plan-preflight"
   },
   {
+    "name": "fallback fill beside a typed value that occurs in the reason",
+    "plan": "1. Type \"text\" into \"Notes\"\n2. Provide hello as a greeting",
+    "line": 2,
+    "reason": "fill fallback needs Verb \"text\" into/in target or target with text/value \"text\"; use Type \"text\" into target otherwise",
+    "nextAction": "use Type \"text\" into \"field\"",
+    "choice": "fill",
+    "phase": "plan-preflight"
+  },
+  {
+    "name": "action ID collision beside a typed value that occurs in the reason",
+    "plan": "### aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\n1. Type \"same\" into \"A\"\n### aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-635361c48bb9eab1\n1. Type \"action\" into \"B\"",
+    "line": 3,
+    "reason": "distinct block titles produce the same action ID",
+    "nextAction": "rename one block so its action ID is distinct",
+    "phase": "plan-preflight"
+  },
+  {
     "name": "fallback scroll",
     "plan": "1. Swipe around",
     "line": 1,

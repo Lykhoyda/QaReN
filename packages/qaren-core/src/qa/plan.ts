@@ -88,11 +88,13 @@ const PLAN_REPAIRS: Record<string, string> = {
     'use Scroll down, Scroll up, or Scroll down until "target"',
 };
 
+const knownProblem = (reason: string): string | undefined =>
+  Object.keys(PLAN_REPAIRS).find((problem) => reason.startsWith(problem));
+
 export function planDiagnostics(refused: RefusedLine[]): PlanDiagnostic[] {
   return refused.map((entry) => {
     const reason =
-      Object.keys(PLAN_REPAIRS).find((problem) => entry.reason.startsWith(problem)) ??
-      'the line is unsupported or the verb judgment is unsure';
+      knownProblem(entry.reason) ?? 'the line is unsupported or the verb judgment is unsure';
     return { line: Math.max(1, entry.line), reason, nextAction: PLAN_REPAIRS[reason] };
   });
 }
@@ -334,18 +336,23 @@ function projectRefusals(
   const identifiers = headings
     .filter((heading) => matchPrivate(heading, set, 'identifier').hit)
     .map(slugify);
-  return refused.map((entry) => ({
-    ...entry,
-    text: projectPlanLine(entry.text, set).text,
-    reason: matchPrivate(
-      identifiers.reduce(
-        (reason, identifier) => reason.split(`"${identifier}"`).join(`"${MASK}"`),
-        entry.reason,
-      ),
-      set,
-      'durable',
-    ).text,
-  }));
+  return refused.map((entry) => {
+    const problem = knownProblem(entry.reason) ?? '';
+    return {
+      ...entry,
+      text: projectPlanLine(entry.text, set).text,
+      reason:
+        problem +
+        matchPrivate(
+          identifiers.reduce(
+            (reason, identifier) => reason.split(`"${identifier}"`).join(`"${MASK}"`),
+            entry.reason.slice(problem.length),
+          ),
+          set,
+          'durable',
+        ).text,
+    };
+  });
 }
 
 function scanPlan(
