@@ -1320,6 +1320,7 @@ fn script_ready_recheck(mock: &mut MockRunner, native_files: &str) {
         "simctl spawn",
         CmdOutput::success("512\t0\tUIKitApplication:com.rndevagent.testapp[abc]"),
     );
+    mock.expect_run("simctl spawn", CmdOutput::success(common::APP_RUNNING));
     mock.expect_run("ls-files", CmdOutput::success(native_files)); // fingerprint recheck
     common::script_xcode(mock);
 }
@@ -4662,6 +4663,7 @@ fn fresh_install_resets_or_proves_absence_before_cached_install_under_the_same_l
             "simctl spawn",
             CmdOutput::success("512\t0\tUIKitApplication:com.rndevagent.testapp[abc]"),
         );
+        mock.expect_run("simctl spawn", CmdOutput::success(common::APP_RUNNING));
         mock.expect_run("ls-files", CmdOutput::success(""));
         common::script_xcode(&mut mock);
         script_drift_status(&mut mock);

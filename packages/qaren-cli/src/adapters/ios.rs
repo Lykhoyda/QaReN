@@ -949,14 +949,17 @@ pub fn parse_sim_named(list_json: &str, name: &str) -> SimNamed {
 
 // launchctl list rows are "PID Status Label"; a loaded-but-dead job shows "-" as PID.
 pub fn app_running_in_launchctl(launchctl_output: &str, app_id: &str) -> bool {
+    app_pid_in_launchctl(launchctl_output, app_id).is_some()
+}
+
+pub fn app_pid_in_launchctl(launchctl_output: &str, app_id: &str) -> Option<u32> {
     let label_prefix = format!("UIKitApplication:{app_id}[");
-    launchctl_output.lines().any(|line| {
+    launchctl_output.lines().find_map(|line| {
         let mut cols = line.split_whitespace();
-        let pid_ok = cols.next().is_some_and(|pid| pid.parse::<u32>().is_ok());
-        let label_ok = cols
-            .nth(1)
-            .is_some_and(|label| label.starts_with(&label_prefix));
-        pid_ok && label_ok
+        let pid = cols.next()?.parse::<u32>().ok()?;
+        cols.nth(1)
+            .is_some_and(|label| label.starts_with(&label_prefix))
+            .then_some(pid)
     })
 }
 
@@ -1024,12 +1027,12 @@ fn crash_token(raw: &str) -> Option<String> {
 
 fn missing_library_name(reason: &str) -> Option<String> {
     let (_, rest) = reason.split_once("Library not loaded: ")?;
-    let path = rest.split_whitespace().next()?;
+    let path = rest.lines().next()?.trim();
     let name = path
         .split('/')
         .find(|c| c.ends_with(".framework"))
         .or_else(|| path.rsplit('/').next())?;
-    crash_token(name).filter(|n| !n.contains(' '))
+    crash_token(name)
 }
 
 // The newest report for this app on this simulator written at or after `since`.

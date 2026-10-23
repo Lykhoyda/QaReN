@@ -3209,6 +3209,8 @@ const READY_TICK: Duration = Duration::from_secs(5);
 const APP_DOWN_CONFIRMATIONS: u32 = 2;
 // shortcut: on Android a PID still missing this long after am start counts as the exit; switch to am start -W if slow emulators need longer.
 const ANDROID_FIRST_PID_GRACE_MS: u64 = 60_000;
+// simctl launch returns before dyld finishes loading, so a first live PID must outlast it.
+const IOS_LAUNCH_SETTLE: Duration = Duration::from_millis(1_250);
 
 // Watches the launch qaren itself issued; a build-owned launch is not watched.
 struct AppWatch {
@@ -3219,7 +3221,7 @@ struct AppWatch {
 }
 
 enum Readiness {
-    Ready,
+    Ready(Option<u32>),
     Pending,
     AppDown,
 }
@@ -3249,7 +3251,25 @@ fn wait_ready_until(
             .with_evidence(vec![super::log_tail(&metro_resource.log, 25)]));
         }
         match ready_probes(ctx, &metro_resource) {
-            Readiness::Ready => {
+            Readiness::Ready(pid) => {
+                if let (Some(watch), Some(pid)) = (watch.take(), pid) {
+                    ctx.runner.sleep(IOS_LAUNCH_SETTLE);
+                    let udid = ctx
+                        .record
+                        .resources
+                        .ios_simulator
+                        .clone()
+                        .expect("ios allocated")
+                        .udid;
+                    let app_id = ctx.record.candidate.app_id.clone();
+                    let launchctl = ctx.runner.run(&ios::launchctl_list_spec(&udid));
+                    if launchctl.ok()
+                        && ios::app_pid_in_launchctl(&launchctl.stdout, &app_id) != Some(pid)
+                    {
+                        let since = ctx.runner.monotonic_ms().saturating_sub(watch.launched_ms);
+                        return Err(app_exited_failure(ctx, &watch, since));
+                    }
+                }
                 ensure_running(ctx.runner, "build")?;
                 return Ok(());
             }
@@ -3311,8 +3331,8 @@ fn ready_probes(ctx: &mut Ctx, metro_resource: &MetroResource) -> Readiness {
             let launchctl = ctx.runner.run(&ios::launchctl_list_spec(&sim.udid));
             if !launchctl.ok() {
                 Readiness::Pending
-            } else if ios::app_running_in_launchctl(&launchctl.stdout, &app_id) {
-                Readiness::Ready
+            } else if let Some(pid) = ios::app_pid_in_launchctl(&launchctl.stdout, &app_id) {
+                Readiness::Ready(Some(pid))
             } else {
                 Readiness::AppDown
             }
@@ -3340,7 +3360,7 @@ fn ready_probes(ctx: &mut Ctx, metro_resource: &MetroResource) -> Readiness {
                 && running.stdout.trim().is_empty()
                 && running.stderr.trim().is_empty();
             if running.ok() && pid {
-                Readiness::Ready
+                Readiness::Ready(None)
             } else if no_process {
                 Readiness::AppDown
             } else {
@@ -3386,7 +3406,10 @@ fn app_exited_failure(ctx: &mut Ctx, watch: &AppWatch, since_ms: u64) -> Failure
                 }
                 None => detail.push_str("; no crash report for this simulator was found"),
             }
-            match facts.and_then(|f| f.missing_library) {
+            match facts
+                .and_then(|f| f.missing_library)
+                .filter(|l| l.ends_with(".framework"))
+            {
                 Some(library) => format!(
                     "the installed build cannot load {library}, which usually means an inconsistent CocoaPods install (for example prebuilt React Native pods mixed with source pods); delete ios/Pods and reinstall the pods, or run expo prebuild --clean for a generated ios dir, {retry}"
                 ),

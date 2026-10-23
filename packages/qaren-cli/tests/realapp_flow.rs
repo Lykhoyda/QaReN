@@ -603,6 +603,7 @@ fn assert_ios_prepare_reuses_cached_client(workspace: bool) {
         "simctl spawn",
         CmdOutput::success("512\t0\tUIKitApplication:com.rndevagent.testapp[abc]"),
     );
+    mock.expect_run("simctl spawn", CmdOutput::success(common::APP_RUNNING));
     mock.expect_run("git", CmdOutput::success(&format!("{}\n", "b".repeat(40))));
     mock.expect_run("git", CmdOutput::success(""));
     mock.expect_run("ls-files", CmdOutput::success(""));

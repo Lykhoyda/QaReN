@@ -237,6 +237,7 @@ pub fn write_ios_workspace(root: &std::path::Path, workspace: &str) {
 }
 
 pub const IOS_NATIVE_FILES: &str = "test-app/ios/Podfile\0";
+pub const APP_RUNNING: &str = "512\t0\tUIKitApplication:com.rndevagent.testapp[abc]";
 
 pub fn script_ios_app_verification(mock: &mut MockRunner) {
     mock.expect_run("plutil", CmdOutput::success(&ios_app_info()));

@@ -1495,8 +1495,11 @@ An unproven install with a spent budget fails with
 `ARTIFACT_INSTALL_FAILED`. Host load is diagnostic only. After its own launch,
 readiness polling fails `APP_EXITED_AT_LAUNCH` once the app process is twice
 seen gone instead of waiting out the deadline (on Android, only after 60 seconds
-without a first PID). On iOS the detail names the exception, dyld termination
-and missing library from the matching simulator crash report, never its paths.
+without a first PID). On iOS the first live sighting must keep the same PID
+about a second later, so an exit during dyld load is caught too. On iOS the
+detail names the exception, dyld termination and missing library from the
+matching simulator crash report, never its paths; only a missing framework gets
+the CocoaPods remedy.
 Other manifest and launch errors remain `BUILD_FAILED`; clean up retained
 resources before retrying those errors.
 

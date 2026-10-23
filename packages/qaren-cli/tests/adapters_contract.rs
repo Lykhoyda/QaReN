@@ -1078,6 +1078,13 @@ fn launchctl_parsing_requires_live_pid_and_exact_label() {
         other_app,
         "com.rndevagent.testapp"
     ));
+    assert_eq!(
+        ios::app_pid_in_launchctl(
+            &format!("{dead}\n{other_app}\n{running}"),
+            "com.rndevagent.testapp"
+        ),
+        Some(512)
+    );
 }
 
 #[test]
@@ -1107,7 +1114,7 @@ fn crash_report_yields_only_tokens_for_this_app_on_this_simulator() {
             app,
             udid,
             "/Users/someone/secret",
-            "Library not loaded: @rpath/a b/x",
+            "Library not loaded: @rpath/My SDK.framework/My SDK\n  Referenced from: /Users/someone/App",
         ),
         app,
         udid,
@@ -1115,7 +1122,7 @@ fn crash_report_yields_only_tokens_for_this_app_on_this_simulator() {
     .unwrap();
     assert_eq!(
         (leaky.exception, leaky.missing_library),
-        (None, Some("a".into()))
+        (None, Some("My SDK.framework".into()))
     );
     assert_eq!(
         ios::parse_crash_report(&report("other.app", udid, "EXC_CRASH", dylib), app, udid),
