@@ -44,9 +44,7 @@ export function targetMissDiagnostic(
   privacy: ObservedPrivacy,
 ): TargetMissDiagnostic {
   const query = target.quoted ?? target.phrase;
-  const wanted = words(query.slice(0, MATCH_TEXT));
-  const wantedWords = new Set(wanted);
-  const wantedPhrase = ` ${wanted.join(' ')} `;
+  const wantedWords = new Set(words(query.slice(0, MATCH_TEXT)));
   const candidates: TargetMissDiagnostic['candidates'] = [];
   let exact = false;
   let inside = false;
@@ -68,10 +66,11 @@ export function targetMissDiagnostic(
     }
     const parts = target.exact === 'id' ? [] : words(label.slice(0, MATCH_TEXT));
     const contained =
+      target.exact !== 'id' &&
+      query.length > 0 &&
       query.length <= MATCH_TEXT &&
-      wanted.length > 0 &&
-      parts.length > wanted.length &&
-      ` ${parts.join(' ')} `.includes(wantedPhrase);
+      label.length > query.length &&
+      label.slice(0, MATCH_TEXT).includes(query);
     const direct =
       (target.exact !== 'id' && label === query) ||
       (target.exact !== 'text' && identifier === query);

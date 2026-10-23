@@ -298,6 +298,40 @@ for (const android of [false, true]) {
   }
 }
 
+for (const [label, match, reason, aggregated] of [
+  ['Policy 12, Details', 'near', 'absent', false],
+  ['policy-12, Details', 'near', 'absent', false],
+  ['Policy-12, Details', 'inside-label', 'only-in-aggregated-label', true],
+  ['Policy-12', 'exact', 'present-but-unavailable', false],
+] as const) {
+  test(`target miss classification preserves literal punctuation and case: ${label}`, () => {
+    const query = 'Policy-12';
+    const tree = nodes(false);
+    delete tree[2].label;
+    tree[3].label = label;
+    const screen = join(tree, [], 'app', { native: 'complete', react: 'complete' });
+    for (const exact of [undefined, 'text', 'id'] as const) {
+      for (const scrolling of [false, true]) {
+        const diagnostic = targetMissDiagnostic(
+          { phrase: query, quoted: query, exact },
+          screen,
+          1,
+          scrolling,
+          new ObservedPrivacy(),
+        );
+        assert.equal(diagnostic.truncated, false);
+        if (exact === 'id') {
+          assert.equal(diagnostic.reason, 'absent');
+          assert.deepEqual(diagnostic.candidates, []);
+          continue;
+        }
+        assert.equal(diagnostic.reason, reason);
+        assert.deepEqual(diagnostic.candidates, [{ label, match, aggregated }]);
+      }
+    }
+  });
+}
+
 for (const exact of ['id', 'text'] as const) {
   for (const relation of ['equal', 'contained', 'near'] as const) {
     test(`exact ${exact} miss ignores ${relation} evidence from the other selector domain`, () => {
