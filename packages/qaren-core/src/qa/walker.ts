@@ -433,10 +433,9 @@ async function walkBlockScoped(
     cached = undefined;
     const target =
       step && ('target' in step ? step.target : step.kind === 'scroll' ? step.until : undefined);
+    const requirePresence = assertion || (!!target && target.quoted === undefined);
     const platformPresence =
-      assertion ||
-      (!!target &&
-        (target.quoted === undefined || (step?.kind === 'press' && target.exact !== 'id')));
+      requirePresence || (!!target && step?.kind === 'press' && target.exact !== 'id');
     const startedAt = deps.now();
     const id = ++sequence.observation;
     latestObservation = id;
@@ -494,12 +493,12 @@ async function walkBlockScoped(
           refuse: 'SCREEN_EVIDENCE_INCOMPLETE',
           reason: 'NATIVE_ACQUISITION_UNUSABLE',
         });
-      if (platformPresence && latest.front === 'dialog' && !recovery)
+      if (requirePresence && latest.front === 'dialog' && !recovery)
         throw new ResolutionError({
           refuse: 'SYSTEM_DIALOG_INTERRUPTED',
           reason: 'a system dialog is in front of the step target',
         });
-      if (platformPresence && latest.front !== 'dialog' && latest.coverage?.native !== 'complete')
+      if (requirePresence && latest.front !== 'dialog' && latest.coverage?.native !== 'complete')
         throw new ResolutionError({
           refuse: 'SCREEN_EVIDENCE_INCOMPLETE',
           reason: 'NATIVE_PRESENCE_UNUSABLE',

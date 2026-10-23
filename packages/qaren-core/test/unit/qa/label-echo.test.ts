@@ -438,13 +438,15 @@ test('a card button pressed by its label folds in its same-label heading text', 
   assert.equal(resolved.ref, '@e2');
 });
 
-test('a card without the heading fact keeps its inner same-label control', () => {
+test('a card without heading or aggregation provenance keeps both same-label identities', () => {
   const screen = join(androidCard(), [], 'app', complete);
   assert.equal(screen.elements[3].kind, 'other');
   const target = { quoted: 'Card 1', phrase: 'Card 1' };
   const resolved = prepareTarget({ kind: 'press', target }, screen);
-  assert.ok('ref' in resolved, JSON.stringify(resolved));
-  assert.equal(resolved.ref, '@e3');
+  assert.ok(
+    'refuse' in resolved && resolved.refuse === 'TARGET_AMBIGUOUS',
+    JSON.stringify(resolved),
+  );
 });
 
 test('a heading that differs from its card label stays its own text identity', () => {
@@ -632,12 +634,14 @@ test('a no-identifier container enclosing two same-label controls does not hide 
   );
 });
 
-test('a tree-enclosing same-label control collapses to the innermost control', () => {
+test('a tree-enclosing same-label button without aggregation provenance stays ambiguous', () => {
   const nodes = echoContainer(1);
   nodes[2] = { ...nodes[2], type: 'Button', identifier: 'page-card' };
   const resolved = prepareTarget(tapNext, join(nodes, []));
-  assert.ok('ref' in resolved, JSON.stringify(resolved));
-  assert.equal(resolved.ref, '@next0');
+  assert.ok(
+    'refuse' in resolved && resolved.refuse === 'TARGET_AMBIGUOUS',
+    JSON.stringify(resolved),
+  );
 });
 
 for (const type of ['Other', 'Button']) {
