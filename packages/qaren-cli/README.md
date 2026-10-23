@@ -2280,7 +2280,8 @@ supported React TextInput; a label alone does not establish private-fill admissi
 
    A saved block is a likely login block when its heading names sign-in (sign in,
    log in, login or authenticate) or its first strict runtime-input fill comes
-   before any tap or back step. A `### Change password` block that taps
+   before any tap or back step, apart from the tap that focuses that fill.
+   A `### Change password` block that taps
    `Settings` first is not suggested.
 
 4. After confirming the block signs in, paste those printed lines into `.qaren/config.yaml`:
@@ -2295,6 +2296,9 @@ supported React TextInput; a label alone does not establish private-fill admissi
    instead. Use the first screen's actual selector; keep exactly one marker key.
    Run `qaren doctor` to check the saved block and its platform. A block must be
    saved for the platform being checked; an iOS block is not an Android block.
+   Doctor fails the login check if a configured block's stored YAML is malformed,
+   including its appId document or trailing content, without printing the body
+   or parser diagnostics. Re-run the plan containing `### Sign in` to save it again.
    Doctor and later runs warn `LOGIN_MARKER_MISMATCH`, printing the block's first
    selector as `loginMarker` lines, when the configured marker differs from it; a
    different marker can work, so make sure it is visible only on the sign-in
@@ -2314,6 +2318,8 @@ signed in. It cannot recover from a sign-in screen: its first command expects
 Home. Put the sign-out steps in their own block above `### Sign in`, then run
 again to save the sign-in block starting on the sign-in screen. QaReN prints
 `LOGIN_BLOCK_SIGNS_OUT` instead of suggesting a marker for that combined block.
+This warning detects sign-out presses before the first runtime-input fill;
+checks and waits mentioning sign-out do not trigger it.
 If a target has neither a testID nor a label, the block cannot be saved; check
 `blocks_not_saved` before configuring recovery.
 
@@ -2321,7 +2327,7 @@ Saved blocks in a linked worktree's real `.qaren/actions` leave with that worktr
 Commit them to make them available in other checkouts and CI, or use the verified
 main-copy link described under [Saved blocks](#saved-blocks). `CORPUS_NOT_SHARED`
 points this out after a check writes blocks there; `qaren doctor` warns while
-that corpus holds untracked or modified blocks and passes once they are committed.
+that corpus holds untracked, modified or ignored blocks and passes once they are committed.
 `qaren pr` reads login from the PR head's committed corpus; local hints do not
 publish configuration or blocks. A likely login block that a PR run writes exists
 only in that run's evidence, so the run prints `LOGIN_BLOCK_RUN_ONLY` instead of
