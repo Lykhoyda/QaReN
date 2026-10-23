@@ -34,6 +34,16 @@ pub struct LedgerSummary {
     pub unverified_presses: Vec<UnverifiedPress>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub dialogs: Vec<DialogEvidence>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub react_coverage_gaps: Vec<ReactCoverageGap>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub react_reconnections: Vec<u64>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct ReactCoverageGap {
+    pub line: u64,
+    pub coverage: crate::core::ReactCoverage,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -94,6 +104,33 @@ pub fn summarize(ledger: &Ledger) -> LedgerSummary {
         escapes: ledger.escapes,
         recoveries: ledger.recoveries,
         failed_step: ledger.failure.as_ref().map(|f| f.step),
+        react_reconnections: ledger
+            .steps
+            .iter()
+            .filter(|row| {
+                row.react_connections
+                    .contains(&crate::core::ReactConnectionEvent::Reconnected)
+                    || row.react_coverage == Some(crate::core::ReactCoverage::Reconnected)
+            })
+            .map(|row| row.line)
+            .collect::<std::collections::BTreeSet<_>>()
+            .into_iter()
+            .collect(),
+        react_coverage_gaps: ledger
+            .steps
+            .iter()
+            .filter_map(|row| row.react_coverage.map(|coverage| (row.line, coverage)))
+            .fold(
+                std::collections::BTreeMap::<u64, crate::core::ReactCoverage>::new(),
+                |mut gaps, (line, coverage)| {
+                    let worst = gaps.entry(line).or_insert(coverage);
+                    *worst = (*worst).max(coverage);
+                    gaps
+                },
+            )
+            .into_iter()
+            .map(|(line, coverage)| ReactCoverageGap { line, coverage })
+            .collect(),
         unverified_fills: ledger
             .steps
             .iter()
@@ -216,13 +253,45 @@ fn row_line_with(row: &Row, prose: &dyn Fn(&str) -> String) -> String {
         .fill_detail()
         .map(|detail| format!("; {detail}"))
         .unwrap_or_default();
-    format!("- {mark} line {}{text}{retry}{reason}{kept}\n", row.line)
+    let coverage = row
+        .react_coverage
+        .map(|coverage| format!("; React coverage {}", coverage.as_str()))
+        .unwrap_or_default();
+    let reconnect = if row
+        .react_connections
+        .contains(&crate::core::ReactConnectionEvent::Reconnected)
+        && row.react_coverage != Some(crate::core::ReactCoverage::Reconnected)
+    {
+        "; React reconnected"
+    } else {
+        ""
+    };
+    format!(
+        "- {mark} line {}{text}{retry}{reason}{kept}{coverage}{reconnect}\n",
+        row.line
+    )
+}
+
+fn reconnect_note(summary: &LedgerSummary) -> String {
+    let lines: Vec<String> = summary
+        .react_reconnections
+        .iter()
+        .map(|line| line.to_string())
+        .collect();
+    if lines.is_empty() {
+        return String::new();
+    }
+    format!(" · React reconnected at line {}", lines.join(", "))
 }
 
 pub fn render(input: &ReportInput<'_>) -> String {
     let summary = summarize(input.ledger);
     let mut out = String::new();
-    out.push_str(&format!("# QaReN check: {}\n\n", prose(&summary.verdict)));
+    out.push_str(&format!(
+        "# QaReN check: {}{}\n\n",
+        prose(&summary.verdict),
+        reconnect_note(&summary)
+    ));
     out.push_str(&format!(
         "Run `{}` · {} · `{}` · device {}\n\n",
         prose(input.run_id),
@@ -367,6 +436,7 @@ pub fn render_pr_comment(
             }
         }
     }
+    out.push_str(&reconnect_note(&summary));
     out.push_str("\n\n");
     out.push_str(&format!(
         "Tested: commit `{}` on {}",
@@ -675,6 +745,92 @@ mod tests {
         let json = serde_json::to_value(&summary).unwrap();
         assert_eq!(json["unverified_presses"][0]["line"], 2);
         assert_eq!(json["unverified_presses"][0]["reason"], press);
+    }
+
+    #[test]
+    fn summary_lists_each_react_gap_line_once_with_its_most_severe_coverage() {
+        let row = |line: u64, outcome: &str, coverage: &str| {
+            serde_json::json!({
+                "block": "b", "line": line, "attempt": 1, "kind": "step",
+                "resolvedBy": "exact", "t": 0, "outcome": outcome, "reactCoverage": coverage,
+            })
+        };
+        let ledger: Ledger = serde_json::from_value(serde_json::json!({
+            "verdict": "PASS", "path": "walk", "blocks": [],
+            "steps": [
+                row(4, "retry", "incomplete"),
+                row(4, "pass", "unknown"),
+                row(2, "retry", "unknown"),
+                row(2, "pass", "unknown"),
+                row(6, "retry", "unknown"),
+                row(6, "pass", "lost"),
+            ],
+            "jev": { "calls": 0, "medianMs": 0 },
+            "llmTurns": 0, "escapes": 0, "recoveries": 0,
+        }))
+        .unwrap();
+        assert_eq!(
+            serde_json::to_value(summarize(&ledger)).unwrap()["react_coverage_gaps"],
+            serde_json::json!([
+                {"line": 2, "coverage": "unknown"},
+                {"line": 4, "coverage": "incomplete"},
+                {"line": 6, "coverage": "lost"},
+            ])
+        );
+    }
+
+    #[test]
+    fn a_recovered_reconnect_reaches_both_verdict_lines_without_refusing() {
+        let row = |line: u64, coverage: Option<&str>| {
+            serde_json::json!({
+                "block": "b", "line": line, "attempt": 1, "kind": "step",
+                "resolvedBy": "exact", "t": 0, "outcome": "pass", "reactCoverage": coverage,
+            })
+        };
+        let mut recovered = row(3, Some("lost"));
+        recovered["reactConnections"] = serde_json::json!(["lost", "reconnected"]);
+        let ledger: Ledger = serde_json::from_value(serde_json::json!({
+            "verdict": "PASS", "path": "walk", "blocks": [],
+            "steps": [row(2, None), recovered, recovered],
+            "jev": { "calls": 0, "medianMs": 0 },
+            "llmTurns": 0, "escapes": 0, "recoveries": 0,
+        }))
+        .unwrap();
+        assert_eq!(
+            serde_json::to_value(summarize(&ledger)).unwrap()["react_coverage_gaps"],
+            serde_json::json!([{"line": 3, "coverage": "lost"}])
+        );
+        assert_eq!(summarize(&ledger).react_reconnections, vec![3]);
+        let input = ReportInput {
+            run_id: "check-test",
+            platform: "ios",
+            app_id: "com.example",
+            device: "test-device",
+            ledger: &ledger,
+        };
+        let report = render(&input);
+        assert!(report.starts_with("# QaReN check: PASS · React reconnected at line 3\n"));
+        assert!(
+            report.contains("line 3; React coverage lost; React reconnected"),
+            "{report}"
+        );
+        let comment = render_pr_comment(
+            &input,
+            None,
+            &PrRun {
+                tested_sha: "abcdef1234567",
+                tested_older_commit: false,
+                video: &VideoStatus::Available,
+                screenshot: None,
+                plan_sha256: "plan-hash",
+                video_publication: &VideoPublication::Eligible,
+            },
+            &MachineIdentity::default(),
+        );
+        assert!(
+            comment.contains("\nPASS · React reconnected at line 3\n"),
+            "{comment}"
+        );
     }
 
     #[test]

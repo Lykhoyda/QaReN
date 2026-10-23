@@ -83,6 +83,7 @@ export interface Screen {
     react: 'complete' | 'incomplete' | 'unknown';
   };
   captureCoverage?: Screen['coverage'];
+  reactConnection?: 'lost' | 'reconnected';
   nativeCaptureCauses?: string[];
   pressEvidenceGap?: string;
   pressGapCount?: number;

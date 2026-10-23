@@ -1300,13 +1300,30 @@ in captured pixels. The shared patterns in
 cover indicators, lookalikes and adjacent protected fields.
 iOS fast snapshots retain nodes with distinct readable values even when their type,
 label, identifier and origin match; deduplication compares those fields separately.
-The React digest adds semantics: a deadline, malformed-payload, validation or
-transport failure degrades React coverage to unknown without retrying capture.
+The React digest adds semantics: a deadline, malformed payload, validation error or
+transport failure can leave the digest unavailable. After an evaluation error on a
+newer CDP connection, QaReN re-injects helpers and retries capture once.
 Operations requiring complete React evidence still refuse when that coverage is
-unavailable. Strict private React capture can scan up to 5,000 fibers across
-renderer roots, including a single-root screen. Existing capture and item
-deadlines, host-evidence and interactive-node limits still apply; incomplete
-evidence is refused.
+unavailable. Each affected row retains its worst `reactCoverage`: `unknown` or
+`incomplete` for bounded or malformed capture evidence, `reconnected` when recovery
+is first observed on a newer CDP connection, or `lost` when the JS/React connection
+was down or the helpers stayed unavailable after one re-injection on a newer connection, including
+loss before an action, during its readback, or before a later reconnect. Native
+proofs can still pass their rows; a connection that remains lost at the end makes
+an otherwise passing run `REFUSED` with `REACT_COVERAGE_LOST` (exit 4), and an
+existing failure stays a failure. Ordered `reactConnections` events retain loss
+and recovery independently of each row's worst coverage, including recovery during
+the same step or nested login recovery. If helpers remain unavailable after the
+retry, a later healthy capture on that same connection still records recovery.
+A recovered connection or a capture limit with a healthy connection does not by
+itself refuse the run. Receipts carry each affected line once, with its most severe coverage, in
+`ledger.react_coverage_gaps` and reconnect lines in `ledger.react_reconnections`.
+Reports show both facts beside each row and name reconnects on the report and
+pull-request verdict lines. A `lost` row withholds every new or patched block of the
+walk, even when later captures recover; any other gap withholds only the block it belongs to.
+Strict private React capture can scan up to 5,000 fibers across renderer roots,
+including a single-root screen. Existing capture and item deadlines, host-evidence and
+interactive-node limits still apply.
 
 On composite components, the digest omits non-string `title`,
 `accessibilityLabel` and `placeholder` props without coercing or serializing them;
@@ -1328,14 +1345,15 @@ inactive routes or hosts with `display: none` (`pruned`) and elapsed millisecond
 and pruned counts are lower bounds observed by the bounded walk, not tree totals.
 These distinguish capture limits, the
 typography sites that leave evidence incomplete, deadlines, renderer coverage,
-malformed evidence and CDP evaluation failures; they exclude app text, labels,
-identifiers and raw errors. Unclassified
+malformed evidence, CDP evaluation failures and connection loss or recovery; they
+exclude app text, labels, identifiers and raw errors. Unclassified
 failures retain the generic warning. The
 [React capture adapter](../qaren-core/src/qa/react-capture.ts) owns classification;
 [ReactCaptureIncomplete](../qaren-core/src/qa/private-input.ts) owns the allowed
 codes, counters and warning detail format. This diagnostic identifies the capture
-failure category; it does not establish the underlying app or host cause or change
-refusal and privacy behavior.
+failure category; it does not establish the underlying app or host cause. Verdict
+and persistence follow the React coverage rules above; privacy protections remain
+unchanged.
 
 On composite components, the digest omits non-string `title`,
 `accessibilityLabel` and `placeholder` props without coercing or serializing them;
@@ -1935,8 +1953,8 @@ a mutation, its selector failure is terminal; recovered selector misses follow
 line and later ones are rewritten, and every `✓` comment stays byte-identical. A failing check is a FAIL and
 is never re-walked or rewritten. Timeout recovery remains deferred (see
 [Step recovery](#step-recovery)); app-process changes stay terminal. A failing block is never saved;
-blocks that passed earlier in the run remain saved. A step without a `testID`
-or label, a phrase wait, or a literal fill into a secure or private input or through
+earlier passing blocks remain subject to the [React coverage contract](#check-a-plan).
+A step without a `testID` or label, a phrase wait, or a literal fill into a secure or private input or through
 [keyboard fallback](#fill-verification-and-keyboard-fallback) leaves the block
 unsaved and the ledger says why without naming any value. A [runtime input](#runtime-inputs)
 fill can be saved in those private or fallback paths when it has a stored selector,

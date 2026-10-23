@@ -35,6 +35,7 @@ async function observe(children: FiberSpec[]) {
   sandbox.__REACT_DEVTOOLS_GLOBAL_HOOK__.getFiberRoots = (id: number) =>
     id === 1 ? new Set([root]) : new Set();
   return captureQaReact({
+    isConnected: true,
     async withPrivateHelperWorld(run) {
       return run(async (expression) => vm.runInContext(expression, sandbox));
     },
@@ -146,6 +147,7 @@ test('capture rejects malformed composite-wrapper facts rather than dropping the
   for (const compositeWrapper of [false, 'true', 1, null, {}]) {
     await assert.rejects(
       captureQaReact({
+        isConnected: true,
         async withPrivateHelperWorld(run) {
           return run(async () => ({
             v: 1,

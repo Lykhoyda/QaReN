@@ -919,6 +919,7 @@ test('literal policy does not confuse missing semantic support with incomplete a
     );
     const result = await runPlan(parsePlan('1. Tap "Save"').blocks!, f.deps);
     assert.equal(result.verdict, 'PASS');
+    assert.equal(result.steps[0].reactCoverage, 'unknown');
     assert.deepEqual(f.actions, ['press @one']);
   }
 });

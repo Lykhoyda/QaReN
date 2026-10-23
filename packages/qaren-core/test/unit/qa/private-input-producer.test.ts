@@ -156,6 +156,7 @@ test('ignored composite objects are never coerced and rendered host text reaches
     fixture.fiber.child.child.tag = 6;
     const observation = await captureQaReact(
       {
+        isConnected: true,
         async withPrivateHelperWorld(run) {
           return run(async (expression) => vm.runInContext(expression, fixture.sandbox));
         },
@@ -234,6 +235,7 @@ function inputPipeline(props: Record<string, unknown>, typography: boolean, host
       react: () =>
         captureQaReact(
           {
+            isConnected: true,
             async withPrivateHelperWorld(run) {
               return run(async (expression) => vm.runInContext(expression, fixture.sandbox));
             },
@@ -342,6 +344,7 @@ function wrappedInput(readOnly = false) {
     ]);
   const react = () =>
     captureQaReact({
+      isConnected: true,
       async withPrivateHelperWorld(run) {
         return run(async (expression) => vm.runInContext(expression, fixture.sandbox));
       },
@@ -628,6 +631,7 @@ test('React dev wrapper producer reaches the adapter and a native input value ma
     const { sandbox } = devTree(() => assert.fail('type accessor executed'));
     const observation = await captureQaReact(
       {
+        isConnected: true,
         async withPrivateHelperWorld(run) {
           return run(async (expression) => vm.runInContext(expression, sandbox));
         },

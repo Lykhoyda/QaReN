@@ -237,6 +237,60 @@ test('a failed walk writes nothing', async () => {
   assert.equal(existsSync(actionFile(dir)), false);
 });
 
+for (const gap of ['unknown', 'incomplete', 'reconnected', 'lost'] as const) {
+  test(`a ${gap} replay miss cannot save a healthy replacement block`, async () => {
+    const dir = root();
+    try {
+      const plan = '### Onboarding\n1. Tap "Skip"';
+      const block = blocks(plan)[0];
+      await run(plan, dir);
+      const path = join(dir, '.qaren', 'actions', `${block.slug}.yaml`);
+      const before = readFileSync(path, 'utf8');
+      const fake = app();
+      const capture = fake.deps.captureScreen;
+      const row = fake.deps.row;
+      let replaying = true;
+      fake.deps.row = (observed) => {
+        row?.(observed);
+        if (observed.outcome === 'retry') replaying = false;
+      };
+      fake.deps.captureScreen = async (options) => {
+        const observed = await capture(options);
+        return {
+          ...observed,
+          elements: observed.elements.map((element) =>
+            element.testID === 'onboarding-skip'
+              ? { ...element, testID: 'onboarding-skip-new' }
+              : element,
+          ),
+          ...(replaying
+            ? gap === 'lost' || gap === 'reconnected'
+              ? { reactConnection: gap }
+              : { captureCoverage: { native: 'complete' as const, react: gap } }
+            : {}),
+        };
+      };
+      const result = await runPlan([block], fake.deps, [], store(dir));
+      assert.equal(result.verdict, gap === 'lost' ? 'REFUSED' : 'PASS');
+      assert.equal(result.path, `replay→walk@${block.items[0].line}`);
+      assert.deepEqual(
+        result.steps.map((row) => row.outcome),
+        ['retry', 'pass'],
+      );
+      assert.deepEqual(
+        result.steps.map((row) => row.reactCoverage),
+        [gap, undefined],
+      );
+      assert.deepEqual(result.blocksWritten, []);
+      assert.equal(result.blocks[0].saved, false);
+      assert.match(result.blocks[0].unsavable!, /React coverage/);
+      assert.equal(readFileSync(path, 'utf8'), before);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+}
+
 test('a ✓ that fails during replay is a FAIL: no re-walk and no write', async () => {
   const dir = root();
   await run(literal, dir);

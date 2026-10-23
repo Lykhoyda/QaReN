@@ -5,7 +5,7 @@ import vm from 'node:vm';
 import { CDPClient } from '../../../dist/cdp-client.js';
 import { createComponentTreeHandler } from '../../../dist/handlers/component-tree.js';
 import { buildFiber, createSandbox } from '../helpers/inject-harness.js';
-import { captureQaReact } from '../../../dist/qa/react-capture.js';
+import { captureQaReact, createQaReactCapture } from '../../../dist/qa/react-capture.js';
 import { captureScreen } from '../../../dist/qa/capture.js';
 import {
   PrivateInputCaptureError,
@@ -14,6 +14,7 @@ import {
 import { inputValues } from '../../../dist/qa/privacy.js';
 import type { NativeNode } from '../../../dist/qa/screen.js';
 import { attested, nativeCapture } from './platform-presence-fixtures.ts';
+import { startFakeCDP } from '../../helpers/fake-cdp-server.js';
 
 const sentinel = 'PRIVATE_TEST_INPUT_7abf';
 const id = '1abcd';
@@ -223,7 +224,8 @@ for (const typography of [false, true]) {
 function mockClient(responses: unknown[]) {
   const calls: Array<{ expression: string; timeoutMs: number }> = [];
   let operations = 0;
-  const client: Pick<CDPClient, 'withPrivateHelperWorld'> = {
+  const client: Pick<CDPClient, 'withPrivateHelperWorld' | 'isConnected'> = {
+    isConnected: true,
     async withPrivateHelperWorld(operation) {
       operations++;
       return operation(async (expression, timeoutMs) => {
@@ -336,7 +338,8 @@ test('ordinary public tree content is not claimed to be private-channel redacted
 });
 
 test('missing API or transport exceptions become constant refusals with no fallback', async () => {
-  const client: Pick<CDPClient, 'withPrivateHelperWorld'> = {
+  const client: Pick<CDPClient, 'withPrivateHelperWorld' | 'isConnected'> = {
+    isConnected: true,
     async withPrivateHelperWorld() {
       throw new Error(`beginQaCapture is not a function: ${sentinel}`);
     },
@@ -422,7 +425,8 @@ test('monotonic overall deadline includes freshness and prevents begin after tim
   t.mock.method(performance, 'now', () => now);
   let release!: () => void;
   let calls = 0;
-  const client: Pick<CDPClient, 'withPrivateHelperWorld'> = {
+  const client: Pick<CDPClient, 'withPrivateHelperWorld' | 'isConnected'> = {
+    isConnected: true,
     async withPrivateHelperWorld(operation) {
       await new Promise<void>((resolve) => {
         release = resolve;
@@ -451,7 +455,8 @@ test('each call receives only remaining budget and polling sleeps are bounded', 
   let now = 0;
   t.mock.method(performance, 'now', () => now);
   const timeouts: number[] = [];
-  const client: Pick<CDPClient, 'withPrivateHelperWorld'> = {
+  const client: Pick<CDPClient, 'withPrivateHelperWorld' | 'isConnected'> = {
+    isConnected: true,
     async withPrivateHelperWorld(operation) {
       now = 400;
       return operation(async (_, timeout) => {
@@ -480,7 +485,8 @@ test('hung begin and late completion cannot bypass the overall deadline', async 
   t.mock.method(performance, 'now', () => now);
   let release!: (value: unknown) => void;
   let calls = 0;
-  const client: Pick<CDPClient, 'withPrivateHelperWorld'> = {
+  const client: Pick<CDPClient, 'withPrivateHelperWorld' | 'isConnected'> = {
+    isConnected: true,
     async withPrivateHelperWorld(operation) {
       return operation(async () => {
         calls++;
@@ -506,7 +512,8 @@ test('hung begin and late completion cannot bypass the overall deadline', async 
 test('port completion after the monotonic deadline cannot return an observation', async (t) => {
   let now = 0;
   t.mock.method(performance, 'now', () => now);
-  const client: Pick<CDPClient, 'withPrivateHelperWorld'> = {
+  const client: Pick<CDPClient, 'withPrivateHelperWorld' | 'isConnected'> = {
+    isConnected: true,
     async withPrivateHelperWorld(operation) {
       const observation = await operation(async () => ({ ...ready() }));
       now = 1501;
@@ -529,7 +536,8 @@ test('malformed ready tree processing across the deadline remains a permanent re
     now = 1501;
     return parse(text);
   });
-  const client: Pick<CDPClient, 'withPrivateHelperWorld'> = {
+  const client: Pick<CDPClient, 'withPrivateHelperWorld' | 'isConnected'> = {
+    isConnected: true,
     async withPrivateHelperWorld(operation) {
       return operation(async () => {
         now = 1499;
@@ -553,7 +561,8 @@ test('a transport error after the deadline remains a permanent refusal', async (
   t.mock.timers.enable({ apis: ['setTimeout'] });
   let now = 0;
   t.mock.method(performance, 'now', () => now);
-  const client: Pick<CDPClient, 'withPrivateHelperWorld'> = {
+  const client: Pick<CDPClient, 'withPrivateHelperWorld' | 'isConnected'> = {
+    isConnected: true,
     async withPrivateHelperWorld() {
       now = 1501;
       throw new Error(sentinel);
@@ -831,18 +840,21 @@ test('a producer refusal forwards its fixed cause and counters, and anything els
 });
 
 test('deadline, transport and helper-world failures are told apart', async () => {
-  const pending: Pick<CDPClient, 'withPrivateHelperWorld'> = {
+  const pending: Pick<CDPClient, 'withPrivateHelperWorld' | 'isConnected'> = {
+    isConnected: true,
     withPrivateHelperWorld: () => new Promise(() => {}),
   };
   await assert.rejects(captureQaReact(pending), classified('deadline'));
-  const broken: Pick<CDPClient, 'withPrivateHelperWorld'> = {
+  const broken: Pick<CDPClient, 'withPrivateHelperWorld' | 'isConnected'> = {
+    isConnected: true,
     async withPrivateHelperWorld() {
       throw new Error(`Private helper world unavailable ${sentinel}`);
     },
   };
   await assert.rejects(captureQaReact(broken), classified('evaluate-error'));
   // The real helper world rewraps operation errors, so the classified refusal must survive it.
-  const rewrapping: Pick<CDPClient, 'withPrivateHelperWorld'> = {
+  const rewrapping: Pick<CDPClient, 'withPrivateHelperWorld' | 'isConnected'> = {
+    isConnected: true,
     async withPrivateHelperWorld(operation) {
       try {
         return await operation(async () => ({ ...ready(), tree: `{${sentinel}` }));
@@ -852,6 +864,27 @@ test('deadline, transport and helper-world failures are told apart', async () =>
     },
   };
   await assert.rejects(captureQaReact(rewrapping), classified('tree-shape'));
+});
+
+test('a dropped connection is told apart from a capture limit, even past the deadline', async () => {
+  const dropped = { isConnected: true };
+  const pending: Pick<CDPClient, 'withPrivateHelperWorld' | 'isConnected'> = {
+    get isConnected() {
+      return dropped.isConnected;
+    },
+    withPrivateHelperWorld: () => {
+      dropped.isConnected = false;
+      return new Promise(() => {});
+    },
+  };
+  await assert.rejects(captureQaReact(pending), classified('disconnected'));
+  const broken: Pick<CDPClient, 'withPrivateHelperWorld' | 'isConnected'> = {
+    isConnected: false,
+    async withPrivateHelperWorld() {
+      throw new Error(`Private helper world unavailable ${sentinel}`);
+    },
+  };
+  await assert.rejects(captureQaReact(broken), classified('disconnected'));
 });
 
 test('the real producer refusal reaches the warning as a value-free cause with counters', async () => {
@@ -878,3 +911,126 @@ test('the real producer refusal reaches the warning as a value-free cause with c
     assert.equal(warnings[0].includes(sentinel), false);
   }
 });
+
+test('a reconnect is marked once, and a helper world still missing after re-injection is lost', async () => {
+  const state = { generation: 1, helpers: true, revive: true, reinjected: 0, tree: ready() };
+  const client: Pick<
+    CDPClient,
+    'withPrivateHelperWorld' | 'isConnected' | 'connectionGeneration' | 'reinjectHelpers'
+  > = {
+    isConnected: true,
+    get connectionGeneration() {
+      return state.generation;
+    },
+    async reinjectHelpers() {
+      state.reinjected += 1;
+      state.helpers = state.revive;
+      return state.helpers;
+    },
+    async withPrivateHelperWorld(operation) {
+      if (!state.helpers) throw new Error(`Private helper world unavailable ${sentinel}`);
+      return operation(async () => state.tree);
+    },
+  };
+  const capture = createQaReactCapture(client);
+  assert.equal((await capture()).reconnected, undefined);
+  state.generation = 2;
+  assert.equal((await capture()).reconnected, true);
+  assert.equal((await capture()).reconnected, undefined);
+  assert.equal(state.reinjected, 0);
+
+  state.generation = 3;
+  state.helpers = false;
+  assert.equal((await capture()).reconnected, true);
+  assert.equal(state.reinjected, 1);
+
+  state.generation = 4;
+  state.helpers = false;
+  state.revive = false;
+  await assert.rejects(capture(), classified('disconnected'));
+  assert.equal(state.reinjected, 2);
+
+  state.helpers = true;
+  assert.equal((await capture()).reconnected, true);
+  assert.equal((await capture()).reconnected, undefined);
+  assert.equal(state.reinjected, 2);
+
+  state.generation = 5;
+  state.helpers = true;
+  state.tree = { ...ready(), tree: 'x'.repeat(1_000_000) };
+  await assert.rejects(capture(), classified('reconnected'));
+  await assert.rejects(capture(), classified('tree-too-large'));
+  assert.equal(state.reinjected, 2);
+});
+
+test('a final capture during replacement socket setup refuses unavailable helpers', async (t) => {
+  const fake = await startFakeCDP(0, {
+    targets: [
+      {
+        id: 'owned',
+        title: 'com.example.app (iPhone)',
+        appId: 'com.example.app',
+        type: 'node',
+        vm: 'Hermes',
+        deviceName: 'iPhone',
+        description: 'React Native Bridgeless [C++ connection]',
+      },
+    ],
+  });
+  const client = new CDPClient(fake.port);
+  const setupEntered = Promise.withResolvers<void>();
+  const setupRelease = Promise.withResolvers<void>();
+  let reconnect: Promise<string> | undefined;
+  t.after(async () => {
+    setupRelease.resolve();
+    await reconnect?.catch(() => {});
+    await client.disconnect();
+    await fake.close();
+  });
+  await client.connectExact(fake.port, { platform: 'ios', bundleId: 'com.example.app' });
+  const capture = createQaReactCapture(client);
+  const generation = client.connectionGeneration;
+  t.mock.method(client, 'setup', async () => {
+    setupEntered.resolve();
+    await setupRelease.promise;
+  });
+  const reinjection = t.mock.method(client, 'reinjectHelpers', async () => false);
+  reconnect = client.softReconnect();
+  await Promise.race([setupEntered.promise, reconnect]);
+  assert.equal(client.isConnected, true);
+  await assert.rejects(capture(), classified('disconnected'));
+  assert.equal(client.connectionGeneration, generation + 1);
+  assert.equal(reinjection.mock.callCount(), 1);
+});
+
+for (const recovered of [false, true]) {
+  test(`a connection change during capture is observed when recovered=${recovered}`, async () => {
+    let generation = 1;
+    let captures = 0;
+    let reinjections = 0;
+    const client: Parameters<typeof createQaReactCapture>[0] = {
+      isConnected: true,
+      get connectionGeneration() {
+        return generation;
+      },
+      async reinjectHelpers() {
+        reinjections++;
+        return false;
+      },
+      async withPrivateHelperWorld(operation) {
+        captures++;
+        if (captures === 1) generation++;
+        if (!recovered) throw new Error('helper world unavailable');
+        return operation(async () => ready());
+      },
+    };
+    const capture = createQaReactCapture(client);
+    if (recovered) {
+      assert.equal((await capture()).reconnected, true);
+      assert.equal((await capture()).reconnected, undefined);
+    } else {
+      await assert.rejects(capture(), classified('disconnected'));
+      assert.equal(reinjections, 1);
+    }
+  });
+}

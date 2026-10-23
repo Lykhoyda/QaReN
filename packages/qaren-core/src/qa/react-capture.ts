@@ -1,3 +1,4 @@
+import { isAbort } from '../domain/cancellation.js';
 import { isRecord } from './questions.js';
 import type { CDPClient } from '../cdp-client.js';
 import type { ReactObservation } from './capture.js';
@@ -206,7 +207,7 @@ function publicObservation(tree: unknown): ReactObservation {
 }
 
 export async function captureQaReact(
-  client: Pick<CDPClient, 'withPrivateHelperWorld'>,
+  client: Pick<CDPClient, 'withPrivateHelperWorld' | 'isConnected'>,
   typography = false,
 ): Promise<ReactObservation> {
   const started = performance.now();
@@ -265,6 +266,7 @@ export async function captureQaReact(
     return observation;
   } catch (error) {
     const ms = Math.round(performance.now() - started);
+    if (!client.isConnected) throw new ReactCaptureIncomplete('disconnected', { ms });
     const classified = error instanceof ReactCaptureIncomplete ? error : refusal;
     if (classified)
       throw new ReactCaptureIncomplete(classified.reason, { ...classified.counters, ms });
@@ -278,4 +280,48 @@ export async function captureQaReact(
     expired = true;
     clearTimeout(timer);
   }
+}
+
+export function createQaReactCapture(
+  client: Pick<
+    CDPClient,
+    'withPrivateHelperWorld' | 'isConnected' | 'connectionGeneration' | 'reinjectHelpers'
+  >,
+): (typography?: boolean) => Promise<ReactObservation> {
+  let generation = client.connectionGeneration;
+  return async (typography = false) => {
+    const reconnected = () => client.connectionGeneration !== generation;
+    try {
+      const observation = await captureQaReact(client, typography);
+      const result = reconnected() ? { ...observation, reconnected: true as const } : observation;
+      generation = client.connectionGeneration;
+      return result;
+    } catch (error) {
+      if (
+        !reconnected() ||
+        !(error instanceof ReactCaptureIncomplete) ||
+        error.reason === 'disconnected'
+      )
+        throw error;
+      let failure = error;
+      if (error.reason === 'evaluate-error') {
+        await client.reinjectHelpers(1500).catch((reinjection: unknown) => {
+          if (isAbort(reinjection)) throw reinjection;
+          return false;
+        });
+        try {
+          const observation = await captureQaReact(client, typography);
+          generation = client.connectionGeneration;
+          return { ...observation, reconnected: true };
+        } catch (retry) {
+          if (!(retry instanceof ReactCaptureIncomplete)) throw retry;
+          if (retry.reason === 'evaluate-error' || retry.reason === 'disconnected')
+            throw new ReactCaptureIncomplete('disconnected', retry.counters);
+          failure = retry;
+        }
+      }
+      generation = client.connectionGeneration;
+      throw new ReactCaptureIncomplete('reconnected', failure.counters);
+    }
+  };
 }

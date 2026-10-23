@@ -219,6 +219,7 @@ async function fixedPlanPipeline() {
         },
         react: () =>
           captureQaReact({
+            isConnected: true,
             withPrivateHelperWorld: async (work) =>
               work(async () => {
                 clock += 1;

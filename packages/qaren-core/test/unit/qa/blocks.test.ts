@@ -56,6 +56,18 @@ function passRows(block: Block, selectors: Record<number, Selector>): LedgerRow[
 }
 
 const ios = { appId: 'com.example.app', platform: 'ios' as const };
+
+test('a block whose rows carry a React coverage gap is withheld even after a healthy retry', () => {
+  const block = blockOf('### Confirm\n1. Tap "Save"');
+  const healthy = passRows(block, { [block.items[0].line]: { id: 'save' } });
+  for (const reactCoverage of ['unknown', 'incomplete', 'reconnected'] as const) {
+    const degraded = { ...healthy[0], outcome: 'retry' as const, reactCoverage };
+    assert.deepEqual(serializeBlock(block, [degraded, ...healthy], ios), {
+      unsavable: `line ${block.items[0].line}: React coverage ${reactCoverage}`,
+    });
+  }
+  assert.ok('yaml' in serializeBlock(block, healthy, ios));
+});
 const literalSelectors: Record<number, Selector> = {
   9: { id: 'onboarding-skip' },
   10: { id: 'onboarding-done' },

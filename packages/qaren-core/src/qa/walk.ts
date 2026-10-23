@@ -58,7 +58,7 @@ import {
   postAdmissionSnapshots,
   type NativeObservation,
 } from './capture.js';
-import { captureQaReact } from './react-capture.js';
+import { createQaReactCapture } from './react-capture.js';
 import type { LedgerRow, StepStart } from './ledger.js';
 import { parsePlanWithJev, planTitle, readPreparedPlan } from './plan.js';
 import { createJev } from './jev.js';
@@ -637,6 +637,7 @@ async function openSession(
   if (login && request.loginBlock && !login.block)
     log(`login block ${request.loginBlock} is missing or unreadable; a login wall fails the step`);
 
+  const captureReact = createQaReactCapture(cdp);
   const deps: WalkerDeps = {
     note: log,
     privacy,
@@ -665,7 +666,7 @@ async function openSession(
                 throw new AppProcessGoneError();
               throw error;
             }),
-          react: () => captureQaReact(cdp, options?.platformPresence === true),
+          react: () => captureReact(options?.platformPresence === true),
         }),
       ),
     press: (ref, qaContext) =>

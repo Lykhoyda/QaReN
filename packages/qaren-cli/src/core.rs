@@ -221,6 +221,10 @@ pub struct Row {
     pub reason: Option<String>,
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub unverified_press: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub react_coverage: Option<ReactCoverage>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub react_connections: Vec<ReactConnectionEvent>,
     #[serde(
         default,
         skip_serializing_if = "Option::is_none",
@@ -235,6 +239,33 @@ pub struct Row {
     pub case_normalized: Option<CaseNormalized>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub dialog: Option<DialogTap>,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord)]
+#[serde(rename_all = "lowercase")]
+pub enum ReactCoverage {
+    Unknown,
+    Incomplete,
+    Reconnected,
+    Lost,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum ReactConnectionEvent {
+    Lost,
+    Reconnected,
+}
+
+impl ReactCoverage {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Unknown => "unknown",
+            Self::Incomplete => "incomplete",
+            Self::Reconnected => "reconnected",
+            Self::Lost => "lost",
+        }
+    }
 }
 
 fn is_zero(value: &u64) -> bool {

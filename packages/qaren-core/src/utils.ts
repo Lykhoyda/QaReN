@@ -5,8 +5,8 @@ import { handleDevClientPicker } from './handlers/dev-client-picker.js';
 import { probeFreshness, recoverFromStaleTarget, consumeCdpStale } from './cdp/recovery.js';
 
 // Cache exact-version freshness for up to 2s per private helper world. Public
-// connectionGeneration intentionally advances only after successful setup and
-// therefore cannot fence reset/context churn.
+// connectionGeneration advances only per opened socket and cannot fence
+// helper reset or context churn within one socket.
 const FRESHNESS_CACHE_MS = 2000;
 const freshnessCache = new WeakMap<CDPClient, { generation: number; expiresAt: number }>();
 

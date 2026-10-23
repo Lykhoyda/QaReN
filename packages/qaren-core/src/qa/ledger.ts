@@ -7,6 +7,10 @@ export interface Selector {
 
 export type LedgerPath = 'walk' | 'replay' | `replay→walk@${number}`;
 
+// Worst coverage is retained for persistence; connection events determine recovery.
+export const REACT_GAPS = ['unknown', 'incomplete', 'reconnected', 'lost'] as const;
+export type ReactConnectionEvent = 'lost' | 'reconnected';
+
 export interface LedgerRow {
   block: string;
   operationId?: number;
@@ -21,6 +25,8 @@ export interface LedgerRow {
   outcome: RowOutcome;
   reason?: string;
   unverifiedPress?: true;
+  reactCoverage?: (typeof REACT_GAPS)[number];
+  reactConnections?: ReactConnectionEvent[];
   timing?: RowTiming;
   selector?: Selector;
   // Typed and held character counts of an unverified fill, kept out of the masked reason.
@@ -90,7 +96,7 @@ export function buildLedger(
   calls: readonly JevCall[] = [],
   path: LedgerPath = 'walk',
   recoveries = 0,
-): Ledger {
+): WalkResult {
   const failedRow = [...steps].reverse().find((r) => r.outcome === 'fail');
   const failedBlock = blocks.find((b) => b.outcome === 'fail');
   if (!failure && (failedRow || failedBlock)) {
@@ -113,6 +119,27 @@ export function buildLedger(
   const speed = summarizeSpeed(steps);
   if (speed) ledger.speed = speed;
   if (failure) ledger.failure = failure;
+  const gap = steps.find((row) => row.reactCoverage === 'lost');
+  const connection = steps
+    .flatMap(
+      (row) =>
+        row.reactConnections ??
+        (row.reactCoverage === 'lost' || row.reactCoverage === 'reconnected'
+          ? [row.reactCoverage]
+          : []),
+    )
+    .at(-1);
+  if (!failure && gap && connection !== 'reconnected') {
+    const message =
+      'React coverage was lost during the walk; native evidence alone cannot verify the run.';
+    return {
+      ...ledger,
+      verdict: 'REFUSED',
+      code: 'REACT_COVERAGE_LOST',
+      message,
+      failure: { step: gap.line, seen: message },
+    };
+  }
   return ledger;
 }
 
@@ -147,7 +174,7 @@ export function ledgerWithoutResult(steps: LedgerRow[], seen: string, inFlight?:
     seen,
     ...(last?.screenshot ? { screenshot: last.screenshot } : {}),
   });
-  return ledger;
+  return { ...ledger, verdict: 'FAIL' };
 }
 
 export function screenshotName(index: number, line: number): string {
