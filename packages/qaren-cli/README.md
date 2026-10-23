@@ -1609,7 +1609,8 @@ that secret despite artifact redaction.
   the attempt count, last started and completed boundary, attach stage (only when the last
   started boundary is `attach`), failure class,
   relaunch count, whether the relaunch failed, app liveness (`probe_failed` when the iOS
-  app-job probe errors or times out) and elapsed, remaining and budget milliseconds.
+  app-job probe errors or times out), the bundle-request observation when probed
+  (`received`, `not_received`, `unknown` or `probe_failed`) and elapsed, remaining and budget milliseconds.
   The failure class describes the current retry or refusal; cancellation retains the most recent
   retry's class, or `none` before any retry. Cancellation emits synchronously on abort before
   the terminal result closes the diagnostic stream, subject to the event caps below.
@@ -1691,7 +1692,12 @@ process group and announces it; the CLI records that group with the driver's
 identity and signals it, before the host, only while that identity still
 matches. Refused or unresolved core or driver cleanup leaves the host untouched
 and retains the lease. A host that was already running, or any
-present or unknown host after that, retains the lease. When the pre-attach host
+present or unknown host after that, retains the lease. Cleanup rechecks an unknown
+host observation up to three times, with each inventory or scoped process-list command
+bounded to ten seconds and 200 ms between probes. After terminating an owned host,
+the same bounded reads allow its exit to settle. An unanswered or malformed read
+never proves absence; a persistent unknown still requires later cleanup and retains
+the lease. When the pre-attach host
 probe cannot answer, the receipt records `runner_host_probe: unknown`. External cleanup of a leased
 borrowed iOS simulator refuses before producer mutation, lease release or saving unless
 the recorded qaren owner is proved gone, including restart-only and not-yet-armed runs.
@@ -2023,8 +2029,9 @@ The [row timing implementation](../qaren-core/src/qa/row-timing.ts) owns
 aggregation; [CLI decoding](src/core.rs) and [report rendering](src/report.rs)
 own consumption.
 
-Launch admission shares the remaining walk deadline across target readiness,
-WebSocket handshakes, probes and retry sleeps. The connect-time dev-build check
+Launch admission has a two-minute deadline, capped by the remaining walk budget,
+shared across target readiness, WebSocket handshakes, probes and retry sleeps.
+Retries and the one relaunch never renew it. The connect-time dev-build check
 and helper injection wait for the runtime's answer until that deadline rather
 than a fixed request timeout; no answer by the deadline is a readiness timeout.
 Target readiness and attachment accept only a runtime Metro reports with the
@@ -2055,14 +2062,19 @@ readiness wait. Individual target-list timeouts and inspector page closures do
 not trigger relaunch. Before a relaunch for a missing target, admission uses the
 [iOS app-job liveness rule](#check-a-plan). A live app skips that no-target
 relaunch and keeps waiting within the same deadline, unless Metro has seen no
-bundle request since the CLI launched the app: then the dev client sits on its
-launcher and gets the one relaunch. The CLI enables Metro's `Metro:Server`
+bundle request since the CLI launched the app: then it permits the one relaunch.
+This uses process and request evidence, without inspecting a launcher layout.
+The skipped decision is rechecked once per readiness window, so an app that later
+exits or an unknown request signal that becomes readable can still recover.
+The CLI enables Metro's `Metro:Server`
 request debug log and probes it once before launch; its Metro log drain counts
 bundle requests on receipt, before any dependency-graph wait, value-free and
 also when that log is withheld. Without a logged request (a failed request probe, a
 Metro without that log, or Metro owned by an `expo run:*` build) the signal
 stays unknown and a live app keeps the skip. The count covers the whole
 Metro server, so another simulator's bundle request also keeps the skip.
+A received request proves neither that the bundle finished nor that it is still
+loading; these cases refuse at the admission deadline if no target appears.
 `core.log` records which way the decision went. An absent job or failed
 probe permits recovery as before. Skipping
 does not consume the one relaunch for persistent runtime-probe or
@@ -2078,7 +2090,11 @@ If the CLI's walk deadline expires before the core reports admission, the CLI
 also returns `CDP_NOT_CONNECTED` with measured host load (or an explicit
 unavailable measurement), regardless of load. After admission, deadline
 expiry remains `WALK_DEADLINE_EXCEEDED`.
-The refusal carries the measured load; the
+The refusal names the observed boundary, typed failure, app liveness and request
+observation; the deadline preserves the latest retry's failure class instead of
+replacing it with a generic probe timeout. Empty target lists, targets on another
+device, another bundle and unanswered list requests have distinct classes.
+The refusal also carries the measured load; the
 [admission implementation](../qaren-core/src/qa/admission.ts) owns attachment
 retry policy; the [CLI core boundary](src/core.rs) owns deadline classification.
 

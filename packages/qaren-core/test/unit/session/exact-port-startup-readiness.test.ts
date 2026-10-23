@@ -9,6 +9,7 @@ import { test, type TestContext } from 'node:test';
 import { CDPClient } from '../../../dist/cdp-client.js';
 import {
   BundleReadinessTimeoutError,
+  TargetListAttemptTimeoutError,
   TargetReadinessTimeoutError,
   TargetSelectionError,
   discoverExactPort,
@@ -313,6 +314,14 @@ for (const [label, deviceName, candidates, Expected] of [
       waitForExactPortTargets(managedPort, 1000, 500, undefined, deviceName, filters.bundleId),
       (error: unknown) => {
         assert.equal((error as Error).constructor, Expected);
+        assert.equal(
+          (error as TargetReadinessTimeoutError).state,
+          Expected === BundleReadinessTimeoutError
+            ? 'other_bundle'
+            : candidates.length === 0
+              ? 'empty'
+              : 'other_device',
+        );
         return true;
       },
     );
@@ -322,6 +331,27 @@ for (const [label, deviceName, candidates, Expected] of [
     await waiting;
   });
 }
+
+test('unanswered target-list requests are not classified as an empty list', async (t) => {
+  const clock = setup(
+    t,
+    (_url, options) =>
+      new Promise<Response>((_resolve, reject) =>
+        options?.signal?.addEventListener('abort', () => reject(options.signal?.reason)),
+      ),
+  );
+  const waiting = assert.rejects(
+    waitForExactPortTargets(managedPort, 1000, 500),
+    (error: unknown) => {
+      assert.equal((error as Error).constructor, TargetListAttemptTimeoutError);
+      assert.equal((error as TargetReadinessTimeoutError).state, 'list_timeout');
+      return true;
+    },
+  );
+  await setImmediate();
+  await clock.advance(1000);
+  await waiting;
+});
 
 test('a final read that times out keeps the wrong-bundle observation of the last answered read', async (t) => {
   let reads = 0;
@@ -431,7 +461,7 @@ for (const [label, candidates] of [
     const admission = admitThroughReadiness(t, () => [...candidates], false);
     const outcome = await admission.run();
     assert.equal(outcome?.error?.code, 'CDP_NOT_CONNECTED');
-    assert.equal(outcome?.error?.meta?.inner, 'target_readiness_timeout');
+    assert.equal(outcome?.error?.meta?.inner, 'bundle_readiness_timeout');
     assert.equal(outcome?.error?.meta?.attempt, 1);
     assert.equal(outcome?.error?.meta?.relaunches, 0);
     assert.deepEqual(admission.calls, ['wait', 'close']);
@@ -464,7 +494,7 @@ for (const [label, missing] of [
   });
 }
 
-test('a live app whose target registers after the readiness window keeps retrying within the walk budget', async (t) => {
+test('a live app whose target registers after the readiness window survives repeated recovery probes', async (t) => {
   let registeredAt: number | undefined;
   const admission = admitThroughReadiness(
     t,
@@ -478,7 +508,7 @@ test('a live app whose target registers after the readiness window keeps retryin
   assert.ok(outcome?.proof, `admission refused: ${outcome?.error?.message}`);
   assert.ok(admission.elapsed() > 3000, `admitted after ${admission.elapsed()}ms`);
   assert.ok(!admission.calls.includes('relaunch'));
-  assert.equal(admission.calls.filter((call) => call === 'app_alive').length, 1);
+  assert.equal(admission.calls.filter((call) => call === 'app_alive').length, 2);
   assert.ok(admission.calls.filter((call) => call === 'wait').length > 2);
   assert.deepEqual(admission.calls.slice(-3), ['connect_exact', 'foreign_driver', 'open']);
 });

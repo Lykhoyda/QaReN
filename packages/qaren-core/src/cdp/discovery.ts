@@ -132,7 +132,14 @@ export async function discoverAllMetroPorts(ports: number[], timeout: number): P
   return checks.filter((p): p is number => p !== null);
 }
 
-export class TargetReadinessTimeoutError extends Error {}
+export class TargetReadinessTimeoutError extends Error {
+  constructor(
+    message: string,
+    readonly state?: 'empty' | 'other_device' | 'other_bundle' | 'list_timeout',
+  ) {
+    super(message);
+  }
+}
 export class TargetListAttemptTimeoutError extends TargetReadinessTimeoutError {}
 export class BundleReadinessTimeoutError extends TargetReadinessTimeoutError {}
 
@@ -189,6 +196,7 @@ export async function waitForExactPortTargets(
   const deadline = performance.now() + timeoutMs;
   let remaining = deadline - performance.now();
   let otherBundleOnly = false;
+  let state: NonNullable<TargetReadinessTimeoutError['state']> = 'list_timeout';
   while (remaining > 0) {
     signal?.throwIfAborted();
     let raw: HermesTarget[] = [];
@@ -202,6 +210,7 @@ export async function waitForExactPortTargets(
     } catch (error) {
       signal?.throwIfAborted();
       if (!(error instanceof TargetListAttemptTimeoutError)) throw error;
+      if (!otherBundleOnly) state = 'list_timeout';
     }
     if (!Array.isArray(raw)) {
       throw new Error(`Invalid CDP target list on port ${port}: expected an array`);
@@ -217,18 +226,26 @@ export async function waitForExactPortTargets(
       bundleId === undefined
         ? onDevice.length > 0
         : onDevice.some((target) => targetMatchesBundleId(target, bundleId));
-    if (fetched) otherBundleOnly = bundleId !== undefined && onDevice.length > 0 && !ready;
+    if (fetched) {
+      otherBundleOnly = bundleId !== undefined && onDevice.length > 0 && !ready;
+      state = raw.length === 0 ? 'empty' : onDevice.length === 0 ? 'other_device' : 'other_bundle';
+    }
     remaining = deadline - performance.now();
     if (remaining <= 0) break;
     if (ready) return;
     await sleep(Math.min(pollMs, remaining), signal);
     remaining = deadline - performance.now();
   }
-  const Timeout = otherBundleOnly ? BundleReadinessTimeoutError : TargetReadinessTimeoutError;
+  const Timeout = otherBundleOnly
+    ? BundleReadinessTimeoutError
+    : state === 'list_timeout'
+      ? TargetListAttemptTimeoutError
+      : TargetReadinessTimeoutError;
   throw new Timeout(
     deviceName === undefined
       ? `Timed out waiting for CDP targets on port ${port} after ${timeoutMs}ms`
       : `Timed out waiting for a CDP target from device ${JSON.stringify(deviceName)} on port ${port} after ${timeoutMs}ms`,
+    state,
   );
 }
 

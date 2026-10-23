@@ -86,6 +86,9 @@ export const ADMISSION_INNER_CLASSES = [
   'target_selection_bundle_not_found',
   'target_list_attempt_timeout',
   'target_readiness_timeout',
+  'target_list_empty',
+  'target_other_device',
+  'bundle_readiness_timeout',
   'cdp_probe_timeout',
   'cdp_handshake_timeout',
   'cdp_target_closed',
@@ -94,6 +97,12 @@ export const ADMISSION_INNER_CLASSES = [
   'none',
 ] as const;
 export const ADMISSION_LIVENESS = ['not_probed', 'alive', 'dead', 'probe_failed'] as const;
+export const ADMISSION_BUNDLE_REQUESTS = [
+  'received',
+  'not_received',
+  'unknown',
+  'probe_failed',
+] as const;
 const ADMISSION_WORDS = {
   admission: ADMISSION_DECISIONS,
   lastStarted: ADMISSION_BOUNDARIES,
@@ -101,6 +110,7 @@ const ADMISSION_WORDS = {
   attachStage: ADMISSION_ATTACH_STAGES,
   inner: ADMISSION_INNER_CLASSES,
   liveness: ADMISSION_LIVENESS,
+  bundleRequest: ADMISSION_BUNDLE_REQUESTS,
 } as const;
 const ADMISSION_NUMBERS = ['attempt', 'relaunches', 'elapsedMs', 'remainingMs'] as const;
 const HEALTH_DETAILS = [
@@ -189,6 +199,7 @@ export interface TimingEvent {
   relaunches?: number;
   relaunchFailed?: boolean;
   liveness?: (typeof ADMISSION_LIVENESS)[number];
+  bundleRequest?: (typeof ADMISSION_BUNDLE_REQUESTS)[number];
   elapsedMs?: number;
   remainingMs?: number;
   healthDetail?: HealthDetail;
