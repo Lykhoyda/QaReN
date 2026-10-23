@@ -462,6 +462,13 @@ fn prepare_validated(
     if let Some(earlier) = recovered {
         ctx.notes.push(("recovered_run".to_string(), earlier));
     }
+    if let Some(orphan) = ctx.record.resources.lease.as_ref().and_then(|l| {
+        l.released_orphan
+            .as_deref()
+            .map(|run_id| crate::lease::orphan_note(&l.lock_dir, run_id))
+    }) {
+        ctx.notes.push(("device_lease".to_string(), orphan));
+    }
     let borrowed_admission = |ctx: &mut Ctx| {
         crate::core::fresh_install_admission(
             ctx.runner,
@@ -1560,8 +1567,13 @@ pub(crate) fn claim_build_lock(ctx: &mut Ctx, lock_root: &Path) -> Result<(), Fa
         LockPolicy::AdoptDead
     };
     match crate::lease::claim_reclaiming_orphan(ctx.runner, lock_root, &name, &holder, policy) {
-        LockOutcome::Claimed { adopted_stale } => {
-            if adopted_stale {
+        (LockOutcome::Claimed { adopted_stale }, orphan) => {
+            if let Some(run_id) = orphan {
+                ctx.notes.push((
+                    "build_lock".to_string(),
+                    crate::lease::orphan_note(&buildplan::lock_dir(lock_root, &name), &run_id),
+                ));
+            } else if adopted_stale {
                 ctx.notes.push((
                     "build_lock".to_string(),
                     "adopted a stale lock whose recorded holder is dead".to_string(),
@@ -1569,11 +1581,14 @@ pub(crate) fn claim_build_lock(ctx: &mut Ctx, lock_root: &Path) -> Result<(), Fa
             }
             Ok(())
         }
-        LockOutcome::Contended {
-            holder: existing,
-            detail,
-            ..
-        } => Err(Failure::new(
+        (
+            LockOutcome::Contended {
+                holder: existing,
+                detail,
+                ..
+            },
+            _,
+        ) => Err(Failure::new(
             "plan",
             FailureCode::BuildContended,
             format!("a concurrent native build holds the serialization lock: {detail}"),
@@ -1585,7 +1600,7 @@ pub(crate) fn claim_build_lock(ctx: &mut Ctx, lock_root: &Path) -> Result<(), Fa
                 )
             ),
         )),
-        LockOutcome::Error(detail) => Err(Failure::new(
+        (LockOutcome::Error(detail), _) => Err(Failure::new(
             "plan",
             FailureCode::RunRecordUpdateFailed,
             format!("cannot operate the build serialization lock: {detail}"),
@@ -1634,12 +1649,23 @@ fn claim_usb_device(ctx: &mut Ctx, lock_root: &Path, serial: &str) -> Result<(),
         &holder,
         LockPolicy::Strict,
     ) {
-        LockOutcome::Claimed { .. } => Ok(()),
-        LockOutcome::Contended {
-            holder: existing,
-            detail,
-            ..
-        } => {
+        (LockOutcome::Claimed { .. }, orphan) => {
+            if let Some(run_id) = orphan {
+                ctx.notes.push((
+                    "usb_device_lock".to_string(),
+                    crate::lease::orphan_note(&lock_dir, &run_id),
+                ));
+            }
+            Ok(())
+        }
+        (
+            LockOutcome::Contended {
+                holder: existing,
+                detail,
+                ..
+            },
+            _,
+        ) => {
             let described = existing
                 .as_ref()
                 .map(|h| format!(" (held for run {})", h.run_id))
@@ -1653,7 +1679,7 @@ fn claim_usb_device(ctx: &mut Ctx, lock_root: &Path, serial: &str) -> Result<(),
                 crate::lease::contended_advice(&lock_dir, existing.as_ref()),
             ))
         }
-        LockOutcome::Error(detail) => Err(Failure::new(
+        (LockOutcome::Error(detail), _) => Err(Failure::new(
             "allocate",
             FailureCode::RunRecordUpdateFailed,
             format!("cannot operate the device claim lock: {detail}"),

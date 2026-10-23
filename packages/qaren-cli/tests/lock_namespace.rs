@@ -404,11 +404,15 @@ fn a_proven_dead_holder_without_run_records_is_reclaimed() {
     let deleted = fixture.path().join("deleted-home");
     let kept = fixture.child_dir("kept-home");
     fs::create_dir_all(kept.join(".qaren/runs/old-run")).unwrap();
+    fs::write(kept.join(".qaren/runs/old-run/run.json"), "{}").unwrap();
+    let recordless = fixture.child_dir("recordless-home");
+    fs::create_dir_all(recordless.join(".qaren/runs/old-run/ios-build")).unwrap();
     let rebooted = "Fri Oct 23 07:00:00 2026";
     for (case, home, lstart, reclaimed) in [
         ("deleted-home", Some(&deleted), "", true),
         ("rebooted", Some(&deleted), rebooted, true),
         ("records-kept", Some(&kept), "", false),
+        ("run-dir-without-record", Some(&recordless), "", true),
         ("live", Some(&deleted), BIRTH, false),
         ("unrecorded-home", None, "", false),
     ] {
@@ -439,7 +443,8 @@ fn a_proven_dead_holder_without_run_records_is_reclaimed() {
             lease::try_acquire(&mut mock, &root, Platform::Ios, DEVICE_A, "new-run", None);
         let held = buildplan::read_holder(&root.join(&name)).unwrap();
         if reclaimed {
-            assert!(outcome.is_ok(), "{case}");
+            let lease = outcome.unwrap_or_else(|busy| panic!("{case}: {:?}", busy.failure));
+            assert_eq!(lease.released_orphan.as_deref(), Some("old-run"), "{case}");
             assert_eq!(held.run_id, "new-run", "{case}");
             assert_eq!(held.home, Some(fixture.path().join("new-home")), "{case}");
         } else {
@@ -477,9 +482,12 @@ fn a_proven_dead_holder_without_run_records_is_reclaimed() {
     assert!(
         matches!(
             outcome,
-            LockOutcome::Claimed {
-                adopted_stale: true
-            }
+            (
+                LockOutcome::Claimed {
+                    adopted_stale: true
+                },
+                Some(ref orphan)
+            ) if orphan == "old-build"
         ),
         "{outcome:?}"
     );
@@ -528,10 +536,13 @@ fn a_killed_owner_with_a_live_build_group_keeps_the_build_lock() {
         &sample_holder("second-build"),
         LockPolicy::Strict,
     );
-    let LockOutcome::Contended {
-        holder: Some(existing),
-        ..
-    } = &second
+    let (
+        LockOutcome::Contended {
+            holder: Some(existing),
+            ..
+        },
+        None,
+    ) = &second
     else {
         panic!("a second build could start: {second:?}");
     };
@@ -544,6 +555,12 @@ fn a_killed_owner_with_a_live_build_group_keeps_the_build_lock() {
     );
     build.kill().unwrap();
     build.wait().unwrap();
+    fs::create_dir_all(
+        fixture
+            .path()
+            .join("deleted-home/.qaren/runs/killed-build/ios-build"),
+    )
+    .unwrap();
     let after = lease::claim_reclaiming_orphan(
         &mut runner,
         &root,
@@ -554,9 +571,12 @@ fn a_killed_owner_with_a_live_build_group_keeps_the_build_lock() {
     assert!(
         matches!(
             after,
-            LockOutcome::Claimed {
-                adopted_stale: true
-            }
+            (
+                LockOutcome::Claimed {
+                    adopted_stale: true
+                },
+                Some(_)
+            )
         ),
         "{after:?}"
     );

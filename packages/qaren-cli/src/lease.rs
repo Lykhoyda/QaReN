@@ -16,6 +16,8 @@ pub struct Lease {
     pub token: String,
     pub lock_dir: PathBuf,
     pub holder: String,
+    #[serde(skip)]
+    pub released_orphan: Option<String>,
 }
 
 impl Lease {
@@ -78,14 +80,15 @@ fn holder_records(home: &Path, run_id: &str) -> Option<PathBuf> {
     {
         return None;
     }
-    let kind = if run_id.starts_with("native-ios-") {
-        "native-suites"
+    let (kind, record) = if run_id.starts_with("native-ios-") {
+        ("native-suites", "suite.json")
     } else {
-        "runs"
+        ("runs", "run.json")
     };
-    Some(home.join(".qaren").join(kind).join(run_id))
+    Some(home.join(".qaren").join(kind).join(run_id).join(record))
 }
 
+// Judged by the record file: a run directory alone (claimed before the record, or re-created by an orphaned build) gives cleanup nothing to load.
 pub fn records_gone(held: &LockHolder) -> bool {
     held.home
         .as_deref()
@@ -96,7 +99,7 @@ pub fn records_gone(held: &LockHolder) -> bool {
 }
 
 // No cleanup can ever run for a proven-dead holder whose records are gone, so once its gated work group is gone too only its owned lock is released.
-fn release_orphan(
+pub fn release_orphan(
     runner: &mut dyn Runner,
     lock_dir: &Path,
     held: &LockHolder,
@@ -137,19 +140,20 @@ pub fn contended_advice(lock_dir: &Path, existing: Option<&LockHolder>) -> Strin
         .map(|pgid| format!(" and `pgrep -g {pgid}` prints nothing"))
         .unwrap_or_default();
     format!(
-        "run {} left no records; once its process has exited{work}, re-run to release {}",
+        "run {} left no run record; once its process has exited{work}, re-run to release {}",
         held.run_id,
         lock_dir.display()
     )
 }
 
+// The second value names the orphaned run whose lock was released for this claim.
 pub fn claim_reclaiming_orphan(
     runner: &mut dyn Runner,
     lock_root: &Path,
     name: &str,
     holder: &LockHolder,
     policy: LockPolicy,
-) -> LockOutcome {
+) -> (LockOutcome, Option<String>) {
     let outcome = buildplan::claim_lock(runner, lock_root, name, holder, policy);
     let LockOutcome::Contended {
         holder: Some(held),
@@ -157,7 +161,7 @@ pub fn claim_reclaiming_orphan(
         ..
     } = &outcome
     else {
-        return outcome;
+        return (outcome, None);
     };
     if !release_orphan(
         runner,
@@ -165,14 +169,25 @@ pub fn claim_reclaiming_orphan(
         held,
         *liveness,
     ) {
-        return outcome;
+        return (outcome, None);
     }
+    let orphan = Some(held.run_id.clone());
     match buildplan::claim_lock(runner, lock_root, name, holder, policy) {
-        LockOutcome::Claimed { .. } => LockOutcome::Claimed {
-            adopted_stale: true,
-        },
-        other => other,
+        LockOutcome::Claimed { .. } => (
+            LockOutcome::Claimed {
+                adopted_stale: true,
+            },
+            orphan,
+        ),
+        other => (other, orphan),
     }
+}
+
+pub fn orphan_note(lock_dir: &Path, run_id: &str) -> String {
+    format!(
+        "released {} left by run {run_id}: its process and work group are gone and it has no run record",
+        lock_dir.display()
+    )
 }
 
 pub fn holder_home(runner: &dyn Runner) -> Option<PathBuf> {
@@ -180,6 +195,12 @@ pub fn holder_home(runner: &dyn Runner) -> Option<PathBuf> {
         .env_var("HOME")
         .map(PathBuf::from)
         .filter(|home| home.is_absolute())
+}
+
+// An inherited group belongs to the caller and may outlive every run, so only a group this process leads gates orphan release.
+fn led_group() -> Option<i32> {
+    let pid = std::process::id() as i32;
+    (unsafe { libc::getpgrp() } == pid).then_some(pid)
 }
 
 // A refused claim, with the holder and the liveness the claim already observed.
@@ -225,21 +246,25 @@ pub fn try_acquire(
         identity,
         at: timefmt::iso8601_utc(now_ms),
         home: holder_home(runner),
-        group: None,
+        group: led_group(),
     };
     let name = lock_name(platform, device_id);
     match claim_reclaiming_orphan(runner, lock_root, &name, &holder, LockPolicy::Strict) {
-        LockOutcome::Claimed { .. } => Ok(Lease {
+        (LockOutcome::Claimed { .. }, released_orphan) => Ok(Lease {
             run_id: run_id.to_string(),
             token,
             lock_dir: buildplan::lock_dir(lock_root, &name),
             holder: holder.holder,
+            released_orphan,
         }),
-        LockOutcome::Contended {
-            holder: existing,
-            liveness,
-            detail,
-        } => {
+        (
+            LockOutcome::Contended {
+                holder: existing,
+                liveness,
+                detail,
+            },
+            _,
+        ) => {
             let described = existing
                 .as_ref()
                 .map(|h| format!(" (held for run {})", h.run_id))
@@ -257,7 +282,7 @@ pub fn try_acquire(
                 liveness,
             }))
         }
-        LockOutcome::Error(detail) => Err(Box::new(Busy {
+        (LockOutcome::Error(detail), _) => Err(Box::new(Busy {
             failure: Failure::new(
                 "lease",
                 FailureCode::RunRecordUpdateFailed,

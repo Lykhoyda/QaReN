@@ -450,9 +450,10 @@ fn main_inner(args: Vec<String>) -> ExitCode {
             match runs_root() {
                 Ok(runs_root) => match verb.as_str() {
                     "status" => status::status(&mut runner, &runs_root, target),
-                    "cleanup" => cleanup::cleanup_with(
+                    "cleanup" => cleanup::cleanup_with_orphan_locks(
                         &mut runner,
                         &runs_root,
+                        lock_root().ok().as_deref(),
                         target,
                         confirm_remove_app.as_deref(),
                     ),

@@ -1775,11 +1775,16 @@ holder is reclaimed only through that run's cleanup; a live or unprovable holder
 refuses `DEVICE_BUSY`. Every holder records its HOME, and the refusal names
 `HOME='<holder home>' qaren cleanup <run-id>`, which recovers it from any session.
 A device, native-build or USB lock whose holder is proven dead (its process gone or
-replaced, as after a reboot) and whose run records under that HOME no longer exist
-is released by the next claim, since no cleanup can run for it. Before a native
-build or native suite is let past its start gate, its process group is recorded in
-the holder; that group must also have no live members, otherwise the refusal names
-the lock and the `pgrep -g` check to wait on.
+replaced, as after a reboot) and whose run record (`run.json`, or a native suite's
+`suite.json`) under that HOME does not exist is released by the next claim, since no
+cleanup can run for it; a run directory without its record, such as one claimed just
+before the holder died or re-created by an orphaned build writing its output, does not
+count. Before a native build or native suite is let past its start gate, its process
+group is recorded in the holder, as is a `qaren` process's own group when it leads
+one; that group must also have no live members, otherwise the refusal names the lock
+and the `pgrep -g` check to wait on. `qaren cleanup <run-id>` for a run with no
+`run.json` releases that run's locks under the same proof, and the receipt of a run
+that released an orphaned lock notes it.
 Do not delete locks to bypass unresolved ownership.
 
 The iOS runner's XCTest result bundles under `Logs/Test` in both its local
@@ -2556,7 +2561,7 @@ by an atomic host-level `usb-<serial>` lock in the
 [configured lock root](#ios-admission-and-cleanup); any
 existing claim — even one whose holder is provably dead — is a structured
 refusal (`DEVICE_CLAIM_CONTENDED`, exit 4), never an adoption; only an
-[orphaned lock](#ios-admission-and-cleanup) whose run records are gone is released.
+[orphaned lock](#ios-admission-and-cleanup) whose run record is gone is released.
 A run-scoped `--one-device <serial>` adb server (host adb key
 pinned explicitly) is the only path to the phone; `expo run:android` routes
 through it via `ADB_SERVER_SOCKET` + `ANDROID_SERIAL`. An `unauthorized` or
