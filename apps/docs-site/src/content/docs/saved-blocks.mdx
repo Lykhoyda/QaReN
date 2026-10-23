@@ -54,9 +54,8 @@ any value, when:
 - a protected value from the plan or the run appears in the block, which reports
   `contains a protected plan-typed value`;
 - a quoted wait or scroll target has no unique `testID` or unique visible text;
-- one of its rows has degraded or reconnected React coverage, or the walk lost the JS/React
-  connection, which withholds every new or patched block (see the
-  [React coverage contract](https://github.com/Lykhoyda/rn-dev-agent/blob/develop/packages/qaren-cli/README.md#check-a-plan)).
+- the [React coverage contract](https://github.com/Lykhoyda/rn-dev-agent/blob/develop/packages/qaren-cli/README.md#check-a-plan)
+  withholds persistence for the block or walk.
 
 A fill from a [runtime input](../plans/#runtime-inputs) is saved by name only, as
 `inputText: { input: "PASSWORD" }`, and replays with the current run's value.

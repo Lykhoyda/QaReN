@@ -1249,9 +1249,9 @@ in captured pixels. The shared patterns in
 cover indicators, lookalikes and adjacent protected fields.
 iOS fast snapshots retain nodes with distinct readable values even when their type,
 label, identifier and origin match; deduplication compares those fields separately.
-The React digest adds semantics: a deadline, malformed-payload, validation or
-transport failure degrades React coverage to unknown; capture is retried only after
-re-injecting helpers on a newer CDP connection.
+The React digest adds semantics: a deadline, malformed payload, validation error or
+transport failure can leave the digest unavailable. After an evaluation error on a
+newer CDP connection, QaReN re-injects helpers and retries capture once.
 Operations requiring complete React evidence still refuse when that coverage is
 unavailable. Each affected row records `reactCoverage` as `unknown` or `incomplete`
 for a capture limit, `reconnected` for the first capture on a newer CDP connection
@@ -1267,7 +1267,7 @@ failure. Receipts carry each affected line once, with its most severe coverage, 
 captures recover; any other gap withholds only the block it belongs to.
 Strict private React capture can scan up to 5,000 fibers across renderer roots,
 including a single-root screen. Existing capture and item deadlines, host-evidence and
-interactive-node limits still apply; incomplete evidence is refused.
+interactive-node limits still apply.
 
 On composite components, the digest omits non-string `title`,
 `accessibilityLabel` and `placeholder` props without coercing or serializing them;
