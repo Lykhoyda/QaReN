@@ -74,8 +74,8 @@ ready for Xcode.
 
 Optional preparation budgets for `check` and `pr`: a native build time limit,
 a dependency-install time limit, a simulator-boot time limit, and a dev-client
-attach limit after which an attach that shows no progress (no target and no
-bundle request Metro received) is refused.
+attach limit after which an attach without a target is refused when the app has
+exited or Metro has received no bundle request since launch.
 
 | Key                    | Default (seconds) |
 | ---------------------- | ----------------- |

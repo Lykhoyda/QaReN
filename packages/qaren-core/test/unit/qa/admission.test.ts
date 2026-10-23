@@ -1685,7 +1685,7 @@ test('each retry decision is observed with its liveness and relaunch count', asy
     bundleRequest: 'unknown',
   };
   assert.deepEqual(facts(), [
-    { ...retry, attempt: 1, lastStarted: 'foreign_driver', lastCompleted: 'foreign_driver' },
+    { ...retry, attempt: 1, lastStarted: 'attach', lastCompleted: 'none' },
     { ...retry, attempt: 2, lastStarted: 'attach', lastCompleted: 'retry_wait' },
   ]);
   assert.doesNotMatch(JSON.stringify(facts()), /PRIVATE/);

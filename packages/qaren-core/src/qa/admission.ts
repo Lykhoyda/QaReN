@@ -37,7 +37,7 @@ import {
 export interface AdmissionSteps {
   metroPort: number;
   readinessMs: number;
-  // A stall without a requested bundle refuses once this much time has passed.
+  // After this long, a stall from a dead app or with no bundle request since launch refuses.
   attachBudgetMs: number;
   remainingMs(): number;
   attach(deadline: number): Promise<void>;
@@ -501,6 +501,7 @@ async function attach(steps: AdmissionSteps, signal: AbortSignal): Promise<Prove
             (probeStall &&
               stallSeenAt !== undefined &&
               performance.now() >= Math.max(relaunchAt, stallSeenAt + steps.readinessMs));
+          let probed = false;
           if (
             !opened &&
             !relaunched &&
@@ -509,12 +510,14 @@ async function attach(steps: AdmissionSteps, signal: AbortSignal): Promise<Prove
             remaining >= steps.readinessMs &&
             recoveryWaitExpired
           ) {
+            const completed = lastCompleted;
             lastStarted = 'foreign_driver';
             await refuseForeignDriver(steps);
             lastCompleted = 'foreign_driver';
             if (noTarget) {
               liveness = await probeLiveness(steps);
               if (liveness === 'alive') bundleRequest = await probeBundleRequest(steps);
+              probed = true;
               nextNoTargetProbe = performance.now() + steps.readinessMs;
             }
             if (!noTarget || liveness !== 'alive' || bundleRequest === 'not_received') {
@@ -528,12 +531,18 @@ async function attach(steps: AdmissionSteps, signal: AbortSignal): Promise<Prove
                 relaunchFailure = describeError(relaunchError).message;
                 throw error;
               }
+            } else {
+              lastStarted = 'attach';
+              lastCompleted = completed;
             }
           }
           if (stalledAttach && lastStarted !== 'relaunch' && performance.now() >= refuseStalledAt) {
-            if (bundleRequest !== 'received' && steps.bundleRequested)
-              bundleRequest = await probeBundleRequest(steps);
-            if (bundleRequest !== 'received') throw error;
+            if (!probed) {
+              liveness = await probeLiveness(steps);
+              if (liveness !== 'dead' && bundleRequest !== 'received' && steps.bundleRequested)
+                bundleRequest = await probeBundleRequest(steps);
+            }
+            if (liveness === 'dead' || bundleRequest === 'not_received') throw error;
           }
           observe('retry', facts(admissionInnerClass(error)));
           lastStarted = 'retry_wait';

@@ -2,7 +2,12 @@ import assert from 'node:assert/strict';
 import { syncBuiltinESMExports } from 'node:module';
 import { test, type TestContext } from 'node:test';
 import { setImmediate as nextTurn } from 'node:timers/promises';
-import { admit, type AdmissionSteps } from '../../../dist/qa/admission.js';
+import {
+  admissionMetric,
+  admit,
+  type AdmissionRefusalFacts,
+  type AdmissionSteps,
+} from '../../../dist/qa/admission.js';
 import {
   BundleReadinessTimeoutError,
   TargetListAttemptTimeoutError,
@@ -83,39 +88,70 @@ function stalled(t: TestContext, overrides: Partial<AdmissionSteps> = {}) {
 }
 
 for (const [name, bundleRequested, state] of [
+  ['a received bundle request', async () => true, 'received'],
   ['an unknown signal', async () => undefined, 'unknown'],
   ['an absent signal', undefined, 'unknown'],
   [
-    'a failed signal',
+    'an unreadable signal',
     async () => {
       throw new Error('unreadable');
     },
     'probe_failed',
   ],
 ] as const) {
-  test(`a live app without a target and ${name} refuses at the attach budget`, async (t) => {
-    const fixture = stalled(t, { bundleRequested });
-    const error = await fixture.run();
-    assert.equal(error.code, 'CDP_NOT_CONNECTED');
-    assert.match(error.message, /target_readiness_timeout/);
-    assert.equal(error.meta.bundleRequest, state);
-    assert.equal(error.meta.budgetMs, 1_199_000);
-    assert.ok(fixture.elapsed() >= 120_000);
+  test(`a live app without a target and ${name} keeps the walk budget`, async (t) => {
+    const facts: Array<Record<string, unknown>> = [];
+    const fixture = stalled(t, {
+      bundleRequested,
+      observe: (_decision, observed) => void facts.push({ ...observed }),
+    });
+    await fixture.waiting();
     assert.equal(fixture.relaunches(), 0);
+    assert.equal(facts.at(-1)?.bundleRequest, state);
   });
 }
 
+function refusedAt(error: { meta: AdmissionRefusalFacts }) {
+  assert.equal(error.meta.lastStarted, 'attach');
+  assert.equal(
+    admissionMetric('refused', error.meta, 'wait_targets', 0).attachStage,
+    'wait_targets',
+  );
+}
+
+test('no bundle request since launch refuses at the attach budget after the one relaunch', async (t) => {
+  const fixture = stalled(t, { bundleRequested: async () => false });
+  const error = await fixture.run();
+  assert.equal(error.code, 'CDP_NOT_CONNECTED');
+  assert.match(error.message, /observed attach: target_readiness_timeout/);
+  assert.equal(error.meta.bundleRequest, 'not_received');
+  assert.equal(error.meta.relaunches, 1);
+  assert.equal(error.meta.budgetMs, 1_199_000);
+  assert.ok(fixture.elapsed() >= 120_000);
+  refusedAt(error);
+});
+
+test('an app that dies after its relaunch refuses despite its bundle request', async (t) => {
+  let relaunched = false;
+  const fixture = stalled(t, {
+    appAlive: async () => !relaunched,
+    bundleRequested: async () => relaunched,
+    relaunch: async () => {
+      relaunched = true;
+    },
+  });
+  const error = await fixture.run();
+  assert.equal(error.code, 'CDP_NOT_CONNECTED');
+  assert.equal(error.meta.liveness, 'dead');
+  assert.equal(error.meta.relaunches, 1);
+  refusedAt(error);
+});
+
 test('the attach budget is the configured one', async (t) => {
-  const fixture = stalled(t, { attachBudgetMs: 60_000, bundleRequested: undefined });
+  const fixture = stalled(t, { attachBudgetMs: 60_000, bundleRequested: async () => false });
   const error = await fixture.run(61_000);
   assert.equal(error.code, 'CDP_NOT_CONNECTED');
   assert.ok(fixture.elapsed() >= 60_000);
-});
-
-test('a live app whose bundle request Metro received keeps the walk budget', async (t) => {
-  const fixture = stalled(t);
-  await fixture.waiting();
-  assert.equal(fixture.relaunches(), 0);
 });
 
 test('a bundle request after the one relaunch keeps the walk budget', async (t) => {
@@ -130,43 +166,39 @@ test('a bundle request after the one relaunch keeps the walk budget', async (t) 
   assert.equal(relaunched, true);
 });
 
-test('no bundle request after the one relaunch refuses at the attach budget', async (t) => {
-  const fixture = stalled(t, { bundleRequested: async () => false });
-  const error = await fixture.run(151_000);
-  assert.equal(error.code, 'CDP_NOT_CONNECTED');
-  assert.equal(error.meta.bundleRequest, 'not_received');
-  assert.equal(error.meta.relaunches, 1);
-});
-
-for (const [name, error, inner] of [
-  ['an empty list', new TargetReadinessTimeoutError('no target', 'empty'), 'target_list_empty'],
+for (const [name, error, inner, relaunches] of [
+  ['an empty list', new TargetReadinessTimeoutError('no target', 'empty'), 'target_list_empty', 1],
   [
     'another device',
     new TargetReadinessTimeoutError('no target', 'other_device'),
     'target_other_device',
+    1,
   ],
   [
     'another bundle',
     new BundleReadinessTimeoutError('wrong bundle', 'other_bundle'),
     'bundle_readiness_timeout',
+    0,
   ],
   [
     'an unreadable list',
     new TargetListAttemptTimeoutError('list timed out'),
     'target_list_attempt_timeout',
+    0,
   ],
 ] as const) {
-  test(`${name} cannot extend admission to the walk deadline`, async (t) => {
+  test(`${name} without a bundle request cannot extend admission to the walk deadline`, async (t) => {
     const fixture = stalled(t, {
       attach: async () => {
         throw error;
       },
-      bundleRequested: undefined,
+      bundleRequested: async () => false,
     });
     const refused = await fixture.run();
     assert.equal(refused.code, 'CDP_NOT_CONNECTED');
     assert.equal(refused.meta.inner, inner);
-    assert.equal(fixture.relaunches(), 0);
+    assert.equal(fixture.relaunches(), relaunches);
+    refusedAt(refused);
   });
 }
 
@@ -245,6 +277,8 @@ for (const change of ['dead_app', 'no_request'] as const) {
 }
 
 test('a platform without a relaunch adapter still refuses a stall at the attach budget', async (t) => {
-  const fixture = stalled(t, { relaunch: undefined, bundleRequested: undefined });
-  assert.equal((await fixture.run()).code, 'CDP_NOT_CONNECTED');
+  const fixture = stalled(t, { relaunch: undefined, bundleRequested: async () => false });
+  const error = await fixture.run();
+  assert.equal(error.code, 'CDP_NOT_CONNECTED');
+  assert.equal(error.meta.relaunches, 0);
 });

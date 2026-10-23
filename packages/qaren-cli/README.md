@@ -2034,11 +2034,15 @@ WebSocket handshakes, probes and retry sleeps; retries and the one relaunch neve
 renew it. A stall without progress refuses earlier, once `deadlines.attach_seconds`
 (default 120; see the [deadline configuration reference](../../apps/docs-site/src/content/docs/configuration.mdx#deadlines)) has passed since admission began:
 a target-list wait that saw no target on the selected device, or whose list
-requests went unanswered, ends admission unless Metro has received a bundle
-request, which is re-read at that point. The refusal follows the first readiness
-window ending after that limit, and a relaunch made just before it still gets its
-full window. A received request, a registered target whose probes or handshakes
-stall, and React that is not yet ready keep the walk deadline. The connect-time dev-build check
+requests went unanswered, ends admission when the app job is proven dead or Metro
+has received no bundle request since the CLI launched the app. Liveness and the
+request signal are re-read at that point, so a request from an earlier launch does
+not keep a dead app waiting. The refusal follows the first readiness window ending
+after that limit, and a relaunch made just before it still gets its full window. A
+received request, an unknown or unreadable request signal (including Metro owned by
+an `expo run:*` build and platforms without the signal), a registered target whose
+probes or handshakes stall, and React that is not yet ready keep the walk deadline.
+The refusal names the stalled `attach` boundary and its stage. The connect-time dev-build check
 and helper injection wait for the runtime's answer until that deadline rather
 than a fixed request timeout; no answer by the deadline is a readiness timeout.
 Target readiness and attachment accept only a runtime Metro reports with the
