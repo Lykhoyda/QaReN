@@ -1470,13 +1470,14 @@ export function insideAlert(element: Element): boolean {
   return ancestorsOf(element).some((ancestor) => alerts.has(ancestor));
 }
 
-// The app content outside every alert and the keyboard, without hittability; undefined when none was captured.
+// The native app content outside every alert and the keyboard, without hittability; undefined when none was captured.
 export function contentBehindAlerts(screen: Screen): string | undefined {
   // Roots, windows and the containers holding an alert or the keyboard carry labels copied from them.
   const holders = new Set(
     screen.elements.filter((e) => alerts.has(e) || keyboards.has(e)).flatMap(ancestorsOf),
   );
   const content = screen.elements
+    .filter((e) => !e.ref.startsWith('react:'))
     .filter((e) => !applications.has(e) && !windows.has(e) && !holders.has(e))
     .filter((e) => !alerts.has(e) && !insideAlert(e))
     .filter((e) => !keyboards.has(e) && !ancestorsOf(e).some((a) => keyboards.has(a)))

@@ -31,6 +31,7 @@ function wizard(
       parentIndex: 1,
       type: 'Button',
       label: 'Save',
+      identifier: 'save-btn',
       hittable: !alert,
       rect: { x: 20, y: 700, width: 360, height: 44 },
     },
@@ -118,7 +119,7 @@ function wizard(
       index: position.get(n.index)!,
       ...(n.parentIndex === undefined ? {} : { parentIndex: position.get(n.parentIndex) }),
     })),
-    [],
+    [{ role: 'button', testID: 'save-btn', label: 'Save' }],
   );
   return { ...captured, coverage: { native: 'complete', react: 'complete' } };
 }
