@@ -3,7 +3,12 @@ import { test } from 'node:test';
 import { join } from '../../../dist/qa/screen.js';
 import type { DigestEntry, NativeNode, Screen } from '../../../dist/qa/screen.js';
 import { exactIdentities } from '../../../dist/qa/identity.js';
-import { prepareTarget, targetEvidence } from '../../../dist/qa/resolve.js';
+import {
+  prepareTarget,
+  presenceMiss,
+  targetEvidence,
+  visibleSelector,
+} from '../../../dist/qa/resolve.js';
 import type { Step, Target } from '../../../dist/qa/plan.js';
 
 const window: NativeNode = {
@@ -53,6 +58,40 @@ test('a stored id resolves to its native element beside a React-only twin', () =
 
 test('a stored id wait passes on the visible native element beside a React-only twin', () => {
   assert.equal(targetEvidence(exactId('close'), twin), 'pass');
+});
+
+test('a quoted wait passes on the visible native element beside a React-only twin', () => {
+  const quoted = { quoted: 'close', phrase: 'close' };
+  assert.equal(targetEvidence(quoted, twin), 'pass');
+  assert.deepEqual(visibleSelector(quoted, twin), { id: 'close' });
+  assert.equal(presenceMiss(quoted, twin), undefined);
+});
+
+test('a missed quoted wait says whether its id was absent or rejected', () => {
+  const quoted = (id: string) => ({ quoted: id, phrase: id });
+  assert.match(
+    presenceMiss(quoted('close'), joined([], [button('close')]))!,
+    /^the element carrying the identifier "close" is in the React tree but not the native capture: button id=close /,
+  );
+  const shared = joined(
+    [
+      { id: 'close', y: 100 },
+      { id: 'close', y: 300 },
+    ],
+    [],
+  );
+  assert.match(
+    presenceMiss(quoted('close'), shared)!,
+    /^2 elements carry the identifier "close": /,
+  );
+  assert.match(
+    presenceMiss(quoted('profile_button'), joined([{ id: 'header-profileButton', y: 40 }], []))!,
+    /^no captured element carries the identifier "profile_button"; nearest identifiers: button id=header-profileButton /,
+  );
+  assert.equal(
+    presenceMiss(quoted('profile_button'), joined([{ id: 'settings', y: 40 }], [])),
+    'no captured element carries the identifier "profile_button"',
+  );
 });
 
 test('two native elements sharing a stored id stay ambiguous', () => {

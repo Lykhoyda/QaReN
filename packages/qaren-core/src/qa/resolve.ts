@@ -709,11 +709,7 @@ export function targetEvidence(target: Target, screen: Screen): LiteralVerdict {
     return !matches[0].offscreen && !centreCovered(matches[0], screen) ? 'pass' : 'fail';
   }
   if (!target.exact) {
-    const ids = exactIdentities(
-      screen,
-      { quoted: target.quoted, phrase: target.quoted, exact: 'id' },
-      'wait',
-    );
+    const ids = idIdentities(target.quoted, screen);
     if (ids.length === 1 && !ids[0].element.offscreen && !centreCovered(ids[0].element, screen))
       return 'pass';
   }
@@ -730,6 +726,47 @@ export function targetEvidence(target: Target, screen: Screen): LiteralVerdict {
   return text;
 }
 
+// A visibility read of an id prefers its native element over a React-only twin, as a stored id does.
+function idIdentities(id: string, screen: Screen): Identity[] {
+  const target: Target = { quoted: id, phrase: id, exact: 'id' };
+  return replayIdentities(exactIdentities(screen, target, 'wait'), target, 'wait');
+}
+
+const looseId = (id: string) => id.toLowerCase().replace(/[^a-z0-9]/g, '');
+
+// Why a quoted wait saw no match, from identifiers and frames only, never labels or text.
+export function presenceMiss(target: Target, screen: Screen): string | undefined {
+  const quoted = target.quoted;
+  if (quoted === undefined || target.exact === 'text') return undefined;
+  const ids = idIdentities(quoted, screen).map(({ element }) => element);
+  const list = (elements: Element[]) => elements.map(describeCandidate).join('; ');
+  if (ids.length > 1)
+    return `${ids.length} elements carry the identifier "${quoted}": ${list(ids)}`;
+  if (ids.length === 1) {
+    const [only] = ids;
+    let branch = 'none';
+    centreCovered(only, screen, (facts) => (branch = facts.branch));
+    const why = only.ref.startsWith('react:')
+      ? 'is in the React tree but not the native capture'
+      : only.offscreen
+        ? 'is offscreen'
+        : branch !== 'none'
+          ? `has its centre covered (${branch})`
+          : undefined;
+    return why && `the element carrying the identifier "${quoted}" ${why}: ${list(ids)}`;
+  }
+  const loose = looseId(quoted);
+  const near = loose
+    ? screen.elements
+        .filter(
+          (e) =>
+            e.testID && (looseId(e.testID).includes(loose) || loose.includes(looseId(e.testID))),
+        )
+        .slice(0, 3)
+    : [];
+  return `no captured element carries the identifier "${quoted}"${near.length ? `; nearest identifiers: ${list(near)}` : ''}`;
+}
+
 export function targetVisible(target: Target, screen: Screen): boolean {
   return targetEvidence(target, screen) === 'pass';
 }
@@ -743,8 +780,7 @@ export function visibleSelector(target: Target, screen: Screen): Selector | unde
   const quoted = target.quoted;
   if (quoted === undefined || !targetVisible(target, screen)) return undefined;
   const shown = screen.elements.filter((e) => !e.offscreen);
-  const uniqueId = (id: string | undefined) =>
-    !!id && exactIdentities(screen, { quoted: id, phrase: id, exact: 'id' }, 'wait').length === 1;
+  const uniqueId = (id: string | undefined) => !!id && idIdentities(id, screen).length === 1;
   if (target.exact !== 'text' && shown.some((e) => e.testID === quoted) && uniqueId(quoted))
     return { id: quoted };
   if (target.exact === 'id') return undefined;

@@ -658,6 +658,10 @@ test('a literal wait over an unchanged screen fails as absent at its deadline', 
     result.failure?.seen ?? '',
     new RegExp(`^"Absent sentinel" did not appear within ${WAIT_BUDGET_MS / 1000}s`),
   );
+  assert.match(
+    result.failure?.seen ?? '',
+    /observations; no captured element carries the identifier "Absent sentinel";/,
+  );
   assert.doesNotMatch(result.failure?.seen ?? '', /VISIBILITY_UNSURE/);
   assert.ok(f.captures() > 2);
 });
