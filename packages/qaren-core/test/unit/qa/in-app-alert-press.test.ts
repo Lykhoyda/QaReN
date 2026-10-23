@@ -9,7 +9,7 @@ const app = { x: 0, y: 0, width: 400, height: 800 };
 
 function wizard(alert: boolean, title = 'New task', behind = true, keyboard = false): Screen {
   const nodes = [
-    { ref: '@app', index: 0, type: 'Application', rect: app },
+    { ref: '@app', index: 0, type: 'Application', label: 'Tasks app', rect: app },
     { ref: '@win', index: 1, parentIndex: 0, type: 'Window', rect: app },
     {
       ref: '@title',
@@ -30,7 +30,14 @@ function wizard(alert: boolean, title = 'New task', behind = true, keyboard = fa
     },
     ...(alert
       ? [
-          { ref: '@alertWin', index: 4, parentIndex: 0, type: 'Window', rect: app },
+          {
+            ref: '@alertWin',
+            index: 4,
+            parentIndex: 0,
+            type: 'Window',
+            label: 'Discard changes?',
+            rect: app,
+          },
           {
             ref: '@alert',
             index: 5,
