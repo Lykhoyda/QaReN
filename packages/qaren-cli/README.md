@@ -2135,8 +2135,9 @@ The shared [candidate comparison](src/candidate.rs) rechecks the commit,
 lockfile hash and worktree fingerprint. The fingerprint hashes normalized
 NUL-delimited Git status records plus affected file contents, symlink targets,
 absence and executable permission bits, so editing an already-dirty file is
-still detected. Repository-root `.qaren/` state is excluded, as are direct
-`.yaml` and `.yml` action files under the selected app root's `.qaren/actions/`.
+still detected. Repository-root `.qaren/` state is excluded, as are the selected
+app root's `.qaren/actions` entry itself, such as an untracked main-copy link, and
+direct `.yaml` and `.yml` action files under it.
 Changes outside these exclusions, including a nested app's `.qaren/config.yaml`
 or source files, and renames crossing the excluded boundary remain candidate
 changes.
