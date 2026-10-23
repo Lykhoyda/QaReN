@@ -7233,9 +7233,15 @@ fn pr_walk_result(candidate_drift: bool, collision: bool) {
     let receipt = run(&mut runner, &pr_request(&repo, &app));
 
     assert_eq!(receipt.hints.len(), 1);
-    assert_eq!(receipt.hints[0].code, "LOGIN_BLOCK_CANDIDATE");
-    assert!(receipt.hints[0].text.contains("loginBlock: tasks"));
-    assert!(receipt.hints[0].text.contains("id: \"login-password\""));
+    assert_eq!(receipt.hints[0].code, "LOGIN_BLOCK_RUN_ONLY");
+    assert!(receipt.hints[0]
+        .text
+        .contains("saved only to this PR run's evidence"));
+    assert!(receipt.hints[0]
+        .text
+        .contains("save it with `qaren check` in the main copy"));
+    assert!(!receipt.hints[0].text.contains("loginBlock:"));
+    assert!(!receipt.hints[0].text.contains("loginMarker:"));
     if candidate_drift {
         assert_eq!(receipt.result, ReceiptResult::Fail);
         assert_eq!(

@@ -856,7 +856,7 @@ fn login_checks(root: &Path, config: Option<&CheckConfig>) -> Vec<Check> {
                         "run the plan that holds its `### Sign in` block once",
                     );
                 };
-                if let Some(hint) = crate::actions::login_hint(root, slug, platform, config) {
+                if let Some(hint) = crate::actions::login_hint(root, slug, platform, config, true) {
                     return Check::warn(
                         "login",
                         format!("loginBlock {slug} for {platform} cannot replay as login"),
@@ -875,7 +875,7 @@ fn login_checks(root: &Path, config: Option<&CheckConfig>) -> Vec<Check> {
                     .unwrap_or_default()
                     .into_iter()
                     .filter_map(|entry| {
-                        crate::actions::login_hint(root, &entry.slug, platform, config)
+                        crate::actions::login_hint(root, &entry.slug, platform, config, true)
                     })
                     .collect();
                 if hints.is_empty() {
@@ -904,16 +904,41 @@ fn saved_blocks_check(runner: &mut dyn Runner, root: &Path) -> Check {
     match corpus_location(runner, root) {
         CorpusLocation::NotGit => Check::skip("saved-blocks", "not a Git checkout"),
         CorpusLocation::Primary => Check::pass("saved-blocks", "primary checkout"),
-        CorpusLocation::Linked { local: true } => Check::warn(
-            "saved-blocks",
-            "saved blocks stay in this linked worktree",
-            corpus_hint(
-                crate::actions::list(root)
-                    .map(|blocks| blocks.len())
-                    .unwrap_or(0),
-            )
-            .text,
-        ),
+        CorpusLocation::Linked { local: true } => {
+            let status = crate::worktree::git(
+                runner,
+                "git-corpus-status",
+                root,
+                &[
+                    "status",
+                    "--porcelain=v1",
+                    "-z",
+                    "--untracked-files=all",
+                    "--",
+                    ".qaren/actions",
+                ],
+                10,
+            );
+            match status
+                .ok()
+                .then(|| crate::run::porcelain_entries(&status.stdout).len())
+            {
+                Some(0) => Check::pass(
+                    "saved-blocks",
+                    "saved blocks in this linked worktree are committed",
+                ),
+                changed => Check::warn(
+                    "saved-blocks",
+                    "uncommitted saved blocks stay in this linked worktree",
+                    corpus_hint(changed.unwrap_or_else(|| {
+                        crate::actions::list(root)
+                            .map(|blocks| blocks.len())
+                            .unwrap_or(0)
+                    }))
+                    .text,
+                ),
+            }
+        }
         CorpusLocation::Linked { local: false } if crate::actions::corpus_link_is_main_copy(runner, root) =>
             Check::pass("saved-blocks", "saved blocks are linked to the main copy"),
         CorpusLocation::Linked { local: false } => Check::warn("saved-blocks",
@@ -2494,7 +2519,8 @@ mod tests {
         let mismatch = &login_checks(&s.0, Some(&config))[0];
         assert_eq!(mismatch.status, Status::Warn);
         let fix = mismatch.fix.as_ref().unwrap();
-        assert!(fix.contains("loginMarker does not match"), "{fix}");
+        assert!(fix.contains("is not the first selector"), "{fix}");
+        assert!(fix.contains("visible only on the sign-in screen"), "{fix}");
         assert!(
             fix.contains("loginMarker:\n      id: \"login-email\""),
             "{fix}"
@@ -2609,13 +2635,41 @@ mod tests {
             Status::Pass
         );
         std::fs::create_dir_all(linked.join(".qaren/actions")).unwrap();
+        std::fs::write(linked.join(".qaren/actions/sign-in.yaml"), "steps: []\n").unwrap();
         let local = saved_blocks_check(&mut runner, &linked);
         assert_eq!(local.status, Status::Warn);
-        assert!(local
-            .fix
-            .unwrap()
-            .contains("then: ln -s <main>/<app>/.qaren/actions .qaren/actions"));
-        std::fs::remove_dir(linked.join(".qaren/actions")).unwrap();
+        let fix = local.fix.unwrap();
+        assert!(fix.starts_with("▸ saved blocks: 1 written"), "{fix}");
+        assert!(fix.contains("then: ln -s <main>/<app>/.qaren/actions .qaren/actions"));
+        for args in [
+            vec!["add", ".qaren/actions"],
+            vec![
+                "-c",
+                "user.name=Test",
+                "-c",
+                "user.email=test@example.invalid",
+                "commit",
+                "-m",
+                "blocks",
+            ],
+        ] {
+            let output = runner.run(&CmdSpec::new("test-git", "git", &args, 10).cwd(&linked));
+            assert!(output.ok(), "{}", output.stderr);
+        }
+        assert_eq!(
+            saved_blocks_check(&mut runner, &linked).status,
+            Status::Pass
+        );
+        std::fs::write(linked.join(".qaren/actions/sign-in.yaml"), "steps: [1]\n").unwrap();
+        assert_eq!(
+            saved_blocks_check(&mut runner, &linked).status,
+            Status::Warn
+        );
+        let output = runner.run(
+            &CmdSpec::new("test-git", "git", &["rm", "-rq", "--cached", ".qaren"], 10).cwd(&linked),
+        );
+        assert!(output.ok(), "{}", output.stderr);
+        std::fs::remove_dir_all(linked.join(".qaren/actions")).unwrap();
         let target = primary.join(".qaren/actions");
         std::fs::create_dir_all(&target).unwrap();
         std::os::unix::fs::symlink(&target, linked.join(".qaren/actions")).unwrap();

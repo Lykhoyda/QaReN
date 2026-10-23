@@ -60,6 +60,7 @@ pub fn login_block(text: &str) -> Option<LoginCandidate> {
     };
     let mut step = 0;
     let mut navigated_at = None;
+    let mut strict_filled = false;
     for line in body.lines() {
         if let Some(comment) = line.strip_prefix("# ") {
             if comment == "qaren: back" {
@@ -106,17 +107,15 @@ pub fn login_block(text: &str) -> Option<LoginCandidate> {
                 });
             }
         }
-        if let Some(fill) = value
-            .get("inputText")
-            .filter(|fill| fill.get("sensitivity").is_none())
-        {
+        if let Some(fill) = value.get("inputText") {
             if let Some(name) = fill
                 .get("input")
                 .and_then(serde_yaml::Value::as_str)
                 .filter(|name| crate::redact::valid_input_name(name))
             {
-                if candidate.inputs.is_empty() && navigated_at.is_none_or(|at| at == step) {
-                    candidate.likely = true;
+                if fill.get("sensitivity").is_none() && !strict_filled {
+                    strict_filled = true;
+                    candidate.likely |= navigated_at.is_none_or(|at| at == step);
                 }
                 if !candidate.inputs.iter().any(|input| input == name) {
                     candidate.inputs.push(name.to_string());
@@ -174,8 +173,8 @@ impl LoginCandidate {
             return None;
         }
         let text = match self.marker_line() {
-            Some(marker) => format!("▸ login: loginMarker does not match the first screen of loginBlock {slug_quoted}, so login recovery\n  never replays it there. Set in .qaren/config.yaml:\n    loginMarker:\n      {marker}"),
-            None => format!("▸ login: loginBlock {slug_quoted} has no first-screen testID or label to use as loginMarker.\n  Start it with a fill or wait on the sign-in screen and run its plan again."),
+            Some(marker) => format!("▸ login: loginMarker is not the first selector of loginBlock {slug_quoted}. Make sure this marker is\n  visible only on the sign-in screen. The block's first selector is:\n    loginMarker:\n      {marker}"),
+            None => format!("▸ login: loginBlock {slug_quoted} has no first-screen testID or label to compare with loginMarker.\n  Make sure this marker is visible only on the sign-in screen."),
         };
         Some(crate::receipt::Hint {
             code: "LOGIN_MARKER_MISMATCH".into(),
@@ -207,14 +206,23 @@ pub fn login_hint(
     slug: &str,
     platform: &str,
     config: &crate::config::CheckConfig,
+    kept: bool,
 ) -> Option<crate::receipt::Hint> {
     let text = show_for(app_root, slug, platform, &config.app_id)?;
+    let slug_quoted = serde_json::to_string(slug).ok()?;
     match config.login_block.as_deref() {
         Some(block) if block == slug => {
             login_block(&text)?.config_hint(slug, config.login_marker.as_ref())
         }
-        Some(_) => login_candidate(&text)?.signs_out_hint(&serde_json::to_string(slug).ok()?),
-        None => login_candidate(&text)?.hint(slug),
+        Some(_) => login_candidate(&text)?.signs_out_hint(&slug_quoted),
+        None if kept => login_candidate(&text)?.hint(slug),
+        None => {
+            let candidate = login_candidate(&text)?;
+            candidate.signs_out_hint(&slug_quoted).or_else(|| Some(crate::receipt::Hint {
+                code: "LOGIN_BLOCK_RUN_ONLY".into(),
+                text: format!("▸ login: block {slug_quoted} is a likely login block, but it was saved only to this PR run's evidence.\n  To reuse it, save it with `qaren check` in the main copy, then configure loginBlock and\n  loginMarker from that run's hint."),
+            }))
+        }
     }
 }
 
@@ -605,10 +613,35 @@ mod tests {
             assert_eq!(marker.id.is_some(), field == "id");
             assert_eq!(candidate.signs_out_at, None);
         }
-        assert!(login_candidate(&block(
-            "- tapOn: { text: Email }\n- inputText: { input: OTP, sensitivity: non-secret }\n"
-        ))
+        assert!(login_candidate(
+            &block("# 1. Fill email\n- tapOn: { text: Email }\n- inputText: { input: OTP, sensitivity: non-secret }\n")
+                .replace("# intent: Sign in", "# intent: Reach the dashboard")
+        )
         .is_none());
+    }
+
+    #[test]
+    fn non_secret_inputs_join_the_inventory_but_not_strict_candidacy() {
+        let mixed = login_candidate(&block("# 1. Fill email\n- tapOn: { id: email }\n- inputText: { input: EMAIL, sensitivity: \"non-secret\" }\n# 2. Fill password\n- tapOn: { id: password }\n- inputText: { input: PASSWORD }\n")).unwrap();
+        assert_eq!(mixed.inputs, ["EMAIL", "PASSWORD"]);
+        let hint = mixed.hint("sign-in").unwrap().text;
+        assert!(hint.contains("runtime inputs EMAIL, PASSWORD"), "{hint}");
+        assert!(
+            hint.contains("QAREN_INPUT_EMAIL and QAREN_INPUT_PASSWORD set"),
+            "{hint}"
+        );
+        let demo = login_block(&block("# 1. Fill user\n- tapOn: { id: login-user }\n- inputText: { input: USERNAME, sensitivity: \"non-secret\" }\n")).unwrap();
+        assert_eq!(demo.inputs, ["USERNAME"]);
+        let marker =
+            serde_yaml::from_str::<crate::config::LoginMarker>("id: login-user\n").unwrap();
+        assert!(demo.config_hint("sign-in", Some(&marker)).is_none());
+        let navigated = block("# 1. Tap \"Account\"\n- tapOn: { text: Account }\n# 2. Fill user\n- tapOn: { id: login-user }\n- inputText: { input: USERNAME, sensitivity: \"non-secret\" }\n# 3. Fill password\n- tapOn: { id: password }\n- inputText: { input: PASSWORD }\n")
+            .replace("# intent: Sign in", "# intent: Open account");
+        assert!(login_candidate(&navigated).is_none());
+        let first_strict =
+            block("# 1. Fill code\n- tapOn: { id: code }\n- inputText: { input: CODE }\n")
+                .replace("# intent: Sign in", "# intent: Unlock");
+        assert!(login_candidate(&first_strict).is_some());
     }
 
     #[test]
@@ -696,6 +729,13 @@ mod tests {
                 "{}",
                 hint.text
             );
+            assert!(
+                hint.text
+                    .contains("Make sure this marker is\n  visible only on the sign-in screen"),
+                "{}",
+                hint.text
+            );
+            assert!(!hint.text.contains("never"), "{}", hint.text);
         }
         let hint = login_block(&block(
             "# 1. Fill email\n- tapOn: { id: login-email }\n- inputText: \"someone\"\n",

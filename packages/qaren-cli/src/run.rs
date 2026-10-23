@@ -1056,9 +1056,13 @@ fn run_inner(
         )
         .collect();
     for slug in slugs {
-        if let Some(hint) =
-            crate::actions::login_hint(&app_root, slug, platform_str(req.platform), &config)
-        {
+        if let Some(hint) = crate::actions::login_hint(
+            &app_root,
+            slug,
+            platform_str(req.platform),
+            &config,
+            pr_state.is_none() || !written.contains(slug),
+        ) {
             hints.push(hint);
         }
     }
@@ -1436,7 +1440,7 @@ pub fn worktree_status(runner: &mut dyn Runner, app_root: &Path) -> Option<BTree
 }
 
 // One `XY path` entry per change; a rename or copy also names its source path.
-fn porcelain_entries(stdout: &str) -> BTreeSet<String> {
+pub(crate) fn porcelain_entries(stdout: &str) -> BTreeSet<String> {
     let mut entries = BTreeSet::new();
     let mut records = stdout.split('\0').filter(|record| !record.is_empty());
     while let Some(record) = records.next() {

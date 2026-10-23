@@ -2293,10 +2293,12 @@ supported React TextInput; a label alone does not establish private-fill admissi
    instead. Use the first screen's actual selector; keep exactly one marker key.
    Run `qaren doctor` to check the saved block and its platform. A block must be
    saved for the platform being checked; an iOS block is not an Android block.
-   Doctor and later runs print `LOGIN_MARKER_MISMATCH` with the expected
-   `loginMarker` lines when the configured marker is not the block's first-screen
-   selector, and `LOGIN_BLOCK_NO_INPUTS` when the configured block fills no
-   runtime inputs.
+   Doctor and later runs warn `LOGIN_MARKER_MISMATCH`, printing the block's first
+   selector as `loginMarker` lines, when the configured marker differs from it; a
+   different marker can work, so make sure it is visible only on the sign-in
+   screen. They warn `LOGIN_BLOCK_NO_INPUTS` when the configured block fills no
+   runtime inputs. Required inputs include non-secret ones, but only a strict
+   fill makes a block a likely login block by position.
 
 5. Keep the named inputs exported and run a later feature plan. When its step
    meets the configured sign-in marker, QaReN replays `sign-in` from its first
@@ -2316,9 +2318,13 @@ If a target has neither a testID nor a label, the block cannot be saved; check
 Saved blocks in a linked worktree's real `.qaren/actions` leave with that worktree.
 Commit them to make them available in other checkouts and CI, or use the verified
 main-copy link described under [Saved blocks](#saved-blocks). `CORPUS_NOT_SHARED`
-points this out after a check writes blocks there. `qaren pr` reads login from
-the PR head's committed corpus; local hints do not publish configuration or
-blocks. See [Test a pull request](#test-a-pull-request).
+points this out after a check writes blocks there; `qaren doctor` warns while
+that corpus holds untracked or modified blocks and passes once they are committed.
+`qaren pr` reads login from the PR head's committed corpus; local hints do not
+publish configuration or blocks. A likely login block that a PR run writes exists
+only in that run's evidence, so the run prints `LOGIN_BLOCK_RUN_ONLY` instead of
+`loginBlock` lines: save it with `qaren check` in the main copy, then configure
+login from that run's hint. See [Test a pull request](#test-a-pull-request).
 
 ### Walk timing
 
