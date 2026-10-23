@@ -3222,6 +3222,8 @@ struct AppWatch {
 
 enum Readiness {
     Ready(Option<u32>),
+    // The watched app is alive but Metro is not ready yet.
+    AppAlive,
     Pending,
     AppDown,
 }
@@ -3250,7 +3252,7 @@ fn wait_ready_until(
             )
             .with_evidence(vec![super::log_tail(&metro_resource.log, 25)]));
         }
-        match ready_probes(ctx, &metro_resource) {
+        match ready_probes(ctx, &metro_resource, watch.is_some()) {
             Readiness::Ready(pid) => {
                 let mut settled = true;
                 if let (Some(mut launch), Some(pid)) = (watch.take(), pid) {
@@ -3278,7 +3280,12 @@ fn wait_ready_until(
                                 ctx.runner.monotonic_ms().saturating_sub(launch.launched_ms);
                             return Err(app_exited_failure(ctx, &launch, since));
                         }
-                        _ => {}
+                        Some(Some(_)) => {}
+                        // An unreadable settle probe proves nothing; keep watching and settle again.
+                        None => {
+                            watch = Some(launch);
+                            settled = false;
+                        }
                     }
                 }
                 if settled {
@@ -3293,6 +3300,11 @@ fn wait_ready_until(
                     if watch.downs >= APP_DOWN_CONFIRMATIONS && since >= watch.first_pid_grace_ms {
                         return Err(app_exited_failure(ctx, watch, since));
                     }
+                }
+            }
+            Readiness::AppAlive => {
+                if let Some(watch) = watch.as_mut() {
+                    watch.downs = 0;
                 }
             }
             Readiness::Pending => {}
@@ -3317,7 +3329,8 @@ fn wait_ready_until(
     }
 }
 
-fn ready_probes(ctx: &mut Ctx, metro_resource: &MetroResource) -> Readiness {
+// A watched launch probes the app even while Metro is not ready, so a stalled Metro cannot hide its exit.
+fn ready_probes(ctx: &mut Ctx, metro_resource: &MetroResource, watched: bool) -> Readiness {
     let port_output = ctx.runner.run(&metro::port_owner_spec(metro_resource.port));
     let port_ours = match metro::parse_port_owner(&port_output) {
         metro::PortOwners::Owned(pid) => {
@@ -3325,11 +3338,12 @@ fn ready_probes(ctx: &mut Ctx, metro_resource: &MetroResource) -> Readiness {
         }
         _ => false,
     };
-    if !port_ours || !metro::metro_responding(ctx.runner, metro_resource.port) {
+    let metro_ready = port_ours && metro::metro_responding(ctx.runner, metro_resource.port);
+    if !metro_ready && !watched {
         return Readiness::Pending;
     }
     let app_id = ctx.record.candidate.app_id.clone();
-    match ctx.record.scenario.platform {
+    let app = match ctx.record.scenario.platform {
         Platform::Ios => {
             let sim = ctx
                 .record
@@ -3380,6 +3394,10 @@ fn ready_probes(ctx: &mut Ctx, metro_resource: &MetroResource) -> Readiness {
                 Readiness::Pending
             }
         }
+    };
+    match app {
+        Readiness::Ready(_) if !metro_ready => Readiness::AppAlive,
+        app => app,
     }
 }
 

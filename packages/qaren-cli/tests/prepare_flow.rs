@@ -350,12 +350,18 @@ fn script_ios_app_tick(mock: &mut qaren::exec::MockRunner, launchctl: &str) {
     mock.expect_run("simctl spawn", CmdOutput::success(launchctl));
 }
 
-fn script_ios_metro_busy_tick(mock: &mut qaren::exec::MockRunner) {
+// Metro does not answer, so only the watched app is probed.
+fn script_ios_metro_busy_tick(mock: &mut qaren::exec::MockRunner, launchctl: CmdOutput) {
     mock.expect_run("ps", CmdOutput::success(&format!("{LSTART}\n")));
     mock.expect_run("ps", CmdOutput::success("S\n"));
     mock.expect_run("lsof", CmdOutput::success("6001\n"));
     mock.expect_run("ps", CmdOutput::success("6000\n"));
     mock.expect_run("curl", CmdOutput::failed(7, ""));
+    mock.expect_run(
+        "simctl get_app_container",
+        CmdOutput::success("/containers/app\n"),
+    );
+    mock.expect_run("simctl spawn", launchctl);
 }
 
 fn script_ios_launched(mock: &mut MockRunner, repo: &std::path::Path) {
@@ -498,6 +504,93 @@ fn ios_app_seen_alive_once_then_gone_after_the_launch_settle_fails_as_exited() {
 }
 
 #[test]
+fn ios_unreadable_launch_settle_probe_never_accepts_a_crashed_app() {
+    let repo = common::temp_repo();
+    let scenario = write_scenario(&repo, &ios_scenario_yaml(8791));
+    let mut mock = MockRunner::new();
+    script_ios_launched(&mut mock, &repo);
+    script_ios_app_tick(&mut mock, common::APP_RUNNING);
+    mock.expect_run(
+        "simctl spawn",
+        CmdOutput::failed(1, "launchctl unavailable"),
+    );
+    script_ios_app_tick(&mut mock, APP_EXITED);
+    script_ios_app_tick(&mut mock, APP_EXITED);
+    common::script_ios_metro_cleanup(&mut mock);
+
+    let receipt = prepare(&mut mock, &prepare_args(&scenario, false, None));
+
+    let failure = receipt
+        .failure
+        .as_ref()
+        .expect("an unconfirmed launch is not ready");
+    assert_eq!(
+        failure.code,
+        FailureCode::AppExitedAtLaunch,
+        "{}",
+        receipt.to_json()
+    );
+    assert_eq!(mock.remaining(), 0);
+}
+
+#[test]
+fn ios_unreadable_launch_settle_probe_settles_again_on_the_next_sighting() {
+    let repo = common::temp_repo();
+    let scenario = write_scenario(&repo, &ios_scenario_yaml(8791));
+    let mut mock = MockRunner::new();
+    script_ios_prepare_launch(&mut mock, &repo, |m| {
+        common::script_ios_launch(m);
+        script_ios_app_tick(m, common::APP_RUNNING);
+        m.expect_run(
+            "simctl spawn",
+            CmdOutput::failed(1, "launchctl unavailable"),
+        );
+    });
+
+    let receipt = prepare(&mut mock, &prepare_args(&scenario, false, None));
+
+    assert_eq!(
+        receipt.result,
+        ReceiptResult::Ready,
+        "{}",
+        receipt.to_json()
+    );
+    let count = |label: &str| mock.calls.iter().filter(|c| c.label == label).count();
+    assert_eq!(
+        count("simctl-launchctl"),
+        4,
+        "sighting, failed settle, sighting, settle"
+    );
+    assert_eq!(mock.remaining(), 0);
+}
+
+#[test]
+fn ios_app_exiting_while_metro_stalls_fails_without_waiting_for_metro() {
+    let repo = common::temp_repo();
+    let scenario = write_scenario(&repo, &ios_scenario_yaml(8791));
+    let mut mock = MockRunner::new();
+    script_ios_launched(&mut mock, &repo);
+    script_ios_metro_busy_tick(&mut mock, CmdOutput::success(APP_EXITED));
+    script_ios_metro_busy_tick(&mut mock, CmdOutput::success(APP_EXITED));
+    common::script_ios_metro_cleanup(&mut mock);
+
+    let receipt = prepare(&mut mock, &prepare_args(&scenario, false, None));
+
+    let failure = receipt
+        .failure
+        .as_ref()
+        .expect("a stalled Metro cannot hide the exit");
+    assert_eq!(
+        failure.code,
+        FailureCode::AppExitedAtLaunch,
+        "{}",
+        receipt.to_json()
+    );
+    assert!(failure.detail.to_string().contains("5s after"));
+    assert_eq!(mock.remaining(), 0);
+}
+
+#[test]
 fn ios_app_relaunched_under_a_new_pid_during_the_launch_settle_fails_as_exited() {
     let repo = common::temp_repo();
     let scenario = write_scenario(&repo, &ios_scenario_yaml(8791));
@@ -556,9 +649,9 @@ fn ios_app_exiting_during_readiness_fails_without_a_crash_report() {
     let scenario = write_scenario(&repo, &ios_scenario_yaml(8791));
     let mut mock = MockRunner::new();
     script_ios_launched(&mut mock, &repo);
-    script_ios_metro_busy_tick(&mut mock);
+    script_ios_metro_busy_tick(&mut mock, CmdOutput::success(common::APP_RUNNING));
+    script_ios_metro_busy_tick(&mut mock, CmdOutput::success(common::APP_RUNNING));
     script_ios_app_tick(&mut mock, APP_EXITED);
-    script_ios_metro_busy_tick(&mut mock);
     script_ios_app_tick(&mut mock, APP_EXITED);
     common::script_ios_metro_cleanup(&mut mock);
 
@@ -584,10 +677,12 @@ fn ios_slow_but_alive_app_is_never_refused_for_a_single_missed_probe() {
     script_ios_prepare_launch(&mut mock, &repo, |m| {
         common::script_ios_launch(m);
         for _ in 0..6 {
-            script_ios_metro_busy_tick(m);
+            script_ios_metro_busy_tick(m, CmdOutput::success(common::APP_RUNNING));
         }
         script_ios_app_tick(m, APP_EXITED);
-        script_ios_metro_busy_tick(m);
+        // Seen alive again, so the next single miss starts a fresh count.
+        script_ios_metro_busy_tick(m, CmdOutput::success(common::APP_RUNNING));
+        script_ios_app_tick(m, APP_EXITED);
         let launchctl_failed = CmdOutput::failed(1, "launchctl unavailable");
         m.expect_run("ps", CmdOutput::success(&format!("{LSTART}\n")));
         m.expect_run("ps", CmdOutput::success("S\n"));
@@ -612,8 +707,8 @@ fn ios_slow_but_alive_app_is_never_refused_for_a_single_missed_probe() {
     let count = |label: &str| mock.calls.iter().filter(|c| c.label == label).count();
     assert_eq!(
         count("simctl-launchctl"),
-        4,
-        "missed, unknown, running, then launch settle"
+        12,
+        "six alive with Metro busy, missed, alive, missed, unknown, running, then launch settle"
     );
     assert_eq!(mock.remaining(), 0);
 }
