@@ -1978,17 +1978,22 @@ pub(crate) fn run_reuse_path(ctx: &mut Ctx, plan: &BuildPlan, t: u64) -> Result<
                         &ctx.record.run_id,
                         &artifact,
                         "native cache entry: unavailable".into(),
-                        false,
+                        ArtifactInstallFailure::ArtifactInvalid,
                     )
                 })?;
                 if !entry.check_artifact(&artifact).map_err(|reason| {
-                    artifact_install_failure(&ctx.record.run_id, &artifact, reason, false)
+                    artifact_install_failure(
+                        &ctx.record.run_id,
+                        &artifact,
+                        reason,
+                        ArtifactInstallFailure::ArtifactInvalid,
+                    )
                 })? {
                     return Err(artifact_install_failure(
                         &ctx.record.run_id,
                         &artifact,
                         "artifact changed before install".into(),
-                        false,
+                        ArtifactInstallFailure::ArtifactInvalid,
                     ));
                 }
             }
@@ -2034,7 +2039,12 @@ pub(crate) fn run_reuse_path(ctx: &mut Ctx, plan: &BuildPlan, t: u64) -> Result<
                     .expect("selected entry")
                     .recheck()
                     .map_err(|reason| {
-                        artifact_install_failure(&ctx.record.run_id, &artifact, reason, false)
+                        artifact_install_failure(
+                            &ctx.record.run_id,
+                            &artifact,
+                            reason,
+                            ArtifactInstallFailure::ArtifactInvalid,
+                        )
                     })?;
             }
             install_cached_ios_app(ctx, &sim.udid, &artifact, deadline)?;
