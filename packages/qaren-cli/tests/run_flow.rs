@@ -1566,6 +1566,12 @@ fn the_receipt_names_written_blocks_and_paths_the_walk_changed_outside_them() {
         vec!["test-app/src/new.ts".to_string()]
     );
     assert_eq!(receipt.ledger.as_ref().unwrap().path, "replay");
+    assert_eq!(
+        serde_json::to_value(&receipt).unwrap()["ledger"]["blocks"],
+        serde_json::json!({
+            "replayed": 2, "patched": 0, "discovered": 0,
+        })
+    );
     let status = mock
         .calls
         .iter()

@@ -1045,6 +1045,7 @@ fn run_inner(
         }
         let refused;
         (blocks, refused) = worktree::copy_blocks(
+            ctx.runner,
             &project_root,
             outcome.ledger.blocks_written.as_deref().unwrap_or_default(),
             &run_dir.join("blocks"),

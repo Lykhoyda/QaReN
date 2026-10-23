@@ -207,10 +207,11 @@ pub fn porcelain_without_qaren_state(
             let path_ref = Path::new(path);
             is_qaren_state_path(path)
                 || actions.as_deref().is_some_and(|actions| {
-                    path_ref.parent() == Some(actions)
-                        && path_ref
-                            .extension()
-                            .is_some_and(|extension| extension == "yaml" || extension == "yml")
+                    path_ref == actions
+                        || path_ref.parent() == Some(actions)
+                            && path_ref
+                                .extension()
+                                .is_some_and(|extension| extension == "yaml" || extension == "yml")
                 })
         })
     }))
@@ -722,6 +723,11 @@ mod tests {
     #[test]
     fn app_actions_are_outputs_but_cross_boundary_renames_are_changes() {
         for (porcelain, expected) in [
+            ("?? test-app/.qaren/actions\0", ""),
+            (
+                "R  test-app/.qaren/actions\0test-app/App.tsx\0",
+                "R  test-app/.qaren/actions\0test-app/App.tsx\0",
+            ),
             ("?? test-app/.qaren/actions/tasks.yaml\0", ""),
             (" M test-app/.qaren/actions/tasks.yml\0", ""),
             (" D test-app/.qaren/actions/tasks.yaml\0", ""),

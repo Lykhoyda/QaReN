@@ -116,9 +116,10 @@ fn roots_failure(detail: String) -> Failure {
 
 // Saved plan blocks under the current app's .qaren/actions; read-only.
 fn actions(args: &[String], json: bool) -> ExitCode {
+    let mut runner = RealRunner::new();
     let app_root = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
     let result = match args {
-        [sub] if sub == "list" => qaren::actions::list(&app_root).map(|entries| {
+        [sub] if sub == "list" => qaren::actions::list(&mut runner, &app_root).map(|entries| {
             if json {
                 format!(
                     "{}\n",
@@ -128,7 +129,7 @@ fn actions(args: &[String], json: bool) -> ExitCode {
                 qaren::actions::render(&entries)
             }
         }),
-        [sub, slug] if sub == "show" && !json => qaren::actions::show(&app_root, slug),
+        [sub, slug] if sub == "show" && !json => qaren::actions::show(&mut runner, &app_root, slug),
         _ => {
             eprintln!("usage: qaren actions list [--json] | qaren actions show <slug>\n{USAGE}");
             return ExitCode::from(2);

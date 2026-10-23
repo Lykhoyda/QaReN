@@ -30,15 +30,15 @@ import { atomicWriter } from '../../dist/domain/atomic-writer.js';
 import { freshRuntimeState } from '../../dist/domain/reusable-action.js';
 import { writeBlock } from '../../dist/qa/blocks.js';
 
-function repository(t: TestContext) {
+function repository(t: TestContext, bare = false) {
   const root = realpathSync(mkdtempSync(join(tmpdir(), 'qaren-action-worktree-')));
   t.after(() => rmSync(root, { recursive: true, force: true }));
   const main = join(root, 'main');
   const linked = join(root, 'linked');
   mkdirSync(main);
   mkdirSync(linked);
-  execFileSync('git', ['init', '-q', main]);
-  const common = join(main, '.git');
+  execFileSync('git', ['init', '-q', ...(bare ? ['--bare'] : []), main]);
+  const common = bare ? main : join(main, '.git');
   const gitdir = join(common, 'worktrees', 'linked');
   mkdirSync(gitdir, { recursive: true });
   writeFileSync(join(gitdir, 'HEAD'), 'ref: refs/heads/linked\n');
@@ -60,6 +60,28 @@ function repository(t: TestContext) {
 
 const yaml =
   'appId: com.example.app\n---\n# id: welcome\n# intent: Welcome\n# status: experimental\n- tapOn: Welcome\n';
+
+for (const scenario of ['accepted', 'other-clone', 'bare'] as const) {
+  test(`main-copy link fixture parity: ${scenario}`, (t) => {
+    const { root, mainApp, linkedApp } = repository(t, scenario === 'bare');
+    let target = join(mainApp, '.qaren', 'actions');
+    if (scenario === 'other-clone') {
+      const other = join(root, 'other');
+      execFileSync('git', ['clone', '-q', join(root, 'main'), other], { stdio: 'pipe' });
+      target = join(other, 'apps', 'example', '.qaren', 'actions');
+      mkdirSync(target, { recursive: true });
+    }
+    writeFileSync(join(target, 'welcome.yaml'), yaml);
+    symlinkSync(target, join(linkedApp, '.qaren', 'actions'));
+    assert.equal(
+      resolveReadableActionCorpus(linkedApp).status,
+      scenario === 'accepted' ? 'owned-directory' : 'refused',
+    );
+    if (scenario === 'accepted')
+      assert.equal(loadAction(linkedApp, 'welcome').metadata.id, 'welcome');
+    else assert.throws(() => loadAction(linkedApp, 'welcome'), /Refusing/);
+  });
+}
 
 test('creating an action refuses a main-copy link replaced during lock acquisition', (t) => {
   const { mainApp, linkedApp } = repository(t);
