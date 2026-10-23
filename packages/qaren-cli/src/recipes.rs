@@ -180,6 +180,20 @@ fn heading<'a>(line: &'a str, hashes: &str) -> Option<&'a str> {
     rest.starts_with(char::is_whitespace).then(|| rest.trim())
 }
 
+// A numbered step or a check: the lines that open the parser's unnamed block before any `###`.
+fn step_line(line: &str) -> bool {
+    let digits = line.trim_start_matches(|c: char| c.is_ascii_digit());
+    let numbered = digits.len() < line.len()
+        && digits
+            .strip_prefix(['.', ')'])
+            .is_some_and(|rest| rest.starts_with(char::is_whitespace));
+    let check = line
+        .trim_start_matches(['-', '*'])
+        .trim_start()
+        .starts_with(['✓', '✔']);
+    numbered || check
+}
+
 pub fn list(app_root: &Path) -> Result<Vec<PlanEntry>, String> {
     let dir = plans_dir(app_root)?;
     let entries = match std::fs::read_dir(&dir) {
@@ -218,17 +232,27 @@ pub fn list(app_root: &Path) -> Result<Vec<PlanEntry>, String> {
             }
             None => &visible[..],
         };
+        let title = visible
+            .iter()
+            .find_map(|line| heading(line, "#"))
+            .map(str::to_string);
+        let unnamed = section
+            .iter()
+            .take_while(|line| heading(line, "###").is_none())
+            .any(|line| step_line(line));
         plans.push(PlanEntry {
             file: format!(".qaren/plans/{name}"),
-            title: visible
-                .iter()
-                .find_map(|line| line.strip_prefix("# "))
-                .map(|title| title.trim().to_string()),
-            blocks: section
-                .iter()
-                .filter_map(|line| heading(line, "###"))
-                .map(str::to_string)
+            blocks: unnamed
+                .then(|| title.clone().unwrap_or_else(|| "plan".to_string()))
+                .into_iter()
+                .chain(
+                    section
+                        .iter()
+                        .filter_map(|line| heading(line, "###"))
+                        .map(str::to_string),
+                )
                 .collect(),
+            title,
             broken: broken(&text),
         });
     }
@@ -680,6 +704,47 @@ mod tests {
                     blocks: vec!["First".into(), "Second".into()],
                     broken: vec![],
                 },
+            ]
+        );
+    }
+
+    #[test]
+    fn listing_names_headingless_blocks_and_tab_titles_like_the_parser() {
+        let app = app("list-unnamed");
+        recipe(&app, "a.md", "# Login\n\n## QA\n\n1. Tap \"Sign in\"\n");
+        recipe(
+            &app,
+            "b.md",
+            "#\tLogin\n1. Tap \"Sign in\"\n✓ \"Welcome\"\n",
+        );
+        recipe(&app, "c.md", "1. Tap \"Sign in\"\n");
+        recipe(
+            &app,
+            "d.md",
+            "# Tasks\n## QA\nstarts on: \"Home\"\n1. Tap \"Tasks\"\n### Add one\n1. Tap \"Add\"\n",
+        );
+        recipe(
+            &app,
+            "e.md",
+            "# Tasks\n## QA\nstarts on: \"Home\"\n### Add one\n1. Tap \"Add\"\n",
+        );
+        let listed: Vec<_> = list(&app)
+            .unwrap()
+            .into_iter()
+            .map(|plan| (plan.title, plan.blocks))
+            .collect();
+        let some = |title: &str| Some(title.to_string());
+        assert_eq!(
+            listed,
+            vec![
+                (some("Login"), vec!["Login".to_string()]),
+                (some("Login"), vec!["Login".to_string()]),
+                (None, vec!["plan".to_string()]),
+                (
+                    some("Tasks"),
+                    vec!["Tasks".to_string(), "Add one".to_string()]
+                ),
+                (some("Tasks"), vec!["Add one".to_string()]),
             ]
         );
     }
