@@ -596,8 +596,9 @@ root, windows and the containers holding an alert or the keyboard are left out
 of both captures, and content that only appears, such as the keyboard and its
 suggestion rows returning to a focused field, never counts; React-only elements
 are not compared. The receipt's `ledger.unverified_presses` lists each such
-passing press with its line and reason, and is omitted when empty. A later plan
-check still decides whether the intended screen followed.
+passing press with its line and reason, and is omitted when empty. The row's
+`unverifiedPress` flag preserves this status even when privacy redacts the
+reason. A later plan check still decides whether the intended screen followed.
 
 While it serves commands, the iOS runner contains XCTest UI automation issues,
 such as a read of an element that vanished, instead of letting XCTest end its

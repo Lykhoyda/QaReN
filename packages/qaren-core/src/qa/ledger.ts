@@ -20,6 +20,7 @@ export interface LedgerRow {
   t: number;
   outcome: RowOutcome;
   reason?: string;
+  unverifiedPress?: true;
   timing?: RowTiming;
   selector?: Selector;
   // Typed and held character counts of an unverified fill, kept out of the masked reason.

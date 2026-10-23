@@ -2318,6 +2318,7 @@ async function walkBlockScoped(
                     }
                   : alertOnly
                     ? {
+                        unverifiedPress: true,
                         reason: redact(
                           alertEffect === 'uncaptured'
                             ? 'UNVERIFIED_PRESS: nothing behind the alert or sheet was captured while it was open; any of its buttons closes it, so the press was not verified'
@@ -2523,6 +2524,7 @@ function valueFree(row: Omit<LedgerRow, 'reason'>): LedgerRow {
     resolvedBy,
     t,
     outcome,
+    ...(row.unverifiedPress ? { unverifiedPress: true } : {}),
     ...(screenshot ? { screenshot } : {}),
     ...(timing ? { timing } : {}),
   };

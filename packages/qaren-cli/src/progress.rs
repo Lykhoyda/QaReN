@@ -206,6 +206,7 @@ mod tests {
             outcome: outcome.into(),
             text: Some(text.into()),
             reason: None,
+            unverified_press: false,
             timing: None,
             selector: None,
             kept: None,

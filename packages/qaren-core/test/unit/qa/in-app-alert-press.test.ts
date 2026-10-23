@@ -2,7 +2,8 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { parsePlan } from '../../../dist/qa/plan.js';
 import { join as joinScreen, type Screen } from '../../../dist/qa/screen.js';
-import { walkBlock } from '../../../dist/qa/walker.js';
+import { runPlan, walkBlock } from '../../../dist/qa/walker.js';
+import { ObservedPrivacy } from '../../../dist/qa/privacy.js';
 import { scriptedJudge, walker } from './judgment-fixtures.ts';
 
 const app = { x: 0, y: 0, width: 400, height: 800 };
@@ -146,12 +147,28 @@ test('an in-app alert button whose tap only closes the alert is not proven', asy
   );
 });
 
+test('input redaction cannot remove an alert press unverified status', async () => {
+  const privacy = new ObservedPrivacy();
+  privacy.classifyInputs(['EXPRESS']);
+  const f = walker([wizard(true), wizard(false)], noJudge, { ok: true, proven: false });
+  f.deps.privacy = privacy;
+  const ledger = await runPlan([plan('1. Tap "Discard"')], f.deps);
+  const row = ledger.steps.find((r) => r.line === 1);
+  assert.equal(row?.outcome, 'pass');
+  assert.doesNotMatch(row?.reason ?? '', /^UNVERIFIED_PRESS:/);
+  assert.equal(row?.unverifiedPress, true);
+  assert.equal(JSON.parse(JSON.stringify(row)).unverifiedPress, true);
+  assert.equal(f.rows.find((r) => r.line === 1)?.unverifiedPress, true);
+  assert.equal(f.rows.find((r) => r.line === 1)?.reason, undefined);
+});
+
 test('an in-app alert button whose tap also changes the app behind it passes proven', async () => {
   const f = walker([wizard(true), wizard(false, 'Tasks')], noJudge, { ok: true, proven: false });
   const outcome = await walkBlock(plan('1. Tap "Discard"'), f.deps);
   const row = outcome.rows.find((r) => r.line === 1);
   assert.equal(row?.outcome, 'pass');
   assert.equal(row?.reason, undefined);
+  assert.equal(row?.unverifiedPress, undefined);
 });
 
 test('an ordinary press that changes the screen still passes without a mark', async () => {
@@ -160,6 +177,7 @@ test('an ordinary press that changes the screen still passes without a mark', as
   const row = outcome.rows.find((r) => r.line === 1);
   assert.equal(row?.outcome, 'pass');
   assert.equal(row?.reason, undefined);
+  assert.equal(row?.unverifiedPress, undefined);
 });
 
 test('an in-app alert that hid the app behind it leaves its button press unverified', async () => {
@@ -193,6 +211,7 @@ test('a proven in-app alert button press passes without a mark', async () => {
   const row = outcome.rows.find((r) => r.line === 1);
   assert.equal(row?.outcome, 'pass');
   assert.equal(row?.reason, undefined);
+  assert.equal(row?.unverifiedPress, undefined);
 });
 
 test('an action sheet button whose tap only closes the sheet is not proven', async () => {
