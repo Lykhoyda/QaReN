@@ -10,6 +10,7 @@ import { attested } from './platform-presence-fixtures.ts';
 import { targetMissDiagnostic } from '../../../dist/qa/target-miss.js';
 import { ObservedPrivacy } from '../../../dist/qa/privacy.js';
 import { createWriter } from '../../../dist/qa/wire.js';
+import { exactIdentities } from '../../../dist/qa/identity.js';
 
 const frame = { x: 0, y: 0, width: 402, height: 874 };
 const target = { phrase: 'Add coverage', quoted: 'Add coverage' };
@@ -50,6 +51,60 @@ for (const android of [false, true]) {
     const result = prepareTarget({ kind: 'press', target }, join(nodes(android, 2), []));
     assert.ok('refuse' in result && result.refuse === 'TARGET_AMBIGUOUS', JSON.stringify(result));
   });
+
+  for (const quoted of [target.quoted, 'Add coverage, Details']) {
+    for (const identified of [false, true]) {
+      test(`${platform}: directly labelled parent and child stay ambiguous for ${quoted}, identified=${identified}`, () => {
+        const tree = nodes(android);
+        tree[2].type = android ? 'android.view.ViewGroup' : 'Other';
+        tree[2].label = tree[3].label;
+        if (!identified) delete tree[2].identifier;
+        tree[3].type = android ? 'android.widget.Button' : 'Button';
+        const screen = join(tree, []);
+        screen.elements[2].semantic!.nativePresence = {
+          kind: 'other',
+          labelSource: 'direct',
+          structural: false,
+        };
+        const named = { phrase: quoted, quoted };
+        for (const purpose of ['action', 'refresh'] as const)
+          assert.equal(exactIdentities(screen, named, 'press', purpose).length, 2);
+        const result = prepareTarget({ kind: 'press', target: named }, screen);
+        assert.ok('refuse' in result && result.refuse === 'TARGET_AMBIGUOUS');
+      });
+    }
+  }
+
+  test(`${platform}: an unidentified label source on an ordinary parent cannot prove aggregation`, () => {
+    const tree = nodes(android);
+    tree[2].type = android ? 'android.view.ViewGroup' : 'Other';
+    tree[2].label = tree[3].label;
+    tree[3].type = android ? 'android.widget.Button' : 'Button';
+    const result = prepareTarget({ kind: 'press', target }, join(tree, []));
+    assert.ok('refuse' in result && result.refuse === 'TARGET_AMBIGUOUS');
+  });
+
+  for (const scroll of [false, true]) {
+    for (const labelSource of ['direct', 'descendant'] as const) {
+      test(`${platform}: ${labelSource} provenance governs suppression with scroll=${scroll}`, () => {
+        const tree = nodes(android);
+        if (!scroll) tree[2].type = android ? 'android.view.ViewGroup' : 'Other';
+        const screen = join(tree, []);
+        screen.elements[2].semantic!.nativePresence = {
+          kind: 'other',
+          labelSource,
+          structural: false,
+        };
+        const result = prepareTarget({ kind: 'press', target }, screen);
+        if (labelSource === 'descendant') {
+          assert.ok('ref' in result);
+          assert.equal(result.ref, '@card0');
+        } else {
+          assert.ok('refuse' in result && result.refuse === 'TARGET_AMBIGUOUS');
+        }
+      });
+    }
+  }
 
   test(`${platform}: the innermost bare card wins when both full labels equal the target`, () => {
     const tree = nodes(android);
