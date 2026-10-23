@@ -2017,7 +2017,9 @@ file. Both `.yaml` and `.yml` identities share this lock.
 
 The ledger's `path` is `walk`, `replay` or `replay→walk@<line>` (the first re-walked
 plan line), and each block reports `source` `discovered`, `replayed` or `patched`. The
-receipt lists `blocks_written`, `blocks_not_saved` (block and reason) and, as a
+receipt lists `blocks_written`, `blocks_not_saved` (block and reason), `hints`
+(`code` and `text`, also printed to stderr; see the
+[reusable sign-in example](#reusable-sign-in-example)) and, as a
 diagnostic that never changes the verdict,
 `worktree_drift`: app-root paths whose `git status` changed during the walk, outside
 `.qaren/actions`. This status-only diagnostic is separate from the
