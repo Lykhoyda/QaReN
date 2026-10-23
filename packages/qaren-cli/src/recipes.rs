@@ -149,6 +149,32 @@ fn unmarked(text: &str) -> String {
         .collect()
 }
 
+// Strips HTML comments, carrying an open one across lines, as the plan parser does.
+fn visible_lines(text: &str) -> Vec<String> {
+    let mut open = false;
+    text.lines()
+        .map(|line| {
+            let mut rest = line;
+            let mut out = String::new();
+            loop {
+                if open {
+                    let Some(close) = rest.find("-->") else { break };
+                    open = false;
+                    rest = &rest[close + 3..];
+                } else if let Some(start) = rest.find("<!--") {
+                    out.push_str(&rest[..start]);
+                    open = true;
+                    rest = &rest[start + 4..];
+                } else {
+                    out.push_str(rest);
+                    break;
+                }
+            }
+            out.trim().to_string()
+        })
+        .collect()
+}
+
 pub fn list(app_root: &Path) -> Result<Vec<PlanEntry>, String> {
     let dir = plans_dir(app_root)?;
     let entries = match std::fs::read_dir(&dir) {
@@ -172,15 +198,16 @@ pub fn list(app_root: &Path) -> Result<Vec<PlanEntry>, String> {
             continue;
         }
         let text = read_regular(&path).ok_or_else(|| format!("cannot read {}", path.display()))?;
+        let visible = visible_lines(&text);
         plans.push(PlanEntry {
             file: format!(".qaren/plans/{name}"),
-            title: text
-                .lines()
-                .find_map(|line| line.trim().strip_prefix("# "))
+            title: visible
+                .iter()
+                .find_map(|line| line.strip_prefix("# "))
                 .map(|title| title.trim().to_string()),
-            blocks: text
-                .lines()
-                .filter_map(|line| line.trim().strip_prefix("### "))
+            blocks: visible
+                .iter()
+                .filter_map(|line| line.strip_prefix("### "))
                 .map(|title| title.trim().to_string())
                 .collect(),
             broken: broken(&text),
@@ -584,6 +611,25 @@ mod tests {
         assert_eq!(
             render(&plans[1..]),
             ".qaren/plans/b.md\tAdd a task\tAdd one, Check\tandroid\n"
+        );
+    }
+
+    #[test]
+    fn listing_ignores_headings_inside_html_comments() {
+        let app = app("list-comments");
+        recipe(
+            &app,
+            "x.md",
+            "<!-- qaren:broken ios -->\n<!--\n# Old journey\n### Old block\n-->\n# Real <!-- note -->\n\n## QA\n\n<!-- ### Hidden -->\n### Block\n1. Tap \"Add\"\n",
+        );
+        assert_eq!(
+            list(&app).unwrap(),
+            vec![PlanEntry {
+                file: ".qaren/plans/x.md".into(),
+                title: Some("Real".into()),
+                blocks: vec!["Block".into()],
+                broken: vec!["ios".into()],
+            }]
         );
     }
 
