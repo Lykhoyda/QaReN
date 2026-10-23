@@ -169,7 +169,7 @@ class CommandDispatcher(
             "drag", "swipe", "scroll" -> drag(cmd)
             "screenshot" -> screenshot()
             "back" -> JSONObject().put("pressed", device.pressBack())
-            "dismissKeyboard", "keyboard" -> JSONObject().put("dismissed", device.pressBack())
+            "dismissKeyboard", "keyboard" -> dismissKeyboard(appPackage)
             // Settle probe (#385): read-only window-gate, deliberately absent from
             // the foregrounding whitelist above — it must never steal foreground,
             // and it IS the settle primitive so it adds no sleep of its own.
@@ -205,6 +205,37 @@ class CommandDispatcher(
         }
 
         return JSONObject().put("ok", true).put("data", data)
+    }
+
+    private fun dismissKeyboard(appPackage: String?): JSONObject {
+        var baseline: Pair<List<Int>, List<QaHierarchy.QaNode>>? = null
+        fun screen(): Pair<List<Int>, List<QaHierarchy.QaNode>>? {
+            if (appPackage == null) return null
+            val read = enumerateQa(appPackage, null) ?: return null
+            val front = QaHierarchy.front(read.windows, appPackage) as? QaHierarchy.Front.App ?: return null
+            if (read.exhausted || read.assembled.truncated || read.assembled.droppedNodes != 0) return null
+            return front.windows.map { it.id } to KeyboardGuard.screenContent(read.assembled.nodes)
+        }
+        val result = try {
+            KeyboardGuard.dismiss(
+                shown = { KeyboardGuard.inputShown(device.executeShellCommand("dumpsys input_method")) },
+                sameScreen = {
+                    val current = screen()
+                    if (baseline == null) baseline = current
+                    current != null && current == baseline
+                },
+                pressBack = { device.pressBack() },
+                now = { SystemClock.uptimeMillis() },
+                sleep = { SystemClock.sleep(it) },
+            )
+        } catch (e: KeyboardGuard.DismissRefused) {
+            throw TypedRunnerException(
+                e.code,
+                "Keyboard dismissal could not prove an unchanged foreground screen and hidden input method",
+                if (e.backAttempted) MutationDisposition.POSSIBLE else MutationDisposition.NONE,
+            )
+        }
+        return JSONObject().put("wasVisible", result.wasVisible).put("dismissed", result.dismissed).put("visible", false)
     }
 
     private fun foreground(appPackage: String) {
