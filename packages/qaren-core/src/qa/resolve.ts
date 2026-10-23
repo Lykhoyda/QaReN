@@ -713,11 +713,7 @@ export function targetEvidence(target: Target, screen: Screen): LiteralVerdict {
       });
     return !matches[0].offscreen && !centreCovered(matches[0], screen) ? 'pass' : 'fail';
   }
-  if (!target.exact) {
-    const ids = idIdentities(target.quoted, screen);
-    if (ids.length === 1 && !ids[0].element.offscreen && !centreCovered(ids[0].element, screen))
-      return 'pass';
-  }
+  if (!target.exact && idSeen(target.quoted, screen)) return 'pass';
   const text = literalEvidence(screen, target.quoted, 'equals').verdict;
   if (target.exact === 'text') {
     if (text === 'unsure') return text;
@@ -735,6 +731,11 @@ export function targetEvidence(target: Target, screen: Screen): LiteralVerdict {
 function idIdentities(id: string, screen: Screen): Identity[] {
   const target: Target = { quoted: id, phrase: id, exact: 'id' };
   return replayIdentities(exactIdentities(screen, target, 'wait'), target, 'wait');
+}
+
+function idSeen(id: string | undefined, screen: Screen): boolean {
+  const ids = id ? idIdentities(id, screen) : [];
+  return ids.length === 1 && !ids[0].element.offscreen && !centreCovered(ids[0].element, screen);
 }
 
 // Why a quoted wait saw no match, from identifiers and frames only, never labels or text.
@@ -773,10 +774,7 @@ export function elementSelector(element: Element): Selector | undefined {
 export function visibleSelector(target: Target, screen: Screen): Selector | undefined {
   const quoted = target.quoted;
   if (quoted === undefined || !targetVisible(target, screen)) return undefined;
-  const shown = screen.elements.filter((e) => !e.offscreen);
-  const uniqueId = (id: string | undefined) => !!id && idIdentities(id, screen).length === 1;
-  if (target.exact !== 'text' && shown.some((e) => e.testID === quoted) && uniqueId(quoted))
-    return { id: quoted };
+  if (target.exact !== 'text' && idSeen(quoted, screen)) return { id: quoted };
   if (target.exact === 'id') return undefined;
   if (literalEvidence(screen, quoted, 'equals').verdict !== 'pass') return undefined;
   const labelled = exactIdentities(
@@ -786,7 +784,7 @@ export function visibleSelector(target: Target, screen: Screen): Selector | unde
   )
     .map(({ element }) => element)
     .filter((e) => !e.offscreen);
-  return target.exact === undefined && labelled.length === 1 && uniqueId(labelled[0].testID)
+  return target.exact === undefined && labelled.length === 1 && idSeen(labelled[0].testID, screen)
     ? { id: labelled[0].testID! }
     : textIdentities(quoted, screen) === 1
       ? { text: quoted }

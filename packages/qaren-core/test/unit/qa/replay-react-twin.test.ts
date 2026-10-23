@@ -74,6 +74,42 @@ test('a quoted wait passes on the visible native element beside a React-only twi
   assert.equal(presenceMiss(quoted, avatar), undefined);
 });
 
+test('a quoted wait passed by visible text saves the text, not a covered native id', () => {
+  const at = (y: number) => ({ x: 20, y, width: 300, height: 44 });
+  const keyboard: NativeNode = {
+    ref: '@k1',
+    index: 3,
+    parentIndex: 0,
+    type: 'Keyboard',
+    rect: { x: 0, y: 500, width: 390, height: 344 },
+  };
+  const form = (nodes: NativeNode[]) =>
+    join(
+      [
+        window,
+        { ref: '@t1', index: 1, parentIndex: 0, type: 'StaticText', label: 'Save', rect: at(100) },
+        {
+          ref: '@b1',
+          index: 2,
+          parentIndex: 0,
+          type: 'Button',
+          identifier: 'Save',
+          label: 'Done',
+          hittable: true,
+          rect: at(700),
+        },
+        ...nodes,
+      ],
+      [button('Save'), button('Save')],
+      'app',
+      { native: 'complete', react: 'complete' },
+    );
+  const quoted = { quoted: 'Save', phrase: 'Save' };
+  assert.equal(targetEvidence(quoted, form([keyboard])), 'pass');
+  assert.deepEqual(visibleSelector(quoted, form([keyboard])), { text: 'Save' });
+  assert.deepEqual(visibleSelector(quoted, form([])), { id: 'Save' });
+});
+
 test('a missed quoted wait says whether its id was absent or rejected', () => {
   const quoted = (id: string) => ({ quoted: id, phrase: id });
   assert.match(
