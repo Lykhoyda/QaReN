@@ -25,7 +25,7 @@ pub(super) fn checks(runner: &mut dyn Runner, os: &str) -> Vec<Check> {
             "host probes support macOS and Linux",
         )];
     }
-    let processes = probe(runner, "ps", &["-axww", "-o", "stat=,args="], 3);
+    let processes = probe(runner, "ps", &["-axww", "-o", "stat=,ucomm=,args="], 3);
     let android = processes.ok().then(|| android_emulators(&processes.stdout));
     let (service, sims) = if os == "macos" {
         simulator_service(runner, &processes)
@@ -124,7 +124,7 @@ fn android_emulators(text: &str) -> Vec<String> {
     text.lines()
         .filter_map(|line| {
             let words: Vec<_> = line.split_whitespace().collect();
-            let executable = Path::new(*words.get(1)?).file_name()?.to_str()?;
+            let executable = *words.get(1)?;
             if !executable.starts_with("qemu-system-") {
                 return None;
             }
@@ -403,7 +403,10 @@ mod tests {
         sys: &str,
         top: &str,
     ) {
-        runner.expect_run("ps -axww -o stat=,args=", CmdOutput::success(processes));
+        runner.expect_run(
+            "ps -axww -o stat=,ucomm=,args=",
+            CmdOutput::success(processes),
+        );
         runner.expect_run("simctl list devices -j", inventory);
         runner.expect_run("vm_stat", CmdOutput::success(vm));
         runner.expect_run("sysctl", CmdOutput::success(sys));
@@ -419,7 +422,7 @@ mod tests {
     #[test]
     fn mac_reports_both_platforms_and_uses_the_second_idle_sample() {
         let mut runner = MockRunner::new();
-        script_mac(&mut runner, "S /sdk/qemu-system-aarch64 -avd Pixel\nS /sdk/emulator -avd Pixel\nS /usr/bin/qemu-system-x86_64 -drive server.img\n", inventory(), VM, SYS, "CPU usage: 90% user, 5% sys, 5% idle\nCPU usage: 2% user, 3% sys, 95% idle\n");
+        script_mac(&mut runner, "S qemu-system-aar /sdk/qemu-system-aarch64 -avd Pixel\nS emulator /sdk/emulator -avd Pixel\nS qemu-system-x86 /usr/bin/qemu-system-x86_64 -drive server.img\n", inventory(), VM, SYS, "CPU usage: 90% user, 5% sys, 5% idle\nCPU usage: 2% user, 3% sys, 95% idle\n");
         let rows = checks(&mut runner, "macos");
         assert!(rows.iter().all(|r| r.status == Status::Pass), "{rows:?}");
         assert!(row(&rows, "host-devices")
@@ -444,11 +447,35 @@ mod tests {
     }
 
     #[test]
+    fn emulator_inventory_handles_sdk_paths_with_spaces() {
+        for executable in ["qemu-system-aarch64", "qemu-system-aar"] {
+            let mut runner = MockRunner::new();
+            script_mac(
+                &mut runner,
+                &format!("S {executable} /Volumes/External SSD/Android/sdk/emulator/qemu/darwin-aarch64/qemu-system-aarch64 -avd Pixel\nS emulator /Volumes/External SSD/Android/sdk/emulator/emulator -avd Pixel\nS qemu-system-x86 /usr/bin/qemu-system-x86_64 -drive server.img\nS sh /bin/sh -c /sdk/qemu-system-aarch64 -avd Other\n"),
+                inventory(),
+                VM,
+                SYS,
+                "CPU usage: 2% user, 3% sys, 95% idle\n",
+            );
+            let rows = checks(&mut runner, "macos");
+            let devices = row(&rows, "host-devices");
+            assert_eq!(devices.status, Status::Pass);
+            assert!(
+                devices.detail.contains("Android emulators: 1 [Pixel]"),
+                "{}",
+                devices.detail
+            );
+            assert_eq!(runner.remaining(), 0);
+        }
+    }
+
+    #[test]
     fn field_memory_and_load_conditions_warn_without_failing() {
         let mut runner = MockRunner::new();
         script_mac(
             &mut runner,
-            "S /sdk/qemu-system-aarch64 -avd Pixel\n",
+            "S qemu-system-aar /sdk/qemu-system-aarch64 -avd Pixel\n",
             inventory(),
             &VM.replace("655360", "11072"),
             &SYS.replace("1.0 2.0 3.0", "94.0 100.0 120.0")
@@ -474,7 +501,7 @@ mod tests {
     fn only_timeout_with_attributable_uninterruptible_simulator_evidence_fails() {
         for (state, expected) in [("U", Status::Fail), ("S", Status::Warn)] {
             let mut runner = MockRunner::new();
-            script_mac(&mut runner, &format!("{state} /runtime/launchd_sim /Users/example/Library/Developer/CoreSimulator/Devices/{UDID}/data\n"), CmdOutput { timed_out: true, ..Default::default() }, VM, SYS, "CPU usage: 2% user, 3% sys, 95% idle\n");
+            script_mac(&mut runner, &format!("{state} launchd_sim /runtime/launchd_sim /Users/example/Library/Developer/CoreSimulator/Devices/{UDID}/data\n"), CmdOutput { timed_out: true, ..Default::default() }, VM, SYS, "CPU usage: 2% user, 3% sys, 95% idle\n");
             let rows = checks(&mut runner, "macos");
             let service = row(&rows, "simulator-service");
             assert_eq!(service.status, expected);
@@ -551,7 +578,7 @@ mod tests {
     fn script_linux(runner: &mut MockRunner, mem: &str, after: &str) {
         runner.expect_run(
             "ps",
-            CmdOutput::success("S /sdk/qemu-system-x86_64 -avd Pixel\n"),
+            CmdOutput::success("S qemu-system-x86 /sdk/qemu-system-x86_64 -avd Pixel\n"),
         );
         runner.expect_run("cat /proc/meminfo", CmdOutput::success(mem));
         runner.expect_run(
