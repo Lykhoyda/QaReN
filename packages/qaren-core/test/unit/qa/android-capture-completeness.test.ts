@@ -3,7 +3,6 @@ import { afterEach, beforeEach, test } from 'node:test';
 import { captureScreen, nativeDevOverlayUncleared } from '../../../dist/qa/capture.js';
 import { keyboardCoversElement } from '../../../dist/qa/screen.js';
 import { NativeSnapshotIncomplete } from '../../../dist/qa/private-input.js';
-import { CAPTURE_BUDGET_MS } from '../../../dist/qa/timing.js';
 import { parsePlan } from '../../../dist/qa/plan.js';
 import { runPlan } from '../../../dist/qa/walker.js';
 import {
@@ -60,7 +59,7 @@ const complete = () => ({
   normalizationDroppedNodes: 0,
 });
 
-async function capture(data: unknown, now?: () => number) {
+async function capture(data: unknown) {
   _setFetchForTest(async (url, init) => {
     if (String(url).endsWith('/health'))
       return Response.json({
@@ -76,7 +75,6 @@ async function capture(data: unknown, now?: () => number) {
   // Each read spends one settle budget, so an empty-capture retry ends without a wall-clock race.
   let now = 0;
   return captureScreen({
-    now,
     appId: 'com.test',
     requirePrivateInputs: true,
     now: () => now,
@@ -160,12 +158,8 @@ test('Android producer or host normalization losses never become usable literal 
       assert.deepEqual(f.actions, []);
     }
   }
-  // An empty tree is reread within the settle budget; a clock past the capture budget ends it.
-  let clock = 0;
-  await assert.rejects(
-    capture({ ...complete(), nodes: [] }, () => (clock += CAPTURE_BUDGET_MS)),
-    NativeSnapshotIncomplete,
-  );
+  // An empty tree is reread within the settle budget, then refused.
+  await assert.rejects(capture({ ...complete(), nodes: [] }), NativeSnapshotIncomplete);
 });
 
 test('Android acquisition reports producer and host losses together', async () => {
