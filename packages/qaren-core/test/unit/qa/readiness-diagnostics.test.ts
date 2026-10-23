@@ -67,6 +67,8 @@ const healthDetails = [
   'http-5xx',
   'body-not-ok',
   'wedged',
+  'transport-timeout',
+  'http-protocol',
   'other',
 ] as const;
 const health = { ...metric, readinessReason: 'health' } as const;

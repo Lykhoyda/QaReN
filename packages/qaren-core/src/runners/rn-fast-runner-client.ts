@@ -1554,11 +1554,23 @@ function healthDetailForReply(res: HttpProbeResult): HealthDetail {
 
 function healthDetailForError(error: unknown): HealthDetail {
   try {
-    const failure = error as { name?: unknown; code?: unknown; cause?: { code?: unknown } };
+    const failure = error as {
+      name?: unknown;
+      code?: unknown;
+      cause?: { name?: unknown; code?: unknown };
+    };
     if (failure?.name === 'AbortError' || failure?.name === 'TimeoutError') return 'abort';
     const code = failure?.code ?? failure?.cause?.code;
     if (code === 'ECONNREFUSED') return 'refused';
     if (code === 'ECONNRESET' || code === 'UND_ERR_SOCKET' || code === 'EPIPE') return 'reset';
+    if (
+      code === 'ETIMEDOUT' ||
+      code === 'UND_ERR_CONNECT_TIMEOUT' ||
+      code === 'UND_ERR_HEADERS_TIMEOUT'
+    )
+      return 'transport-timeout';
+    // fetch's parser error carries no code, only its class name.
+    if (failure?.cause?.name === 'HTTPParserError') return 'http-protocol';
   } catch {
     // Diagnostics cannot change readiness.
   }

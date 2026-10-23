@@ -1616,7 +1616,8 @@ that secret despite artifact redaction.
   existing liveness classification as `readinessReason`, or `unknown` if the probe did not
   return a classification; `count` identifies the probe site, not a retry ordinal.
   A `health` failure adds `healthDetail` (`refused`, `reset`, `abort`, `http-4xx`, `http-5xx`, `body-not-ok`,
-  `wedged` or `other`). Every failed readiness probe is followed by a `runner-post-mortem` point
+  `wedged`, `transport-timeout`, `http-protocol` or `other`). Every failed readiness probe is
+  followed by a `runner-post-mortem` point
   with the runner host child (`alive`, `exited`, `unknown`), its exit code or signal name, counts of
   the runner's fixed lifecycle markers, of contained XCTest issues, and of XCTest issue and
   test-failed lines for the runner's test (never output text), and `appProcess`: the app process found

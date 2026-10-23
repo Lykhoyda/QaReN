@@ -111,6 +111,8 @@ const HEALTH_DETAILS = [
   'http-5xx',
   'body-not-ok',
   'wedged',
+  'transport-timeout',
+  'http-protocol',
   'other',
 ] as const;
 export type HealthDetail = (typeof HEALTH_DETAILS)[number];

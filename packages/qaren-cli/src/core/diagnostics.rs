@@ -99,6 +99,8 @@ const HEALTH_DETAILS: &[&str] = &[
     "http-5xx",
     "body-not-ok",
     "wedged",
+    "transport-timeout",
+    "http-protocol",
     "other",
 ];
 const RUNNER_SIGNALS: &[&str] = &[

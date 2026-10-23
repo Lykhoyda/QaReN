@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { createServer } from 'node:net';
 import { afterEach, test } from 'node:test';
 import {
   _setFastRunnerStateForTest,
@@ -489,4 +490,80 @@ test('a run cancelled during the app-process lookup raises the cancellation', as
     await assert.rejects(snapshot(), (error) => error === reason);
   });
   assert.equal(f.events.filter((e) => e.stage === 'runner-post-mortem').length, 0);
+});
+
+async function malformedReplyError(): Promise<unknown> {
+  const server = createServer((socket) => socket.end('HTTP/1.1 2X0 bad\r\n\r\n'));
+  await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+  try {
+    const { port } = server.address() as { port: number };
+    return await fetch(`http://127.0.0.1:${port}/health`).then(
+      () => assert.fail('a malformed status line must fail fetch'),
+      (error: unknown) => error,
+    );
+  } finally {
+    server.close();
+  }
+}
+
+test('default probe classifies transport timeouts and HTTP protocol errors', async () => {
+  const parserError = await malformedReplyError();
+  const cases = [
+    ['transport-timeout', failedHealth('ETIMEDOUT')],
+    ['transport-timeout', failedHealth('UND_ERR_CONNECT_TIMEOUT')],
+    ['transport-timeout', failedHealth('UND_ERR_HEADERS_TIMEOUT')],
+    [
+      'http-protocol',
+      () => {
+        throw parserError;
+      },
+    ],
+  ] satisfies [string, () => never][];
+  for (const [healthDetail, health] of cases) {
+    const events = await readThenFail(health);
+    assert.deepEqual(
+      events
+        .filter((e) => e.stage === 'native-readiness' && e.edge === 'end')
+        .map((e) => [e.outcome, e.readinessReason, e.healthDetail]),
+      [
+        ['ok', 'alive', undefined],
+        ['failed', 'health', healthDetail],
+      ],
+    );
+    assert.ok(!/ECONN|ETIMEDOUT|UND_ERR|HPE_/.test(JSON.stringify(events)));
+  }
+});
+
+test('the existing local probe controller aborts at its unchanged 2000ms timeout', async (t) => {
+  const f = fixture();
+  let healthCalls = 0;
+  _setFetchForTest(async () => {
+    healthCalls++;
+    return new Promise(() => {});
+  });
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  let finished = false;
+  const pending = runIOS({ command: 'snapshot', qaReadOnly: true, qaTiming: f.qaTiming }).catch(
+    (error) => {
+      finished = true;
+      return error;
+    },
+  );
+  await new Promise<void>((resolve) => setImmediate(resolve));
+  f.advance(1999);
+  t.mock.timers.tick(1999);
+  await new Promise<void>((resolve) => setImmediate(resolve));
+  assert.equal(finished, false);
+  f.advance(1);
+  t.mock.timers.tick(1);
+  const error = await pending;
+  assert.match(String(error), /ACTION_CONTEXT_CHANGED/);
+  assert.deepEqual(
+    f.events
+      .filter((e) => e.stage === 'native-readiness' && e.edge === 'end')
+      .map((e) => [e.ms, e.readinessReason, e.healthDetail]),
+    [[2000, 'health', 'abort']],
+  );
+  assert.equal(healthCalls, 1);
+  assert.equal(f.requests.length, 0);
 });

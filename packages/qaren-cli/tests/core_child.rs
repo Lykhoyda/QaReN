@@ -354,6 +354,8 @@ fn runner_termination_diagnostics_reach_private_diagnostics_only_as_fixed_words_
             "http-5xx",
             "body-not-ok",
             "wedged",
+            "transport-timeout",
+            "http-protocol",
             "other",
         ] {
             let mut value = readiness.clone();
