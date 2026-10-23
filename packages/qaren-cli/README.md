@@ -465,7 +465,10 @@ Plans contain a `## QA` section, named `###` blocks, numbered actions and
 targets resolve observed labels or test IDs locally. Distinct matches are
 counted before kind, disabled, hittability, offscreen or React-only filters, so two
 or more refuse with `TARGET_AMBIGUOUS`, without a Jev tie-break, even if the
-target adds positional words such as `Tap "Save" at the bottom`. A fill counts
+target adds positional words such as `Tap "Save" at the bottom`. Outside fills,
+a React-only element whose testID equals the quoted value is not counted while a
+native element carries that testID, so a quoted press, wait or scroll reaches
+the native element; two native elements sharing it still refuse. A fill counts
 text-entry candidates plus every element carrying its testID, so a form label
 naming an input is not a twin, while a button sharing the input's testID is. A
 React-only projection collapses into the one native input only when complete
@@ -1005,7 +1008,8 @@ a label and no accessibility text descendant contributes its merged label;
 this also admits an icon-only control's explicit label. A literal check passing
 through that contribution records `matched an accessibility label` in the ledger.
 Quoted waits and scroll-until targets also accept a unique visible testID as
-identity evidence, independently of literal text.
+identity evidence, independently of literal text; a React-only twin of a native
+element carrying that testID does not break its uniqueness.
 
 When a literal check fails and a node's label contains the plan's literal, the
 failure can explain why that node did not count: `not-visible` means it was
@@ -1072,6 +1076,9 @@ Waits poll unresolved text as not yet present and end with `VISIBILITY_UNSURE`
 when the final evidence remains unsure. A quoted wait with at least two definite
 absence observations sharing one screen signature fails at its deadline with
 “did not appear”; it does not report expired evidence for that stable absence.
+For a quoted value that is not a stored text selector, the failure adds why from
+identifiers and frames only: no captured element carries the identifier, several
+do, or the one that does is React-only, offscreen or has its centre covered.
 Either unmet ending first gets [step recovery](#step-recovery), so a quoted wait
 behind a blocking screen or system dialog runs once more with its full budget.
 Scroll-until-text uses the same visibility verdict
@@ -1804,7 +1811,8 @@ The value-free reason is
 value was observed rather than typed. Existing saved actions are not removed.
 
 For quoted waits and scroll-until steps, a testID is stored only when exactly one
-captured element carries it, including offscreen elements in that count. A shared
+captured element carries it, including offscreen elements in that count and
+excluding React-only twins of a native element carrying it. A shared
 testID falls back to unique literal text evidence; without either unique identity
 the block remains unsaved. A stored text selector must pass the
 [literal-evidence rule](#plan-checks-and-screen-evidence) and match exactly one
