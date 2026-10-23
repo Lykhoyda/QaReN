@@ -134,7 +134,7 @@ function aggregatesControl(container: Element, child: Element): boolean {
   return enclosing.some((_, start) => carried.every((part, i) => part === enclosing[start + i]));
 }
 
-// A no-identifier container enclosing exactly one same-label actionable control only echoes that control.
+// Descendant provenance distinguishes a container echo from a separately labelled control.
 function containerEcho(
   container: Element,
   matched: readonly Element[],
