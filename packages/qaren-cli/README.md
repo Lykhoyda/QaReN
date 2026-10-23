@@ -75,8 +75,9 @@ Setup runs Doctor before its smoke run. Host capacity is a conservative snapshot
 not a hardware guarantee: each concurrent simulator/emulator lane needs about 4 GiB
 of headroom for the device, the app and its share of Metro. The recommendation is
 `floor(headroom / 4 GiB)` more lanes beyond those already booted,
-whose memory is already in use. Elevated pressure or fewer than one lane's headroom
-warns. Recheck after closing lanes or apps: memory usage changes during builds.
+whose memory is already in use. Doctor warns when pressure is elevated or unknown,
+or headroom is below one lane's need. Recheck after closing lanes or apps: memory
+usage changes during builds.
 
 On macOS, headroom is available memory: `vm_stat` free, speculative and inactive
 pages, using its reported page size; purgeable pages already sit on those queues
@@ -88,8 +89,9 @@ are platform-specific; either elevated signal warns regardless of lane count.
 All booted Apple simulators count, including other simulator platforms. Android
 inventory counts local `qemu-system-*` processes with `-avd`, including starting
 emulators, without contacting ADB; custom emulator launchers that omit `-avd` and
-remote emulator hosts are outside this inventory. A failed inventory probe reports
-unknown and warns instead of treating it as zero devices.
+remote emulator hosts are outside this inventory. A failed inventory probe makes
+`host-devices` report unknown and warn instead of treating it as zero devices;
+the `simulator-service` row separately reports simulator inventory failures below.
 
 Load warns when the one-minute load is at least the logical CPU count or sampled
 CPU idle is below 10%: readiness deadlines may expire, so use fewer concurrent
@@ -103,8 +105,9 @@ which have five seconds each; subprocess termination can add up to five seconds
 per timeout. Missing, malformed or timed-out host statistics warn with a manual
 next step. A simulator inventory timeout alone warns: it does not identify a
 wedged device. Any other `simctl` failure shows its error and points to
-`sudo xcodebuild -runFirstLaunch` or an Xcode update; `ios-runtime` fails on it and
-warns on a timeout. A timeout together with an uninterruptible `launchd_sim` whose argv
+`sudo xcodebuild -runFirstLaunch` or an Xcode update; the corresponding
+`ios-runtime` or `simulator-service` row fails. `ios-runtime` warns on a timeout.
+A device inventory timeout together with an uninterruptible `launchd_sim` whose argv
 names a simulator UUID fails and reports that UUID as observed evidence. Ask the
 device owner to shut down that simulator and recheck; restarting CoreSimulatorService
 stops **every simulator on the machine**. Doctor and setup perform neither action.
