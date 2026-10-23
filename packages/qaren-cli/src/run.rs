@@ -2403,7 +2403,7 @@ fn plan_unparseable(value: &Value, plan_file: &Path) -> Option<Failure> {
         "preflight",
         FailureCode::PlanUnparseable,
         problems.join("; "),
-        format!("{}; then re-run qaren check", repairs.join("; ")),
+        format!("{}; then re-run", repairs.join("; ")),
     ))
 }
 

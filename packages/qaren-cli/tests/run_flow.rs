@@ -2464,12 +2464,29 @@ fn every_plan_problem_names_the_file_line_and_repair_before_device_access() {
     ))
     .unwrap();
     for entry in cases.as_array().unwrap() {
-        for phase in ["input-inventory", "plan-preflight"] {
+        for (pr, phase) in [false, true]
+            .into_iter()
+            .flat_map(|pr| ["input-inventory", "plan-preflight"].map(|phase| (pr, phase)))
+        {
             let (repo, app) = app_repo();
-            let req = request(&repo, &app, 30);
+            let req = if pr {
+                pr_request(&repo, &app)
+            } else {
+                request(&repo, &app, 30)
+            };
             std::fs::write(&req.plan_file, entry["plan"].as_str().unwrap()).unwrap();
             let mut mock = MockRunner::new();
             mock.expect_run("node --version", CmdOutput::success("v26.8.1\n"));
+            if pr {
+                mock.expect_run("git", CmdOutput::success(&format!("{}\n", repo.display())));
+                mock.expect_run("gh pr view", pr_view_json(PR_HEAD));
+                mock.expect_run("fetch origin pull/12/head", CmdOutput::success(""));
+                mock.expect_run(
+                    "rev-parse refs/qaren/pr/",
+                    CmdOutput::success(&format!("{PR_HEAD}\n")),
+                );
+                mock.expect_run("update-ref -d", CmdOutput::success(""));
+            }
             if phase == "plan-preflight" {
                 script_inventory(&mut mock);
             }
@@ -2508,12 +2525,13 @@ fn every_plan_problem_names_the_file_line_and_repair_before_device_access() {
             assert!(failure
                 .next_action
                 .contains(&req.plan_file.display().to_string()));
-            assert!(failure.next_action.contains("re-run qaren check"));
+            assert!(failure.next_action.ends_with("; then re-run"));
+            assert!(!failure.next_action.contains("qaren check"));
             assert_eq!(mock.remaining(), 0);
-            assert!(mock
-                .calls
-                .iter()
-                .all(|c| Path::new(&c.program) == req.node.as_deref().unwrap()));
+            assert!(mock.calls.iter().all(|c| {
+                Path::new(&c.program) == req.node.as_deref().unwrap()
+                    || (pr && ["git", "gh"].contains(&c.program.as_str()))
+            }));
         }
     }
 }
