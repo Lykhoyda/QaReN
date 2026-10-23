@@ -5743,6 +5743,11 @@ fn pool_creation_lock_held_refuses() {
     let failure = receipt.failure.as_ref().unwrap();
     assert_eq!(failure.code, FailureCode::DeviceBusy);
     assert!(failure.detail.to_string().contains("other-creator"));
+    assert!(
+        failure.detail.contains("`qaren cleanup other-creator`"),
+        "{:?}",
+        failure.detail
+    );
     assert_eq!(mock.remaining(), 0);
     assert!(!labels(&mock).iter().any(|l| l == "simctl-create"));
     let record = RunRecord::load(&repo, &receipt.run_id).unwrap();
@@ -5778,6 +5783,42 @@ fn new_flag_keeps_the_temporary_path_and_never_reads_the_pool() {
     assert_eq!(mock.remaining(), 0);
     assert_eq!(receipt.outcomes["device_pool"], "fresh");
     assert!(!labels(&mock).iter().any(|l| l == "simctl-list"));
+    let record = RunRecord::load(&repo, &receipt.run_id).unwrap();
+    assert_eq!(
+        record.resources.ios_simulator.as_ref().unwrap().name,
+        format!("qaren-{}", receipt.run_id)
+    );
+    assert!(record.resources.lease.is_none());
+    assert!(!record.resources.device_borrowed);
+    assert!(!pool_lease_dir(&repo, BORROWED).exists());
+}
+
+#[test]
+fn pool_falls_back_to_a_temporary_simulator_when_this_process_identity_is_unproven() {
+    let repo = common::temp_repo();
+    plant_member(&repo, BORROWED);
+    let scenario_path = write_scenario(&repo, &ios_scenario_yaml(8791));
+    let mut mock = MockRunner::new();
+    script_validation(&mut mock, &repo, IOS_TOOLS);
+    mock.expect_run("simctl list devices -j", member_inventory("Shutdown"));
+    mock.expect_run("ps", CmdOutput::failed(1, "operation not permitted"));
+    mock.expect_run("ps", CmdOutput::failed(1, "operation not permitted"));
+    mock.expect_run("lsof", free_port());
+    common::script_ios_deps(&mut mock);
+    mock.expect_run("ls-files", CmdOutput::success(""));
+    common::script_xcode(&mut mock);
+    mock.expect_run("simctl create", CmdOutput::failed(1, "boom"));
+
+    let receipt = prepare(&mut mock, &pool_args(&scenario_path));
+
+    assert_eq!(
+        receipt.result,
+        ReceiptResult::Failed,
+        "{}",
+        receipt.to_json()
+    );
+    assert_eq!(mock.remaining(), 0);
+    assert!(receipt.outcomes["device_pool"].starts_with("fresh: "));
     let record = RunRecord::load(&repo, &receipt.run_id).unwrap();
     assert_eq!(
         record.resources.ios_simulator.as_ref().unwrap().name,
@@ -5904,10 +5945,15 @@ fn pool_falls_back_to_a_temporary_simulator_when_a_short_form_does_not_resolve()
 
 #[test]
 fn pool_dry_run_reports_reclaiming_a_dead_holder_whose_run_never_reached_ready() {
-    for state in ["Shutdown", "Booted"] {
+    for (state, armed) in [("Shutdown", false), ("Booted", true), ("Booted", false)] {
         let repo = common::temp_repo();
         plant_member(&repo, BORROWED);
         plant_pool_holder(&repo, BORROWED, Phase::Failed);
+        if armed {
+            let mut record = RunRecord::load(&repo, "check-earlier").unwrap();
+            record.resources.arm_borrowed_ios_stop().unwrap();
+            record.save(&repo).unwrap();
+        }
         let scenario_path = write_scenario(&repo, &ios_scenario_yaml(8791));
         let mut mock = MockRunner::new();
         script_validation(&mut mock, &repo, IOS_TOOLS);
@@ -5925,13 +5971,18 @@ fn pool_dry_run_reports_reclaiming_a_dead_holder_whose_run_never_reached_ready()
 
         let receipt = prepare(&mut mock, &args);
 
+        if state == "Booted" && !armed {
+            assert_eq!(receipt.result, ReceiptResult::Refused);
+            assert_eq!(receipt.failure.unwrap().code, FailureCode::DeviceBusy);
+            continue;
+        }
+        assert_eq!(mock.remaining(), 0);
         assert_eq!(
             receipt.result,
             ReceiptResult::Planned,
             "{state}: {:?}",
             receipt.failure
         );
-        assert_eq!(mock.remaining(), 0);
         assert_eq!(
             receipt.outcomes["device_pool"],
             format!(

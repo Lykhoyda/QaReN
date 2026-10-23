@@ -290,12 +290,13 @@ fn prepare_validated(
     }
 
     check_prereqs(runner, &scenario, args.android_home.as_deref())?;
-    let pool_fallback = pool_mode
+    let mut pool_fallback = (pool_mode
         && !resolve_pool_identifiers(
             runner,
             scenario.ios.as_mut().expect("validated ios scenario"),
-        );
-    let pool_mode = pool_mode && !pool_fallback;
+        ))
+    .then_some(POOL_FALLBACK);
+    let pool_mode = pool_mode && pool_fallback.is_none();
     // An observation only: custody comes from the lease, and the target is re-proven under it.
     let selected = match borrowed.as_deref() {
         Some(udid) => {
@@ -305,7 +306,7 @@ fn prepare_validated(
         }
         None => None,
     };
-    let pool_scan = match pool_mode {
+    let mut pool_scan = match pool_mode {
         true => Some(scan_pool(
             runner,
             &args.pool_root,
@@ -324,10 +325,11 @@ fn prepare_validated(
         )?;
     }
     // A borrowed run checks its Metro port under the lease, after a dead holder's own cleanup.
+    let port_deferred = selected.is_some() || pool_scan.is_some();
     if let Some(metro) = scenario
         .metro
         .as_ref()
-        .filter(|_| (selected.is_none() && pool_scan.is_none()) || args.dry_run)
+        .filter(|_| !port_deferred || args.dry_run)
     {
         check_port_free(runner, metro.port)?;
     }
@@ -345,7 +347,7 @@ fn prepare_validated(
     let run_id = format!("{}-{}", scenario.name, timefmt::compact_utc(started_ms));
 
     if args.dry_run {
-        let mut dry_outcome = pool_fallback.then(|| POOL_FALLBACK.to_string());
+        let mut dry_outcome = pool_fallback.map(str::to_string);
         let (dry_selected, dry_boot, dry_name) = match &pool_scan {
             Some(scan) => match dry_run_pool_member(runner, scan, &args.lock_root, &args.runs_root)
             {
@@ -426,18 +428,18 @@ fn prepare_validated(
 
     let self_pid = std::process::id() as i32;
     let identity = capture_pid_identity(runner, self_pid);
-    if (selected.is_some() || pool_scan.is_some()) && identity.is_none() {
+    if pool_scan.is_some() && identity.is_none() {
+        pool_scan = None;
+        pool_fallback = Some(POOL_IDENTITY_FALLBACK);
+    }
+    if selected.is_some() && identity.is_none() {
         // Like check's run-directory claim, an unrecorded claim is dropped on refusal.
         let _ = std::fs::remove_dir_all(&run_dir);
         return Err(Failure::new(
             "lease",
             FailureCode::OwnershipUnproven,
             "this prepare process's birth identity could not be proven, so it cannot hold a device lease",
-            if pool_scan.is_some() {
-                "ensure ps can read this process's start time, then re-run, or pass --new for a temporary simulator"
-            } else {
-                "ensure ps can read this process's start time, then re-run"
-            },
+            "ensure ps can read this process's start time, then re-run",
         ));
     }
     let node = std::env::var_os("QAREN_NODE")
@@ -492,7 +494,7 @@ fn prepare_validated(
             return Err(f);
         }
     };
-    if let (Some(metro), true) = (&scenario.metro, custody.is_some() || pool_create) {
+    if let (Some(metro), true) = (&scenario.metro, port_deferred) {
         if let Err(f) = check_port_free(runner, metro.port) {
             let _ = std::fs::remove_dir_all(&run_dir);
             return Err(match &custody {
@@ -563,9 +565,9 @@ fn prepare_validated(
     if args.new_device {
         ctx.notes
             .push(("device_pool".to_string(), "fresh".to_string()));
-    } else if pool_fallback {
+    } else if let Some(fallback) = pool_fallback {
         ctx.notes
-            .push(("device_pool".to_string(), POOL_FALLBACK.to_string()));
+            .push(("device_pool".to_string(), fallback.to_string()));
     }
     if pool_claimed {
         let udid = ctx
@@ -1088,6 +1090,7 @@ fn allocate_ios(ctx: &mut Ctx, pool: Option<(&Path, &Path)>) -> Result<(), Failu
 }
 
 const POOL_FALLBACK: &str = "fresh: ios.device_type or ios.runtime does not name exactly one installed simulator identifier, so this run uses a temporary simulator";
+const POOL_IDENTITY_FALLBACK: &str = "fresh: this prepare process's birth identity could not be proven, so it cannot hold a pool device lease and this run uses a temporary simulator";
 
 // A short form becomes the one installed identifier it names; false keeps this run on the temporary path.
 fn resolve_pool_identifiers(runner: &mut dyn Runner, spec: &mut IosSpec) -> bool {
@@ -1233,7 +1236,7 @@ fn pool_refusal(scan: &PoolScan, cap: u32, occupied: &[String]) -> Failure {
     )
 }
 
-// Read-only, in the claim's order: a dead holder whose run never reached ready is reclaimed in any power state; a free member must be Shutdown.
+// Read-only, in the claim's order: a dead holder whose run never reached ready is reclaimed, and its cleanup shuts the member down only if its stop is armed; the member must then be Shutdown.
 fn dry_run_pool_member(
     runner: &mut dyn Runner,
     scan: &PoolScan,
@@ -1251,16 +1254,19 @@ fn dry_run_pool_member(
             .identity
             .as_ref()
             .map(|i| probe_pid_identity(runner, i));
-        (matches!(
+        if !matches!(
             liveness,
             Some(PidLiveness::Dead | PidLiveness::AliveForeign)
-        ) && RunRecord::load(runs_root, &holder.run_id).is_ok()
-            && ready_holder(runs_root, Some(&holder), liveness).is_none())
-        .then(|| {
-            let mut sim = sim.clone();
+        ) || ready_holder(runs_root, Some(&holder), liveness).is_some()
+        {
+            return None;
+        }
+        let record = RunRecord::load(runs_root, &holder.run_id).ok()?;
+        let mut sim = sim.clone();
+        if record.resources.borrowed_ios_stop() == crate::runrecord::BorrowedIosStop::Pending {
             sim.state = ios::SimState::Shutdown;
-            (sim, Some(holder.run_id))
-        })
+        }
+        (sim.state == ios::SimState::Shutdown).then(|| (sim, Some(holder.run_id)))
     })
 }
 
@@ -1454,7 +1460,11 @@ fn claim_pool_create_lock(ctx: &mut Ctx, pool_root: &Path) -> Result<(), Failure
             ctx.save()?;
             let (held, next) = match existing {
                 Some(h) => (
-                    format!(" (held for run {})", h.run_id),
+                    format!(
+                        " (held for run {}; if it is no longer creating, recover with {})",
+                        h.run_id,
+                        crate::lease::cleanup_command(&h.run_id)
+                    ),
                     format!(
                         "re-run once run {} finishes creating, or clean it up with {}",
                         h.run_id,

@@ -3149,7 +3149,9 @@ one, pass it with `--device`.
   `~/.qaren/pool/create-ios`, recounts, creates `qaren-pool-<run-id>`, takes
   its device lease, writes its record, arms its stop and releases the lock
   before booting. A held creation lock refuses with `DEVICE_BUSY` naming the
-  holding run. prepare never waits for a device.
+  holding run and `qaren cleanup <run-id>` as the recovery; a creator that
+  failed or crashed keeps the lock, and pool creation stays blocked until that
+  cleanup. prepare never waits for a device.
 - **Return.** `qaren cleanup <run-id>` stops the run's processes, shuts the
   member down after strict admission with an exact readback, keeps it and
   releases the lease last. QaReN never deletes a pool member; delete one with
@@ -3164,7 +3166,13 @@ one, pass it with `--device`.
   simulator.
 - **`--dry-run`** names the member it would claim and the reset commands, or
   the `simctl create qaren-pool-<run-id>` it would run, and claims, writes and
-  prunes nothing.
+  prunes nothing. A member whose dead holder's run never reached `ready` is
+  reported as reused after reclaiming that run; a Booted one counts only if
+  that run armed its stop, since cleanup shuts down nothing else.
+- **Unproven process identity.** When `ps` cannot prove this prepare's own
+  birth identity, it cannot hold a device lease, so the run keeps the
+  temporary `qaren-<run-id>` path and `device_pool` reports `fresh:` with the
+  reason.
 
 The pool and its cap are per QaReN home: another `HOME` never scans these
 records, and its leases live under its own lock root unless `QAREN_LOCK_ROOT`
