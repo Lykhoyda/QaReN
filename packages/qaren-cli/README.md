@@ -2555,7 +2555,8 @@ structural guarantees never weaken. At allocate time the device is claimed
 by an atomic host-level `usb-<serial>` lock in the
 [configured lock root](#ios-admission-and-cleanup); any
 existing claim — even one whose holder is provably dead — is a structured
-refusal (`DEVICE_CLAIM_CONTENDED`, exit 4), never an adoption.
+refusal (`DEVICE_CLAIM_CONTENDED`, exit 4), never an adoption; only an
+[orphaned lock](#ios-admission-and-cleanup) whose run records are gone is released.
 A run-scoped `--one-device <serial>` adb server (host adb key
 pinned explicitly) is the only path to the phone; `expo run:android` routes
 through it via `ADB_SERVER_SOCKET` + `ANDROID_SERIAL`. An `unauthorized` or
@@ -2779,7 +2780,9 @@ reason, never a guess. Only a saved state permits ownership rebinding.
 host-level `native-build-<platform>` lock before allocation. A live holder
 is a structured refusal (`BUILD_CONTENDED`, exit 4). Android can adopt a
 provably dead holder's lock. iOS refuses an existing lock until its run's
-cleanup proves the finite build group retired; a dead CLI alone is insufficient.
+cleanup proves the finite build group retired, or until an
+[orphaned lock](#ios-admission-and-cleanup)'s recorded group has no live members;
+a dead CLI alone is insufficient.
 The lock is released after preparation or by cleanup only when owned build
 authority is retired.
 
