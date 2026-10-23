@@ -70,7 +70,7 @@ test('a React digest failure degrades coverage without a retry or a refusal', as
   }
 });
 
-test('reconnected React cannot erase a pre-act or post-act gap or teach blocks from that walk', async () => {
+test('a lost connection withholds every block of the walk; a capture limit only its own block', async () => {
   const gaps = [
     ['unknown', () => new ReactCaptureIncomplete('deadline')],
     ['unknown', () => new Error('helper failed: private detail')],
@@ -126,12 +126,20 @@ test('reconnected React cannot erase a pre-act or post-act gap or teach blocks f
             );
             assert.ok(result.steps.every((row) => row.outcome === 'pass'));
             assert.equal(reads, 4);
-            assert.deepEqual(result.blocksWritten, []);
-            assert.deepEqual(
-              blocks.map((block) => loadBlock(appRoot, block.slug)),
-              before,
-            );
-            if (mode === 'walk') assert.ok(result.blocks.every((block) => block.saved === false));
+            const learned = mode === 'walk' && gap !== 'lost';
+            assert.deepEqual(result.blocksWritten, learned ? [blocks[0].slug, blocks[2].slug] : []);
+            assert.deepEqual(loadBlock(appRoot, blocks[1].slug), before[1]);
+            if (!learned)
+              assert.deepEqual(
+                blocks.map((block) => loadBlock(appRoot, block.slug)),
+                before,
+              );
+            if (mode === 'walk')
+              assert.deepEqual(
+                result.blocks.map((block) => block.saved !== false),
+                [learned, false, learned],
+              );
+            if (mode === 'walk') assert.match(result.blocks[1].unsavable!, /React coverage/);
             assert.ok(!JSON.stringify(result).includes('private detail'));
           } finally {
             rmSync(appRoot, { recursive: true, force: true });

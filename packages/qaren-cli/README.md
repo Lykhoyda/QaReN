@@ -1258,8 +1258,9 @@ loss before an action, during its readback, or before a later reconnect. Native
 proofs can still pass their rows; only a `lost` row makes an otherwise passing run
 `REFUSED` with `REACT_COVERAGE_LOST` (exit 4), and an existing failure stays a
 failure. Receipts carry each affected line once, with its most severe coverage, in
-`ledger.react_coverage_gaps`, and reports show the coverage beside each row. No new
-or patched block is saved from a walk with any gap, even when later captures recover.
+`ledger.react_coverage_gaps`, and reports show the coverage beside each row. A `lost`
+row withholds every new or patched block of the walk, even when later captures
+recover; an `unknown` or `incomplete` row withholds only the block it belongs to.
 Strict private React capture can scan up to 5,000 fibers across renderer roots,
 including a single-root screen. Existing capture and item deadlines, host-evidence and
 interactive-node limits still apply; incomplete evidence is refused.

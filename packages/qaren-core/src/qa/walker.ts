@@ -2852,12 +2852,8 @@ export async function runPlan(
     ): BlockResult => {
       const result = withPrivateFills({ key: block.slug, outcome: 'pass', source }, privateFills);
       if (result.saved === false) return result;
-      if (steps.some((row) => row.reactCoverage !== undefined))
-        return {
-          ...result,
-          saved: false,
-          unsavable: 'React coverage was degraded during the walk',
-        };
+      if (steps.some((row) => row.reactCoverage === 'lost'))
+        return { ...result, saved: false, unsavable: 'React coverage was lost during the walk' };
       const serialized = serializeBlock(block, rows, store, privacy.privateSet('persisted'));
       if ('unsavable' in serialized)
         return { ...result, saved: false, unsavable: serialized.unsavable };
