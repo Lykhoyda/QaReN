@@ -8,7 +8,7 @@ export interface Selector {
 export type LedgerPath = 'walk' | 'replay' | `replay→walk@${number}`;
 
 // Ordered least severe first; only a lost connection refuses the run.
-export const REACT_GAPS = ['unknown', 'incomplete', 'lost'] as const;
+export const REACT_GAPS = ['unknown', 'incomplete', 'reconnected', 'lost'] as const;
 
 export interface LedgerRow {
   block: string;

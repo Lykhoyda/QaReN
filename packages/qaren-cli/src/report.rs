@@ -249,10 +249,27 @@ fn row_line_with(row: &Row, prose: &dyn Fn(&str) -> String) -> String {
     )
 }
 
+fn reconnect_note(summary: &LedgerSummary) -> String {
+    let lines: Vec<String> = summary
+        .react_coverage_gaps
+        .iter()
+        .filter(|gap| gap.coverage == crate::core::ReactCoverage::Reconnected)
+        .map(|gap| gap.line.to_string())
+        .collect();
+    if lines.is_empty() {
+        return String::new();
+    }
+    format!(" · React reconnected at line {}", lines.join(", "))
+}
+
 pub fn render(input: &ReportInput<'_>) -> String {
     let summary = summarize(input.ledger);
     let mut out = String::new();
-    out.push_str(&format!("# QaReN check: {}\n\n", prose(&summary.verdict)));
+    out.push_str(&format!(
+        "# QaReN check: {}{}\n\n",
+        prose(&summary.verdict),
+        reconnect_note(&summary)
+    ));
     out.push_str(&format!(
         "Run `{}` · {} · `{}` · device {}\n\n",
         prose(input.run_id),
@@ -397,6 +414,7 @@ pub fn render_pr_comment(
             }
         }
     }
+    out.push_str(&reconnect_note(&summary));
     out.push_str("\n\n");
     out.push_str(&format!(
         "Tested: commit `{}` on {}",
@@ -736,6 +754,57 @@ mod tests {
                 {"line": 4, "coverage": "incomplete"},
                 {"line": 6, "coverage": "lost"},
             ])
+        );
+    }
+
+    #[test]
+    fn a_recovered_reconnect_reaches_both_verdict_lines_without_refusing() {
+        let row = |line: u64, coverage: Option<&str>| {
+            serde_json::json!({
+                "block": "b", "line": line, "attempt": 1, "kind": "step",
+                "resolvedBy": "exact", "t": 0, "outcome": "pass", "reactCoverage": coverage,
+            })
+        };
+        let ledger: Ledger = serde_json::from_value(serde_json::json!({
+            "verdict": "PASS", "path": "walk", "blocks": [],
+            "steps": [row(2, None), row(3, Some("reconnected"))],
+            "jev": { "calls": 0, "medianMs": 0 },
+            "llmTurns": 0, "escapes": 0, "recoveries": 0,
+        }))
+        .unwrap();
+        assert_eq!(
+            serde_json::to_value(summarize(&ledger)).unwrap()["react_coverage_gaps"],
+            serde_json::json!([{"line": 3, "coverage": "reconnected"}])
+        );
+        let input = ReportInput {
+            run_id: "check-test",
+            platform: "ios",
+            app_id: "com.example",
+            device: "test-device",
+            ledger: &ledger,
+        };
+        let report = render(&input);
+        assert!(report.starts_with("# QaReN check: PASS · React reconnected at line 3\n"));
+        assert!(
+            report.contains("line 3; React coverage reconnected"),
+            "{report}"
+        );
+        let comment = render_pr_comment(
+            &input,
+            None,
+            &PrRun {
+                tested_sha: "abcdef1234567",
+                tested_older_commit: false,
+                video: &VideoStatus::Available,
+                screenshot: None,
+                plan_sha256: "plan-hash",
+                video_publication: &VideoPublication::Eligible,
+            },
+            &MachineIdentity::default(),
+        );
+        assert!(
+            comment.contains("\nPASS · React reconnected at line 3\n"),
+            "{comment}"
         );
     }
 

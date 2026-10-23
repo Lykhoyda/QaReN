@@ -380,7 +380,7 @@ async function walkBlockScoped(
   let recoveries = 0;
   const captureScreen: WalkerDeps['captureScreen'] = async (options) => {
     const screen = await deps.captureScreen(options);
-    const react = screen.reactLost ? 'lost' : screen.captureCoverage?.react;
+    const react = screen.reactConnection ?? screen.captureCoverage?.react;
     if (react && react !== 'complete') {
       const prior = reactGaps.get(line);
       if (!prior || REACT_GAPS.indexOf(react) > REACT_GAPS.indexOf(prior))

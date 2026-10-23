@@ -5,7 +5,7 @@ import vm from 'node:vm';
 import { CDPClient } from '../../../dist/cdp-client.js';
 import { createComponentTreeHandler } from '../../../dist/handlers/component-tree.js';
 import { buildFiber, createSandbox } from '../helpers/inject-harness.js';
-import { captureQaReact } from '../../../dist/qa/react-capture.js';
+import { captureQaReact, createQaReactCapture } from '../../../dist/qa/react-capture.js';
 import { captureScreen } from '../../../dist/qa/capture.js';
 import {
   PrivateInputCaptureError,
@@ -909,4 +909,50 @@ test('the real producer refusal reaches the warning as a value-free cause with c
     assert.ok(warnings[0].endsWith(`mode=${typography ? 'platform-presence' : 'ordinary'}`));
     assert.equal(warnings[0].includes(sentinel), false);
   }
+});
+
+test('a reconnect is marked once, and a helper world still missing after re-injection is lost', async () => {
+  const state = { generation: 1, helpers: true, revive: true, reinjected: 0, tree: ready() };
+  const client: Pick<
+    CDPClient,
+    'withPrivateHelperWorld' | 'isConnected' | 'connectionGeneration' | 'reinjectHelpers'
+  > = {
+    isConnected: true,
+    get connectionGeneration() {
+      return state.generation;
+    },
+    async reinjectHelpers() {
+      state.reinjected += 1;
+      state.helpers = state.revive;
+      return state.helpers;
+    },
+    async withPrivateHelperWorld(operation) {
+      if (!state.helpers) throw new Error(`Private helper world unavailable ${sentinel}`);
+      return operation(async () => state.tree);
+    },
+  };
+  const capture = createQaReactCapture(client);
+  assert.equal((await capture()).reconnected, undefined);
+  state.generation = 2;
+  assert.equal((await capture()).reconnected, true);
+  assert.equal((await capture()).reconnected, undefined);
+  assert.equal(state.reinjected, 0);
+
+  state.generation = 3;
+  state.helpers = false;
+  assert.equal((await capture()).reconnected, true);
+  assert.equal(state.reinjected, 1);
+
+  state.generation = 4;
+  state.helpers = false;
+  state.revive = false;
+  await assert.rejects(capture(), classified('disconnected'));
+  assert.equal(state.reinjected, 2);
+
+  state.generation = 5;
+  state.helpers = true;
+  state.tree = { ...ready(), tree: 'x'.repeat(1_000_000) };
+  await assert.rejects(capture(), classified('reconnected'));
+  await assert.rejects(capture(), classified('tree-too-large'));
+  assert.equal(state.reinjected, 2);
 });

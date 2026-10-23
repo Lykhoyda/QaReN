@@ -121,6 +121,7 @@ export interface ReactObservation {
   truncated?: unknown;
   verdict?: unknown;
   hostEvidence?: unknown;
+  reconnected?: true;
 }
 
 export interface CaptureDeps {
@@ -577,11 +578,15 @@ async function capture(deps: CaptureDeps): Promise<Screen> {
   }
   let react: ReactObservation = {};
   let reactWarning: string | undefined;
-  let reactLost = false;
+  let reactConnection: Screen['reactConnection'];
   try {
     react = await measureTiming(deps.timing, now, 'react-private', () => deps.react());
+    if (react.reconnected === true) reactConnection = 'reconnected';
   } catch (error) {
-    reactLost = error instanceof ReactCaptureIncomplete && error.reason === 'disconnected';
+    if (error instanceof ReactCaptureIncomplete && error.reason === 'disconnected')
+      reactConnection = 'lost';
+    if (error instanceof ReactCaptureIncomplete && error.reason === 'reconnected')
+      reactConnection = 'reconnected';
     // The native snapshot carries privacy, so a missing digest only loses semantics.
     const detail = error instanceof ReactCaptureIncomplete ? ` (${error.detail})` : '';
     reactWarning = `interactive digest unavailable${detail}; React coverage is unknown`;
@@ -644,7 +649,7 @@ async function capture(deps: CaptureDeps): Promise<Screen> {
         ),
         captureCoverage,
         ...(react.renderError === true ? { renderError: true } : {}),
-        ...(reactLost ? { reactLost: true as const } : {}),
+        ...(reactConnection ? { reactConnection } : {}),
       },
       nodes,
     );

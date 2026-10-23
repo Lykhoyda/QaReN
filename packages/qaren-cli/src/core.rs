@@ -244,6 +244,7 @@ pub struct Row {
 pub enum ReactCoverage {
     Unknown,
     Incomplete,
+    Reconnected,
     Lost,
 }
 
@@ -252,6 +253,7 @@ impl ReactCoverage {
         match self {
             Self::Unknown => "unknown",
             Self::Incomplete => "incomplete",
+            Self::Reconnected => "reconnected",
             Self::Lost => "lost",
         }
     }

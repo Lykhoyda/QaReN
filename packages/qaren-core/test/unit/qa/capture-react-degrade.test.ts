@@ -40,6 +40,7 @@ test('a React digest failure degrades coverage without a retry or a refusal', as
   for (const failure of [
     new PrivateInputCaptureError(),
     new ReactCaptureIncomplete('disconnected'),
+    new ReactCaptureIncomplete('reconnected'),
     new Error('transport closed'),
     new Error('malformed digest'),
   ]) {
@@ -61,7 +62,12 @@ test('a React digest failure degrades coverage without a retry or a refusal', as
     });
     assert.deepEqual({ natives, reads }, { natives: 1, reads: 1 });
     assert.equal(screen.coverage?.react, 'unknown');
-    assert.equal(screen.reactLost, failure instanceof ReactCaptureIncomplete || undefined);
+    assert.equal(
+      screen.reactConnection,
+      failure instanceof ReactCaptureIncomplete
+        ? { disconnected: 'lost', reconnected: 'reconnected' }[failure.reason]
+        : undefined,
+    );
     assert.equal(events.filter((event) => event.stage === 'refresh').length, 0);
     const privacy = new ObservedPrivacy();
     privacy.observe(screen);
@@ -70,16 +76,43 @@ test('a React digest failure degrades coverage without a retry or a refusal', as
   }
 });
 
-test('a lost connection withholds every block of the walk; a capture limit only its own block', async () => {
+test('a lost connection withholds every block of the walk; a capture limit or reconnect only its own block', async () => {
+  const healthy = () => ({
+    interactive: [],
+    verdict: { state: 'ok', path: 'interactive', complete: true },
+    hostEvidence: { complete: true, hosts: [] },
+  });
   const gaps = [
-    ['unknown', () => new ReactCaptureIncomplete('deadline')],
-    ['unknown', () => new Error('helper failed: private detail')],
-    ['incomplete', undefined],
-    ['lost', () => new ReactCaptureIncomplete('disconnected')],
+    [
+      'unknown',
+      () => {
+        throw new ReactCaptureIncomplete('deadline');
+      },
+    ],
+    [
+      'unknown',
+      () => {
+        throw new Error('helper failed: private detail');
+      },
+    ],
+    ['incomplete', () => ({ interactive: [], verdict: { state: 'degraded', complete: false } })],
+    ['reconnected', () => ({ ...healthy(), reconnected: true as const })],
+    [
+      'reconnected',
+      () => {
+        throw new ReactCaptureIncomplete('reconnected');
+      },
+    ],
+    [
+      'lost',
+      () => {
+        throw new ReactCaptureIncomplete('disconnected');
+      },
+    ],
   ] as const;
   for (const platform of ['ios', 'android'] as const) {
     for (const mode of ['walk', 'replay'] as const) {
-      for (const [gap, failure] of gaps) {
+      for (const [gap, observe] of gaps) {
         for (const lostAt of [2, 3]) {
           const appRoot = mkdtempSync(join(tmpdir(), 'react-reconnect-'));
           try {
@@ -98,15 +131,7 @@ test('a lost connection withholds every block of the walk; a capture limit only 
                 native: async () => ({ ...nativeCapture(), presenceCapture: undefined }),
                 react: async () => {
                   reads += 1;
-                  if (lose && reads === lostAt) {
-                    if (failure) throw failure();
-                    return { interactive: [], verdict: { state: 'degraded', complete: false } };
-                  }
-                  return {
-                    interactive: [],
-                    verdict: { state: 'ok', path: 'interactive', complete: true },
-                    hostEvidence: { complete: true, hosts: [] },
-                  };
+                  return lose && reads === lostAt ? observe() : healthy();
                 },
               });
             if (mode === 'replay') {

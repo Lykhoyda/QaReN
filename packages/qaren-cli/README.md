@@ -1253,14 +1253,17 @@ The React digest adds semantics: a deadline, malformed-payload, validation or
 transport failure degrades React coverage to unknown without retrying capture.
 Operations requiring complete React evidence still refuse when that coverage is
 unavailable. Each affected row records `reactCoverage` as `unknown` or `incomplete`
-for a capture limit, or `lost` when the JS/React connection was down, including
+for a capture limit, `reconnected` for the first capture on a newer CDP connection
+than the previous capture, or `lost` when the JS/React connection was down or the
+helpers stayed unavailable after one re-injection on a newer connection, including
 loss before an action, during its readback, or before a later reconnect. Native
 proofs can still pass their rows; only a `lost` row makes an otherwise passing run
 `REFUSED` with `REACT_COVERAGE_LOST` (exit 4), and an existing failure stays a
 failure. Receipts carry each affected line once, with its most severe coverage, in
-`ledger.react_coverage_gaps`, and reports show the coverage beside each row. A `lost`
-row withholds every new or patched block of the walk, even when later captures
-recover; an `unknown` or `incomplete` row withholds only the block it belongs to.
+`ledger.react_coverage_gaps`, and reports show the coverage beside each row; a
+`reconnected` line is also named on the report and pull-request verdict lines. A
+`lost` row withholds every new or patched block of the walk, even when later
+captures recover; any other gap withholds only the block it belongs to.
 Strict private React capture can scan up to 5,000 fibers across renderer roots,
 including a single-root screen. Existing capture and item deadlines, host-evidence and
 interactive-node limits still apply; incomplete evidence is refused.

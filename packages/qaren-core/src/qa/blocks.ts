@@ -159,7 +159,7 @@ export function serializeBlock(
   privateSet: PrivateSet = { values: [] },
 ): { yaml: string } | { unsavable: string } {
   const gap = rows.find((row) => row.reactCoverage !== undefined);
-  if (gap) return { unsavable: `line ${gap.line}: React coverage was ${gap.reactCoverage}` };
+  if (gap) return { unsavable: `line ${gap.line}: React coverage ${gap.reactCoverage}` };
   const protectedContent = (texts: string[]): boolean =>
     texts.some((text) => matchPrivate(text, privateSet, 'persisted').hit);
   const withheld = { unsavable: 'contains a protected plan-typed value' };
