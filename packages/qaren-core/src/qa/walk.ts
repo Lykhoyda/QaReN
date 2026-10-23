@@ -80,6 +80,7 @@ import {
   admissionMetric,
   admit,
   awaitBundleReady,
+  awaitDevClientManifest,
   launchBundleRequests,
   createBundleReload,
   devClientLaunchUrl,
@@ -479,12 +480,17 @@ async function openSession(
           );
         },
         bundleReady: (deadline) => awaitBundleReady((expr) => cdp.evaluate(expr), deadline),
-        // Same launch the CLI made: terminate, then open the dev client on its Metro.
+        // Same launch the CLI made: once Metro answers the manifest in time, terminate and open the dev client on its Metro.
         ...(platform === 'ios'
           ? {
-              relaunch: () => {
+              relaunch: async (deadline: number) => {
+                const url = devClientLaunchUrl(target);
+                const manifest = await awaitDevClientManifest(url, deadline);
+                log(
+                  `relaunching after the manifest answered in ${manifest.ms} ms (attempt ${manifest.attempts})`,
+                );
                 bundleRequests?.relaunching();
-                return relaunchIosDevClient(appId, target.deviceId, devClientLaunchUrl(target));
+                return relaunchIosDevClient(appId, target.deviceId, url);
               },
               appAlive: async () => {
                 const alive = await isAppRunning('ios', appId, undefined, target.deviceId);

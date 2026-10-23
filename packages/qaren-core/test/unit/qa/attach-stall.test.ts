@@ -1,10 +1,13 @@
 import assert from 'node:assert/strict';
+import { createServer, type RequestListener } from 'node:http';
+import type { AddressInfo } from 'node:net';
 import { syncBuiltinESMExports } from 'node:module';
 import { test, type TestContext } from 'node:test';
 import { setImmediate as nextTurn } from 'node:timers/promises';
 import {
   admissionMetric,
   admit,
+  awaitDevClientManifest,
   launchBundleRequests,
   type AdmissionRefusalFacts,
   type AdmissionSteps,
@@ -120,13 +123,14 @@ function refusedAt(error: { meta: AdmissionRefusalFacts }) {
   );
 }
 
-test('no bundle request since launch refuses at the attach budget after the one relaunch', async (t) => {
+test('no bundle request since launch refuses at the attach budget after a relaunch each readiness window', async (t) => {
   const fixture = stalled(t, { bundleRequested: async () => false });
   const error = await fixture.run();
   assert.equal(error.code, 'CDP_NOT_CONNECTED');
   assert.match(error.message, /observed attach: target_readiness_timeout/);
   assert.equal(error.meta.bundleRequest, 'not_received');
-  assert.equal(error.meta.relaunches, 1);
+  assert.equal(error.meta.relaunches, 4);
+  assert.equal(fixture.relaunches(), 4);
   assert.equal(error.meta.budgetMs, 1_199_000);
   assert.ok(fixture.elapsed() >= 120_000);
   refusedAt(error);
@@ -144,7 +148,7 @@ test('an app that dies after its relaunch refuses despite its bundle request', a
   const error = await fixture.run();
   assert.equal(error.code, 'CDP_NOT_CONNECTED');
   assert.equal(error.meta.liveness, 'dead');
-  assert.equal(error.meta.relaunches, 1);
+  assert.equal(error.meta.relaunches, 4);
   refusedAt(error);
 });
 
@@ -180,7 +184,7 @@ for (const [name, atRelaunch, afterRelaunch, expected] of [
     assert.equal(error.code, 'CDP_NOT_CONNECTED');
     assert.equal(error.meta.bundleRequest, 'not_received');
     assert.equal(error.meta.liveness, 'alive');
-    assert.equal(error.meta.relaunches, 1);
+    assert.equal(error.meta.relaunches, 3);
     assert.ok(fixture.elapsed() >= 120_000);
     refusedAt(error);
   });
@@ -193,7 +197,7 @@ test('the attach budget is the configured one', async (t) => {
   assert.ok(fixture.elapsed() >= 60_000);
 });
 
-test('a bundle request after the one relaunch keeps the walk budget', async (t) => {
+test('a bundle request after a relaunch keeps the walk budget', async (t) => {
   let relaunched = false;
   const fixture = stalled(t, {
     bundleRequested: async () => relaunched,
@@ -206,12 +210,12 @@ test('a bundle request after the one relaunch keeps the walk budget', async (t) 
 });
 
 for (const [name, error, inner, relaunches] of [
-  ['an empty list', new TargetReadinessTimeoutError('no target', 'empty'), 'target_list_empty', 1],
+  ['an empty list', new TargetReadinessTimeoutError('no target', 'empty'), 'target_list_empty', 4],
   [
     'another device',
     new TargetReadinessTimeoutError('no target', 'other_device'),
     'target_other_device',
-    1,
+    4,
   ],
   [
     'another bundle',
@@ -320,4 +324,103 @@ test('a platform without a relaunch adapter still refuses a stall at the attach 
   const error = await fixture.run();
   assert.equal(error.code, 'CDP_NOT_CONNECTED');
   assert.equal(error.meta.relaunches, 0);
+});
+
+const proven = async () => ({
+  ok: true as const,
+  scriptURL: 'http://127.0.0.1:8081/index.bundle',
+  appModules: 3,
+});
+
+test('a dev client still on its launcher after a relaunch is relaunched until it loads', async (t) => {
+  const deadlines: number[] = [];
+  const fixture = stalled(t, {
+    attach: async () => {
+      if (deadlines.length < 2) throw new TargetReadinessTimeoutError('no target', 'empty');
+    },
+    bundleRequested: async () => false,
+    relaunch: async (deadline) => void deadlines.push(deadline),
+    open: async () => undefined,
+    prove: proven,
+  });
+  assert.equal((await fixture.run()).ok, true);
+  assert.deepEqual(deadlines, [120_000, 120_000]);
+});
+
+test('a first relaunch after the attach budget still gets a readiness window to reach Metro', async (t) => {
+  const deadlines: number[] = [];
+  const fixture = stalled(t, {
+    appAlive: async () => performance.now() < 150_000,
+    relaunch: async (deadline) => void deadlines.push(deadline),
+  });
+  const error = await fixture.run(200_000);
+  assert.equal(error.meta.liveness, 'dead');
+  assert.deepEqual(deadlines, [180_000]);
+});
+
+async function metro(t: TestContext, answer: RequestListener): Promise<string> {
+  const server = createServer(answer);
+  await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+  t.after(() => {
+    server.closeAllConnections();
+    server.close();
+  });
+  return `http://127.0.0.1:${(server.address() as AddressInfo).port}/?disableOnboarding=1`;
+}
+
+test('a relaunch waits for a manifest answer inside the dev client request timeout', async (t) => {
+  let clock = 0;
+  t.mock.method(performance, 'now', () => clock);
+  const seen: unknown[] = [];
+  const url = await metro(t, (req, res) => {
+    seen.push([req.method, req.url, req.headers['expo-platform'], req.headers.accept]);
+    clock += seen.length === 1 ? 12_000 : 1_000;
+    res.end('{}');
+  });
+  assert.deepEqual(await awaitDevClientManifest(url, 60_000), { ms: 1_000, attempts: 2 });
+  const request = ['GET', '/?disableOnboarding=1', 'ios', 'application/expo+json,application/json'];
+  assert.deepEqual(seen, [request, request]);
+});
+
+test('a manifest slower than the dev client timeout until the deadline fails the relaunch', async (t) => {
+  let clock = 0;
+  t.mock.method(performance, 'now', () => clock);
+  const url = await metro(t, (_req, res) => {
+    clock += 12_000;
+    res.end('{}');
+  });
+  await assert.rejects(
+    awaitDevClientManifest(url, 30_000),
+    /never answered inside the dev client's 10s request timeout: last 12000 ms after 3 attempts/,
+  );
+});
+
+test('an unanswered manifest request ends at the deadline', async (t) => {
+  const url = await metro(t, () => undefined);
+  await assert.rejects(
+    awaitDevClientManifest(url, performance.now() + 100),
+    /never answered inside the dev client's 10s request timeout: last \d+ ms after \d+ attempts/,
+  );
+});
+
+test('a manifest error or an unreachable Metro fails the relaunch at once', async (t) => {
+  let requests = 0;
+  const url = await metro(t, (_req, res) => {
+    requests++;
+    res.statusCode = 500;
+    res.end();
+  });
+  await assert.rejects(
+    awaitDevClientManifest(url, performance.now() + 60_000),
+    /answered HTTP 500/,
+  );
+  assert.equal(requests, 1);
+  const closed = createServer();
+  await new Promise<void>((resolve) => closed.listen(0, '127.0.0.1', resolve));
+  const { port } = closed.address() as AddressInfo;
+  await new Promise<void>((resolve) => closed.close(() => resolve()));
+  await assert.rejects(
+    awaitDevClientManifest(`http://127.0.0.1:${port}/`, performance.now() + 60_000),
+    /dev client manifest request failed/,
+  );
 });

@@ -2081,12 +2081,12 @@ aggregation; [CLI decoding](src/core.rs) and [report rendering](src/report.rs)
 own consumption.
 
 Launch admission shares the remaining walk deadline across target readiness,
-WebSocket handshakes, probes and retry sleeps; retries and the one relaunch never
+WebSocket handshakes, probes and retry sleeps; retries and relaunches never
 renew it. A stall without progress refuses earlier, once `deadlines.attach_seconds`
 (default 120; see the [deadline configuration reference](../../apps/docs-site/src/content/docs/configuration.mdx#deadlines)) has passed since admission began:
 a target-list wait that saw no target on the selected device, or whose list
 requests went unanswered, ends admission when the app job is proven dead or Metro
-has received no bundle request since the latest launch. The one relaunch rebases
+has received no bundle request since the latest launch. Each relaunch rebases
 the request count on Metro's count just before it (an unreadable count leaves the
 signal unknown), and liveness and the request signal are re-read at that point, so
 a request from an earlier launch keeps neither a dead nor a relaunched app waiting. The refusal follows the first readiness window ending
@@ -2120,12 +2120,13 @@ After a target-readiness wait that saw no target on the selected device, or
 persistent runtime-probe or WebSocket-handshake timeouts lasting a full readiness
 window from the first such timeout (never before the original readiness window
 ends), an iOS dev
-client can be relaunched once if the remaining deadline still covers a full
-readiness wait. Individual target-list timeouts and inspector page closures do
+client can be relaunched if the remaining deadline still covers a full
+readiness wait: once for stalled probes or handshakes, and for a missing target
+again each readiness window while the attach limit has not passed. Individual target-list timeouts and inspector page closures do
 not trigger relaunch. Before a relaunch for a missing target, admission uses the
 [iOS app-job liveness rule](#check-a-plan). A live app skips that no-target
 relaunch and keeps waiting within the same deadline, unless Metro has seen no
-bundle request since the CLI launched the app: then it permits the one relaunch.
+bundle request since the latest launch: then it permits a relaunch.
 This uses process and request evidence, without inspecting a launcher layout.
 The skipped decision is rechecked once per readiness window, so an app that later
 exits or an unknown request signal that becomes readable can still recover.
@@ -2140,15 +2141,21 @@ A received request proves neither that the bundle finished nor that it is still
 loading, so a live app with one keeps waiting within the walk deadline.
 `core.log` records the observed request signal. An absent job or failed
 probe permits recovery as before. Skipping
-does not consume the one relaunch for persistent runtime-probe or
+does not consume the relaunch for persistent runtime-probe or
 WebSocket-handshake timeouts, and a target that registers late gets the same
-readiness window before a stalled handshake triggers the one relaunch. For retained admission facts,
+readiness window before a stalled handshake triggers the relaunch. For retained admission facts,
 see [runtime-input diagnostics](#runtime-inputs). Before the liveness check or
 relaunch, admission checks for a foreign driver;
 a conflict refuses `BUSY_FOREIGN_FLOW`
-without relaunching. It relaunches on the exact simulator with the CLI's original
-`initialUrl` using `simctl launch --terminate-running-process`, then waits again
-within the original deadline. A failed relaunch refuses without another wait.
+without relaunching. Like the CLI's launch, a relaunch first waits until Metro
+answers the dev client's own manifest request in under 10 s: the dev client
+gives each manifest request 10 s, then stays on its launcher without requesting
+a bundle. It retries slow answers until the attach limit (or one readiness
+window, if that limit has passed); a manifest error, an unreachable Metro or no
+answer in time fails the relaunch. It relaunches on the exact simulator with the
+CLI's original `initialUrl` using `simctl launch --terminate-running-process`
+within the CLI launch's 60 s bound, then waits again within the original deadline. A failed relaunch refuses without
+another wait.
 If the CLI's walk deadline expires before the core reports admission, the CLI
 also returns `CDP_NOT_CONNECTED` with measured host load (or an explicit
 unavailable measurement), regardless of load. After admission, deadline

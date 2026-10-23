@@ -8,6 +8,8 @@ const execFile = promisify(execFileCb);
 
 const TERMINATE_TIMEOUT_MS = 10_000;
 const LAUNCH_TIMEOUT_MS = 15_000;
+// The CLI's own dev-client launch bound; a loaded host can take longer than 15 s to relaunch.
+const DEV_CLIENT_LAUNCH_TIMEOUT_MS = 60_000;
 const IOS_UDID_RE = /^[0-9A-F]{8}-[0-9A-F]{4}-[0-9A-F]{4}-[0-9A-F]{4}-[0-9A-F]{12}$/i;
 const ANDROID_SERIAL_RE = /^[A-Za-z0-9._:-]{1,128}$/;
 
@@ -51,7 +53,7 @@ export async function relaunchIosDevClient(
   initialUrl: string,
 ): Promise<void> {
   await execFile('xcrun', buildIosRelaunchArgv(bundleId, deviceId, initialUrl), {
-    timeout: LAUNCH_TIMEOUT_MS,
+    timeout: DEV_CLIENT_LAUNCH_TIMEOUT_MS,
     encoding: 'utf8',
   });
 }

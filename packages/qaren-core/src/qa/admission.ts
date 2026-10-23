@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import { loadavg } from 'node:os';
 import {
+  cancellableFetch,
   interruptible,
   withCancellation,
   withDeadline,
@@ -43,8 +44,8 @@ export interface AdmissionSteps {
   attach(deadline: number): Promise<void>;
   // Inside the attach deadline: the attached client must have run its bundle before anything reads it.
   bundleReady?(deadline: number): Promise<void>;
-  // A stalled launch gets one relaunch after its readiness wait.
-  relaunch?(): Promise<void>;
+  // A no-target stall relaunches each readiness window until the attach budget, any other stall once; it may wait until the deadline.
+  relaunch?(deadline: number): Promise<void>;
   // Before relaunching without a target, preserve a live app with a bundle request.
   appAlive?(): Promise<boolean>;
   // No request permits relaunch; a received request does not prove that a bundle finished loading.
@@ -426,12 +427,48 @@ export function launchBundleRequests(
 export const devClientLaunchUrl = (target: { metroUrlForDevice: string }): string =>
   `${target.metroUrlForDevice}/?disableOnboarding=1`;
 
+// The dev client waits this long for each manifest answer, then stays on its launcher without requesting a bundle.
+export const DEV_CLIENT_REQUEST_TIMEOUT_MS = 10_000;
+
+// Like the CLI's launch: (re)launch only once Metro answers the dev client's own manifest request in time.
+export async function awaitDevClientManifest(
+  url: string,
+  deadline: number,
+): Promise<{ ms: number; attempts: number }> {
+  let attempts = 0;
+  let ms: number | undefined;
+  while (performance.now() < deadline) {
+    attempts++;
+    const startedAt = performance.now();
+    let response: Response | undefined;
+    try {
+      response = await cancellableFetch(fetch, url, {
+        headers: { 'expo-platform': 'ios', accept: 'application/expo+json,application/json' },
+        signal: AbortSignal.timeout(Math.max(1, Math.ceil(deadline - startedAt))),
+      });
+      await response.arrayBuffer();
+    } catch (error) {
+      if (isAbort(error)) throw error;
+      if ((error as { name?: unknown } | null)?.name !== 'TimeoutError')
+        throw new Error(`dev client manifest request failed: ${describeError(error).message}`);
+      response = undefined;
+    }
+    ms = Math.round(performance.now() - startedAt);
+    if (response && !response.ok)
+      throw new Error(`dev client manifest answered HTTP ${response.status}`);
+    if (response && ms < DEV_CLIENT_REQUEST_TIMEOUT_MS) return { ms, attempts };
+  }
+  throw new Error(
+    `dev client manifest never answered inside the dev client's ${DEV_CLIENT_REQUEST_TIMEOUT_MS / 1000}s request timeout: ${ms === undefined ? 'no request' : `last ${ms} ms`} after ${attempts} attempts`,
+  );
+}
+
 async function attach(steps: AdmissionSteps, signal: AbortSignal): Promise<Proven> {
   const started = performance.now();
   const deadline = started + steps.remainingMs();
   const refuseStalledAt = started + steps.attachBudgetMs;
   const relaunchAt = started + steps.readinessMs;
-  let relaunched = false;
+  let relaunches = 0;
   let nextNoTargetProbe = started;
   // first probe/handshake timeout against a registered target; it gets a full readiness window before a relaunch
   let stallSeenAt: number | undefined;
@@ -452,7 +489,7 @@ async function attach(steps: AdmissionSteps, signal: AbortSignal): Promise<Prove
       lastStarted,
       lastCompleted,
       inner,
-      relaunches: relaunched ? 1 : 0,
+      relaunches,
       relaunchFailed: relaunchFailure !== undefined,
       liveness,
       ...(bundleRequest === 'not_probed' ? {} : { bundleRequest }),
@@ -529,7 +566,7 @@ async function attach(steps: AdmissionSteps, signal: AbortSignal): Promise<Prove
           let probed = false;
           if (
             !opened &&
-            !relaunched &&
+            (relaunches === 0 || (noTarget && performance.now() < refuseStalledAt)) &&
             (!noTarget || performance.now() >= nextNoTargetProbe) &&
             steps.relaunch &&
             remaining >= steps.readinessMs &&
@@ -546,12 +583,15 @@ async function attach(steps: AdmissionSteps, signal: AbortSignal): Promise<Prove
               nextNoTargetProbe = performance.now() + steps.readinessMs;
             }
             if (!noTarget || liveness !== 'alive' || bundleRequest === 'not_received') {
-              relaunched = true;
+              relaunches++;
               try {
                 lastStarted = 'relaunch';
-                await interruptible(steps.relaunch);
+                const relaunch = steps.relaunch;
+                const until = Math.max(refuseStalledAt, performance.now() + steps.readinessMs);
+                await interruptible(() => relaunch(until));
                 lastCompleted = 'relaunch';
                 bundleRequest = 'not_probed';
+                nextNoTargetProbe = performance.now() + steps.readinessMs;
               } catch (relaunchError) {
                 if (isAbort(relaunchError)) throw relaunchError;
                 relaunchFailure = describeError(relaunchError).message;
