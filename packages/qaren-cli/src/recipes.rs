@@ -313,7 +313,8 @@ fn update(
     if unsafe { libc::flock(std::os::fd::AsRawFd::as_raw_fd(&lock), libc::LOCK_EX) } != 0 {
         return RecipeOutcome::because(Outcome::NotMarked, "could not write");
     }
-    let Some(current) = read_regular(path).filter(|current| unmarked(current) == unmarked(preimage))
+    let Some(current) =
+        read_regular(path).filter(|current| unmarked(current) == unmarked(preimage))
     else {
         return RecipeOutcome::because(Outcome::NotMarked, "changed during the run");
     };
@@ -510,7 +511,10 @@ mod tests {
             assert_ne!(thread.join().unwrap(), Outcome::NotMarked);
         }
         let text = std::fs::read_to_string(&path).unwrap();
-        assert_eq!(broken(&text), vec!["ios".to_string(), "android".to_string()]);
+        assert_eq!(
+            broken(&text),
+            vec!["ios".to_string(), "android".to_string()]
+        );
         assert_eq!(unmarked(&text), PLAN);
     }
 
@@ -521,7 +525,10 @@ mod tests {
         let path = recipe(&app, "x.md", &android);
         assert_eq!(flag(&path, "ios", PLAN).outcome, Outcome::Flagged);
         let both = std::fs::read_to_string(&path).unwrap();
-        assert_eq!(broken(&both), vec!["ios".to_string(), "android".to_string()]);
+        assert_eq!(
+            broken(&both),
+            vec!["ios".to_string(), "android".to_string()]
+        );
         assert_eq!(clear(&path, "android", PLAN).outcome, Outcome::Cleared);
         assert_eq!(
             std::fs::read_to_string(&path).unwrap(),
