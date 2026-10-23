@@ -921,6 +921,7 @@ fn saved_blocks_check(runner: &mut dyn Runner, root: &Path) -> Check {
                     "--porcelain=v1",
                     "-z",
                     "--untracked-files=all",
+                    "--ignored=matching",
                     "--",
                     ".qaren/actions",
                 ],
@@ -2689,6 +2690,11 @@ mod tests {
         let fix = local.fix.unwrap();
         assert!(fix.starts_with("▸ saved blocks: 1 written"), "{fix}");
         assert!(fix.contains("then: ln -s <main>/<app>/.qaren/actions .qaren/actions"));
+        std::fs::write(linked.join(".gitignore"), ".qaren/actions/\n").unwrap();
+        let ignored = saved_blocks_check(&mut runner, &linked);
+        assert_eq!(ignored.status, Status::Warn, "{ignored:?}");
+        assert!(ignored.fix.unwrap().contains("they leave with this"));
+        std::fs::remove_file(linked.join(".gitignore")).unwrap();
         for args in [
             vec!["add", ".qaren/actions"],
             vec![
@@ -2708,6 +2714,21 @@ mod tests {
             saved_blocks_check(&mut runner, &linked).status,
             Status::Pass
         );
+        std::fs::write(
+            linked.join(".gitignore"),
+            ".qaren/actions/session-only.yaml\n",
+        )
+        .unwrap();
+        std::fs::write(
+            linked.join(".qaren/actions/session-only.yaml"),
+            "steps: []\n",
+        )
+        .unwrap();
+        let mixed = saved_blocks_check(&mut runner, &linked);
+        assert_eq!(mixed.status, Status::Warn, "{mixed:?}");
+        assert!(mixed.fix.unwrap().contains("they leave with this"));
+        std::fs::remove_file(linked.join(".qaren/actions/session-only.yaml")).unwrap();
+        std::fs::remove_file(linked.join(".gitignore")).unwrap();
         std::fs::write(linked.join(".qaren/actions/sign-in.yaml"), "steps: [1]\n").unwrap();
         assert_eq!(
             saved_blocks_check(&mut runner, &linked).status,
