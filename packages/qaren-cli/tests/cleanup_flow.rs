@@ -3583,6 +3583,8 @@ fn crashed_pool_creation_deletes_the_owned_simulator_and_releases_the_creation_l
         run_id: run_id.into(),
         identity: None,
         at: "2026-10-22T00:00:00Z".into(),
+        home: None,
+        group: None,
     };
     let pool_root = repo.join(".pool");
     assert!(matches!(

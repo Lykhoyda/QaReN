@@ -1463,12 +1463,12 @@ fn claim_pool_create_lock(ctx: &mut Ctx, pool_root: &Path) -> Result<(), Failure
                     format!(
                         " (held for run {}; if it is no longer creating, recover with {})",
                         h.run_id,
-                        crate::lease::cleanup_command(&h.run_id)
+                        crate::lease::cleanup_command(&h.run_id, h.home.as_deref())
                     ),
                     format!(
                         "re-run once run {} finishes creating, or clean it up with {}",
                         h.run_id,
-                        crate::lease::cleanup_command(&h.run_id)
+                        crate::lease::cleanup_command(&h.run_id, h.home.as_deref())
                     ),
                 ),
                 None => (
