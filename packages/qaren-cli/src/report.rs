@@ -15,6 +15,8 @@ pub struct LedgerSummary {
     pub verdict: String,
     pub path: String,
     pub steps: u64,
+    #[serde(default)]
+    pub blocks: BlockCounts,
     pub jev_calls: u64,
     pub jev_median_ms: u64,
     #[serde(default)]
@@ -29,6 +31,13 @@ pub struct LedgerSummary {
     pub unverified_fills: Vec<UnverifiedFill>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub dialogs: Vec<DialogEvidence>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct BlockCounts {
+    pub replayed: u64,
+    pub patched: u64,
+    pub discovered: u64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -55,10 +64,20 @@ pub struct DialogEvidence {
 }
 
 pub fn summarize(ledger: &Ledger) -> LedgerSummary {
+    let mut blocks = BlockCounts::default();
+    for block in &ledger.blocks {
+        match block.source.as_str() {
+            "replayed" => blocks.replayed += 1,
+            "patched" => blocks.patched += 1,
+            "discovered" => blocks.discovered += 1,
+            _ => {}
+        }
+    }
     LedgerSummary {
         verdict: ledger.verdict.clone(),
         path: ledger.path.clone(),
         steps: ledger.steps.len() as u64,
+        blocks,
         jev_calls: ledger.jev.calls,
         jev_median_ms: ledger.jev.median_ms,
         jev_input_tokens: ledger.jev.input_tokens,
@@ -207,6 +226,14 @@ pub fn render(input: &ReportInput<'_>) -> String {
                 prose(&block.source)
             ));
         }
+        let total = input.ledger.blocks.len() as u64;
+        out.push_str(&format!(
+            "\nReplayed {} of {total} blocks ({}%); patched {}; walked {}.\n",
+            summary.blocks.replayed,
+            summary.blocks.replayed * 100 / total,
+            summary.blocks.patched,
+            summary.blocks.discovered,
+        ));
     }
     if let Some(failure) = &input.ledger.failure {
         out.push_str("\n## Failure\n\n");
@@ -364,7 +391,7 @@ pub fn render_pr_comment(
     out.push_str(&format!("\nPlan sha256 `{}`\n\n", prose(pr.plan_sha256)));
     out.push_str("<details><summary>Run details</summary>\n\n");
     out.push_str(&format!(
-        "steps {} · jev.calls {} · jev.medianMs {} · llmTurns {} · escapes {} · recoveries {} · path {}\n",
+        "steps {} · jev.calls {} · jev.medianMs {} · llmTurns {} · escapes {} · recoveries {} · path {}",
         summary.steps,
         summary.jev_calls,
         summary.jev_median_ms,
@@ -373,13 +400,90 @@ pub fn render_pr_comment(
         summary.recoveries,
         clean(&summary.path)
     ));
-    out.push_str("\n</details>\n");
+    if !input.ledger.blocks.is_empty() {
+        out.push_str(&format!(
+            " · blocks replayed {}/{}",
+            summary.blocks.replayed,
+            input.ledger.blocks.len(),
+        ));
+    }
+    out.push_str("\n\n</details>\n");
     redact_machine(&public(&redact_machine(&out, machine)), machine)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn block_ledger(sources: &[&str]) -> Ledger {
+        serde_json::from_value(serde_json::json!({
+            "verdict": "FAIL", "path": "replay→walk@3", "steps": [],
+            "blocks": sources.iter().enumerate().map(|(i, source)| serde_json::json!({
+                "key": format!("private-block-{i}"),
+                "outcome": if i + 1 == sources.len() { "fail" } else { "pass" }, "source": source,
+            })).collect::<Vec<_>>(),
+            "jev": { "calls": 0, "medianMs": 0 },
+            "llmTurns": 0, "escapes": 0, "recoveries": 0,
+        }))
+        .unwrap()
+    }
+
+    #[test]
+    fn summarize_counts_block_sources() {
+        let ledger = block_ledger(&["replayed", "patched", "discovered"]);
+        let json = serde_json::to_value(summarize(&ledger)).unwrap();
+        assert_eq!(
+            json["blocks"],
+            serde_json::json!({
+                "replayed": 1, "patched": 1, "discovered": 1,
+            })
+        );
+        let mut legacy = json;
+        legacy.as_object_mut().unwrap().remove("blocks");
+        let summary: LedgerSummary = serde_json::from_value(legacy).unwrap();
+        assert_eq!(
+            serde_json::to_value(summary).unwrap()["blocks"],
+            serde_json::json!({
+                "replayed": 0, "patched": 0, "discovered": 0,
+            })
+        );
+    }
+
+    #[test]
+    fn render_lists_the_replay_figure_and_pr_comment_counts_only() {
+        for sources in [vec!["replayed", "patched", "discovered"], vec![]] {
+            let ledger = block_ledger(&sources);
+            let input = ReportInput {
+                run_id: "check-test",
+                platform: "ios",
+                app_id: "com.example",
+                device: "test-device",
+                ledger: &ledger,
+            };
+            let report = render(&input);
+            let comment = render_pr_comment(
+                &input,
+                None,
+                &PrRun {
+                    tested_sha: "abcdef1234567",
+                    tested_older_commit: false,
+                    video: &VideoStatus::Available,
+                    screenshot: None,
+                    plan_sha256: "plan-hash",
+                    video_publication: &VideoPublication::Eligible,
+                },
+                &MachineIdentity::default(),
+            );
+            if sources.is_empty() {
+                assert!(!report.contains("Replayed"));
+                assert!(!comment.contains("blocks replayed"));
+            } else {
+                assert!(report.contains("Replayed 1 of 3 blocks (33%); patched 1; walked 1."));
+                assert!(comment.contains("blocks replayed 1/3"));
+            }
+            assert!(!comment.contains("private-block"));
+        }
+    }
 
     #[test]
     fn app_text_frames_are_explained_only_when_present_in_failure() {

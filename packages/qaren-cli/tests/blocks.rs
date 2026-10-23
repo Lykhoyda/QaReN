@@ -39,7 +39,7 @@ fn actions_list_reads_slug_platform_plan_hash_and_status() {
     std::fs::write(dir.join("notes.txt"), "not an action").unwrap();
     std::fs::write(dir.join("headless.yaml"), "- launchApp\n").unwrap();
 
-    let entries = actions::list(&root).unwrap();
+    let entries = actions::list(&mut RealRunner::new(), &root).unwrap();
     let json = serde_json::to_value(&entries).unwrap();
     assert_eq!(
         json,
@@ -54,15 +54,15 @@ fn actions_list_reads_slug_platform_plan_hash_and_status() {
         "checkout\tandroid\tdef456\tactive\nonboarding\tios\tabc123\tactive\nrecorded\t-\t-\texperimental\n"
     );
     assert_eq!(
-        actions::show(&root, "onboarding").unwrap(),
+        actions::show(&mut RealRunner::new(), &root, "onboarding").unwrap(),
         block("onboarding", "ios", "abc123")
     );
     assert_eq!(
-        actions::show(&root, "checkout").unwrap(),
+        actions::show(&mut RealRunner::new(), &root, "checkout").unwrap(),
         block("checkout", "android", "def456")
     );
-    assert!(actions::show(&root, "../escape").is_err());
-    assert!(actions::show(&root, "missing").is_err());
+    assert!(actions::show(&mut RealRunner::new(), &root, "../escape").is_err());
+    assert!(actions::show(&mut RealRunner::new(), &root, "missing").is_err());
 }
 
 #[test]
@@ -72,8 +72,10 @@ fn actions_list_and_show_refuse_yaml_yml_twins() {
     std::fs::write(dir.join("login.yml"), block("login", "ios", "abc123")).unwrap();
     for twin in [block("login", "ios", "def456"), "- launchApp\n".to_string()] {
         std::fs::write(dir.join("login.yaml"), twin).unwrap();
-        assert!(actions::list(&root).unwrap_err().contains("ambiguous"));
-        assert!(actions::show(&root, "login")
+        assert!(actions::list(&mut RealRunner::new(), &root)
+            .unwrap_err()
+            .contains("ambiguous"));
+        assert!(actions::show(&mut RealRunner::new(), &root, "login")
             .unwrap_err()
             .contains("ambiguous"));
     }
@@ -83,10 +85,143 @@ fn actions_list_and_show_refuse_yaml_yml_twins() {
 fn actions_list_is_empty_without_a_corpus_and_refuses_a_symlinked_one() {
     let root = temp_dir("empty");
     std::fs::remove_dir_all(root.join(".qaren/actions")).unwrap();
-    assert!(actions::list(&root).unwrap().is_empty());
+    assert!(actions::list(&mut RealRunner::new(), &root)
+        .unwrap()
+        .is_empty());
     let target = temp_dir("elsewhere");
     std::os::unix::fs::symlink(target.join(".qaren/actions"), root.join(".qaren/actions")).unwrap();
-    assert!(actions::list(&root).unwrap_err().contains("symlinked"));
+    assert!(actions::list(&mut RealRunner::new(), &root)
+        .unwrap_err()
+        .contains("symlinked"));
+}
+
+#[test]
+fn main_copy_link_fixture_parity() {
+    for scenario in [
+        "accepted",
+        "aliased",
+        "local-copy",
+        "other-clone",
+        "bare",
+        "chained",
+        "qaren-link",
+        "wrong-app",
+        "ancestor-link",
+        "file-link",
+    ] {
+        let root = temp_dir(&format!("main-copy-{scenario}"));
+        let main = root.join("main");
+        let linked = root.join("linked");
+        std::fs::create_dir_all(&main).unwrap();
+        std::fs::create_dir_all(&linked).unwrap();
+        if scenario == "bare" {
+            git(&main, &["init", "-q", "--bare"]);
+        } else {
+            git(&main, &["init", "-q"]);
+        }
+        let common = if scenario == "bare" {
+            main.clone()
+        } else {
+            main.join(".git")
+        };
+        let gitdir = common.join("worktrees/linked");
+        std::fs::create_dir_all(&gitdir).unwrap();
+        std::fs::write(gitdir.join("HEAD"), "ref: refs/heads/linked\n").unwrap();
+        std::fs::write(gitdir.join("commondir"), "../..\n").unwrap();
+        std::fs::write(
+            gitdir.join("gitdir"),
+            format!("{}/.git\n", linked.display()),
+        )
+        .unwrap();
+        std::fs::write(
+            linked.join(".git"),
+            format!("gitdir: {}\n", gitdir.display()),
+        )
+        .unwrap();
+        let main_app = main.join("apps/example");
+        let mut app = linked.join("apps/example");
+        let actions_dir = main_app.join(".qaren/actions");
+        std::fs::create_dir_all(&actions_dir).unwrap();
+        std::fs::create_dir_all(app.join(".qaren")).unwrap();
+        let bytes = block("welcome", "ios", "abc123");
+        std::fs::write(actions_dir.join("welcome.yaml"), &bytes).unwrap();
+        let mut target = actions_dir.clone();
+        if matches!(scenario, "other-clone" | "local-copy" | "wrong-app") {
+            let other = root.join("other");
+            git(
+                &root,
+                &[
+                    "clone",
+                    "-q",
+                    main.to_str().unwrap(),
+                    other.to_str().unwrap(),
+                ],
+            );
+            target = if scenario == "wrong-app" {
+                main.join("apps/other/.qaren/actions")
+            } else {
+                other.join("apps/example/.qaren/actions")
+            };
+            std::fs::create_dir_all(&target).unwrap();
+            std::fs::write(target.join("welcome.yaml"), &bytes).unwrap();
+            if scenario == "local-copy" {
+                app = target.parent().unwrap().parent().unwrap().to_path_buf();
+            }
+        } else if scenario == "aliased" {
+            let alias = root.join("main-alias");
+            std::os::unix::fs::symlink(&main, &alias).unwrap();
+            target = alias.join("apps/example/.qaren/actions");
+        } else if scenario == "chained" {
+            let real = main_app.join("real-actions");
+            std::fs::rename(&actions_dir, &real).unwrap();
+            std::os::unix::fs::symlink(&real, &actions_dir).unwrap();
+        } else if scenario == "ancestor-link" {
+            let real = root.join("elsewhere");
+            std::fs::rename(&main_app, &real).unwrap();
+            std::os::unix::fs::symlink(&real, &main_app).unwrap();
+        } else if scenario == "file-link" {
+            let file = actions_dir.join("welcome.yaml");
+            std::fs::rename(&file, root.join("outside.yaml")).unwrap();
+            std::os::unix::fs::symlink(root.join("outside.yaml"), file).unwrap();
+        }
+        if scenario == "qaren-link" {
+            std::fs::remove_dir(app.join(".qaren")).unwrap();
+            std::os::unix::fs::symlink(main_app.join(".qaren"), app.join(".qaren")).unwrap();
+        } else if scenario != "local-copy" {
+            std::os::unix::fs::symlink(&target, app.join(".qaren/actions")).unwrap();
+        }
+        let accepted = matches!(scenario, "accepted" | "aliased" | "local-copy");
+        assert_eq!(
+            actions::list(&mut RealRunner::new(), &app).is_ok(),
+            accepted,
+            "{scenario}"
+        );
+        assert_eq!(
+            actions::show(&mut RealRunner::new(), &app, "welcome").is_ok(),
+            accepted,
+            "{scenario}"
+        );
+        let dest = root.join("copied");
+        let (copied, refused) =
+            qaren::worktree::copy_blocks(&mut RealRunner::new(), &app, &["welcome".into()], &dest);
+        assert_eq!(copied.len(), usize::from(accepted), "{scenario}");
+        assert_eq!(refused.len(), usize::from(!accepted), "{scenario}");
+        if accepted {
+            assert_eq!(
+                actions::list(&mut RealRunner::new(), &app).unwrap()[0].slug,
+                "welcome"
+            );
+            assert_eq!(
+                actions::show(&mut RealRunner::new(), &app, "welcome").unwrap(),
+                bytes
+            );
+            assert_eq!(
+                std::fs::read_to_string(dest.join("welcome.yaml")).unwrap(),
+                bytes
+            );
+        }
+        std::fs::remove_dir_all(&root).unwrap();
+    }
 }
 
 #[test]
@@ -195,12 +330,12 @@ fn actions_refuse_a_symlinked_action_file_instead_of_skipping_it() {
     let outside = temp_dir("outside").join("secret.yaml");
     std::fs::write(&outside, "# id: secret\n# intent: outside\n").unwrap();
     std::os::unix::fs::symlink(&outside, root.join(".qaren/actions/linked.yaml")).unwrap();
-    assert!(actions::show(&root, "linked").is_err());
-    assert!(actions::list(&root).is_err());
+    assert!(actions::show(&mut RealRunner::new(), &root, "linked").is_err());
+    assert!(actions::list(&mut RealRunner::new(), &root).is_err());
     std::fs::remove_file(root.join(".qaren/actions/linked.yaml")).unwrap();
     std::os::unix::fs::symlink(&outside, root.join(".qaren/actions/linked.yml")).unwrap();
-    assert!(actions::show(&root, "linked").is_err());
-    assert!(actions::list(&root).is_err());
+    assert!(actions::show(&mut RealRunner::new(), &root, "linked").is_err());
+    assert!(actions::list(&mut RealRunner::new(), &root).is_err());
 }
 
 #[test]
@@ -219,15 +354,21 @@ fn action_headers_match_core_validity_fallback_and_status_defaults() {
             std::fs::write(dir.join(format!("{slug}.{extension}")), text).unwrap();
         }
         assert_eq!(
-            serde_json::to_value(actions::list(&root).unwrap()).unwrap(),
+            serde_json::to_value(actions::list(&mut RealRunner::new(), &root).unwrap()).unwrap(),
             serde_json::json!([
                 {"slug":"explicit", "platform":null, "planHash":null, "status":"experimental"},
                 {"slug":"implicit", "platform":null, "planHash":null, "status":"experimental"}
             ])
         );
-        assert_eq!(actions::show(&root, "explicit").unwrap(), explicit);
-        assert_eq!(actions::show(&root, "implicit").unwrap(), implicit);
-        assert!(actions::show(&root, "invalid").is_err());
+        assert_eq!(
+            actions::show(&mut RealRunner::new(), &root, "explicit").unwrap(),
+            explicit
+        );
+        assert_eq!(
+            actions::show(&mut RealRunner::new(), &root, "implicit").unwrap(),
+            implicit
+        );
+        assert!(actions::show(&mut RealRunner::new(), &root, "invalid").is_err());
         assert_eq!(
             actions::header(implicit, "implicit").unwrap()["id"],
             "implicit"

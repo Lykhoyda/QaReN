@@ -81,11 +81,15 @@ The fields you read most:
 | `next_action`          | What to do next                                                            |
 | `artifacts.report`     | The path of `report.md`                                                    |
 | `ledger`               | The verdict, the walk path, step and Jev counts, recoveries                |
+| `ledger.blocks`        | Counts of `replayed`, `patched` and `discovered` blocks reached by the run |
 | `blocks_written`       | Blocks saved under `.qaren/actions/`                                       |
 | `blocks_not_saved`     | Blocks that passed but were not saved, each with a value-free reason       |
 | `worktree_drift`       | App files whose `git status` changed during the walk; never changes the verdict |
 
 See [Troubleshooting](../troubleshooting/) for the common codes.
+
+The local report and PR comment show how many blocks were replayed; see the
+[saved-block contract](https://github.com/Lykhoyda/rn-dev-agent/blob/develop/packages/qaren-cli/README.md#saved-blocks).
 
 For interpreting app-derived failure evidence, follow the
 [app-derived failure text contract](https://github.com/Lykhoyda/rn-dev-agent/blob/develop/packages/qaren-cli/README.md#app-derived-failure-text).

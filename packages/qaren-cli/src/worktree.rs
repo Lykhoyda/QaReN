@@ -286,16 +286,20 @@ fn is_real(path: &Path, dir: bool) -> bool {
     })
 }
 
-pub fn copy_blocks(app_root: &Path, slugs: &[String], dest: &Path) -> (Vec<String>, Vec<String>) {
-    let qaren = app_root.join(".qaren");
-    let actions = qaren.join("actions");
-    let corpus_ok = is_real(&qaren, true) && is_real(&actions, true);
+pub fn copy_blocks(
+    runner: &mut dyn Runner,
+    app_root: &Path,
+    slugs: &[String],
+    dest: &Path,
+) -> (Vec<String>, Vec<String>) {
+    let actions = crate::actions::actions_dir(runner, app_root).ok();
     let mut copied = Vec::new();
     let mut refused = Vec::new();
     for slug in slugs {
-        let source = (safe_slug(slug) && corpus_ok)
-            .then(|| crate::actions::action_path(&actions, slug).ok().flatten())
-            .flatten();
+        let source = actions
+            .as_ref()
+            .filter(|_| safe_slug(slug))
+            .and_then(|actions| crate::actions::action_path(actions, slug).ok().flatten());
         let ok = source.is_some_and(|source| {
             is_real(&source, false)
                 && std::fs::create_dir_all(dest).is_ok()
@@ -531,7 +535,12 @@ mod tests {
         }))
         .unwrap();
         let dest = root.join("blocks");
-        let (copied, refused) = copy_blocks(&app, ledger.blocks_written.as_deref().unwrap(), &dest);
+        let (copied, refused) = copy_blocks(
+            &mut crate::exec::RealRunner::new(),
+            &app,
+            ledger.blocks_written.as_deref().unwrap(),
+            &dest,
+        );
         assert_eq!(copied, ["alice"]);
         assert!(refused.is_empty());
         std::fs::remove_dir_all(&app).unwrap();
@@ -554,6 +563,7 @@ mod tests {
         }
         let dest = root.join("blocks");
         let (copied, refused) = copy_blocks(
+            &mut crate::exec::RealRunner::new(),
             &app,
             &["tasks".into(), "control".into(), "ambiguous".into()],
             &dest,
@@ -579,6 +589,7 @@ mod tests {
         std::os::unix::fs::symlink(root.join("secret"), actions.join("leak.yaml")).unwrap();
         let dest = root.join("blocks");
         let (copied, refused) = copy_blocks(
+            &mut crate::exec::RealRunner::new(),
             &app,
             &["real".to_string(), "leak".to_string(), "../x".to_string()],
             &dest,
@@ -590,7 +601,12 @@ mod tests {
         let linked = root.join("linked");
         std::fs::create_dir_all(&linked).unwrap();
         std::os::unix::fs::symlink(&app.join(".qaren"), linked.join(".qaren")).unwrap();
-        let (copied, _) = copy_blocks(&linked, &["real".to_string()], &root.join("blocks2"));
+        let (copied, _) = copy_blocks(
+            &mut crate::exec::RealRunner::new(),
+            &linked,
+            &["real".to_string()],
+            &root.join("blocks2"),
+        );
         assert!(copied.is_empty());
         std::fs::remove_dir_all(&root).unwrap();
     }

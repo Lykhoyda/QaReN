@@ -1,3 +1,4 @@
+use crate::exec::{CmdSpec, Runner};
 use serde::Serialize;
 use std::collections::BTreeMap;
 use std::io::Read;
@@ -61,16 +62,87 @@ pub fn header(text: &str, fallback_id: &str) -> Option<BTreeMap<String, String>>
     Some(fields)
 }
 
-fn actions_dir(app_root: &Path) -> Result<PathBuf, String> {
+// Mirrors the action-store.ts mainCopyActionsTarget rule; fixture parity pins both readers.
+pub(crate) fn main_copy_actions(runner: &mut dyn Runner, app_root: &Path) -> Option<PathBuf> {
+    fn git(runner: &mut dyn Runner, root: &Path, args: &[&str]) -> Option<String> {
+        let spec = CmdSpec::new("git actions main copy", "git", args, 2)
+            .cwd(root)
+            .env_remove("GIT_DIR")
+            .env_remove("GIT_WORK_TREE")
+            .env_remove("GIT_COMMON_DIR");
+        let output = runner.run(&spec);
+        output.ok().then(|| {
+            output
+                .stdout
+                .strip_suffix('\n')
+                .unwrap_or(&output.stdout)
+                .to_string()
+        })
+    }
+    fn git_path(runner: &mut dyn Runner, root: &Path, flag: &str) -> Option<PathBuf> {
+        std::fs::canonicalize(git(
+            runner,
+            root,
+            &["rev-parse", "--path-format=absolute", flag],
+        )?)
+        .ok()
+    }
+    let app_root = app_root.canonicalize().ok()?;
+    let worktree = git_path(runner, &app_root, "--show-toplevel")?;
+    let common = git_path(runner, &app_root, "--git-common-dir")?;
+    let listing = git(
+        runner,
+        &app_root,
+        &["worktree", "list", "--porcelain", "-z"],
+    )?;
+    let record = listing.split("\0\0").next()?;
+    if record.split('\0').any(|field| field == "bare") {
+        return None;
+    }
+    let main = PathBuf::from(record.split('\0').next()?.strip_prefix("worktree ")?)
+        .canonicalize()
+        .ok()?;
+    if main == worktree
+        || git_path(runner, &main, "--show-toplevel")? != main
+        || git_path(runner, &main, "--git-common-dir")? != common
+    {
+        return None;
+    }
+    let relative = app_root.strip_prefix(&worktree).ok()?;
+    if relative
+        .components()
+        .any(|part| matches!(part, std::path::Component::ParentDir))
+    {
+        return None;
+    }
+    Some(main.join(relative).join(".qaren/actions"))
+}
+
+pub(crate) fn actions_dir(runner: &mut dyn Runner, app_root: &Path) -> Result<PathBuf, String> {
+    let app_root = app_root
+        .canonicalize()
+        .unwrap_or_else(|_| app_root.to_path_buf());
     let qaren = app_root.join(".qaren");
     let dir = qaren.join("actions");
-    for path in [&qaren, &dir] {
-        if std::fs::symlink_metadata(path).is_ok_and(|meta| meta.file_type().is_symlink()) {
-            return Err(format!(
-                "refusing the symlinked action corpus at {}",
-                path.display()
-            ));
+    let refuse =
+        |path: &Path| format!("refusing the symlinked action corpus at {}", path.display());
+    if std::fs::symlink_metadata(&qaren).is_ok_and(|meta| meta.file_type().is_symlink()) {
+        return Err(refuse(&qaren));
+    }
+    if std::fs::symlink_metadata(&dir).is_ok_and(|meta| meta.file_type().is_symlink()) {
+        let expected = main_copy_actions(runner, &app_root).ok_or_else(|| refuse(&dir))?;
+        let target = qaren.join(std::fs::read_link(&dir).map_err(|_| refuse(&dir))?);
+        let real_dir = |path: &Path| {
+            std::fs::symlink_metadata(path)
+                .is_ok_and(|meta| meta.is_dir() && !meta.file_type().is_symlink())
+        };
+        if !real_dir(&target)
+            || !real_dir(expected.parent().unwrap())
+            || target.canonicalize().ok().as_ref() != Some(&expected)
+        {
+            return Err(refuse(&dir));
         }
+        return Ok(expected);
     }
     Ok(dir)
 }
@@ -111,8 +183,8 @@ pub(crate) fn action_path(dir: &Path, slug: &str) -> Result<Option<PathBuf>, Str
     Ok(found)
 }
 
-pub fn list(app_root: &Path) -> Result<Vec<ActionEntry>, String> {
-    let dir = actions_dir(app_root)?;
+pub fn list(runner: &mut dyn Runner, app_root: &Path) -> Result<Vec<ActionEntry>, String> {
+    let dir = actions_dir(runner, app_root)?;
     let entries = match std::fs::read_dir(&dir) {
         Ok(entries) => entries,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
@@ -149,7 +221,7 @@ pub fn list(app_root: &Path) -> Result<Vec<ActionEntry>, String> {
     Ok(actions)
 }
 
-pub fn show(app_root: &Path, slug: &str) -> Result<String, String> {
+pub fn show(runner: &mut dyn Runner, app_root: &Path, slug: &str) -> Result<String, String> {
     let valid = !slug.is_empty()
         && slug.len() <= 128
         && !slug.starts_with('.')
@@ -160,7 +232,7 @@ pub fn show(app_root: &Path, slug: &str) -> Result<String, String> {
     if !valid {
         return Err(format!("{slug:?} is not an action slug"));
     }
-    let path = action_path(&actions_dir(app_root)?, slug)?
+    let path = action_path(&actions_dir(runner, app_root)?, slug)?
         .ok_or_else(|| format!("no saved action named {slug}"))?;
     let text = read_action(&path)?;
     if header(&text, slug).is_none() {

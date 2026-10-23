@@ -1326,8 +1326,12 @@ fn patched_blocks_keep_their_extension_through_preservation_and_publication() {
             let bytes = b"# patched block\r\nsteps: []\r\n\n";
             std::fs::write(actions.join(format!("tasks.{extension}")), bytes).unwrap();
             std::fs::remove_file(dir.join("blocks/tasks.yaml")).unwrap();
-            let (copied, refused) =
-                qaren::worktree::copy_blocks(&app, &["tasks".into()], &dir.join("blocks"));
+            let (copied, refused) = qaren::worktree::copy_blocks(
+                &mut qaren::exec::RealRunner::new(),
+                &app,
+                &["tasks".into()],
+                &dir.join("blocks"),
+            );
             assert_eq!(copied, ["tasks"]);
             assert!(refused.is_empty());
             assert_eq!(

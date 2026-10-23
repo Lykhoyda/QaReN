@@ -1825,6 +1825,11 @@ bundles can remain on disk until the next runner launch performs this cleanup.
 
 ### Saved blocks
 
+Each `###` block in a saved plan maps to `.qaren/actions/<slug>.yaml` (existing
+`.yml` files keep their extension). Editing a plan line re-walks only its block;
+editing a title starts a new block. A checkout keeps one platform's copy per block,
+and plans that share a title share that block file.
+
 Open a block that continues a journey with `starts on: <testID or text>` before its
 steps. The value is literal, with optional quotes, and becomes the block's first
 wait in the ledger and saved YAML. On a fresh walk and replay, QaReN waits up to
@@ -1933,6 +1938,13 @@ diagnostic that never changes the verdict,
 `.qaren/actions`. This status-only diagnostic is separate from the
 [candidate provenance check](#candidate-provenance), which can fail the run.
 
+The receipt's `ledger.blocks` counts `replayed`, `patched` and `discovered` blocks.
+For blocks reached by the run, the local report prints, for example,
+`Replayed 1 of 3 blocks (33%); patched 1; walked 1.` The percentage rounds down;
+on a failing run the denominator includes only blocks reached, including the failed
+block. The PR comment reports only `blocks replayed 1/3` under Run details. With no
+blocks, neither report prints a replay figure.
+
 Block names in final ledger rows, block results, reports and `blocks_not_saved`
 withhold the whole displayed name as `•••` when either the original title or
 its slug matches a protected value. Machine fields `blocksWritten` in the core
@@ -1943,14 +1955,15 @@ block preservation; replay identifiers also remain unchanged.
 action corpus of the current directory. Both `.yaml` and `.yml` are supported;
 existing files retain their extension when patched. A slug with both extensions
 refuses inspection and is not overwritten by `check`. These inspection commands
-refuse symlinked corpora and action files. Inspection header validity and defaults follow the
+accept the verified main-copy corpus link described below and refuse other corpus
+links and symlinked action files. Inspection header validity and defaults follow the
 [core header parser](../qaren-core/src/domain/reusable-action.ts); `list` skips
 invalid headers and `show` refuses them.
 Both commands mask values from the invocation's `QAREN_INPUT_` namespace in stdout,
 including values not required by a plan.
 
-The TypeScript action store used by saved-block reads, replay and writes normally
-uses a real `.qaren/actions` directory. A linked Git
+Saved-block reads, replay, writes, CLI inspection and PR block preservation normally
+use a real `.qaren/actions` directory. A linked Git
 worktree may instead link that directory directly to an existing real
 `.qaren/actions` directory in this repository's main copy, at the same
 app-relative path. Git must prove that both copies share the same repository;
@@ -1963,6 +1976,19 @@ a missing main-copy directory when verified; otherwise they report that the dire
 proof could not be verified. They recommend a real directory or the supported
 direct link. The [action store](../qaren-core/src/domain/action-store.ts)
 owns these checks and detects replacement of the link or corpus during an operation.
+
+To share saved steps, first keep the blocks in the main copy's real actions
+directory. When the linked worktree has no `.qaren/actions`, create the link from
+that worktree's app directory:
+
+```bash
+ln -s /absolute/path/to/main-copy/app/.qaren/actions .qaren/actions
+```
+
+Use the same app-relative path in both copies (omit `app/` for a root app).
+QaReN does not create this link automatically; a real local actions directory
+keeps blocks local. Separate clones cannot use the link: commit the blocks to
+share them between clones.
 
 PR runs copy saved blocks to the run's `blocks/` directory with their original
 extension and bytes. See [Test a pull request](#test-a-pull-request) for branch
@@ -2218,8 +2244,9 @@ The shared [candidate comparison](src/candidate.rs) rechecks the commit,
 lockfile hash and worktree fingerprint. The fingerprint hashes normalized
 NUL-delimited Git status records plus affected file contents, symlink targets,
 absence and executable permission bits, so editing an already-dirty file is
-still detected. Repository-root `.qaren/` state is excluded, as are direct
-`.yaml` and `.yml` action files under the selected app root's `.qaren/actions/`.
+still detected. Repository-root `.qaren/` state is excluded, as are the selected
+app root's `.qaren/actions` entry itself, such as an untracked main-copy link, and
+direct `.yaml` and `.yml` action files under it.
 Changes outside these exclusions, including a nested app's `.qaren/config.yaml`
 or source files, and renames crossing the excluded boundary remain candidate
 changes.
