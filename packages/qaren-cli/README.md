@@ -1253,22 +1253,23 @@ The React digest adds semantics: a deadline, malformed payload, validation error
 transport failure can leave the digest unavailable. After an evaluation error on a
 newer CDP connection, QaReN re-injects helpers and retries capture once.
 Operations requiring complete React evidence still refuse when that coverage is
-unavailable. Each affected row records `reactCoverage` as `unknown` or `incomplete`
-for a capture limit, `reconnected` for the first capture on a newer CDP connection
-than the previous capture, or `lost` when the JS/React connection was down or the
-helpers stayed unavailable after one re-injection on a newer connection, including
+unavailable. Each affected row retains its worst `reactCoverage`: `unknown` or
+`incomplete` for bounded or malformed capture evidence, `reconnected` when recovery
+is first observed on a newer CDP connection, or `lost` when the JS/React connection
+was down or the helpers stayed unavailable after one re-injection on a newer connection, including
 loss before an action, during its readback, or before a later reconnect. Native
 proofs can still pass their rows; a connection that remains lost at the end makes
 an otherwise passing run `REFUSED` with `REACT_COVERAGE_LOST` (exit 4), and an
 existing failure stays a failure. Ordered `reactConnections` events retain loss
 and recovery independently of each row's worst coverage, including recovery during
-the same step. A recovered connection does not by itself refuse the run. Receipts
+the same step or nested login recovery. If helpers remain unavailable after the
+retry, a later healthy capture on that same connection still records recovery.
+A recovered connection does not by itself refuse the run. Receipts
 carry each affected line once, with its most severe coverage, in
 `ledger.react_coverage_gaps` and reconnect lines in `ledger.react_reconnections`.
 Reports show both facts beside each row and name reconnects on the report and
-pull-request verdict lines. A
-`lost` row withholds every new or patched block of the walk, even when later
-captures recover; any other gap withholds only the block it belongs to.
+pull-request verdict lines. A `lost` row withholds every new or patched block of the
+walk, even when later captures recover; any other gap withholds only the block it belongs to.
 Strict private React capture can scan up to 5,000 fibers across renderer roots,
 including a single-root screen. Existing capture and item deadlines, host-evidence and
 interactive-node limits still apply.
