@@ -120,6 +120,7 @@ const keyboardCoveredElements = new WeakSet<Element>();
 // Native scroll containers (iOS names, Android class suffixes); only native-backed elements are ever members.
 const scrollContainers = new WeakMap<Element, string>();
 const windows = new WeakSet<Element>();
+const alerts = new WeakSet<Element>();
 // Press/fill from the element's own React evidence, without the screen-wide capability gaps.
 const localCapabilities = new WeakMap<
   Element,
@@ -1095,6 +1096,7 @@ export function join(
     if (bounds) elementViewports.set(elements[i], bounds);
     if (isScrollContainerType(n.type)) scrollContainers.set(elements[i], n.type!);
     if (n.type === 'Window') windows.add(elements[i]);
+    if (n.type === 'Alert') alerts.add(elements[i]);
     if (duplicates.has(i) || elements[i].kind !== 'text') return;
     for (let p = n.parentIndex; p !== undefined && p >= 0 && p < i; p = nodes[p].parentIndex)
       textDescendants.set(p, [...(textDescendants.get(p) ?? []), i]);
@@ -1451,6 +1453,25 @@ export function screenSignature(screen: Screen): string {
         e.side ?? null,
       ]),
   });
+}
+
+// An app-owned alert closes on any of its buttons, so its closure alone never proves which one fired.
+export function insideAlert(element: Element): boolean {
+  return ancestorsOf(element).some((ancestor) => alerts.has(ancestor));
+}
+
+// The app content outside every alert, without hittability; undefined when none was captured.
+export function contentBehindAlerts(screen: Screen): string | undefined {
+  const content = screen.elements
+    .filter((e) => !alerts.has(e) && !insideAlert(e))
+    .filter((e) => e.label !== undefined || e.testID !== undefined || e.value !== undefined)
+    .map((e) => [
+      e.kind,
+      e.secure && nativeLabelMayBeValue(e) ? null : (e.label ?? null),
+      e.testID ?? null,
+      e.secure ? null : (e.value ?? null),
+    ]);
+  return content.length ? JSON.stringify(content) : undefined;
 }
 
 export function frontFromSurface(surface: string | undefined, nodes: NativeNode[]): Front {

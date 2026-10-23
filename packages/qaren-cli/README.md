@@ -587,6 +587,12 @@ a multi-gesture command reports mutation `possible` because earlier gestures
 may already have run. Take a fresh snapshot of the alert and explicitly tap
 the intended button.
 
+Any button of an app alert closes it, so the alert's closure alone never proves
+which button ran. An unproven press on a button inside a native `Alert` passes
+with reason `UNVERIFIED_PRESS` when the labels, identifiers and values outside
+every alert are unchanged, or were not captured while the alert was open. A
+later plan check still decides whether the intended screen followed.
+
 While it serves commands, the iOS runner contains XCTest UI automation issues,
 such as a read of an element that vanished, instead of letting XCTest end its
 test, and logs only the issue type. A tap, press, drag, swipe or typing gesture
