@@ -16,7 +16,8 @@ import { createWriter, resultForWalk } from '../../../dist/qa/wire.js';
 import { scriptedJudge, walker } from './judgment-fixtures.ts';
 import { nativeCapture } from './platform-presence-fixtures.ts';
 import { loadBlock } from '../../../dist/qa/blocks.js';
-import { buildLedger } from '../../../dist/qa/ledger.js';
+import { buildLedger, type LedgerRow } from '../../../dist/qa/ledger.js';
+import { createQaReactCapture } from '../../../dist/qa/react-capture.js';
 
 const secret = 'field-secret@example.test';
 
@@ -196,6 +197,118 @@ test('coverage gaps preserve an existing failed row instead of replacing its fai
   );
   assert.equal(result.verdict, 'FAIL');
   assert.deepEqual(result.failure, failure);
+});
+
+test('Metro stop and restart preserves same-step and later recovery; renewed or permanent loss refuses', async () => {
+  for (const { restartAt, relapseAt } of [
+    { restartAt: 3 },
+    { restartAt: 4 },
+    { restartAt: 3, relapseAt: 4 },
+    { restartAt: undefined },
+  ]) {
+    const appRoot = mkdtempSync(join(tmpdir(), 'react-stop-restart-'));
+    try {
+      const f = walker(
+        [],
+        scriptedJudge(() => assert.fail('literal plan needs no model')),
+      );
+      let reads = 0;
+      let connected = true;
+      let generation = 1;
+      const reactCapture = createQaReactCapture({
+        get isConnected() {
+          return connected;
+        },
+        get connectionGeneration() {
+          return generation;
+        },
+        async reinjectHelpers() {
+          return true;
+        },
+        async withPrivateHelperWorld(operation) {
+          if (!connected) throw new Error('Metro transport closed');
+          return operation(async () => ({
+            v: 1,
+            id: '1abcd',
+            state: 'ready',
+            tree: JSON.stringify({
+              interactive: [],
+              verdict: {
+                state: 'ok',
+                path: 'interactive',
+                complete: true,
+                reasons: [],
+                rendererErrors: 0,
+                unscannedRendererIds: [],
+                droppedSubtrees: 0,
+                collapsedChildLists: 0,
+              },
+              hostEvidence: { complete: true, hosts: [] },
+            }),
+          }));
+        },
+      });
+      f.deps.captureScreen = () =>
+        captureScreen({
+          native: async () => ({ ...nativeCapture(), presenceCapture: undefined }),
+          react: async () => {
+            reads += 1;
+            if (reads === 2 || reads === relapseAt) connected = false;
+            if (reads === restartAt) {
+              connected = true;
+              generation += 1;
+            }
+            return reactCapture();
+          },
+        });
+      const result = await runPlan(
+        parsePlan('### Before\n✓ "Save"\n### Tap\n1. Tap "save"\n### After\n✓ "Save"').blocks!,
+        f.deps,
+        [],
+        { appRoot, appId: 'com.test', platform: 'ios' },
+      );
+      assert.equal(reads, 4);
+      const recovered = restartAt !== undefined && relapseAt === undefined;
+      assert.equal(result.verdict, recovered ? 'PASS' : 'REFUSED');
+      assert.equal(result.steps[1].reactCoverage, 'lost');
+      assert.deepEqual(
+        result.steps[1].reactConnections,
+        restartAt === 3 ? ['lost', 'reconnected'] : ['lost'],
+      );
+      assert.deepEqual(f.rows[1].reactConnections, result.steps[1].reactConnections);
+      assert.deepEqual(result.blocksWritten, []);
+      assert.deepEqual(readdirSync(appRoot), []);
+      const output: string[] = [];
+      assert.equal(
+        createWriter((line) => output.push(line), 'restart').result(resultForWalk(result, 'lease')),
+        recovered ? 0 : 4,
+      );
+      assert.deepEqual(
+        JSON.parse(output[0]).payload.steps[1].reactConnections,
+        result.steps[1].reactConnections,
+      );
+    } finally {
+      rmSync(appRoot, { recursive: true, force: true });
+    }
+  }
+});
+
+test('a retry retaining old lost coverage does not undo an observed reconnect', () => {
+  const row: LedgerRow = {
+    block: 'tap',
+    line: 22,
+    text: '',
+    attempt: 1,
+    kind: 'step',
+    resolvedBy: 'exact',
+    t: 0,
+    outcome: 'retry',
+    reactCoverage: 'lost',
+    reactConnections: ['lost', 'reconnected'],
+  };
+  const retry: LedgerRow = { ...row, attempt: 2, outcome: 'pass', reactConnections: [] };
+  assert.equal(buildLedger([], [row, retry]).verdict, 'PASS');
+  assert.equal(buildLedger([], [row, { ...retry, reactConnections: ['lost'] }]).verdict, 'REFUSED');
 });
 
 test('a native snapshot failure still refuses', async () => {

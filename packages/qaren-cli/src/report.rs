@@ -36,6 +36,8 @@ pub struct LedgerSummary {
     pub dialogs: Vec<DialogEvidence>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub react_coverage_gaps: Vec<ReactCoverageGap>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub react_reconnections: Vec<u64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -102,6 +104,18 @@ pub fn summarize(ledger: &Ledger) -> LedgerSummary {
         escapes: ledger.escapes,
         recoveries: ledger.recoveries,
         failed_step: ledger.failure.as_ref().map(|f| f.step),
+        react_reconnections: ledger
+            .steps
+            .iter()
+            .filter(|row| {
+                row.react_connections
+                    .contains(&crate::core::ReactConnectionEvent::Reconnected)
+                    || row.react_coverage == Some(crate::core::ReactCoverage::Reconnected)
+            })
+            .map(|row| row.line)
+            .collect::<std::collections::BTreeSet<_>>()
+            .into_iter()
+            .collect(),
         react_coverage_gaps: ledger
             .steps
             .iter()
@@ -243,18 +257,26 @@ fn row_line_with(row: &Row, prose: &dyn Fn(&str) -> String) -> String {
         .react_coverage
         .map(|coverage| format!("; React coverage {}", coverage.as_str()))
         .unwrap_or_default();
+    let reconnect = if row
+        .react_connections
+        .contains(&crate::core::ReactConnectionEvent::Reconnected)
+        && row.react_coverage != Some(crate::core::ReactCoverage::Reconnected)
+    {
+        "; React reconnected"
+    } else {
+        ""
+    };
     format!(
-        "- {mark} line {}{text}{retry}{reason}{kept}{coverage}\n",
+        "- {mark} line {}{text}{retry}{reason}{kept}{coverage}{reconnect}\n",
         row.line
     )
 }
 
 fn reconnect_note(summary: &LedgerSummary) -> String {
     let lines: Vec<String> = summary
-        .react_coverage_gaps
+        .react_reconnections
         .iter()
-        .filter(|gap| gap.coverage == crate::core::ReactCoverage::Reconnected)
-        .map(|gap| gap.line.to_string())
+        .map(|line| line.to_string())
         .collect();
     if lines.is_empty() {
         return String::new();
@@ -765,17 +787,20 @@ mod tests {
                 "resolvedBy": "exact", "t": 0, "outcome": "pass", "reactCoverage": coverage,
             })
         };
+        let mut recovered = row(3, Some("lost"));
+        recovered["reactConnections"] = serde_json::json!(["lost", "reconnected"]);
         let ledger: Ledger = serde_json::from_value(serde_json::json!({
             "verdict": "PASS", "path": "walk", "blocks": [],
-            "steps": [row(2, None), row(3, Some("reconnected"))],
+            "steps": [row(2, None), recovered, recovered],
             "jev": { "calls": 0, "medianMs": 0 },
             "llmTurns": 0, "escapes": 0, "recoveries": 0,
         }))
         .unwrap();
         assert_eq!(
             serde_json::to_value(summarize(&ledger)).unwrap()["react_coverage_gaps"],
-            serde_json::json!([{"line": 3, "coverage": "reconnected"}])
+            serde_json::json!([{"line": 3, "coverage": "lost"}])
         );
+        assert_eq!(summarize(&ledger).react_reconnections, vec![3]);
         let input = ReportInput {
             run_id: "check-test",
             platform: "ios",
@@ -786,7 +811,7 @@ mod tests {
         let report = render(&input);
         assert!(report.starts_with("# QaReN check: PASS · React reconnected at line 3\n"));
         assert!(
-            report.contains("line 3; React coverage reconnected"),
+            report.contains("line 3; React coverage lost; React reconnected"),
             "{report}"
         );
         let comment = render_pr_comment(

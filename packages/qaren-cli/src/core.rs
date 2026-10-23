@@ -223,6 +223,8 @@ pub struct Row {
     pub unverified_press: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub react_coverage: Option<ReactCoverage>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub react_connections: Vec<ReactConnectionEvent>,
     #[serde(
         default,
         skip_serializing_if = "Option::is_none",
@@ -246,6 +248,13 @@ pub enum ReactCoverage {
     Incomplete,
     Reconnected,
     Lost,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum ReactConnectionEvent {
+    Lost,
+    Reconnected,
 }
 
 impl ReactCoverage {

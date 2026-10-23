@@ -208,6 +208,7 @@ mod tests {
             reason: None,
             unverified_press: false,
             react_coverage: None,
+            react_connections: Vec::new(),
             timing: None,
             selector: None,
             kept: None,

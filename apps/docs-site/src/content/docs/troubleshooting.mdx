@@ -60,7 +60,7 @@ The screen layer's own codes appear at the start of `failure.detail` or in the r
 | `SCREEN_EVIDENCE_INCOMPLETE` | The captured screen was not complete enough to act on safely                  |
 | `APP_PROCESS_CHANGED`        | On iOS, the app crashed or restarted between captures                         |
 | `CDP_NOT_CONNECTED`          | The app's JavaScript runtime did not attach in time, or a target wait made no progress past [`deadlines.attach_seconds`](../configuration/#deadlines); the detail names the stalled boundary, app liveness, bundle request and host load |
-| `REACT_COVERAGE_LOST`        | The JS/React connection was lost during an otherwise passing walk; the walk saves no new blocks. See the [React coverage contract](https://github.com/Lykhoyda/rn-dev-agent/blob/develop/packages/qaren-cli/README.md#check-a-plan) |
+| `REACT_COVERAGE_LOST`        | The JS/React connection remained lost at the end of an otherwise passing walk; the walk saves no new blocks. See the [React coverage contract](https://github.com/Lykhoyda/rn-dev-agent/blob/develop/packages/qaren-cli/README.md#check-a-plan) |
 
 ## Teardown, cleanup and publish
 

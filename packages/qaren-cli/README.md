@@ -1258,11 +1258,15 @@ for a capture limit, `reconnected` for the first capture on a newer CDP connecti
 than the previous capture, or `lost` when the JS/React connection was down or the
 helpers stayed unavailable after one re-injection on a newer connection, including
 loss before an action, during its readback, or before a later reconnect. Native
-proofs can still pass their rows; only a `lost` row makes an otherwise passing run
-`REFUSED` with `REACT_COVERAGE_LOST` (exit 4), and an existing failure stays a
-failure. Receipts carry each affected line once, with its most severe coverage, in
-`ledger.react_coverage_gaps`, and reports show the coverage beside each row; a
-`reconnected` line is also named on the report and pull-request verdict lines. A
+proofs can still pass their rows; a connection that remains lost at the end makes
+an otherwise passing run `REFUSED` with `REACT_COVERAGE_LOST` (exit 4), and an
+existing failure stays a failure. Ordered `reactConnections` events retain loss
+and recovery independently of each row's worst coverage, including recovery during
+the same step. A recovered connection does not by itself refuse the run. Receipts
+carry each affected line once, with its most severe coverage, in
+`ledger.react_coverage_gaps` and reconnect lines in `ledger.react_reconnections`.
+Reports show both facts beside each row and name reconnects on the report and
+pull-request verdict lines. A
 `lost` row withholds every new or patched block of the walk, even when later
 captures recover; any other gap withholds only the block it belongs to.
 Strict private React capture can scan up to 5,000 fibers across renderer roots,

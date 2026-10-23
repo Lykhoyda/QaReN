@@ -367,6 +367,7 @@ async function walkBlockScoped(
   const replay = opts.mode === 'replay';
   const rows: WalkRow[] = [];
   const reactGaps = new Map<number, NonNullable<LedgerRow['reactCoverage']>>();
+  let reactConnections: NonNullable<LedgerRow['reactConnections']> = [];
   const privateFills: number[] = [];
   for (const item of block.items)
     if (item.kind === 'fill' && !typed.includes(fillText(item))) typed.push(fillText(item));
@@ -381,6 +382,8 @@ async function walkBlockScoped(
   const captureScreen: WalkerDeps['captureScreen'] = async (options) => {
     const screen = await deps.captureScreen(options);
     const react = screen.reactConnection ?? screen.captureCoverage?.react;
+    if ((react === 'lost' || react === 'reconnected') && reactConnections.at(-1) !== react)
+      reactConnections.push(react);
     if (react && react !== 'complete') {
       const prior = reactGaps.get(line);
       if (!prior || REACT_GAPS.indexOf(react) > REACT_GAPS.indexOf(prior))
@@ -824,7 +827,9 @@ async function walkBlockScoped(
       ...row,
       operationId: operationFor(row.line),
       ...(reactCoverage ? { reactCoverage } : {}),
+      ...(reactCoverage || reactConnections.length ? { reactConnections } : {}),
     };
+    reactConnections = [];
     let timing: RowTiming | undefined;
     try {
       timing = deps.rowTiming?.(row.t);
@@ -2569,6 +2574,7 @@ function valueFree(row: Omit<LedgerRow, 'reason'>): LedgerRow {
     screenshot,
     timing,
     reactCoverage,
+    reactConnections,
   } = row;
   return {
     block: '',
@@ -2584,6 +2590,7 @@ function valueFree(row: Omit<LedgerRow, 'reason'>): LedgerRow {
     ...(screenshot ? { screenshot } : {}),
     ...(timing ? { timing } : {}),
     ...(reactCoverage ? { reactCoverage } : {}),
+    ...(reactConnections ? { reactConnections } : {}),
   };
 }
 
