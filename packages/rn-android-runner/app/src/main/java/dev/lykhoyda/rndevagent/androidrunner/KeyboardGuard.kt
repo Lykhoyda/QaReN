@@ -11,6 +11,11 @@ object KeyboardGuard {
         return values.singleOrNull()?.toBooleanStrictOrNull()
     }
 
+    fun screenContent(nodes: List<QaHierarchy.QaNode>): List<QaHierarchy.QaNode> =
+        nodes.filter { it.type != "Keyboard" }.map {
+            it.copy(rect = QaHierarchy.Bounds(0, 0, 0, 0), hittable = false, visibleToUser = false, source = null)
+        }
+
     fun dismiss(
         shown: () -> Boolean?,
         sameScreen: () -> Boolean,

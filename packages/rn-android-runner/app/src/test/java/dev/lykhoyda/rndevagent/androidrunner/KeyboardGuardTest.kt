@@ -3,6 +3,7 @@ package dev.lykhoyda.rndevagent.androidrunner
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertNotEquals
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertThrows
 import org.junit.Test
@@ -91,6 +92,28 @@ class KeyboardGuardTest {
         }
         assertEquals("ACTION_CONTEXT_CHANGED", error.code)
         assertTrue(error.backAttempted)
+    }
+
+    private fun node(label: String, rect: QaHierarchy.Bounds, visible: Boolean, type: String = "android.widget.Button") =
+        QaHierarchy.node(
+            QaHierarchy.RawNode(
+                className = type, text = label, contentDescription = null, viewIdResourceName = null, packageName = "app",
+                bounds = rect, enabled = true, visibleToUser = visible, selected = false, checked = false,
+                password = false, heading = false, children = emptyList(),
+            ),
+        )!!
+
+    @Test fun keyboardResizeKeepsScreenContent() {
+        val covered = listOf(
+            node("Submit", QaHierarchy.Bounds(0, 900, 100, 1000), visible = false),
+            node("", QaHierarchy.Bounds(0, 1200, 1080, 1920), visible = true, type = "Keyboard"),
+        )
+        val revealed = listOf(node("Submit", QaHierarchy.Bounds(0, 1500, 100, 1600), visible = true))
+        assertEquals(KeyboardGuard.screenContent(covered), KeyboardGuard.screenContent(revealed))
+        assertNotEquals(
+            KeyboardGuard.screenContent(covered),
+            KeyboardGuard.screenContent(listOf(node("Back", QaHierarchy.Bounds(0, 1500, 100, 1600), visible = true))),
+        )
     }
 
     @Test fun visibilityReadExceptionNeverPressesBack() {

@@ -214,10 +214,7 @@ class CommandDispatcher(
             val read = enumerateQa(appPackage, null) ?: return null
             val front = QaHierarchy.front(read.windows, appPackage) as? QaHierarchy.Front.App ?: return null
             if (read.exhausted || read.assembled.truncated || read.assembled.droppedNodes != 0) return null
-            val nodes = read.assembled.nodes.filter { it.type != "Keyboard" }.map {
-                it.copy(rect = QaHierarchy.Bounds(0, 0, 0, 0), hittable = false, source = null)
-            }
-            return front.windows.map { it.id } to nodes
+            return front.windows.map { it.id } to KeyboardGuard.screenContent(read.assembled.nodes)
         }
         val result = try {
             KeyboardGuard.dismiss(
