@@ -6,7 +6,7 @@ import { parsePlan } from '../../../dist/qa/plan.js';
 import { runPlan } from '../../../dist/qa/walker.js';
 import { captureScreen } from '../../../dist/qa/capture.js';
 import { scriptedJudge, walker } from './judgment-fixtures.ts';
-import { attested } from './platform-presence-fixtures.ts';
+import { attested, nativeCapture } from './platform-presence-fixtures.ts';
 import { targetMissDiagnostic } from '../../../dist/qa/target-miss.js';
 import { ObservedPrivacy } from '../../../dist/qa/privacy.js';
 import { createWriter } from '../../../dist/qa/wire.js';
@@ -50,6 +50,70 @@ function aggregate(screen: Screen): Screen {
 
 for (const android of [false, true]) {
   const platform = android ? 'Android' : 'iOS';
+  for (const labelSource of ['descendant', 'direct', 'none'] as const) {
+    test(`${platform}: runPlan acquires ${labelSource} label provenance for a quoted press`, async () => {
+      const f = walker(
+        [],
+        scriptedJudge(() => assert.fail('quoted target must be model-free')),
+      );
+      const requested: boolean[] = [];
+      f.deps.captureScreen = (options) =>
+        captureScreen({
+          appId: 'com.test',
+          requirePrivateInputs: true,
+          platformPresence: options?.platformPresence,
+          now: () => 0,
+          native: async (presenceBudgetMs) => {
+            requested.push(options?.platformPresence === true);
+            const tree = nodes(android).map((node, index) => ({
+              ...node,
+              index,
+              depth: index,
+              enabled: true,
+              presence: {
+                captureId: 'capture-7',
+                generation: 7,
+                nodeIndex: index,
+                status: 'observed',
+                observedUptimeMs: 150,
+                labelSource: index === 2 ? labelSource : 'direct',
+              },
+            }));
+            return {
+              ...attested(tree),
+              ...(options?.platformPresence
+                ? {
+                    snapshotGeneration: 7,
+                    presenceCapture: {
+                      ...nativeCapture().presenceCapture,
+                      appliedBudgetMs: presenceBudgetMs,
+                      ...(android
+                        ? {
+                            source: 'android-a11y-live',
+                            enumeration: 'app-windows',
+                            pointScale: 1,
+                          }
+                        : {}),
+                    },
+                  }
+                : {}),
+            };
+          },
+          react: async () => ({ interactive: [] }),
+        });
+      const result = await runPlan(parsePlan('1. Tap "Add coverage"').blocks!, f.deps);
+      assert.ok(requested.length > 0);
+      assert.ok(requested.every(Boolean));
+      if (labelSource === 'descendant') {
+        assert.equal(result.verdict, 'PASS', result.failure?.seen);
+        assert.deepEqual(f.actions, ['press @card0']);
+      } else {
+        assert.notEqual(result.verdict, 'PASS');
+        assert.match(result.failure?.seen ?? '', /TARGET_AMBIGUOUS/);
+        assert.deepEqual(f.actions, []);
+      }
+    });
+  }
   for (const scroll of [false, true]) {
     for (const identified of [false, true]) {
       for (const quoted of [target.quoted, 'Add coverage, Details']) {

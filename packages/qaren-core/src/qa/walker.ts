@@ -433,7 +433,10 @@ async function walkBlockScoped(
     cached = undefined;
     const target =
       step && ('target' in step ? step.target : step.kind === 'scroll' ? step.until : undefined);
-    const platformPresence = assertion || (!!target && target.quoted === undefined);
+    const platformPresence =
+      assertion ||
+      (!!target &&
+        (target.quoted === undefined || (step?.kind === 'press' && target.exact !== 'id')));
     const startedAt = deps.now();
     const id = ++sequence.observation;
     latestObservation = id;

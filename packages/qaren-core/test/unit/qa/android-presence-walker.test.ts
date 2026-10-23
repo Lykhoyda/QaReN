@@ -272,7 +272,7 @@ test('a runner advertising only the earlier presence rule is stale: no QA read, 
   });
 });
 
-test('a literal Android step needs no presence and is unchanged', async () => {
+test('a quoted Android press requests presence and retains literal targeting', async () => {
   const requests: Record<string, unknown>[] = [];
   const f = walker(
     [],
@@ -282,7 +282,7 @@ test('a literal Android step needs no presence and is unchanged', async () => {
   const result = await runPlan(parsePlan('1. Tap "home-pager-qa-btn"').blocks!, f.deps);
   assert.equal(result.verdict, 'PASS', result.failure?.seen);
   assert.deepEqual(f.actions, ['press @e3']);
-  assert.equal(requests[0].platformPresence, undefined);
+  assert.equal(requests[0].platformPresence, true);
 });
 
 async function runAndroidPresence(capabilities: string[]) {
