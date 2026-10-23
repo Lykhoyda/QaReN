@@ -81,7 +81,6 @@ import {
   admit,
   awaitBundleReady,
   awaitDevClientManifest,
-  devClientManifestInTime,
   launchBundleRequests,
   createBundleReload,
   devClientLaunchUrl,
@@ -491,14 +490,7 @@ async function openSession(
                   `relaunching after the manifest answered in ${manifest.ms} ms (attempt ${manifest.attempts})`,
                 );
                 bundleRequests?.relaunching();
-                await relaunchIosDevClient(appId, target.deviceId, url);
-                const manifestInTime = await devClientManifestInTime(url);
-                log(
-                  manifestInTime
-                    ? 'the relaunched dev client manifest answered in time'
-                    : 'the relaunched dev client manifest missed its request timeout',
-                );
-                return { manifestInTime };
+                return relaunchIosDevClient(appId, target.deviceId, url);
               },
               appAlive: async () => {
                 const alive = await isAppRunning('ios', appId, undefined, target.deviceId);

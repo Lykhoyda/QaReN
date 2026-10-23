@@ -33,8 +33,6 @@ import {
 } from '../../../dist/cdp/connect.js';
 import { CDPRequestTimeoutError, sendWithTimeout } from '../../../dist/cdp/transport.js';
 
-const late = { manifestInTime: false };
-
 const PROVEN = {
   ok: true,
   scriptURL: 'http://127.0.0.1:8081/index.bundle',
@@ -359,7 +357,6 @@ for (const Timeout of [CDPProbeTimeoutError, CDPHandshakeTimeoutError]) {
       },
       relaunch: async () => {
         relaunched++;
-        return late;
       },
     });
     const admitted = admit(steps, stop).catch((error) => error);
@@ -406,7 +403,6 @@ for (const Timeout of [CDPProbeTimeoutError, CDPHandshakeTimeoutError]) {
       },
       relaunch: async () => {
         relaunched++;
-        return late;
       },
     });
     const admitted = admit(steps, stop).catch((error) => error);
@@ -461,7 +457,6 @@ function scriptedAttach(
     },
     relaunch: async () => {
       relaunchedAt.push(now);
-      return late;
     },
   });
   let settled = false;
@@ -572,7 +567,6 @@ test('the single retry relaunches the app before waiting again', async () => {
     },
     relaunch: async () => {
       order.push('relaunch');
-      return late;
     },
   });
   assert.deepEqual(await admit(steps, stop), PROVEN);
@@ -588,7 +582,6 @@ test('an exhausted readiness wait can relaunch once at low load', async () => {
     },
     relaunch: async () => {
       relaunched++;
-      return late;
     },
   });
   assert.deepEqual(await admit(steps, stop), PROVEN);
@@ -632,7 +625,6 @@ for (const foreign of ['Maestro holds the device', 'XCTest holds the device']) {
       },
       relaunch: async () => {
         order.push('relaunch');
-        return late;
       },
       open: async () => {
         order.push('open');
@@ -664,7 +656,6 @@ test('cancellation during the retry driver probe prevents relaunch', async () =>
   };
   steps.relaunch = async () => {
     calls.push('relaunch');
-    return late;
   };
   await assert.rejects(admit(steps, stop), { code: 'RUN_CANCELLED' });
   assert.deepEqual(calls, ['foreignDriver', 'close']);
@@ -688,7 +679,6 @@ test('a live app skips the one relaunch and admission keeps waiting', async () =
     },
     relaunch: async () => {
       order.push('relaunch');
-      return late;
     },
   });
   assert.deepEqual(await admit(steps, stop), PROVEN);
@@ -748,7 +738,6 @@ test('a dead app gets the one relaunch as before', async () => {
     relaunch: async () => {
       order.push('relaunch');
       relaunched++;
-      return late;
     },
   });
   assert.deepEqual(await admit(steps, stop), PROVEN);
@@ -790,7 +779,6 @@ function launcherStall(bundleRequested: AdmissionSteps['bundleRequested']) {
     relaunch: async () => {
       order.push('relaunch');
       relaunched++;
-      return late;
     },
   });
   return { order, deadlines, relaunches: () => relaunched, admitted: admit(steps, stop) };
@@ -859,7 +847,6 @@ test('a dead app relaunches without reading the bundle signal', async () => {
     bundleRequested: async () => assert.fail('a dead app needs no bundle signal'),
     relaunch: async () => {
       relaunched++;
-      return late;
     },
   });
   assert.deepEqual(await admit(steps, stop), PROVEN);
@@ -910,7 +897,6 @@ test('a failing liveness probe relaunches and records the failure without its de
     },
     relaunch: async () => {
       remaining = 0;
-      return late;
     },
   });
   const error = await refusalOf(admit(steps, stop));
@@ -1486,7 +1472,7 @@ test('a relaunch followed by a deterministic failure records one relaunch and tw
       if (++attempts === 1) throw new TargetReadinessTimeoutError('stuck on the launcher');
       throw new Error('no target');
     },
-    relaunch: async () => late,
+    relaunch: async () => undefined,
   });
   const error = await refusalOf(admit(steps, stop));
   const { rest } = budget(error.meta!);
