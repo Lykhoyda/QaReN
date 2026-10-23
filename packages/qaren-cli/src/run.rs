@@ -2336,16 +2336,12 @@ fn plan_unparseable(value: &Value, plan_file: &Path) -> Option<Failure> {
     let mut problems = Vec::new();
     let mut repairs = Vec::new();
     for entry in entries {
-        let line = entry.get("line")?.as_u64()?.max(1);
+        let line = entry.get("line")?.as_u64()?;
         let reason = entry.get("reason")?.as_str()?;
-        if reason.trim().is_empty() {
+        let action = entry.get("nextAction")?.as_str()?;
+        if reason.trim().is_empty() || action.trim().is_empty() {
             return None;
         }
-        let action = entry
-            .get("nextAction")
-            .and_then(Value::as_str)
-            .filter(|action| !action.trim().is_empty())
-            .unwrap_or("rewrite this line using a supported QA operation");
         problems.push(format!("{}: line {line}: {reason}", plan_file.display()));
         repairs.push(format!(
             "edit {} at line {line}: {action}",

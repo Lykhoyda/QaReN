@@ -2462,7 +2462,7 @@ fn every_plan_problem_names_the_file_line_and_repair_before_device_access() {
 }
 
 #[test]
-fn an_unparseable_plan_refuses_before_the_device_is_touched() {
+fn a_plan_refusal_without_a_repair_is_a_malformed_core_reply() {
     let (repo, app) = app_repo();
     let mut mock = MockRunner::new();
     mock.environment
@@ -2479,12 +2479,9 @@ fn an_unparseable_plan_refuses_before_the_device_is_touched() {
     );
     let receipt = run(&mut mock, &request(&repo, &app, 30));
     assert_eq!(receipt.result, ReceiptResult::Refused);
-    let failure = receipt.failure.as_ref().unwrap();
-    assert_eq!(failure.code, FailureCode::PlanUnparseable);
-    assert!(
-        failure.detail.contains("line 3: no verb"),
-        "{}",
-        failure.detail
+    assert_eq!(
+        receipt.failure.as_ref().unwrap().code,
+        FailureCode::CoreRefused
     );
     assert_eq!(mock.remaining(), 0);
 }
