@@ -578,11 +578,17 @@ async function attach(steps: AdmissionSteps, signal: AbortSignal): Promise<Prove
             lastCompleted = 'foreign_driver';
             if (noTarget) {
               liveness = await probeLiveness(steps);
-              if (liveness === 'alive') bundleRequest = await probeBundleRequest(steps);
+              if (liveness === 'alive' || (liveness !== 'dead' && steps.bundleRequested))
+                bundleRequest = await probeBundleRequest(steps);
               probed = true;
               nextNoTargetProbe = performance.now() + steps.readinessMs;
             }
-            if (!noTarget || liveness !== 'alive' || bundleRequest === 'not_received') {
+            if (
+              !noTarget ||
+              liveness === 'dead' ||
+              bundleRequest === 'not_received' ||
+              (relaunches === 0 && liveness !== 'alive')
+            ) {
               relaunches++;
               try {
                 lastStarted = 'relaunch';

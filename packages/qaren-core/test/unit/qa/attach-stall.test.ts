@@ -347,6 +347,33 @@ test('a dev client still on its launcher after a relaunch is relaunched until it
   assert.deepEqual(deadlines, [120_000, 120_000]);
 });
 
+test('a failed liveness probe never relaunches an app again once it requested its bundle', async (t) => {
+  let relaunches = 0;
+  const fixture = stalled(t, {
+    appAlive: async () => {
+      throw new Error('launchctl timed out');
+    },
+    bundleRequested: async () => relaunches > 0,
+    relaunch: async () => void relaunches++,
+  });
+  await fixture.waiting();
+  assert.equal(relaunches, 1);
+});
+
+test('a failed liveness probe still relaunches again while no bundle was requested', async (t) => {
+  const fixture = stalled(t, {
+    appAlive: async () => {
+      throw new Error('launchctl timed out');
+    },
+    bundleRequested: async () => false,
+  });
+  const error = await fixture.run();
+  assert.equal(error.meta.liveness, 'probe_failed');
+  assert.equal(error.meta.bundleRequest, 'not_received');
+  assert.equal(error.meta.relaunches, 4);
+  assert.equal(fixture.relaunches(), 4);
+});
+
 test('a first relaunch after the attach budget still gets a readiness window to reach Metro', async (t) => {
   const deadlines: number[] = [];
   const fixture = stalled(t, {

@@ -2140,7 +2140,8 @@ Metro server, so another simulator's bundle request also keeps the skip.
 A received request proves neither that the bundle finished nor that it is still
 loading, so a live app with one keeps waiting within the walk deadline.
 `core.log` records the observed request signal. An absent job or failed
-probe permits recovery as before. Skipping
+probe permits the first relaunch as before; a later one needs an absent job or
+no bundle request since the latest launch. Skipping
 does not consume the relaunch for persistent runtime-probe or
 WebSocket-handshake timeouts, and a target that registers late gets the same
 readiness window before a stalled handshake triggers the relaunch. For retained admission facts,
