@@ -37,6 +37,7 @@ import {
   scrollUntilBand,
   scrollUntilDirection,
   targetEvidence,
+  presenceMiss,
   visibleSelector,
 } from './resolve.js';
 import { literalEvidence, type LiteralNearMiss } from './evidence.js';
@@ -1669,7 +1670,16 @@ async function walkBlockScoped(
             const recovering = await recovery(item, 1, reason);
             if (recovering === 'retry') continue attempts;
             if (recovering) return recovering;
-            if (unchanged) return failed(item, 1, reason, observation.screen, await shoot(item));
+            if (unchanged) {
+              const miss = presenceMiss(item.target, observation.screen);
+              return failed(
+                item,
+                1,
+                miss ? `${reason}; ${miss}` : reason,
+                observation.screen,
+                await shoot(item),
+              );
+            }
             usable(observation, item, deadline);
             throw new EvidenceExpired(true);
           }

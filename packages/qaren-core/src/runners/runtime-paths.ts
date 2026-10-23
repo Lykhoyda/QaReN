@@ -58,12 +58,11 @@ export function candidateRunnerManifestFiles(baseDir = import.meta.dirname): str
 
 export function candidatePluginManifestFiles(baseDir = import.meta.dirname): string[] {
   return compactUnique([
+    // Installed runtime identity takes precedence over host-plugin overrides.
+    join(baseDir, '..', 'package.json'),
     process.env.QAREN_PLUGIN_MANIFEST,
     // Source checkout: packages/qaren-core/dist/runners → packages/qaren-plugin.
     join(baseDir, '..', '..', '..', 'qaren-plugin', '.claude-plugin', 'plugin.json'),
-    // Core package fallback: enough for artifact versioning.
-    join(baseDir, '..', 'package.json'),
-    join(baseDir, '..', '..', 'package.json'),
   ]);
 }
 

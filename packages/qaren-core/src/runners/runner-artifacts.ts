@@ -11,8 +11,13 @@ import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync
 import { homedir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { candidateRunnerManifestFiles, firstExistingFile } from './runtime-paths.js';
+import {
+  assertRunnerAssetName,
+  isQarenRunnerRelease,
+  type RunnerPlatform,
+} from '../domain/runner-artifact-identity.js';
 
-export type RunnerPlatform = 'ios' | 'android';
+export type { RunnerPlatform } from '../domain/runner-artifact-identity.js';
 export type ArtifactProvenance = 'cache' | 'downloaded' | 'build-local';
 
 export const RUNNER_REPO = 'Lykhoyda/rn-dev-agent';
@@ -172,11 +177,25 @@ async function acquireArtifact(
   throwIfCancelled();
   if (deps.env.RN_RUNNER_BUILD === 'local') return { provenance: 'build-local' };
 
+  if (!version || !isQarenRunnerRelease(version)) {
+    return {
+      provenance: 'build-local',
+      note: `prebuilt runner refused: runtime version ${version ?? 'unknown'} does not identify a QaReN 2.x or newer release; legacy 1.x artifacts are excluded; building shipped source locally`,
+    };
+  }
+
   const manifest = deps.readManifest();
-  if (!version || !manifest || manifest.version !== version) return { provenance: 'build-local' };
+  if (!manifest) return { provenance: 'build-local' };
+  if (manifest.version !== version) {
+    return {
+      provenance: 'build-local',
+      note: `no published ${platform} runner for ${version} (manifest version is ${manifest.version}); building shipped source locally`,
+    };
+  }
 
   const assets = manifest.assets?.[platform] ?? [];
   if (assets.length === 0) return { provenance: 'build-local' };
+  for (const asset of assets) assertRunnerAssetName(asset.name, version, platform);
 
   const cacheDir = deps.cacheDir(version, platform);
   if (deps.existsSync(join(cacheDir, STALE_PREBUILT_MARKER))) return { provenance: 'build-local' };

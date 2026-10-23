@@ -98,7 +98,7 @@ const shapes = (): Shape[] => {
       screen: join(node(root(), { identifier: 'twin', y: 100 }), reactTwin),
       quoted: 'twin',
       identities: 2,
-      press: 'TARGET_AMBIGUOUS',
+      press: '@n2',
       replay: '@n2',
     },
     {

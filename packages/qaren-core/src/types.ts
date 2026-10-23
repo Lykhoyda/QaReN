@@ -413,6 +413,7 @@ export type ToolErrorCode =
   // GH #383: runner speaks an incompatible wire protocol even after the
   // reap-and-reinstall path ran — stale prebuilt artifacts need a rebuild.
   | 'RUNNER_PROTOCOL_MISMATCH'
+  | 'RUNNER_VERSION_MISMATCH'
   // E2E regression runner (2026-06-18)
   | 'NOT_FOUND'
   | 'ALREADY_LOCKED'
