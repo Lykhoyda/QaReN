@@ -364,6 +364,53 @@ fn reclaim_of_a_records_gone_holder_with_a_live_group_keeps_the_release_advice()
 }
 
 #[test]
+fn a_reused_holder_pid_leading_its_own_group_does_not_keep_an_orphaned_lease() {
+    use qaren::buildplan::{claim_lock, LockHolder, LockOutcome, LockPolicy};
+    let repo = common::temp_repo();
+    let lock_root = repo.join("locks");
+    let held = LockHolder {
+        holder: "qaren-old-run".into(),
+        run_id: "old-run".into(),
+        identity: Some(common::identity(4242, "Wed Aug 12 15:00:00 2026")),
+        at: "2026-10-23T00:00:00Z".into(),
+        home: Some(repo.join("deleted-home")),
+        group: Some(4242),
+    };
+    let name = lock_name(Platform::Ios, UDID);
+    assert!(matches!(
+        claim_lock(
+            &mut MockRunner::new(),
+            &lock_root,
+            &name,
+            &held,
+            LockPolicy::Strict
+        ),
+        LockOutcome::Claimed { .. }
+    ));
+
+    let mut runner = MockRunner::new();
+    runner.expect_run(
+        "ps -p 4242 -o lstart=",
+        CmdOutput::success("Thu Oct 22 09:00:00 2026\n"),
+    );
+    let lease = qaren::lease::try_acquire(
+        &mut runner,
+        &lock_root,
+        Platform::Ios,
+        UDID,
+        "new-run",
+        None,
+    )
+    .unwrap();
+    assert_eq!(lease.released_orphan.as_deref(), Some("old-run"));
+    assert_eq!(
+        read_holder(&lock_root.join(&name)).unwrap().run_id,
+        "new-run"
+    );
+    assert_eq!(runner.remaining(), 0);
+}
+
+#[test]
 fn cleanup_of_a_run_without_run_json_releases_only_its_orphaned_locks() {
     use qaren::buildplan::{claim_lock, LockHolder, LockOutcome, LockPolicy};
     use qaren::commands::cleanup::cleanup_with_orphan_locks;

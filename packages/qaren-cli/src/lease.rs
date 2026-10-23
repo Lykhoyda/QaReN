@@ -112,8 +112,10 @@ pub fn release_orphan(
     {
         return false;
     }
+    let pid_reused = liveness == Some(PidLiveness::AliveForeign);
     if held.group.is_some_and(|pgid| {
-        crate::adapters::metro::group_presence(runner, pgid)
+        !(pid_reused && held.identity.as_ref().is_some_and(|i| i.pid == pgid))
+            && crate::adapters::metro::group_presence(runner, pgid)
             != crate::adapters::metro::GroupPresence::Absent
     }) {
         return false;
