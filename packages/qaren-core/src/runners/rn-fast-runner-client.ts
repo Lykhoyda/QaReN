@@ -88,6 +88,7 @@ import {
   resolveIosRunnerArtifacts,
 } from './runner-artifacts.js';
 import { resolveNativeRunnerDir } from './runtime-paths.js';
+import { RunnerArtifactMismatchError } from '../domain/runner-artifact-identity.js';
 import {
   decideRecovery,
   generateCommandId,
@@ -862,6 +863,7 @@ export async function ensureFastRunner(
   try {
     await startFastRunner(deviceId, bundleId, undefined, opts);
   } catch (err) {
+    if (err instanceof RunnerArtifactMismatchError) throw err;
     console.error(
       `Fast runner auto-start failed: ${err instanceof Error ? err.message : String(err)}`,
     );

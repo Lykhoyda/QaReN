@@ -11,8 +11,16 @@ import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync
 import { homedir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { candidateRunnerManifestFiles, firstExistingFile } from './runtime-paths.js';
+import {
+  assertRunnerArchiveIdentity,
+  assertRunnerAssetName,
+  isQarenRunnerRelease,
+  RunnerArtifactMismatchError,
+  RUNNER_IDENTITY_FILE,
+  type RunnerPlatform,
+} from '../domain/runner-artifact-identity.js';
 
-export type RunnerPlatform = 'ios' | 'android';
+export type { RunnerPlatform } from '../domain/runner-artifact-identity.js';
 export type ArtifactProvenance = 'cache' | 'downloaded' | 'build-local';
 
 export const RUNNER_REPO = 'Lykhoyda/rn-dev-agent';
@@ -54,6 +62,7 @@ export interface ArtifactDeps {
   cacheDir(version: string, platform: RunnerPlatform): string;
   existsSync(p: string): boolean;
   sha256File(p: string): string;
+  readArchiveIdentity(zipPath: string): unknown;
   listFiles(dir: string): string[];
   fetchToFile(
     url: string,
@@ -172,11 +181,26 @@ async function acquireArtifact(
   throwIfCancelled();
   if (deps.env.RN_RUNNER_BUILD === 'local') return { provenance: 'build-local' };
 
+  if (!version || !isQarenRunnerRelease(version)) {
+    return {
+      provenance: 'build-local',
+      note: `prebuilt runner refused: runtime version ${version ?? 'unknown'} does not identify a QaReN 2.x or newer release; legacy 1.x artifacts are excluded; building shipped source locally`,
+    };
+  }
+
   const manifest = deps.readManifest();
-  if (!version || !manifest || manifest.version !== version) return { provenance: 'build-local' };
+  if (!manifest) return { provenance: 'build-local' };
+  if (manifest.version !== version) {
+    throw new RunnerArtifactMismatchError(
+      version,
+      platform,
+      `manifest version is ${manifest.version}`,
+    );
+  }
 
   const assets = manifest.assets?.[platform] ?? [];
   if (assets.length === 0) return { provenance: 'build-local' };
+  for (const asset of assets) assertRunnerAssetName(asset.name, version, platform);
 
   const cacheDir = deps.cacheDir(version, platform);
   if (deps.existsSync(join(cacheDir, STALE_PREBUILT_MARKER))) return { provenance: 'build-local' };
@@ -199,8 +223,17 @@ async function acquireArtifact(
       allZipsPresent = false;
     }
   }
-  const cacheValid =
-    allZipsPresent && verifyChecksums(assets, actualByName).ok && extractedOk(productsDir);
+  const archivesValid = allZipsPresent && verifyChecksums(assets, actualByName).ok;
+  if (archivesValid) {
+    for (const asset of assets) {
+      assertRunnerArchiveIdentity(
+        deps.readArchiveIdentity(join(cacheDir, asset.name)),
+        version,
+        platform,
+      );
+    }
+  }
+  const cacheValid = archivesValid && extractedOk(productsDir);
 
   const decision = resolveArtifactDecision({
     envOverride: false,
@@ -225,6 +258,7 @@ async function acquireArtifact(
       if (got !== a.sha256) {
         throw new Error(`checksum mismatch for ${a.name} (expected ${a.sha256}, got ${got})`);
       }
+      assertRunnerArchiveIdentity(deps.readArchiveIdentity(zp), version, platform);
       throwIfCancelled();
       deps.unzip(zp, productsDir);
     }
@@ -246,6 +280,7 @@ async function acquireArtifact(
     }
     throwIfCancelled();
     if (isAbort(err)) throw err;
+    if (err instanceof RunnerArtifactMismatchError) throw err;
     const msg = err instanceof Error ? err.message : String(err);
     return {
       provenance: 'build-local',
@@ -359,6 +394,20 @@ export function defaultArtifactDeps(): ArtifactDeps {
     cacheDir: (version, platform) => cacheDirFor(homedir(), process.platform, version, platform),
     existsSync,
     sha256File,
+    readArchiveIdentity: (zipPath) => {
+      try {
+        return JSON.parse(
+          execFileSync('unzip', ['-p', zipPath, RUNNER_IDENTITY_FILE], {
+            encoding: 'utf8',
+            stdio: ['ignore', 'pipe', 'pipe'],
+            maxBuffer: 16_384,
+            timeout: 10_000,
+          }),
+        );
+      } catch {
+        return null;
+      }
+    },
     listFiles: (dir) => {
       try {
         return readdirSync(dir);

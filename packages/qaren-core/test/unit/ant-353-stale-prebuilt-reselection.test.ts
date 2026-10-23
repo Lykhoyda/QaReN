@@ -14,7 +14,7 @@ import {
 } from '../../dist/runners/rn-fast-runner-client.js';
 import { getPluginVersion } from '../../dist/runners/protocol.js';
 
-const V = '1.0.13';
+const V = '2.0.0-beta.3';
 const LOCAL_DD = '/runtime/rn-fast-runner/build/DerivedData';
 const LOCAL_XCTESTRUN = join(LOCAL_DD, 'Build/Products/RnFastRunner.xctestrun');
 const MISSING_FEATURES = {
@@ -25,7 +25,7 @@ const MISSING_FEATURES = {
 
 function prebuiltCache() {
   const cacheDir = join('/cache', V, 'ios');
-  const zip = join(cacheDir, 'rn-fast-runner-sim.zip');
+  const zip = join(cacheDir, `rn-fast-runner-${V}-sim.zip`);
   const files = new Set<string>([
     zip,
     join(cacheDir, 'products/Build/Products/RnFastRunner.xctestrun'),
@@ -35,11 +35,15 @@ function prebuiltCache() {
     env: {},
     readManifest: () => ({
       version: V,
-      assets: { ios: [{ name: 'rn-fast-runner-sim.zip', sha256: 'GOOD', bytes: 1 }], android: [] },
+      assets: {
+        ios: [{ name: `rn-fast-runner-${V}-sim.zip`, sha256: 'GOOD', bytes: 1 }],
+        android: [],
+      },
     }),
     cacheDir: (v: string, p: string) => join('/cache', v, p),
     existsSync: (p: string) => files.has(p) || [...files].some((f) => f.startsWith(p + '/')),
     sha256File: () => 'GOOD',
+    readArchiveIdentity: () => ({ schemaVersion: 1, version: V, platform: 'ios' }),
     listFiles: (d: string) =>
       [...files].filter((f) => f.startsWith(d + '/')).map((f) => f.slice(d.length + 1)),
     fetchToFile: async () => {

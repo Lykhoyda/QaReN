@@ -96,7 +96,8 @@ jobs:
           test -n "$(find build/dd/Build/Products -name '*.xctestrun' -print -quit)" \
             || { echo "no .xctestrun produced — unexpected DerivedData layout"; exit 1; }
           ZIP="rn-fast-runner-$VERSION-sim.zip"
-          (cd build/dd && zip -r "$GITHUB_WORKSPACE/$ZIP" Build/Products)
+          printf '{"schemaVersion":1,"version":"%s","platform":"ios"}\n' "$VERSION" > build/dd/qaren-runner.json
+          (cd build/dd && zip -r "$GITHUB_WORKSPACE/$ZIP" Build/Products qaren-runner.json)
           {
             echo "sha256=$(shasum -a 256 "$ZIP" | cut -d' ' -f1)"
             echo "bytes=$(wc -c < "$ZIP" | tr -d ' ')"
@@ -149,7 +150,8 @@ jobs:
           TEST=packages/rn-android-runner/app/build/outputs/apk/androidTest/debug/app-debug-androidTest.apk
           test -f "$APP" && test -f "$TEST" || { echo "APK(s) missing after gradle build"; exit 1; }
           ZIP="rn-android-runner-$VERSION.zip"
-          zip -j "$ZIP" "$APP" "$TEST"
+          printf '{"schemaVersion":1,"version":"%s","platform":"android"}\n' "$VERSION" > qaren-runner.json
+          zip -j "$ZIP" "$APP" "$TEST" qaren-runner.json
           {
             echo "sha256=$(shasum -a 256 "$ZIP" | cut -d' ' -f1)"
             echo "bytes=$(wc -c < "$ZIP" | tr -d ' ')"
