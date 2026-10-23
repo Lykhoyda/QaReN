@@ -336,7 +336,12 @@ for (const exact of ['id', 'text'] as const) {
   for (const relation of ['equal', 'contained', 'near'] as const) {
     test(`exact ${exact} miss ignores ${relation} evidence from the other selector domain`, () => {
       const query = 'coverage card';
-      const other = relation === 'equal' ? query : relation === 'contained' ? `${query} details` : 'coverage details';
+      const other =
+        relation === 'equal'
+          ? query
+          : relation === 'contained'
+            ? `${query} details`
+            : 'coverage details';
       const tree = nodes(false);
       tree.forEach((node) => {
         delete node.label;
@@ -350,7 +355,11 @@ for (const exact of ['id', 'text'] as const) {
       assert.equal(miss.reason, 'absent');
       assert.deepEqual(miss.candidates, []);
       const ordinary = targetMissDiagnostic(
-        { phrase: query, quoted: query }, screen, 1, false, new ObservedPrivacy(),
+        { phrase: query, quoted: query },
+        screen,
+        1,
+        false,
+        new ObservedPrivacy(),
       );
       assert.equal(ordinary.candidates.length, 1);
       if (exact === 'id') screen.elements[3].testID = query;
@@ -364,10 +373,15 @@ for (const exact of ['id', 'text'] as const) {
 }
 
 test('exact identifier diagnostics do not describe identifier matches as aggregated labels', () => {
-  const screen = aggregate(join(nodes(false), [], 'app', { native: 'complete', react: 'complete' }));
+  const screen = aggregate(
+    join(nodes(false), [], 'app', { native: 'complete', react: 'complete' }),
+  );
   const diagnostic = targetMissDiagnostic(
     { phrase: 'coverage-list', quoted: 'coverage-list', exact: 'id' },
-    screen, 1, false, new ObservedPrivacy(),
+    screen,
+    1,
+    false,
+    new ObservedPrivacy(),
   );
   assert.equal(diagnostic.reason, 'present-but-unavailable');
   assert.equal(diagnostic.candidates[0].match, 'exact');

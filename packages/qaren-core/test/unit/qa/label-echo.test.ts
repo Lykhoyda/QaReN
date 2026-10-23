@@ -519,7 +519,9 @@ for (const contained of [true, false]) {
   test(`a descendant-labelled no-identifier container collapses only a tree-contained control (tree-contained=${contained})`, () => {
     const screen = join(echoContainer(1, contained), []);
     screen.elements[2].semantic!.nativePresence = {
-      kind: 'other', labelSource: 'descendant', structural: false,
+      kind: 'other',
+      labelSource: 'descendant',
+      structural: false,
     };
     const resolved = prepareTarget(tapNext, screen);
     if (!contained) {
