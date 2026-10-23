@@ -8,6 +8,8 @@ use serde::Serialize;
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 
+mod host;
+
 const VERSION: &str = env!("CARGO_PKG_VERSION");
 const INSTALL: &str = "bash <plugin>/scripts/ensure-qaren.sh --install";
 const MCP_MARKERS: [&str; 2] = ["rn-dev-agent-core", "cdp-supervisor"];
@@ -162,7 +164,7 @@ impl Report {
     }
 }
 
-// Read-only: files are only opened for reading and the runner only runs version, list and df commands.
+// Read-only: host probes never change a device or start a service.
 pub fn doctor(
     runner: &mut dyn Runner,
     home: &Path,
@@ -244,6 +246,7 @@ pub fn doctor(
         &path_dirs,
         &runner.env_names(),
     ));
+    checks.extend(host::checks(runner, std::env::consts::OS));
 
     let build = exe
         .as_deref()
@@ -343,20 +346,25 @@ fn xcode(runner: &mut dyn Runner) -> Check {
 
 fn ios_runtimes(runner: &mut dyn Runner, configured: Option<&str>) -> Check {
     let output = runner.run(&ios::list_runtimes_spec());
-    let available = if output.ok() {
-        ios::parse_available_runtimes(&output.stdout)
-    } else {
-        Vec::new()
-    };
-    if available.is_empty() {
-        let why = if output.ok() {
-            String::new()
-        } else {
-            format!(" (simctl: {})", output.summary())
-        };
+    if output.timed_out {
+        return Check::warn(
+            "ios-runtime",
+            "simctl did not read the runtime inventory in time; availability is unknown",
+            "check the simulator-service row, then re-run doctor after the inventory responds",
+        );
+    }
+    if !output.ok() {
         return Check::fail(
             "ios-runtime",
-            format!("no iOS simulator runtime is available{why}"),
+            format!("simctl could not list runtimes: {}", output.summary()),
+            host::SIMCTL_FIX,
+        );
+    }
+    let available = ios::parse_available_runtimes(&output.stdout);
+    if available.is_empty() {
+        return Check::fail(
+            "ios-runtime",
+            "no iOS simulator runtime is available",
             "install an iOS platform in Xcode > Settings > Components",
         );
     }
@@ -1293,6 +1301,20 @@ mod tests {
             .as_ref()
             .and_then(|exe| exe.parent()?.parent())
             .map_or(PathBuf::from("/runtime"), |dir| dir.join("runtime"));
+        runner.expect_run("ps -axww", CmdOutput::failed(1, "unavailable"));
+        if cfg!(target_os = "macos") {
+            runner.expect_run(
+                "simctl list devices -j",
+                CmdOutput::failed(1, "unavailable"),
+            );
+            for command in ["vm_stat", "sysctl", "top"] {
+                runner.expect_run(command, CmdOutput::failed(1, "unavailable"));
+            }
+        } else {
+            for command in ["/proc/meminfo", "/proc/loadavg", "/proc/stat", "/proc/stat"] {
+                runner.expect_run(command, CmdOutput::failed(1, "unavailable"));
+            }
+        }
         doctor(runner, &scratch.0, cwd, exe, runtime, None)
     }
 
@@ -2005,18 +2027,36 @@ mod tests {
         }
         assert_eq!(runner.remaining(), 0);
         assert!(runner.spawned_logs.is_empty());
-        assert!(runner.calls.iter().all(|call| call.program == "df"
+        assert!(runner.calls.iter().all(|call| call.label == "doctor-host"
+            || call.program == "df"
             || call
                 .args
                 .iter()
                 .any(|arg| arg == "--version" || arg == "-version" || arg == "list")));
         assert_eq!(s.tree(), before);
-        assert_eq!(report.exit_code(), 0, "{text}");
+        assert_eq!(
+            report.exit_code(),
+            u8::from(cfg!(target_os = "macos")),
+            "{text}"
+        );
+        if cfg!(target_os = "macos") {
+            let service = row(&report, "simulator-service");
+            assert_eq!(service.status, Status::Fail);
+            assert!(service.detail.contains("unavailable"));
+            assert_eq!(service.fix.as_deref(), Some(host::SIMCTL_FIX));
+        }
         assert!(text.starts_with(&format!("qaren {VERSION} at ")));
         assert!(text.contains("(build abababab)"));
         let parsed: serde_json::Value = serde_json::from_str(&json).unwrap();
-        assert_eq!(parsed["verdict"], "pass");
-        assert_eq!(parsed["checks"].as_array().unwrap().len(), 21);
+        assert_eq!(
+            parsed["verdict"],
+            if cfg!(target_os = "macos") {
+                "fail"
+            } else {
+                "pass"
+            }
+        );
+        assert_eq!(parsed["checks"].as_array().unwrap().len(), 25);
     }
 
     #[test]
@@ -2040,6 +2080,35 @@ mod tests {
         assert_eq!(row(&report, "config").status, Status::Skip);
         assert_eq!(row(&report, "android-sdk").status, Status::Skip);
         assert_eq!(row(&report, "source-checkout").status, Status::Skip);
+    }
+
+    #[test]
+    fn unreadable_runtime_inventory_warns_without_claiming_no_runtime_is_installed() {
+        let mut runner = MockRunner::new();
+        runner.expect_run(
+            "simctl list runtimes --json",
+            CmdOutput {
+                timed_out: true,
+                ..Default::default()
+            },
+        );
+        let row = ios_runtimes(&mut runner, None);
+        assert_eq!(row.status, Status::Warn);
+        assert!(row.detail.contains("availability is unknown"));
+        assert!(row.fix.unwrap().contains("simulator-service"));
+    }
+
+    #[test]
+    fn a_failing_runtime_inventory_fails_with_simctl_error_and_the_xcode_fix() {
+        let mut runner = MockRunner::new();
+        runner.expect_run(
+            "simctl list runtimes --json",
+            CmdOutput::failed(1, "CoreSimulator is out of date"),
+        );
+        let row = ios_runtimes(&mut runner, None);
+        assert_eq!(row.status, Status::Fail);
+        assert!(row.detail.contains("CoreSimulator is out of date"));
+        assert!(row.fix.unwrap().contains("xcodebuild -runFirstLaunch"));
     }
 
     #[test]
