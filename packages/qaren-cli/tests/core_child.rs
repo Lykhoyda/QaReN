@@ -120,6 +120,7 @@ fn request() -> CoreRequest {
         run_id: RUN.to_string(),
         t0: 1_770_000_000_000,
         walk_budget_ms: 300_000,
+        attach_budget_ms: 120_000,
         plan: "1. Tap \"Tasks\"\n✓ \"Tasks\"\n".to_string(),
         prepared: serde_json::json!({"hash":"test","blocks":[]}),
         preflight_calls: vec![],

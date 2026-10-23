@@ -37,6 +37,8 @@ import {
 export interface AdmissionSteps {
   metroPort: number;
   readinessMs: number;
+  // A stall without a requested bundle refuses once this much time has passed.
+  attachBudgetMs: number;
   remainingMs(): number;
   attach(deadline: number): Promise<void>;
   // Inside the attach deadline: the attached client must have run its bundle before anything reads it.
@@ -57,8 +59,6 @@ export interface AdmissionSteps {
 }
 
 type Proven = Extract<ProveOutcome, { ok: true }>;
-
-export const ATTACH_BUDGET_MS = 120_000;
 
 export type AdmissionBoundary = (typeof ADMISSION_BOUNDARIES)[number];
 export type AdmissionInnerClass = (typeof ADMISSION_INNER_CLASSES)[number];
@@ -403,7 +403,8 @@ export const devClientLaunchUrl = (target: { metroUrlForDevice: string }): strin
 
 async function attach(steps: AdmissionSteps, signal: AbortSignal): Promise<Proven> {
   const started = performance.now();
-  const deadline = started + Math.min(ATTACH_BUDGET_MS, steps.remainingMs());
+  const deadline = started + steps.remainingMs();
+  const refuseStalledAt = started + steps.attachBudgetMs;
   const relaunchAt = started + steps.readinessMs;
   let relaunched = false;
   let nextNoTargetProbe = started;
@@ -489,10 +490,9 @@ async function attach(steps: AdmissionSteps, signal: AbortSignal): Promise<Prove
           )
             throw error;
           retried = error;
-          const noTarget =
-            lastStarted === 'attach' &&
-            error instanceof TargetReadinessTimeoutError &&
-            !(error instanceof TargetListAttemptTimeoutError);
+          const stalledAttach =
+            lastStarted === 'attach' && error instanceof TargetReadinessTimeoutError;
+          const noTarget = stalledAttach && !(error instanceof TargetListAttemptTimeoutError);
           const probeStall =
             error instanceof CDPProbeTimeoutError || error instanceof CDPHandshakeTimeoutError;
           if (probeStall && stallSeenAt === undefined) stallSeenAt = performance.now();
@@ -529,6 +529,11 @@ async function attach(steps: AdmissionSteps, signal: AbortSignal): Promise<Prove
                 throw error;
               }
             }
+          }
+          if (stalledAttach && lastStarted !== 'relaunch' && performance.now() >= refuseStalledAt) {
+            if (bundleRequest !== 'received' && steps.bundleRequested)
+              bundleRequest = await probeBundleRequest(steps);
+            if (bundleRequest !== 'received') throw error;
           }
           observe('retry', facts(admissionInnerClass(error)));
           lastStarted = 'retry_wait';

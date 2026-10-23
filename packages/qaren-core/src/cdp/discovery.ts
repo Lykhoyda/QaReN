@@ -210,7 +210,6 @@ export async function waitForExactPortTargets(
     } catch (error) {
       signal?.throwIfAborted();
       if (!(error instanceof TargetListAttemptTimeoutError)) throw error;
-      if (!otherBundleOnly) state = 'list_timeout';
     }
     if (!Array.isArray(raw)) {
       throw new Error(`Invalid CDP target list on port ${port}: expected an array`);

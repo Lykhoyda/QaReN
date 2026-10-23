@@ -248,6 +248,8 @@ pub struct Deadlines {
     pub build_seconds: u64,
     #[serde(default = "d_boot")]
     pub device_boot_seconds: u64,
+    #[serde(default = "d_attach")]
+    pub attach_seconds: u64,
 }
 
 fn d_deps() -> u64 {
@@ -259,6 +261,9 @@ fn d_build() -> u64 {
 fn d_boot() -> u64 {
     420
 }
+fn d_attach() -> u64 {
+    120
+}
 
 impl Default for Deadlines {
     fn default() -> Self {
@@ -266,6 +271,7 @@ impl Default for Deadlines {
             install_deps_seconds: d_deps(),
             build_seconds: d_build(),
             device_boot_seconds: d_boot(),
+            attach_seconds: d_attach(),
         }
     }
 }
@@ -276,6 +282,7 @@ impl Deadlines {
             ("deadlines.install_deps_seconds", self.install_deps_seconds),
             ("deadlines.build_seconds", self.build_seconds),
             ("deadlines.device_boot_seconds", self.device_boot_seconds),
+            ("deadlines.attach_seconds", self.attach_seconds),
         ] {
             if !(30..=7200).contains(&value) {
                 return Err(format!(

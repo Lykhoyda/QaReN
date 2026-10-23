@@ -441,29 +441,17 @@ pub fn parse_runner_hosts(output: &str) -> RunnerHostPresence {
 }
 
 pub fn probe_runner_hosts(runner: &mut dyn Runner, udid: &str) -> RunnerHostPresence {
-    probe_runner_hosts_with_timeout(runner, udid, 30)
-}
-
-pub(crate) fn probe_runner_hosts_with_timeout(
-    runner: &mut dyn Runner,
-    udid: &str,
-    timeout_seconds: u64,
-) -> RunnerHostPresence {
     if canonical_udid(udid).as_deref() != Some(udid) {
         return RunnerHostPresence::Unknown;
     }
-    let mut spec = list_devices_spec();
-    spec.timeout_seconds = timeout_seconds;
-    let inventory = runner.run(&spec);
+    let inventory = runner.run(&list_devices_spec());
     if !inventory.ok() || !inventory.stderr.is_empty() || inventory.stdout.len() >= 1024 * 1024 {
         return RunnerHostPresence::Unknown;
     }
     match parse_selected_sim(&inventory.stdout, udid).map(|sim| sim.state) {
         Some(SimState::Shutdown) => RunnerHostPresence::Absent,
         Some(SimState::Booted) => {
-            let mut spec = launchctl_list_spec(udid);
-            spec.timeout_seconds = timeout_seconds;
-            let output = runner.run(&spec);
+            let output = runner.run(&launchctl_list_spec(udid));
             if output.ok() && output.stderr.is_empty() {
                 parse_runner_hosts(&output.stdout)
             } else {

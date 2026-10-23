@@ -454,6 +454,7 @@ async function openSession(
       {
         metroPort: target.metroPort,
         readinessMs: REACT_READY_TIMEOUT_MS,
+        attachBudgetMs: request.attachBudgetMs,
         remainingMs,
         attach: async (deadline) => {
           attachStage = 'wait_targets';
@@ -488,16 +489,16 @@ async function openSession(
               },
               bundleRequested: async () => {
                 if (!target.metroBundleRequests) {
-                  log('relaunch skipped: no bundle request signal');
+                  log('no bundle request signal');
                   return undefined;
                 }
                 const requested = bundleRequestedSinceLaunch(target.metroBundleRequests);
                 log(
                   requested === false
-                    ? 'relaunch allowed: Metro received no bundle request since launch'
+                    ? 'Metro received no bundle request since launch'
                     : requested
-                      ? 'relaunch skipped: Metro received a bundle request'
-                      : 'relaunch skipped: bundle request signal unknown',
+                      ? 'Metro received a bundle request'
+                      : 'bundle request signal unknown',
                 );
                 return requested;
               },

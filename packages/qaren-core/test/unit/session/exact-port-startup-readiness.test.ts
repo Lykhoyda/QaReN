@@ -380,12 +380,19 @@ test('a final read that times out keeps the wrong-bundle observation of the last
 
 function admitThroughReadiness(
   t: TestContext,
-  respond: (now: number, relaunched: boolean) => unknown[],
+  respond: (now: number, relaunched: boolean) => unknown[] | 'unanswered',
   appAlive: boolean,
 ) {
   const calls: string[] = [];
   let relaunched = false;
-  const clock = setup(t, async () => Response.json(respond(clock.now(), relaunched)));
+  const clock = setup(t, async (_url, options) => {
+    const answer = respond(clock.now(), relaunched);
+    return answer === 'unanswered'
+      ? new Promise<Response>((_resolve, reject) =>
+          options?.signal?.addEventListener('abort', () => reject(options.signal?.reason)),
+        )
+      : Response.json(answer);
+  });
   const started = clock.now();
   const budgetMs = 10_000;
   const remainingMs = () => Math.max(0, budgetMs - (clock.now() - started));
@@ -396,6 +403,7 @@ function admitThroughReadiness(
     {
       metroPort: managedPort,
       readinessMs: 1000,
+      attachBudgetMs: budgetMs,
       remainingMs,
       attach: async () => {
         calls.push('wait');
@@ -493,6 +501,23 @@ for (const [label, missing] of [
     ]);
   });
 }
+
+test('a final read that times out keeps an empty window eligible for no-target recovery', async (t) => {
+  let reads = 0;
+  const admission = admitThroughReadiness(
+    t,
+    (_now, relaunched) => (relaunched ? [target()] : ++reads % 2 === 0 ? 'unanswered' : []),
+    false,
+  );
+  const outcome = await admission.run();
+  assert.ok(outcome?.proof, `admission refused: ${outcome?.error?.message}`);
+  assert.deepEqual(admission.calls.slice(0, 4), [
+    'wait',
+    'foreign_driver',
+    'app_alive',
+    'relaunch',
+  ]);
+});
 
 test('a live app whose target registers after the readiness window survives repeated recovery probes', async (t) => {
   let registeredAt: number | undefined;

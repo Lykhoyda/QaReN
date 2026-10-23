@@ -1134,7 +1134,7 @@ fn settled_runner_hosts(
 ) -> ios::RunnerHostPresence {
     let mut presence = ios::RunnerHostPresence::Unknown;
     for attempt in 0..3 {
-        presence = ios::probe_runner_hosts_with_timeout(runner, udid, 10);
+        presence = ios::probe_runner_hosts(runner, udid);
         if presence == ios::RunnerHostPresence::Absent
             || (presence == ios::RunnerHostPresence::Present && !after_terminate)
         {
@@ -2100,7 +2100,11 @@ mod integrity_tests {
             .calls
             .iter()
             .any(|spec| spec.label == "simctl-terminate"));
-        assert!(runner.calls.iter().all(|spec| spec.timeout_seconds <= 10));
+        assert!(runner.calls.iter().all(|spec| match spec.label.as_str() {
+            "simctl-list" => spec.timeout_seconds == 30,
+            "simctl-launchctl" => spec.timeout_seconds == 20,
+            _ => false,
+        }));
     }
 
     #[test]

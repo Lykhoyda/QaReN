@@ -845,6 +845,12 @@ fn run_inner(
         run_id: run_id.clone(),
         t0: ctx.runner.now_epoch_ms(),
         walk_budget_ms: req.budgets.walk_seconds.saturating_mul(1000),
+        attach_budget_ms: ctx
+            .record
+            .scenario
+            .deadlines
+            .attach_seconds
+            .saturating_mul(1000),
         plan: plan.clone(),
         prepared,
         preflight_calls: preflight_jev

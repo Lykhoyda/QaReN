@@ -1693,8 +1693,8 @@ identity and signals it, before the host, only while that identity still
 matches. Refused or unresolved core or driver cleanup leaves the host untouched
 and retains the lease. A host that was already running, or any
 present or unknown host after that, retains the lease. Cleanup rechecks an unknown
-host observation up to three times, with each inventory or scoped process-list command
-bounded to ten seconds and 200 ms between probes. After terminating an owned host,
+host observation up to three times, 200 ms apart, keeping the inventory and scoped
+process-list commands' own 30- and 20-second limits. After terminating an owned host,
 the same bounded reads allow its exit to settle. An unanswered or malformed read
 never proves absence; a persistent unknown still requires later cleanup and retains
 the lease. When the pre-attach host
@@ -2029,9 +2029,16 @@ The [row timing implementation](../qaren-core/src/qa/row-timing.ts) owns
 aggregation; [CLI decoding](src/core.rs) and [report rendering](src/report.rs)
 own consumption.
 
-Launch admission has a two-minute deadline, capped by the remaining walk budget,
-shared across target readiness, WebSocket handshakes, probes and retry sleeps.
-Retries and the one relaunch never renew it. The connect-time dev-build check
+Launch admission shares the remaining walk deadline across target readiness,
+WebSocket handshakes, probes and retry sleeps; retries and the one relaunch never
+renew it. A stall without progress refuses earlier, once `deadlines.attach_seconds`
+(default 120; see the [deadline configuration reference](../../apps/docs-site/src/content/docs/configuration.mdx#deadlines)) has passed since admission began:
+a target-list wait that saw no target on the selected device, or whose list
+requests went unanswered, ends admission unless Metro has received a bundle
+request, which is re-read at that point. The refusal follows the first readiness
+window ending after that limit, and a relaunch made just before it still gets its
+full window. A received request, a registered target whose probes or handshakes
+stall, and React that is not yet ready keep the walk deadline. The connect-time dev-build check
 and helper injection wait for the runtime's answer until that deadline rather
 than a fixed request timeout; no answer by the deadline is a readiness timeout.
 Target readiness and attachment accept only a runtime Metro reports with the
@@ -2074,8 +2081,8 @@ Metro without that log, or Metro owned by an `expo run:*` build) the signal
 stays unknown and a live app keeps the skip. The count covers the whole
 Metro server, so another simulator's bundle request also keeps the skip.
 A received request proves neither that the bundle finished nor that it is still
-loading; these cases refuse at the admission deadline if no target appears.
-`core.log` records which way the decision went. An absent job or failed
+loading, so a live app with one keeps waiting within the walk deadline.
+`core.log` records the observed request signal. An absent job or failed
 probe permits recovery as before. Skipping
 does not consume the one relaunch for persistent runtime-probe or
 WebSocket-handshake timeouts, and a target that registers late gets the same
