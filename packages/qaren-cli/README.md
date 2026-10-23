@@ -2227,6 +2227,90 @@ these failure records.
 Dev-overlay recovery must re-prove clearance before retrying the step. A failed
 clearance or a non-executing hide with no overlay to clear fails the step.
 
+#### Reusable sign-in example
+
+Save sign-in once, then configure recovery for later checks on the same app and
+platform. This works with iOS and Android, Expo dev clients and configured native
+builds; use your existing build configuration and device flags. Apps without
+testIDs can use stored visible labels (`text`) instead of IDs. Runtime-input fills
+still require the [runtime-input prerequisites](#runtime-inputs), including a
+supported React TextInput; a label alone does not establish private-fill admission.
+
+1. Start on the sign-in screen and write `.qaren/plans/sign-in.md`. If the app
+   echoes the username, declare that before filling it:
+
+   ```markdown
+   ## QA
+
+   ### Sign in
+
+   1. Expect input USERNAME on screen
+   2. Fill "Email" with input USERNAME
+   3. Fill "Password" with input PASSWORD
+   4. Tap "Sign in"
+   ✓ "Welcome"
+   ```
+
+2. In your own shell, export inputs from your password manager. For example,
+   replace these placeholder references with your own password-manager CLI paths;
+   keep the resulting values out of plans and logs:
+
+   ```sh
+   export QAREN_INPUT_USERNAME="$(op read 'op://<vault>/<item>/username')"
+   export QAREN_INPUT_PASSWORD="$(op read 'op://<vault>/<item>/password')"
+   ```
+
+   In CI, supply those environment names through your CI secret store.
+
+3. Run `qaren check --plan-file .qaren/plans/sign-in.md` (add `--platform android`
+   for Android). On success, `.qaren/actions/sign-in.yaml` stores input names,
+   never their values. With an `Email` field whose testID is `login-email`, the
+   local receipt and stderr show:
+
+   ```text
+   ▸ login: block "sign-in" signs in with runtime inputs USERNAME, PASSWORD.
+     To replay it whenever its first screen appears, add to .qaren/config.yaml:
+       loginBlock: sign-in
+       loginMarker:
+         id: "login-email"
+     Every run then needs QAREN_INPUT_USERNAME and QAREN_INPUT_PASSWORD set.
+   ```
+
+4. Paste those printed lines into `.qaren/config.yaml`:
+
+   ```yaml
+   loginBlock: sign-in
+   loginMarker:
+     id: "login-email"
+   ```
+
+   If the first stored selector is a label, the hint prints `text: "Email"`
+   instead. Use the first screen's actual selector; keep exactly one marker key.
+   Run `qaren doctor` to check the saved block and its platform. A block must be
+   saved for the platform being checked; an iOS block is not an Android block.
+
+5. Keep the named inputs exported and run a later feature plan. When its step
+   meets the configured sign-in marker, QaReN replays `sign-in` from its first
+   command and retries that step once. Inputs are required before device
+   selection on every run with this login configuration, even if no login wall
+   appears. Runs with inputs withhold screenshots and video as documented under
+   [Runtime inputs](#runtime-inputs).
+
+A block starting at Home with `Tap "Log out"` before its sign-in fills starts
+signed in. It cannot recover from a sign-in screen: its first command expects
+Home. Put the sign-out steps in their own block above `### Sign in`, then run
+again to save the sign-in block starting on the sign-in screen. QaReN prints
+`LOGIN_BLOCK_SIGNS_OUT` instead of suggesting a marker for that combined block.
+If a target has neither a testID nor a label, the block cannot be saved; check
+`blocks_not_saved` before configuring recovery.
+
+Saved blocks in a linked worktree's real `.qaren/actions` leave with that worktree.
+Commit them to make them available in other checkouts and CI, or use the verified
+main-copy link described under [Saved blocks](#saved-blocks). `CORPUS_NOT_SHARED`
+points this out after a check writes blocks there. `qaren pr` reads login from
+the PR head's committed corpus; local hints do not publish configuration or
+blocks. See [Test a pull request](#test-a-pull-request).
+
 ### Walk timing
 
 For runs using runtime inputs, see the [runtime-input diagnostics](#runtime-inputs)

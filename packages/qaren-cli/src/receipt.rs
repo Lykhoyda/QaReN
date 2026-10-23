@@ -88,6 +88,12 @@ pub struct BlockNotSaved {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Hint {
+    pub code: String,
+    pub text: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Receipt {
     pub schema: String,
     pub verb: String,
@@ -132,6 +138,8 @@ pub struct Receipt {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub blocks_written: Vec<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub hints: Vec<Hint>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub blocks_not_saved: Vec<BlockNotSaved>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub worktree_drift: Vec<String>,
@@ -173,6 +181,7 @@ impl Receipt {
             preflight_jev: None,
             tested_older_commit: None,
             blocks_written: Vec::new(),
+            hints: Vec::new(),
             blocks_not_saved: Vec::new(),
             worktree_drift: Vec::new(),
             recipe: None,

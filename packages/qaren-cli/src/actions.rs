@@ -5,6 +5,246 @@ use std::io::Read;
 use std::os::unix::fs::OpenOptionsExt;
 use std::path::{Path, PathBuf};
 
+#[derive(Debug)]
+pub struct LoginCandidate {
+    pub inputs: Vec<String>,
+    pub marker: Option<crate::core::Selector>,
+    pub signs_out_at: Option<usize>,
+}
+
+fn signs_out(text: &str) -> bool {
+    let text = text.to_lowercase();
+    let word = |c: char| c.is_alphanumeric() || c == '_';
+    text.char_indices().any(|(at, _)| {
+        if text[..at].chars().next_back().is_some_and(word) {
+            return false;
+        }
+        ["log", "sign"].iter().any(|prefix| {
+            let Some(rest) = text[at..].strip_prefix(prefix) else {
+                return false;
+            };
+            let rest = rest
+                .strip_prefix(|c: char| c.is_whitespace() || c == '_' || c == '-')
+                .unwrap_or(rest);
+            rest.strip_prefix("out")
+                .is_some_and(|tail| !tail.chars().next().is_some_and(word))
+        })
+    })
+}
+
+pub fn login_candidate(text: &str) -> Option<LoginCandidate> {
+    let (_, body) = text.split_once("\n---\n")?;
+    let (_, body) = body.split_once("\n\n")?;
+    let mut candidate = LoginCandidate {
+        inputs: Vec::new(),
+        marker: None,
+        signs_out_at: None,
+    };
+    let mut step = 0;
+    for line in body.lines() {
+        if let Some(comment) = line.strip_prefix("# ") {
+            if !comment.starts_with("qaren:") {
+                step += 1;
+                if candidate.inputs.is_empty() && signs_out(comment) {
+                    candidate.signs_out_at.get_or_insert(step);
+                }
+            }
+            continue;
+        }
+        let Some(command) = line.strip_prefix("- ") else {
+            continue;
+        };
+        let value: serde_yaml::Value = serde_yaml::from_str(command).ok()?;
+        let selector = value
+            .get("tapOn")
+            .or_else(|| value.get("extendedWaitUntil")?.get("visible"))
+            .or_else(|| value.get("scrollUntilVisible")?.get("element"));
+        if candidate.inputs.is_empty()
+            && selector
+                .or_else(|| value.get("assertVisible"))
+                .is_some_and(|selector| {
+                    ["id", "text"]
+                        .iter()
+                        .filter_map(|key| selector.get(key)?.as_str())
+                        .any(signs_out)
+                })
+        {
+            candidate.signs_out_at.get_or_insert(step.max(1));
+        }
+        if let Some(selector) = selector {
+            let id = selector.get("id").and_then(serde_yaml::Value::as_str);
+            let text = selector.get("text").and_then(serde_yaml::Value::as_str);
+            if candidate.marker.is_none() && (id.is_some() ^ text.is_some()) {
+                candidate.marker = Some(crate::core::Selector {
+                    id: id.map(str::to_string),
+                    text: text.map(str::to_string),
+                });
+            }
+        }
+        if let Some(fill) = value
+            .get("inputText")
+            .filter(|fill| fill.get("sensitivity").is_none())
+        {
+            if let Some(name) = fill
+                .get("input")
+                .and_then(serde_yaml::Value::as_str)
+                .filter(|name| crate::redact::valid_input_name(name))
+            {
+                if !candidate.inputs.iter().any(|input| input == name) {
+                    candidate.inputs.push(name.to_string());
+                }
+            }
+        }
+    }
+    (!candidate.inputs.is_empty()).then_some(candidate)
+}
+
+impl LoginCandidate {
+    pub fn hint(&self, slug: &str) -> Option<crate::receipt::Hint> {
+        let slug_quoted = serde_json::to_string(slug).ok()?;
+        if let Some(step) = self.signs_out_at {
+            return Some(crate::receipt::Hint {
+                code: "LOGIN_BLOCK_SIGNS_OUT".into(),
+                text: format!("▸ login: block {slug_quoted} signs out (step {step}) before it signs in, so it starts signed in.\n  Login recovery replays a block from the sign-in screen: move the sign-out steps into\n  their own block above it and start the sign-in block on the sign-in screen."),
+            });
+        }
+        let marker = self.marker.as_ref()?;
+        let (key, value) = marker
+            .id
+            .as_ref()
+            .map(|id| ("id", id))
+            .or_else(|| marker.text.as_ref().map(|text| ("text", text)))?;
+        let envs = self
+            .inputs
+            .iter()
+            .map(|name| format!("QAREN_INPUT_{name}"))
+            .collect::<Vec<_>>()
+            .join(" and ");
+        let config_slug = match serde_yaml::from_str::<serde_yaml::Value>(slug) {
+            Ok(serde_yaml::Value::String(_)) => slug,
+            _ => &slug_quoted,
+        };
+        Some(crate::receipt::Hint {
+            code: "LOGIN_BLOCK_CANDIDATE".into(),
+            text: format!("▸ login: block {slug_quoted} signs in with runtime inputs {}.\n  To replay it whenever its first screen appears, add to .qaren/config.yaml:\n    loginBlock: {config_slug}\n    loginMarker:\n      {key}: {}\n  Every run then needs {envs} set.", self.inputs.join(", "), serde_json::to_string(value).ok()?),
+        })
+    }
+}
+
+pub fn login_for(
+    app_root: &Path,
+    slug: &str,
+    platform: &str,
+    app_id: &str,
+) -> Option<LoginCandidate> {
+    login_candidate(&show_for(app_root, slug, platform, app_id)?)
+}
+
+pub fn show_for(app_root: &Path, slug: &str, platform: &str, app_id: &str) -> Option<String> {
+    let text = show(app_root, slug).ok()?;
+    let fields = header(&text, slug)?;
+    if fields.get("platform").map(String::as_str) != Some(platform)
+        || fields.get("appId").map(String::as_str) != Some(app_id)
+    {
+        return None;
+    }
+    Some(text)
+}
+
+#[derive(Debug, PartialEq, Eq)]
+pub enum CorpusLocation {
+    NotGit,
+    Primary,
+    Linked { local: bool },
+}
+
+pub fn corpus_location(runner: &mut dyn crate::exec::Runner, app_root: &Path) -> CorpusLocation {
+    let output = crate::worktree::git(
+        runner,
+        "git-corpus-location",
+        app_root,
+        &[
+            "rev-parse",
+            "--path-format=absolute",
+            "--git-dir",
+            "--git-common-dir",
+        ],
+        10,
+    );
+    let mut paths = output.stdout.lines();
+    let (Some(dir), Some(common)) = (paths.next(), paths.next()) else {
+        return CorpusLocation::NotGit;
+    };
+    if !output.ok() {
+        return CorpusLocation::NotGit;
+    }
+    if Path::new(dir) == Path::new(common) {
+        CorpusLocation::Primary
+    } else {
+        CorpusLocation::Linked {
+            local: std::fs::symlink_metadata(app_root.join(".qaren/actions"))
+                .is_ok_and(|meta| meta.is_dir()),
+        }
+    }
+}
+
+pub fn corpus_hint(written: usize) -> crate::receipt::Hint {
+    crate::receipt::Hint {
+        code: "CORPUS_NOT_SHARED".into(),
+        text: format!("▸ saved blocks: {written} written to this linked worktree's .qaren/actions; they leave with this\n  worktree and other checkouts walk them again. Commit them, or share saved blocks with\n  the main copy: move them to <main>/<app>/.qaren/actions, remove this worktree's\n  .qaren/actions, then: ln -s <main>/<app>/.qaren/actions .qaren/actions"),
+    }
+}
+
+pub fn corpus_link_is_main_copy(runner: &mut dyn crate::exec::Runner, root: &Path) -> bool {
+    let link = root.join(".qaren/actions");
+    if !std::fs::symlink_metadata(&link).is_ok_and(|meta| meta.is_symlink())
+        || !std::fs::symlink_metadata(root.join(".qaren")).is_ok_and(|meta| meta.is_dir())
+    {
+        return false;
+    }
+    let top = crate::worktree::git(
+        runner,
+        "git-corpus-root",
+        root,
+        &["rev-parse", "--show-toplevel"],
+        10,
+    );
+    let worktrees = crate::worktree::git(
+        runner,
+        "git-corpus-main",
+        root,
+        &["worktree", "list", "--porcelain", "-z"],
+        10,
+    );
+    let Some(record) = worktrees.stdout.split("\0\0").next() else {
+        return false;
+    };
+    if !top.ok() || !worktrees.ok() || record.split('\0').any(|field| field == "bare") {
+        return false;
+    }
+    let Some(main) = record
+        .split('\0')
+        .next()
+        .and_then(|field| field.strip_prefix("worktree "))
+    else {
+        return false;
+    };
+    let Ok(root) = root.canonicalize() else {
+        return false;
+    };
+    let Ok(relative) = root.strip_prefix(top.stdout.trim()) else {
+        return false;
+    };
+    let target = Path::new(main).join(relative).join(".qaren/actions");
+    let Ok(link_target) = std::fs::read_link(&link) else {
+        return false;
+    };
+    let link_target = link.parent().unwrap().join(link_target);
+    std::fs::symlink_metadata(&target).is_ok_and(|meta| meta.is_dir())
+        && std::fs::symlink_metadata(&link_target).is_ok_and(|meta| meta.is_dir())
+        && link_target.canonicalize().ok() == target.canonicalize().ok()
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ActionEntry {
@@ -255,4 +495,71 @@ pub fn render(actions: &[ActionEntry]) -> String {
             )
         })
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn block(commands: &str) -> String {
+        format!("appId: com.example.app\n---\n# id: sign-in\n# intent: Sign in\n# appId: com.example.app\n# platform: ios\n\n{commands}")
+    }
+
+    #[test]
+    fn login_candidates_use_the_first_selector_and_strict_input_names() {
+        for (command, field) in [
+            ("tapOn: { id: \"login-email\" }", "id"),
+            (
+                "extendedWaitUntil: { visible: { text: \"Email\" }, timeout: 15000 }",
+                "text",
+            ),
+            (
+                "scrollUntilVisible: { element: { text: \"Email\" }, direction: DOWN }",
+                "text",
+            ),
+        ] {
+            let candidate = login_candidate(&block(&format!(
+                "# 1. Fill email\n- {command}\n- inputText: {{ input: \"USERNAME\" }}\n# 2. Fill password\n- tapOn: {{ id: \"password\" }}\n- inputText: {{ input: \"PASSWORD\" }}\n"
+            )))
+            .unwrap();
+            assert_eq!(candidate.inputs, ["USERNAME", "PASSWORD"]);
+            let marker = candidate.marker.unwrap();
+            assert_eq!(marker.id.is_some(), field == "id");
+            assert_eq!(candidate.signs_out_at, None);
+        }
+        assert!(login_candidate(&block(
+            "- tapOn: { text: Email }\n- inputText: { input: OTP, sensitivity: non-secret }\n"
+        ))
+        .is_none());
+    }
+
+    #[test]
+    fn sign_out_detection_stops_at_the_first_strict_fill() {
+        for label in ["Logout", "sign-out", "SignOut", "Log out", "sign_out"] {
+            let candidate = login_candidate(&block(&format!(
+                "# 1. Tap \"{label}\"\n- tapOn: {{ text: \"{label}\" }}\n# 2. Fill email\n- tapOn: {{ id: email }}\n- inputText: {{ input: USERNAME }}\n"
+            ))).unwrap();
+            assert_eq!(candidate.signs_out_at, Some(1), "{label}");
+        }
+        let candidate = login_candidate(&block("# 1. Fill email\n- tapOn: { id: logo }\n- inputText: { input: USERNAME }\n# 2. Log out\n- tapOn: { text: Logout }\n")).unwrap();
+        assert_eq!(candidate.signs_out_at, None);
+    }
+
+    #[test]
+    fn hints_quote_yaml_scalars_and_json_selector_text() {
+        let candidate = login_candidate(&block("# 1. Fill email\n- tapOn: { text: 'Email \"primary\"' }\n- inputText: { input: USERNAME }\n")).unwrap();
+        let hint = candidate.hint("123").unwrap();
+        assert!(hint.text.contains("loginBlock: \"123\""));
+        assert!(hint.text.contains("text: \"Email \\\"primary\\\"\""));
+    }
+
+    #[test]
+    fn sign_out_comments_and_stored_selectors_each_flag_the_block() {
+        for commands in [
+            "# 1. Sign-out\n- tapOn: { id: account-control }\n# 2. Fill email\n- inputText: { input: USERNAME }\n",
+            "# 1. Open account\n- tapOn: { id: SignOut }\n# 2. Fill email\n- inputText: { input: USERNAME }\n",
+        ] {
+            assert_eq!(login_candidate(&block(commands)).unwrap().signs_out_at, Some(1));
+        }
+    }
 }

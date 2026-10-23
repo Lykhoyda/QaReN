@@ -544,6 +544,9 @@ fn main_inner(args: Vec<String>) -> ExitCode {
     if let Some(recipe) = &receipt.recipe {
         eprintln!("plan: {}", recipe.render());
     }
+    for hint in &receipt.hints {
+        eprintln!("{}", hint.text);
+    }
 
     ExitCode::from(receipt_exit_code(receipt.result))
 }

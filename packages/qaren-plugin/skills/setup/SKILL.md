@@ -108,4 +108,24 @@ for i in $(seq 20); do [ -s <dir>/exit ] && break; sleep 5; done; tail -n 3 <dir
 
 Stopping a poll never affects the run. If `<dir>/exit` never appears, `<qaren path> status <run-id> --json` reports the run's state and its next action.
 
-Once `<dir>/exit` exists, read `<dir>/receipt.json`; if it is empty, report the exit code and the diagnostic from `<dir>/progress.log` and stop. Otherwise report the receipt's `result`, `run_id` and `next_action`. When `result` is not `pass`, quote `failure.code` and `failure.next_action` verbatim if present and stop. When a `pass` receipt's `next_action` is a `qaren cleanup` command, teardown was incomplete: offer to run it. On `pass`, QaReN is set up: next, the `using-qaren` skill writes a plan for a feature.
+Once `<dir>/exit` exists, read `<dir>/receipt.json`; if it is empty, report the exit code and the diagnostic from `<dir>/progress.log` and stop. Otherwise report the receipt's `result`, `run_id` and `next_action`. When `result` is not `pass`, quote `failure.code` and `failure.next_action` verbatim if present and stop. When a `pass` receipt's `next_action` is a `qaren cleanup` command, teardown was incomplete: offer to run it. On `pass`, continue to step 7.
+
+
+## 7. Sign-in (optional)
+
+If the launch path read in step 5 has no auth gate, setup is complete; use `using-qaren` for a feature plan. Otherwise offer to save a reusable sign-in block. Start it on the sign-in screen; put any sign-out steps in their own block above it. Use visible labels when the app has no testIDs. Write a `### Sign in` block using names only:
+
+```markdown
+### Sign in
+
+1. Fill "<username field>" with input USERNAME
+2. Fill "<password field>" with input PASSWORD
+3. Tap "<sign-in button>"
+✓ "<signed-in text>"
+```
+
+When the app echoes an input, add a numbered `Expect input USERNAME on screen` step before the fill. Ask the user to export `QAREN_INPUT_USERNAME` and `QAREN_INPUT_PASSWORD` from their password manager in their own shell; keep values out of plans, messages and tool output. Ensure the check inherits that shell's inputs. Use the same app configuration and device flags as step 6; for a label-only app, follow the README's [runtime-input prerequisites](https://github.com/Lykhoyda/rn-dev-agent/blob/develop/packages/qaren-cli/README.md#runtime-inputs).
+
+Run this plan once using step 6's run-and-wait procedure. Read the receipt's `hints` and stderr: when `LOGIN_BLOCK_CANDIDATE` prints `loginBlock` and `loginMarker`, show those lines and paste them into `.qaren/config.yaml` only with the user's consent, as in step 3. If `LOGIN_BLOCK_SIGNS_OUT` appears, split out the sign-out steps and re-save the sign-in block before configuring it. Follow `CORPUS_NOT_SHARED` when working in a linked worktree. If no block was saved, read `blocks_not_saved` and resolve its reason; do not invent a marker or login configuration.
+
+Confirm `<qaren path> doctor` reports the saved login for the selected platform. Every later run needs the configured login block's `QAREN_INPUT_<NAME>` variables. The [worked example](https://github.com/Lykhoyda/rn-dev-agent/blob/develop/packages/qaren-cli/README.md#reusable-sign-in-example) covers setup, replay and worktrees. QaReN is now set up; use `using-qaren` for a feature plan.

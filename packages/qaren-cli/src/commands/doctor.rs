@@ -139,7 +139,13 @@ impl Report {
                 printable(&check.detail)
             ));
             if let Some(fix) = &check.fix {
-                out.push_str(&format!("     fix: {}\n", printable(fix)));
+                out.push_str(&format!(
+                    "     fix: {}\n",
+                    fix.lines()
+                        .map(printable)
+                        .collect::<Vec<_>>()
+                        .join("\n     ")
+                ));
             }
         }
         let count = |status| self.checks.iter().filter(|c| c.status == status).count();
@@ -150,12 +156,12 @@ impl Report {
             count(Status::Pass),
             count(Status::Skip)
         ));
-        out
+        crate::redact::redact_inputs(&out)
     }
 
     pub fn to_json(&self) -> String {
         let verdict = if self.failed() { "fail" } else { "pass" };
-        serde_json::to_string_pretty(&serde_json::json!({
+        crate::redact::durable_json(&serde_json::json!({
             "identity": self.identity,
             "checks": self.checks,
             "verdict": verdict,
@@ -237,6 +243,8 @@ pub fn doctor(
     checks.push(runtime_dirs(&runtime_root));
     checks.push(source_checkout(runner, cwd));
     checks.push(config_row);
+    checks.extend(login_checks(cwd, config.as_ref()));
+    checks.push(saved_blocks_check(runner, cwd));
     checks.extend(leftover_rows(
         home,
         &codex_home,
@@ -826,6 +834,109 @@ fn config_check(file: &Path) -> (Check, Option<CheckConfig>) {
     }
 }
 
+fn login_checks(root: &Path, config: Option<&CheckConfig>) -> Vec<Check> {
+    let Some(config) = config else {
+        return vec![Check::skip("login", "no app config")];
+    };
+    let platforms = if config.android.is_some() {
+        if config.ios.is_some() {
+            vec!["ios", "android"]
+        } else {
+            vec!["android"]
+        }
+    } else {
+        vec!["ios"]
+    };
+    platforms
+        .into_iter()
+        .map(|platform| {
+            let candidates = || {
+                crate::actions::list(root)
+                    .unwrap_or_default()
+                    .into_iter()
+                    .filter_map(|entry| {
+                        crate::actions::login_for(root, &entry.slug, platform, &config.app_id)
+                            .map(|candidate| (entry.slug, candidate))
+                    })
+                    .collect::<Vec<_>>()
+            };
+            if let Some(slug) = &config.login_block {
+                let text = crate::actions::show_for(root, slug, platform, &config.app_id);
+                if text.is_none() {
+                    return Check::warn(
+                        "login",
+                        format!("loginBlock {slug} is not saved for {platform}"),
+                        "run the plan that holds its `### Sign in` block once",
+                    );
+                }
+                let candidate = text.as_deref().and_then(crate::actions::login_candidate);
+                if let Some(hint) = candidate
+                    .as_ref()
+                    .filter(|c| c.signs_out_at.is_some())
+                    .and_then(|c| c.hint(slug))
+                {
+                    return Check::warn(
+                        "login",
+                        format!("loginBlock {slug} for {platform} starts signed in"),
+                        hint.text,
+                    );
+                }
+                let inputs = candidate
+                    .map(|c| c.inputs.join(", "))
+                    .unwrap_or_else(|| "none".into());
+                Check::pass(
+                    "login",
+                    format!("loginBlock {slug} is saved for {platform} (inputs {inputs})"),
+                )
+            } else {
+                let hints: Vec<_> = candidates()
+                    .into_iter()
+                    .filter_map(|(slug, candidate)| candidate.hint(&slug))
+                    .collect();
+                if hints.is_empty() {
+                    Check::skip(
+                        "login",
+                        format!("no saved sign-in candidate for {platform}"),
+                    )
+                } else {
+                    Check::warn(
+                        "login",
+                        format!("saved sign-in candidate for {platform}"),
+                        hints
+                            .into_iter()
+                            .map(|hint| hint.text)
+                            .collect::<Vec<_>>()
+                            .join("\n"),
+                    )
+                }
+            }
+        })
+        .collect()
+}
+
+fn saved_blocks_check(runner: &mut dyn Runner, root: &Path) -> Check {
+    use crate::actions::{corpus_hint, corpus_location, CorpusLocation};
+    match corpus_location(runner, root) {
+        CorpusLocation::NotGit => Check::skip("saved-blocks", "not a Git checkout"),
+        CorpusLocation::Primary => Check::pass("saved-blocks", "primary checkout"),
+        CorpusLocation::Linked { local: true } => Check::warn(
+            "saved-blocks",
+            "saved blocks stay in this linked worktree",
+            corpus_hint(
+                crate::actions::list(root)
+                    .map(|blocks| blocks.len())
+                    .unwrap_or(0),
+            )
+            .text,
+        ),
+        CorpusLocation::Linked { local: false } if crate::actions::corpus_link_is_main_copy(runner, root) =>
+            Check::pass("saved-blocks", "saved blocks are linked to the main copy"),
+        CorpusLocation::Linked { local: false } => Check::warn("saved-blocks",
+            "no shared saved-block corpus in this linked worktree",
+            "commit saved blocks for other checkouts, or use the main-copy link described in the saved-block contract"),
+    }
+}
+
 fn leftover(id: &'static str, found: Vec<String>, fixes: Vec<String>) -> Check {
     if found.is_empty() {
         Check::pass(id, "none found")
@@ -1301,6 +1412,10 @@ mod tests {
             .as_ref()
             .and_then(|exe| exe.parent()?.parent())
             .map_or(PathBuf::from("/runtime"), |dir| dir.join("runtime"));
+        runner.expect_run(
+            "--git-common-dir",
+            CmdOutput::failed(128, "not a git checkout"),
+        );
         runner.expect_run("ps -axww", CmdOutput::failed(1, "unavailable"));
         if cfg!(target_os = "macos") {
             runner.expect_run(
@@ -1315,6 +1430,7 @@ mod tests {
                 runner.expect_run(command, CmdOutput::failed(1, "unavailable"));
             }
         }
+
         doctor(runner, &scratch.0, cwd, exe, runtime, None)
     }
 
@@ -2029,10 +2145,11 @@ mod tests {
         assert!(runner.spawned_logs.is_empty());
         assert!(runner.calls.iter().all(|call| call.label == "doctor-host"
             || call.program == "df"
-            || call
-                .args
-                .iter()
-                .any(|arg| arg == "--version" || arg == "-version" || arg == "list")));
+            || call.args.iter().any(|arg| arg == "--version"
+                || arg == "-version"
+                || arg == "list"
+                || arg == "rev-parse")));
+
         assert_eq!(s.tree(), before);
         assert_eq!(
             report.exit_code(),
@@ -2056,7 +2173,8 @@ mod tests {
                 "pass"
             }
         );
-        assert_eq!(parsed["checks"].as_array().unwrap().len(), 25);
+        assert_eq!(parsed["checks"].as_array().unwrap().len(), 27);
+
     }
 
     #[test]
@@ -2323,5 +2441,110 @@ mod tests {
         let check = row(&run_doctor(&mut runner, &s, &s.0, None), "config").clone();
         assert_eq!(check.status, Status::Fail);
         assert!(check.detail.contains("ScenarioInvalid"), "{}", check.detail);
+    }
+
+    #[test]
+    fn login_rows_cover_missing_saved_candidate_and_sign_out_states() {
+        let s = Scratch::new("login-rows");
+        assert_eq!(login_checks(&s.0, None)[0].status, Status::Skip);
+        let mut config: CheckConfig =
+            serde_yaml::from_str("appId: com.example.app\ndevClientScheme: exp+example\n").unwrap();
+        assert_eq!(login_checks(&s.0, Some(&config))[0].status, Status::Skip);
+        config.login_block = Some("sign-in".into());
+        let missing = login_checks(&s.0, Some(&config));
+        assert_eq!(missing[0].status, Status::Warn);
+        assert_eq!(
+            missing[0].fix.as_deref(),
+            Some("run the plan that holds its `### Sign in` block once")
+        );
+        let block = "appId: com.example.app\n---\n# id: sign-in\n# intent: Sign in\n# appId: com.example.app\n# platform: ios\n\n# 1. Fill email\n- tapOn: { text: Email }\n- inputText: { input: USERNAME }\n# 2. Fill password\n- tapOn: { id: password }\n- inputText: { input: PASSWORD }\n";
+        s.file(".qaren/actions/sign-in.yaml", block);
+        let saved = login_checks(&s.0, Some(&config));
+        assert_eq!(saved[0].status, Status::Pass);
+        assert_eq!(
+            saved[0].detail,
+            "loginBlock sign-in is saved for ios (inputs USERNAME, PASSWORD)"
+        );
+        config.login_block = None;
+        let candidate = login_checks(&s.0, Some(&config));
+        assert_eq!(candidate[0].status, Status::Warn);
+        assert!(candidate[0]
+            .fix
+            .as_ref()
+            .unwrap()
+            .contains("text: \"Email\""));
+        s.file(
+            ".qaren/actions/sign-in.yaml",
+            &block.replace("# 1. Fill email", "# 1. SignOut first"),
+        );
+        let warning = login_checks(&s.0, Some(&config));
+        assert!(warning[0]
+            .fix
+            .as_ref()
+            .unwrap()
+            .contains("signs out (step 1)"));
+        assert!(!warning[0].fix.as_ref().unwrap().contains("loginMarker:"));
+        config.login_block = Some("sign-in".into());
+        assert_eq!(login_checks(&s.0, Some(&config))[0].status, Status::Warn);
+        s.file(
+            ".qaren/actions/sign-in.yaml",
+            &block.replace("platform: ios", "platform: android"),
+        );
+        assert_eq!(login_checks(&s.0, Some(&config))[0].status, Status::Warn);
+        config.android = Some(serde_yaml::from_str("{}\n").unwrap());
+        assert_eq!(login_checks(&s.0, Some(&config))[0].status, Status::Pass);
+        config.app_id = "com.other.app".into();
+        assert_eq!(login_checks(&s.0, Some(&config))[0].status, Status::Warn);
+    }
+
+    #[test]
+    fn saved_block_rows_inspect_only_an_isolated_temporary_git_repository() {
+        let s = Scratch::new("corpus-rows");
+        let mut runner = crate::exec::RealRunner::new();
+        assert_eq!(saved_blocks_check(&mut runner, &s.0).status, Status::Skip);
+        let primary = s.dir("primary");
+        let linked = s.path("linked");
+        for args in [
+            vec!["init"],
+            vec![
+                "-c",
+                "user.name=Test",
+                "-c",
+                "user.email=test@example.invalid",
+                "commit",
+                "--allow-empty",
+                "-m",
+                "initial",
+            ],
+            vec!["worktree", "add", "--detach", linked.to_str().unwrap()],
+        ] {
+            let output = runner.run(&CmdSpec::new("test-git", "git", &args, 10).cwd(&primary));
+            assert!(output.ok(), "{}", output.stderr);
+        }
+        assert_eq!(
+            saved_blocks_check(&mut runner, &primary).status,
+            Status::Pass
+        );
+        std::fs::create_dir_all(linked.join(".qaren/actions")).unwrap();
+        let local = saved_blocks_check(&mut runner, &linked);
+        assert_eq!(local.status, Status::Warn);
+        assert!(local
+            .fix
+            .unwrap()
+            .contains("then: ln -s <main>/<app>/.qaren/actions .qaren/actions"));
+        std::fs::remove_dir(linked.join(".qaren/actions")).unwrap();
+        let target = primary.join(".qaren/actions");
+        std::fs::create_dir_all(&target).unwrap();
+        std::os::unix::fs::symlink(&target, linked.join(".qaren/actions")).unwrap();
+        assert_eq!(
+            saved_blocks_check(&mut runner, &linked).status,
+            Status::Pass
+        );
+        std::fs::remove_file(linked.join(".qaren/actions")).unwrap();
+        std::os::unix::fs::symlink(s.dir("unrelated"), linked.join(".qaren/actions")).unwrap();
+        assert_eq!(
+            saved_blocks_check(&mut runner, &linked).status,
+            Status::Warn
+        );
     }
 }
