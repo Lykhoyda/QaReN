@@ -66,18 +66,21 @@ export function targetMissDiagnostic(
       scanIncomplete = true;
       truncated = true;
     }
-    const parts = words(label.slice(0, MATCH_TEXT));
+    const parts = target.exact === 'id' ? [] : words(label.slice(0, MATCH_TEXT));
     const contained =
       query.length <= MATCH_TEXT &&
       wanted.length > 0 &&
       parts.length > wanted.length &&
       ` ${parts.join(' ')} `.includes(wantedPhrase);
-    const direct = label === query || identifier === query;
+    const direct =
+      (target.exact !== 'id' && label === query) ||
+      (target.exact !== 'text' && identifier === query);
     exact ||= direct;
     inside ||= contained;
-    const near = [...parts, ...words(identifier.slice(0, MATCH_TEXT))].some((word) =>
-      wantedWords.has(word),
-    );
+    const near = [
+      ...parts,
+      ...(target.exact === 'text' ? [] : words(identifier.slice(0, MATCH_TEXT))),
+    ].some((word) => wantedWords.has(word));
     if (!direct && !contained && !near) continue;
     if (candidates.length >= MISS_CANDIDATES) {
       truncated = true;
@@ -87,7 +90,9 @@ export function targetMissDiagnostic(
       ...(identifier ? { identifier: display(identifier) } : {}),
       ...(label ? { label: withheld || isPossibleInput(element) ? MASK : display(label) } : {}),
       match: direct ? 'exact' : contained ? 'inside-label' : 'near',
-      aggregated: contained || element.semantic?.nativePresence?.labelSource === 'descendant',
+      aggregated:
+        target.exact !== 'id' &&
+        (contained || element.semantic?.nativePresence?.labelSource === 'descendant'),
     });
   }
   const incomplete =

@@ -9,7 +9,6 @@ import {
   actionView,
   forwardedInputOf,
   reactInputHostOf,
-  isScrollContainer,
 } from './screen.js';
 
 export type IdentityTag = 'native' | 'react-only' | 'wrapper';
@@ -98,9 +97,8 @@ function encloses(container: Element, element: Element): boolean {
 }
 
 function aggregatesControl(container: Element, child: Element): boolean {
-  const source = container.semantic?.nativePresence?.labelSource;
   if (
-    (source === undefined ? !isScrollContainer(container) : source !== 'descendant') ||
+    container.semantic?.nativePresence?.labelSource !== 'descendant' ||
     container.kind !== 'other' ||
     container.ref.startsWith('react:') ||
     child.ref.startsWith('react:') ||
@@ -145,7 +143,7 @@ function containerEcho(
   if (
     container.kind !== 'other' ||
     container.testID !== undefined ||
-    container.semantic?.nativePresence?.labelSource === 'direct' ||
+    container.semantic?.nativePresence?.labelSource !== 'descendant' ||
     container.label === undefined ||
     container.ref.startsWith('react:')
   )

@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { join, type NativeNode } from '../../../dist/qa/screen.js';
+import { join, type NativeNode, type Screen } from '../../../dist/qa/screen.js';
 import { prepareTarget } from '../../../dist/qa/resolve.js';
 import { parsePlan } from '../../../dist/qa/plan.js';
 import { runPlan } from '../../../dist/qa/walker.js';
@@ -39,16 +39,44 @@ function nodes(android: boolean, siblings = 1): NativeNode[] {
   ];
 }
 
+function aggregate(screen: Screen): Screen {
+  screen.elements[2].semantic!.nativePresence = {
+    kind: 'other',
+    labelSource: 'descendant',
+    structural: false,
+  };
+  return screen;
+}
+
 for (const android of [false, true]) {
   const platform = android ? 'Android' : 'iOS';
+  for (const scroll of [false, true]) {
+    for (const identified of [false, true]) {
+      for (const quoted of [target.quoted, 'Add coverage, Details']) {
+        test(`${platform}: unknown parent provenance preserves ambiguity, scroll=${scroll}, identified=${identified}, target=${quoted}`, () => {
+          const tree = nodes(android);
+          if (!scroll) tree[2].type = android ? 'android.view.ViewGroup' : 'Other';
+          if (!identified) delete tree[2].identifier;
+          tree[2].label = tree[3].label;
+          tree[3].type = android ? 'android.widget.Button' : 'Button';
+          const screen = join(tree, []);
+          const named = { phrase: quoted, quoted };
+          for (const purpose of ['action', 'refresh'] as const)
+            assert.equal(exactIdentities(screen, named, 'press', purpose).length, 2);
+          const result = prepareTarget({ kind: 'press', target: named }, screen);
+          assert.ok('refuse' in result && result.refuse === 'TARGET_AMBIGUOUS');
+        });
+      }
+    }
+  }
   test(`${platform}: an identified aggregated scroll container does not compete with its unidentified card`, () => {
-    const result = prepareTarget({ kind: 'press', target }, join(nodes(android), []));
+    const result = prepareTarget({ kind: 'press', target }, aggregate(join(nodes(android), [])));
     assert.ok('ref' in result, JSON.stringify(result));
     assert.equal(result.ref, '@card0');
   });
 
   test(`${platform}: two distinct cards still refuse as ambiguous`, () => {
-    const result = prepareTarget({ kind: 'press', target }, join(nodes(android, 2), []));
+    const result = prepareTarget({ kind: 'press', target }, aggregate(join(nodes(android, 2), [])));
     assert.ok('refuse' in result && result.refuse === 'TARGET_AMBIGUOUS', JSON.stringify(result));
   });
 
@@ -109,7 +137,7 @@ for (const android of [false, true]) {
   test(`${platform}: the innermost bare card wins when both full labels equal the target`, () => {
     const tree = nodes(android);
     tree[2].label = tree[3].label = target.quoted;
-    const result = prepareTarget({ kind: 'press', target }, join(tree, []));
+    const result = prepareTarget({ kind: 'press', target }, aggregate(join(tree, [])));
     assert.ok('ref' in result, JSON.stringify(result));
     assert.equal(result.ref, '@card0');
   });
@@ -137,7 +165,7 @@ for (const android of [false, true]) {
       if (shape === 'unhittable') tree[3].hittable = false;
       if (shape === 'missing-frame') delete tree[3].rect;
       if (shape === 'invalid-frame') tree[3].rect!.width = NaN;
-      const result = prepareTarget({ kind: 'press', target }, join(tree, []));
+      const result = prepareTarget({ kind: 'press', target }, aggregate(join(tree, [])));
       assert.ok(!('ref' in result) || result.ref !== '@card0', JSON.stringify(result));
       if (shape === 'sibling')
         assert.ok('refuse' in result && result.refuse === 'TARGET_AMBIGUOUS');
@@ -205,6 +233,48 @@ for (const android of [false, true]) {
     }
   }
 }
+
+for (const exact of ['id', 'text'] as const) {
+  for (const relation of ['equal', 'contained', 'near'] as const) {
+    test(`exact ${exact} miss ignores ${relation} evidence from the other selector domain`, () => {
+      const query = 'coverage card';
+      const other = relation === 'equal' ? query : relation === 'contained' ? `${query} details` : 'coverage details';
+      const tree = nodes(false);
+      tree.forEach((node) => {
+        delete node.label;
+        delete node.identifier;
+      });
+      if (exact === 'id') tree[3].label = other;
+      else tree[3].identifier = other;
+      const screen = join(tree, [], 'app', { native: 'complete', react: 'complete' });
+      const selected = { phrase: query, quoted: query, exact };
+      const miss = targetMissDiagnostic(selected, screen, 1, false, new ObservedPrivacy());
+      assert.equal(miss.reason, 'absent');
+      assert.deepEqual(miss.candidates, []);
+      const ordinary = targetMissDiagnostic(
+        { phrase: query, quoted: query }, screen, 1, false, new ObservedPrivacy(),
+      );
+      assert.equal(ordinary.candidates.length, 1);
+      if (exact === 'id') screen.elements[3].testID = query;
+      else screen.elements[3].label = query;
+      const present = targetMissDiagnostic(selected, screen, 1, false, new ObservedPrivacy());
+      assert.equal(present.reason, 'present-but-unavailable');
+      assert.equal(present.candidates[0].match, 'exact');
+      assert.equal(present.candidates[0].aggregated, false);
+    });
+  }
+}
+
+test('exact identifier diagnostics do not describe identifier matches as aggregated labels', () => {
+  const screen = aggregate(join(nodes(false), [], 'app', { native: 'complete', react: 'complete' }));
+  const diagnostic = targetMissDiagnostic(
+    { phrase: 'coverage-list', quoted: 'coverage-list', exact: 'id' },
+    screen, 1, false, new ObservedPrivacy(),
+  );
+  assert.equal(diagnostic.reason, 'present-but-unavailable');
+  assert.equal(diagnostic.candidates[0].match, 'exact');
+  assert.equal(diagnostic.candidates[0].aggregated, false);
+});
 
 test('private miss candidates mask runtime inputs and observed input values before truncation', () => {
   const secret = 'synthetic-sensitive-name';

@@ -516,8 +516,12 @@ function echoContainer(controls: number, contained = true): NativeNode[] {
 const tapNext = { kind: 'press' as const, target: { phrase: 'Next', quoted: 'Next' } };
 
 for (const contained of [true, false]) {
-  test(`a no-identifier container collapses only a tree-contained control (tree-contained=${contained})`, () => {
-    const resolved = prepareTarget(tapNext, join(echoContainer(1, contained), []));
+  test(`a descendant-labelled no-identifier container collapses only a tree-contained control (tree-contained=${contained})`, () => {
+    const screen = join(echoContainer(1, contained), []);
+    screen.elements[2].semantic!.nativePresence = {
+      kind: 'other', labelSource: 'descendant', structural: false,
+    };
+    const resolved = prepareTarget(tapNext, screen);
     if (!contained) {
       assert.ok(
         'refuse' in resolved && resolved.refuse === 'TARGET_AMBIGUOUS',
@@ -530,15 +534,14 @@ for (const contained of [true, false]) {
   });
 }
 
-test('frame containment remains an echo fallback when ancestry is unknown', () => {
+test('frame containment without label provenance preserves ambiguity', () => {
   const nodes = echoContainer(1, false).map(({ parentIndex: _parentIndex, ...node }) => node);
   const resolved = prepareTarget(tapNext, join(nodes, []));
-  assert.ok('ref' in resolved, JSON.stringify(resolved));
-  assert.equal(resolved.ref, '@next0');
+  assert.ok('refuse' in resolved && resolved.refuse === 'TARGET_AMBIGUOUS');
 });
 
 for (const tree of [true, false]) {
-  test(`two stacked unidentified label echoes resolve to their button (tree=${tree})`, () => {
+  test(`stacked unidentified labels require descendant evidence (tree=${tree})`, () => {
     const fullFrame = { x: 0, y: 0, width: 402, height: 874 };
     const nodes: NativeNode[] = [
       { ref: '@app', index: 0, type: 'Application', rect: fullFrame },
@@ -593,6 +596,10 @@ for (const tree of [true, false]) {
           .filter((node) => node.type !== 'StaticText')
           .map(({ parentIndex: _parentIndex, ...node }) => node);
     const resolved = prepareTarget(press, join(observed, []));
+    if (!tree) {
+      assert.ok('refuse' in resolved && resolved.refuse === 'TARGET_AMBIGUOUS');
+      return;
+    }
     assert.ok('ref' in resolved, JSON.stringify(resolved));
     assert.equal(resolved.ref, '@button');
     assert.equal(resolved.element.testID, 'consent-skip');
