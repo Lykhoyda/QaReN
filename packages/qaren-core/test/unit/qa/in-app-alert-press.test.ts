@@ -139,7 +139,10 @@ test('an in-app alert button whose tap only closes the alert is not proven', asy
   assert.deepEqual(f.actions, ['press @discard']);
   const row = outcome.rows.find((r) => r.line === 1);
   assert.equal(row?.outcome, 'pass');
-  assert.match(row?.reason ?? '', /^UNVERIFIED_PRESS: /);
+  assert.match(
+    row?.reason ?? '',
+    /^UNVERIFIED_PRESS: the alert or sheet closed and nothing behind it changed;/,
+  );
 });
 
 test('an in-app alert button whose tap also changes the app behind it passes proven', async () => {
@@ -166,7 +169,10 @@ test('an in-app alert that hid the app behind it leaves its button press unverif
   const outcome = await walkBlock(plan('1. Tap "Discard"'), f.deps);
   const row = outcome.rows.find((r) => r.line === 1);
   assert.equal(row?.outcome, 'pass');
-  assert.match(row?.reason ?? '', /^UNVERIFIED_PRESS: /);
+  assert.match(
+    row?.reason ?? '',
+    /^UNVERIFIED_PRESS: nothing behind the alert or sheet was captured /,
+  );
 });
 
 test('a keyboard returning after the alert closes does not prove its button press', async () => {

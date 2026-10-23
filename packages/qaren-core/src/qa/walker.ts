@@ -2322,7 +2322,9 @@ async function walkBlockScoped(
                   : alertOnly
                     ? {
                         reason: redact(
-                          'UNVERIFIED_PRESS: the in-app alert closed but nothing behind it changed; any of its buttons closes it, so the press was not verified',
+                          behind.before === undefined
+                            ? 'UNVERIFIED_PRESS: nothing behind the alert or sheet was captured while it was open; any of its buttons closes it, so the press was not verified'
+                            : 'UNVERIFIED_PRESS: the alert or sheet closed and nothing behind it changed; any of its buttons closes it, so the press was not verified',
                         ),
                       }
                     : {}),

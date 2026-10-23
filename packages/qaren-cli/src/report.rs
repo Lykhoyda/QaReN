@@ -499,7 +499,7 @@ mod tests {
 
     #[test]
     fn summary_lists_passing_unverified_presses_apart_from_fills() {
-        let press = "UNVERIFIED_PRESS: the in-app alert closed but nothing behind it changed; any of its buttons closes it, so the press was not verified";
+        let press = "UNVERIFIED_PRESS: the alert or sheet closed and nothing behind it changed; any of its buttons closes it, so the press was not verified";
         let row = |line: u64, outcome: &str, reason: Option<&str>| {
             serde_json::json!({
                 "block": "b", "line": line, "attempt": 1, "kind": "step",
