@@ -54,10 +54,11 @@ Config failures report the file path and failure category; inspect the file loca
 against the [configuration schema](src/config.rs). A `VERSION` mismatch reports
 the binary's expected version without echoing the file's contents.
 
-With `CLAUDE_CONFIG_DIR` set to a non-empty path, Doctor reads Claude's settings,
-plugins and legacy state there, and its user MCP configuration from
+With `CLAUDE_CONFIG_DIR` set to a non-empty path, Doctor reads Claude's settings
+and plugins there, and its user MCP configuration from
 `$CLAUDE_CONFIG_DIR/.claude.json`; an unset or empty variable uses the default
-locations above. A missing custom directory is treated as having no leftovers
+locations above. Legacy rn-dev-agent state is always checked at
+`~/.claude/rn-agent/`. A missing custom directory is treated as having no leftovers
 and is never created. Project-local `.mcp.json` remains relative to the app.
 
 The probes run outside any project with Corepack's network access disabled, so a

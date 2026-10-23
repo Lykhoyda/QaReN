@@ -846,7 +846,7 @@ fn leftover_rows(
         codex_plugin(home, codex_home),
         mcp_servers(home, codex_home, cwd, &claude_config),
         binaries(path_dirs),
-        home_dirs(home, &claude_dir, xdg_state),
+        home_dirs(home, xdg_state),
         project(cwd),
         environment(env_names),
     ]
@@ -1074,7 +1074,7 @@ fn binaries(path_dirs: &[PathBuf]) -> Check {
     )
 }
 
-fn home_dirs(home: &Path, claude_dir: &Path, xdg_state: Option<&Path>) -> Check {
+fn home_dirs(home: &Path, xdg_state: Option<&Path>) -> Check {
     let actions_home = home.join(".rn-dev-agent");
     let candidates = [
         actions_home.clone(),
@@ -1083,7 +1083,7 @@ fn home_dirs(home: &Path, claude_dir: &Path, xdg_state: Option<&Path>) -> Check 
         home.join("Library")
             .join("Application Support")
             .join("rn-dev-agent"),
-        claude_dir.join("rn-agent"),
+        home.join(".claude").join("rn-agent"),
     ]
     .into_iter()
     .chain(xdg_state.map(|state| state.join("rn-dev-agent")));
@@ -1510,7 +1510,21 @@ mod tests {
             let before = s.tree();
             script_toolchain(&mut runner, Some("v24.1.0\n"), RUNTIMES);
             let report = run_doctor(&mut runner, &s, &app, None);
-            for id in ["1x-claude-plugin", "1x-mcp", "1x-home-dirs"] {
+            let legacy = row(&report, "1x-home-dirs");
+            assert_eq!(legacy.status, Status::Warn, "{mode} {legacy:?}");
+            assert!(
+                legacy
+                    .detail
+                    .contains(&s.path(".claude/rn-agent").display().to_string()),
+                "{mode} {legacy:?}"
+            );
+            if let Some(path) = custom.as_ref().filter(|path| **path != s.path(".claude")) {
+                assert!(
+                    !legacy.detail.contains(&path.display().to_string()),
+                    "{mode} {legacy:?}"
+                );
+            }
+            for id in ["1x-claude-plugin", "1x-mcp"] {
                 let check = row(&report, id);
                 assert_eq!(
                     check.status,
@@ -1860,7 +1874,7 @@ mod tests {
                 .contains("claude mcp remove 'x; rm -rf ~'"),
             "{mcp:?}"
         );
-        let dirs = home_dirs(&s.0, &s.path(".claude"), None);
+        let dirs = home_dirs(&s.0, None);
         assert!(
             dirs.fix
                 .as_deref()
