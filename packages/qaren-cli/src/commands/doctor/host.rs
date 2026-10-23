@@ -64,6 +64,16 @@ fn simulator_service(
             );
         }
     }
+    if !output.timed_out && !output.ok() {
+        return (
+            Check::fail(
+                "simulator-service",
+                format!("simctl list devices failed ({})", output.summary()),
+                SIMCTL_FIX,
+            ),
+            None,
+        );
+    }
     let stuck = if processes.ok() {
         stuck_simulators(&processes.stdout)
     } else {
@@ -79,13 +89,8 @@ fn simulator_service(
     };
     let detail = if output.timed_out {
         format!("simctl list devices did not respond within 5s; {evidence}")
-    } else if output.ok() {
-        format!("simctl list devices returned an unreadable inventory; {evidence}")
     } else {
-        format!(
-            "simctl list devices failed ({}); {evidence}",
-            output.summary()
-        )
+        format!("simctl list devices returned an unreadable inventory; {evidence}")
     };
     let status = if output.timed_out && !stuck.is_empty() {
         Status::Fail
@@ -523,20 +528,26 @@ mod tests {
 
     #[test]
     fn a_failing_simctl_without_a_timeout_names_its_error_and_the_xcode_fix() {
-        let mut runner = MockRunner::new();
-        script_mac(
-            &mut runner,
-            "",
-            CmdOutput::failed(1, "CoreSimulator is out of date"),
-            VM,
-            SYS,
-            "CPU usage: 2% user, 3% sys, 95% idle\n",
-        );
-        let rows = checks(&mut runner, "macos");
-        let service = row(&rows, "simulator-service");
-        assert_eq!(service.status, Status::Warn);
-        assert!(service.detail.contains("CoreSimulator is out of date"));
-        assert_eq!(service.fix.as_deref(), Some(SIMCTL_FIX));
+        for processes in [
+            String::new(),
+            format!("U launchd_sim /runtime/launchd_sim /Users/example/Library/Developer/CoreSimulator/Devices/{UDID}/data\n"),
+        ] {
+            let mut runner = MockRunner::new();
+            script_mac(
+                &mut runner,
+                &processes,
+                CmdOutput::failed(1, "CoreSimulator is out of date"),
+                VM,
+                SYS,
+                "CPU usage: 2% user, 3% sys, 95% idle\n",
+            );
+            let rows = checks(&mut runner, "macos");
+            let service = row(&rows, "simulator-service");
+            assert_eq!(service.status, Status::Fail);
+            assert!(service.detail.contains("CoreSimulator is out of date"));
+            assert_eq!(service.fix.as_deref(), Some(SIMCTL_FIX));
+            assert_eq!(row(&rows, "host-devices").status, Status::Warn);
+        }
     }
 
     #[test]

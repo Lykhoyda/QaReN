@@ -2034,11 +2034,28 @@ mod tests {
                 .iter()
                 .any(|arg| arg == "--version" || arg == "-version" || arg == "list")));
         assert_eq!(s.tree(), before);
-        assert_eq!(report.exit_code(), 0, "{text}");
+        assert_eq!(
+            report.exit_code(),
+            u8::from(cfg!(target_os = "macos")),
+            "{text}"
+        );
+        if cfg!(target_os = "macos") {
+            let service = row(&report, "simulator-service");
+            assert_eq!(service.status, Status::Fail);
+            assert!(service.detail.contains("unavailable"));
+            assert_eq!(service.fix.as_deref(), Some(host::SIMCTL_FIX));
+        }
         assert!(text.starts_with(&format!("qaren {VERSION} at ")));
         assert!(text.contains("(build abababab)"));
         let parsed: serde_json::Value = serde_json::from_str(&json).unwrap();
-        assert_eq!(parsed["verdict"], "pass");
+        assert_eq!(
+            parsed["verdict"],
+            if cfg!(target_os = "macos") {
+                "fail"
+            } else {
+                "pass"
+            }
+        );
         assert_eq!(parsed["checks"].as_array().unwrap().len(), 25);
     }
 
