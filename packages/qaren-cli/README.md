@@ -852,12 +852,17 @@ bound or an unavailable initial content state refuses with `TEXT_ENTRY_UNVERIFIE
 and no mutation. If clearing does not settle, focus moves, or the step budget
 expires, no replacement text is sent; clearing may already have mutated the field.
 
-After typing, a controlled non-secure value must match exactly. A readable mismatch,
-including a missing prefix or app normalization, fails with `TEXT_ENTRY_UNVERIFIED`
-without retyping. Unreadable final values remain honestly unverified. For private
-runtime inputs, length and exact-match comparisons run inside the app; only state
-and comparison metadata leave the process, never the value. Private character
-counts are omitted from the run's public output.
+After typing, an exact controlled non-secure value verifies the fill. Readable
+mismatches, including dropped characters and app formatting such as `123456`
+becoming `123 456`, remain honestly unverified. Only a proven retained prefix from
+the prior value followed by the requested text permits one bounded clear-and-retype,
+with the same focus and empty-state proofs. A retained prefix after that recovery
+fails with `TEXT_ENTRY_UNVERIFIED`; other mismatches remain unverified. Unreadable
+final values also remain unverified. Private non-secure runtime inputs instead
+require an exact length/content match and fail a confirmed mismatch without
+retyping. These comparisons run inside the app; only state and comparison metadata
+leave the process, never the value. Private character counts are omitted from the
+run's public output.
 
 Secure fields retain direct typing: they receive no selection or Delete, their
 values are never read, and the result stays unverified. **Known limit:** a prefilled

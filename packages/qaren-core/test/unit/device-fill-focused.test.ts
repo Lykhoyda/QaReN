@@ -120,7 +120,7 @@ test('focused fill: wrapper ref derives the base testID and matching read-back v
   assert.equal(fill.opts.exactTarget, undefined);
 });
 
-test('focused fill: React mismatch returns TEXT_ENTRY_UNVERIFIED with observed mutation', async () => {
+test('focused fill: readable React mismatch stays honestly unverified', async () => {
   const client = fakeClient([
     { value: '', controlled: true, focused: true },
     { value: 'other@example.com', controlled: true, focused: true },
@@ -132,9 +132,8 @@ test('focused fill: React mismatch returns TEXT_ENTRY_UNVERIFIED with observed m
     ),
   );
   const env = envelope(result as never);
-  assert.equal(env.code, 'TEXT_ENTRY_UNVERIFIED');
-  assert.equal(env.meta.mutation, 'observed');
-  assert.deepEqual(env.meta.pathsTried, ['focused']);
+  assert.equal(env.ok, true);
+  assert.equal(env.data.verified, false);
   assert.equal(calls.filter((c) => c.cliArgs[0] === 'fill').length, 1);
 });
 
