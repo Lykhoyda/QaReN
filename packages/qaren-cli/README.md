@@ -824,20 +824,20 @@ no secure or disabled element carries the quoted
 testID and React reports that exact input focused. The guard and proof use the
 quoted ID unchanged, including a literal `-pressable` suffix. Only an
 observed wrapper in the tap path establishes a wrapper-to-base identity mapping.
-The final focus read runs after runner readiness and health checks, in the
-call that sends the native typing command. Both keyboard-up paths require this
-read to be positive; the keyboard-down transition path vetoes a contradictory
-unfocused read. A false, unbound, unreadable or failed read at either proof stage
-on a keyboard-up path types nothing; failure of the pre-dispatch read returns
+The final focus reads run after runner readiness and health checks, before clearing
+and again before inserting text. Every fallback path, including a keyboard-down
+transition, requires positive proof that the intended input is focused before
+either mutation. A false, unbound, unreadable or failed read before clearing returns
 `NO_TEXT_INPUT_TARGET` with no mutation. An unknown keyboard state still refuses.
 Each walker focus decision logs one value-free `fallback-focus` line.
 
 QaReN then requests replacement of the focused field's content: the iOS runner sends
 select-all and an explicit Delete in separate ordered records. For a readable, nonempty
 controlled field, preparation instead moves to the end and deletes its measured length
-(at most 256 keys), after confirming that the value has not changed. This preparation
-also runs before a retype. The host re-proves focus on the intended React input before
-sending the plan text. If focus moved or
+(at most 256 keys), after confirming that the value has not changed. An initial
+prefill exceeding that bound refuses with `TEXT_ENTRY_UNVERIFIED` and no mutation.
+This preparation also runs before a retype. The host re-proves focus on the intended
+React input before sending the plan text. If focus moved or
 cannot be proved, no replacement text is sent; clearing may already have mutated the field.
 When the input is a
 controlled React field, its value is then read back locally and compared, never
@@ -870,11 +870,12 @@ left unverified with its line and value-free reason, plus `kept` and a `detail`
 such as `field kept 10 of 13 chars on 2 attempts` when counts exist; the report
 line shows the same detail. Fill character counts are omitted when the run requires
 runtime inputs. The list is omitted when empty. A runner
-must advertise `FILL_EVIDENCE_V1` on both iOS and Android. Session startup routes
-a missing capability through the bounded source-rebuild path instead of
+must advertise `FILL_EVIDENCE_V1` on both iOS and Android, and `FOCUSED_REPLACE_V2`
+on iOS. Session startup routes a missing capability through the bounded
+source-rebuild path instead of
 accepting the released artifact; see [prebuilt runner selection](../../README.md#prebuilt-runners)
-for persistent rejection of stale iOS prebuilts. An active iOS runner missing it refuses focused
-replacement with `RN_FAST_RUNNER_STALE`
+for persistent rejection of stale iOS prebuilts. An active iOS runner missing either
+capability refuses focused replacement with `RN_FAST_RUNNER_STALE`
 and no mutation instead of appending. A refused replacement keeps the runner's
 mutation disposition. The [focused replacement tests](../qaren-core/test/unit/device-fill-focused-replace.test.ts)
 cover these guards and mutation reporting.

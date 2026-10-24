@@ -1034,7 +1034,7 @@ export interface FillArgs {
   vetoUnfocused?: boolean;
   requireFocused?: boolean;
   skipFinalValidation?: boolean;
-  /** Replace the field's content instead of appending (focused: the runner's select-all sequence). */
+  /** Replace the field's content instead of appending. */
   clearFirst?: boolean;
   privateValue?: boolean;
   /** Story 04 (#385): per-call settle budget override in ms. */

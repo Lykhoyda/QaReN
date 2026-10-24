@@ -138,26 +138,25 @@ test('focused fill: React mismatch returns TEXT_ENTRY_UNVERIFIED with observed m
   assert.equal(calls.filter((c) => c.cliArgs[0] === 'fill').length, 1);
 });
 
-test('focused fill: positional ref or no client is warned, never verified', async () => {
-  const { result: positional } = await withFocusedSeam({}, () =>
+test('focused fill: positional ref or no client refuses before mutation', async () => {
+  const { result: positional, calls: positionalCalls } = await withFocusedSeam({}, () =>
     performFocusedFill({ ref: '@e1', text: 'qa.user@example.com' }, null),
   );
   const positionalEnv = envelope(positional as never);
-  assert.equal(positionalEnv.ok, true);
-  assert.equal(positionalEnv.data.verified, false);
-  assert.equal(positionalEnv.data.verifiedOracle, 'none');
-  assert.equal(positionalEnv.meta.warning.includes('the value could not be confirmed'), true);
-  assert.ok(!JSON.stringify(positionalEnv).includes('"verified":true'));
+  assert.equal(positionalEnv.code, 'NO_TEXT_INPUT_TARGET');
+  assert.equal(positionalEnv.meta.mutation, 'none');
+  assert.ok(!positionalCalls.some((c) => c.cliArgs[0] === 'fill'));
 
-  const { result: noClient } = await withFocusedSeam({}, () =>
+  const { result: noClient, calls: noClientCalls } = await withFocusedSeam({}, () =>
     performFocusedFill(
       { ref: 'EmailOtpFormContent_email-pressable', text: 'qa.user@example.com' },
       null,
     ),
   );
   const noClientEnv = envelope(noClient as never);
-  assert.equal(noClientEnv.data.verified, false);
-  assert.equal(noClientEnv.meta.verify, undefined);
+  assert.equal(noClientEnv.code, 'NO_TEXT_INPUT_TARGET');
+  assert.equal(noClientEnv.meta.mutation, 'none');
+  assert.ok(!noClientCalls.some((c) => c.cliArgs[0] === 'fill'));
 });
 
 test('focused fill: runner TEXT_TARGET_FOCUS_FAILED surfaces as NO_TEXT_INPUT_TARGET with no mutation', async () => {
@@ -170,7 +169,11 @@ test('focused fill: runner TEXT_TARGET_FOCUS_FAILED surfaces as NO_TEXT_INPUT_TA
           { mutation: 'none' },
         ),
     },
-    () => performFocusedFill({ ref: 'EmailOtpFormContent_email-pressable', text: 'a' }, null),
+    () =>
+      performFocusedFill(
+        { ref: 'EmailOtpFormContent_email-pressable', text: 'a' },
+        fakeClient([{ value: '', focused: true }]),
+      ),
   );
   const env = envelope(result as never);
   assert.equal(env.code, 'NO_TEXT_INPUT_TARGET');
@@ -209,7 +212,7 @@ test('default fill: wrapper-bind refusal names focused: true and keeps NO_TEXT_I
   assert.ok(!calls.some((c) => c.cliArgs[0] === 'fill'));
 });
 
-test('focused fill: matching unfocused named field stays typed but unverified', async () => {
+test('focused fill: matching unfocused named field refuses before mutation', async () => {
   const client = fakeClient([
     { value: '', controlled: true, focused: false },
     { value: 'qa.user@example.com', controlled: true, focused: false },
@@ -221,28 +224,23 @@ test('focused fill: matching unfocused named field stays typed but unverified', 
     ),
   );
   const env = envelope(result as never);
-  assert.equal(env.ok, true);
-  assert.equal(env.data.typed, true);
-  assert.equal(env.data.verified, false);
-  assert.equal(env.data.filled, undefined);
-  assert.ok(!JSON.stringify(env).includes('"filled":true'));
-  assert.equal(calls.filter((c) => c.cliArgs[0] === 'fill').length, 1);
+  assert.equal(env.code, 'NO_TEXT_INPUT_TARGET');
+  assert.equal(env.meta.mutation, 'none');
+  assert.ok(!calls.some((c) => c.cliArgs[0] === 'fill'));
 });
 
-test('focused fill: missing pre-read does not verify even when post-read equals the text', async () => {
+test('focused fill: missing pre-read refuses before a later matching read can permit mutation', async () => {
   const client = fakeClient([null, { value: 'qa.user@example.com', controlled: true }]);
-  const { result } = await withFocusedSeam({}, () =>
+  const { result, calls } = await withFocusedSeam({}, () =>
     performFocusedFill(
       { ref: 'EmailOtpFormContent_email-pressable', text: 'qa.user@example.com' },
       client,
     ),
   );
   const env = envelope(result as never);
-  assert.equal(env.ok, true);
-  assert.equal(env.data.typed, true);
-  assert.equal(env.data.verified, false);
-  assert.equal(env.data.filled, undefined);
-  assert.ok(!JSON.stringify(env).includes('"filled":true'));
+  assert.equal(env.code, 'NO_TEXT_INPUT_TARGET');
+  assert.equal(env.meta.mutation, 'none');
+  assert.ok(!calls.some((c) => c.cliArgs[0] === 'fill'));
 });
 
 test('focused fill: stale then exact React read-back verifies', async () => {
@@ -293,7 +291,11 @@ test('focused fill: runner TEXT_SYNTHESIS_UNAVAILABLE surfaces as NO_TEXT_INPUT_
     {
       fill: () => failResult(message, 'TEXT_SYNTHESIS_UNAVAILABLE', { mutation: 'none' }),
     },
-    () => performFocusedFill({ ref: 'EmailOtpFormContent_email-pressable', text: 'a' }, null),
+    () =>
+      performFocusedFill(
+        { ref: 'EmailOtpFormContent_email-pressable', text: 'a' },
+        fakeClient([{ value: '', focused: true }]),
+      ),
   );
   const env = envelope(result as never);
   assert.equal(env.code, 'NO_TEXT_INPUT_TARGET');
@@ -332,7 +334,10 @@ for (const focused of [false, true]) {
       },
       () =>
         focused
-          ? performFocusedFill({ ref: 'EmailOtpFormContent_email-pressable', text: 'x' }, null)
+          ? performFocusedFill(
+              { ref: 'EmailOtpFormContent_email-pressable', text: 'x' },
+              fakeClient([{ value: '', focused: true }]),
+            )
           : performExactFill({ ref: 'email', text: 'x' }, null, {}),
     );
     assert.equal(envelope(result as never).code, 'TARGET_AMBIGUOUS');
