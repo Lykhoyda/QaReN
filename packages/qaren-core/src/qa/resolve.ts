@@ -781,6 +781,50 @@ export function presenceMiss(target: Target, screen: Screen): string | undefined
   return `no captured element carries the identifier "${quoted}"`;
 }
 
+export function aggregateScrollTargetVisible(target: Target, screen: Screen): boolean {
+  if (
+    target.quoted === undefined ||
+    target.exact !== undefined ||
+    screen.front !== 'app' ||
+    (screen.captureCoverage?.native ?? screen.coverage?.native) !== 'complete'
+  )
+    return false;
+  const matches = screen.elements.filter(
+    (element) =>
+      !element.ref.startsWith('react:') &&
+      ['other', 'cell'].includes(element.nativeKind ?? element.kind) &&
+      !element.offscreen &&
+      element.label?.split(',').some((part) => part.trim() === target.quoted),
+  );
+  if (matches.length > 1)
+    throw new ResolutionError({
+      refuse: 'TARGET_AMBIGUOUS',
+      reason: 'multiple on-screen containers carry the scroll target',
+    });
+  const element = matches[0];
+  if (!element) return false;
+  const source = element.semantic?.nativePresence?.labelSource;
+  if (
+    (source !== undefined && source !== 'descendant') ||
+    element.visibilityEvidence === 'unresolved'
+  )
+    throw new ResolutionError({
+      refuse: 'TARGET_AMBIGUOUS',
+      reason: 'container visibility evidence is contradictory',
+    });
+  const frame = elementFrame(element);
+  return (
+    !!frame &&
+    Object.values(frame).every(Number.isFinite) &&
+    frame.width > 0 &&
+    frame.height > 0 &&
+    !element.secure &&
+    !nativeLabelMayBeValue(element) &&
+    !keyboardCoversElement(element) &&
+    !centreCovered(element, screen)
+  );
+}
+
 export function targetVisible(target: Target, screen: Screen): boolean {
   return targetEvidence(target, screen) === 'pass';
 }

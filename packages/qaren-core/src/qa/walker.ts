@@ -47,6 +47,7 @@ import {
   scrollUntilBand,
   scrollUntilDirection,
   targetEvidence,
+  aggregateScrollTargetVisible,
   targetNeedsPresence,
   presenceMiss,
   visibleSelector,
@@ -1125,6 +1126,22 @@ async function walkBlockScoped(
         const target = item.kind === 'wait' ? item.target : item.until!;
         if (target.quoted !== undefined) {
           const evidence = targetEvidence(target, observation.screen);
+          if (
+            evidence !== 'pass' &&
+            item.kind === 'scroll' &&
+            aggregateScrollTargetVisible(target, observation.screen)
+          ) {
+            try {
+              deps.labelProvenanceDiagnostic?.({
+                kind: 'label-provenance',
+                line: item.line,
+                ...unavailableProvenance(),
+                requested: false,
+                resolvedBy: 'aggregate-visibility',
+              });
+            } catch {}
+            return { observation, found: true };
+          }
           return { observation, found: evidence === 'pass', unsure: evidence === 'unsure' };
         }
         const visibility = decision.visibility;

@@ -345,9 +345,9 @@ extension RnFastRunnerTests {
     if let deadline, timing.deadlineReached(deadline, read: kind, edge: .before) { return nil }
     var result: T?
     let exception = RunnerObjCExceptionCatcher.catchException({
-      result = try? read()
+      do { result = try read() } catch { timing.fail(.readUnavailable) }
     })
-    guard exception == nil else { return nil }
+    guard exception == nil else { timing.fail(.readUnavailable); return nil }
     if let deadline, timing.deadlineReached(deadline, read: kind, edge: .after) { return nil }
     return result
   }
@@ -355,7 +355,11 @@ extension RnFastRunnerTests {
   private func presenceAppIsEligible(
     _ app: XCUIApplication, deadline: Double, timing: PresenceCaptureTiming
   ) -> Bool? {
-    guard let state = presenceRead(deadline: deadline, timing: timing, read: .appState, { app.state }) else {
+    guard let state = presenceRead(deadline: deadline, timing: timing, read: .appState, {
+      let state = app.state
+      if state != .runningForeground { timing.fail(.ineligible) }
+      return state
+    }) else {
       timing.fail(.readUnavailable)
       return nil
     }
@@ -364,8 +368,16 @@ extension RnFastRunnerTests {
       return false
     }
     #if !os(macOS)
-      guard let alerts = presenceRead(deadline: deadline, timing: timing, read: .alerts, { self.springboard.alerts.count }),
-            let sheets = presenceRead(deadline: deadline, timing: timing, read: .sheets, { self.springboard.sheets.count }) else {
+      guard let alerts = presenceRead(deadline: deadline, timing: timing, read: .alerts, {
+        let count = self.springboard.alerts.count
+        if count != 0 { timing.fail(.ineligible) }
+        return count
+      }),
+            let sheets = presenceRead(deadline: deadline, timing: timing, read: .sheets, {
+        let count = self.springboard.sheets.count
+        if count != 0 { timing.fail(.ineligible) }
+        return count
+      }) else {
         timing.fail(.readUnavailable)
         return nil
       }
@@ -437,9 +449,14 @@ extension RnFastRunnerTests {
     var diagnostic = CandidateLabelProvenanceDiagnostics()
     let started = presenceUptimeMs()
     let deadline = started + Double(budgetMs)
+    let timing = PresenceCaptureTiming(started: started, now: presenceUptimeMs)
     func finish(_ outcome: String) -> DataPayload {
       diagnostic.deadlineExpired = presenceUptimeMs() >= deadline
-      diagnostic.outcome = diagnostic.deadlineExpired && ["available", "unavailable"].contains(outcome) ? "deadline" : outcome
+      let failure = timing.diagnostics(complete: false).failure?.reason
+      let timedOutRead = failure == .deadline && [
+        "ineligible", "read-unavailable", "enumeration-incomplete", "observation-unavailable"
+      ].contains(outcome)
+      diagnostic.outcome = timedOutRead || (diagnostic.deadlineExpired && ["available", "unavailable"].contains(outcome)) ? "deadline" : outcome
       var payload = result
       payload.labelProvenanceDiagnostics = diagnostic
       if diagnostic.deadlineExpired { payload.labelProvenance = nil }
@@ -450,13 +467,14 @@ extension RnFastRunnerTests {
           indices.allSatisfy({ retainedSnapshotTargets[$0]?.generation == currentSnapshotGeneration }) else {
       return finish("baseline-unavailable")
     }
-    let timing = PresenceCaptureTiming(started: started, now: presenceUptimeMs)
     var previous: [PresenceEntry]?
     var previousSources: [PlatformPresenceObservation.LabelSource]?
     while !timing.deadlineReached(deadline, read: .preparationPoll, edge: .before) {
       guard presenceAppIsEligible(app, deadline: deadline, timing: timing) == true else { return finish("ineligible") }
       guard let context = presenceRead(deadline: deadline, timing: timing, read: .rootSnapshot, {
-        self.makeSnapshotTraversalContext(app: app, options: options)
+        let context = self.makeSnapshotTraversalContext(app: app, options: options)
+        if context == nil { timing.fail(.readUnavailable) }
+        return context
       }) ?? nil else { return finish("read-unavailable") }
       diagnostic.sampleCount += 1
       var selected: [Int: (XCUIElementSnapshot, PresenceEntry)] = [:]
@@ -796,11 +814,19 @@ extension RnFastRunnerTests {
     guard matches.count == count else { unknownReason?(.matchCountMismatch); return nil }
     var readUnavailable = false
     for element in matches {
-      let hittable = presenceRead(deadline: deadline, timing: timing, read: .candidateHit, { element.isHittable })
+      let hittable = presenceRead(deadline: deadline, timing: timing, read: .candidateHit, {
+        let hittable = element.isHittable
+        if !hittable { timing.fail(.readUnavailable) }
+        return hittable
+      })
       if hittable == nil { readUnavailable = true }
       guard hittable == true else { continue }
       let observed = presenceUptimeMs()
-      guard let after = presenceRead(deadline: deadline, timing: timing, read: .postHitSnapshot, { try element.snapshot() })
+      guard let after = presenceRead(deadline: deadline, timing: timing, read: .postHitSnapshot, {
+        let after = try element.snapshot()
+        if PresenceDescriptor(after) != descriptor { timing.fail(.enumerationChanged) }
+        return after
+      })
       else { unknownReason?(.readUnavailable); return nil }
       guard PresenceDescriptor(after) == descriptor else { unknownReason?(.postHitMismatch); return nil }
       return observed

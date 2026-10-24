@@ -38,8 +38,30 @@ ${models.slice(models.indexOf('struct SnapshotOptions {'))}
 ${section(predicates, 'func computeSnapshotHittable(', 'func snapshotTypeName(')}
 ${section(source, 'final class PresenceCaptureTiming', 'func makePlatformPresencePayload(')}
 ${source.slice(source.indexOf('func makePlatformPresencePayload('))}
-enum XCUIElement {
+final class XCUIElement {
   enum ElementType: UInt { case application = 1, window = 2, button = 9, staticText = 48, other = 82, scrollView = 44, any = 0 }
+  let node: XCUIElementSnapshot
+  let app: XCUIApplication
+  var reads = 0
+  init(_ node: XCUIElementSnapshot, _ app: XCUIApplication) { self.node = node; self.app = app }
+  func snapshot() throws -> XCUIElementSnapshot {
+    reads += 1
+    let stage = reads == 1 ? "candidate-snapshot" : "post-hit-snapshot"
+    app.onLiveRead(stage)
+    if app.failLiveRead == stage { throw Unavailable.read }
+    if stage == "post-hit-snapshot" && app.mismatchPost {
+      let other = XCUIElementSnapshot()
+      other.elementType = node.elementType; other.identifier = node.identifier; other.label = node.label
+      other.frame = node.frame; other.frame.origin.x += 1
+      return other
+    }
+    return node
+  }
+  var isHittable: Bool { app.onLiveRead("candidate-hit"); return !app.falseHit }
+}
+struct NSPredicate {
+  let identifier: String, label: String
+  init(format: String, _ identifier: String, _ label: String) { self.identifier = identifier; self.label = label }
 }
 final class XCUIElementSnapshot {
   var sampleToken = 0
@@ -67,12 +89,39 @@ final class XCUIApplication {
   var backgroundAt = 0
   var cycle = false
   var onRead: (Int) -> Void = { _ in }
+  var onState: (Int) -> Void = { _ in }
+  var onLiveRead: (String) -> Void = { _ in }
+  var failLiveRead = ""
+  var falseHit = false
+  var mismatchPost = false
   var state: State {
     states += 1
+    onState(states)
     return states == backgroundAt ? .runningBackground : .runningForeground
   }
-  struct Query { let count = 0; let allElementsBoundByIndex: [XCUIElement] = [] }
-  func descendants(matching: XCUIElement.ElementType) -> Query { Query() }
+  struct Query {
+    var app: XCUIApplication? = nil
+    var nodes: [XCUIElementSnapshot] = []
+    let count = 0
+    let allElementsBoundByIndex: [XCUIElement] = []
+    func matching(_ predicate: NSPredicate) -> Query {
+      Query(app: app, nodes: nodes.filter { $0.identifier == predicate.identifier && $0.label == predicate.label })
+    }
+    var allElementsBoundByAccessibilityElement: [XCUIElement] {
+      guard let app else { return [] }
+      app.onLiveRead("all-matches")
+      return nodes.map { XCUIElement($0, app) }
+    }
+  }
+  func descendants(matching type: XCUIElement.ElementType) -> Query {
+    var nodes: [XCUIElementSnapshot] = []
+    func visit(_ node: XCUIElementSnapshot) {
+      if node.elementType == type { nodes.append(node) }
+      for child in node.children { visit(child) }
+    }
+    visit(snapshots[min(max(0, reads - 1), snapshots.count - 1)])
+    return Query(app: self, nodes: nodes)
+  }
   let alerts = Query(), sheets = Query()
   init(_ snapshots: [XCUIElementSnapshot]) { self.snapshots = snapshots }
   func snapshot() throws -> XCUIElementSnapshot {
@@ -118,6 +167,7 @@ final class Harness {
   var selectedSample = 0
   var nextClockTime: Double?
   var observationMs = 0.0
+  var useLiveReads = false
   let springboard = XCUIApplication([])
   var blockingAlert: DataPayload? = nil
   func blockingSystemAlertSnapshot() -> DataPayload? { blockingAlert }
@@ -159,8 +209,11 @@ ${section(source, '  func retainSnapshotTargets(', '  // MARK: - Snapshot Filter
   func isKeyboardVisible(app: XCUIApplication) -> Bool { keyboardReads += 1; return false }
 ${section(source, '  func snapshotCandidateLabelProvenance(', '  private func observePresence(')}
   private func observePresence(_ descriptor: PresenceDescriptor, count: Int, app: XCUIApplication, deadline: Double, timing: PresenceCaptureTiming, unknownReason: ((PlatformPresenceObservation.UnknownReason) -> Void)? = nil) -> Double? {
-    observations += 1; observedAt.append(now); now += observationMs; return now
+    observations += 1; observedAt.append(now); now += observationMs
+    if useLiveReads { return liveObservePresence(descriptor, count: count, app: app, deadline: deadline, timing: timing, unknownReason: unknownReason) }
+    return now
   }
+${section(source, '  private func observePresence(', '  func retainSnapshotTargets(').replace('private func observePresence(', 'private func liveObservePresence(')}
 }
 func tree(_ change: String = "") -> XCUIElementSnapshot {
   let root = XCUIElementSnapshot(); root.elementType = .application
@@ -276,6 +329,38 @@ for name in ["candidate-timeout", "candidate-direct-timeout", "candidate-alterna
   let diagnostic = result.labelProvenanceDiagnostics!
   precondition(diagnostic.outcome == (name == "candidate-alternating-source" ? "source-changed" : "deadline"))
   precondition(diagnostic.directLabelIndices == (name == "candidate-timeout" ? [3] : name == "candidate-direct-timeout" ? [2, 3] : [3, 2]))
+}
+for stage in ["eligibility", "root", "enumeration", "all-matches", "candidate-snapshot", "candidate-hit", "post-hit-snapshot", "final-eligibility", "root-failure", "candidate-failure", "eligibility-failure", "hit-failure", "post-failure"] {
+  let h = Harness(); h.useLiveReads = true
+  let first = candidateTree(sibling: 10)
+  let app = XCUIApplication([first])
+  let ordinary = h.snapshotFast(app: app, options: SnapshotOptions(interactiveOnly: true, compact: false, depth: nil, scope: nil, raw: false))
+  h.retainSnapshotTargets(ordinary.nodes ?? [])
+  app.reads = 0
+  var delayed = false
+  func exhaust() { if !delayed { h.now += 500; delayed = true } }
+  app.onRead = { read in if read == 2 && ["root", "root-failure"].contains(stage) { exhaust() } }
+  app.onState = { state in
+    if (["eligibility", "eligibility-failure"].contains(stage) && state == 3) || (stage == "final-eligibility" && state == 2) { exhaust() }
+  }
+  if stage == "root-failure" { app.unavailableAt = 2 }
+  if stage == "eligibility-failure" { app.backgroundAt = 3 }
+  first.onChildren = { if app.reads == 2 && stage == "enumeration" { exhaust() } }
+  app.onLiveRead = { read in
+    if app.reads == 2 && (stage == read || (stage == "candidate-failure" && read == "candidate-snapshot") ||
+      (stage == "hit-failure" && read == "candidate-hit") || (stage == "post-failure" && read == "post-hit-snapshot")) {
+      if stage == "candidate-failure" { app.failLiveRead = read }
+      if stage == "hit-failure" { app.falseHit = true }
+      if stage == "post-failure" { app.mismatchPost = true }
+      exhaust()
+    }
+  }
+  let result = h.snapshotCandidateLabelProvenance(app: app, indices: [2, 3], budgetMs: 300)
+  let diagnostic = result.labelProvenanceDiagnostics!
+  precondition(delayed && result.labelProvenance == nil && result.nodes == nil && result.keyboardVisible == nil)
+  precondition(h.currentSnapshotGeneration == 7 && h.keyboardReads == 1)
+  precondition(diagnostic.outcome == (stage == "eligibility-failure" ? "ineligible" : stage.hasSuffix("failure") ? "read-unavailable" : "deadline"), stage + ": " + diagnostic.outcome)
+  precondition(diagnostic.directLabelIndices == [3])
 }
 for change in ["card-value", "card-enabled", "container-enabled", "label-source", "parent-link"] {
   let h = Harness()
@@ -403,11 +488,7 @@ do {
     assert.equal(rows.get(name).elapsed, 100, name);
     assert.equal(rows.get(name).diagnostic.sampleCount, 2, name);
     assert.equal(rows.get(name).diagnostic.deadlineExpired, false, name);
-    assert.equal(
-      rows.get(name).diagnostic.outcome,
-      'source-changed',
-      name,
-    );
+    assert.equal(rows.get(name).diagnostic.outcome, 'source-changed', name);
     assert.equal(rows.get(name).diagnostic.fieldMask, 256, name);
     rows.delete(name);
   }

@@ -124,3 +124,27 @@ for (const directLabelIndices of [
     );
   });
 }
+
+test('aggregate scroll visibility diagnostic is private and value-free without runtime inputs', () => {
+  const lines: string[] = [];
+  const expected = {
+    ...event,
+    requested: false,
+    outcome: 'unavailable',
+    resolvedBy: 'aggregate-visibility',
+  };
+  createWriter((line) => lines.push(line), 'aggregate-visibility').diagnostic({
+    ...expected,
+    label: 'private-canary',
+  });
+  assert.equal(lines.length, 1);
+  assert.deepEqual(JSON.parse(lines[0]).payload, expected);
+  assert.doesNotMatch(lines[0], /private-canary/);
+  for (const patch of [
+    { requested: true },
+    { outcome: 'source-changed' },
+    { outcome: 'identity-mismatch' },
+  ]) {
+    assert.equal(cleanDiagnostic({ ...expected, ...patch }), undefined);
+  }
+});
