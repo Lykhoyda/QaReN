@@ -1,11 +1,103 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { parsePlan } from '../../../dist/qa/plan.js';
+import { captureScreen } from '../../../dist/qa/capture.js';
 import type { NativePresence } from '../../../dist/qa/native-presence.js';
 import { join, screenSignature, type NativeNode, type Screen } from '../../../dist/qa/screen.js';
-import { PHRASE_WAIT_BUDGET_MS } from '../../../dist/qa/timing.js';
+import { EVIDENCE_USE_MS, PHRASE_WAIT_BUDGET_MS } from '../../../dist/qa/timing.js';
 import { runPlan, WAIT_POLL_MS } from '../../../dist/qa/walker.js';
 import { element, screen, scriptedJudge, walker } from './judgment-fixtures.ts';
+import { attested, nativeCapture } from './platform-presence-fixtures.ts';
+
+for (const direction of ['up', 'down']) {
+  for (const refresh of [false, true]) {
+    test(`quoted scroll-until ${direction} captures navigation titles with refresh=${refresh}`, async () => {
+      const f = walker([], scriptedJudge(() => assert.fail('quoted visibility is model-free')));
+      const modes: boolean[] = [];
+      let drags = 0;
+      f.deps.captureScreen = async (options) => {
+        modes.push(options?.platformPresence === true);
+        const destination = modes.length === (refresh ? 3 : 2);
+        const title = destination ? 'Claims' : 'Policies';
+        const source = nativeCapture();
+        const nodes: NativeNode[] = [
+          { type: 'Application', rect: { x: 0, y: 0, width: 400, height: 800 } },
+          { type: 'Window', parentIndex: 0, rect: { x: 0, y: 0, width: 400, height: 800 } },
+          { type: 'ScrollView', parentIndex: 1, rect: { x: 0, y: 100, width: 400, height: 600 } },
+          {
+            type: 'StaticText',
+            parentIndex: 2,
+            label: destination ? 'Footer' : 'Loading',
+            rect: { x: 10, y: 200, width: 100, height: 30 },
+          },
+          {
+            type: 'NavigationBar',
+            parentIndex: 1,
+            identifier: title,
+            rect: { x: 0, y: 0, width: 400, height: 80 },
+          },
+          {
+            type: 'StaticText',
+            parentIndex: 4,
+            label: title,
+            rect: { x: 10, y: 20, width: 100, height: 30 },
+          },
+          {
+            type: 'Button',
+            parentIndex: 1,
+            selected: true,
+            label: 'Policies tab',
+            rect: { x: 10, y: 740, width: 100, height: 40 },
+          },
+        ].map((node, index) => ({
+          ...node,
+          ref: `@e${index}`,
+          index,
+          depth: [0, 1, 2, 3, 2, 3, 2][index],
+          enabled: true,
+          hittable: true,
+          ...(options?.platformPresence
+            ? { presence: { ...source.nodes[1].presence, nodeIndex: index } }
+            : {}),
+        }));
+        const captured = await captureScreen({
+          appId: 'com.test',
+          platformPresence: options?.platformPresence,
+          now: f.deps.now,
+          native: async () => ({
+            ...attested(nodes),
+            snapshotGeneration: source.snapshotGeneration,
+            ...(options?.platformPresence ? { presenceCapture: source.presenceCapture } : {}),
+          }),
+          react: async () => ({ interactive: [], verdict: { state: 'ok', complete: true } }),
+        });
+        return captured;
+      };
+      const scroll = f.deps.scroll;
+      f.deps.scroll = async (dir, context) => {
+        if (refresh && drags === 1) {
+          await f.deps.sleep(EVIDENCE_USE_MS);
+          context!.check();
+          assert.fail('expired evidence must refresh before another drag');
+        }
+        context!.authorize();
+        drags += 1;
+        return scroll(dir, context);
+      };
+      const result = await runPlan(
+        parsePlan(`1. Scroll ${direction} until "Footer"`).blocks!,
+        f.deps,
+      );
+      assert.equal(result.verdict, 'REFUSED', result.failure?.seen);
+      assert.equal(result.code, 'SCROLL_NAVIGATED');
+      assert.match(result.failure?.seen ?? '', /navigation title changed/);
+      assert.equal(drags, 1);
+      assert.deepEqual(f.actions, [`scroll ${direction}`]);
+      assert.deepEqual(modes, Array(refresh ? 3 : 2).fill(true));
+      assert.ok(result.steps.every((step) => step.outcome !== 'pass'));
+    });
+  }
+}
 
 const shown = (label: string): Screen => screen([element('@text', label, { kind: 'text' })]);
 
