@@ -13,6 +13,7 @@ const frame = { x: 0, y: 0, width: 402, height: 874 };
 type Snapshot = {
   footer?: boolean;
   tab?: string;
+  title?: string;
   toolbarY?: number;
   toolbarHittable?: boolean;
   overlays?: NonNullable<NativeNode['rect']>[];
@@ -78,6 +79,15 @@ function fixture() {
         selected: true,
         label: state.tab,
         rect: { x: 0, y: 820, width: 100, height: 40 },
+      });
+    if (state.title)
+      rawNodes.push({
+        type: 'NavigationBar',
+        hittable: false,
+        parentIndex: 1,
+        identifier: 'main-navigation',
+        label: state.title,
+        rect: { x: 0, y: 0, width: 402, height: 60 },
       });
     const depth = (index: number): number => {
       const parent = rawNodes[index].parentIndex;
@@ -229,6 +239,24 @@ for (const direction of ['up', 'down'] as const) {
             mode === 'replay' ? [false, true, false, false] : [false, true, false],
           ).flat(),
         );
+      } finally {
+        clearRefMap();
+      }
+    });
+
+    test(`stable navigation identifier cannot mask confirmation title changes: ${direction}, ${mode}`, async () => {
+      const f = fixture();
+      let navigated = false;
+      f.setSnapshot(async (presence) => {
+        if (presence) navigated = true;
+        return { footer: true, tab: 'Policies', title: navigated ? 'Claims' : 'Policies' };
+      });
+      try {
+        const result = await run(f, direction, mode);
+        assert.equal(result.refusal?.code, 'SCROLL_NAVIGATED');
+        assert.equal(result.block.outcome, 'fail');
+        assert.equal(f.drags(), 0);
+        assert.ok(f.f.rows.every((row) => row.outcome !== 'pass'));
       } finally {
         clearRefMap();
       }

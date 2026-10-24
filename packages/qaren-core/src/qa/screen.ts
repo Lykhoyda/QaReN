@@ -1162,8 +1162,8 @@ export function join(
     if (bounds) elementViewports.set(elements[i], bounds);
     if (isScrollContainerType(n.type)) scrollContainers.set(elements[i], n.type!);
     if (n.type === 'NavigationBar') {
-      const title = n.identifier?.trim() || n.label?.trim();
-      if (title) navigationBarTitles.set(elements[i], title);
+      const title = [n.identifier?.trim(), n.label?.trim()];
+      if (title.some(Boolean)) navigationBarTitles.set(elements[i], JSON.stringify(title));
     } else if (/(?:^|\.)(?:Toolbar|ActionBar|ActionBarView)$/.test(n.type ?? '')) {
       const title =
         nodes

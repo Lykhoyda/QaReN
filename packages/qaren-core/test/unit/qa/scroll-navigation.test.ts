@@ -98,6 +98,27 @@ test('native navigation-bar label and identifier changes stop scrolling', () => 
     change(screen({ titleIdentifier: 'Policies' }), screen({ titleIdentifier: 'Claims' }))!,
     /title/,
   );
+  assert.match(
+    change(
+      screen({ title: '', titleIdentifier: 'Policies' }),
+      screen({ title: '', titleIdentifier: 'Claims' }),
+    )!,
+    /title/,
+  );
+});
+
+test('a stable navigation-bar identifier cannot mask a changed title label', () => {
+  const before = screen({ titleIdentifier: 'main-navigation', title: 'Policies' });
+  const after = screen({ titleIdentifier: 'main-navigation', title: 'Claims' });
+  assert.match(change(before, after)!, /title/);
+  assert.equal(
+    change(before, screen({ titleIdentifier: 'main-navigation', title: 'Policies' })),
+    undefined,
+  );
+  assert.equal(
+    before.elements.find((element) => element.ref === '@title')?.semantic?.heading,
+    undefined,
+  );
 });
 
 test('JS-only header changes have no native title marker', () => {
