@@ -26,7 +26,8 @@ function fixture() {
     chmodSync(join(root, path), 0o755);
   };
   executable('bin/corepack', ':');
-  executable('bin/cargo', ':');
+  executable('bin/git', 'echo 0123456789abcdef0123456789abcdef01234567');
+  executable('bin/cargo', 'printf "%s" "$QAREN_BUILD_COMMIT" > "$FIXTURE_ROOT/build-commit"');
   executable('bin/xcrun', 'echo forbidden-device-command >&2; exit 99');
   executable(
     'packages/qaren-cli/target/debug/qaren',
@@ -115,6 +116,10 @@ test('gate delegates fresh install and device selection to check without device 
       assert.equal(output.status, 0, output.stdout + output.stderr);
       const args = readFileSync(join(f.root, 'args'), 'utf8').trim().split('\n');
       assert.equal(args[0], 'check');
+      assert.equal(
+        readFileSync(join(f.root, 'build-commit'), 'utf8'),
+        '0123456789abcdef0123456789abcdef01234567',
+      );
       assert.ok(args.includes('--fresh-install'));
       assert.ok(!args.includes('--boot-device'));
       assert.equal(args.includes('--device'), selected);

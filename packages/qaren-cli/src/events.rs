@@ -1,3 +1,4 @@
+use crate::client::Client;
 use crate::core::{Row, RowTiming, StepStart};
 use crate::receipt::Receipt;
 use serde::{Deserialize, Serialize};
@@ -177,13 +178,30 @@ impl Events {
         }
     }
 
-    pub fn run(&mut self, run_id: &str, verb: &str, platform: &str) {
-        let payload = json!({
+    pub fn run(
+        &mut self,
+        run_id: &str,
+        verb: &str,
+        platform: &str,
+        client: &Client,
+        flags: &[&'static str],
+    ) {
+        let mut payload = json!({
             "runId": token(run_id),
             "verb": token(verb),
             "platform": token(platform),
             "ownerPid": std::process::id(),
+            "qarenVersion": token(env!("CARGO_PKG_VERSION")),
+            "harness": token(client.harness),
+            "markers": client.markers.iter().map(|m| token(m)).collect::<Vec<_>>(),
+            "flags": flags.iter().map(|f| token(f)).collect::<Vec<_>>(),
         });
+        if let Some(commit) = option_env!("QAREN_BUILD_COMMIT") {
+            payload["qarenCommit"] = token(commit).into();
+        }
+        if let Some(model) = &client.model {
+            payload["model"] = token(model).into();
+        }
         self.submit("run", payload);
     }
 
@@ -419,7 +437,7 @@ fn epoch_ms() -> u64 {
         .unwrap_or(0)
 }
 
-// Names, labels and codes only: anything else is cut to a bounded identifier.
+// Bounding identifier shape does not anonymise model or build metadata.
 fn token(s: &str) -> String {
     s.chars()
         .filter(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '-' | '.'))
@@ -457,8 +475,8 @@ pub fn attach(path: &Path) {
     with(|e| e.attach(path));
 }
 
-pub fn run(run_id: &str, verb: &str, platform: &str) {
-    with(|e| e.run(run_id, verb, platform));
+pub fn run(run_id: &str, verb: &str, platform: &str, client: &Client, flags: &[&'static str]) {
+    with(|e| e.run(run_id, verb, platform, client, flags));
 }
 
 pub fn stage(name: &'static str, state: StageState, code: Option<&str>, ms: Option<u64>) {
@@ -570,7 +588,13 @@ mod tests {
                 assert!(events.is_none());
                 CURRENT.with(|current| *current.borrow_mut() = events);
                 stage("preflight", StageState::Running, None, None);
-                run("check-1", verb, "ios");
+                run(
+                    "check-1",
+                    verb,
+                    "ios",
+                    &crate::client::detect(&crate::exec::MockRunner::new()),
+                    &[],
+                );
                 attach(&path);
                 stage("preflight", StageState::Passed, None, None);
                 cmd("native-build", Edge::Start, None, None);
@@ -597,7 +621,13 @@ mod tests {
         let path = dir.join("events.jsonl");
         let mut ev = Events::start(None).unwrap();
         ev.stage("preflight", StageState::Running, None, None);
-        ev.run("check-1", "check", "ios");
+        ev.run(
+            "check-1",
+            "check",
+            "ios",
+            &crate::client::detect(&crate::exec::MockRunner::new()),
+            &[],
+        );
         ev.attach(&path);
         ev.stage("preflight", StageState::Passed, None, None);
         ev.stage("prebuild", StageState::Skipped, None, None);
@@ -640,6 +670,15 @@ mod tests {
         assert!(got[2].payload["ms"].is_u64());
         assert!(got[3].payload.get("ms").is_none());
         assert_eq!(got[1].payload["runId"], "check-1");
+        let mut expected = json!({
+            "runId": "check-1", "verb": "check", "platform": "ios",
+            "ownerPid": std::process::id(), "qarenVersion": token(env!("CARGO_PKG_VERSION")),
+            "harness": "unknown", "markers": [], "flags": []
+        });
+        if let Some(commit) = option_env!("QAREN_BUILD_COMMIT") {
+            expected["qarenCommit"] = token(commit).into();
+        }
+        assert_eq!(got[1].payload, expected);
         assert_eq!(got[1].payload["ownerPid"], std::process::id());
         assert_eq!(
             got[5].payload,
@@ -659,6 +698,73 @@ mod tests {
             std::fs::metadata(&path).unwrap().permissions().mode() & 0o777
         };
         assert_eq!(file_mode, 0o600);
+    }
+
+    #[test]
+    fn run_identity_is_bounded_and_never_contains_session_or_flag_values() {
+        let dir = temp("identity");
+        let path = dir.join("events.jsonl");
+        let mut ev = Events::start(None).unwrap();
+        let client = Client {
+            harness: "pi",
+            markers: vec!["pi", "codex"],
+            model: Some(format!("private/model name {}", "m".repeat(80))),
+        };
+        ev.run(
+            "check-1",
+            "pr",
+            "ios",
+            &client,
+            &[
+                "fresh_install",
+                "boot_device",
+                "restart_device",
+                "shutdown_device_on_exit",
+                "device",
+                "pr",
+            ],
+        );
+        ev.attach(&path);
+        ev.finish();
+        let payload = &lines(&path)[0].payload;
+        assert_eq!(payload["harness"], "pi");
+        assert_eq!(payload["markers"], json!(["pi", "codex"]));
+        assert_eq!(
+            payload["model"],
+            format!("privatemodelname{}", "m".repeat(48))
+        );
+        assert_eq!(
+            payload["flags"],
+            json!([
+                "fresh_install",
+                "boot_device",
+                "restart_device",
+                "shutdown_device_on_exit",
+                "device",
+                "pr"
+            ])
+        );
+        let mut keys: Vec<_> = payload
+            .as_object()
+            .unwrap()
+            .keys()
+            .map(String::as_str)
+            .collect();
+        keys.retain(|key| *key != "qarenCommit");
+        assert_eq!(
+            keys,
+            [
+                "flags",
+                "harness",
+                "markers",
+                "model",
+                "ownerPid",
+                "platform",
+                "qarenVersion",
+                "runId",
+                "verb"
+            ]
+        );
     }
 
     #[test]
@@ -845,7 +951,13 @@ mod tests {
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();
         init();
         stage("preflight", StageState::Running, None, None);
-        run("check-1", "check", "ios");
+        run(
+            "check-1",
+            "check",
+            "ios",
+            &crate::client::detect(&crate::exec::MockRunner::new()),
+            &[],
+        );
         attach(&path);
         stage("preflight", StageState::Passed, None, None);
         end(&receipt(ReceiptResult::Pass), 0);
