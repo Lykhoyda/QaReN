@@ -37,7 +37,7 @@ test('mixed plans acquire provenance for quoted presses and presence for phrase 
   assert.deepEqual(f.actions, ['press @save', 'press @save', 'back']);
 });
 
-test('literal-only plans acquire provenance only for quoted presses', async () => {
+test('literal-only plans acquire provenance for quoted presses and presence for scroll-until', async () => {
   const judge = scriptedJudge(() => assert.fail('literal-only plans must not ask Jev'));
   const f = walker(
     [screen([element('@save', 'Save'), element('@name', 'Name', { kind: 'input' })])],
@@ -51,7 +51,7 @@ test('literal-only plans acquire provenance only for quoted presses', async () =
     f.deps,
   );
   assert.equal(result.verdict, 'PASS');
-  assert.deepEqual(modes, [false, true, true, ...Array(10).fill(false)]);
+  assert.deepEqual(modes, [false, true, true, false, false, false, true, ...Array(6).fill(false)]);
   assert.equal(result.jev.calls, 0);
   assert.equal(JSON.stringify(result).includes('private-value'), false);
 });
@@ -107,7 +107,7 @@ test('semantic checks retain presence while quoted next steps select their captu
         quoted
           ? mutates
             ? [true, true, kind === 'press', kind === 'press']
-            : [true, true, false]
+            : [true, true, kind === 'scroll']
           : mutates
             ? [true, true, true]
             : [true, true],
