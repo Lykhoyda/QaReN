@@ -1720,7 +1720,7 @@ export async function performFocusedFill(
   const initialBefore = before;
   const boundedClear = async (
     deleteCount: number,
-    observed?: string,
+    observed: string,
   ): Promise<ToolResult | null> => {
     if (deleteCount < 1 || deleteCount > 256 || args.qaContext?.expired) {
       return fillFailure(
@@ -1737,11 +1737,7 @@ export async function performFocusedFill(
         })
       : null;
   };
-  if (args.clearFirst && privateValue) {
-    const failure = await boundedClear(256);
-    return failure ?? unverified();
-  }
-  if (initialBefore === null) {
+  if (privateValue || initialBefore === null) {
     await measureTiming(
       args.qaTiming?.observe,
       args.qaTiming?.now ?? (() => performance.now()),
