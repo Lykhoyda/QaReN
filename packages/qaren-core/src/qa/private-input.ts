@@ -13,7 +13,7 @@ export class PrivateInputCaptureError extends Error {
 
 // Built only from a node count and fixed cause codes, so it carries no screen content.
 const NATIVE_CAUSE =
-  /^(unattested|truncated|ref-map-not-updated|node-count-mismatch|dropped=\d{1,7}|verdict=(failed|degraded)|reason=(empty-capture|snapshot-ref-freshness-unknown|unrecognized))$/;
+  /^(unattested|truncated|ref-map-not-updated|node-count-mismatch|keyboard-state-unknown|snapshot-generation-unknown|dropped=\d{1,7}|verdict=(failed|degraded)|reason=(empty-capture|snapshot-ref-freshness-unknown|unrecognized)|presence-failure=(initial-eligibility|preparation|enumeration|observation|final-eligibility|revalidation|finalization):(deadline|read-unavailable|ineligible|node-limit|enumeration-changed)|presence-deadline=(initial-eligibility|preparation|enumeration|observation|final-eligibility|revalidation|finalization):(app-state|alerts|sheets|root-snapshot|preparation-poll|enumeration|observation-loop|observation|first-match|all-matches|candidate-snapshot|candidate-hit|post-hit-snapshot|revalidation|finalization):(before|after))$/;
 
 export class NativeSnapshotIncomplete extends PrivateInputCaptureError {
   readonly nodes: number;

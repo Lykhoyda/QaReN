@@ -1345,9 +1345,11 @@ acquisition failures also refuse without reinjection or a public-tree fallback.
 
 A required private capture re-reads a canonical empty snapshot (`nodes=[]`,
 verdict `degraded`, `nodeCount=0`, reasons exactly `empty-capture`, no truncation
-or dropped nodes), or an iOS `RN_FAST_RUNNER_DOWN` failure marked as pending
-runner relaunch recovery, at 500 ms intervals within the existing 6-second settle
-budget and remaining total capture budget. Both conditions share one retry
+or dropped nodes), an incomplete version-2 presence snapshot whose matching
+generation is known but whose keyboard state was withheld, or an iOS
+`RN_FAST_RUNNER_DOWN` failure marked as pending runner relaunch recovery, at
+500 ms intervals within the existing 6-second settle budget and remaining total
+capture budget. These conditions share one retry
 deadline; re-reads on both ordinary and platform-presence routes, including
 readiness probes and snapshot transport, stop waiting at that deadline.
 After timeout containment relaunches the iOS reader, it waits for an `alive`
@@ -1357,8 +1359,12 @@ the type call retains its existing result. Persistent runner unavailability
 refuses with `NATIVE_CAPTURE_UNAVAILABLE` after the capture retry budget.
 An empty snapshot's unchanged ref map and zero-node count
 diagnostics do not prevent this read-only retry; persistent emptiness still
-refuses with the same code and message, and other incomplete captures refuse
-immediately.
+refuses with the same code and message. Persistent incomplete presence refuses
+with `PRIVATE_INPUT_CAPTURE_UNKNOWN`, naming the unknown keyboard state and any
+known acquisition phase, failure reason or deadline read using fixed codes.
+Only a fresh, complete snapshot can establish privacy or admit a newly arrived
+system alert; partial presence never authorizes actions, screenshots or model
+evidence. Other incomplete captures refuse immediately.
 
 A non-advisory platform-presence response with `RUNNER_TIMEOUT` or a message
 containing `main thread execution timed out` now attempts the same poisoning,

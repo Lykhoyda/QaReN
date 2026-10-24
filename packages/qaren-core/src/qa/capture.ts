@@ -171,6 +171,25 @@ function nativeIncompleteCauses(observation: NativeObservation): string[] {
     for (const reason of verdict.reasons)
       causes.push(`reason=${SNAPSHOT_REASONS.has(reason) ? reason : 'unrecognized'}`);
   if (
+    Array.isArray(verdict?.reasons) &&
+    verdict.reasons.includes('snapshot-ref-freshness-unknown')
+  ) {
+    if (typeof observation.keyboardVisible !== 'boolean') causes.push('keyboard-state-unknown');
+    if (
+      typeof observation.snapshotGeneration !== 'number' ||
+      !Number.isSafeInteger(observation.snapshotGeneration) ||
+      observation.snapshotGeneration < 0
+    )
+      causes.push('snapshot-generation-unknown');
+    if (isRecord(observation.presenceCapture))
+      causes.push(
+        ...presenceDiagnostics(observation.presenceCapture.diagnostics).filter(
+          (cause) =>
+            cause.startsWith('presence-failure=') || cause.startsWith('presence-deadline='),
+        ),
+      );
+  }
+  if (
     Array.isArray(observation.nodes) &&
     typeof verdict?.nodeCount === 'number' &&
     (observation.nodes.length === 0 || verdict.nodeCount !== observation.nodes.length)
@@ -195,6 +214,32 @@ function retryableEmptyCapture(observation: NativeObservation): boolean {
     Array.isArray(verdict.reasons) &&
     verdict.reasons.length === 1 &&
     verdict.reasons[0] === 'empty-capture'
+  );
+}
+
+function retryablePresenceCapture(observation: NativeObservation): boolean {
+  const verdict = observation.snapshotVerdict;
+  const presence = observation.presenceCapture;
+  return (
+    Array.isArray(observation.nodes) &&
+    observation.truncated === false &&
+    observation.normalizationDroppedNodes === 0 &&
+    observation.keyboardVisible === undefined &&
+    typeof observation.snapshotGeneration === 'number' &&
+    Number.isSafeInteger(observation.snapshotGeneration) &&
+    observation.snapshotGeneration >= 0 &&
+    isRecord(presence) &&
+    presence.version === 2 &&
+    presence.complete === false &&
+    presence.generation === observation.snapshotGeneration &&
+    isRecord(verdict) &&
+    verdict.state === 'degraded' &&
+    verdict.nodeCount === observation.nodes.length &&
+    verdict.refMapUpdated === false &&
+    Array.isArray(verdict.reasons) &&
+    verdict.reasons.length === (observation.nodes.length === 0 ? 2 : 1) &&
+    verdict.reasons.at(-1) === 'snapshot-ref-freshness-unknown' &&
+    (observation.nodes.length > 0 || verdict.reasons[0] === 'empty-capture')
   );
 }
 
@@ -536,7 +581,15 @@ async function capture(deps: CaptureDeps): Promise<Screen> {
         throw new NativeCaptureError();
       runnerDown = true;
     }
-    if (!runnerDown && (!deps.requirePrivateInputs || !retryableEmptyCapture(native))) break;
+    if (
+      !runnerDown &&
+      (!deps.requirePrivateInputs ||
+        !(
+          retryableEmptyCapture(native) ||
+          (deps.platformPresence === true && retryablePresenceCapture(native))
+        ))
+    )
+      break;
     const at = now();
     retryDeadline ??= Math.min(at + SETTLE_DEFAULT_BUDGET_MS, started + CAPTURE_BUDGET_MS);
     const remaining = retryDeadline - at;
@@ -545,7 +598,7 @@ async function capture(deps: CaptureDeps): Promise<Screen> {
       break;
     }
     await sleep(Math.min(WAIT_POLL_MS, remaining));
-    const readBudget = retryDeadline - now();
+    const readBudget = Math.floor(retryDeadline - now());
     if (!(readBudget > 0)) {
       if (runnerDown) throw new NativeCaptureError();
       break;
