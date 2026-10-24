@@ -264,6 +264,7 @@ export function cleanTimingEvent(value: unknown): TimingEvent | undefined {
     ['source', MEDIA_SOURCES],
   ] as const) {
     if (input[key] === undefined) continue;
+    if (key === 'kind' && input.kind === 'metric') continue;
     const word = (words as readonly string[]).find((word) => word === input[key]);
     if (input.stage !== 'screenshot' || input.outcome !== 'withheld' || !word) return undefined;
     Object.assign(event, { [key]: word });

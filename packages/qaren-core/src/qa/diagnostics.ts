@@ -66,10 +66,7 @@ export function cleanDiagnostic(value: unknown): Record<string, unknown> | undef
     };
   }
   if (value.kind === 'metric' || MEDIA_KINDS.some((kind) => kind === value.kind)) {
-    const event = cleanTimingEvent({
-      ...value,
-      kind: value.kind === 'metric' ? undefined : value.kind,
-    });
+    const event = cleanTimingEvent(value);
     return event ? { kind: 'metric', ...event } : undefined;
   }
   if (value.kind === 'block-outcome' || value.kind === 'login-outcome') {
