@@ -151,6 +151,7 @@ export interface WalkerDeps {
     platformPresence?: boolean;
     timing?: TimingObserver;
   }): Promise<Screen>;
+  captureOrdinaryScreen?: WalkerDeps['captureScreen'];
   press(ref: string, context: QaDispatchContext): Promise<ActResult>;
   fill(ref: string, text: string, context: QaDispatchContext): Promise<ActResult>;
   // iOS only: type, proven only by a matching React read-back; testID identifies the pre-dispatch focus veto.
@@ -227,6 +228,7 @@ export interface WalkerTimingDiagnostic {
 interface Observation {
   id: number;
   screen: Screen;
+  scrollScreen?: Screen;
   timing: ObservationTiming;
 }
 
@@ -409,8 +411,11 @@ async function walkBlockScoped(
   let mutationStarted = false;
   let latestObservation = 0;
   let recoveries = 0;
-  const captureScreen: WalkerDeps['captureScreen'] = async (options) => {
-    const screen = await deps.captureScreen(options);
+  const captureScreen = async (
+    options: Parameters<WalkerDeps['captureScreen']>[0],
+    ordinary = false,
+  ): Promise<Screen> => {
+    const screen = await (ordinary ? deps.captureOrdinaryScreen! : deps.captureScreen)(options);
     const react = screen.reactConnection ?? screen.captureCoverage?.react;
     if ((react === 'lost' || react === 'reconnected') && reactConnections.at(-1) !== react)
       reactConnections.push(react);
@@ -456,16 +461,40 @@ async function walkBlockScoped(
     step?: Exclude<Item, { kind: 'check' }>,
     assertion = false,
     recovery = false,
+    mode?: 'ordinary' | 'presence',
   ): Promise<Observation> => {
     assertActive();
+    if (!mode && step?.kind === 'scroll' && step.until && deps.captureOrdinaryScreen) {
+      const startedAt = deps.now();
+      const before = await capture(step, assertion, recovery, 'presence');
+      const geometry = await capture(step, assertion, recovery, 'ordinary');
+      const after = await capture(step, assertion, recovery, 'presence');
+      const navigation = scrollNavigationChange(
+        before.screen,
+        after.screen,
+        scrollUntilContainer(step.until, before.screen),
+      );
+      if (navigation)
+        throw new ResolutionError({ refuse: 'SCROLL_NAVIGATED', reason: navigation });
+      const timing = admitObservation(startedAt, deps.now());
+      if (!timing)
+        throw new ResolutionError({
+          refuse: 'SCREEN_EVIDENCE_INCOMPLETE',
+          reason: 'ACQUISITION_EXPIRED',
+        });
+      geometry.screen.pointScale = after.screen.pointScale;
+      return { ...after, timing, scrollScreen: geometry.screen };
+    }
     cached = undefined;
     const target =
       step && ('target' in step ? step.target : step.kind === 'scroll' ? step.until : undefined);
-    const requirePresence = assertion || (!!target && target.quoted === undefined);
+    const requirePresence =
+      mode !== 'ordinary' && (assertion || (!!target && target.quoted === undefined));
     const platformPresence =
-      requirePresence ||
-      (step?.kind === 'scroll' && !!step.until) ||
-      (!!target && step?.kind === 'press' && target.exact !== 'id');
+      mode !== 'ordinary' &&
+      (requirePresence ||
+        (step?.kind === 'scroll' && !!step.until) ||
+        (!!target && step?.kind === 'press' && target.exact !== 'id'));
     const startedAt = deps.now();
     const id = ++sequence.observation;
     latestObservation = id;
@@ -483,11 +512,14 @@ async function walkBlockScoped(
     let admitted = false;
     try {
       try {
-        latest = await captureScreen({
-          observation: id,
-          ...(platformPresence ? { platformPresence: true } : {}),
-          ...(timingObserver ? { timing: timingObserver } : {}),
-        });
+        latest = await captureScreen(
+          {
+            observation: id,
+            ...(platformPresence ? { platformPresence: true } : {}),
+            ...(timingObserver ? { timing: timingObserver } : {}),
+          },
+          mode === 'ordinary',
+        );
       } catch (error) {
         if (isAbort(error)) throw error;
         if (error instanceof AppProcessGoneError) throw processChanged();
@@ -1861,10 +1893,14 @@ async function walkBlockScoped(
                 observation,
                 (context) =>
                   deps.scroll(
-                    scrollUntilDirection(item.until!, observation.screen, item.direction),
+                    scrollUntilDirection(
+                      item.until!,
+                      observation.scrollScreen ?? observation.screen,
+                      item.direction,
+                    ),
                     context,
                     undefined,
-                    scrollUntilBand(item.until!, observation.screen),
+                    scrollUntilBand(item.until!, observation.scrollScreen ?? observation.screen),
                   ),
                 deadline,
               );

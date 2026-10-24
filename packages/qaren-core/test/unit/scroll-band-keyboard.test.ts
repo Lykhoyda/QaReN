@@ -232,3 +232,23 @@ test('(w3) a clearance distance shorter than a real drag drags the minimum', () 
   const [y1, y2] = bandedYs({ y: 300, height: 100 }, 10);
   assert.equal(y1 - y2, 48);
 });
+
+for (const direction of ['up', 'down'] as const) {
+  for (const distance of [undefined, 10, 5000]) {
+    test(`no-band ${direction} preserves centered travel with a 160px keyboard-safe height and distance=${distance}`, () => {
+      clearRefMap();
+      updateRefMapFromFlat([
+        WINDOW,
+        { ...KEYBOARD, rect: { ...KEYBOARD.rect, y: 160 } },
+      ], { snapshotGeneration: 1, keyboardVisible: true });
+      try {
+        const half = distance === undefined ? 19 : distance === 10 ? 5 : 48;
+        const ys = direction === 'down' ? [80 + half, 80 - half] : [80 - half, 80 + half];
+        assert.deepEqual(buildDirectionalScrollCliArgs(direction, 0.6, undefined, distance),
+          ['scroll', '195', String(ys[0]), '195', String(ys[1]), '300']);
+      } finally {
+        clearRefMap();
+      }
+    });
+  }
+}

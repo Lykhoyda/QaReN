@@ -50,7 +50,6 @@ import {
 } from './privacy.js';
 import { literalEvidence, literalTextProjection, type LiteralVerdict } from './evidence.js';
 import { clip } from './native-presence.js';
-import { MIN_SCROLL_BAND_HEIGHT } from '../domain/scroll-gesture.js';
 
 export { ACT, CHECK } from './questions.js';
 export const MAX_CANDIDATES = 30;
@@ -480,7 +479,6 @@ function clearOfFrontOverlays(
 ): NativeNode['rect'] {
   const behind = screen.elements.indexOf(container);
   const lineage = ancestorsOf(container);
-  const root = lineage.find(isWindow) ?? lineage.at(-1);
   let spans = [{ top: band.y, bottom: band.y + band.height }];
   const padding = 4 * (screen.pointScale ?? 1);
   for (const [i, other] of screen.elements.entries()) {
@@ -493,12 +491,7 @@ function clearOfFrontOverlays(
     )
       continue;
     const ancestors = ancestorsOf(other);
-    if (
-      lineage.includes(other) ||
-      ancestors.includes(container) ||
-      (root && (ancestors.find(isWindow) ?? ancestors.at(-1)) !== root)
-    )
-      continue;
+    if (lineage.includes(other) || ancestors.includes(container)) continue;
     const rect = elementFrame(other);
     if (
       !rect ||
@@ -601,8 +594,6 @@ export function scrollUntilBand(target: Target, screen: Screen): NativeNode['rec
   }
   if (!band) return undefined;
   const clear = clearOfFrontOverlays(container, band, screen);
-  if (band.height >= MIN_SCROLL_BAND_HEIGHT && (!clear || clear.height < MIN_SCROLL_BAND_HEIGHT))
-    return band;
   return clear ?? { ...band, height: 0 };
 }
 

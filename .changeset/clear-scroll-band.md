@@ -2,4 +2,4 @@
 'qaren': patch
 ---
 
-Keep scroll-until drags inside the list, clear of floating controls in its own window when the remaining band can host a real drag.
+Keep scroll-until drags inside the list and clear of front overlays, refusing when no safe band can host a real drag.

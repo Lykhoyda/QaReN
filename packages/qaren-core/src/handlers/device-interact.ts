@@ -2090,10 +2090,12 @@ function computeScrollFromDirection(
     : screen.height * CLEARANCE_BAND_FRACTION;
   const dy = Math.round(
     distance !== undefined && Number.isFinite(distance) && distance > 0
-      ? Math.max(Math.min(distance, span), Math.min(MIN_DRAG_TRAVEL, span))
+      ? caller
+        ? Math.max(Math.min(distance, span), Math.min(MIN_DRAG_TRAVEL, span))
+        : Math.min(distance, span)
       : caller
         ? span
-        : Math.max(Math.min(MIN_DRAG_TRAVEL, span), screen.height * SWIPE_FRACTION * amount),
+        : screen.height * SWIPE_FRACTION * amount,
   );
   const dx = Math.round(screen.width * SWIPE_FRACTION * amount);
   // Rounding the centre and the half-span up together can land an end on the band's edge row.

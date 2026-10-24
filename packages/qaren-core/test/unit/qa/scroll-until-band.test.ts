@@ -479,16 +479,10 @@ for (const [label, hittable] of [
     assert.ok(band.y + band.height <= 776, JSON.stringify(band));
   });
 
-  test(`a second presence window cannot erase the list band when bar hittable=${hittable}`, () => {
-    const band = scrollUntilBand(option20, floatingTabScreen(hittable, true));
-    assert.deepEqual(band, scrollUntilBand(option20, floatingTabScreen(hittable)));
-    assert.ok(band && band.height > 0);
-    for (const direction of ['up', 'down'] as const) {
-      const [, y1, , y2] = bandDrag(band, { width: 402, height: 874 }, 874, direction);
-      assert.ok(Math.abs(y2 - y1) >= 48);
-      for (const y of [y1, y2]) assert.ok(y > 20 && y < 780, `${y}`);
-    }
+  test(`a full-screen overlay in a second window erases the band when bar hittable=${hittable}`, () => {
+    assert.equal(scrollUntilBand(option20, floatingTabScreen(hittable, true))?.height, 0);
   });
+
 }
 
 test('(y) list rows and a header drawn before the list do not cut the band', () => {
@@ -521,7 +515,7 @@ test('(y) list rows and a header drawn before the list do not cut the band', () 
 });
 
 for (const scale of [1, 3]) {
-  test(`Android root ancestry excludes another presence layer at scale ${scale}`, () => {
+  test(`a full-screen overlay in another Android root erases the band at scale ${scale}`, () => {
     const frame = { x: 0, y: 0, width: 402 * scale, height: 874 * scale };
     const screen = join(
       [
@@ -554,12 +548,12 @@ for (const scale of [1, 3]) {
       [],
     );
     screen.pointScale = scale;
-    assert.deepEqual(scrollUntilBand(option20, screen), { ...frame, height: 776 * scale });
+    assert.equal(scrollUntilBand(option20, screen)?.height, 0);
   });
 }
 
 for (const overlayTop of [0, 48]) {
-  test(`a large list falls back to its uncut band when overlays leave less than a drag, top=${overlayTop}`, () => {
+  test(`a large list refuses when overlays leave less than a drag, top=${overlayTop}`, () => {
     const frame = { x: 0, y: 0, width: 402, height: 874 };
     const screen = join(
       [
@@ -578,23 +572,14 @@ for (const overlayTop of [0, 48]) {
       [],
     );
     const band = scrollUntilBand(option20, screen);
-    assert.deepEqual(band, frame);
+    assert.ok(band && band.height < 50);
     clearRefMap();
     updateRefMapFromFlat([{ ref: '@window', type: 'Window', rect: frame }]);
     try {
       for (const direction of ['up', 'down'] as const) {
-        const coordinates = buildDirectionalScrollCliArgs(
-          direction,
-          0.6,
-          undefined,
-          undefined,
-          band,
-        )
-          .slice(1, 5)
-          .map(Number);
-        assert.deepEqual(
-          coordinates,
-          direction === 'down' ? [201, 758, 201, 102] : [201, 102, 201, 758],
+        assert.throws(
+          () => buildDirectionalScrollCliArgs(direction, 0.6, undefined, undefined, band),
+          /SCROLL_BAND_TOO_SMALL/,
         );
       }
     } finally {
@@ -630,3 +615,20 @@ test('an intrinsically small list still refuses after overlay subtraction', () =
     clearRefMap();
   }
 });
+
+for (const direction of ['up', 'down'] as const) {
+  test(`a toolbar in a front window cuts the ${direction} gesture band`, () => {
+    const frame = { x: 0, y: 0, width: 402, height: 874 };
+    const screen = join([
+      { ref: '@window', index: 0, type: 'Window', rect: frame },
+      { ref: '@list', index: 1, parentIndex: 0, type: 'ScrollView', rect: frame },
+      { ref: '@front', index: 2, type: 'Window', rect: frame },
+      { ref: '@toolbar', index: 3, parentIndex: 2, type: 'Button', hittable: true,
+        rect: { x: 0, y: 730, width: 402, height: 70 } },
+    ], []);
+    const band = scrollUntilBand(option20, screen);
+    assert.ok(band && band.y + band.height <= 726);
+    const [, y1, , y2] = bandDrag(band, frame, frame.height, direction);
+    assert.ok(y1 < 730 && y2 < 730);
+  });
+}
