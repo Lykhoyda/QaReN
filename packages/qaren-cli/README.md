@@ -1363,6 +1363,9 @@ diagnostics do not prevent this read-only retry; persistent emptiness still
 refuses with the same code and message. Persistent incomplete presence refuses
 with `PRIVATE_INPUT_CAPTURE_UNKNOWN`, naming the unknown keyboard state and any
 known acquisition phase, failure reason or deadline read using fixed codes.
+If the retry deadline cuts off a read, the refusal retains the last incomplete
+presence snapshot's fixed causes and adds `retry-deadline` without returning that
+snapshot as usable evidence.
 Only a fresh, complete snapshot can establish privacy or admit a newly arrived
 system alert; partial presence never authorizes actions, screenshots or model
 evidence. Malformed, truncated, dropped-node and other incomplete captures refuse

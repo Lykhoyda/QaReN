@@ -5,6 +5,7 @@ import { test, type TestContext } from 'node:test';
 import {
   captureScreen,
   NativeCaptureError,
+  AppProcessGoneError,
   type NativeObservation,
 } from '../../../dist/qa/capture.js';
 import { HandlerError } from '../../../dist/qa/adapt.js';
@@ -123,6 +124,75 @@ test('persistent incomplete presence refuses with a value-free acquisition reaso
   assert.equal(error.message.includes('private-code-canary'), false);
   assert.equal(reads, 2);
   assert.equal(time.now(), 22_000);
+});
+
+for (const firstReadMs of [20_500, 4_000]) {
+  test(`a deadline-cut presence re-read preserves the prior causes after a ${firstReadMs}ms first read`, async (t) => {
+    const time = clock(t);
+    let reads = 0;
+    const result = captureScreen({
+      platformPresence: true,
+      requirePrivateInputs: true,
+      now: time.now,
+      native: async () => {
+        if (++reads === 1) {
+          time.elapse(firstReadMs);
+          const incomplete = incompletePresence();
+          Object.assign(incomplete.nodes[1], { value: 'deadline-private-canary' });
+          Object.assign(incomplete.presenceCapture.diagnostics.failure, {
+            detail: 'deadline-private-canary',
+          });
+          return incomplete;
+        }
+        return new Promise<NativeObservation>(() => {});
+      },
+      react: async () => assert.fail('no React read after incomplete native evidence expires'),
+    }).catch((error: Error) => error);
+    await nextTurn();
+    await time.advance(500);
+    assert.equal(reads, 2);
+    const deadline = Math.min(firstReadMs + 6_000, 22_000);
+    await time.advance(deadline - time.now());
+    const error = await result;
+    assert.ok(error instanceof NativeSnapshotIncomplete, String(error));
+    assert.equal(error.code, 'PRIVATE_INPUT_CAPTURE_UNKNOWN');
+    assert.equal(error.nodes, 2);
+    assert.ok(error.causes.includes('keyboard-state-unknown'));
+    assert.ok(error.causes.includes('presence-failure=revalidation:enumeration-changed'));
+    assert.ok(error.causes.includes('retry-deadline'));
+    assert.equal(error.message.includes('deadline-private-canary'), false);
+    assert.equal(time.now(), deadline);
+  });
+}
+
+test('a real acquisition failure after incomplete presence does not inherit the retry deadline refusal', async (t) => {
+  const time = clock(t);
+  for (const failure of [
+    new HandlerError('RN_FAST_RUNNER_DOWN', 'private-error-canary'),
+    new AppProcessGoneError(),
+  ]) {
+    let reads = 0;
+    const result = captureScreen({
+      platformPresence: true,
+      requirePrivateInputs: true,
+      now: time.now,
+      native: async () => {
+        if (++reads === 1) return incompletePresence();
+        throw failure;
+      },
+      react: async () => assert.fail('failed acquisition must not read React'),
+    }).catch((error: Error) => error);
+    await nextTurn();
+    await time.advance(500);
+    const error = await result;
+    assert.ok(
+      error instanceof
+        (failure instanceof AppProcessGoneError ? AppProcessGoneError : NativeCaptureError),
+    );
+    assert.equal(error.message.includes('retry-deadline'), false);
+    assert.equal(error.message.includes('private-error-canary'), false);
+    assert.equal(reads, 2);
+  }
 });
 
 test('an alert arriving before presence enumeration yields an empty incomplete read, then a fresh alert capture', async (t) => {

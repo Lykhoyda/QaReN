@@ -560,17 +560,24 @@ async function capture(deps: CaptureDeps): Promise<Screen> {
   let retryDeadline: number | undefined;
   for (;;) {
     let runnerDown = false;
+    const retryRefusal =
+      retryDeadline !== undefined && retryablePresenceCapture(native)
+        ? new NativeSnapshotIncomplete(native.nodes?.length ?? 0, [
+            ...nativeIncompleteCauses(native),
+            'retry-deadline',
+          ])
+        : new NativeCaptureError();
     try {
       native = await measureTiming(deps.timing, now, 'native-total', () =>
         retryDeadline === undefined
           ? deps.native(presenceBudgetMs)
-          : withDeadline(
-              performance.now() + Math.max(0, retryDeadline - now()),
-              new NativeCaptureError(),
-              () => deps.native(presenceBudgetMs),
+          : withDeadline(performance.now() + Math.max(0, retryDeadline - now()), retryRefusal, () =>
+              deps.native(presenceBudgetMs),
             ),
       );
     } catch (error) {
+      if (error === retryRefusal && retryRefusal instanceof NativeSnapshotIncomplete)
+        throw retryRefusal;
       if (error instanceof AppProcessGoneError) throw error;
       if (!deps.requirePrivateInputs) throw error;
       if (

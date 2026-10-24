@@ -2,4 +2,4 @@
 'qaren': patch
 ---
 
-Re-read incomplete post-fill presence snapshots within existing capture budgets and name persistent acquisition failures without exposing private input.
+Re-read incomplete post-fill presence snapshots within existing capture budgets and preserve named acquisition failures when retries expire without exposing private input.
