@@ -4,7 +4,7 @@ import { parsePlan } from '../../../dist/qa/plan.js';
 import { join as joinScreen } from '../../../dist/qa/screen.js';
 import type { Element, Screen, Visibility } from '../../../dist/qa/screen.js';
 import { CHECK } from '../../../dist/qa/questions.js';
-import { PHRASE_WAIT_BUDGET_MS } from '../../../dist/qa/timing.js';
+import { EVIDENCE_USE_MS, PHRASE_WAIT_BUDGET_MS } from '../../../dist/qa/timing.js';
 import { runPlan, SCROLL_ATTEMPTS, WAIT_BUDGET_MS, WAIT_POLL_MS } from '../../../dist/qa/walker.js';
 import { scriptedJudge, walker } from './judgment-fixtures.ts';
 
@@ -73,6 +73,53 @@ function visibilityJudge(...probabilities: number[]) {
       }),
     );
   });
+}
+
+for (const direction of ['up', 'down']) {
+  for (const refresh of ['reask', 'decision-expiry', 'dispatch-expiry']) {
+    test(`scroll-until ${direction} refuses navigation during ${refresh}`, async () => {
+      let elapsed = 0;
+      const judge = scriptedJudge((_questions, index) => {
+        if (index === 1 && refresh === 'decision-expiry') elapsed += EVIDENCE_USE_MS;
+        return {
+          visibility_1: {
+            type: 'noul',
+            noul: index >= 2 ? 0.9 : index === 1 && refresh === 'reask' ? 0.5 : 0.1,
+          },
+        };
+      });
+      const original = screen({ ...text('Policies'), selected: true }, text('Loading'));
+      const destination = screen({ ...text('Claims'), selected: true }, text('Footer'));
+      const f = walker([original, original, destination], judge);
+      f.deps.now = () => elapsed;
+      f.deps.sleep = async (ms) => {
+        elapsed += ms;
+      };
+      const scroll = f.deps.scroll;
+      let drags = 0;
+      f.deps.scroll = async (dir, context) => {
+        if (drags === 1 && refresh === 'dispatch-expiry') {
+          elapsed += EVIDENCE_USE_MS;
+          context!.check();
+          assert.fail('expired dispatch must refresh before sending another drag');
+        }
+        context!.authorize();
+        drags += 1;
+        return scroll(dir, context);
+      };
+      const result = await runPlan(
+        parsePlan(`1. Scroll ${direction} until the footer text`).blocks!,
+        f.deps,
+      );
+      assert.equal(result.verdict, 'REFUSED');
+      assert.equal(result.code, 'SCROLL_NAVIGATED');
+      assert.equal(drags, 1);
+      assert.deepEqual(f.actions, [`scroll ${direction}`]);
+      assert.equal(f.captures(), 3);
+      assert.equal(judge.requests.length, 2, 'the destination must not receive a visibility judgment');
+      assert.ok(result.steps.every((step) => step.outcome !== 'pass'));
+    });
+  }
 }
 
 test('a phrase wait succeeds on present text without selecting or pressing a target', async () => {
