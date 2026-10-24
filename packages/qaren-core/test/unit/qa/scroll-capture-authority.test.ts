@@ -5,6 +5,7 @@ import { parsePlan } from '../../../dist/qa/plan.js';
 import { disabledStateOf, join as joinScreen } from '../../../dist/qa/screen.js';
 import type { NativeNode } from '../../../dist/qa/screen.js';
 import { walkBlock } from '../../../dist/qa/walker.js';
+import { EVIDENCE_USE_MS } from '../../../dist/qa/timing.js';
 import { decideScreen } from '../../../dist/qa/resolve.js';
 import { ObservedPrivacy } from '../../../dist/qa/privacy.js';
 import { buildDirectionalScrollCliArgs } from '../../../dist/handlers/device-interact.js';
@@ -225,6 +226,27 @@ async function run(
 }
 
 for (const direction of ['up', 'down'] as const) {
+  for (const mode of ['quoted', 'phrase', 'replay', 'text-replay'] as const) {
+    test(`slow presence confirmation uses fresh ordinary evidence: ${direction}, ${mode}`, async () => {
+      const f = fixture();
+      f.setSnapshot(async (presence) => {
+        if (presence) await f.f.deps.sleep(EVIDENCE_USE_MS + 1_000);
+        return { footer: true };
+      });
+      try {
+        const result = await run(f, direction, mode);
+        assert.equal(result.block.outcome, 'pass');
+        assert.equal(result.refusal, undefined);
+        assert.deepEqual(f.modes, [false, true, false]);
+        assert.equal(f.drags(), 0);
+      } finally {
+        clearRefMap();
+      }
+    });
+  }
+}
+
+for (const direction of ['up', 'down'] as const) {
   for (const mode of ['quoted', 'phrase', 'replay'] as const) {
     for (const change of ['unrelated', 'label', 'unidentified-label', 'both'] as const) {
       if (mode === 'replay' && change === 'unidentified-label') continue;
@@ -233,7 +255,8 @@ for (const direction of ['up', 'down'] as const) {
           const f = fixture();
           let confirmations = 0;
           f.setSnapshot(async (presence) => {
-            if (presence && ++confirmations === 1 && expiry) await f.f.deps.sleep(11_000);
+            if (presence) confirmations += 1;
+            if (!presence && confirmations === 1 && expiry) await f.f.deps.sleep(11_000);
             const changed = !presence && confirmations >= (expiry ? 2 : 1);
             return {
               footer: true,
@@ -250,7 +273,7 @@ for (const direction of ['up', 'down'] as const) {
             assert.equal(f.drags(), 0);
             assert.deepEqual(
               f.modes,
-              expiry ? [false, true, false, true, false] : [false, true, false],
+              expiry ? [false, true, false, false, true, false] : [false, true, false],
             );
           } finally {
             clearRefMap();
@@ -297,7 +320,8 @@ for (const direction of ['up', 'down'] as const) {
       const f = fixture();
       let confirmations = 0;
       f.setSnapshot(async (presence) => {
-        if (presence && ++confirmations === 1) await f.f.deps.sleep(11_000);
+        if (presence) confirmations += 1;
+        if (!presence && confirmations === 1) await f.f.deps.sleep(11_000);
         return {
           footer: true,
           listID: 'policies',
@@ -310,7 +334,7 @@ for (const direction of ['up', 'down'] as const) {
         assert.equal(result.block.outcome, 'fail');
         assert.equal(f.drags(), 0);
         assert.match(JSON.stringify(result.failure), /VISIBILITY_UNSURE/);
-        assert.deepEqual(f.modes, [false, true, false, true, false]);
+        assert.deepEqual(f.modes, [false, true, false, false, true, false]);
       } finally {
         clearRefMap();
       }
@@ -324,7 +348,7 @@ for (const direction of ['up', 'down'] as const) {
         assert.equal(result.block.outcome, 'pass');
         assert.equal(f.drags(), 1);
         assert.deepEqual(f.endpoints, [
-          direction === 'down' ? [201, 758, 201, 102] : [201, 102, 201, 758],
+          direction === 'down' ? [201, 758, 201, 21] : [201, 102, 201, 839],
         ]);
         assert.deepEqual(
           f.modes,
@@ -476,12 +500,12 @@ for (const direction of ['up', 'down'] as const) {
       }
     });
 
-    test(`presence confirmation cannot renew expired ordinary geometry: ${direction}, ${mode}`, async () => {
+    test(`fresh ordinary geometry cannot renew expired presence: ${direction}, ${mode}`, async () => {
       const f = fixture();
       const completed: number[] = [];
       f.setSnapshot(async (presence, read) => {
         if (read === 1) await f.f.deps.sleep(2_000);
-        if (read === 2) await f.f.deps.sleep(11_000);
+        if (read === 3) await f.f.deps.sleep(11_000);
         completed.push(f.f.deps.now());
         return { footer: !presence || read > 2 };
       });
@@ -490,8 +514,8 @@ for (const direction of ['up', 'down'] as const) {
         assert.equal(result.failure, undefined);
         assert.equal(result.block.outcome, 'pass');
         assert.equal(f.drags(), 0);
-        assert.deepEqual(completed.slice(0, 2), [2_000, 13_000]);
-        assert.deepEqual(f.modes, [false, true, false, true, false]);
+        assert.deepEqual(completed.slice(0, 3), [2_000, 2_000, 13_000]);
+        assert.deepEqual(f.modes, [false, true, false, false, true, false]);
       } finally {
         clearRefMap();
       }
@@ -627,7 +651,8 @@ for (const direction of ['up', 'down'] as const) {
         const f = fixture();
         let confirmations = 0;
         f.setSnapshot(async (presence) => {
-          if (presence && ++confirmations === 1 && expiry) await f.f.deps.sleep(11_000);
+          if (presence) confirmations += 1;
+          if (!presence && confirmations === 1 && expiry) await f.f.deps.sleep(11_000);
           const changed = !presence && confirmations >= (expiry ? 2 : 1);
           return {
             footer: true,
@@ -646,7 +671,7 @@ for (const direction of ['up', 'down'] as const) {
           assert.equal(f.drags(), 0);
           assert.deepEqual(
             f.modes,
-            expiry ? [false, true, false, true, false] : [false, true, false],
+            expiry ? [false, true, false, false, true, false] : [false, true, false],
           );
         } finally {
           clearRefMap();
@@ -677,7 +702,8 @@ for (const direction of ['up', 'down'] as const) {
         });
         f.f.deps.judge = judge;
         f.setSnapshot(async (presence) => {
-          if (presence && ++confirmations === 1 && transition === 'expiry')
+          if (presence) confirmations += 1;
+          if (!presence && confirmations === 1 && transition === 'expiry')
             await f.f.deps.sleep(11_000);
           const changed = !presence && confirmations >= (transition === 'initial' ? 1 : 2);
           const outside = direction === 'down' ? 750 : 50;
@@ -710,7 +736,7 @@ for (const direction of ['up', 'down'] as const) {
             transition === 'reask'
               ? [false, true, false, false, true, false]
               : transition === 'expiry'
-                ? [false, true, false, true, false]
+                ? [false, true, false, false, true, false]
                 : [false, true, false],
           );
         } finally {
@@ -796,7 +822,8 @@ for (const direction of ['up', 'down'] as const) {
               ),
             );
             f.setSnapshot(async (presence) => {
-              if (presence && ++confirmations === 1 && transition === 'expiry')
+              if (presence) confirmations += 1;
+              if (!presence && confirmations === 1 && transition === 'expiry')
                 await f.f.deps.sleep(11_000);
               const changed = !presence && confirmations >= (transition === 'initial' ? 1 : 2);
               return {
@@ -829,7 +856,7 @@ for (const direction of ['up', 'down'] as const) {
                 transition === 'reask'
                   ? [false, true, false, false, true, false]
                   : transition === 'expiry'
-                    ? [false, true, false, true, false]
+                    ? [false, true, false, false, true, false]
                     : [false, true, false],
               );
             } finally {
@@ -862,7 +889,8 @@ for (const direction of ['up', 'down'] as const) {
           );
         });
         f.setSnapshot(async (presence) => {
-          if (presence && ++confirmations === 1 && transition === 'expiry')
+          if (presence) confirmations += 1;
+          if (!presence && confirmations === 1 && transition === 'expiry')
             await f.f.deps.sleep(11_000);
           const changed = !presence && confirmations >= (transition === 'initial' ? 1 : 2);
           return {
@@ -895,7 +923,7 @@ for (const direction of ['up', 'down'] as const) {
             transition === 'reask'
               ? [false, true, false, false, true, false]
               : transition === 'expiry'
-                ? [false, true, false, true, false]
+                ? [false, true, false, false, true, false]
                 : [false, true, false],
           );
         } finally {
@@ -965,7 +993,8 @@ for (const direction of ['up', 'down'] as const) {
           });
           f.f.deps.judge = judge;
           f.setSnapshot(async (presence) => {
-            if (presence && ++confirmations === 1 && transition === 'expiry')
+            if (presence) confirmations += 1;
+            if (!presence && confirmations === 1 && transition === 'expiry')
               await f.f.deps.sleep(11_000);
             const changed = !presence && confirmations >= (transition === 'initial' ? 1 : 2);
             return {
@@ -1001,7 +1030,7 @@ for (const direction of ['up', 'down'] as const) {
               transition === 'reask'
                 ? [false, true, false, false, true, false]
                 : transition === 'expiry'
-                  ? [false, true, false, true, false]
+                  ? [false, true, false, false, true, false]
                   : [false, true, false],
             );
           } finally {
@@ -1077,7 +1106,8 @@ for (const direction of ['up', 'down'] as const) {
             });
             f.f.deps.judge = judge;
             f.setSnapshot(async (presence) => {
-              if (presence && ++confirmations === 1 && transition === 'expiry')
+              if (presence) confirmations += 1;
+              if (!presence && confirmations === 1 && transition === 'expiry')
                 await f.f.deps.sleep(11_000);
               const changed = !presence && confirmations >= (transition === 'initial' ? 1 : 2);
               return {
@@ -1112,7 +1142,7 @@ for (const direction of ['up', 'down'] as const) {
                 transition === 'reask'
                   ? [false, true, false, false, true, false]
                   : transition === 'expiry'
-                    ? [false, true, false, true, false]
+                    ? [false, true, false, false, true, false]
                     : [false, true, false],
               );
             } finally {
@@ -1295,7 +1325,8 @@ for (const representation of ['native', 'react'] as const) {
             });
             f.f.deps.judge = judge;
             const next = async (presence: boolean) => {
-              if (presence && ++confirmations === 1 && transition === 'expiry')
+              if (presence) confirmations += 1;
+              if (!presence && confirmations === 1 && transition === 'expiry')
                 await f.f.deps.sleep(11_000);
               const changed = !presence && confirmations >= (transition === 'initial' ? 1 : 2);
               return {
@@ -1369,7 +1400,7 @@ for (const representation of ['native', 'react'] as const) {
                 transition === 'reask'
                   ? [false, true, false, false, true, false]
                   : transition === 'expiry'
-                    ? [false, true, false, true, false]
+                    ? [false, true, false, false, true, false]
                     : [false, true, false],
               );
             } finally {

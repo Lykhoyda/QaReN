@@ -15,7 +15,32 @@ import {
   _setFetchForTest,
 } from '../../../dist/runners/rn-fast-runner-client.js';
 
-test('a precise band drag stays 10% inside its edges', () => {
+test('full-list drag travel loses only the start inset from develop travel', () => {
+  updateRefMapFromFlat([
+    { ref: '@window', type: 'Window', rect: { x: 0, y: 0, width: 402, height: 874 } },
+  ]);
+  try {
+    const band = { x: 0, y: 100, width: 402, height: 700 };
+    const developTravel = band.height - 2;
+    const startInset = Math.ceil(band.height * 0.1);
+    for (const direction of ['up', 'down'] as const) {
+      const [, , start, , end] = buildDirectionalScrollCliArgs(
+        direction,
+        0.6,
+        undefined,
+        undefined,
+        band,
+      ).map(Number);
+      assert.ok(Math.abs(end - start) >= developTravel - startInset, `${start} -> ${end}`);
+      assert.equal(end, direction === 'down' ? band.y + 1 : band.y + band.height - 1);
+      assert.ok(direction === 'down' ? start <= 730 : start >= 170);
+    }
+  } finally {
+    clearRefMap();
+  }
+});
+
+test('a precise band drag insets touch-down and reaches the far edge', () => {
   updateRefMapFromFlat([
     { ref: '@window', type: 'Window', rect: { x: 0, y: 0, width: 402, height: 874 } },
   ]);
@@ -26,7 +51,7 @@ test('a precise band drag stays 10% inside its edges', () => {
       width: 402,
       height: 700,
     }).map(Number);
-    assert.ok(y1 <= 730 && y2 >= 170, `${y1} -> ${y2}`);
+    assert.ok(y1 <= 730 && y2 === 101, `${y1} -> ${y2}`);
   } finally {
     clearRefMap();
   }
@@ -127,7 +152,7 @@ for (const platform of ['ios', 'android'] as const) {
           width,
           height: 200,
         }),
-        ['scroll', String(width / 2), '480', String(width / 2), '320', '300'],
+        ['scroll', String(width / 2), '480', String(width / 2), '301', '300'],
       );
     });
   });

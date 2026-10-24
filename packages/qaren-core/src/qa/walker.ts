@@ -1138,7 +1138,6 @@ async function walkBlockScoped(
               return { observation: ordinary, found: false };
             }
             observation = await capture(item, false, false, 'presence');
-            usable(ordinary, item, deadline);
             const refreshed = await capture(item);
             validateRefresh(ordinary.screen, refreshed.screen);
             ordinary = refreshed;

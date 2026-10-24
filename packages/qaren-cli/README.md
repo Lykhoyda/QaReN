@@ -720,8 +720,8 @@ from the bottom on iOS. Callers passing no band
 use the existing keyboard-safe band. On both iOS and Android, a target whose centre
 is covered by the observed keyboard or a sticky overlay gets a scroll sized to move that centre
 toward the middle of that band. Precise drags normally keep a 10% dead zone at
-each edge; short bands shrink that dead zone to preserve at least 48 px of
-travel, while keeping the existing one-pixel edge inset. A clearance scroll without
+touch-down and end one pixel inside the far band edge; short bands shrink the
+start inset to preserve at least 48 px of travel. A clearance scroll without
 a band keeps the cap of 60% of the screen area above the keyboard, without a
 minimum-distance clamp.
 Scrolls without a clearance distance keep the fixed amount of `0.6` on the window

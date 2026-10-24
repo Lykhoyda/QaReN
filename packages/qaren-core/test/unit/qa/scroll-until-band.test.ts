@@ -302,7 +302,7 @@ test('(p) that drag spans the visible list and cannot land as a tap', () => {
   const band = scrollUntilBand(option20, androidOptionSheet())!;
   const [x1, y1, x2, y2] = bandDrag(band, { width: 1080, height: 2424 }, 1541);
   assert.deepEqual([x1, x2], [540, 540]);
-  assert.ok(y1 - y2 >= Math.floor(band.height * 0.8) - 2, `${y1} -> ${y2}`);
+  assert.ok(y1 - y2 >= Math.floor(band.height * 0.9) - 2, `${y1} -> ${y2}`);
   for (const y of [y1, y2]) assert.ok(y > 949 && y < 1453, `${y}`);
 });
 
@@ -328,7 +328,7 @@ test('(v) an iOS row below a stretched list drags across the band, clear of the 
   const band = scrollUntilBand(until('Scroll down until "qa-sheet-capture-option-17"'), screen)!;
   assert.deepEqual(band, { ...IOS_LIST, height: 568 - 48 - 357 });
   const [, y1, , y2] = bandDrag(band, { width: 402, height: 874 }, 568);
-  assert.deepEqual([y1, y2], [504, 374]);
+  assert.deepEqual([y1, y2], [503, 358]);
   assert.ok(y1 <= 568 - KEYBOARD_EDGE_INSET, `${y1}`);
 });
 
@@ -375,7 +375,7 @@ test('a keyboard-covered target clears a floating toolbar before building the dr
   assert.deepEqual(band, { x: 0, y: 300, width: 390, height: 121 });
   for (const direction of ['up', 'down'] as const) {
     const [, y1, , y2] = bandDrag(band, frame, 508, direction);
-    assert.deepEqual([y1, y2], direction === 'down' ? [409, 313] : [313, 409]);
+    assert.deepEqual([y1, y2], direction === 'down' ? [408, 301] : [313, 420]);
     for (const y of [y1, y2]) assert.ok(y < 425 || y > 450, `${y}`);
     assert.ok(Math.abs(y1 - y2) >= 48);
   }

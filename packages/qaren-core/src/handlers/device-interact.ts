@@ -2071,7 +2071,7 @@ function bandTooSmall(band: Band): string | undefined {
     : undefined;
 }
 
-// Precise bands keep a 10% dead zone; window drags retain their centred fractions.
+// Precise drags inset touch-down only; window drags retain their centred fractions.
 function computeScrollFromDirection(
   direction: 'up' | 'down' | 'left' | 'right',
   amount: number,
@@ -2081,12 +2081,9 @@ function computeScrollFromDirection(
   const cx = Math.round((screen.x ?? 0) + screen.width / 2);
   const cy = Math.round((screen.y ?? 0) + screen.height / 2);
   const caller = screen.x !== undefined || screen.y !== undefined;
-  const deadZone = Math.max(
-    1,
-    Math.min(screen.height * 0.1, (screen.height - MIN_DRAG_TRAVEL) / 2),
-  );
+  const deadZone = Math.max(1, Math.min(screen.height * 0.1, screen.height - MIN_DRAG_TRAVEL - 1));
   const span = caller
-    ? Math.floor(screen.height - 2 * deadZone)
+    ? Math.floor(screen.height - deadZone - 1)
     : screen.height * CLEARANCE_BAND_FRACTION;
   const dy = Math.round(
     distance !== undefined && Number.isFinite(distance) && distance > 0
@@ -2098,6 +2095,17 @@ function computeScrollFromDirection(
         : screen.height * SWIPE_FRACTION * amount,
   );
   const dx = Math.round(screen.width * SWIPE_FRACTION * amount);
+  if (caller && (direction === 'down' || direction === 'up')) {
+    const start =
+      direction === 'down'
+        ? Math.floor((screen.y ?? 0) + screen.height - deadZone)
+        : Math.ceil((screen.y ?? 0) + deadZone);
+    const end =
+      direction === 'down'
+        ? Math.max(start - dy, Math.ceil((screen.y ?? 0) + 1))
+        : Math.min(start + dy, Math.floor((screen.y ?? 0) + screen.height - 1));
+    return { x1: cx, y1: start, x2: cx, y2: end };
+  }
   // Rounding the centre and the half-span up together can land an end on the band's edge row.
   const top = Math.max(cy - Math.round(dy / 2), Math.ceil((screen.y ?? 0) + 1));
   const bottom = Math.min(cy + Math.round(dy / 2), Math.floor((screen.y ?? 0) + screen.height - 1));

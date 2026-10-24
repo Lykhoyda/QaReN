@@ -365,7 +365,7 @@ test('(u) one clearance swipe spans the band clear of the keyboard edge', () => 
       distance,
       clearanceBand(target, screen),
     ).map(Number);
-    assert.deepEqual([y1, y2], [504, 374]);
+    assert.deepEqual([y1, y2], [503, 358]);
     assert.ok(y1 - y2 < 752 - 568, `${y1 - y2}`);
   } finally {
     clearRefMap();
