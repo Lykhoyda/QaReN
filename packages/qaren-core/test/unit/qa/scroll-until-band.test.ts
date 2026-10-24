@@ -420,7 +420,7 @@ test('a no-container fallback stays centred with a separate keyboard window', ()
   }
 });
 
-function floatingTabScreen(barHittable: boolean): Screen {
+function floatingTabScreen(barHittable: boolean, presenceWindow = false): Screen {
   const frame = { x: 0, y: 0, width: 402, height: 874 };
   return join(
     [
@@ -443,6 +443,27 @@ function floatingTabScreen(barHittable: boolean): Screen {
         hittable: true,
         rect: { x: 20 + 181 * i, y: 780, width: 181, height: 60 },
       })),
+      ...(presenceWindow
+        ? [
+            { ref: '@presence-window', index: 6, parentIndex: 0, type: 'Window', rect: frame },
+            {
+              ref: '@presence-root',
+              index: 7,
+              parentIndex: 6,
+              type: 'Other',
+              hittable: true,
+              rect: frame,
+            },
+            {
+              ref: '@presence-child',
+              index: 8,
+              parentIndex: 7,
+              type: 'Button',
+              hittable: true,
+              rect: frame,
+            },
+          ]
+        : []),
     ],
     [],
   );
@@ -456,6 +477,17 @@ for (const [label, hittable] of [
     const band = scrollUntilBand(option20, floatingTabScreen(hittable));
     assert.ok(band && band.height > 0);
     assert.ok(band.y + band.height <= 776, JSON.stringify(band));
+  });
+
+  test(`a second presence window cannot erase the list band when bar hittable=${hittable}`, () => {
+    const band = scrollUntilBand(option20, floatingTabScreen(hittable, true));
+    assert.deepEqual(band, scrollUntilBand(option20, floatingTabScreen(hittable)));
+    assert.ok(band && band.height > 0);
+    for (const direction of ['up', 'down'] as const) {
+      const [, y1, , y2] = bandDrag(band, { width: 402, height: 874 }, 874, direction);
+      assert.ok(Math.abs(y2 - y1) >= 48);
+      for (const y of [y1, y2]) assert.ok(y > 20 && y < 780, `${y}`);
+    }
   });
 }
 
@@ -488,14 +520,101 @@ test('(y) list rows and a header drawn before the list do not cut the band', () 
   assert.deepEqual(scrollUntilBand(option20, screen), frame);
 });
 
-test('a fully covered list refuses instead of falling back to a window drag', () => {
+for (const scale of [1, 3]) {
+  test(`Android root ancestry excludes another presence layer at scale ${scale}`, () => {
+    const frame = { x: 0, y: 0, width: 402 * scale, height: 874 * scale };
+    const screen = join(
+      [
+        { ref: '@root', index: 0, type: 'android.widget.FrameLayout', hittable: true, rect: frame },
+        { ref: '@list', index: 1, parentIndex: 0, type: 'android.widget.ScrollView', rect: frame },
+        {
+          ref: '@bar',
+          index: 2,
+          parentIndex: 0,
+          type: 'android.widget.Button',
+          hittable: true,
+          rect: { x: 20 * scale, y: 780 * scale, width: 362 * scale, height: 60 * scale },
+        },
+        {
+          ref: '@presence-root',
+          index: 3,
+          type: 'android.view.ViewGroup',
+          hittable: true,
+          rect: frame,
+        },
+        {
+          ref: '@presence-child',
+          index: 4,
+          parentIndex: 3,
+          type: 'android.widget.Button',
+          hittable: true,
+          rect: frame,
+        },
+      ],
+      [],
+    );
+    screen.pointScale = scale;
+    assert.deepEqual(scrollUntilBand(option20, screen), { ...frame, height: 776 * scale });
+  });
+}
+
+for (const overlayTop of [0, 48]) {
+  test(`a large list falls back to its uncut band when overlays leave less than a drag, top=${overlayTop}`, () => {
+    const frame = { x: 0, y: 0, width: 402, height: 874 };
+    const screen = join(
+      [
+        { ref: '@app', index: 0, type: 'Application', rect: frame },
+        { ref: '@window', index: 1, parentIndex: 0, type: 'Window', rect: frame },
+        { ref: '@list', index: 2, parentIndex: 1, type: 'ScrollView', rect: frame },
+        {
+          ref: '@overlay',
+          index: 3,
+          parentIndex: 1,
+          type: 'Button',
+          hittable: true,
+          rect: { ...frame, y: overlayTop, height: frame.height - overlayTop },
+        },
+      ],
+      [],
+    );
+    const band = scrollUntilBand(option20, screen);
+    assert.deepEqual(band, frame);
+    clearRefMap();
+    updateRefMapFromFlat([{ ref: '@window', type: 'Window', rect: frame }]);
+    try {
+      for (const direction of ['up', 'down'] as const) {
+        const coordinates = buildDirectionalScrollCliArgs(
+          direction,
+          0.6,
+          undefined,
+          undefined,
+          band,
+        )
+          .slice(1, 5)
+          .map(Number);
+        assert.deepEqual(
+          coordinates,
+          direction === 'down' ? [201, 758, 201, 102] : [201, 102, 201, 758],
+        );
+      }
+    } finally {
+      clearRefMap();
+    }
+  });
+}
+
+test('an intrinsically small list still refuses after overlay subtraction', () => {
   const frame = { x: 0, y: 0, width: 402, height: 874 };
   const screen = join(
     [
-      { ref: '@app', index: 0, type: 'Application', rect: frame },
-      { ref: '@window', index: 1, parentIndex: 0, type: 'Window', rect: frame },
-      { ref: '@list', index: 2, parentIndex: 1, type: 'ScrollView', rect: frame },
-      { ref: '@overlay', index: 3, parentIndex: 1, type: 'Button', hittable: true, rect: frame },
+      { ref: '@window', index: 0, type: 'Window', rect: frame },
+      {
+        ref: '@list',
+        index: 1,
+        parentIndex: 0,
+        type: 'ScrollView',
+        rect: { ...frame, y: 200, height: 49 },
+      },
     ],
     [],
   );

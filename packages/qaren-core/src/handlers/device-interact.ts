@@ -1,4 +1,5 @@
 import { sleep as cancellableSleep } from '../domain/cancellation.js';
+import { MIN_DRAG_TRAVEL, MIN_SCROLL_BAND_HEIGHT } from '../domain/scroll-gesture.js';
 import { randomUUID } from 'node:crypto';
 import { measureDispatchPhase, measureTiming, type TimingContext } from '../qa/timing.js';
 import type { QaDispatchContext } from '../domain/qa-dispatch.js';
@@ -1994,8 +1995,6 @@ const DEFAULT_SCREEN = { width: 402, height: 874 };
 const SWIPE_FRACTION = 0.4;
 // The middle of the band: chrome above the keyboard and the top bar sit at its edges.
 const CLEARANCE_BAND_FRACTION = 0.6;
-// shortcut: 48 covers Android's 8 dp touch slop up to 6x density and iOS's pan hysteresis; read the slop from the runner if a legitimate band is ever refused.
-const MIN_DRAG_TRAVEL = 48;
 const DEFAULT_SWIPE_DURATION_MS = 300;
 
 function computeSwipeFromDirection(
@@ -2067,7 +2066,7 @@ function dragBand(within?: Band): Band {
 
 // A band too short for a real drag would be dispatched as a tap on whatever lies under the finger.
 function bandTooSmall(band: Band): string | undefined {
-  return band.width < 2 || band.height - 2 < MIN_DRAG_TRAVEL
+  return band.width < 2 || band.height < MIN_SCROLL_BAND_HEIGHT
     ? `the ${Math.round(band.height)}px band cannot host a ${MIN_DRAG_TRAVEL}px drag`
     : undefined;
 }

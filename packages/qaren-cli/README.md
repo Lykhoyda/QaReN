@@ -730,6 +730,11 @@ the keyboard. One scroll-until attempt moves the list by one visible band and
 cannot carry the target past it. A band shorter than 50 px or narrower than 2 px
 refuses `SCROLL_BAND_TOO_SMALL` before anything is sent, because a drag under the
 touch slop would land as a tap.
+Scroll-until only subtracts front overlays in the list's own window or root;
+descendants in another presence or system layer do not cut its band. If those cuts
+leave less than 50 px but the original list band is large enough, the drag uses
+that original band with the existing endpoint dead zone. An intrinsically small
+list still refuses before dispatch.
 Successful iOS fast-runner scrolls now run the same bounded settle wait as taps
 before returning, using snapshot equality. Results
 include `meta.settle` and `meta.timings_ms.settle`; a timeout reports unsettled
