@@ -196,7 +196,10 @@ for (const [maxLength, dropFirst] of [
 
 for (const after of [
   [{ value: '123 456', focused: true }],
-  [{ value: '123', focused: true }, { value: '123 456', focused: true }],
+  [
+    { value: '123', focused: true },
+    { value: '123 456', focused: true },
+  ],
 ]) {
   test('formatting stays unverified on initial typing and dropped-keystroke retyping', async () => {
     const { env, dispatched } = await run({ value: '', focused: true }, { text: '123456', after });
@@ -339,10 +342,16 @@ test('a value-free positive focus probe still permits replacement', async () => 
 
 for (const after of [
   [{ value: 'other@example.testreal@example.test', focused: true }],
-  [{ value: 'real@example', focused: true }, { value: 'other@example.testreal@example.test', focused: true }],
+  [
+    { value: 'real@example', focused: true },
+    { value: 'other@example.testreal@example.test', focused: true },
+  ],
 ]) {
   test('a longer readback without a proven retained prefix stays unverified', async () => {
-    const { env, dispatched } = await run({ value: 'decoy@example.test', focused: true }, { after });
+    const { env, dispatched } = await run(
+      { value: 'decoy@example.test', focused: true },
+      { after },
+    );
     assert.equal(env.ok, true);
     assert.equal(env.data.verified, false);
     assert.equal(dispatched.length, after.length);
