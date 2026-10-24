@@ -4,6 +4,11 @@ import { readFileSync } from 'node:fs';
 import { test } from 'node:test';
 import { captureScreen } from '../../../dist/qa/capture.js';
 import { nativeCapture } from '../qa/platform-presence-fixtures.ts';
+import { provenanceDiagnosticFromWire } from '../../../dist/qa/label-provenance.js';
+import { join } from '../../../dist/qa/screen.js';
+import { parsePlan } from '../../../dist/qa/plan.js';
+import { runPlan } from '../../../dist/qa/walker.js';
+import { scriptedJudge, walker } from '../qa/judgment-fixtures.ts';
 
 const native = new URL(
   '../../../../rn-fast-runner/RnFastRunner/RnFastRunnerUITests/',
@@ -49,6 +54,22 @@ final class XCUIElement {
     let stage = reads == 1 ? "candidate-snapshot" : "post-hit-snapshot"
     app.onLiveRead(stage)
     if app.failLiveRead == stage { throw Unavailable.read }
+    if stage == "candidate-snapshot" && !app.mismatchInitial.isEmpty {
+      let other = XCUIElementSnapshot()
+      other.elementType = node.elementType; other.identifier = node.identifier; other.label = node.label
+      other.value = node.value; other.frame = node.frame; other.isEnabled = node.isEnabled
+      other.children = node.children
+      switch app.mismatchInitial {
+      case "type": other.elementType = .other
+      case "identifier": other.identifier += "-changed"
+      case "label": other.label = "Add coverage"
+      case "value": other.value = "PRIVATE-changed-value"
+      case "frame": other.frame.origin.x += 1
+      case "enabled": other.isEnabled.toggle()
+      default: break
+      }
+      return other
+    }
     if stage == "post-hit-snapshot" && app.mismatchPost {
       let other = XCUIElementSnapshot()
       other.elementType = node.elementType; other.identifier = node.identifier; other.label = node.label
@@ -94,6 +115,7 @@ final class XCUIApplication {
   var failLiveRead = ""
   var falseHit = false
   var mismatchPost = false
+  var mismatchInitial = ""
   var state: State {
     states += 1
     onState(states)
@@ -359,8 +381,34 @@ for stage in ["eligibility", "root", "enumeration", "all-matches", "candidate-sn
   let diagnostic = result.labelProvenanceDiagnostics!
   precondition(delayed && result.labelProvenance == nil && result.nodes == nil && result.keyboardVisible == nil)
   precondition(h.currentSnapshotGeneration == 7 && h.keyboardReads == 1)
-  precondition(diagnostic.outcome == (stage == "eligibility-failure" ? "ineligible" : stage.hasSuffix("failure") ? "read-unavailable" : "deadline"), stage + ": " + diagnostic.outcome)
+  precondition(diagnostic.outcome == (stage == "eligibility-failure" ? "ineligible" : stage == "post-failure" ? "identity-mismatch" : stage.hasSuffix("failure") ? "read-unavailable" : "deadline"), stage + ": " + diagnostic.outcome)
   precondition(diagnostic.directLabelIndices == [3])
+}
+for (field, mask) in [("type", 1), ("identifier", 2), ("label", 4), ("value", 8), ("frame", 16), ("enabled", 32)] {
+  let h = Harness(); h.useLiveReads = true
+  let app = XCUIApplication([candidateTree(sibling: 10)])
+  let ordinary = h.snapshotFast(app: app, options: SnapshotOptions(interactiveOnly: true, compact: false, depth: nil, scope: nil, raw: false))
+  h.retainSnapshotTargets(ordinary.nodes ?? [])
+  let before = h.retainedSnapshotTargets
+  app.reads = 0
+  app.onLiveRead = { read in
+    if app.reads == 2 && read == "candidate-snapshot" {
+      app.mismatchInitial = field
+      h.now += 500
+    }
+  }
+  let result = h.snapshotCandidateLabelProvenance(app: app, indices: [2, 3], budgetMs: 300)
+  let diagnostic = result.labelProvenanceDiagnostics!
+  precondition(result.labelProvenance == nil && result.nodes == nil && result.keyboardVisible == nil)
+  precondition(diagnostic.sampleCount == 2 && diagnostic.deadlineExpired)
+  precondition(diagnostic.outcome == "identity-mismatch" && diagnostic.fieldMask == mask && diagnostic.nodeIndex == 2, field)
+  precondition(h.observations == 3 && diagnostic.directLabelIndices == [3])
+  precondition(h.currentSnapshotGeneration == 7 && h.keyboardReads == 1)
+  precondition(h.retainedSnapshotTargets[2]?.generation == before[2]?.generation)
+  precondition(h.retainedSnapshotTargets[3]?.rect == before[3]?.rect)
+  let output: [String: Any] = ["name": "late-initial-" + field,
+    "diagnostic": try JSONSerialization.jsonObject(with: JSONEncoder().encode(diagnostic))]
+  print(String(data: try JSONSerialization.data(withJSONObject: output, options: [.sortedKeys]), encoding: .utf8)!)
 }
 for change in ["card-value", "card-enabled", "container-enabled", "label-source", "parent-link"] {
   let h = Harness()
@@ -462,6 +510,61 @@ do {
         return [row.name, row];
       }),
   );
+  for (const [field, mask] of [
+    ['type', 1],
+    ['identifier', 2],
+    ['label', 4],
+    ['value', 8],
+    ['frame', 16],
+    ['enabled', 32],
+  ] as const) {
+    const row = rows.get(`late-initial-${field}`);
+    const diagnostic = provenanceDiagnosticFromWire(row.diagnostic);
+    assert.ok(diagnostic, field);
+    assert.equal(diagnostic.outcome, 'identity-mismatch', field);
+    assert.equal(row.diagnostic.fieldMask, mask, field);
+    const f = walker(
+      [],
+      scriptedJudge(() => assert.fail('quoted tap needs no model')),
+    );
+    f.deps.captureScreen = async () =>
+      join(
+        [
+          {
+            ref: '@e2',
+            type: 'Other',
+            label: 'Add coverage',
+            hittable: true,
+            rect: { x: 0, y: 0, width: 400, height: 800 },
+          },
+          {
+            ref: '@e3',
+            type: 'Button',
+            parentIndex: 0,
+            label: 'Add coverage',
+            hittable: true,
+            rect: { x: 20, y: 300, width: 360, height: 60 },
+          },
+        ],
+        [],
+        'app',
+        { native: 'complete', react: 'complete' },
+      );
+    f.deps.readLabelProvenance = async (_refs, _deadline, report) => {
+      report(diagnostic);
+      return undefined;
+    };
+    let screenshots = 0;
+    f.deps.screenshot = async () => {
+      screenshots++;
+      return 'screen.png';
+    };
+    const outcome = await runPlan(parsePlan('1. Tap "Add coverage"').blocks!, f.deps);
+    assert.match(JSON.stringify(outcome), /TARGET_AMBIGUOUS/, field);
+    assert.deepEqual(f.actions, [], field);
+    assert.equal(screenshots, 0, field);
+    rows.delete(`late-initial-${field}`);
+  }
   assert.deepEqual(rows.get('candidate-sibling-animation'), {
     name: 'candidate-sibling-animation',
     indices: [2, 3],

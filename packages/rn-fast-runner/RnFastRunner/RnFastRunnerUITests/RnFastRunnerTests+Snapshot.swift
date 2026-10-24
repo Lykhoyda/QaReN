@@ -452,11 +452,16 @@ extension RnFastRunnerTests {
     let timing = PresenceCaptureTiming(started: started, now: presenceUptimeMs)
     func finish(_ outcome: String) -> DataPayload {
       diagnostic.deadlineExpired = presenceUptimeMs() >= deadline
-      let failure = timing.diagnostics(complete: false).failure?.reason
-      let timedOutRead = failure == .deadline && [
+      let failure = timing.diagnostics(complete: false).failure
+      let timedOutRead = failure?.reason == .deadline && [
         "ineligible", "read-unavailable", "enumeration-incomplete", "observation-unavailable"
       ].contains(outcome)
       diagnostic.outcome = timedOutRead || (diagnostic.deadlineExpired && ["available", "unavailable"].contains(outcome)) ? "deadline" : outcome
+      if outcome == "read-unavailable", failure?.reason == .enumerationChanged,
+         let mismatch = failure?.mismatch {
+        diagnostic.outcome = "identity-mismatch"
+        diagnostic.fieldMask |= mismatch.fieldMask
+      }
       var payload = result
       payload.labelProvenanceDiagnostics = diagnostic
       if diagnostic.deadlineExpired { payload.labelProvenance = nil }
@@ -807,7 +812,18 @@ extension RnFastRunnerTests {
     else { unknownReason?(.readUnavailable); return nil }
     var matches: [XCUIElement] = []
     for element in elements {
-      guard let snapshot = presenceRead(deadline: deadline, timing: timing, read: .candidateSnapshot, { try element.snapshot() })
+      guard let snapshot = presenceRead(deadline: deadline, timing: timing, read: .candidateSnapshot, {
+        let snapshot = try element.snapshot()
+        if self.presenceUptimeMs() >= deadline {
+          if let current = PresenceDescriptor(snapshot) {
+            let mask = current.changedFields(from: descriptor)
+            if mask != 0 { timing.fail(.enumerationChanged, mismatch: .init(kind: .node, fieldMask: mask)) }
+          } else {
+            timing.fail(.readUnavailable)
+          }
+        }
+        return snapshot
+      })
       else { unknownReason?(.readUnavailable); return nil }
       if PresenceDescriptor(snapshot) == descriptor { matches.append(element) }
     }
@@ -824,7 +840,12 @@ extension RnFastRunnerTests {
       let observed = presenceUptimeMs()
       guard let after = presenceRead(deadline: deadline, timing: timing, read: .postHitSnapshot, {
         let after = try element.snapshot()
-        if PresenceDescriptor(after) != descriptor { timing.fail(.enumerationChanged) }
+        let current = PresenceDescriptor(after)
+        if current != descriptor {
+          timing.fail(.enumerationChanged, mismatch: .init(
+            kind: .node, fieldMask: current?.changedFields(from: descriptor) ?? 0
+          ))
+        }
         return after
       })
       else { unknownReason?(.readUnavailable); return nil }
