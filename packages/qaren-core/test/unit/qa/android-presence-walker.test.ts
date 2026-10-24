@@ -327,10 +327,10 @@ test('quoted scroll-until uses captured Android density for overlay padding', as
   };
   const result = await runPlan(parsePlan('1. Scroll down until "Footer"').blocks!, f.deps);
   assert.equal(result.verdict, 'PASS', result.failure?.seen);
-  assert.equal(requests.length, 3);
+  assert.equal(requests.length, 4);
   assert.deepEqual(
     requests.map((request) => request.platformPresence === true),
-    [false, false, true],
+    [false, false, true, false],
   );
 });
 

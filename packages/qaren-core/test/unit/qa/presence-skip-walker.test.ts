@@ -370,7 +370,7 @@ for (const direction of ['up', 'down'] as const) {
         assert.deepEqual(
           modes,
           navigation === 'none'
-            ? [false, false, true]
+            ? [false, false, true, false]
             : Array(navigation === 'after-drag-refresh' ? 3 : 2).fill(false),
         );
       } finally {
