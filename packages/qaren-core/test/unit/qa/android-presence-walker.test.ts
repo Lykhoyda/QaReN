@@ -296,7 +296,10 @@ test('quoted scroll-until uses captured Android density for overlay padding', as
       presence: { ...base.presence, nodeIndex: index, labelSource: 'none' },
     });
   }
-  const f = walker([], scriptedJudge(() => assert.fail('quoted visibility is model-free')));
+  const f = walker(
+    [],
+    scriptedJudge(() => assert.fail('quoted visibility is model-free')),
+  );
   const capture = capturing(() => fixture, undefined, requests);
   f.deps.captureScreen = async (options) => {
     const captured = await capture(options);

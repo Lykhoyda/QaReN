@@ -12,7 +12,10 @@ import { attested, nativeCapture } from './platform-presence-fixtures.ts';
 for (const direction of ['up', 'down']) {
   for (const refresh of [false, true]) {
     test(`quoted scroll-until ${direction} captures navigation titles with refresh=${refresh}`, async () => {
-      const f = walker([], scriptedJudge(() => assert.fail('quoted visibility is model-free')));
+      const f = walker(
+        [],
+        scriptedJudge(() => assert.fail('quoted visibility is model-free')),
+      );
       const modes: boolean[] = [];
       let drags = 0;
       f.deps.captureScreen = async (options) => {
