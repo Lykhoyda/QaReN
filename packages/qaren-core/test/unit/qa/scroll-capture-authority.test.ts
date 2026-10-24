@@ -16,6 +16,7 @@ type Snapshot = {
   footerLabel?: string;
   terms?: boolean;
   termsY?: number;
+  termsLabel?: string;
   footerMissing?: boolean;
   footerUnidentified?: boolean;
   loading?: boolean;
@@ -115,7 +116,7 @@ function fixture() {
         type: 'StaticText',
         parentIndex: 2,
         identifier: 'terms',
-        label: 'Terms',
+        label: state.termsLabel ?? 'Terms',
         rect: { x: 10, y: state.termsY ?? 350, width: 100, height: 30 },
       });
     if (state.keyboardY !== undefined)
@@ -196,18 +197,21 @@ function fixture() {
 async function run(
   f: ReturnType<typeof fixture>,
   direction: 'up' | 'down',
-  mode: 'quoted' | 'phrase' | 'replay',
+  mode: 'quoted' | 'phrase' | 'replay' | 'text-replay',
   phrase = 'the footer text',
 ) {
   const block = parsePlan(`1. Scroll ${direction} until ${mode === 'phrase' ? phrase : '"Footer"'}`)
     .blocks![0];
-  if (mode === 'replay') {
+  if (mode === 'replay' || mode === 'text-replay') {
     const step = block.items[0];
     assert.ok(step.kind === 'scroll');
-    step.until = { quoted: 'footer', phrase: 'footer', exact: 'id' };
+    step.until =
+      mode === 'replay'
+        ? { quoted: 'footer', phrase: 'footer', exact: 'id' }
+        : { quoted: 'Footer', phrase: 'Footer', exact: 'text' };
   }
   return walkBlock(block, f.f.deps, 0, [], undefined, undefined, {
-    mode: mode === 'replay' ? 'replay' : 'walk',
+    mode: mode === 'replay' || mode === 'text-replay' ? 'replay' : 'walk',
   });
 }
 
@@ -752,5 +756,171 @@ for (const direction of ['up', 'down'] as const) {
         }
       });
     }
+  }
+}
+
+for (const direction of ['up', 'down'] as const) {
+  for (const unidentified of [false, true]) {
+    for (const change of ['offscreen', 'replacement'] as const) {
+      if (!unidentified && change === 'offscreen') continue;
+      for (const mode of ['quoted', 'text-replay', 'phrase', 'replay'] as const) {
+        if (unidentified && mode === 'replay') continue;
+        for (const transition of ['initial', 'expiry', 'reask'] as const) {
+          if (transition === 'reask' && mode !== 'phrase') continue;
+          test(`confirmation reconciles target ${change}: ${direction}, unidentified=${unidentified}, ${mode}, ${transition}`, async () => {
+            const f = fixture();
+            let confirmations = 0;
+            f.f.deps.judge = scriptedJudge((questions, index, state) =>
+              Object.fromEntries(
+                Object.keys(questions).map((id) => [
+                  id,
+                  {
+                    type: 'noul',
+                    noul:
+                      transition === 'reask' && index === 0
+                        ? 0.5
+                        : JSON.stringify(state).includes('Footer')
+                          ? 0.9
+                          : 0.1,
+                  },
+                ]),
+              ),
+            );
+            f.setSnapshot(async (presence) => {
+              if (presence && ++confirmations === 1 && transition === 'expiry')
+                await f.f.deps.sleep(11_000);
+              const changed = !presence && confirmations >= (transition === 'initial' ? 1 : 2);
+              return {
+                footer: true,
+                footerUnidentified: unidentified,
+                footerLabel: changed && change === 'replacement' ? 'Loading' : 'Footer',
+                footerY:
+                  changed && change === 'offscreen' ? (direction === 'down' ? 750 : 50) : 200,
+                loading: changed && change === 'offscreen',
+                loadingY: 200,
+                loadingUnidentified: true,
+                listID: 'policies',
+                listFrame: { x: 0, y: 100, width: 402, height: 600 },
+                tab: 'Policies',
+                title: 'Policies',
+              };
+            });
+            try {
+              const result = await run(f, direction, mode);
+              if (mode === 'replay') {
+                assert.equal(result.block.outcome, 'pass');
+                assert.equal(result.failure, undefined);
+              } else {
+                assert.equal(result.block.outcome, 'fail');
+                assert.match(JSON.stringify(result.failure), /VISIBILITY_UNSURE/);
+              }
+              assert.equal(f.drags(), 0);
+              assert.deepEqual(
+                f.modes,
+                transition === 'reask'
+                  ? [false, true, false, false, true, false]
+                  : transition === 'expiry'
+                    ? [false, true, false, true, false]
+                    : [false, true, false],
+              );
+            } finally {
+              clearRefMap();
+            }
+          });
+        }
+      }
+    }
+  }
+  for (const predicate of ['welcome', 'footer-and-terms', 'terms-and-footer'] as const) {
+    for (const transition of ['initial', 'expiry', 'reask'] as const) {
+      test(`whole semantic claim reconciles replacement content: ${direction}, ${predicate}, ${transition}`, async () => {
+        const f = fixture();
+        let confirmations = 0;
+        f.f.deps.judge = scriptedJudge((questions, index, state) => {
+          const evidence = JSON.stringify(state);
+          const present =
+            predicate === 'welcome'
+              ? evidence.includes('Welcome')
+              : evidence.includes('Footer') && evidence.includes('Terms');
+          return Object.fromEntries(
+            Object.keys(questions).map((id) => [
+              id,
+              {
+                type: 'noul',
+                noul: transition === 'reask' && index === 0 ? 0.5 : present ? 0.9 : 0.1,
+              },
+            ]),
+          );
+        });
+        f.setSnapshot(async (presence) => {
+          if (presence && ++confirmations === 1 && transition === 'expiry')
+            await f.f.deps.sleep(11_000);
+          const changed = !presence && confirmations >= (transition === 'initial' ? 1 : 2);
+          return {
+            footer: true,
+            footerLabel:
+              changed && predicate !== 'terms-and-footer'
+                ? 'Loading'
+                : predicate === 'welcome'
+                  ? 'Welcome'
+                  : 'Footer',
+            terms: predicate !== 'welcome',
+            termsLabel: changed && predicate === 'terms-and-footer' ? 'Loading' : 'Terms',
+            listID: 'policies',
+            tab: 'Policies',
+            title: 'Policies',
+          };
+        });
+        try {
+          const result = await run(
+            f,
+            direction,
+            'phrase',
+            predicate === 'welcome' ? 'the welcome message' : 'the footer and terms text',
+          );
+          assert.equal(result.block.outcome, 'fail');
+          assert.match(JSON.stringify(result.failure), /VISIBILITY_UNSURE/);
+          assert.equal(f.drags(), 0);
+          assert.deepEqual(
+            f.modes,
+            transition === 'reask'
+              ? [false, true, false, false, true, false]
+              : transition === 'expiry'
+                ? [false, true, false, true, false]
+                : [false, true, false],
+          );
+        } finally {
+          clearRefMap();
+        }
+      });
+    }
+  }
+}
+
+for (const direction of ['up', 'down'] as const) {
+  for (const unidentified of [false, true]) {
+    test(`unknown labels preserve text replay selector refusal: ${direction}, unidentified=${unidentified}`, async () => {
+      const f = fixture();
+      let confirmed = false;
+      f.setSnapshot(async (presence) => {
+        if (presence) confirmed = true;
+        return {
+          footer: true,
+          footerUnidentified: unidentified,
+          hideFooterLabel: !presence && confirmed,
+          listID: 'policies',
+        };
+      });
+      try {
+        const result = await run(f, direction, 'text-replay');
+        assert.equal(result.block.outcome, 'fail');
+        assert.match(JSON.stringify(result.failure), /REPLAY_SELECTOR/);
+        assert.doesNotMatch(JSON.stringify(result.failure), /VISIBILITY_UNSURE/);
+        assert.equal(f.drags(), 0);
+        assert.deepEqual(f.modes, [false, true, false]);
+      } finally {
+        clearRefMap();
+      }
+    });
   }
 }

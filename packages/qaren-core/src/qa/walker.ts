@@ -82,6 +82,7 @@ import {
   ObservedPrivacy,
   matchPrivate,
   projectPlanLine,
+  nativeLabelMayBeValue,
 } from './privacy.js';
 import { renderReason, segments, type Reason } from './untrusted.js';
 import { NativeSnapshotIncomplete, PrivateInputCaptureError } from './private-input.js';
@@ -1046,14 +1047,22 @@ async function walkBlockScoped(
             witness.testID === undefined
               ? []
               : ordinary.screen.elements.filter((element) => element.testID === witness.testID);
+          const named =
+            witness.testID === undefined && witness.label !== undefined
+              ? ordinary.screen.elements.filter(
+                  (element) => element.kind === witness.kind && element.label === witness.label,
+                )
+              : [];
           const matches = identified.length
             ? identified
-            : ordinary.screen.elements.filter((element) =>
-                witness.testID !== undefined && element.testID !== undefined
-                  ? element.testID === witness.testID
-                  : sameIdentity(element, witness) ||
-                    (frame !== undefined && frameKey(element) === frame),
-              );
+            : named.length
+              ? named
+              : ordinary.screen.elements.filter(
+                  (element) =>
+                    (witness.testID === undefined || element.testID === undefined) &&
+                    frame !== undefined &&
+                    frameKey(element) === frame,
+                );
           if (!matches.length)
             return (
               (ordinary.screen.captureCoverage?.native ?? ordinary.screen.coverage?.native) ===
@@ -1067,7 +1076,19 @@ async function walkBlockScoped(
               element.visibilityEvidence === 'offscreen' ||
               element.semantic?.visibility === 'hidden' ||
               element.semantic?.visibility === 'offscreen' ||
-              scrollConfirmationCovered(element, ordinary.screen),
+              scrollConfirmationCovered(element, ordinary.screen) ||
+              (target.exact !== 'id' &&
+                (target.exact === 'text' ||
+                  target.quoted === undefined ||
+                  target.quoted !== witness.testID) &&
+                witness.label !== undefined &&
+                element.label !== undefined &&
+                (!witness.semantic?.nativePresence ||
+                  witness.semantic.nativePresence.labelSource === 'direct') &&
+                (!element.semantic?.nativePresence ||
+                  element.semantic.nativePresence.labelSource === 'direct') &&
+                !nativeLabelMayBeValue(element) &&
+                element.label !== witness.label),
           );
         };
         try {
