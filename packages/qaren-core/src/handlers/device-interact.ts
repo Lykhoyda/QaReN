@@ -2141,7 +2141,9 @@ export function buildDirectionalScrollCliArgs(
   if (refusal) throw new Error(`SCROLL_BAND_TOO_SMALL: ${refusal}`);
   const coords = computeScrollFromDirection(direction, clamped, band, distance);
   if (!coords)
-    throw new Error(`SCROLL_BAND_TOO_SMALL: rounded endpoints cannot host a ${MIN_DRAG_TRAVEL}px drag`);
+    throw new Error(
+      `SCROLL_BAND_TOO_SMALL: rounded endpoints cannot host a ${MIN_DRAG_TRAVEL}px drag`,
+    );
   const duration = durationMs ?? DEFAULT_SWIPE_DURATION_MS;
   return [
     'scroll',
