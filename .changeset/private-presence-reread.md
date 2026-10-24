@@ -2,4 +2,4 @@
 'qaren': patch
 ---
 
-Resolve quoted presses and their post-action proofs with ordinary privacy-checked capture, acquiring settled presence evidence only for unresolved container candidates while retaining named refusal causes.
+Resolve quoted presses with ordinary privacy-checked capture when sufficient, acquiring settled presence evidence for unresolved container candidates and keeping post-action proof in the same projection while retaining named refusal causes.

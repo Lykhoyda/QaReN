@@ -577,13 +577,15 @@ that control's echo only when native presence proves its label comes from descen
 With the same proven descendant provenance, quoted label presses can also collapse
 an identified native container into a smaller, enabled, visible, hittable descendant
 control when tree ancestry, frame containment and whole label segments agree.
-Quoted label presses first use an ordinary capture. An ambiguous target or a
+Quoted label presses first use an ordinary capture. A potential
 merged-label container candidate requests a fresh platform-presence capture to
 obtain this provenance, without requiring the complete native presence that phrase
 targets require. Unique quoted targets and their post-action proofs that ordinary
-capture resolves do not request presence; semantic phrase-action readbacks retain
-their existing presence admission. Native acquisition and privacy admission still
-apply to every capture. Direct or unknown label
+capture resolves do not request presence. Post-action effect comparisons retain
+the pre-action capture's projection, including after provenance escalation, so a
+projection-only label change cannot prove a press or a behind-alert callback.
+Semantic phrase-action readbacks retain their existing presence admission.
+Native acquisition and privacy admission still apply to every capture. Direct or unknown label
 provenance keeps differently framed candidates distinct. A native ancestor and
 hittable descendant with the exact same label and frame are one tap target and
 resolve to the inner control. Multiple distinct children remain ambiguous.
@@ -1349,9 +1351,9 @@ acquisition failures also refuse without reinjection or a public-tree fallback.
 
 A required private capture re-reads a canonical empty snapshot (`nodes=[]`,
 verdict `degraded`, `nodeCount=0`, reasons exactly `empty-capture`, no truncation
-or dropped nodes), a structurally valid incomplete version-2 platform-presence
-snapshot with no truncation or dropped nodes, a consistent node count, a known
-matching generation and withheld keyboard state, or an iOS
+or dropped nodes), a structurally valid incomplete version-2 snapshot on the
+platform-presence route with no truncation or dropped nodes, a consistent node
+count, a known matching generation and withheld keyboard state, or an iOS
 `RN_FAST_RUNNER_DOWN` failure marked as pending runner relaunch recovery, at
 500 ms intervals within the existing 6-second settle budget and remaining total
 capture budget. These conditions share one retry
