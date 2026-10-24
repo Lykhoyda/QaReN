@@ -14,6 +14,7 @@ import {
 import { literalEvidence } from '../../../dist/qa/evidence.js';
 import { replayBlock, runPlan, walkBlock } from '../../../dist/qa/walker.js';
 import { scriptedJudge, walker } from './judgment-fixtures.ts';
+import type { TargetMissDiagnostic } from '../../../dist/qa/target-miss.js';
 
 const app = { x: 0, y: 0, width: 402, height: 874 };
 const complete = { native: 'complete', react: 'complete' } as const;
@@ -264,6 +265,8 @@ async function consumers(screen: Screen, text: string, exact: 'text' | 'id' = 't
   const plan = (line: string) => `## QA\n\n### Literal\n1. ${line}\n`;
   const outcome = async (line: string) => {
     const f = walker([screen], noJev());
+    const diagnostics: TargetMissDiagnostic[] = [];
+    f.deps.targetMiss = (event) => diagnostics.push(event);
     const result = await runPlan(blockOf(plan(line)), f.deps);
     assert.notEqual(result.verdict, 'REFUSED', JSON.stringify(result));
     return {
@@ -271,6 +274,7 @@ async function consumers(screen: Screen, text: string, exact: 'text' | 'id' = 't
       seen: 'failure' in result ? renderReason(result.failure?.seen ?? '', (text) => text) : '',
       reason: 'steps' in result ? result.steps.at(-1)?.reason : undefined,
       actions: f.actions,
+      diagnostics,
     };
   };
   const [block] = blockOf(plan(`Wait for "${text}"`));
@@ -339,6 +343,11 @@ test('V5: check, wait, scroll-until and replay share one rule on the same screen
     for (const consumer of [c.wait, c.scroll]) {
       assert.equal(consumer.verdict, 'FAIL');
       assert.match(consumer.seen, /VISIBILITY_UNSURE: "Describe the issue" stayed unresolved/);
+      assert.doesNotMatch(consumer.seen, /target visibility:/);
+      assert.equal(consumer.diagnostics.length, 1);
+      assert.equal(consumer.diagnostics[0].reason, 'evidence-incomplete');
+      assert.equal(consumer.diagnostics[0].truncated, false);
+      assert.deepEqual(consumer.diagnostics[0].candidates, []);
     }
     assert.equal(c.replay.failed, true);
     assert.equal(c.replay.miss, undefined, 'an unresolved occurrence is not a missing selector');

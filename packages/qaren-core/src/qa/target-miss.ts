@@ -48,6 +48,7 @@ export function targetMissDiagnostic(
   const candidates: TargetMissDiagnostic['candidates'] = [];
   let exact = false;
   let inside = false;
+  let unresolved = false;
   let scanIncomplete = screen.elements.length > SCAN_LIMIT || query.length > MATCH_TEXT;
   let truncated = scanIncomplete;
   const withheld = concealsScreen(screen);
@@ -57,7 +58,7 @@ export function targetMissDiagnostic(
       .slice(0, MISS_TEXT)
       .replace(/[\uD800-\uDFFF]/gu, '\uFFFD');
   for (const element of screen.elements.slice(0, SCAN_LIMIT)) {
-    if (element.offscreen || element.visibilityEvidence === 'unresolved') continue;
+    if (element.offscreen && element.visibilityEvidence !== 'unresolved') continue;
     const label = element.label ?? '';
     const identifier = element.testID ?? '';
     if (label.length > MATCH_TEXT || identifier.length > MATCH_TEXT) {
@@ -74,6 +75,10 @@ export function targetMissDiagnostic(
     const direct =
       (target.exact !== 'id' && label === query) ||
       (target.exact !== 'text' && identifier === query);
+    if (element.visibilityEvidence === 'unresolved') {
+      unresolved ||= direct || contained;
+      continue;
+    }
     exact ||= direct;
     inside ||= contained;
     const near = [
@@ -95,7 +100,9 @@ export function targetMissDiagnostic(
     });
   }
   const incomplete =
-    (screen.captureCoverage?.native ?? screen.coverage?.native) !== 'complete' || scanIncomplete;
+    (screen.captureCoverage?.native ?? screen.coverage?.native) !== 'complete' ||
+    scanIncomplete ||
+    unresolved;
   return {
     kind: 'target-miss',
     line,

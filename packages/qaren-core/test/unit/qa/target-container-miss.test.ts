@@ -377,6 +377,47 @@ for (const exact of ['id', 'text'] as const) {
   }
 }
 
+test('unresolved matches prevent conclusive misses in the selected domain', () => {
+  for (const exact of [undefined, 'id', 'text'] as const) {
+    for (const relation of ['equal', 'contained', 'near'] as const) {
+      for (const offscreen of [false, true]) {
+        for (const scrolling of [false, true]) {
+          const tree = nodes(false);
+          tree.forEach((node) => {
+            delete node.label;
+            delete node.identifier;
+          });
+          const screen = join(tree, [], 'app', { native: 'complete', react: 'complete' });
+          const element = screen.elements[3];
+          const query = 'coverage card';
+          const value =
+            relation === 'equal'
+              ? query
+              : relation === 'contained'
+                ? `${query}, details`
+                : 'coverage details';
+          element.label = exact === 'id' ? query : value;
+          element.testID = exact === 'id' ? value : query;
+          element.visibilityEvidence = 'unresolved';
+          element.offscreen = offscreen;
+          const diagnostic = targetMissDiagnostic(
+            { phrase: query, quoted: query, exact },
+            screen,
+            1,
+            scrolling,
+            new ObservedPrivacy(),
+          );
+          const matches = exact === undefined || relation === 'equal' ||
+            (exact === 'text' && relation === 'contained');
+          assert.equal(diagnostic.reason, matches ? 'evidence-incomplete' : 'absent');
+          assert.equal(diagnostic.truncated, false);
+          assert.deepEqual(diagnostic.candidates, []);
+        }
+      }
+    }
+  }
+});
+
 test('exact identifier diagnostics do not describe identifier matches as aggregated labels', () => {
   const screen = aggregate(
     join(nodes(false), [], 'app', { native: 'complete', react: 'complete' }),
