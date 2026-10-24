@@ -439,7 +439,7 @@ extension RnFastRunnerTests {
     let deadline = started + Double(budgetMs)
     func finish(_ outcome: String) -> DataPayload {
       diagnostic.deadlineExpired = presenceUptimeMs() >= deadline
-      diagnostic.outcome = diagnostic.deadlineExpired ? "deadline" : outcome
+      diagnostic.outcome = diagnostic.deadlineExpired && ["available", "unavailable"].contains(outcome) ? "deadline" : outcome
       var payload = result
       payload.labelProvenanceDiagnostics = diagnostic
       if diagnostic.deadlineExpired { payload.labelProvenance = nil }
@@ -453,7 +453,6 @@ extension RnFastRunnerTests {
     let timing = PresenceCaptureTiming(started: started, now: presenceUptimeMs)
     var previous: [PresenceEntry]?
     var previousSources: [PlatformPresenceObservation.LabelSource]?
-    var failure = "unavailable"
     while !timing.deadlineReached(deadline, read: .preparationPoll, edge: .before) {
       guard presenceAppIsEligible(app, deadline: deadline, timing: timing) == true else { return finish("ineligible") }
       guard let context = presenceRead(deadline: deadline, timing: timing, read: .rootSnapshot, {
@@ -474,12 +473,16 @@ extension RnFastRunnerTests {
         }
       })
       guard !truncated else { return finish("enumeration-incomplete") }
+      for index in indices {
+        if let (snapshot, _) = selected[index], presenceLabelSource(snapshot) == .direct,
+           !diagnostic.directLabelIndices.contains(index) { diagnostic.directLabelIndices.append(index) }
+      }
       var entries: [PresenceEntry] = []
       var sources: [PlatformPresenceObservation.LabelSource] = []
       for index in indices {
         guard let (snapshot, entry) = selected[index], let target = retainedSnapshotTargets[index] else {
-          diagnostic.nodeIndex = index; failure = "baseline-unavailable"
-          break
+          diagnostic.nodeIndex = index
+          return finish("baseline-unavailable")
         }
         var mask = 0
         if target.type != elementTypeName(snapshot.elementType) { mask |= 1 }
@@ -489,44 +492,46 @@ extension RnFastRunnerTests {
         if target.rect != snapshotRect(from: snapshot.frame) { mask |= 16 }
         if target.parentIndex != entry.parentIndex { mask |= 128 }
         if mask != 0 {
-          diagnostic.nodeIndex = index; diagnostic.fieldMask = mask; failure = "identity-mismatch"
-          break
+          diagnostic.nodeIndex = index; diagnostic.fieldMask = mask
+          return finish("identity-mismatch")
+        }
+        let source = presenceLabelSource(snapshot)
+        if let previousSources, previousSources[entries.count] != source {
+          diagnostic.nodeIndex = index; diagnostic.fieldMask = 256
+          return finish("source-changed")
         }
         var unknown: PlatformPresenceObservation.UnknownReason?
         guard observePresence(entry.descriptor, count: 1, app: app, deadline: deadline, timing: timing,
           unknownReason: { unknown = $0 }) != nil else {
-          diagnostic.nodeIndex = index; failure = unknown?.rawValue ?? "observation-unavailable"
-          break
+          diagnostic.nodeIndex = index
+          return finish(unknown?.rawValue ?? "observation-unavailable")
         }
         entries.append(entry)
-        sources.append(presenceLabelSource(snapshot))
+        sources.append(source)
       }
       guard presenceAppIsEligible(app, deadline: deadline, timing: timing) == true else { return finish("ineligible") }
-      guard !timing.deadlineReached(deadline, read: .finalization, edge: .after) else { return finish(failure) }
-      var stable = entries.count == indices.count && previous?.count == entries.count
-      if stable, let previous, let previousSources {
+      let stable = previous != nil
+      if let previous {
         for offset in entries.indices {
           let entry = entries[offset], prior = previous[offset]
           var mask = entry.descriptor.changedFields(from: prior.descriptor)
           if entry.depth != prior.depth { mask |= 64 }
           if entry.parentIndex != prior.parentIndex { mask |= 128 }
-          if sources[offset] != previousSources[offset] { mask |= 256 }
           if mask != 0 { diagnostic.nodeIndex = indices[offset]; diagnostic.fieldMask = mask }
-          if entry.descriptor.frame != prior.descriptor.frame || entry.parentIndex != prior.parentIndex
-            || sources[offset] != previousSources[offset] { stable = false }
         }
       }
+      guard !timing.deadlineReached(deadline, read: .finalization, edge: .after) else { return finish("unavailable") }
       if stable {
         result.labelProvenance = zip(indices, sources).map { CandidateLabelProvenance(index: $0.0, labelSource: $0.1) }
         return finish("available")
       }
-      previous = entries.count == indices.count ? entries : nil
-      previousSources = entries.count == indices.count ? sources : nil
+      previous = entries
+      previousSources = sources
       let remaining = deadline - presenceUptimeMs()
-      if remaining <= 0 { return finish(failure) }
+      if remaining <= 0 { return finish("unavailable") }
       sleepFor(min(0.1, remaining / 1000))
     }
-    return finish(failure)
+    return finish("unavailable")
   }
 
   func snapshotPlatformPresence(app: XCUIApplication, appId: String, presenceBudgetMs: Int) -> DataPayload {

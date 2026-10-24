@@ -79,3 +79,48 @@ test('containment resolution is a value-free private diagnostic with an unavaila
     undefined,
   );
 });
+
+for (const outcome of ['deadline', 'source-changed', 'identity-mismatch']) {
+  test(`candidate source facts survive diagnostics: ${outcome}`, () => {
+    const wire = {
+      sampleCount: 2,
+      nodeIndex: 0,
+      fieldMask: 256,
+      deadlineExpired: true,
+      outcome,
+      directLabelIndices: [0, 1],
+    };
+    const diagnostic = provenanceDiagnosticFromWire(wire);
+    assert.ok(diagnostic);
+    assert.deepEqual(diagnostic.directLabelIndices, [0, 1]);
+    assert.equal(diagnostic.outcome, outcome);
+    const lines: string[] = [];
+    createWriter((line) => lines.push(line), 'source-facts').diagnostic({
+      kind: 'label-provenance',
+      line: 1,
+      ...diagnostic,
+      label: 'private-canary',
+    });
+    assert.deepEqual(JSON.parse(lines[0]).payload, {
+      kind: 'label-provenance',
+      line: 1,
+      ...diagnostic,
+    });
+    assert.doesNotMatch(lines[0], /private-canary/);
+  });
+}
+for (const directLabelIndices of [
+  [-1],
+  [1.5],
+  [1, 1],
+  Array.from({ length: 65 }, (_, i) => i),
+  ['private-canary'],
+]) {
+  test(`invalid direct-label indices are refused: ${JSON.stringify(directLabelIndices)}`, () => {
+    assert.equal(cleanDiagnostic({ ...event, directLabelIndices }), undefined);
+    assert.equal(
+      provenanceDiagnosticFromWire({ ...event, fieldMask: 0, directLabelIndices }),
+      undefined,
+    );
+  });
+}

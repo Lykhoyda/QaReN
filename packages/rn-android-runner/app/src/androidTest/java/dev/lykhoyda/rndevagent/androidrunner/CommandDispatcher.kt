@@ -325,11 +325,13 @@ class CommandDispatcher(
         val result = JSONObject()
         val started = SystemClock.uptimeMillis()
         val budget = cmd.optInt("presenceBudgetMs", 0)
+        val directLabelIndices = linkedSetOf<Int>()
         val diagnostic = JSONObject().put("sampleCount", 0).put("nodeIndex", JSONObject.NULL)
             .put("fieldMask", 0).put("deadlineExpired", false).put("outcome", "unavailable")
         fun finish(outcome: String): JSONObject {
             val expired = SystemClock.uptimeMillis() - started >= budget
-            diagnostic.put("deadlineExpired", expired).put("outcome", if (expired) "deadline" else outcome)
+            diagnostic.put("directLabelIndices", JSONArray(directLabelIndices.toList()))
+                .put("deadlineExpired", expired).put("outcome", if (expired && outcome in listOf("available", "unavailable")) "deadline" else outcome)
             if (expired) result.remove("labelProvenance")
             return result.put("labelProvenanceDiagnostics", diagnostic)
         }
@@ -353,6 +355,7 @@ class CommandDispatcher(
                 val pass = PresencePass(appPackage, qaSnapshotGeneration, started, budget,
                     windows, assembled, exhausted, indices.toSet()).run()
                 val sources = indices.map { pass.node(it).optString("labelSource") }
+                indices.forEachIndexed { offset, index -> if (sources[offset] == "direct") directLabelIndices.add(index) }
                 val observed = indices.all { pass.node(it).optString("status") == "observed" }
                 val comparison = if (PresenceRules.sameEnumeration(baseline, selected)) previous else baseline
                 comparison?.indices?.firstOrNull { !PresenceRules.sameEnumeration(listOf(comparison[it]), listOf(selected[it])) }?.let { offset ->
@@ -362,22 +365,24 @@ class CommandDispatcher(
                     val mask = if (diagnostic.optInt("nodeIndex", -1) == indices[offset]) diagnostic.getInt("fieldMask") else 0
                     diagnostic.put("nodeIndex", indices[offset]).put("fieldMask", mask or 256)
                 }
+                if (!PresenceRules.sameEnumeration(baseline, selected) ||
+                    (previous != null && !PresenceRules.sameEnumeration(previous, selected))) return finish("identity-mismatch")
+                if (previousSources != null && previousSources != sources) return finish("source-changed")
                 if (!observed) {
-                    diagnostic.put("nodeIndex", indices.first { pass.node(it).optString("status") != "observed" })
+                    val node = indices.first { pass.node(it).optString("status") != "observed" }
+                    diagnostic.put("nodeIndex", node)
+                    val reason = pass.node(node).optString("unknownReason")
+                    val failure = pass.capture().optJSONObject("diagnostics")?.optJSONObject("failure")?.optString("reason")
+                    return finish(if (reason.isNotEmpty()) reason else if (failure == "deadline") "deadline" else "observation-unavailable")
                 }
-                if (observed && PresenceRules.sameEnumeration(baseline, selected)) {
-                    if (previous != null && PresenceRules.sameEnumeration(previous, selected) && previousSources == sources) {
-                        result.put("labelProvenance", JSONArray().apply {
-                            indices.forEachIndexed { offset, index -> put(JSONObject().put("index", index).put("labelSource", sources[offset])) }
-                        })
-                        return finish("available")
-                    }
-                    previous = selected.map { it.copy(source = null) }
-                    previousSources = sources
-                } else {
-                    previous = null
-                    previousSources = null
+                if (previous != null && previousSources == sources) {
+                    result.put("labelProvenance", JSONArray().apply {
+                        indices.forEachIndexed { offset, index -> put(JSONObject().put("index", index).put("labelSource", sources[offset])) }
+                    })
+                    return finish("available")
                 }
+                previous = selected.map { it.copy(source = null) }
+                previousSources = sources
             } finally {
                 if (Build.VERSION.SDK_INT < 33) handles.forEach { it.recycle() }
             }
@@ -582,7 +587,7 @@ class CommandDispatcher(
                 .put("status", if (complete && observation.observed) "observed" else "unknown")
                 .put("labelSource", observation.labelSource.wire)
             if (complete && observation.observed) json.put("observedUptimeMs", observedAt[index])
-            if (complete) observation.reason?.let { json.put("unknownReason", it.wire) }
+            if (complete || candidateIndices != null) observation.reason?.let { json.put("unknownReason", it.wire) }
             return json
         }
 

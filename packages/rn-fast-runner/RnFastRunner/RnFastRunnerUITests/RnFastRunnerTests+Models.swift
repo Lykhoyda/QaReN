@@ -542,6 +542,7 @@ struct CandidateLabelProvenance: Codable {
 }
 
 struct CandidateLabelProvenanceDiagnostics: Codable {
+  var directLabelIndices: [Int] = []
   var sampleCount = 0
   var nodeIndex: Int? = nil
   var fieldMask = 0

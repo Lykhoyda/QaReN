@@ -259,6 +259,24 @@ for unstable in [false, true] {
     "hasTree": result.nodes != nil, "hasKeyboard": result.keyboardVisible != nil]
   print(String(data: try JSONSerialization.data(withJSONObject: output, options: [.sortedKeys]), encoding: .utf8)!)
 }
+for name in ["candidate-timeout", "candidate-direct-timeout", "candidate-alternating-source"] {
+  let h = Harness()
+  let first = candidateTree(sibling: 10), second = candidateTree(sibling: 11)
+  if name == "candidate-direct-timeout" { first.children[0].children[1].label = "Add coverage" }
+  second.children[0].children[1].label = "Add coverage"
+  let app = XCUIApplication([first])
+  let ordinary = h.snapshotFast(app: app, options: SnapshotOptions(interactiveOnly: true, compact: false, depth: nil, scope: nil, raw: false))
+  h.retainSnapshotTargets(ordinary.nodes ?? [])
+  let before = h.retainedSnapshotTargets
+  app.snapshots = [first, second]; app.reads = 0; app.cycle = true
+  let result = h.snapshotCandidateLabelProvenance(app: app, indices: [2, 3], budgetMs: name == "candidate-alternating-source" ? 300 : 100)
+  precondition(result.labelProvenance == nil && result.nodes == nil && result.keyboardVisible == nil)
+  precondition(h.currentSnapshotGeneration == 7 && h.keyboardReads == 1)
+  precondition(h.retainedSnapshotTargets[2]?.generation == before[2]?.generation)
+  let diagnostic = result.labelProvenanceDiagnostics!
+  precondition(diagnostic.outcome == (name == "candidate-alternating-source" ? "source-changed" : "deadline"))
+  precondition(diagnostic.directLabelIndices == (name == "candidate-timeout" ? [3] : name == "candidate-direct-timeout" ? [2, 3] : [3, 2]))
+}
 for change in ["card-value", "card-enabled", "container-enabled", "label-source", "parent-link"] {
   let h = Harness()
   let first = candidateTree(sibling: 10), second = candidateTree(sibling: 11)
@@ -382,15 +400,20 @@ do {
   }
   for (const name of ['label-source', 'parent-link']) {
     assert.deepEqual(rows.get(name).indices, [], name);
-    assert.equal(rows.get(name).elapsed, 300, name);
-    assert.equal(rows.get(name).diagnostic.sampleCount, 3, name);
-    assert.equal(rows.get(name).diagnostic.deadlineExpired, true, name);
-    assert.equal(rows.get(name).diagnostic.fieldMask, name === 'parent-link' ? 128 : 260, name);
+    assert.equal(rows.get(name).elapsed, 100, name);
+    assert.equal(rows.get(name).diagnostic.sampleCount, 2, name);
+    assert.equal(rows.get(name).diagnostic.deadlineExpired, false, name);
+    assert.equal(
+      rows.get(name).diagnostic.outcome,
+      'source-changed',
+      name,
+    );
+    assert.equal(rows.get(name).diagnostic.fieldMask, 256, name);
     rows.delete(name);
   }
   const unsettledCandidate = rows.get('candidate-unsettled');
   assert.deepEqual(unsettledCandidate.indices, []);
-  assert.equal(unsettledCandidate.elapsed, 300);
+  assert.equal(unsettledCandidate.elapsed, 100);
   assert.equal(unsettledCandidate.hasTree, false);
   assert.equal(unsettledCandidate.hasKeyboard, false);
   rows.delete('candidate-sibling-animation');

@@ -92,6 +92,18 @@ fn clean_label_provenance(fields: &Map<String, Value>) -> Option<Value> {
         }
         clean.insert(key.into(), value.clone());
     }
+    if let Some(indices) = fields.get("directLabelIndices") {
+        let indices = indices.as_array()?;
+        if indices.len() > 64
+            || indices.iter().enumerate().any(|(offset, index)| {
+                index.as_u64().filter(|n| *n <= MAX_NUMBER as u64).is_none()
+                    || indices[..offset].contains(index)
+            })
+        {
+            return None;
+        }
+        clean.insert("directLabelIndices".into(), indices.clone().into());
+    }
     let deadline = fields.get("deadlineExpired")?;
     if !deadline.is_null() && !deadline.is_boolean() {
         return None;
@@ -108,6 +120,7 @@ fn clean_label_provenance(fields: &Map<String, Value>) -> Option<Value> {
         "adapter-unavailable",
         "baseline-unavailable",
         "identity-mismatch",
+        "source-changed",
         "observation-unavailable",
         "deadline",
         "not-hittable",
@@ -127,7 +140,7 @@ fn clean_label_provenance(fields: &Map<String, Value>) -> Option<Value> {
     }
     clean.insert("outcome".into(), outcome.into());
     if let Some(resolved_by) = fields.get("resolvedBy") {
-        if resolved_by.as_str() != Some("containment") || outcome == "available" {
+        if resolved_by.as_str() != Some("containment") || outcome != "deadline" {
             return None;
         }
         clean.insert("resolvedBy".into(), "containment".into());

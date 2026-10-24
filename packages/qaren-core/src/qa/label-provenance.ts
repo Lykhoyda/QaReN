@@ -32,6 +32,7 @@ export const PROVENANCE_OUTCOMES = [
   'adapter-unavailable',
   'baseline-unavailable',
   'identity-mismatch',
+  'source-changed',
   'observation-unavailable',
   'deadline',
   'not-hittable',
@@ -47,6 +48,7 @@ export const PROVENANCE_OUTCOMES = [
 ] as const;
 
 export interface ProvenanceReadDiagnostic {
+  directLabelIndices?: number[];
   requested: boolean;
   sampleCount: number | null;
   nodeIndex: number | null;
@@ -82,6 +84,11 @@ export function cleanProvenanceReadDiagnostic(
   const v = value as Record<string, unknown>;
   const count = (n: unknown) => n === null || (Number.isSafeInteger(n) && (n as number) >= 0);
   if (
+    (v.directLabelIndices !== undefined &&
+      (!Array.isArray(v.directLabelIndices) ||
+        v.directLabelIndices.length > 64 ||
+        new Set(v.directLabelIndices).size !== v.directLabelIndices.length ||
+        !v.directLabelIndices.every((index) => Number.isSafeInteger(index) && index >= 0))) ||
     typeof v.requested !== 'boolean' ||
     !count(v.sampleCount) ||
     !count(v.nodeIndex) ||
@@ -94,6 +101,9 @@ export function cleanProvenanceReadDiagnostic(
   )
     return;
   return {
+    ...(v.directLabelIndices !== undefined
+      ? { directLabelIndices: [...(v.directLabelIndices as number[])] }
+      : {}),
     requested: v.requested,
     sampleCount: v.sampleCount as number | null,
     nodeIndex: v.nodeIndex as number | null,

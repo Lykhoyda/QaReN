@@ -1,3 +1,4 @@
+import type { ProvenanceReadDiagnostic } from '../../../dist/qa/label-provenance.js';
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { clearRefMap, getFreshRefTarget } from '../../../dist/fast-runner-ref-map.js';
@@ -32,6 +33,7 @@ test('Android candidate metadata leaves refs and generation intact and returns n
   const rect = { x: 0, y: 0, width: 1080, height: 200 };
   const bodies: Record<string, unknown>[] = [];
   let malformed = false;
+  let diagnostic: Record<string, unknown> | undefined;
   _setFetchForTest(async (url, init) => {
     if (String(url).endsWith('/health'))
       return Response.json({
@@ -47,13 +49,16 @@ test('Android candidate metadata leaves refs and generation intact and returns n
       ok: true,
       data: body.labelProvenance
         ? {
-            labelProvenance: [
-              {
-                index: malformed ? 99 : 0,
-                labelSource: 'descendant',
-                value: 'private-native-canary',
-              },
-            ],
+            labelProvenanceDiagnostics: diagnostic,
+            labelProvenance: diagnostic
+              ? undefined
+              : [
+                  {
+                    index: malformed ? 99 : 0,
+                    labelSource: 'descendant',
+                    value: 'private-native-canary',
+                  },
+                ],
             nodes: [{ index: 99, type: 'TextField', value: 'private-native-canary', rect }],
           }
         : {
@@ -95,4 +100,27 @@ test('Android candidate metadata leaves refs and generation intact and returns n
     undefined,
   );
   assert.deepEqual(getFreshRefTarget('@e0'), before);
+  for (const outcome of ['deadline', 'source-changed', 'identity-mismatch'] as const) {
+    diagnostic = {
+      sampleCount: 2,
+      nodeIndex: 0,
+      fieldMask: outcome === 'source-changed' ? 256 : 0,
+      deadlineExpired: true,
+      outcome,
+      directLabelIndices: [0],
+      label: 'private-native-canary',
+    };
+    const events: ProvenanceReadDiagnostic[] = [];
+    assert.equal(
+      await readAndroidLabelProvenance(['@e0'], 777, 'com.test', 'test-emulator', (event) =>
+        events.push(event),
+      ),
+      undefined,
+    );
+    assert.equal(events.length, 1);
+    assert.equal(events[0].outcome, outcome);
+    assert.deepEqual(events[0].directLabelIndices, [0]);
+    assert.doesNotMatch(JSON.stringify(events), /private-native-canary/);
+    assert.deepEqual(getFreshRefTarget('@e0'), before);
+  }
 });

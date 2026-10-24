@@ -62,12 +62,17 @@ function containedControl(elements: readonly Element[]): ContainmentEquivalence 
   return { container, control };
 }
 
-export function applyContainmentFallback(screen: Screen, target: Target): boolean {
+export function applyContainmentFallback(
+  screen: Screen,
+  target: Target,
+  directLabelIndices: number[],
+): boolean {
   if (target.quoted === undefined || target.exact === 'id') return false;
   const pair = containedControl(
     exactIdentities(screen, target, 'press').map(({ element }) => element),
   );
-  if (!pair) return false;
+  if (!pair || directLabelIndices.some((index) => pair.container.ref === `@e${index}`))
+    return false;
   containmentEquivalences.set(screen, pair);
   return true;
 }

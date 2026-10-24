@@ -189,7 +189,7 @@ fn candidate_provenance_diagnostics_are_value_free_and_private_without_inputs() 
     let event = serde_json::json!({
         "kind": "label-provenance", "line": 2, "requested": true, "sampleCount": 3,
         "nodeIndex": 47, "differedFields": ["frame", "parentIndex"], "deadlineExpired": true,
-        "outcome": "deadline"
+        "outcome": "source-changed", "directLabelIndices": [0, 47]
     });
     let mut with_raw = event.clone();
     with_raw["value"] = "private-diagnostic-canary".into();

@@ -606,13 +606,15 @@ async function walkBlockScoped(
     } catch (error) {
       if (isAbort(error)) throw error;
       if (error instanceof AppProcessGoneError) throw processChanged();
-      provenanceDiagnostic.outcome = error === provenanceTimeout ? 'deadline' : 'read-failed';
+      if (provenanceDiagnostic.outcome === 'unavailable')
+        provenanceDiagnostic.outcome = error === provenanceTimeout ? 'deadline' : 'read-failed';
       if (error === provenanceTimeout) provenanceDiagnostic.deadlineExpired = true;
     }
     assertActive();
     if (deps.now() >= deadline) {
       provenanceDiagnostic.deadlineExpired = true;
-      provenanceDiagnostic.outcome = 'deadline';
+      if (['available', 'unavailable'].includes(provenanceDiagnostic.outcome))
+        provenanceDiagnostic.outcome = 'deadline';
     }
     const provenanceAdmitted =
       deps.now() < deadline && applyLabelProvenance(observation.screen, refs, provenance);
@@ -621,14 +623,14 @@ async function walkBlockScoped(
       !provenanceAdmitted &&
       provenance === undefined &&
       deps.now() < deadline &&
-      [
-        'unavailable',
-        'deadline',
-        'adapter-unavailable',
-        'read-failed',
-        'read-unavailable',
-      ].includes(provenanceDiagnostic.outcome) &&
-      applyContainmentFallback(observation.screen, step.target);
+      provenanceDiagnostic.outcome === 'deadline' &&
+      provenanceDiagnostic.differedFields.length === 0 &&
+      provenanceDiagnostic.directLabelIndices !== undefined &&
+      applyContainmentFallback(
+        observation.screen,
+        step.target,
+        provenanceDiagnostic.directLabelIndices,
+      );
     try {
       deps.labelProvenanceDiagnostic?.({
         kind: 'label-provenance',

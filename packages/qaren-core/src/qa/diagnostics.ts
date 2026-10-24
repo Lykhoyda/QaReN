@@ -39,7 +39,7 @@ export function cleanDiagnostic(value: unknown): Record<string, unknown> | undef
     const event = cleanProvenanceReadDiagnostic(value);
     if (
       value.resolvedBy !== undefined &&
-      (value.resolvedBy !== 'containment' || event?.outcome === 'available')
+      (value.resolvedBy !== 'containment' || event?.outcome !== 'deadline')
     )
       return undefined;
     return event && Number.isSafeInteger(value.line) && (value.line as number) > 0
