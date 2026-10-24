@@ -60,7 +60,7 @@ test('candidate metadata retains the privacy-admitted ordinary reference and ori
     return container('@ordinary', false);
   };
   f.deps.readLabelProvenance = async (refs, deadline) => {
-    assert.equal(deadline, 11_000);
+    assert.equal(deadline, 9_500);
     now += 500;
     return refs.map((ref) => ({
       ref,
@@ -225,3 +225,90 @@ test('a private code fill and notification dismissal prove the next screen witho
   assert.equal(JSON.stringify({ result, rows: f.rows }).includes(secret), false);
   assert.ok(screenshots.every(Boolean), 'no screenshot while the code may be visible');
 });
+
+for (const label of ['Skip', 'Skip, Skip']) {
+  test(`equal-frame ancestor echo ${label} presses its inner control without provenance`, async () => {
+    const f = walker(
+      [],
+      scriptedJudge(() => assert.fail('literal target needs no model')),
+    );
+    f.deps.captureScreen = async () =>
+      join(
+        [
+          {
+            ref: '@outer',
+            type: 'Other',
+            label,
+            hittable: true,
+            rect: { x: 20, y: 300, width: 120, height: 44 },
+          },
+          {
+            ref: '@inner',
+            parentIndex: 0,
+            type: 'Other',
+            label,
+            hittable: true,
+            rect: { x: 20, y: 300, width: 120, height: 44 },
+          },
+        ],
+        [],
+        'app',
+        { native: 'complete', react: 'complete' },
+      );
+    let reads = 0;
+    f.deps.readLabelProvenance = async () => {
+      reads++;
+      return undefined;
+    };
+    const result = await runPlan(parsePlan('1. Tap "Skip"').blocks!, f.deps);
+    assert.equal(result.verdict, 'PASS', JSON.stringify(result));
+    assert.equal(reads, 0);
+    assert.deepEqual(f.actions, ['press @inner']);
+  });
+}
+
+for (const available of [true, false]) {
+  test(`different-frame card provenance ${available ? 'returns' : 'expires'} before the walker deadline`, async () => {
+    const f = walker(
+      [],
+      scriptedJudge(() => assert.fail('literal target needs no model')),
+    );
+    let now = 0;
+    f.deps.now = () => now;
+    f.deps.captureScreen = async () => {
+      now += 1_000;
+      return container('@ordinary', false);
+    };
+    const events: Array<{ sampleCount: number | null; outcome: string }> = [];
+    f.deps.labelProvenanceDiagnostic = (event) => events.push(event);
+    f.deps.readLabelProvenance = async (refs, deadline, report) => {
+      assert.equal(deadline, 9_500, 'runner must leave 1.5 seconds for its reply');
+      now = deadline + 100;
+      report({
+        requested: true,
+        sampleCount: 3,
+        nodeIndex: null,
+        differedFields: [],
+        deadlineExpired: !available,
+        outcome: available ? 'available' : 'deadline',
+      });
+      return available
+        ? refs.map((ref) => ({
+            ref,
+            labelSource: ref === '@ordinary-parent' ? ('descendant' as const) : ('direct' as const),
+          }))
+        : undefined;
+    };
+    const result = await runPlan(parsePlan('1. Tap "Add coverage"').blocks!, f.deps);
+    assert.equal(events.length, 1);
+    assert.equal(events[0].sampleCount, 3);
+    if (available) {
+      assert.equal(result.verdict, 'PASS', JSON.stringify(result));
+      assert.deepEqual(f.actions, ['press @ordinary-card']);
+    } else {
+      assert.match(JSON.stringify(result), /TARGET_AMBIGUOUS/);
+      assert.equal(events[0].outcome, 'deadline');
+      assert.deepEqual(f.actions, []);
+    }
+  });
+}

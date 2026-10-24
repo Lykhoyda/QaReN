@@ -96,6 +96,21 @@ function encloses(container: Element, element: Element): boolean {
   );
 }
 
+function sameFrameLabel(container: Element, child: Element): boolean {
+  const outer = elementFrame(container);
+  const inner = elementFrame(child);
+  return (
+    !!outer &&
+    !!inner &&
+    container.label !== undefined &&
+    container.label === child.label &&
+    outer.x === inner.x &&
+    outer.y === inner.y &&
+    outer.width === inner.width &&
+    outer.height === inner.height
+  );
+}
+
 function aggregatesControl(container: Element, child: Element, requireProvenance = true): boolean {
   if (
     container.kind === 'text' ||
@@ -127,14 +142,7 @@ function aggregatesControl(container: Element, child: Element, requireProvenance
     inner.y + inner.height > outer.y + outer.height
   )
     return false;
-  if (
-    container.label === child.label &&
-    outer.x === inner.x &&
-    outer.y === inner.y &&
-    outer.width === inner.width &&
-    outer.height === inner.height
-  )
-    return true;
+  if (sameFrameLabel(container, child)) return true;
   if (
     container.kind !== 'other' ||
     (requireProvenance && container.semantic?.nativePresence?.labelSource !== 'descendant') ||
@@ -177,6 +185,13 @@ function containerEcho(
 // Potential aggregation requests evidence; only proven aggregation can collapse identities.
 export function needsLabelProvenance(screen: Screen, target: Target): boolean {
   const matched = exactIdentities(screen, target, 'press').map(({ element }) => element);
+  if (
+    matched.length === 1 &&
+    ancestorsOf(matched[0]).some(
+      (ancestor) => sameFrameLabel(ancestor, matched[0]) && aggregatesControl(ancestor, matched[0]),
+    )
+  )
+    return false;
   return matched.some(
     (container) =>
       container.kind === 'other' &&

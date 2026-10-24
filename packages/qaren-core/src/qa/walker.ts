@@ -599,7 +599,8 @@ async function walkBlockScoped(
         async () => {
           if (!deps.readLabelProvenance) return undefined;
           provenanceDiagnostic = unavailableProvenance();
-          return deps.readLabelProvenance(refs, deadline, report);
+          // Leave time for the native timeout diagnostic to reach the walker.
+          return deps.readLabelProvenance(refs, deadline - 1_500, report);
         },
       );
     } catch (error) {

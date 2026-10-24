@@ -582,8 +582,9 @@ admission. A potential merged-label container candidate then requests label
 provenance metadata only for the named candidates. This read takes no screenshot,
 reads no React tree, and cannot authorize media or replace the ordinary privacy
 observation. It retains that snapshot's references, generation and dispatch
-expiry. Both native producers require live candidate observations that match the
-ordinary identities and agree across their last two samples; changes to unrelated
+expiry. The native provenance deadline is 1.5 seconds earlier than the walker
+deadline, leaving time for samples or timeout diagnostics to return. Both native
+producers require live candidate observations that match the ordinary identities and agree across their last two samples; changes to unrelated
 nodes do not invalidate that agreement. On iOS, candidate indices and parent
 indices use the ordinary snapshot's retained filtering and deduplication options,
 rather than raw-tree positions. iOS sample stability compares label source,
@@ -606,7 +607,8 @@ phrase-action readbacks retain their existing full presence and privacy admissio
 Direct or unknown label
 provenance keeps differently framed candidates distinct. A native ancestor and
 hittable descendant with the exact same label and frame are one tap target and
-resolve to the inner control. Multiple distinct children remain ambiguous.
+resolve to the inner control without a provenance read, including repeated merged
+labels. Multiple distinct children remain ambiguous.
 Android's blank containers with proven descendant provenance acquire a bounded label
 from visible observed children during screen projection; input and secure content
 is excluded, and a container's own label is never reclassified.
