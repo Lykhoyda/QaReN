@@ -26,16 +26,19 @@ async function run(
     mutation?: 'none' | 'possible';
     requireFocused?: boolean;
     clearFirst?: boolean;
+    privateValue?: boolean;
   } = {},
-): Promise<{ env: any; dispatched: string[][] }> {
+): Promise<{ env: any; dispatched: string[][]; clearCounts: (number | undefined)[] }> {
   _setActiveSessionForTest({ platform: 'ios', deviceId: 'TEST-DEVICE', appId: 'com.test' });
   clearRefMap();
   markSnapshotDirty();
   updateRefMapFromFlat(WRAPPER_ONLY as never, { snapshotGeneration: 7, keyboardVisible: true });
   const dispatched: string[][] = [];
-  _setRunAgentDeviceForTest(async (cliArgs: string[]) => {
+  const clearCounts: (number | undefined)[] = [];
+  _setRunAgentDeviceForTest(async (cliArgs: string[], opts: { focusedDeleteCount?: number }) => {
     if (cliArgs[0] !== 'fill') return okResult({ nodes: WRAPPER_ONLY });
     dispatched.push(cliArgs.slice(2));
+    clearCounts.push(opts.focusedDeleteCount);
     if (options.mutation)
       return failResult('Replacement refused', 'TEXT_SYNTHESIS_UNAVAILABLE', {
         mutation: options.mutation,
@@ -58,6 +61,7 @@ async function run(
               value: read.value,
               controlled: read.value !== null,
               focused: read.focused,
+              ...(options.privateValue ? { privateValue: true } : {}),
             }),
           }
         : { error: 'unreadable' };
@@ -74,10 +78,11 @@ async function run(
         ...(options.requireFocused ? { requireFocused: true } : {}),
         skipFinalValidation: true,
         clearFirst: options.clearFirst ?? true,
+        privateValue: options.privateValue,
       },
       client,
     );
-    return { env: JSON.parse(result.content[0].text), dispatched };
+    return { env: JSON.parse(result.content[0].text), dispatched, clearCounts };
   } finally {
     _setRunAgentDeviceForTest(null);
     _setActiveSessionForTest(null);
@@ -94,7 +99,7 @@ test('a fallback refill requests replacement in one runner dispatch', async () =
   assert.deepEqual(dispatched, [REPLACE]);
 });
 
-test('a stable retained-prefix concatenation fails observed without another dispatch or raw values', async () => {
+test('a stable retained-prefix concatenation still fails after one bounded clear without raw values', async () => {
   const { env, dispatched } = await run(
     { value: 'decoy@example.test', focused: true },
     { after: { value: 'decoy@example.testreal@example.test', focused: true } },
@@ -103,8 +108,37 @@ test('a stable retained-prefix concatenation fails observed without another disp
   assert.equal(env.code, 'TEXT_ENTRY_UNVERIFIED');
   assert.equal(env.meta.mutation, 'observed');
   assert.notEqual(env.meta.verify, 'exact');
-  assert.deepEqual(dispatched, [REPLACE]);
+  assert.deepEqual(dispatched, [REPLACE, REPLACE]);
   assert.doesNotMatch(JSON.stringify(env), /decoy@example\.test|real@example\.test/);
+});
+
+for (const retained of [
+  'decoy@example.testreal@example.test',
+  'decoy@example.tesreal@example.test',
+]) {
+  test('an ineffective select-all recovers once by clearing the current observed length', async () => {
+    const { env, dispatched, clearCounts } = await run(
+      { value: 'decoy@example.test', focused: true },
+      {
+        after: [
+          { value: retained, focused: true },
+          { value: 'real@example.test', focused: true },
+        ],
+      },
+    );
+    assert.equal(env.ok, true);
+    assert.equal(env.meta.verify, 'exact');
+    assert.deepEqual(dispatched, [REPLACE, REPLACE]);
+    assert.deepEqual(clearCounts, [undefined, retained.length]);
+    assert.doesNotMatch(JSON.stringify(env), /decoy@example|real@example/);
+  });
+}
+
+test('a private field uses a bounded clear and keeps its outcome unverified', async () => {
+  const { env, clearCounts } = await run({ value: null, focused: true }, { privateValue: true });
+  assert.equal(env.ok, true);
+  assert.equal(env.data.verified, false);
+  assert.deepEqual(clearCounts, [undefined, 256]);
 });
 
 test('a shorter first readback then initial retained prefix fails after the existing retype', async () => {

@@ -26,12 +26,15 @@ extension RnFastRunnerTests {
     }
   }
 
-  private func executeFocusedType(app: XCUIApplication, text: String, replace: Bool) -> Response {
+  private func executeFocusedType(app: XCUIApplication, text: String, replace: Bool, prepareReplacement: Bool = false, deleteCount: Int = 0) -> Response {
+    guard (0...256).contains(deleteCount), prepareReplacement || deleteCount == 0 else {
+      return Response(ok: false, error: ErrorPayload(code: "INVALID_ARGUMENT", message: "focused clear exceeds the 256-key budget", mutation: "none"))
+    }
     var keyboardVisible = false
     withTemporaryScrollIdleTimeoutIfSupported(app) {
       keyboardVisible = app.keyboards.count > 0
     }
-    switch TypingRecipe.focusedTypeDecision(textIsEmpty: text.isEmpty, keyboardVisible: keyboardVisible) {
+    switch TypingRecipe.focusedTypeDecision(textIsEmpty: text.isEmpty && !prepareReplacement, keyboardVisible: keyboardVisible) {
     case .refuseEmptyText:
       return Response(
         ok: false,
@@ -54,9 +57,16 @@ extension RnFastRunnerTests {
       var synthesis: RunnerSynthesizedTextEntryResult?
       withTemporaryScrollIdleTimeoutIfSupported(app) {
         gesture {
-          synthesis = replace
-            ? RunnerSynthesizedTextEntry.replaceText(withApplication: app, text: text)
-            : RunnerSynthesizedTextEntry.synthesizeText(withApplication: app, text: text)
+          if prepareReplacement {
+            synthesis = RunnerSynthesizedTextEntry.prepareReplacement(
+              withApplication: app, deleteCount: UInt(deleteCount),
+              endKey: XCUIKeyboardKey.end.rawValue, deleteKey: XCUIKeyboardKey.delete.rawValue
+            )
+          } else {
+            synthesis = replace
+              ? RunnerSynthesizedTextEntry.replaceText(withApplication: app, text: text)
+              : RunnerSynthesizedTextEntry.synthesizeText(withApplication: app, text: text)
+          }
         }
       }
       let result = synthesis!
@@ -68,7 +78,7 @@ extension RnFastRunnerTests {
         return Response(
           ok: true,
           data: DataPayload(
-            message: "typed",
+            message: prepareReplacement ? "cleared" : "typed",
             typingBurst: false,
             keyboardWaitMs: 0,
             inputResolution: "focused-first-responder",
@@ -760,7 +770,11 @@ extension RnFastRunnerTests {
       }
       let delaySeconds = Double(max(command.delayMs ?? 0, 0)) / 1000.0
       if command.focused == true {
-        return executeFocusedType(app: activeApp, text: text, replace: command.clearFirst == true)
+        return executeFocusedType(
+          app: activeApp, text: text, replace: command.clearFirst == true,
+          prepareReplacement: command.prepareReplacement == true,
+          deleteCount: command.replacementDeleteCount ?? 0
+        )
       }
       // GH #581: one exact operation — bind the declared input (never an
       // ambient-focused substitute), skip the focus tap only when THAT input

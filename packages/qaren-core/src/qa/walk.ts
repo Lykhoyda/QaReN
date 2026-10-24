@@ -722,7 +722,7 @@ async function openSession(
           appProcess: {},
           reactFocused: async (testID: string) =>
             (await readReactInputValue(cdpClientOrNull(getClient), testID))?.focused === true,
-          typeFocused: (ref, text, testID, qaContext, requireFocused) =>
+          typeFocused: (ref, text, testID, qaContext, requireFocused, privateValue) =>
             act(
               () =>
                 fill({
@@ -734,6 +734,7 @@ async function openSession(
                   requireFocused,
                   skipFinalValidation: true,
                   clearFirst: true,
+                  privateValue: privateValue || currentInputs()?.hasInputs === true,
                   qaContext,
                   qaTiming: { now, observe: timing },
                 }),

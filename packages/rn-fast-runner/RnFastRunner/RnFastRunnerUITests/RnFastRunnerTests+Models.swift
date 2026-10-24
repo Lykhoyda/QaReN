@@ -81,6 +81,8 @@ struct Command: Codable {
   var focusY: Double? = nil
   var focusWaitMs: Int? = nil
   var focused: Bool? = nil
+  var prepareReplacement: Bool? = nil
+  var replacementDeleteCount: Int? = nil
   var operationToken: String? = nil
 }
 
