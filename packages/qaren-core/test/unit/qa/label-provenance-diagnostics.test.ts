@@ -65,3 +65,17 @@ test('native provenance diagnostics whitelist field masks and fixed outcomes wit
       undefined,
     );
 });
+
+test('containment resolution is a value-free private diagnostic with an unavailable provenance outcome', () => {
+  const lines: string[] = [];
+  const writer = createWriter((line) => lines.push(line), 'containment-test');
+  writer.diagnostic({ ...event, resolvedBy: 'containment', value: 'private-canary' });
+  assert.equal(lines.length, 1);
+  assert.deepEqual(JSON.parse(lines[0]).payload, { ...event, resolvedBy: 'containment' });
+  assert.doesNotMatch(lines[0], /private-canary/);
+  assert.equal(cleanDiagnostic({ ...event, resolvedBy: 'private-canary' }), undefined);
+  assert.equal(
+    cleanDiagnostic({ ...event, outcome: 'available', resolvedBy: 'containment' }),
+    undefined,
+  );
+});

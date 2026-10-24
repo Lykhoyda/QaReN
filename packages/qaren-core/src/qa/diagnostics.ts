@@ -37,8 +37,18 @@ export function cleanDiagnostic(value: unknown): Record<string, unknown> | undef
   if (!isRecord(value)) return undefined;
   if (value.kind === 'label-provenance') {
     const event = cleanProvenanceReadDiagnostic(value);
+    if (
+      value.resolvedBy !== undefined &&
+      (value.resolvedBy !== 'containment' || event?.outcome === 'available')
+    )
+      return undefined;
     return event && Number.isSafeInteger(value.line) && (value.line as number) > 0
-      ? { kind: 'label-provenance', line: value.line, ...event }
+      ? {
+          kind: 'label-provenance',
+          line: value.line,
+          ...event,
+          ...(value.resolvedBy === 'containment' ? { resolvedBy: 'containment' } : {}),
+        }
       : undefined;
   }
   if (value.kind === 'target-miss') return cleanTargetMiss(value);

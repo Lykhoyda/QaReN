@@ -52,7 +52,7 @@ import {
   visibleSelector,
 } from './resolve.js';
 import { literalEvidence, type LiteralNearMiss } from './evidence.js';
-import { exactIdentities, focusIdentityOf } from './identity.js';
+import { applyContainmentFallback, exactIdentities, focusIdentityOf } from './identity.js';
 import {
   type BlockPlatform,
   type StoredBlock,
@@ -617,16 +617,29 @@ async function walkBlockScoped(
     const provenanceAdmitted =
       deps.now() < deadline && applyLabelProvenance(observation.screen, refs, provenance);
     if (provenanceAdmitted) provenanceDiagnostic.outcome = 'available';
+    const containment =
+      !provenanceAdmitted &&
+      provenance === undefined &&
+      deps.now() < deadline &&
+      [
+        'unavailable',
+        'deadline',
+        'adapter-unavailable',
+        'read-failed',
+        'read-unavailable',
+      ].includes(provenanceDiagnostic.outcome) &&
+      applyContainmentFallback(observation.screen, step.target);
     try {
       deps.labelProvenanceDiagnostic?.({
         kind: 'label-provenance',
         line: step.line,
         ...provenanceDiagnostic,
+        ...(containment ? { resolvedBy: 'containment' as const } : {}),
       });
     } catch {
       /* Diagnostics cannot change admission. */
     }
-    if (!provenanceAdmitted)
+    if (!provenanceAdmitted && !containment)
       throw new ResolutionError({
         refuse: 'TARGET_AMBIGUOUS',
         reason: 'candidate label provenance was unavailable within the observation budget',

@@ -126,6 +126,12 @@ fn clean_label_provenance(fields: &Map<String, Value>) -> Option<Value> {
         return None;
     }
     clean.insert("outcome".into(), outcome.into());
+    if let Some(resolved_by) = fields.get("resolvedBy") {
+        if resolved_by.as_str() != Some("containment") || outcome == "available" {
+            return None;
+        }
+        clean.insert("resolvedBy".into(), "containment".into());
+    }
     let names = fields.get("differedFields")?.as_array()?;
     let allowed = [
         "type",

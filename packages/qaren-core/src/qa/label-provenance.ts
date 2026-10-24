@@ -59,6 +59,7 @@ export type ProvenanceReporter = (event: ProvenanceReadDiagnostic) => void;
 export interface LabelProvenanceDiagnostic extends ProvenanceReadDiagnostic {
   kind: 'label-provenance';
   line: number;
+  resolvedBy?: 'containment';
 }
 
 export function unavailableProvenance(
