@@ -987,7 +987,8 @@ fn run_inner(
             events::close_running(StageState::Failed, Some(&code.code_str()), &["recording"]);
         }
         Verdict::Refused { code, .. } => {
-            events::close_running(StageState::Failed, Some(code), &["recording"])
+            events::stage("steps", StageState::Failed, Some(code), None);
+            events::close_running(StageState::Failed, Some(code), &["recording"]);
         }
     }
     let t = ctx.mark("walk", t);
@@ -1152,20 +1153,17 @@ fn run_inner(
             });
             (ReceiptResult::Fail, Some(failure))
         }
-        Verdict::Refused { code, message } => {
-            events::stage("steps", StageState::Failed, Some(code), None);
-            (
-                ReceiptResult::Refused,
-                Some(outcome.failure.clone().unwrap_or_else(|| {
-                    Failure::new(
-                        "prove",
-                        refusal_code(code),
-                        format!("{code}: {message}"),
-                        "resolve the refusal, then re-run",
-                    )
-                })),
-            )
-        }
+        Verdict::Refused { code, message } => (
+            ReceiptResult::Refused,
+            Some(outcome.failure.clone().unwrap_or_else(|| {
+                Failure::new(
+                    "prove",
+                    refusal_code(code),
+                    format!("{code}: {message}"),
+                    "resolve the refusal, then re-run",
+                )
+            })),
+        ),
     };
     let mut tested_older_commit = None;
     let mut published_video = None;

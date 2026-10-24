@@ -2819,44 +2819,65 @@ fn an_old_node_refuses_at_preflight() {
 
 #[test]
 fn a_child_refusal_is_a_typed_refusal_with_the_child_code() {
-    let (repo, app) = app_repo();
-    let mut mock = MockRunner::new();
-    script_preflight(&mut mock, &repo);
-    script_provision(&mut mock);
-    let refusal = r#"{"verdict":"REFUSED","code":"TARGET_AMBIGUOUS","message":"scriptURL port 8081 != 8791"}"#;
-    script_drift_status(&mut mock);
-    script_host_probe(&mut mock, UDID, hosts_absent());
-    mock.expect_spawn_piped(
-        "walk.js",
-        9000,
-        &format!("{}\n", envelope(2, "result", refusal)),
-        Some(4),
-    );
-    script_core_identity(&mut mock);
-    script_teardown(&mut mock);
+    for admitted in [false, true] {
+        let (repo, app) = app_repo();
+        let mut mock = MockRunner::new();
+        script_preflight(&mut mock, &repo);
+        script_provision(&mut mock);
+        let refusal = r#"{"verdict":"REFUSED","code":"TARGET_AMBIGUOUS","message":"scriptURL port 8081 != 8791"}"#;
+        script_drift_status(&mut mock);
+        script_host_probe(&mut mock, UDID, hosts_absent());
+        let stdout = if admitted {
+            format!(
+                "{}\n{}\n",
+                envelope(2, "admitted", "{}"),
+                envelope(3, "result", refusal)
+            )
+        } else {
+            format!("{}\n", envelope(2, "result", refusal))
+        };
+        mock.expect_spawn_piped("walk.js", 9000, &stdout, Some(4));
+        script_core_identity(&mut mock);
+        script_teardown(&mut mock);
 
-    mock.environment.insert("CLAUDECODE".into(), "1".into());
-    mock.environment.insert("CLAUDE_CODE_SESSION_ID".into(), "/private/session key".into());
-    let mut req = request(&repo, &app, 30);
-    req.device = Some(UDID.into());
-    let (receipt, events) = run_with_events(&mut mock, &req);
-    let identity = &events.iter().find(|e| e["event"] == "run").unwrap()["payload"];
-    assert_eq!(identity["harness"], "claude");
-    assert_eq!(identity["markers"], serde_json::json!(["claude"]));
-    assert_eq!(identity["flags"], serde_json::json!(["device"]));
-    assert!(identity.get("harnessSession").is_none());
-    assert!(!identity.to_string().contains(UDID));
-    assert_eq!(receipt.result, ReceiptResult::Refused);
-    assert!(events.iter().any(|e| e["event"] == "stage"
-        && e["payload"]["name"] == "steps"
-        && e["payload"]["state"] == "failed"
-        && e["payload"]["code"] == "TARGET_AMBIGUOUS"));
-    assert_direct_ios_launch(&mock);
-    let failure = receipt.failure.as_ref().unwrap();
-    assert_eq!(failure.code, FailureCode::CoreRefused);
-    assert!(failure.detail.contains("8081"));
-    assert_eq!(mock.remaining(), 0);
-    assert_eq!(receipt.cleanup["device_lease"], "removed");
+        mock.environment.insert("CLAUDECODE".into(), "1".into());
+        mock.environment.insert(
+            "CLAUDE_CODE_SESSION_ID".into(),
+            "/private/session key".into(),
+        );
+        let mut req = request(&repo, &app, 30);
+        req.device = Some(UDID.into());
+        let (receipt, events) = run_with_events(&mut mock, &req);
+        let identity = &events.iter().find(|e| e["event"] == "run").unwrap()["payload"];
+        assert_eq!(identity["harness"], "claude");
+        assert_eq!(identity["markers"], serde_json::json!(["claude"]));
+        assert_eq!(identity["flags"], serde_json::json!(["device"]));
+        assert!(identity.get("harnessSession").is_none());
+        assert!(!identity.to_string().contains(UDID));
+        assert_eq!(receipt.result, ReceiptResult::Refused);
+        let failed_steps: Vec<_> = events
+            .iter()
+            .filter(|e| {
+                e["event"] == "stage"
+                    && e["payload"]["name"] == "steps"
+                    && e["payload"]["state"] == "failed"
+            })
+            .collect();
+        assert_eq!(failed_steps.len(), 1, "admitted={admitted}: {events:?}");
+        assert_eq!(failed_steps[0]["payload"]["code"], "TARGET_AMBIGUOUS");
+        assert_eq!(failed_steps[0]["payload"]["ms"].is_u64(), admitted);
+        let cleanup = events
+            .iter()
+            .find(|e| e["event"] == "stage" && e["payload"]["name"] == "cleanup")
+            .unwrap();
+        assert!(failed_steps[0]["seq"].as_u64().unwrap() < cleanup["seq"].as_u64().unwrap());
+        assert_direct_ios_launch(&mock);
+        let failure = receipt.failure.as_ref().unwrap();
+        assert_eq!(failure.code, FailureCode::CoreRefused);
+        assert!(failure.detail.contains("8081"));
+        assert_eq!(mock.remaining(), 0);
+        assert_eq!(receipt.cleanup["device_lease"], "removed");
+    }
 }
 
 #[test]
