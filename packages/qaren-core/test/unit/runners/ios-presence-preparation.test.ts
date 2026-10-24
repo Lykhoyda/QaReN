@@ -32,6 +32,7 @@ import Foundation
 import CoreGraphics
 #endif
 ${section(models, 'struct SnapshotRect:', 'struct RetainedSnapshotTarget')}
+${section(models, 'struct RetainedSnapshotTarget {', 'struct RecordedExactTypeTarget')}
 ${section(source, 'final class PresenceCaptureTiming', 'func makePlatformPresencePayload(')}
 ${source.slice(source.indexOf('func makePlatformPresencePayload('))}
 enum XCUIElement {
@@ -84,6 +85,7 @@ struct DataPayload {
   var keyboardVisible: Bool? = nil
   var snapshotGeneration: Int? = nil
   var presenceCapture: PlatformPresenceCapture? = nil
+  var labelProvenance: [CandidateLabelProvenance]? = nil
 }
 enum RunnerObjCExceptionCatcher {
   static func catchException(_ read: () -> Void) -> String? { read(); return nil }
@@ -93,6 +95,7 @@ final class Harness {
   let currentSnapshotGeneration = 7
   var now = 1000.0
   var sleeps: [Double] = []
+  var retainedSnapshotTargets: [Int: RetainedSnapshotTarget] = [:]
   var observations = 0
   var observedAt: [Double] = []
   var selectedSample = 0
@@ -116,7 +119,7 @@ final class Harness {
 ${section(source, '  private struct PresenceDescriptor:', '  func platformPresenceFailure(')}
 ${section(source, '  private func presenceRead<', '  private func presenceLabelSource(')}
   private func presenceLabelSource(_ snapshot: XCUIElementSnapshot) -> PlatformPresenceObservation.LabelSource {
-    snapshot.label.isEmpty ? .none : .direct
+    snapshot.label.isEmpty ? (snapshot.children.isEmpty ? .none : .descendant) : .direct
   }
   private func evaluateSnapshot(_ snapshot: XCUIElementSnapshot, in context: SnapshotTraversalContext) {}
   private func makeSnapshotNode(snapshot: XCUIElementSnapshot, evaluation: Void, depth: Int, index: Int, parentIndex: Int?) -> SnapshotNode {
@@ -127,7 +130,15 @@ ${section(source, '  private func presenceRead<', '  private func presenceLabelS
       enabled: snapshot.isEnabled, focused: nil, hittable: true, depth: depth, parentIndex: parentIndex,
       hiddenContentAbove: nil, hiddenContentBelow: nil)
   }
-${section(source, '  func snapshotPlatformPresence(', '  private func observePresence(')}
+  func elementTypeName(_ type: XCUIElement.ElementType) -> String { String(type.rawValue) }
+  func aggregatedLabel(for snapshot: XCUIElementSnapshot) -> String? {
+    if !snapshot.label.isEmpty { return snapshot.label }
+    return snapshot.children.compactMap { aggregatedLabel(for: $0) }.first
+  }
+  func snapshotRect(from rect: CGRect) -> SnapshotRect {
+    SnapshotRect(x: Double(rect.origin.x), y: Double(rect.origin.y), width: Double(rect.width), height: Double(rect.height))
+  }
+${section(source, '  func snapshotCandidateLabelProvenance(', '  private func observePresence(')}
   private func observePresence(_ descriptor: PresenceDescriptor, count: Int, app: XCUIApplication, deadline: Double, timing: PresenceCaptureTiming, unknownReason: ((PlatformPresenceObservation.UnknownReason) -> Void)? = nil) -> Double? {
     observations += 1; observedAt.append(now); now += observationMs; return now
   }
@@ -184,6 +195,34 @@ func run(_ name: String, _ trees: [XCUIElementSnapshot], budget: Int = 20_000, c
     "observed": nodes.filter { $0.presence?.status == .observed }.count,
     "timestamps": nodes.filter { $0.presence?.observedUptimeMs != nil }.count
   ]
+  print(String(data: try JSONSerialization.data(withJSONObject: output, options: [.sortedKeys]), encoding: .utf8)!)
+}
+func candidateTree(sibling: Double, candidate: Double = 10) -> XCUIElementSnapshot {
+  let root = tree()
+  let container = root.children[0].children[0]
+  container.elementType = .scrollView; container.identifier = "list"; container.label = ""; container.value = nil
+  container.frame = CGRect(x: candidate, y: 20, width: 300, height: 400)
+  let card = XCUIElementSnapshot(); card.label = "Add coverage"; card.identifier = "card"; card.value = nil
+  container.children = [card]
+  root.children[0].children[1].frame.size.height = sibling
+  return root
+}
+for unstable in [false, true] {
+  let h = Harness()
+  let trees = [candidateTree(sibling: 10), candidateTree(sibling: 11, candidate: unstable ? 11 : 10)]
+  let parent = trees[0].children[0].children[0], card = parent.children[0]
+  for (index, snapshot, ancestor) in [(2, parent, 1), (3, card, 2)] {
+    h.retainedSnapshotTargets[index] = RetainedSnapshotTarget(generation: 7, index: index,
+      type: h.elementTypeName(snapshot.elementType), label: h.aggregatedLabel(for: snapshot),
+      identifier: snapshot.identifier, rect: h.snapshotRect(from: snapshot.frame), parentIndex: ancestor)
+  }
+  let app = XCUIApplication(trees); app.cycle = true
+  let result = h.snapshotCandidateLabelProvenance(app: app, indices: [2, 3], budgetMs: 300)
+  let metadata = result.labelProvenance ?? []
+  let output: [String: Any] = ["name": unstable ? "candidate-unsettled" : "candidate-sibling-animation",
+    "indices": metadata.map { $0.index }, "sources": metadata.map { $0.labelSource.rawValue },
+    "reads": app.reads, "observations": h.observations, "elapsed": h.now - 1000,
+    "hasTree": result.nodes != nil, "hasKeyboard": result.keyboardVisible != nil]
   print(String(data: try JSONSerialization.data(withJSONObject: output, options: [.sortedKeys]), encoding: .utf8)!)
 }
 try run("stable", [tree()])
@@ -262,6 +301,23 @@ do {
         return [row.name, row];
       }),
   );
+  assert.deepEqual(rows.get('candidate-sibling-animation'), {
+    name: 'candidate-sibling-animation',
+    indices: [2, 3],
+    sources: ['descendant', 'direct'],
+    reads: 2,
+    observations: 4,
+    elapsed: 100,
+    hasTree: false,
+    hasKeyboard: false,
+  });
+  const unsettledCandidate = rows.get('candidate-unsettled');
+  assert.deepEqual(unsettledCandidate.indices, []);
+  assert.equal(unsettledCandidate.elapsed, 300);
+  assert.equal(unsettledCandidate.hasTree, false);
+  assert.equal(unsettledCandidate.hasKeyboard, false);
+  rows.delete('candidate-sibling-animation');
+  rows.delete('candidate-unsettled');
   assert.deepEqual(rows.get('system-alert'), {
     name: 'system-alert',
     nodes: 1,

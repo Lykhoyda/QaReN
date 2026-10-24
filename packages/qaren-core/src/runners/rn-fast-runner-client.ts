@@ -1,3 +1,4 @@
+import { labelProvenanceFromWire, type LabelProvenance } from '../qa/label-provenance.js';
 import { systemModalDiagnostic } from '../domain/system-modal-diagnostic.js';
 import { SETTLE_DEFAULT_BUDGET_MS } from '../lifecycle/settle.js';
 import { currentInputs } from '../qa/inputs.js';
@@ -1824,6 +1825,7 @@ export interface RunIOSArgs {
   direction?: 'up' | 'down' | 'left' | 'right';
   scale?: number;
   platformPresence?: boolean;
+  labelProvenance?: number[];
   presenceBudgetMs?: number;
   interactiveOnly?: boolean;
   compact?: boolean;
@@ -2685,6 +2687,7 @@ export async function runIOS(args: RunIOSArgs): Promise<ToolResult> {
   if (presenceRequested) {
     body.platformPresence = true;
     body.presenceBudgetMs = args.presenceBudgetMs;
+    if (args.labelProvenance) body.labelProvenance = args.labelProvenance;
   } else {
     if (args.interactiveOnly !== undefined) body.interactiveOnly = args.interactiveOnly;
     if (args.compact !== undefined) body.compact = args.compact;
@@ -3089,6 +3092,17 @@ export async function runIOS(args: RunIOSArgs): Promise<ToolResult> {
       keyboardVisible?: boolean;
       appProcessIdentifier?: number;
     };
+    if (args.labelProvenance) {
+      const metadata = resp.data as
+        | { labelProvenance?: unknown; appProcessIdentifier?: unknown }
+        | undefined;
+      const evidence =
+        typeof lastReadAppProcess === 'number' &&
+        metadata?.appProcessIdentifier === lastReadAppProcess
+          ? labelProvenanceFromWire(metadata?.labelProvenance, args.labelProvenance)
+          : undefined;
+      return okResult({ labelProvenance: evidence });
+    }
     const missingRefFreshness =
       presenceRequested &&
       (typeof data.keyboardVisible !== 'boolean' ||
@@ -3185,4 +3199,36 @@ export async function runIOS(args: RunIOSArgs): Promise<ToolResult> {
     ...(keyboardRelayoutRecovered ? { keyboardGuard: 'auto_dismissed' } : {}),
   };
   return okResult(resp.data ?? {}, Object.keys(finalMeta).length ? { meta: finalMeta } : undefined);
+}
+
+export async function readIOSLabelProvenance(
+  refs: string[],
+  budgetMs: number,
+  bundleId: string,
+  deviceId: string,
+): Promise<LabelProvenance[] | undefined> {
+  const targets = refs.map((ref) => getFreshRefTarget(ref));
+  const generation = targets[0]?.snapshotGeneration;
+  if (
+    refs.length < 1 ||
+    refs.length > 64 ||
+    targets.some((target) => !target || target.snapshotGeneration !== generation)
+  )
+    return undefined;
+  const result = await runIOS({
+    command: 'snapshot',
+    bundleId,
+    deviceId,
+    qaReadOnly: true,
+    platformPresence: true,
+    presenceBudgetMs: budgetMs,
+    snapshotGeneration: generation,
+    labelProvenance: targets.map((target) => target!.snapshotNodeIndex),
+  });
+  try {
+    const envelope = JSON.parse(result.content[0]?.text ?? '');
+    return envelope.ok === true ? envelope.data?.labelProvenance : undefined;
+  } catch {
+    return undefined;
+  }
 }

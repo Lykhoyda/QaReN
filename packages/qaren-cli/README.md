@@ -577,15 +577,24 @@ that control's echo only when native presence proves its label comes from descen
 With the same proven descendant provenance, quoted label presses can also collapse
 an identified native container into a smaller, enabled, visible, hittable descendant
 control when tree ancestry, frame containment and whole label segments agree.
-Quoted label presses first use an ordinary capture. A potential
-merged-label container candidate requests a fresh platform-presence capture to
-obtain this provenance, without requiring the complete native presence that phrase
-targets require. Unique quoted targets and their post-action proofs that ordinary
-capture resolves do not request presence. Post-action effect comparisons retain
-the pre-action capture's projection, including after provenance escalation, so a
-projection-only label change cannot prove a press or a behind-alert callback.
-Semantic phrase-action readbacks retain their existing presence admission.
-Native acquisition and privacy admission still apply to every capture. Direct or unknown label
+Quoted label presses first use an ordinary capture with the full native privacy
+admission. A potential merged-label container candidate then requests label
+provenance metadata only for the named candidates. This read takes no screenshot,
+reads no React tree, and cannot authorize media or replace the ordinary privacy
+observation. It retains that snapshot's references, generation and dispatch
+expiry. Both native producers require live candidate observations that match the
+ordinary identities and agree across their last two samples; changes to unrelated
+nodes do not invalidate that agreement. Missing, changing or unavailable candidate
+provenance fails as `TARGET_AMBIGUOUS`, with no press and no
+`PRIVATE_INPUT_CAPTURE_UNKNOWN` from the metadata read. Ordinary privacy failures
+still refuse that capture. A subsequent ordinary capture must pass admission
+before screenshots can resume.
+
+Unique quoted targets that ordinary capture resolves need no provenance read.
+Post-action effects use the ordinary projection on both sides of a quoted press,
+so metadata alone cannot prove navigation or an alert callback. Semantic
+phrase-action readbacks retain their existing full presence and privacy admission.
+Direct or unknown label
 provenance keeps differently framed candidates distinct. A native ancestor and
 hittable descendant with the exact same label and frame are one tap target and
 resolve to the inner control. Multiple distinct children remain ambiguous.

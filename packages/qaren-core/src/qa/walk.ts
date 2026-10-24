@@ -1,5 +1,6 @@
 import { QaDispatchError } from '../domain/qa-dispatch.js';
 import { ownedLogin, parseInputPreflight } from './input-preflight.js';
+import { readAndroidLabelProvenance } from '../runners/rn-android-runner-client.js';
 import { ObservedPrivacy } from './privacy.js';
 import { InputPrivacyRefusal, withInputs, currentInputs } from './inputs.js';
 import {
@@ -45,6 +46,7 @@ import { compileFlow, FlowCompileError } from '../flow/compile.js';
 import { foreignFlowGate } from '../lifecycle/foreign-flow-gate.js';
 import { androidForeignDriverMessage } from '../runners/external-runner-detect.js';
 import {
+  readIOSLabelProvenance,
   observeAppProcess,
   observeRunnerDrivers,
   observeRunnerRelaunches,
@@ -647,6 +649,12 @@ async function openSession(
     presenceUnavailable: platform === 'android',
     timing,
     publicationInterrupted: admittedSnapshots.interrupted,
+    readLabelProvenance: async (refs, deadline) => {
+      const budget = Math.min(20_000, Math.floor(deadline - now()));
+      if (budget <= 0) return undefined;
+      const read = platform === 'ios' ? readIOSLabelProvenance : readAndroidLabelProvenance;
+      return stop.track(() => read(refs, budget, appId, target.deviceId));
+    },
     captureScreen: (options) =>
       stop.track(() =>
         captureScreen({

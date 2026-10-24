@@ -65,6 +65,7 @@ struct Command: Codable {
   var platformPresence: Bool? = nil
   var qaReadOnly: Bool? = nil
   var presenceBudgetMs: Int? = nil
+  var labelProvenance: [Int]? = nil
   let fullscreen: Bool?
   var guardKeyboard: Bool? = nil
   var targetBounds: SnapshotRect? = nil
@@ -216,6 +217,7 @@ struct DataPayload: Codable {
   var tappedRect: SnapshotRect? = nil
   var alertClosed: Bool? = nil
   var systemModal: SystemModalDiagnostic? = nil
+  var labelProvenance: [CandidateLabelProvenance]? = nil
 
   init(
     message: String? = nil,
@@ -339,7 +341,7 @@ func runnerErrorPayload(_ error: Error, command: String? = nil) -> ErrorPayload 
   return ErrorPayload(message: "\(error)")
 }
 
-struct SnapshotRect: Codable {
+struct SnapshotRect: Codable, Equatable {
   let x: Double
   let y: Double
   let width: Double
@@ -533,6 +535,11 @@ struct PlatformPresenceObservation: Codable {
   var unknownReason: UnknownReason? = nil
 }
 
+struct CandidateLabelProvenance: Codable {
+  let index: Int
+  let labelSource: PlatformPresenceObservation.LabelSource
+}
+
 struct RetainedSnapshotTarget {
   let generation: Int
   let index: Int
@@ -544,6 +551,7 @@ struct RetainedSnapshotTarget {
   var ownerRect: SnapshotRect? = nil
   // A Button with a Keyboard ancestor in the same snapshot, such as an iOS Return key.
   var keyboardOwned: Bool = false
+  var parentIndex: Int? = nil
 }
 
 struct RecordedExactTypeTarget {

@@ -282,6 +282,15 @@ extension RnFastRunnerTests {
       let target = currentBundleId == bundleId
         ? (currentApp ?? XCUIApplication(bundleIdentifier: bundleId))
         : XCUIApplication(bundleIdentifier: bundleId)
+      if let indices = command.labelProvenance {
+        guard command.snapshotGeneration == currentSnapshotGeneration else {
+          return Response(ok: true, data: DataPayload())
+        }
+        return Response(ok: true, data: runnerPayload(
+          snapshotCandidateLabelProvenance(app: target, indices: indices, budgetMs: presenceBudgetMs),
+          appProcessIdentifier: observedProcessIdentifier(target)
+        ))
+      }
       currentSnapshotGeneration += 1
       // Observation must not activate or relaunch the app to manufacture presence.
       let payload = runnerPayload(

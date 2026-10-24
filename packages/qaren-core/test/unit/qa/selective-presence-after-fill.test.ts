@@ -43,7 +43,7 @@ function container(prefix: string, provenance: boolean) {
   return screen;
 }
 
-test('a container candidate escalates to a fresh observation and dispatches only its new reference', async () => {
+test('candidate metadata retains the privacy-admitted ordinary reference and original dispatch deadline', async () => {
   const f = walker(
     [],
     scriptedJudge(() => assert.fail('quoted target needs no model')),
@@ -52,14 +52,24 @@ test('a container candidate escalates to a fresh observation and dispatches only
   const requested: { presence: boolean; observation: number | undefined }[] = [];
   f.deps.now = () => now;
   f.deps.captureScreen = async (options) => {
-    const presence = options?.platformPresence === true;
-    requested.push({ presence, observation: options?.observation });
-    now += presence ? 5_000 : requested.length === 1 ? 19_000 : 1;
-    return container(presence ? '@new' : '@old', presence);
+    requested.push({
+      presence: options?.platformPresence === true,
+      observation: options?.observation,
+    });
+    now += 1_000;
+    return container('@ordinary', false);
+  };
+  f.deps.readLabelProvenance = async (refs, deadline) => {
+    assert.equal(deadline, 11_000);
+    now += 500;
+    return refs.map((ref) => ({
+      ref,
+      labelSource: ref === '@ordinary-parent' ? 'descendant' : 'direct',
+    }));
   };
   f.deps.press = async (ref, context) => {
-    assert.equal(ref, '@new-card');
-    assert.equal(context.deadline, now + 10_000);
+    assert.equal(ref, '@ordinary-card');
+    assert.equal(context.deadline, 11_000);
     f.actions.push(`press ${ref}`);
     return { ok: true, proven: true };
   };
@@ -67,10 +77,9 @@ test('a container candidate escalates to a fresh observation and dispatches only
   assert.equal(result.verdict, 'PASS', JSON.stringify(result));
   assert.deepEqual(requested, [
     { presence: false, observation: 1 },
-    { presence: true, observation: 2 },
-    { presence: true, observation: 3 },
+    { presence: false, observation: 2 },
   ]);
-  assert.deepEqual(f.actions, ['press @new-card']);
+  assert.deepEqual(f.actions, ['press @ordinary-card']);
 });
 
 for (const expired of ['ordinary', 'provenance'] as const) {
@@ -90,13 +99,18 @@ for (const expired of ['ordinary', 'provenance'] as const) {
     };
     const result = await runPlan(parsePlan('1. Tap "Add coverage"').blocks!, f.deps);
     assert.equal(result.verdict, 'FAIL');
-    assert.match(JSON.stringify(result), /ACQUISITION_EXPIRED/);
+    assert.match(
+      JSON.stringify(result),
+      expired === 'ordinary'
+        ? /ACQUISITION_EXPIRED/
+        : /TARGET_AMBIGUOUS: candidate label provenance was unavailable/,
+    );
     assert.deepEqual(requests, expired === 'ordinary' ? [false] : [false, true]);
     assert.deepEqual(f.actions, []);
   });
 }
 
-test('required provenance keeps a named incomplete-presence refusal and never uses the ordinary candidate', async () => {
+test('unavailable candidate provenance refuses ambiguity and never uses the ordinary candidate', async () => {
   const f = walker(
     [],
     scriptedJudge(() => assert.fail('incomplete evidence needs no model')),
@@ -113,10 +127,12 @@ test('required provenance keeps a named incomplete-presence refusal and never us
     return container('@old', false);
   };
   const result = await runPlan(parsePlan('1. Tap "Add coverage"').blocks!, f.deps);
-  assert.equal(result.verdict, 'REFUSED');
-  assert.equal('code' in result && result.code, 'PRIVATE_INPUT_CAPTURE_UNKNOWN');
-  assert.match(JSON.stringify(result), /keyboard-state-unknown/);
-  assert.match(JSON.stringify(result), /retry-deadline/);
+  assert.equal(result.verdict, 'FAIL');
+  assert.match(
+    JSON.stringify(result),
+    /TARGET_AMBIGUOUS: candidate label provenance was unavailable/,
+  );
+  assert.doesNotMatch(JSON.stringify(result), /PRIVATE_INPUT_CAPTURE_UNKNOWN/);
   assert.deepEqual(requests, [false, true]);
   assert.deepEqual(f.actions, []);
 });

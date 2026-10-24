@@ -2,4 +2,4 @@
 'qaren': patch
 ---
 
-Resolve quoted presses with ordinary privacy-checked capture when sufficient, acquiring settled presence evidence for unresolved container candidates and keeping post-action proof in the same projection while retaining named refusal causes.
+Resolve quoted container targets with bounded candidate-only label provenance after ordinary privacy admission, refusing unavailable provenance as target ambiguity while preserving private-input masking and screenshot withholding.

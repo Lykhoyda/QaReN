@@ -185,7 +185,10 @@ for (const changed of [false, true]) {
     };
     const result = await runPlan(parsePlan('1. Tap "Add coverage"').blocks!, f.deps);
     assert.equal(result.verdict, changed ? 'PASS' : 'FAIL', JSON.stringify(result));
-    assert.deepEqual(modes, changed ? [false, true, true] : [false, true, true, false, true, true]);
+    assert.deepEqual(
+      modes,
+      changed ? [false, true, false] : [false, true, false, false, true, false],
+    );
     assert.deepEqual(f.actions, changed ? ['press @e3'] : ['press @e3', 'press @e3']);
     assert.deepEqual(
       result.steps.map((row) => row.outcome),
@@ -240,7 +243,7 @@ test('Android alert dismissal cannot count a descendant projection change as a c
   assert.deepEqual(f.actions, ['press @e6']);
   assert.equal(result.steps[0].unverifiedPress, true);
   assert.match(result.steps[0].reason ?? '', /UNVERIFIED_PRESS: .*nothing behind it changed/);
-  assert.deepEqual(modes, [false, true, true]);
+  assert.deepEqual(modes, [false, true, false]);
 });
 
 test('Android retains ambiguity between real siblings under a derived container label', async () => {

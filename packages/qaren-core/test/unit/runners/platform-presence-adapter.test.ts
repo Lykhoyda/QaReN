@@ -8,6 +8,7 @@ import {
   _setRunnerStateForTest,
   getFastRunnerState,
   runIOS,
+  readIOSLabelProvenance,
 } from '../../../dist/runners/rn-fast-runner-client.js';
 import {
   clearRefMap,
@@ -508,4 +509,60 @@ test('presence transport and native failures never retry, relayout, or reap the 
     assert.deepEqual(signals, []);
     assert.equal(subprocess.mock.callCount(), 0);
   }
+});
+
+test('candidate metadata preserves the ordinary ref map and withholds trees, values and wrong-process evidence', async () => {
+  _setCapabilitiesForTest(['PLATFORM_PRESENCE_V2', 'QA_READ_ONLY_V1']);
+  let processId = 71;
+  const bodies: Record<string, unknown>[] = [];
+  _setFetchForTest(async (url, init) => {
+    if (String(url).endsWith('/health'))
+      return Response.json({
+        ok: true,
+        protocolVersion: 2,
+        commands: REQUIRED_IOS_COMMANDS,
+        capabilities: [...REQUIRED_IOS_FEATURES, 'PLATFORM_PRESENCE_V2', 'QA_READ_ONLY_V1'],
+      });
+    const { commandId: _commandId, ...body } = JSON.parse(String(init?.body));
+    bodies.push(body);
+    return Response.json({
+      ok: true,
+      data: body.labelProvenance
+        ? {
+            labelProvenance: [
+              { index: 0, labelSource: 'descendant', value: 'private-native-canary' },
+            ],
+            nodes: [{ index: 99, type: 'TextField', value: 'private-native-canary', rect }],
+            appProcessIdentifier: processId,
+          }
+        : {
+            nodes: [{ index: 0, type: 'Button', label: 'Add coverage', rect }],
+            snapshotGeneration: 17,
+            keyboardVisible: false,
+            appProcessIdentifier: processId,
+          },
+    });
+  });
+  await runIOS({ command: 'snapshot', bundleId: 'com.test' });
+  const before = getFreshRefTarget('@e0');
+  const evidence = await readIOSLabelProvenance(['@e0'], 777, 'com.test', 'sim');
+  assert.deepEqual(evidence, [{ ref: '@e0', labelSource: 'descendant' }]);
+  assert.equal(JSON.stringify(evidence).includes('private-native-canary'), false);
+  assert.deepEqual(getFreshRefTarget('@e0'), before);
+  assert.equal(getFreshRefTarget('@e99'), null);
+  assert.deepEqual(bodies[1], {
+    command: 'snapshot',
+    qaReadOnly: true,
+    appBundleId: 'com.test',
+    platformPresence: true,
+    presenceBudgetMs: 777,
+    labelProvenance: [0],
+    snapshotGeneration: 17,
+  });
+  processId = 72;
+  assert.equal(await readIOSLabelProvenance(['@e0'], 777, 'com.test', 'sim'), undefined);
+  assert.deepEqual(getFreshRefTarget('@e0'), before);
+  const requests = bodies.length;
+  assert.equal(await readIOSLabelProvenance(['@e99'], 777, 'com.test', 'sim'), undefined);
+  assert.equal(bodies.length, requests);
 });

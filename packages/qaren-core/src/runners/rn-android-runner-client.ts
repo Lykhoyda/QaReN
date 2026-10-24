@@ -1,3 +1,4 @@
+import { labelProvenanceFromWire, type LabelProvenance } from '../qa/label-provenance.js';
 import { currentInputs } from '../qa/inputs.js';
 /*
  * Copyright (c) 2026 Anton Lykhoyda
@@ -28,6 +29,7 @@ import {
   updateRefMapFromFlat,
   buildSnapshotVerdict,
   getCachedMetadata,
+  getFreshRefTarget,
   type FlatNode,
 } from '../fast-runner-ref-map.js';
 import { findFreePort } from './free-port.js';
@@ -185,6 +187,7 @@ export interface RunAndroidArgs {
   interactiveOnly?: boolean;
   /** A QA snapshot that also runs the runner's presence pass within this budget. */
   platformPresence?: boolean;
+  labelProvenance?: number[];
   presenceBudgetMs?: number;
   outPath?: string;
   /** GH #581: exact input identity + declared focus point for type/verifyInput. */
@@ -2177,6 +2180,7 @@ export async function runAndroid(args: RunAndroidArgs): Promise<ToolResult> {
   if (presenceRequested) {
     body.platformPresence = true;
     body.presenceBudgetMs = args.presenceBudgetMs;
+    if (args.labelProvenance) body.labelProvenance = args.labelProvenance;
   }
   if (args.bundleId) body.appBundleId = args.bundleId;
   if (args.x !== undefined) body.x = args.x;
@@ -2356,6 +2360,12 @@ export async function runAndroid(args: RunAndroidArgs): Promise<ToolResult> {
   }
 
   if (args.command === 'snapshot' && resp.data && typeof resp.data === 'object') {
+    if (args.labelProvenance) {
+      const metadata = resp.data as { labelProvenance?: unknown };
+      return okResult({
+        labelProvenance: labelProvenanceFromWire(metadata.labelProvenance, args.labelProvenance),
+      });
+    }
     const data = resp.data as {
       nodes?: RunnerSnapshotNode[];
       truncated?: unknown;
@@ -2437,4 +2447,36 @@ export function isAndroidConnectionFailure(message: string): boolean {
   return /fetch failed|ECONNREFUSED|ECONNRESET|socket hang up|rn-android-runner not started|did not become ready|Android runner instrumentation exited before readiness|Failed to spawn Android runner instrumentation/i.test(
     message,
   );
+}
+
+export async function readAndroidLabelProvenance(
+  refs: string[],
+  budgetMs: number,
+  bundleId: string,
+  deviceId: string,
+): Promise<LabelProvenance[] | undefined> {
+  const targets = refs.map((ref) => getFreshRefTarget(ref));
+  const generation = targets[0]?.snapshotGeneration;
+  if (
+    refs.length < 1 ||
+    refs.length > 64 ||
+    targets.some((target) => !target || target.snapshotGeneration !== generation)
+  )
+    return undefined;
+  const result = await runAndroid({
+    command: 'snapshot',
+    bundleId,
+    deviceId,
+    qaReadOnly: true,
+    platformPresence: true,
+    presenceBudgetMs: budgetMs,
+    snapshotGeneration: generation,
+    labelProvenance: targets.map((target) => target!.snapshotNodeIndex),
+  });
+  try {
+    const envelope = JSON.parse(result.content[0]?.text ?? '');
+    return envelope.ok === true ? envelope.data?.labelProvenance : undefined;
+  } catch {
+    return undefined;
+  }
 }

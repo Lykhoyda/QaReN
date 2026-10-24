@@ -416,6 +416,62 @@ extension RnFastRunnerTests {
     return aggregatedLabel(for: snapshot) == nil ? .none : .descendant
   }
 
+  func snapshotCandidateLabelProvenance(app: XCUIApplication, indices: [Int], budgetMs: Int) -> DataPayload {
+    var result = DataPayload()
+    guard !indices.isEmpty, indices.count <= 64, Set(indices).count == indices.count,
+          indices.allSatisfy({ retainedSnapshotTargets[$0]?.generation == currentSnapshotGeneration }) else { return result }
+    let started = presenceUptimeMs()
+    let deadline = started + Double(budgetMs)
+    let timing = PresenceCaptureTiming(started: started, now: presenceUptimeMs)
+    var previous: [PresenceEntry]?
+    var previousSources: [PlatformPresenceObservation.LabelSource]?
+    while !timing.deadlineReached(deadline, read: .preparationPoll, edge: .before) {
+      guard presenceAppIsEligible(app, deadline: deadline, timing: timing) == true,
+            let root = presenceRead(deadline: deadline, timing: timing, read: .rootSnapshot, { try app.snapshot() }) else { return result }
+      var stack: [(XCUIElementSnapshot, Int, Int?)] = [(root, 0, nil)]
+      var selected: [Int: (XCUIElementSnapshot, PresenceEntry)] = [:]
+      var count = 0
+      while let (snapshot, depth, parent) = stack.popLast() {
+        guard count < maxSnapshotElements,
+              !timing.deadlineReached(deadline, read: .enumeration, edge: .before) else { return result }
+        let index = count
+        if indices.contains(index), let descriptor = PresenceDescriptor(snapshot) {
+          selected[index] = (snapshot, PresenceEntry(descriptor: descriptor, depth: depth, parentIndex: parent))
+        }
+        for child in snapshot.children.reversed() { stack.append((child, depth + 1, index)) }
+        count += 1
+      }
+      var entries: [PresenceEntry] = []
+      var sources: [PlatformPresenceObservation.LabelSource] = []
+      for index in indices {
+        guard let (snapshot, entry) = selected[index], let target = retainedSnapshotTargets[index],
+              target.type == elementTypeName(snapshot.elementType),
+              target.parentIndex == entry.parentIndex,
+              target.identifier == (snapshot.identifier.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? nil : snapshot.identifier.trimmingCharacters(in: .whitespacesAndNewlines)),
+              target.label == aggregatedLabel(for: snapshot),
+              target.rect == snapshotRect(from: snapshot.frame),
+              observePresence(entry.descriptor, count: 1, app: app, deadline: deadline, timing: timing) != nil else {
+          entries.removeAll()
+          break
+        }
+        entries.append(entry)
+        sources.append(presenceLabelSource(snapshot))
+      }
+      guard presenceAppIsEligible(app, deadline: deadline, timing: timing) == true,
+            !timing.deadlineReached(deadline, read: .finalization, edge: .after) else { return result }
+      if entries.count == indices.count, previous == entries, previousSources == sources {
+        result.labelProvenance = zip(indices, sources).map { CandidateLabelProvenance(index: $0.0, labelSource: $0.1) }
+        return result
+      }
+      previous = entries.count == indices.count ? entries : nil
+      previousSources = entries.count == indices.count ? sources : nil
+      let remaining = deadline - presenceUptimeMs()
+      if remaining <= 0 { return result }
+      sleepFor(min(0.1, remaining / 1000))
+    }
+    return result
+  }
+
   func snapshotPlatformPresence(app: XCUIApplication, appId: String, presenceBudgetMs: Int) -> DataPayload {
     // A recognised SpringBoard alert is the observation in every snapshot flavour; it has no Keyboard node.
     if let blocking = blockingSystemAlertSnapshot() {
@@ -715,7 +771,8 @@ extension RnFastRunnerTests {
             index: node.index,
             parentOf: { byIndex[$0]?.parentIndex },
             typeOf: { byIndex[$0]?.type }
-          )
+          ),
+          parentIndex: node.parentIndex
         )
       )
     })

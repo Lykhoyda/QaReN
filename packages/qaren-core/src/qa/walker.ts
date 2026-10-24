@@ -6,7 +6,7 @@ import {
   throwIfInputPrivacyRefused,
   withEchoScope,
 } from './inputs.js';
-import { isAbort, cancellationSignal } from '../domain/cancellation.js';
+import { isAbort, cancellationSignal, withDeadline } from '../domain/cancellation.js';
 import type { Block, Item, Target } from './plan.js';
 import {
   type Element,
@@ -81,6 +81,7 @@ import {
 } from './privacy.js';
 import { renderReason, segments, type Reason } from './untrusted.js';
 import { NativeSnapshotIncomplete, PrivateInputCaptureError } from './private-input.js';
+import { applyLabelProvenance, type LabelProvenance } from './label-provenance.js';
 import {
   AppProcessGoneError,
   emitCaptureDiagnostics,
@@ -138,6 +139,7 @@ export interface ActResult {
 }
 
 export interface WalkerDeps {
+  readLabelProvenance?(refs: string[], deadline: number): Promise<LabelProvenance[] | undefined>;
   privacy?: ObservedPrivacy;
   mediaWithheld?(event: MediaWithheldDiagnostic): void;
   judge?: Judge;
@@ -408,6 +410,7 @@ async function walkBlockScoped(
   let mutationStarted = false;
   let latestObservation = 0;
   let recoveries = 0;
+  let metadataOnly = false;
   const captureScreen: WalkerDeps['captureScreen'] = async (options) => {
     const screen = await deps.captureScreen(options);
     const react = screen.reactConnection ?? screen.captureCoverage?.react;
@@ -532,6 +535,7 @@ async function walkBlockScoped(
           reason: 'NATIVE_PRESENCE_UNUSABLE',
         });
       admitted = true;
+      metadataOnly = false;
       emitCaptureDiagnostics(latest);
       return { screen: latest, timing, id, platformPresence };
     } catch (error) {
@@ -559,9 +563,31 @@ async function walkBlockScoped(
     recovery = false,
   ): Promise<Observation> => {
     const observation = await captureOnce(step, assertion, recovery);
-    return step && targetNeedsPresence(step, observation.screen)
-      ? captureOnce(step, assertion, recovery, 'provenance')
-      : observation;
+    if (!step || step.kind !== 'press' || !targetNeedsPresence(step, observation.screen))
+      return observation;
+    const refs = exactIdentities(observation.screen, step.target, 'press')
+      .map(({ element }) => element.ref)
+      .filter((ref) => !ref.startsWith('react:'));
+    const deadline = observationDeadline(observation.timing);
+    metadataOnly = true;
+    let provenance: LabelProvenance[] | undefined;
+    try {
+      provenance = await withDeadline(
+        performance.now() + Math.max(0, deadline - deps.now()),
+        new Error('candidate-provenance-deadline'),
+        async () => deps.readLabelProvenance?.(refs, deadline),
+      );
+    } catch (error) {
+      if (isAbort(error)) throw error;
+      if (error instanceof AppProcessGoneError) throw processChanged();
+    }
+    assertActive();
+    if (deps.now() >= deadline || !applyLabelProvenance(observation.screen, refs, provenance))
+      throw new ResolutionError({
+        refuse: 'TARGET_AMBIGUOUS',
+        reason: 'candidate label provenance was unavailable within the observation budget',
+      });
+    return observation;
   };
   const diagnostic = (
     item: Item,
@@ -993,6 +1019,10 @@ async function walkBlockScoped(
       });
       sequence.latch!.count += 1;
       withheldRows.set(item.line, latch.reason);
+      return undefined;
+    }
+    if (metadataOnly) {
+      metric('screenshot', undefined, { outcome: 'withheld' });
       return undefined;
     }
     shots += 1;

@@ -96,6 +96,12 @@ class Harness {
   }
   func platformPresenceFailure() -> Response { Response(ok: false) }
   func snapshotPlatformPresence(app: XCUIApplication, appId: String, presenceBudgetMs: Int) -> DataPayload { DataPayload() }
+  var metadataReads = 0
+  func snapshotCandidateLabelProvenance(app: XCUIApplication, indices: [Int], budgetMs: Int) -> DataPayload {
+    metadataReads += 1
+    precondition(indices == [2] && budgetMs == 777)
+    return DataPayload()
+  }
   func retainSnapshotTargets(_ nodes: [Int]) {}
   func observedProcessIdentifier(_ target: XCUIApplication) -> Int? { 7 }
   var alertTaps = 0
@@ -141,6 +147,13 @@ for verb in ["snapshot", "verifyInput", "isScreenStatic"] {
   let admitted = try h.run(command(verb))
   precondition(admitted.ok)
   precondition(h.reads == 1)
+}
+for generation in [0, 1] {
+  let h = Harness(); let original = h.currentApp; let before = activations
+  let request = try decoder.decode(Command.self, from: Data("{\\"command\\":\\"snapshot\\",\\"qaReadOnly\\":true,\\"appBundleId\\":\\"qa.app\\",\\"platformPresence\\":true,\\"presenceBudgetMs\\":777,\\"snapshotGeneration\\":\\(generation),\\"labelProvenance\\":[2]}".utf8))
+  let response = try h.run(request)
+  precondition(response.ok && h.metadataReads == (generation == 0 ? 1 : 0))
+  precondition(h.currentSnapshotGeneration == 0 && h.currentApp === original && activations == before)
 }
 let wrong = Harness()
 let rejected = try wrong.run(command("tap"))
