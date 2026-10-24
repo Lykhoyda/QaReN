@@ -14,6 +14,8 @@ type Snapshot = {
   footer?: boolean;
   footerY?: number;
   footerMissing?: boolean;
+  footerUnidentified?: boolean;
+  loading?: boolean;
   keyboardY?: number;
   listID?: string;
   hideFooterLabel?: boolean;
@@ -65,8 +67,15 @@ function fixture() {
             : state.footer
               ? 'Footer'
               : 'Loading',
-        identifier: state.footerMissing ? undefined : state.footer ? 'footer' : 'loading',
-        rect: { x: 10, y: state.footerY ?? 200, width: 100, height: 30 },
+        identifier:
+          state.footerMissing || state.footerUnidentified
+            ? undefined
+            : state.footer
+              ? 'footer'
+              : 'loading',
+        rect: state.footerMissing
+          ? undefined
+          : { x: 10, y: state.footerY ?? 200, width: 100, height: 30 },
       },
       ...(presence
         ? [
@@ -88,6 +97,14 @@ function fixture() {
           ]),
       ...(state.overlays ?? []).map((rect) => ({ type: 'Button', parentIndex: 1, rect })),
     ];
+    if (state.loading)
+      rawNodes.push({
+        type: 'StaticText',
+        parentIndex: 2,
+        identifier: 'loading-extra',
+        label: 'Loading',
+        rect: { x: 10, y: 300, width: 100, height: 30 },
+      });
     if (state.keyboardY !== undefined)
       rawNodes.push({
         type: 'Keyboard',
@@ -183,6 +200,39 @@ async function run(
 
 for (const direction of ['up', 'down'] as const) {
   for (const mode of ['quoted', 'phrase', 'replay'] as const) {
+    for (const change of ['unrelated', 'label', 'unidentified-label', 'both'] as const) {
+      if (mode === 'replay' && change === 'unidentified-label') continue;
+      for (const expiry of [false, true]) {
+        test(`stable target survives ordinary ${change}: ${direction}, ${mode}, expiry=${expiry}`, async () => {
+          const f = fixture();
+          let confirmations = 0;
+          f.setSnapshot(async (presence) => {
+            if (presence && ++confirmations === 1 && expiry) await f.f.deps.sleep(11_000);
+            const changed = !presence && confirmations >= (expiry ? 2 : 1);
+            return {
+              footer: true,
+              listID: 'policies',
+              footerUnidentified: change === 'unidentified-label',
+              hideFooterLabel: changed && change !== 'unrelated',
+              loading: (change === 'unrelated' || change === 'both') && !changed,
+            };
+          });
+          try {
+            const result = await run(f, direction, mode);
+            assert.equal(result.block.outcome, 'pass');
+            assert.equal(result.failure, undefined);
+            assert.equal(f.drags(), 0);
+            assert.deepEqual(
+              f.modes,
+              expiry ? [false, true, false, true, false] : [false, true, false],
+            );
+          } finally {
+            clearRefMap();
+          }
+        });
+      }
+    }
+
     for (const contradiction of ['outside-list', 'keyboard', 'overlay', 'disappeared'] as const) {
       test(`new ordinary ${contradiction} vetoes positive confirmation: ${direction}, ${mode}`, async () => {
         const f = fixture();
@@ -495,6 +545,42 @@ for (const direction of ['up', 'down'] as const) {
         assert.equal(result.block.outcome, 'pass');
         assert.equal(f.drags(), 0);
         assert.deepEqual(f.modes, [false, true, false]);
+      } finally {
+        clearRefMap();
+      }
+    });
+  }
+}
+
+for (const direction of ['up', 'down'] as const) {
+  for (const change of ['unrelated', 'unidentified-label'] as const) {
+    test(`uncertainty re-ask keeps a stable target through ordinary ${change}: ${direction}`, async () => {
+      const f = fixture();
+      let confirmations = 0;
+      const judge = scriptedJudge((questions, index) =>
+        Object.fromEntries(
+          Object.keys(questions).map((id) => [id, { type: 'noul', noul: index === 0 ? 0.5 : 0.9 }]),
+        ),
+      );
+      f.f.deps.judge = judge;
+      f.setSnapshot(async (presence) => {
+        if (presence) confirmations += 1;
+        const changed = !presence && confirmations >= 2;
+        return {
+          footer: true,
+          listID: 'policies',
+          footerUnidentified: change === 'unidentified-label',
+          hideFooterLabel: changed && change === 'unidentified-label',
+          loading: change === 'unrelated' && !changed,
+        };
+      });
+      try {
+        const result = await run(f, direction, 'phrase');
+        assert.equal(result.block.outcome, 'pass');
+        assert.equal(result.failure, undefined);
+        assert.equal(f.drags(), 0);
+        assert.equal(judge.requests.length, 2);
+        assert.deepEqual(f.modes, [false, true, false, false, true, false]);
       } finally {
         clearRefMap();
       }

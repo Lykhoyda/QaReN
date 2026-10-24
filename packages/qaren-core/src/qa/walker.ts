@@ -18,7 +18,6 @@ import {
   insideAlert,
   elementFrame,
   isNativeInput,
-  visibilityView,
   describe,
 } from './screen.js';
 import {
@@ -38,6 +37,7 @@ import {
   bindDispatchIdentity,
   stepTarget,
   scrollConfirmationCovered,
+  scrollConfirmationTargets,
   scrollUntilBand,
   scrollUntilContainer,
   scrollUntilHasCandidate,
@@ -1071,54 +1071,38 @@ async function walkBlockScoped(
         }
         const confirmed = (): { observation: Observation; found: true } => {
           if (item.kind === 'scroll') {
-            const contradicted = () =>
-              new ResolutionError({
+            const witnesses = scrollConfirmationTargets(target, observation.screen);
+            const contradicted =
+              witnesses.length > 0 &&
+              witnesses.every((witness) => {
+                const frame = frameKey(witness);
+                const matches = ordinary.screen.elements.filter((element) =>
+                  witness.testID !== undefined && element.testID !== undefined
+                    ? element.testID === witness.testID
+                    : sameIdentity(element, witness) ||
+                      (frame !== undefined && frameKey(element) === frame),
+                );
+                if (!matches.length)
+                  return (
+                    (ordinary.screen.captureCoverage?.native ??
+                      ordinary.screen.coverage?.native) === 'complete' &&
+                    witness.testID !== undefined &&
+                    beforeConfirmation.elements.some((element) => element.testID === witness.testID)
+                  );
+                return matches.every(
+                  (element) =>
+                    element.offscreen ||
+                    element.visibilityEvidence === 'offscreen' ||
+                    element.semantic?.visibility === 'hidden' ||
+                    element.semantic?.visibility === 'offscreen' ||
+                    scrollConfirmationCovered(element, ordinary.screen),
+                );
+              });
+            if (contradicted)
+              throw new ResolutionError({
                 refuse: 'VISIBILITY_UNSURE',
                 reason: 'the newer ordinary observation contradicts confirmed target visibility',
               });
-            if (target.quoted !== undefined && targetEvidence(target, ordinary.screen) === 'fail')
-              throw contradicted();
-            let witnesses: Element[];
-            if (target.quoted !== undefined) {
-              witnesses = exactIdentities(observation.screen, target, 'wait', 'refresh')
-                .map(({ element }) => element)
-                .filter(
-                  (element) =>
-                    !element.offscreen &&
-                    element.visibilityEvidence !== 'offscreen' &&
-                    element.visibilityEvidence !== 'unresolved',
-                );
-            } else {
-              const projected = visibilityView(observation.screen);
-              if ('refuse' in projected) throw new ResolutionError(projected);
-              witnesses = projected.elements;
-            }
-            for (const witness of witnesses) {
-              const matches = ordinary.screen.elements.filter(
-                (element) =>
-                  sameIdentity(element, witness) &&
-                  (target.quoted !== undefined ||
-                    !element.label ||
-                    !witness.label ||
-                    element.label === witness.label),
-              );
-              if (
-                !matches.length &&
-                !beforeConfirmation.elements.some((element) => sameIdentity(element, witness))
-              )
-                continue;
-              if (
-                !matches.some(
-                  (element) =>
-                    !element.offscreen &&
-                    element.visibilityEvidence !== 'offscreen' &&
-                    element.semantic?.visibility !== 'hidden' &&
-                    element.semantic?.visibility !== 'offscreen' &&
-                    !scrollConfirmationCovered(element, ordinary.screen),
-                )
-              )
-                throw contradicted();
-            }
           }
           return { observation: item.kind === 'scroll' ? ordinary : observation, found: true };
         };

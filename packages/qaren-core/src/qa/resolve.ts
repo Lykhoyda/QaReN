@@ -642,6 +642,26 @@ export function scrollUntilHasCandidate(target: Target, screen: Screen): boolean
   return true;
 }
 
+export function scrollConfirmationTargets(target: Target, screen: Screen): Element[] {
+  let candidates: Element[];
+  if (target.quoted !== undefined) {
+    candidates = exactIdentities(screen, target, 'wait', 'refresh').map(({ element }) => element);
+  } else {
+    const projected = visibilityView(screen);
+    if ('refuse' in projected) throw new ResolutionError(projected);
+    const phrase = target.phrase.replace(/\b(?:text|headings?|titles?)\b/gi, '');
+    candidates = projected.elements.filter(
+      (element) => targetNameMismatch(element, phrase) === undefined,
+    );
+  }
+  return candidates.filter(
+    (element) =>
+      !element.offscreen &&
+      element.visibilityEvidence !== 'offscreen' &&
+      element.visibilityEvidence !== 'unresolved',
+  );
+}
+
 const GENERIC_TARGET_WORDS = new Set(
   'tap press click open select choose the a an this that on in to of button control link icon image field input box toggle switch tab row item option label'.split(
     ' ',
