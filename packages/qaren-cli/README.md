@@ -722,19 +722,17 @@ is covered by the observed keyboard or a sticky overlay gets a scroll sized to m
 toward the middle of that band. Precise drags normally keep a 10% dead zone at
 each edge; short bands shrink that dead zone to preserve at least 48 px of
 travel, while keeping the existing one-pixel edge inset. A clearance scroll without
-a band keeps the cap of 60% of the screen area above the keyboard.
+a band keeps the cap of 60% of the screen area above the keyboard, without a
+minimum-distance clamp.
 Scrolls without a clearance distance keep the fixed amount of `0.6` on the window
 band; inside a caller band they span its clear interior, except
 a keyboard-bound edge, which the band clears by 48 pt so the drag never starts on
 the keyboard. One scroll-until attempt moves the list by one visible band and
-cannot carry the target past it. A band shorter than 50 px or narrower than 2 px
-refuses `SCROLL_BAND_TOO_SMALL` before anything is sent, because a drag under the
-touch slop would land as a tap.
-Scroll-until derives its band from the ordinary capture and subtracts front overlays
-across windows and roots, refusing when the remaining band cannot host a real drag.
-Platform presence still supplies navigation markers; captures on both sides of the
-ordinary geometry must agree on navigation and overlay clearance before that geometry
-can authorize a drag, and later reads cannot extend its original expiry.
+cannot carry the target past it. An explicit band shorter than 50 px or narrower
+than 2 px refuses `SCROLL_BAND_TOO_SMALL` before anything is sent, because a drag
+under the touch slop would land as a tap.
+For scroll-until capture, overlay clearance and navigation safeguards, see
+[Plan checks and screen evidence](#plan-checks-and-screen-evidence).
 Successful iOS fast-runner scrolls now run the same bounded settle wait as taps
 before returning, using snapshot equality. Results
 include `meta.settle` and `meta.timings_ms.settle`; a timeout reports unsettled
@@ -1023,9 +1021,8 @@ interactive React hosts cannot all be associated (a mounted `Modal`, or inputs
 the keyboard covers) keeps the `SCREEN_EVIDENCE_INCOMPLETE` presence gap, as on
 iOS; stale or incomplete captures refuse with `NATIVE_PRESENCE_UNUSABLE`. Quoted
 press, fill and wait targets and literal checks remain usable without requesting
-presence. On both platforms, every scroll-until capture requests platform presence,
-including quoted targets and refreshes, to acquire native navigation titles and
-display density for the navigation guard and overlay padding described below.
+presence. Scroll-until combines ordinary geometry with platform presence as
+described in the scroll safety rules below, including quoted targets and refreshes.
 
 Context-bound iOS QA reads require the unchanged target app already in the
 foreground. They never activate or relaunch it, or retry a failed read through
@@ -1177,13 +1174,25 @@ the viewport but it is reported not visible, as with an Android heading under
 the status bar, scrolling uses the clearance direction described above, regardless
 of the requested direction. With no single matching identity, an already visible
 target or no known viewport, the requested direction is retained. The
-scroll-until drag starts inside the list it is meant to move (the target's own
+scroll-until direction and drag band come from the same ordinary capture. Each
+observation brackets that capture with platform-presence reads, including for
+quoted targets, replay and refreshes. Presence supplies native navigation titles
+and display density without using its extra raw windows as gesture geometry.
+The two presence reads must agree on navigation markers and overlay clearance;
+changed clearance refuses `SCREEN_EVIDENCE_INCOMPLETE` with reason
+`SCROLL_CLEARANCE_CHANGED` before target acceptance or dispatch. Clearance includes
+the list frame and viewport, keyboard state, density, front surface and front
+overlay frames, retaining repeated identical frames so a new overlapping blocker
+still counts as a change. Later reads cannot extend any constituent observation's
+original expiry; expired evidence must refresh before dispatch. See the
+[capture authority regressions](../qaren-core/test/unit/qa/scroll-capture-authority.test.ts).
+The scroll-until drag starts inside the list it is meant to move (the target's own
 scroll container, or the frontmost one above the keyboard), not at the screen
 centre. A row scrolled out of its list drags inside that list; a row covered
 inside it drags inside its clearance band. For each selected-list band, including
 keyboard-clipped clearance bands, the screen model removes the padded rows of
 hittable non-text elements drawn after the selected list, outside its subtree,
-that overlap the band horizontally.
+that overlap the band horizontally, including across windows and roots.
 The largest remaining vertical span becomes the drag band; window ancestors and
 the list's own rows do not cut it. Padding uses four points, scaled by the captured
 display density on Android when available. An exhausted clear span refuses with
