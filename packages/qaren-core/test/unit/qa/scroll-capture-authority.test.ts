@@ -1277,8 +1277,8 @@ for (const representation of ['native', 'react'] as const) {
             let confirmations = 0;
             const judge = scriptedJudge((questions, index, state) => {
               const delivered = JSON.stringify(state).replaceAll('\\', '');
-              const button = delivered.includes('Button \"Continue');
-              const control = button || delivered.includes('Link \"Continue');
+              const button = delivered.includes('Button "Continue');
+              const control = button || delivered.includes('Link "Continue');
               const present =
                 delivered.includes('Continue') &&
                 (predicate === 'content' || (predicate === 'control' ? control : button)) &&
@@ -1356,7 +1356,7 @@ for (const representation of ['native', 'react'] as const) {
               assert.ok(
                 delivered.includes(
                   (predicate === 'control' ? 'Link' : predicate === 'content' ? 'Button' : 'Text') +
-                    ' \"Continue',
+                    ' "Continue',
                 ),
               );
               assert.ok(delivered.includes(changedLabel ? 'Continue now' : 'Continue'));
@@ -1438,7 +1438,7 @@ for (const representation of ['native', 'react'] as const) {
         new Map([[witness, { kind: 'text', label: 'Footer now', disabled: true }]]),
       );
       const delivered = JSON.stringify(judge.requests[0].state).replaceAll('\\', '');
-      assert.ok(delivered.includes('Text \"Footer now'));
+      assert.ok(delivered.includes('Text "Footer now'));
       assert.ok(delivered.includes('disabled'));
       assert.deepEqual(witness, original);
       assert.equal(witness.semantic?.nativePresence, nativePresence);
