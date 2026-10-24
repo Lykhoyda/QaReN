@@ -482,7 +482,6 @@ for (const [label, hittable] of [
   test(`a full-screen overlay in a second window erases the band when bar hittable=${hittable}`, () => {
     assert.equal(scrollUntilBand(option20, floatingTabScreen(hittable, true))?.height, 0);
   });
-
 }
 
 test('(y) list rows and a header drawn before the list do not cut the band', () => {
@@ -619,13 +618,22 @@ test('an intrinsically small list still refuses after overlay subtraction', () =
 for (const direction of ['up', 'down'] as const) {
   test(`a toolbar in a front window cuts the ${direction} gesture band`, () => {
     const frame = { x: 0, y: 0, width: 402, height: 874 };
-    const screen = join([
-      { ref: '@window', index: 0, type: 'Window', rect: frame },
-      { ref: '@list', index: 1, parentIndex: 0, type: 'ScrollView', rect: frame },
-      { ref: '@front', index: 2, type: 'Window', rect: frame },
-      { ref: '@toolbar', index: 3, parentIndex: 2, type: 'Button', hittable: true,
-        rect: { x: 0, y: 730, width: 402, height: 70 } },
-    ], []);
+    const screen = join(
+      [
+        { ref: '@window', index: 0, type: 'Window', rect: frame },
+        { ref: '@list', index: 1, parentIndex: 0, type: 'ScrollView', rect: frame },
+        { ref: '@front', index: 2, type: 'Window', rect: frame },
+        {
+          ref: '@toolbar',
+          index: 3,
+          parentIndex: 2,
+          type: 'Button',
+          hittable: true,
+          rect: { x: 0, y: 730, width: 402, height: 70 },
+        },
+      ],
+      [],
+    );
     const band = scrollUntilBand(option20, screen);
     assert.ok(band && band.y + band.height <= 726);
     const [, y1, , y2] = bandDrag(band, frame, frame.height, direction);

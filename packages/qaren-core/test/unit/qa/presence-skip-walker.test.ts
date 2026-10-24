@@ -260,7 +260,10 @@ for (const direction of ['up', 'down'] as const) {
     'after-drag-refresh',
   ] as const) {
     test(`scroll-until uses ordinary geometry and guards presence titles: ${direction}, ${navigation}`, async () => {
-      const f = walker([], scriptedJudge(() => assert.fail('quoted visibility is model-free')));
+      const f = walker(
+        [],
+        scriptedJudge(() => assert.fail('quoted visibility is model-free')),
+      );
       let drags = 0;
       let destination = false;
       const modes: boolean[] = [];
@@ -275,32 +278,58 @@ for (const direction of ['up', 'down'] as const) {
           { type: 'Application', rect: frame },
           { type: 'Window', parentIndex: 0, rect: frame },
           { type: 'ScrollView', parentIndex: 1, rect: frame },
-          { type: 'StaticText', parentIndex: 2, label: drags && (navigation !== 'after-drag-refresh' || destination)
-              ? 'Footer'
-              : 'Loading',
-            rect: { x: 10, y: 200, width: 100, height: 30 } },
-          { type: 'NavigationBar', parentIndex: 1, identifier: title,
-            rect: { x: 0, y: 20, width: 402, height: 60 } },
-          { type: 'StaticText', parentIndex: 4, label: title,
-            rect: { x: 10, y: 30, width: 100, height: 30 } },
-          { type: 'Button', parentIndex: 1, selected: true, label: 'Policies tab',
-            rect: { x: 20, y: 780, width: 180, height: 60 } },
-          ...(presence ? [
-            { type: 'Window', parentIndex: 0, rect: frame },
-            { type: 'Other', parentIndex: 7, rect: frame },
-            { type: 'Button', parentIndex: 8, rect: frame },
-          ] : []),
+          {
+            type: 'StaticText',
+            parentIndex: 2,
+            label:
+              drags && (navigation !== 'after-drag-refresh' || destination) ? 'Footer' : 'Loading',
+            rect: { x: 10, y: 200, width: 100, height: 30 },
+          },
+          {
+            type: 'NavigationBar',
+            parentIndex: 1,
+            identifier: title,
+            rect: { x: 0, y: 20, width: 402, height: 60 },
+          },
+          {
+            type: 'StaticText',
+            parentIndex: 4,
+            label: title,
+            rect: { x: 10, y: 30, width: 100, height: 30 },
+          },
+          {
+            type: 'Button',
+            parentIndex: 1,
+            selected: true,
+            label: 'Policies tab',
+            rect: { x: 20, y: 780, width: 180, height: 60 },
+          },
+          ...(presence
+            ? [
+                { type: 'Window', parentIndex: 0, rect: frame },
+                { type: 'Other', parentIndex: 7, rect: frame },
+                { type: 'Button', parentIndex: 8, rect: frame },
+              ]
+            : []),
         ].map((node, index) => ({
-          ...node, ref: `@e${index}`, index,
+          ...node,
+          ref: `@e${index}`,
+          index,
           depth: [0, 1, 2, 3, 2, 3, 2, 1, 2, 3][index],
-          enabled: true, hittable: true,
+          enabled: true,
+          hittable: true,
           ...(presence ? { presence: { ...source.nodes[1].presence, nodeIndex: index } } : {}),
         }));
         updateRefMapFromFlat(nodes);
         return captureScreen({
-          appId: 'com.test', platformPresence: presence, now: f.deps.now,
-          native: async () => ({ ...attested(nodes), snapshotGeneration: source.snapshotGeneration,
-            ...(presence ? { presenceCapture: source.presenceCapture } : {}) }),
+          appId: 'com.test',
+          platformPresence: presence,
+          now: f.deps.now,
+          native: async () => ({
+            ...attested(nodes),
+            snapshotGeneration: source.snapshotGeneration,
+            ...(presence ? { presenceCapture: source.presenceCapture } : {}),
+          }),
           react: async () => ({ interactive: [], verdict: { state: 'ok', complete: true } }),
         });
       };
@@ -315,23 +344,35 @@ for (const direction of ['up', 'down'] as const) {
         }
         context!.authorize();
         assert.ok(band && band.height > 0);
-        const [, , y1, , y2] = buildDirectionalScrollCliArgs(dir, 0.6, undefined, undefined, band).map(Number);
+        const [, , y1, , y2] = buildDirectionalScrollCliArgs(
+          dir,
+          0.6,
+          undefined,
+          undefined,
+          band,
+        ).map(Number);
         assert.ok(y1 > 80 && y1 < 776 && y2 > 80 && y2 < 776);
         drags += 1;
         if (navigation === 'after-drag') destination = true;
         return { ok: true, proven: true };
       };
       try {
-        const result = await runPlan(parsePlan(`1. Scroll ${direction} until "Footer"`).blocks!, f.deps);
-        assert.equal(result.verdict, navigation === 'none' ? 'PASS' : 'REFUSED', result.failure?.seen);
+        const result = await runPlan(
+          parsePlan(`1. Scroll ${direction} until "Footer"`).blocks!,
+          f.deps,
+        );
+        assert.equal(
+          result.verdict,
+          navigation === 'none' ? 'PASS' : 'REFUSED',
+          result.failure?.seen,
+        );
         assert.equal(drags, navigation === 'during-geometry' ? 0 : 1);
         if (navigation !== 'none') {
           assert.equal(result.code, 'SCROLL_NAVIGATED');
           assert.match(result.failure?.seen ?? '', /navigation title changed/);
         }
-        const batches = navigation === 'during-geometry'
-          ? 1
-          : navigation === 'after-drag-refresh' ? 3 : 2;
+        const batches =
+          navigation === 'during-geometry' ? 1 : navigation === 'after-drag-refresh' ? 3 : 2;
         assert.deepEqual(modes, Array.from({ length: batches }, () => [true, false, true]).flat());
       } finally {
         clearRefMap();
