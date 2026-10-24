@@ -1385,9 +1385,13 @@ Where presence is required after a system dialog closes, iOS native preparation
 compares consecutive full enumerations and waits for a 500 ms quiet window before
 observing candidates. Any descriptor or hierarchy change resets that quiet window
 without renewing the existing presence deadline. Revalidation after observation
-still rejects a changed enumeration. A provenance escalation has its own fresh
-observation, bounded capture budget and dispatch deadline; the prior ordinary
-candidate never authorizes the press.
+still rejects a changed enumeration. Candidate-only label provenance metadata
+enriches the privacy-admitted ordinary observation, preserving its references and
+generation and consuming its original dispatch deadline. This metadata read takes
+no screenshot and cannot replace ordinary privacy admission or lift screenshot
+withholding; a subsequent ordinary capture must pass admission before screenshots
+can resume. Semantic phrase-action readbacks still require full platform presence
+and privacy admission.
 Only a fresh, complete snapshot can establish privacy or admit a newly arrived
 system alert; partial presence never authorizes actions, screenshots or model
 evidence. Malformed, truncated, dropped-node and other incomplete captures refuse
