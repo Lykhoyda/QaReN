@@ -20,7 +20,8 @@ CONFIG="$APP/.qaren/config.yaml"
 [ -f "$PLAN" ] || { echo "gate:qaren-check: plan $PLAN is missing"; exit 1; }
 
 (cd "$ROOT" && corepack yarn build:core)
-cargo build --manifest-path "$ROOT/packages/qaren-cli/Cargo.toml" --locked
+build_commit="$(git -C "$ROOT" rev-parse HEAD)"
+QAREN_BUILD_COMMIT="$build_commit" cargo build --manifest-path "$ROOT/packages/qaren-cli/Cargo.toml" --locked
 QAREN="$ROOT/packages/qaren-cli/target/debug/qaren"
 export QAREN_RUNTIME="$ROOT/packages/qaren-core/dist"
 

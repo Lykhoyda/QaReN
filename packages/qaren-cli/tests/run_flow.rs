@@ -2823,7 +2823,7 @@ fn a_child_refusal_is_a_typed_refusal_with_the_child_code() {
     let mut mock = MockRunner::new();
     script_preflight(&mut mock, &repo);
     script_provision(&mut mock);
-    let refusal = r#"{"verdict":"REFUSED","code":"METRO_ORIGIN_MISMATCH","message":"scriptURL port 8081 != 8791"}"#;
+    let refusal = r#"{"verdict":"REFUSED","code":"TARGET_AMBIGUOUS","message":"scriptURL port 8081 != 8791"}"#;
     script_drift_status(&mut mock);
     script_host_probe(&mut mock, UDID, hosts_absent());
     mock.expect_spawn_piped(
@@ -2835,11 +2835,25 @@ fn a_child_refusal_is_a_typed_refusal_with_the_child_code() {
     script_core_identity(&mut mock);
     script_teardown(&mut mock);
 
-    let receipt = run(&mut mock, &request(&repo, &app, 30));
+    mock.environment.insert("CLAUDECODE".into(), "1".into());
+    mock.environment.insert("CLAUDE_CODE_SESSION_ID".into(), "/private/session key".into());
+    let mut req = request(&repo, &app, 30);
+    req.device = Some(UDID.into());
+    let (receipt, events) = run_with_events(&mut mock, &req);
+    let identity = &events.iter().find(|e| e["event"] == "run").unwrap()["payload"];
+    assert_eq!(identity["harness"], "claude");
+    assert_eq!(identity["markers"], serde_json::json!(["claude"]));
+    assert_eq!(identity["flags"], serde_json::json!(["device"]));
+    assert!(identity.get("harnessSession").is_none());
+    assert!(!identity.to_string().contains(UDID));
     assert_eq!(receipt.result, ReceiptResult::Refused);
+    assert!(events.iter().any(|e| e["event"] == "stage"
+        && e["payload"]["name"] == "steps"
+        && e["payload"]["state"] == "failed"
+        && e["payload"]["code"] == "TARGET_AMBIGUOUS"));
     assert_direct_ios_launch(&mock);
     let failure = receipt.failure.as_ref().unwrap();
-    assert_eq!(failure.code, FailureCode::MetroOriginMismatch);
+    assert_eq!(failure.code, FailureCode::CoreRefused);
     assert!(failure.detail.contains("8081"));
     assert_eq!(mock.remaining(), 0);
     assert_eq!(receipt.cleanup["device_lease"], "removed");

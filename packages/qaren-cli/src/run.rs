@@ -422,7 +422,7 @@ fn run_inner(
         run_id = claim.run_id.clone();
         run_dir = claim.path.clone();
         run_claim = Some(claim);
-        start_events(req, &run_id, &run_dir);
+        start_events(runner, req, &run_id, &run_dir);
         let wt = worktree::pr_worktree_path(&run_dir);
         // ponytail: until run.json exists only this process knows the worktree; a SIGKILL here
         // leaves it under the run directory for `git worktree prune`; add durable intent if that bites.
@@ -524,7 +524,7 @@ fn run_inner(
     }
 
     if pr_state.is_none() {
-        start_events(req, &run_id, &run_dir);
+        start_events(runner, req, &run_id, &run_dir);
     }
     let mut resources = Resources::default();
     resources.lease = Some(lease.clone());
@@ -1152,17 +1152,20 @@ fn run_inner(
             });
             (ReceiptResult::Fail, Some(failure))
         }
-        Verdict::Refused { code, message } => (
-            ReceiptResult::Refused,
-            Some(outcome.failure.clone().unwrap_or_else(|| {
-                Failure::new(
-                    "prove",
-                    refusal_code(code),
-                    format!("{code}: {message}"),
-                    "resolve the refusal, then re-run",
-                )
-            })),
-        ),
+        Verdict::Refused { code, message } => {
+            events::stage("steps", StageState::Failed, Some(code), None);
+            (
+                ReceiptResult::Refused,
+                Some(outcome.failure.clone().unwrap_or_else(|| {
+                    Failure::new(
+                        "prove",
+                        refusal_code(code),
+                        format!("{code}: {message}"),
+                        "resolve the refusal, then re-run",
+                    )
+                })),
+            )
+        }
     };
     let mut tested_older_commit = None;
     let mut published_video = None;
@@ -2343,8 +2346,26 @@ fn build_scenario(
     }
 }
 
-fn start_events(req: &RunRequest, run_id: &str, run_dir: &Path) {
-    events::run(run_id, verb(req), platform_str(req.platform));
+fn start_events(runner: &dyn Runner, req: &RunRequest, run_id: &str, run_dir: &Path) {
+    let client = crate::client::detect(runner);
+    let flags: Vec<_> = [
+        (req.fresh_install, "fresh_install"),
+        (req.boot_device, "boot_device"),
+        (req.restart_device, "restart_device"),
+        (req.shutdown_device_on_exit, "shutdown_device_on_exit"),
+        (req.device.is_some(), "device"),
+        (req.pr.is_some(), "pr"),
+    ]
+    .into_iter()
+    .filter_map(|(enabled, name)| enabled.then_some(name))
+    .collect();
+    events::run(
+        run_id,
+        verb(req),
+        platform_str(req.platform),
+        &client,
+        &flags,
+    );
     events::attach(&run_dir.join("logs").join("events.jsonl"));
     crate::progress::watch_hint(run_id);
 }

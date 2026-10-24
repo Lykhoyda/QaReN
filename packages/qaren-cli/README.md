@@ -171,6 +171,15 @@ stays failed after a startup failure, even if retained-resource cleanup succeeds
 recording is skipped when it was not requested or is unavailable for the platform
 (see [Test a pull request](#test-a-pull-request)). Failures close running stages.
 Only `check` and `pr` produce the value-free `logs/events.jsonl` stream.
+Run identity recording is on by default and stays local; nothing is sent.
+The `run` event records the QaReN version, the build commit when stamped at build
+time, the harness claimed by its own environment markers, all matching harness
+markers, opt-in flag names, and `PI_MODEL` only when Pi is the selected harness.
+Flag values and harness session keys are never recorded. Every identity string
+passes through a 64-character identifier filter; this bounds its shape rather
+than anonymising it. Markers can be inherited or spoofed, so multiple markers
+make attribution ambiguous. A failed `steps` stage preserves the core's specific
+refusal code. These events are never uploaded or included by `qaren publish`.
 The startup progress hint names the command to watch that run.
 Telemetry uses a bounded, nonblocking writer queue with a reserved final-event
 slot and at most 500 ms of draining. Writer startup or I/O failure disables

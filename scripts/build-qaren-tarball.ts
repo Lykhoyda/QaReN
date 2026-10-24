@@ -186,7 +186,14 @@ function buildCli(platform: QarenPlatform): string {
     '-C',
     'link-arg=-Wl,-S',
   ];
-  const env = { ...process.env, CARGO_ENCODED_RUSTFLAGS: flags.join('\x1f') };
+  const env = {
+    ...process.env,
+    CARGO_ENCODED_RUSTFLAGS: flags.join('\x1f'),
+    QAREN_BUILD_COMMIT: execFileSync('git', ['rev-parse', 'HEAD'], {
+      cwd: ROOT,
+      encoding: 'utf8',
+    }).trim(),
+  };
   delete env.RUSTFLAGS;
   execFileSync(
     'cargo',
