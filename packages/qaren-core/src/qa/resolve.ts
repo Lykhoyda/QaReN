@@ -610,33 +610,21 @@ export function scrollUntilBand(target: Target, screen: Screen): NativeNode['rec
   return clear ?? { ...band, height: 0 };
 }
 
-export function scrollUntilClearanceChanged(
-  target: Target,
-  before: Screen,
-  after: Screen,
-): boolean {
-  const rectKey = (rect: NativeNode['rect']) =>
-    rect ? [rect.x, rect.y, rect.width, rect.height] : null;
-  const clearance = (screen: Screen) => {
-    const container = scrollUntilContainer(target, screen);
-    const frame = container && elementFrame(container);
-    const viewport = container && elementViewport(container);
-    const band = frame && clip(frame, viewport);
-    return JSON.stringify([
-      screen.front,
-      screen.pointScale,
-      screen.keyboardVisible,
-      rectKey(screen.keyboardFrame),
-      rectKey(frame),
-      rectKey(viewport),
-      container && band
-        ? frontOverlayFrames(container, band, screen)
-            .map((rect) => JSON.stringify(rectKey(rect)))
-            .sort()
-        : [],
-    ]);
-  };
-  return clearance(before) !== clearance(after);
+export function scrollUntilHasCandidate(target: Target, screen: Screen): boolean {
+  if (target.quoted !== undefined) {
+    if (
+      exactIdentities(screen, target, 'scroll').some(
+        ({ element }) => !element.offscreen && !centreCovered(element, screen),
+      )
+    )
+      return true;
+    return (
+      target.exact !== 'id' && literalEvidence(screen, target.quoted, 'equals').verdict !== 'fail'
+    );
+  }
+  return screen.elements.some(
+    (element) => !element.ref.startsWith('react:') && !element.offscreen && !!element.label,
+  );
 }
 
 const GENERIC_TARGET_WORDS = new Set(

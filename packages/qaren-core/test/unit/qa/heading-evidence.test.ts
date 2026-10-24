@@ -572,7 +572,7 @@ test('unrelated Account heading and plain Settings text stay unestablished even 
     assert.equal(result.verdict, 'FAIL');
     assert.match(result.failure!.seen, /VISIBILITY_UNSURE/);
     assert.equal(judge.requests.length - start, captures);
-    assert.equal(w.captures(), captures);
+    assert.equal(w.captures(), plan.startsWith('Scroll') ? 2 * captures : captures);
     assert.deepEqual(w.actions, []);
   }
 });

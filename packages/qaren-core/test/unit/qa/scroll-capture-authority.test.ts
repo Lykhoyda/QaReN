@@ -3,8 +3,6 @@ import { test } from 'node:test';
 import { captureScreen } from '../../../dist/qa/capture.js';
 import { parsePlan } from '../../../dist/qa/plan.js';
 import type { NativeNode } from '../../../dist/qa/screen.js';
-import { EVIDENCE_USE_MS } from '../../../dist/qa/timing.js';
-import { renderReason } from '../../../dist/qa/untrusted.js';
 import { walkBlock } from '../../../dist/qa/walker.js';
 import { buildDirectionalScrollCliArgs } from '../../../dist/handlers/device-interact.js';
 import { clearRefMap, updateRefMapFromFlat } from '../../../dist/fast-runner-ref-map.js';
@@ -103,7 +101,6 @@ function fixture() {
     });
   };
   f.deps.captureScreen = read;
-  f.deps.captureOrdinaryScreen = (options) => read({ ...options, platformPresence: false });
   f.deps.scroll = async (direction, context, _distance, band) => {
     context!.authorize();
     endpoints.push(
@@ -145,107 +142,92 @@ async function run(
 
 for (const direction of ['up', 'down'] as const) {
   for (const mode of ['quoted', 'phrase', 'replay'] as const) {
-    test(`ordinary geometry completing at 2s stays expired at 13s: ${direction}, ${mode}`, async () => {
+    test(`presence wrappers cannot collapse ordinary geometry: ${direction}, ${mode}`, async () => {
       const f = fixture();
-      const completed: number[] = [];
-      f.setSnapshot(async (_presence, read) => {
-        if (read === 1) await f.f.deps.sleep(2_000);
-        if (read === 3) await f.f.deps.sleep(11_000);
-        completed.push(f.f.deps.now());
-        return { footer: read > 3 };
-      });
       try {
         const result = await run(f, direction, mode);
         assert.equal(result.failure, undefined);
         assert.equal(result.block.outcome, 'pass');
-        assert.equal(f.drags(), 0, 'expired ordinary geometry must refresh before dispatch');
-        assert.deepEqual(completed.slice(0, 3), [2_000, 2_000, 13_000]);
-        assert.deepEqual(f.modes, [true, false, true, true, false, true]);
+        assert.equal(f.drags(), 1);
+        assert.deepEqual(f.endpoints, [
+          direction === 'down' ? [201, 758, 201, 102] : [201, 102, 201, 758],
+        ]);
+        assert.deepEqual(
+          f.modes,
+          mode === 'phrase' ? [false, true, false, true] : [false, false, true],
+        );
       } finally {
         clearRefMap();
       }
     });
 
-    for (const change of ['appeared', 'moved', 'became-hittable'] as const) {
-      test(`a toolbar changing during final presence prevents the old endpoint: ${direction}, ${mode}, ${change}`, async () => {
-        const f = fixture();
-        f.setSnapshot(async (_presence, read) => ({
-          toolbarY:
-            read === 3 ? 730 : change === 'appeared' ? undefined : change === 'moved' ? 900 : 730,
-          toolbarHittable: read === 3 || change !== 'became-hittable',
-        }));
-        try {
-          const result = await run(f, direction, mode);
-          assert.equal(result.block.outcome, 'fail');
-          assert.match(
-            renderReason(result.failure?.seen ?? '', (text) => text),
-            /SCREEN_EVIDENCE_INCOMPLETE: SCROLL_CLEARANCE_CHANGED/,
-          );
-          assert.equal(f.drags(), 0);
-          assert.deepEqual(f.endpoints, []);
-          assert.deepEqual(f.modes, [true, false, true]);
-        } finally {
-          clearRefMap();
-        }
-      });
-    }
-
-    for (const targetVisible of [false, true]) {
-      test(`a new full-screen overlay sharing a wrapper rectangle stops before target acceptance: ${direction}, ${mode}, target visible=${targetVisible}`, async () => {
-        const f = fixture();
-        f.setSnapshot(async (_presence, read) => ({
-          footer: read === 3 && targetVisible,
-          overlays: read === 3 ? [frame] : [],
-        }));
-        try {
-          const result = await run(f, direction, mode);
-          assert.equal(result.block.outcome, 'fail');
-          assert.match(
-            renderReason(result.failure?.seen ?? '', (text) => text),
-            /SCREEN_EVIDENCE_INCOMPLETE: SCROLL_CLEARANCE_CHANGED/,
-          );
-          assert.equal(f.drags(), 0);
-          assert.deepEqual(f.endpoints, []);
-          assert.deepEqual(f.modes, [true, false, true]);
-          assert.equal(
-            f.f.deps.judge.calls.length,
-            0,
-            'clearance must be checked before target judgment',
-          );
-          assert.ok(result.rows.every((row) => row.outcome !== 'pass'));
-        } finally {
-          clearRefMap();
-        }
-      });
-    }
-
-    test(`overlay ordering does not change clearance: ${direction}, ${mode}`, async () => {
+    test(`capture coherence uses only the ordinary toolbar frame: ${direction}, ${mode}`, async () => {
       const f = fixture();
-      const top = { x: 0, y: 50, width: 402, height: 20 };
-      const bottom = { x: 0, y: 730, width: 402, height: 70 };
-      f.setSnapshot(async (_presence, read) => ({
+      f.setSnapshot(async (presence) => ({
         footer: f.drags() > 0,
-        overlays: read % 3 === 0 ? [bottom, top] : [top, bottom],
+        toolbarY: presence ? 900 : 730,
       }));
       try {
         const result = await run(f, direction, mode);
         assert.equal(result.failure, undefined);
         assert.equal(result.block.outcome, 'pass');
         assert.equal(f.drags(), 1);
+        const [, start, , end] = f.endpoints[0];
+        assert.ok(start < 726 && end < 726, JSON.stringify(f.endpoints));
+        assert.ok(start > 0 && end > 0);
+        assert.deepEqual(
+          f.modes,
+          mode === 'phrase' ? [false, true, false, true] : [false, false, true],
+        );
       } finally {
         clearRefMap();
       }
     });
 
-    test(`stable raw presence wrappers preserve ordinary geometry: ${direction}, ${mode}`, async () => {
+    test(`a genuine full-screen ordinary overlay still refuses: ${direction}, ${mode}`, async () => {
       const f = fixture();
+      f.setSnapshot(async () => ({ overlays: [frame, frame] }));
+      try {
+        await assert.rejects(run(f, direction, mode), /SCROLL_BAND_TOO_SMALL/);
+        assert.equal(f.drags(), 0);
+        assert.deepEqual(f.endpoints, []);
+      } finally {
+        clearRefMap();
+      }
+    });
+
+    test(`negative presence cannot replace ordinary geometry: ${direction}, ${mode}`, async () => {
+      const f = fixture();
+      f.setSnapshot(async (presence) => ({ footer: !presence, toolbarY: presence ? 900 : 730 }));
+      try {
+        const result = await run(f, direction, mode);
+        assert.equal(result.block.outcome, 'fail');
+        assert.equal(f.drags(), 6);
+        for (const [, start, , end] of f.endpoints)
+          assert.ok(start < 726 && end < 726, JSON.stringify(f.endpoints));
+        assert.ok(result.rows.every((row) => row.outcome !== 'pass'));
+        assert.deepEqual(f.modes, Array.from({ length: 7 }, () => [false, true]).flat());
+      } finally {
+        clearRefMap();
+      }
+    });
+
+    test(`presence confirmation cannot renew expired ordinary geometry: ${direction}, ${mode}`, async () => {
+      const f = fixture();
+      const completed: number[] = [];
+      f.setSnapshot(async (presence, read) => {
+        if (read === 1) await f.f.deps.sleep(2_000);
+        if (read === 2) await f.f.deps.sleep(11_000);
+        completed.push(f.f.deps.now());
+        return { footer: !presence || read > 2 };
+      });
       try {
         const result = await run(f, direction, mode);
         assert.equal(result.failure, undefined);
-        assert.equal(f.drags(), 1);
-        assert.deepEqual(f.endpoints, [
-          direction === 'down' ? [201, 758, 201, 102] : [201, 102, 201, 758],
-        ]);
+        assert.equal(result.block.outcome, 'pass');
+        assert.equal(f.drags(), 0);
+        assert.deepEqual(completed.slice(0, 2), [2_000, 13_000]);
+        assert.deepEqual(f.modes, [false, true, false, true]);
       } finally {
         clearRefMap();
       }
@@ -253,59 +235,32 @@ for (const direction of ['up', 'down'] as const) {
   }
 }
 
-for (const direction of ['up', 'down'] as const) {
-  for (const refresh of ['reask', 'decision-expiry', 'dispatch-expiry'] as const) {
-    for (const overlay of ['toolbar', 'coincident'] as const) {
-      test(`changed ${overlay} clearance refuses before target evaluation during ${refresh}: ${direction}`, async () => {
-        const f = fixture();
-        f.setSnapshot(async (_presence, read) => ({
-          toolbarY: overlay === 'toolbar' && read === 9 ? 730 : undefined,
-          overlays: overlay === 'coincident' && read === 9 ? [frame] : [],
-          footer: read === 9,
-        }));
-        let now = 0;
-        f.f.deps.now = () => now;
-        f.f.deps.sleep = async (ms) => {
-          now += ms;
-        };
-        f.f.deps.judge = scriptedJudge((questions, index) => {
-          if (index === 1 && refresh === 'decision-expiry') now += EVIDENCE_USE_MS;
-          return Object.fromEntries(
-            Object.keys(questions).map((id) => [
-              id,
-              {
-                type: 'noul',
-                noul: index === 1 && refresh === 'reask' ? 0.5 : 0.1,
-              },
-            ]),
-          );
-        });
-        const scroll = f.f.deps.scroll;
-        f.f.deps.scroll = async (...args) => {
-          if (f.drags() === 1 && refresh === 'dispatch-expiry') {
-            await f.f.deps.sleep(EVIDENCE_USE_MS);
-            args[1]!.check();
-            assert.fail('expired dispatch must refresh');
-          }
-          return scroll(...args);
-        };
-        try {
-          const result = await run(f, direction, 'phrase');
-          assert.equal(result.block.outcome, 'fail');
-          assert.match(
-            renderReason(result.failure?.seen ?? '', (text) => text),
-            /SCREEN_EVIDENCE_INCOMPLETE: SCROLL_CLEARANCE_CHANGED/,
-          );
-          assert.equal(f.drags(), 1);
-          assert.equal(
-            f.f.deps.judge.calls.length,
-            2,
-            'changed clearance must precede another judgment',
-          );
-        } finally {
-          clearRefMap();
-        }
-      });
-    }
+test('quoted confirmation is requested only after an ordinary match', async () => {
+  const f = fixture();
+  f.setSnapshot(async (presence) => {
+    if (presence)
+      assert.equal(f.drags(), 1, 'no presence read may precede the ordinary target candidate');
+    return { footer: f.drags() > 0, toolbarY: presence ? 730 : undefined };
+  });
+  try {
+    const result = await run(f, 'down', 'quoted');
+    assert.equal(result.block.outcome, 'pass');
+    assert.equal(f.drags(), 1);
+    assert.deepEqual(f.modes, [false, false, true]);
+  } finally {
+    clearRefMap();
   }
-}
+});
+
+test('plain scroll keeps the centered window gesture and ordinary captures', async () => {
+  const f = fixture();
+  try {
+    const result = await walkBlock(parsePlan('1. Scroll down').blocks![0], f.f.deps);
+    assert.equal(result.block.outcome, 'pass');
+    assert.equal(f.drags(), 1);
+    assert.deepEqual(f.endpoints, [[201, 542, 201, 332]]);
+    assert.ok(f.modes.every((presence) => !presence));
+  } finally {
+    clearRefMap();
+  }
+});

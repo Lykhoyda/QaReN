@@ -29,13 +29,6 @@ export function scrollNavigationChange(
     );
   if (selected(before) !== selected(after))
     return 'selected element outside the scroll list changed';
-  const titles = (screen: Screen) =>
-    identities(
-      screen.elements
-        .filter((element) => element.semantic?.heading?.kind === 'navigation-title')
-        .map((element) => element.label ?? element.testID),
-    );
-  if (titles(before) !== titles(after)) return 'navigation title changed';
   if (container) {
     const frame = elementFrame(container);
     const tolerance = 2 * (before.pointScale ?? 1);

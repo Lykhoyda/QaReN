@@ -826,7 +826,7 @@ test('stale visibility polls consume neither semantic re-asks nor scrolls', asyn
     };
     const result = await runPlan(parsePlan(`1. ${verb} the welcome text`).blocks!, f.deps);
     assert.equal(result.verdict, 'PASS');
-    assert.equal(f.captures(), 4);
+    assert.equal(f.captures(), verb.startsWith('Scroll') ? 8 : 4);
     assert.deepEqual(f.actions, []);
     assert.equal(now, 21_500);
   }
@@ -848,7 +848,7 @@ test('zero-scroll stale loops stop at the original 65-second item deadline', asy
     assert.equal(result.verdict, 'FAIL');
     assert.match(result.failure!.seen, /VISIBILITY_UNSURE/);
     assert.doesNotMatch(result.failure!.seen, /did not appear|did not come into view/);
-    assert.equal(f.captures(), 7);
+    assert.equal(f.captures(), verb.startsWith('Scroll') ? 14 : 7);
     assert.equal(now, 73_000, 'the final in-flight read drains but is never accepted');
     assert.deepEqual(f.actions, []);
   }
@@ -1169,6 +1169,6 @@ test('dispatch expiry at the item deadline reports item expiry unless cancellati
     assert.match(result.failure!.seen, cancel ? /RUN_CANCELLED/ : /ITEM_DEADLINE_EXCEEDED/);
     assert.equal(events.at(-1)!.code, cancel ? 'RUN_CANCELLED' : 'ITEM_DEADLINE_EXCEEDED');
     assert.equal(sends, 0);
-    assert.equal(f.captures(), 1);
+    assert.equal(f.captures(), 2);
   }
 });

@@ -13,7 +13,7 @@ import { attested, nativeCapture } from './platform-presence-fixtures.ts';
 
 for (const direction of ['up', 'down']) {
   for (const refresh of [false, true]) {
-    test(`quoted scroll-until ${direction} captures navigation titles with refresh=${refresh}`, async () => {
+    test(`quoted scroll-until ${direction} guards ordinary selected tabs with refresh=${refresh}`, async () => {
       const f = walker(
         [],
         scriptedJudge(() => assert.fail('quoted visibility is model-free')),
@@ -51,7 +51,7 @@ for (const direction of ['up', 'down']) {
             type: 'Button',
             parentIndex: 1,
             selected: true,
-            label: 'Policies tab',
+            label: destination ? 'Claims tab' : 'Policies tab',
             rect: { x: 10, y: 740, width: 100, height: 40 },
           },
         ].map((node, index) => ({
@@ -95,10 +95,10 @@ for (const direction of ['up', 'down']) {
       );
       assert.equal(result.verdict, 'REFUSED', result.failure?.seen);
       assert.equal(result.code, 'SCROLL_NAVIGATED');
-      assert.match(result.failure?.seen ?? '', /navigation title changed/);
+      assert.match(result.failure?.seen ?? '', /selected element outside the scroll list changed/);
       assert.equal(drags, 1);
       assert.deepEqual(f.actions, [`scroll ${direction}`]);
-      assert.deepEqual(modes, Array(refresh ? 3 : 2).fill(true));
+      assert.deepEqual(modes, Array(refresh ? 3 : 2).fill(false));
       assert.ok(result.steps.every((step) => step.outcome !== 'pass'));
     });
   }
@@ -253,13 +253,8 @@ test('an unchanged screen receives one presence capture and judgment per poll', 
 });
 
 for (const direction of ['up', 'down'] as const) {
-  for (const navigation of [
-    'none',
-    'after-drag',
-    'during-geometry',
-    'after-drag-refresh',
-  ] as const) {
-    test(`scroll-until uses ordinary geometry and guards presence titles: ${direction}, ${navigation}`, async () => {
+  for (const navigation of ['none', 'after-drag', 'after-drag-refresh'] as const) {
+    test(`scroll-until uses ordinary geometry and guards selected tabs: ${direction}, ${navigation}`, async () => {
       const f = walker(
         [],
         scriptedJudge(() => assert.fail('quoted visibility is model-free')),
@@ -271,7 +266,6 @@ for (const direction of ['up', 'down'] as const) {
       const read: typeof f.deps.captureScreen = async (options) => {
         const presence = options?.platformPresence === true;
         modes.push(presence);
-        if (!presence && navigation === 'during-geometry') destination = true;
         const title = destination ? 'Claims' : 'Policies';
         const source = nativeCapture();
         const nodes: NativeNode[] = [
@@ -301,7 +295,7 @@ for (const direction of ['up', 'down'] as const) {
             type: 'Button',
             parentIndex: 1,
             selected: true,
-            label: 'Policies tab',
+            label: destination ? 'Claims tab' : 'Policies tab',
             rect: { x: 20, y: 780, width: 180, height: 60 },
           },
           ...(presence
@@ -334,7 +328,6 @@ for (const direction of ['up', 'down'] as const) {
         });
       };
       f.deps.captureScreen = read;
-      f.deps.captureOrdinaryScreen = (options) => read({ ...options, platformPresence: false });
       f.deps.scroll = async (dir, context, _distance, band) => {
         if (navigation === 'after-drag-refresh' && drags === 1) {
           destination = true;
@@ -366,14 +359,20 @@ for (const direction of ['up', 'down'] as const) {
           navigation === 'none' ? 'PASS' : 'REFUSED',
           result.failure?.seen,
         );
-        assert.equal(drags, navigation === 'during-geometry' ? 0 : 1);
+        assert.equal(drags, 1);
         if (navigation !== 'none') {
           assert.equal(result.code, 'SCROLL_NAVIGATED');
-          assert.match(result.failure?.seen ?? '', /navigation title changed/);
+          assert.match(
+            result.failure?.seen ?? '',
+            /selected element outside the scroll list changed/,
+          );
         }
-        const batches =
-          navigation === 'during-geometry' ? 1 : navigation === 'after-drag-refresh' ? 3 : 2;
-        assert.deepEqual(modes, Array.from({ length: batches }, () => [true, false, true]).flat());
+        assert.deepEqual(
+          modes,
+          navigation === 'none'
+            ? [false, false, true]
+            : Array(navigation === 'after-drag-refresh' ? 3 : 2).fill(false),
+        );
       } finally {
         clearRefMap();
       }

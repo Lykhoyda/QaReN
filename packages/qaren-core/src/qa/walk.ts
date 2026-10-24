@@ -569,6 +569,7 @@ async function openSession(
     >(result);
     return {
       appProcessIdentifier: data.appProcessIdentifier,
+      pointScale: data.pointScale,
       keyboardVisible: data.keyboardVisible,
       nodes: data.nodes,
       presenceCapture: data.presenceCapture,
@@ -671,7 +672,6 @@ async function openSession(
     timing,
     publicationInterrupted: admittedSnapshots.interrupted,
     captureScreen: readScreen,
-    captureOrdinaryScreen: (options) => readScreen({ ...options, platformPresence: false }),
     press: (ref, qaContext) =>
       act(() => press({ ref, qaContext, qaTiming: { now, observe: timing } }), false, {
         now,

@@ -2395,6 +2395,11 @@ export async function runAndroid(args: RunAndroidArgs): Promise<ToolResult> {
       return okResult(
         {
           nodes: flat,
+          ...(typeof data.pointScale === 'number' &&
+          Number.isFinite(data.pointScale) &&
+          data.pointScale > 0
+            ? { pointScale: data.pointScale }
+            : {}),
           ...(typeof data.truncated === 'boolean' ? { truncated: data.truncated } : {}),
           ...(Number.isSafeInteger(dropped) ? { normalizationDroppedNodes: dropped } : {}),
           ...freshness,

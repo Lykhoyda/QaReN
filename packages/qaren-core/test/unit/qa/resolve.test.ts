@@ -566,7 +566,7 @@ test('uncertain whole-claim visibility names the resolution refusal within the e
       assert.match(ledger.failure?.seen ?? '', /VISIBILITY_UNSURE/);
       assert.deepEqual(f.actions, []);
       assert.equal(judge.requests.length, 2);
-      assert.equal(f.captures(), 2);
+      assert.equal(f.captures(), line.includes('Scroll') ? 4 : 2);
     }
   }
 });
@@ -582,7 +582,7 @@ test('whole-claim assertions refuse more than 30 contributions instead of splitt
       const result = await runPlan(parsePlan(line).blocks!, f.deps);
       assert.equal(result.verdict, 'FAIL');
       assert.match(result.steps[0].reason!, /^CANDIDATE_LIMIT:/);
-      assert.equal(f.captures(), 1);
+      assert.equal(f.captures(), line.includes('Scroll') ? 2 : 1);
       assert.equal(judge.requests.length, 0);
       assert.deepEqual(f.actions, []);
     }

@@ -55,6 +55,7 @@ export class AppProcessGoneError extends Error {
 
 export interface NativeObservation {
   appProcessIdentifier?: unknown;
+  pointScale?: unknown;
   keyboardVisible?: unknown;
   presenceCapture?: unknown;
   snapshotGeneration?: unknown;
@@ -647,6 +648,11 @@ async function capture(deps: CaptureDeps): Promise<Screen> {
           hostEvidence,
           nativePresence ?? (native.presenceCapture !== undefined ? 'unknown' : undefined),
         ),
+        ...(typeof native.pointScale === 'number' &&
+        Number.isFinite(native.pointScale) &&
+        native.pointScale > 0
+          ? { pointScale: native.pointScale }
+          : {}),
         captureCoverage,
         ...(react.renderError === true ? { renderError: true } : {}),
         ...(reactConnection ? { reactConnection } : {}),

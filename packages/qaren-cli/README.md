@@ -1174,17 +1174,14 @@ the viewport but it is reported not visible, as with an Android heading under
 the status bar, scrolling uses the clearance direction described above, regardless
 of the requested direction. With no single matching identity, an already visible
 target or no known viewport, the requested direction is retained. The
-scroll-until direction and drag band come from the same ordinary capture. Each
-observation brackets that capture with platform-presence reads, including for
-quoted targets, replay and refreshes. Presence supplies native navigation titles
-and display density without using its extra raw windows as gesture geometry.
-The two presence reads must agree on navigation markers and overlay clearance;
-changed clearance refuses `SCREEN_EVIDENCE_INCOMPLETE` with reason
-`SCROLL_CLEARANCE_CHANGED` before target acceptance or dispatch. Clearance includes
-the list frame and viewport, keyboard state, density, front surface and front
-overlay frames, retaining repeated identical frames so a new overlapping blocker
-still counts as a change. Later reads cannot extend any constituent observation's
-original expiry; expired evidence must refresh before dispatch. See the
+scroll-until direction, drag band, overlay clearance and navigation markers come
+from one ordinary capture per iteration, including replay and freshness refreshes.
+After that capture finds a quoted text or identity candidate, a separate platform
+presence capture confirms target visibility; phrase predicates confirm the ordinary
+capture's named native candidates through the semantic visibility judgment.
+Presence nodes never supply gesture geometry or navigation markers. An unsuccessful
+confirmation retains the ordinary observation and its original expiry for the next
+drag; expired evidence must refresh before dispatch. See the
 [capture authority regressions](../qaren-core/test/unit/qa/scroll-capture-authority.test.ts).
 The scroll-until drag starts inside the list it is meant to move (the target's own
 scroll container, or the frontmost one above the keyboard), not at the screen
@@ -1199,13 +1196,15 @@ display density on Android when available. An exhausted clear span refuses with
 `SCROLL_BAND_TOO_SMALL`; a screen without a scroll container retains the centred
 window drag. After each scroll-until drag, every fresh observation, including
 visibility-probe refreshes for expired or uncertain evidence, is checked against
-the pre-drag screen. A changed selected element outside the lists (such as a tab),
-navigation title, or scrolled list refuses with `SCROLL_NAVIGATED` before looking
+the pre-drag screen. A changed selected element outside the lists (such as a tab)
+or scrolled list refuses with `SCROLL_NAVIGATED` before looking
 for the target on the destination screen. An identified list retains its identity
 through keyboard or header resizing when its type and testID remain present;
 unidentified lists require the same type and a frame within two points. Moving
-rows and a collapsing navigation title with the same identity do not count as
-navigation. End-of-list stop follows separately. One clearance swipe lifts a
+rows and header resizing do not count as navigation. Title-only navigation needs
+a presence-free title signal and is tracked in
+[this follow-up](https://github.com/Lykhoyda/rn-dev-agent/issues/1281).
+End-of-list stop follows separately. One clearance swipe lifts a
 covered row by at most the height of its list's visible band above the keyboard.
 A uniquely name-matched off-screen row further away is scrolled toward again,
 at most six times, stopping on an unchanged screen or the existing deadline;

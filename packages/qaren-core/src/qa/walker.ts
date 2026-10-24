@@ -38,7 +38,7 @@ import {
   stepTarget,
   scrollUntilBand,
   scrollUntilContainer,
-  scrollUntilClearanceChanged,
+  scrollUntilHasCandidate,
   scrollUntilDirection,
   targetEvidence,
   presenceMiss,
@@ -152,7 +152,6 @@ export interface WalkerDeps {
     platformPresence?: boolean;
     timing?: TimingObserver;
   }): Promise<Screen>;
-  captureOrdinaryScreen?: WalkerDeps['captureScreen'];
   press(ref: string, context: QaDispatchContext): Promise<ActResult>;
   fill(ref: string, text: string, context: QaDispatchContext): Promise<ActResult>;
   // iOS only: type, proven only by a matching React read-back; testID identifies the pre-dispatch focus veto.
@@ -229,7 +228,6 @@ export interface WalkerTimingDiagnostic {
 interface Observation {
   id: number;
   screen: Screen;
-  scrollScreen?: Screen;
   timing: ObservationTiming;
 }
 
@@ -414,9 +412,8 @@ async function walkBlockScoped(
   let recoveries = 0;
   const captureScreen = async (
     options: Parameters<WalkerDeps['captureScreen']>[0],
-    ordinary = false,
   ): Promise<Screen> => {
-    const screen = await (ordinary ? deps.captureOrdinaryScreen! : deps.captureScreen)(options);
+    const screen = await deps.captureScreen(options);
     const react = screen.reactConnection ?? screen.captureCoverage?.react;
     if ((react === 'lost' || react === 'reconnected') && reactConnections.at(-1) !== react)
       reactConnections.push(react);
@@ -462,49 +459,19 @@ async function walkBlockScoped(
     step?: Exclude<Item, { kind: 'check' }>,
     assertion = false,
     recovery = false,
-    mode?: 'ordinary' | 'presence',
+    mode?: 'presence',
   ): Promise<Observation> => {
     assertActive();
-    if (!mode && step?.kind === 'scroll' && step.until && deps.captureOrdinaryScreen) {
-      const startedAt = deps.now();
-      const before = await capture(step, assertion, recovery, 'presence');
-      const geometry = await capture(step, assertion, recovery, 'ordinary');
-      const after = await capture(step, assertion, recovery, 'presence');
-      const navigation = scrollNavigationChange(
-        before.screen,
-        after.screen,
-        scrollUntilContainer(step.until, before.screen),
-      );
-      if (navigation) throw new ResolutionError({ refuse: 'SCROLL_NAVIGATED', reason: navigation });
-      const timing = admitObservation(startedAt, deps.now());
-      if (!timing)
-        throw new ResolutionError({
-          refuse: 'SCREEN_EVIDENCE_INCOMPLETE',
-          reason: 'ACQUISITION_EXPIRED',
-        });
-      const expiresAt = Math.min(
-        timing.expiresAt,
-        before.timing.expiresAt,
-        geometry.timing.expiresAt,
-        after.timing.expiresAt,
-      );
-      if (scrollUntilClearanceChanged(step.until, before.screen, after.screen))
-        throw new ResolutionError({
-          refuse: 'SCREEN_EVIDENCE_INCOMPLETE',
-          reason: 'SCROLL_CLEARANCE_CHANGED',
-        });
-      geometry.screen.pointScale = after.screen.pointScale;
-      return { ...after, timing: { ...timing, expiresAt }, scrollScreen: geometry.screen };
-    }
     cached = undefined;
     const target =
       step && ('target' in step ? step.target : step.kind === 'scroll' ? step.until : undefined);
+    const ordinaryScroll = !mode && !assertion && step?.kind === 'scroll' && !!step.until;
     const requirePresence =
-      mode !== 'ordinary' && (assertion || (!!target && target.quoted === undefined));
+      !ordinaryScroll && (assertion || (!!target && target.quoted === undefined));
     const platformPresence =
-      mode !== 'ordinary' &&
-      (requirePresence ||
-        (step?.kind === 'scroll' && !!step.until) ||
+      !ordinaryScroll &&
+      (mode === 'presence' ||
+        requirePresence ||
         (!!target && step?.kind === 'press' && target.exact !== 'id'));
     const startedAt = deps.now();
     const id = ++sequence.observation;
@@ -523,14 +490,11 @@ async function walkBlockScoped(
     let admitted = false;
     try {
       try {
-        latest = await captureScreen(
-          {
-            observation: id,
-            ...(platformPresence ? { platformPresence: true } : {}),
-            ...(timingObserver ? { timing: timingObserver } : {}),
-          },
-          mode === 'ordinary',
-        );
+        latest = await captureScreen({
+          observation: id,
+          ...(platformPresence ? { platformPresence: true } : {}),
+          ...(timingObserver ? { timing: timingObserver } : {}),
+        });
       } catch (error) {
         if (isAbort(error)) throw error;
         if (error instanceof AppProcessGoneError) throw processChanged();
@@ -1061,6 +1025,17 @@ async function walkBlockScoped(
       let decision = initial;
       while (deps.now() < deadline) {
         checkObservation?.(observation.screen);
+        const ordinary = observation;
+        const target = item.kind === 'wait' ? item.target : item.until!;
+        if (item.kind === 'scroll') {
+          usable(ordinary, item, deadline);
+          if (!scrollUntilHasCandidate(target, ordinary.screen)) {
+            if (target.exact) targetEvidence(target, ordinary.screen);
+            return { observation: ordinary, found: false };
+          }
+          observation = await capture(item, false, false, 'presence');
+          decision = undefined;
+        }
         try {
           decision = await decide(observation, undefined, item, deadline, decision);
         } catch (error) {
@@ -1074,10 +1049,13 @@ async function walkBlockScoped(
           decision = undefined;
           continue;
         }
-        const target = item.kind === 'wait' ? item.target : item.until!;
         if (target.quoted !== undefined) {
           const evidence = targetEvidence(target, observation.screen);
-          return { observation, found: evidence === 'pass', unsure: evidence === 'unsure' };
+          return {
+            observation: evidence === 'pass' ? observation : ordinary,
+            found: evidence === 'pass',
+            unsure: evidence === 'unsure',
+          };
         }
         const visibility = decision.visibility;
         if (!visibility)
@@ -1098,7 +1076,7 @@ async function walkBlockScoped(
           throw new ResolutionError(visibility);
         }
         if (visibility.verdict === 'present') return { observation, found: true };
-        if (visibility.verdict === 'absent') return { observation, found: false };
+        if (visibility.verdict === 'absent') return { observation: ordinary, found: false };
         if (visibility.verdict === 'pending' && item.kind === 'wait')
           return { observation, found: false };
         const remaining = deadline - deps.now();
@@ -1693,7 +1671,11 @@ async function walkBlockScoped(
         if (item.kind === 'check') {
           const next = block.items[block.items.indexOf(item) + 1];
           const nextStep =
-            !item.literal && next && next.kind !== 'check' && stepTarget(next)?.quoted === undefined
+            !item.literal &&
+            next &&
+            next.kind !== 'check' &&
+            !(next.kind === 'scroll' && next.until) &&
+            stepTarget(next)?.quoted === undefined
               ? next
               : undefined;
           let before = await capture(nextStep, !item.literal);
@@ -1852,8 +1834,7 @@ async function walkBlockScoped(
         if (item.kind === 'scroll' && item.until) {
           resolvedBy = item.until.quoted === undefined ? 'jev' : resolvedBy;
           const deadline = deps.now() + PHRASE_WAIT_BUDGET_MS;
-          const held = cached?.item === item ? cached : undefined;
-          let observation = held?.observation ?? (await capture(item));
+          let observation = await capture(item);
           cached = undefined;
           let beforeScroll: { screen: Screen; container?: Element } | undefined;
           const probe = visibilityProbe(item, deadline, (screen) => {
@@ -1890,7 +1871,7 @@ async function walkBlockScoped(
             unsure = observed.unsure === true;
             return observed.found;
           };
-          let found = await visible(observation, held?.decision);
+          let found = await visible(observation);
           let attempts = 0;
           const container = scrollUntilContainer(item.until, observation.screen);
           while (!found && attempts < SCROLL_ATTEMPTS && deps.now() < deadline) {
@@ -1904,14 +1885,10 @@ async function walkBlockScoped(
                 observation,
                 (context) =>
                   deps.scroll(
-                    scrollUntilDirection(
-                      item.until!,
-                      observation.scrollScreen ?? observation.screen,
-                      item.direction,
-                    ),
+                    scrollUntilDirection(item.until!, observation.screen, item.direction),
                     context,
                     undefined,
-                    scrollUntilBand(item.until!, observation.scrollScreen ?? observation.screen),
+                    scrollUntilBand(item.until!, observation.screen),
                   ),
                 deadline,
               );

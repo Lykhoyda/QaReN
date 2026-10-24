@@ -78,15 +78,7 @@ function screen(
       type: 'Keyboard',
       rect: { x: 0, y: 500, width: 390, height: 344 },
     });
-  const result = join(nodes, []);
-  const title = result.elements.find((element) => element.ref === '@title')!;
-  title.semantic = {
-    press: 'unsupported',
-    fill: 'unsupported',
-    visibility: 'visible',
-    heading: { kind: 'navigation-title', barRef: '@navigation' },
-  };
-  return result;
+  return join(nodes, []);
 }
 
 function change(before: Screen, after: Screen): string | undefined {
@@ -97,12 +89,12 @@ test('selected tab changes stop scrolling', () => {
   assert.match(change(screen(), screen({ tab: 'Claims' }))!, /selected/);
 });
 
-test('navigation title changes stop scrolling', () => {
+test('title-only changes are deferred until an ordinary title signal exists', () => {
   const before = screen();
   const after = screen({ title: 'Claims' });
   for (const s of [before, after])
     s.elements.find((element) => element.ref === '@title')!.testID = 'navigation-title';
-  assert.match(change(before, after)!, /navigation title/);
+  assert.equal(change(before, after), undefined);
 });
 
 test('a disappeared, replaced or differently typed dragged list stops scrolling', () => {

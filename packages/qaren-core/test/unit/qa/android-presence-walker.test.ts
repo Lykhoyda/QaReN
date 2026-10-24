@@ -300,8 +300,21 @@ test('quoted scroll-until uses captured Android density for overlay padding', as
     [],
     scriptedJudge(() => assert.fail('quoted visibility is model-free')),
   );
-  const capture = capturing(() => fixture, undefined, requests);
+  let presence = false;
+  const capture = capturing(
+    () => {
+      const next = structuredClone(fixture);
+      if (!presence) {
+        Reflect.deleteProperty(next.data, 'presenceCapture');
+        for (const node of next.data.nodes) Reflect.deleteProperty(node, 'presence');
+      }
+      return next;
+    },
+    undefined,
+    requests,
+  );
   f.deps.captureScreen = async (options) => {
+    presence = options?.platformPresence === true;
     const captured = await capture(options);
     assert.equal(captured.pointScale, fixture.data.presenceCapture.pointScale);
     return captured;
@@ -314,8 +327,11 @@ test('quoted scroll-until uses captured Android density for overlay padding', as
   };
   const result = await runPlan(parsePlan('1. Scroll down until "Footer"').blocks!, f.deps);
   assert.equal(result.verdict, 'PASS', result.failure?.seen);
-  assert.equal(requests.length, 2);
-  assert.ok(requests.every((request) => request.platformPresence === true));
+  assert.equal(requests.length, 3);
+  assert.deepEqual(
+    requests.map((request) => request.platformPresence === true),
+    [false, false, true],
+  );
 });
 
 for (const platformPresence of [false, true]) {

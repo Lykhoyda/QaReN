@@ -667,7 +667,7 @@ for (const verb of ['Wait for "Ready"', 'Scroll down until "Ready"']) {
         [['pass', 'exact']],
       );
       assert.deepEqual(result.blocksWritten, []);
-      assert.equal(fake.captures(), 3);
+      assert.equal(fake.captures(), verb.startsWith('Scroll') ? 4 : 3);
       assert.deepEqual(
         fake.actions,
         verb.startsWith('Scroll') ? ['scroll down', 'scroll down'] : [],
@@ -808,7 +808,7 @@ for (const kind of ['wait', 'scroll', 'press', 'fill'] as const) {
         /TARGET_AMBIGUOUS/,
       );
       assert.deepEqual(fake.actions, []);
-      assert.equal(fake.captures(), 1);
+      assert.equal(fake.captures(), kind === 'scroll' ? 2 : 1);
       assert.equal(fake.deps.now(), 0);
     });
   }
