@@ -428,8 +428,7 @@ function identityRulesOutDriver(value: unknown, line: string, scanStartedAt: num
   const executable = observedExecutable(value, line, scanStartedAt);
   if (!executable) return false;
   const name = executable.slice(executable.lastIndexOf('/') + 1);
-  // The kernel executable decides; argv[0] may name a symlink such as a versioned CLI.
-  // Script interpreters cannot host a listed driver, so their arguments (an agent prompt) never decide.
+  // Kernel identity rules out interpreter prompts; argv[0] may be a versioned CLI symlink.
   return !(
     SHELL_WRAPPERS.test(name) ||
     /^(?:java|osascript)$/i.test(name) ||
