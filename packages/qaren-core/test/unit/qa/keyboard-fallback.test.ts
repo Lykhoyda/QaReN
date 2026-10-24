@@ -1,5 +1,8 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import vm from 'node:vm';
+import { INJECTED_HELPERS } from '../../../dist/injected-helpers.js';
+import { reactFocused } from '../../../dist/qa/walk.js';
 import { renderReason } from '../../../dist/qa/untrusted.js';
 import type { WalkSequence } from '../../../dist/qa/walker.js';
 import { existsSync, mkdirSync, mkdtempSync, readFileSync } from 'node:fs';
@@ -2732,3 +2735,70 @@ test('no-target fallback focus never times its keyboard proof from an earlier li
   assert.equal(proofs[0].proof, 'focused');
   assert.equal(Object.hasOwn(proofs[0], 'ms'), false);
 });
+
+for (const route of ['tap', 'no-target'] as const) {
+  test(`keyboard-up runtime-input ${route} focus probe never reads or transmits a private prefill`, async () => {
+    const prefill = 'private-prefilled-address';
+    let valueReads = 0;
+    const input = {
+      tag: 5,
+      type: 'RCTSinglelineTextInputView',
+      memoizedProps: {
+        testID: 'qa-hidden-email',
+        get value() {
+          valueReads++;
+          return prefill;
+        },
+        onChangeText() {},
+      },
+      stateNode: { isFocused: () => true },
+      child: null,
+      sibling: null,
+      return: null as unknown,
+    };
+    const root = {
+      tag: 0,
+      type: { displayName: 'PrivateForm' },
+      memoizedProps: {},
+      child: input,
+      sibling: null,
+      return: null,
+    };
+    input.return = root;
+    const context = vm.createContext({
+      setTimeout,
+      clearTimeout,
+      __REACT_DEVTOOLS_GLOBAL_HOOK__: {
+        renderers: new Map([[1, {}]]),
+        getFiberRoots: () => new Set([{ current: root }]),
+      },
+    });
+    vm.runInContext(INJECTED_HELPERS, context);
+    const responses: string[] = [];
+    const client = {
+      evaluate: async (expression: string) => {
+        const value = vm.runInContext(expression, context) as string;
+        responses.push(value);
+        return { value };
+      },
+    } as never;
+    const fake = app({
+      initialKeyboard: true,
+      ...(route === 'no-target' ? { initial: [submit] } : {}),
+    });
+    fake.deps.reactFocused = (testID) => reactFocused(client, testID);
+    const outcome = await withInputs(new RunInputs({ EMAIL }, ['EMAIL']), () =>
+      walkBlock(blocks(slotPlan())[0], fake.deps),
+    );
+    assert.equal(outcome.block.outcome, 'pass', JSON.stringify(outcome.failure));
+    assert.equal(fake.typed.length, 1);
+    assert.ok(responses.length > 0);
+    assert.equal(valueReads, 0);
+    for (const response of responses) {
+      assert.equal(response.includes(prefill), false);
+      assert.equal(JSON.parse(response).value, null);
+      assert.equal(JSON.parse(response).focused, true);
+    }
+    assert.ok(fake.notes.includes(FOCUS_NOTE(route === 'tap' ? 'tap' : 'none', 'focused')));
+  });
+}
