@@ -1184,10 +1184,12 @@ window drag. After each scroll-until drag, every fresh observation, including
 visibility-probe refreshes for expired or uncertain evidence, is checked against
 the pre-drag screen. A changed selected element outside the lists (such as a tab),
 navigation title, or scrolled list refuses with `SCROLL_NAVIGATED` before looking
-for the target on the destination screen. Moving rows and a collapsing navigation
-title with the same identity do not count as navigation. End-of-list stop follows
-separately. One clearance swipe lifts a covered
-row by at most the height of its list's visible band above the keyboard.
+for the target on the destination screen. An identified list retains its identity
+through keyboard or header resizing when its type and testID remain present;
+unidentified lists require the same type and a frame within two points. Moving
+rows and a collapsing navigation title with the same identity do not count as
+navigation. End-of-list stop follows separately. One clearance swipe lifts a
+covered row by at most the height of its list's visible band above the keyboard.
 A uniquely name-matched off-screen row further away is scrolled toward again,
 at most six times, stopping on an unchanged screen or the existing deadline;
 covered rows and other scroll origins still get one clearance swipe. See the

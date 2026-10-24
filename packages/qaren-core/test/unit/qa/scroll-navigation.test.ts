@@ -15,8 +15,9 @@ function screen(
     header?: boolean;
     list?: boolean;
     listType?: string;
-    listID?: string;
+    listID?: string | false;
     listFrame?: typeof frame;
+    keyboard?: boolean;
   } = {},
 ): Screen {
   const nodes: NativeNode[] = [
@@ -46,7 +47,7 @@ function screen(
         index: 3,
         parentIndex: 0,
         type: options.listType ?? 'ScrollView',
-        identifier: options.listID ?? 'policies',
+        identifier: options.listID === false ? undefined : (options.listID ?? 'policies'),
         rect: options.listFrame ?? frame,
       },
       {
@@ -68,6 +69,14 @@ function screen(
       type: 'StaticText',
       label: 'Welcome',
       rect: { x: 0, y: 100, width: 390, height: 44 },
+    });
+  if (options.keyboard)
+    nodes.push({
+      ref: '@keyboard',
+      index: 6,
+      parentIndex: 0,
+      type: 'Keyboard',
+      rect: { x: 0, y: 500, width: 390, height: 344 },
     });
   const result = join(nodes, []);
   const title = result.elements.find((element) => element.ref === '@title')!;
@@ -118,13 +127,32 @@ test('an ordinary header label can scroll away', () => {
   assert.equal(change(screen(), screen({ header: false })), undefined);
 });
 
-test('list frames tolerate two points on every axis', () => {
+test('an identified list can resize without changing the screen', () => {
+  assert.equal(change(screen({ listFrame: { ...frame, height: 400 } }), screen()), undefined);
+});
+
+test('dismissing the keyboard can expand the same identified list', () => {
+  assert.equal(
+    change(screen({ keyboard: true, listFrame: { ...frame, height: 400 } }), screen()),
+    undefined,
+  );
+});
+
+test('a collapsing header can move and expand the same identified list', () => {
+  assert.equal(
+    change(screen(), screen({ titleHeight: 30, listFrame: { ...frame, y: 60, height: 640 } })),
+    undefined,
+  );
+});
+
+test('unidentified list frames tolerate two points on every axis', () => {
   for (const axis of ['x', 'y', 'width', 'height'] as const) {
     for (const sign of [-1, 1]) {
       assert.equal(
         change(
-          screen(),
+          screen({ listID: false }),
           screen({
+            listID: false,
             listFrame: {
               ...frame,
               [axis]: frame[axis] + sign * 2,
@@ -135,8 +163,9 @@ test('list frames tolerate two points on every axis', () => {
       );
       assert.match(
         change(
-          screen(),
+          screen({ listID: false }),
           screen({
+            listID: false,
             listFrame: {
               ...frame,
               [axis]: frame[axis] + sign * 3,

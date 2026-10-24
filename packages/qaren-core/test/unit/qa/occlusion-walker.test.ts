@@ -1033,6 +1033,73 @@ test('(h) scroll-until with a covered target drags inside its clip band', async 
   assert.deepEqual(bands, [{ x: 0, y: 300, width: 400, height: 500 - 48 - 300 }]);
 });
 
+for (const layout of ['keyboard dismissal', 'header collapse'] as const) {
+  test(`scroll-until accepts a revealed target after ${layout} resizes the same list`, async () => {
+    const snapshot = (scrolled: boolean): Screen => {
+      const keyboard = layout === 'keyboard dismissal' && !scrolled;
+      const header = layout === 'header collapse' && !scrolled;
+      return covered(
+        join(
+          [
+            ...root(),
+            {
+              ref: '@scroll',
+              index: 2,
+              parentIndex: 1,
+              type: 'ScrollView',
+              identifier: 'policies-list',
+              rect: {
+                x: 0,
+                y: header ? 200 : 100,
+                width: 400,
+                height: keyboard ? 400 : header ? 500 : 600,
+              },
+            },
+            {
+              ref: '@target',
+              index: 3,
+              parentIndex: 2,
+              type: 'Button',
+              identifier: 'go',
+              label: 'Go',
+              hittable: scrolled,
+              rect: { x: 20, y: scrolled ? 300 : 740, width: 300, height: 44 },
+            },
+            ...(keyboard
+              ? [
+                  {
+                    ref: '@keyboard',
+                    index: 4,
+                    parentIndex: 1,
+                    type: 'Keyboard',
+                    rect: { x: 0, y: 500, width: 400, height: 300 },
+                  },
+                ]
+              : []),
+            ...(layout === 'header collapse'
+              ? [
+                  {
+                    ref: '@header',
+                    index: 4,
+                    parentIndex: 1,
+                    type: 'StaticText',
+                    label: 'Policies',
+                    rect: { x: 0, y: 80, width: 400, height: header ? 120 : 20 },
+                  },
+                ]
+              : []),
+          ],
+          [],
+        ),
+      );
+    };
+    const f = fake([snapshot(false), snapshot(true)], {});
+    const outcome = await walkBlock(block('1. Scroll down until "go"\n'), f.deps);
+    assert.equal(outcome.block.outcome, 'pass');
+    assert.equal(f.calls.filter((call) => call.startsWith('scroll')).length, 1);
+  });
+}
+
 // An Android keyboard form: a ScrollView list from 300 under the keyboard (1400) and a sticky Submit footer sibling 1150-1400.
 function stickyForm(y: number): Screen {
   const rect = { x: 0, y: 0, width: 1080, height: 2400 };

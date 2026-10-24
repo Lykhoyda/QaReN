@@ -40,11 +40,14 @@ export function scrollNavigationChange(
     const frame = elementFrame(container);
     const tolerance = 2 * (before.pointScale ?? 1);
     const present = after.elements.some((element) => {
+      if (
+        !isScrollContainer(element) ||
+        scrollContainerType(element) !== scrollContainerType(container)
+      )
+        return false;
+      if (container.testID) return element.testID === container.testID;
       const next = elementFrame(element);
       return (
-        isScrollContainer(element) &&
-        scrollContainerType(element) === scrollContainerType(container) &&
-        (!container.testID || element.testID === container.testID) &&
         frame &&
         next &&
         (['x', 'y', 'width', 'height'] as const).every(
