@@ -9,7 +9,7 @@ import { decideScreen } from '../../../dist/qa/resolve.js';
 import { ObservedPrivacy } from '../../../dist/qa/privacy.js';
 import { buildDirectionalScrollCliArgs } from '../../../dist/handlers/device-interact.js';
 import { clearRefMap, updateRefMapFromFlat } from '../../../dist/fast-runner-ref-map.js';
-import { scriptedJudge, walker } from './judgment-fixtures.ts';
+import { element, screen, scriptedJudge, walker } from './judgment-fixtures.ts';
 import { attested, nativeCapture } from './platform-presence-fixtures.ts';
 
 const frame = { x: 0, y: 0, width: 402, height: 874 };
@@ -18,6 +18,7 @@ type Snapshot = {
   footerY?: number;
   footerLabel?: string;
   footerControl?: boolean;
+  footerType?: string;
   footerEnabled?: boolean | null;
   terms?: boolean;
   termsY?: number;
@@ -70,7 +71,9 @@ function fixture() {
         rect: state.listFrame ?? frame,
       },
       {
-        type: state.footerMissing ? 'Other' : state.footerControl ? 'Button' : 'StaticText',
+        type: state.footerMissing
+          ? 'Other'
+          : (state.footerType ?? (state.footerControl ? 'Button' : 'StaticText')),
         enabled: state.footerEnabled === null ? undefined : (state.footerEnabled ?? true),
         parentIndex: 2,
         label:
@@ -1263,3 +1266,206 @@ test('captured control state distinguishes known booleans from missing native an
     }
   }
 });
+
+for (const representation of ['native', 'react'] as const) {
+  for (const direction of ['up', 'down'] as const) {
+    for (const changedLabel of [false, true]) {
+      for (const transition of ['initial', 'expiry', 'reask'] as const) {
+        for (const predicate of ['button', 'control', 'content', 'conjunction'] as const) {
+          test(`semantic confirmation reconciles kind: ${representation}, ${direction}, changedLabel=${changedLabel}, ${transition}, ${predicate}`, async () => {
+            const f = fixture();
+            let confirmations = 0;
+            const judge = scriptedJudge((questions, index, state) => {
+              const delivered = JSON.stringify(state).replaceAll('\\', '');
+              const button = delivered.includes('Button \"Continue');
+              const control = button || delivered.includes('Link \"Continue');
+              const present =
+                delivered.includes('Continue') &&
+                (predicate === 'content' || (predicate === 'control' ? control : button)) &&
+                (predicate !== 'conjunction' || delivered.includes('Terms'));
+              return Object.fromEntries(
+                Object.keys(questions).map((id) => [
+                  id,
+                  {
+                    type: 'noul',
+                    noul: transition === 'reask' && index === 0 ? 0.5 : present ? 0.9 : 0.1,
+                  },
+                ]),
+              );
+            });
+            f.f.deps.judge = judge;
+            const next = async (presence: boolean) => {
+              if (presence && ++confirmations === 1 && transition === 'expiry')
+                await f.f.deps.sleep(11_000);
+              const changed = !presence && confirmations >= (transition === 'initial' ? 1 : 2);
+              return {
+                footer: true,
+                footerType: changed
+                  ? predicate === 'control'
+                    ? 'Link'
+                    : predicate === 'content'
+                      ? 'Button'
+                      : 'StaticText'
+                  : predicate === 'content'
+                    ? 'StaticText'
+                    : 'Button',
+                footerLabel: changed && changedLabel ? 'Continue now' : 'Continue',
+                terms: predicate === 'conjunction',
+                listID: 'policies',
+              };
+            };
+            const originals: ReturnType<typeof element>[] = [];
+            f.setSnapshot(next);
+            if (representation === 'react')
+              f.f.deps.captureScreen = async (options) => {
+                const presence = options?.platformPresence === true;
+                f.modes.push(presence);
+                const state = await next(presence);
+                const witness = element('continue', state.footerLabel, {
+                  testID: 'footer',
+                  kind:
+                    state.footerType === 'Button'
+                      ? 'button'
+                      : state.footerType === 'Link'
+                        ? 'link'
+                        : 'text',
+                });
+                if (presence) originals.push(witness);
+                return screen([
+                  witness,
+                  ...(state.terms ? [element('terms', 'Terms', { kind: 'text' })] : []),
+                ]);
+              };
+            try {
+              const result = await run(
+                f,
+                direction,
+                'phrase',
+                `the continue ${predicate === 'content' ? 'text' : predicate === 'control' ? 'control' : 'button'}${predicate === 'conjunction' ? ' and terms text' : ''}`,
+              );
+              const compatible = predicate === 'control' || predicate === 'content';
+              assert.equal(
+                result.block.outcome,
+                compatible ? 'pass' : 'fail',
+                JSON.stringify(result.failure),
+              );
+              if (!compatible) assert.match(JSON.stringify(result.failure), /VISIBILITY_UNSURE/);
+              assert.equal(f.drags(), 0);
+              assert.equal(judge.requests.length, transition === 'reask' ? 3 : 2);
+              const delivered = JSON.stringify(judge.requests.at(-1)?.state).replaceAll('\\', '');
+              assert.ok(
+                delivered.includes(
+                  (predicate === 'control' ? 'Link' : predicate === 'content' ? 'Button' : 'Text') +
+                    ' \"Continue',
+                ),
+              );
+              assert.ok(delivered.includes(changedLabel ? 'Continue now' : 'Continue'));
+              for (const original of originals) {
+                assert.equal(original.kind, predicate === 'content' ? 'text' : 'button');
+                assert.equal(original.label, 'Continue');
+              }
+              assert.deepEqual(
+                f.modes,
+                transition === 'reask'
+                  ? [false, true, false, false, true, false]
+                  : transition === 'expiry'
+                    ? [false, true, false, true, false]
+                    : [false, true, false],
+              );
+            } finally {
+              clearRefMap();
+            }
+          });
+        }
+      }
+    }
+    test(`unknown native kind retains qualified kind: ${representation}, ${direction}`, async () => {
+      const f = fixture();
+      let confirmed = false;
+      f.setSnapshot(async (presence) => {
+        if (presence) confirmed = true;
+        return {
+          footer: true,
+          footerType: !presence && confirmed ? 'Other' : 'Button',
+          listID: 'policies',
+        };
+      });
+      if (representation === 'react') {
+        f.f.deps.captureScreen = async (options) => {
+          const presence = options?.platformPresence === true;
+          if (presence) confirmed = true;
+          return screen([
+            element('footer', 'Footer', {
+              testID: 'footer',
+              kind: !presence && confirmed ? 'other' : 'button',
+            }),
+          ]);
+        };
+      }
+      try {
+        const result = await run(f, direction, 'phrase', 'the footer button');
+        assert.equal(result.block.outcome, 'pass', JSON.stringify(result.failure));
+        assert.equal(f.drags(), 0);
+      } finally {
+        clearRefMap();
+      }
+    });
+  }
+  test(`assertion kind updates preserve qualified evidence: ${representation}`, async () => {
+    const f = fixture();
+    f.setSnapshot(async () => ({ footer: true, footerControl: true }));
+    try {
+      const observed =
+        representation === 'native'
+          ? await f.f.deps.captureScreen({ platformPresence: true })
+          : screen([element('footer', 'Footer', { testID: 'footer' })]);
+      const witness = observed.elements.find((e) => e.testID === 'footer')!;
+      const original = structuredClone(witness);
+      const nativePresence = witness.semantic?.nativePresence;
+      const judge = scriptedJudge((questions) =>
+        Object.fromEntries(Object.keys(questions).map((id) => [id, { type: 'noul', noul: 0.9 }])),
+      );
+      const item = parsePlan('1. Scroll down until the footer text').blocks![0].items[0];
+      await decideScreen(
+        observed,
+        judge,
+        undefined,
+        item,
+        [],
+        new ObservedPrivacy(),
+        Infinity,
+        false,
+        new Map([[witness, { kind: 'text', label: 'Footer now', disabled: true }]]),
+      );
+      const delivered = JSON.stringify(judge.requests[0].state).replaceAll('\\', '');
+      assert.ok(delivered.includes('Text \"Footer now'));
+      assert.ok(delivered.includes('disabled'));
+      assert.deepEqual(witness, original);
+      assert.equal(witness.semantic?.nativePresence, nativePresence);
+    } finally {
+      clearRefMap();
+    }
+  });
+}
+
+for (const direction of ['up', 'down'] as const) {
+  for (const mode of ['quoted', 'text-replay', 'replay'] as const) {
+    test(`literal confirmation retains identity and text across kind changes: ${direction}, ${mode}`, async () => {
+      const f = fixture();
+      let confirmed = false;
+      f.setSnapshot(async (presence) => {
+        if (presence) confirmed = true;
+        return { footer: true, footerControl: presence || !confirmed, listID: 'policies' };
+      });
+      try {
+        const result = await run(f, direction, mode);
+        assert.equal(result.block.outcome, 'pass', JSON.stringify(result.failure));
+        assert.equal(result.failure, undefined);
+        assert.equal(f.drags(), 0);
+        assert.deepEqual(f.modes, [false, true, false]);
+      } finally {
+        clearRefMap();
+      }
+    });
+  }
+}

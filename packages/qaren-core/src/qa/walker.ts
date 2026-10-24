@@ -1093,6 +1093,14 @@ async function walkBlockScoped(
             disabled !== semanticDisabled(witness)
           )
             assertionUpdates.set(witness, { disabled });
+          const kind = available[0].nativeKind ?? available[0].kind;
+          if (
+            target.quoted === undefined &&
+            kind !== 'other' &&
+            available.every((element) => (element.nativeKind ?? element.kind) === kind) &&
+            kind !== (witness.semantic?.nativePresence?.kind ?? witness.kind)
+          )
+            assertionUpdates.set(witness, { ...assertionUpdates.get(witness), kind });
           const changed = available.every(
             (element) =>
               target.exact !== 'id' &&

@@ -711,6 +711,7 @@ export function decideTarget(prepared: TargetQuestion, answer: Answer | undefine
 }
 
 export interface AssertionUpdate {
+  kind?: Element['kind'];
   label?: string;
   disabled?: boolean;
 }
@@ -730,7 +731,7 @@ function describeSemantic(element: Element, update?: AssertionUpdate): string {
   if (native)
     return `${describe({
       ...element,
-      kind: native.kind,
+      kind: update?.kind ?? native.kind,
       label: native.labelSource === 'direct' ? (update?.label ?? element.label) : undefined,
       value: undefined,
       placeholder: undefined,
@@ -741,6 +742,7 @@ function describeSemantic(element: Element, update?: AssertionUpdate): string {
     })} (native accessibility name; ${offscreen ? 'outside the visible area' : 'platform-observed presence'}${qualification})`;
   return describe({
     ...element,
+    kind: update?.kind ?? element.kind,
     label: update?.label ?? element.label,
     disabled: update?.disabled ?? semanticDisabled(element),
     offscreen,
