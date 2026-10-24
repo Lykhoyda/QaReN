@@ -6,6 +6,7 @@ import { applyNativePrivateInputs } from '../../../dist/qa/private-input.js';
 import { parsePlan } from '../../../dist/qa/plan.js';
 import { runPlan } from '../../../dist/qa/walker.js';
 import { RunInputs, withInputs } from '../../../dist/qa/inputs.js';
+import { createWriter } from '../../../dist/qa/wire.js';
 import { cleanDiagnostic } from '../../../dist/qa/diagnostics.js';
 import { cleanTimingEvent } from '../../../dist/qa/timing.js';
 import { element, screen, scriptedJudge, walker } from './judgment-fixtures.ts';
@@ -101,7 +102,7 @@ for (const [name, cause, setup, qualifier] of [
     const warnings: string[] = [];
     f.deps.privacy = data.privacy;
     f.deps.timing = (event) => metrics.push(event);
-    f.deps.warn = (line) => warnings.push(line);
+    f.deps.mediaWithheld = (event) => warnings.push(`media-withheld ${JSON.stringify(event)}`);
     if (data.login)
       f.deps.login = {
         marker: { id: 'login-screen' },
@@ -116,6 +117,10 @@ for (const [name, cause, setup, qualifier] of [
     assert.deepEqual(ledger.mediaWithheld?.screenshots, entry);
     assert.deepEqual(
       ledger.steps.map((row) => row.screenshotWithheld),
+      [cause, cause],
+    );
+    assert.deepEqual(
+      f.rows.map((row) => row.screenshotWithheld),
       [cause, cause],
     );
     assert.ok(ledger.steps.every((row) => row.screenshot === undefined));
@@ -197,7 +202,7 @@ test('only frames after the first cause are withheld and later causes cannot rep
     [ready(), observed, secure, ready()],
     scriptedJudge(() => assert.fail('literal check')),
   );
-  f.deps.warn = () => {
+  f.deps.mediaWithheld = () => {
     throw new Error('diagnostic sink unavailable');
   };
   const ledger = await runPlan(
@@ -247,4 +252,45 @@ test('qualified withholding metrics keep their native kind across diagnostic cle
   assert.deepEqual(cleanDiagnostic(event), event);
   assert.equal(cleanDiagnostic({ ...event, stage: 'capture' }), undefined);
   assert.equal(cleanDiagnostic({ ...event, kind: canary }), undefined);
+});
+
+test('private media diagnostics survive the wire with only closed cause fields', async () => {
+  const lines: string[] = [];
+  const writer = createWriter((line) => lines.push(line), 'media-run');
+  const f = walker(
+    [ready()],
+    scriptedJudge(() => assert.fail('literal check')),
+  );
+  f.deps.mediaWithheld = writer.diagnostic;
+  f.deps.privacy = new ObservedPrivacy();
+  await withInputs(new RunInputs({ FIXTURE: canary }, ['FIXTURE'], f.deps.privacy), () =>
+    runPlan(parsePlan('✓ "Ready"').blocks!, f.deps),
+  );
+  assert.deepEqual(
+    lines.map((line) => JSON.parse(line).payload),
+    [
+      {
+        kind: 'media-withheld',
+        scope: 'screenshots',
+        cause: { reason: 'runtime-input' },
+        line: 0,
+      },
+    ],
+  );
+  const event = {
+    kind: 'media-withheld',
+    scope: 'video',
+    cause: { reason: 'generic-value', kind: 'other', value: canary },
+    line: 2,
+  };
+  assert.deepEqual(cleanDiagnostic(event), {
+    ...event,
+    cause: { reason: 'generic-value', kind: 'other' },
+  });
+  for (const cause of [
+    { reason: canary },
+    { reason: 'echo', source: canary },
+    { reason: 'secure-field', kind: 'other' },
+  ])
+    assert.equal(cleanDiagnostic({ ...event, cause }), undefined);
 });

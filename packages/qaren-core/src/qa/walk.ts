@@ -640,7 +640,13 @@ async function openSession(
   const captureReact = createQaReactCapture(cdp);
   const deps: WalkerDeps = {
     note: log,
-    warn: log,
+    mediaWithheld: (event) => {
+      if (currentInputs()?.hasInputs) diagnostic(event);
+      else {
+        const { scope, cause, line } = event;
+        log(`media-withheld ${JSON.stringify({ v: 1, scope, ...cause, line })}`);
+      }
+    },
     privacy,
     judge: createJev({ apiKey, now, timing }),
     interruptionVeto: !!apiKey,

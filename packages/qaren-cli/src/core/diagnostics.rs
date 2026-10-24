@@ -247,6 +247,37 @@ const ADMISSION_KEYS: &[&str] = &[
 fn clean(value: &Value) -> Option<Value> {
     let fields = value.as_object()?;
     let raw_kind = fields.get("kind")?.as_str()?;
+    if raw_kind == "media-withheld" {
+        let scope = fields.get("scope")?.as_str()?;
+        if !["screenshots", "video"].contains(&scope) {
+            return None;
+        }
+        let line = fields.get("line")?.as_u64()?;
+        if line > MAX_NUMBER as u64 {
+            return None;
+        }
+        let cause = fields.get("cause")?.as_object()?;
+        let reason: super::WithholdCause =
+            serde_json::from_value(cause.get("reason")?.clone()).ok()?;
+        let mut clean_cause = serde_json::json!({"reason": reason});
+        if let Some(kind) = cause.get("kind") {
+            if reason != super::WithholdCause::GenericValue {
+                return None;
+            }
+            let kind: super::MediaKind = serde_json::from_value(kind.clone()).ok()?;
+            clean_cause["kind"] = serde_json::to_value(kind).ok()?;
+        }
+        if let Some(source) = cause.get("source") {
+            if reason != super::WithholdCause::Echo {
+                return None;
+            }
+            let source: super::MediaSource = serde_json::from_value(source.clone()).ok()?;
+            clean_cause["source"] = serde_json::to_value(source).ok()?;
+        }
+        return Some(
+            serde_json::json!({"kind": raw_kind, "scope": scope, "cause": clean_cause, "line": line}),
+        );
+    }
     let carrier_kind = [
         "input", "other", "text", "button", "cell", "image", "switch", "link",
     ]
@@ -456,6 +487,7 @@ fn clean(value: &Value) -> Option<Value> {
 pub(super) struct Sink {
     file: Option<File>,
     path: PathBuf,
+    log: PathBuf,
     events: usize,
     outcomes: usize,
 }
@@ -468,6 +500,7 @@ impl Sink {
                 .then(|| private_file(&path))
                 .flatten(),
             path,
+            log: log.to_path_buf(),
             events: 0,
             outcomes: 0,
         }
@@ -498,6 +531,15 @@ impl Sink {
         *count += 1;
         if let Ok(line) = serde_json::to_string(&event) {
             let _ = writeln!(file, "{line}");
+            if event["kind"] == "media-withheld" {
+                let mut record = event["cause"].clone();
+                record["v"] = 1.into();
+                record["scope"] = event["scope"].clone();
+                record["line"] = event["line"].clone();
+                if let Some(mut log) = private_file(&self.log) {
+                    let _ = writeln!(log, "media-withheld {record}");
+                }
+            }
         }
     }
 }

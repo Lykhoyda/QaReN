@@ -63,7 +63,11 @@ import {
   checkVerdict,
 } from './questions.js';
 import { type LoginMarker, dismissCandidate, recover } from './recover.js';
-import type { BlockOutcome, BlockOutcomeDiagnostic } from './diagnostics.js';
+import type {
+  BlockOutcome,
+  BlockOutcomeDiagnostic,
+  MediaWithheldDiagnostic,
+} from './diagnostics.js';
 import { targetMissDiagnostic, type TargetMissDiagnostic } from './target-miss.js';
 import {
   concealsScreen,
@@ -134,7 +138,7 @@ export interface ActResult {
 
 export interface WalkerDeps {
   privacy?: ObservedPrivacy;
-  warn?(line: string): void;
+  mediaWithheld?(event: MediaWithheldDiagnostic): void;
   judge?: Judge;
   interruptionVeto?: boolean;
   // Android has no platform presence capture yet.
@@ -308,9 +312,7 @@ function recordMediaLatch(
   if (latch && !sequence.latch) {
     sequence.latch = { line, count: 0 };
     try {
-      deps.warn?.(
-        `media-withheld ${JSON.stringify({ v: 1, scope: 'screenshots', ...latch, line })}`,
-      );
+      deps.mediaWithheld?.({ kind: 'media-withheld', scope: 'screenshots', cause: latch, line });
     } catch {
       // Diagnostics cannot change the walk.
     }
@@ -2655,6 +2657,7 @@ function valueFree(row: Omit<LedgerRow, 'reason'>): LedgerRow {
     t,
     outcome,
     ...(row.unverifiedPress ? { unverifiedPress: true } : {}),
+    ...(row.screenshotWithheld ? { screenshotWithheld: row.screenshotWithheld } : {}),
     ...(screenshot ? { screenshot } : {}),
     ...(timing ? { timing } : {}),
     ...(reactCoverage ? { reactCoverage } : {}),
@@ -2904,9 +2907,8 @@ export async function runPlan(
       };
       if (ledger.mediaWithheld?.video) {
         try {
-          deps.warn?.(
-            `media-withheld ${JSON.stringify({ v: 1, scope: 'video', ...ledger.mediaWithheld.video })}`,
-          );
+          const { line, ...cause } = ledger.mediaWithheld.video;
+          deps.mediaWithheld?.({ kind: 'media-withheld', scope: 'video', cause, line });
         } catch {
           // Diagnostics cannot change the walk.
         }

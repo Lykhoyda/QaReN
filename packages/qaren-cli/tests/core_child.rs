@@ -618,6 +618,10 @@ fn a_real_slot_child_keeps_raw_logs_withheld_while_retaining_structured_diagnost
             send('diagnostic', {kind: 'block-outcome', line: 2, outcome: 'pass'});
             send('diagnostic', {kind: 'login-outcome', outcome: 'pass'});
             send('diagnostic', {kind: 'login-outcome', outcome: payload.inputs.PASSWORD});
+            send('diagnostic', {kind: 'media-withheld', scope: 'screenshots', cause: {reason: 'runtime-input', value: payload.inputs.PASSWORD}, line: 0});
+            send('diagnostic', {kind: 'media-withheld', scope: 'video', cause: {reason: 'generic-value', kind: 'other'}, line: 2});
+            send('diagnostic', {kind: 'media-withheld', scope: 'video', cause: {reason: payload.inputs.PASSWORD}, line: 3});
+            send('diagnostic', {kind: 'media-withheld', scope: 'video', cause: {reason: 'echo', source: payload.inputs.PASSWORD}, line: 3});
             send('result', {verdict: 'PASS', path: 'walk', blocks: [], steps: [], jev: {calls: 0, medianMs: 0}, llmTurns: 0, escapes: 0, recoveries: 0});
             reader.close();
             process.stdin.destroy();
@@ -639,12 +643,23 @@ fn a_real_slot_child_keeps_raw_logs_withheld_while_retaining_structured_diagnost
         .unwrap();
         let result = core::wait(&mut runner, child, budgets(), &mut |_, _| {});
         assert_eq!(result.verdict, Verdict::Pass);
+        let log = std::fs::read_to_string(raw_log).unwrap();
+        assert!(log.contains("[private output withheld]"));
+        let records: Vec<serde_json::Value> = log
+            .lines()
+            .filter_map(|line| line.strip_prefix("media-withheld "))
+            .map(|line| serde_json::from_str(line).unwrap())
+            .collect();
         assert_eq!(
-            std::fs::read_to_string(raw_log).unwrap(),
-            "[private output withheld]\n"
+            records,
+            vec![
+                serde_json::json!({"v": 1, "scope": "screenshots", "reason": "runtime-input", "line": 0}),
+                serde_json::json!({"v": 1, "scope": "video", "reason": "generic-value", "kind": "other", "line": 2}),
+            ]
         );
+        assert!(!log.contains("private-synthetic"));
         let retained = std::fs::read_to_string(repo.join("core-diagnostics.jsonl")).unwrap();
-        assert_eq!(retained.lines().count(), 4);
+        assert_eq!(retained.lines().count(), 6);
         assert!(!retained.contains(secret));
         assert!(!retained.contains("private-synthetic"));
         assert!(!format!("{result:?}").contains("private-synthetic"));
