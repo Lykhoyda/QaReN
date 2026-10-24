@@ -123,8 +123,8 @@ test('(c) a resolved covered target drags inside its own clip band', () => {
   assert.deepEqual(band, { x: 0, y: 300, width: 400, height: 500 - 48 - 300 });
 });
 
-test('(d) a screen without a scroll container uses its window band', () => {
-  assert.deepEqual(scrollUntilBand(option20, androidSheet([], 'android.view.ViewGroup')), SCREEN);
+test('(d) a screen without a scroll container keeps the band centre', () => {
+  assert.equal(scrollUntilBand(option20, androidSheet([], 'android.view.ViewGroup')), undefined);
 });
 
 test('(e) a sheet list in a later window wins over a background list covering the window', () => {
@@ -365,35 +365,29 @@ test('a keyboard-covered target clears a floating toolbar before building the dr
   }
 });
 
-for (const covered of [false, true]) {
-  test(`a no-container window fallback clears front overlays, fully covered=${covered}`, () => {
-    const frame = { x: 0, y: 0, width: 390, height: 844 };
-    const screen = join(
-      [
-        { ref: '@window', index: 0, type: 'Window', rect: frame },
-        {
-          ref: '@overlay', index: 1, parentIndex: 0, type: 'Button', hittable: true,
-          rect: covered ? frame : { x: 0, y: 425, width: 390, height: 25 },
-        },
-        {
-          ref: '@keyboard', index: 2, parentIndex: 0, type: 'Keyboard',
-          rect: { x: 0, y: 508, width: 390, height: 336 },
-        },
-      ], [],
-    );
-    const band = scrollUntilBand(option20, screen)!;
-    assert.deepEqual(band, { ...frame, height: covered ? 0 : 421 });
-    if (covered) {
-      assert.throws(() => bandDrag(band, frame, 508), /SCROLL_BAND_TOO_SMALL/);
-    } else {
-      for (const direction of ['up', 'down'] as const) {
-        const [, y1, , y2] = bandDrag(band, frame, 508, direction);
-        for (const y of [y1, y2]) assert.ok(y >= 20 && y < 425, `${y}`);
-        assert.ok(Math.abs(y1 - y2) >= 48);
-      }
-    }
-  });
-}
+test('a no-container fallback stays centred with a separate keyboard window', () => {
+  const frame = { x: 0, y: 0, width: 390, height: 844 };
+  const nodes: NativeNode[] = [
+    { ref: '@window', index: 0, type: 'Window', rect: frame },
+    { ref: '@keyboard-window', index: 1, type: 'Window', rect: frame },
+    {
+      ref: '@keyboard', index: 2, parentIndex: 1, type: 'Keyboard',
+      rect: { x: 0, y: 508, width: 390, height: 336 },
+    },
+  ];
+  const band = scrollUntilBand(option20, join(nodes, []));
+  assert.equal(band, undefined);
+  clearRefMap();
+  updateRefMapFromFlat(nodes, { snapshotGeneration: 1, keyboardVisible: true });
+  try {
+    assert.deepEqual(buildDirectionalScrollCliArgs('down', 0.6, undefined, undefined, band),
+      ['scroll', '195', '315', '195', '193', '300']);
+    assert.deepEqual(buildDirectionalScrollCliArgs('up', 0.6, undefined, undefined, band),
+      ['scroll', '195', '193', '195', '315', '300']);
+  } finally {
+    clearRefMap();
+  }
+});
 
 function floatingTabScreen(barHittable: boolean): Screen {
   const frame = { x: 0, y: 0, width: 402, height: 874 };

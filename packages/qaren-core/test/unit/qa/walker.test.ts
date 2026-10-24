@@ -470,6 +470,31 @@ test('wait polls until the target appears and scroll-until scrolls until visible
   assert.equal(scrolled.rows[0].attempt, 2);
 });
 
+for (const direction of ['up', 'down']) {
+  test(`scroll-until ${direction} refuses navigation before accepting a destination target`, async () => {
+    const before = screen(['Policies']);
+    before.elements[0].selected = true;
+    const after = screen(['Claims', 'Footer']);
+    after.elements[0].selected = true;
+    const f = fake([before]);
+    let drags = 0;
+    f.deps.scroll = async () => {
+      drags += 1;
+      return { ok: true, proven: false };
+    };
+    f.deps.captureScreen = async () => drags ? after : before;
+    const result = await runPlan([block(`1. Scroll ${direction} until "Footer"\n`)], f.deps);
+    assert.equal(result.verdict, 'REFUSED');
+    assert.equal(result.code, 'SCROLL_NAVIGATED');
+    assert.match(result.message ?? '', /selected/);
+    assert.equal(drags, 1);
+    const lines: string[] = [];
+    const writer = createWriter((line) => lines.push(line), 'scroll-navigation');
+    assert.equal(writer.result(resultForWalk(result, 'test-lease')), 4);
+    assert.equal(JSON.parse(lines[0]).payload.code, 'SCROLL_NAVIGATED');
+  });
+}
+
 test('runPlan stops at the first failing block and rolls up the ledger', async () => {
   const parsed = parsePlan(
     '### One\n1. Tap "A"\n### Two\n1. Tap "Missing"\n### Three\n1. Tap "C"\n',

@@ -473,15 +473,11 @@ export function clearanceBand(element: Element, screen: Screen): NativeNode['rec
 }
 
 function clearOfFrontOverlays(
-  container: Element | undefined,
+  container: Element,
   band: NonNullable<NativeNode['rect']>,
   screen: Screen,
 ): NativeNode['rect'] {
-  const window = container
-    ? ancestorsOf(container).find(isWindow)
-    : screen.elements.slice().reverse().find(isWindow);
-  const floor = container ?? window;
-  const behind = floor ? screen.elements.indexOf(floor) : -1;
+  const behind = screen.elements.indexOf(container);
   let spans = [{ top: band.y, bottom: band.y + band.height }];
   const padding = 4 * (screen.pointScale ?? 1);
   for (const [i, other] of screen.elements.entries()) {
@@ -493,7 +489,7 @@ function clearOfFrontOverlays(
       !other.hittable
     )
       continue;
-    if (container && ancestorsOf(other).includes(container)) continue;
+    if (ancestorsOf(other).includes(container)) continue;
     const rect = elementFrame(other);
     if (
       !rect ||
@@ -581,6 +577,7 @@ export function scrollUntilContainer(target: Target, screen: Screen): Element | 
 
 export function scrollUntilBand(target: Target, screen: Screen): NativeNode['rect'] {
   const container = scrollUntilContainer(target, screen);
+  if (!container) return undefined;
   const matches = exactIdentities(screen, target, 'scroll');
   const element = matches.length === 1 ? matches[0].element : undefined;
   let band: NativeNode['rect'];
@@ -590,15 +587,8 @@ export function scrollUntilBand(target: Target, screen: Screen): NativeNode['rec
       : aboveKeyboard(elementViewport(element), screen);
   }
   if (!band && (!element || element.offscreen)) {
-    const window = screen.elements.slice().reverse().find(isWindow);
-    const floor = container ?? window;
-    const frame = floor && elementFrame(floor);
-    if (container && frame) band = aboveKeyboard(clip(frame, elementViewport(container)), screen);
-    else if (frame) {
-      const keyboardTop =
-        screen.keyboardVisible !== false && screen.keyboardFrame ? screen.keyboardFrame.y : Infinity;
-      band = { ...frame, height: Math.max(0, Math.min(frame.y + frame.height, keyboardTop) - frame.y) };
-    }
+    const frame = elementFrame(container);
+    if (frame) band = aboveKeyboard(clip(frame, elementViewport(container)), screen);
   }
   return band && (clearOfFrontOverlays(container, band, screen) ?? { ...band, height: 0 });
 }

@@ -1178,7 +1178,11 @@ The largest remaining vertical span becomes the drag band; window ancestors and
 the list's own rows do not cut it. Padding uses four points, scaled by the captured
 display density on Android when available. An exhausted clear span refuses with
 `SCROLL_BAND_TOO_SMALL`; a screen without a scroll container retains the centred
-window drag. One clearance swipe lifts a covered
+window drag. After each scroll-until drag, a changed selected tab outside the lists,
+navigation title, or scrolled list refuses with `SCROLL_NAVIGATED` before looking
+for the target on the destination screen. Moving rows and a collapsing navigation
+title with the same identity do not count as navigation. End-of-list stop follows
+separately. One clearance swipe lifts a covered
 row by at most the height of its list's visible band above the keyboard.
 A uniquely name-matched off-screen row further away is scrolled toward again,
 at most six times, stopping on an unchanged screen or the existing deadline;

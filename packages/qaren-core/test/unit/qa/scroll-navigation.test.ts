@@ -1,0 +1,110 @@
+import assert from 'node:assert/strict';
+import { test } from 'node:test';
+import { join, isScrollContainer, type NativeNode, type Screen } from '../../../dist/qa/screen.js';
+import { scrollNavigationChange } from '../../../dist/qa/scroll-navigation.js';
+
+const frame = { x: 0, y: 100, width: 390, height: 600 };
+
+function screen(options: {
+  tab?: string;
+  title?: string;
+  titleHeight?: number;
+  rowY?: number;
+  rowLabel?: string;
+  header?: boolean;
+  list?: boolean;
+  listType?: string;
+  listID?: string;
+  listFrame?: typeof frame;
+} = {}): Screen {
+  const nodes: NativeNode[] = [
+    { ref: '@window', index: 0, type: 'Window', rect: { x: 0, y: 0, width: 390, height: 844 } },
+    {
+      ref: '@tab', index: 1, parentIndex: 0, type: 'Button', selected: true,
+      label: options.tab ?? 'Policies', rect: { x: 0, y: 780, width: 150, height: 44 },
+    },
+    {
+      ref: '@title', index: 2, parentIndex: 0, type: 'StaticText',
+      label: options.title ?? 'Policies',
+      rect: { x: 0, y: 20, width: 390, height: options.titleHeight ?? 70 },
+    },
+  ];
+  if (options.list !== false) {
+    nodes.push(
+      {
+        ref: '@list', index: 3, parentIndex: 0, type: options.listType ?? 'ScrollView',
+        identifier: options.listID ?? 'policies', rect: options.listFrame ?? frame,
+      },
+      {
+        ref: '@row', index: 4, parentIndex: 3, type: 'Button', selected: true,
+        label: options.rowLabel ?? 'Policy',
+        rect: { x: 0, y: options.rowY ?? 500, width: 390, height: 44 },
+      },
+    );
+  }
+  if (options.header !== false) nodes.push({
+    ref: '@header', index: 5, parentIndex: 0, type: 'StaticText', label: 'Welcome',
+    rect: { x: 0, y: 100, width: 390, height: 44 },
+  });
+  const result = join(nodes, []);
+  const title = result.elements.find((element) => element.ref === '@title')!;
+  title.semantic = {
+    press: 'unsupported', fill: 'unsupported', visibility: 'visible',
+    heading: { kind: 'navigation-title', barRef: '@navigation' },
+  };
+  return result;
+}
+
+function change(before: Screen, after: Screen): string | undefined {
+  return scrollNavigationChange(before, after, before.elements.find(isScrollContainer));
+}
+
+test('selected tab changes stop scrolling', () => {
+  assert.match(change(screen(), screen({ tab: 'Claims' }))!, /selected/);
+});
+
+test('navigation title changes stop scrolling', () => {
+  const before = screen();
+  const after = screen({ title: 'Claims' });
+  for (const s of [before, after]) s.elements.find((element) => element.ref === '@title')!.testID = 'navigation-title';
+  assert.match(change(before, after)!, /navigation title/);
+});
+
+test('a disappeared, replaced or differently typed dragged list stops scrolling', () => {
+  for (const after of [screen({ list: false }), screen({ listID: 'claims' }),
+    screen({ listType: 'CollectionView' })]) {
+    assert.match(change(screen(), after)!, /scrolled list/);
+  }
+});
+
+test('moving rows and changing selection inside the list do not count as navigation', () => {
+  assert.equal(change(screen(), screen({ rowY: 200, rowLabel: 'Next policy' })), undefined);
+});
+
+test('a large navigation title can collapse without changing identity', () => {
+  assert.equal(change(screen(), screen({ titleHeight: 30 })), undefined);
+});
+
+test('an ordinary header label can scroll away', () => {
+  assert.equal(change(screen(), screen({ header: false })), undefined);
+});
+
+test('list frames tolerate two points on every axis', () => {
+  for (const axis of ['x', 'y', 'width', 'height'] as const) {
+    for (const sign of [-1, 1]) {
+      assert.equal(change(screen(), screen({ listFrame: {
+        ...frame, [axis]: frame[axis] + sign * 2,
+      } })), undefined);
+      assert.match(change(screen(), screen({ listFrame: {
+        ...frame, [axis]: frame[axis] + sign * 3,
+      } }))!, /scrolled list/);
+    }
+  }
+});
+
+test('selected controls use stable test IDs when their labels change', () => {
+  const before = screen();
+  const after = screen({ tab: 'Your policies' });
+  for (const s of [before, after]) s.elements.find((element) => element.ref === '@tab')!.testID = 'policies-tab';
+  assert.equal(change(before, after), undefined);
+});
