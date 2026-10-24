@@ -718,20 +718,22 @@ test('unresolved Xcode refuses container paths even with exact destination proof
 
 test('unresolved Xcode does not traverse wrappers or excuse another candidate', async () => {
   const argv = xcodeArgv();
-  for (const wrapper of [
-    '/bin/sh',
-    '/usr/bin/env',
-    '/usr/bin/python3',
-    '/usr/bin/node',
-    '/usr/bin/java',
-  ]) {
+  for (const [wrapper, expected] of [
+    ['/bin/sh', 'unknown'],
+    ['/usr/bin/env', 'unknown'],
+    ['/usr/bin/java', 'unknown'],
+    // An interpreter cannot host xcodebuild; a real one is its own row.
+    ['/usr/bin/python3', 'clear'],
+    ['/usr/bin/node', 'clear'],
+  ] as const) {
     assert.equal(
       await probeIosExternalRunnerStrict(
         fakePs(`20 ${wrapper} ${argv.join(' ')}\n`),
         UDID,
         async () => ({ ...xcodeIdentity(wrapper), argv: [wrapper, ...argv] }),
       ),
-      'unknown',
+      expected,
+      wrapper,
     );
   }
   for (const [other, expected] of [
@@ -901,10 +903,9 @@ test('attested unscoped MCP controls coexist while observed device automation st
 test('MCP admission uses attested argv rather than kernel-path spelling', async () => {
   for (const launched of ['java', '/opt/java/current/bin/java', ambiguousJvms[0]]) {
     const argv = [launched, '-classpath', '/Users/Test User/lib/*', 'maestro.cli.AppKt', 'mcp'];
-    let calls = 0;
+    const calls: Array<boolean | undefined> = [];
     const observe = async (pid: number, timeout: number, withArgv?: boolean) => {
-      calls++;
-      assert.equal(withArgv, true);
+      calls.push(withArgv);
       assert.ok(timeout > 0 && timeout <= 1_000);
       return {
         v: 1,
@@ -919,8 +920,25 @@ test('MCP admission uses attested argv rather than kernel-path spelling', async 
       'clear',
       launched,
     );
-    assert.equal(calls, 1);
+    // An unresolved path reads identity first and exact argv only once the kernel proves a JVM.
+    assert.deepEqual(calls, launched === ambiguousJvms[0] ? [undefined, true] : [true]);
   }
+  const argv = [ambiguousJvms[0], '-classpath', 'lib', 'maestro.cli.AppKt', 'mcp'];
+  assert.deepEqual(
+    await probeIosExternalRunnerAdmission(
+      fakePs(`20 ${argv.join(' ')}\n`),
+      UDID,
+      async (pid, _timeout, withArgv) => ({
+        v: 1,
+        pid,
+        birth: { seconds: 1, micros: 0 },
+        executable: withArgv ? '/opt/bin/agent' : '/opt/java/versions/21/bin/java',
+        argv,
+      }),
+    ),
+    { status: 'unknown', evidence: { reason: 'executable_identity_unproven', pid: 20 } },
+    'the argv read must observe the same executable',
+  );
 });
 
 test('controller coexistence requires complete consistent native argv, not just Java identity', async () => {
@@ -1170,6 +1188,60 @@ test('strict executable ambiguity keeps word-only prompts clear and never attrib
       if (prompt === prompts[0]) assert.equal(status, 'clear', command);
       // Unescaped ps text cannot always distinguish a driver path in argv from the executable.
       else assert.notEqual(status, 'busy', command);
+    }
+  }
+});
+
+test('an agent CLI is classified by kernel identity, never by its one-argument prompt', async () => {
+  const prompt =
+    `QA brief: run maestro test, /opt/homebrew/bin/maestro test --device ${UDID}, ` +
+    `${spacedExecutables[1]} test-without-building -destination id=${UDID}, ` +
+    `/tmp/build/RnFastRunner.app/RnFastRunner, /tmp/XCTRunner, java -cp lib maestro.cli.AppKt mcp. ` +
+    'x'.repeat(9_000);
+  const agents: Array<[string, string]> = [
+    ['/opt/node/bin/node', `node /opt/node/bin/agent exec ${prompt}`],
+    ['/usr/bin/python3', `/usr/bin/python3 /opt/bin/agent ${prompt}`],
+    ['/opt/bin/agent-native', `/opt/bin/agent-native exec ${prompt}`],
+  ];
+  const xcodebuild = '/Applications/Xcode.app/Contents/Developer/usr/bin/xcodebuild';
+  const realXcode = [xcodebuild, 'test-without-building', '-destination', `id=${UDID}`];
+  const realMaestro = ['/opt/homebrew/bin/maestro', 'test', '--device', UDID, 'flow.yaml'];
+  for (const [executable, command] of agents) {
+    const row = `20 ${command}\n`;
+    const observed: Array<boolean | undefined> = [];
+    const observe = async (pid: number, _timeout: number, withArgv?: boolean) => {
+      if (pid === 20) observed.push(withArgv);
+      const argv = pid === 21 ? realXcode : pid === 22 ? realMaestro : undefined;
+      return {
+        v: 1,
+        pid,
+        birth: { seconds: 1, micros: 0 },
+        executable: argv?.[0] ?? executable,
+        ...(withArgv && argv ? { argv } : {}),
+      };
+    };
+    assert.equal(
+      await probeIosExternalRunnerStrict(fakePs(row), UDID, observe),
+      'clear',
+      executable,
+    );
+    assert.deepEqual(observed, [undefined], 'the prompt never needs exact argv');
+    assert.equal(
+      await probeIosExternalRunnerStrict(fakePs(`20 ${command.slice(0, 40)} ${UDID}\n`), UDID),
+      'clear',
+      'a prompt naming only the device needs no observer',
+    );
+    for (const real of [realXcode, realMaestro]) {
+      const pid = real === realXcode ? 21 : 22;
+      assert.deepEqual(
+        await probeIosExternalRunnerAdmission(
+          fakePs(`${row}${pid} ${real.join(' ')}\n`),
+          UDID,
+          observe,
+        ),
+        { status: 'busy', evidence: { reason: 'driver_on_selected_device', pid } },
+        real[0],
+      );
     }
   }
 });
