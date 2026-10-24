@@ -294,3 +294,34 @@ test('private media diagnostics survive the wire with only closed cause fields',
   ])
     assert.equal(cleanDiagnostic({ ...event, cause }), undefined);
 });
+
+for (const mode of ['unused', 'absent'] as const) {
+  test(`media diagnostics cross the wire with ${mode} inputs`, async () => {
+    const lines: string[] = [];
+    const writer = createWriter((line) => lines.push(line), 'media-run');
+    const observed = native('SecureTextField');
+    observed.elements.push(...ready().elements);
+    observed.visibleText.push('Ready');
+    const f = walker(
+      [observed],
+      scriptedJudge(() => assert.fail('literal check')),
+    );
+    f.deps.mediaWithheld = writer.diagnostic;
+    const run = () => runPlan(parsePlan('✓ "Ready"').blocks!, f.deps);
+    if (mode === 'unused') await withInputs(new RunInputs({}, []), run);
+    else await run();
+    assert.deepEqual(
+      lines.map((line) => JSON.parse(line).payload),
+      [
+        {
+          kind: 'media-withheld',
+          scope: 'screenshots',
+          cause: { reason: 'secure-field' },
+          line: 1,
+        },
+        { kind: 'media-withheld', scope: 'video', cause: { reason: 'secure-field' }, line: 1 },
+      ],
+    );
+    assert.doesNotMatch(lines.join(''), /PRIVATE-CANARY|@private/);
+  });
+}

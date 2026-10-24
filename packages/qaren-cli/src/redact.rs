@@ -86,14 +86,57 @@ pub fn redact_secrets(raw: &str) -> String {
 // Ledger and receipt evidence only; operational records must preserve exact identities.
 pub fn durable_json<T: serde::Serialize>(value: &T) -> serde_json::Result<String> {
     let mut projected = serde_json::to_value(value)?;
-    fn inputs(value: &mut serde_json::Value) {
+    let mut media = Vec::new();
+    if let Some(value) = projected.get("mediaWithheld") {
+        if let Ok(value) = serde_json::from_value::<crate::core::MediaWithheld>(value.clone()) {
+            media.push(("/mediaWithheld".to_string(), serde_json::to_value(value)?));
+        }
+    }
+    if let Some(steps) = projected.get("steps").and_then(serde_json::Value::as_array) {
+        for (index, row) in steps.iter().enumerate() {
+            if let Some(value) = row.get("screenshotWithheld") {
+                if let Ok(cause) =
+                    serde_json::from_value::<crate::core::WithholdCause>(value.clone())
+                {
+                    media.push((
+                        format!("/steps/{index}/screenshotWithheld"),
+                        serde_json::to_value(cause)?,
+                    ));
+                }
+            }
+        }
+    }
+    if let Some(note) = projected
+        .pointer("/outcomes/media_withheld")
+        .and_then(serde_json::Value::as_str)
+    {
+        if let Some(cause) = crate::core::MediaLatch::from_receipt_note(note) {
+            media.push((
+                "/outcomes/media_withheld".to_string(),
+                cause.receipt_note().into(),
+            ));
+        }
+    }
+    fn inputs(value: &mut serde_json::Value, path: &str, media: &[(String, serde_json::Value)]) {
+        if let Some((_, closed)) = media.iter().find(|(pointer, _)| pointer == path) {
+            *value = closed.clone();
+            return;
+        }
         match value {
             serde_json::Value::String(s) => *s = redact_inputs(s),
-            serde_json::Value::Array(items) => items.iter_mut().for_each(inputs),
+            serde_json::Value::Array(items) => {
+                for (index, item) in items.iter_mut().enumerate() {
+                    inputs(item, &format!("{path}/{index}"), media);
+                }
+            }
             serde_json::Value::Object(map) => {
                 *map = std::mem::take(map)
                     .into_iter()
                     .map(|(key, mut value)| {
+                        let child = format!("{path}/{}", key.replace('~', "~0").replace('/', "~1"));
+                        let closed = media.iter().any(|(pointer, _)| {
+                            pointer == &child || pointer.starts_with(&format!("{child}/"))
+                        });
                         if !value.is_string()
                             || ![
                                 "verdict",
@@ -111,16 +154,16 @@ pub fn durable_json<T: serde::Serialize>(value: &T) -> serde_json::Result<String
                             ]
                             .contains(&key.as_str())
                         {
-                            inputs(&mut value);
+                            inputs(&mut value, &child, media);
                         }
-                        (redact_inputs(&key), value)
+                        (if closed { key } else { redact_inputs(&key) }, value)
                     })
                     .collect();
             }
             _ => {}
         }
     }
-    inputs(&mut projected);
+    inputs(&mut projected, "", &media);
     let value = &projected;
     let text = serde_json::to_string_pretty(value)?;
     if !names_private_key(&text) {

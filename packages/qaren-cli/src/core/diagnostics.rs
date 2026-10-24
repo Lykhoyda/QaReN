@@ -510,7 +510,12 @@ impl Sink {
         let Some(event) = clean(payload) else {
             return;
         };
-        if self.file.is_none() && payload["kind"] == "target-miss" {
+        if self.file.is_none()
+            && matches!(
+                event["kind"].as_str(),
+                Some("target-miss" | "media-withheld")
+            )
+        {
             self.file = private_file(&self.path);
         }
         let Some(file) = &mut self.file else {

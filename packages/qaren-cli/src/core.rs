@@ -142,6 +142,32 @@ pub struct MediaLatch {
 }
 
 impl MediaLatch {
+    pub(crate) fn from_receipt_note(note: &str) -> Option<Self> {
+        let (cause, line) = note.split_once("@line ")?;
+        let (reason, qualifier) = cause
+            .split_once('/')
+            .map_or((cause, None), |(r, q)| (r, Some(q)));
+        let reason: WithholdCause = serde_json::from_value(Value::String(reason.into())).ok()?;
+        let mut entry = Self {
+            reason,
+            kind: None,
+            source: None,
+            line: line.parse().ok()?,
+            count: None,
+        };
+        if let Some(qualifier) = qualifier {
+            let value = Value::String(qualifier.into());
+            match reason {
+                WithholdCause::GenericValue => {
+                    entry.kind = Some(serde_json::from_value(value).ok()?)
+                }
+                WithholdCause::Echo => entry.source = Some(serde_json::from_value(value).ok()?),
+                _ => return None,
+            }
+        }
+        (entry.receipt_note() == note).then_some(entry)
+    }
+
     pub fn receipt_note(&self) -> String {
         let qualifier = self
             .kind

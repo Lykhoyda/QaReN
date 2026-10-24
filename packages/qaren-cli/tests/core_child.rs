@@ -2134,3 +2134,81 @@ fn screenshot_withholding_metrics_accept_only_closed_words_on_withheld_frames() 
         assert_eq!(got, vec![metric, qualified]);
     });
 }
+
+#[test]
+fn media_diagnostics_reach_the_private_sink_with_unused_or_absent_inputs() {
+    use qaren::exec::RealRunner;
+    use qaren::redact::{with_input_scope, InputValues};
+    use std::ffi::OsString;
+    use std::sync::Arc;
+    for unused in [true, false] {
+        let entries = if unused {
+            vec![(
+                OsString::from("QAREN_INPUT_PASSWORD"),
+                OsString::from("private-canary"),
+            )]
+        } else {
+            vec![]
+        };
+        with_input_scope(Arc::new(InputValues::from_entries(entries)), || {
+            let repo = common::temp_repo();
+            let wire = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                .parent()
+                .unwrap()
+                .join("qaren-core/dist/qa/wire.js");
+            let script = r#"
+                const {createWriter} = await import(process.argv[1]);
+                const reader = (await import('node:readline')).createInterface({input: process.stdin});
+                reader.once('line', input => {
+                    const {runId} = JSON.parse(input);
+                    if (process.argv[2] === 'unused') process.stderr.write('private-canary\n');
+                    const writer = createWriter(line => process.stdout.write(line), runId);
+                    for (const scope of ['screenshots', 'video']) writer.diagnostic({kind:'media-withheld', scope, cause:{reason:'secure-field'}, line:1});
+                    process.stdout.write(JSON.stringify({v:1, runId, seq:writer.seq+1, type:'result', payload:{verdict:'PASS',path:'walk',blocks:[],steps:[],jev:{calls:0,medianMs:0},llmTurns:0,escapes:0,recoveries:0}})+'\n');
+                    reader.close(); process.stdin.destroy();
+                });
+            "#;
+            let mut runner = RealRunner::with_log_executable(env!("CARGO_BIN_EXE_qaren").into());
+            let fixture = CmdSpec::new(
+                "fixture",
+                "node",
+                &[
+                    "--input-type=module",
+                    "-e",
+                    script,
+                    wire.to_str().unwrap(),
+                    if unused { "unused" } else { "absent" },
+                ],
+                5,
+            );
+            let log_path = repo.join("core.log");
+            let child =
+                core::spawn_private(&mut runner, &fixture, &log_path, &request(), None, None)
+                    .unwrap();
+            let result = core::wait(&mut runner, child, budgets(), &mut |_, _| {});
+            assert_eq!(result.verdict, Verdict::Pass);
+            let stored = std::fs::read_to_string(repo.join("core-diagnostics.jsonl")).unwrap();
+            let records: Vec<serde_json::Value> = stored
+                .lines()
+                .map(|line| serde_json::from_str(line).unwrap())
+                .collect();
+            assert_eq!(
+                records,
+                vec![
+                    serde_json::json!({"kind":"media-withheld","scope":"screenshots","cause":{"reason":"secure-field"},"line":1}),
+                    serde_json::json!({"kind":"media-withheld","scope":"video","cause":{"reason":"secure-field"},"line":1}),
+                ]
+            );
+            let log = std::fs::read_to_string(log_path).unwrap();
+            assert!(!log.contains("private-canary"));
+            assert_eq!(log.contains("[private output withheld]"), unused);
+            assert_eq!(
+                log.lines()
+                    .filter(|line| line.starts_with("media-withheld "))
+                    .count(),
+                2
+            );
+            std::fs::remove_dir_all(repo).unwrap();
+        });
+    }
+}

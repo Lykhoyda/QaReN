@@ -363,7 +363,11 @@ export function createWriter(write: (line: string) => void, runId: string): Wire
       try {
         const clean = cleanDiagnostic(payload);
         if (!clean) return;
-        if (!currentInputs()?.hasInputs && clean.kind !== 'target-miss') return;
+        if (
+          !currentInputs()?.hasInputs &&
+          !['target-miss', 'media-withheld'].includes(clean.kind as string)
+        )
+          return;
         if (clean.kind === 'block-outcome' || clean.kind === 'login-outcome') {
           if (outcomes >= 10_000) return;
           outcomes++;
