@@ -83,7 +83,7 @@ for (const shape of [
         nodeIndex: null,
         differedFields: [],
         deadlineExpired: true,
-        outcome: 'deadline',
+        outcome: 'deadline-clean',
       });
       return undefined;
     };
@@ -96,7 +96,7 @@ for (const shape of [
     if (['Other', 'ScrollView', 'Cell'].includes(shape)) {
       assert.equal(result.verdict, 'PASS', JSON.stringify(result));
       assert.deepEqual(f.actions, ['press @e1']);
-      assert.equal(events[0].outcome, 'deadline');
+      assert.equal(events[0].outcome, 'deadline-clean');
       assert.equal(events[0].sampleCount, 3);
       assert.equal(events[0].resolvedBy, 'containment');
     } else {
@@ -165,9 +165,9 @@ for (const source of [
           sampleCount: null,
           nodeIndex: null,
           differedFields: [],
-          deadlineExpired: null,
+          deadlineExpired: true,
           outcome: ['direct-timeout', 'inner-timeout', 'missing-facts'].includes(source)
-            ? 'deadline'
+            ? 'deadline-clean'
             : source,
           ...(source === 'missing-facts'
             ? {}
@@ -232,7 +232,7 @@ test('containment selection preserves both captured candidates and cannot prove 
       nodeIndex: null,
       differedFields: [],
       deadlineExpired: true,
-      outcome: 'deadline',
+      outcome: 'deadline-clean',
       directLabelIndices: [1],
     });
     return undefined;

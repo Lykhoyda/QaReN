@@ -590,16 +590,19 @@ indices use the ordinary snapshot's retained filtering and deduplication options
 rather than raw-tree positions. iOS sample stability compares label source,
 parent link and frame; ordinary identity guards and each live candidate observation
 remain mandatory, while unrelated value or enabled-state changes between samples
-do not invalidate provenance. When a provenance read exhausts its time budget
-before the ordinary observation expires, exactly two native candidates can resolve by strict
-frame containment: one enabled, visible, hittable interactive control inside one
+do not invalidate provenance. Only an explicit `deadline-clean` native outcome
+can enable containment fallback before the ordinary observation expires; exactly
+two native candidates can then resolve by strict frame containment: one enabled, visible, hittable interactive control inside one
 non-interactive container (such as Other, group, cell or scroll container). Both
 frames must be finite, and every inner edge must lie strictly inside the outer
 frame. Distinct twins, two interactive candidates, additional candidates and an
 unhittable inner candidate remain `TARGET_AMBIGUOUS`. A fallback requires bounded
 direct-label facts from the producer and no direct outer-container label in any
-completed sample; a direct inner-control label is allowed. Available provenance
-keeps its existing authority; identity/process mismatches and expired observations do
+completed sample; a direct inner-control label is allowed. Each producer emits
+`deadline-clean` only when its between-sample polling deadline expires after a
+complete checked sample. Root reads, partial enumeration, live-read timeouts,
+legacy `deadline`, missing and unknown outcomes cannot enable fallback. Available
+provenance keeps its existing authority; identity/process mismatches and expired observations do
 not use the fallback. Other missing or changing candidate provenance fails as
 `TARGET_AMBIGUOUS`, with no press and no `PRIVATE_INPUT_CAPTURE_UNKNOWN` from the
 metadata read. Ordinary privacy failures
@@ -609,7 +612,7 @@ whether a read was requested, the sample count, candidate index, differing field
 names, deadline state and a fixed outcome code, without labels, identifiers,
 values or pixels; unavailable counts and deadline state are `null`. These events
 are retained in `core-diagnostics.jsonl` even without runtime inputs. A containment
-fallback retains the deadline outcome and records `resolvedBy: containment`;
+fallback retains the `deadline-clean` outcome and records `resolvedBy: containment`;
 a quoted scroll-until can also confirm one on-screen container carrying a whole
 label segment on an ordinary capture, provided no observed provenance or visibility
 contradicts it. Several matching containers refuse. This confirms visibility only,

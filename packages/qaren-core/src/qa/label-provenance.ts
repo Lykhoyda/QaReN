@@ -35,6 +35,7 @@ export const PROVENANCE_OUTCOMES = [
   'source-changed',
   'observation-unavailable',
   'deadline',
+  'deadline-clean',
   'not-hittable',
   'match-count-mismatch',
   'post-hit-mismatch',

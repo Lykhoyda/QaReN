@@ -1,5 +1,6 @@
 import type { ProvenanceReadDiagnostic } from '../../../dist/qa/label-provenance.js';
 import assert from 'node:assert/strict';
+import { assertProvenanceAdmission } from '../../helpers/candidate-provenance.ts';
 import { test } from 'node:test';
 import { clearRefMap, getFreshRefTarget } from '../../../dist/fast-runner-ref-map.js';
 import {
@@ -100,14 +101,20 @@ test('Android candidate metadata leaves refs and generation intact and returns n
     undefined,
   );
   assert.deepEqual(getFreshRefTarget('@e0'), before);
-  for (const outcome of ['deadline', 'source-changed', 'identity-mismatch'] as const) {
+  for (const outcome of [
+    'deadline',
+    'deadline-clean',
+    'unknown-timeout',
+    'source-changed',
+    'identity-mismatch',
+  ] as const) {
     diagnostic = {
       sampleCount: 2,
       nodeIndex: 0,
       fieldMask: outcome === 'source-changed' ? 256 : 0,
       deadlineExpired: true,
       outcome,
-      directLabelIndices: [0],
+      directLabelIndices: [1],
       label: 'private-native-canary',
     };
     const events: ProvenanceReadDiagnostic[] = [];
@@ -118,8 +125,9 @@ test('Android candidate metadata leaves refs and generation intact and returns n
       undefined,
     );
     assert.equal(events.length, 1);
-    assert.equal(events[0].outcome, outcome);
-    assert.deepEqual(events[0].directLabelIndices, [0]);
+    assert.equal(events[0].outcome, outcome === 'unknown-timeout' ? 'unavailable' : outcome);
+    if (outcome !== 'unknown-timeout') assert.deepEqual(events[0].directLabelIndices, [1]);
+    await assertProvenanceAdmission(events[0], outcome === 'deadline-clean');
     assert.doesNotMatch(JSON.stringify(events), /private-native-canary/);
     assert.deepEqual(getFreshRefTarget('@e0'), before);
   }

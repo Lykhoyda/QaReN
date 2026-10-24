@@ -123,6 +123,7 @@ fn clean_label_provenance(fields: &Map<String, Value>) -> Option<Value> {
         "source-changed",
         "observation-unavailable",
         "deadline",
+        "deadline-clean",
         "not-hittable",
         "match-count-mismatch",
         "post-hit-mismatch",
@@ -141,7 +142,7 @@ fn clean_label_provenance(fields: &Map<String, Value>) -> Option<Value> {
     clean.insert("outcome".into(), outcome.into());
     if let Some(resolved_by) = fields.get("resolvedBy") {
         let valid = match resolved_by.as_str()? {
-            "containment" => outcome == "deadline",
+            "containment" => outcome == "deadline-clean",
             "aggregate-visibility" => {
                 outcome == "unavailable" && fields.get("requested")?.as_bool()? == false
             }

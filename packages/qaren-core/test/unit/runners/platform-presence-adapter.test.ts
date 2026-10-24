@@ -1,4 +1,6 @@
 import assert from 'node:assert/strict';
+import { assertProvenanceAdmission } from '../../helpers/candidate-provenance.ts';
+import type { ProvenanceReadDiagnostic } from '../../../dist/qa/label-provenance.js';
 import childProcess from 'node:child_process';
 import { syncBuiltinESMExports } from 'node:module';
 import { afterEach, beforeEach, test } from 'node:test';
@@ -514,6 +516,7 @@ test('presence transport and native failures never retry, relayout, or reap the 
 test('candidate metadata preserves the ordinary ref map and withholds trees, values and wrong-process evidence', async () => {
   _setCapabilitiesForTest(['PLATFORM_PRESENCE_V2', 'QA_READ_ONLY_V1']);
   let processId = 71;
+  let timeoutOutcome: string | undefined;
   const bodies: Record<string, unknown>[] = [];
   _setFetchForTest(async (url, init) => {
     if (String(url).endsWith('/health'))
@@ -529,17 +532,18 @@ test('candidate metadata preserves the ordinary ref map and withholds trees, val
       ok: true,
       data: body.labelProvenance
         ? {
-            labelProvenance: [
-              { index: 0, labelSource: 'descendant', value: 'private-native-canary' },
-            ],
+            labelProvenance: timeoutOutcome
+              ? undefined
+              : [{ index: 0, labelSource: 'descendant', value: 'private-native-canary' }],
             nodes: [{ index: 99, type: 'TextField', value: 'private-native-canary', rect }],
             appProcessIdentifier: processId,
             labelProvenanceDiagnostics: {
               sampleCount: 2,
-              fieldMask: 8,
+              fieldMask: timeoutOutcome ? 0 : 8,
               nodeIndex: 0,
-              deadlineExpired: false,
-              outcome: 'available',
+              deadlineExpired: timeoutOutcome !== undefined,
+              directLabelIndices: [1],
+              outcome: timeoutOutcome ?? 'available',
               value: 'private-diagnostic-canary',
             },
           }
@@ -560,6 +564,7 @@ test('candidate metadata preserves the ordinary ref map and withholds trees, val
   assert.deepEqual(diagnostics, [
     {
       requested: true,
+      directLabelIndices: [1],
       sampleCount: 2,
       nodeIndex: 0,
       differedFields: ['value'],
@@ -581,6 +586,18 @@ test('candidate metadata preserves the ordinary ref map and withholds trees, val
     labelProvenance: [0],
     snapshotGeneration: 17,
   });
+  for (const outcome of ['deadline', 'deadline-clean', 'unknown-timeout']) {
+    timeoutOutcome = outcome;
+    const events: ProvenanceReadDiagnostic[] = [];
+    assert.equal(
+      await readIOSLabelProvenance(['@e0'], 777, 'com.test', 'sim', (event) => events.push(event)),
+      undefined,
+    );
+    assert.equal(events.length, 1);
+    await assertProvenanceAdmission(events[0], outcome === 'deadline-clean');
+    assert.deepEqual(getFreshRefTarget('@e0'), before);
+  }
+  timeoutOutcome = undefined;
   processId = 72;
   assert.equal(await readIOSLabelProvenance(['@e0'], 777, 'com.test', 'sim'), undefined);
   assert.deepEqual(getFreshRefTarget('@e0'), before);

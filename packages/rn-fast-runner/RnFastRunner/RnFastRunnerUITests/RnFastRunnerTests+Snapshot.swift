@@ -554,7 +554,16 @@ extension RnFastRunnerTests {
       if remaining <= 0 { return finish("unavailable") }
       sleepFor(min(0.1, remaining / 1000))
     }
-    return finish("unavailable")
+    guard previous?.count == indices.count, diagnostic.fieldMask == 0,
+          timing.diagnostics(complete: false).failure?.reason == .deadline else { return finish("deadline") }
+    for index in indices {
+      var child = index
+      while let parent = retainedSnapshotTargets[child]?.parentIndex, parent < child {
+        if diagnostic.directLabelIndices.contains(parent) { return finish("deadline") }
+        child = parent
+      }
+    }
+    return finish("deadline-clean")
   }
 
   func snapshotPlatformPresence(app: XCUIApplication, appId: String, presenceBudgetMs: Int) -> DataPayload {

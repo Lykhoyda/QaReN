@@ -624,7 +624,8 @@ async function walkBlockScoped(
       !provenanceAdmitted &&
       provenance === undefined &&
       deps.now() < deadline &&
-      provenanceDiagnostic.outcome === 'deadline' &&
+      provenanceDiagnostic.outcome === 'deadline-clean' &&
+      provenanceDiagnostic.deadlineExpired === true &&
       provenanceDiagnostic.differedFields.length === 0 &&
       provenanceDiagnostic.directLabelIndices !== undefined &&
       applyContainmentFallback(

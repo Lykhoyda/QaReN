@@ -9,10 +9,11 @@ const event = {
   line: 2,
   requested: true,
   sampleCount: 3,
-  nodeIndex: 47,
-  differedFields: ['frame', 'parentIndex'],
+  nodeIndex: null,
+  directLabelIndices: [1],
+  differedFields: [],
   deadlineExpired: true,
-  outcome: 'deadline',
+  outcome: 'deadline-clean',
 };
 test('candidate refusal diagnostics survive the private wire without inputs and strip arbitrary data', () => {
   const lines: string[] = [];
@@ -80,7 +81,7 @@ test('containment resolution is a value-free private diagnostic with an unavaila
   );
 });
 
-for (const outcome of ['deadline', 'source-changed', 'identity-mismatch']) {
+for (const outcome of ['deadline', 'deadline-clean', 'source-changed', 'identity-mismatch']) {
   test(`candidate source facts survive diagnostics: ${outcome}`, () => {
     const wire = {
       sampleCount: 2,
@@ -146,5 +147,11 @@ test('aggregate scroll visibility diagnostic is private and value-free without r
     { outcome: 'identity-mismatch' },
   ]) {
     assert.equal(cleanDiagnostic({ ...expected, ...patch }), undefined);
+  }
+});
+
+test('legacy and future timeout outcomes cannot claim containment resolution', () => {
+  for (const outcome of ['deadline', 'future-timeout', 'unavailable']) {
+    assert.equal(cleanDiagnostic({ ...event, outcome, resolvedBy: 'containment' }), undefined);
   }
 });

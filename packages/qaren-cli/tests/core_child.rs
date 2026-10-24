@@ -232,7 +232,7 @@ fn candidate_provenance_diagnostics_are_value_free_and_private_without_inputs() 
 #[test]
 fn containment_provenance_resolution_stays_private_and_value_free() {
     for (outcome, resolved_by, requested) in [
-        ("deadline", "containment", true),
+        ("deadline-clean", "containment", true),
         ("unavailable", "aggregate-visibility", false),
     ] {
         let repo = common::temp_repo();
@@ -245,11 +245,18 @@ fn containment_provenance_resolution_stays_private_and_value_free() {
         with_raw["value"] = "private-diagnostic-canary".into();
         let mut invalid = event.clone();
         invalid["resolvedBy"] = "private-diagnostic-canary".into();
+        let mut legacy = event.clone();
+        legacy["outcome"] = "deadline".into();
+        legacy["resolvedBy"] = "containment".into();
+        let mut unknown = event.clone();
+        unknown["outcome"] = "unknown-timeout".into();
         let stdout = format!(
-            "{}\n{}\n{}\n",
+            "{}\n{}\n{}\n{}\n{}\n",
             envelope(2, "diagnostic", &with_raw.to_string()),
             envelope(3, "diagnostic", &invalid.to_string()),
-            envelope(4, "result", &pass_ledger(&[]))
+            envelope(4, "diagnostic", &legacy.to_string()),
+            envelope(5, "diagnostic", &unknown.to_string()),
+            envelope(6, "result", &pass_ledger(&[]))
         );
         let mut mock = MockRunner::new();
         mock.expect_spawn_piped("walk.js", 9000, &stdout, Some(0));

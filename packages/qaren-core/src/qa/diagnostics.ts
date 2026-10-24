@@ -39,7 +39,7 @@ export function cleanDiagnostic(value: unknown): Record<string, unknown> | undef
     const event = cleanProvenanceReadDiagnostic(value);
     if (
       value.resolvedBy !== undefined &&
-      !(value.resolvedBy === 'containment' && event?.outcome === 'deadline') &&
+      !(value.resolvedBy === 'containment' && event?.outcome === 'deadline-clean') &&
       !(
         value.resolvedBy === 'aggregate-visibility' &&
         event?.outcome === 'unavailable' &&

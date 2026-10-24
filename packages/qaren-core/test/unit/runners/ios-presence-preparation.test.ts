@@ -5,10 +5,7 @@ import { test } from 'node:test';
 import { captureScreen } from '../../../dist/qa/capture.js';
 import { nativeCapture } from '../qa/platform-presence-fixtures.ts';
 import { provenanceDiagnosticFromWire } from '../../../dist/qa/label-provenance.js';
-import { join } from '../../../dist/qa/screen.js';
-import { parsePlan } from '../../../dist/qa/plan.js';
-import { runPlan } from '../../../dist/qa/walker.js';
-import { scriptedJudge, walker } from '../qa/judgment-fixtures.ts';
+import { assertProvenanceAdmission } from '../../helpers/candidate-provenance.ts';
 
 const native = new URL(
   '../../../../rn-fast-runner/RnFastRunner/RnFastRunnerUITests/',
@@ -349,7 +346,7 @@ for name in ["candidate-timeout", "candidate-direct-timeout", "candidate-alterna
   precondition(h.currentSnapshotGeneration == 7 && h.keyboardReads == 1)
   precondition(h.retainedSnapshotTargets[2]?.generation == before[2]?.generation)
   let diagnostic = result.labelProvenanceDiagnostics!
-  precondition(diagnostic.outcome == (name == "candidate-alternating-source" ? "source-changed" : "deadline"))
+  precondition(diagnostic.outcome == (name == "candidate-alternating-source" ? "source-changed" : name == "candidate-timeout" ? "deadline-clean" : "deadline"))
   precondition(diagnostic.directLabelIndices == (name == "candidate-timeout" ? [3] : name == "candidate-direct-timeout" ? [2, 3] : [3, 2]))
 }
 for stage in ["eligibility", "root", "enumeration", "all-matches", "candidate-snapshot", "candidate-hit", "post-hit-snapshot", "final-eligibility", "root-failure", "candidate-failure", "eligibility-failure", "hit-failure", "post-failure"] {
@@ -383,6 +380,26 @@ for stage in ["eligibility", "root", "enumeration", "all-matches", "candidate-sn
   precondition(h.currentSnapshotGeneration == 7 && h.keyboardReads == 1)
   precondition(diagnostic.outcome == (stage == "eligibility-failure" ? "ineligible" : stage == "post-failure" ? "identity-mismatch" : stage.hasSuffix("failure") ? "read-unavailable" : "deadline"), stage + ": " + diagnostic.outcome)
   precondition(diagnostic.directLabelIndices == [3])
+}
+for name in ["clean-poll", "direct-poll", "partial-contradiction", "late-root-contradiction"] {
+  let h = Harness(); h.useLiveReads = true
+  let first = candidateTree(sibling: 10), second = candidateTree(sibling: 11)
+  if name == "direct-poll" { first.children[0].children[1].label = "Add coverage" }
+  second.children[0].children[1].label = "Add coverage"
+  let app = XCUIApplication([first])
+  let ordinary = h.snapshotFast(app: app, options: SnapshotOptions(interactiveOnly: true, compact: false, depth: nil, scope: nil, raw: false))
+  h.retainSnapshotTargets(ordinary.nodes ?? [])
+  app.snapshots = [first, second]; app.reads = 0
+  second.children[0].children[2].onChildren = {
+    if name == "partial-contradiction" { h.now += 500 }
+  }
+  app.onRead = { read in if read == 2 && name == "late-root-contradiction" { h.now += 500 } }
+  let result = h.snapshotCandidateLabelProvenance(app: app, indices: [2, 3], budgetMs: name.hasSuffix("poll") ? 100 : 300)
+  let diagnostic = result.labelProvenanceDiagnostics!
+  precondition(result.labelProvenance == nil && result.nodes == nil && result.keyboardVisible == nil)
+  precondition(diagnostic.outcome == (name == "clean-poll" ? "deadline-clean" : "deadline"), name + ": " + diagnostic.outcome)
+  let output: [String: Any] = ["name": name, "diagnostic": try JSONSerialization.jsonObject(with: JSONEncoder().encode(diagnostic))]
+  print(String(data: try JSONSerialization.data(withJSONObject: output, options: [.sortedKeys]), encoding: .utf8)!)
 }
 for (field, mask) in [("type", 1), ("identifier", 2), ("label", 4), ("value", 8), ("frame", 16), ("enabled", 32)] {
   let h = Harness(); h.useLiveReads = true
@@ -523,47 +540,33 @@ do {
     assert.ok(diagnostic, field);
     assert.equal(diagnostic.outcome, 'identity-mismatch', field);
     assert.equal(row.diagnostic.fieldMask, mask, field);
-    const f = walker(
-      [],
-      scriptedJudge(() => assert.fail('quoted tap needs no model')),
-    );
-    f.deps.captureScreen = async () =>
-      join(
-        [
-          {
-            ref: '@e2',
-            type: 'Other',
-            label: 'Add coverage',
-            hittable: true,
-            rect: { x: 0, y: 0, width: 400, height: 800 },
-          },
-          {
-            ref: '@e3',
-            type: 'Button',
-            parentIndex: 0,
-            label: 'Add coverage',
-            hittable: true,
-            rect: { x: 20, y: 300, width: 360, height: 60 },
-          },
-        ],
-        [],
-        'app',
-        { native: 'complete', react: 'complete' },
-      );
-    f.deps.readLabelProvenance = async (_refs, _deadline, report) => {
-      report(diagnostic);
-      return undefined;
-    };
-    let screenshots = 0;
-    f.deps.screenshot = async () => {
-      screenshots++;
-      return 'screen.png';
-    };
-    const outcome = await runPlan(parsePlan('1. Tap "Add coverage"').blocks!, f.deps);
-    assert.match(JSON.stringify(outcome), /TARGET_AMBIGUOUS/, field);
-    assert.deepEqual(f.actions, [], field);
-    assert.equal(screenshots, 0, field);
+    await assertProvenanceAdmission(diagnostic, false, [2, 3]);
     rows.delete(`late-initial-${field}`);
+  }
+  for (const name of [
+    'clean-poll',
+    'direct-poll',
+    'partial-contradiction',
+    'late-root-contradiction',
+  ]) {
+    const diagnostic = provenanceDiagnosticFromWire(rows.get(name).diagnostic);
+    assert.ok(diagnostic, name);
+    await assertProvenanceAdmission(diagnostic, name === 'clean-poll', [2, 3]);
+    rows.delete(name);
+  }
+  for (const outcome of ['deadline', 'unknown-timeout']) {
+    await assertProvenanceAdmission(
+      provenanceDiagnosticFromWire({
+        outcome,
+        fieldMask: 0,
+        sampleCount: 1,
+        nodeIndex: null,
+        directLabelIndices: [3],
+        deadlineExpired: true,
+      }),
+      false,
+      [2, 3],
+    );
   }
   assert.deepEqual(rows.get('candidate-sibling-animation'), {
     name: 'candidate-sibling-animation',

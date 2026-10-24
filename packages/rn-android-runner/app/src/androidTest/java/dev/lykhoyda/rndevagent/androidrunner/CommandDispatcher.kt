@@ -390,7 +390,17 @@ class CommandDispatcher(
             if (remaining <= 0) break
             SystemClock.sleep(minOf(100L, remaining))
         }
-        return finish("unavailable")
+        if (previous == null || diagnostic.getInt("fieldMask") != 0) return finish("deadline")
+        for (index in indices) {
+            var child = index
+            var parent = qaSnapshotNodes[child].parentIndex
+            while (parent != null && parent in 0 until child) {
+                if (parent in directLabelIndices) return finish("deadline")
+                child = parent
+                parent = qaSnapshotNodes[child].parentIndex
+            }
+        }
+        return finish("deadline-clean")
     }
 
     private fun candidateFieldMask(a: QaHierarchy.QaNode, b: QaHierarchy.QaNode): Int {
