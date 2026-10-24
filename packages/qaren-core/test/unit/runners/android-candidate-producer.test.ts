@@ -117,9 +117,9 @@ ${section(source, '    private fun qaLabelProvenance(', '    // presenceBudgetMs
 }
 fun json(value: Any?): String = when(value) {
   null -> "null"
-  is JSONObject -> value.values.entries.joinToString(",", "{", "}") { "\\\"" + it.key + "\\\":" + json(it.value) }
+  is JSONObject -> value.values.entries.joinToString(",", "{", "}") { "\\"" + it.key + "\\":" + json(it.value) }
   is JSONArray -> value.values.joinToString(",", "[", "]") { json(it) }
-  is String -> "\\\"" + value + "\\\""
+  is String -> "\\"" + value + "\\""
   else -> value.toString()
 }
 fun main() {
