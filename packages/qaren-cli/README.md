@@ -890,14 +890,22 @@ on a keyboard-up path types nothing; failure of the pre-dispatch read returns
 `NO_TEXT_INPUT_TARGET` with no mutation. An unknown keyboard state still refuses.
 Each walker focus decision logs one value-free `fallback-focus` line.
 
-QaReN then requests replacement of the focused field's content: the runner synthesizes
-select-all and types the plan text in one sequence. When the input is a
+QaReN then requests replacement of the focused field's content: the iOS runner sends
+select-all and an explicit Delete in separate ordered records, then the host re-proves
+focus on the intended React input before sending the plan text. If focus moved or
+cannot be proved, no replacement text is sent; clearing may already have mutated the field.
+When the input is a
 controlled React field, its value is then read back locally and compared, never
 logged: an exact match verifies the fill. A stable controlled read-back exactly equal
-to the prior nonempty value followed by the requested text fails with
-`TEXT_ENTRY_UNVERIFIED` and an observed mutation, without retrying or continuing to
-submit. This detects a retained-prefix concatenation after typing; it does not
-repair the native replacement mechanism or cover unreadable values.
+to a nonempty prefix of the prior value followed by the requested text triggers one
+bounded clear-and-retype: move to the end, delete the current observed length (at most
+256 keys), re-prove focus, type, and verify again. This also covers select-all doing
+nothing before Delete removes just the last character. A changed value, lost focus,
+expired step budget, excessive length, or failed final verification refuses with
+`TEXT_ENTRY_UNVERIFIED`; no third attempt runs. Secure fields and runtime-input runs
+never supply their prior values to the length calculation: they use a fixed 256-key
+clear as their one retype and keep the existing unverified outcome. The bound cannot
+prove that a longer private value was completely cleared.
 The same check runs after the bounded retype below, comparing against the preserved
 initial value and the retype's fresh controlled, focused value before dispatch.
 A stable, nonempty read-back holding a
@@ -927,7 +935,7 @@ mutation disposition. The [focused replacement tests](../qaren-core/test/unit/de
 cover these guards and mutation reporting.
 An unverified keyboard step records a passing row with reason `UNVERIFIED_FILL`,
 allowing later plan steps to continue; it does not establish the field's final
-value. Apart from that one retype, failed keyboard typing is not retried. Before the fallback tap or
+value. Apart from that one replacement recovery or dropped-keystroke retype, failed keyboard typing is not retried. Before the fallback tap or
 no-target typing dispatch, the value is protected under the
 [shared masking rules](#input-value-masking), and screenshots are withheld for the rest
 of the walk. For block persistence after fallback, see [Saved blocks](#saved-blocks).

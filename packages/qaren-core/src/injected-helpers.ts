@@ -3,7 +3,7 @@ import { TYPOGRAPHY_TEXT_LIMITS } from './qa/host-typography.js';
 import { INPUT_HOST_TYPES } from './qa/input-host-types.js';
 
 // Bump when the injected surface changes so warm runtimes replace stale helpers.
-export const HELPERS_VERSION = 99;
+export const HELPERS_VERSION = 100;
 
 export const INJECTED_HELPERS = `
 (function() {
@@ -3101,8 +3101,8 @@ export const INJECTED_HELPERS = `
           component: candidate.name,
           candidateTestID: candidate.props.testID,
           sourceEvidence: source.evidence,
-          controlled: typeof candidate.props.value === 'string',
-          valueBefore: typeof candidate.props.value === 'string' ? candidate.props.value : null
+          controlled: !opts.omitValue && typeof candidate.props.value === 'string',
+          valueBefore: !opts.omitValue && typeof candidate.props.value === 'string' ? candidate.props.value : null
         });
       }
     }
@@ -4591,13 +4591,17 @@ export const INJECTED_HELPERS = `
     }
   }
 
-  function readInputValue(testID) {
+  function readInputValue(testID, options) {
     if (!testID) return JSON.stringify({ __agent_error: 'testID is required' });
-    var resolution = resolveTypeTextTarget({ testID: testID });
+    var resolution = resolveTypeTextTarget({ testID: testID, omitValue: true });
     if (resolution.error) return JSON.stringify({ __agent_error: resolution.error });
     if (!resolution.binding) return JSON.stringify({ value: null, controlled: false, focused: false });
     var props = resolution.binding.candidateFiber.memoizedProps || {};
     var focused = hostIsFocused(resolution.binding.candidateFiber);
+    if (options && options.focusOnly) return JSON.stringify({ value: null, controlled: false, focused: focused });
+    if (options && (options.privateValue || (options.protectSecure && props.secureTextEntry === true))) {
+      return JSON.stringify({ value: null, controlled: false, focused: focused, privateValue: true });
+    }
     if (typeof props.value === 'string') {
       return JSON.stringify({ value: props.value, controlled: true, focused: focused });
     }
