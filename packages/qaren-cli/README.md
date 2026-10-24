@@ -568,6 +568,9 @@ an identified native container into a smaller, enabled, visible, hittable descen
 control when tree ancestry, frame containment and whole label segments agree.
 Quoted label presses request platform-presence capture to obtain this provenance. Direct or unknown label
 provenance keeps the parent distinct; multiple distinct children remain ambiguous.
+Android's blank containers with proven descendant provenance acquire a bounded label
+from visible observed children during screen projection; input and secure content
+is excluded, and a container's own label is never reclassified.
 An explicit identifier selector still names the container. The
 [container regression tests](../qaren-core/test/unit/qa/target-container-miss.test.ts)
 cover these boundaries on both platforms through target resolution and `runPlan`.

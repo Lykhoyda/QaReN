@@ -67,6 +67,7 @@ for (const android of [false, true]) {
             requested.push(options?.platformPresence === true);
             const tree = nodes(android).map((node, index) => ({
               ...node,
+              ...(android && index === 2 && labelSource === 'descendant' ? { label: '' } : {}),
               index,
               depth: index,
               enabled: true,
@@ -100,6 +101,10 @@ for (const android of [false, true]) {
             };
           },
           react: async () => ({ interactive: [] }),
+        }).then((screen) => {
+          if (android && labelSource === 'descendant')
+            assert.equal(screen.elements[2].label, 'Add coverage, Details');
+          return screen;
         });
       const result = await runPlan(parsePlan('1. Tap "Add coverage"').blocks!, f.deps);
       assert.ok(requested.length > 0);

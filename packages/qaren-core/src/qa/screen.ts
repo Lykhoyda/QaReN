@@ -7,6 +7,7 @@ import {
 import { isRecord } from './questions.js';
 import {
   captureInputPrivacy,
+  isPossibleInput,
   nativeLabelMayBeValue,
   SCROLL_BAR_PERCENT,
   SYSTEM_SCROLL_BAR_LABEL,
@@ -532,6 +533,55 @@ export function joinedSnapshotDiagnostics(screen: Screen) {
   return projectionCounts.get(screen.elements) ?? null;
 }
 
+function androidDescendantLabels(
+  nodes: NativeNode[],
+  elements: Element[],
+  presence: NativePresence | undefined,
+  blocked: ReadonlySet<number>,
+): Map<number, string> {
+  const derived = new Map<number, string>();
+  if (presence?.source !== 'android-a11y-live' || nodes.length > 600) return derived;
+  const children = nodes.map((): number[] => []);
+  nodes.forEach((node, index) => {
+    const parent = node.parentIndex;
+    if (parent !== undefined && Number.isInteger(parent) && parent >= 0 && parent < index)
+      children[parent].push(index);
+  });
+  const carried = new Map<number, string>();
+  for (let index = nodes.length - 1; index >= 0; index--) {
+    const node = nodes[index];
+    const observation = presence.nodes[index];
+    if (
+      observation?.status !== 'observed' ||
+      blocked.has(index) ||
+      node.visibleToUser === false ||
+      node.enabled === false ||
+      node.secure ||
+      isPossibleInput(elements[index]) ||
+      node.value !== undefined
+    )
+      continue;
+    const direct = nonEmpty(node.label);
+    if (direct && observation.labelSource === 'direct') {
+      if (direct.length <= 4096) carried.set(index, direct);
+    } else if (
+      !direct &&
+      observation.labelSource === 'descendant' &&
+      kindOf(node.type) === 'other'
+    ) {
+      const label = children[index]
+        .map((child) => carried.get(child))
+        .filter((label): label is string => label !== undefined)
+        .join(', ');
+      if (label && label.length <= 4096) {
+        carried.set(index, label);
+        derived.set(index, label);
+      }
+    }
+  }
+  return derived;
+}
+
 export function join(
   nodes: NativeNode[],
   digest: DigestEntry[],
@@ -924,6 +974,13 @@ export function join(
     localCapabilities.set(element, local);
     return element;
   });
+  for (const [index, label] of androidDescendantLabels(
+    nodes,
+    elements,
+    presence,
+    new Set([...offscreen, ...viewport, ...contradicted, ...reactCovered]),
+  ))
+    elements[index].label = label;
   digest.forEach((d, i) => {
     if (used.has(i) || !d.testID || d.hidden) return;
     if (
