@@ -407,7 +407,9 @@ test('unresolved matches prevent conclusive misses in the selected domain', () =
             scrolling,
             new ObservedPrivacy(),
           );
-          const matches = exact === undefined || relation === 'equal' ||
+          const matches =
+            exact === undefined ||
+            relation === 'equal' ||
             (exact === 'text' && relation === 'contained');
           assert.equal(diagnostic.reason, matches ? 'evidence-incomplete' : 'absent');
           assert.equal(diagnostic.truncated, false);
