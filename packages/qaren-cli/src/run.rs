@@ -1042,7 +1042,38 @@ fn run_inner(
             format!("could not persist {}: {e}", ledger_path.display()),
         ));
     }
-    // ⑫ then ⑬: the recording ends with the walk, and saved blocks leave the worktree before it goes.
+    let mut hints = Vec::new();
+    let written = outcome.ledger.blocks_written.as_deref().unwrap_or_default();
+    let slugs: std::collections::BTreeSet<_> = written
+        .iter()
+        .chain(
+            outcome
+                .ledger
+                .blocks
+                .iter()
+                .filter(|block| block.source == "replayed")
+                .map(|block| &block.key),
+        )
+        .collect();
+    for slug in slugs {
+        if let Some(hint) = crate::actions::login_hint(
+            ctx.runner,
+            &app_root,
+            slug,
+            platform_str(req.platform),
+            &config,
+            pr_state.is_none() || !written.contains(slug),
+        ) {
+            hints.push(hint);
+        }
+    }
+    if pr_state.is_none()
+        && !written.is_empty()
+        && crate::actions::corpus_location(ctx.runner, &app_root)
+            == (crate::actions::CorpusLocation::Linked { local: true })
+    {
+        hints.push(crate::actions::corpus_hint(written.len()));
+    }
     let mut early_cleanup = Vec::new();
     let mut blocks = Vec::new();
     if pr_state.is_some() {
@@ -1294,6 +1325,7 @@ fn run_inner(
     receipt.tested_older_commit = tested_older_commit;
     receipt.ledger = Some(report::summarize(&outcome.ledger));
     receipt.blocks_written = outcome.ledger.blocks_written.clone().unwrap_or_default();
+    receipt.hints = hints;
     receipt.blocks_not_saved = outcome
         .ledger
         .blocks
@@ -1409,7 +1441,7 @@ pub fn worktree_status(runner: &mut dyn Runner, app_root: &Path) -> Option<BTree
 }
 
 // One `XY path` entry per change; a rename or copy also names its source path.
-fn porcelain_entries(stdout: &str) -> BTreeSet<String> {
+pub(crate) fn porcelain_entries(stdout: &str) -> BTreeSet<String> {
     let mut entries = BTreeSet::new();
     let mut records = stdout.split('\0').filter(|record| !record.is_empty());
     while let Some(record) = records.next() {

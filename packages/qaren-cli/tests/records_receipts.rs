@@ -393,3 +393,34 @@ fn borrowed_ios_stop_transitions_and_load_validation_require_canonical_borrowed_
         );
     }
 }
+
+#[test]
+fn receipt_hints_are_optional_and_use_the_durable_redaction_owner() {
+    let mut receipt = Receipt::new(
+        "check",
+        "hints",
+        ReceiptResult::Pass,
+        "complete",
+        "now".into(),
+    );
+    assert!(
+        serde_json::from_str::<serde_json::Value>(&receipt.to_json())
+            .unwrap()
+            .get("hints")
+            .is_none()
+    );
+    receipt.hints.push(qaren::receipt::Hint {
+        code: "LOGIN_BLOCK_CANDIDATE".into(),
+        text: "selector sentinel-value-123".into(),
+    });
+    let inputs = std::sync::Arc::new(qaren::redact::InputValues::from_entries([(
+        "QAREN_INPUT_PASSWORD".into(),
+        "sentinel-value-123".into(),
+    )]));
+    let raw = qaren::redact::with_input_scope(inputs, || receipt.to_json());
+    assert!(!raw.contains("sentinel-value-123"));
+    let parsed: Receipt = serde_json::from_str(&raw).unwrap();
+    assert_eq!(parsed.hints.len(), 1);
+    assert_eq!(parsed.hints[0].code, "LOGIN_BLOCK_CANDIDATE");
+    assert_eq!(parsed.next_action, receipt.next_action);
+}

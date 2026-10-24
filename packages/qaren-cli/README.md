@@ -2017,7 +2017,9 @@ file. Both `.yaml` and `.yml` identities share this lock.
 
 The ledger's `path` is `walk`, `replay` or `replay→walk@<line>` (the first re-walked
 plan line), and each block reports `source` `discovered`, `replayed` or `patched`. The
-receipt lists `blocks_written`, `blocks_not_saved` (block and reason) and, as a
+receipt lists `blocks_written`, `blocks_not_saved` (block and reason), `hints`
+(`code` and `text`, also printed to stderr; see the
+[reusable sign-in example](#reusable-sign-in-example)) and, as a
 diagnostic that never changes the verdict,
 `worktree_drift`: app-root paths whose `git status` changed during the walk, outside
 `.qaren/actions`. This status-only diagnostic is separate from the
@@ -2226,6 +2228,111 @@ these failure records.
 
 Dev-overlay recovery must re-prove clearance before retrying the step. A failed
 clearance or a non-executing hide with no overlay to clear fails the step.
+
+#### Reusable sign-in example
+
+Save sign-in once, then configure recovery for later checks on the same app and
+platform. This works with iOS and Android, Expo dev clients and configured native
+builds; use your existing build configuration and device flags. Apps without
+testIDs can use stored visible labels (`text`) instead of IDs. Runtime-input fills
+still require the [runtime-input prerequisites](#runtime-inputs), including a
+supported React TextInput; a label alone does not establish private-fill admission.
+
+1. Start on the sign-in screen and write `.qaren/plans/sign-in.md`. If the app
+   echoes the username, declare that before filling it:
+
+   ```markdown
+   ## QA
+
+   ### Sign in
+
+   1. Expect input USERNAME on screen
+   2. Fill "Email" with input USERNAME
+   3. Fill "Password" with input PASSWORD
+   4. Tap "Sign in"
+   ✓ "Welcome"
+   ```
+
+2. In your own shell, export inputs from your password manager. For example,
+   replace these placeholder references with your own password-manager CLI paths;
+   keep the resulting values out of plans and logs:
+
+   ```sh
+   export QAREN_INPUT_USERNAME="$(op read 'op://<vault>/<item>/username')"
+   export QAREN_INPUT_PASSWORD="$(op read 'op://<vault>/<item>/password')"
+   ```
+
+   In CI, supply those environment names through your CI secret store.
+
+3. Run `qaren check --plan-file .qaren/plans/sign-in.md` (add `--platform android`
+   for Android). On success, `.qaren/actions/sign-in.yaml` stores input names,
+   never their values. With an `Email` field whose testID is `login-email`, the
+   local receipt and stderr show:
+
+   ```text
+   ▸ login: block "sign-in" is a likely login block with runtime inputs USERNAME, PASSWORD.
+     Confirm it signs in; then, to replay it whenever its first screen appears, add to .qaren/config.yaml:
+       loginBlock: sign-in
+       loginMarker:
+         id: "login-email"
+     Every run then needs QAREN_INPUT_USERNAME and QAREN_INPUT_PASSWORD set.
+   ```
+
+   A saved block is a likely login block when its heading names sign-in (sign in,
+   log in, login or authenticate) or its first strict runtime-input fill comes
+   before any tap or back step, apart from the tap that focuses that fill.
+   A `### Change password` block that taps
+   `Settings` first is not suggested.
+
+4. After confirming the block signs in, paste those printed lines into `.qaren/config.yaml`:
+
+   ```yaml
+   loginBlock: sign-in
+   loginMarker:
+     id: "login-email"
+   ```
+
+   If the first stored selector is a label, the hint prints `text: "Email"`
+   instead. Use the first screen's actual selector; keep exactly one marker key.
+   Run `qaren doctor` to check the saved block and its platform. A block must be
+   saved for the platform being checked; an iOS block is not an Android block.
+   Doctor fails the login check if a configured block's stored YAML is malformed,
+   including its appId document or trailing content, without printing the body
+   or parser diagnostics. Re-run the plan containing `### Sign in` to save it again.
+   Doctor and later runs warn `LOGIN_MARKER_MISMATCH`, printing the block's first
+   selector as `loginMarker` lines, when the configured marker differs from it; a
+   different marker can work, so make sure it is visible only on the sign-in
+   screen. They warn `LOGIN_BLOCK_NO_INPUTS` when the configured block fills no
+   runtime inputs. Required inputs include non-secret ones, but only a strict
+   fill makes a block a likely login block by position.
+
+5. Keep the named inputs exported and run a later feature plan. When its step
+   meets the configured sign-in marker, QaReN replays `sign-in` from its first
+   command and retries that step once. Inputs are required before device
+   selection on every run with this login configuration, even if no login wall
+   appears. Runs with inputs withhold screenshots and video as documented under
+   [Runtime inputs](#runtime-inputs).
+
+A block starting at Home with `Tap "Log out"` before its sign-in fills starts
+signed in. It cannot recover from a sign-in screen: its first command expects
+Home. Put the sign-out steps in their own block above `### Sign in`, then run
+again to save the sign-in block starting on the sign-in screen. QaReN prints
+`LOGIN_BLOCK_SIGNS_OUT` instead of suggesting a marker for that combined block.
+This warning detects sign-out presses before the first runtime-input fill;
+checks and waits mentioning sign-out do not trigger it.
+If a target has neither a testID nor a label, the block cannot be saved; check
+`blocks_not_saved` before configuring recovery.
+
+Saved blocks in a linked worktree's real `.qaren/actions` leave with that worktree.
+Commit them to make them available in other checkouts and CI, or use the verified
+main-copy link described under [Saved blocks](#saved-blocks). `CORPUS_NOT_SHARED`
+points this out after a check writes blocks there; `qaren doctor` warns while
+that corpus holds untracked, modified or ignored blocks and passes once they are committed.
+`qaren pr` reads login from the PR head's committed corpus; local hints do not
+publish configuration or blocks. A likely login block that a PR run writes exists
+only in that run's evidence, so the run prints `LOGIN_BLOCK_RUN_ONLY` instead of
+`loginBlock` lines: save it with `qaren check` in the main copy, then configure
+login from that run's hint. See [Test a pull request](#test-a-pull-request).
 
 ### Walk timing
 

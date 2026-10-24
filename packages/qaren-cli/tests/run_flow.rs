@@ -1413,6 +1413,14 @@ fn script_teardown_with_status(
     script_teardown_resources(mock, inventory, probe_dead_leader, udid, runner_host);
 }
 
+fn script_final_verification(mock: &mut MockRunner) {
+    mock.expect_run("git", CmdOutput::success(&format!("{}\n", "b".repeat(40))));
+    mock.expect_run(
+        "git",
+        CmdOutput::success("?? test-app/.qaren/config.yaml\0?? test-app/plan.md\0"),
+    );
+}
+
 fn script_teardown_resources(
     mock: &mut MockRunner,
     inventory: CmdOutput,
@@ -1756,7 +1764,12 @@ fn the_receipt_names_written_blocks_and_paths_the_walk_changed_outside_them() {
         "(exclude).qaren/actions",
         CmdOutput::success(" M test-app/dirty.ts\0?? test-app/src/new.ts\0"),
     );
-    script_teardown_after_drift(
+    script_final_verification(&mut mock);
+    mock.expect_run(
+        "--git-common-dir",
+        CmdOutput::failed(128, "not a git checkout"),
+    );
+    script_teardown_resources(
         &mut mock,
         CmdOutput::success("1 1 S\n6000 6000 S\n"),
         false,
@@ -6759,7 +6772,8 @@ impl Runner for PrRunner {
         if spec.label == "core-walk" {
             let app = spec.cwd.as_ref().unwrap();
             std::fs::create_dir_all(app.join(".qaren/actions")).unwrap();
-            std::fs::write(app.join(".qaren/actions/tasks.yaml"), "steps: []\n").unwrap();
+            std::fs::write(app.join(".qaren/actions/tasks.yaml"),
+                "appId: com.rndevagent.testapp\n---\n# id: tasks\n# intent: Sign in\n# appId: com.rndevagent.testapp\n# platform: ios\n\n# 1. Fill password\n- tapOn: { id: login-password }\n- inputText: { input: PASSWORD }\n").unwrap();
         }
         self.inner.spawn_piped_unchecked(spec, log)
     }
@@ -7218,6 +7232,16 @@ fn pr_walk_result(candidate_drift: bool, collision: bool) {
 
     let receipt = run(&mut runner, &pr_request(&repo, &app));
 
+    assert_eq!(receipt.hints.len(), 1);
+    assert_eq!(receipt.hints[0].code, "LOGIN_BLOCK_RUN_ONLY");
+    assert!(receipt.hints[0]
+        .text
+        .contains("saved only to this PR run's evidence"));
+    assert!(receipt.hints[0]
+        .text
+        .contains("save it with `qaren check` in the main copy"));
+    assert!(!receipt.hints[0].text.contains("loginBlock:"));
+    assert!(!receipt.hints[0].text.contains("loginMarker:"));
     if candidate_drift {
         assert_eq!(receipt.result, ReceiptResult::Fail);
         assert_eq!(
@@ -7290,10 +7314,9 @@ fn pr_walk_result(candidate_drift: bool, collision: bool) {
     assert_eq!(receipt.cleanup["device_lease"], "removed");
     assert!(!wt.exists());
     let run_dir = repo.join("runs").join(&id);
-    assert_eq!(
-        std::fs::read_to_string(run_dir.join("blocks/tasks.yaml")).unwrap(),
-        "steps: []\n"
-    );
+    assert!(std::fs::read_to_string(run_dir.join("blocks/tasks.yaml"))
+        .unwrap()
+        .contains("- inputText: { input: PASSWORD }"));
     let pr: qaren::publish::PrRunRecord =
         serde_json::from_slice(&std::fs::read(run_dir.join("pr.json")).unwrap()).unwrap();
     assert_eq!(
@@ -9171,4 +9194,141 @@ fn unsafe_native_root_fails_check_and_releases_the_existing_device_lease() {
     assert!(receipt.build.is_none());
     assert_eq!(mock.remaining(), 0);
     assert!(!mock.calls.iter().any(|c| c.label == "simctl-install"));
+}
+
+#[test]
+fn saved_login_hints_use_names_and_the_first_screen_without_publishing_them() {
+    for (written, configured, label, signs_out, foreign, linked, nested) in [
+        (true, false, false, false, false, false, false),
+        (true, false, false, false, false, true, false),
+        (false, false, true, false, false, false, false),
+        (true, true, false, false, false, false, false),
+        (true, true, false, true, false, false, false),
+        (true, false, false, false, true, false, false),
+        (true, false, false, false, false, true, true),
+    ] {
+        let (repo, project) = app_repo();
+        let app = if nested {
+            let app = project.join("mobile");
+            std::fs::create_dir_all(app.join(".qaren")).unwrap();
+            std::fs::copy(
+                project.join(".qaren/config.yaml"),
+                app.join(".qaren/config.yaml"),
+            )
+            .unwrap();
+            app
+        } else {
+            project.clone()
+        };
+        if configured {
+            use std::io::Write;
+            std::fs::OpenOptions::new()
+                .append(true)
+                .open(app.join(".qaren/config.yaml"))
+                .unwrap()
+                .write_all(b"loginBlock: sign-in\nloginMarker:\n  id: login-email\n")
+                .unwrap();
+        }
+        let marker = if label {
+            "text: \"Email\""
+        } else {
+            "id: \"login-email\""
+        };
+        let sign_out = if signs_out {
+            "# 1. Tap Log out\n- tapOn: { text: \"Log out\" }\n"
+        } else {
+            ""
+        };
+        let app_id = if foreign {
+            "com.other.app"
+        } else {
+            "com.rndevagent.testapp"
+        };
+        std::fs::create_dir_all(app.join(".qaren/actions")).unwrap();
+        std::fs::write(app.join(".qaren/actions/sign-in.yaml"), format!(
+            "appId: {app_id}\n---\n# id: sign-in\n# intent: Sign in\n# appId: {app_id}\n# platform: ios\n\n{sign_out}# 1. Fill email\n- tapOn: {{ {marker} }}\n- inputText: {{ input: USERNAME }}\n# 2. Fill password\n- tapOn: {{ id: password }}\n- inputText: {{ input: PASSWORD }}\n"
+        )).unwrap();
+        let mut mock = MockRunner::new();
+        script_preflight(&mut mock, &repo);
+        script_provision(&mut mock);
+        script_drift_status(&mut mock);
+        let source = if written { "discovered" } else { "replayed" };
+        let mut ledger = serde_json::json!({"verdict":"PASS","path":"walk","blocks":[{"key":"sign-in","outcome":"pass","source":source}],"steps":[],"jev":{"calls":0,"medianMs":0},"llmTurns":0,"escapes":0,"recoveries":0});
+        if written {
+            ledger["blocksWritten"] = serde_json::json!(["sign-in"]);
+        }
+        script_host_probe(&mut mock, UDID, hosts_absent());
+        mock.expect_spawn_piped(
+            "walk.js",
+            9000,
+            &format!("{}\n", envelope(2, "result", &ledger.to_string())),
+            Some(0),
+        );
+        script_core_identity(&mut mock);
+        script_drift_status(&mut mock);
+        script_final_verification(&mut mock);
+        if written {
+            mock.expect_run(
+                "--git-common-dir",
+                CmdOutput::success(if linked {
+                    "/repo/.git/worktrees/task\n/repo/.git\n"
+                } else {
+                    "/repo/.git\n/repo/.git\n"
+                }),
+            );
+        }
+        script_teardown_resources(
+            &mut mock,
+            CmdOutput::success("1 1 S\n6000 6000 S\n"),
+            false,
+            UDID,
+            Some(hosts_absent()),
+        );
+        let inputs = std::sync::Arc::new(qaren::redact::InputValues::from_entries([(
+            "QAREN_INPUT_PASSWORD".into(),
+            "sentinel-value-123".into(),
+        )]));
+        let mut req = request(&repo, &project, 30);
+        req.config_path = app.join(".qaren/config.yaml");
+        let receipt = qaren::redact::with_input_scope(inputs, || run(&mut mock, &req));
+        assert_eq!(receipt.result, ReceiptResult::Pass, "{:?}", receipt.failure);
+        assert_eq!(mock.remaining(), 0);
+        if written {
+            let corpus = mock
+                .calls
+                .iter()
+                .find(|call| call.args.iter().any(|arg| arg == "--git-common-dir"))
+                .unwrap();
+            assert_eq!(
+                corpus.cwd.as_ref().unwrap().canonicalize().unwrap(),
+                app.canonicalize().unwrap()
+            );
+        }
+        let json = receipt.to_json();
+        assert!(!json.contains("sentinel-value-123"));
+        if foreign || (configured && !signs_out) {
+            assert!(receipt.hints.is_empty());
+        } else if signs_out {
+            assert_eq!(receipt.hints[0].code, "LOGIN_BLOCK_SIGNS_OUT");
+            assert!(!receipt.hints[0].text.contains("loginMarker:"));
+        } else {
+            assert_eq!(receipt.hints[0].code, "LOGIN_BLOCK_CANDIDATE");
+            assert_eq!(receipt.hints[0].text, format!(
+                "▸ login: block \"sign-in\" is a likely login block with runtime inputs USERNAME, PASSWORD.\n  Confirm it signs in; then, to replay it whenever its first screen appears, add to .qaren/config.yaml:\n    loginBlock: sign-in\n    loginMarker:\n      {marker}\n  Every run then needs QAREN_INPUT_USERNAME and QAREN_INPUT_PASSWORD set."
+            ));
+        }
+        if linked {
+            assert_eq!(receipt.hints.len(), 2);
+            assert_eq!(receipt.hints[1].code, "CORPUS_NOT_SHARED");
+            assert!(receipt.hints[1]
+                .text
+                .starts_with("▸ saved blocks: 1 written"));
+            assert!(receipt.hints[1]
+                .text
+                .contains("then: ln -s <main>/<app>/.qaren/actions .qaren/actions"));
+        }
+        let report = std::fs::read_to_string(&receipt.artifacts["report"]).unwrap();
+        assert!(!report.contains("loginMarker:"));
+        assert!(!report.contains("login-email"));
+    }
 }
