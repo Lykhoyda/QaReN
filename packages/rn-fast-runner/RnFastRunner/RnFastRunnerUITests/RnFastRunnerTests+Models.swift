@@ -218,6 +218,7 @@ struct DataPayload: Codable {
   var alertClosed: Bool? = nil
   var systemModal: SystemModalDiagnostic? = nil
   var labelProvenance: [CandidateLabelProvenance]? = nil
+  var labelProvenanceDiagnostics: CandidateLabelProvenanceDiagnostics? = nil
 
   init(
     message: String? = nil,
@@ -538,6 +539,14 @@ struct PlatformPresenceObservation: Codable {
 struct CandidateLabelProvenance: Codable {
   let index: Int
   let labelSource: PlatformPresenceObservation.LabelSource
+}
+
+struct CandidateLabelProvenanceDiagnostics: Codable {
+  var sampleCount = 0
+  var nodeIndex: Int? = nil
+  var fieldMask = 0
+  var deadlineExpired = false
+  var outcome = "unavailable"
 }
 
 struct RetainedSnapshotTarget {

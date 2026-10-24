@@ -284,7 +284,9 @@ extension RnFastRunnerTests {
         : XCUIApplication(bundleIdentifier: bundleId)
       if let indices = command.labelProvenance {
         guard command.snapshotGeneration == currentSnapshotGeneration else {
-          return Response(ok: true, data: DataPayload())
+          var payload = DataPayload()
+          payload.labelProvenanceDiagnostics = CandidateLabelProvenanceDiagnostics(outcome: "baseline-unavailable")
+          return Response(ok: true, data: payload)
         }
         return Response(ok: true, data: runnerPayload(
           snapshotCandidateLabelProvenance(app: target, indices: indices, budgetMs: presenceBudgetMs),

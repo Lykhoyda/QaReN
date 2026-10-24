@@ -534,6 +534,14 @@ test('candidate metadata preserves the ordinary ref map and withholds trees, val
             ],
             nodes: [{ index: 99, type: 'TextField', value: 'private-native-canary', rect }],
             appProcessIdentifier: processId,
+            labelProvenanceDiagnostics: {
+              sampleCount: 2,
+              fieldMask: 8,
+              nodeIndex: 0,
+              deadlineExpired: false,
+              outcome: 'available',
+              value: 'private-diagnostic-canary',
+            },
           }
         : {
             nodes: [{ index: 0, type: 'Button', label: 'Add coverage', rect }],
@@ -545,7 +553,21 @@ test('candidate metadata preserves the ordinary ref map and withholds trees, val
   });
   await runIOS({ command: 'snapshot', bundleId: 'com.test' });
   const before = getFreshRefTarget('@e0');
-  const evidence = await readIOSLabelProvenance(['@e0'], 777, 'com.test', 'sim');
+  const diagnostics: unknown[] = [];
+  const evidence = await readIOSLabelProvenance(['@e0'], 777, 'com.test', 'sim', (event) =>
+    diagnostics.push(event),
+  );
+  assert.deepEqual(diagnostics, [
+    {
+      requested: true,
+      sampleCount: 2,
+      nodeIndex: 0,
+      differedFields: ['value'],
+      deadlineExpired: false,
+      outcome: 'available',
+    },
+  ]);
+  assert.doesNotMatch(JSON.stringify(diagnostics), /private-diagnostic-canary/);
   assert.deepEqual(evidence, [{ ref: '@e0', labelSource: 'descendant' }]);
   assert.equal(JSON.stringify(evidence).includes('private-native-canary'), false);
   assert.deepEqual(getFreshRefTarget('@e0'), before);

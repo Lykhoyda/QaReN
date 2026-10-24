@@ -118,6 +118,8 @@ for (const failure of ['ordinary-private', 'metadata-private', 'metadata-deadlin
     );
     let now = 0;
     let reads = 0;
+    const diagnostics: Array<{ deadlineExpired: boolean | null }> = [];
+    f.deps.labelProvenanceDiagnostic = (event) => diagnostics.push(event);
     f.deps.now = () => now;
     f.deps.captureScreen = async () => {
       if (failure === 'ordinary-private')
@@ -155,6 +157,8 @@ for (const failure of ['ordinary-private', 'metadata-private', 'metadata-deadlin
     };
     f.deps.screenshot = async () => assert.fail('unknown evidence cannot authorize pixels');
     const result = await runPlan(parsePlan('1. Tap "Add coverage"').blocks!, f.deps);
+    assert.equal(diagnostics.length, failure === 'ordinary-private' ? 0 : 1);
+    if (failure === 'metadata-deadline') assert.equal(diagnostics[0].deadlineExpired, true);
     assert.deepEqual(f.actions, []);
     assert.equal(reads, failure === 'ordinary-private' ? 0 : 1);
     assert.match(
@@ -207,4 +211,69 @@ test('cancellation during candidate metadata takes precedence over unavailable p
   assert.match(JSON.stringify(result), /RUN_CANCELLED/);
   assert.doesNotMatch(JSON.stringify(result), /TARGET_AMBIGUOUS/);
   assert.deepEqual(f.actions, []);
+});
+
+test('unresolved candidate provenance emits value-free native sample and mismatch diagnostics', async () => {
+  const f = walker(
+    [],
+    scriptedJudge(() => assert.fail('literal target needs no model')),
+  );
+  const { join } = await import('../../../dist/qa/screen.js');
+  f.deps.captureScreen = async () =>
+    join(
+      [
+        { ref: '@app', type: 'Application', rect: { x: 0, y: 0, width: 400, height: 800 } },
+        {
+          ref: '@outer',
+          parentIndex: 0,
+          type: 'ScrollView',
+          label: 'Add coverage, Details',
+          hittable: true,
+          rect: { x: 0, y: 0, width: 400, height: 800 },
+        },
+        {
+          ref: '@inner',
+          parentIndex: 1,
+          type: 'Other',
+          label: 'Add coverage, Details',
+          hittable: true,
+          rect: { x: 20, y: 300, width: 360, height: 60 },
+        },
+      ],
+      [],
+      'app',
+      { native: 'complete', react: 'complete' },
+    );
+  const events: unknown[] = [];
+  f.deps.labelProvenanceDiagnostic = (event) => events.push(event);
+  f.deps.readLabelProvenance = async (_refs, _deadline, report) => {
+    report({
+      requested: true,
+      sampleCount: 3,
+      nodeIndex: 2,
+      differedFields: ['frame'],
+      deadlineExpired: true,
+      outcome: 'deadline',
+      value: 'private-canary',
+    });
+    return undefined;
+  };
+  const result = await runPlan(parsePlan('1. Tap "Add coverage"').blocks!, f.deps);
+  assert.match(JSON.stringify(result), /TARGET_AMBIGUOUS/);
+  assert.deepEqual(f.actions, []);
+  assert.equal(events.length, 1);
+  assert.deepEqual(events[0], {
+    kind: 'label-provenance',
+    line: 1,
+    requested: true,
+    sampleCount: 3,
+    nodeIndex: 2,
+    differedFields: ['frame'],
+    deadlineExpired: true,
+    outcome: 'deadline',
+  });
+  assert.doesNotMatch(
+    JSON.stringify({ result, events }),
+    /PRIVATE_INPUT_CAPTURE_UNKNOWN|private-canary/,
+  );
 });

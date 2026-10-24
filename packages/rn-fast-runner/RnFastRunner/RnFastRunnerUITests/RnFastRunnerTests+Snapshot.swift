@@ -434,19 +434,32 @@ extension RnFastRunnerTests {
 
   func snapshotCandidateLabelProvenance(app: XCUIApplication, indices: [Int], budgetMs: Int) -> DataPayload {
     var result = DataPayload()
-    guard let options = retainedFastSnapshotOptions,
-          !indices.isEmpty, indices.count <= 64, Set(indices).count == indices.count,
-          indices.allSatisfy({ retainedSnapshotTargets[$0]?.generation == currentSnapshotGeneration }) else { return result }
+    var diagnostic = CandidateLabelProvenanceDiagnostics()
     let started = presenceUptimeMs()
     let deadline = started + Double(budgetMs)
+    func finish(_ outcome: String) -> DataPayload {
+      diagnostic.deadlineExpired = presenceUptimeMs() >= deadline
+      diagnostic.outcome = diagnostic.deadlineExpired ? "deadline" : outcome
+      var payload = result
+      payload.labelProvenanceDiagnostics = diagnostic
+      if diagnostic.deadlineExpired { payload.labelProvenance = nil }
+      return payload
+    }
+    guard let options = retainedFastSnapshotOptions,
+          !indices.isEmpty, indices.count <= 64, Set(indices).count == indices.count,
+          indices.allSatisfy({ retainedSnapshotTargets[$0]?.generation == currentSnapshotGeneration }) else {
+      return finish("baseline-unavailable")
+    }
     let timing = PresenceCaptureTiming(started: started, now: presenceUptimeMs)
     var previous: [PresenceEntry]?
     var previousSources: [PlatformPresenceObservation.LabelSource]?
+    var failure = "unavailable"
     while !timing.deadlineReached(deadline, read: .preparationPoll, edge: .before) {
-      guard presenceAppIsEligible(app, deadline: deadline, timing: timing) == true,
-            let context = presenceRead(deadline: deadline, timing: timing, read: .rootSnapshot, {
-              self.makeSnapshotTraversalContext(app: app, options: options)
-            }) ?? nil else { return result }
+      guard presenceAppIsEligible(app, deadline: deadline, timing: timing) == true else { return finish("ineligible") }
+      guard let context = presenceRead(deadline: deadline, timing: timing, read: .rootSnapshot, {
+        self.makeSnapshotTraversalContext(app: app, options: options)
+      }) ?? nil else { return finish("read-unavailable") }
+      diagnostic.sampleCount += 1
       var selected: [Int: (XCUIElementSnapshot, PresenceEntry)] = [:]
       var count = 1
       let (_, truncated) = fastSnapshotNodes(context: context, options: options, canContinue: {
@@ -460,36 +473,60 @@ extension RnFastRunnerTests {
           ))
         }
       })
-      guard !truncated else { return result }
+      guard !truncated else { return finish("enumeration-incomplete") }
       var entries: [PresenceEntry] = []
       var sources: [PlatformPresenceObservation.LabelSource] = []
       for index in indices {
-        guard let (snapshot, entry) = selected[index], let target = retainedSnapshotTargets[index],
-              target.type == elementTypeName(snapshot.elementType),
-              target.parentIndex == entry.parentIndex,
-              target.identifier == (snapshot.identifier.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? nil : snapshot.identifier.trimmingCharacters(in: .whitespacesAndNewlines)),
-              target.label == aggregatedLabel(for: snapshot),
-              target.rect == snapshotRect(from: snapshot.frame),
-              observePresence(entry.descriptor, count: 1, app: app, deadline: deadline, timing: timing) != nil else {
-          entries.removeAll()
+        guard let (snapshot, entry) = selected[index], let target = retainedSnapshotTargets[index] else {
+          diagnostic.nodeIndex = index; failure = "baseline-unavailable"
+          break
+        }
+        var mask = 0
+        if target.type != elementTypeName(snapshot.elementType) { mask |= 1 }
+        let identifier = snapshot.identifier.trimmingCharacters(in: .whitespacesAndNewlines)
+        if target.identifier != (identifier.isEmpty ? nil : identifier) { mask |= 2 }
+        if target.label != aggregatedLabel(for: snapshot) { mask |= 4 }
+        if target.rect != snapshotRect(from: snapshot.frame) { mask |= 16 }
+        if target.parentIndex != entry.parentIndex { mask |= 128 }
+        if mask != 0 {
+          diagnostic.nodeIndex = index; diagnostic.fieldMask = mask; failure = "identity-mismatch"
+          break
+        }
+        var unknown: PlatformPresenceObservation.UnknownReason?
+        guard observePresence(entry.descriptor, count: 1, app: app, deadline: deadline, timing: timing,
+          unknownReason: { unknown = $0 }) != nil else {
+          diagnostic.nodeIndex = index; failure = unknown?.rawValue ?? "observation-unavailable"
           break
         }
         entries.append(entry)
         sources.append(presenceLabelSource(snapshot))
       }
-      guard presenceAppIsEligible(app, deadline: deadline, timing: timing) == true,
-            !timing.deadlineReached(deadline, read: .finalization, edge: .after) else { return result }
-      if entries.count == indices.count, previous == entries, previousSources == sources {
+      guard presenceAppIsEligible(app, deadline: deadline, timing: timing) == true else { return finish("ineligible") }
+      guard !timing.deadlineReached(deadline, read: .finalization, edge: .after) else { return finish(failure) }
+      var stable = entries.count == indices.count && previous?.count == entries.count
+      if stable, let previous, let previousSources {
+        for offset in entries.indices {
+          let entry = entries[offset], prior = previous[offset]
+          var mask = entry.descriptor.changedFields(from: prior.descriptor)
+          if entry.depth != prior.depth { mask |= 64 }
+          if entry.parentIndex != prior.parentIndex { mask |= 128 }
+          if sources[offset] != previousSources[offset] { mask |= 256 }
+          if mask != 0 { diagnostic.nodeIndex = indices[offset]; diagnostic.fieldMask = mask }
+          if entry.descriptor.frame != prior.descriptor.frame || entry.parentIndex != prior.parentIndex
+            || sources[offset] != previousSources[offset] { stable = false }
+        }
+      }
+      if stable {
         result.labelProvenance = zip(indices, sources).map { CandidateLabelProvenance(index: $0.0, labelSource: $0.1) }
-        return result
+        return finish("available")
       }
       previous = entries.count == indices.count ? entries : nil
       previousSources = entries.count == indices.count ? sources : nil
       let remaining = deadline - presenceUptimeMs()
-      if remaining <= 0 { return result }
+      if remaining <= 0 { return finish(failure) }
       sleepFor(min(0.1, remaining / 1000))
     }
-    return result
+    return finish(failure)
   }
 
   func snapshotPlatformPresence(app: XCUIApplication, appId: String, presenceBudgetMs: Int) -> DataPayload {

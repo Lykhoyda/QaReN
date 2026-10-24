@@ -1,4 +1,12 @@
 import {
+  applyLabelProvenance,
+  type LabelProvenance,
+  cleanProvenanceReadDiagnostic,
+  unavailableProvenance,
+  type ProvenanceReporter,
+  type LabelProvenanceDiagnostic,
+} from './label-provenance.js';
+import {
   fillText,
   InputPrivacyRefusal,
   currentInputs,
@@ -81,7 +89,6 @@ import {
 } from './privacy.js';
 import { renderReason, segments, type Reason } from './untrusted.js';
 import { NativeSnapshotIncomplete, PrivateInputCaptureError } from './private-input.js';
-import { applyLabelProvenance, type LabelProvenance } from './label-provenance.js';
 import {
   AppProcessGoneError,
   emitCaptureDiagnostics,
@@ -139,7 +146,11 @@ export interface ActResult {
 }
 
 export interface WalkerDeps {
-  readLabelProvenance?(refs: string[], deadline: number): Promise<LabelProvenance[] | undefined>;
+  readLabelProvenance?(
+    refs: string[],
+    deadline: number,
+    report: ProvenanceReporter,
+  ): Promise<LabelProvenance[] | undefined>;
   privacy?: ObservedPrivacy;
   mediaWithheld?(event: MediaWithheldDiagnostic): void;
   judge?: Judge;
@@ -184,6 +195,7 @@ export interface WalkerDeps {
   cancelled?(): boolean;
   diagnostic?(event: WalkerTimingDiagnostic): void;
   targetMiss?(event: TargetMissDiagnostic): void;
+  labelProvenanceDiagnostic?(event: LabelProvenanceDiagnostic): void;
   blockOutcome?(event: BlockOutcomeDiagnostic): void;
   loginOutcome?(outcome: BlockOutcome): void;
   timing?: TimingObserver;
@@ -571,18 +583,49 @@ async function walkBlockScoped(
     const deadline = observationDeadline(observation.timing);
     metadataOnly = true;
     let provenance: LabelProvenance[] | undefined;
+    let provenanceDiagnostic = {
+      ...unavailableProvenance('adapter-unavailable'),
+      requested: false,
+    };
+    const report: ProvenanceReporter = (event) => {
+      const clean = cleanProvenanceReadDiagnostic(event);
+      if (clean) provenanceDiagnostic = clean;
+    };
+    const provenanceTimeout = new Error('candidate-provenance-deadline');
     try {
       provenance = await withDeadline(
         performance.now() + Math.max(0, deadline - deps.now()),
-        new Error('candidate-provenance-deadline'),
-        async () => deps.readLabelProvenance?.(refs, deadline),
+        provenanceTimeout,
+        async () => {
+          if (!deps.readLabelProvenance) return undefined;
+          provenanceDiagnostic = unavailableProvenance();
+          return deps.readLabelProvenance(refs, deadline, report);
+        },
       );
     } catch (error) {
       if (isAbort(error)) throw error;
       if (error instanceof AppProcessGoneError) throw processChanged();
+      provenanceDiagnostic.outcome = error === provenanceTimeout ? 'deadline' : 'read-failed';
+      if (error === provenanceTimeout) provenanceDiagnostic.deadlineExpired = true;
     }
     assertActive();
-    if (deps.now() >= deadline || !applyLabelProvenance(observation.screen, refs, provenance))
+    if (deps.now() >= deadline) {
+      provenanceDiagnostic.deadlineExpired = true;
+      provenanceDiagnostic.outcome = 'deadline';
+    }
+    const provenanceAdmitted =
+      deps.now() < deadline && applyLabelProvenance(observation.screen, refs, provenance);
+    if (provenanceAdmitted) provenanceDiagnostic.outcome = 'available';
+    try {
+      deps.labelProvenanceDiagnostic?.({
+        kind: 'label-provenance',
+        line: step.line,
+        ...provenanceDiagnostic,
+      });
+    } catch {
+      /* Diagnostics cannot change admission. */
+    }
+    if (!provenanceAdmitted)
       throw new ResolutionError({
         refuse: 'TARGET_AMBIGUOUS',
         reason: 'candidate label provenance was unavailable within the observation budget',

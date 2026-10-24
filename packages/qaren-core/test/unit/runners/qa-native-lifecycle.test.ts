@@ -43,7 +43,8 @@ import Foundation
 ${section(read('Models'), 'enum CommandType:', 'struct Response:')}
 ${section(read('Models'), 'struct SnapshotRect:', 'struct SnapshotNode:')}
 struct ErrorPayload { var code: String? = nil; let message: String; var mutation: String? = nil; var reason: String? = nil }
-struct DataPayload { var nodes: [Int]? = nil }
+struct CandidateLabelProvenanceDiagnostics { var outcome: String }
+struct DataPayload { var nodes: [Int]? = nil; var labelProvenanceDiagnostics: CandidateLabelProvenanceDiagnostics? = nil }
 func runnerPayload(_ payload: DataPayload, appProcessIdentifier: Int?) -> DataPayload { payload }
 struct Response { let ok: Bool; var data: DataPayload? = nil; var error: ErrorPayload? = nil }
 enum RunnerErrorDomain { static let exception = "exception"; static let general = "general" }

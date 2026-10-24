@@ -1,4 +1,11 @@
-import { labelProvenanceFromWire, type LabelProvenance } from '../qa/label-provenance.js';
+import {
+  cleanProvenanceReadDiagnostic,
+  labelProvenanceFromWire,
+  type LabelProvenance,
+  provenanceDiagnosticFromWire,
+  unavailableProvenance,
+  type ProvenanceReporter,
+} from '../qa/label-provenance.js';
 import { currentInputs } from '../qa/inputs.js';
 /*
  * Copyright (c) 2026 Anton Lykhoyda
@@ -2361,9 +2368,15 @@ export async function runAndroid(args: RunAndroidArgs): Promise<ToolResult> {
 
   if (args.command === 'snapshot' && resp.data && typeof resp.data === 'object') {
     if (args.labelProvenance) {
-      const metadata = resp.data as { labelProvenance?: unknown };
+      const metadata = resp.data as {
+        labelProvenance?: unknown;
+        labelProvenanceDiagnostics?: unknown;
+      };
       return okResult({
         labelProvenance: labelProvenanceFromWire(metadata.labelProvenance, args.labelProvenance),
+        labelProvenanceDiagnostics:
+          provenanceDiagnosticFromWire(metadata.labelProvenanceDiagnostics) ??
+          unavailableProvenance(),
       });
     }
     const data = resp.data as {
@@ -2454,6 +2467,7 @@ export async function readAndroidLabelProvenance(
   budgetMs: number,
   bundleId: string,
   deviceId: string,
+  report?: ProvenanceReporter,
 ): Promise<LabelProvenance[] | undefined> {
   const targets = refs.map((ref) => getFreshRefTarget(ref));
   const generation = targets[0]?.snapshotGeneration;
@@ -2461,8 +2475,10 @@ export async function readAndroidLabelProvenance(
     refs.length < 1 ||
     refs.length > 64 ||
     targets.some((target) => !target || target.snapshotGeneration !== generation)
-  )
+  ) {
+    report?.(unavailableProvenance('ref-unavailable'));
     return undefined;
+  }
   const result = await runAndroid({
     command: 'snapshot',
     bundleId,
@@ -2475,8 +2491,13 @@ export async function readAndroidLabelProvenance(
   });
   try {
     const envelope = JSON.parse(result.content[0]?.text ?? '');
+    report?.(
+      cleanProvenanceReadDiagnostic(envelope.data?.labelProvenanceDiagnostics) ??
+        unavailableProvenance(envelope.ok === true ? 'unavailable' : 'read-failed'),
+    );
     return envelope.ok === true ? envelope.data?.labelProvenance : undefined;
   } catch {
+    report?.(unavailableProvenance('malformed'));
     return undefined;
   }
 }

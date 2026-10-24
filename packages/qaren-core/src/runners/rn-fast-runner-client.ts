@@ -1,4 +1,11 @@
-import { labelProvenanceFromWire, type LabelProvenance } from '../qa/label-provenance.js';
+import {
+  cleanProvenanceReadDiagnostic,
+  labelProvenanceFromWire,
+  type LabelProvenance,
+  provenanceDiagnosticFromWire,
+  unavailableProvenance,
+  type ProvenanceReporter,
+} from '../qa/label-provenance.js';
 import { systemModalDiagnostic } from '../domain/system-modal-diagnostic.js';
 import { SETTLE_DEFAULT_BUDGET_MS } from '../lifecycle/settle.js';
 import { currentInputs } from '../qa/inputs.js';
@@ -3094,14 +3101,26 @@ export async function runIOS(args: RunIOSArgs): Promise<ToolResult> {
     };
     if (args.labelProvenance) {
       const metadata = resp.data as
-        | { labelProvenance?: unknown; appProcessIdentifier?: unknown }
+        | {
+            labelProvenance?: unknown;
+            labelProvenanceDiagnostics?: unknown;
+            appProcessIdentifier?: unknown;
+          }
         | undefined;
       const evidence =
         typeof lastReadAppProcess === 'number' &&
         metadata?.appProcessIdentifier === lastReadAppProcess
           ? labelProvenanceFromWire(metadata?.labelProvenance, args.labelProvenance)
           : undefined;
-      return okResult({ labelProvenance: evidence });
+      return okResult({
+        labelProvenance: evidence,
+        labelProvenanceDiagnostics:
+          typeof lastReadAppProcess !== 'number' ||
+          metadata?.appProcessIdentifier !== lastReadAppProcess
+            ? unavailableProvenance('process-mismatch')
+            : (provenanceDiagnosticFromWire(metadata?.labelProvenanceDiagnostics) ??
+              unavailableProvenance(evidence ? 'available' : 'unavailable')),
+      });
     }
     const missingRefFreshness =
       presenceRequested &&
@@ -3206,6 +3225,7 @@ export async function readIOSLabelProvenance(
   budgetMs: number,
   bundleId: string,
   deviceId: string,
+  report?: ProvenanceReporter,
 ): Promise<LabelProvenance[] | undefined> {
   const targets = refs.map((ref) => getFreshRefTarget(ref));
   const generation = targets[0]?.snapshotGeneration;
@@ -3213,8 +3233,10 @@ export async function readIOSLabelProvenance(
     refs.length < 1 ||
     refs.length > 64 ||
     targets.some((target) => !target || target.snapshotGeneration !== generation)
-  )
+  ) {
+    report?.(unavailableProvenance('ref-unavailable'));
     return undefined;
+  }
   const result = await runIOS({
     command: 'snapshot',
     bundleId,
@@ -3227,8 +3249,13 @@ export async function readIOSLabelProvenance(
   });
   try {
     const envelope = JSON.parse(result.content[0]?.text ?? '');
+    report?.(
+      cleanProvenanceReadDiagnostic(envelope.data?.labelProvenanceDiagnostics) ??
+        unavailableProvenance(envelope.ok === true ? 'unavailable' : 'read-failed'),
+    );
     return envelope.ok === true ? envelope.data?.labelProvenance : undefined;
   } catch {
+    report?.(unavailableProvenance('malformed'));
     return undefined;
   }
 }

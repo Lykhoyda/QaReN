@@ -99,6 +99,7 @@ struct DataPayload {
   var snapshotGeneration: Int? = nil
   var presenceCapture: PlatformPresenceCapture? = nil
   var labelProvenance: [CandidateLabelProvenance]? = nil
+  var labelProvenanceDiagnostics: CandidateLabelProvenanceDiagnostics? = nil
   var snapshotDiagnostics: SnapshotDiagnostics? = nil
 }
 enum RunnerObjCExceptionCatcher {
@@ -258,6 +259,30 @@ for unstable in [false, true] {
     "hasTree": result.nodes != nil, "hasKeyboard": result.keyboardVisible != nil]
   print(String(data: try JSONSerialization.data(withJSONObject: output, options: [.sortedKeys]), encoding: .utf8)!)
 }
+for change in ["card-value", "card-enabled", "container-enabled", "label-source", "parent-link"] {
+  let h = Harness()
+  let first = candidateTree(sibling: 10), second = candidateTree(sibling: 11)
+  let parent = second.children[0].children[1]
+  switch change {
+  case "card-value": first.children[0].children[1].children[0].value = "sample-a"; parent.children[0].value = "sample-b"
+  case "card-enabled": parent.children[0].isEnabled = false
+  case "container-enabled": parent.isEnabled = false
+  case "label-source": parent.label = "Add coverage"
+  case "parent-link":
+    let card = parent.children[0]; parent.children = []; parent.label = "Add coverage"
+    second.children[0].children.insert(card, at: 2)
+  default: break
+  }
+  let app = XCUIApplication([first])
+  let ordinary = h.snapshotFast(app: app, options: SnapshotOptions(interactiveOnly: true, compact: false, depth: nil, scope: nil, raw: false))
+  h.retainSnapshotTargets(ordinary.nodes ?? [])
+  app.snapshots = [first, second]; app.reads = 0; app.cycle = true
+  let result = h.snapshotCandidateLabelProvenance(app: app, indices: [2, 3], budgetMs: 300)
+  let output: [String: Any] = ["name": change, "indices": result.labelProvenance?.map { $0.index } ?? [],
+    "reads": app.reads, "elapsed": h.now - 1000, "hasTree": result.nodes != nil, "hasKeyboard": result.keyboardVisible != nil,
+    "diagnostic": try JSONSerialization.jsonObject(with: JSONEncoder().encode(result.labelProvenanceDiagnostics!))]
+  print(String(data: try JSONSerialization.data(withJSONObject: output, options: [.sortedKeys]), encoding: .utf8)!)
+}
 try run("stable", [tree()])
 try run("explicit-budget", [tree()], budget: 1234)
 try run("first-read-cost", [tree()], readDelay: [1: 500])
@@ -344,6 +369,25 @@ do {
     hasTree: false,
     hasKeyboard: false,
   });
+  for (const name of ['card-value', 'card-enabled', 'container-enabled']) {
+    assert.deepEqual(rows.get(name).indices, [2, 3], name);
+    assert.equal(rows.get(name).reads, 2, name);
+    assert.equal(rows.get(name).elapsed, 100, name);
+    assert.equal(rows.get(name).hasTree, false, name);
+    assert.equal(rows.get(name).hasKeyboard, false, name);
+    assert.equal(rows.get(name).diagnostic.sampleCount, 2, name);
+    assert.equal(rows.get(name).diagnostic.deadlineExpired, false, name);
+    assert.equal(rows.get(name).diagnostic.fieldMask, name === 'card-value' ? 8 : 32, name);
+    rows.delete(name);
+  }
+  for (const name of ['label-source', 'parent-link']) {
+    assert.deepEqual(rows.get(name).indices, [], name);
+    assert.equal(rows.get(name).elapsed, 300, name);
+    assert.equal(rows.get(name).diagnostic.sampleCount, 3, name);
+    assert.equal(rows.get(name).diagnostic.deadlineExpired, true, name);
+    assert.equal(rows.get(name).diagnostic.fieldMask, name === 'parent-link' ? 128 : 260, name);
+    rows.delete(name);
+  }
   const unsettledCandidate = rows.get('candidate-unsettled');
   assert.deepEqual(unsettledCandidate.indices, []);
   assert.equal(unsettledCandidate.elapsed, 300);

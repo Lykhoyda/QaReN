@@ -184,6 +184,52 @@ fn run_child(mock: &mut MockRunner, log: &Path) -> core::CoreOutcome {
 }
 
 #[test]
+fn candidate_provenance_diagnostics_are_value_free_and_private_without_inputs() {
+    let repo = common::temp_repo();
+    let event = serde_json::json!({
+        "kind": "label-provenance", "line": 2, "requested": true, "sampleCount": 3,
+        "nodeIndex": 47, "differedFields": ["frame", "parentIndex"], "deadlineExpired": true,
+        "outcome": "deadline"
+    });
+    let mut with_raw = event.clone();
+    with_raw["value"] = "private-diagnostic-canary".into();
+    let mut invalid = event.clone();
+    invalid["differedFields"] = serde_json::json!(["private-diagnostic-canary"]);
+    let stdout = format!(
+        "{}\n{}\n{}\n",
+        envelope(2, "diagnostic", &with_raw.to_string()),
+        envelope(3, "diagnostic", &invalid.to_string()),
+        envelope(4, "result", &pass_ledger(&[]))
+    );
+    let mut mock = MockRunner::new();
+    mock.expect_spawn_piped("walk.js", 9000, &stdout, Some(0));
+    let result = run_child(&mut mock, &repo.join("core.log"));
+    assert_eq!(result.verdict, Verdict::Pass);
+    let path = repo.join("core-diagnostics.jsonl");
+    let stored = std::fs::read_to_string(&path).unwrap();
+    assert_eq!(stored.lines().count(), 1);
+    assert_eq!(
+        serde_json::from_str::<serde_json::Value>(stored.trim()).unwrap(),
+        event
+    );
+    assert!(!stored.contains("private-diagnostic-canary"));
+    assert!(!std::fs::read_to_string(repo.join("core.log"))
+        .unwrap_or_default()
+        .contains("label-provenance"));
+    assert!(!serde_json::to_string(&result.ledger)
+        .unwrap()
+        .contains("label-provenance"));
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        assert_eq!(
+            std::fs::metadata(path).unwrap().permissions().mode() & 0o777,
+            0o600
+        );
+    }
+}
+
+#[test]
 fn target_miss_diagnostics_stay_private_without_runtime_inputs() {
     let repo = common::temp_repo();
     let event = serde_json::json!({

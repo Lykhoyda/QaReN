@@ -586,11 +586,18 @@ expiry. Both native producers require live candidate observations that match the
 ordinary identities and agree across their last two samples; changes to unrelated
 nodes do not invalidate that agreement. On iOS, candidate indices and parent
 indices use the ordinary snapshot's retained filtering and deduplication options,
-rather than raw-tree positions. Missing, changing or unavailable candidate
+rather than raw-tree positions. iOS sample stability compares label source,
+parent link and frame; ordinary identity guards and each live candidate observation
+remain mandatory, while unrelated value or enabled-state changes between samples
+do not invalidate provenance. Missing, changing or unavailable candidate
 provenance fails as `TARGET_AMBIGUOUS`, with no press and no
 `PRIVATE_INPUT_CAPTURE_UNKNOWN` from the metadata read. Ordinary privacy failures
 still refuse that capture. A subsequent ordinary capture must pass admission
-before screenshots can resume.
+before screenshots can resume. A private `label-provenance` diagnostic records
+whether a read was requested, the sample count, candidate index, differing field
+names, deadline state and a fixed outcome code, without labels, identifiers,
+values or pixels; unavailable counts and deadline state are `null`. These events
+are retained in `core-diagnostics.jsonl` even without runtime inputs.
 
 Unique quoted targets that ordinary capture resolves need no provenance read.
 Post-action effects use the ordinary projection on both sides of a quoted press,

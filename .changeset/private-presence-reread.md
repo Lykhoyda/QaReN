@@ -2,4 +2,4 @@
 'qaren': patch
 ---
 
-Resolve quoted container targets with bounded candidate-only label provenance after ordinary privacy admission, refusing unavailable provenance as target ambiguity while preserving private-input masking and screenshot withholding.
+Resolve quoted container targets with bounded candidate-only label provenance after ordinary privacy admission, refusing unavailable provenance as target ambiguity with value-free diagnostics and provenance-relevant sample stability while preserving private-input masking and screenshot withholding.
