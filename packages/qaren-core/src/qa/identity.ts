@@ -96,7 +96,7 @@ function encloses(container: Element, element: Element): boolean {
   );
 }
 
-function aggregatesControl(container: Element, child: Element): boolean {
+function aggregatesControl(container: Element, child: Element, requireProvenance = true): boolean {
   if (
     container.kind === 'text' ||
     container.kind === 'input' ||
@@ -137,7 +137,7 @@ function aggregatesControl(container: Element, child: Element): boolean {
     return true;
   if (
     container.kind !== 'other' ||
-    container.semantic?.nativePresence?.labelSource !== 'descendant' ||
+    (requireProvenance && container.semantic?.nativePresence?.labelSource !== 'descendant') ||
     outer.width * outer.height <= inner.width * inner.height
   )
     return false;
@@ -152,11 +152,12 @@ function containerEcho(
   container: Element,
   matched: readonly Element[],
   purpose: 'action' | 'refresh',
+  requireProvenance = true,
 ): boolean {
   if (
     container.kind !== 'other' ||
     container.testID !== undefined ||
-    container.semantic?.nativePresence?.labelSource !== 'descendant' ||
+    (requireProvenance && container.semantic?.nativePresence?.labelSource !== 'descendant') ||
     container.label === undefined ||
     container.ref.startsWith('react:')
   )
@@ -171,6 +172,23 @@ function containerEcho(
       encloses(container, e),
   );
   return (purpose === 'refresh' ? enclosed : actionView({ elements: enclosed })).length === 1;
+}
+
+// Potential aggregation requests evidence; only proven aggregation can collapse identities.
+export function needsLabelProvenance(screen: Screen, target: Target): boolean {
+  const matched = exactIdentities(screen, target, 'press').map(({ element }) => element);
+  return matched.some(
+    (container) =>
+      container.kind === 'other' &&
+      !container.ref.startsWith('react:') &&
+      container.semantic?.nativePresence?.labelSource === undefined &&
+      ((container.label !== target.quoted &&
+        container.label?.split(',').some((part) => part.trim() === target.quoted)) ||
+        matched.some(
+          (child) => child !== container && aggregatesControl(container, child, false),
+        ) ||
+        containerEcho(container, matched, 'action', false)),
+  );
 }
 
 export function wrapperEquivalence(screen: Screen, id: string): Element | undefined {

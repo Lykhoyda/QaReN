@@ -102,13 +102,14 @@ for (const android of [false, true]) {
           },
           react: async () => ({ interactive: [] }),
         }).then((screen) => {
-          if (android && labelSource === 'descendant')
+          if (android && labelSource === 'descendant' && options?.platformPresence)
             assert.equal(screen.elements[2].label, 'Add coverage, Details');
           return screen;
         });
       const result = await runPlan(parsePlan('1. Tap "Add coverage"').blocks!, f.deps);
       assert.ok(requested.length > 0);
-      assert.ok(requested.every(Boolean));
+      assert.equal(requested[0], false);
+      assert.ok(requested.includes(true), 'the container candidate must request provenance');
       if (labelSource === 'descendant') {
         assert.equal(result.verdict, 'PASS', result.failure?.seen);
         assert.deepEqual(f.actions, ['press @card0']);

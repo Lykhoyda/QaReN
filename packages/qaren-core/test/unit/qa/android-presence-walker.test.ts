@@ -425,7 +425,7 @@ test('a runner advertising only the earlier presence rule is stale: no QA read, 
   });
 });
 
-test('a quoted Android press requests presence and retains literal targeting', async () => {
+test('a unique quoted Android press uses ordinary capture and retains literal targeting', async () => {
   const requests: Record<string, unknown>[] = [];
   const f = walker(
     [],
@@ -435,7 +435,8 @@ test('a quoted Android press requests presence and retains literal targeting', a
   const result = await runPlan(parsePlan('1. Tap "home-pager-qa-btn"').blocks!, f.deps);
   assert.equal(result.verdict, 'PASS', result.failure?.seen);
   assert.deepEqual(f.actions, ['press @e3']);
-  assert.equal(requests[0].platformPresence, true);
+  assert.equal(requests[0].platformPresence, undefined);
+  assert.ok(requests.every((request) => request.platformPresence !== true));
 });
 
 async function runAndroidPresence(capabilities: string[]) {

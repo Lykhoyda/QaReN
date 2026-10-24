@@ -35,6 +35,7 @@ import {
   type Identity,
   PRESSABLE_SUFFIX,
   exactIdentities,
+  needsLabelProvenance,
   focusIdentityOf,
   withoutPressable,
   wrapperEquivalence,
@@ -201,6 +202,15 @@ export function prepareTarget(step: Step, screen: Screen): Resolution | TargetQu
       criteria,
     },
   };
+}
+
+export function targetNeedsPresence(step: Step, screen: Screen): boolean {
+  return (
+    step.kind === 'press' &&
+    step.target.quoted !== undefined &&
+    step.target.exact !== 'id' &&
+    needsLabelProvenance(screen, step.target)
+  );
 }
 
 function hostOutside(screen: Screen, inner?: string, outer?: string): boolean {

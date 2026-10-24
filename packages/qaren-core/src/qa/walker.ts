@@ -39,6 +39,7 @@ import {
   scrollUntilBand,
   scrollUntilDirection,
   targetEvidence,
+  targetNeedsPresence,
   presenceMiss,
   visibleSelector,
 } from './resolve.js';
@@ -449,18 +450,18 @@ async function walkBlockScoped(
     await deps.sleep(ms);
     assertActive();
   };
-  const capture = async (
+  const captureOnce = async (
     step?: Exclude<Item, { kind: 'check' }>,
     assertion = false,
     recovery = false,
+    purpose: 'resolve' | 'proof' | 'provenance' = 'resolve',
   ): Promise<Observation> => {
     assertActive();
     cached = undefined;
     const target =
       step && ('target' in step ? step.target : step.kind === 'scroll' ? step.until : undefined);
     const requirePresence = assertion || (!!target && target.quoted === undefined);
-    const platformPresence =
-      requirePresence || (!!target && step?.kind === 'press' && target.exact !== 'id');
+    const platformPresence = requirePresence || purpose === 'provenance';
     const startedAt = deps.now();
     const id = ++sequence.observation;
     latestObservation = id;
@@ -550,6 +551,17 @@ async function walkBlockScoped(
         });
       }
     }
+  };
+  const capture = async (
+    step?: Exclude<Item, { kind: 'check' }>,
+    assertion = false,
+    recovery = false,
+    purpose: 'resolve' | 'proof' = 'resolve',
+  ): Promise<Observation> => {
+    const observation = await captureOnce(step, assertion, recovery, purpose);
+    return purpose === 'resolve' && step && targetNeedsPresence(step, observation.screen)
+      ? captureOnce(step, assertion, recovery, 'provenance')
+      : observation;
   };
   const diagnostic = (
     item: Item,
@@ -2364,7 +2376,7 @@ async function walkBlockScoped(
             }
           }
           if (outcome || typedUnverified) break;
-          const after = await capture(item);
+          const after = await capture(item, false, false, 'proof');
           // NOTE: a not-ok result is not a verdict; an act that timed out may still have landed.
           const changed = screenSignature(after.screen) !== screenSignature(before.screen);
           usable(after, item);

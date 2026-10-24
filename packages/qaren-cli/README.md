@@ -577,9 +577,13 @@ that control's echo only when native presence proves its label comes from descen
 With the same proven descendant provenance, quoted label presses can also collapse
 an identified native container into a smaller, enabled, visible, hittable descendant
 control when tree ancestry, frame containment and whole label segments agree.
-Quoted label presses request platform-presence capture to obtain this provenance
-without requiring the complete native presence that phrase targets require;
-native acquisition and privacy admission still apply. Direct or unknown label
+Quoted label presses first use an ordinary capture. An ambiguous target or a
+merged-label container candidate requests a fresh platform-presence capture to
+obtain this provenance, without requiring the complete native presence that phrase
+targets require. Unique quoted targets and their post-action proofs that ordinary
+capture resolves do not request presence; semantic phrase-action readbacks retain
+their existing presence admission. Native acquisition and privacy admission still
+apply to every capture. Direct or unknown label
 provenance keeps differently framed candidates distinct. A native ancestor and
 hittable descendant with the exact same label and frame are one tap target and
 resolve to the inner control. Multiple distinct children remain ambiguous.
@@ -1366,6 +1370,13 @@ known acquisition phase, failure reason or deadline read using fixed codes.
 If the retry deadline cuts off a read, the refusal retains the last incomplete
 presence snapshot's fixed causes and adds `retry-deadline` without returning that
 snapshot as usable evidence.
+Where presence is required after a system dialog closes, native preparation
+compares consecutive full enumerations and waits for a 500 ms quiet window before
+observing candidates. Any descriptor or hierarchy change resets that quiet window
+without renewing the existing presence deadline. Revalidation after observation
+still rejects a changed enumeration. A provenance escalation has its own fresh
+observation, bounded capture budget and dispatch deadline; the prior ordinary
+candidate never authorizes the press.
 Only a fresh, complete snapshot can establish privacy or admit a newly arrived
 system alert; partial presence never authorizes actions, screenshots or model
 evidence. Malformed, truncated, dropped-node and other incomplete captures refuse

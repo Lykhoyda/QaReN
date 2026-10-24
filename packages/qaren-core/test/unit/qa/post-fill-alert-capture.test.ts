@@ -1,8 +1,6 @@
 import assert from 'node:assert/strict';
-import { syncBuiltinESMExports } from 'node:module';
 import { test } from 'node:test';
-import { setImmediate as nextTurn } from 'node:timers/promises';
-import { captureScreen, type NativeObservation } from '../../../dist/qa/capture.js';
+import { captureScreen } from '../../../dist/qa/capture.js';
 import { parsePlan } from '../../../dist/qa/plan.js';
 import { runPlan } from '../../../dist/qa/walker.js';
 import type { NativeNode } from '../../../dist/qa/screen.js';
@@ -52,28 +50,18 @@ function nodes(count: number, modal?: string): NativeNode[] {
   return result;
 }
 
-for (const [count, modal, rewalk, firstReadMs, generation] of [
-  [120, 'Element(7)', false, undefined, 7],
-  [120, 'Element(5)', false, undefined, 7],
-  [63, undefined, true, undefined, 7],
-  [153, 'Element(7)', false, 7_808, 41],
-  [103, undefined, false, 6_399, 19],
+for (const [count, modal, rewalk] of [
+  [120, 'Element(7)', false],
+  [120, 'Element(5)', false],
+  [63, undefined, true],
+  [153, 'Element(7)', false],
+  [103, undefined, false],
 ] as const) {
-  test(`post-fill quoted press ${firstReadMs ? 'retains deadline causes' : 'settles'} on a ${count}-node ${modal ?? 'app'} screen`, async (t) => {
-    let now = 0;
-    if (firstReadMs) {
-      t.mock.timers.enable({ apis: ['setTimeout'] });
-      syncBuiltinESMExports();
-      t.after(() => {
-        t.mock.timers.reset();
-        syncBuiltinESMExports();
-      });
-    }
+  test(`post-fill quoted press uses ordinary evidence on a ${count}-node ${modal ?? 'first re-walk'} screen`, async () => {
     let filled = 0;
     let pressed = false;
     let presenceReads = 0;
     let screenshots = 0;
-    let postPressReads = 0;
     const f = walker(
       [],
       scriptedJudge(() => assert.fail('quoted targets do not need a model')),
@@ -98,7 +86,6 @@ for (const [count, modal, rewalk, firstReadMs, generation] of [
         ...options,
         appId: 'com.test',
         requirePrivateInputs: true,
-        ...(firstReadMs ? { now: () => now } : {}),
         native: async () => {
           if (filled < 2)
             return attested([
@@ -130,22 +117,14 @@ for (const [count, modal, rewalk, firstReadMs, generation] of [
             );
             captured.push({ ref: '@after', index: count, parentIndex: 1, type: 'Other' });
           }
-          const postPressIncomplete = pressed && firstReadMs;
-          if (postPressIncomplete) {
-            if (++postPressReads > 1) return new Promise<NativeObservation>(() => {});
-            now += firstReadMs;
-          }
-          if (
-            postPressIncomplete ||
-            (options?.platformPresence && !pressed && ++presenceReads <= 2)
-          ) {
+          if (options?.platformPresence) {
+            presenceReads++;
             const native = nativeCapture();
             return {
               ...attested(captured),
-              snapshotGeneration: generation,
+              snapshotGeneration: 7,
               presenceCapture: {
                 ...native.presenceCapture,
-                generation,
                 complete: false,
                 diagnostics: { failure: { phase: 'revalidation', reason: 'enumeration-changed' } },
               },
@@ -165,31 +144,13 @@ for (const [count, modal, rewalk, firstReadMs, generation] of [
       `1. Type "${email}" into "Email"\n2. Type "${code}" into "Code"\n${rewalk ? '## Re-walk\n' : ''}3. Tap "Log out"`,
     );
     assert.ok(plan.blocks);
-    const pending = runPlan(plan.blocks, f.deps);
-    if (firstReadMs) {
-      await nextTurn();
-      for (const duration of [500, 500, 500, 5_500]) {
-        now += duration;
-        t.mock.timers.tick(duration);
-        await nextTurn();
-      }
-    }
-    const result = await pending;
-    assert.equal(result.verdict, firstReadMs ? 'REFUSED' : 'PASS', JSON.stringify(result));
-    assert.equal(presenceReads, 3);
+    const result = await runPlan(plan.blocks, f.deps);
+    assert.equal(result.verdict, 'PASS', JSON.stringify(result));
+    assert.equal(presenceReads, 0);
     assert.ok(f.actions.includes('press @logout'));
     const row = result.steps.find((step) => step.line === (rewalk ? 4 : 3));
-    if (firstReadMs) {
-      assert.equal('code' in result && result.code, 'PRIVATE_INPUT_CAPTURE_UNKNOWN');
-      assert.match(JSON.stringify(result), /keyboard-state-unknown/);
-      assert.match(JSON.stringify(result), /presence-failure=revalidation:enumeration-changed/);
-      assert.match(JSON.stringify(result), /retry-deadline/);
-      assert.match(JSON.stringify(result), new RegExp(`nodes=${count};`));
-      assert.equal(postPressReads, 2);
-    } else {
-      assert.equal(row?.unverifiedPress, modal ? true : undefined);
-      if (modal) assert.match(row?.reason ?? '', /UNVERIFIED_PRESS: .*alert or sheet/);
-    }
+    assert.equal(row?.unverifiedPress, modal ? true : undefined);
+    if (modal) assert.match(row?.reason ?? '', /UNVERIFIED_PRESS: .*alert or sheet/);
     const publicOutput = JSON.stringify({ result, rows: f.rows });
     assert.equal(publicOutput.includes(email), false);
     assert.equal(publicOutput.includes(code), false);

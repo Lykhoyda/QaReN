@@ -94,6 +94,7 @@ final class Harness {
   var now = 1000.0
   var sleeps: [Double] = []
   var observations = 0
+  var observedAt: [Double] = []
   var selectedSample = 0
   var nextClockTime: Double?
   var observationMs = 0.0
@@ -128,7 +129,7 @@ ${section(source, '  private func presenceRead<', '  private func presenceLabelS
   }
 ${section(source, '  func snapshotPlatformPresence(', '  private func observePresence(')}
   private func observePresence(_ descriptor: PresenceDescriptor, count: Int, app: XCUIApplication, deadline: Double, timing: PresenceCaptureTiming, unknownReason: ((PlatformPresenceObservation.UnknownReason) -> Void)? = nil) -> Double? {
-    observations += 1; now += observationMs; return now
+    observations += 1; observedAt.append(now); now += observationMs; return now
   }
 }
 func tree(_ change: String = "") -> XCUIElementSnapshot {
@@ -235,6 +236,18 @@ do {
     "presenceCapture": result.presenceCapture != nil, "reads": app.reads, "states": app.states
   ]
   print(String(data: try JSONSerialization.data(withJSONObject: output, options: [.sortedKeys]), encoding: .utf8)!)
+  h.blockingAlert = nil
+  app.snapshots = [tree(), tree("frame")]
+  let after = h.snapshotPlatformPresence(app: app, appId: "test", presenceBudgetMs: 900)
+  let capture = after.presenceCapture!
+  let diagnostics = try JSONSerialization.jsonObject(with: JSONEncoder().encode(capture.diagnostics!))
+  let settled: [String: Any] = [
+    "name": "after-permission-dismissal", "complete": capture.complete,
+    "reads": app.reads, "selectedSample": h.selectedSample, "observedAt": h.observedAt,
+    "elapsed": capture.endedUptimeMs - capture.startedUptimeMs,
+    "budget": capture.appliedBudgetMs, "diagnostics": diagnostics
+  ]
+  print(String(data: try JSONSerialization.data(withJSONObject: settled, options: [.sortedKeys]), encoding: .utf8)!)
 }
 `,
   });
@@ -260,6 +273,17 @@ do {
     states: 0,
   });
   rows.delete('system-alert');
+  const afterDismissal = rows.get('after-permission-dismissal');
+  assert.equal(afterDismissal.complete, true);
+  assert.equal(afterDismissal.reads, 8);
+  assert.equal(afterDismissal.selectedSample, 7);
+  assert.deepEqual(afterDismissal.observedAt, [1600, 1600]);
+  assert.equal(afterDismissal.elapsed, 600);
+  assert.equal(afterDismissal.budget, 900);
+  assert.equal(afterDismissal.diagnostics.preparationSamples, 7);
+  assert.equal(afterDismissal.diagnostics.preparationResets, 1);
+  assert.equal(afterDismissal.diagnostics.preparationQuietElapsedMs, 500);
+  rows.delete('after-permission-dismissal');
   assert.equal(rows.get('explicit-budget').budget, 1234);
   assert.equal(rows.get('explicit-budget').complete, true);
   for (const name of [
