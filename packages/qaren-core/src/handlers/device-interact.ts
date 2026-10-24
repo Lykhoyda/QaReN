@@ -1664,17 +1664,14 @@ export async function performFocusedFill(
         );
       }
     }
-    return runNative(
-      ['fill', args.ref, args.text, ...(args.clearFirst ? ['--clear-first'] : [])],
-      {
-        qaContext: args.qaContext,
-        qaTiming: args.qaTiming,
-        focusedType: true,
-        focusedProof,
-        focusedDeleteCount: deleteCount,
-        settle: { enabled: false },
-      },
-    );
+    return runNative(['fill', args.ref, args.text, ...(args.clearFirst ? ['--clear-first'] : [])], {
+      qaContext: args.qaContext,
+      qaTiming: args.qaTiming,
+      focusedType: true,
+      focusedProof,
+      focusedDeleteCount: deleteCount,
+      settle: { enabled: false },
+    });
   };
   const native = await dispatchFill();
   if (native.isError) {
