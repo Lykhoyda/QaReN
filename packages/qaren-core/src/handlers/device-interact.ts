@@ -1629,7 +1629,7 @@ export async function performFocusedFill(
   const oracleTestId = focusedFillOracleTestId(args);
   let before: string | null = null;
   let privateValue = args.privateValue === true;
-  let expectedBeforeClear: string | undefined;
+  let expectedBeforeClear: string | null | undefined;
   const focusedProof = async (focusOnly = false): Promise<boolean> => {
     const read = await readReactInputValue(client, oracleTestId, {
       protectSecure: true,
@@ -1644,17 +1644,39 @@ export async function performFocusedFill(
       (expectedBeforeClear === undefined || before === expectedBeforeClear)
     );
   };
-  // The transport re-proves focus between clearing and string insertion.
-  const native = await runNative(
-    ['fill', args.ref, args.text, ...(args.clearFirst ? ['--clear-first'] : [])],
-    {
-      qaContext: args.qaContext,
-      qaTiming: args.qaTiming,
-      focusedType: true,
-      focusedProof,
-      settle: { enabled: false },
-    },
-  );
+  const dispatchFill = async (deleteCount?: number, observed?: string): Promise<ToolResult> => {
+    expectedBeforeClear = observed;
+    if (args.clearFirst) {
+      if (!(await focusedProof())) {
+        return failResult(
+          'The intended input is not focused; no text was entered.',
+          'NO_TEXT_INPUT_TARGET',
+          { mutation: 'none' },
+        );
+      }
+      expectedBeforeClear = before;
+      deleteCount ??= before?.length || undefined;
+      if (deleteCount !== undefined && deleteCount > 256) {
+        return failResult(
+          'Focused replacement exceeds its bounded clear budget.',
+          'TEXT_ENTRY_UNVERIFIED',
+          { mutation: 'none' },
+        );
+      }
+    }
+    return runNative(
+      ['fill', args.ref, args.text, ...(args.clearFirst ? ['--clear-first'] : [])],
+      {
+        qaContext: args.qaContext,
+        qaTiming: args.qaTiming,
+        focusedType: true,
+        focusedProof,
+        focusedDeleteCount: deleteCount,
+        settle: { enabled: false },
+      },
+    );
+  };
+  const native = await dispatchFill();
   if (native.isError) {
     const mutation = extractMutationDisposition(native);
     if (mutation === 'none') {
@@ -1707,15 +1729,7 @@ export async function performFocusedFill(
         { mutation: 'observed', pathsTried },
       );
     }
-    expectedBeforeClear = observed;
-    const result = await runNative(['fill', args.ref, args.text, '--clear-first'], {
-      qaContext: args.qaContext,
-      qaTiming: args.qaTiming,
-      focusedType: true,
-      focusedProof,
-      focusedDeleteCount: deleteCount,
-      settle: { enabled: false },
-    });
+    const result = await dispatchFill(deleteCount, observed);
     return result.isError
       ? fillFailure('TEXT_ENTRY_UNVERIFIED', extractErrorText(result), {
           mutation: extractMutationDisposition(result) === 'none' ? 'observed' : 'possible',
@@ -1763,11 +1777,19 @@ export async function performFocusedFill(
       verifiedOracle: 'react-tree',
       textEntryRoute,
     });
-  const hasExcessText = (verification: Awaited<ReturnType<typeof readBack>>) =>
+  const retainedPrefix = (
+    verification: Awaited<ReturnType<typeof readBack>>,
+    dispatchBefore: string | null,
+  ) =>
     args.clearFirst &&
     verification.verdict === 'mismatch' &&
     verification.observed !== undefined &&
-    verification.observed.length > args.text.length;
+    verification.observed.endsWith(args.text) &&
+    verification.observed.length > args.text.length &&
+    [initialBefore, dispatchBefore].some(
+      (value) =>
+        value !== null && value.startsWith(verification.observed!.slice(0, -args.text.length)),
+    );
   const replacementFailure = () =>
     fillFailure(
       'TEXT_ENTRY_UNVERIFIED',
@@ -1776,7 +1798,7 @@ export async function performFocusedFill(
     );
   const verification = await readBack();
   if (verification.verdict === 'exact') return verified();
-  if (hasExcessText(verification)) {
+  if (retainedPrefix(verification, initialBefore)) {
     const observed = verification.observed!;
     const failure = await boundedClear(observed.length, observed);
     if (failure) return failure;
@@ -1808,13 +1830,8 @@ export async function performFocusedFill(
       { mutation: 'observed', pathsTried },
     );
   if (args.qaContext?.expired) return lost(first, '; no step time remained to retype');
-  const retyped = await runNative(['fill', args.ref, args.text, '--clear-first'], {
-    qaContext: args.qaContext,
-    qaTiming: args.qaTiming,
-    focusedType: true,
-    focusedProof,
-    settle: { enabled: false },
-  });
+  const retyped = await dispatchFill();
+  const retypeBefore = before;
   if (retyped.isError) {
     return extractMutationDisposition(retyped) === 'none'
       ? lost(first, '; the retype was refused')
@@ -1825,7 +1842,7 @@ export async function performFocusedFill(
   }
   const second = await readBack();
   if (second.verdict === 'exact') return verified();
-  if (hasExcessText(second)) return replacementFailure();
+  if (retainedPrefix(second, retypeBefore)) return replacementFailure();
   const held = droppedLength(second.observed, expected);
   if (held === undefined) return unverified();
   // The same loss twice is the field's own stripping or maxLength: unverified, with the lengths disclosed.

@@ -891,8 +891,11 @@ on a keyboard-up path types nothing; failure of the pre-dispatch read returns
 Each walker focus decision logs one value-free `fallback-focus` line.
 
 QaReN then requests replacement of the focused field's content: the iOS runner sends
-select-all and an explicit Delete in separate ordered records, then the host re-proves
-focus on the intended React input before sending the plan text. If focus moved or
+select-all and an explicit Delete in separate ordered records. For a readable, nonempty
+controlled field, preparation instead moves to the end and deletes its measured length
+(at most 256 keys), after confirming that the value has not changed. This preparation
+also runs before a retype. The host re-proves focus on the intended React input before
+sending the plan text. If focus moved or
 cannot be proved, no replacement text is sent; clearing may already have mutated the field.
 When the input is a
 controlled React field, its value is then read back locally and compared, never
