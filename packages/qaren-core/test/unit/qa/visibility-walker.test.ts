@@ -76,6 +76,97 @@ function visibilityJudge(...probabilities: number[]) {
 }
 
 for (const direction of ['up', 'down']) {
+  for (const marker of ['tab', 'title-label', 'title-id', 'identified-list', 'unidentified-list']) {
+    test(`scroll-until ${direction} refuses ${marker} navigation during the first uncertainty pause`, async () => {
+      const captured = (destination: boolean): Screen => {
+        const observed = joinScreen(
+          [
+            {
+              ref: '@window',
+              index: 0,
+              type: 'Window',
+              rect: { x: 0, y: 0, width: 390, height: 844 },
+            },
+            {
+              ref: '@tab',
+              index: 1,
+              parentIndex: 0,
+              type: 'Button',
+              selected: true,
+              label: destination && marker === 'tab' ? 'Claims' : 'Policies',
+              rect: { x: 0, y: 780, width: 150, height: 44 },
+            },
+            {
+              ref: '@title',
+              index: 2,
+              parentIndex: 0,
+              type: 'NavigationBar',
+              hittable: false,
+              identifier:
+                marker === 'title-id' ? (destination ? 'Claims' : 'Policies') : 'main-navigation',
+              label: destination && marker === 'title-label' ? 'Claims' : 'Policies',
+              rect: { x: 0, y: 0, width: 390, height: 80 },
+            },
+            {
+              ref: '@list',
+              index: 3,
+              parentIndex: 0,
+              type: 'ScrollView',
+              identifier:
+                marker === 'unidentified-list'
+                  ? undefined
+                  : destination && marker === 'identified-list'
+                    ? 'claims'
+                    : 'policies',
+              rect: {
+                x: 0,
+                y: destination && marker === 'unidentified-list' ? 110 : 100,
+                width: 390,
+                height: 600,
+              },
+            },
+            {
+              ref: '@text',
+              index: 4,
+              parentIndex: 3,
+              type: 'StaticText',
+              label: destination ? 'Footer' : 'Loading',
+              rect: { x: 10, y: 200, width: 100, height: 30 },
+            },
+          ],
+          [],
+        );
+        observed.elements.push(text(destination ? 'Footer' : 'Loading'));
+        observed.coverage = { native: 'complete', react: 'complete' };
+        return observed;
+      };
+      const original = captured(false);
+      const destination = captured(true);
+      const judge = visibilityJudge(0.5, 0.9);
+      const f = walker([original, original, original, destination], judge);
+      const modes: boolean[] = [];
+      const read = f.deps.captureScreen;
+      f.deps.captureScreen = async (options) => {
+        modes.push(options?.platformPresence === true);
+        if (f.captures() === 3) assert.equal(f.deps.now(), WAIT_POLL_MS);
+        return read(options);
+      };
+      const result = await runPlan(
+        parsePlan(`1. Scroll ${direction} until the footer text`).blocks!,
+        f.deps,
+      );
+      assert.equal(result.verdict, 'REFUSED');
+      assert.equal(result.code, 'SCROLL_NAVIGATED');
+      assert.deepEqual(f.actions, []);
+      assert.equal(judge.requests.length, 1);
+      assert.deepEqual(f.captures(), 4);
+      assert.deepEqual(modes, [false, true, false, false]);
+      assert.ok(result.steps.every((step) => step.outcome !== 'pass'));
+    });
+  }
+}
+
+for (const direction of ['up', 'down']) {
   for (const refresh of ['reask', 'decision-expiry', 'dispatch-expiry']) {
     test(`scroll-until ${direction} refuses navigation during ${refresh}`, async () => {
       let elapsed = 0;

@@ -1104,6 +1104,7 @@ async function walkBlockScoped(
         await pause(Math.min(WAIT_POLL_MS, remaining));
         if (deps.now() >= deadline) break;
         observation = await capture(item);
+        validateRefresh(ordinary.screen, observation.screen);
         decision = undefined;
       }
       usable(observation, item, deadline);
