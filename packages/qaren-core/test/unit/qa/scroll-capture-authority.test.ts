@@ -12,6 +12,12 @@ import { attested, nativeCapture } from './platform-presence-fixtures.ts';
 const frame = { x: 0, y: 0, width: 402, height: 874 };
 type Snapshot = {
   footer?: boolean;
+  footerY?: number;
+  footerMissing?: boolean;
+  keyboardY?: number;
+  listID?: string;
+  hideFooterLabel?: boolean;
+  listFrame?: NonNullable<NativeNode['rect']>;
   tab?: string;
   title?: string;
   toolbarY?: number;
@@ -44,13 +50,23 @@ function fixture() {
     const rawNodes: NativeNode[] = [
       { type: 'Application', rect: frame },
       { type: 'Window', parentIndex: 0, rect: frame },
-      { type: 'ScrollView', parentIndex: 1, rect: frame },
       {
-        type: 'StaticText',
+        type: 'ScrollView',
+        parentIndex: 1,
+        identifier: state.listID,
+        rect: state.listFrame ?? frame,
+      },
+      {
+        type: state.footerMissing ? 'Other' : 'StaticText',
         parentIndex: 2,
-        label: state.footer ? 'Footer' : 'Loading',
-        identifier: state.footer ? 'footer' : 'loading',
-        rect: { x: 10, y: 200, width: 100, height: 30 },
+        label:
+          state.footerMissing || state.hideFooterLabel
+            ? undefined
+            : state.footer
+              ? 'Footer'
+              : 'Loading',
+        identifier: state.footerMissing ? undefined : state.footer ? 'footer' : 'loading',
+        rect: { x: 10, y: state.footerY ?? 200, width: 100, height: 30 },
       },
       ...(presence
         ? [
@@ -72,6 +88,12 @@ function fixture() {
           ]),
       ...(state.overlays ?? []).map((rect) => ({ type: 'Button', parentIndex: 1, rect })),
     ];
+    if (state.keyboardY !== undefined)
+      rawNodes.push({
+        type: 'Keyboard',
+        parentIndex: 1,
+        rect: { x: 0, y: state.keyboardY, width: 402, height: 874 - state.keyboardY },
+      });
     if (state.tab)
       rawNodes.push({
         type: 'Button',
@@ -161,6 +183,63 @@ async function run(
 
 for (const direction of ['up', 'down'] as const) {
   for (const mode of ['quoted', 'phrase', 'replay'] as const) {
+    for (const contradiction of ['outside-list', 'keyboard', 'overlay', 'disappeared'] as const) {
+      test(`new ordinary ${contradiction} vetoes positive confirmation: ${direction}, ${mode}`, async () => {
+        const f = fixture();
+        let confirmed = false;
+        f.setSnapshot(async (presence) => {
+          if (presence) confirmed = true;
+          const changed = confirmed && !presence;
+          return {
+            footer: true,
+            tab: 'Policies',
+            title: 'Policies',
+            listID: 'policies',
+            listFrame: { x: 0, y: 100, width: 402, height: 600 },
+            footerY:
+              changed && contradiction === 'outside-list' ? (direction === 'down' ? 750 : 50) : 200,
+            footerMissing: changed && contradiction === 'disappeared',
+            keyboardY: changed && contradiction === 'keyboard' ? 180 : undefined,
+            overlays: changed && contradiction === 'overlay' ? [frame] : [],
+          };
+        });
+        try {
+          const result = await run(f, direction, mode);
+          assert.equal(result.block.outcome, 'fail');
+          assert.ok(result.rows.every((row) => row.outcome !== 'pass'));
+          if (contradiction !== 'disappeared' || mode !== 'replay') {
+            assert.equal(f.drags(), 0);
+            assert.match(JSON.stringify(result.failure), /VISIBILITY_UNSURE/);
+          }
+        } finally {
+          clearRefMap();
+        }
+      });
+    }
+
+    test(`expiry recovery still vetoes stale positive confirmation: ${direction}, ${mode}`, async () => {
+      const f = fixture();
+      let confirmations = 0;
+      f.setSnapshot(async (presence) => {
+        if (presence && ++confirmations === 1) await f.f.deps.sleep(11_000);
+        return {
+          footer: true,
+          listID: 'policies',
+          listFrame: { x: 0, y: 100, width: 402, height: 600 },
+          footerY: !presence && confirmations > 1 ? (direction === 'down' ? 750 : 50) : 200,
+        };
+      });
+      try {
+        const result = await run(f, direction, mode);
+        assert.equal(result.block.outcome, 'fail');
+        assert.equal(f.drags(), 0);
+        assert.match(JSON.stringify(result.failure), /VISIBILITY_UNSURE/);
+        assert.deepEqual(f.modes, [false, true, false, true, false]);
+      } finally {
+        clearRefMap();
+      }
+    });
+
     test(`presence wrappers cannot collapse ordinary geometry: ${direction}, ${mode}`, async () => {
       const f = fixture();
       try {
@@ -373,3 +452,52 @@ test('plain scroll keeps the centered window gesture and ordinary captures', asy
     clearRefMap();
   }
 });
+
+for (const direction of ['up', 'down'] as const) {
+  test(`uncertainty re-ask still vetoes stale positive confirmation: ${direction}`, async () => {
+    const f = fixture();
+    let confirmations = 0;
+    const judge = scriptedJudge((questions, index) =>
+      Object.fromEntries(
+        Object.keys(questions).map((id) => [id, { type: 'noul', noul: index === 0 ? 0.5 : 0.9 }]),
+      ),
+    );
+    f.f.deps.judge = judge;
+    f.setSnapshot(async (presence) => {
+      if (presence) confirmations += 1;
+      return {
+        footer: true,
+        listID: 'policies',
+        listFrame: { x: 0, y: 100, width: 402, height: 600 },
+        footerY: !presence && confirmations > 1 ? (direction === 'down' ? 750 : 50) : 200,
+      };
+    });
+    try {
+      const result = await run(f, direction, 'phrase');
+      assert.equal(result.block.outcome, 'fail');
+      assert.equal(f.drags(), 0);
+      assert.equal(judge.requests.length, 2);
+      assert.match(JSON.stringify(result.failure), /VISIBILITY_UNSURE/);
+      assert.deepEqual(f.modes, [false, true, false, false, true, false]);
+    } finally {
+      clearRefMap();
+    }
+  });
+}
+
+for (const direction of ['up', 'down'] as const) {
+  for (const mode of ['phrase', 'replay'] as const) {
+    test(`unknown ordinary labels do not replace qualified presence: ${direction}, ${mode}`, async () => {
+      const f = fixture();
+      f.setSnapshot(async (presence) => ({ footer: true, hideFooterLabel: !presence }));
+      try {
+        const result = await run(f, direction, mode);
+        assert.equal(result.block.outcome, 'pass');
+        assert.equal(f.drags(), 0);
+        assert.deepEqual(f.modes, [false, true, false]);
+      } finally {
+        clearRefMap();
+      }
+    });
+  }
+}

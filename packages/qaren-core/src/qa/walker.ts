@@ -18,6 +18,7 @@ import {
   insideAlert,
   elementFrame,
   isNativeInput,
+  visibilityView,
   describe,
 } from './screen.js';
 import {
@@ -36,6 +37,7 @@ import {
   bindFillIdentity,
   bindDispatchIdentity,
   stepTarget,
+  scrollConfirmationCovered,
   scrollUntilBand,
   scrollUntilContainer,
   scrollUntilHasCandidate,
@@ -1035,6 +1037,7 @@ async function walkBlockScoped(
       let decision = initial;
       while (deps.now() < deadline) {
         checkObservation?.(observation.screen);
+        const beforeConfirmation = observation.screen;
         let ordinary = observation;
         const target = item.kind === 'wait' ? item.target : item.until!;
         try {
@@ -1066,11 +1069,65 @@ async function walkBlockScoped(
           decision = undefined;
           continue;
         }
+        const confirmed = (): { observation: Observation; found: true } => {
+          if (item.kind === 'scroll') {
+            const contradicted = () =>
+              new ResolutionError({
+                refuse: 'VISIBILITY_UNSURE',
+                reason: 'the newer ordinary observation contradicts confirmed target visibility',
+              });
+            if (target.quoted !== undefined && targetEvidence(target, ordinary.screen) === 'fail')
+              throw contradicted();
+            let witnesses: Element[];
+            if (target.quoted !== undefined) {
+              witnesses = exactIdentities(observation.screen, target, 'wait', 'refresh')
+                .map(({ element }) => element)
+                .filter(
+                  (element) =>
+                    !element.offscreen &&
+                    element.visibilityEvidence !== 'offscreen' &&
+                    element.visibilityEvidence !== 'unresolved',
+                );
+            } else {
+              const projected = visibilityView(observation.screen);
+              if ('refuse' in projected) throw new ResolutionError(projected);
+              witnesses = projected.elements;
+            }
+            for (const witness of witnesses) {
+              const matches = ordinary.screen.elements.filter(
+                (element) =>
+                  sameIdentity(element, witness) &&
+                  (target.quoted !== undefined ||
+                    !element.label ||
+                    !witness.label ||
+                    element.label === witness.label),
+              );
+              if (
+                !matches.length &&
+                !beforeConfirmation.elements.some((element) => sameIdentity(element, witness))
+              )
+                continue;
+              if (
+                !matches.some(
+                  (element) =>
+                    !element.offscreen &&
+                    element.visibilityEvidence !== 'offscreen' &&
+                    element.semantic?.visibility !== 'hidden' &&
+                    element.semantic?.visibility !== 'offscreen' &&
+                    !scrollConfirmationCovered(element, ordinary.screen),
+                )
+              )
+                throw contradicted();
+            }
+          }
+          return { observation: item.kind === 'scroll' ? ordinary : observation, found: true };
+        };
         if (target.quoted !== undefined) {
           const evidence = targetEvidence(target, observation.screen);
+          if (evidence === 'pass') return confirmed();
           return {
             observation: item.kind === 'scroll' ? ordinary : observation,
-            found: evidence === 'pass',
+            found: false,
             unsure: evidence === 'unsure',
           };
         }
@@ -1092,8 +1149,7 @@ async function walkBlockScoped(
             );
           throw new ResolutionError(visibility);
         }
-        if (visibility.verdict === 'present')
-          return { observation: item.kind === 'scroll' ? ordinary : observation, found: true };
+        if (visibility.verdict === 'present') return confirmed();
         if (visibility.verdict === 'absent') return { observation: ordinary, found: false };
         if (visibility.verdict === 'pending' && item.kind === 'wait')
           return { observation, found: false };
