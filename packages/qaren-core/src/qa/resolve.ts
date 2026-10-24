@@ -472,14 +472,14 @@ export function clearanceBand(element: Element, screen: Screen): NativeNode['rec
   return bottom > top ? { ...viewport, y: top, height: bottom - top } : undefined;
 }
 
-function clearOfFrontOverlays(
+function frontOverlayFrames(
   container: Element,
   band: NonNullable<NativeNode['rect']>,
   screen: Screen,
-): NativeNode['rect'] {
+): NonNullable<NativeNode['rect']>[] {
   const behind = screen.elements.indexOf(container);
   const lineage = ancestorsOf(container);
-  let spans = [{ top: band.y, bottom: band.y + band.height }];
+  const frames: NonNullable<NativeNode['rect']>[] = [];
   const padding = 4 * (screen.pointScale ?? 1);
   for (const [i, other] of screen.elements.entries()) {
     if (
@@ -501,6 +501,19 @@ function clearOfFrontOverlays(
       rect.x + rect.width + padding <= band.x
     )
       continue;
+    frames.push(rect);
+  }
+  return frames;
+}
+
+function clearOfFrontOverlays(
+  container: Element,
+  band: NonNullable<NativeNode['rect']>,
+  screen: Screen,
+): NativeNode['rect'] {
+  let spans = [{ top: band.y, bottom: band.y + band.height }];
+  const padding = 4 * (screen.pointScale ?? 1);
+  for (const rect of frontOverlayFrames(container, band, screen)) {
     const top = rect.y - padding;
     const bottom = rect.y + rect.height + padding;
     spans = spans.flatMap((span) =>
@@ -595,6 +608,39 @@ export function scrollUntilBand(target: Target, screen: Screen): NativeNode['rec
   if (!band) return undefined;
   const clear = clearOfFrontOverlays(container, band, screen);
   return clear ?? { ...band, height: 0 };
+}
+
+export function scrollUntilClearanceChanged(
+  target: Target,
+  before: Screen,
+  after: Screen,
+): boolean {
+  const rectKey = (rect: NativeNode['rect']) =>
+    rect ? [rect.x, rect.y, rect.width, rect.height] : null;
+  const clearance = (screen: Screen) => {
+    const container = scrollUntilContainer(target, screen);
+    const frame = container && elementFrame(container);
+    const viewport = container && elementViewport(container);
+    const band = frame && clip(frame, viewport);
+    return JSON.stringify([
+      screen.front,
+      screen.pointScale,
+      screen.keyboardVisible,
+      rectKey(screen.keyboardFrame),
+      rectKey(frame),
+      rectKey(viewport),
+      container && band
+        ? [
+            ...new Set(
+              frontOverlayFrames(container, band, screen).map((rect) =>
+                JSON.stringify(rectKey(rect)),
+              ),
+            ),
+          ].sort()
+        : [],
+    ]);
+  };
+  return clearance(before) !== clearance(after);
 }
 
 const GENERIC_TARGET_WORDS = new Set(

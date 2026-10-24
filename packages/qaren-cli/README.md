@@ -733,7 +733,8 @@ touch slop would land as a tap.
 Scroll-until derives its band from the ordinary capture and subtracts front overlays
 across windows and roots, refusing when the remaining band cannot host a real drag.
 Platform presence still supplies navigation markers; captures on both sides of the
-ordinary geometry must agree before that geometry can authorize a drag.
+ordinary geometry must agree on navigation and overlay clearance before that geometry
+can authorize a drag, and later reads cannot extend its original expiry.
 Successful iOS fast-runner scrolls now run the same bounded settle wait as taps
 before returning, using snapshot equality. Results
 include `meta.settle` and `meta.timings_ms.settle`; a timeout reports unsettled

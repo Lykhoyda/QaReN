@@ -38,6 +38,7 @@ import {
   stepTarget,
   scrollUntilBand,
   scrollUntilContainer,
+  scrollUntilClearanceChanged,
   scrollUntilDirection,
   targetEvidence,
   presenceMiss,
@@ -474,16 +475,26 @@ async function walkBlockScoped(
         after.screen,
         scrollUntilContainer(step.until, before.screen),
       );
-      if (navigation)
-        throw new ResolutionError({ refuse: 'SCROLL_NAVIGATED', reason: navigation });
+      if (navigation) throw new ResolutionError({ refuse: 'SCROLL_NAVIGATED', reason: navigation });
       const timing = admitObservation(startedAt, deps.now());
       if (!timing)
         throw new ResolutionError({
           refuse: 'SCREEN_EVIDENCE_INCOMPLETE',
           reason: 'ACQUISITION_EXPIRED',
         });
+      const expiresAt = Math.min(
+        timing.expiresAt,
+        before.timing.expiresAt,
+        geometry.timing.expiresAt,
+        after.timing.expiresAt,
+      );
+      if (scrollUntilClearanceChanged(step.until, before.screen, after.screen))
+        throw new ResolutionError({
+          refuse: 'SCREEN_EVIDENCE_INCOMPLETE',
+          reason: 'SCROLL_CLEARANCE_CHANGED',
+        });
       geometry.screen.pointScale = after.screen.pointScale;
-      return { ...after, timing, scrollScreen: geometry.screen };
+      return { ...after, timing: { ...timing, expiresAt }, scrollScreen: geometry.screen };
     }
     cached = undefined;
     const target =
