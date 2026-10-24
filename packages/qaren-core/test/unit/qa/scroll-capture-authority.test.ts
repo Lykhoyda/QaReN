@@ -12,7 +12,12 @@ import { scriptedJudge, walker } from './judgment-fixtures.ts';
 import { attested, nativeCapture } from './platform-presence-fixtures.ts';
 
 const frame = { x: 0, y: 0, width: 402, height: 874 };
-type Snapshot = { footer?: boolean; toolbarY?: number; toolbarHittable?: boolean };
+type Snapshot = {
+  footer?: boolean;
+  toolbarY?: number;
+  toolbarHittable?: boolean;
+  overlays?: NonNullable<NativeNode['rect']>[];
+};
 
 function fixture() {
   let drags = 0;
@@ -65,6 +70,7 @@ function fixture() {
               rect: { x: 0, y: state.toolbarY, width: 402, height: 70 },
             },
           ]),
+      ...(state.overlays ?? []).map((rect) => ({ type: 'Button', parentIndex: 1, rect })),
     ];
     const depth = (index: number): number => {
       const parent = rawNodes[index].parentIndex;
@@ -184,6 +190,53 @@ for (const direction of ['up', 'down'] as const) {
       });
     }
 
+    for (const targetVisible of [false, true]) {
+      test(`a new full-screen overlay sharing a wrapper rectangle stops before target acceptance: ${direction}, ${mode}, target visible=${targetVisible}`, async () => {
+        const f = fixture();
+        f.setSnapshot(async (_presence, read) => ({
+          footer: read === 3 && targetVisible,
+          overlays: read === 3 ? [frame] : [],
+        }));
+        try {
+          const result = await run(f, direction, mode);
+          assert.equal(result.block.outcome, 'fail');
+          assert.match(
+            renderReason(result.failure?.seen ?? '', (text) => text),
+            /SCREEN_EVIDENCE_INCOMPLETE: SCROLL_CLEARANCE_CHANGED/,
+          );
+          assert.equal(f.drags(), 0);
+          assert.deepEqual(f.endpoints, []);
+          assert.deepEqual(f.modes, [true, false, true]);
+          assert.equal(
+            f.f.deps.judge.calls.length,
+            0,
+            'clearance must be checked before target judgment',
+          );
+          assert.ok(result.rows.every((row) => row.outcome !== 'pass'));
+        } finally {
+          clearRefMap();
+        }
+      });
+    }
+
+    test(`overlay ordering does not change clearance: ${direction}, ${mode}`, async () => {
+      const f = fixture();
+      const top = { x: 0, y: 50, width: 402, height: 20 };
+      const bottom = { x: 0, y: 730, width: 402, height: 70 };
+      f.setSnapshot(async (_presence, read) => ({
+        footer: f.drags() > 0,
+        overlays: read % 3 === 0 ? [bottom, top] : [top, bottom],
+      }));
+      try {
+        const result = await run(f, direction, mode);
+        assert.equal(result.failure, undefined);
+        assert.equal(result.block.outcome, 'pass');
+        assert.equal(f.drags(), 1);
+      } finally {
+        clearRefMap();
+      }
+    });
+
     test(`stable raw presence wrappers preserve ordinary geometry: ${direction}, ${mode}`, async () => {
       const f = fixture();
       try {
@@ -202,51 +255,57 @@ for (const direction of ['up', 'down'] as const) {
 
 for (const direction of ['up', 'down'] as const) {
   for (const refresh of ['reask', 'decision-expiry', 'dispatch-expiry'] as const) {
-    test(`changed clearance refuses before target evaluation during ${refresh}: ${direction}`, async () => {
-      const f = fixture();
-      f.setSnapshot(async (_presence, read) => ({ toolbarY: read === 9 ? 730 : undefined }));
-      let now = 0;
-      f.f.deps.now = () => now;
-      f.f.deps.sleep = async (ms) => {
-        now += ms;
-      };
-      f.f.deps.judge = scriptedJudge((questions, index) => {
-        if (index === 1 && refresh === 'decision-expiry') now += EVIDENCE_USE_MS;
-        return Object.fromEntries(
-          Object.keys(questions).map((id) => [
-            id,
-            {
-              type: 'noul',
-              noul: index === 1 && refresh === 'reask' ? 0.5 : 0.1,
-            },
-          ]),
-        );
-      });
-      const scroll = f.f.deps.scroll;
-      f.f.deps.scroll = async (...args) => {
-        if (f.drags() === 1 && refresh === 'dispatch-expiry') {
-          await f.f.deps.sleep(EVIDENCE_USE_MS);
-          args[1]!.check();
-          assert.fail('expired dispatch must refresh');
+    for (const overlay of ['toolbar', 'coincident'] as const) {
+      test(`changed ${overlay} clearance refuses before target evaluation during ${refresh}: ${direction}`, async () => {
+        const f = fixture();
+        f.setSnapshot(async (_presence, read) => ({
+          toolbarY: overlay === 'toolbar' && read === 9 ? 730 : undefined,
+          overlays: overlay === 'coincident' && read === 9 ? [frame] : [],
+          footer: read === 9,
+        }));
+        let now = 0;
+        f.f.deps.now = () => now;
+        f.f.deps.sleep = async (ms) => {
+          now += ms;
+        };
+        f.f.deps.judge = scriptedJudge((questions, index) => {
+          if (index === 1 && refresh === 'decision-expiry') now += EVIDENCE_USE_MS;
+          return Object.fromEntries(
+            Object.keys(questions).map((id) => [
+              id,
+              {
+                type: 'noul',
+                noul: index === 1 && refresh === 'reask' ? 0.5 : 0.1,
+              },
+            ]),
+          );
+        });
+        const scroll = f.f.deps.scroll;
+        f.f.deps.scroll = async (...args) => {
+          if (f.drags() === 1 && refresh === 'dispatch-expiry') {
+            await f.f.deps.sleep(EVIDENCE_USE_MS);
+            args[1]!.check();
+            assert.fail('expired dispatch must refresh');
+          }
+          return scroll(...args);
+        };
+        try {
+          const result = await run(f, direction, 'phrase');
+          assert.equal(result.block.outcome, 'fail');
+          assert.match(
+            renderReason(result.failure?.seen ?? '', (text) => text),
+            /SCREEN_EVIDENCE_INCOMPLETE: SCROLL_CLEARANCE_CHANGED/,
+          );
+          assert.equal(f.drags(), 1);
+          assert.equal(
+            f.f.deps.judge.calls.length,
+            2,
+            'changed clearance must precede another judgment',
+          );
+        } finally {
+          clearRefMap();
         }
-        return scroll(...args);
-      };
-      try {
-        const result = await run(f, direction, 'phrase');
-        assert.equal(result.block.outcome, 'fail');
-        assert.match(
-          renderReason(result.failure?.seen ?? '', (text) => text),
-          /SCREEN_EVIDENCE_INCOMPLETE: SCROLL_CLEARANCE_CHANGED/,
-        );
-        assert.equal(f.drags(), 1);
-        assert.equal(
-          f.f.deps.judge.calls.length,
-          2,
-          'changed clearance must precede another judgment',
-        );
-      } finally {
-        clearRefMap();
-      }
-    });
+      });
+    }
   }
 }

@@ -630,13 +630,9 @@ export function scrollUntilClearanceChanged(
       rectKey(frame),
       rectKey(viewport),
       container && band
-        ? [
-            ...new Set(
-              frontOverlayFrames(container, band, screen).map((rect) =>
-                JSON.stringify(rectKey(rect)),
-              ),
-            ),
-          ].sort()
+        ? frontOverlayFrames(container, band, screen)
+            .map((rect) => JSON.stringify(rectKey(rect)))
+            .sort()
         : [],
     ]);
   };
