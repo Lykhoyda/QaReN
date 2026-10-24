@@ -1680,15 +1680,16 @@ export async function performFocusedFill(
   if (native.isError) {
     const mutation = extractMutationDisposition(native);
     if (mutation === 'none') {
+      const code = extractErrorCode(native);
       return fillFailure(
-        extractErrorCode(native) === 'TARGET_AMBIGUOUS'
-          ? 'TARGET_AMBIGUOUS'
+        code === 'TARGET_AMBIGUOUS' || code === 'TEXT_ENTRY_UNVERIFIED'
+          ? code
           : 'NO_TEXT_INPUT_TARGET',
         extractErrorText(native),
         {
           mutation: 'none',
           pathsTried,
-          ...(extractErrorCode(native) === 'TEXT_SYNTHESIS_UNAVAILABLE'
+          ...(code === 'TEXT_SYNTHESIS_UNAVAILABLE'
             ? {
                 hint: 'No text was entered. This Xcode cannot synthesize text, so device_fill focused: true cannot type here. Do not retry focused: true.',
               }
