@@ -842,45 +842,28 @@ either mutation. A false, unbound, unreadable or failed read before clearing ret
 `NO_TEXT_INPUT_TARGET` with no mutation. An unknown keyboard state still refuses.
 Each walker focus decision logs one value-free `fallback-focus` line.
 
-QaReN then requests replacement of the focused field's content: the iOS runner sends
-select-all and an explicit Delete in separate ordered records. For a readable, nonempty
-controlled field, preparation instead moves to the end and deletes its measured length
-(at most 256 keys), after confirming that the value has not changed. An initial
-prefill exceeding that bound refuses with `TEXT_ENTRY_UNVERIFIED` and no mutation.
-This preparation also runs before a retype. The host re-proves focus on the intended
-React input before sending the plan text. If focus moved or
-cannot be proved, no replacement text is sent; clearing may already have mutated the field.
-When the input is a
-controlled React field, its value is then read back locally and compared, never
-logged: an exact match verifies the fill. A stable controlled read-back exactly equal
-to a nonempty prefix of the prior value followed by the requested text triggers one
-bounded clear-and-retype: move to the end, delete the current observed length (at most
-256 keys), re-prove focus, type, and verify again. This also covers select-all doing
-nothing before Delete removes just the last character. A changed value, lost focus,
-expired step budget, excessive length, or failed final verification refuses with
-`TEXT_ENTRY_UNVERIFIED`; no third attempt runs. Secure fields and runtime-input runs
-never read their prior values or use them for a length calculation. They retain the
-initial select-all and Delete preparation, then stay unverified after one dispatch;
-without readable retained-text evidence, they are never cleared and typed again.
-The same check runs after the bounded retype below, comparing against the preserved
-initial value and the retype's fresh controlled, focused value before dispatch.
-A stable, nonempty read-back holding a
-strictly shorter, in-order part of the text is ambiguous: keystrokes dropped under
-host load and a field that strips characters or limits length look alike. QaReN
-requests one clear-and-retype with the same text within the same step budget. A match then
-verifies the fill. A second loss of a different length points to dropped
-keystrokes and fails with `TEXT_ENTRY_UNVERIFIED` naming only the typed and held
-lengths. The same loss twice points to the field's own transformation and stays
-unverified. Its row reason ends `the field kept the same shorter value on every
-attempt`, and the counts travel beside it as numbers, `kept: { typed, observed }`
-with one held count per attempt, because masking a private value may hide any
-digit in the reason text. Any other normalized, empty, uncontrolled or unreadable
-value also stays unverified. A later plan check still decides whether the value
-is acceptable. The receipt's `ledger.unverified_fills` lists each passing fill
-left unverified with its line and value-free reason, plus `kept` and a `detail`
-such as `field kept 10 of 13 chars on 2 attempts` when counts exist; the report
-line shows the same detail. Fill character counts are omitted when the run requires
-runtime inputs. The list is omitted when empty. A runner
+For non-secure focused fields, QaReN checks the current content before typing.
+An empty field receives text directly, with no selection or Delete. A nonempty
+controlled field is cleared by moving to the end and deleting its measured length
+(at most 256 keys), after confirming that its content has not changed. The host
+requires two consecutive empty observations before sending the first character,
+and re-proves focus before both clearing and insertion. A prefill exceeding the
+bound or an unavailable initial content state refuses with `TEXT_ENTRY_UNVERIFIED`
+and no mutation. If clearing does not settle, focus moves, or the step budget
+expires, no replacement text is sent; clearing may already have mutated the field.
+
+After typing, a controlled non-secure value must match exactly. A readable mismatch,
+including a missing prefix or app normalization, fails with `TEXT_ENTRY_UNVERIFIED`
+without retyping. Unreadable final values remain honestly unverified. For private
+runtime inputs, length and exact-match comparisons run inside the app; only state
+and comparison metadata leave the process, never the value. Private character
+counts are omitted from the run's public output.
+
+Secure fields retain direct typing: they receive no selection or Delete, their
+values are never read, and the result stays unverified. **Known limit:** a prefilled
+secure field is not replaced. Use the app's own reset or recovery path to reach an
+empty secure field before filling it; automatic secure clearing needs a future
+value-free content-state source. A runner
 must advertise `FILL_EVIDENCE_V1` on both iOS and Android, and `FOCUSED_REPLACE_V2`
 on iOS. Session startup routes a missing capability through the bounded
 source-rebuild path instead of
