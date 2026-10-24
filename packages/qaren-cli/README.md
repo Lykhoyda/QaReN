@@ -1179,10 +1179,20 @@ from one ordinary capture per iteration, including replay and freshness refreshe
 After that capture finds a quoted text or identity candidate, a separate platform
 presence capture confirms target visibility; phrase predicates confirm the ordinary
 capture's named native candidates through the semantic visibility judgment.
-Presence nodes never supply gesture geometry or navigation markers. An unsuccessful
-confirmation retains the ordinary observation and its original expiry for the next
-drag; expired evidence must refresh before dispatch. See the
+Presence nodes never supply gesture geometry or navigation markers. Confirmation
+is followed by a fresh ordinary capture, which supplies the next drag's geometry
+and retains its own acquisition time and expiry; expired evidence must refresh
+before dispatch. See the
 [capture authority regressions](../qaren-core/test/unit/qa/scroll-capture-authority.test.ts).
+Before accepting a confirmed target, the walker checks for contradictory target
+visibility in that newer ordinary capture. For phrase targets, established changes
+to text, enabled/disabled state or element kind re-evaluate the whole supported
+claim: a visible “Welcome” becoming “Welcome back” can still satisfy “the welcome
+message”, while a button becoming static text cannot satisfy “the continue button”.
+Unknown facts and missing labels do not establish a contradiction, and unrelated
+content changes do not invalidate the target. Re-evaluation preserves the original
+qualified evidence and privacy masking. Quoted and text-replay targets retain
+strict matching; ID-only replay retains identity and visibility semantics.
 The scroll-until drag starts inside the list it is meant to move (the target's own
 scroll container, or the frontmost one above the keyboard), not at the screen
 centre. A row scrolled out of its list drags inside that list; a row covered
