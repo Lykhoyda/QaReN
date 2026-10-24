@@ -246,7 +246,18 @@ const ADMISSION_KEYS: &[&str] = &[
 
 fn clean(value: &Value) -> Option<Value> {
     let fields = value.as_object()?;
-    let kind = fields.get("kind")?.as_str()?;
+    let raw_kind = fields.get("kind")?.as_str()?;
+    let carrier_kind = [
+        "input", "other", "text", "button", "cell", "image", "switch", "link",
+    ]
+    .contains(&raw_kind);
+    if carrier_kind
+        && (fields.get("stage")?.as_str()? != "screenshot"
+            || fields.get("outcome")?.as_str()? != "withheld")
+    {
+        return None;
+    }
+    let kind = if carrier_kind { "metric" } else { raw_kind };
     if kind == "target-miss" {
         return clean_target_miss(fields);
     }
@@ -275,6 +286,8 @@ fn clean(value: &Value) -> Option<Value> {
                 "relaunch",
                 "reapDisposition",
                 "readinessReason",
+                "withheld",
+                "source",
                 "admission",
                 "attempt",
                 "lastStarted",
@@ -328,12 +341,19 @@ fn clean(value: &Value) -> Option<Value> {
         return None;
     }
     let mut clean = Map::new();
-    clean.insert("kind".into(), kind.into());
+    clean.insert("kind".into(), raw_kind.into());
     for (key, value) in fields {
         if key == "kind" {
             continue;
         }
         if !required.contains(&key.as_str()) && !optional.contains(&key.as_str()) {
+            return None;
+        }
+        if ["withheld", "source"].contains(&key.as_str())
+            && (kind != "metric"
+                || fields.get("stage")?.as_str()? != "screenshot"
+                || fields.get("outcome")?.as_str()? != "withheld")
+        {
             return None;
         }
         if key == "readinessReason"
@@ -390,6 +410,16 @@ fn clean(value: &Value) -> Option<Value> {
             "proof" => Some(&["focused", "not-proven"]),
             "settled" | "hierarchyChanged" if !value.is_boolean() => Some(&["unknown"]),
             "nativeMutation" => Some(&["none", "observed", "possible"]),
+            "withheld" => Some(&[
+                "runtime-input",
+                "concealed-fill",
+                "secure-field",
+                "input-value",
+                "generic-value",
+                "code-row",
+                "echo",
+            ]),
+            "source" => Some(&["typed", "observed", "concealed", "secret", "code", "input"]),
             "readinessReason" => Some(NATIVE_READINESS_REASONS),
             "admission" => Some(&["retry", "cancelled", "refused"]),
             "lastStarted" => Some(ADMISSION_BOUNDARIES),

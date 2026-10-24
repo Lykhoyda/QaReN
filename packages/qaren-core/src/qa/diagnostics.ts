@@ -1,5 +1,6 @@
 import { NATIVE_CODES, REFUSAL_STAGES } from '../domain/qa-dispatch.js';
 import { cleanTimingEvent } from './timing.js';
+import { MEDIA_KINDS } from './privacy.js';
 import { isRecord } from './questions.js';
 import { cleanTargetMiss } from './target-miss.js';
 
@@ -32,8 +33,11 @@ export function cleanDiagnostic(value: unknown): Record<string, unknown> | undef
     Number.isFinite(value[key]) &&
     value[key] >= 0 &&
     value[key] <= Number.MAX_SAFE_INTEGER;
-  if (value.kind === 'metric') {
-    const event = cleanTimingEvent(value);
+  if (value.kind === 'metric' || MEDIA_KINDS.some((kind) => kind === value.kind)) {
+    const event = cleanTimingEvent({
+      ...value,
+      kind: value.kind === 'metric' ? undefined : value.kind,
+    });
     return event ? { kind: 'metric', ...event } : undefined;
   }
   if (value.kind === 'block-outcome' || value.kind === 'login-outcome') {

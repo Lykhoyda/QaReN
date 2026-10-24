@@ -2064,3 +2064,58 @@ fn exact_selection_refusal_classes_survive_private_diagnostics() {
         assert_eq!(got, expected);
     });
 }
+
+#[test]
+fn screenshot_withholding_metrics_accept_only_closed_words_on_withheld_frames() {
+    use qaren::redact::{with_input_scope, InputValues};
+    use serde_json::json;
+    use std::ffi::OsString;
+    use std::sync::Arc;
+    let repo = common::temp_repo();
+    let inputs = Arc::new(InputValues::from_entries([(
+        OsString::from("QAREN_INPUT_PASSWORD"),
+        OsString::from("private-synthetic-value"),
+    )]));
+    with_input_scope(inputs, || {
+        let metric = json!({"kind":"metric","stage":"screenshot","edge":"point","outcome":"withheld","at":1,"withheld":"echo","source":"typed"});
+        let qualified = json!({"kind":"other","stage":"screenshot","edge":"point","outcome":"withheld","at":1,"withheld":"generic-value"});
+        let mut wrong_stage = qualified.clone();
+        wrong_stage["stage"] = "capture".into();
+        let mut wrong_kind = qualified.clone();
+        wrong_kind["kind"] = "private-synthetic-value".into();
+        let mut payloads = vec![metric.clone(), qualified.clone(), wrong_stage, wrong_kind];
+        for (key, value) in [
+            ("stage", "capture"),
+            ("outcome", "ok"),
+            ("withheld", "private-synthetic-value"),
+            ("source", "private-synthetic-value"),
+        ] {
+            let mut invalid = metric.clone();
+            invalid[key] = value.into();
+            payloads.push(invalid);
+        }
+        let mut stdout = String::new();
+        for (i, payload) in payloads.iter().enumerate() {
+            stdout.push_str(&envelope(i as u64 + 2, "diagnostic", &payload.to_string()));
+            stdout.push('\n');
+        }
+        stdout.push_str(&envelope(
+            payloads.len() as u64 + 2,
+            "result",
+            &pass_ledger(&[]),
+        ));
+        stdout.push('\n');
+        let mut mock = MockRunner::new();
+        mock.expect_spawn_piped("walk.js", 9000, &stdout, Some(0));
+        assert_eq!(
+            run_child(&mut mock, &repo.join("core.log")).verdict,
+            Verdict::Pass
+        );
+        let stored = std::fs::read_to_string(repo.join("core-diagnostics.jsonl")).unwrap();
+        let got: Vec<serde_json::Value> = stored
+            .lines()
+            .map(|line| serde_json::from_str(line).unwrap())
+            .collect();
+        assert_eq!(got, vec![metric, qualified]);
+    });
+}

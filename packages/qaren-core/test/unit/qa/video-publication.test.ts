@@ -215,3 +215,54 @@ test('non-secret-only runs still refuse screenshots at the capture adapter', asy
       { ok: false, reason: 'WITHHELD_PRIVATE_INPUT' },
     );
 });
+
+test('video reason follows a pre-plan login window while screenshots retain the first cause', async () => {
+  const wall = screen([
+    element('@login', 'Sign in', { testID: 'login-screen' }),
+    element('@password', '', { kind: 'input', secure: true }),
+  ]);
+  capturePrivateScreen(wall, []);
+  const home = screen([
+    element('@settings', 'Settings'),
+    element('@ready', 'Ready', { kind: 'text' }),
+  ]);
+  const valued = screen([
+    ...home.elements,
+    element('@value', '', { nativeKind: 'other', kind: 'other', value: 'private-display-canary' }),
+  ]);
+  capturePrivateScreen(valued, [
+    {
+      values: ['private-display-canary'],
+      secure: false,
+      elements: [valued.elements.at(-1)!],
+      associationUnique: true,
+    },
+  ]);
+  const f = walker(
+    [],
+    scriptedJudge(() => assert.fail('literal plan')),
+  );
+  let loggedIn = false;
+  let navigated = false;
+  f.deps.captureScreen = async () => (!loggedIn ? wall : navigated ? valued : home);
+  f.deps.press = async (ref) => {
+    if (ref === '@login') loggedIn = true;
+    if (ref === '@settings') navigated = true;
+    return { ok: true, proven: true };
+  };
+  f.deps.hideDevMenu = async () => ({ ok: true, proven: true });
+  f.deps.login = {
+    marker: { id: 'login-screen' },
+    block: parsePlan('1. Tap "Sign in"').blocks![0],
+  };
+  const result = await runPlan(parsePlan('1. Tap "Settings"\n✓ "Ready"').blocks!, f.deps);
+  assert.equal(result.verdict, 'PASS');
+  assert.equal(typeof result.publishFromMs, 'number');
+  assert.equal(result.videoPublication, 'withheld-privacy');
+  assert.equal(result.mediaWithheld?.screenshots?.reason, 'secure-field');
+  assert.deepEqual(result.mediaWithheld?.video, {
+    reason: 'generic-value',
+    kind: 'other',
+    line: 1,
+  });
+});

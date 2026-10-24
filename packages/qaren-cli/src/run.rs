@@ -1133,6 +1133,15 @@ fn run_inner(
         Err(f) => return Ok(ctx.fail(f)),
     };
 
+    if let Some(entry) = outcome
+        .ledger
+        .media_withheld
+        .as_ref()
+        .and_then(|media| media.screenshots.as_ref().or(media.video.as_ref()))
+    {
+        ctx.notes
+            .push(("media_withheld".to_string(), entry.receipt_note()));
+    }
     let (mut result, mut failure) = match &outcome.verdict {
         Verdict::Pass => (ReceiptResult::Pass, None),
         Verdict::Fail => {

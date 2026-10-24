@@ -1,5 +1,39 @@
-import type { Element, EvidenceStatus, NativeNode, Screen } from './screen.js';
+import type { Element, EvidenceStatus, Kind, NativeNode, Screen } from './screen.js';
 import { ancestorsOf, elementFrame } from './screen.js';
+
+export const WITHHOLD_CAUSES = [
+  'runtime-input',
+  'concealed-fill',
+  'secure-field',
+  'input-value',
+  'generic-value',
+  'code-row',
+  'echo',
+] as const;
+export type WithholdCause = (typeof WITHHOLD_CAUSES)[number];
+export const MEDIA_KINDS = [
+  'input',
+  'other',
+  'text',
+  'button',
+  'cell',
+  'image',
+  'switch',
+  'link',
+] as const satisfies readonly Kind[];
+export const MEDIA_SOURCES = [
+  'typed',
+  'observed',
+  'concealed',
+  'secret',
+  'code',
+  'input',
+] as const satisfies readonly Provenance[];
+export interface MediaLatch {
+  reason: WithholdCause;
+  kind?: Kind;
+  source?: Provenance;
+}
 
 export const MASK = '•••';
 export const SCREEN_TEXT_WITHHELD = '[screen text withheld: a secure field is on screen]';
@@ -28,6 +62,7 @@ const privateScreens = new WeakMap<
     secrets: string[];
     subjects: PrivateSubject[];
     sensitivePixels: boolean;
+    cause?: MediaLatch;
   }
 >();
 const uncertainPrivateInputs = new WeakSet<Element>();
@@ -102,15 +137,38 @@ export function capturePrivateScreen(
       }
     }
   }
+  const carriers = screen.elements.filter(
+    (element) =>
+      inputValues({ ...screen, elements: [element] }).length > 0 ||
+      facts.some((fact) => fact.elements.includes(element) && fact.values.some(Boolean)),
+  );
+  const sensitivePixels =
+    values.size > 0 ||
+    facts.some((fact) => fact.secure) ||
+    inputValues(screen).length > 0 ||
+    screen.elements.some((element) => element.secure);
+  const secure =
+    facts.some((fact) => fact.secure) || screen.elements.some((element) => element.secure);
+  const input = carriers.some(
+    (element) =>
+      element.nativeKind === 'input' ||
+      element.kind === 'input' ||
+      element.semantic?.fill === 'supported',
+  );
+  const carrier = carriers[0];
+  const cause: MediaLatch | undefined = !sensitivePixels
+    ? undefined
+    : secure
+      ? { reason: 'secure-field' }
+      : input
+        ? { reason: 'input-value' }
+        : { reason: 'generic-value', ...(carrier?.nativeKind ? { kind: carrier.nativeKind } : {}) };
   privateScreens.set(screen, {
     values: [...values],
     secrets: [...secrets],
     subjects,
-    sensitivePixels:
-      values.size > 0 ||
-      facts.some((fact) => fact.secure) ||
-      inputValues(screen).length > 0 ||
-      screen.elements.some((element) => element.secure),
+    sensitivePixels,
+    cause,
   });
 }
 
@@ -644,6 +702,9 @@ export class ObservedPrivacy {
   private sensitivePixels = false;
   private sensitiveInWindow = false;
   private sensitiveLatest = false;
+  private firstLatch?: MediaLatch;
+  private windowLatch?: MediaLatch;
+  private latestLatch?: MediaLatch;
   // Fields typed into without a readable value, by any identity ('' is any input); only a seen field can leave.
   private readonly concealedFields = new Set<{ ids: string[]; seen: boolean }>();
   private shown: Element[] = [];
@@ -657,7 +718,7 @@ export class ObservedPrivacy {
 
   classifyInputs(values: readonly string[]): void {
     values.filter(Boolean).forEach((value) => this.inputValues.add(value));
-    if (this.inputValues.size) this.mark();
+    if (this.inputValues.size) this.mark({ reason: 'runtime-input' });
   }
 
   assertInputHashSafe(text: string, values: Iterable<string> = this.inputValues): boolean {
@@ -676,12 +737,14 @@ export class ObservedPrivacy {
 
   observe(screen: Screen): void {
     this.sensitiveLatest = false;
+    this.latestLatch = undefined;
     this.shown = screen.elements.filter((element) => !element.offscreen);
     for (const field of this.concealedFields)
       if (this.showing(field.ids)) field.seen = true;
       else if (field.seen) this.concealedFields.delete(field);
-    if (this.concealedFields.size > 0) this.mark();
-    if (privateScreens.get(screen)?.sensitivePixels === true) this.mark();
+    if (this.concealedFields.size > 0) this.mark({ reason: 'concealed-fill' });
+    const cause = privateScreens.get(screen)?.cause;
+    if (cause) this.mark(cause);
     for (const value of privateScreens.get(screen)?.secrets ?? []) this.secret.add(value);
     for (const value of inputValues(screen)) this.observed.add(value);
     for (const value of inputValues(screen, true)) this.concealed.add(value);
@@ -707,7 +770,7 @@ export class ObservedPrivacy {
         );
         if (boxes.includes(element) || echo || merged) this.codeElements.add(element);
       }
-      if (rows.length > 0) this.mark();
+      if (rows.length > 0) this.mark({ reason: 'code-row' });
     }
     for (const element of screen.elements)
       if (element.secure) {
@@ -723,6 +786,24 @@ export class ObservedPrivacy {
     ];
     const values = this.privateSet();
     const folded = text.map((line) => line.normalize('NFC').toLowerCase());
+    const match = values.values.find(
+      (value) =>
+        text.some(
+          (line) =>
+            matchPrivate(
+              line,
+              {
+                values: [value],
+                fragments: values.fragments?.filter((fragment) => fragment === value.text),
+              },
+              'persisted',
+            ).hit,
+        ) ||
+        (chars(value.text.trim()) < SHORT &&
+          forms(value.text).some((form) => text.some((line) => line.includes(form)))) ||
+        (chars(value.text.trim()) >= SHORT &&
+          folded.some((line) => line.includes(value.text.trim().normalize('NFC').toLowerCase()))),
+    );
     if (
       text.some((line) => matchPrivate(line, values, 'persisted').hit) ||
       values.values.some(
@@ -736,7 +817,7 @@ export class ObservedPrivacy {
           folded.some((line) => line.includes(value.text.trim().normalize('NFC').toLowerCase())),
       )
     )
-      this.mark();
+      this.mark({ reason: 'echo', ...(match ? { source: match.provenance } : {}) });
   }
 
   didFill(value?: string): void {
@@ -750,7 +831,7 @@ export class ObservedPrivacy {
     this.concealedFields.add({ ids, seen: this.showing(ids) });
     this.concealed.add(value);
     if (secure) this.secret.add(value);
-    this.mark();
+    this.mark({ reason: 'concealed-fill' });
   }
 
   private showing(ids: readonly string[]): boolean {
@@ -763,10 +844,21 @@ export class ObservedPrivacy {
     );
   }
 
-  private mark(): void {
+  private mark(latch: MediaLatch): void {
+    this.firstLatch ??= latch;
+    this.windowLatch ??= latch;
+    this.latestLatch ??= latch;
     this.sensitivePixels = true;
     this.sensitiveInWindow = true;
     this.sensitiveLatest = true;
+  }
+
+  latched(): MediaLatch | undefined {
+    return this.firstLatch;
+  }
+
+  windowLatched(): MediaLatch | undefined {
+    return this.windowLatch;
   }
 
   canScreenshot(): boolean {
@@ -776,6 +868,7 @@ export class ObservedPrivacy {
   // The published video starts here, still showing the latest screen; screenshots keep the run-wide flag.
   startWindow(): void {
     this.sensitiveInWindow = this.sensitiveLatest;
+    this.windowLatch = this.latestLatch;
   }
 
   windowClean(): boolean {

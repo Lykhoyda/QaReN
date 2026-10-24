@@ -1,3 +1,4 @@
+import type { MediaLatch, WithholdCause } from './privacy.js';
 export type RowOutcome = 'pass' | 'fail' | 'retry';
 
 export interface Selector {
@@ -21,6 +22,7 @@ export interface LedgerRow {
   resolvedBy: 'exact' | 'jev';
   ref?: string;
   screenshot?: string;
+  screenshotWithheld?: WithholdCause;
   t: number;
   outcome: RowOutcome;
   reason?: string;
@@ -64,6 +66,10 @@ export interface BlockResult {
 export interface Ledger {
   verdict: 'PASS' | 'FAIL';
   videoPublication?: 'eligible' | 'withheld-fill' | 'withheld-privacy' | 'unknown';
+  mediaWithheld?: {
+    screenshots?: MediaLatch & { line: number; count: number };
+    video?: MediaLatch & { line: number };
+  };
   admittedAtMs?: number;
   publishFromMs?: number;
   publicationInterrupted?: boolean;
