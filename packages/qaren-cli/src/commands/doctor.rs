@@ -2722,10 +2722,22 @@ mod tests {
     }
 
     #[test]
+    fn saved_block_rows_skip_when_git_cannot_identify_a_checkout() {
+        let mut runner = MockRunner::new();
+        runner.expect_run(
+            "--git-common-dir",
+            CmdOutput::failed(128, "not a git checkout"),
+        );
+        let check = saved_blocks_check(&mut runner, Path::new("/not-a-checkout"));
+        assert_eq!(check.status, Status::Skip);
+        assert_eq!(check.detail, "not a Git checkout");
+        assert!(check.fix.is_none());
+    }
+
+    #[test]
     fn saved_block_rows_inspect_only_an_isolated_temporary_git_repository() {
         let s = Scratch::new("corpus-rows");
         let mut runner = crate::exec::RealRunner::new();
-        assert_eq!(saved_blocks_check(&mut runner, &s.0).status, Status::Skip);
         let primary = s.dir("primary");
         let linked = s.path("linked");
         for args in [
