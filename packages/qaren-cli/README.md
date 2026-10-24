@@ -727,8 +727,9 @@ Scrolls without a clearance distance keep the fixed amount of `0.6` on the windo
 band; inside a caller band they span its clear interior, except
 a keyboard-bound edge, which the band clears by 48 pt so the drag never starts on
 the keyboard. One scroll-until attempt moves the list by one visible band and
-cannot carry the target past it. A band shorter than 50 px refuses `SCROLL_BAND_TOO_SMALL` before
-anything is sent, because a drag under the touch slop would land as a tap.
+cannot carry the target past it. A band shorter than 50 px or narrower than 2 px
+refuses `SCROLL_BAND_TOO_SMALL` before anything is sent, because a drag under the
+touch slop would land as a tap.
 Successful iOS fast-runner scrolls now run the same bounded settle wait as taps
 before returning, using snapshot equality. Results
 include `meta.settle` and `meta.timings_ms.settle`; a timeout reports unsettled
@@ -1171,14 +1172,17 @@ target or no known viewport, the requested direction is retained. The
 scroll-until drag starts inside the list it is meant to move (the target's own
 scroll container, or the frontmost one above the keyboard), not at the screen
 centre. A row scrolled out of its list drags inside that list; a row covered
-inside it drags inside its clearance band. For absent or scrolled-out targets,
-the screen model removes the padded rows of hittable non-text elements drawn
-after the selected list, outside its subtree, that overlap the band horizontally.
+inside it drags inside its clearance band. For each selected-list band, including
+keyboard-clipped clearance bands, the screen model removes the padded rows of
+hittable non-text elements drawn after the selected list, outside its subtree,
+that overlap the band horizontally.
 The largest remaining vertical span becomes the drag band; window ancestors and
 the list's own rows do not cut it. Padding uses four points, scaled by the captured
 display density on Android when available. An exhausted clear span refuses with
 `SCROLL_BAND_TOO_SMALL`; a screen without a scroll container retains the centred
-window drag. After each scroll-until drag, a changed selected tab outside the lists,
+window drag. After each scroll-until drag, every fresh observation, including
+visibility-probe refreshes for expired or uncertain evidence, is checked against
+the pre-drag screen. A changed selected element outside the lists (such as a tab),
 navigation title, or scrolled list refuses with `SCROLL_NAVIGATED` before looking
 for the target on the destination screen. Moving rows and a collapsing navigation
 title with the same identity do not count as navigation. End-of-list stop follows

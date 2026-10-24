@@ -359,7 +359,7 @@ test('a keyboard-covered target clears a floating toolbar before building the dr
   assert.deepEqual(band, { x: 0, y: 300, width: 390, height: 121 });
   for (const direction of ['up', 'down'] as const) {
     const [, y1, , y2] = bandDrag(band, frame, 508, direction);
-    assert.deepEqual([y1, y2], direction === 'down' ? [408, 312] : [312, 408]);
+    assert.deepEqual([y1, y2], direction === 'down' ? [409, 313] : [313, 409]);
     for (const y of [y1, y2]) assert.ok(y < 425 || y > 450, `${y}`);
     assert.ok(Math.abs(y1 - y2) >= 48);
   }
