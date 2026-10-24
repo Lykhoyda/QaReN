@@ -185,10 +185,7 @@ for (const changed of [false, true]) {
     };
     const result = await runPlan(parsePlan('1. Tap "Add coverage"').blocks!, f.deps);
     assert.equal(result.verdict, changed ? 'PASS' : 'FAIL', JSON.stringify(result));
-    assert.deepEqual(
-      modes,
-      changed ? [false, true, true] : [false, true, true, false, true, true],
-    );
+    assert.deepEqual(modes, changed ? [false, true, true] : [false, true, true, false, true, true]);
     assert.deepEqual(f.actions, changed ? ['press @e3'] : ['press @e3', 'press @e3']);
     assert.deepEqual(
       result.steps.map((row) => row.outcome),
