@@ -584,7 +584,9 @@ reads no React tree, and cannot authorize media or replace the ordinary privacy
 observation. It retains that snapshot's references, generation and dispatch
 expiry. Both native producers require live candidate observations that match the
 ordinary identities and agree across their last two samples; changes to unrelated
-nodes do not invalidate that agreement. Missing, changing or unavailable candidate
+nodes do not invalidate that agreement. On iOS, candidate indices and parent
+indices use the ordinary snapshot's retained filtering and deduplication options,
+rather than raw-tree positions. Missing, changing or unavailable candidate
 provenance fails as `TARGET_AMBIGUOUS`, with no press and no
 `PRIVATE_INPUT_CAPTURE_UNKNOWN` from the metadata read. Ordinary privacy failures
 still refuse that capture. A subsequent ordinary capture must pass admission
@@ -1385,13 +1387,10 @@ Where presence is required after a system dialog closes, iOS native preparation
 compares consecutive full enumerations and waits for a 500 ms quiet window before
 observing candidates. Any descriptor or hierarchy change resets that quiet window
 without renewing the existing presence deadline. Revalidation after observation
-still rejects a changed enumeration. Candidate-only label provenance metadata
-enriches the privacy-admitted ordinary observation, preserving its references and
-generation and consuming its original dispatch deadline. This metadata read takes
-no screenshot and cannot replace ordinary privacy admission or lift screenshot
-withholding; a subsequent ordinary capture must pass admission before screenshots
-can resume. Semantic phrase-action readbacks still require full platform presence
-and privacy admission.
+still rejects a changed enumeration. For candidate-only label provenance, follow
+the quoted-label contract in [Check a plan](#check-a-plan); metadata cannot replace
+ordinary privacy admission or lift screenshot withholding. Semantic phrase-action
+readbacks still require full platform presence and privacy admission.
 Only a fresh, complete snapshot can establish privacy or admit a newly arrived
 system alert; partial presence never authorizes actions, screenshots or model
 evidence. Malformed, truncated, dropped-node and other incomplete captures refuse
