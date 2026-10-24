@@ -848,9 +848,9 @@ bounded clear-and-retype: move to the end, delete the current observed length (a
 nothing before Delete removes just the last character. A changed value, lost focus,
 expired step budget, excessive length, or failed final verification refuses with
 `TEXT_ENTRY_UNVERIFIED`; no third attempt runs. Secure fields and runtime-input runs
-never supply their prior values to the length calculation: they use a fixed 256-key
-clear as their one retype and keep the existing unverified outcome. The bound cannot
-prove that a longer private value was completely cleared.
+never read their prior values or use them for a length calculation. They retain the
+initial select-all and Delete preparation, then stay unverified after one dispatch;
+without readable retained-text evidence, they are never cleared and typed again.
 The same check runs after the bounded retype below, comparing against the preserved
 initial value and the retype's fresh controlled, focused value before dispatch.
 A stable, nonempty read-back holding a

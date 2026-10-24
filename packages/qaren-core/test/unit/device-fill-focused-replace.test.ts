@@ -27,6 +27,7 @@ async function run(
     requireFocused?: boolean;
     clearFirst?: boolean;
     privateValue?: boolean;
+    secureValue?: boolean;
     text?: string;
   } = {},
 ): Promise<{ env: any; dispatched: string[][]; clearCounts: (number | undefined)[] }> {
@@ -48,7 +49,13 @@ async function run(
   });
   const client = {
     isConnected: true,
-    evaluate: async () => {
+    evaluate: async (expression: string) => {
+      const [, probeOptions] = JSON.parse(
+        '[' + expression.slice('__QAREN.readInputValue('.length, -1) + ']',
+      );
+      const protectedValue =
+        probeOptions.privateValue === true ||
+        (options.secureValue === true && probeOptions.protectSecure === true);
       const after = options.after;
       const read =
         dispatched.length > 0 && 'after' in options
@@ -59,10 +66,10 @@ async function run(
       return read
         ? {
             value: JSON.stringify({
-              value: read.value,
-              controlled: read.value !== null,
+              value: protectedValue ? null : read.value,
+              controlled: protectedValue ? false : read.value !== null,
               focused: read.focused,
-              ...(options.privateValue ? { privateValue: true } : {}),
+              ...(protectedValue ? { privateValue: true } : {}),
             }),
           }
         : { error: 'unreadable' };
@@ -206,12 +213,22 @@ test('a readable prefill beyond the clear budget refuses without mutation', asyn
   assert.deepEqual(dispatched, []);
 });
 
-test('a private field uses a bounded clear and keeps its outcome unverified', async () => {
-  const { env, clearCounts } = await run({ value: null, focused: true }, { privateValue: true });
-  assert.equal(env.ok, true);
-  assert.equal(env.data.verified, false);
-  assert.deepEqual(clearCounts, [undefined, 256]);
-});
+for (const kind of ['private', 'secure'] as const) {
+  for (const value of ['', 'private-prefill']) {
+    test(`${kind} ${value ? 'prefilled' : 'empty'} input clears only before its first dispatch`, async () => {
+      const { env, dispatched, clearCounts } = await run(
+        { value, focused: true },
+        { privateValue: kind === 'private', secureValue: kind === 'secure' },
+      );
+      assert.equal(env.ok, true);
+      assert.equal(env.data.verified, false);
+      assert.equal(env.data.verifiedOracle, 'none');
+      assert.deepEqual(dispatched, [REPLACE]);
+      assert.deepEqual(clearCounts, [undefined]);
+      assert.doesNotMatch(JSON.stringify(env), /private-prefill|real@example/);
+    });
+  }
+}
 
 test('a shorter first readback then initial retained prefix fails after the existing retype', async () => {
   const { env, dispatched } = await run(
