@@ -120,6 +120,7 @@ const elementFrames = new WeakMap<Element, NonNullable<NativeNode['rect']>>();
 const nativeAncestors = new WeakMap<Element, Element[]>();
 const elementViewports = new WeakMap<Element, NonNullable<NativeNode['rect']>>();
 const keyboardCoveredElements = new WeakSet<Element>();
+const knownDisabledStates = new WeakSet<Element>();
 // Native scroll containers (iOS names, Android class suffixes); only native-backed elements are ever members.
 const scrollContainers = new WeakMap<Element, string>();
 const navigationBarTitles = new WeakMap<Element, string>();
@@ -906,6 +907,13 @@ export function join(
           : {}),
       },
     };
+    if (
+      typeof n.enabled === 'boolean' ||
+      host?.disabled === true ||
+      host?.readOnly === true ||
+      (!presenceMode && uniqueMatch && typeof match?.disabled === 'boolean')
+    )
+      knownDisabledStates.add(element);
     if (label) element.label = label;
     if (testID) element.testID = testID;
     const privateNativeLabel = presenceMode && observed?.labelSource !== 'direct';
@@ -1010,6 +1018,7 @@ export function join(
         disabled: !presenceMode && d.disabled === true,
       },
     };
+    if (!presenceMode && typeof d.disabled === 'boolean') knownDisabledStates.add(element);
     // Screen text comes only from the native tree, so a React-only element shows no user-visible string;
     // its value still joins the mask set, which can only reduce what is written.
     const value = digestValue(d.value);
@@ -1366,6 +1375,10 @@ function projectionRefusal(screen: Screen): { refuse: string; reason: string } |
     );
   }
   return undefined;
+}
+
+export function disabledStateOf(element: Element): boolean | undefined {
+  return knownDisabledStates.has(element) ? semanticDisabled(element) : undefined;
 }
 
 export function semanticDisabled(element: Element): boolean {

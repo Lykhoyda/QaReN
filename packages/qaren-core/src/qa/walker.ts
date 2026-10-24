@@ -18,12 +18,15 @@ import {
   insideAlert,
   elementFrame,
   isNativeInput,
+  disabledStateOf,
+  semanticDisabled,
   describe,
 } from './screen.js';
 import {
   type Resolution,
   type CentreCoverageDiagnostic,
   type ScreenDecision,
+  type AssertionUpdate,
   CHECK,
   ResolutionError,
   decideScreen,
@@ -704,7 +707,7 @@ async function walkBlockScoped(
     step?: Exclude<Item, { kind: 'check' }>,
     deadline = Infinity,
     initial?: ScreenDecision,
-    assertionLabels?: ReadonlyMap<Element, string>,
+    assertionUpdates?: ReadonlyMap<Element, AssertionUpdate>,
   ): Promise<ScreenDecision> => {
     const item = (check ?? step)!;
     usable(observation, item, deadline);
@@ -730,7 +733,7 @@ async function walkBlockScoped(
             privacy,
             observationDeadline(observation.timing, deadline),
             deps.diagnostic !== undefined,
-            assertionLabels,
+            assertionUpdates,
           ));
       } catch (error) {
         if (isAbort(error)) throw error;
@@ -1043,7 +1046,7 @@ async function walkBlockScoped(
         const beforeConfirmation = observation.screen;
         let ordinary = observation;
         const target = item.kind === 'wait' ? item.target : item.until!;
-        const assertionLabels = new Map<Element, string>();
+        const assertionUpdates = new Map<Element, AssertionUpdate>();
         const isContradicted = (witness: Element): boolean => {
           const frame = frameKey(witness);
           const identified =
@@ -1082,6 +1085,14 @@ async function walkBlockScoped(
               !scrollConfirmationCovered(element, ordinary.screen),
           );
           if (!available.length) return true;
+          const disabled = disabledStateOf(available[0]);
+          if (
+            target.quoted === undefined &&
+            disabled !== undefined &&
+            available.every((element) => disabledStateOf(element) === disabled) &&
+            disabled !== semanticDisabled(witness)
+          )
+            assertionUpdates.set(witness, { disabled });
           const changed = available.every(
             (element) =>
               target.exact !== 'id' &&
@@ -1103,7 +1114,10 @@ async function walkBlockScoped(
             target.quoted === undefined &&
             available.every((element) => element.label === available[0].label)
           ) {
-            assertionLabels.set(witness, available[0].label!);
+            assertionUpdates.set(witness, {
+              ...assertionUpdates.get(witness),
+              label: available[0].label!,
+            });
             return false;
           }
           return true;
@@ -1135,7 +1149,7 @@ async function walkBlockScoped(
               const contradicted = scrollConfirmationEvidence(target, observation.screen).filter(
                 isContradicted,
               );
-              if (contradicted.length || assertionLabels.size) {
+              if (contradicted.length || assertionUpdates.size) {
                 const retained = {
                   ...observation,
                   screen: {
@@ -1151,7 +1165,7 @@ async function walkBlockScoped(
                   item,
                   deadline,
                   undefined,
-                  assertionLabels,
+                  assertionUpdates,
                 );
                 usable(ordinary, item, deadline);
                 if (

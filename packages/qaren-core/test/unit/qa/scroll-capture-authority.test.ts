@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { captureScreen } from '../../../dist/qa/capture.js';
 import { parsePlan } from '../../../dist/qa/plan.js';
+import { disabledStateOf, join as joinScreen } from '../../../dist/qa/screen.js';
 import type { NativeNode } from '../../../dist/qa/screen.js';
 import { walkBlock } from '../../../dist/qa/walker.js';
 import { decideScreen } from '../../../dist/qa/resolve.js';
@@ -16,6 +17,8 @@ type Snapshot = {
   footer?: boolean;
   footerY?: number;
   footerLabel?: string;
+  footerControl?: boolean;
+  footerEnabled?: boolean | null;
   terms?: boolean;
   termsY?: number;
   termsLabel?: string;
@@ -67,7 +70,8 @@ function fixture() {
         rect: state.listFrame ?? frame,
       },
       {
-        type: state.footerMissing ? 'Other' : 'StaticText',
+        type: state.footerMissing ? 'Other' : state.footerControl ? 'Button' : 'StaticText',
+        enabled: state.footerEnabled === null ? undefined : (state.footerEnabled ?? true),
         parentIndex: 2,
         label:
           state.footerMissing || state.hideFooterLabel
@@ -153,7 +157,7 @@ function fixture() {
       ref: `@e${index}`,
       index,
       depth: depth(index),
-      enabled: true,
+      enabled: 'enabled' in node ? node.enabled : true,
       hittable: node.hittable ?? true,
       ...(presence ? { presence: { ...source.nodes[1].presence, nodeIndex: index } } : {}),
     }));
@@ -1030,7 +1034,7 @@ test('updated assertion labels retain model masking and original native evidence
       privacy,
       Infinity,
       false,
-      new Map([[witness, `Welcome ${privateValue}`]]),
+      new Map([[witness, { label: `Welcome ${privateValue}` }]]),
     );
     assert.deepEqual(decision.visibility, { verdict: 'present' });
     const delivered = JSON.stringify(judge.requests[0].state);
@@ -1040,5 +1044,222 @@ test('updated assertion labels retain model masking and original native evidence
     assert.equal(witness.semantic.nativePresence.labelSource, 'direct');
   } finally {
     clearRefMap();
+  }
+});
+
+for (const direction of ['up', 'down'] as const) {
+  for (const enabled of [false, true]) {
+    for (const label of ['same', 'changed', 'unknown'] as const) {
+      for (const transition of ['initial', 'expiry', 'reask'] as const) {
+        for (const predicate of ['state', 'control', 'conjunction'] as const) {
+          test(`semantic confirmation reconciles control state: ${direction}, enabled=${enabled}, ${label}, ${transition}, ${predicate}`, async () => {
+            const f = fixture();
+            let confirmations = 0;
+            const judge = scriptedJudge((questions, index, state) => {
+              const evidence = JSON.stringify(state);
+              const stateMatches = evidence.includes('disabled') === !enabled;
+              const present =
+                evidence.includes('Continue') &&
+                (predicate === 'control' || stateMatches) &&
+                (predicate === 'state' || evidence.includes('Terms'));
+              return Object.fromEntries(
+                Object.keys(questions).map((id) => [
+                  id,
+                  {
+                    type: 'noul',
+                    noul: transition === 'reask' && index === 0 ? 0.5 : present ? 0.9 : 0.1,
+                  },
+                ]),
+              );
+            });
+            f.f.deps.judge = judge;
+            f.setSnapshot(async (presence) => {
+              if (presence && ++confirmations === 1 && transition === 'expiry')
+                await f.f.deps.sleep(11_000);
+              const changed = !presence && confirmations >= (transition === 'initial' ? 1 : 2);
+              return {
+                footer: true,
+                footerControl: true,
+                footerLabel: changed && label === 'changed' ? 'Continue now' : 'Continue',
+                hideFooterLabel: changed && label === 'unknown',
+                footerEnabled: changed ? !enabled : enabled,
+                terms: predicate !== 'state',
+                listID: 'policies',
+                tab: 'Policies',
+                title: 'Policies',
+              };
+            });
+            try {
+              const text = `the ${predicate === 'control' ? '' : enabled ? 'enabled ' : 'disabled '}continue control${predicate === 'state' ? '' : ' and terms text'}`;
+              const result = await run(f, direction, 'phrase', text);
+              assert.equal(
+                result.block.outcome,
+                predicate === 'control' ? 'pass' : 'fail',
+                JSON.stringify(result.failure),
+              );
+              if (predicate === 'control') assert.equal(result.failure, undefined);
+              else assert.match(JSON.stringify(result.failure), /VISIBILITY_UNSURE/);
+              assert.equal(f.drags(), 0);
+              assert.equal(judge.requests.length, transition === 'reask' ? 3 : 2);
+              const delivered = JSON.stringify(judge.requests.at(-1)?.state);
+              assert.equal(delivered.includes('disabled'), enabled);
+              assert.ok(delivered.includes(label === 'changed' ? 'Continue now' : 'Continue'));
+              assert.deepEqual(
+                f.modes,
+                transition === 'reask'
+                  ? [false, true, false, false, true, false]
+                  : transition === 'expiry'
+                    ? [false, true, false, true, false]
+                    : [false, true, false],
+              );
+            } finally {
+              clearRefMap();
+            }
+          });
+        }
+      }
+    }
+    for (const mode of ['quoted', 'text-replay', 'replay'] as const) {
+      test(`literal confirmation retains control visibility across state changes: ${direction}, enabled=${enabled}, ${mode}`, async () => {
+        const f = fixture();
+        let confirmed = false;
+        f.setSnapshot(async (presence) => {
+          if (presence) confirmed = true;
+          return {
+            footer: true,
+            footerControl: true,
+            footerEnabled: !presence && confirmed ? !enabled : enabled,
+            listID: 'policies',
+          };
+        });
+        try {
+          const result = await run(f, direction, mode);
+          assert.equal(result.block.outcome, 'pass', JSON.stringify(result.failure));
+          assert.equal(result.failure, undefined);
+          assert.equal(f.drags(), 0);
+          assert.deepEqual(f.modes, [false, true, false]);
+        } finally {
+          clearRefMap();
+        }
+      });
+    }
+  }
+  for (const label of ['same', 'changed', 'unknown'] as const) {
+    test(`unknown control state does not invent enabled evidence: ${direction}, ${label}`, async () => {
+      const f = fixture();
+      let confirmed = false;
+      const judge = scriptedJudge((questions, _index, state) =>
+        Object.fromEntries(
+          Object.keys(questions).map((id) => [
+            id,
+            {
+              type: 'noul',
+              noul: JSON.stringify(state).includes('disabled') ? 0.9 : 0.1,
+            },
+          ]),
+        ),
+      );
+      f.f.deps.judge = judge;
+      f.setSnapshot(async (presence) => {
+        if (presence) confirmed = true;
+        const changed = !presence && confirmed;
+        return {
+          footer: true,
+          footerControl: true,
+          footerLabel: changed && label === 'changed' ? 'Continue now' : 'Continue',
+          hideFooterLabel: changed && label === 'unknown',
+          footerEnabled: changed ? null : false,
+          listID: 'policies',
+        };
+      });
+      try {
+        const result = await run(f, direction, 'phrase', 'the disabled continue control');
+        assert.equal(result.block.outcome, 'pass', JSON.stringify(result.failure));
+        assert.equal(result.failure, undefined);
+        assert.equal(f.drags(), 0);
+        assert.ok(JSON.stringify(judge.requests.at(-1)?.state).includes('disabled'));
+        assert.deepEqual(f.modes, [false, true, false]);
+      } finally {
+        clearRefMap();
+      }
+    });
+  }
+}
+
+for (const enabled of [false, true]) {
+  for (const changedLabel of [false, true]) {
+    test(`assertion state updates preserve original qualified evidence: enabled=${enabled}, changedLabel=${changedLabel}`, async () => {
+      const f = fixture();
+      f.setSnapshot(async () => ({
+        footer: true,
+        footerControl: true,
+        footerLabel: 'Continue',
+        footerEnabled: enabled,
+      }));
+      try {
+        const observed = await f.f.deps.captureScreen({ platformPresence: true });
+        const witness = observed.elements.find((element) => element.testID === 'footer');
+        assert.ok(witness?.semantic?.nativePresence);
+        assert.equal(disabledStateOf(witness), !enabled);
+        const nativePresence = witness.semantic.nativePresence;
+        const judge = scriptedJudge((questions) =>
+          Object.fromEntries(Object.keys(questions).map((id) => [id, { type: 'noul', noul: 0.9 }])),
+        );
+        const item = parsePlan('1. Scroll down until the continue control').blocks![0].items[0];
+        assert.ok(item.kind === 'scroll');
+        const decision = await decideScreen(
+          observed,
+          judge,
+          undefined,
+          item,
+          [],
+          new ObservedPrivacy(),
+          Infinity,
+          false,
+          new Map([
+            [witness, { disabled: enabled, ...(changedLabel ? { label: 'Continue now' } : {}) }],
+          ]),
+        );
+        assert.deepEqual(decision.visibility, { verdict: 'present' });
+        const delivered = JSON.stringify(judge.requests[0].state);
+        assert.equal(delivered.includes('disabled'), enabled);
+        assert.ok(delivered.includes(changedLabel ? 'Continue now' : 'Continue'));
+        assert.equal(witness.label, 'Continue');
+        assert.equal(witness.disabled, !enabled);
+        assert.equal(witness.semantic.disabled, !enabled);
+        assert.equal(witness.semantic.nativePresence, nativePresence);
+        assert.equal(disabledStateOf(witness), !enabled);
+      } finally {
+        clearRefMap();
+      }
+    });
+  }
+}
+
+test('captured control state distinguishes known booleans from missing native and React facts', () => {
+  for (const representation of ['native', 'react', 'associated'] as const) {
+    for (const disabled of [undefined, false, true]) {
+      const observed = joinScreen(
+        representation === 'react'
+          ? []
+          : [
+              {
+                ref: '@control',
+                type: 'Button',
+                identifier: 'control',
+                label: 'Continue',
+                enabled:
+                  representation === 'native' && disabled !== undefined ? !disabled : undefined,
+                rect: frame,
+              },
+            ],
+        representation === 'native' ? [] : [{ role: 'button', testID: 'control', disabled }],
+        'app',
+        { native: 'complete', react: 'complete' },
+      );
+      const control = observed.elements.find((element) => element.testID === 'control');
+      assert.ok(control);
+      assert.equal(disabledStateOf(control), disabled, representation);
+    }
   }
 });

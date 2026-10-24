@@ -710,7 +710,12 @@ export function decideTarget(prepared: TargetQuestion, answer: Answer | undefine
   return { ref: chosen.ref, element: chosen };
 }
 
-function describeSemantic(element: Element): string {
+export interface AssertionUpdate {
+  label?: string;
+  disabled?: boolean;
+}
+
+function describeSemantic(element: Element, update?: AssertionUpdate): string {
   const native = element.semantic?.nativePresence;
   const heading = element.semantic?.heading;
   const qualification =
@@ -726,15 +731,20 @@ function describeSemantic(element: Element): string {
     return `${describe({
       ...element,
       kind: native.kind,
-      label: native.labelSource === 'direct' ? element.label : undefined,
+      label: native.labelSource === 'direct' ? (update?.label ?? element.label) : undefined,
       value: undefined,
       placeholder: undefined,
       where: undefined,
       side: undefined,
-      disabled: semanticDisabled(element),
+      disabled: update?.disabled ?? semanticDisabled(element),
       offscreen,
     })} (native accessibility name; ${offscreen ? 'outside the visible area' : 'platform-observed presence'}${qualification})`;
-  return describe({ ...element, disabled: semanticDisabled(element), offscreen });
+  return describe({
+    ...element,
+    label: update?.label ?? element.label,
+    disabled: update?.disabled ?? semanticDisabled(element),
+    offscreen,
+  });
 }
 
 // pending: not established on this capture, and not proven absent.
@@ -1058,7 +1068,7 @@ export async function decideScreen(
   privacy = new ObservedPrivacy(),
   deadline?: number,
   diagnostics = false,
-  assertionLabels?: ReadonlyMap<Element, string>,
+  assertionUpdates?: ReadonlyMap<Element, AssertionUpdate>,
 ): Promise<ScreenDecision> {
   const checked =
     check && !check.literal ? prepareAssertion(check.text, screen, diagnostics) : undefined;
@@ -1089,10 +1099,11 @@ export async function decideScreen(
     check?.text ?? '',
     step ? (stepTarget(step)?.phrase ?? '') : '',
     ...screen.visibleText,
-    ...(assertionLabels?.values() ?? []),
+    ...Array.from(assertionUpdates?.values() ?? [], (update) => update.label ?? ''),
     ...screen.elements.map(describe),
   ]);
-  const assertionLabel = (element: Element) => assertionLabels?.get(element) ?? element.label;
+  const assertionLabel = (element: Element) =>
+    assertionUpdates?.get(element)?.label ?? element.label;
   const assertionBound = (
     assertion: VisibilityDecision | AssertionQuestion | undefined,
     text: string,
@@ -1166,11 +1177,7 @@ export async function decideScreen(
                 assertionEvidence: {
                   observed: evidence.elements.map((element) =>
                     mask.describeElement(element, (shown) =>
-                      describeSemantic(
-                        assertionLabels?.has(element)
-                          ? { ...shown, label: assertionLabels.get(element)! }
-                          : shown,
-                      ),
+                      describeSemantic(shown, assertionUpdates?.get(element)),
                     ),
                   ),
                   unknown: evidence.unknown.map(({ element: e, reason }) => ({
