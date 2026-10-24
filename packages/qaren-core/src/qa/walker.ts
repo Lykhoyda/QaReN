@@ -227,6 +227,7 @@ interface Observation {
   id: number;
   screen: Screen;
   timing: ObservationTiming;
+  platformPresence: boolean;
 }
 
 const ITEM_DEADLINE_EXCEEDED = 'VISIBILITY_UNSURE: ITEM_DEADLINE_EXCEEDED';
@@ -454,7 +455,7 @@ async function walkBlockScoped(
     step?: Exclude<Item, { kind: 'check' }>,
     assertion = false,
     recovery = false,
-    purpose: 'resolve' | 'proof' | 'provenance' = 'resolve',
+    purpose: 'resolve' | 'provenance' = 'resolve',
   ): Promise<Observation> => {
     assertActive();
     cached = undefined;
@@ -525,14 +526,14 @@ async function walkBlockScoped(
           refuse: 'SYSTEM_DIALOG_INTERRUPTED',
           reason: 'a system dialog is in front of the step target',
         });
-      if (requirePresence && latest.front !== 'dialog' && latest.coverage?.native !== 'complete')
+      if (platformPresence && latest.front !== 'dialog' && latest.coverage?.native !== 'complete')
         throw new ResolutionError({
           refuse: 'SCREEN_EVIDENCE_INCOMPLETE',
           reason: 'NATIVE_PRESENCE_UNUSABLE',
         });
       admitted = true;
       emitCaptureDiagnostics(latest);
-      return { screen: latest, timing, id };
+      return { screen: latest, timing, id, platformPresence };
     } catch (error) {
       if (isAbort(error)) throw error;
       if (error instanceof ResolutionError && error.code === 'APP_PROCESS_CHANGED')
@@ -556,10 +557,9 @@ async function walkBlockScoped(
     step?: Exclude<Item, { kind: 'check' }>,
     assertion = false,
     recovery = false,
-    purpose: 'resolve' | 'proof' = 'resolve',
   ): Promise<Observation> => {
-    const observation = await captureOnce(step, assertion, recovery, purpose);
-    return purpose === 'resolve' && step && targetNeedsPresence(step, observation.screen)
+    const observation = await captureOnce(step, assertion, recovery);
+    return step && targetNeedsPresence(step, observation.screen)
       ? captureOnce(step, assertion, recovery, 'provenance')
       : observation;
   };
@@ -2376,7 +2376,12 @@ async function walkBlockScoped(
             }
           }
           if (outcome || typedUnverified) break;
-          const after = await capture(item, false, false, 'proof');
+          const after = await captureOnce(
+            item,
+            false,
+            false,
+            before.platformPresence ? 'provenance' : 'resolve',
+          );
           // NOTE: a not-ok result is not a verdict; an act that timed out may still have landed.
           const changed = screenSignature(after.screen) !== screenSignature(before.screen);
           usable(after, item);

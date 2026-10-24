@@ -66,7 +66,7 @@ test('standalone semantic checks and checks batched with targetless steps retain
     const modes = traceCaptures(f);
     const result = await runPlan(parsePlan(`✓ The screen is ready${next}`).blocks!, f.deps);
     assert.equal(result.verdict, 'PASS');
-    assert.deepEqual(modes, next ? [true, true, false] : [true, true]);
+    assert.deepEqual(modes, next ? [true, true, true] : [true, true]);
     assert.equal(f.deps.now(), WAIT_POLL_MS);
   }
 });
@@ -145,7 +145,7 @@ test('semantic checks retain presence through independent freshness refreshes an
         next.includes('Tap')
           ? [true, true, true, false, false]
           : next
-            ? [true, true, true, false]
+            ? [true, true, true, true]
             : [true, true, true],
       );
       assert.equal(judge.requests.length, 3);

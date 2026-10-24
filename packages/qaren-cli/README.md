@@ -1370,7 +1370,7 @@ known acquisition phase, failure reason or deadline read using fixed codes.
 If the retry deadline cuts off a read, the refusal retains the last incomplete
 presence snapshot's fixed causes and adds `retry-deadline` without returning that
 snapshot as usable evidence.
-Where presence is required after a system dialog closes, native preparation
+Where presence is required after a system dialog closes, iOS native preparation
 compares consecutive full enumerations and waits for a 500 ms quiet window before
 observing candidates. Any descriptor or hierarchy change resets that quiet window
 without renewing the existing presence deadline. Revalidation after observation

@@ -68,7 +68,7 @@ test('a container candidate escalates to a fresh observation and dispatches only
   assert.deepEqual(requested, [
     { presence: false, observation: 1 },
     { presence: true, observation: 2 },
-    { presence: false, observation: 3 },
+    { presence: true, observation: 3 },
   ]);
   assert.deepEqual(f.actions, ['press @new-card']);
 });
