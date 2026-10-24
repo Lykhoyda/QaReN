@@ -771,8 +771,8 @@ for (const mode of ['proof', 'transition'] as const) {
       const env = JSON.parse(result.content[0].text);
       const allowed = focused === true;
       const prefix = allowed
-        ? ['health', 'focus', 'type', 'focus', 'type', 'health']
-        : ['health', 'focus'];
+        ? ['focus', 'health', 'focus', 'type', 'focus', 'type', 'health']
+        : ['focus', 'health', 'focus'];
       assert.deepEqual(events.slice(0, prefix.length), prefix);
       assert.ok(events.slice(prefix.length).every((event) => event === 'focus'));
       assert.deepEqual(sends, allowed ? ['type', 'type'] : []);

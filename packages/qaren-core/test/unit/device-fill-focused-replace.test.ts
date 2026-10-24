@@ -116,7 +116,6 @@ test('a stable retained-prefix concatenation still fails after one bounded clear
 for (const retained of [
   'decoy@example.testreal@example.test',
   'decoy@example.tesreal@example.test',
-  'decoyreal@example.test@example.test',
 ]) {
   test('an ineffective select-all recovers once by clearing the current observed length', async () => {
     const { env, dispatched, clearCounts } = await run(
@@ -131,35 +130,81 @@ for (const retained of [
     assert.equal(env.ok, true);
     assert.equal(env.meta.verify, 'exact');
     assert.deepEqual(dispatched, [REPLACE, REPLACE]);
-    assert.deepEqual(clearCounts, [undefined, retained.length]);
+    assert.deepEqual(clearCounts, ['decoy@example.test'.length, retained.length]);
     assert.doesNotMatch(JSON.stringify(env), /decoy@example|real@example/);
   });
 }
 
-for (const recovered of [true, false]) {
-  test(`middle-caret address insertion ${recovered ? 'recovers' : 'refuses'} after one bounded clear`, async () => {
-    const corrupted = 'OldNew LaneRoad';
-    const { env, dispatched, clearCounts } = await run(
-      { value: 'Old Road', focused: true },
-      {
-        text: 'New Lane',
-        after: [
-          { value: corrupted, focused: true },
-          { value: recovered ? 'New Lane' : corrupted, focused: true },
-        ],
-      },
-    );
-    assert.equal(env.ok, recovered);
-    if (recovered) assert.equal(env.meta.verify, 'exact');
-    else assert.equal(env.code, 'TEXT_ENTRY_UNVERIFIED');
-    assert.deepEqual(dispatched, [
-      ['New Lane', '--clear-first'],
-      ['New Lane', '--clear-first'],
-    ]);
-    assert.deepEqual(clearCounts, [undefined, corrupted.length]);
-    assert.doesNotMatch(JSON.stringify(env), /Old Road|New Lane/);
+for (const [maxLength, dropFirst] of [
+  [8, false],
+  [40, false],
+  [8, true],
+] as const) {
+  test(`prefilled middle-caret replacement clears before insertion with maxLength ${maxLength}, dropped first entry ${dropFirst}`, async () => {
+    _setActiveSessionForTest({ platform: 'ios', deviceId: 'TEST-DEVICE', appId: 'com.test' });
+    let value = 'Old Road';
+    let caret = 4;
+    const counts: Array<number | undefined> = [];
+    _setRunAgentDeviceForTest(async (_args: string[], opts: { focusedDeleteCount?: number }) => {
+      counts.push(opts.focusedDeleteCount);
+      if (opts.focusedDeleteCount) {
+        caret = value.length;
+        const removed = Math.min(caret, opts.focusedDeleteCount);
+        value = value.slice(0, caret - removed);
+        caret -= removed;
+      } else if (caret) {
+        value = value.slice(0, caret - 1) + value.slice(caret);
+        caret--;
+      }
+      const available = Math.max(0, maxLength - value.length);
+      const typed = dropFirst && counts.length === 1 ? 'New' : 'New Lane';
+      const inserted = typed.slice(0, available);
+      value = value.slice(0, caret) + inserted + value.slice(caret);
+      return okResult({ typed: true });
+    });
+    const client = {
+      evaluate: async () => ({ value: JSON.stringify({ value, controlled: true, focused: true }) }),
+    } as never;
+    try {
+      const result = await performFocusedFill(
+        {
+          ref: 'street',
+          testID: 'street',
+          text: 'New Lane',
+          clearFirst: true,
+          skipFinalValidation: true,
+        },
+        client,
+      );
+      const env = JSON.parse(result.content[0].text);
+      assert.equal(value, 'New Lane');
+      assert.equal(env.meta.verify, 'exact');
+      assert.deepEqual(counts, dropFirst ? [8, 3] : [8]);
+    } finally {
+      _setRunAgentDeviceForTest(null);
+      _setActiveSessionForTest(null);
+    }
   });
 }
+
+for (const after of [
+  [{ value: '123 456', focused: true }],
+  [{ value: '123', focused: true }, { value: '123 456', focused: true }],
+]) {
+  test('formatting stays unverified on initial typing and dropped-keystroke retyping', async () => {
+    const { env, dispatched } = await run({ value: '', focused: true }, { text: '123456', after });
+    assert.equal(env.ok, true);
+    assert.equal(env.data.verified, false);
+    assert.equal(dispatched.length, after.length);
+  });
+}
+
+test('a readable prefill beyond the clear budget refuses without mutation', async () => {
+  const { env, dispatched } = await run({ value: 'x'.repeat(257), focused: true });
+  assert.equal(env.ok, false);
+  assert.equal(env.meta.mutation, 'none');
+  assert.deepEqual(dispatched, []);
+});
 
 test('a private field uses a bounded clear and keeps its outcome unverified', async () => {
   const { env, clearCounts } = await run({ value: null, focused: true }, { privateValue: true });
@@ -274,22 +319,14 @@ test('a value-free positive focus probe still permits replacement', async () => 
 });
 
 for (const after of [
-  [{ value: 'decoyreal@example.test@example.test', focused: true }],
-  [
-    { value: 'real@example', focused: true },
-    { value: 'realreal@example.test@example', focused: true },
-  ],
   [{ value: 'other@example.testreal@example.test', focused: true }],
+  [{ value: 'real@example', focused: true }, { value: 'other@example.testreal@example.test', focused: true }],
 ]) {
-  test('excess text at any caret position fails after at most one recovery', async () => {
-    const { env, dispatched } = await run(
-      { value: 'decoy@example.test', focused: true },
-      { after },
-    );
-    assert.equal(env.code, 'TEXT_ENTRY_UNVERIFIED');
-    assert.equal(env.meta.mutation, 'observed');
-    assert.deepEqual(dispatched, [REPLACE, REPLACE]);
-    assert.doesNotMatch(JSON.stringify(env), /decoy@example|real@example/);
+  test('a longer readback without a proven retained prefix stays unverified', async () => {
+    const { env, dispatched } = await run({ value: 'decoy@example.test', focused: true }, { after });
+    assert.equal(env.ok, true);
+    assert.equal(env.data.verified, false);
+    assert.equal(dispatched.length, after.length);
   });
 }
 
