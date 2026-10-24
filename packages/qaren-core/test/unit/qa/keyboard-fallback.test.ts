@@ -1239,11 +1239,8 @@ for (const route of ['transition', 'keyboard-up', 'no-target'] as const) {
       const text = 'synthetic-replacement';
       const shorter = 'synthetic';
       const retype = readback.startsWith('retype-');
-      const fails =
-        readback === 'retained-prefix' ||
-        readback === 'retype-initial-prefix' ||
-        readback === 'retype-dispatch-prefix';
-      const unverified = !fails && readback !== 'exact' && readback !== 'retype-exact';
+      const fails = readback !== 'exact' && readback !== 'unreadable';
+      const unverified = readback === 'unreadable';
       const finalValue = {
         'retained-prefix': before + text,
         exact: text,
@@ -1318,7 +1315,7 @@ for (const route of ['transition', 'keyboard-up', 'no-target'] as const) {
           { appRoot: dir, platform: 'ios', appId: 'com.test' },
         );
         assert.equal(ledger.verdict, fails ? 'FAIL' : 'PASS');
-        assert.equal(dispatches, retype || readback === 'retained-prefix' ? 2 : 1);
+        assert.equal(dispatches, 1);
         assert.equal(fake.typed.length, 1);
         assert.equal(fake.log.includes('press @submit'), !fails);
         if (!fails) assert.equal(ledger.blocks[0].saved, false);
@@ -1354,12 +1351,11 @@ for (const route of ['transition', 'keyboard-up', 'no-target'] as const) {
   }
 }
 
-test('a normalizing controlled fallback continues as unverified', async () => {
+test('a normalizing controlled fallback fails before submission', async () => {
   const { performFocusedFill } = await import('../../../dist/handlers/device-interact.js');
   const { _setActiveSessionForTest, _setRunAgentDeviceForTest } =
     await import('../../../dist/agent-device-wrapper.js');
   const { okResult } = await import('../../../dist/utils.js');
-  const { unwrap } = await import('../../../dist/qa/adapt.js');
   const fake = app({ typedLabel: 'normalized@example.test' });
   const type = fake.deps.typeFocused!;
   let reads = 0;
@@ -1384,29 +1380,27 @@ test('a normalizing controlled fallback continues as unverified', async () => {
   });
   fake.deps.typeFocused = async (ref, text, testID, context) => {
     await type(ref, text, testID, context);
-    const { data } = unwrap<{ verified: boolean }>(
-      await performFocusedFill(
-        {
-          ref,
-          text,
-          testID,
-          focused: true,
-          vetoUnfocused: true,
-          skipFinalValidation: true,
-        },
-        client,
-      ),
+    const result = await performFocusedFill(
+      { ref, text, testID, focused: true, vetoUnfocused: true, skipFinalValidation: true },
+      client,
     );
-    assert.equal(data.verified, false);
-    return { ok: true, proven: false };
+    const env = JSON.parse(result.content[0].text);
+    return env.ok
+      ? { ok: true, proven: true }
+      : {
+          ok: false,
+          proven: false,
+          mutation: 'observed' as const,
+          error: `${env.code}: ${env.error}`,
+        };
   };
   try {
     const result = await walkBlock(blocks(plan())[0], fake.deps);
-    assert.equal(result.block.outcome, 'pass');
-    assert.match(result.rows[0].reason ?? '', /^UNVERIFIED_FILL:/);
+    assert.equal(result.block.outcome, 'fail');
+    assert.match(result.rows[0].reason ?? '', /TEXT_ENTRY_UNVERIFIED/);
     assert.ok(reads > 1, 'the typed value is read back');
     assert.equal(fills, 1);
-    assert.equal(fake.state(), 'accepted');
+    assert.equal(fake.state(), 'typed');
   } finally {
     _setRunAgentDeviceForTest(null);
     _setActiveSessionForTest(null);
@@ -2802,3 +2796,107 @@ for (const route of ['tap', 'no-target'] as const) {
     assert.ok(fake.notes.includes(FOCUS_NOTE(route === 'tap' ? 'tap' : 'none', 'focused')));
   });
 }
+
+test('a runtime email missing its first character stops the plan before submission', async () => {
+  const { performFocusedFill, extractMutationDisposition } =
+    await import('../../../dist/handlers/device-interact.js');
+  const { _setActiveSessionForTest, _setRunAgentDeviceForTest } =
+    await import('../../../dist/agent-device-wrapper.js');
+  const { okResult } = await import('../../../dist/utils.js');
+  let value = '';
+  const input = {
+    tag: 5,
+    type: 'RCTSinglelineTextInputView',
+    memoizedProps: {
+      testID: 'qa-hidden-email',
+      get value() {
+        return value;
+      },
+      onChangeText() {},
+    },
+    stateNode: { isFocused: () => true },
+    child: null,
+    sibling: null,
+    return: null as unknown,
+  };
+  const root = {
+    tag: 0,
+    type: { displayName: 'PrivateForm' },
+    memoizedProps: {},
+    child: input,
+    sibling: null,
+    return: null,
+  };
+  input.return = root;
+  const context = vm.createContext({
+    setTimeout,
+    clearTimeout,
+    __REACT_DEVTOOLS_GLOBAL_HOOK__: {
+      renderers: new Map([[1, {}]]),
+      getFiberRoots: () => new Set([{ current: root }]),
+    },
+  });
+  vm.runInContext(INJECTED_HELPERS, context);
+  const responses: string[] = [];
+  const client = {
+    evaluate: async (expression: string) => {
+      const result = vm.runInContext(expression, context) as string;
+      responses.push(result);
+      return { value: result };
+    },
+  } as never;
+  const fake = app({ initialKeyboard: true });
+  fake.deps.reactFocused = (testID) => reactFocused(client, testID);
+  const type = fake.deps.typeFocused!;
+  let dispatches = 0;
+  _setActiveSessionForTest({ platform: 'ios', deviceId: 'TEST', appId: 'com.test' });
+  _setRunAgentDeviceForTest(async (args: string[]) => {
+    assert.equal(args.includes('--clear-first'), false);
+    dispatches++;
+    value = EMAIL.slice(1);
+    return okResult({ typed: true });
+  });
+  fake.deps.typeFocused = async (ref, text, testID, dispatchContext, requireFocused) => {
+    await type(ref, text, testID, dispatchContext, requireFocused);
+    const result = await performFocusedFill(
+      {
+        ref,
+        text,
+        testID,
+        privateValue: true,
+        clearFirst: true,
+        qaContext: dispatchContext,
+        skipFinalValidation: true,
+      },
+      client,
+    );
+    const envelope = JSON.parse(result.content[0].text);
+    return envelope.ok
+      ? { ok: true, proven: true }
+      : {
+          ok: false,
+          proven: false,
+          mutation: extractMutationDisposition(result),
+          error: `${envelope.code}: ${envelope.error}`,
+        };
+  };
+  try {
+    const outcome = await withInputs(new RunInputs({ EMAIL }, ['EMAIL']), () =>
+      walkBlock(blocks(slotPlan())[0], fake.deps),
+    );
+    assert.equal(outcome.block.outcome, 'fail');
+    assert.equal(dispatches, 1);
+    assert.equal(fake.log.includes('press @submit'), false);
+    assert.match(
+      renderReason(outcome.failure?.seen ?? '', (text) => text),
+      /TEXT_ENTRY_UNVERIFIED/,
+    );
+    for (const serialized of [...responses, JSON.stringify(outcome), JSON.stringify(fake.rows)]) {
+      assert.equal(serialized.includes(EMAIL), false);
+      assert.equal(serialized.includes(EMAIL.slice(1)), false);
+    }
+  } finally {
+    _setRunAgentDeviceForTest(null);
+    _setActiveSessionForTest(null);
+  }
+});

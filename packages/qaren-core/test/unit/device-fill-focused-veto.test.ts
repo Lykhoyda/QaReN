@@ -110,7 +110,10 @@ test('proof-mode fill types once with positive pre-dispatch focus evidence', asy
   const { result, fills } = await withSeam(() =>
     performFocusedFill(
       { ...args, requireFocused: true, skipFinalValidation: true },
-      client([{ value: '', focused: true }]),
+      client([
+        { value: '', focused: true },
+        { value: args.text, focused: true },
+      ]),
     ),
   );
   assert.equal(fills, 1);
@@ -132,7 +135,7 @@ test('U9: a focused React input types once and verifies through the React tree',
 });
 
 for (const focused of [true, false]) {
-  test(`a normalized fallback stays unverified while retaining focus veto (${focused})`, async () => {
+  test(`a normalized fallback fails while retaining focus veto (${focused})`, async () => {
     let reads = 0;
     const normalizingClient = {
       isConnected: true,
@@ -154,9 +157,8 @@ for (const focused of [true, false]) {
     assert.equal(fills, focused ? 1 : 0);
     const env = envelope(result);
     if (focused) {
-      assert.equal(env.ok, true);
-      assert.equal(env.data.verified, false);
-      assert.equal(env.data.verifiedOracle, 'none');
+      assert.equal(env.ok, false);
+      assert.equal(env.code, 'TEXT_ENTRY_UNVERIFIED');
     } else {
       assert.equal(env.code, 'NO_TEXT_INPUT_TARGET');
       assert.equal(env.meta.mutation, 'none');
