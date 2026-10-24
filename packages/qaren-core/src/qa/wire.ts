@@ -359,10 +359,11 @@ export function createWriter(write: (line: string) => void, runId: string): Wire
   };
   return {
     diagnostic: (payload) => {
-      if (closed || !currentInputs()?.hasInputs) return;
+      if (closed) return;
       try {
         const clean = cleanDiagnostic(payload);
         if (!clean) return;
+        if (!currentInputs()?.hasInputs && clean.kind !== 'target-miss') return;
         if (clean.kind === 'block-outcome' || clean.kind === 'login-outcome') {
           if (outcomes >= 10_000) return;
           outcomes++;

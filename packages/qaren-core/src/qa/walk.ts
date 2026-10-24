@@ -706,6 +706,7 @@ async function openSession(
       else log(`timing ${JSON.stringify(event)}`);
     },
     blockOutcome: diagnostic,
+    targetMiss: diagnostic,
     loginOutcome: (outcome) => diagnostic({ kind: 'login-outcome', outcome }),
     hideDevMenu: () => act(() => recoverDevOverlays(overlays), false),
     ...(login ? { login } : {}),

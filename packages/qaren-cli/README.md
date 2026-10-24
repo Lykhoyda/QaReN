@@ -560,10 +560,25 @@ When that candidate is among the matches, the text and other same-label ancestor
 collapse into it, including layout and press-capable but non-hittable wrappers.
 This applies to quoted presses and stored text-selector replay; it does not grant
 native tap eligibility to a wrapper. A differently labelled heading stays distinct,
-and a heading's own unique testID still names that heading. A container without a
-testID that encloses (by tree or frame) exactly one same-label action candidate, such as the
-full-screen element iOS can label like the first control, is that control's
-echo. When nothing matches exactly, a quoted press target equal to one whole
+and a heading's own unique testID still names that heading. A native container without a
+testID that encloses (by tree or frame) exactly one same-label action candidate is
+that control's echo only when native presence proves its label comes from descendants.
+With the same proven descendant provenance, quoted label presses can also collapse
+an identified native container into a smaller, enabled, visible, hittable descendant
+control when tree ancestry, frame containment and whole label segments agree.
+Quoted label presses request platform-presence capture to obtain this provenance
+without requiring the complete native presence that phrase targets require;
+native acquisition and privacy admission still apply. Direct or unknown label
+provenance keeps differently framed candidates distinct. A native ancestor and
+hittable descendant with the exact same label and frame are one tap target and
+resolve to the inner control. Multiple distinct children remain ambiguous.
+Android's blank containers with proven descendant provenance acquire a bounded label
+from visible observed children during screen projection; input and secure content
+is excluded, and a container's own label is never reclassified.
+An explicit identifier selector still names the container. The
+[container regression tests](../qaren-core/test/unit/qa/target-container-miss.test.ts)
+cover these boundaries on both platforms through target resolution and `runPlan`.
+When nothing matches exactly, a quoted press target equal to one whole
 comma-separated segment of exactly one actionable element's merged label (for
 example `Item 2` in `Item 2, Status 2`) names that element; two such elements
 refuse as ambiguous. A label-only native row keeps its accessibility-label
@@ -1234,6 +1249,27 @@ The deepest captured depth does not establish a snapshot depth limit or explain
 missing cards. Successful step attempts and literal checks emit no such failure line;
 diagnostic errors do not change the failed step's outcome. The
 [capture implementation](../qaren-core/src/qa/capture.ts) owns the field layout.
+
+Failed waits and scroll-until steps also retain a `target-miss` event in the private
+`logs/core-diagnostics.jsonl`, including runs without runtime inputs. It contains
+at most 20 nearby candidate labels and identifiers, each limited to 256 characters
+after input masking; secure-screen and input labels are withheld. Exact identifier
+selectors match identifiers only, and exact text selectors match labels only;
+ordinary quoted targets can match either. Direct matches and containment within
+a larger label preserve case and punctuation; only near matches normalize them.
+`only-in-aggregated-label` means the literal text occurs inside a larger label
+without a direct match; it does not prove the container's label provenance.
+The event records `present-but-unavailable` for a direct match with resolved visibility.
+Otherwise, it records `evidence-incomplete` when absence cannot be established,
+including when an exact or contained match in the selected domain has unresolved
+visibility or geometry. Unresolved elements are excluded from the candidate list;
+an empty list alone does not establish absence. With complete evidence, it records
+`only-in-aggregated-label`, then `not-scrollable` if scrolling has no eligible
+container, or `absent`. The refusal appends this likely reason when evidence is
+sufficient, except for replay misses that trigger re-walking and wait preconditions.
+Candidate strings are never copied into the public ledger or publication output.
+The [target-miss implementation](../qaren-core/src/qa/target-miss.ts) owns matching
+and bounds; this diagnostic does not change visibility acceptance.
 
 Phrase presses require complete native and React coverage and proven React-to-native
 associations. Native text, images and plain views are excluded from press candidates

@@ -1954,7 +1954,7 @@ test('a settled target that needs a clearance scroll is pressed at its post-scro
   );
 });
 
-// A text-labelled full-width control whose label is exposed as a label-sized control inside it.
+// A full-width control whose text label is exposed as a child.
 function nestedContinue(): Screen {
   return covered(
     join(
@@ -1973,7 +1973,7 @@ function nestedContinue(): Screen {
           ref: '@label',
           index: 3,
           parentIndex: 2,
-          type: 'Button',
+          type: 'StaticText',
           label: 'Continue',
           hittable: true,
           rect: { x: 170.3, y: 706.3, width: 61.7, height: 20 },
@@ -1992,7 +1992,7 @@ test('a moved label inside its control settles on the one identity the step reso
   assert.equal(outcome.block.outcome, 'pass', outcome.failure?.seen);
   assert.deepEqual(
     f.calls.filter((c) => c.startsWith('press')),
-    ['press @label', 'press @label'],
+    ['press @control', 'press @control'],
   );
 });
 

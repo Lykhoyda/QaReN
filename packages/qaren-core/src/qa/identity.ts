@@ -96,7 +96,58 @@ function encloses(container: Element, element: Element): boolean {
   );
 }
 
-// A no-identifier container enclosing exactly one same-label actionable control only echoes that control.
+function aggregatesControl(container: Element, child: Element): boolean {
+  if (
+    container.kind === 'text' ||
+    container.kind === 'input' ||
+    container.ref.startsWith('react:') ||
+    child.ref.startsWith('react:') ||
+    child.kind === 'text' ||
+    child.kind === 'input' ||
+    !child.hittable ||
+    child.disabled ||
+    child.offscreen ||
+    !container.label ||
+    !child.label ||
+    !ancestorsOf(child).includes(container)
+  )
+    return false;
+  const outer = elementFrame(container);
+  const inner = elementFrame(child);
+  if (
+    !outer ||
+    !inner ||
+    !Object.values(outer).every(Number.isFinite) ||
+    !Object.values(inner).every(Number.isFinite) ||
+    inner.width <= 0 ||
+    inner.height <= 0 ||
+    inner.x < outer.x ||
+    inner.y < outer.y ||
+    inner.x + inner.width > outer.x + outer.width ||
+    inner.y + inner.height > outer.y + outer.height
+  )
+    return false;
+  if (
+    container.label === child.label &&
+    outer.x === inner.x &&
+    outer.y === inner.y &&
+    outer.width === inner.width &&
+    outer.height === inner.height
+  )
+    return true;
+  if (
+    container.kind !== 'other' ||
+    container.semantic?.nativePresence?.labelSource !== 'descendant' ||
+    outer.width * outer.height <= inner.width * inner.height
+  )
+    return false;
+  const parts = (label: string) => label.split(/[,\n]/u).map((part) => part.trim());
+  const enclosing = parts(container.label);
+  const carried = parts(child.label);
+  return enclosing.some((_, start) => carried.every((part, i) => part === enclosing[start + i]));
+}
+
+// Descendant provenance distinguishes a container echo from a separately labelled control.
 function containerEcho(
   container: Element,
   matched: readonly Element[],
@@ -105,6 +156,7 @@ function containerEcho(
   if (
     container.kind !== 'other' ||
     container.testID !== undefined ||
+    container.semantic?.nativePresence?.labelSource !== 'descendant' ||
     container.label === undefined ||
     container.ref.startsWith('react:')
   )
@@ -194,7 +246,7 @@ export function exactIdentities(
   const identities = matched.filter(
     (e) =>
       !controls.includes(e) ||
-      !controls.some((inner) => inner !== e && ancestorsOf(inner).includes(e)),
+      !controls.some((inner) => inner !== e && aggregatesControl(e, inner)),
   );
   return identities
     .filter((e) => {
@@ -202,6 +254,12 @@ export function exactIdentities(
       return (
         (!control || !identities.includes(control)) &&
         !forwardsInput(e, identities) &&
+        !(
+          kind === 'press' &&
+          target.exact !== 'id' &&
+          e.testID !== quoted &&
+          identities.some((child) => child !== e && aggregatesControl(e, child))
+        ) &&
         !containerEcho(e, identities, purpose)
       );
     })

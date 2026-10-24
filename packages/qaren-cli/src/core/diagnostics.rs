@@ -1,7 +1,77 @@
 use serde_json::{Map, Value};
 use std::fs::{File, OpenOptions};
 use std::io::Write;
-use std::path::Path;
+use std::path::{Path, PathBuf};
+
+fn clean_target_miss(fields: &Map<String, Value>) -> Option<Value> {
+    if fields
+        .keys()
+        .any(|key| !["kind", "line", "reason", "truncated", "candidates"].contains(&key.as_str()))
+    {
+        return None;
+    }
+    let line = fields.get("line")?.as_u64()?;
+    if line == 0 || line > MAX_NUMBER as u64 {
+        return None;
+    }
+    let reason = fields.get("reason")?.as_str()?;
+    if ![
+        "absent",
+        "only-in-aggregated-label",
+        "not-scrollable",
+        "present-but-unavailable",
+        "evidence-incomplete",
+    ]
+    .contains(&reason)
+    {
+        return None;
+    }
+    let candidates = fields.get("candidates")?.as_array()?;
+    if candidates.len() > 20 {
+        return None;
+    }
+    let mut clean_candidates = Vec::new();
+    for candidate in candidates {
+        let candidate = candidate.as_object()?;
+        if candidate
+            .keys()
+            .any(|key| !["identifier", "label", "match", "aggregated"].contains(&key.as_str()))
+        {
+            return None;
+        }
+        let matching = candidate.get("match")?.as_str()?;
+        if !["exact", "inside-label", "near"].contains(&matching) {
+            return None;
+        }
+        let mut clean = Map::new();
+        clean.insert("match".into(), matching.into());
+        clean.insert(
+            "aggregated".into(),
+            candidate.get("aggregated")?.as_bool()?.into(),
+        );
+        for key in ["identifier", "label"] {
+            if let Some(value) = candidate.get(key) {
+                let text = value.as_str()?;
+                if text.encode_utf16().count() > 256 {
+                    return None;
+                }
+                clean.insert(
+                    key.into(),
+                    crate::redact::redact_inputs(&crate::redact::redact_secrets(text))
+                        .chars()
+                        .take(256)
+                        .collect::<String>()
+                        .into(),
+                );
+            }
+        }
+        clean_candidates.push(Value::Object(clean));
+    }
+    Some(serde_json::json!({
+        "kind": "target-miss", "line": line, "reason": reason,
+        "truncated": fields.get("truncated")?.as_bool()?, "candidates": clean_candidates,
+    }))
+}
 
 const MAX_NUMBER: f64 = 9_007_199_254_740_991.0;
 const STAGES: &[&str] = &[
@@ -177,6 +247,9 @@ const ADMISSION_KEYS: &[&str] = &[
 fn clean(value: &Value) -> Option<Value> {
     let fields = value.as_object()?;
     let kind = fields.get("kind")?.as_str()?;
+    if kind == "target-miss" {
+        return clean_target_miss(fields);
+    }
     let (required, optional): (&[&str], &[&str]) = match kind {
         "metric" => (
             &["stage", "edge", "outcome", "at"],
@@ -352,28 +425,31 @@ fn clean(value: &Value) -> Option<Value> {
 
 pub(super) struct Sink {
     file: Option<File>,
+    path: PathBuf,
     events: usize,
     outcomes: usize,
 }
 
 impl Sink {
     pub(super) fn new(log: &Path) -> Self {
+        let path = log.with_file_name("core-diagnostics.jsonl");
         Self {
             file: crate::redact::private_output_mode()
-                .then(|| {
-                    OpenOptions::new()
-                        .create(true)
-                        .append(true)
-                        .open(log.with_file_name("core-diagnostics.jsonl"))
-                        .ok()
-                })
+                .then(|| private_file(&path))
                 .flatten(),
+            path,
             events: 0,
             outcomes: 0,
         }
     }
 
     pub(super) fn accept(&mut self, payload: &Value) {
+        let Some(event) = clean(payload) else {
+            return;
+        };
+        if self.file.is_none() && payload["kind"] == "target-miss" {
+            self.file = private_file(&self.path);
+        }
         let Some(file) = &mut self.file else {
             return;
         };
@@ -390,10 +466,19 @@ impl Sink {
             return;
         }
         *count += 1;
-        if let Some(event) = clean(payload) {
-            if let Ok(line) = serde_json::to_string(&event) {
-                let _ = writeln!(file, "{line}");
-            }
+        if let Ok(line) = serde_json::to_string(&event) {
+            let _ = writeln!(file, "{line}");
         }
     }
+}
+
+fn private_file(path: &Path) -> Option<File> {
+    let mut options = OpenOptions::new();
+    options.create(true).append(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
+    }
+    options.open(path).ok()
 }

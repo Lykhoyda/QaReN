@@ -64,6 +64,7 @@ import {
 } from './questions.js';
 import { type LoginMarker, dismissCandidate, recover } from './recover.js';
 import type { BlockOutcome, BlockOutcomeDiagnostic } from './diagnostics.js';
+import { targetMissDiagnostic, type TargetMissDiagnostic } from './target-miss.js';
 import {
   concealsScreen,
   isPrivateInput,
@@ -174,6 +175,7 @@ export interface WalkerDeps {
   start?(start: StepStart): void;
   cancelled?(): boolean;
   diagnostic?(event: WalkerTimingDiagnostic): void;
+  targetMiss?(event: TargetMissDiagnostic): void;
   blockOutcome?(event: BlockOutcomeDiagnostic): void;
   loginOutcome?(outcome: BlockOutcome): void;
   timing?: TimingObserver;
@@ -431,7 +433,9 @@ async function walkBlockScoped(
     cached = undefined;
     const target =
       step && ('target' in step ? step.target : step.kind === 'scroll' ? step.until : undefined);
-    const platformPresence = assertion || (!!target && target.quoted === undefined);
+    const requirePresence = assertion || (!!target && target.quoted === undefined);
+    const platformPresence =
+      requirePresence || (!!target && step?.kind === 'press' && target.exact !== 'id');
     const startedAt = deps.now();
     const id = ++sequence.observation;
     latestObservation = id;
@@ -489,12 +493,12 @@ async function walkBlockScoped(
           refuse: 'SCREEN_EVIDENCE_INCOMPLETE',
           reason: 'NATIVE_ACQUISITION_UNUSABLE',
         });
-      if (platformPresence && latest.front === 'dialog' && !recovery)
+      if (requirePresence && latest.front === 'dialog' && !recovery)
         throw new ResolutionError({
           refuse: 'SYSTEM_DIALOG_INTERRUPTED',
           reason: 'a system dialog is in front of the step target',
         });
-      if (platformPresence && latest.front !== 'dialog' && latest.coverage?.native !== 'complete')
+      if (requirePresence && latest.front !== 'dialog' && latest.coverage?.native !== 'complete')
         throw new ResolutionError({
           refuse: 'SCREEN_EVIDENCE_INCOMPLETE',
           reason: 'NATIVE_PRESENCE_UNUSABLE',
@@ -880,6 +884,28 @@ async function walkBlockScoped(
   ): WalkOutcome => {
     const quoted = item.kind === 'check' ? undefined : stepTarget(item)?.quoted;
     if (quoted !== undefined) emitQuotedTargetDiagnostic(screen, quoted, item.line);
+    if ((item.kind === 'wait' || item.kind === 'scroll') && stepTarget(item)) {
+      try {
+        const diagnostic = targetMissDiagnostic(
+          stepTarget(item)!,
+          screen,
+          item.line,
+          item.kind === 'scroll',
+          privacy,
+        );
+        if (
+          !miss &&
+          !(item.kind === 'wait' && item.precondition) &&
+          diagnostic.reason !== 'evidence-incomplete'
+        ) {
+          const detail = `; target visibility: ${diagnostic.reason}`;
+          reason = typeof reason === 'string' ? reason + detail : [...segments(reason), detail];
+        }
+        deps.targetMiss?.(diagnostic);
+      } catch {
+        // Diagnostics cannot change the failed step's outcome.
+      }
+    }
     emit({
       ...base(item, attempt),
       ...(ref ? { ref } : {}),

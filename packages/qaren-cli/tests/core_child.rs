@@ -184,6 +184,96 @@ fn run_child(mock: &mut MockRunner, log: &Path) -> core::CoreOutcome {
 }
 
 #[test]
+fn target_miss_diagnostics_stay_private_without_runtime_inputs() {
+    let repo = common::temp_repo();
+    let event = serde_json::json!({
+        "kind": "target-miss", "line": 1, "reason": "only-in-aggregated-label", "truncated": false,
+        "candidates": [{"identifier": "coverage-card", "label": "Coverage, Details", "match": "inside-label", "aggregated": true}]
+    });
+    let mut invalid = event.clone();
+    invalid["candidates"][0]["value"] = "unallowed".into();
+    let stdout = format!(
+        "{}\n{}\n{}\n",
+        envelope(2, "diagnostic", &event.to_string()),
+        envelope(3, "diagnostic", &invalid.to_string()),
+        envelope(4, "result", &pass_ledger(&[]))
+    );
+    let mut mock = MockRunner::new();
+    mock.expect_spawn_piped("walk.js", 9000, &stdout, Some(0));
+    let result = run_child(&mut mock, &repo.join("core.log"));
+    assert_eq!(result.verdict, Verdict::Pass);
+    let path = repo.join("core-diagnostics.jsonl");
+    let stored = std::fs::read_to_string(&path).unwrap();
+    assert_eq!(stored.lines().count(), 1);
+    assert_eq!(
+        serde_json::from_str::<serde_json::Value>(stored.trim()).unwrap(),
+        event
+    );
+    assert!(!std::fs::read_to_string(repo.join("core.log"))
+        .unwrap_or_default()
+        .contains("coverage-card"));
+    assert!(!serde_json::to_string(&result.ledger)
+        .unwrap()
+        .contains("coverage-card"));
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        assert_eq!(
+            std::fs::metadata(path).unwrap().permissions().mode() & 0o777,
+            0o600
+        );
+    }
+}
+
+#[test]
+fn target_miss_diagnostics_redact_inputs_and_reject_unbounded_candidates() {
+    use qaren::redact::{with_input_scope, InputValues};
+    use std::ffi::OsString;
+    use std::sync::Arc;
+    let repo = common::temp_repo();
+    let secret = "synthetic-private-slot";
+    let inputs = Arc::new(InputValues::from_entries([
+        (OsString::from("QAREN_INPUT_NAME"), OsString::from(secret)),
+        (OsString::from("QAREN_INPUT_CODE"), OsString::from("42")),
+    ]));
+    with_input_scope(inputs, || {
+        let event = serde_json::json!({
+            "kind": "target-miss", "line": 1, "reason": "absent", "truncated": false,
+            "candidates": [{"label": format!("Coverage {secret}"), "match": "near", "aggregated": false}]
+        });
+        let mut oversized = event.clone();
+        oversized["candidates"][0]["label"] = "x".repeat(257).into();
+        let mut too_many = event.clone();
+        too_many["candidates"] = vec![event["candidates"][0].clone(); 21].into();
+        let mut expanding = event.clone();
+        expanding["candidates"][0]["label"] = "42".repeat(128).into();
+        let stdout = format!(
+            "{}\n{}\n{}\n{}\n{}\n",
+            envelope(2, "diagnostic", &event.to_string()),
+            envelope(3, "diagnostic", &oversized.to_string()),
+            envelope(4, "diagnostic", &too_many.to_string()),
+            envelope(5, "diagnostic", &expanding.to_string()),
+            envelope(6, "result", &pass_ledger(&[]))
+        );
+        let mut mock = MockRunner::new();
+        mock.expect_spawn_piped("walk.js", 9000, &stdout, Some(0));
+        assert_eq!(
+            run_child(&mut mock, &repo.join("core.log")).verdict,
+            Verdict::Pass
+        );
+        let stored = std::fs::read_to_string(repo.join("core-diagnostics.jsonl")).unwrap();
+        assert_eq!(stored.lines().count(), 2);
+        assert!(!stored.contains(secret));
+        assert!(stored.contains("REDACTED_INPUT"));
+        let bounded: serde_json::Value =
+            serde_json::from_str(stored.lines().nth(1).unwrap()).unwrap();
+        let label = bounded["candidates"][0]["label"].as_str().unwrap();
+        assert!(!label.contains("42"));
+        assert_eq!(label.chars().count(), 256);
+    });
+}
+
+#[test]
 fn slot_diagnostics_retain_only_allowlisted_events_without_affecting_the_result() {
     use qaren::redact::{with_input_scope, InputValues};
     use std::ffi::OsString;

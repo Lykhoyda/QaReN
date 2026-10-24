@@ -1,6 +1,7 @@
 import { NATIVE_CODES, REFUSAL_STAGES } from '../domain/qa-dispatch.js';
 import { cleanTimingEvent } from './timing.js';
 import { isRecord } from './questions.js';
+import { cleanTargetMiss } from './target-miss.js';
 
 export type BlockOutcome = 'pass' | 'fail' | 'refused';
 export interface BlockOutcomeDiagnostic {
@@ -25,6 +26,7 @@ const DISPATCH_CODES = [
 
 export function cleanDiagnostic(value: unknown): Record<string, unknown> | undefined {
   if (!isRecord(value)) return undefined;
+  if (value.kind === 'target-miss') return cleanTargetMiss(value);
   const number = (key: string): boolean =>
     typeof value[key] === 'number' &&
     Number.isFinite(value[key]) &&

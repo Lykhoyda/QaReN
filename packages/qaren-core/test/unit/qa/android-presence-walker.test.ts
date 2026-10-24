@@ -3,6 +3,8 @@ import { afterEach, beforeEach, test } from 'node:test';
 import { captureScreen } from '../../../dist/qa/capture.js';
 import { parsePlan } from '../../../dist/qa/plan.js';
 import { runPlan } from '../../../dist/qa/walker.js';
+import { prepareTarget } from '../../../dist/qa/resolve.js';
+import { isPossibleInput } from '../../../dist/qa/privacy.js';
 import {
   _setAndroidRunnerStateForTest,
   _setFetchForTest,
@@ -111,6 +113,157 @@ const judge = () =>
   scriptedJudge((q) =>
     Object.fromEntries(Object.entries(q).map(([key, question]) => [key, choice(question)])),
   );
+
+function descendantContainer() {
+  const fixture = androidPresenceCapture();
+  const container = fixture.data.nodes[2];
+  container.type = 'android.widget.ScrollView';
+  container.presence.labelSource = 'descendant';
+  fixture.data.nodes[3].identifier = '';
+  fixture.data.nodes.splice(4);
+  fixture.hostEvidence.hosts.splice(0);
+  fixture.hostEvidence.typography.nodes.splice(0);
+  return fixture;
+}
+
+test('Android projects a blank descendant-labelled container through the runner wire and selects its card', async () => {
+  const fixture = descendantContainer();
+  assert.equal(fixture.data.nodes[2].label, '');
+  const screen = await capturing(() => fixture)({ platformPresence: true });
+  assert.equal(screen.elements[2].label, 'Open Pager QA');
+  assert.equal(screen.elements[2].semantic?.nativePresence?.labelSource, 'descendant');
+  const result = prepareTarget(
+    { kind: 'press', target: { phrase: 'Open Pager QA', quoted: 'Open Pager QA' } },
+    screen,
+  );
+  assert.ok('ref' in result, JSON.stringify(result));
+  assert.equal(result.ref, '@e3');
+  const f = walker(
+    [],
+    scriptedJudge(() => assert.fail('quoted press must be model-free')),
+  );
+  f.deps.captureScreen = capturing(() => fixture);
+  assert.equal(
+    (await runPlan(parsePlan('1. Tap "Open Pager QA"').blocks!, f.deps)).verdict,
+    'PASS',
+  );
+  assert.deepEqual(f.actions, ['press @e3']);
+});
+
+test('Android retains ambiguity between real siblings under a derived container label', async () => {
+  const fixture = descendantContainer();
+  const sibling = structuredClone(fixture.data.nodes[3]);
+  sibling.index = 4;
+  sibling.rect.y = 400;
+  sibling.presence.nodeIndex = 4;
+  fixture.data.nodes.push(sibling);
+  const screen = await capturing(() => fixture)({ platformPresence: true });
+  assert.equal(screen.elements[2].label, 'Open Pager QA, Open Pager QA');
+  const result = prepareTarget(
+    { kind: 'press', target: { phrase: 'Open Pager QA', quoted: 'Open Pager QA' } },
+    screen,
+  );
+  assert.ok('refuse' in result && result.refuse === 'TARGET_AMBIGUOUS', JSON.stringify(result));
+});
+
+test('Android carries descendant labels through nested blank containers to the hittable card', async () => {
+  const fixture = descendantContainer();
+  const card = fixture.data.nodes[3];
+  const text = structuredClone(card);
+  text.index = 4;
+  text.parentIndex = 3;
+  text.depth = 4;
+  text.type = 'android.widget.TextView';
+  text.presence.nodeIndex = 4;
+  fixture.data.nodes.push(text);
+  card.type = 'android.view.ViewGroup';
+  card.label = '';
+  card.presence.labelSource = 'descendant';
+  const screen = await capturing(() => fixture)({ platformPresence: true });
+  assert.equal(screen.elements[2].label, 'Open Pager QA');
+  assert.equal(screen.elements[3].label, 'Open Pager QA');
+  const result = prepareTarget(
+    { kind: 'press', target: { phrase: 'Open Pager QA', quoted: 'Open Pager QA' } },
+    screen,
+  );
+  assert.ok('ref' in result, JSON.stringify(result));
+  assert.equal(result.ref, '@e3');
+});
+
+test('Android does not reclassify a container with its own label as descendant-labelled', async () => {
+  const fixture = descendantContainer();
+  fixture.data.nodes[2].label = 'Open Pager QA';
+  fixture.data.nodes[2].presence.labelSource = 'direct';
+  const screen = await capturing(() => fixture)({ platformPresence: true });
+  const result = prepareTarget(
+    { kind: 'press', target: { phrase: 'Open Pager QA', quoted: 'Open Pager QA' } },
+    screen,
+  );
+  assert.equal(screen.elements[2].semantic?.nativePresence?.labelSource, 'direct');
+  assert.equal(screen.elements[2].label, 'Open Pager QA');
+  assert.ok('refuse' in result && result.refuse === 'TARGET_AMBIGUOUS', JSON.stringify(result));
+});
+
+for (const excluded of [
+  'input',
+  'secure',
+  'disabled',
+  'unobserved',
+  'offscreen',
+  'oversized',
+] as const) {
+  test(`Android descendant label projection excludes ${excluded} content`, async () => {
+    const fixture = descendantContainer();
+    const child = fixture.data.nodes[3];
+    if (excluded === 'input') {
+      child.type = 'android.widget.EditText';
+      child.presence.labelSource = 'value';
+    }
+    if (excluded === 'secure') Reflect.set(child, 'secure', true);
+    if (excluded === 'disabled') child.enabled = false;
+    if (excluded === 'unobserved' || excluded === 'offscreen') {
+      child.presence.status = 'unknown';
+      Reflect.deleteProperty(child.presence, 'observedUptimeMs');
+    }
+    if (excluded === 'offscreen') child.visibleToUser = false;
+    if (excluded === 'oversized') child.label = 'x'.repeat(4097);
+    const screen = await capturing(() => fixture)({ platformPresence: true });
+    assert.equal(screen.elements[2].label, undefined);
+  });
+}
+
+test('Android descendant projection excludes a React-designated input exposed as a native container', async () => {
+  const fixture = descendantContainer();
+  fixture.data.nodes[3].type = 'android.view.ViewGroup';
+  fixture.data.nodes[3].identifier = 'field';
+  const original = androidPresenceCapture();
+  const host = original.hostEvidence.hosts[1];
+  host.testID = 'field';
+  Object.assign(host.capabilities, { fill: true });
+  fixture.hostEvidence.hosts.push(host);
+  fixture.hostEvidence.typography.nodes.push({
+    ...original.hostEvidence.typography.nodes[1],
+    hostIndex: 0,
+    parentHostIndex: null,
+    hostType: 'AndroidTextInput',
+  });
+  const screen = await capturing(() => fixture)({ platformPresence: true });
+  assert.equal(isPossibleInput(screen.elements[3]), true);
+  assert.equal(screen.elements[2].label, undefined);
+});
+
+test('Android bounds the complete derived label without emitting a truncated prefix', async () => {
+  const fixture = descendantContainer();
+  fixture.data.nodes[3].label = 'a'.repeat(2048);
+  const sibling = structuredClone(fixture.data.nodes[3]);
+  sibling.index = 4;
+  sibling.presence.nodeIndex = 4;
+  sibling.rect.y = 400;
+  sibling.label = 'b'.repeat(2048);
+  fixture.data.nodes.push(sibling);
+  const screen = await capturing(() => fixture)({ platformPresence: true });
+  assert.equal(screen.elements[2].label, undefined);
+});
 
 test('the Android capture retains its point scale for scroll gesture insets', async () => {
   const fixture = androidPresenceCapture();
@@ -272,7 +425,7 @@ test('a runner advertising only the earlier presence rule is stale: no QA read, 
   });
 });
 
-test('a literal Android step needs no presence and is unchanged', async () => {
+test('a quoted Android press requests presence and retains literal targeting', async () => {
   const requests: Record<string, unknown>[] = [];
   const f = walker(
     [],
@@ -282,7 +435,7 @@ test('a literal Android step needs no presence and is unchanged', async () => {
   const result = await runPlan(parsePlan('1. Tap "home-pager-qa-btn"').blocks!, f.deps);
   assert.equal(result.verdict, 'PASS', result.failure?.seen);
   assert.deepEqual(f.actions, ['press @e3']);
-  assert.equal(requests[0].platformPresence, undefined);
+  assert.equal(requests[0].platformPresence, true);
 });
 
 async function runAndroidPresence(capabilities: string[]) {

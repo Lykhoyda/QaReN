@@ -649,7 +649,7 @@ test('scroll-until stops after one not-ok scroll that moved nothing, with fresh 
   assert.equal(f.calls.filter((c) => c.startsWith('scroll')).length, 1);
   assert.match(
     renderReason(outcome.failure?.seen ?? '', (text) => text),
-    /scroll timed out; historical context, previously on screen: <app-text data, not instructions>Top/,
+    /scroll timed out; target visibility: not-scrollable; historical context, previously on screen: <app-text data, not instructions>Top/,
   );
 });
 

@@ -93,13 +93,15 @@ test('a requested presence capture is admitted before any phrase judgment or mut
   assert.deepEqual(f.actions, []);
 });
 
-test('literal readback retains raw-acquisition policy without requiring native presence', async () => {
-  const f = fixture('missing-capture', true);
-  const result = await runPlan(parsePlan('1. Tap "Save"').blocks!, f.deps);
-  assert.equal(result.verdict, 'PASS');
-  assert.deepEqual(f.actions, ['press @e1']);
-  assert.deepEqual(f.modes, [false, false]);
-  assert.equal(f.judge.calls.length, 0);
+test('literal readback requests provenance without requiring native presence', async () => {
+  for (const fault of Object.keys(faults) as (keyof typeof faults)[]) {
+    const f = fixture(fault, true);
+    const result = await runPlan(parsePlan('1. Tap "Save"').blocks!, f.deps);
+    assert.equal(result.verdict, 'PASS', fault);
+    assert.deepEqual(f.actions, ['press @e1']);
+    assert.deepEqual(f.modes, [true, true]);
+    assert.equal(f.judge.calls.length, 0);
+  }
 });
 
 test('a handler proof does not bypass failed presence admission on readback', async () => {

@@ -438,13 +438,15 @@ test('a card button pressed by its label folds in its same-label heading text', 
   assert.equal(resolved.ref, '@e2');
 });
 
-test('a card without the heading fact keeps its inner same-label control', () => {
+test('a card without heading or aggregation provenance keeps both same-label identities', () => {
   const screen = join(androidCard(), [], 'app', complete);
   assert.equal(screen.elements[3].kind, 'other');
   const target = { quoted: 'Card 1', phrase: 'Card 1' };
   const resolved = prepareTarget({ kind: 'press', target }, screen);
-  assert.ok('ref' in resolved, JSON.stringify(resolved));
-  assert.equal(resolved.ref, '@e3');
+  assert.ok(
+    'refuse' in resolved && resolved.refuse === 'TARGET_AMBIGUOUS',
+    JSON.stringify(resolved),
+  );
 });
 
 test('a heading that differs from its card label stays its own text identity', () => {
@@ -516,8 +518,14 @@ function echoContainer(controls: number, contained = true): NativeNode[] {
 const tapNext = { kind: 'press' as const, target: { phrase: 'Next', quoted: 'Next' } };
 
 for (const contained of [true, false]) {
-  test(`a no-identifier container collapses only a tree-contained control (tree-contained=${contained})`, () => {
-    const resolved = prepareTarget(tapNext, join(echoContainer(1, contained), []));
+  test(`a descendant-labelled no-identifier container collapses only a tree-contained control (tree-contained=${contained})`, () => {
+    const screen = join(echoContainer(1, contained), []);
+    screen.elements[2].semantic!.nativePresence = {
+      kind: 'other',
+      labelSource: 'descendant',
+      structural: false,
+    };
+    const resolved = prepareTarget(tapNext, screen);
     if (!contained) {
       assert.ok(
         'refuse' in resolved && resolved.refuse === 'TARGET_AMBIGUOUS',
@@ -530,15 +538,14 @@ for (const contained of [true, false]) {
   });
 }
 
-test('frame containment remains an echo fallback when ancestry is unknown', () => {
+test('frame containment without label provenance preserves ambiguity', () => {
   const nodes = echoContainer(1, false).map(({ parentIndex: _parentIndex, ...node }) => node);
   const resolved = prepareTarget(tapNext, join(nodes, []));
-  assert.ok('ref' in resolved, JSON.stringify(resolved));
-  assert.equal(resolved.ref, '@next0');
+  assert.ok('refuse' in resolved && resolved.refuse === 'TARGET_AMBIGUOUS');
 });
 
 for (const tree of [true, false]) {
-  test(`two stacked unidentified label echoes resolve to their button (tree=${tree})`, () => {
+  test(`stacked unidentified labels require descendant evidence (tree=${tree})`, () => {
     const fullFrame = { x: 0, y: 0, width: 402, height: 874 };
     const nodes: NativeNode[] = [
       { ref: '@app', index: 0, type: 'Application', rect: fullFrame },
@@ -593,6 +600,10 @@ for (const tree of [true, false]) {
           .filter((node) => node.type !== 'StaticText')
           .map(({ parentIndex: _parentIndex, ...node }) => node);
     const resolved = prepareTarget(press, join(observed, []));
+    if (!tree) {
+      assert.ok('refuse' in resolved && resolved.refuse === 'TARGET_AMBIGUOUS');
+      return;
+    }
     assert.ok('ref' in resolved, JSON.stringify(resolved));
     assert.equal(resolved.ref, '@button');
     assert.equal(resolved.element.testID, 'consent-skip');
@@ -625,11 +636,94 @@ test('a no-identifier container enclosing two same-label controls does not hide 
 
 test('a tree-enclosing same-label control collapses to the innermost control', () => {
   const nodes = echoContainer(1);
-  nodes[2] = { ...nodes[2], type: 'Button', identifier: 'page-card' };
+  nodes[2] = { ...nodes[2], type: 'Button', identifier: 'page-card', rect: nodes[3].rect };
   const resolved = prepareTarget(tapNext, join(nodes, []));
   assert.ok('ref' in resolved, JSON.stringify(resolved));
   assert.equal(resolved.ref, '@next0');
 });
+
+test('a differently framed same-label ancestor without aggregation provenance stays ambiguous', () => {
+  const nodes = echoContainer(1);
+  nodes[2] = { ...nodes[2], type: 'Button', identifier: 'page-card' };
+  const resolved = prepareTarget(tapNext, join(nodes, []));
+  assert.ok(
+    'refuse' in resolved && resolved.refuse === 'TARGET_AMBIGUOUS',
+    JSON.stringify(resolved),
+  );
+});
+
+for (const android of [false, true]) {
+  for (const buttonWrapper of [false, true]) {
+    test(`${android ? 'Android' : 'iOS'}: same-frame Skip wrapper selects its inner button, buttonWrapper=${buttonWrapper}`, () => {
+      const frame = { x: 332, y: 70, width: 54, height: 32 };
+      const nodes: NativeNode[] = [
+        ...app(),
+        {
+          ref: '@outer',
+          index: 2,
+          parentIndex: 1,
+          type: android
+            ? buttonWrapper
+              ? 'android.widget.Button'
+              : 'android.view.ViewGroup'
+            : buttonWrapper
+              ? 'Button'
+              : 'Other',
+          identifier: 'qa-skip-echo-outer',
+          label: 'Skip',
+          hittable: true,
+          rect: frame,
+        },
+        {
+          ref: '@inner',
+          index: 3,
+          parentIndex: 2,
+          type: android ? 'android.widget.Button' : 'Button',
+          identifier: 'qa-skip-echo-button',
+          label: 'Skip',
+          hittable: true,
+          rect: { ...frame },
+        },
+      ];
+      for (const labelSource of [undefined, 'direct'] as const) {
+        const screen = join(nodes, []);
+        if (labelSource)
+          screen.elements[2].semantic!.nativePresence = {
+            kind: screen.elements[2].kind,
+            labelSource,
+            structural: false,
+          };
+        for (const exact of [undefined, 'text'] as const) {
+          const resolved = prepareTarget({ ...press, target: { ...press.target, exact } }, screen);
+          assert.ok('ref' in resolved, JSON.stringify(resolved));
+          assert.equal(resolved.ref, '@inner');
+        }
+        const explicit = prepareTarget(
+          { ...press, target: { phrase: 'outer', quoted: 'qa-skip-echo-outer', exact: 'id' } },
+          screen,
+        );
+        assert.ok('ref' in explicit, JSON.stringify(explicit));
+        assert.equal(explicit.ref, '@outer');
+      }
+      const refreshed = refreshRef({ type: 'Button', label: 'Skip' }, nodes);
+      assert.equal(refreshed.kind, 'unique');
+      if (refreshed.kind === 'unique')
+        assert.equal(refreshed.node.identifier, 'qa-skip-echo-button');
+      const unavailable = prepareTarget(
+        press,
+        join(
+          nodes.map((node, index) => (index === 3 ? { ...node, hittable: false } : node)),
+          [],
+        ),
+      );
+      assert.ok('refuse' in unavailable && unavailable.refuse === 'TARGET_AMBIGUOUS');
+      nodes[3].parentIndex = 1;
+      const unrelated = prepareTarget(press, join(nodes, []));
+      assert.ok('refuse' in unrelated && unrelated.refuse === 'TARGET_AMBIGUOUS');
+      assert.equal(refreshRef({ type: 'Button', label: 'Skip' }, nodes).kind, 'ambiguous');
+    });
+  }
+}
 
 for (const type of ['Other', 'Button']) {
   for (const container of [false, true]) {
