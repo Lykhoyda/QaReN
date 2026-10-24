@@ -38,6 +38,7 @@ extension RnFastRunnerTests {
   }
 
   func snapshotFast(app: XCUIApplication, options: SnapshotOptions, includeDiagnostics: Bool = false) -> DataPayload {
+    retainedFastSnapshotOptions = nil
     if let blocking = blockingSystemAlertSnapshot() {
       return blocking
     }
@@ -51,6 +52,25 @@ extension RnFastRunnerTests {
       ), app: app)
     }
 
+    retainedFastSnapshotOptions = options
+    let (nodes, truncated) = fastSnapshotNodes(context: context, options: options)
+
+    return withSystemModalDiagnostic(DataPayload(
+      nodes: nodes,
+      truncated: truncated,
+      keyboardVisible: isKeyboardVisible(app: app),
+      snapshotGeneration: currentSnapshotGeneration,
+      snapshotDiagnostics: includeDiagnostics ? context.viewportSource.flatMap {
+        SnapshotDiagnostics(viewport: context.viewport, source: $0)
+      } : nil
+    ), app: app)
+  }
+
+  private func fastSnapshotNodes(
+    context: SnapshotTraversalContext, options: SnapshotOptions,
+    canContinue: () -> Bool = { true },
+    visit: (XCUIElementSnapshot, SnapshotNode) -> Void = { _, _ in }
+  ) -> ([SnapshotNode], Bool) {
     var cachedDescendantElements: [XCUIElement]?
     func collapsedTabDescendants() -> [XCUIElement] {
       if let cachedDescendantElements {
@@ -75,6 +95,7 @@ extension RnFastRunnerTests {
         parentIndex: nil
       )
     )
+    visit(context.rootSnapshot, nodes[0])
     if context.maxDepth > 0 {
       let didTruncateFallback = appendCollapsedTabFallbackNodes(
         to: &nodes,
@@ -94,6 +115,7 @@ extension RnFastRunnerTests {
     }
 
     while let (snapshot, depth, visibleDepth, parentIndex) = stack.popLast() {
+      if !canContinue() { return (nodes, true) }
       if nodes.count >= fastSnapshotLimit {
         truncated = true
         break
@@ -142,6 +164,7 @@ extension RnFastRunnerTests {
           parentIndex: parentIndex
         )
       )
+      visit(snapshot, nodes[nodes.count - 1])
       if visibleDepth < context.maxDepth {
         let didTruncateFallback = appendCollapsedTabFallbackNodes(
           to: &nodes,
@@ -157,18 +180,11 @@ extension RnFastRunnerTests {
 
     }
 
-    return withSystemModalDiagnostic(DataPayload(
-      nodes: nodes,
-      truncated: truncated,
-      keyboardVisible: isKeyboardVisible(app: app),
-      snapshotGeneration: currentSnapshotGeneration,
-      snapshotDiagnostics: includeDiagnostics ? context.viewportSource.flatMap {
-        SnapshotDiagnostics(viewport: context.viewport, source: $0)
-      } : nil
-    ), app: app)
+    return (nodes, truncated)
   }
 
   func snapshotRaw(app: XCUIApplication, options: SnapshotOptions) -> DataPayload {
+    retainedFastSnapshotOptions = nil
     if let blocking = blockingSystemAlertSnapshot() {
       return blocking
     }
@@ -418,7 +434,8 @@ extension RnFastRunnerTests {
 
   func snapshotCandidateLabelProvenance(app: XCUIApplication, indices: [Int], budgetMs: Int) -> DataPayload {
     var result = DataPayload()
-    guard !indices.isEmpty, indices.count <= 64, Set(indices).count == indices.count,
+    guard let options = retainedFastSnapshotOptions,
+          !indices.isEmpty, indices.count <= 64, Set(indices).count == indices.count,
           indices.allSatisfy({ retainedSnapshotTargets[$0]?.generation == currentSnapshotGeneration }) else { return result }
     let started = presenceUptimeMs()
     let deadline = started + Double(budgetMs)
@@ -427,20 +444,23 @@ extension RnFastRunnerTests {
     var previousSources: [PlatformPresenceObservation.LabelSource]?
     while !timing.deadlineReached(deadline, read: .preparationPoll, edge: .before) {
       guard presenceAppIsEligible(app, deadline: deadline, timing: timing) == true,
-            let root = presenceRead(deadline: deadline, timing: timing, read: .rootSnapshot, { try app.snapshot() }) else { return result }
-      var stack: [(XCUIElementSnapshot, Int, Int?)] = [(root, 0, nil)]
+            let context = presenceRead(deadline: deadline, timing: timing, read: .rootSnapshot, {
+              self.makeSnapshotTraversalContext(app: app, options: options)
+            }) ?? nil else { return result }
       var selected: [Int: (XCUIElementSnapshot, PresenceEntry)] = [:]
-      var count = 0
-      while let (snapshot, depth, parent) = stack.popLast() {
-        guard count < maxSnapshotElements,
-              !timing.deadlineReached(deadline, read: .enumeration, edge: .before) else { return result }
-        let index = count
-        if indices.contains(index), let descriptor = PresenceDescriptor(snapshot) {
-          selected[index] = (snapshot, PresenceEntry(descriptor: descriptor, depth: depth, parentIndex: parent))
-        }
-        for child in snapshot.children.reversed() { stack.append((child, depth + 1, index)) }
+      var count = 1
+      let (_, truncated) = fastSnapshotNodes(context: context, options: options, canContinue: {
         count += 1
-      }
+        return count <= self.maxSnapshotElements
+          && !timing.deadlineReached(deadline, read: .enumeration, edge: .before)
+      }, visit: { snapshot, node in
+        if indices.contains(node.index), let descriptor = PresenceDescriptor(snapshot) {
+          selected[node.index] = (snapshot, PresenceEntry(
+            descriptor: descriptor, depth: node.depth, parentIndex: node.parentIndex
+          ))
+        }
+      })
+      guard !truncated else { return result }
       var entries: [PresenceEntry] = []
       var sources: [PlatformPresenceObservation.LabelSource] = []
       for index in indices {
@@ -473,6 +493,7 @@ extension RnFastRunnerTests {
   }
 
   func snapshotPlatformPresence(app: XCUIApplication, appId: String, presenceBudgetMs: Int) -> DataPayload {
+    retainedFastSnapshotOptions = nil
     // A recognised SpringBoard alert is the observation in every snapshot flavour; it has no Keyboard node.
     if let blocking = blockingSystemAlertSnapshot() {
       return DataPayload(nodes: blocking.nodes, truncated: false, keyboardVisible: false,

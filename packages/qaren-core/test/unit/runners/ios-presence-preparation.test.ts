@@ -22,6 +22,7 @@ test('actual Swift capture prepares exact raw trees inside one deadline and stil
     return t.skip('Swift toolchain unavailable');
   assert.equal(available.status, 0, available.stderr);
   const source = readFileSync(new URL('RnFastRunnerTests+Snapshot.swift', native), 'utf8');
+  const predicates = readFileSync(new URL('SnapshotPredicates.swift', native), 'utf8');
   const models = readFileSync(new URL('RnFastRunnerTests+Models.swift', native), 'utf8');
   const result = spawnSync('swift', ['-'], {
     encoding: 'utf8',
@@ -33,10 +34,12 @@ import CoreGraphics
 #endif
 ${section(models, 'struct SnapshotRect:', 'struct RetainedSnapshotTarget')}
 ${section(models, 'struct RetainedSnapshotTarget {', 'struct RecordedExactTypeTarget')}
+${models.slice(models.indexOf('struct SnapshotOptions {'))}
+${section(predicates, 'func computeSnapshotHittable(', 'func snapshotTypeName(')}
 ${section(source, 'final class PresenceCaptureTiming', 'func makePlatformPresencePayload(')}
 ${source.slice(source.indexOf('func makePlatformPresencePayload('))}
 enum XCUIElement {
-  enum ElementType: UInt { case application = 1, window = 2, button = 9, staticText = 48, other = 82, scrollView = 44 }
+  enum ElementType: UInt { case application = 1, window = 2, button = 9, staticText = 48, other = 82, scrollView = 44, any = 0 }
 }
 final class XCUIElementSnapshot {
   var sampleToken = 0
@@ -46,6 +49,7 @@ final class XCUIElementSnapshot {
   var label = "PRIVATE-label"
   var value: Any? = "PRIVATE-value"
   var frame = CGRect(x: 10, y: 20, width: 30, height: 40)
+  var isSelected = false
   var isEnabled = true
   private var childNodes: [XCUIElementSnapshot] = []
   var children: [XCUIElementSnapshot] {
@@ -67,7 +71,8 @@ final class XCUIApplication {
     states += 1
     return states == backgroundAt ? .runningBackground : .runningForeground
   }
-  struct Query { let count = 0 }
+  struct Query { let count = 0; let allElementsBoundByIndex: [XCUIElement] = [] }
+  func descendants(matching: XCUIElement.ElementType) -> Query { Query() }
   let alerts = Query(), sheets = Query()
   init(_ snapshots: [XCUIElementSnapshot]) { self.snapshots = snapshots }
   func snapshot() throws -> XCUIElementSnapshot {
@@ -79,6 +84,14 @@ final class XCUIApplication {
     return snapshots[index]
   }
 }
+enum SnapshotViewportSource { case app }
+struct SnapshotDiagnostics { let viewport: CGRect; let source: SnapshotViewportSource }
+enum DispatchGuard {
+  static func nearestOwner(of: Int, parentOf: (Int) -> Int?, owns: (Int) -> Bool) -> Int? { nil }
+}
+enum KeyboardGuard {
+  static func isKeyboardOwnedButton(type: String, index: Int, parentOf: (Int) -> Int?, typeOf: (Int) -> String?) -> Bool { false }
+}
 struct DataPayload {
   var nodes: [SnapshotNode]? = nil
   var truncated: Bool? = nil
@@ -86,11 +99,14 @@ struct DataPayload {
   var snapshotGeneration: Int? = nil
   var presenceCapture: PlatformPresenceCapture? = nil
   var labelProvenance: [CandidateLabelProvenance]? = nil
+  var snapshotDiagnostics: SnapshotDiagnostics? = nil
 }
 enum RunnerObjCExceptionCatcher {
   static func catchException(_ read: () -> Void) -> String? { read(); return nil }
 }
 final class Harness {
+  let fastSnapshotLimit = 300
+  var retainedFastSnapshotOptions: SnapshotOptions?
   var maxSnapshotElements = 600
   let currentSnapshotGeneration = 7
   var now = 1000.0
@@ -114,30 +130,32 @@ final class Harness {
     let queryRoot: XCUIApplication
     let rootSnapshot: XCUIElementSnapshot
     let viewport: CGRect
+    var viewportSource: SnapshotViewportSource? = nil
     let maxDepth: Int
   }
 ${section(source, '  private struct PresenceDescriptor:', '  func platformPresenceFailure(')}
 ${section(source, '  private func presenceRead<', '  private func presenceLabelSource(')}
-  private func presenceLabelSource(_ snapshot: XCUIElementSnapshot) -> PlatformPresenceObservation.LabelSource {
-    snapshot.label.isEmpty ? (snapshot.children.isEmpty ? .none : .descendant) : .direct
-  }
-  private func evaluateSnapshot(_ snapshot: XCUIElementSnapshot, in context: SnapshotTraversalContext) {}
-  private func makeSnapshotNode(snapshot: XCUIElementSnapshot, evaluation: Void, depth: Int, index: Int, parentIndex: Int?) -> SnapshotNode {
-    if index == 0 { selectedSample = snapshot.sampleToken }
-    return SnapshotNode(index: index, type: snapshot.elementType == .staticText ? "StaticText" : "Other",
-      label: snapshot.label, identifier: snapshot.identifier, value: nil,
-      rect: SnapshotRect(x: Double(snapshot.frame.origin.x), y: Double(snapshot.frame.origin.y), width: Double(snapshot.frame.width), height: Double(snapshot.frame.height)),
-      enabled: snapshot.isEnabled, focused: nil, hittable: true, depth: depth, parentIndex: parentIndex,
-      hiddenContentAbove: nil, hiddenContentBelow: nil)
-  }
+${section(source, '  private struct SnapshotEvaluation {', '  // MARK: - Snapshot Entry')}
+${section(source, '  func snapshotFast(', '  func snapshotRaw(')}
+${section(source, '  private func presenceLabelSource(', '  func snapshotCandidateLabelProvenance(')}
+${section(source, '  private func evaluateSnapshot(', '  private func snapshotViewport(').replace('    let label = aggregatedLabel', '    if snapshot.elementType == .application { selectedSample = snapshot.sampleToken }\n    let label = aggregatedLabel')}
+${section(source, '  func aggregatedLabel(', '  private func isVisibleInViewport(')}
+${section(source, '  private func shouldInclude(', '  private func makeSnapshotTraversalContext(')}
+${section(source, '  func retainSnapshotTargets(', '  // MARK: - Snapshot Filtering')}
+  let interactiveTypes: Set<XCUIElement.ElementType> = [.button, .staticText]
+  private func isScrollableContainer(_ snapshot: XCUIElementSnapshot, visible: Bool) -> Bool { snapshot.elementType == .scrollView }
+  private func snapshotHasFocus(_ snapshot: XCUIElementSnapshot) -> Bool { false }
+  private func isVisibleInViewport(_ rect: CGRect, _ viewport: CGRect) -> Bool { !rect.isEmpty && rect.intersects(viewport) }
   func elementTypeName(_ type: XCUIElement.ElementType) -> String { String(type.rawValue) }
-  func aggregatedLabel(for snapshot: XCUIElementSnapshot) -> String? {
-    if !snapshot.label.isEmpty { return snapshot.label }
-    return snapshot.children.compactMap { aggregatedLabel(for: $0) }.first
+  private func makeSnapshotTraversalContext(app: XCUIApplication, options: SnapshotOptions) -> SnapshotTraversalContext? {
+    guard let root = try? app.snapshot() else { return nil }
+    selectedSample = root.sampleToken
+    return SnapshotTraversalContext(queryRoot: app, rootSnapshot: root, viewport: CGRect(x: 0, y: 0, width: 400, height: 800), maxDepth: options.depth ?? Int.max)
   }
-  func snapshotRect(from rect: CGRect) -> SnapshotRect {
-    SnapshotRect(x: Double(rect.origin.x), y: Double(rect.origin.y), width: Double(rect.width), height: Double(rect.height))
-  }
+  private func safeSnapshotElementsQuery(_ read: () -> [XCUIElement]) -> [XCUIElement] { read() }
+  private func appendCollapsedTabFallbackNodes(to: inout [SnapshotNode], containerSnapshot: XCUIElementSnapshot, resolveElements: () -> [XCUIElement], depth: Int, parentIndex: Int, nodeLimit: Int, viewport: CGRect) -> Bool { false }
+  var keyboardReads = 0
+  func isKeyboardVisible(app: XCUIApplication) -> Bool { keyboardReads += 1; return false }
 ${section(source, '  func snapshotCandidateLabelProvenance(', '  private func observePresence(')}
   private func observePresence(_ descriptor: PresenceDescriptor, count: Int, app: XCUIApplication, deadline: Double, timing: PresenceCaptureTiming, unknownReason: ((PlatformPresenceObservation.UnknownReason) -> Void)? = nil) -> Double? {
     observations += 1; observedAt.append(now); now += observationMs; return now
@@ -203,21 +221,36 @@ func candidateTree(sibling: Double, candidate: Double = 10) -> XCUIElementSnapsh
   container.elementType = .scrollView; container.identifier = "list"; container.label = ""; container.value = nil
   container.frame = CGRect(x: candidate, y: 20, width: 300, height: 400)
   let card = XCUIElementSnapshot(); card.label = "Add coverage"; card.identifier = "card"; card.value = nil
+  let siblingNode = XCUIElementSnapshot(); siblingNode.elementType = .staticText
+  siblingNode.label = "Other"; siblingNode.identifier = "other"; siblingNode.value = nil
+  let duplicate = XCUIElementSnapshot(); duplicate.elementType = siblingNode.elementType
+  duplicate.label = siblingNode.label; duplicate.identifier = siblingNode.identifier; duplicate.value = nil; duplicate.frame = siblingNode.frame
   container.children = [card]
-  root.children[0].children[1].frame.size.height = sibling
+  let empty = XCUIElementSnapshot(); empty.elementType = .other; empty.label = ""; empty.identifier = ""; empty.value = nil
+  let window = root.children[0]
+  window.children = [empty, container, siblingNode, duplicate]
+  empty.frame.size.height = sibling
   return root
 }
 for unstable in [false, true] {
   let h = Harness()
   let trees = [candidateTree(sibling: 10), candidateTree(sibling: 11, candidate: unstable ? 11 : 10)]
-  let parent = trees[0].children[0].children[0], card = parent.children[0]
-  for (index, snapshot, ancestor) in [(2, parent, 1), (3, card, 2)] {
-    h.retainedSnapshotTargets[index] = RetainedSnapshotTarget(generation: 7, index: index,
-      type: h.elementTypeName(snapshot.elementType), label: h.aggregatedLabel(for: snapshot),
-      identifier: snapshot.identifier, rect: h.snapshotRect(from: snapshot.frame), parentIndex: ancestor)
+  let app = XCUIApplication([trees[0]])
+  let ordinary = h.snapshotFast(app: app, options: SnapshotOptions(interactiveOnly: true, compact: false, depth: nil, scope: nil, raw: false))
+  h.retainSnapshotTargets(ordinary.nodes ?? [])
+  let indices = (ordinary.nodes ?? []).filter { $0.identifier == "list" || $0.identifier == "card" }.map { $0.index }
+  precondition(indices == [2, 3] && ordinary.nodes?.count == 5)
+  let before = h.retainedSnapshotTargets
+  app.snapshots = trees; app.reads = 0; app.cycle = true
+  let result = h.snapshotCandidateLabelProvenance(app: app, indices: indices, budgetMs: 300)
+  precondition(h.currentSnapshotGeneration == 7 && h.keyboardReads == 1)
+  precondition(h.retainedFastSnapshotOptions != nil)
+  for index in indices {
+    precondition(h.retainedSnapshotTargets[index]?.index == before[index]?.index)
+    precondition(h.retainedSnapshotTargets[index]?.parentIndex == before[index]?.parentIndex)
+    precondition(h.retainedSnapshotTargets[index]?.rect == before[index]?.rect)
+    precondition(h.retainedSnapshotTargets[index]?.generation == before[index]?.generation)
   }
-  let app = XCUIApplication(trees); app.cycle = true
-  let result = h.snapshotCandidateLabelProvenance(app: app, indices: [2, 3], budgetMs: 300)
   let metadata = result.labelProvenance ?? []
   let output: [String: Any] = ["name": unstable ? "candidate-unsettled" : "candidate-sibling-animation",
     "indices": metadata.map { $0.index }, "sources": metadata.map { $0.labelSource.rawValue },
