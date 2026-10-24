@@ -1058,6 +1058,7 @@ export async function decideScreen(
   privacy = new ObservedPrivacy(),
   deadline?: number,
   diagnostics = false,
+  assertionLabels?: ReadonlyMap<Element, string>,
 ): Promise<ScreenDecision> {
   const checked =
     check && !check.literal ? prepareAssertion(check.text, screen, diagnostics) : undefined;
@@ -1088,8 +1089,10 @@ export async function decideScreen(
     check?.text ?? '',
     step ? (stepTarget(step)?.phrase ?? '') : '',
     ...screen.visibleText,
+    ...(assertionLabels?.values() ?? []),
     ...screen.elements.map(describe),
   ]);
+  const assertionLabel = (element: Element) => assertionLabels?.get(element) ?? element.label;
   const assertionBound = (
     assertion: VisibilityDecision | AssertionQuestion | undefined,
     text: string,
@@ -1102,8 +1105,8 @@ export async function decideScreen(
       (unobservedValue(
         text,
         elements.flatMap((element) => [
-          ...(element.label !== undefined && !nativeLabelMayBeValue(element)
-            ? [element.label]
+          ...(assertionLabel(element) !== undefined && !nativeLabelMayBeValue(element)
+            ? [assertionLabel(element)!]
             : []),
           ...(!element.semantic?.nativePresence &&
           !element.secure &&
@@ -1161,7 +1164,15 @@ export async function decideScreen(
           ...(evidence && (questions[checkId] || questions[visibilityId])
             ? {
                 assertionEvidence: {
-                  observed: evidence.elements.map((e) => mask.describeElement(e, describeSemantic)),
+                  observed: evidence.elements.map((element) =>
+                    mask.describeElement(element, (shown) =>
+                      describeSemantic(
+                        assertionLabels?.has(element)
+                          ? { ...shown, label: assertionLabels.get(element)! }
+                          : shown,
+                      ),
+                    ),
+                  ),
                   unknown: evidence.unknown.map(({ element: e, reason }) => ({
                     description: mask.describeElement(e, (e) =>
                       describe({

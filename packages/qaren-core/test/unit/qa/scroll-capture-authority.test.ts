@@ -4,6 +4,8 @@ import { captureScreen } from '../../../dist/qa/capture.js';
 import { parsePlan } from '../../../dist/qa/plan.js';
 import type { NativeNode } from '../../../dist/qa/screen.js';
 import { walkBlock } from '../../../dist/qa/walker.js';
+import { decideScreen } from '../../../dist/qa/resolve.js';
+import { ObservedPrivacy } from '../../../dist/qa/privacy.js';
 import { buildDirectionalScrollCliArgs } from '../../../dist/handlers/device-interact.js';
 import { clearRefMap, updateRefMapFromFlat } from '../../../dist/fast-runner-ref-map.js';
 import { scriptedJudge, walker } from './judgment-fixtures.ts';
@@ -924,3 +926,119 @@ for (const direction of ['up', 'down'] as const) {
     });
   }
 }
+
+for (const direction of ['up', 'down'] as const) {
+  for (const unidentified of [false, true]) {
+    for (const predicate of ['welcome', 'footer-and-terms', 'terms-and-footer'] as const) {
+      for (const transition of ['initial', 'expiry', 'reask'] as const) {
+        test(`whole semantic claim accepts compatible content: ${direction}, unidentified=${unidentified}, ${predicate}, ${transition}`, async () => {
+          const f = fixture();
+          let confirmations = 0;
+          const updatedLabel =
+            predicate === 'welcome'
+              ? 'Welcome back'
+              : predicate === 'footer-and-terms'
+                ? 'Footer details'
+                : 'Terms of service';
+          const judge = scriptedJudge((questions, index, state) => {
+            const evidence = JSON.stringify(state);
+            const present =
+              predicate === 'welcome'
+                ? evidence.includes('Welcome')
+                : evidence.includes('Footer') && evidence.includes('Terms');
+            return Object.fromEntries(
+              Object.keys(questions).map((id) => [
+                id,
+                {
+                  type: 'noul',
+                  noul: transition === 'reask' && index === 0 ? 0.5 : present ? 0.9 : 0.1,
+                },
+              ]),
+            );
+          });
+          f.f.deps.judge = judge;
+          f.setSnapshot(async (presence) => {
+            if (presence && ++confirmations === 1 && transition === 'expiry')
+              await f.f.deps.sleep(11_000);
+            const changed = !presence && confirmations >= (transition === 'initial' ? 1 : 2);
+            return {
+              footer: true,
+              footerUnidentified: unidentified,
+              footerLabel:
+                changed && predicate !== 'terms-and-footer'
+                  ? updatedLabel
+                  : predicate === 'welcome'
+                    ? 'Welcome'
+                    : 'Footer',
+              terms: predicate !== 'welcome',
+              termsLabel: changed && predicate === 'terms-and-footer' ? updatedLabel : 'Terms',
+              listID: 'policies',
+              tab: 'Policies',
+              title: 'Policies',
+            };
+          });
+          try {
+            const result = await run(
+              f,
+              direction,
+              'phrase',
+              predicate === 'welcome' ? 'the welcome message' : 'the footer and terms text',
+            );
+            assert.equal(result.block.outcome, 'pass', JSON.stringify(result.failure));
+            assert.equal(result.failure, undefined);
+            assert.equal(f.drags(), 0);
+            assert.equal(judge.requests.length, transition === 'reask' ? 3 : 2);
+            assert.ok(JSON.stringify(judge.requests.at(-1)?.state).includes(updatedLabel));
+            assert.deepEqual(
+              f.modes,
+              transition === 'reask'
+                ? [false, true, false, false, true, false]
+                : transition === 'expiry'
+                  ? [false, true, false, true, false]
+                  : [false, true, false],
+            );
+          } finally {
+            clearRefMap();
+          }
+        });
+      }
+    }
+  }
+}
+
+test('updated assertion labels retain model masking and original native evidence', async () => {
+  const f = fixture();
+  f.setSnapshot(async () => ({ footer: true, footerLabel: 'Welcome' }));
+  try {
+    const observed = await f.f.deps.captureScreen({ platformPresence: true });
+    const witness = observed.elements.find((element) => element.testID === 'footer');
+    assert.ok(witness?.semantic?.nativePresence);
+    const privateValue = 'private-marker-719';
+    const privacy = new ObservedPrivacy([privateValue]);
+    privacy.didFill(privateValue);
+    const judge = scriptedJudge((questions) =>
+      Object.fromEntries(Object.keys(questions).map((id) => [id, { type: 'noul', noul: 0.9 }])),
+    );
+    const item = parsePlan('1. Scroll down until the welcome message').blocks![0].items[0];
+    assert.ok(item.kind === 'scroll');
+    const decision = await decideScreen(
+      observed,
+      judge,
+      undefined,
+      item,
+      privacy.modelValues(),
+      privacy,
+      Infinity,
+      false,
+      new Map([[witness, `Welcome ${privateValue}`]]),
+    );
+    assert.deepEqual(decision.visibility, { verdict: 'present' });
+    const delivered = JSON.stringify(judge.requests[0].state);
+    assert.ok(delivered.includes('Welcome [QAREN_VALUE_'));
+    assert.ok(!delivered.includes(privateValue));
+    assert.equal(witness.label, 'Welcome');
+    assert.equal(witness.semantic.nativePresence.labelSource, 'direct');
+  } finally {
+    clearRefMap();
+  }
+});
