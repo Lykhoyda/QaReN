@@ -642,17 +642,14 @@ export function scrollUntilHasCandidate(target: Target, screen: Screen): boolean
   return true;
 }
 
-export function scrollConfirmationTargets(target: Target, screen: Screen): Element[] {
+export function scrollConfirmationEvidence(target: Target, screen: Screen): Element[] {
   let candidates: Element[];
   if (target.quoted !== undefined) {
     candidates = exactIdentities(screen, target, 'wait', 'refresh').map(({ element }) => element);
   } else {
     const projected = visibilityView(screen);
     if ('refuse' in projected) throw new ResolutionError(projected);
-    const phrase = target.phrase.replace(/\b(?:text|headings?|titles?)\b/gi, '');
-    candidates = projected.elements.filter(
-      (element) => targetNameMismatch(element, phrase) === undefined,
-    );
+    candidates = projected.elements;
   }
   return candidates.filter(
     (element) =>

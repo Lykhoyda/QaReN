@@ -13,9 +13,14 @@ const frame = { x: 0, y: 0, width: 402, height: 874 };
 type Snapshot = {
   footer?: boolean;
   footerY?: number;
+  footerLabel?: string;
+  terms?: boolean;
+  termsY?: number;
   footerMissing?: boolean;
   footerUnidentified?: boolean;
   loading?: boolean;
+  loadingY?: number;
+  loadingUnidentified?: boolean;
   keyboardY?: number;
   listID?: string;
   hideFooterLabel?: boolean;
@@ -65,7 +70,7 @@ function fixture() {
           state.footerMissing || state.hideFooterLabel
             ? undefined
             : state.footer
-              ? 'Footer'
+              ? (state.footerLabel ?? 'Footer')
               : 'Loading',
         identifier:
           state.footerMissing || state.footerUnidentified
@@ -101,9 +106,17 @@ function fixture() {
       rawNodes.push({
         type: 'StaticText',
         parentIndex: 2,
-        identifier: 'loading-extra',
+        identifier: state.loadingUnidentified ? undefined : 'loading-extra',
         label: 'Loading',
-        rect: { x: 10, y: 300, width: 100, height: 30 },
+        rect: { x: 10, y: state.loadingY ?? 300, width: 100, height: 30 },
+      });
+    if (state.terms)
+      rawNodes.push({
+        type: 'StaticText',
+        parentIndex: 2,
+        identifier: 'terms',
+        label: 'Terms',
+        rect: { x: 10, y: state.termsY ?? 350, width: 100, height: 30 },
       });
     if (state.keyboardY !== undefined)
       rawNodes.push({
@@ -184,10 +197,10 @@ async function run(
   f: ReturnType<typeof fixture>,
   direction: 'up' | 'down',
   mode: 'quoted' | 'phrase' | 'replay',
+  phrase = 'the footer text',
 ) {
-  const block = parsePlan(
-    `1. Scroll ${direction} until ${mode === 'phrase' ? 'the footer text' : '"Footer"'}`,
-  ).blocks![0];
+  const block = parsePlan(`1. Scroll ${direction} until ${mode === 'phrase' ? phrase : '"Footer"'}`)
+    .blocks![0];
   if (mode === 'replay') {
     const step = block.items[0];
     assert.ok(step.kind === 'scroll');
@@ -507,9 +520,15 @@ for (const direction of ['up', 'down'] as const) {
   test(`uncertainty re-ask still vetoes stale positive confirmation: ${direction}`, async () => {
     const f = fixture();
     let confirmations = 0;
-    const judge = scriptedJudge((questions, index) =>
+    const judge = scriptedJudge((questions, index, state) =>
       Object.fromEntries(
-        Object.keys(questions).map((id) => [id, { type: 'noul', noul: index === 0 ? 0.5 : 0.9 }]),
+        Object.keys(questions).map((id) => [
+          id,
+          {
+            type: 'noul',
+            noul: index === 0 ? 0.5 : JSON.stringify(state).includes('Footer') ? 0.9 : 0.1,
+          },
+        ]),
       ),
     );
     f.f.deps.judge = judge;
@@ -526,7 +545,7 @@ for (const direction of ['up', 'down'] as const) {
       const result = await run(f, direction, 'phrase');
       assert.equal(result.block.outcome, 'fail');
       assert.equal(f.drags(), 0);
-      assert.equal(judge.requests.length, 2);
+      assert.equal(judge.requests.length, 3);
       assert.match(JSON.stringify(result.failure), /VISIBILITY_UNSURE/);
       assert.deepEqual(f.modes, [false, true, false, false, true, false]);
     } finally {
@@ -579,11 +598,159 @@ for (const direction of ['up', 'down'] as const) {
         assert.equal(result.block.outcome, 'pass');
         assert.equal(result.failure, undefined);
         assert.equal(f.drags(), 0);
-        assert.equal(judge.requests.length, 2);
+        assert.equal(judge.requests.length, change === 'unrelated' ? 3 : 2);
         assert.deepEqual(f.modes, [false, true, false, false, true, false]);
       } finally {
         clearRefMap();
       }
     });
+  }
+}
+
+for (const direction of ['up', 'down'] as const) {
+  for (const mode of ['quoted', 'phrase', 'replay'] as const) {
+    for (const expiry of [false, true]) {
+      test(`identified offscreen target wins over its old frame occupant: ${direction}, ${mode}, expiry=${expiry}`, async () => {
+        const f = fixture();
+        let confirmations = 0;
+        f.setSnapshot(async (presence) => {
+          if (presence && ++confirmations === 1 && expiry) await f.f.deps.sleep(11_000);
+          const changed = !presence && confirmations >= (expiry ? 2 : 1);
+          return {
+            footer: true,
+            listID: 'policies',
+            listFrame: { x: 0, y: 100, width: 402, height: 600 },
+            footerY: changed ? (direction === 'down' ? 750 : 50) : 200,
+            loading: changed,
+            loadingY: 200,
+            loadingUnidentified: true,
+          };
+        });
+        try {
+          const result = await run(f, direction, mode);
+          assert.equal(result.block.outcome, 'fail');
+          assert.match(JSON.stringify(result.failure), /VISIBILITY_UNSURE/);
+          assert.equal(f.drags(), 0);
+          assert.deepEqual(
+            f.modes,
+            expiry ? [false, true, false, true, false] : [false, true, false],
+          );
+        } finally {
+          clearRefMap();
+        }
+      });
+    }
+  }
+  for (const predicate of ['welcome', 'footer-and-terms', 'terms-and-footer'] as const) {
+    for (const transition of ['initial', 'expiry', 'reask'] as const) {
+      test(`semantic target contradiction: ${direction}, ${predicate}, ${transition}`, async () => {
+        const f = fixture();
+        let confirmations = 0;
+        const judge = scriptedJudge((questions, index, state) => {
+          const evidence = JSON.stringify(state);
+          const present =
+            predicate === 'welcome'
+              ? evidence.includes('Welcome')
+              : evidence.includes('Footer') && evidence.includes('Terms');
+          return Object.fromEntries(
+            Object.keys(questions).map((id) => [
+              id,
+              {
+                type: 'noul',
+                noul: transition === 'reask' && index === 0 ? 0.5 : present ? 0.9 : 0.1,
+              },
+            ]),
+          );
+        });
+        f.f.deps.judge = judge;
+        f.setSnapshot(async (presence) => {
+          if (presence && ++confirmations === 1 && transition === 'expiry')
+            await f.f.deps.sleep(11_000);
+          const changed = !presence && confirmations >= (transition === 'initial' ? 1 : 2);
+          const outside = direction === 'down' ? 750 : 50;
+          return {
+            footer: true,
+            footerLabel: predicate === 'welcome' ? 'Welcome' : 'Footer',
+            footerY: changed && predicate !== 'terms-and-footer' ? outside : 200,
+            terms: predicate !== 'welcome',
+            termsY: changed && predicate === 'terms-and-footer' ? outside : 350,
+            listID: 'policies',
+            listFrame: { x: 0, y: 100, width: 402, height: 600 },
+            loading: true,
+            loadingY: 200,
+            loadingUnidentified: true,
+          };
+        });
+        try {
+          const result = await run(
+            f,
+            direction,
+            'phrase',
+            predicate === 'welcome' ? 'the welcome message' : 'the footer and terms text',
+          );
+          assert.equal(result.block.outcome, 'fail');
+          assert.match(JSON.stringify(result.failure), /VISIBILITY_UNSURE/);
+          assert.equal(f.drags(), 0);
+          assert.equal(judge.requests.length, transition === 'reask' ? 3 : 2);
+          assert.deepEqual(
+            f.modes,
+            transition === 'reask'
+              ? [false, true, false, false, true, false]
+              : transition === 'expiry'
+                ? [false, true, false, true, false]
+                : [false, true, false],
+          );
+        } finally {
+          clearRefMap();
+        }
+      });
+    }
+  }
+}
+
+for (const direction of ['up', 'down'] as const) {
+  for (const predicate of ['welcome', 'footer-and-terms'] as const) {
+    for (const change of ['unrelated', 'unknown-label'] as const) {
+      test(`semantic confirmation preserves current target: ${direction}, ${predicate}, ${change}`, async () => {
+        const f = fixture();
+        let confirmed = false;
+        f.f.deps.judge = scriptedJudge((questions, _index, state) => {
+          const evidence = JSON.stringify(state);
+          const present =
+            predicate === 'welcome'
+              ? evidence.includes('Welcome')
+              : evidence.includes('Footer') && evidence.includes('Terms');
+          return Object.fromEntries(
+            Object.keys(questions).map((id) => [id, { type: 'noul', noul: present ? 0.9 : 0.1 }]),
+          );
+        });
+        f.setSnapshot(async (presence) => {
+          if (presence) confirmed = true;
+          const changed = !presence && confirmed;
+          return {
+            footer: true,
+            footerLabel: predicate === 'welcome' ? 'Welcome' : 'Footer',
+            terms: predicate !== 'welcome',
+            hideFooterLabel: changed && change === 'unknown-label',
+            loading: change === 'unrelated' && !changed,
+            listID: 'policies',
+          };
+        });
+        try {
+          const result = await run(
+            f,
+            direction,
+            'phrase',
+            predicate === 'welcome' ? 'the welcome message' : 'the footer and terms text',
+          );
+          assert.equal(result.block.outcome, 'pass');
+          assert.equal(result.failure, undefined);
+          assert.equal(f.drags(), 0);
+          assert.deepEqual(f.modes, [false, true, false]);
+        } finally {
+          clearRefMap();
+        }
+      });
+    }
   }
 }
