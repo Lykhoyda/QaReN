@@ -1259,8 +1259,11 @@ ordinary quoted targets can match either. Direct matches and containment within
 a larger label preserve case and punctuation; only near matches normalize them.
 `only-in-aggregated-label` means the literal text occurs inside a larger label
 without a direct match; it does not prove the container's label provenance.
-The event records `present-but-unavailable` for a direct match and
-`evidence-incomplete` when absence cannot be established. Otherwise, it records
+The event records `present-but-unavailable` for a direct match with resolved visibility.
+Otherwise, it records `evidence-incomplete` when absence cannot be established,
+including when an exact or contained match in the selected domain has unresolved
+visibility or geometry. Unresolved elements are excluded from the candidate list;
+an empty list alone does not establish absence. With complete evidence, it records
 `only-in-aggregated-label`, then `not-scrollable` if scrolling has no eligible
 container, or `absent`. The refusal appends this likely reason when evidence is
 sufficient, except for replay misses that trigger re-walking and wait preconditions.
