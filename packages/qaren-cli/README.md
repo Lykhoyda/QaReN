@@ -1017,7 +1017,10 @@ Android phrase steps resolve against these observations. A valid capture whose
 interactive React hosts cannot all be associated (a mounted `Modal`, or inputs
 the keyboard covers) keeps the `SCREEN_EVIDENCE_INCOMPLETE` presence gap, as on
 iOS; stale or incomplete captures refuse with `NATIVE_PRESENCE_UNUSABLE`. Quoted
-targets and literal checks remain usable without requesting presence.
+press, fill and wait targets and literal checks remain usable without requesting
+presence. On both platforms, every scroll-until capture requests platform presence,
+including quoted targets and refreshes, to acquire native navigation titles and
+display density for the navigation guard and overlay padding described below.
 
 Context-bound iOS QA reads require the unchanged target app already in the
 foreground. They never activate or relaunch it, or retry a failed read through
