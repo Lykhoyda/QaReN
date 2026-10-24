@@ -566,7 +566,9 @@ that control's echo only when native presence proves its label comes from descen
 With the same proven descendant provenance, quoted label presses can also collapse
 an identified native container into a smaller, enabled, visible, hittable descendant
 control when tree ancestry, frame containment and whole label segments agree.
-Quoted label presses request platform-presence capture to obtain this provenance. Direct or unknown label
+Quoted label presses request platform-presence capture to obtain this provenance
+without requiring the complete native presence that phrase targets require;
+native acquisition and privacy admission still apply. Direct or unknown label
 provenance keeps the parent distinct; multiple distinct children remain ambiguous.
 Android's blank containers with proven descendant provenance acquire a bounded label
 from visible observed children during screen projection; input and secure content
