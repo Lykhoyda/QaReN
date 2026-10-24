@@ -569,7 +569,9 @@ control when tree ancestry, frame containment and whole label segments agree.
 Quoted label presses request platform-presence capture to obtain this provenance
 without requiring the complete native presence that phrase targets require;
 native acquisition and privacy admission still apply. Direct or unknown label
-provenance keeps the parent distinct; multiple distinct children remain ambiguous.
+provenance keeps differently framed candidates distinct. A native ancestor and
+hittable descendant with the exact same label and frame are one tap target and
+resolve to the inner control. Multiple distinct children remain ambiguous.
 Android's blank containers with proven descendant provenance acquire a bounded label
 from visible observed children during screen projection; input and secure content
 is excluded, and a container's own label is never reclassified.

@@ -98,8 +98,8 @@ function encloses(container: Element, element: Element): boolean {
 
 function aggregatesControl(container: Element, child: Element): boolean {
   if (
-    container.semantic?.nativePresence?.labelSource !== 'descendant' ||
-    container.kind !== 'other' ||
+    container.kind === 'text' ||
+    container.kind === 'input' ||
     container.ref.startsWith('react:') ||
     child.ref.startsWith('react:') ||
     child.kind === 'text' ||
@@ -121,11 +121,24 @@ function aggregatesControl(container: Element, child: Element): boolean {
     !Object.values(inner).every(Number.isFinite) ||
     inner.width <= 0 ||
     inner.height <= 0 ||
-    outer.width * outer.height <= inner.width * inner.height ||
     inner.x < outer.x ||
     inner.y < outer.y ||
     inner.x + inner.width > outer.x + outer.width ||
     inner.y + inner.height > outer.y + outer.height
+  )
+    return false;
+  if (
+    container.label === child.label &&
+    outer.x === inner.x &&
+    outer.y === inner.y &&
+    outer.width === inner.width &&
+    outer.height === inner.height
+  )
+    return true;
+  if (
+    container.kind !== 'other' ||
+    container.semantic?.nativePresence?.labelSource !== 'descendant' ||
+    outer.width * outer.height <= inner.width * inner.height
   )
     return false;
   const parts = (label: string) => label.split(/[,\n]/u).map((part) => part.trim());

@@ -634,7 +634,15 @@ test('a no-identifier container enclosing two same-label controls does not hide 
   );
 });
 
-test('a tree-enclosing same-label button without aggregation provenance stays ambiguous', () => {
+test('a tree-enclosing same-label control collapses to the innermost control', () => {
+  const nodes = echoContainer(1);
+  nodes[2] = { ...nodes[2], type: 'Button', identifier: 'page-card', rect: nodes[3].rect };
+  const resolved = prepareTarget(tapNext, join(nodes, []));
+  assert.ok('ref' in resolved, JSON.stringify(resolved));
+  assert.equal(resolved.ref, '@next0');
+});
+
+test('a differently framed same-label ancestor without aggregation provenance stays ambiguous', () => {
   const nodes = echoContainer(1);
   nodes[2] = { ...nodes[2], type: 'Button', identifier: 'page-card' };
   const resolved = prepareTarget(tapNext, join(nodes, []));
@@ -643,6 +651,79 @@ test('a tree-enclosing same-label button without aggregation provenance stays am
     JSON.stringify(resolved),
   );
 });
+
+for (const android of [false, true]) {
+  for (const buttonWrapper of [false, true]) {
+    test(`${android ? 'Android' : 'iOS'}: same-frame Skip wrapper selects its inner button, buttonWrapper=${buttonWrapper}`, () => {
+      const frame = { x: 332, y: 70, width: 54, height: 32 };
+      const nodes: NativeNode[] = [
+        ...app(),
+        {
+          ref: '@outer',
+          index: 2,
+          parentIndex: 1,
+          type: android
+            ? buttonWrapper
+              ? 'android.widget.Button'
+              : 'android.view.ViewGroup'
+            : buttonWrapper
+              ? 'Button'
+              : 'Other',
+          identifier: 'qa-skip-echo-outer',
+          label: 'Skip',
+          hittable: true,
+          rect: frame,
+        },
+        {
+          ref: '@inner',
+          index: 3,
+          parentIndex: 2,
+          type: android ? 'android.widget.Button' : 'Button',
+          identifier: 'qa-skip-echo-button',
+          label: 'Skip',
+          hittable: true,
+          rect: { ...frame },
+        },
+      ];
+      for (const labelSource of [undefined, 'direct'] as const) {
+        const screen = join(nodes, []);
+        if (labelSource)
+          screen.elements[2].semantic!.nativePresence = {
+            kind: screen.elements[2].kind,
+            labelSource,
+            structural: false,
+          };
+        for (const exact of [undefined, 'text'] as const) {
+          const resolved = prepareTarget({ ...press, target: { ...press.target, exact } }, screen);
+          assert.ok('ref' in resolved, JSON.stringify(resolved));
+          assert.equal(resolved.ref, '@inner');
+        }
+        const explicit = prepareTarget(
+          { ...press, target: { phrase: 'outer', quoted: 'qa-skip-echo-outer', exact: 'id' } },
+          screen,
+        );
+        assert.ok('ref' in explicit, JSON.stringify(explicit));
+        assert.equal(explicit.ref, '@outer');
+      }
+      const refreshed = refreshRef({ type: 'Button', label: 'Skip' }, nodes);
+      assert.equal(refreshed.kind, 'unique');
+      if (refreshed.kind === 'unique')
+        assert.equal(refreshed.node.identifier, 'qa-skip-echo-button');
+      const unavailable = prepareTarget(
+        press,
+        join(
+          nodes.map((node, index) => (index === 3 ? { ...node, hittable: false } : node)),
+          [],
+        ),
+      );
+      assert.ok('refuse' in unavailable && unavailable.refuse === 'TARGET_AMBIGUOUS');
+      nodes[3].parentIndex = 1;
+      const unrelated = prepareTarget(press, join(nodes, []));
+      assert.ok('refuse' in unrelated && unrelated.refuse === 'TARGET_AMBIGUOUS');
+      assert.equal(refreshRef({ type: 'Button', label: 'Skip' }, nodes).kind, 'ambiguous');
+    });
+  }
+}
 
 for (const type of ['Other', 'Button']) {
   for (const container of [false, true]) {
