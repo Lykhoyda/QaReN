@@ -109,6 +109,10 @@ const log = (message: string): void => {
   );
 };
 
+export async function reactFocused(client: CDPClient | null, testID: string): Promise<boolean> {
+  return (await readReactInputValue(client, testID, { focusOnly: true }))?.focused === true;
+}
+
 export function scrollArgs(
   direction: Parameters<WalkerDeps['scroll']>[0],
   clearance?: number,
@@ -729,8 +733,7 @@ async function openSession(
     ...(platform === 'ios'
       ? {
           appProcess: {},
-          reactFocused: async (testID: string) =>
-            (await readReactInputValue(cdpClientOrNull(getClient), testID))?.focused === true,
+          reactFocused: (testID: string) => reactFocused(cdpClientOrNull(getClient), testID),
           typeFocused: (ref, text, testID, qaContext, requireFocused, privateValue) =>
             act(
               () =>
