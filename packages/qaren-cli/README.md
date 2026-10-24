@@ -719,9 +719,9 @@ Android, using the snapshot's display density, and 20 pt from the top and 34 pt
 from the bottom on iOS. Callers passing no band
 use the existing keyboard-safe band. On both iOS and Android, a target whose centre
 is covered by the observed keyboard or a sticky overlay gets a scroll sized to move that centre
-toward the middle of that band. Precise drags normally keep a 10% dead zone at
-touch-down and end one pixel inside the far band edge; short bands shrink the
-start inset to preserve at least 48 px of travel. A clearance scroll without
+toward the middle of that band. Precise vertical drags normally keep a 10% dead zone at
+touch-down and stop at least one pixel inside the far band edge; short bands shrink the
+start inset to allow at least 48 px of travel. A clearance scroll without
 a band keeps the cap of 60% of the screen area above the keyboard, without a
 minimum-distance clamp.
 Scrolls without a clearance distance keep the fixed amount of `0.6` on the window
@@ -729,8 +729,10 @@ band; inside a caller band they span its clear interior, except
 a keyboard-bound edge, which the band clears by 48 pt so the drag never starts on
 the keyboard. One scroll-until attempt moves the list by one visible band and
 cannot carry the target past it. An explicit band shorter than 50 px or narrower
-than 2 px refuses `SCROLL_BAND_TOO_SMALL` before anything is sent, because a drag
-under the touch slop would land as a tap.
+than 2 px refuses `SCROLL_BAND_TOO_SMALL` before anything is sent. A vertical drag
+inside an explicit band also refuses if its rounded endpoints leave less than
+48 px of travel, including when fractional band coordinates pass the size check,
+because a drag under the touch slop would land as a tap.
 For scroll-until capture, overlay clearance and navigation safeguards, see
 [Plan checks and screen evidence](#plan-checks-and-screen-evidence).
 Successful iOS fast-runner scrolls now run the same bounded settle wait as taps
