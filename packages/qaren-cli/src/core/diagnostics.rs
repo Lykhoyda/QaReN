@@ -246,7 +246,49 @@ const ADMISSION_KEYS: &[&str] = &[
 
 fn clean(value: &Value) -> Option<Value> {
     let fields = value.as_object()?;
-    let kind = fields.get("kind")?.as_str()?;
+    let raw_kind = fields.get("kind")?.as_str()?;
+    if raw_kind == "media-withheld" {
+        let scope = fields.get("scope")?.as_str()?;
+        if !["screenshots", "video"].contains(&scope) {
+            return None;
+        }
+        let line = fields.get("line")?.as_u64()?;
+        if line > MAX_NUMBER as u64 {
+            return None;
+        }
+        let cause = fields.get("cause")?.as_object()?;
+        let reason: super::WithholdCause =
+            serde_json::from_value(cause.get("reason")?.clone()).ok()?;
+        let mut clean_cause = serde_json::json!({"reason": reason});
+        if let Some(kind) = cause.get("kind") {
+            if reason != super::WithholdCause::GenericValue {
+                return None;
+            }
+            let kind: super::MediaKind = serde_json::from_value(kind.clone()).ok()?;
+            clean_cause["kind"] = serde_json::to_value(kind).ok()?;
+        }
+        if let Some(source) = cause.get("source") {
+            if reason != super::WithholdCause::Echo {
+                return None;
+            }
+            let source: super::MediaSource = serde_json::from_value(source.clone()).ok()?;
+            clean_cause["source"] = serde_json::to_value(source).ok()?;
+        }
+        return Some(
+            serde_json::json!({"kind": raw_kind, "scope": scope, "cause": clean_cause, "line": line}),
+        );
+    }
+    let carrier_kind = [
+        "input", "other", "text", "button", "cell", "image", "switch", "link",
+    ]
+    .contains(&raw_kind);
+    if carrier_kind
+        && (fields.get("stage")?.as_str()? != "screenshot"
+            || fields.get("outcome")?.as_str()? != "withheld")
+    {
+        return None;
+    }
+    let kind = if carrier_kind { "metric" } else { raw_kind };
     if kind == "target-miss" {
         return clean_target_miss(fields);
     }
@@ -275,6 +317,8 @@ fn clean(value: &Value) -> Option<Value> {
                 "relaunch",
                 "reapDisposition",
                 "readinessReason",
+                "withheld",
+                "source",
                 "admission",
                 "attempt",
                 "lastStarted",
@@ -328,12 +372,19 @@ fn clean(value: &Value) -> Option<Value> {
         return None;
     }
     let mut clean = Map::new();
-    clean.insert("kind".into(), kind.into());
+    clean.insert("kind".into(), raw_kind.into());
     for (key, value) in fields {
         if key == "kind" {
             continue;
         }
         if !required.contains(&key.as_str()) && !optional.contains(&key.as_str()) {
+            return None;
+        }
+        if ["withheld", "source"].contains(&key.as_str())
+            && (kind != "metric"
+                || fields.get("stage")?.as_str()? != "screenshot"
+                || fields.get("outcome")?.as_str()? != "withheld")
+        {
             return None;
         }
         if key == "readinessReason"
@@ -390,6 +441,16 @@ fn clean(value: &Value) -> Option<Value> {
             "proof" => Some(&["focused", "not-proven"]),
             "settled" | "hierarchyChanged" if !value.is_boolean() => Some(&["unknown"]),
             "nativeMutation" => Some(&["none", "observed", "possible"]),
+            "withheld" => Some(&[
+                "runtime-input",
+                "concealed-fill",
+                "secure-field",
+                "input-value",
+                "generic-value",
+                "code-row",
+                "echo",
+            ]),
+            "source" => Some(&["typed", "observed", "concealed", "secret", "code", "input"]),
             "readinessReason" => Some(NATIVE_READINESS_REASONS),
             "admission" => Some(&["retry", "cancelled", "refused"]),
             "lastStarted" => Some(ADMISSION_BOUNDARIES),
@@ -426,6 +487,7 @@ fn clean(value: &Value) -> Option<Value> {
 pub(super) struct Sink {
     file: Option<File>,
     path: PathBuf,
+    log: PathBuf,
     events: usize,
     outcomes: usize,
 }
@@ -438,6 +500,7 @@ impl Sink {
                 .then(|| private_file(&path))
                 .flatten(),
             path,
+            log: log.to_path_buf(),
             events: 0,
             outcomes: 0,
         }
@@ -447,7 +510,12 @@ impl Sink {
         let Some(event) = clean(payload) else {
             return;
         };
-        if self.file.is_none() && payload["kind"] == "target-miss" {
+        if self.file.is_none()
+            && matches!(
+                event["kind"].as_str(),
+                Some("target-miss" | "media-withheld")
+            )
+        {
             self.file = private_file(&self.path);
         }
         let Some(file) = &mut self.file else {
@@ -468,6 +536,15 @@ impl Sink {
         *count += 1;
         if let Ok(line) = serde_json::to_string(&event) {
             let _ = writeln!(file, "{line}");
+            if event["kind"] == "media-withheld" {
+                let mut record = event["cause"].clone();
+                record["v"] = 1.into();
+                record["scope"] = event["scope"].clone();
+                record["line"] = event["line"].clone();
+                if let Some(mut log) = private_file(&self.log) {
+                    let _ = writeln!(log, "media-withheld {record}");
+                }
+            }
         }
     }
 }

@@ -67,6 +67,132 @@ pub struct AndroidEnv {
     pub platform_tools: PathBuf,
 }
 
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "kebab-case")]
+pub enum WithholdCause {
+    RuntimeInput,
+    ConcealedFill,
+    SecureField,
+    InputValue,
+    GenericValue,
+    CodeRow,
+    Echo,
+}
+
+impl WithholdCause {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::RuntimeInput => "runtime-input",
+            Self::ConcealedFill => "concealed-fill",
+            Self::SecureField => "secure-field",
+            Self::InputValue => "input-value",
+            Self::GenericValue => "generic-value",
+            Self::CodeRow => "code-row",
+            Self::Echo => "echo",
+        }
+    }
+
+    pub fn sentence(self) -> &'static str {
+        match self {
+            Self::RuntimeInput => "the run holds runtime inputs",
+            Self::ConcealedFill => "a filled field could not be read back",
+            Self::SecureField => "a secure field was on screen",
+            Self::InputValue => "an editable field showed text",
+            Self::GenericValue => "a non-input element exposes an accessibility value",
+            Self::CodeRow => "one-character boxes showed a typed value",
+            Self::Echo => "a value already treated as private reappeared as text",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum MediaKind {
+    Input,
+    Other,
+    Text,
+    Button,
+    Cell,
+    Image,
+    Switch,
+    Link,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum MediaSource {
+    Typed,
+    Observed,
+    Concealed,
+    Secret,
+    Code,
+    Input,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct MediaLatch {
+    pub reason: WithholdCause,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub kind: Option<MediaKind>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source: Option<MediaSource>,
+    pub line: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub count: Option<u64>,
+}
+
+impl MediaLatch {
+    pub(crate) fn from_receipt_note(note: &str) -> Option<Self> {
+        let (cause, line) = note.split_once("@line ")?;
+        let (reason, qualifier) = cause
+            .split_once('/')
+            .map_or((cause, None), |(r, q)| (r, Some(q)));
+        let reason: WithholdCause = serde_json::from_value(Value::String(reason.into())).ok()?;
+        let mut entry = Self {
+            reason,
+            kind: None,
+            source: None,
+            line: line.parse().ok()?,
+            count: None,
+        };
+        if let Some(qualifier) = qualifier {
+            let value = Value::String(qualifier.into());
+            match reason {
+                WithholdCause::GenericValue => {
+                    entry.kind = Some(serde_json::from_value(value).ok()?)
+                }
+                WithholdCause::Echo => entry.source = Some(serde_json::from_value(value).ok()?),
+                _ => return None,
+            }
+        }
+        (entry.receipt_note() == note).then_some(entry)
+    }
+
+    pub fn receipt_note(&self) -> String {
+        let qualifier = self
+            .kind
+            .and_then(|kind| serde_json::to_value(kind).ok())
+            .or_else(|| {
+                self.source
+                    .and_then(|source| serde_json::to_value(source).ok())
+            });
+        let qualifier = qualifier
+            .as_ref()
+            .and_then(Value::as_str)
+            .map(|word| format!("/{word}"))
+            .unwrap_or_default();
+        format!("{}{qualifier}@line {}", self.reason.as_str(), self.line)
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct MediaWithheld {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub screenshots: Option<MediaLatch>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub video: Option<MediaLatch>,
+}
+
 // The ledger the child returns as its result line; the wire is a contract, so it is read strictly.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
@@ -78,6 +204,12 @@ pub struct Ledger {
         deserialize_with = "passive"
     )]
     pub video_publication: Option<crate::record::VideoPublication>,
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "passive"
+    )]
+    pub media_withheld: Option<MediaWithheld>,
     // Epoch ms at which the walk proved the app's bundle and cleared its dev overlays; earlier recorded frames are never published.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub admitted_at_ms: Option<u64>,
@@ -213,6 +345,12 @@ pub struct Row {
     pub r#ref: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub screenshot: Option<String>,
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "passive"
+    )]
+    pub screenshot_withheld: Option<WithholdCause>,
     pub t: u64,
     pub outcome: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -1231,6 +1369,9 @@ fn refusal_ledger(result: &Value, rows: &[Row], seen: &str) -> Result<Ledger, St
     if let Some(eligibility) = result.get("videoPublication") {
         normalized["videoPublication"] = eligibility.clone();
     }
+    if let Some(media) = result.get("mediaWithheld") {
+        normalized["mediaWithheld"] = media.clone();
+    }
     let mut ledger: Ledger =
         serde_json::from_value(normalized).map_err(|error| error.to_string())?;
     if !valid_ledger_path(&ledger.path) {
@@ -1282,6 +1423,7 @@ pub fn synthesized_ledger(rows: &[Row], verdict: &str, seen: &str) -> Ledger {
     Ledger {
         verdict: verdict.to_string(),
         video_publication: None,
+        media_withheld: None,
         admitted_at_ms: None,
         publish_from_ms: None,
         publication_interrupted: false,

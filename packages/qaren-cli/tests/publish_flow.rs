@@ -2356,3 +2356,26 @@ fn both_comment_paths_reconcile_only_the_authenticated_authors_report_fingerprin
         assert_eq!(second.0.remaining(), 0);
     }
 }
+
+#[test]
+fn privacy_comment_names_only_the_video_cause() {
+    let (runs, dir) = run_dir(false);
+    edit_pr(&dir, |pr| {
+        pr["videoPublication"] = "withheld-privacy".into();
+        pr["blocks"] = serde_json::json!([]);
+    });
+    let path = dir.join("ledger.json");
+    let mut ledger: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+    ledger["mediaWithheld"] = serde_json::json!({"screenshots":{"reason":"echo","source":"typed","line":867,"count":42},"video":{"reason":"generic-value","kind":"other","line":987}});
+    std::fs::write(&path, serde_json::to_vec(&ledger).unwrap()).unwrap();
+    let mut runner = Git(MockRunner::new());
+    script_comment_and_label(&mut runner.0);
+    let receipt = publish(&mut runner, &runs, RUN, &machine());
+    assert_eq!(receipt.result, ReceiptResult::Published);
+    let body = std::fs::read_to_string(dir.join("comment.md")).unwrap();
+    assert!(body.contains("Video withheld: screenshot privacy disallowed capture during the walk (generic-value)."), "{body}");
+    for private in ["987", "867", "typed", "other", "echo"] {
+        assert!(!body.contains(private), "{body}");
+    }
+}

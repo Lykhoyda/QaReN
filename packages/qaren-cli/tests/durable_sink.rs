@@ -366,6 +366,7 @@ fn evidence_documents_and_reports_still_withhold_opaque_output() {
     let ledger = qaren::core::Ledger {
         verdict: "FAIL".into(),
         video_publication: None,
+        media_withheld: None,
         admitted_at_ms: None,
         publish_from_ms: None,
         publication_interrupted: false,
@@ -402,4 +403,84 @@ fn evidence_documents_and_reports_still_withhold_opaque_output() {
     .unwrap();
     assert!(!std::fs::read_to_string(report).unwrap().contains(BODY));
     std::fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn withholding_codes_survive_input_collisions_without_exempting_free_text() {
+    use qaren::redact::{with_input_scope, InputValues};
+    use std::ffi::OsString;
+    use std::sync::Arc;
+    for input in [
+        "input",
+        "echo",
+        "generic-value",
+        "other",
+        "reason",
+        "source",
+        "steps",
+        "mediaWithheld",
+        "screenshotWithheld",
+        "outcomes",
+        "media_withheld",
+    ] {
+        with_input_scope(
+            Arc::new(InputValues::from_entries([(
+                OsString::from("QAREN_INPUT_PASSWORD"),
+                OsString::from(input),
+            )])),
+            || {
+                let ledger: qaren::core::Ledger = serde_json::from_value(serde_json::json!({
+                "verdict":"PASS", "path":"walk", "blocks":[],
+                "steps":[{"block":"qa","line":1,"attempt":1,"kind":"check","resolvedBy":"exact","t":1,"outcome":"pass","screenshotWithheld":"runtime-input"}],
+                "jev":{"calls":0,"medianMs":0}, "llmTurns":0,"escapes":0,"recoveries":0,
+                "mediaWithheld":{"screenshots":{"reason":"generic-value","kind":"input","line":0,"count":1},"video":{"reason":"echo","source":"input","line":1}},
+                "failure":{"step":1,"seen":format!("untrusted {input}")}
+            })).unwrap();
+                let stored = qaren::redact::durable_json(&ledger).unwrap();
+                let loaded: qaren::core::Ledger = serde_json::from_str(&stored).unwrap();
+                assert_eq!(loaded.media_withheld, ledger.media_withheld, "{input}");
+                assert_eq!(
+                    loaded.steps[0].screenshot_withheld, ledger.steps[0].screenshot_withheld,
+                    "{input}"
+                );
+                assert_eq!(loaded.failure.unwrap().seen, "untrusted [REDACTED_INPUT]");
+                let mut receipt = Receipt::new(
+                    "check",
+                    "collision",
+                    ReceiptResult::Pass,
+                    "verify",
+                    String::new(),
+                );
+                let note = ledger
+                    .media_withheld
+                    .as_ref()
+                    .unwrap()
+                    .screenshots
+                    .as_ref()
+                    .unwrap()
+                    .receipt_note();
+                receipt
+                    .outcomes
+                    .insert("media_withheld".into(), note.clone());
+                receipt
+                    .blocks_not_saved
+                    .push(qaren::receipt::BlockNotSaved {
+                        block: "qa".into(),
+                        reason: input.into(),
+                    });
+                let stored = receipt.to_json();
+                let raw: serde_json::Value = serde_json::from_str(&stored).unwrap();
+                assert_eq!(
+                    raw.pointer("/outcomes/media_withheld")
+                        .and_then(serde_json::Value::as_str),
+                    Some(note.as_str()),
+                    "{input}"
+                );
+                assert!(!raw.to_string().contains(&format!("\"reason\":\"{input}\"")));
+                let untrusted = serde_json::json!({"reason":input,"outcomes":{"media_withheld":format!("{input} arbitrary text")}});
+                let stored = qaren::redact::durable_json(&untrusted).unwrap();
+                assert!(stored.contains("[REDACTED_INPUT]"));
+            },
+        );
+    }
 }

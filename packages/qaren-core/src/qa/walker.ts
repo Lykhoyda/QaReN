@@ -63,7 +63,11 @@ import {
   checkVerdict,
 } from './questions.js';
 import { type LoginMarker, dismissCandidate, recover } from './recover.js';
-import type { BlockOutcome, BlockOutcomeDiagnostic } from './diagnostics.js';
+import type {
+  BlockOutcome,
+  BlockOutcomeDiagnostic,
+  MediaWithheldDiagnostic,
+} from './diagnostics.js';
 import { targetMissDiagnostic, type TargetMissDiagnostic } from './target-miss.js';
 import {
   concealsScreen,
@@ -134,6 +138,7 @@ export interface ActResult {
 
 export interface WalkerDeps {
   privacy?: ObservedPrivacy;
+  mediaWithheld?(event: MediaWithheldDiagnostic): void;
   judge?: Judge;
   interruptionVeto?: boolean;
   // Android has no platform presence capture yet.
@@ -287,6 +292,7 @@ const recoveryTarget = (item: Item): Target | undefined =>
 
 export interface WalkSequence {
   observation: number;
+  latch?: { line: number; windowLine?: number; count: number };
   operation?: number;
   publicationInterrupted?: boolean;
   momentum?: boolean;
@@ -294,6 +300,25 @@ export interface WalkSequence {
   window?: { fromMs: number; typed: number };
   // System prompts recovery declined in this run; a repeat ask is the plan author's to answer.
   declinedPrompts?: Set<string>;
+}
+
+function recordMediaLatch(
+  privacy: ObservedPrivacy,
+  sequence: WalkSequence,
+  deps: WalkerDeps,
+  line: number,
+): void {
+  const latch = privacy.latched();
+  if (latch && !sequence.latch) {
+    sequence.latch = { line, count: 0 };
+    try {
+      deps.mediaWithheld?.({ kind: 'media-withheld', scope: 'screenshots', cause: latch, line });
+    } catch {
+      // Diagnostics cannot change the walk.
+    }
+  }
+  if (privacy.windowLatched() && sequence.latch && sequence.latch.windowLine === undefined)
+    sequence.latch.windowLine = line;
 }
 
 // Title and button labels of a system prompt, held in memory only.
@@ -467,6 +492,7 @@ async function walkBlockScoped(
         sequence.publicationInterrupted = true;
       const privacyStarted = deps.timing ? deps.now() : 0;
       privacy.observe(latest);
+      recordMediaLatch(privacy, sequence, deps, line);
       guardAppProcess(deps.appProcess, latest.appProcessIdentifier);
       if (latest.renderError) throw new RenderError();
       if (deps.timing)
@@ -825,7 +851,11 @@ async function walkBlockScoped(
     }
     return operationId;
   };
+  const withheldRows = new Map<number, NonNullable<LedgerRow['screenshotWithheld']>>();
   const emit = (row: WalkRow): void => {
+    const withheld = withheldRows.get(row.line);
+    withheldRows.delete(row.line);
+    if (withheld) row = { ...row, screenshotWithheld: withheld };
     const reactCoverage = reactGaps.get(row.line);
     row = {
       ...row,
@@ -941,7 +971,16 @@ async function walkBlockScoped(
   const shoot = async (item: Item): Promise<string | undefined> => {
     assertActive();
     if (!privacy.canScreenshot()) {
-      metric('screenshot', undefined, { outcome: 'withheld' });
+      recordMediaLatch(privacy, sequence, deps, line);
+      const latch = privacy.latched()!;
+      metric('screenshot', undefined, {
+        outcome: 'withheld',
+        withheld: latch.reason,
+        ...(latch.kind ? { kind: latch.kind } : {}),
+        ...(latch.source ? { source: latch.source } : {}),
+      });
+      sequence.latch!.count += 1;
+      withheldRows.set(item.line, latch.reason);
       return undefined;
     }
     shots += 1;
@@ -1100,6 +1139,7 @@ async function walkBlockScoped(
       quoted,
       target.element.testID ?? target.element.label,
     );
+    recordMediaLatch(privacy, sequence, deps, line);
     if (item.input === undefined && !privateFills.includes(item.line)) privateFills.push(item.line);
     let tap: ActResult | undefined;
     if (!centreCovered(target.element, before.screen))
@@ -1247,6 +1287,7 @@ async function walkBlockScoped(
       return;
     if (!(await focusProven('none', quoted))) return;
     privacy.concealFallback(fillText(item), false, quoted);
+    recordMediaLatch(privacy, sequence, deps, line);
     if (item.input === undefined) privateFills.push(item.line);
     let entry: ActResult;
     currentInputs()?.expectEcho(quoted, item.input);
@@ -1322,6 +1363,7 @@ async function walkBlockScoped(
       return { fail: ['the login block did not pass: ', ...segments(nested.failure.seen)] };
     if (!sequence.planPassed) {
       privacy.startWindow();
+      if (sequence.latch) sequence.latch.windowLine = privacy.windowLatched() ? line : undefined;
       sequence.window = { fromMs: deps.now(), typed: typed.length };
     }
     return 'pass' as const;
@@ -2188,6 +2230,7 @@ async function walkBlockScoped(
                   element.secure,
                   element.testID ?? element.label,
                 );
+                recordMediaLatch(privacy, sequence, deps, line);
                 if (item.input === undefined && !privateFills.includes(item.line))
                   privateFills.push(item.line);
               }
@@ -2614,6 +2657,7 @@ function valueFree(row: Omit<LedgerRow, 'reason'>): LedgerRow {
     t,
     outcome,
     ...(row.unverifiedPress ? { unverifiedPress: true } : {}),
+    ...(row.screenshotWithheld ? { screenshotWithheld: row.screenshotWithheld } : {}),
     ...(screenshot ? { screenshot } : {}),
     ...(timing ? { timing } : {}),
     ...(reactCoverage ? { reactCoverage } : {}),
@@ -2762,6 +2806,7 @@ export async function runPlan(
       publicationInterrupted: false,
       planPassed: false,
     };
+    recordMediaLatch(privacy, sequence, deps, 0);
     const walk = async (block: Block, opts?: WalkOptions, operations?: Map<number, number>) => {
       const outcome = await walkBlock(
         block,
@@ -2835,10 +2880,39 @@ export async function runPlan(
           recoveries,
         ),
         videoPublication: videoPublication(),
+        ...(sequence.latch
+          ? {
+              mediaWithheld: {
+                screenshots: {
+                  ...privacy.latched()!,
+                  line: sequence.latch.line,
+                  count: sequence.latch.count,
+                },
+                ...(videoPublication() === 'withheld-privacy'
+                  ? {
+                      video: {
+                        ...(sequence.window ? privacy.windowLatched()! : privacy.latched()!),
+                        line: sequence.window
+                          ? (sequence.latch.windowLine ?? sequence.latch.line)
+                          : sequence.latch.line,
+                      },
+                    }
+                  : {}),
+              },
+            }
+          : {}),
         ...(sequence.window ? { publishFromMs: sequence.window.fromMs } : {}),
         publicationInterrupted:
           sequence.publicationInterrupted || deps.publicationInterrupted?.() === true,
       };
+      if (ledger.mediaWithheld?.video) {
+        try {
+          const { line, ...cause } = ledger.mediaWithheld.video;
+          deps.mediaWithheld?.({ kind: 'media-withheld', scope: 'video', cause, line });
+        } catch {
+          // Diagnostics cannot change the walk.
+        }
+      }
       if (store) ledger.blocksWritten = written;
       if (ledger.verdict === 'PASS' && !outcome?.refusal && !deps.cancelled?.())
         ledger.recipe = privateFills.length

@@ -1,3 +1,10 @@
+import {
+  WITHHOLD_CAUSES,
+  MEDIA_KINDS,
+  MEDIA_SOURCES,
+  type MediaLatch,
+  type WithholdCause,
+} from './privacy.js';
 export const NATIVE_PRESENCE_BUDGET_MS = 20_000;
 export const CAPTURE_BUDGET_MS = 22_000;
 export const EVIDENCE_USE_MS = 10_000;
@@ -191,6 +198,9 @@ export interface TimingEvent {
   keyboard?: boolean;
   relaunch?: 'attempted' | 'ready' | 'failed' | 'timeout';
   reapDisposition?: 'reaped' | 'already-absent' | 'replacement-preserved';
+  withheld?: WithholdCause;
+  kind?: MediaLatch['kind'];
+  source?: MediaLatch['source'];
   readinessReason?: NativeReadinessReason;
   admission?: (typeof ADMISSION_DECISIONS)[number];
   attempt?: number;
@@ -247,6 +257,17 @@ export function cleanTimingEvent(value: unknown): TimingEvent | undefined {
     )
       return undefined;
     event.readinessReason = input.readinessReason as NativeReadinessReason;
+  }
+  for (const [key, words] of [
+    ['withheld', WITHHOLD_CAUSES],
+    ['kind', MEDIA_KINDS],
+    ['source', MEDIA_SOURCES],
+  ] as const) {
+    if (input[key] === undefined) continue;
+    if (key === 'kind' && input.kind === 'metric') continue;
+    const word = (words as readonly string[]).find((word) => word === input[key]);
+    if (input.stage !== 'screenshot' || input.outcome !== 'withheld' || !word) return undefined;
+    Object.assign(event, { [key]: word });
   }
   const admission = input.stage === 'admission' && input.edge === 'point';
   for (const [key, values] of Object.entries(ADMISSION_WORDS)) {

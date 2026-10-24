@@ -302,6 +302,9 @@ pub fn render(input: &ReportInput<'_>) -> String {
     out.push_str("## What was walked\n\n");
     for row in walked(input) {
         out.push_str(&row_line(row));
+        if let Some(cause) = row.screenshot_withheld {
+            out.push_str(&format!("  screenshot withheld ({})\n", cause.as_str()));
+        }
         if let Some(shot) = row.screenshot.as_deref().and_then(screenshot_link) {
             out.push_str(&format!("  ![line {}]({shot})\n", row.line));
         }
@@ -340,6 +343,19 @@ pub fn render(input: &ReportInput<'_>) -> String {
         }
     }
     out.push_str("\n## Run details\n\n");
+    if let Some(entry) = input
+        .ledger
+        .media_withheld
+        .as_ref()
+        .and_then(|media| media.screenshots.as_ref())
+    {
+        out.push_str(&format!(
+            "- Screenshots withheld from line {}: {} ({})\n",
+            entry.line,
+            entry.reason.sentence(),
+            entry.reason.as_str()
+        ));
+    }
     out.push_str(&format!(
         "steps {} · jev.calls {} · jev.medianMs {} · jev.inputTokens {} · llmTurns {} · escapes {} · recoveries {} · path {}\n",
         summary.steps,
@@ -450,7 +466,18 @@ pub fn render_pr_comment(
     }
     out.push_str("\n\n");
     if let Some(reason) = pr.video_publication.withholding_reason() {
-        out.push_str(&format!("Video withheld: {reason}.\n\n"));
+        let code = if *pr.video_publication == VideoPublication::WithheldPrivacy {
+            input
+                .ledger
+                .media_withheld
+                .as_ref()
+                .and_then(|media| media.video.as_ref())
+                .map(|entry| format!(" ({})", entry.reason.as_str()))
+                .unwrap_or_default()
+        } else {
+            String::new()
+        };
+        out.push_str(&format!("Video withheld: {reason}{code}.\n\n"));
     } else {
         match pr.video {
             VideoStatus::Available => out.push_str("Video of the walk is attached below.\n\n"),

@@ -1,7 +1,15 @@
 import { NATIVE_CODES, REFUSAL_STAGES } from '../domain/qa-dispatch.js';
 import { cleanTimingEvent } from './timing.js';
+import { MEDIA_KINDS, MEDIA_SOURCES, WITHHOLD_CAUSES, type MediaLatch } from './privacy.js';
 import { isRecord } from './questions.js';
 import { cleanTargetMiss } from './target-miss.js';
+
+export interface MediaWithheldDiagnostic {
+  kind: 'media-withheld';
+  scope: 'screenshots' | 'video';
+  cause: MediaLatch;
+  line: number;
+}
 
 export type BlockOutcome = 'pass' | 'fail' | 'refused';
 export interface BlockOutcomeDiagnostic {
@@ -32,7 +40,32 @@ export function cleanDiagnostic(value: unknown): Record<string, unknown> | undef
     Number.isFinite(value[key]) &&
     value[key] >= 0 &&
     value[key] <= Number.MAX_SAFE_INTEGER;
-  if (value.kind === 'metric') {
+  if (value.kind === 'media-withheld') {
+    const cause = value.cause;
+    if (
+      !['screenshots', 'video'].includes(value.scope as string) ||
+      !number('line') ||
+      !Number.isSafeInteger(value.line) ||
+      !isRecord(cause) ||
+      !WITHHOLD_CAUSES.includes(cause.reason as never) ||
+      (cause.kind !== undefined &&
+        (cause.reason !== 'generic-value' || !MEDIA_KINDS.includes(cause.kind as never))) ||
+      (cause.source !== undefined &&
+        (cause.reason !== 'echo' || !MEDIA_SOURCES.includes(cause.source as never)))
+    )
+      return undefined;
+    return {
+      kind: value.kind,
+      scope: value.scope,
+      line: value.line,
+      cause: {
+        reason: cause.reason,
+        ...(cause.kind !== undefined ? { kind: cause.kind } : {}),
+        ...(cause.source !== undefined ? { source: cause.source } : {}),
+      },
+    };
+  }
+  if (value.kind === 'metric' || MEDIA_KINDS.some((kind) => kind === value.kind)) {
     const event = cleanTimingEvent(value);
     return event ? { kind: 'metric', ...event } : undefined;
   }

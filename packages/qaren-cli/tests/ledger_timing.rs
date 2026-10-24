@@ -160,3 +160,40 @@ fn report_run_details_print_speed_only_when_present() {
     let untimed: Ledger = serde_json::from_value(ledger(json!([]), json!(null))).unwrap();
     assert!(!input(&untimed).contains("stepMedianMs"));
 }
+
+#[test]
+fn media_withholding_round_trips_and_unknown_causes_are_passive() {
+    let mut raw = ledger(
+        json!([{"block":"qa","line":3,"attempt":1,"kind":"check","resolvedBy":"exact","t":1,"outcome":"pass","screenshotWithheld":"generic-value"}]),
+        json!({"walkMs":0,"steps":0,"passed":0,"failed":0}),
+    );
+    raw["mediaWithheld"] = json!({"screenshots":{"reason":"generic-value","kind":"other","line":3,"count":2},"video":{"reason":"echo","source":"typed","line":5}});
+    let parsed: Ledger = serde_json::from_value(raw.clone()).unwrap();
+    assert_eq!(serde_json::to_value(&parsed).unwrap(), raw);
+    assert_eq!(
+        parsed
+            .media_withheld
+            .as_ref()
+            .unwrap()
+            .screenshots
+            .as_ref()
+            .unwrap()
+            .receipt_note(),
+        "generic-value/other@line 3"
+    );
+    let report = render(&ReportInput {
+        run_id: "check-1",
+        platform: "ios",
+        app_id: "com.test",
+        device: "sim",
+        ledger: &parsed,
+    });
+    assert!(report.contains("screenshot withheld (generic-value)"));
+    assert!(report.contains("Screenshots withheld from line 3:"));
+    raw["steps"][0]["screenshotWithheld"] = json!("future-code");
+    raw["mediaWithheld"]["screenshots"]["reason"] = json!("future-code");
+    let parsed: Ledger = serde_json::from_value(raw).unwrap();
+    let serialized = serde_json::to_value(parsed).unwrap();
+    assert!(serialized.get("mediaWithheld").is_none());
+    assert!(serialized["steps"][0].get("screenshotWithheld").is_none());
+}

@@ -1247,6 +1247,50 @@ not emitted. Samples are dropped before histogram entries to keep the line withi
 the byte limit. It excludes value text, label text, identifiers and testIDs. The
 [diagnostic implementation](../qaren-core/src/qa/privacy.ts) owns its field layout.
 
+### Why were my screenshots withheld?
+
+Each withheld screenshot metric has `stage: "screenshot"`, `outcome: "withheld"`
+and `withheld: "<code>"`. Slot runs retain these metrics in
+`logs/core-diagnostics.jsonl`; without used slots they follow the ordinary
+`logs/core.log` timing route, subject to subprocess output withholding.
+Optional `kind` (for `generic-value`) and `source` (for `echo`) are closed
+categories, never app data. The [privacy implementation](../qaren-core/src/qa/privacy.ts)
+owns the allowed categories and per-screen cause precedence.
+
+A structured `media-withheld` diagnostic records the first cause and plan line
+per scope (`screenshots` or `video`) in `logs/core-diagnostics.jsonl`, and a
+`media-withheld` line in `logs/core.log` retains the same cause, scope and line.
+These records use the private diagnostic boundary with used runtime inputs,
+an exported unused `QAREN_INPUT_` namespace, or no inputs; raw subprocess output
+withholding remains unchanged. They contain no values, labels, identifiers,
+testIDs, geometry, character counts or element indices.
+
+`ledger.json` carries `screenshotWithheld` on each withheld row, including streamed
+rows retained after an interrupted walk. `mediaWithheld.screenshots` holds the
+first `reason`, optional `kind` or `source`, `line` and withheld screenshot `count`.
+`mediaWithheld.video` holds the publication-window cause and line, without a
+count, only when `videoPublication` is `withheld-privacy`.
+The receipt includes one `media_withheld=<code>[/<kind|source>]@line <N>` note,
+preferring the screenshot cause. `report.md` marks each withheld row and explains
+the first screenshot cause and line. Line 0 means privacy latched before the walk.
+
+| Code | Meaning | What to do |
+| --- | --- | --- |
+| `secure-field` | A secure field was on screen, even empty. | Start a new run already signed in, without visiting the secure field. |
+| `input-value` | An editable field showed text, including an Android label or hint. | Avoid the screen or clear the field in the app's test data. |
+| `generic-value` | A non-input element exposes an accessibility value; `kind` names its native category. | Check whether the accessibility value carries data. |
+| `echo` | A value already treated as private reappeared as text; `source` names its provenance. | For `typed`, use a test value the app does not echo, including saved-login literals. `observed` means a value previously seen in a field or other value carrier. `secret`, `code`, `input` and `concealed` are expected privacy guards. |
+| `runtime-input` | The run holds runtime inputs. | Expected for input runs; see [reusable sign-in](#reusable-sign-in-example) for login inputs. |
+| `concealed-fill` | A filled field could not be read back. | For a clean video window, the field must be seen and then leave the screen before login completes; screenshots require a new run. |
+| `code-row` | One-character boxes showed a typed value. | Expected for code-entry screens. |
+
+The first screenshot cause remains sticky for the run, even after the field
+leaves the screen. To obtain screenshots, start a new run on a screen without
+private data or runtime inputs. Video uses the privacy window after a successful
+pre-plan login; see [video publication](#video-publication). These diagnostics do
+not change capture, masking or publication rules. Older cores may omit them;
+the CLI passively ignores unknown withholding codes in mixed-version evidence.
+
 When a quoted target step fails, the walker attempts a value-free `quoted-target`
 line in `logs/core.log` for that failure's captured screen, rather than each wait
 poll. It reports exact native label or identifier matches before candidate
@@ -2736,6 +2780,9 @@ During [private-capture relaunch recovery](#check-a-plan), a transient runner-do
 failure without an app process identifier does not alone mark an interruption;
 a subsequent capture reporting a different app process still does, as does
 any other existing interruption evidence.
+For `withheld-privacy`, the pull request comment adds only the closed cause code,
+for example `(generic-value)`; it omits line numbers, qualifiers and counts.
+
 Missing, unknown or unreadable eligibility also withholds the video; the comment
 explains why, without changing the run verdict.
 

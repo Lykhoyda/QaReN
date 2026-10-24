@@ -202,6 +202,7 @@ mod tests {
             resolved_by: "exact".into(),
             r#ref: None,
             screenshot: None,
+            screenshot_withheld: None,
             t: 0,
             outcome: outcome.into(),
             text: Some(text.into()),
