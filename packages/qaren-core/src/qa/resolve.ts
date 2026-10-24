@@ -582,14 +582,24 @@ export function scrollUntilContainer(target: Target, screen: Screen): Element | 
 export function scrollUntilBand(target: Target, screen: Screen): NativeNode['rect'] {
   const container = scrollUntilContainer(target, screen);
   const matches = exactIdentities(screen, target, 'scroll');
-  if (matches.length === 1) {
-    const element = matches[0].element;
-    if (!element.offscreen) return clearanceBand(element, screen);
-    const own = aboveKeyboard(elementViewport(element), screen);
-    if (own) return clearOfFrontOverlays(container, own, screen) ?? { ...own, height: 0 };
+  const element = matches.length === 1 ? matches[0].element : undefined;
+  let band: NativeNode['rect'];
+  if (element) {
+    band = !element.offscreen
+      ? clearanceBand(element, screen)
+      : aboveKeyboard(elementViewport(element), screen);
   }
-  const frame = container && elementFrame(container);
-  const band = container && frame && aboveKeyboard(clip(frame, elementViewport(container)), screen);
+  if (!band && (!element || element.offscreen)) {
+    const window = screen.elements.slice().reverse().find(isWindow);
+    const floor = container ?? window;
+    const frame = floor && elementFrame(floor);
+    if (container && frame) band = aboveKeyboard(clip(frame, elementViewport(container)), screen);
+    else if (frame) {
+      const keyboardTop =
+        screen.keyboardVisible !== false && screen.keyboardFrame ? screen.keyboardFrame.y : Infinity;
+      band = { ...frame, height: Math.max(0, Math.min(frame.y + frame.height, keyboardTop) - frame.y) };
+    }
+  }
   return band && (clearOfFrontOverlays(container, band, screen) ?? { ...band, height: 0 });
 }
 

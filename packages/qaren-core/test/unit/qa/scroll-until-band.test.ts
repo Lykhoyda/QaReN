@@ -123,8 +123,8 @@ test('(c) a resolved covered target drags inside its own clip band', () => {
   assert.deepEqual(band, { x: 0, y: 300, width: 400, height: 500 - 48 - 300 });
 });
 
-test('(d) a screen without a scroll container keeps the band centre', () => {
-  assert.equal(scrollUntilBand(option20, androidSheet([], 'android.view.ViewGroup')), undefined);
+test('(d) a screen without a scroll container uses its window band', () => {
+  assert.deepEqual(scrollUntilBand(option20, androidSheet([], 'android.view.ViewGroup')), SCREEN);
 });
 
 test('(e) a sheet list in a later window wins over a background list covering the window', () => {
@@ -271,6 +271,7 @@ function bandDrag(
   band: NonNullable<ReturnType<typeof scrollUntilBand>>,
   window: { width: number; height: number },
   keyboardTop: number,
+  direction: 'up' | 'down' = 'down',
 ): number[] {
   clearRefMap();
   updateRefMapFromFlat(
@@ -285,7 +286,7 @@ function bandDrag(
     { snapshotGeneration: 1, keyboardVisible: true },
   );
   try {
-    return buildDirectionalScrollCliArgs('down', 0.6, undefined, undefined, band)
+    return buildDirectionalScrollCliArgs(direction, 0.6, undefined, undefined, band)
       .slice(1, 5)
       .map(Number);
   } finally {
@@ -330,6 +331,69 @@ test('(v) an iOS row below a stretched list drags across the band, clear of the 
   assert.deepEqual([y1, y2], [504, 374]);
   assert.ok(y1 <= 568 - KEYBOARD_EDGE_INSET, `${y1}`);
 });
+
+test('a keyboard-covered target clears a floating toolbar before building the drag', () => {
+  const frame = { x: 0, y: 0, width: 390, height: 844 };
+  const screen = join(
+    [
+      { ref: '@window', index: 0, type: 'Window', rect: frame },
+      {
+        ref: '@list', index: 1, parentIndex: 0, type: 'ScrollView',
+        rect: { x: 0, y: 300, width: 390, height: 500 },
+      },
+      {
+        ref: '@target', index: 2, parentIndex: 1, type: 'Button', identifier: 'go',
+        hittable: true, rect: { x: 20, y: 518, width: 300, height: 44 },
+      },
+      {
+        ref: '@toolbar', index: 3, parentIndex: 0, type: 'Toolbar', hittable: true,
+        rect: { x: 0, y: 425, width: 390, height: 25 },
+      },
+      {
+        ref: '@keyboard', index: 4, parentIndex: 0, type: 'Keyboard',
+        rect: { x: 0, y: 508, width: 390, height: 336 },
+      },
+    ], [],
+  );
+  const band = scrollUntilBand(until('Scroll down until "go"'), screen)!;
+  assert.deepEqual(band, { x: 0, y: 300, width: 390, height: 121 });
+  for (const direction of ['up', 'down'] as const) {
+    const [, y1, , y2] = bandDrag(band, frame, 508, direction);
+    assert.deepEqual([y1, y2], direction === 'down' ? [408, 312] : [312, 408]);
+    for (const y of [y1, y2]) assert.ok(y < 425 || y > 450, `${y}`);
+    assert.ok(Math.abs(y1 - y2) >= 48);
+  }
+});
+
+for (const covered of [false, true]) {
+  test(`a no-container window fallback clears front overlays, fully covered=${covered}`, () => {
+    const frame = { x: 0, y: 0, width: 390, height: 844 };
+    const screen = join(
+      [
+        { ref: '@window', index: 0, type: 'Window', rect: frame },
+        {
+          ref: '@overlay', index: 1, parentIndex: 0, type: 'Button', hittable: true,
+          rect: covered ? frame : { x: 0, y: 425, width: 390, height: 25 },
+        },
+        {
+          ref: '@keyboard', index: 2, parentIndex: 0, type: 'Keyboard',
+          rect: { x: 0, y: 508, width: 390, height: 336 },
+        },
+      ], [],
+    );
+    const band = scrollUntilBand(option20, screen)!;
+    assert.deepEqual(band, { ...frame, height: covered ? 0 : 421 });
+    if (covered) {
+      assert.throws(() => bandDrag(band, frame, 508), /SCROLL_BAND_TOO_SMALL/);
+    } else {
+      for (const direction of ['up', 'down'] as const) {
+        const [, y1, , y2] = bandDrag(band, frame, 508, direction);
+        for (const y of [y1, y2]) assert.ok(y >= 20 && y < 425, `${y}`);
+        assert.ok(Math.abs(y1 - y2) >= 48);
+      }
+    }
+  });
+}
 
 function floatingTabScreen(barHittable: boolean): Screen {
   const frame = { x: 0, y: 0, width: 402, height: 874 };
