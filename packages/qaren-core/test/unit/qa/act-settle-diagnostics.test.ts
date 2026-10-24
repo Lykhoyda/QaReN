@@ -383,17 +383,17 @@ test('post-settle dispatch refusal retains the measured settle metric with withh
       { now: () => 900000, observe: (event) => events.push(event) },
     );
     assert.equal(outcome.ok, false);
-    assert.equal(context.authorizations, 1);
+    assert.equal(context.authorizations, 2);
     assert.equal(thrown, context.refusal);
     assert.throws(
       () => context.assertComplete(),
       (error) => error === thrown,
     );
-    assert.equal(context.authorizations, 1);
+    assert.equal(context.authorizations, 2);
     assert.equal(context.refusalDiagnostic?.stage, 'settle');
     assert.equal(context.refusalDiagnostic?.nativeCode, null);
     assert.equal(context.refusalDiagnostic?.mutating, true);
-    assert.deepEqual(sends, ['type', 'snapshot', 'snapshot']);
+    assert.deepEqual(sends, ['type', 'type', 'snapshot', 'snapshot']);
     assert.deepEqual(
       events.filter((event) => event.stage === 'settle'),
       [

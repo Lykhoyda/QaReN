@@ -1315,7 +1315,7 @@ for (const route of ['transition', 'keyboard-up', 'no-target'] as const) {
           { appRoot: dir, platform: 'ios', appId: 'com.test' },
         );
         assert.equal(ledger.verdict, fails ? 'FAIL' : 'PASS');
-        assert.equal(dispatches, retype ? 2 : 1);
+        assert.equal(dispatches, retype || readback === 'retained-prefix' ? 2 : 1);
         assert.equal(fake.typed.length, 1);
         assert.equal(fake.log.includes('press @submit'), !fails);
         if (!fails) assert.equal(ledger.blocks[0].saved, false);

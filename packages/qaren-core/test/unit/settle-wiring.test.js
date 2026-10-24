@@ -237,6 +237,7 @@ test('end-to-end: runNative ios tap → runner /command + settle probe → meta.
           'SCREEN_STATIC',
           'EXACT_KEYBOARD_TARGET_GUARD',
           'FILL_EVIDENCE_V1',
+          'FOCUSED_REPLACE_V2',
           'HIT_TESTED_DISPATCH_V1',
           'TARGET_FRAME_GUARD_V1',
           'SNAPSHOT_FIDELITY_V1',

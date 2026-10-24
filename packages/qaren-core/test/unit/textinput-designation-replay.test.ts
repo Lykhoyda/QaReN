@@ -255,7 +255,31 @@ function replayFixture(
     async settle() {},
   };
 
-  return { calls, input, deps };
+  return { calls, input, deps, client };
+}
+
+for (const options of [
+  { secure: true, protectSecure: true },
+  { privateValue: true },
+  { focusOnly: true },
+]) {
+  test('private and focus-only input probes never read the value property', async () => {
+    const fixture = replayFixture();
+    fixture.input.memoizedProps.secureTextEntry = 'secure' in options;
+    let reads = 0;
+    Object.defineProperty(fixture.input.memoizedProps, 'value', {
+      get() {
+        reads++;
+        throw new Error('private value was read');
+      },
+    });
+    const result = await fixture.client.evaluate(
+      `__QAREN.readInputValue("email",${JSON.stringify(options)})`,
+    );
+    assert.equal(result.error, undefined);
+    assert.equal(JSON.parse(result.value as string).value, null);
+    assert.equal(reads, 0);
+  });
 }
 
 test('replay designates a bare TextInput and types without press or focus dispatch', async () => {

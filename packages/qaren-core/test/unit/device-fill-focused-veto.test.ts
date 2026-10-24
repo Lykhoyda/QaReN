@@ -49,7 +49,8 @@ function client(reads: Array<{ value: string; focused: boolean } | null>) {
   return {
     isConnected: true,
     evaluate: async (expr: string) => {
-      assert.equal(expr, '__QAREN.readInputValue("qa-hidden-email")');
+      const [testID] = JSON.parse('[' + expr.slice('__QAREN.readInputValue('.length, -1) + ']');
+      assert.equal(testID, 'qa-hidden-email');
       const read = reads[Math.min(index++, reads.length - 1)];
       return read
         ? { value: JSON.stringify({ value: read.value, controlled: true, focused: read.focused }) }

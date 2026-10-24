@@ -153,6 +153,7 @@ export interface WalkerDeps {
     testID: string | undefined,
     context: QaDispatchContext,
     requireFocused?: boolean,
+    privateValue?: boolean,
   ): Promise<ActResult>;
   // iOS only: positive React proof that the input with this testID is focused.
   reactFocused?(testID: string): Promise<boolean>;
@@ -1192,6 +1193,7 @@ async function walkBlockScoped(
           again.oracleTestID,
           context,
           proofMode,
+          isPrivateInput(again.element),
         ),
       );
     } catch (error) {

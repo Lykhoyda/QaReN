@@ -341,6 +341,7 @@ test('GH-588 V6: success-shaped fill fails closed when settle observes runner au
             'HONEST_HITTABLE',
             'EXACT_KEYBOARD_TARGET_GUARD',
             'FILL_EVIDENCE_V1',
+            'FOCUSED_REPLACE_V2',
             'HIT_TESTED_DISPATCH_V1',
             'TARGET_FRAME_GUARD_V1',
             'SNAPSHOT_FIDELITY_V1',

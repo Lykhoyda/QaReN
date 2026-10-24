@@ -11,9 +11,6 @@ typedef id (*RunnerTextMsgSendInitPath)(id, SEL);
 typedef void (*RunnerTextMsgSendType)(id, SEL, NSString *, NSTimeInterval, NSUInteger, BOOL);
 typedef void (*RunnerTextMsgSendTypeKey)(id, SEL, NSString *, NSUInteger, NSTimeInterval);
 
-// Text-entry-specific extension of the shared bridge: the 1-arg `initWithName:`
-// record initializer and the text-input path selectors, none of which gesture
-// synthesis needs.
 typedef struct {
   RunnerXCTestEventBridge core;
   SEL initRecordSelector;
@@ -36,7 +33,11 @@ static RunnerSynthesizedTextEntryResult *RunnerTextEntryFailed(NSString *message
 static RunnerSynthesizedTextEntryResult *RunnerSynthesizeTextWithMode(
   id application,
   NSString *text,
-  BOOL replace
+  BOOL replace,
+  BOOL prepareOnly,
+  NSUInteger deleteCount,
+  NSString *endKey,
+  NSString *deleteKey
 );
 
 @interface RunnerSynthesizedTextEntryResult ()
@@ -54,12 +55,20 @@ static RunnerSynthesizedTextEntryResult *RunnerSynthesizeTextWithMode(
 
 + (RunnerSynthesizedTextEntryResult *)synthesizeTextWithApplication:(id)application
                                                                text:(NSString *)text {
-  return RunnerSynthesizeTextWithMode(application, text, NO);
+  return RunnerSynthesizeTextWithMode(application, text, NO, NO, 0, @"", @"\b");
 }
 
 + (RunnerSynthesizedTextEntryResult *)replaceTextWithApplication:(id)application
                                                            text:(NSString *)text {
-  return RunnerSynthesizeTextWithMode(application, text, YES);
+  return RunnerSynthesizeTextWithMode(application, text, YES, NO, 0, @"", @"\b");
+}
+
++ (RunnerSynthesizedTextEntryResult *)prepareReplacementWithApplication:(id)application
+                                                          deleteCount:(NSUInteger)deleteCount
+                                                               endKey:(NSString *)endKey
+                                                            deleteKey:(NSString *)deleteKey {
+  if (deleteCount > 256) return RunnerTextEntryUnavailable(@"focused clear exceeds the 256-key budget");
+  return RunnerSynthesizeTextWithMode(application, @"", YES, YES, deleteCount, endKey, deleteKey);
 }
 
 @end
@@ -67,7 +76,11 @@ static RunnerSynthesizedTextEntryResult *RunnerSynthesizeTextWithMode(
 static RunnerSynthesizedTextEntryResult *RunnerSynthesizeTextWithMode(
   id application,
   NSString *text,
-  BOOL replace
+  BOOL replace,
+  BOOL prepareOnly,
+  NSUInteger deleteCount,
+  NSString *endKey,
+  NSString *deleteKey
 ) {
   @try {
     RunnerTextEventBridge bridge;
@@ -96,13 +109,11 @@ static RunnerSynthesizedTextEntryResult *RunnerSynthesizeTextWithMode(
       ((RunnerMsgSendSetInteger)objc_msgSend)(
         selectionRecord, bridge.core.setTargetProcessIDSelector, targetProcessID
       );
-      // XCUIKeyModifierCommand is public XCTest API (1 << 4). Keeping the value local
-      // avoids importing XCUIAutomation headers into the bridging helper. A text-input
-      // path only performs its first operation reliably, so selection and replacement
-      // use ordered records rather than one multi-operation path.
+      // Each text-input path reliably performs only its first operation.
       NSUInteger commandModifier = 1UL << 4;
       ((RunnerTextMsgSendTypeKey)objc_msgSend)(
-        selectionPath, bridge.typeKeySelector, @"a", commandModifier, 0.0
+        selectionPath, bridge.typeKeySelector,
+        deleteCount > 0 ? endKey : @"a", deleteCount > 0 ? 0 : commandModifier, 0.0
       );
       ((RunnerMsgSendAddPath)objc_msgSend)(selectionRecord, bridge.core.addPathSelector, selectionPath);
       NSError *selectionError = nil;
@@ -115,6 +126,27 @@ static RunnerSynthesizedTextEntryResult *RunnerSynthesizeTextWithMode(
           [NSString stringWithFormat:@"private XCTest text selection failed: %@", detail]
         );
       }
+      id deleteRecord = ((RunnerTextMsgSendInit)objc_msgSend)(
+        [bridge.core.recordClass alloc], bridge.initRecordSelector, @"qaren-fill-delete"
+      );
+      id deletePath =
+        ((RunnerTextMsgSendInitPath)objc_msgSend)([bridge.core.pathClass alloc], bridge.initPathSelector);
+      if (deleteRecord == nil || deletePath == nil) {
+        return RunnerTextEntryFailed(@"private XCTest text synthesis failed: could not create the delete event");
+      }
+      ((RunnerMsgSendSetInteger)objc_msgSend)(deleteRecord, bridge.core.setTargetProcessIDSelector, targetProcessID);
+      if (deleteCount > 0) {
+        NSString *deletes = [@"" stringByPaddingToLength:deleteCount withString:deleteKey startingAtIndex:0];
+        ((RunnerTextMsgSendType)objc_msgSend)(deletePath, bridge.typeTextSelector, deletes, 0.0, 1000, YES);
+      } else {
+        ((RunnerTextMsgSendTypeKey)objc_msgSend)(deletePath, bridge.typeKeySelector, deleteKey, 0, 0.0);
+      }
+      ((RunnerMsgSendAddPath)objc_msgSend)(deleteRecord, bridge.core.addPathSelector, deletePath);
+      NSError *deleteError = nil;
+      if (!((RunnerMsgSendSynthesize)objc_msgSend)(deleteRecord, bridge.core.synthesizeSelector, &deleteError)) {
+        return RunnerTextEntryFailed(@"private XCTest text deletion failed");
+      }
+      if (prepareOnly) return RunnerTextEntryResult(RunnerSynthesizedTextEntryStatusSucceeded, nil);
     }
 
     id record = ((RunnerTextMsgSendInit)objc_msgSend)(

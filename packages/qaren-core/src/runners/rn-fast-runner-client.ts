@@ -1856,7 +1856,8 @@ export interface RunIOSArgs {
   focusWaitMs?: number;
   /** Type into the first responder instead of binding an input. */
   focused?: boolean;
-  _focusedProof?: () => Promise<boolean>;
+  _focusedProof?: (focusOnly?: boolean) => Promise<boolean>;
+  replacementDeleteCount?: number;
   operationToken?: string;
   /** Independent CDP/helper readback; never serialized onto the runner wire. */
   _verifyExactReadback?: (
@@ -2756,6 +2757,26 @@ export async function runIOS(args: RunIOSArgs): Promise<ToolResult> {
     );
   }
 
+  if (
+    args.command === 'type' &&
+    args.focused &&
+    args.clearFirst &&
+    !lastKnownCapabilities.includes('FOCUSED_REPLACE_V2')
+  ) {
+    return failResult(
+      'Focused replacement requires a current runner and an operation-fresh focus proof.',
+      'RN_FAST_RUNNER_STALE',
+      { missingFeatures: ['FOCUSED_REPLACE_V2'], mutation: 'none', dispatched: false },
+    );
+  }
+  if (args.command === 'type' && args.focused && args.clearFirst && !args._focusedProof) {
+    return failResult(
+      'Focused replacement has no focus proof; no clearing or typing was performed.',
+      'NO_TEXT_INPUT_TARGET',
+      { mutation: 'none', dispatched: false },
+    );
+  }
+
   const dispatchStarted = args.qaTiming?.now() ?? 0;
   const keyboardEvent = (event: 'shown' | 'hidden' | 'relayout') => {
     if (!args.qaTiming) return;
@@ -2910,13 +2931,43 @@ export async function runIOS(args: RunIOSArgs): Promise<ToolResult> {
         args.qaTiming,
       );
     } else {
-      ({ resp, recovery } = await postCommandWithRecovery(
-        withKeyboardGuard(body, args.command, process.env) as Record<string, unknown>,
-        args.qaContext,
-        args.qaTiming,
-        args.command === 'type' && args.focused ? args._focusedProof : undefined,
-        args.qaContext ? qaRecovery : undefined,
-      ));
+      let prepared: Awaited<ReturnType<typeof postCommandWithRecovery>> | undefined;
+      if (args.command === 'type' && args.focused && args.clearFirst) {
+        prepared = await postCommandWithRecovery(
+          {
+            ...body,
+            text: '',
+            prepareReplacement: true,
+            replacementDeleteCount: args.replacementDeleteCount ?? 0,
+          },
+          args.qaContext,
+          args.qaTiming,
+          args._focusedProof,
+        );
+        if (prepared.resp.ok) body.clearFirst = false;
+      }
+      ({ resp, recovery } =
+        prepared && !prepared.resp.ok
+          ? prepared
+          : await postCommandWithRecovery(
+              withKeyboardGuard(body, args.command, process.env) as Record<string, unknown>,
+              args.qaContext,
+              args.qaTiming,
+              args.command === 'type' && args.focused && args._focusedProof
+                ? () => args._focusedProof!(args.clearFirst === true)
+                : undefined,
+              args.qaContext ? qaRecovery : undefined,
+            ));
+      if (prepared?.resp.ok && !resp.ok) {
+        resp.error = {
+          ...resp.error,
+          mutation: 'possible',
+          message:
+            resp.error?.reason === 'focus-proof-refused'
+              ? 'Focus left the intended field after clearing; no replacement text was entered.'
+              : (resp.error?.message ?? 'Focused replacement failed after clearing.'),
+        };
+      }
     }
   } catch (err) {
     throwIfCancelled();

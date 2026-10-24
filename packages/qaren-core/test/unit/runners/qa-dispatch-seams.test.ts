@@ -769,19 +769,21 @@ for (const mode of ['proof', 'transition'] as const) {
         client,
       );
       const env = JSON.parse(result.content[0].text);
-      const allowed = focused === true || (mode === 'transition' && focused === null);
-      // After the one send, only value read-backs follow; an empty read-back is never retyped.
-      assert.deepEqual(
-        events.slice(0, allowed ? 4 : undefined),
-        allowed ? ['health', 'focus', 'type', 'health'] : ['health', 'focus'],
-      );
-      assert.ok(events.slice(4).every((event) => event === 'focus'));
-      assert.deepEqual(sends, allowed ? ['type'] : []);
-      assert.equal(context.authorizations, allowed ? 1 : 0);
+      const prepared = focused === true || (mode === 'transition' && focused === null);
+      const allowed = focused === true;
+      const prefix = allowed
+        ? ['health', 'focus', 'type', 'focus', 'type', 'health']
+        : prepared
+          ? ['health', 'focus', 'type', 'focus']
+          : ['health', 'focus'];
+      assert.deepEqual(events.slice(0, prefix.length), prefix);
+      assert.ok(events.slice(prefix.length).every((event) => event === 'focus'));
+      assert.deepEqual(sends, allowed ? ['type', 'type'] : prepared ? ['type'] : []);
+      assert.equal(context.authorizations, sends.length);
       assert.equal(env.ok, allowed);
       if (!allowed) {
-        assert.equal(env.code, 'NO_TEXT_INPUT_TARGET');
-        assert.equal(env.meta.mutation, 'none');
+        assert.equal(env.code, prepared ? 'TEXT_ENTRY_UNVERIFIED' : 'NO_TEXT_INPUT_TARGET');
+        assert.equal(env.meta.mutation, prepared ? 'possible' : 'none');
       }
     });
   }
@@ -1064,7 +1066,8 @@ test('instant-submit authority loss retains refusal facts beside long typing and
     let now = 0;
     const lines: string[] = [];
     const writer = createWriter((line) => lines.push(line), 'run');
-    const sends = runner(() => {
+    const sends = runner((body) => {
+      if (body.prepareReplacement) return { ok: true, data: { message: 'cleared' } };
       now += 12532;
       _setFastRunnerStateForTest(null);
       return { ok: true, data: { typed: true } };
@@ -1094,7 +1097,7 @@ test('instant-submit authority loss retains refusal facts beside long typing and
     const record = lines.map((line) => JSON.parse(line).payload);
     assert.equal(result.verdict, 'FAIL');
     assert.match(result.failure!.seen, /ACTION_OUTCOME_UNCERTAIN/);
-    assert.deepEqual(sends, ['type']);
+    assert.deepEqual(sends, ['type', 'type']);
     assert.ok(
       record.some(
         (event) =>
@@ -1120,7 +1123,7 @@ test('instant-submit authority loss retains refusal facts beside long typing and
         event.code === 'ACTION_INTERRUPTED',
     );
     assert.equal(refusal?.line, 17);
-    assert.equal(refusal?.authorizations, 1);
+    assert.equal(refusal?.authorizations, 2);
     assert.equal(refusal?.refusalStage, 'settle');
     assert.equal(refusal?.nativeCode, 'RUNNER_OWNERSHIP_MISMATCH');
     assert.equal(refusal?.mutating, true);
