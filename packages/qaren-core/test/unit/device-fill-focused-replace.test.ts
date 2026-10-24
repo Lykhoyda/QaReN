@@ -27,6 +27,7 @@ async function run(
     requireFocused?: boolean;
     clearFirst?: boolean;
     privateValue?: boolean;
+    text?: string;
   } = {},
 ): Promise<{ env: any; dispatched: string[][]; clearCounts: (number | undefined)[] }> {
   _setActiveSessionForTest({ platform: 'ios', deviceId: 'TEST-DEVICE', appId: 'com.test' });
@@ -71,7 +72,7 @@ async function run(
     const result = await performFocusedFill(
       {
         ref: '@e1',
-        text: 'real@example.test',
+        text: options.text ?? 'real@example.test',
         testID: 'qa-hidden-email',
         focused: true,
         vetoUnfocused: true,
@@ -115,6 +116,7 @@ test('a stable retained-prefix concatenation still fails after one bounded clear
 for (const retained of [
   'decoy@example.testreal@example.test',
   'decoy@example.tesreal@example.test',
+  'decoyreal@example.test@example.test',
 ]) {
   test('an ineffective select-all recovers once by clearing the current observed length', async () => {
     const { env, dispatched, clearCounts } = await run(
@@ -131,6 +133,31 @@ for (const retained of [
     assert.deepEqual(dispatched, [REPLACE, REPLACE]);
     assert.deepEqual(clearCounts, [undefined, retained.length]);
     assert.doesNotMatch(JSON.stringify(env), /decoy@example|real@example/);
+  });
+}
+
+for (const recovered of [true, false]) {
+  test(`middle-caret address insertion ${recovered ? 'recovers' : 'refuses'} after one bounded clear`, async () => {
+    const corrupted = 'OldNew LaneRoad';
+    const { env, dispatched, clearCounts } = await run(
+      { value: 'Old Road', focused: true },
+      {
+        text: 'New Lane',
+        after: [
+          { value: corrupted, focused: true },
+          { value: recovered ? 'New Lane' : corrupted, focused: true },
+        ],
+      },
+    );
+    assert.equal(env.ok, recovered);
+    if (recovered) assert.equal(env.meta.verify, 'exact');
+    else assert.equal(env.code, 'TEXT_ENTRY_UNVERIFIED');
+    assert.deepEqual(dispatched, [
+      ['New Lane', '--clear-first'],
+      ['New Lane', '--clear-first'],
+    ]);
+    assert.deepEqual(clearCounts, [undefined, corrupted.length]);
+    assert.doesNotMatch(JSON.stringify(env), /Old Road|New Lane/);
   });
 }
 
@@ -178,7 +205,6 @@ test('a shorter first readback then retype-dispatch retained prefix fails withou
 for (const [name, value, verified] of [
   ['exact', 'real@example.test', true],
   ['same shorter', 'real@example', false],
-  ['unrelated longer', 'other@example.testreal@example.test', false],
   ['unreadable', null, false],
 ] as const) {
   test(`a shorter first readback then ${name} preserves its policy after two dispatches`, async () => {
@@ -223,25 +249,49 @@ test('an explicit insertion still verifies its appended readback', async () => {
   assert.deepEqual(dispatched, [['real@example.test']]);
 });
 
-for (const after of [null, { value: 'other@example.testreal@example.test', focused: true }]) {
-  test(`${after === null ? 'an unreadable' : 'a different longer'} readback preserves unverified policy`, async () => {
+test('an unreadable readback preserves unverified policy', async () => {
+  const { env, dispatched } = await run(
+    { value: 'decoy@example.test', focused: true },
+    { after: null },
+  );
+  assert.equal(env.ok, true);
+  assert.equal(env.data.verified, false);
+  assert.deepEqual(dispatched, [REPLACE]);
+});
+
+test('an unavailable focus probe on the keyboard-down transition refuses before clearing', async () => {
+  const { env, dispatched } = await run(null);
+  assert.equal(env.code, 'NO_TEXT_INPUT_TARGET');
+  assert.equal(env.meta.mutation, 'none');
+  assert.deepEqual(dispatched, []);
+});
+
+test('a value-free positive focus probe still permits replacement', async () => {
+  const { env, dispatched } = await run({ value: null, focused: true });
+  assert.equal(env.ok, true);
+  assert.equal(env.data.verified, false);
+  assert.deepEqual(dispatched, [REPLACE]);
+});
+
+for (const after of [
+  [{ value: 'decoyreal@example.test@example.test', focused: true }],
+  [
+    { value: 'real@example', focused: true },
+    { value: 'realreal@example.test@example', focused: true },
+  ],
+  [{ value: 'other@example.testreal@example.test', focused: true }],
+]) {
+  test('excess text at any caret position fails after at most one recovery', async () => {
     const { env, dispatched } = await run(
       { value: 'decoy@example.test', focused: true },
       { after },
     );
-    assert.equal(env.ok, true);
-    assert.equal(env.data.verified, false);
-    assert.deepEqual(dispatched, [REPLACE]);
+    assert.equal(env.code, 'TEXT_ENTRY_UNVERIFIED');
+    assert.equal(env.meta.mutation, 'observed');
+    assert.deepEqual(dispatched, [REPLACE, REPLACE]);
+    assert.doesNotMatch(JSON.stringify(env), /decoy@example|real@example/);
   });
 }
-
-test('an unreadable field on the keyboard-down transition path still requests replacement', async () => {
-  for (const read of [null, { value: null, focused: true }] as const) {
-    const { env, dispatched } = await run(read);
-    assert.equal(env.ok, true);
-    assert.deepEqual(dispatched, [REPLACE]);
-  }
-});
 
 for (const [name, read] of [
   ['unreadable', null],

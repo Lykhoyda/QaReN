@@ -1,5 +1,3 @@
-// device_fill focused: true with vetoUnfocused — the keyboard fallback refuses before typing when
-// React reports the intended input unfocused, and types as before when React cannot say.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 
@@ -82,17 +80,18 @@ test('U10: an unfocused React input vetoes the type with no mutation', async () 
   assert.ok(!JSON.stringify(env).includes(args.text));
 });
 
-test('U10: without the veto flag an unfocused read still types (existing behaviour)', async () => {
+test('an unfocused read refuses even without the veto flag', async () => {
   const { fills } = await withSeam(() =>
     performFocusedFill({ ...args, vetoUnfocused: false }, client([{ value: '', focused: false }])),
   );
-  assert.equal(fills, 1);
+  assert.equal(fills, 0);
 });
 
-test('U10: an unreadable React input is not vetoed; the type is reported unverified', async () => {
+test('an unavailable React focus probe refuses without mutation', async () => {
   const { result, fills } = await withSeam(() => performFocusedFill(args, client([null])));
-  assert.equal(fills, 1);
-  assert.equal(envelope(result).data.verified, false);
+  assert.equal(fills, 0);
+  assert.equal(envelope(result).code, 'NO_TEXT_INPUT_TARGET');
+  assert.equal(envelope(result).meta.mutation, 'none');
 });
 
 for (const read of [null, { value: '', focused: false }]) {
