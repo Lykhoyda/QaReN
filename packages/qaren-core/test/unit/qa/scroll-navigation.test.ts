@@ -10,6 +10,8 @@ function screen(
     tab?: string;
     title?: string;
     titleHeight?: number;
+    titleType?: string;
+    titleIdentifier?: string;
     rowY?: number;
     rowLabel?: string;
     header?: boolean;
@@ -35,7 +37,8 @@ function screen(
       ref: '@title',
       index: 2,
       parentIndex: 0,
-      type: 'StaticText',
+      type: options.titleType ?? 'NavigationBar',
+      identifier: options.titleIdentifier,
       label: options.title ?? 'Policies',
       rect: { x: 0, y: 20, width: 390, height: options.titleHeight ?? 70 },
     },
@@ -89,13 +92,49 @@ test('selected tab changes stop scrolling', () => {
   assert.match(change(screen(), screen({ tab: 'Claims' }))!, /selected/);
 });
 
-test('title-only changes are deferred until an ordinary title signal exists', () => {
-  const before = screen();
-  const after = screen({ title: 'Claims' });
-  for (const s of [before, after])
-    s.elements.find((element) => element.ref === '@title')!.testID = 'navigation-title';
-  assert.equal(change(before, after), undefined);
+test('native navigation-bar label and identifier changes stop scrolling', () => {
+  assert.match(change(screen(), screen({ title: 'Claims' }))!, /title/);
+  assert.match(
+    change(screen({ titleIdentifier: 'Policies' }), screen({ titleIdentifier: 'Claims' }))!,
+    /title/,
+  );
 });
+
+test('JS-only header changes have no native title marker', () => {
+  assert.equal(
+    change(
+      screen({ titleType: 'StaticText' }),
+      screen({ titleType: 'StaticText', title: 'Claims' }),
+    ),
+    undefined,
+  );
+});
+
+for (const type of [
+  'android.widget.Toolbar',
+  'androidx.appcompat.widget.Toolbar',
+  'android.app.ActionBar',
+  'com.android.internal.widget.ActionBarView',
+]) {
+  test(`ordinary Android title text stops navigation: ${type}`, () => {
+    const android = (label: string) =>
+      join(
+        [
+          { type: 'Window', rect: { x: 0, y: 0, width: 390, height: 844 } },
+          { type, parentIndex: 0, rect: { x: 0, y: 0, width: 390, height: 80 } },
+          {
+            type: 'android.widget.TextView',
+            parentIndex: 1,
+            label,
+            rect: { x: 40, y: 20, width: 200, height: 30 },
+          },
+        ],
+        [],
+      );
+    assert.match(change(android('Policies'), android('Claims'))!, /title/);
+    assert.equal(change(android('Policies'), android('Policies')), undefined);
+  });
+}
 
 test('a disappeared, replaced or differently typed dragged list stops scrolling', () => {
   for (const after of [

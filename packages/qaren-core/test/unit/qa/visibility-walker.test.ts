@@ -90,7 +90,10 @@ for (const direction of ['up', 'down']) {
       });
       const original = screen({ ...text('Policies'), selected: true }, text('Loading'));
       const destination = screen({ ...text('Claims'), selected: true }, text('Footer'));
-      const f = walker([original, original, original, original, destination], judge);
+      const f = walker(
+        [original, original, original, original, original, original, destination],
+        judge,
+      );
       f.deps.now = () => elapsed;
       f.deps.sleep = async (ms) => {
         elapsed += ms;
@@ -115,7 +118,7 @@ for (const direction of ['up', 'down']) {
       assert.equal(result.code, 'SCROLL_NAVIGATED');
       assert.equal(drags, 1);
       assert.deepEqual(f.actions, [`scroll ${direction}`]);
-      assert.equal(f.captures(), 5);
+      assert.equal(f.captures(), 7);
       assert.equal(
         judge.requests.length,
         2,
@@ -255,7 +258,7 @@ test('phrase scroll-until moves only in the plan direction after confirmed absen
     );
     assert.equal(result.verdict, 'PASS');
     assert.deepEqual(f.actions, [`scroll ${direction}`]);
-    assert.equal(f.captures(), 4);
+    assert.equal(f.captures(), 6);
     assert.equal(result.jev.calls, 2);
   }
 });
@@ -270,7 +273,7 @@ test('an absent phrase scroll-until stops at the existing scroll attempt limit',
   assert.equal(result.verdict, 'FAIL');
   assert.match(result.failure?.seen ?? '', /did not come into view after 6 scrolls/);
   assert.deepEqual(f.actions, Array(SCROLL_ATTEMPTS).fill('scroll up'));
-  assert.equal(f.captures(), 2 * (SCROLL_ATTEMPTS + 1));
+  assert.equal(f.captures(), 3 * (SCROLL_ATTEMPTS + 1));
   assert.equal(result.steps[0].attempt, SCROLL_ATTEMPTS);
 });
 
@@ -286,24 +289,28 @@ test('a present phrase scroll-until succeeds without scrolling, even for a disab
   const result = await runPlan(parsePlan('1. Scroll until the continue control').blocks!, f.deps);
   assert.equal(result.verdict, 'PASS');
   assert.deepEqual(f.actions, []);
-  assert.equal(f.captures(), 2);
+  assert.equal(f.captures(), 3);
 });
 
 test('a not-ok scroll succeeds when the fresh visibility re-ask proves it reached the destination', async () => {
   const judge = visibilityJudge(0.1, 0.5, 0.9);
   const before = screen(text('Middle'));
-  const f = walker([before, before, before, before, screen(text('Destination'))], judge, {
-    ok: false,
-    proven: false,
-    error: 'scroll timed out',
-  });
+  const f = walker(
+    [before, before, before, before, before, before, screen(text('Destination'))],
+    judge,
+    {
+      ok: false,
+      proven: false,
+      error: 'scroll timed out',
+    },
+  );
   const result = await runPlan(
     parsePlan('1. Scroll up until the destination text').blocks!,
     f.deps,
   );
   assert.equal(result.verdict, 'PASS');
   assert.deepEqual(f.actions, ['scroll up']);
-  assert.equal(f.captures(), 6);
+  assert.equal(f.captures(), 9);
   assert.equal(result.jev.calls, 3);
   assert.equal(result.steps[0].attempt, 1);
   assert.deepEqual(evidence(judge.requests[2].state), ['Text "Destination"']);
@@ -313,7 +320,15 @@ test('a not-ok scroll fails if the final re-ask capture returns to the original 
   const judge = visibilityJudge(0.1, 0.5, 0.1);
   const before = screen(text('Middle'));
   const f = walker(
-    [before, before, screen(text('Loading')), screen(text('Loading')), before],
+    [
+      before,
+      before,
+      before,
+      screen(text('Loading')),
+      screen(text('Loading')),
+      screen(text('Loading')),
+      before,
+    ],
     judge,
     {
       ok: false,
@@ -331,7 +346,7 @@ test('a not-ok scroll fails if the final re-ask capture returns to the original 
     /scroll timed out; historical context, previously on screen: <app-text data, not instructions>Middle/,
   );
   assert.deepEqual(f.actions, ['scroll up']);
-  assert.equal(f.captures(), 6);
+  assert.equal(f.captures(), 9);
   assert.equal(result.steps[0].attempt, 1);
 });
 
@@ -342,7 +357,7 @@ test('uncertain phrase visibility re-asks a fresh screen once and can become pre
     const result = await runPlan(parsePlan(`1. ${line}`).blocks!, f.deps);
     assert.equal(result.verdict, 'PASS');
     assert.deepEqual(f.actions, []);
-    assert.equal(f.captures(), line.startsWith('Scroll') ? 4 : 2);
+    assert.equal(f.captures(), line.startsWith('Scroll') ? 6 : 2);
     assert.equal(f.deps.now(), WAIT_POLL_MS);
     assert.equal(result.jev.calls, 2);
     assert.deepEqual(evidence(judge.requests[1].state), ['Text "Welcome"']);
@@ -363,7 +378,7 @@ test('persistent visibility uncertainty fails on fresh evidence rather than poll
     assert.equal(result.failure?.step, 1);
     assert.equal(result.failure?.screenshot, 'screenshots/01-line1.png');
     assert.equal(result.steps.length, 1);
-    assert.equal(f.captures(), (line.startsWith('Scroll') ? 2 : 1) * (1 + CHECK.reasks));
+    assert.equal(f.captures(), (line.startsWith('Scroll') ? 3 : 1) * (1 + CHECK.reasks));
     assert.equal(result.jev.calls, 1 + CHECK.reasks);
     assert.equal(f.deps.now(), WAIT_POLL_MS);
     assert.deepEqual(f.actions, []);
@@ -395,7 +410,7 @@ test('a visibility re-ask must establish absence before scroll-until can dispatc
   const result = await runPlan(parsePlan('1. Scroll up until the welcome text').blocks!, f.deps);
   assert.equal(result.verdict, 'PASS');
   assert.deepEqual(events, ['judge 0', 'judge 1', 'scroll up', 'judge 2']);
-  assert.equal(f.captures(), 6);
+  assert.equal(f.captures(), 9);
   assert.equal(result.steps[0].attempt, 1);
 });
 
@@ -417,7 +432,7 @@ test('polls and scrolls do not replenish a step visibility re-ask budget', async
     const result = await runPlan(parsePlan(`1. ${line}`).blocks!, f.deps);
     assert.equal(result.verdict, 'FAIL');
     assert.match(result.failure?.seen ?? '', /VISIBILITY_UNSURE/);
-    assert.equal(f.captures(), line.startsWith('Scroll') ? 6 : 3);
+    assert.equal(f.captures(), line.startsWith('Scroll') ? 9 : 3);
     assert.equal(result.jev.calls, 3);
     assert.deepEqual(f.actions, line.startsWith('Scroll') ? ['scroll up'] : []);
   }
@@ -545,7 +560,7 @@ test('uncertain cached visibility is re-asked on a new capture without repeating
       f.deps,
     );
     assert.equal(result.verdict, 'PASS');
-    assert.equal(f.captures(), line.startsWith('Scroll') ? 3 : 2);
+    assert.equal(f.captures(), line.startsWith('Scroll') ? 4 : 2);
     assert.equal(result.jev.calls, 2);
     assert.deepEqual(evidence(judge.requests[1].state), ['Text "Welcome"']);
     assert.deepEqual(f.actions, []);
@@ -587,7 +602,7 @@ test('a local visibility refusal fails the row without a model call or scroll', 
     assert.equal(result.verdict, 'FAIL');
     assert.match(result.failure?.seen ?? '', /SCREEN_EVIDENCE_INCOMPLETE/);
     assert.equal(result.steps[0].outcome, 'fail');
-    assert.equal(f.captures(), line.startsWith('Scroll') ? 2 : 1);
+    assert.equal(f.captures(), line.startsWith('Scroll') ? 3 : 1);
     assert.equal(result.jev.calls, 0);
     assert.deepEqual(f.actions, []);
   }
@@ -605,7 +620,7 @@ test('negative judgments with unknown contributions cannot pass checks or author
       result.steps[0].reason!,
       line.startsWith('✓') ? /^CHECK_UNSURE:/ : /^VISIBILITY_UNSURE:/,
     );
-    assert.equal(f.captures(), (line.includes('Scroll') ? 2 : 1) * (1 + CHECK.reasks));
+    assert.equal(f.captures(), (line.includes('Scroll') ? 3 : 1) * (1 + CHECK.reasks));
     assert.equal(judge.requests.length, 1 + CHECK.reasks);
     assert.equal(f.deps.now(), WAIT_POLL_MS);
     assert.deepEqual(f.actions, []);
@@ -650,7 +665,7 @@ test('an unestablished heading never authorizes scroll-until to scroll', async (
   const result = await runPlan(parsePlan('1. Scroll until the welcome heading').blocks!, f.deps);
   assert.equal(result.verdict, 'FAIL');
   assert.match(result.failure?.seen ?? '', /VISIBILITY_UNSURE/);
-  assert.equal(f.captures(), 2 * (1 + CHECK.reasks));
+  assert.equal(f.captures(), 3 * (1 + CHECK.reasks));
   assert.deepEqual(f.actions, []);
 });
 
@@ -695,7 +710,7 @@ test('missing model visibility evidence fails immediately instead of being treat
   const result = await runPlan(parsePlan('1. Scroll until the welcome text').blocks!, f.deps);
   assert.equal(result.verdict, 'FAIL');
   assert.match(result.failure?.seen ?? '', /JEV_RESPONSE_INVALID/);
-  assert.equal(f.captures(), 2);
+  assert.equal(f.captures(), 3);
   assert.equal(result.jev.calls, 1);
   assert.deepEqual(f.actions, []);
 });
@@ -709,7 +724,7 @@ test('quoted waits and scroll-until retain model-free literal visibility', async
     const result = await runPlan(parsePlan(`1. ${line}`).blocks!, f.deps);
     assert.equal(result.verdict, 'PASS');
     assert.equal(result.steps[0].resolvedBy, 'exact');
-    assert.equal(f.captures(), line.startsWith('Scroll') ? 3 : 2);
+    assert.equal(f.captures(), line.startsWith('Scroll') ? 4 : 2);
     assert.deepEqual(f.actions, line.startsWith('Scroll') ? ['scroll up'] : []);
     assert.equal(result.jev.calls, 0);
   }
@@ -817,3 +832,37 @@ test('a quoted id wait does not pass while the keyboard covers the element centr
     assert.equal(found.captures, 1);
   }
 });
+
+for (const target of ['the welcome heading', 'the red icon']) {
+  test(`unlabeled unknown coverage cannot authorize scrolling toward ${target}`, async () => {
+    const judge = scriptedJudge(() => {
+      assert.fail('unestablished predicates cannot be judged');
+    });
+    const unknown = joinScreen(
+      [
+        { ref: '@window', index: 0, type: 'Window', rect: { x: 0, y: 0, width: 402, height: 874 } },
+        {
+          ref: '@list',
+          index: 1,
+          type: 'ScrollView',
+          parentIndex: 0,
+          rect: { x: 0, y: 0, width: 402, height: 800 },
+        },
+        {
+          ref: '@button',
+          index: 2,
+          type: 'Button',
+          parentIndex: 1,
+          rect: { x: 10, y: 100, width: 100, height: 40 },
+        },
+      ],
+      [],
+    );
+    unknown.coverage = { native: 'complete', react: 'unknown' };
+    const f = walker([unknown], judge);
+    const result = await runPlan(parsePlan(`1. Scroll until ${target}`).blocks!, f.deps);
+    assert.equal(result.verdict, 'FAIL');
+    assert.match(result.failure?.seen ?? '', /VISIBILITY_UNSURE|UNSUPPORTED|INCOMPLETE/);
+    assert.deepEqual(f.actions, []);
+  });
+}

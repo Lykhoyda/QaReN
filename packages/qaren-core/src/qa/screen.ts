@@ -122,6 +122,7 @@ const elementViewports = new WeakMap<Element, NonNullable<NativeNode['rect']>>()
 const keyboardCoveredElements = new WeakSet<Element>();
 // Native scroll containers (iOS names, Android class suffixes); only native-backed elements are ever members.
 const scrollContainers = new WeakMap<Element, string>();
+const navigationBarTitles = new WeakMap<Element, string>();
 const windows = new WeakSet<Element>();
 const alerts = new WeakSet<Element>();
 const keyboards = new WeakSet<Element>();
@@ -138,6 +139,10 @@ export function keyboardCoversElement(element: Element): boolean {
 
 export function isScrollContainer(element: Element): boolean {
   return scrollContainers.has(element);
+}
+
+export function navigationBarTitle(element: Element): string | undefined {
+  return navigationBarTitles.get(element);
 }
 
 export function isWindow(element: Element): boolean {
@@ -1156,6 +1161,17 @@ export function join(
     const bounds = clippingViewport(viewport, i);
     if (bounds) elementViewports.set(elements[i], bounds);
     if (isScrollContainerType(n.type)) scrollContainers.set(elements[i], n.type!);
+    if (n.type === 'NavigationBar') {
+      const title = n.identifier?.trim() || n.label?.trim();
+      if (title) navigationBarTitles.set(elements[i], title);
+    } else if (/(?:^|\.)(?:Toolbar|ActionBar|ActionBarView)$/.test(n.type ?? '')) {
+      const title =
+        nodes
+          .filter((child) => child.parentIndex === i && /(?:^|\.)TextView$/.test(child.type ?? ''))
+          .map((child) => child.label?.trim())
+          .find(Boolean) || n.label?.trim();
+      if (title) navigationBarTitles.set(elements[i], title);
+    }
     if (n.type === 'Window') windows.add(elements[i]);
     if (n.type === 'Application') applications.add(elements[i]);
     if (isAppAlertType(n.type)) alerts.add(elements[i]);

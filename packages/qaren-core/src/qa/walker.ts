@@ -1018,6 +1018,16 @@ async function walkBlockScoped(
     checkObservation?: (screen: Screen) => void,
   ) => {
     let reasks = 0;
+    const validateRefresh = (before: Screen, after: Screen): void => {
+      if (item.kind !== 'scroll') return;
+      const navigation = scrollNavigationChange(
+        before,
+        after,
+        scrollUntilContainer(item.until!, before),
+      );
+      if (navigation) throw new ResolutionError({ refuse: 'SCROLL_NAVIGATED', reason: navigation });
+      checkObservation?.(after);
+    };
     return async (
       observation: Observation,
       initial?: ScreenDecision,
@@ -1025,19 +1035,25 @@ async function walkBlockScoped(
       let decision = initial;
       while (deps.now() < deadline) {
         checkObservation?.(observation.screen);
-        const ordinary = observation;
+        let ordinary = observation;
         const target = item.kind === 'wait' ? item.target : item.until!;
-        if (item.kind === 'scroll') {
-          usable(ordinary, item, deadline);
-          if (!scrollUntilHasCandidate(target, ordinary.screen)) {
-            if (target.exact) targetEvidence(target, ordinary.screen);
-            return { observation: ordinary, found: false };
-          }
-          observation = await capture(item, false, false, 'presence');
-          decision = undefined;
-        }
         try {
+          if (item.kind === 'scroll') {
+            usable(ordinary, item, deadline);
+            if (!scrollUntilHasCandidate(target, ordinary.screen)) {
+              if (target.exact) targetEvidence(target, ordinary.screen);
+              return { observation: ordinary, found: false };
+            }
+            observation = await capture(item, false, false, 'presence');
+            usable(ordinary, item, deadline);
+            const refreshed = await capture(item);
+            validateRefresh(ordinary.screen, refreshed.screen);
+            ordinary = refreshed;
+            usable(ordinary, item, deadline);
+            decision = undefined;
+          }
           decision = await decide(observation, undefined, item, deadline, decision);
+          if (item.kind === 'scroll') usable(ordinary, item, deadline);
         } catch (error) {
           if (isAbort(error)) throw error;
           if (!(error instanceof EvidenceExpired)) throw error;
@@ -1046,13 +1062,14 @@ async function walkBlockScoped(
           await pause(Math.min(WAIT_POLL_MS, Math.max(0, deadline - deps.now())));
           if (deps.now() >= deadline) throw new EvidenceExpired(true);
           observation = await capture(item);
+          validateRefresh(ordinary.screen, observation.screen);
           decision = undefined;
           continue;
         }
         if (target.quoted !== undefined) {
           const evidence = targetEvidence(target, observation.screen);
           return {
-            observation: evidence === 'pass' ? observation : ordinary,
+            observation: item.kind === 'scroll' ? ordinary : observation,
             found: evidence === 'pass',
             unsure: evidence === 'unsure',
           };
@@ -1075,7 +1092,8 @@ async function walkBlockScoped(
             );
           throw new ResolutionError(visibility);
         }
-        if (visibility.verdict === 'present') return { observation, found: true };
+        if (visibility.verdict === 'present')
+          return { observation: item.kind === 'scroll' ? ordinary : observation, found: true };
         if (visibility.verdict === 'absent') return { observation: ordinary, found: false };
         if (visibility.verdict === 'pending' && item.kind === 'wait')
           return { observation, found: false };
@@ -1864,7 +1882,14 @@ async function walkBlockScoped(
                   ? replayMiss
                   : error;
               replayMiss = error;
-              observation = s;
+              observation = await capture(item);
+              const navigation = scrollNavigationChange(
+                s.screen,
+                observation.screen,
+                scrollUntilContainer(item.until!, s.screen),
+              );
+              if (navigation)
+                throw new ResolutionError({ refuse: 'SCROLL_NAVIGATED', reason: navigation });
               return false;
             }
             observation = observed.observation;

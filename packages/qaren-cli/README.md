@@ -1196,13 +1196,17 @@ display density on Android when available. An exhausted clear span refuses with
 `SCROLL_BAND_TOO_SMALL`; a screen without a scroll container retains the centred
 window drag. After each scroll-until drag, every fresh observation, including
 visibility-probe refreshes for expired or uncertain evidence, is checked against
-the pre-drag screen. A changed selected element outside the lists (such as a tab)
+the pre-drag screen. After target confirmation, a fresh ordinary capture supplies
+geometry and navigation checks before target acceptance or another drag. A changed
+selected element outside the lists (such as a tab), native navigation-bar title,
 or scrolled list refuses with `SCROLL_NAVIGATED` before looking
 for the target on the destination screen. An identified list retains its identity
 through keyboard or header resizing when its type and testID remain present;
 unidentified lists require the same type and a frame within two points. Moving
-rows and header resizing do not count as navigation. Title-only navigation needs
-a presence-free title signal and is tracked in
+rows and header resizing do not count as navigation. Native title changes are
+checked when both ordinary snapshots expose an iOS navigation-bar title or Android
+toolbar/action-bar title. JS-only headers have no native title marker; their
+title-only navigation remains tracked in
 [this follow-up](https://github.com/Lykhoyda/rn-dev-agent/issues/1281).
 End-of-list stop follows separately. One clearance swipe lifts a
 covered row by at most the height of its list's visible band above the keyboard.

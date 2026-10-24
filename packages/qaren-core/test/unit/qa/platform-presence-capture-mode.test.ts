@@ -60,7 +60,7 @@ test('literal-only plans acquire provenance for quoted presses and presence for 
     false,
     false,
     true,
-    ...Array(6).fill(false),
+    ...Array(7).fill(false),
   ]);
   assert.equal(result.jev.calls, 0);
   assert.equal(JSON.stringify(result).includes('private-value'), false);
@@ -81,7 +81,7 @@ test('quoted scroll-until requests platform evidence without requiring semantic 
     const modes = traceCaptures(f);
     const result = await runPlan(parsePlan(`1. Scroll ${direction} until "Save"`).blocks!, f.deps);
     assert.equal(result.verdict, 'PASS', result.failure?.seen);
-    assert.deepEqual(modes, [false, false, true]);
+    assert.deepEqual(modes, [false, false, true, false]);
     assert.deepEqual(f.actions, [`scroll ${direction}`]);
   }
 });
@@ -135,7 +135,7 @@ test('semantic checks retain presence while quoted next steps select their captu
       assert.deepEqual(
         modes,
         kind === 'scroll'
-          ? [true, true, false, true]
+          ? [true, true, false, true, false]
           : quoted
             ? mutates
               ? [true, true, kind === 'press', kind === 'press']
@@ -283,7 +283,9 @@ test('phrase scroll re-asks refresh ordinary geometry before presence confirmati
     assert.equal(result.verdict, 'PASS');
     assert.deepEqual(
       modes,
-      kind === 'scroll' ? [false, true, false, true, false, true] : [true, true, true],
+      kind === 'scroll'
+        ? [false, true, false, false, true, false, false, true, false]
+        : [true, true, true],
     );
     assert.deepEqual(f.actions, kind === 'scroll' ? ['scroll down'] : []);
     assert.equal(f.deps.now(), WAIT_POLL_MS * 2);
@@ -315,7 +317,7 @@ test('scroll visibility is independent of a preceding check while waits reuse it
     assert.equal(result.verdict, 'PASS');
     assert.deepEqual(
       modes,
-      line.startsWith('Scroll') ? [true, false, true, true, true] : [true, true, true, true],
+      line.startsWith('Scroll') ? [true, false, true, false, true, true] : [true, true, true, true],
     );
     assert.deepEqual(f.actions, ['press @save']);
     assert.equal(result.jev.calls, 2);

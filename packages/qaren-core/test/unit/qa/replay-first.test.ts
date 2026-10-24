@@ -652,7 +652,10 @@ for (const verb of ['Wait for "Ready"', 'Scroll down until "Ready"']) {
       const judge = scriptedJudge(() => assert.fail('stored-ID visibility must not ask Jev'));
       const seed = walker([shown], judge);
       assert.equal(ledger(await runPlan(plan, seed.deps, [], store(dir))).verdict, 'PASS');
-      const fake = walker([screen([]), screen([]), shown], judge);
+      const fake = walker(
+        [...Array(verb.startsWith('Scroll') ? 4 : 2).fill(screen([])), shown],
+        judge,
+      );
       const scroll = fake.deps.scroll;
       fake.deps.scroll = (direction, context) => {
         context.authorize();
@@ -667,7 +670,7 @@ for (const verb of ['Wait for "Ready"', 'Scroll down until "Ready"']) {
         [['pass', 'exact']],
       );
       assert.deepEqual(result.blocksWritten, []);
-      assert.equal(fake.captures(), verb.startsWith('Scroll') ? 4 : 3);
+      assert.equal(fake.captures(), verb.startsWith('Scroll') ? 7 : 3);
       assert.deepEqual(
         fake.actions,
         verb.startsWith('Scroll') ? ['scroll down', 'scroll down'] : [],
@@ -751,7 +754,7 @@ for (const budget of ['attempts', 'deadline']) {
     );
     const attempts = budget === 'attempts' ? SCROLL_ATTEMPTS : 1;
     assert.deepEqual(fake.actions, Array(attempts).fill('scroll down'));
-    assert.equal(fake.captures(), budget === 'attempts' ? SCROLL_ATTEMPTS + 1 : 1);
+    assert.equal(fake.captures(), budget === 'attempts' ? 2 * (SCROLL_ATTEMPTS + 1) : 2);
   });
 }
 
@@ -808,7 +811,7 @@ for (const kind of ['wait', 'scroll', 'press', 'fill'] as const) {
         /TARGET_AMBIGUOUS/,
       );
       assert.deepEqual(fake.actions, []);
-      assert.equal(fake.captures(), kind === 'scroll' ? 2 : 1);
+      assert.equal(fake.captures(), kind === 'scroll' ? 3 : 1);
       assert.equal(fake.deps.now(), 0);
     });
   }

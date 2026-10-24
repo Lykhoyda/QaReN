@@ -622,9 +622,7 @@ export function scrollUntilHasCandidate(target: Target, screen: Screen): boolean
       target.exact !== 'id' && literalEvidence(screen, target.quoted, 'equals').verdict !== 'fail'
     );
   }
-  return screen.elements.some(
-    (element) => !element.ref.startsWith('react:') && !element.offscreen && !!element.label,
-  );
+  return true;
 }
 
 const GENERIC_TARGET_WORDS = new Set(

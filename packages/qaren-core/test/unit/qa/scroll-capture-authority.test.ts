@@ -12,6 +12,7 @@ import { attested, nativeCapture } from './platform-presence-fixtures.ts';
 const frame = { x: 0, y: 0, width: 402, height: 874 };
 type Snapshot = {
   footer?: boolean;
+  tab?: string;
   toolbarY?: number;
   toolbarHittable?: boolean;
   overlays?: NonNullable<NativeNode['rect']>[];
@@ -70,6 +71,14 @@ function fixture() {
           ]),
       ...(state.overlays ?? []).map((rect) => ({ type: 'Button', parentIndex: 1, rect })),
     ];
+    if (state.tab)
+      rawNodes.push({
+        type: 'Button',
+        parentIndex: 1,
+        selected: true,
+        label: state.tab,
+        rect: { x: 0, y: 820, width: 100, height: 40 },
+      });
     const depth = (index: number): number => {
       const parent = rawNodes[index].parentIndex;
       return parent === undefined ? 0 : depth(parent) + 1;
@@ -154,7 +163,11 @@ for (const direction of ['up', 'down'] as const) {
         ]);
         assert.deepEqual(
           f.modes,
-          mode === 'phrase' ? [false, true, false, true] : [false, false, true],
+          mode === 'phrase'
+            ? [false, true, false, false, true, false]
+            : mode === 'replay'
+              ? [false, false, false, true, false]
+              : [false, false, true, false],
         );
       } finally {
         clearRefMap();
@@ -177,7 +190,11 @@ for (const direction of ['up', 'down'] as const) {
         assert.ok(start > 0 && end > 0);
         assert.deepEqual(
           f.modes,
-          mode === 'phrase' ? [false, true, false, true] : [false, false, true],
+          mode === 'phrase'
+            ? [false, true, false, false, true, false]
+            : mode === 'replay'
+              ? [false, false, false, true, false]
+              : [false, false, true, false],
         );
       } finally {
         clearRefMap();
@@ -206,7 +223,71 @@ for (const direction of ['up', 'down'] as const) {
         for (const [, start, , end] of f.endpoints)
           assert.ok(start < 726 && end < 726, JSON.stringify(f.endpoints));
         assert.ok(result.rows.every((row) => row.outcome !== 'pass'));
-        assert.deepEqual(f.modes, Array.from({ length: 7 }, () => [false, true]).flat());
+        assert.deepEqual(
+          f.modes,
+          Array.from({ length: 7 }, () =>
+            mode === 'replay' ? [false, true, false, false] : [false, true, false],
+          ).flat(),
+        );
+      } finally {
+        clearRefMap();
+      }
+    });
+
+    for (const refresh of [false, true]) {
+      test(`confirmation navigation precedes target acceptance: ${direction}, ${mode}, refresh=${refresh}`, async () => {
+        const f = fixture();
+        let navigated = false;
+        f.setSnapshot(async (presence) => {
+          if (presence && f.drags() > 0) {
+            navigated = true;
+            if (refresh) await f.f.deps.sleep(11_000);
+          }
+          return { footer: f.drags() > 0, tab: navigated ? 'Claims' : 'Policies' };
+        });
+        try {
+          const result = await run(f, direction, mode);
+          assert.equal(result.refusal?.code, 'SCROLL_NAVIGATED');
+          assert.equal(result.block.outcome, 'fail');
+          assert.equal(f.drags(), 1);
+          assert.ok(f.f.rows.every((row) => row.outcome !== 'pass'));
+        } finally {
+          clearRefMap();
+        }
+      });
+
+      test(`negative confirmation refreshes new toolbar clearance: ${direction}, ${mode}, refresh=${refresh}`, async () => {
+        const f = fixture();
+        let appeared = false;
+        f.setSnapshot(async (presence) => {
+          if (presence) {
+            appeared = true;
+            if (refresh) await f.f.deps.sleep(1_000);
+          }
+          return { footer: !presence, toolbarY: appeared ? 730 : undefined };
+        });
+        try {
+          const result = await run(f, direction, mode);
+          assert.equal(result.block.outcome, 'fail');
+          assert.equal(f.drags(), 6);
+          for (const [, start, , end] of f.endpoints)
+            assert.ok(start < 726 && end < 726, JSON.stringify(f.endpoints));
+        } finally {
+          clearRefMap();
+        }
+      });
+    }
+
+    test(`confirmation reveals a new full-screen blocker: ${direction}, ${mode}`, async () => {
+      const f = fixture();
+      let appeared = false;
+      f.setSnapshot(async (presence) => {
+        if (presence) appeared = true;
+        return { footer: !presence, overlays: appeared ? [frame] : [] };
+      });
+      try {
+        await assert.rejects(run(f, direction, mode), /SCROLL_BAND_TOO_SMALL/);
+        assert.equal(f.drags(), 0);
       } finally {
         clearRefMap();
       }
@@ -227,7 +308,7 @@ for (const direction of ['up', 'down'] as const) {
         assert.equal(result.block.outcome, 'pass');
         assert.equal(f.drags(), 0);
         assert.deepEqual(completed.slice(0, 2), [2_000, 13_000]);
-        assert.deepEqual(f.modes, [false, true, false, true]);
+        assert.deepEqual(f.modes, [false, true, false, true, false]);
       } finally {
         clearRefMap();
       }
@@ -246,7 +327,7 @@ test('quoted confirmation is requested only after an ordinary match', async () =
     const result = await run(f, 'down', 'quoted');
     assert.equal(result.block.outcome, 'pass');
     assert.equal(f.drags(), 1);
-    assert.deepEqual(f.modes, [false, false, true]);
+    assert.deepEqual(f.modes, [false, false, true, false]);
   } finally {
     clearRefMap();
   }
