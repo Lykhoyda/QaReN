@@ -614,9 +614,10 @@ values or pixels; unavailable counts and deadline state are `null`. These events
 are retained in `core-diagnostics.jsonl` even without runtime inputs. A containment
 fallback retains the `deadline-clean` outcome and records `resolvedBy: containment`;
 a quoted scroll-until can also confirm one on-screen container carrying a whole
-label segment on an ordinary capture, provided no observed provenance or visibility
-contradicts it. Several matching containers refuse. This confirms visibility only,
-and records `resolvedBy: aggregate-visibility` without labels or references;
+label segment on an ordinary capture without requesting candidate provenance,
+provided no observed provenance or visibility contradicts it. Several matching
+containers refuse. This confirms visibility only and records
+`resolvedBy: aggregate-visibility` without labels or references;
 it changes target identity only, without adding provenance or changing capture
 comparisons and media admission.
 

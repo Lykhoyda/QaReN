@@ -2,4 +2,4 @@
 "qaren": patch
 ---
 
-Preserve pure native-read deadlines and late candidate contradiction refusals while confirming unique aggregate-labelled scroll targets without weakening privacy or press safeguards.
+Confirm unique aggregate-labelled scroll targets on ordinary captures without granting press authority or weakening privacy and contradictory-evidence refusals.
