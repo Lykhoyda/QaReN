@@ -2077,7 +2077,7 @@ function computeScrollFromDirection(
   amount: number,
   screen: Band,
   distance?: number,
-): { x1: number; y1: number; x2: number; y2: number } {
+): { x1: number; y1: number; x2: number; y2: number } | undefined {
   const cx = Math.round((screen.x ?? 0) + screen.width / 2);
   const cy = Math.round((screen.y ?? 0) + screen.height / 2);
   const caller = screen.x !== undefined || screen.y !== undefined;
@@ -2104,6 +2104,7 @@ function computeScrollFromDirection(
       direction === 'down'
         ? Math.max(start - dy, Math.ceil((screen.y ?? 0) + 1))
         : Math.min(start + dy, Math.floor((screen.y ?? 0) + screen.height - 1));
+    if (Math.abs(end - start) < MIN_DRAG_TRAVEL) return undefined;
     return { x1: cx, y1: start, x2: cx, y2: end };
   }
   // Rounding the centre and the half-span up together can land an end on the band's edge row.
@@ -2139,6 +2140,8 @@ export function buildDirectionalScrollCliArgs(
   const refusal = bandTooSmall(band);
   if (refusal) throw new Error(`SCROLL_BAND_TOO_SMALL: ${refusal}`);
   const coords = computeScrollFromDirection(direction, clamped, band, distance);
+  if (!coords)
+    throw new Error(`SCROLL_BAND_TOO_SMALL: rounded endpoints cannot host a ${MIN_DRAG_TRAVEL}px drag`);
   const duration = durationMs ?? DEFAULT_SWIPE_DURATION_MS;
   return [
     'scroll',
@@ -2317,12 +2320,14 @@ export function createDeviceScrollHandler(): (args: ScrollArgs) => Promise<ToolR
     const band = dragBand(args.within);
     const refusal = bandTooSmall(band);
     if (refusal) return failResult(refusal, 'SCROLL_BAND_TOO_SMALL', { mutation: 'none' });
-    const { x1, y1, x2, y2 } = computeScrollFromDirection(
-      args.direction,
-      amount,
-      band,
-      args.distance,
-    );
+    const coords = computeScrollFromDirection(args.direction, amount, band, args.distance);
+    if (!coords)
+      return failResult(
+        `rounded endpoints cannot host a ${MIN_DRAG_TRAVEL}px drag`,
+        'SCROLL_BAND_TOO_SMALL',
+        { mutation: 'none' },
+      );
+    const { x1, y1, x2, y2 } = coords;
     // GH #383: adopt persisted per-device state so a respawned worker sees a
     // live runner before this fast-path gate.
     if (!args.qaContext) adoptPersistedFastRunnerState(getActiveSession()?.deviceId);

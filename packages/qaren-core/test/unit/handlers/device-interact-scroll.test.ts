@@ -157,6 +157,38 @@ for (const platform of ['ios', 'android'] as const) {
     });
   });
 
+  test(`${platform} fractional bands dispatch only rounded drags of at least 48px`, () => {
+    withWindow(() => {
+      for (const { y, height, down, up } of [
+        { y: 300, height: 50, down: true, up: true },
+        { y: 300.5, height: 50, down: false, up: false },
+        { y: 300, height: 50.5, down: true, up: false },
+        { y: 300.5, height: 51, down: false, up: false },
+        { y: 300.5, height: 51.5, down: false, up: true },
+        { y: 300.5, height: 55, down: true, up: true },
+      ]) {
+        const band = { x: 0, y, width, height };
+        for (const direction of ['up', 'down'] as const) {
+          for (const distance of [undefined, 10, 48, 5000]) {
+            const build = () =>
+              buildDirectionalScrollCliArgs(direction, 0.6, undefined, distance, band);
+            if (!(direction === 'down' ? down : up)) {
+              assert.throws(build, /SCROLL_BAND_TOO_SMALL/);
+              continue;
+            }
+            const [, , start, , end] = build().map(Number);
+            assert.ok(Math.abs(end - start) >= 48, `${direction}: ${start} -> ${end}`);
+            assert.ok(direction === 'down' ? start > end : start < end);
+            for (const point of [start, end]) {
+              assert.ok(Number.isInteger(point));
+              assert.ok(point >= y + 1 && point <= y + height - 1);
+            }
+          }
+        }
+      }
+    });
+  });
+
   test(`${platform} a gesture-inset-clamped band too short to drag still refuses`, () => {
     withWindow(() => {
       for (const band of [
@@ -261,15 +293,30 @@ test('a scroll band too short for a real drag refuses before any runner call, so
     { ref: '@e0', type: 'Window', rect: { x: 0, y: 0, width: 390, height: 844 }, hittable: true },
   ]);
   try {
-    for (const within of [
-      { x: 0, y: 300, width: 390, height: 40 },
-      { x: 0, y: 770, width: 390, height: 74 },
-    ]) {
-      const result = await createDeviceScrollHandler()({ direction: 'down', within });
-      const envelope = JSON.parse(result.content[0].text);
-      assert.equal(envelope.ok, false);
-      assert.equal(envelope.code, 'SCROLL_BAND_TOO_SMALL');
-      assert.equal(envelope.meta?.mutation, 'none');
+    for (const platform of ['ios', 'android'] as const) {
+      setActiveSessionInMemoryForTest({
+        name: 'test-scroll',
+        platform,
+        deviceId: 'TEST-UDID',
+        openedAt: '2026-10-13T00:00:00.000Z',
+        appId: 'dev.lykhoyda.rndevagent.fixture',
+      });
+      for (const direction of ['up', 'down'] as const) {
+        for (const distance of [undefined, 10, 5000]) {
+          for (const within of [
+            { x: 0, y: 300, width: 390, height: 40 },
+            { x: 0, y: 770, width: 390, height: 74 },
+            { x: 0, y: 300.5, width: 390, height: 50 },
+            { x: 0, y: 300.5, width: 390, height: 51 },
+          ]) {
+            const result = await createDeviceScrollHandler()({ direction, distance, within });
+            const envelope = JSON.parse(result.content[0].text);
+            assert.equal(envelope.ok, false);
+            assert.equal(envelope.code, 'SCROLL_BAND_TOO_SMALL');
+            assert.equal(envelope.meta?.mutation, 'none');
+          }
+        }
+      }
     }
     assert.deepEqual(bodies, []);
   } finally {
