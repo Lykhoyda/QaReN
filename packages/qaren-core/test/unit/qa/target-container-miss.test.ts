@@ -242,7 +242,7 @@ for (const android of [false, true]) {
     });
   }
 
-  test(`${platform}: failed scroll distinguishes a target only inside a larger label`, async () => {
+  test(`${platform}: failed scroll distinguishes a substring inside a larger label part`, async () => {
     const screen = join(nodes(android), []);
     const f = walker(
       [screen],
@@ -257,7 +257,7 @@ for (const android of [false, true]) {
         native: async () => attested(nodes(android)),
         react: async () => ({ interactive: [] }),
       });
-    const result = await runPlan(parsePlan('1. Scroll down until "Add coverage"').blocks!, f.deps);
+    const result = await runPlan(parsePlan('1. Scroll down until "coverage"').blocks!, f.deps);
     assert.equal(result.verdict, 'FAIL');
     assert.match(JSON.stringify(result), /only-in-aggregated-label/);
     assert.equal(diagnostics.length, 1);
@@ -291,7 +291,11 @@ for (const android of [false, true]) {
           });
         const result = await runPlan(
           parsePlan(
-            kind === 'wait' ? '1. Wait for "Add coverage"' : '1. Scroll down until "Add coverage"',
+            kind === 'wait'
+              ? '1. Wait for "Add coverage"'
+              : expected === 'only-in-aggregated-label'
+                ? '1. Scroll down until "coverage"'
+                : '1. Scroll down until "Add coverage"',
           ).blocks!,
           f.deps,
         );

@@ -794,6 +794,7 @@ export function aggregateScrollTargetVisible(target: Target, screen: Screen): bo
       !element.ref.startsWith('react:') &&
       ['other', 'cell'].includes(element.nativeKind ?? element.kind) &&
       !element.offscreen &&
+      screen.labelText?.includes(element.label ?? '') &&
       element.label?.split(',').some((part) => part.trim() === target.quoted),
   );
   if (matches.length > 1)

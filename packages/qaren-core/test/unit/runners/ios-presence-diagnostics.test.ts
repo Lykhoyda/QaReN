@@ -92,10 +92,11 @@ ${section(snapshot, '  private func presenceRead<', '  private func presenceAppI
     }
     precondition(notHittable == false && unobservable != nil && unobservable! == nil)
     precondition(unavailable == nil && reads == 4)
-    precondition(ordinary.diagnostics(complete: false).failure == nil)
+    precondition(ordinary.diagnostics(complete: false).failure?.reason == .readUnavailable)
     now = 140
     ordinary.endPhase()
-    print(String(data: try JSONEncoder().encode(ordinary.diagnostics(complete: true)), encoding: .utf8)!)
+    print(String(data: try JSONEncoder().encode(ordinary.diagnostics(complete: false)), encoding: .utf8)!)
+    precondition(ordinary.diagnostics(complete: true).failure == nil)
 
     now = 4_799
     let changed = PresenceCaptureTiming(started: now, now: { now })
@@ -168,7 +169,10 @@ try Harness().run()
     failure: { phase: 'initial-eligibility', reason: 'deadline' },
     deadline: { phase: 'initial-eligibility', read: 'app-state', edge: 'before' },
   });
-  assert.deepEqual(ordinary, { phaseMs: { 'initial-eligibility': 0, observation: 40 } });
+  assert.deepEqual(ordinary, {
+    phaseMs: { 'initial-eligibility': 0, observation: 40 },
+    failure: { phase: 'observation', reason: 'read-unavailable' },
+  });
   assert.deepEqual(changed, {
     phaseMs: { revalidation: 2 },
     failure: { phase: 'revalidation', reason: 'enumeration-changed' },
