@@ -206,11 +206,13 @@ for (const after of [
   });
 }
 
-test('a readable prefill beyond the clear budget refuses without mutation', async () => {
-  const { env, dispatched } = await run({ value: 'x'.repeat(257), focused: true });
+test('a focused readable prefill beyond the clear budget preserves its refusal without mutation', async () => {
+  const { env, dispatched, clearCounts } = await run({ value: 'x'.repeat(257), focused: true });
   assert.equal(env.ok, false);
+  assert.equal(env.code, 'TEXT_ENTRY_UNVERIFIED');
   assert.equal(env.meta.mutation, 'none');
   assert.deepEqual(dispatched, []);
+  assert.deepEqual(clearCounts, []);
 });
 
 for (const kind of ['private', 'secure'] as const) {
