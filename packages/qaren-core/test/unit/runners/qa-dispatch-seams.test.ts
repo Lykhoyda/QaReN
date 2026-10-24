@@ -769,21 +769,18 @@ for (const mode of ['proof', 'transition'] as const) {
         client,
       );
       const env = JSON.parse(result.content[0].text);
-      const prepared = focused === true || (mode === 'transition' && focused === null);
       const allowed = focused === true;
       const prefix = allowed
         ? ['health', 'focus', 'type', 'focus', 'type', 'health']
-        : prepared
-          ? ['health', 'focus', 'type', 'focus']
-          : ['health', 'focus'];
+        : ['health', 'focus'];
       assert.deepEqual(events.slice(0, prefix.length), prefix);
       assert.ok(events.slice(prefix.length).every((event) => event === 'focus'));
-      assert.deepEqual(sends, allowed ? ['type', 'type'] : prepared ? ['type'] : []);
+      assert.deepEqual(sends, allowed ? ['type', 'type'] : []);
       assert.equal(context.authorizations, sends.length);
       assert.equal(env.ok, allowed);
       if (!allowed) {
-        assert.equal(env.code, prepared ? 'TEXT_ENTRY_UNVERIFIED' : 'NO_TEXT_INPUT_TARGET');
-        assert.equal(env.meta.mutation, prepared ? 'possible' : 'none');
+        assert.equal(env.code, 'NO_TEXT_INPUT_TARGET');
+        assert.equal(env.meta.mutation, 'none');
       }
     });
   }
