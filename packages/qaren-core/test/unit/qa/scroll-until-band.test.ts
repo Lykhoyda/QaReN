@@ -338,22 +338,38 @@ test('a keyboard-covered target clears a floating toolbar before building the dr
     [
       { ref: '@window', index: 0, type: 'Window', rect: frame },
       {
-        ref: '@list', index: 1, parentIndex: 0, type: 'ScrollView',
+        ref: '@list',
+        index: 1,
+        parentIndex: 0,
+        type: 'ScrollView',
         rect: { x: 0, y: 300, width: 390, height: 500 },
       },
       {
-        ref: '@target', index: 2, parentIndex: 1, type: 'Button', identifier: 'go',
-        hittable: true, rect: { x: 20, y: 518, width: 300, height: 44 },
+        ref: '@target',
+        index: 2,
+        parentIndex: 1,
+        type: 'Button',
+        identifier: 'go',
+        hittable: true,
+        rect: { x: 20, y: 518, width: 300, height: 44 },
       },
       {
-        ref: '@toolbar', index: 3, parentIndex: 0, type: 'Toolbar', hittable: true,
+        ref: '@toolbar',
+        index: 3,
+        parentIndex: 0,
+        type: 'Toolbar',
+        hittable: true,
         rect: { x: 0, y: 425, width: 390, height: 25 },
       },
       {
-        ref: '@keyboard', index: 4, parentIndex: 0, type: 'Keyboard',
+        ref: '@keyboard',
+        index: 4,
+        parentIndex: 0,
+        type: 'Keyboard',
         rect: { x: 0, y: 508, width: 390, height: 336 },
       },
-    ], [],
+    ],
+    [],
   );
   const band = scrollUntilBand(until('Scroll down until "go"'), screen)!;
   assert.deepEqual(band, { x: 0, y: 300, width: 390, height: 121 });
@@ -371,7 +387,10 @@ test('a no-container fallback stays centred with a separate keyboard window', ()
     { ref: '@window', index: 0, type: 'Window', rect: frame },
     { ref: '@keyboard-window', index: 1, type: 'Window', rect: frame },
     {
-      ref: '@keyboard', index: 2, parentIndex: 1, type: 'Keyboard',
+      ref: '@keyboard',
+      index: 2,
+      parentIndex: 1,
+      type: 'Keyboard',
       rect: { x: 0, y: 508, width: 390, height: 336 },
     },
   ];
@@ -380,10 +399,22 @@ test('a no-container fallback stays centred with a separate keyboard window', ()
   clearRefMap();
   updateRefMapFromFlat(nodes, { snapshotGeneration: 1, keyboardVisible: true });
   try {
-    assert.deepEqual(buildDirectionalScrollCliArgs('down', 0.6, undefined, undefined, band),
-      ['scroll', '195', '315', '195', '193', '300']);
-    assert.deepEqual(buildDirectionalScrollCliArgs('up', 0.6, undefined, undefined, band),
-      ['scroll', '195', '193', '195', '315', '300']);
+    assert.deepEqual(buildDirectionalScrollCliArgs('down', 0.6, undefined, undefined, band), [
+      'scroll',
+      '195',
+      '315',
+      '195',
+      '193',
+      '300',
+    ]);
+    assert.deepEqual(buildDirectionalScrollCliArgs('up', 0.6, undefined, undefined, band), [
+      'scroll',
+      '195',
+      '193',
+      '195',
+      '315',
+      '300',
+    ]);
   } finally {
     clearRefMap();
   }

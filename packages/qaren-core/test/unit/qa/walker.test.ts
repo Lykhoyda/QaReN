@@ -482,7 +482,7 @@ for (const direction of ['up', 'down']) {
       drags += 1;
       return { ok: true, proven: false };
     };
-    f.deps.captureScreen = async () => drags ? after : before;
+    f.deps.captureScreen = async () => (drags ? after : before);
     const result = await runPlan([block(`1. Scroll ${direction} until "Footer"\n`)], f.deps);
     assert.equal(result.verdict, 'REFUSED');
     assert.equal(result.code, 'SCROLL_NAVIGATED');

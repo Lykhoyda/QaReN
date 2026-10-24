@@ -8,7 +8,7 @@ import {
 } from './screen.js';
 
 function identities(values: (string | undefined)[]): string {
-  return JSON.stringify([...new Set(values.flatMap((value) => value ? [value] : []))].sort());
+  return JSON.stringify([...new Set(values.flatMap((value) => (value ? [value] : [])))].sort());
 }
 
 export function scrollNavigationChange(
@@ -16,31 +16,41 @@ export function scrollNavigationChange(
   after: Screen,
   container?: Element,
 ): string | undefined {
-  const selected = (screen: Screen) => identities(
-    screen.elements.filter((element) =>
-      element.selected && !isScrollContainer(element) &&
-      !ancestorsOf(element).some(isScrollContainer),
-    ).map((element) => element.testID ? `id:${element.testID}` : element.label),
-  );
-  if (selected(before) !== selected(after)) return 'selected element outside the scroll list changed';
-  const titles = (screen: Screen) => identities(
-    screen.elements.filter((element) =>
-      element.semantic?.heading?.kind === 'navigation-title',
-    ).map((element) => element.label ?? element.testID),
-  );
+  const selected = (screen: Screen) =>
+    identities(
+      screen.elements
+        .filter(
+          (element) =>
+            element.selected &&
+            !isScrollContainer(element) &&
+            !ancestorsOf(element).some(isScrollContainer),
+        )
+        .map((element) => (element.testID ? `id:${element.testID}` : element.label)),
+    );
+  if (selected(before) !== selected(after))
+    return 'selected element outside the scroll list changed';
+  const titles = (screen: Screen) =>
+    identities(
+      screen.elements
+        .filter((element) => element.semantic?.heading?.kind === 'navigation-title')
+        .map((element) => element.label ?? element.testID),
+    );
   if (titles(before) !== titles(after)) return 'navigation title changed';
   if (container) {
     const frame = elementFrame(container);
     const tolerance = 2 * (before.pointScale ?? 1);
     const present = after.elements.some((element) => {
       const next = elementFrame(element);
-      return isScrollContainer(element) &&
+      return (
+        isScrollContainer(element) &&
         scrollContainerType(element) === scrollContainerType(container) &&
         (!container.testID || element.testID === container.testID) &&
-        frame && next &&
-        (['x', 'y', 'width', 'height'] as const).every((axis) =>
-          Math.abs(frame[axis] - next[axis]) <= tolerance,
-        );
+        frame &&
+        next &&
+        (['x', 'y', 'width', 'height'] as const).every(
+          (axis) => Math.abs(frame[axis] - next[axis]) <= tolerance,
+        )
+      );
     });
     if (!present) return 'scrolled list disappeared or changed';
   }

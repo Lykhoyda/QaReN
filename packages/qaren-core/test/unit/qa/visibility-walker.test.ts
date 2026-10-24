@@ -116,7 +116,11 @@ for (const direction of ['up', 'down']) {
       assert.equal(drags, 1);
       assert.deepEqual(f.actions, [`scroll ${direction}`]);
       assert.equal(f.captures(), 3);
-      assert.equal(judge.requests.length, 2, 'the destination must not receive a visibility judgment');
+      assert.equal(
+        judge.requests.length,
+        2,
+        'the destination must not receive a visibility judgment',
+      );
       assert.ok(result.steps.every((step) => step.outcome !== 'pass'));
     });
   }
