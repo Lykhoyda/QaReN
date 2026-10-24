@@ -56,6 +56,26 @@ test('literal-only plans acquire provenance for quoted presses and presence for 
   assert.equal(JSON.stringify(result).includes('private-value'), false);
 });
 
+test('quoted scroll-until requests platform evidence without requiring semantic presence', async () => {
+  for (const direction of ['down', 'up']) {
+    const initial = screen([element('@welcome', 'Welcome')]);
+    const revealed = screen([element('@save', 'Save')]);
+    for (const captured of [initial, revealed]) {
+      captured.captureCoverage = { native: 'complete', react: 'complete' };
+      captured.coverage = { native: 'unknown', react: 'complete' };
+    }
+    const f = walker(
+      [initial, revealed],
+      scriptedJudge(() => assert.fail('literal scroll-until must not ask Jev')),
+    );
+    const modes = traceCaptures(f);
+    const result = await runPlan(parsePlan(`1. Scroll ${direction} until "Save"`).blocks!, f.deps);
+    assert.equal(result.verdict, 'PASS', result.failure?.seen);
+    assert.deepEqual(modes, [true, true]);
+    assert.deepEqual(f.actions, [`scroll ${direction}`]);
+  }
+});
+
 test('standalone semantic checks and checks batched with targetless steps retain presence on re-ask', async () => {
   for (const next of ['', '\n1. Back', '\n1. Scroll down', '\n1. Accept the dialog']) {
     const judge = scriptedJudge((questions, index) => {

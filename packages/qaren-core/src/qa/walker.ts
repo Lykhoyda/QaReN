@@ -461,12 +461,11 @@ async function walkBlockScoped(
     cached = undefined;
     const target =
       step && ('target' in step ? step.target : step.kind === 'scroll' ? step.until : undefined);
-    const requirePresence =
-      assertion ||
-      (step?.kind === 'scroll' && !!step.until) ||
-      (!!target && target.quoted === undefined);
+    const requirePresence = assertion || (!!target && target.quoted === undefined);
     const platformPresence =
-      requirePresence || (!!target && step?.kind === 'press' && target.exact !== 'id');
+      requirePresence ||
+      (step?.kind === 'scroll' && !!step.until) ||
+      (!!target && step?.kind === 'press' && target.exact !== 'id');
     const startedAt = deps.now();
     const id = ++sequence.observation;
     latestObservation = id;
