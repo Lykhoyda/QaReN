@@ -437,7 +437,7 @@ fn epoch_ms() -> u64 {
         .unwrap_or(0)
 }
 
-// Names, labels and codes only: anything else is cut to a bounded identifier.
+// Bounding identifier shape does not anonymise model or build metadata.
 fn token(s: &str) -> String {
     s.chars()
         .filter(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '-' | '.'))
