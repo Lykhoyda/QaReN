@@ -3,7 +3,7 @@ import { TYPOGRAPHY_TEXT_LIMITS } from './qa/host-typography.js';
 import { INPUT_HOST_TYPES } from './qa/input-host-types.js';
 
 // Bump when the injected surface changes so warm runtimes replace stale helpers.
-export const HELPERS_VERSION = 100;
+export const HELPERS_VERSION = 101;
 
 export const INJECTED_HELPERS = `
 (function() {
@@ -4599,8 +4599,20 @@ export const INJECTED_HELPERS = `
     var props = resolution.binding.candidateFiber.memoizedProps || {};
     var focused = hostIsFocused(resolution.binding.candidateFiber);
     if (options && options.focusOnly) return JSON.stringify({ value: null, controlled: false, focused: focused });
+    if (options && options.valueState && props.secureTextEntry !== true) {
+      var localValue = props.value;
+      var readable = typeof localValue === 'string';
+      return JSON.stringify({
+        value: null, controlled: readable, focused: focused, secure: false,
+        privateValue: options.privateValue === true,
+        contentLength: readable ? localValue.length : undefined,
+        exact: readable && typeof options.compareTo === 'string'
+          ? localValue.length === options.compareTo.length && localValue === options.compareTo
+          : undefined
+      });
+    }
     if (options && (options.privateValue || (options.protectSecure && props.secureTextEntry === true))) {
-      return JSON.stringify({ value: null, controlled: false, focused: focused, privateValue: true });
+      return JSON.stringify({ value: null, controlled: false, focused: focused, privateValue: true, secure: props.secureTextEntry === true });
     }
     if (typeof props.value === 'string') {
       return JSON.stringify({ value: props.value, controlled: true, focused: focused });

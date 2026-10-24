@@ -2,4 +2,4 @@
 'qaren': patch
 ---
 
-Fix iOS Fill replacement of prefilled fields with explicit deletion, a bounded clear fallback, and a fresh focus check before typing.
+Fix iOS Fill for empty and prefilled non-secure inputs by confirming clear completion before typing and failing private value mismatches while preserving direct secure typing.

@@ -732,9 +732,11 @@ for (const mode of ['proof', 'transition'] as const) {
       session();
       const events: string[] = [];
       let currentFocus: boolean | null = true;
+      let currentValue = '';
       const sends = runner(
         () => {
           events.push('type');
+          currentValue = 'replacement';
           return { ok: true, data: { typed: true, textEntryRoute: 'synthesized-first-responder' } };
         },
         async () => {
@@ -750,7 +752,11 @@ for (const mode of ['proof', 'transition'] as const) {
           return currentFocus === null
             ? { error: 'unavailable' }
             : {
-                value: JSON.stringify({ value: '', controlled: true, focused: currentFocus }),
+                value: JSON.stringify({
+                  value: currentValue,
+                  controlled: true,
+                  focused: currentFocus,
+                }),
               };
         },
       } as never;
@@ -771,11 +777,11 @@ for (const mode of ['proof', 'transition'] as const) {
       const env = JSON.parse(result.content[0].text);
       const allowed = focused === true;
       const prefix = allowed
-        ? ['focus', 'health', 'focus', 'type', 'focus', 'type', 'health']
+        ? ['focus', 'health', 'focus', 'type', 'health']
         : ['focus', 'health', 'focus'];
       assert.deepEqual(events.slice(0, prefix.length), prefix);
       assert.ok(events.slice(prefix.length).every((event) => event === 'focus'));
-      assert.deepEqual(sends, allowed ? ['type', 'type'] : []);
+      assert.deepEqual(sends, allowed ? ['type'] : []);
       assert.equal(context.authorizations, sends.length);
       assert.equal(env.ok, allowed);
       if (!allowed) {
@@ -1176,5 +1182,70 @@ for (const [name, pid, after, nativeCode] of [
     assert.equal(context.refusalDiagnostic?.stage, 'settle');
     assert.equal(context.refusalDiagnostic?.mutating, true);
     assert.equal(context.refusalDiagnostic?.nativeCode, nativeCode ?? null);
+  });
+}
+
+for (const applies of [true, false]) {
+  test(`focused private clear must settle before the actual string request: applied=${applies}`, async () => {
+    session();
+    let value = 'old';
+    let preparation = false;
+    let clearReads = 0;
+    const bodies: Array<Record<string, unknown>> = [];
+    const sends = runner((body) => {
+      bodies.push(body);
+      if (body.prepareReplacement) {
+        preparation = true;
+      } else {
+        assert.equal(value, '');
+        value = 'replacement';
+      }
+      return { ok: true, data: { typed: true } };
+    });
+    const client = {
+      evaluate: async (expression: string) => {
+        const [, options] = JSON.parse(
+          '[' + expression.slice('__QAREN.readInputValue('.length, -1) + ']',
+        );
+        if (preparation && options.compareTo === '') {
+          clearReads++;
+          if (applies && clearReads >= 2) value = '';
+        }
+        return {
+          value: JSON.stringify({
+            value: null,
+            controlled: true,
+            focused: true,
+            secure: false,
+            privateValue: true,
+            contentLength: value.length,
+            ...(typeof options.compareTo === 'string'
+              ? { exact: value === options.compareTo }
+              : {}),
+          }),
+        };
+      },
+    } as never;
+    const context = new QaDispatchContext(5_000, () => 1);
+    const result = await performFocusedFill(
+      {
+        ref: 'field',
+        testID: 'field',
+        text: 'replacement',
+        privateValue: true,
+        clearFirst: true,
+        qaContext: context,
+        skipFinalValidation: true,
+      },
+      client,
+    );
+    const envelope = JSON.parse(result.content[0].text);
+    assert.equal(envelope.ok, applies);
+    assert.deepEqual(sends, applies ? ['type', 'type'] : ['type']);
+    assert.equal(bodies[0].text, '');
+    assert.equal(bodies[0].replacementDeleteCount, 3);
+    if (applies) assert.equal(bodies[1].clearFirst, false);
+    assert.ok(clearReads >= 3);
+    assert.equal(context.authorizations, sends.length);
   });
 }
