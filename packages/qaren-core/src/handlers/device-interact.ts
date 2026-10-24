@@ -1743,7 +1743,7 @@ export async function performFocusedFill(
       },
       'Typed into the focused field; the value could not be confirmed. Confirm with device_screenshot or expect_text before relying on it.',
     );
-  const initialBefore = before;
+  const initialBefore = before as string | null;
   if (privateValue && !secure && args.clearFirst) {
     const comparison = await measureTiming(
       args.qaTiming?.observe,
@@ -1832,10 +1832,31 @@ export async function performFocusedFill(
     });
   const verification = await readBack();
   if (verification.verdict === 'exact') return verified();
-  if (verification.verdict === 'mismatch') {
+  const retainedPrefix = (result: Awaited<ReturnType<typeof readBack>>) =>
+    args.clearFirst &&
+    initialBefore.length > 0 &&
+    result.verdict === 'mismatch' &&
+    result.observed !== undefined &&
+    result.observed.startsWith(initialBefore) &&
+    result.observed.endsWith(args.text) &&
+    result.observed.length > args.text.length;
+  if (retainedPrefix(verification)) {
+    const observed = verification.observed!;
+    if (observed.length <= 256 && !args.qaContext?.expired) {
+      const replacement = await dispatchFill(observed.length, observed);
+      if (replacement.isError) {
+        return fillFailure('TEXT_ENTRY_UNVERIFIED', extractErrorText(replacement), {
+          mutation: extractMutationDisposition(replacement) === 'none' ? 'observed' : 'possible',
+          pathsTried,
+        });
+      }
+      const recovered = await readBack();
+      if (recovered.verdict === 'exact') return verified();
+      if (!retainedPrefix(recovered)) return unverified();
+    }
     return fillFailure(
       'TEXT_ENTRY_UNVERIFIED',
-      'The input differs from the requested text; not retrying.',
+      'The input retained its prior value after bounded replacement; not retrying.',
       { mutation: 'observed', pathsTried },
     );
   }
