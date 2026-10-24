@@ -472,6 +472,52 @@ export function clearanceBand(element: Element, screen: Screen): NativeNode['rec
   return bottom > top ? { ...viewport, y: top, height: bottom - top } : undefined;
 }
 
+function clearOfFrontOverlays(
+  container: Element | undefined,
+  band: NonNullable<NativeNode['rect']>,
+  screen: Screen,
+): NativeNode['rect'] {
+  const window = container
+    ? ancestorsOf(container).find(isWindow)
+    : screen.elements.slice().reverse().find(isWindow);
+  const floor = container ?? window;
+  const behind = floor ? screen.elements.indexOf(floor) : -1;
+  let spans = [{ top: band.y, bottom: band.y + band.height }];
+  const padding = 4 * (screen.pointScale ?? 1);
+  for (const [i, other] of screen.elements.entries()) {
+    if (
+      i <= behind ||
+      isWindow(other) ||
+      other.kind === 'text' ||
+      other.offscreen ||
+      !other.hittable
+    )
+      continue;
+    if (container && ancestorsOf(other).includes(container)) continue;
+    const rect = elementFrame(other);
+    if (
+      !rect ||
+      rect.width <= 0 ||
+      rect.height <= 0 ||
+      rect.x - padding >= band.x + band.width ||
+      rect.x + rect.width + padding <= band.x
+    )
+      continue;
+    const top = rect.y - padding;
+    const bottom = rect.y + rect.height + padding;
+    spans = spans.flatMap((span) =>
+      bottom <= span.top || top >= span.bottom
+        ? [span]
+        : [
+            { top: span.top, bottom: Math.min(span.bottom, top) },
+            { top: Math.max(span.top, bottom), bottom: span.bottom },
+          ].filter((part) => part.bottom > part.top),
+    );
+  }
+  const best = spans.sort((a, b) => b.bottom - b.top - (a.bottom - a.top))[0];
+  return best ? { ...band, y: best.top, height: best.bottom - best.top } : undefined;
+}
+
 // An occluded target scrolls toward the centre of the visible part of its clip.
 export function clearanceScroll(element: Element, screen: Screen): 'up' | 'down' {
   const frame = elementFrame(element);
@@ -507,33 +553,44 @@ function horizontalOnlyContainer(type: string | undefined): boolean {
   return HORIZONTAL_ONLY_SUFFIXES.some((suffix) => leaf.endsWith(suffix));
 }
 
-// Covered inside its clip: its clearance band. Scrolled out of it: the clip itself is the list to
-// move. Otherwise the frontmost visible scroll container above the keyboard.
-export function scrollUntilBand(target: Target, screen: Screen): NativeNode['rect'] {
+function aboveKeyboard(rect: NativeNode['rect'], screen: Screen): NativeNode['rect'] {
+  if (!rect) return undefined;
   const keyboardTop =
     screen.keyboardVisible !== false && screen.keyboardFrame ? screen.keyboardFrame.y : Infinity;
-  const aboveKeyboard = (rect: NativeNode['rect']): NativeNode['rect'] => {
-    if (!rect) return undefined;
-    const height = Math.min(rect.y + rect.height, keyboardTop - KEYBOARD_EDGE_INSET) - rect.y;
-    return rect.width > 0 && height > 0 ? { ...rect, height } : undefined;
-  };
+  const height = Math.min(rect.y + rect.height, keyboardTop - KEYBOARD_EDGE_INSET) - rect.y;
+  return rect.width > 0 && height > 0 ? { ...rect, height } : undefined;
+}
+
+export function scrollUntilContainer(target: Target, screen: Screen): Element | undefined {
   const matches = exactIdentities(screen, target, 'scroll');
   if (matches.length === 1) {
     const element = matches[0].element;
-    if (!element.offscreen) return clearanceBand(element, screen);
-    const own = aboveKeyboard(elementViewport(element));
-    if (own) return own;
+    if (!element.offscreen || aboveKeyboard(elementViewport(element), screen))
+      return ancestorsOf(element).find(isScrollContainer);
   }
-  let best: NativeNode['rect'];
+  let best: Element | undefined;
   for (const element of screen.elements) {
     if (!isScrollContainer(element) || horizontalOnlyContainer(scrollContainerType(element)))
       continue;
     const frame = elementFrame(element);
     if (!frame) continue;
-    // Element order is the runner's traversal: later windows are frontmost, children follow parents.
-    best = aboveKeyboard(clip(frame, elementViewport(element))) ?? best;
+    if (aboveKeyboard(clip(frame, elementViewport(element)), screen)) best = element;
   }
   return best;
+}
+
+export function scrollUntilBand(target: Target, screen: Screen): NativeNode['rect'] {
+  const container = scrollUntilContainer(target, screen);
+  const matches = exactIdentities(screen, target, 'scroll');
+  if (matches.length === 1) {
+    const element = matches[0].element;
+    if (!element.offscreen) return clearanceBand(element, screen);
+    const own = aboveKeyboard(elementViewport(element), screen);
+    if (own) return clearOfFrontOverlays(container, own, screen) ?? { ...own, height: 0 };
+  }
+  const frame = container && elementFrame(container);
+  const band = container && frame && aboveKeyboard(clip(frame, elementViewport(container)), screen);
+  return band && (clearOfFrontOverlays(container, band, screen) ?? { ...band, height: 0 });
 }
 
 const GENERIC_TARGET_WORDS = new Set(

@@ -301,11 +301,11 @@ test('(p) that drag spans the visible list and cannot land as a tap', () => {
   const band = scrollUntilBand(option20, androidOptionSheet())!;
   const [x1, y1, x2, y2] = bandDrag(band, { width: 1080, height: 2424 }, 1541);
   assert.deepEqual([x1, x2], [540, 540]);
-  assert.ok(y1 - y2 >= 500, `${y1} -> ${y2}`);
+  assert.ok(y1 - y2 >= Math.floor(band.height * 0.8) - 2, `${y1} -> ${y2}`);
   for (const y of [y1, y2]) assert.ok(y > 949 && y < 1453, `${y}`);
 });
 
-test('(r) an offscreen target ignores overlays, a covered row still stops at a footer after the list', () => {
+test('(r) an offscreen target clears front overlays, a covered row still stops at a footer after the list', () => {
   const footer: NativeNode = {
     ref: '@footer',
     index: 31,
@@ -315,7 +315,7 @@ test('(r) an offscreen target ignores overlays, a covered row still stops at a f
     rect: { x: 37, y: 1300, width: 1006, height: 153 },
   };
   const screen = androidOptionSheet(0, [footer]);
-  assert.deepEqual(scrollUntilBand(option20, screen), ANDROID_LIST);
+  assert.deepEqual(scrollUntilBand(option20, screen), { ...ANDROID_LIST, height: 347 });
   assert.deepEqual(clearanceBand(byRef(screen, '@option-2'), screen), {
     ...ANDROID_LIST,
     height: 1300 - 949,
@@ -327,6 +327,98 @@ test('(v) an iOS row below a stretched list drags across the band, clear of the 
   const band = scrollUntilBand(until('Scroll down until "qa-sheet-capture-option-17"'), screen)!;
   assert.deepEqual(band, { ...IOS_LIST, height: 568 - 48 - 357 });
   const [, y1, , y2] = bandDrag(band, { width: 402, height: 874 }, 568);
-  assert.deepEqual([y1, y2], [519, 358]);
+  assert.deepEqual([y1, y2], [504, 374]);
   assert.ok(y1 <= 568 - KEYBOARD_EDGE_INSET, `${y1}`);
+});
+
+function floatingTabScreen(barHittable: boolean): Screen {
+  const frame = { x: 0, y: 0, width: 402, height: 874 };
+  return join(
+    [
+      { ref: '@app', index: 0, type: 'Application', rect: frame },
+      { ref: '@window', index: 1, parentIndex: 0, type: 'Window', rect: frame },
+      { ref: '@list', index: 2, parentIndex: 1, type: 'ScrollView', rect: frame },
+      {
+        ref: '@bar',
+        index: 3,
+        parentIndex: 1,
+        type: 'TabBar',
+        hittable: barHittable,
+        rect: { x: 20, y: 780, width: 362, height: 60 },
+      },
+      ...[0, 1].map((i) => ({
+        ref: `@tab-${i}`,
+        index: 4 + i,
+        parentIndex: 3,
+        type: 'Button',
+        hittable: true,
+        rect: { x: 20 + 181 * i, y: 780, width: 181, height: 60 },
+      })),
+    ],
+    [],
+  );
+}
+
+for (const [label, hittable] of [
+  ['w', true],
+  ['x', false],
+] as const) {
+  test(`(${label}) floating tab controls are outside the scroll-until band when bar hittable=${hittable}`, () => {
+    const band = scrollUntilBand(option20, floatingTabScreen(hittable));
+    assert.ok(band && band.height > 0);
+    assert.ok(band.y + band.height <= 776, JSON.stringify(band));
+  });
+}
+
+test('(y) list rows and a header drawn before the list do not cut the band', () => {
+  const frame = { x: 0, y: 0, width: 402, height: 874 };
+  const screen = join(
+    [
+      { ref: '@app', index: 0, type: 'Application', rect: frame },
+      { ref: '@window', index: 1, parentIndex: 0, type: 'Window', rect: frame },
+      {
+        ref: '@header',
+        index: 2,
+        parentIndex: 1,
+        type: 'Button',
+        hittable: true,
+        rect: { x: 0, y: 790, width: 402, height: 40 },
+      },
+      { ref: '@list', index: 3, parentIndex: 1, type: 'ScrollView', rect: frame },
+      {
+        ref: '@row',
+        index: 4,
+        parentIndex: 3,
+        type: 'Button',
+        hittable: true,
+        rect: { x: 0, y: 750, width: 402, height: 60 },
+      },
+    ],
+    [],
+  );
+  assert.deepEqual(scrollUntilBand(option20, screen), frame);
+});
+
+test('a fully covered list refuses instead of falling back to a window drag', () => {
+  const frame = { x: 0, y: 0, width: 402, height: 874 };
+  const screen = join(
+    [
+      { ref: '@app', index: 0, type: 'Application', rect: frame },
+      { ref: '@window', index: 1, parentIndex: 0, type: 'Window', rect: frame },
+      { ref: '@list', index: 2, parentIndex: 1, type: 'ScrollView', rect: frame },
+      { ref: '@overlay', index: 3, parentIndex: 1, type: 'Button', hittable: true, rect: frame },
+    ],
+    [],
+  );
+  const band = scrollUntilBand(option20, screen);
+  clearRefMap();
+  updateRefMapFromFlat([{ ref: '@window', type: 'Window', rect: frame }]);
+  try {
+    assert.throws(
+      () => buildDirectionalScrollCliArgs('down', 0.6, undefined, undefined, band),
+      /SCROLL_BAND_TOO_SMALL/,
+    );
+  } finally {
+    clearRefMap();
+  }
 });

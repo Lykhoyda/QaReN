@@ -343,7 +343,7 @@ test("(t) rows of the target's own list never shrink its band, even as direct ch
   });
 });
 
-// One swipe lifts at most the band (161 pt); option 20 parked 184 pt under the keyboard is past the single-swipe rule.
+// Option 20 remains beyond one clearance drag.
 test('(u) one clearance swipe spans the band clear of the keyboard edge', () => {
   const screen = parked();
   const target = byRef(screen, '@option-20');
@@ -365,7 +365,7 @@ test('(u) one clearance swipe spans the band clear of the keyboard edge', () => 
       distance,
       clearanceBand(target, screen),
     ).map(Number);
-    assert.deepEqual([y1, y2], [519, 358]);
+    assert.deepEqual([y1, y2], [504, 374]);
     assert.ok(y1 - y2 < 752 - 568, `${y1 - y2}`);
   } finally {
     clearRefMap();

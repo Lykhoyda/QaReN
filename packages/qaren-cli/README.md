@@ -719,11 +719,12 @@ Android, using the snapshot's display density, and 20 pt from the top and 34 pt
 from the bottom on iOS. Callers passing no band
 use the existing keyboard-safe band. On both iOS and Android, a target whose centre
 is covered by the observed keyboard or a sticky overlay gets a scroll sized to move that centre
-toward the middle of that band, and the drag may span the band with both endpoints
-at least one pixel inside its edges after rounding. A clearance scroll without
+toward the middle of that band. Precise drags normally keep a 10% dead zone at
+each edge; short bands shrink that dead zone to preserve at least 48 px of
+travel, while keeping the existing one-pixel edge inset. A clearance scroll without
 a band keeps the cap of 60% of the screen area above the keyboard.
 Scrolls without a clearance distance keep the fixed amount of `0.6` on the window
-band; inside a caller band they span the band a pixel inside each edge, except
+band; inside a caller band they span its clear interior, except
 a keyboard-bound edge, which the band clears by 48 pt so the drag never starts on
 the keyboard. One scroll-until attempt moves the list by one visible band and
 cannot carry the target past it. A band shorter than 50 px refuses `SCROLL_BAND_TOO_SMALL` before
@@ -1170,7 +1171,14 @@ target or no known viewport, the requested direction is retained. The
 scroll-until drag starts inside the list it is meant to move (the target's own
 scroll container, or the frontmost one above the keyboard), not at the screen
 centre. A row scrolled out of its list drags inside that list; a row covered
-inside it drags inside its clearance band. One clearance swipe lifts a covered
+inside it drags inside its clearance band. For absent or scrolled-out targets,
+the screen model removes the padded rows of hittable non-text elements drawn
+after the selected list, outside its subtree, that overlap the band horizontally.
+The largest remaining vertical span becomes the drag band; window ancestors and
+the list's own rows do not cut it. Padding uses four points, scaled by the captured
+display density on Android when available. An exhausted clear span refuses with
+`SCROLL_BAND_TOO_SMALL`; a screen without a scroll container retains the centred
+window drag. One clearance swipe lifts a covered
 row by at most the height of its list's visible band above the keyboard.
 A uniquely name-matched off-screen row further away is scrolled toward again,
 at most six times, stopping on an unchanged screen or the existing deadline;

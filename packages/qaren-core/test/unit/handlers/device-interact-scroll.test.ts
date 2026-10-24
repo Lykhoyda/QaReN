@@ -15,6 +15,61 @@ import {
   _setFetchForTest,
 } from '../../../dist/runners/rn-fast-runner-client.js';
 
+test('a precise band drag stays 10% inside its edges', () => {
+  updateRefMapFromFlat([
+    { ref: '@window', type: 'Window', rect: { x: 0, y: 0, width: 402, height: 874 } },
+  ]);
+  try {
+    const [, , y1, , y2] = buildDirectionalScrollCliArgs('down', 0.6, undefined, undefined, {
+      x: 0,
+      y: 100,
+      width: 402,
+      height: 700,
+    }).map(Number);
+    assert.ok(y1 <= 730 && y2 >= 170, `${y1} -> ${y2}`);
+  } finally {
+    clearRefMap();
+  }
+});
+
+test('a band outside the window refuses', () => {
+  updateRefMapFromFlat([
+    { ref: '@window', type: 'Window', rect: { x: 0, y: 0, width: 402, height: 874 } },
+  ]);
+  try {
+    assert.throws(
+      () =>
+        buildDirectionalScrollCliArgs('down', 0.6, undefined, undefined, {
+          x: 0,
+          y: 1000,
+          width: 402,
+          height: 100,
+        }),
+      /SCROLL_BAND_TOO_SMALL/,
+    );
+  } finally {
+    clearRefMap();
+  }
+});
+
+test('a 50px precise band shrinks its dead zone to preserve a 48px drag', () => {
+  updateRefMapFromFlat([
+    { ref: '@window', type: 'Window', rect: { x: 0, y: 0, width: 402, height: 874 } },
+  ]);
+  try {
+    const [, , y1, , y2] = buildDirectionalScrollCliArgs('down', 0.6, undefined, undefined, {
+      x: 0,
+      y: 300,
+      width: 402,
+      height: 50,
+    }).map(Number);
+    assert.deepEqual([y1, y2], [349, 301]);
+    assert.equal(y1 - y2, 48);
+  } finally {
+    clearRefMap();
+  }
+});
+
 for (const platform of ['ios', 'android'] as const) {
   const pointScale = platform === 'android' ? 2.625 : 1;
   const topInset = platform === 'android' ? 48 * pointScale : 20;
@@ -63,7 +118,7 @@ for (const platform of ['ios', 'android'] as const) {
     });
   });
 
-  test(`${platform} interior scroll bands retain their endpoints`, () => {
+  test(`${platform} interior scroll bands keep their dead zone`, () => {
     withWindow(() => {
       assert.deepEqual(
         buildDirectionalScrollCliArgs('down', 0.6, undefined, undefined, {
@@ -72,7 +127,7 @@ for (const platform of ['ios', 'android'] as const) {
           width,
           height: 200,
         }),
-        ['scroll', String(width / 2), '499', String(width / 2), '301', '300'],
+        ['scroll', String(width / 2), '480', String(width / 2), '320', '300'],
       );
     });
   });

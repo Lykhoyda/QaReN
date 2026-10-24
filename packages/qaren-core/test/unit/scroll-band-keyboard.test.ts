@@ -67,7 +67,7 @@ test('a plain scroll with no container uses a centred drag despite the cached sc
   }
 });
 
-test('without a keyboard an explicit container band still spans a pixel inside its edges', () => {
+test('without a keyboard an explicit container band keeps its dead zone', () => {
   clearRefMap();
   updateRefMapFromFlat([WINDOW] as never, { snapshotGeneration: 1, keyboardVisible: false });
   try {
@@ -78,7 +78,7 @@ test('without a keyboard an explicit container band still spans a pixel inside i
         width: 360,
         height: 600,
       }),
-      ['scroll', '200', '699', '200', '101', '300'],
+      ['scroll', '200', '640', '200', '160', '300'],
     );
   } finally {
     clearRefMap();
@@ -138,7 +138,7 @@ test('a clearance scroll inside a named band starts and ends inside that band ab
 });
 
 // An Android form: the walker's band is the list above its sticky footer (y 300-1150).
-test('a clearance distance inside a named band spans the whole band, a pixel inside each edge', () => {
+test('a clearance distance inside a named band keeps its dead zone', () => {
   clearRefMap();
   updateRefMapFromFlat(
     [
@@ -154,8 +154,8 @@ test('a clearance distance inside a named band spans the whole band, a pixel ins
       width: 1080,
       height: 850,
     }).map(Number);
-    assert.ok(Math.abs(y1 - 1149) <= 1 && Math.abs(y2 - 301) <= 1, `${y1} ${y2}`);
-    assert.ok(y1 - y2 >= 800, `${y1 - y2}`);
+    assert.ok(Math.abs(y1 - 1065) <= 1 && Math.abs(y2 - 385) <= 1, `${y1} ${y2}`);
+    assert.ok(y1 - y2 >= 680, `${y1 - y2}`);
   } finally {
     clearRefMap();
   }
@@ -189,13 +189,13 @@ function bandDragYs(direction: 'up' | 'down', band: { y: number; height: number 
 }
 
 for (const height of [1045, 1044]) {
-  test(`a full-band clearance drag over a ${height}px band starts and ends strictly inside it`, () => {
+  test(`a clearance drag over a ${height}px band starts and ends strictly inside it`, () => {
     const band = { y: 283, height };
     for (const direction of ['down', 'up'] as const) {
       const ys = bandDragYs(direction, band);
       assert.ok(Math.max(...ys) <= band.y + height - 1, `${direction} ${ys}`);
       assert.ok(Math.min(...ys) >= band.y + 1, `${direction} ${ys}`);
-      assert.ok(Math.abs(ys[0] - ys[1]) >= height - 3, `${direction} ${ys}`);
+      assert.ok(Math.abs(ys[0] - ys[1]) >= Math.floor(height * 0.8) - 2, `${direction} ${ys}`);
     }
   });
 }
@@ -219,7 +219,7 @@ function bandedYs(band: { y: number; height: number }, distance?: number): numbe
 }
 
 test('(w1) a scroll without a distance spans its named band above the keyboard', () => {
-  assert.deepEqual(bandedYs({ y: 300, height: 500 }), [507, 301]);
+  assert.deepEqual(bandedYs({ y: 300, height: 500 }), [487, 321]);
 });
 
 test('(w2) a band too short for a real drag refuses before anything is built', () => {

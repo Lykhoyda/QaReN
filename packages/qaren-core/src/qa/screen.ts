@@ -70,6 +70,7 @@ export interface Element {
 export type Front = 'app' | 'dev-menu' | 'dev-fab' | 'picker' | 'dialog';
 
 export interface Screen {
+  pointScale?: number;
   renderError?: boolean;
   elements: Element[];
   visibleText: string[];
@@ -1184,6 +1185,7 @@ export function join(
     }
   });
   const screen: Screen = {
+    ...(presence?.pointScale !== undefined ? { pointScale: presence.pointScale } : {}),
     elements: elements.filter((_, i) => !duplicates.has(i)),
     visibleText,
     ...(keyboardFrame ? { keyboardFrame, uncoveredText, uncoveredLabelText } : {}),
