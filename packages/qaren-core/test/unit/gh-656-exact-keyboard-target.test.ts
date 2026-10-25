@@ -120,6 +120,7 @@ test('GH-656: iOS feature compatibility rejects old swipe-capable artifacts only
       missing: [
         'EXACT_KEYBOARD_TARGET_GUARD',
         'FILL_EVIDENCE_V1',
+        'FOCUSED_REPLACE_V2',
         'HIT_TESTED_DISPATCH_V1',
         'TARGET_FRAME_GUARD_V1',
         'SNAPSHOT_FIDELITY_V1',
@@ -134,6 +135,7 @@ test('GH-656: iOS feature compatibility rejects old swipe-capable artifacts only
         capabilities: [
           'EXACT_KEYBOARD_TARGET_GUARD',
           'FILL_EVIDENCE_V1',
+          'FOCUSED_REPLACE_V2',
           'HIT_TESTED_DISPATCH_V1',
           'TARGET_FRAME_GUARD_V1',
           'SNAPSHOT_FIDELITY_V1',
@@ -251,6 +253,7 @@ test('GH-656: stale cached keyboard ref refuses before generic iOS healing', asy
           capabilities: [
             'EXACT_KEYBOARD_TARGET_GUARD',
             'FILL_EVIDENCE_V1',
+            'FOCUSED_REPLACE_V2',
             'HIT_TESTED_DISPATCH_V1',
             'TARGET_FRAME_GUARD_V1',
             'SNAPSHOT_FIDELITY_V1',

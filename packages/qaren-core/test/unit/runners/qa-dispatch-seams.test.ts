@@ -732,9 +732,11 @@ for (const mode of ['proof', 'transition'] as const) {
       session();
       const events: string[] = [];
       let currentFocus: boolean | null = true;
+      let currentValue = '';
       const sends = runner(
         () => {
           events.push('type');
+          currentValue = 'replacement';
           return { ok: true, data: { typed: true, textEntryRoute: 'synthesized-first-responder' } };
         },
         async () => {
@@ -750,7 +752,11 @@ for (const mode of ['proof', 'transition'] as const) {
           return currentFocus === null
             ? { error: 'unavailable' }
             : {
-                value: JSON.stringify({ value: '', controlled: true, focused: currentFocus }),
+                value: JSON.stringify({
+                  value: currentValue,
+                  controlled: true,
+                  focused: currentFocus,
+                }),
               };
         },
       } as never;
@@ -769,15 +775,14 @@ for (const mode of ['proof', 'transition'] as const) {
         client,
       );
       const env = JSON.parse(result.content[0].text);
-      const allowed = focused === true || (mode === 'transition' && focused === null);
-      // After the one send, only value read-backs follow; an empty read-back is never retyped.
-      assert.deepEqual(
-        events.slice(0, allowed ? 4 : undefined),
-        allowed ? ['health', 'focus', 'type', 'health'] : ['health', 'focus'],
-      );
-      assert.ok(events.slice(4).every((event) => event === 'focus'));
+      const allowed = focused === true;
+      const prefix = allowed
+        ? ['focus', 'health', 'focus', 'type', 'health']
+        : ['focus', 'health', 'focus'];
+      assert.deepEqual(events.slice(0, prefix.length), prefix);
+      assert.ok(events.slice(prefix.length).every((event) => event === 'focus'));
       assert.deepEqual(sends, allowed ? ['type'] : []);
-      assert.equal(context.authorizations, allowed ? 1 : 0);
+      assert.equal(context.authorizations, sends.length);
       assert.equal(env.ok, allowed);
       if (!allowed) {
         assert.equal(env.code, 'NO_TEXT_INPUT_TARGET');
@@ -1064,7 +1069,8 @@ test('instant-submit authority loss retains refusal facts beside long typing and
     let now = 0;
     const lines: string[] = [];
     const writer = createWriter((line) => lines.push(line), 'run');
-    const sends = runner(() => {
+    const sends = runner((body) => {
+      if (body.prepareReplacement) return { ok: true, data: { message: 'cleared' } };
       now += 12532;
       _setFastRunnerStateForTest(null);
       return { ok: true, data: { typed: true } };
@@ -1094,7 +1100,7 @@ test('instant-submit authority loss retains refusal facts beside long typing and
     const record = lines.map((line) => JSON.parse(line).payload);
     assert.equal(result.verdict, 'FAIL');
     assert.match(result.failure!.seen, /ACTION_OUTCOME_UNCERTAIN/);
-    assert.deepEqual(sends, ['type']);
+    assert.deepEqual(sends, ['type', 'type']);
     assert.ok(
       record.some(
         (event) =>
@@ -1120,7 +1126,7 @@ test('instant-submit authority loss retains refusal facts beside long typing and
         event.code === 'ACTION_INTERRUPTED',
     );
     assert.equal(refusal?.line, 17);
-    assert.equal(refusal?.authorizations, 1);
+    assert.equal(refusal?.authorizations, 2);
     assert.equal(refusal?.refusalStage, 'settle');
     assert.equal(refusal?.nativeCode, 'RUNNER_OWNERSHIP_MISMATCH');
     assert.equal(refusal?.mutating, true);
@@ -1176,5 +1182,70 @@ for (const [name, pid, after, nativeCode] of [
     assert.equal(context.refusalDiagnostic?.stage, 'settle');
     assert.equal(context.refusalDiagnostic?.mutating, true);
     assert.equal(context.refusalDiagnostic?.nativeCode, nativeCode ?? null);
+  });
+}
+
+for (const applies of [true, false]) {
+  test(`focused private clear must settle before the actual string request: applied=${applies}`, async () => {
+    session();
+    let value = 'old';
+    let preparation = false;
+    let clearReads = 0;
+    const bodies: Array<Record<string, unknown>> = [];
+    const sends = runner((body) => {
+      bodies.push(body);
+      if (body.prepareReplacement) {
+        preparation = true;
+      } else {
+        assert.equal(value, '');
+        value = 'replacement';
+      }
+      return { ok: true, data: { typed: true } };
+    });
+    const client = {
+      evaluate: async (expression: string) => {
+        const [, options] = JSON.parse(
+          '[' + expression.slice('__QAREN.readInputValue('.length, -1) + ']',
+        );
+        if (preparation && options.compareTo === '') {
+          clearReads++;
+          if (applies && clearReads >= 2) value = '';
+        }
+        return {
+          value: JSON.stringify({
+            value: null,
+            controlled: true,
+            focused: true,
+            secure: false,
+            privateValue: true,
+            contentLength: value.length,
+            ...(typeof options.compareTo === 'string'
+              ? { exact: value === options.compareTo }
+              : {}),
+          }),
+        };
+      },
+    } as never;
+    const context = new QaDispatchContext(5_000, () => 1);
+    const result = await performFocusedFill(
+      {
+        ref: 'field',
+        testID: 'field',
+        text: 'replacement',
+        privateValue: true,
+        clearFirst: true,
+        qaContext: context,
+        skipFinalValidation: true,
+      },
+      client,
+    );
+    const envelope = JSON.parse(result.content[0].text);
+    assert.equal(envelope.ok, applies);
+    assert.deepEqual(sends, applies ? ['type', 'type'] : ['type']);
+    assert.equal(bodies[0].text, '');
+    assert.equal(bodies[0].replacementDeleteCount, 3);
+    if (applies) assert.equal(bodies[1].clearFirst, false);
+    assert.ok(clearReads >= 3);
+    assert.equal(context.authorizations, sends.length);
   });
 }

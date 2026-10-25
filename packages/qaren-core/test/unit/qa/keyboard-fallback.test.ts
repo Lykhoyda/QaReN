@@ -1,5 +1,8 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import vm from 'node:vm';
+import { INJECTED_HELPERS } from '../../../dist/injected-helpers.js';
+import { reactFocused } from '../../../dist/qa/walk.js';
 import { renderReason } from '../../../dist/qa/untrusted.js';
 import type { WalkSequence } from '../../../dist/qa/walker.js';
 import { existsSync, mkdirSync, mkdtempSync, readFileSync } from 'node:fs';
@@ -1213,151 +1216,219 @@ for (const strict of [false, true]) {
 }
 
 for (const route of ['transition', 'keyboard-up', 'no-target'] as const) {
-  for (const readback of [
-    'retained-prefix',
-    'exact',
-    'unreadable',
-    'retype-initial-prefix',
-    'retype-dispatch-prefix',
-    'retype-exact',
-    'retype-same-shorter',
-    'retype-other-longer',
-    'retype-unreadable',
-  ] as const) {
-    test(`controlled replacement ${readback} stops or continues truthfully through ${route} fallback`, async () => {
-      const { performFocusedFill, extractMutationDisposition } =
-        await import('../../../dist/handlers/device-interact.js');
-      const { _setActiveSessionForTest, _setRunAgentDeviceForTest, markSnapshotDirty } =
-        await import('../../../dist/agent-device-wrapper.js');
-      const { updateRefMapFromFlat, clearRefMap } =
-        await import('../../../dist/fast-runner-ref-map.js');
-      const { okResult } = await import('../../../dist/utils.js');
-      const before = 'synthetic-prefill';
-      const text = 'synthetic-replacement';
-      const shorter = 'synthetic';
-      const retype = readback.startsWith('retype-');
-      const fails =
-        readback === 'retained-prefix' ||
-        readback === 'retype-initial-prefix' ||
-        readback === 'retype-dispatch-prefix';
-      const unverified = !fails && readback !== 'exact' && readback !== 'retype-exact';
-      const finalValue = {
-        'retained-prefix': before + text,
-        exact: text,
-        unreadable: null,
-        'retype-initial-prefix': before + text,
-        'retype-dispatch-prefix': shorter + text,
-        'retype-exact': text,
-        'retype-same-shorter': shorter,
-        'retype-other-longer': 'unrelated' + text,
-        'retype-unreadable': null,
-      }[readback];
+  for (const runtimeValue of [false, true]) {
+    test(`${route} derives focused Fill privacy from its own value source`, async () => {
       const fake = app({
         ...(route === 'no-target' ? { initial: [submit] } : {}),
         initialKeyboard: route !== 'transition',
         reactFocused: true,
       });
       const type = fake.deps.typeFocused!;
-      let dispatches = 0;
-      const native = [{ ref: '@wrap', identifier: WRAP, type: 'Other' }];
-      const client = {
-        isConnected: true,
-        evaluate: async () => ({
-          value: JSON.stringify({
-            value: dispatches === 0 ? before : retype && dispatches === 1 ? shorter : finalValue,
-            controlled: dispatches === 0 || (retype && dispatches === 1) || finalValue !== null,
-            focused: true,
-          }),
-        }),
-      } as never;
-      _setActiveSessionForTest({ platform: 'ios', deviceId: 'TEST-DEVICE', appId: 'com.test' });
-      clearRefMap();
-      markSnapshotDirty();
-      updateRefMapFromFlat(native as never, { snapshotGeneration: 7, keyboardVisible: true });
-      _setRunAgentDeviceForTest(async (args) => {
-        if (args[0] !== 'fill') return okResult({ nodes: native });
-        dispatches += 1;
-        assert.ok(args.includes('--clear-first'));
-        return okResult({ typed: true });
-      });
-      fake.deps.typeFocused = async (ref, value, testID, context, requireFocused) => {
-        await type(ref, value, testID, context, requireFocused);
-        const result = await performFocusedFill(
-          {
-            ref,
-            text: value,
-            testID,
-            focused: true,
-            vetoUnfocused: true,
-            requireFocused,
-            skipFinalValidation: true,
-            clearFirst: true,
-            qaContext: context,
-          },
-          client,
-        );
-        const env = JSON.parse(result.content[0].text);
-        return env.ok
-          ? { ok: true, proven: env.meta?.verify === 'exact' }
-          : {
-              ok: false,
-              proven: false,
-              mutation: extractMutationDisposition(result),
-              error: `${env.code}: ${env.error}`,
-            };
+      const flags: Array<boolean | undefined> = [];
+      fake.deps.typeFocused = async (ref, text, testID, context, focused, privateValue) => {
+        flags.push(privateValue);
+        return type(ref, text, testID, context, focused, privateValue);
       };
-      try {
-        const dir = mkdtempSync(join(tmpdir(), 'qaren-retained-prefix-'));
-        const ledger = await runPlan(
-          blocks(route === 'no-target' ? otpPlan(text) : plan(text)),
-          fake.deps,
-          [],
-          { appRoot: dir, platform: 'ios', appId: 'com.test' },
-        );
-        assert.equal(ledger.verdict, fails ? 'FAIL' : 'PASS');
-        assert.equal(dispatches, retype ? 2 : 1);
-        assert.equal(fake.typed.length, 1);
-        assert.equal(fake.log.includes('press @submit'), !fails);
-        if (!fails) assert.equal(ledger.blocks[0].saved, false);
-        assert.deepEqual(ledger.blocksWritten, []);
-        assert.equal(ledger.videoPublication, 'withheld-fill');
-        assert.ok(!fake.log.some((line) => line.startsWith('shot')));
-        assert.equal(fake.rows[0].screenshot, undefined);
-        assert.equal(fake.rows[0].selector, undefined);
-        assert.equal(
-          ledger.steps[0].reason?.startsWith('UNVERIFIED_FILL:') ?? false,
-          unverified,
-          JSON.stringify(ledger.steps),
-        );
-        if (fails) {
-          assert.equal(fake.rows[0].outcome, 'fail');
-          assert.match(
-            renderReason(ledger.failure?.seen ?? '', (value) => value),
-            /not retried/,
-          );
-          assert.equal(fake.state(), 'typed');
-        }
-        assert.ok(
-          !strings({ ledger, rows: fake.rows, questions: fake.questions, notes: fake.notes }).some(
-            (value) => value.includes(before) || value.includes(text),
-          ),
-        );
-      } finally {
-        _setRunAgentDeviceForTest(null);
-        _setActiveSessionForTest(null);
-        clearRefMap();
-      }
+      const target = route === 'no-target' ? 'qa-otp-code' : 'qa-hidden-email';
+      const markdown = runtimeValue ? slotPlan('EMAIL', target) : plan(EMAIL, target, '');
+      const result = await withInputs(
+        new RunInputs({ EMAIL: runtimeValue ? EMAIL : 'other@example.test' }, ['EMAIL']),
+        () => walkBlock(blocks(markdown)[0], fake.deps),
+      );
+      assert.equal(result.block.outcome, 'pass');
+      assert.deepEqual(flags, [runtimeValue]);
     });
   }
 }
 
-test('a normalizing controlled fallback continues as unverified', async () => {
+for (const route of ['transition', 'keyboard-up', 'no-target'] as const) {
+  for (const runtimePrivate of [false, true]) {
+    for (const readback of [
+      'exact',
+      'unreadable',
+      'retained-prefix',
+      'recovered-exact',
+      'recovered-formatting',
+      'missing-prefix',
+      'shorter',
+      'formatting',
+      'other-longer',
+    ] as const) {
+      test(`${runtimePrivate ? 'runtime-private' : 'readable'} replacement ${readback} reports truthfully through ${route} fallback`, async () => {
+        const { performFocusedFill, extractMutationDisposition } =
+          await import('../../../dist/handlers/device-interact.js');
+        const { _setActiveSessionForTest, _setRunAgentDeviceForTest, markSnapshotDirty } =
+          await import('../../../dist/agent-device-wrapper.js');
+        const { updateRefMapFromFlat, clearRefMap } =
+          await import('../../../dist/fast-runner-ref-map.js');
+        const { okResult } = await import('../../../dist/utils.js');
+        const before = 'synthetic-prefill';
+        const text = 'synthetic-replacement';
+        const retained = ['retained-prefix', 'recovered-exact', 'recovered-formatting'].includes(
+          readback,
+        );
+        const fails = runtimePrivate
+          ? readback !== 'exact' && readback !== 'unreadable'
+          : readback === 'retained-prefix';
+        const unverified = !fails && readback !== 'exact' && readback !== 'recovered-exact';
+        const finalValue = {
+          exact: text,
+          unreadable: null,
+          'retained-prefix': before + text,
+          'recovered-exact': text,
+          'recovered-formatting': 'synthetic replacement',
+          'missing-prefix': text.slice(3),
+          shorter: 'synthetic',
+          formatting: 'synthetic replacement',
+          'other-longer': 'unrelated' + text,
+        }[readback];
+        let current: string | null = before;
+        const responses: string[] = [];
+        const fake = app({
+          ...(route === 'no-target' ? { initial: [submit] } : {}),
+          initialKeyboard: route !== 'transition',
+          reactFocused: true,
+        });
+        const type = fake.deps.typeFocused!;
+        let dispatches = 0;
+        const native = [{ ref: '@wrap', identifier: WRAP, type: 'Other' }];
+        const client = {
+          isConnected: true,
+          evaluate: async (expression: string) => {
+            const [, options] = JSON.parse(
+              '[' + expression.slice('__QAREN.readInputValue('.length, -1) + ']',
+            );
+            const protectedValue = options.privateValue || options.focusOnly;
+            const value = JSON.stringify({
+              value: protectedValue ? null : current,
+              controlled: current !== null && (!protectedValue || options.valueState === true),
+              focused: true,
+              ...(options.privateValue ? { privateValue: true, secure: false } : {}),
+              ...(options.valueState && current !== null
+                ? {
+                    contentLength: current.length,
+                    ...(typeof options.compareTo === 'string'
+                      ? { exact: current === options.compareTo }
+                      : {}),
+                  }
+                : {}),
+            });
+            responses.push(value);
+            return { value };
+          },
+        } as never;
+        _setActiveSessionForTest({ platform: 'ios', deviceId: 'TEST-DEVICE', appId: 'com.test' });
+        clearRefMap();
+        markSnapshotDirty();
+        updateRefMapFromFlat(native as never, { snapshotGeneration: 7, keyboardVisible: true });
+        _setRunAgentDeviceForTest(async (args, options) => {
+          if (args[0] !== 'fill') return okResult({ nodes: native });
+          dispatches += 1;
+          assert.ok(args.includes('--clear-first'));
+          current = '';
+          assert.equal(await options.focusedProof(true), true);
+          current = retained && dispatches === 1 ? before + text : finalValue;
+          return okResult({ typed: true });
+        });
+        fake.deps.typeFocused = async (
+          ref,
+          value,
+          testID,
+          context,
+          requireFocused,
+          privateValue,
+        ) => {
+          await type(ref, value, testID, context, requireFocused, privateValue);
+          const result = await performFocusedFill(
+            {
+              ref,
+              text: value,
+              testID,
+              focused: true,
+              vetoUnfocused: true,
+              requireFocused,
+              skipFinalValidation: true,
+              clearFirst: true,
+              privateValue,
+              qaContext: context,
+            },
+            client,
+          );
+          const env = JSON.parse(result.content[0].text);
+          return env.ok
+            ? { ok: true, proven: env.meta?.verify === 'exact' }
+            : {
+                ok: false,
+                proven: false,
+                mutation: extractMutationDisposition(result),
+                error: `${env.code}: ${env.error}`,
+              };
+        };
+        try {
+          const dir = mkdtempSync(join(tmpdir(), 'qaren-retained-prefix-'));
+          const markdown = runtimePrivate
+            ? slotPlan('EMAIL', route === 'no-target' ? 'qa-otp-code' : 'qa-hidden-email')
+            : route === 'no-target'
+              ? otpPlan(text)
+              : plan(text);
+          const run = () =>
+            runPlan(blocks(markdown), fake.deps, [], {
+              appRoot: dir,
+              platform: 'ios',
+              appId: 'com.test',
+            });
+          const ledger = await (runtimePrivate
+            ? withInputs(new RunInputs({ EMAIL: text }, ['EMAIL']), run)
+            : run());
+          assert.equal(ledger.verdict, fails ? 'FAIL' : 'PASS');
+          assert.equal(dispatches, !runtimePrivate && retained ? 2 : 1);
+          assert.equal(fake.typed.length, 1);
+          assert.equal(fake.log.includes('press @submit'), !fails);
+          assert.equal(ledger.videoPublication, 'withheld-fill');
+          assert.ok(!fake.log.some((line) => line.startsWith('shot')));
+          assert.equal(fake.rows[0].screenshot, undefined);
+          assert.equal(fake.rows[0].selector, undefined);
+          assert.equal(
+            ledger.steps[0].reason?.startsWith('UNVERIFIED_FILL:') ?? false,
+            unverified,
+            JSON.stringify(ledger.steps),
+          );
+          if (fails) {
+            assert.equal(fake.rows[0].outcome, 'fail');
+            assert.match(
+              renderReason(ledger.failure?.seen ?? '', (value) => value),
+              /not retried/,
+            );
+            assert.equal(fake.state(), 'typed');
+          }
+          assert.ok(
+            !strings({
+              ledger,
+              rows: fake.rows,
+              questions: fake.questions,
+              notes: fake.notes,
+            }).some((value) => value.includes(before) || value.includes(text)),
+          );
+          if (runtimePrivate) {
+            for (const response of responses) assert.equal(JSON.parse(response).value, null);
+            assert.ok(responses.some((response) => 'exact' in JSON.parse(response)));
+          }
+        } finally {
+          _setRunAgentDeviceForTest(null);
+          _setActiveSessionForTest(null);
+          clearRefMap();
+        }
+      });
+    }
+  }
+}
+
+test('a normalizing readable fallback continues honestly unverified', async () => {
   const { performFocusedFill } = await import('../../../dist/handlers/device-interact.js');
   const { _setActiveSessionForTest, _setRunAgentDeviceForTest } =
     await import('../../../dist/agent-device-wrapper.js');
   const { okResult } = await import('../../../dist/utils.js');
-  const { unwrap } = await import('../../../dist/qa/adapt.js');
-  const fake = app({ typedLabel: 'normalized@example.test' });
+  const fake = app({ typedLabel: '123 456' });
   const type = fake.deps.typeFocused!;
   let reads = 0;
   let fills = 0;
@@ -1367,7 +1438,7 @@ test('a normalizing controlled fallback continues as unverified', async () => {
       reads += 1;
       return {
         value: JSON.stringify({
-          value: reads === 1 ? '' : 'normalized@example.test',
+          value: fills === 0 ? '' : '123 456',
           controlled: true,
           focused: true,
         }),
@@ -1379,28 +1450,36 @@ test('a normalizing controlled fallback continues as unverified', async () => {
     fills += 1;
     return okResult({ typed: true });
   });
-  fake.deps.typeFocused = async (ref, text, testID, context) => {
-    await type(ref, text, testID, context);
-    const { data } = unwrap<{ verified: boolean }>(
-      await performFocusedFill(
-        {
-          ref,
-          text,
-          testID,
-          focused: true,
-          vetoUnfocused: true,
-          skipFinalValidation: true,
-        },
-        client,
-      ),
+  fake.deps.typeFocused = async (ref, text, testID, context, requireFocused, privateValue) => {
+    await type(ref, text, testID, context, requireFocused, privateValue);
+    const result = await performFocusedFill(
+      {
+        ref,
+        text,
+        testID,
+        focused: true,
+        vetoUnfocused: true,
+        requireFocused,
+        privateValue,
+        clearFirst: true,
+        skipFinalValidation: true,
+      },
+      client,
     );
-    assert.equal(data.verified, false);
-    return { ok: true, proven: false };
+    const env = JSON.parse(result.content[0].text);
+    return env.ok
+      ? { ok: true, proven: env.meta?.verify === 'exact' }
+      : {
+          ok: false,
+          proven: false,
+          mutation: 'observed' as const,
+          error: `${env.code}: ${env.error}`,
+        };
   };
   try {
-    const result = await walkBlock(blocks(plan())[0], fake.deps);
+    const result = await walkBlock(blocks(plan('123456'))[0], fake.deps);
     assert.equal(result.block.outcome, 'pass');
-    assert.match(result.rows[0].reason ?? '', /^UNVERIFIED_FILL:/);
+    assert.match(result.rows[0].reason ?? '', /UNVERIFIED_FILL/);
     assert.ok(reads > 1, 'the typed value is read back');
     assert.equal(fills, 1);
     assert.equal(fake.state(), 'accepted');
@@ -2731,4 +2810,183 @@ test('no-target fallback focus never times its keyboard proof from an earlier li
   assert.equal(proofs.length, 1);
   assert.equal(proofs[0].proof, 'focused');
   assert.equal(Object.hasOwn(proofs[0], 'ms'), false);
+});
+
+for (const route of ['tap', 'no-target'] as const) {
+  test(`keyboard-up runtime-input ${route} focus probe never reads or transmits a private prefill`, async () => {
+    const prefill = 'private-prefilled-address';
+    let valueReads = 0;
+    const input = {
+      tag: 5,
+      type: 'RCTSinglelineTextInputView',
+      memoizedProps: {
+        testID: 'qa-hidden-email',
+        get value() {
+          valueReads++;
+          return prefill;
+        },
+        onChangeText() {},
+      },
+      stateNode: { isFocused: () => true },
+      child: null,
+      sibling: null,
+      return: null as unknown,
+    };
+    const root = {
+      tag: 0,
+      type: { displayName: 'PrivateForm' },
+      memoizedProps: {},
+      child: input,
+      sibling: null,
+      return: null,
+    };
+    input.return = root;
+    const context = vm.createContext({
+      setTimeout,
+      clearTimeout,
+      __REACT_DEVTOOLS_GLOBAL_HOOK__: {
+        renderers: new Map([[1, {}]]),
+        getFiberRoots: () => new Set([{ current: root }]),
+      },
+    });
+    vm.runInContext(INJECTED_HELPERS, context);
+    const responses: string[] = [];
+    const client = {
+      evaluate: async (expression: string) => {
+        const value = vm.runInContext(expression, context) as string;
+        responses.push(value);
+        return { value };
+      },
+    } as never;
+    const fake = app({
+      initialKeyboard: true,
+      ...(route === 'no-target' ? { initial: [submit] } : {}),
+    });
+    fake.deps.reactFocused = (testID) => reactFocused(client, testID);
+    const outcome = await withInputs(new RunInputs({ EMAIL }, ['EMAIL']), () =>
+      walkBlock(blocks(slotPlan())[0], fake.deps),
+    );
+    assert.equal(outcome.block.outcome, 'pass', JSON.stringify(outcome.failure));
+    assert.equal(fake.typed.length, 1);
+    assert.ok(responses.length > 0);
+    assert.equal(valueReads, 0);
+    for (const response of responses) {
+      assert.equal(response.includes(prefill), false);
+      assert.equal(JSON.parse(response).value, null);
+      assert.equal(JSON.parse(response).focused, true);
+    }
+    assert.ok(fake.notes.includes(FOCUS_NOTE(route === 'tap' ? 'tap' : 'none', 'focused')));
+  });
+}
+
+test('a runtime email missing its first character stops the plan before submission', async () => {
+  const { performFocusedFill, extractMutationDisposition } =
+    await import('../../../dist/handlers/device-interact.js');
+  const { _setActiveSessionForTest, _setRunAgentDeviceForTest } =
+    await import('../../../dist/agent-device-wrapper.js');
+  const { okResult } = await import('../../../dist/utils.js');
+  let value = '';
+  const input = {
+    tag: 5,
+    type: 'RCTSinglelineTextInputView',
+    memoizedProps: {
+      testID: 'qa-hidden-email',
+      get value() {
+        return value;
+      },
+      onChangeText() {},
+    },
+    stateNode: { isFocused: () => true },
+    child: null,
+    sibling: null,
+    return: null as unknown,
+  };
+  const root = {
+    tag: 0,
+    type: { displayName: 'PrivateForm' },
+    memoizedProps: {},
+    child: input,
+    sibling: null,
+    return: null,
+  };
+  input.return = root;
+  const context = vm.createContext({
+    setTimeout,
+    clearTimeout,
+    __REACT_DEVTOOLS_GLOBAL_HOOK__: {
+      renderers: new Map([[1, {}]]),
+      getFiberRoots: () => new Set([{ current: root }]),
+    },
+  });
+  vm.runInContext(INJECTED_HELPERS, context);
+  const responses: string[] = [];
+  const client = {
+    evaluate: async (expression: string) => {
+      const result = vm.runInContext(expression, context) as string;
+      responses.push(result);
+      return { value: result };
+    },
+  } as never;
+  const fake = app({ initialKeyboard: true });
+  fake.deps.reactFocused = (testID) => reactFocused(client, testID);
+  const type = fake.deps.typeFocused!;
+  let dispatches = 0;
+  _setActiveSessionForTest({ platform: 'ios', deviceId: 'TEST', appId: 'com.test' });
+  _setRunAgentDeviceForTest(async (args: string[]) => {
+    assert.equal(args.includes('--clear-first'), false);
+    dispatches++;
+    value = EMAIL.slice(1);
+    return okResult({ typed: true });
+  });
+  fake.deps.typeFocused = async (
+    ref,
+    text,
+    testID,
+    dispatchContext,
+    requireFocused,
+    privateValue,
+  ) => {
+    await type(ref, text, testID, dispatchContext, requireFocused);
+    const result = await performFocusedFill(
+      {
+        ref,
+        text,
+        testID,
+        privateValue,
+        requireFocused,
+        clearFirst: true,
+        qaContext: dispatchContext,
+        skipFinalValidation: true,
+      },
+      client,
+    );
+    const envelope = JSON.parse(result.content[0].text);
+    return envelope.ok
+      ? { ok: true, proven: envelope.meta?.verify === 'exact' }
+      : {
+          ok: false,
+          proven: false,
+          mutation: extractMutationDisposition(result),
+          error: `${envelope.code}: ${envelope.error}`,
+        };
+  };
+  try {
+    const outcome = await withInputs(new RunInputs({ EMAIL }, ['EMAIL']), () =>
+      walkBlock(blocks(slotPlan())[0], fake.deps),
+    );
+    assert.equal(outcome.block.outcome, 'fail');
+    assert.equal(dispatches, 1);
+    assert.equal(fake.log.includes('press @submit'), false);
+    assert.match(
+      renderReason(outcome.failure?.seen ?? '', (text) => text),
+      /TEXT_ENTRY_UNVERIFIED/,
+    );
+    for (const serialized of [...responses, JSON.stringify(outcome), JSON.stringify(fake.rows)]) {
+      assert.equal(serialized.includes(EMAIL), false);
+      assert.equal(serialized.includes(EMAIL.slice(1)), false);
+    }
+  } finally {
+    _setRunAgentDeviceForTest(null);
+    _setActiveSessionForTest(null);
+  }
 });

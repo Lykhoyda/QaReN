@@ -18,15 +18,18 @@ typedef NS_ENUM(NSInteger, RunnerSynthesizedTextEntryStatus) {
 
 @interface RunnerSynthesizedTextEntry : NSObject
 
-// Synthesizes keyboard input for the current first responder without resolving an
-// XCUIElement or serializing the application's accessibility tree.
+// Types into the first responder without serializing the accessibility tree.
 + (RunnerSynthesizedTextEntryResult *)synthesizeTextWithApplication:(id)application
                                                                text:(NSString *)text;
 
-// Replaces the current first responder's contents using one synthesized
-// Command-A, Delete, and text-input event sequence.
+// Sends ordered Command-A, Delete, and text records.
 + (RunnerSynthesizedTextEntryResult *)replaceTextWithApplication:(id)application
                                                            text:(NSString *)text;
+
++ (RunnerSynthesizedTextEntryResult *)prepareReplacementWithApplication:(id)application
+                                                          deleteCount:(NSUInteger)deleteCount
+                                                               endKey:(NSString *)endKey
+                                                            deleteKey:(NSString *)deleteKey;
 
 @end
 

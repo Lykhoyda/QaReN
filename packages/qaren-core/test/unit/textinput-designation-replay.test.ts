@@ -255,8 +255,74 @@ function replayFixture(
     async settle() {},
   };
 
-  return { calls, input, deps };
+  return { calls, input, deps, client };
 }
+
+for (const options of [
+  { secure: true, protectSecure: true },
+  { privateValue: true },
+  { focusOnly: true },
+]) {
+  test('private and focus-only input probes never read the value property', async () => {
+    const fixture = replayFixture();
+    fixture.input.memoizedProps.secureTextEntry = 'secure' in options;
+    let reads = 0;
+    Object.defineProperty(fixture.input.memoizedProps, 'value', {
+      get() {
+        reads++;
+        throw new Error('private value was read');
+      },
+    });
+    const result = await fixture.client.evaluate(
+      `__QAREN.readInputValue("email",${JSON.stringify(options)})`,
+    );
+    assert.equal(result.error, undefined);
+    assert.equal(JSON.parse(result.value as string).value, null);
+    assert.equal(reads, 0);
+  });
+}
+
+test('private non-secure value state compares inside the app without returning its value', async () => {
+  const fixture = replayFixture();
+  fixture.input.memoizedProps.value = 'person@example.test';
+  for (const expected of ['person@example.test', 'erson@example.test', 'PERSON@example.test']) {
+    const result = await fixture.client.evaluate(
+      `__QAREN.readInputValue("email",${JSON.stringify({
+        privateValue: true,
+        protectSecure: true,
+        valueState: true,
+        compareTo: expected,
+      })})`,
+    );
+    assert.equal(result.error, undefined);
+    const state = JSON.parse(result.value as string);
+    assert.equal(state.value, null);
+    assert.equal(state.exact, expected === 'person@example.test');
+    assert.equal(state.contentLength, 'person@example.test'.length);
+    assert.doesNotMatch(result.value as string, /person@example|erson@example/);
+  }
+});
+
+test('secure value-state probes do not access the value even for an exact comparison', async () => {
+  const fixture = replayFixture();
+  fixture.input.memoizedProps.secureTextEntry = true;
+  let reads = 0;
+  Object.defineProperty(fixture.input.memoizedProps, 'value', {
+    get() {
+      reads++;
+      throw new Error('secure value was read');
+    },
+  });
+  const result = await fixture.client.evaluate(
+    '__QAREN.readInputValue("email",{"privateValue":true,"protectSecure":true,"valueState":true,"compareTo":"secret"})',
+  );
+  assert.equal(result.error, undefined);
+  const state = JSON.parse(result.value as string);
+  assert.equal(state.secure, true);
+  assert.equal(state.contentLength, undefined);
+  assert.equal(state.exact, undefined);
+  assert.equal(reads, 0);
+});
 
 test('replay designates a bare TextInput and types without press or focus dispatch', async () => {
   const fixture = replayFixture();

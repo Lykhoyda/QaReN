@@ -1035,8 +1035,9 @@ export interface FillArgs {
   vetoUnfocused?: boolean;
   requireFocused?: boolean;
   skipFinalValidation?: boolean;
-  /** Replace the field's content instead of appending (focused: the runner's select-all sequence). */
+  /** Replace the field's content instead of appending. */
   clearFirst?: boolean;
+  privateValue?: boolean;
   /** Story 04 (#385): per-call settle budget override in ms. */
   settleTimeoutMs?: number;
 }
@@ -1493,15 +1494,39 @@ export async function performExactFill(
 export async function readReactInputValue(
   client: CDPClient | null,
   testID: string | null | undefined,
-): Promise<{ value: string | null; controlled: boolean; focused: boolean } | null> {
+  options?: {
+    focusOnly?: boolean;
+    privateValue?: boolean;
+    protectSecure?: boolean;
+    valueState?: boolean;
+    compareTo?: string;
+  },
+): Promise<{
+  value: string | null;
+  controlled: boolean;
+  focused: boolean;
+  privateValue?: boolean;
+  secure?: boolean;
+  contentLength?: number;
+  exact?: boolean;
+} | null> {
   if (!client || !testID) return null;
   try {
-    const result = await client.evaluate('__QAREN.readInputValue(' + JSON.stringify(testID) + ')');
+    const result = await client.evaluate(
+      '__QAREN.readInputValue(' +
+        JSON.stringify(testID) +
+        (options ? ',' + JSON.stringify(options) : '') +
+        ')',
+    );
     if (result.error || typeof result.value !== 'string') return null;
     const parsed: {
       value?: string | null;
       controlled?: boolean;
       focused?: boolean;
+      privateValue?: boolean;
+      secure?: boolean;
+      contentLength?: number;
+      exact?: boolean;
       __agent_error?: string;
     } = JSON.parse(result.value);
     if (parsed.__agent_error) return null;
@@ -1509,6 +1534,12 @@ export async function readReactInputValue(
       value: parsed.value ?? null,
       controlled: parsed.controlled === true,
       focused: parsed.focused === true,
+      ...(parsed.privateValue === true ? { privateValue: true } : {}),
+      ...(typeof parsed.secure === 'boolean' ? { secure: parsed.secure } : {}),
+      ...(Number.isSafeInteger(parsed.contentLength) && parsed.contentLength! >= 0
+        ? { contentLength: parsed.contentLength }
+        : {}),
+      ...(typeof parsed.exact === 'boolean' ? { exact: parsed.exact } : {}),
     };
   } catch {
     return null;
@@ -1553,27 +1584,6 @@ async function awaitReactInputValue(
     : { verdict: 'unreadable' };
 }
 
-// Same length and equal ignoring letter case, but not identical: the app normalized case only.
-function caseOnly(observed: string | undefined, expected: string): boolean {
-  return (
-    observed !== undefined &&
-    observed !== expected &&
-    [...observed].length === [...expected].length &&
-    observed.toLowerCase() === expected.toLowerCase()
-  );
-}
-
-// The observed length when the field holds a nonempty, strictly shorter in-order subset of what was typed.
-function droppedLength(observed: string | undefined, expected: string): number | undefined {
-  if (observed === undefined) return undefined;
-  const typed = [...expected];
-  const held = [...observed];
-  if (held.length === 0 || held.length >= typed.length) return undefined;
-  let next = 0;
-  for (const char of typed) if (next < held.length && held[next] === char) next++;
-  return next === held.length ? held.length : undefined;
-}
-
 // The requested identity itself; a wrapper id is never rewritten to an unobserved inner id.
 function focusedFillOracleTestId(args: FillArgs): string | null {
   if (args.testID) return args.testID;
@@ -1615,39 +1625,100 @@ export async function performFocusedFill(
   }
   const oracleTestId = focusedFillOracleTestId(args);
   let before: string | null = null;
-  let beforeFocused = false;
-  const focusedProof = async (): Promise<boolean> => {
-    const read = await readReactInputValue(client, oracleTestId);
+  let privateValue = args.privateValue === true;
+  let secure = false;
+  let contentLength: number | undefined;
+  let expectedContentLength: number | undefined;
+  let awaitingClear = false;
+  let expectedBeforeClear: string | null | undefined;
+  const focusedProof = async (focusOnly = false): Promise<boolean> => {
+    if (focusOnly && awaitingClear && !secure) {
+      let empty = false;
+      for (let attempt = 0; attempt < 6; attempt++) {
+        if (args.qaContext?.expired) return false;
+        const state = await readReactInputValue(client, oracleTestId, {
+          protectSecure: true,
+          privateValue,
+          valueState: true,
+          compareTo: '',
+        });
+        if (state?.focused !== true) return false;
+        if (state.exact === true && empty) return !args.qaContext?.expired;
+        empty = state.exact === true;
+        if (attempt < 5) await cancellableSleep(100);
+      }
+      return false;
+    }
+    const read = await readReactInputValue(client, oracleTestId, {
+      protectSecure: true,
+      ...(focusOnly ? { focusOnly: true } : {}),
+      ...(privateValue ? { privateValue: true, valueState: !focusOnly } : {}),
+    });
+    if (focusOnly) return read?.focused === true;
+    privateValue ||= read?.privateValue === true;
+    secure ||= read?.secure === true;
     before = controlledReactValue(read);
-    beforeFocused = read?.focused === true;
-    return !(
-      (args.requireFocused && read?.focused !== true) ||
-      (args.vetoUnfocused && read && !read.focused)
+    contentLength = read?.contentLength ?? (before === null ? undefined : before.length);
+    return (
+      read?.focused === true &&
+      (expectedContentLength === undefined || contentLength === expectedContentLength) &&
+      (expectedBeforeClear === undefined || before === expectedBeforeClear)
     );
   };
-  // clearFirst requests one select-all and text sequence in the runner.
-  const native = await runNative(
-    ['fill', args.ref, args.text, ...(args.clearFirst ? ['--clear-first'] : [])],
-    {
+  const dispatchFill = async (deleteCount?: number, observed?: string): Promise<ToolResult> => {
+    expectedBeforeClear = observed;
+    expectedContentLength = undefined;
+    if (args.clearFirst) {
+      if (!(await focusedProof())) {
+        return failResult(
+          'The intended input is not focused; no text was entered.',
+          'NO_TEXT_INPUT_TARGET',
+          { mutation: 'none' },
+        );
+      }
+      expectedBeforeClear = before;
+      expectedContentLength = contentLength;
+      if (contentLength === undefined && !secure) {
+        return failResult(
+          'The input content state is unavailable; no text was entered.',
+          'TEXT_ENTRY_UNVERIFIED',
+          { mutation: 'none' },
+        );
+      }
+      deleteCount ??= contentLength || undefined;
+      if (deleteCount !== undefined && deleteCount > 256) {
+        return failResult(
+          'Focused replacement exceeds its bounded clear budget.',
+          'TEXT_ENTRY_UNVERIFIED',
+          { mutation: 'none' },
+        );
+      }
+    }
+    const clear = args.clearFirst && !secure && contentLength !== 0;
+    awaitingClear = clear === true;
+    return runNative(['fill', args.ref, args.text, ...(clear ? ['--clear-first'] : [])], {
       qaContext: args.qaContext,
       qaTiming: args.qaTiming,
       focusedType: true,
       focusedProof,
+      focusedDeleteCount: deleteCount,
       settle: { enabled: false },
-    },
-  );
+    });
+  };
+  const native = await dispatchFill();
   if (native.isError) {
     const mutation = extractMutationDisposition(native);
     if (mutation === 'none') {
+      const code = extractErrorCode(native);
       return fillFailure(
-        extractErrorCode(native) === 'TARGET_AMBIGUOUS'
-          ? 'TARGET_AMBIGUOUS'
+        code === 'TARGET_AMBIGUOUS' || code === 'TEXT_ENTRY_UNVERIFIED'
+          ? code
           : 'NO_TEXT_INPUT_TARGET',
         extractErrorText(native),
         {
           mutation: 'none',
           pathsTried,
-          ...(extractErrorCode(native) === 'TEXT_SYNTHESIS_UNAVAILABLE'
+          ...(code === 'TEXT_SYNTHESIS_UNAVAILABLE'
             ? {
                 hint: 'No text was entered. This Xcode cannot synthesize text, so device_fill focused: true cannot type here. Do not retry focused: true.',
               }
@@ -1661,9 +1732,7 @@ export async function performFocusedFill(
     });
   }
   const textEntryRoute = extractTextEntryRoute(native);
-  const unverified = (
-    kept?: { typedLength: number; observedLengths: number[] } | { caseNormalizedChars: number },
-  ) =>
+  const unverified = () =>
     warnResult(
       {
         typed: true,
@@ -1672,12 +1741,61 @@ export async function performFocusedFill(
         verifiedOracle: 'none',
         textEntryPath: 'focused-synthesized',
         textEntryRoute,
-        ...kept,
       },
       'Typed into the focused field; the value could not be confirmed. Confirm with device_screenshot or expect_text before relying on it.',
     );
-  const initialBefore = before;
-  if (initialBefore === null || !beforeFocused) {
+  const initialBefore = before as string | null;
+  if (privateValue && !secure && args.clearFirst) {
+    const comparison = await measureTiming(
+      args.qaTiming?.observe,
+      args.qaTiming?.now ?? (() => performance.now()),
+      'type-readback',
+      async (): Promise<ReactValueVerification> => {
+        let mismatch = false;
+        for (let attempt = 0; attempt < 6; attempt++) {
+          if (args.qaContext?.expired) break;
+          const state = await readReactInputValue(client, oracleTestId, {
+            protectSecure: true,
+            privateValue: true,
+            valueState: true,
+            compareTo: args.text,
+          });
+          if (state?.exact === true) {
+            await cancellableSleep(150);
+            if (args.qaContext?.expired) break;
+            const confirm = await readReactInputValue(client, oracleTestId, {
+              protectSecure: true,
+              privateValue: true,
+              valueState: true,
+              compareTo: args.text,
+            });
+            if (confirm?.exact === true) return 'exact';
+            mismatch ||= confirm?.exact === false;
+          }
+          mismatch ||= state?.exact === false;
+          if (attempt < 5) await cancellableSleep(100);
+        }
+        return mismatch ? 'mismatch' : 'unreadable';
+      },
+      (result) => (result === 'exact' ? 'ok' : result === 'mismatch' ? 'failed' : 'unavailable'),
+    );
+    if (comparison === 'exact') {
+      return verifiedFillResult('native', args.text.length, {
+        textEntryPath: 'focused-synthesized',
+        verifiedOracle: 'react-tree',
+        textEntryRoute,
+      });
+    }
+    if (comparison === 'mismatch') {
+      return fillFailure(
+        'TEXT_ENTRY_UNVERIFIED',
+        'The private input differs from the requested text; not retrying.',
+        { mutation: 'observed', pathsTried },
+      );
+    }
+    return unverified();
+  }
+  if (privateValue || initialBefore === null) {
     await measureTiming(
       args.qaTiming?.observe,
       args.qaTiming?.now ?? (() => performance.now()),
@@ -1695,7 +1813,10 @@ export async function performFocusedFill(
       'type-readback',
       () =>
         measureDispatchPhase('dispatch-readback', args.qaContext?.line, () =>
-          awaitReactInputValue(() => readReactInputValue(client, oracleTestId), expected),
+          awaitReactInputValue(
+            () => readReactInputValue(client, oracleTestId, { protectSecure: true, privateValue }),
+            expected,
+          ),
         ),
       (result) =>
         result.verdict === 'exact'
@@ -1710,79 +1831,37 @@ export async function performFocusedFill(
       verifiedOracle: 'react-tree',
       textEntryRoute,
     });
-  const retainedPrefixFailure = (
-    verification: Awaited<ReturnType<typeof readBack>>,
-    dispatchBefore: string | null,
-  ) => {
-    if (
-      args.clearFirst &&
-      verification.verdict === 'mismatch' &&
-      [initialBefore, dispatchBefore].some(
-        (value) => value !== null && value !== '' && verification.observed === value + args.text,
-      )
-    ) {
-      return fillFailure(
-        'TEXT_ENTRY_UNVERIFIED',
-        'device_fill requested replacement but the focused field retained its prior value before the typed text; not retrying.',
-        { mutation: 'observed', pathsTried },
-      );
-    }
-  };
   const verification = await readBack();
   if (verification.verdict === 'exact') return verified();
-  const retained = retainedPrefixFailure(verification, initialBefore);
-  if (retained) return retained;
-  const caseNormalized =
-    verification.verdict === 'mismatch' && caseOnly(verification.observed, expected)
-      ? { caseNormalizedChars: [...expected].length }
-      : undefined;
-  if (caseNormalized) return unverified(caseNormalized);
-  if (!args.skipFinalValidation) {
-    if (verification.verdict === 'mismatch') {
-      return fillFailure(
-        'TEXT_ENTRY_UNVERIFIED',
-        'device_fill typed into the focused field but its React value differs; not retrying.',
-        { mutation: 'observed', pathsTried },
-      );
-    }
-    return unverified();
-  }
-  // Host load can drop keystrokes on a controlled field; normalizing fields keep the unverified pass.
-  const first = args.clearFirst ? droppedLength(verification.observed, expected) : undefined;
-  if (first === undefined) return unverified();
-  const lost = (held: number, why: string) =>
-    fillFailure(
-      'TEXT_ENTRY_UNVERIFIED',
-      `typed ${[...expected].length} characters but the field holds ${held}${why}`,
-      { mutation: 'observed', pathsTried },
-    );
-  if (args.qaContext?.expired) return lost(first, '; no step time remained to retype');
-  const retyped = await runNative(['fill', args.ref, args.text, '--clear-first'], {
-    qaContext: args.qaContext,
-    qaTiming: args.qaTiming,
-    focusedType: true,
-    focusedProof,
-    settle: { enabled: false },
-  });
-  const retypeBefore = beforeFocused ? before : null;
-  if (retyped.isError) {
-    return extractMutationDisposition(retyped) === 'none'
-      ? lost(first, '; the retype was refused')
-      : fillFailure('TEXT_ENTRY_UNVERIFIED', extractErrorText(retyped), {
-          mutation: 'possible',
+  const retainedPrefix = (result: Awaited<ReturnType<typeof readBack>>) =>
+    args.clearFirst &&
+    initialBefore.length > 0 &&
+    result.verdict === 'mismatch' &&
+    result.observed !== undefined &&
+    result.observed.startsWith(initialBefore) &&
+    result.observed.endsWith(args.text) &&
+    result.observed.length > args.text.length;
+  if (retainedPrefix(verification)) {
+    const observed = verification.observed!;
+    if (observed.length <= 256 && !args.qaContext?.expired) {
+      const replacement = await dispatchFill(observed.length, observed);
+      if (replacement.isError) {
+        return fillFailure('TEXT_ENTRY_UNVERIFIED', extractErrorText(replacement), {
+          mutation: extractMutationDisposition(replacement) === 'none' ? 'observed' : 'possible',
           pathsTried,
         });
+      }
+      const recovered = await readBack();
+      if (recovered.verdict === 'exact') return verified();
+      if (!retainedPrefix(recovered)) return unverified();
+    }
+    return fillFailure(
+      'TEXT_ENTRY_UNVERIFIED',
+      'The input retained its prior value after bounded replacement; not retrying.',
+      { mutation: 'observed', pathsTried },
+    );
   }
-  const second = await readBack();
-  if (second.verdict === 'exact') return verified();
-  const retainedAfterRetype = retainedPrefixFailure(second, retypeBefore);
-  if (retainedAfterRetype) return retainedAfterRetype;
-  const held = droppedLength(second.observed, expected);
-  if (held === undefined) return unverified();
-  // The same loss twice is the field's own stripping or maxLength: unverified, with the lengths disclosed.
-  return held === first
-    ? unverified({ typedLength: [...expected].length, observedLengths: [first, held] })
-    : lost(held, ' after one clear-and-retype');
+  return unverified();
 }
 
 export async function performReactTreeInput(
