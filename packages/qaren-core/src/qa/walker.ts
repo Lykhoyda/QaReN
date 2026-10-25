@@ -81,6 +81,7 @@ import type {
 import { targetMissDiagnostic, type TargetMissDiagnostic } from './target-miss.js';
 import {
   concealsScreen,
+  INPUT_SCREEN_TEXT_WITHHELD,
   isPrivateInput,
   MASK,
   ObservedPrivacy,
@@ -2975,6 +2976,12 @@ export async function runPlan(
     };
     const unprotected = (value: string): boolean =>
       !matchPrivate(value, privacy.privateSet('persisted'), 'persisted').hit;
+    const render = (reason: Reason): string =>
+      renderReason(
+        reason,
+        (text) => privacy.redact(text),
+        currentInputs()?.hasInputs ? INPUT_SCREEN_TEXT_WITHHELD : undefined,
+      );
     const finish = (outcome?: WalkOutcome): WalkResult => {
       throwIfInputPrivacyRefused();
       if (!deps.cancelled?.()) {
@@ -2988,15 +2995,13 @@ export async function runPlan(
             ...row,
             block: display(row.block),
             text: projectPlanLine(row.text, privacy.privateSet()).text,
-            ...(reason !== undefined
-              ? { reason: renderReason(reason, (text) => privacy.redact(text)) }
-              : {}),
+            ...(reason !== undefined ? { reason: render(reason) } : {}),
             ...(selector && unprotected(selector.id ?? selector.text ?? '') ? { selector } : {}),
           })),
           outcome?.failure
             ? {
                 ...outcome.failure,
-                seen: renderReason(outcome.failure.seen, (text) => privacy.redact(text)),
+                seen: render(outcome.failure.seen),
               }
             : undefined,
           calls(),
