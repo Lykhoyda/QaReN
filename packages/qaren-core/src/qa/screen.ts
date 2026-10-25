@@ -120,10 +120,8 @@ const elementFrames = new WeakMap<Element, NonNullable<NativeNode['rect']>>();
 const nativeAncestors = new WeakMap<Element, Element[]>();
 const elementViewports = new WeakMap<Element, NonNullable<NativeNode['rect']>>();
 const keyboardCoveredElements = new WeakSet<Element>();
-const knownDisabledStates = new WeakSet<Element>();
 // Native scroll containers (iOS names, Android class suffixes); only native-backed elements are ever members.
 const scrollContainers = new WeakMap<Element, string>();
-const navigationBarTitles = new WeakMap<Element, string>();
 const windows = new WeakSet<Element>();
 const alerts = new WeakSet<Element>();
 const keyboards = new WeakSet<Element>();
@@ -140,10 +138,6 @@ export function keyboardCoversElement(element: Element): boolean {
 
 export function isScrollContainer(element: Element): boolean {
   return scrollContainers.has(element);
-}
-
-export function navigationBarTitle(element: Element): string | undefined {
-  return navigationBarTitles.get(element);
 }
 
 export function isWindow(element: Element): boolean {
@@ -907,13 +901,6 @@ export function join(
           : {}),
       },
     };
-    if (
-      typeof n.enabled === 'boolean' ||
-      host?.disabled === true ||
-      host?.readOnly === true ||
-      (!presenceMode && uniqueMatch && typeof match?.disabled === 'boolean')
-    )
-      knownDisabledStates.add(element);
     if (label) element.label = label;
     if (testID) element.testID = testID;
     const privateNativeLabel = presenceMode && observed?.labelSource !== 'direct';
@@ -1018,7 +1005,6 @@ export function join(
         disabled: !presenceMode && d.disabled === true,
       },
     };
-    if (!presenceMode && typeof d.disabled === 'boolean') knownDisabledStates.add(element);
     // Screen text comes only from the native tree, so a React-only element shows no user-visible string;
     // its value still joins the mask set, which can only reduce what is written.
     const value = digestValue(d.value);
@@ -1170,17 +1156,6 @@ export function join(
     const bounds = clippingViewport(viewport, i);
     if (bounds) elementViewports.set(elements[i], bounds);
     if (isScrollContainerType(n.type)) scrollContainers.set(elements[i], n.type!);
-    if (n.type === 'NavigationBar') {
-      const title = [n.identifier?.trim(), n.label?.trim()];
-      if (n.label?.trim()) navigationBarTitles.set(elements[i], JSON.stringify(title));
-    } else if (/(?:^|\.)(?:Toolbar|ActionBar|ActionBarView)$/.test(n.type ?? '')) {
-      const title =
-        nodes
-          .filter((child) => child.parentIndex === i && /(?:^|\.)TextView$/.test(child.type ?? ''))
-          .map((child) => child.label?.trim())
-          .find(Boolean) || n.label?.trim();
-      if (title) navigationBarTitles.set(elements[i], title);
-    }
     if (n.type === 'Window') windows.add(elements[i]);
     if (n.type === 'Application') applications.add(elements[i]);
     if (isAppAlertType(n.type)) alerts.add(elements[i]);
@@ -1375,10 +1350,6 @@ function projectionRefusal(screen: Screen): { refuse: string; reason: string } |
     );
   }
   return undefined;
-}
-
-export function disabledStateOf(element: Element): boolean | undefined {
-  return knownDisabledStates.has(element) ? semanticDisabled(element) : undefined;
 }
 
 export function semanticDisabled(element: Element): boolean {

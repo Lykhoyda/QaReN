@@ -1,4 +1,12 @@
 import {
+  applyLabelProvenance,
+  type LabelProvenance,
+  cleanProvenanceReadDiagnostic,
+  unavailableProvenance,
+  type ProvenanceReporter,
+  type LabelProvenanceDiagnostic,
+} from './label-provenance.js';
+import {
   fillText,
   InputPrivacyRefusal,
   currentInputs,
@@ -6,7 +14,7 @@ import {
   throwIfInputPrivacyRefused,
   withEchoScope,
 } from './inputs.js';
-import { isAbort, cancellationSignal } from '../domain/cancellation.js';
+import { isAbort, cancellationSignal, withDeadline } from '../domain/cancellation.js';
 import type { Block, Item, Target } from './plan.js';
 import {
   type Element,
@@ -18,15 +26,12 @@ import {
   insideAlert,
   elementFrame,
   isNativeInput,
-  disabledStateOf,
-  semanticDisabled,
   describe,
 } from './screen.js';
 import {
   type Resolution,
   type CentreCoverageDiagnostic,
   type ScreenDecision,
-  type AssertionUpdate,
   CHECK,
   ResolutionError,
   decideScreen,
@@ -39,20 +44,19 @@ import {
   bindFillIdentity,
   bindDispatchIdentity,
   stepTarget,
-  scrollConfirmationCovered,
-  scrollConfirmationOccluded,
-  scrollConfirmationEvidence,
   scrollUntilBand,
+  scrollUntilEvidence,
   scrollUntilContainer,
-  scrollUntilHasCandidate,
   scrollUntilDirection,
   targetEvidence,
+  aggregateScrollTargetVisible,
+  targetNeedsPresence,
   presenceMiss,
   visibleSelector,
 } from './resolve.js';
 import { literalEvidence, type LiteralNearMiss } from './evidence.js';
 import { scrollNavigationChange } from './scroll-navigation.js';
-import { exactIdentities, focusIdentityOf } from './identity.js';
+import { applyContainmentFallback, exactIdentities, focusIdentityOf } from './identity.js';
 import {
   type BlockPlatform,
   type StoredBlock,
@@ -86,7 +90,6 @@ import {
   ObservedPrivacy,
   matchPrivate,
   projectPlanLine,
-  nativeLabelMayBeValue,
 } from './privacy.js';
 import { renderReason, segments, type Reason } from './untrusted.js';
 import { NativeSnapshotIncomplete, PrivateInputCaptureError } from './private-input.js';
@@ -147,6 +150,11 @@ export interface ActResult {
 }
 
 export interface WalkerDeps {
+  readLabelProvenance?(
+    refs: string[],
+    deadline: number,
+    report: ProvenanceReporter,
+  ): Promise<LabelProvenance[] | undefined>;
   privacy?: ObservedPrivacy;
   mediaWithheld?(event: MediaWithheldDiagnostic): void;
   judge?: Judge;
@@ -191,6 +199,7 @@ export interface WalkerDeps {
   cancelled?(): boolean;
   diagnostic?(event: WalkerTimingDiagnostic): void;
   targetMiss?(event: TargetMissDiagnostic): void;
+  labelProvenanceDiagnostic?(event: LabelProvenanceDiagnostic): void;
   blockOutcome?(event: BlockOutcomeDiagnostic): void;
   loginOutcome?(outcome: BlockOutcome): void;
   timing?: TimingObserver;
@@ -236,6 +245,7 @@ interface Observation {
   id: number;
   screen: Screen;
   timing: ObservationTiming;
+  platformPresence: boolean;
 }
 
 const ITEM_DEADLINE_EXCEEDED = 'VISIBILITY_UNSURE: ITEM_DEADLINE_EXCEEDED';
@@ -417,9 +427,8 @@ async function walkBlockScoped(
   let mutationStarted = false;
   let latestObservation = 0;
   let recoveries = 0;
-  const captureScreen = async (
-    options: Parameters<WalkerDeps['captureScreen']>[0],
-  ): Promise<Screen> => {
+  let metadataOnly = false;
+  const captureScreen: WalkerDeps['captureScreen'] = async (options) => {
     const screen = await deps.captureScreen(options);
     const react = screen.reactConnection ?? screen.captureCoverage?.react;
     if ((react === 'lost' || react === 'reconnected') && reactConnections.at(-1) !== react)
@@ -462,24 +471,18 @@ async function walkBlockScoped(
     await deps.sleep(ms);
     assertActive();
   };
-  const capture = async (
+  const captureOnce = async (
     step?: Exclude<Item, { kind: 'check' }>,
     assertion = false,
     recovery = false,
-    mode?: 'presence',
+    purpose: 'resolve' | 'provenance' = 'resolve',
   ): Promise<Observation> => {
     assertActive();
     cached = undefined;
     const target =
       step && ('target' in step ? step.target : step.kind === 'scroll' ? step.until : undefined);
-    const ordinaryScroll = !mode && !assertion && step?.kind === 'scroll' && !!step.until;
-    const requirePresence =
-      !ordinaryScroll && (assertion || (!!target && target.quoted === undefined));
-    const platformPresence =
-      !ordinaryScroll &&
-      (mode === 'presence' ||
-        requirePresence ||
-        (!!target && step?.kind === 'press' && target.exact !== 'id'));
+    const requirePresence = assertion || (!!target && target.quoted === undefined);
+    const platformPresence = requirePresence || purpose === 'provenance';
     const startedAt = deps.now();
     const id = ++sequence.observation;
     latestObservation = id;
@@ -543,14 +546,15 @@ async function walkBlockScoped(
           refuse: 'SYSTEM_DIALOG_INTERRUPTED',
           reason: 'a system dialog is in front of the step target',
         });
-      if (requirePresence && latest.front !== 'dialog' && latest.coverage?.native !== 'complete')
+      if (platformPresence && latest.front !== 'dialog' && latest.coverage?.native !== 'complete')
         throw new ResolutionError({
           refuse: 'SCREEN_EVIDENCE_INCOMPLETE',
           reason: 'NATIVE_PRESENCE_UNUSABLE',
         });
       admitted = true;
+      metadataOnly = false;
       emitCaptureDiagnostics(latest);
-      return { screen: latest, timing, id };
+      return { screen: latest, timing, id, platformPresence };
     } catch (error) {
       if (isAbort(error)) throw error;
       if (error instanceof ResolutionError && error.code === 'APP_PROCESS_CHANGED')
@@ -569,6 +573,86 @@ async function walkBlockScoped(
         });
       }
     }
+  };
+  const capture = async (
+    step?: Exclude<Item, { kind: 'check' }>,
+    assertion = false,
+    recovery = false,
+  ): Promise<Observation> => {
+    const observation = await captureOnce(step, assertion, recovery);
+    if (!step || step.kind !== 'press' || !targetNeedsPresence(step, observation.screen))
+      return observation;
+    const refs = exactIdentities(observation.screen, step.target, 'press')
+      .map(({ element }) => element.ref)
+      .filter((ref) => !ref.startsWith('react:'));
+    const deadline = observationDeadline(observation.timing);
+    metadataOnly = true;
+    let provenance: LabelProvenance[] | undefined;
+    let provenanceDiagnostic = {
+      ...unavailableProvenance('adapter-unavailable'),
+      requested: false,
+    };
+    const report: ProvenanceReporter = (event) => {
+      const clean = cleanProvenanceReadDiagnostic(event);
+      if (clean) provenanceDiagnostic = clean;
+    };
+    const provenanceTimeout = new Error('candidate-provenance-deadline');
+    try {
+      provenance = await withDeadline(
+        performance.now() + Math.max(0, deadline - deps.now()),
+        provenanceTimeout,
+        async () => {
+          if (!deps.readLabelProvenance) return undefined;
+          provenanceDiagnostic = unavailableProvenance();
+          // Leave time for the native timeout diagnostic to reach the walker.
+          return deps.readLabelProvenance(refs, deadline - 1_500, report);
+        },
+      );
+    } catch (error) {
+      if (isAbort(error)) throw error;
+      if (error instanceof AppProcessGoneError) throw processChanged();
+      if (provenanceDiagnostic.outcome === 'unavailable')
+        provenanceDiagnostic.outcome = error === provenanceTimeout ? 'deadline' : 'read-failed';
+      if (error === provenanceTimeout) provenanceDiagnostic.deadlineExpired = true;
+    }
+    assertActive();
+    if (deps.now() >= deadline) {
+      provenanceDiagnostic.deadlineExpired = true;
+      if (['available', 'unavailable'].includes(provenanceDiagnostic.outcome))
+        provenanceDiagnostic.outcome = 'deadline';
+    }
+    const provenanceAdmitted =
+      deps.now() < deadline && applyLabelProvenance(observation.screen, refs, provenance);
+    if (provenanceAdmitted) provenanceDiagnostic.outcome = 'available';
+    const containment =
+      !provenanceAdmitted &&
+      provenance === undefined &&
+      deps.now() < deadline &&
+      provenanceDiagnostic.outcome === 'deadline-clean' &&
+      provenanceDiagnostic.deadlineExpired === true &&
+      provenanceDiagnostic.differedFields.length === 0 &&
+      provenanceDiagnostic.directLabelIndices !== undefined &&
+      applyContainmentFallback(
+        observation.screen,
+        step.target,
+        provenanceDiagnostic.directLabelIndices,
+      );
+    try {
+      deps.labelProvenanceDiagnostic?.({
+        kind: 'label-provenance',
+        line: step.line,
+        ...provenanceDiagnostic,
+        ...(containment ? { resolvedBy: 'containment' as const } : {}),
+      });
+    } catch {
+      /* Diagnostics cannot change admission. */
+    }
+    if (!provenanceAdmitted && !containment)
+      throw new ResolutionError({
+        refuse: 'TARGET_AMBIGUOUS',
+        reason: 'candidate label provenance was unavailable within the observation budget',
+      });
+    return observation;
   };
   const diagnostic = (
     item: Item,
@@ -708,7 +792,6 @@ async function walkBlockScoped(
     step?: Exclude<Item, { kind: 'check' }>,
     deadline = Infinity,
     initial?: ScreenDecision,
-    assertionUpdates?: ReadonlyMap<Element, AssertionUpdate>,
   ): Promise<ScreenDecision> => {
     const item = (check ?? step)!;
     usable(observation, item, deadline);
@@ -734,7 +817,6 @@ async function walkBlockScoped(
             privacy,
             observationDeadline(observation.timing, deadline),
             deps.diagnostic !== undefined,
-            assertionUpdates,
           ));
       } catch (error) {
         if (isAbort(error)) throw error;
@@ -1004,6 +1086,10 @@ async function walkBlockScoped(
       withheldRows.set(item.line, latch.reason);
       return undefined;
     }
+    if (metadataOnly) {
+      metric('screenshot', undefined, { outcome: 'withheld' });
+      return undefined;
+    }
     shots += 1;
     const started = deps.timing ? deps.now() : 0;
     metric('screenshot', undefined, { edge: 'start' });
@@ -1027,16 +1113,6 @@ async function walkBlockScoped(
     checkObservation?: (screen: Screen) => void,
   ) => {
     let reasks = 0;
-    const validateRefresh = (before: Screen, after: Screen): void => {
-      if (item.kind !== 'scroll') return;
-      const navigation = scrollNavigationChange(
-        before,
-        after,
-        scrollUntilContainer(item.until!, before),
-      );
-      if (navigation) throw new ResolutionError({ refuse: 'SCROLL_NAVIGATED', reason: navigation });
-      checkObservation?.(after);
-    };
     return async (
       observation: Observation,
       initial?: ScreenDecision,
@@ -1044,181 +1120,8 @@ async function walkBlockScoped(
       let decision = initial;
       while (deps.now() < deadline) {
         checkObservation?.(observation.screen);
-        const beforeConfirmation = observation.screen;
-        let ordinary = observation;
-        const target = item.kind === 'wait' ? item.target : item.until!;
-        const assertionUpdates = new Map<Element, AssertionUpdate>();
-        const occluded = new Set<Element>();
-        const isContradicted = (witness: Element): boolean => {
-          const frame = frameKey(witness);
-          const identified =
-            witness.testID === undefined
-              ? []
-              : ordinary.screen.elements.filter((element) => element.testID === witness.testID);
-          const named =
-            witness.testID === undefined && witness.label !== undefined
-              ? ordinary.screen.elements.filter(
-                  (element) => element.kind === witness.kind && element.label === witness.label,
-                )
-              : [];
-          const matches = identified.length
-            ? identified
-            : named.length
-              ? named
-              : ordinary.screen.elements.filter(
-                  (element) =>
-                    (witness.testID === undefined || element.testID === undefined) &&
-                    frame !== undefined &&
-                    frameKey(element) === frame,
-                );
-          if (!matches.length)
-            return (
-              (ordinary.screen.captureCoverage?.native ?? ordinary.screen.coverage?.native) ===
-                'complete' &&
-              witness.testID !== undefined &&
-              beforeConfirmation.elements.some((element) => element.testID === witness.testID)
-            );
-          let available = matches.filter(
-            (element) =>
-              !element.offscreen &&
-              element.visibilityEvidence !== 'offscreen' &&
-              element.semantic?.visibility !== 'hidden' &&
-              element.semantic?.visibility !== 'offscreen' &&
-              !scrollConfirmationCovered(element, ordinary.screen),
-          );
-          if (!available.length) {
-            if (!matches.every((element) => scrollConfirmationOccluded(element, ordinary.screen)))
-              return true;
-            occluded.add(witness);
-            available = matches;
-          }
-          const disabled = disabledStateOf(available[0]);
-          if (
-            target.quoted === undefined &&
-            disabled !== undefined &&
-            available.every((element) => disabledStateOf(element) === disabled) &&
-            disabled !== semanticDisabled(witness)
-          )
-            assertionUpdates.set(witness, { disabled });
-          const kind = available[0].nativeKind ?? available[0].kind;
-          if (
-            target.quoted === undefined &&
-            kind !== 'other' &&
-            available.every((element) => (element.nativeKind ?? element.kind) === kind) &&
-            kind !== (witness.semantic?.nativePresence?.kind ?? witness.kind)
-          )
-            assertionUpdates.set(witness, { ...assertionUpdates.get(witness), kind });
-          const changed = available.every(
-            (element) =>
-              target.exact !== 'id' &&
-              (target.exact === 'text' ||
-                target.quoted === undefined ||
-                target.quoted !== witness.testID) &&
-              witness.label !== undefined &&
-              element.label !== undefined &&
-              (!witness.semantic?.nativePresence ||
-                witness.semantic.nativePresence.labelSource === 'direct') &&
-              (!element.semantic?.nativePresence ||
-                element.semantic.nativePresence.labelSource === 'direct') &&
-              !nativeLabelMayBeValue(witness) &&
-              !nativeLabelMayBeValue(element) &&
-              element.label !== witness.label,
-          );
-          if (!changed) return occluded.has(witness);
-          if (
-            target.quoted === undefined &&
-            available.every((element) => element.label === available[0].label)
-          ) {
-            assertionUpdates.set(witness, {
-              ...assertionUpdates.get(witness),
-              label: available[0].label!,
-            });
-            return occluded.has(witness);
-          }
-          occluded.delete(witness);
-          return true;
-        };
         try {
-          if (item.kind === 'scroll') {
-            usable(ordinary, item, deadline);
-            if (!scrollUntilHasCandidate(target, ordinary.screen)) {
-              if (target.exact) targetEvidence(target, ordinary.screen);
-              return { observation: ordinary, found: false };
-            }
-            observation = await capture(item, false, false, 'presence');
-            const refreshed = await capture(item);
-            validateRefresh(ordinary.screen, refreshed.screen);
-            ordinary = refreshed;
-            usable(ordinary, item, deadline);
-            decision = undefined;
-          }
           decision = await decide(observation, undefined, item, deadline, decision);
-          if (item.kind === 'scroll') {
-            usable(ordinary, item, deadline);
-            if (
-              target.quoted === undefined &&
-              decision.visibility &&
-              !('refuse' in decision.visibility) &&
-              decision.visibility.verdict === 'present'
-            ) {
-              const contradicted = scrollConfirmationEvidence(target, observation.screen).filter(
-                isContradicted,
-              );
-              if (contradicted.length || assertionUpdates.size) {
-                const retained = {
-                  ...observation,
-                  screen: {
-                    ...observation.screen,
-                    elements: observation.screen.elements.filter(
-                      (element) => !contradicted.includes(element),
-                    ),
-                  },
-                };
-                const rechecked = await decide(
-                  retained,
-                  undefined,
-                  item,
-                  deadline,
-                  undefined,
-                  assertionUpdates,
-                );
-                usable(ordinary, item, deadline);
-                if (
-                  !rechecked.visibility ||
-                  'refuse' in rechecked.visibility ||
-                  rechecked.visibility.verdict !== 'present'
-                ) {
-                  if (
-                    contradicted.length > 0 &&
-                    contradicted.every((element) => occluded.has(element))
-                  ) {
-                    const updated = assertionUpdates.size
-                      ? await decide(
-                          observation,
-                          undefined,
-                          item,
-                          deadline,
-                          undefined,
-                          assertionUpdates,
-                        )
-                      : decision;
-                    usable(ordinary, item, deadline);
-                    if (
-                      updated.visibility &&
-                      !('refuse' in updated.visibility) &&
-                      updated.visibility.verdict === 'present'
-                    )
-                      return { observation: ordinary, found: false };
-                  }
-                  throw new ResolutionError({
-                    refuse: 'VISIBILITY_UNSURE',
-                    reason:
-                      'the newer ordinary observation contradicts confirmed target visibility',
-                  });
-                }
-              }
-            }
-          }
         } catch (error) {
           if (isAbort(error)) throw error;
           if (!(error instanceof EvidenceExpired)) throw error;
@@ -1227,32 +1130,34 @@ async function walkBlockScoped(
           await pause(Math.min(WAIT_POLL_MS, Math.max(0, deadline - deps.now())));
           if (deps.now() >= deadline) throw new EvidenceExpired(true);
           observation = await capture(item);
-          validateRefresh(ordinary.screen, observation.screen);
           decision = undefined;
           continue;
         }
-        const confirmed = (): { observation: Observation; found: boolean } => {
-          if (item.kind === 'scroll' && target.quoted !== undefined) {
-            const witnesses = scrollConfirmationEvidence(target, observation.screen);
-            const contradicted = witnesses.length > 0 && witnesses.every(isContradicted);
-            if (contradicted) {
-              if (witnesses.every((element) => occluded.has(element)))
-                return { observation: ordinary, found: false };
-              throw new ResolutionError({
-                refuse: 'VISIBILITY_UNSURE',
-                reason: 'the newer ordinary observation contradicts confirmed target visibility',
-              });
-            }
-          }
-          return { observation: item.kind === 'scroll' ? ordinary : observation, found: true };
-        };
+        const target = item.kind === 'wait' ? item.target : item.until!;
         if (target.quoted !== undefined) {
           const evidence = targetEvidence(target, observation.screen);
-          if (evidence === 'pass') return confirmed();
+          if (
+            evidence !== 'pass' &&
+            item.kind === 'scroll' &&
+            aggregateScrollTargetVisible(target, observation.screen)
+          ) {
+            try {
+              deps.labelProvenanceDiagnostic?.({
+                kind: 'label-provenance',
+                line: item.line,
+                ...unavailableProvenance(),
+                requested: false,
+                resolvedBy: 'aggregate-visibility',
+              });
+            } catch {}
+            return { observation, found: true };
+          }
+          const scrollEvidence =
+            item.kind === 'scroll' ? scrollUntilEvidence(target, observation.screen) : evidence;
           return {
-            observation: item.kind === 'scroll' ? ordinary : observation,
-            found: false,
-            unsure: evidence === 'unsure',
+            observation,
+            found: scrollEvidence === 'pass',
+            unsure: scrollEvidence === 'unsure',
           };
         }
         const visibility = decision.visibility;
@@ -1273,8 +1178,8 @@ async function walkBlockScoped(
             );
           throw new ResolutionError(visibility);
         }
-        if (visibility.verdict === 'present') return confirmed();
-        if (visibility.verdict === 'absent') return { observation: ordinary, found: false };
+        if (visibility.verdict === 'present') return { observation, found: true };
+        if (visibility.verdict === 'absent') return { observation, found: false };
         if (visibility.verdict === 'pending' && item.kind === 'wait')
           return { observation, found: false };
         const remaining = deadline - deps.now();
@@ -1284,7 +1189,6 @@ async function walkBlockScoped(
         await pause(Math.min(WAIT_POLL_MS, remaining));
         if (deps.now() >= deadline) break;
         observation = await capture(item);
-        validateRefresh(ordinary.screen, observation.screen);
         decision = undefined;
       }
       usable(observation, item, deadline);
@@ -1870,11 +1774,7 @@ async function walkBlockScoped(
         if (item.kind === 'check') {
           const next = block.items[block.items.indexOf(item) + 1];
           const nextStep =
-            !item.literal &&
-            next &&
-            next.kind !== 'check' &&
-            !(next.kind === 'scroll' && next.until) &&
-            stepTarget(next)?.quoted === undefined
+            !item.literal && next && next.kind !== 'check' && stepTarget(next)?.quoted === undefined
               ? next
               : undefined;
           let before = await capture(nextStep, !item.literal);
@@ -2033,7 +1933,8 @@ async function walkBlockScoped(
         if (item.kind === 'scroll' && item.until) {
           resolvedBy = item.until.quoted === undefined ? 'jev' : resolvedBy;
           const deadline = deps.now() + PHRASE_WAIT_BUDGET_MS;
-          let observation = await capture(item);
+          const held = cached?.item === item ? cached : undefined;
+          let observation = held?.observation ?? (await capture(item));
           cached = undefined;
           let beforeScroll: { screen: Screen; container?: Element } | undefined;
           const probe = visibilityProbe(item, deadline, (screen) => {
@@ -2063,21 +1964,14 @@ async function walkBlockScoped(
                   ? replayMiss
                   : error;
               replayMiss = error;
-              observation = await capture(item);
-              const navigation = scrollNavigationChange(
-                s.screen,
-                observation.screen,
-                scrollUntilContainer(item.until!, s.screen),
-              );
-              if (navigation)
-                throw new ResolutionError({ refuse: 'SCROLL_NAVIGATED', reason: navigation });
+              observation = s;
               return false;
             }
             observation = observed.observation;
             unsure = observed.unsure === true;
             return observed.found;
           };
-          let found = await visible(observation);
+          let found = await visible(observation, held?.decision);
           let attempts = 0;
           const container = scrollUntilContainer(item.until, observation.screen);
           while (!found && attempts < SCROLL_ATTEMPTS && deps.now() < deadline) {
@@ -2616,7 +2510,12 @@ async function walkBlockScoped(
             }
           }
           if (outcome || typedUnverified) break;
-          const after = await capture(item);
+          const after = await captureOnce(
+            item,
+            false,
+            false,
+            before.platformPresence ? 'provenance' : 'resolve',
+          );
           // NOTE: a not-ok result is not a verdict; an act that timed out may still have landed.
           const changed = screenSignature(after.screen) !== screenSignature(before.screen);
           usable(after, item);

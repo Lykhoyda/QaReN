@@ -1040,7 +1040,7 @@ test('ledger block names hide input values whole, not their fragments', async ()
   );
 });
 
-test('a declared echo is in force from its line to the end of its block', async () => {
+test('known input labels stay masked across declared blocks and nested login', async () => {
   const email = 'qa-synth-1234@example.test';
   const otp = '482913';
   const hint = (label: string) => [
@@ -1093,14 +1093,14 @@ test('a declared echo is in force from its line to the end of its block', async 
     const outcome = await first.run();
     assert.equal(outcome.failure, undefined);
     assert.deepEqual(first.echoRows, [['pass']]);
-    assert.throws(() => hashSnapshotNodes(hint(`We sent a code to ${email}`)), InputPrivacyRefusal);
+    assert.doesNotThrow(() => hashSnapshotNodes(hint(`We sent a code to ${email}`)));
   });
-  await withInputs(inputs(), () =>
-    assert.rejects(
-      walk(parsed('# Login\n1. Fill "email" with input EMAIL\n2. Tap "next"\n')).run(),
-      InputPrivacyRefusal,
-    ),
-  );
+  await withInputs(inputs(), async () => {
+    const outcome = await walk(
+      parsed('# Login\n1. Fill "email" with input EMAIL\n2. Tap "next"\n'),
+    ).run();
+    assert.equal(outcome.failure, undefined);
+  });
   await withInputs(inputs(), async () => {
     assert.equal((await walk(declared, { fromLine: 4 }).run()).failure, undefined);
   });
@@ -1118,15 +1118,17 @@ test('a declared echo is in force from its line to the end of its block', async 
     assert.equal((await outer.run()).failure, undefined);
   });
   assert.equal(nested, true);
-  await withInputs(inputs(), () =>
-    assert.rejects(
-      walk(declared, {}, async () => {
-        await walkBlock(login, fixtureWalker(screens(), scriptedJudge([])).deps);
-        hashSnapshotNodes(hint(`Your code is ${otp}`));
-      }).run(),
+  await withInputs(inputs(), async () => {
+    const outcome = await walk(declared, {}, async () => {
+      await walkBlock(login, fixtureWalker(screens(), scriptedJudge([])).deps);
+      hashSnapshotNodes(hint(`Your code is ${otp}`));
+    }).run();
+    assert.equal(outcome.failure, undefined);
+    assert.throws(
+      () => hashSnapshotNodes([{ ...hint('Email')[0], identifier: email }]),
       InputPrivacyRefusal,
-    ),
-  );
+    );
+  });
 });
 
 test('annotated fixture reaches the next capture, fill row and authenticated assertion without an echo', async () => {

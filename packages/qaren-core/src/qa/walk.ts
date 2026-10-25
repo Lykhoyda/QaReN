@@ -1,5 +1,6 @@
 import { QaDispatchError } from '../domain/qa-dispatch.js';
 import { ownedLogin, parseInputPreflight } from './input-preflight.js';
+import { readAndroidLabelProvenance } from '../runners/rn-android-runner-client.js';
 import { ObservedPrivacy } from './privacy.js';
 import { InputPrivacyRefusal, withInputs, currentInputs } from './inputs.js';
 import {
@@ -45,6 +46,7 @@ import { compileFlow, FlowCompileError } from '../flow/compile.js';
 import { foreignFlowGate } from '../lifecycle/foreign-flow-gate.js';
 import { androidForeignDriverMessage } from '../runners/external-runner-detect.js';
 import {
+  readIOSLabelProvenance,
   observeAppProcess,
   observeRunnerDrivers,
   observeRunnerRelaunches,
@@ -639,29 +641,6 @@ async function openSession(
     log(`login block ${request.loginBlock} is missing or unreadable; a login wall fails the step`);
 
   const captureReact = createQaReactCapture(cdp);
-  const readScreen: WalkerDeps['captureScreen'] = (options) =>
-    stop.track(() =>
-      captureScreen({
-        appId,
-        requirePrivateInputs: true,
-        observation: options?.observation,
-        platformPresence: options?.platformPresence,
-        now,
-        timing: options?.timing,
-        warn: log,
-        native: (presenceBudgetMs) =>
-          rawSnapshot(
-            options?.platformPresence,
-            presenceBudgetMs,
-            options?.timing ? { now, observe: options.timing } : undefined,
-          ).catch((error: unknown) => {
-            if (error instanceof HandlerError && error.meta?.reason === 'app-not-running')
-              throw new AppProcessGoneError();
-            throw error;
-          }),
-        react: () => captureReact(options?.platformPresence === true),
-      }),
-    );
   const deps: WalkerDeps = {
     note: log,
     mediaWithheld: diagnostic,
@@ -671,7 +650,35 @@ async function openSession(
     presenceUnavailable: platform === 'android',
     timing,
     publicationInterrupted: admittedSnapshots.interrupted,
-    captureScreen: readScreen,
+    readLabelProvenance: async (refs, deadline, report) => {
+      const budget = Math.min(20_000, Math.floor(deadline - now()));
+      if (budget <= 0) return undefined;
+      const read = platform === 'ios' ? readIOSLabelProvenance : readAndroidLabelProvenance;
+      return stop.track(() => read(refs, budget, appId, target.deviceId, report));
+    },
+    captureScreen: (options) =>
+      stop.track(() =>
+        captureScreen({
+          appId,
+          requirePrivateInputs: true,
+          observation: options?.observation,
+          platformPresence: options?.platformPresence,
+          now,
+          timing: options?.timing,
+          warn: log,
+          native: (presenceBudgetMs) =>
+            rawSnapshot(
+              options?.platformPresence,
+              presenceBudgetMs,
+              options?.timing ? { now, observe: options.timing } : undefined,
+            ).catch((error: unknown) => {
+              if (error instanceof HandlerError && error.meta?.reason === 'app-not-running')
+                throw new AppProcessGoneError();
+              throw error;
+            }),
+          react: () => captureReact(options?.platformPresence === true),
+        }),
+      ),
     press: (ref, qaContext) =>
       act(() => press({ ref, qaContext, qaTiming: { now, observe: timing } }), false, {
         now,
@@ -710,6 +717,7 @@ async function openSession(
     },
     blockOutcome: diagnostic,
     targetMiss: diagnostic,
+    labelProvenanceDiagnostic: diagnostic,
     loginOutcome: (outcome) => diagnostic({ kind: 'login-outcome', outcome }),
     hideDevMenu: () => act(() => recoverDevOverlays(overlays), false),
     ...(login ? { login } : {}),

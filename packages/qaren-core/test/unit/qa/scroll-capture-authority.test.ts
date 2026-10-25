@@ -2,15 +2,11 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { captureScreen } from '../../../dist/qa/capture.js';
 import { parsePlan } from '../../../dist/qa/plan.js';
-import { disabledStateOf, join as joinScreen } from '../../../dist/qa/screen.js';
 import type { NativeNode } from '../../../dist/qa/screen.js';
 import { walkBlock } from '../../../dist/qa/walker.js';
-import { EVIDENCE_USE_MS } from '../../../dist/qa/timing.js';
-import { decideScreen } from '../../../dist/qa/resolve.js';
-import { ObservedPrivacy } from '../../../dist/qa/privacy.js';
 import { buildDirectionalScrollCliArgs } from '../../../dist/handlers/device-interact.js';
 import { clearRefMap, updateRefMapFromFlat } from '../../../dist/fast-runner-ref-map.js';
-import { element, screen, scriptedJudge, walker } from './judgment-fixtures.ts';
+import { scriptedJudge, walker } from './judgment-fixtures.ts';
 import { attested, nativeCapture } from './platform-presence-fixtures.ts';
 
 const frame = { x: 0, y: 0, width: 402, height: 874 };
@@ -18,54 +14,38 @@ type Snapshot = {
   footer?: boolean;
   footerY?: number;
   footerHeight?: number;
-  footerLabel?: string;
-  footerControl?: boolean;
-  footerType?: string;
-  footerEnabled?: boolean | null;
-  terms?: boolean;
-  termsY?: number;
-  termsLabel?: string;
-  footerMissing?: boolean;
-  footerUnidentified?: boolean;
-  loading?: boolean;
-  loadingY?: number;
-  loadingLabel?: string;
-  loadingUnidentified?: boolean;
-  keyboardY?: number;
   listID?: string;
-  hideFooterLabel?: boolean;
   listFrame?: NonNullable<NativeNode['rect']>;
   tab?: string;
   title?: string;
-  titleY?: number;
-  toolbarY?: number;
-  toolbarHittable?: boolean;
   overlays?: NonNullable<NativeNode['rect']>[];
 };
 
 function fixture() {
   let drags = 0;
-  let reads = 0;
   const modes: boolean[] = [];
   const endpoints: number[][] = [];
-  const judge = scriptedJudge((questions, _index, state) =>
-    Object.fromEntries(
-      Object.keys(questions).map((id) => [
-        id,
-        { type: 'noul', noul: JSON.stringify(state).includes('Footer') ? 0.9 : 0.1 },
-      ]),
+  const f = walker(
+    [],
+    scriptedJudge((questions, _index, state) =>
+      Object.fromEntries(
+        Object.keys(questions).map((id) => [
+          id,
+          {
+            type: 'noul',
+            noul: JSON.stringify(state).includes('Footer') ? 0.9 : 0.1,
+          },
+        ]),
+      ),
     ),
   );
-  const f = walker([], judge);
-  let snapshot: (presence: boolean, read: number) => Promise<Snapshot> = async () => ({
-    footer: drags > 0,
-  });
-  const read: typeof f.deps.captureScreen = async (options) => {
+  let snapshot: (presence: boolean) => Promise<Snapshot> = async () => ({ footer: drags > 0 });
+  f.deps.captureScreen = async (options) => {
     const presence = options?.platformPresence === true;
     modes.push(presence);
-    const state = await snapshot(presence, ++reads);
+    const state = await snapshot(presence);
     const source = nativeCapture();
-    const rawNodes: NativeNode[] = [
+    const raw: NativeNode[] = [
       { type: 'Application', rect: frame },
       { type: 'Window', parentIndex: 0, rect: frame },
       {
@@ -75,96 +55,38 @@ function fixture() {
         rect: state.listFrame ?? frame,
       },
       {
-        type: state.footerMissing
-          ? 'Other'
-          : (state.footerType ?? (state.footerControl ? 'Button' : 'StaticText')),
-        enabled: state.footerEnabled === null ? undefined : (state.footerEnabled ?? true),
+        type: 'StaticText',
         parentIndex: 2,
-        label:
-          state.footerMissing || state.hideFooterLabel
-            ? undefined
-            : state.footer
-              ? (state.footerLabel ?? 'Footer')
-              : 'Loading',
-        identifier:
-          state.footerMissing || state.footerUnidentified
-            ? undefined
-            : state.footer
-              ? 'footer'
-              : 'loading',
-        rect: state.footerMissing
-          ? undefined
-          : { x: 10, y: state.footerY ?? 200, width: 100, height: state.footerHeight ?? 30 },
+        identifier: state.footer ? 'footer' : 'loading',
+        label: state.footer ? 'Footer' : 'Loading',
+        rect: { x: 10, y: state.footerY ?? 200, width: 100, height: state.footerHeight ?? 30 },
       },
-      ...(presence
-        ? [
-            { type: 'Window', parentIndex: 0, rect: frame },
-            { type: 'Other', parentIndex: 4, rect: frame },
-            { type: 'Button', parentIndex: 5, rect: frame },
-          ]
-        : []),
-      ...(state.toolbarY === undefined
-        ? []
-        : [
-            { type: 'Window', parentIndex: 0, rect: frame },
-            {
-              type: 'Button',
-              parentIndex: presence ? 7 : 4,
-              hittable: state.toolbarHittable ?? true,
-              rect: { x: 0, y: state.toolbarY, width: 402, height: 70 },
-            },
-          ]),
       ...(state.overlays ?? []).map((rect) => ({ type: 'Button', parentIndex: 1, rect })),
     ];
-    if (state.loading)
-      rawNodes.push({
-        type: 'StaticText',
-        parentIndex: 2,
-        identifier: state.loadingUnidentified ? undefined : 'loading-extra',
-        label: state.loadingLabel ?? 'Loading',
-        rect: { x: 10, y: state.loadingY ?? 300, width: 100, height: 30 },
-      });
-    if (state.terms)
-      rawNodes.push({
-        type: 'StaticText',
-        parentIndex: 2,
-        identifier: 'terms',
-        label: state.termsLabel ?? 'Terms',
-        rect: { x: 10, y: state.termsY ?? 350, width: 100, height: 30 },
-      });
-    if (state.keyboardY !== undefined)
-      rawNodes.push({
-        type: 'Keyboard',
-        parentIndex: 1,
-        rect: { x: 0, y: state.keyboardY, width: 402, height: 874 - state.keyboardY },
-      });
     if (state.tab)
-      rawNodes.push({
+      raw.push({
         type: 'Button',
         parentIndex: 1,
         selected: true,
         label: state.tab,
         rect: { x: 0, y: 820, width: 100, height: 40 },
       });
-    if (state.title !== undefined)
-      rawNodes.push({
+    if (state.title)
+      raw.push({
         type: 'NavigationBar',
-        hittable: false,
         parentIndex: 1,
-        identifier: 'main-navigation',
+        hittable: false,
         label: state.title,
-        rect: { x: 0, y: state.titleY ?? 0, width: 402, height: 60 },
+        rect: { x: 0, y: 0, width: 402, height: 60 },
       });
-    const depth = (index: number): number => {
-      const parent = rawNodes[index].parentIndex;
-      return parent === undefined ? 0 : depth(parent) + 1;
-    };
-    const nodes = rawNodes.map((node, index) => ({
+    const depth = (i: number): number =>
+      raw[i].parentIndex === undefined ? 0 : depth(raw[i].parentIndex!) + 1;
+    const nodes = raw.map((node, index) => ({
       ...node,
       ref: `@e${index}`,
       index,
       depth: depth(index),
-      enabled: 'enabled' in node ? node.enabled : true,
+      enabled: true,
       hittable: node.hittable ?? true,
       ...(presence ? { presence: { ...source.nodes[1].presence, nodeIndex: index } } : {}),
     }));
@@ -185,7 +107,6 @@ function fixture() {
       }),
     });
   };
-  f.deps.captureScreen = read;
   f.deps.scroll = async (direction, context, _distance, band) => {
     context!.authorize();
     endpoints.push(
@@ -228,119 +149,46 @@ async function run(
   });
 }
 
-for (const direction of ['up', 'down'] as const) {
-  for (const mode of ['quoted', 'phrase', 'replay', 'text-replay'] as const) {
-    test(`overlay cannot conceal an outside-list contradiction: ${direction}, ${mode}`, async () => {
-      const f = fixture();
-      let confirmed = false;
-      f.setSnapshot(async (presence) => {
-        if (presence) confirmed = true;
-        return {
-          footer: true,
-          listID: 'feed',
-          listFrame: { x: 0, y: 100, width: 402, height: 600 },
-          footerY: confirmed && !presence ? (direction === 'down' ? 800 : 50) : 200,
-          overlays: [{ x: 21, y: direction === 'down' ? 791 : 40, width: 360, height: 70 }],
-        };
-      });
-      try {
-        const result = await run(f, direction, mode);
-        assert.equal(result.block.outcome, 'fail');
-        assert.match(JSON.stringify(result.failure), /VISIBILITY_UNSURE/);
-        assert.equal(f.drags(), 0);
-      } finally {
-        clearRefMap();
-      }
-    });
-  }
-  for (const change of ['unrelated', 'label', 'state', 'kind'] as const) {
-    test(`occluded semantic target reconciles ${change} updates: ${direction}`, async () => {
-      const f = fixture();
-      let confirmed = false;
-      f.f.deps.judge = scriptedJudge((questions, _index, state) => {
-        const evidence = JSON.stringify(state);
-        const present =
-          evidence.includes('Footer') &&
-          (change !== 'state' || !evidence.includes('disabled')) &&
-          (change !== 'kind' || evidence.includes('button'));
-        return Object.fromEntries(
-          Object.keys(questions).map((id) => [id, { type: 'noul', noul: present ? 0.9 : 0.1 }]),
-        );
-      });
-      f.setSnapshot(async (presence) => {
-        if (presence) confirmed = true;
-        const changed = confirmed && !presence && f.drags() === 0;
-        return {
-          footer: true,
-          footerY: changed ? (direction === 'down' ? 800 : 100) : 200,
-          footerLabel: changed && change === 'label' ? 'Loading' : 'Footer',
-          footerControl: change === 'state' || change === 'kind',
-          footerType: changed && change === 'kind' ? 'StaticText' : undefined,
-          footerEnabled: !(changed && change === 'state'),
-          loading: true,
-          loadingLabel: changed ? 'Loaded' : 'Loading',
-          listID: 'feed',
-          overlays: [{ x: 21, y: direction === 'down' ? 791 : 80, width: 360, height: 70 }],
-        };
-      });
-      try {
-        const result = await run(
-          f,
-          direction,
-          'phrase',
-          change === 'state'
-            ? 'the enabled footer button'
-            : change === 'kind'
-              ? 'the footer button'
-              : 'the footer text',
-        );
-        assert.equal(
-          result.block.outcome,
-          change === 'unrelated' ? 'pass' : 'fail',
-          JSON.stringify(result),
-        );
-        assert.equal(f.drags(), change === 'unrelated' ? 1 : 0);
-        if (change !== 'unrelated')
-          assert.match(JSON.stringify(result.failure), /VISIBILITY_UNSURE/);
-      } finally {
-        clearRefMap();
-      }
-    });
-  }
-}
-
-test('scroll continues when row 58 lands under a floating bar with one drag left', async () => {
+test('sixth-drag target confirmation uses ordinary captures within the item deadline', async () => {
   const f = fixture();
-  f.setSnapshot(async () => ({
-    footer: f.drags() >= 5,
-    footerY: f.drags() === 5 ? 818.7 : 200,
-    footerHeight: 64,
-    listID: 'feed',
-    tab: 'A',
-    listFrame: { x: 0, y: 106.67, width: 402, height: 767.33 },
-    overlays: [{ x: 21, y: 791, width: 360, height: 70 }],
-  }));
+  const scroll = f.f.deps.scroll;
+  f.f.deps.scroll = async (...args) => {
+    await f.f.deps.sleep(5_000);
+    return scroll(...args);
+  };
+  f.setSnapshot(async (presence) => {
+    await f.f.deps.sleep(presence ? (f.drags() === 5 ? 16_300 : 12_700) : 700);
+    return {
+      footer: f.drags() >= 5,
+      footerY: f.drags() === 5 ? 818.7 : 200,
+      footerHeight: 64,
+      listID: 'feed',
+      tab: 'A',
+      listFrame: { x: 0, y: 106.67, width: 402, height: 767.33 },
+      overlays: [{ x: 21, y: 791, width: 360, height: 70 }],
+    };
+  });
   try {
     const result = await run(f, 'down', 'quoted');
     assert.equal(result.failure, undefined);
     assert.equal(result.block.outcome, 'pass');
     assert.equal(f.drags(), 6);
-    assert.ok(f.endpoints.every(([, start, , end]) => start < 787 && end < 787));
+    assert.ok(f.modes.every((presence) => !presence));
   } finally {
     clearRefMap();
   }
 });
 
 for (const direction of ['up', 'down'] as const) {
-  for (const mode of ['quoted', 'phrase', 'replay', 'text-replay'] as const) {
+  for (const mode of ['quoted', 'replay', 'text-replay'] as const) {
     for (const partial of [false, true]) {
-      test(`target overlapping a floating overlay needs another drag: ${direction}, ${mode}, partial=${partial}`, async () => {
+      test(`overlapping target gets another bounded drag: ${direction}, ${mode}, partial=${partial}`, async () => {
         const f = fixture();
         const overlay = { x: 21, y: direction === 'down' ? 791 : 80, width: 360, height: 70 };
         f.setSnapshot(async () => ({
-          footer: mode === 'text-replay' || mode === 'phrase' || f.drags() > 0,
+          footer: mode === 'text-replay' || f.drags() > 0,
           footerY:
-            f.drags() === 1 || ((mode === 'text-replay' || mode === 'phrase') && f.drags() === 0)
+            f.drags() === 1 || (mode === 'text-replay' && f.drags() === 0)
               ? direction === 'down'
                 ? partial
                   ? 770
@@ -358,6 +206,7 @@ for (const direction of ['up', 'down'] as const) {
           assert.equal(result.failure, undefined);
           assert.equal(result.block.outcome, 'pass');
           assert.equal(f.drags(), 2);
+          assert.ok(f.modes.every((presence) => !presence));
           assert.ok(
             f.endpoints.every(([, start, , end]) =>
               direction === 'down'
@@ -370,393 +219,56 @@ for (const direction of ['up', 'down'] as const) {
         }
       });
     }
-    test(`a newly covering full-screen overlay refuses before another drag: ${direction}, ${mode}`, async () => {
-      const f = fixture();
-      let confirmed = false;
-      f.setSnapshot(async (presence) => {
-        if (presence) confirmed = true;
-        return { footer: true, listID: 'feed', overlays: confirmed && !presence ? [frame] : [] };
-      });
-      try {
-        await assert.rejects(run(f, direction, mode), /SCROLL_BAND_TOO_SMALL/);
-        assert.equal(f.drags(), 0);
-        assert.deepEqual(f.endpoints, []);
-      } finally {
-        clearRefMap();
-      }
-    });
   }
-}
-
-for (const direction of ['up', 'down'] as const) {
-  for (const mode of ['quoted', 'replay'] as const) {
-    for (const animation of ['fade', 'translate', 'disappear'] as const) {
-      test(`scroll finds its target after a custom title ${animation}: ${direction}, ${mode}`, async () => {
-        const f = fixture();
-        f.setSnapshot(async () => ({
-          footer: f.drags() > 0,
-          tab: 'Home',
-          listID: 'feed',
-          title:
-            f.drags() === 0 || animation === 'translate'
-              ? 'Home'
-              : animation === 'fade'
-                ? ''
-                : undefined,
-          titleY: f.drags() > 0 ? -20 : 0,
-        }));
-        try {
-          const result = await run(f, direction, mode);
-          assert.equal(result.refusal, undefined);
-          assert.equal(result.block.outcome, 'pass', JSON.stringify(result.failure));
-          assert.equal(f.drags(), 1);
-        } finally {
-          clearRefMap();
-        }
-      });
+  test(`native title changes do not interrupt scrolling: ${direction}`, async () => {
+    const f = fixture();
+    f.setSnapshot(async () => ({
+      footer: f.drags() > 0,
+      title: f.drags() ? 'Claims' : 'Policies',
+      tab: 'A',
+      listID: 'feed',
+    }));
+    try {
+      const result = await run(f, direction, 'quoted');
+      assert.equal(result.block.outcome, 'pass');
+      assert.equal(f.drags(), 1);
+      assert.ok(f.modes.every((presence) => !presence));
+    } finally {
+      clearRefMap();
     }
-  }
-  for (const mode of ['quoted', 'replay'] as const) {
-    test(`post-drag title replacement refuses with the same list: ${direction}, ${mode}`, async () => {
-      const f = fixture();
-      f.setSnapshot(async () => ({
-        footer: f.drags() > 0,
-        tab: 'Policies',
-        title: f.drags() > 0 ? 'Claims' : 'Policies',
-        listID: 'policies',
-      }));
-      try {
-        const result = await run(f, direction, mode);
-        assert.equal(result.refusal?.code, 'SCROLL_NAVIGATED', JSON.stringify(result));
-        assert.equal(result.block.outcome, 'fail');
-        assert.equal(f.drags(), 1);
-        assert.ok(f.f.rows.every((row) => row.outcome !== 'pass'));
-      } finally {
-        clearRefMap();
-      }
-    });
-  }
-  for (const mode of ['quoted', 'phrase', 'replay', 'text-replay'] as const) {
-    test(`slow presence confirmation uses fresh ordinary evidence: ${direction}, ${mode}`, async () => {
-      const f = fixture();
-      f.setSnapshot(async (presence) => {
-        if (presence) await f.f.deps.sleep(EVIDENCE_USE_MS + 1_000);
-        return { footer: true };
-      });
-      try {
-        const result = await run(f, direction, mode);
-        assert.equal(result.block.outcome, 'pass');
-        assert.equal(result.refusal, undefined);
-        assert.deepEqual(f.modes, [false, true, false]);
-        assert.equal(f.drags(), 0);
-      } finally {
-        clearRefMap();
-      }
-    });
-  }
-}
-
-for (const direction of ['up', 'down'] as const) {
-  for (const mode of ['quoted', 'phrase', 'replay'] as const) {
-    for (const change of ['unrelated', 'label', 'unidentified-label', 'both'] as const) {
-      if (mode === 'replay' && change === 'unidentified-label') continue;
-      for (const expiry of [false, true]) {
-        test(`stable target survives ordinary ${change}: ${direction}, ${mode}, expiry=${expiry}`, async () => {
-          const f = fixture();
-          let confirmations = 0;
-          f.setSnapshot(async (presence) => {
-            if (presence) confirmations += 1;
-            if (!presence && confirmations === 1 && expiry) await f.f.deps.sleep(11_000);
-            const changed = !presence && confirmations >= (expiry ? 2 : 1);
-            return {
-              footer: true,
-              listID: 'policies',
-              footerUnidentified: change === 'unidentified-label',
-              hideFooterLabel: changed && change !== 'unrelated',
-              loading: (change === 'unrelated' || change === 'both') && !changed,
-            };
-          });
-          try {
-            const result = await run(f, direction, mode);
-            assert.equal(result.block.outcome, 'pass');
-            assert.equal(result.failure, undefined);
-            assert.equal(f.drags(), 0);
-            assert.deepEqual(
-              f.modes,
-              expiry ? [false, true, false, false, true, false] : [false, true, false],
-            );
-          } finally {
-            clearRefMap();
-          }
-        });
-      }
-    }
-
-    for (const contradiction of ['outside-list', 'keyboard', 'disappeared'] as const) {
-      test(`new ordinary ${contradiction} vetoes positive confirmation: ${direction}, ${mode}`, async () => {
-        const f = fixture();
-        let confirmed = false;
-        f.setSnapshot(async (presence) => {
-          if (presence) confirmed = true;
-          const changed = confirmed && !presence;
-          return {
-            footer: true,
-            tab: 'Policies',
-            title: 'Policies',
-            listID: 'policies',
-            listFrame: { x: 0, y: 100, width: 402, height: 600 },
-            footerY:
-              changed && contradiction === 'outside-list' ? (direction === 'down' ? 750 : 50) : 200,
-            footerMissing: changed && contradiction === 'disappeared',
-            keyboardY: changed && contradiction === 'keyboard' ? 180 : undefined,
-          };
-        });
-        try {
-          const result = await run(f, direction, mode);
-          assert.equal(result.block.outcome, 'fail');
-          assert.ok(result.rows.every((row) => row.outcome !== 'pass'));
-          if (contradiction !== 'disappeared' || mode !== 'replay') {
-            assert.equal(f.drags(), 0);
-            assert.match(JSON.stringify(result.failure), /VISIBILITY_UNSURE/);
-          }
-        } finally {
-          clearRefMap();
-        }
-      });
-    }
-
-    test(`expiry recovery still vetoes stale positive confirmation: ${direction}, ${mode}`, async () => {
-      const f = fixture();
-      let confirmations = 0;
-      f.setSnapshot(async (presence) => {
-        if (presence) confirmations += 1;
-        if (!presence && confirmations === 1) await f.f.deps.sleep(11_000);
-        return {
-          footer: true,
-          listID: 'policies',
-          listFrame: { x: 0, y: 100, width: 402, height: 600 },
-          footerY: !presence && confirmations > 1 ? (direction === 'down' ? 750 : 50) : 200,
-        };
-      });
-      try {
-        const result = await run(f, direction, mode);
-        assert.equal(result.block.outcome, 'fail');
-        assert.equal(f.drags(), 0);
-        assert.match(JSON.stringify(result.failure), /VISIBILITY_UNSURE/);
-        assert.deepEqual(f.modes, [false, true, false, false, true, false]);
-      } finally {
-        clearRefMap();
-      }
-    });
-
-    test(`presence wrappers cannot collapse ordinary geometry: ${direction}, ${mode}`, async () => {
-      const f = fixture();
-      try {
-        const result = await run(f, direction, mode);
-        assert.equal(result.failure, undefined);
-        assert.equal(result.block.outcome, 'pass');
-        assert.equal(f.drags(), 1);
-        assert.deepEqual(f.endpoints, [
-          direction === 'down' ? [201, 758, 201, 21] : [201, 102, 201, 839],
-        ]);
-        assert.deepEqual(
-          f.modes,
-          mode === 'phrase'
-            ? [false, true, false, false, true, false]
-            : mode === 'replay'
-              ? [false, false, false, true, false]
-              : [false, false, true, false],
-        );
-      } finally {
-        clearRefMap();
-      }
-    });
-
-    test(`capture coherence uses only the ordinary toolbar frame: ${direction}, ${mode}`, async () => {
-      const f = fixture();
-      f.setSnapshot(async (presence) => ({
-        footer: f.drags() > 0,
-        toolbarY: presence ? 900 : 730,
-      }));
-      try {
-        const result = await run(f, direction, mode);
-        assert.equal(result.failure, undefined);
-        assert.equal(result.block.outcome, 'pass');
-        assert.equal(f.drags(), 1);
-        const [, start, , end] = f.endpoints[0];
-        assert.ok(start < 726 && end < 726, JSON.stringify(f.endpoints));
-        assert.ok(start > 0 && end > 0);
-        assert.deepEqual(
-          f.modes,
-          mode === 'phrase'
-            ? [false, true, false, false, true, false]
-            : mode === 'replay'
-              ? [false, false, false, true, false]
-              : [false, false, true, false],
-        );
-      } finally {
-        clearRefMap();
-      }
-    });
-
-    test(`a genuine full-screen ordinary overlay still refuses: ${direction}, ${mode}`, async () => {
-      const f = fixture();
-      f.setSnapshot(async () => ({ overlays: [frame, frame] }));
-      try {
-        await assert.rejects(run(f, direction, mode), /SCROLL_BAND_TOO_SMALL/);
-        assert.equal(f.drags(), 0);
-        assert.deepEqual(f.endpoints, []);
-      } finally {
-        clearRefMap();
-      }
-    });
-
-    test(`negative presence cannot replace ordinary geometry: ${direction}, ${mode}`, async () => {
-      const f = fixture();
-      f.setSnapshot(async (presence) => ({ footer: !presence, toolbarY: presence ? 900 : 730 }));
-      try {
-        const result = await run(f, direction, mode);
-        assert.equal(result.block.outcome, 'fail');
-        assert.equal(f.drags(), 6);
-        for (const [, start, , end] of f.endpoints)
-          assert.ok(start < 726 && end < 726, JSON.stringify(f.endpoints));
-        assert.ok(result.rows.every((row) => row.outcome !== 'pass'));
-        assert.deepEqual(
-          f.modes,
-          Array.from({ length: 7 }, () =>
-            mode === 'replay' ? [false, true, false, false] : [false, true, false],
-          ).flat(),
-        );
-      } finally {
-        clearRefMap();
-      }
-    });
-
-    for (const replacedList of [false, true]) {
-      test(`confirmation title change refuses independently of list replacement: ${direction}, ${mode}, replaced=${replacedList}`, async () => {
-        const f = fixture();
-        let confirmed = false;
-        f.setSnapshot(async (presence) => {
-          if (presence) confirmed = true;
-          return {
-            footer: true,
-            tab: 'Policies',
-            title: confirmed ? 'Claims' : 'Policies',
-            listID: confirmed && replacedList ? 'claims' : 'policies',
-          };
-        });
-        try {
-          const result = await run(f, direction, mode);
-          assert.equal(result.refusal?.code, 'SCROLL_NAVIGATED');
-          assert.equal(result.block.outcome, 'fail');
-          assert.equal(f.drags(), 0);
-          assert.ok(f.f.rows.every((row) => row.outcome !== 'pass'));
-        } finally {
-          clearRefMap();
-        }
-      });
-    }
-
-    for (const refresh of [false, true]) {
-      test(`confirmation navigation precedes target acceptance: ${direction}, ${mode}, refresh=${refresh}`, async () => {
-        const f = fixture();
-        let navigated = false;
-        f.setSnapshot(async (presence) => {
-          if (presence && f.drags() > 0) {
-            navigated = true;
-            if (refresh) await f.f.deps.sleep(11_000);
-          }
-          return { footer: f.drags() > 0, tab: navigated ? 'Claims' : 'Policies' };
-        });
-        try {
-          const result = await run(f, direction, mode);
-          assert.equal(result.refusal?.code, 'SCROLL_NAVIGATED');
-          assert.equal(result.block.outcome, 'fail');
-          assert.equal(f.drags(), 1);
-          assert.ok(f.f.rows.every((row) => row.outcome !== 'pass'));
-        } finally {
-          clearRefMap();
-        }
-      });
-
-      test(`negative confirmation refreshes new toolbar clearance: ${direction}, ${mode}, refresh=${refresh}`, async () => {
-        const f = fixture();
-        let appeared = false;
-        f.setSnapshot(async (presence) => {
-          if (presence) {
-            appeared = true;
-            if (refresh) await f.f.deps.sleep(1_000);
-          }
-          return { footer: !presence, toolbarY: appeared ? 730 : undefined };
-        });
-        try {
-          const result = await run(f, direction, mode);
-          assert.equal(result.block.outcome, 'fail');
-          assert.equal(f.drags(), 6);
-          for (const [, start, , end] of f.endpoints)
-            assert.ok(start < 726 && end < 726, JSON.stringify(f.endpoints));
-        } finally {
-          clearRefMap();
-        }
-      });
-    }
-
-    test(`confirmation reveals a new full-screen blocker: ${direction}, ${mode}`, async () => {
-      const f = fixture();
-      let appeared = false;
-      f.setSnapshot(async (presence) => {
-        if (presence) appeared = true;
-        return { footer: !presence, overlays: appeared ? [frame] : [] };
-      });
-      try {
-        await assert.rejects(run(f, direction, mode), /SCROLL_BAND_TOO_SMALL/);
-        assert.equal(f.drags(), 0);
-      } finally {
-        clearRefMap();
-      }
-    });
-
-    test(`fresh ordinary geometry cannot renew expired presence: ${direction}, ${mode}`, async () => {
-      const f = fixture();
-      const completed: number[] = [];
-      f.setSnapshot(async (presence, read) => {
-        if (read === 1) await f.f.deps.sleep(2_000);
-        if (read === 3) await f.f.deps.sleep(11_000);
-        completed.push(f.f.deps.now());
-        return { footer: !presence || read > 2 };
-      });
-      try {
-        const result = await run(f, direction, mode);
-        assert.equal(result.failure, undefined);
-        assert.equal(result.block.outcome, 'pass');
-        assert.equal(f.drags(), 0);
-        assert.deepEqual(completed.slice(0, 3), [2_000, 2_000, 13_000]);
-        assert.deepEqual(f.modes, [false, true, false, false, true, false]);
-      } finally {
-        clearRefMap();
-      }
-    });
-  }
-}
-
-test('quoted confirmation is requested only after an ordinary match', async () => {
-  const f = fixture();
-  f.setSnapshot(async (presence) => {
-    if (presence)
-      assert.equal(f.drags(), 1, 'no presence read may precede the ordinary target candidate');
-    return { footer: f.drags() > 0, toolbarY: presence ? 730 : undefined };
   });
+  test(`no clear band refuses before dispatch: ${direction}`, async () => {
+    const f = fixture();
+    f.setSnapshot(async () => ({ overlays: [frame, frame] }));
+    try {
+      await assert.rejects(run(f, direction, 'quoted'), /SCROLL_BAND_TOO_SMALL/);
+      assert.equal(f.drags(), 0);
+    } finally {
+      clearRefMap();
+    }
+  });
+}
+
+test('under-bar continuation retains the six-drag bound', async () => {
+  const f = fixture();
+  f.setSnapshot(async () => ({
+    footer: true,
+    footerY: 800,
+    listID: 'feed',
+    overlays: [{ x: 21, y: 791, width: 360, height: 70 }],
+  }));
   try {
     const result = await run(f, 'down', 'quoted');
-    assert.equal(result.block.outcome, 'pass');
-    assert.equal(f.drags(), 1);
-    assert.deepEqual(f.modes, [false, false, true, false]);
+    assert.equal(result.block.outcome, 'fail');
+    assert.match(JSON.stringify(result.failure), /did not come into view after 6 scrolls/);
+    assert.equal(f.drags(), 6);
+    assert.ok(f.modes.every((presence) => !presence));
   } finally {
     clearRefMap();
   }
 });
 
-test('plain scroll keeps the centered window gesture and ordinary captures', async () => {
+test('plain scroll retains its centered gesture and ordinary capture', async () => {
   const f = fixture();
   try {
     const result = await walkBlock(parsePlan('1. Scroll down').blocks![0], f.f.deps);
@@ -768,951 +280,3 @@ test('plain scroll keeps the centered window gesture and ordinary captures', asy
     clearRefMap();
   }
 });
-
-for (const direction of ['up', 'down'] as const) {
-  test(`uncertainty re-ask still vetoes stale positive confirmation: ${direction}`, async () => {
-    const f = fixture();
-    let confirmations = 0;
-    const judge = scriptedJudge((questions, index, state) =>
-      Object.fromEntries(
-        Object.keys(questions).map((id) => [
-          id,
-          {
-            type: 'noul',
-            noul: index === 0 ? 0.5 : JSON.stringify(state).includes('Footer') ? 0.9 : 0.1,
-          },
-        ]),
-      ),
-    );
-    f.f.deps.judge = judge;
-    f.setSnapshot(async (presence) => {
-      if (presence) confirmations += 1;
-      return {
-        footer: true,
-        listID: 'policies',
-        listFrame: { x: 0, y: 100, width: 402, height: 600 },
-        footerY: !presence && confirmations > 1 ? (direction === 'down' ? 750 : 50) : 200,
-      };
-    });
-    try {
-      const result = await run(f, direction, 'phrase');
-      assert.equal(result.block.outcome, 'fail');
-      assert.equal(f.drags(), 0);
-      assert.equal(judge.requests.length, 3);
-      assert.match(JSON.stringify(result.failure), /VISIBILITY_UNSURE/);
-      assert.deepEqual(f.modes, [false, true, false, false, true, false]);
-    } finally {
-      clearRefMap();
-    }
-  });
-}
-
-for (const direction of ['up', 'down'] as const) {
-  for (const mode of ['phrase', 'replay'] as const) {
-    test(`unknown ordinary labels do not replace qualified presence: ${direction}, ${mode}`, async () => {
-      const f = fixture();
-      f.setSnapshot(async (presence) => ({ footer: true, hideFooterLabel: !presence }));
-      try {
-        const result = await run(f, direction, mode);
-        assert.equal(result.block.outcome, 'pass');
-        assert.equal(f.drags(), 0);
-        assert.deepEqual(f.modes, [false, true, false]);
-      } finally {
-        clearRefMap();
-      }
-    });
-  }
-}
-
-for (const direction of ['up', 'down'] as const) {
-  for (const change of ['unrelated', 'unidentified-label'] as const) {
-    test(`uncertainty re-ask keeps a stable target through ordinary ${change}: ${direction}`, async () => {
-      const f = fixture();
-      let confirmations = 0;
-      const judge = scriptedJudge((questions, index) =>
-        Object.fromEntries(
-          Object.keys(questions).map((id) => [id, { type: 'noul', noul: index === 0 ? 0.5 : 0.9 }]),
-        ),
-      );
-      f.f.deps.judge = judge;
-      f.setSnapshot(async (presence) => {
-        if (presence) confirmations += 1;
-        const changed = !presence && confirmations >= 2;
-        return {
-          footer: true,
-          listID: 'policies',
-          footerUnidentified: change === 'unidentified-label',
-          hideFooterLabel: changed && change === 'unidentified-label',
-          loading: change === 'unrelated' && !changed,
-        };
-      });
-      try {
-        const result = await run(f, direction, 'phrase');
-        assert.equal(result.block.outcome, 'pass');
-        assert.equal(result.failure, undefined);
-        assert.equal(f.drags(), 0);
-        assert.equal(judge.requests.length, change === 'unrelated' ? 3 : 2);
-        assert.deepEqual(f.modes, [false, true, false, false, true, false]);
-      } finally {
-        clearRefMap();
-      }
-    });
-  }
-}
-
-for (const direction of ['up', 'down'] as const) {
-  for (const mode of ['quoted', 'phrase', 'replay'] as const) {
-    for (const expiry of [false, true]) {
-      test(`identified offscreen target wins over its old frame occupant: ${direction}, ${mode}, expiry=${expiry}`, async () => {
-        const f = fixture();
-        let confirmations = 0;
-        f.setSnapshot(async (presence) => {
-          if (presence) confirmations += 1;
-          if (!presence && confirmations === 1 && expiry) await f.f.deps.sleep(11_000);
-          const changed = !presence && confirmations >= (expiry ? 2 : 1);
-          return {
-            footer: true,
-            listID: 'policies',
-            listFrame: { x: 0, y: 100, width: 402, height: 600 },
-            footerY: changed ? (direction === 'down' ? 750 : 50) : 200,
-            loading: changed,
-            loadingY: 200,
-            loadingUnidentified: true,
-          };
-        });
-        try {
-          const result = await run(f, direction, mode);
-          assert.equal(result.block.outcome, 'fail');
-          assert.match(JSON.stringify(result.failure), /VISIBILITY_UNSURE/);
-          assert.equal(f.drags(), 0);
-          assert.deepEqual(
-            f.modes,
-            expiry ? [false, true, false, false, true, false] : [false, true, false],
-          );
-        } finally {
-          clearRefMap();
-        }
-      });
-    }
-  }
-  for (const predicate of ['welcome', 'footer-and-terms', 'terms-and-footer'] as const) {
-    for (const transition of ['initial', 'expiry', 'reask'] as const) {
-      test(`semantic target contradiction: ${direction}, ${predicate}, ${transition}`, async () => {
-        const f = fixture();
-        let confirmations = 0;
-        const judge = scriptedJudge((questions, index, state) => {
-          const evidence = JSON.stringify(state);
-          const present =
-            predicate === 'welcome'
-              ? evidence.includes('Welcome')
-              : evidence.includes('Footer') && evidence.includes('Terms');
-          return Object.fromEntries(
-            Object.keys(questions).map((id) => [
-              id,
-              {
-                type: 'noul',
-                noul: transition === 'reask' && index === 0 ? 0.5 : present ? 0.9 : 0.1,
-              },
-            ]),
-          );
-        });
-        f.f.deps.judge = judge;
-        f.setSnapshot(async (presence) => {
-          if (presence) confirmations += 1;
-          if (!presence && confirmations === 1 && transition === 'expiry')
-            await f.f.deps.sleep(11_000);
-          const changed = !presence && confirmations >= (transition === 'initial' ? 1 : 2);
-          const outside = direction === 'down' ? 750 : 50;
-          return {
-            footer: true,
-            footerLabel: predicate === 'welcome' ? 'Welcome' : 'Footer',
-            footerY: changed && predicate !== 'terms-and-footer' ? outside : 200,
-            terms: predicate !== 'welcome',
-            termsY: changed && predicate === 'terms-and-footer' ? outside : 350,
-            listID: 'policies',
-            listFrame: { x: 0, y: 100, width: 402, height: 600 },
-            loading: true,
-            loadingY: 200,
-            loadingUnidentified: true,
-          };
-        });
-        try {
-          const result = await run(
-            f,
-            direction,
-            'phrase',
-            predicate === 'welcome' ? 'the welcome message' : 'the footer and terms text',
-          );
-          assert.equal(result.block.outcome, 'fail');
-          assert.match(JSON.stringify(result.failure), /VISIBILITY_UNSURE/);
-          assert.equal(f.drags(), 0);
-          assert.equal(judge.requests.length, transition === 'reask' ? 3 : 2);
-          assert.deepEqual(
-            f.modes,
-            transition === 'reask'
-              ? [false, true, false, false, true, false]
-              : transition === 'expiry'
-                ? [false, true, false, false, true, false]
-                : [false, true, false],
-          );
-        } finally {
-          clearRefMap();
-        }
-      });
-    }
-  }
-}
-
-for (const direction of ['up', 'down'] as const) {
-  for (const predicate of ['welcome', 'footer-and-terms'] as const) {
-    for (const change of ['unrelated', 'unknown-label'] as const) {
-      test(`semantic confirmation preserves current target: ${direction}, ${predicate}, ${change}`, async () => {
-        const f = fixture();
-        let confirmed = false;
-        f.f.deps.judge = scriptedJudge((questions, _index, state) => {
-          const evidence = JSON.stringify(state);
-          const present =
-            predicate === 'welcome'
-              ? evidence.includes('Welcome')
-              : evidence.includes('Footer') && evidence.includes('Terms');
-          return Object.fromEntries(
-            Object.keys(questions).map((id) => [id, { type: 'noul', noul: present ? 0.9 : 0.1 }]),
-          );
-        });
-        f.setSnapshot(async (presence) => {
-          if (presence) confirmed = true;
-          const changed = !presence && confirmed;
-          return {
-            footer: true,
-            footerLabel: predicate === 'welcome' ? 'Welcome' : 'Footer',
-            terms: predicate !== 'welcome',
-            hideFooterLabel: changed && change === 'unknown-label',
-            loading: change === 'unrelated' && !changed,
-            listID: 'policies',
-          };
-        });
-        try {
-          const result = await run(
-            f,
-            direction,
-            'phrase',
-            predicate === 'welcome' ? 'the welcome message' : 'the footer and terms text',
-          );
-          assert.equal(result.block.outcome, 'pass');
-          assert.equal(result.failure, undefined);
-          assert.equal(f.drags(), 0);
-          assert.deepEqual(f.modes, [false, true, false]);
-        } finally {
-          clearRefMap();
-        }
-      });
-    }
-  }
-}
-
-for (const direction of ['up', 'down'] as const) {
-  for (const unidentified of [false, true]) {
-    for (const change of ['offscreen', 'replacement'] as const) {
-      if (!unidentified && change === 'offscreen') continue;
-      for (const mode of ['quoted', 'text-replay', 'phrase', 'replay'] as const) {
-        if (unidentified && mode === 'replay') continue;
-        for (const transition of ['initial', 'expiry', 'reask'] as const) {
-          if (transition === 'reask' && mode !== 'phrase') continue;
-          test(`confirmation reconciles target ${change}: ${direction}, unidentified=${unidentified}, ${mode}, ${transition}`, async () => {
-            const f = fixture();
-            let confirmations = 0;
-            f.f.deps.judge = scriptedJudge((questions, index, state) =>
-              Object.fromEntries(
-                Object.keys(questions).map((id) => [
-                  id,
-                  {
-                    type: 'noul',
-                    noul:
-                      transition === 'reask' && index === 0
-                        ? 0.5
-                        : JSON.stringify(state).includes('Footer')
-                          ? 0.9
-                          : 0.1,
-                  },
-                ]),
-              ),
-            );
-            f.setSnapshot(async (presence) => {
-              if (presence) confirmations += 1;
-              if (!presence && confirmations === 1 && transition === 'expiry')
-                await f.f.deps.sleep(11_000);
-              const changed = !presence && confirmations >= (transition === 'initial' ? 1 : 2);
-              return {
-                footer: true,
-                footerUnidentified: unidentified,
-                footerLabel: changed && change === 'replacement' ? 'Loading' : 'Footer',
-                footerY:
-                  changed && change === 'offscreen' ? (direction === 'down' ? 750 : 50) : 200,
-                loading: changed && change === 'offscreen',
-                loadingY: 200,
-                loadingUnidentified: true,
-                listID: 'policies',
-                listFrame: { x: 0, y: 100, width: 402, height: 600 },
-                tab: 'Policies',
-                title: 'Policies',
-              };
-            });
-            try {
-              const result = await run(f, direction, mode);
-              if (mode === 'replay') {
-                assert.equal(result.block.outcome, 'pass');
-                assert.equal(result.failure, undefined);
-              } else {
-                assert.equal(result.block.outcome, 'fail');
-                assert.match(JSON.stringify(result.failure), /VISIBILITY_UNSURE/);
-              }
-              assert.equal(f.drags(), 0);
-              assert.deepEqual(
-                f.modes,
-                transition === 'reask'
-                  ? [false, true, false, false, true, false]
-                  : transition === 'expiry'
-                    ? [false, true, false, false, true, false]
-                    : [false, true, false],
-              );
-            } finally {
-              clearRefMap();
-            }
-          });
-        }
-      }
-    }
-  }
-  for (const predicate of ['welcome', 'footer-and-terms', 'terms-and-footer'] as const) {
-    for (const transition of ['initial', 'expiry', 'reask'] as const) {
-      test(`whole semantic claim reconciles replacement content: ${direction}, ${predicate}, ${transition}`, async () => {
-        const f = fixture();
-        let confirmations = 0;
-        f.f.deps.judge = scriptedJudge((questions, index, state) => {
-          const evidence = JSON.stringify(state);
-          const present =
-            predicate === 'welcome'
-              ? evidence.includes('Welcome')
-              : evidence.includes('Footer') && evidence.includes('Terms');
-          return Object.fromEntries(
-            Object.keys(questions).map((id) => [
-              id,
-              {
-                type: 'noul',
-                noul: transition === 'reask' && index === 0 ? 0.5 : present ? 0.9 : 0.1,
-              },
-            ]),
-          );
-        });
-        f.setSnapshot(async (presence) => {
-          if (presence) confirmations += 1;
-          if (!presence && confirmations === 1 && transition === 'expiry')
-            await f.f.deps.sleep(11_000);
-          const changed = !presence && confirmations >= (transition === 'initial' ? 1 : 2);
-          return {
-            footer: true,
-            footerLabel:
-              changed && predicate !== 'terms-and-footer'
-                ? 'Loading'
-                : predicate === 'welcome'
-                  ? 'Welcome'
-                  : 'Footer',
-            terms: predicate !== 'welcome',
-            termsLabel: changed && predicate === 'terms-and-footer' ? 'Loading' : 'Terms',
-            listID: 'policies',
-            tab: 'Policies',
-            title: 'Policies',
-          };
-        });
-        try {
-          const result = await run(
-            f,
-            direction,
-            'phrase',
-            predicate === 'welcome' ? 'the welcome message' : 'the footer and terms text',
-          );
-          assert.equal(result.block.outcome, 'fail');
-          assert.match(JSON.stringify(result.failure), /VISIBILITY_UNSURE/);
-          assert.equal(f.drags(), 0);
-          assert.deepEqual(
-            f.modes,
-            transition === 'reask'
-              ? [false, true, false, false, true, false]
-              : transition === 'expiry'
-                ? [false, true, false, false, true, false]
-                : [false, true, false],
-          );
-        } finally {
-          clearRefMap();
-        }
-      });
-    }
-  }
-}
-
-for (const direction of ['up', 'down'] as const) {
-  for (const unidentified of [false, true]) {
-    test(`unknown labels preserve text replay selector refusal: ${direction}, unidentified=${unidentified}`, async () => {
-      const f = fixture();
-      let confirmed = false;
-      f.setSnapshot(async (presence) => {
-        if (presence) confirmed = true;
-        return {
-          footer: true,
-          footerUnidentified: unidentified,
-          hideFooterLabel: !presence && confirmed,
-          listID: 'policies',
-        };
-      });
-      try {
-        const result = await run(f, direction, 'text-replay');
-        assert.equal(result.block.outcome, 'fail');
-        assert.match(JSON.stringify(result.failure), /REPLAY_SELECTOR/);
-        assert.doesNotMatch(JSON.stringify(result.failure), /VISIBILITY_UNSURE/);
-        assert.equal(f.drags(), 0);
-        assert.deepEqual(f.modes, [false, true, false]);
-      } finally {
-        clearRefMap();
-      }
-    });
-  }
-}
-
-for (const direction of ['up', 'down'] as const) {
-  for (const unidentified of [false, true]) {
-    for (const predicate of ['welcome', 'footer-and-terms', 'terms-and-footer'] as const) {
-      for (const transition of ['initial', 'expiry', 'reask'] as const) {
-        test(`whole semantic claim accepts compatible content: ${direction}, unidentified=${unidentified}, ${predicate}, ${transition}`, async () => {
-          const f = fixture();
-          let confirmations = 0;
-          const updatedLabel =
-            predicate === 'welcome'
-              ? 'Welcome back'
-              : predicate === 'footer-and-terms'
-                ? 'Footer details'
-                : 'Terms of service';
-          const judge = scriptedJudge((questions, index, state) => {
-            const evidence = JSON.stringify(state);
-            const present =
-              predicate === 'welcome'
-                ? evidence.includes('Welcome')
-                : evidence.includes('Footer') && evidence.includes('Terms');
-            return Object.fromEntries(
-              Object.keys(questions).map((id) => [
-                id,
-                {
-                  type: 'noul',
-                  noul: transition === 'reask' && index === 0 ? 0.5 : present ? 0.9 : 0.1,
-                },
-              ]),
-            );
-          });
-          f.f.deps.judge = judge;
-          f.setSnapshot(async (presence) => {
-            if (presence) confirmations += 1;
-            if (!presence && confirmations === 1 && transition === 'expiry')
-              await f.f.deps.sleep(11_000);
-            const changed = !presence && confirmations >= (transition === 'initial' ? 1 : 2);
-            return {
-              footer: true,
-              footerUnidentified: unidentified,
-              footerLabel:
-                changed && predicate !== 'terms-and-footer'
-                  ? updatedLabel
-                  : predicate === 'welcome'
-                    ? 'Welcome'
-                    : 'Footer',
-              terms: predicate !== 'welcome',
-              termsLabel: changed && predicate === 'terms-and-footer' ? updatedLabel : 'Terms',
-              listID: 'policies',
-              tab: 'Policies',
-              title: 'Policies',
-            };
-          });
-          try {
-            const result = await run(
-              f,
-              direction,
-              'phrase',
-              predicate === 'welcome' ? 'the welcome message' : 'the footer and terms text',
-            );
-            assert.equal(result.block.outcome, 'pass', JSON.stringify(result.failure));
-            assert.equal(result.failure, undefined);
-            assert.equal(f.drags(), 0);
-            assert.equal(judge.requests.length, transition === 'reask' ? 3 : 2);
-            assert.ok(JSON.stringify(judge.requests.at(-1)?.state).includes(updatedLabel));
-            assert.deepEqual(
-              f.modes,
-              transition === 'reask'
-                ? [false, true, false, false, true, false]
-                : transition === 'expiry'
-                  ? [false, true, false, false, true, false]
-                  : [false, true, false],
-            );
-          } finally {
-            clearRefMap();
-          }
-        });
-      }
-    }
-  }
-}
-
-test('updated assertion labels retain model masking and original native evidence', async () => {
-  const f = fixture();
-  f.setSnapshot(async () => ({ footer: true, footerLabel: 'Welcome' }));
-  try {
-    const observed = await f.f.deps.captureScreen({ platformPresence: true });
-    const witness = observed.elements.find((element) => element.testID === 'footer');
-    assert.ok(witness?.semantic?.nativePresence);
-    const privateValue = 'private-marker-719';
-    const privacy = new ObservedPrivacy([privateValue]);
-    privacy.didFill(privateValue);
-    const judge = scriptedJudge((questions) =>
-      Object.fromEntries(Object.keys(questions).map((id) => [id, { type: 'noul', noul: 0.9 }])),
-    );
-    const item = parsePlan('1. Scroll down until the welcome message').blocks![0].items[0];
-    assert.ok(item.kind === 'scroll');
-    const decision = await decideScreen(
-      observed,
-      judge,
-      undefined,
-      item,
-      privacy.modelValues(),
-      privacy,
-      Infinity,
-      false,
-      new Map([[witness, { label: `Welcome ${privateValue}` }]]),
-    );
-    assert.deepEqual(decision.visibility, { verdict: 'present' });
-    const delivered = JSON.stringify(judge.requests[0].state);
-    assert.ok(delivered.includes('Welcome [QAREN_VALUE_'));
-    assert.ok(!delivered.includes(privateValue));
-    assert.equal(witness.label, 'Welcome');
-    assert.equal(witness.semantic.nativePresence.labelSource, 'direct');
-  } finally {
-    clearRefMap();
-  }
-});
-
-for (const direction of ['up', 'down'] as const) {
-  for (const enabled of [false, true]) {
-    for (const label of ['same', 'changed', 'unknown'] as const) {
-      for (const transition of ['initial', 'expiry', 'reask'] as const) {
-        for (const predicate of ['state', 'control', 'conjunction'] as const) {
-          test(`semantic confirmation reconciles control state: ${direction}, enabled=${enabled}, ${label}, ${transition}, ${predicate}`, async () => {
-            const f = fixture();
-            let confirmations = 0;
-            const judge = scriptedJudge((questions, index, state) => {
-              const evidence = JSON.stringify(state);
-              const stateMatches = evidence.includes('disabled') === !enabled;
-              const present =
-                evidence.includes('Continue') &&
-                (predicate === 'control' || stateMatches) &&
-                (predicate === 'state' || evidence.includes('Terms'));
-              return Object.fromEntries(
-                Object.keys(questions).map((id) => [
-                  id,
-                  {
-                    type: 'noul',
-                    noul: transition === 'reask' && index === 0 ? 0.5 : present ? 0.9 : 0.1,
-                  },
-                ]),
-              );
-            });
-            f.f.deps.judge = judge;
-            f.setSnapshot(async (presence) => {
-              if (presence) confirmations += 1;
-              if (!presence && confirmations === 1 && transition === 'expiry')
-                await f.f.deps.sleep(11_000);
-              const changed = !presence && confirmations >= (transition === 'initial' ? 1 : 2);
-              return {
-                footer: true,
-                footerControl: true,
-                footerLabel: changed && label === 'changed' ? 'Continue now' : 'Continue',
-                hideFooterLabel: changed && label === 'unknown',
-                footerEnabled: changed ? !enabled : enabled,
-                terms: predicate !== 'state',
-                listID: 'policies',
-                tab: 'Policies',
-                title: 'Policies',
-              };
-            });
-            try {
-              const text = `the ${predicate === 'control' ? '' : enabled ? 'enabled ' : 'disabled '}continue control${predicate === 'state' ? '' : ' and terms text'}`;
-              const result = await run(f, direction, 'phrase', text);
-              assert.equal(
-                result.block.outcome,
-                predicate === 'control' ? 'pass' : 'fail',
-                JSON.stringify(result.failure),
-              );
-              if (predicate === 'control') assert.equal(result.failure, undefined);
-              else assert.match(JSON.stringify(result.failure), /VISIBILITY_UNSURE/);
-              assert.equal(f.drags(), 0);
-              assert.equal(judge.requests.length, transition === 'reask' ? 3 : 2);
-              const delivered = JSON.stringify(judge.requests.at(-1)?.state);
-              assert.equal(delivered.includes('disabled'), enabled);
-              assert.ok(delivered.includes(label === 'changed' ? 'Continue now' : 'Continue'));
-              assert.deepEqual(
-                f.modes,
-                transition === 'reask'
-                  ? [false, true, false, false, true, false]
-                  : transition === 'expiry'
-                    ? [false, true, false, false, true, false]
-                    : [false, true, false],
-              );
-            } finally {
-              clearRefMap();
-            }
-          });
-        }
-      }
-    }
-    for (const mode of ['quoted', 'text-replay', 'replay'] as const) {
-      test(`literal confirmation retains control visibility across state changes: ${direction}, enabled=${enabled}, ${mode}`, async () => {
-        const f = fixture();
-        let confirmed = false;
-        f.setSnapshot(async (presence) => {
-          if (presence) confirmed = true;
-          return {
-            footer: true,
-            footerControl: true,
-            footerEnabled: !presence && confirmed ? !enabled : enabled,
-            listID: 'policies',
-          };
-        });
-        try {
-          const result = await run(f, direction, mode);
-          assert.equal(result.block.outcome, 'pass', JSON.stringify(result.failure));
-          assert.equal(result.failure, undefined);
-          assert.equal(f.drags(), 0);
-          assert.deepEqual(f.modes, [false, true, false]);
-        } finally {
-          clearRefMap();
-        }
-      });
-    }
-  }
-  for (const label of ['same', 'changed', 'unknown'] as const) {
-    test(`unknown control state does not invent enabled evidence: ${direction}, ${label}`, async () => {
-      const f = fixture();
-      let confirmed = false;
-      const judge = scriptedJudge((questions, _index, state) =>
-        Object.fromEntries(
-          Object.keys(questions).map((id) => [
-            id,
-            {
-              type: 'noul',
-              noul: JSON.stringify(state).includes('disabled') ? 0.9 : 0.1,
-            },
-          ]),
-        ),
-      );
-      f.f.deps.judge = judge;
-      f.setSnapshot(async (presence) => {
-        if (presence) confirmed = true;
-        const changed = !presence && confirmed;
-        return {
-          footer: true,
-          footerControl: true,
-          footerLabel: changed && label === 'changed' ? 'Continue now' : 'Continue',
-          hideFooterLabel: changed && label === 'unknown',
-          footerEnabled: changed ? null : false,
-          listID: 'policies',
-        };
-      });
-      try {
-        const result = await run(f, direction, 'phrase', 'the disabled continue control');
-        assert.equal(result.block.outcome, 'pass', JSON.stringify(result.failure));
-        assert.equal(result.failure, undefined);
-        assert.equal(f.drags(), 0);
-        assert.ok(JSON.stringify(judge.requests.at(-1)?.state).includes('disabled'));
-        assert.deepEqual(f.modes, [false, true, false]);
-      } finally {
-        clearRefMap();
-      }
-    });
-  }
-}
-
-for (const enabled of [false, true]) {
-  for (const changedLabel of [false, true]) {
-    test(`assertion state updates preserve original qualified evidence: enabled=${enabled}, changedLabel=${changedLabel}`, async () => {
-      const f = fixture();
-      f.setSnapshot(async () => ({
-        footer: true,
-        footerControl: true,
-        footerLabel: 'Continue',
-        footerEnabled: enabled,
-      }));
-      try {
-        const observed = await f.f.deps.captureScreen({ platformPresence: true });
-        const witness = observed.elements.find((element) => element.testID === 'footer');
-        assert.ok(witness?.semantic?.nativePresence);
-        assert.equal(disabledStateOf(witness), !enabled);
-        const nativePresence = witness.semantic.nativePresence;
-        const judge = scriptedJudge((questions) =>
-          Object.fromEntries(Object.keys(questions).map((id) => [id, { type: 'noul', noul: 0.9 }])),
-        );
-        const item = parsePlan('1. Scroll down until the continue control').blocks![0].items[0];
-        assert.ok(item.kind === 'scroll');
-        const decision = await decideScreen(
-          observed,
-          judge,
-          undefined,
-          item,
-          [],
-          new ObservedPrivacy(),
-          Infinity,
-          false,
-          new Map([
-            [witness, { disabled: enabled, ...(changedLabel ? { label: 'Continue now' } : {}) }],
-          ]),
-        );
-        assert.deepEqual(decision.visibility, { verdict: 'present' });
-        const delivered = JSON.stringify(judge.requests[0].state);
-        assert.equal(delivered.includes('disabled'), enabled);
-        assert.ok(delivered.includes(changedLabel ? 'Continue now' : 'Continue'));
-        assert.equal(witness.label, 'Continue');
-        assert.equal(witness.disabled, !enabled);
-        assert.equal(witness.semantic.disabled, !enabled);
-        assert.equal(witness.semantic.nativePresence, nativePresence);
-        assert.equal(disabledStateOf(witness), !enabled);
-      } finally {
-        clearRefMap();
-      }
-    });
-  }
-}
-
-test('captured control state distinguishes known booleans from missing native and React facts', () => {
-  for (const representation of ['native', 'react', 'associated'] as const) {
-    for (const disabled of [undefined, false, true]) {
-      const observed = joinScreen(
-        representation === 'react'
-          ? []
-          : [
-              {
-                ref: '@control',
-                type: 'Button',
-                identifier: 'control',
-                label: 'Continue',
-                enabled:
-                  representation === 'native' && disabled !== undefined ? !disabled : undefined,
-                rect: frame,
-              },
-            ],
-        representation === 'native' ? [] : [{ role: 'button', testID: 'control', disabled }],
-        'app',
-        { native: 'complete', react: 'complete' },
-      );
-      const control = observed.elements.find((element) => element.testID === 'control');
-      assert.ok(control);
-      assert.equal(disabledStateOf(control), disabled, representation);
-    }
-  }
-});
-
-for (const representation of ['native', 'react'] as const) {
-  for (const direction of ['up', 'down'] as const) {
-    for (const changedLabel of [false, true]) {
-      for (const transition of ['initial', 'expiry', 'reask'] as const) {
-        for (const predicate of ['button', 'control', 'content', 'conjunction'] as const) {
-          test(`semantic confirmation reconciles kind: ${representation}, ${direction}, changedLabel=${changedLabel}, ${transition}, ${predicate}`, async () => {
-            const f = fixture();
-            let confirmations = 0;
-            const judge = scriptedJudge((questions, index, state) => {
-              const delivered = JSON.stringify(state).replaceAll('\\', '');
-              const button = delivered.includes('Button "Continue');
-              const control = button || delivered.includes('Link "Continue');
-              const present =
-                delivered.includes('Continue') &&
-                (predicate === 'content' || (predicate === 'control' ? control : button)) &&
-                (predicate !== 'conjunction' || delivered.includes('Terms'));
-              return Object.fromEntries(
-                Object.keys(questions).map((id) => [
-                  id,
-                  {
-                    type: 'noul',
-                    noul: transition === 'reask' && index === 0 ? 0.5 : present ? 0.9 : 0.1,
-                  },
-                ]),
-              );
-            });
-            f.f.deps.judge = judge;
-            const next = async (presence: boolean) => {
-              if (presence) confirmations += 1;
-              if (!presence && confirmations === 1 && transition === 'expiry')
-                await f.f.deps.sleep(11_000);
-              const changed = !presence && confirmations >= (transition === 'initial' ? 1 : 2);
-              return {
-                footer: true,
-                footerType: changed
-                  ? predicate === 'control'
-                    ? 'Link'
-                    : predicate === 'content'
-                      ? 'Button'
-                      : 'StaticText'
-                  : predicate === 'content'
-                    ? 'StaticText'
-                    : 'Button',
-                footerLabel: changed && changedLabel ? 'Continue now' : 'Continue',
-                terms: predicate === 'conjunction',
-                listID: 'policies',
-              };
-            };
-            const originals: ReturnType<typeof element>[] = [];
-            f.setSnapshot(next);
-            if (representation === 'react')
-              f.f.deps.captureScreen = async (options) => {
-                const presence = options?.platformPresence === true;
-                f.modes.push(presence);
-                const state = await next(presence);
-                const witness = element('continue', state.footerLabel, {
-                  testID: 'footer',
-                  kind:
-                    state.footerType === 'Button'
-                      ? 'button'
-                      : state.footerType === 'Link'
-                        ? 'link'
-                        : 'text',
-                });
-                if (presence) originals.push(witness);
-                return screen([
-                  witness,
-                  ...(state.terms ? [element('terms', 'Terms', { kind: 'text' })] : []),
-                ]);
-              };
-            try {
-              const result = await run(
-                f,
-                direction,
-                'phrase',
-                `the continue ${predicate === 'content' ? 'text' : predicate === 'control' ? 'control' : 'button'}${predicate === 'conjunction' ? ' and terms text' : ''}`,
-              );
-              const compatible = predicate === 'control' || predicate === 'content';
-              assert.equal(
-                result.block.outcome,
-                compatible ? 'pass' : 'fail',
-                JSON.stringify(result.failure),
-              );
-              if (!compatible) assert.match(JSON.stringify(result.failure), /VISIBILITY_UNSURE/);
-              assert.equal(f.drags(), 0);
-              assert.equal(judge.requests.length, transition === 'reask' ? 3 : 2);
-              const delivered = JSON.stringify(judge.requests.at(-1)?.state).replaceAll('\\', '');
-              assert.ok(
-                delivered.includes(
-                  (predicate === 'control' ? 'Link' : predicate === 'content' ? 'Button' : 'Text') +
-                    ' "Continue',
-                ),
-              );
-              assert.ok(delivered.includes(changedLabel ? 'Continue now' : 'Continue'));
-              for (const original of originals) {
-                assert.equal(original.kind, predicate === 'content' ? 'text' : 'button');
-                assert.equal(original.label, 'Continue');
-              }
-              assert.deepEqual(
-                f.modes,
-                transition === 'reask'
-                  ? [false, true, false, false, true, false]
-                  : transition === 'expiry'
-                    ? [false, true, false, false, true, false]
-                    : [false, true, false],
-              );
-            } finally {
-              clearRefMap();
-            }
-          });
-        }
-      }
-    }
-    test(`unknown native kind retains qualified kind: ${representation}, ${direction}`, async () => {
-      const f = fixture();
-      let confirmed = false;
-      f.setSnapshot(async (presence) => {
-        if (presence) confirmed = true;
-        return {
-          footer: true,
-          footerType: !presence && confirmed ? 'Other' : 'Button',
-          listID: 'policies',
-        };
-      });
-      if (representation === 'react') {
-        f.f.deps.captureScreen = async (options) => {
-          const presence = options?.platformPresence === true;
-          if (presence) confirmed = true;
-          return screen([
-            element('footer', 'Footer', {
-              testID: 'footer',
-              kind: !presence && confirmed ? 'other' : 'button',
-            }),
-          ]);
-        };
-      }
-      try {
-        const result = await run(f, direction, 'phrase', 'the footer button');
-        assert.equal(result.block.outcome, 'pass', JSON.stringify(result.failure));
-        assert.equal(f.drags(), 0);
-      } finally {
-        clearRefMap();
-      }
-    });
-  }
-  test(`assertion kind updates preserve qualified evidence: ${representation}`, async () => {
-    const f = fixture();
-    f.setSnapshot(async () => ({ footer: true, footerControl: true }));
-    try {
-      const observed =
-        representation === 'native'
-          ? await f.f.deps.captureScreen({ platformPresence: true })
-          : screen([element('footer', 'Footer', { testID: 'footer' })]);
-      const witness = observed.elements.find((e) => e.testID === 'footer')!;
-      const original = structuredClone(witness);
-      const nativePresence = witness.semantic?.nativePresence;
-      const judge = scriptedJudge((questions) =>
-        Object.fromEntries(Object.keys(questions).map((id) => [id, { type: 'noul', noul: 0.9 }])),
-      );
-      const item = parsePlan('1. Scroll down until the footer text').blocks![0].items[0];
-      await decideScreen(
-        observed,
-        judge,
-        undefined,
-        item,
-        [],
-        new ObservedPrivacy(),
-        Infinity,
-        false,
-        new Map([[witness, { kind: 'text', label: 'Footer now', disabled: true }]]),
-      );
-      const delivered = JSON.stringify(judge.requests[0].state).replaceAll('\\', '');
-      assert.ok(delivered.includes('Text "Footer now'));
-      assert.ok(delivered.includes('disabled'));
-      assert.deepEqual(witness, original);
-      assert.equal(witness.semantic?.nativePresence, nativePresence);
-    } finally {
-      clearRefMap();
-    }
-  });
-}
-
-for (const direction of ['up', 'down'] as const) {
-  for (const mode of ['quoted', 'text-replay', 'replay'] as const) {
-    test(`literal confirmation retains identity and text across kind changes: ${direction}, ${mode}`, async () => {
-      const f = fixture();
-      let confirmed = false;
-      f.setSnapshot(async (presence) => {
-        if (presence) confirmed = true;
-        return { footer: true, footerControl: presence || !confirmed, listID: 'policies' };
-      });
-      try {
-        const result = await run(f, direction, mode);
-        assert.equal(result.block.outcome, 'pass', JSON.stringify(result.failure));
-        assert.equal(result.failure, undefined);
-        assert.equal(f.drags(), 0);
-        assert.deepEqual(f.modes, [false, true, false]);
-      } finally {
-        clearRefMap();
-      }
-    });
-  }
-}

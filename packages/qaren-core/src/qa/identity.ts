@@ -18,6 +18,65 @@ export interface Identity {
   tag: IdentityTag;
 }
 
+interface ContainmentEquivalence {
+  container: Element;
+  control: Element;
+}
+
+// Target equivalence never changes capture or provenance facts.
+const containmentEquivalences = new WeakMap<Screen, ContainmentEquivalence>();
+
+function containedControl(elements: readonly Element[]): ContainmentEquivalence | undefined {
+  if (elements.length !== 2 || elements.some((e) => e.ref.startsWith('react:'))) return;
+  const interactive = (e: Element) =>
+    !['input', 'text', 'image'].includes(e.nativeKind ?? e.kind) &&
+    (['button', 'link', 'switch'].includes(e.kind) ||
+      ['button', 'link', 'switch'].includes(e.nativeKind ?? e.kind) ||
+      e.semantic?.press === 'supported');
+  const controls = elements.filter(interactive);
+  if (controls.length !== 1) return;
+  const control = controls[0];
+  const container = elements.find((e) => e !== control)!;
+  if (
+    !['other', 'cell'].includes(container.nativeKind ?? container.kind) ||
+    !control.hittable ||
+    control.disabled ||
+    control.offscreen
+  )
+    return;
+  const inner = elementFrame(control);
+  const outer = elementFrame(container);
+  if (
+    !inner ||
+    !outer ||
+    !Object.values(inner).every(Number.isFinite) ||
+    !Object.values(outer).every(Number.isFinite) ||
+    inner.width <= 0 ||
+    inner.height <= 0 ||
+    inner.x <= outer.x ||
+    inner.y <= outer.y ||
+    inner.x + inner.width >= outer.x + outer.width ||
+    inner.y + inner.height >= outer.y + outer.height
+  )
+    return;
+  return { container, control };
+}
+
+export function applyContainmentFallback(
+  screen: Screen,
+  target: Target,
+  directLabelIndices: number[],
+): boolean {
+  if (target.quoted === undefined || target.exact === 'id') return false;
+  const pair = containedControl(
+    exactIdentities(screen, target, 'press').map(({ element }) => element),
+  );
+  if (!pair || directLabelIndices.some((index) => pair.container.ref === `@e${index}`))
+    return false;
+  containmentEquivalences.set(screen, pair);
+  return true;
+}
+
 export const PRESSABLE_SUFFIX = '-pressable';
 export const withoutPressable = (id: string): string =>
   id.endsWith(PRESSABLE_SUFFIX) ? id.slice(0, -PRESSABLE_SUFFIX.length) : id;
@@ -96,7 +155,22 @@ function encloses(container: Element, element: Element): boolean {
   );
 }
 
-function aggregatesControl(container: Element, child: Element): boolean {
+function sameFrameLabel(container: Element, child: Element): boolean {
+  const outer = elementFrame(container);
+  const inner = elementFrame(child);
+  return (
+    !!outer &&
+    !!inner &&
+    container.label !== undefined &&
+    container.label === child.label &&
+    outer.x === inner.x &&
+    outer.y === inner.y &&
+    outer.width === inner.width &&
+    outer.height === inner.height
+  );
+}
+
+function aggregatesControl(container: Element, child: Element, requireProvenance = true): boolean {
   if (
     container.kind === 'text' ||
     container.kind === 'input' ||
@@ -127,17 +201,10 @@ function aggregatesControl(container: Element, child: Element): boolean {
     inner.y + inner.height > outer.y + outer.height
   )
     return false;
-  if (
-    container.label === child.label &&
-    outer.x === inner.x &&
-    outer.y === inner.y &&
-    outer.width === inner.width &&
-    outer.height === inner.height
-  )
-    return true;
+  if (sameFrameLabel(container, child)) return true;
   if (
     container.kind !== 'other' ||
-    container.semantic?.nativePresence?.labelSource !== 'descendant' ||
+    (requireProvenance && container.semantic?.nativePresence?.labelSource !== 'descendant') ||
     outer.width * outer.height <= inner.width * inner.height
   )
     return false;
@@ -152,11 +219,12 @@ function containerEcho(
   container: Element,
   matched: readonly Element[],
   purpose: 'action' | 'refresh',
+  requireProvenance = true,
 ): boolean {
   if (
     container.kind !== 'other' ||
     container.testID !== undefined ||
-    container.semantic?.nativePresence?.labelSource !== 'descendant' ||
+    (requireProvenance && container.semantic?.nativePresence?.labelSource !== 'descendant') ||
     container.label === undefined ||
     container.ref.startsWith('react:')
   )
@@ -171,6 +239,31 @@ function containerEcho(
       encloses(container, e),
   );
   return (purpose === 'refresh' ? enclosed : actionView({ elements: enclosed })).length === 1;
+}
+
+// Potential aggregation requests evidence; only proven aggregation can collapse identities.
+export function needsLabelProvenance(screen: Screen, target: Target): boolean {
+  const matched = exactIdentities(screen, target, 'press').map(({ element }) => element);
+  if (
+    matched.length === 1 &&
+    ancestorsOf(matched[0]).some(
+      (ancestor) => sameFrameLabel(ancestor, matched[0]) && aggregatesControl(ancestor, matched[0]),
+    )
+  )
+    return false;
+  return matched.some(
+    (container) =>
+      (container.kind === 'other' || container.kind === 'cell') &&
+      !container.ref.startsWith('react:') &&
+      container.semantic?.nativePresence?.labelSource === undefined &&
+      ((container.label !== target.quoted &&
+        container.label?.split(',').some((part) => part.trim() === target.quoted)) ||
+        matched.some(
+          (child) => child !== container && aggregatesControl(container, child, false),
+        ) ||
+        containerEcho(container, matched, 'action', false) ||
+        containedControl(matched)?.container === container),
+  );
 }
 
 export function wrapperEquivalence(screen: Screen, id: string): Element | undefined {
@@ -248,7 +341,7 @@ export function exactIdentities(
       !controls.includes(e) ||
       !controls.some((inner) => inner !== e && aggregatesControl(e, inner)),
   );
-  return identities
+  const resolved: Identity[] = identities
     .filter((e) => {
       const control = echoControl(e, purpose);
       return (
@@ -271,4 +364,17 @@ export function exactIdentities(
           ? 'wrapper'
           : 'native',
     }));
+  const admitted = containmentEquivalences.get(screen);
+  const pair = admitted && containedControl(resolved.map(({ element }) => element));
+  if (
+    kind === 'press' &&
+    purpose === 'action' &&
+    target.exact !== 'id' &&
+    pair &&
+    admitted &&
+    pair.container === admitted.container &&
+    pair.control === admitted.control
+  )
+    return resolved.filter(({ element }) => element !== pair.container);
+  return resolved;
 }

@@ -124,6 +124,7 @@ struct DataPayload {
   var presenceCapture: PlatformPresenceCapture? = nil
 }
 final class Harness {
+  var retainedFastSnapshotOptions: Int? = nil
   let maxSnapshotElements = 600
   let currentSnapshotGeneration = 7
   var now = 1000.0

@@ -4,7 +4,6 @@ import {
   ancestorsOf,
   elementFrame,
   isScrollContainer,
-  navigationBarTitle,
   scrollContainerType,
 } from './screen.js';
 
@@ -30,12 +29,6 @@ export function scrollNavigationChange(
     );
   if (selected(before) !== selected(after))
     return 'selected element outside the scroll list changed';
-  const titles = (screen: Screen) =>
-    new Set(screen.elements.flatMap((element) => navigationBarTitle(element) || []));
-  const beforeTitles = titles(before);
-  const afterTitles = titles(after);
-  if ([...afterTitles].some((title) => !beforeTitles.has(title)))
-    return 'native navigation-bar title changed';
   if (container) {
     const frame = elementFrame(container);
     const tolerance = 2 * (before.pointScale ?? 1);

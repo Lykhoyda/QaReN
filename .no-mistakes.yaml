@@ -10,3 +10,17 @@ test:
     Run every qaren, xcrun, simctl, xcodebuild, adb and maestro command, and any script or test that reaches a simulator or emulator, through scripts/qaren-sim-sandbox.sh (for example `scripts/qaren-sim-sandbox.sh qaren check --plan-file plan.md`).
     It runs the command in an isolated HOME with xcrun, simctl, devicectl, xcodebuild and adb shims that show one fake booted iPhone and no Android device and refuse every other device command, and a maestro that reports itself unavailable; export QAREN_SANDBOX_DIR to keep one sandbox across calls, and add scenario-specific shims to its bin/.
     Never list, boot, install on, or drive a real simulator or emulator, and never bypass the shims with an absolute xcrun, simctl, xcodebuild, adb or maestro path. A step that stops because the sandbox has no real device (a `qaren-sim-sandbox:` refused or not-available message, or a refusal for a missing device, adb server or simulator service) is not live-validated: report it as such rather than retrying on a real device. Investigate any other failure as a real test failure.
+
+# One automatic review fix round, then the review parks for a decision.
+auto_fix:
+  review: 1
+
+# review and pr are read only from the default branch's copy of this file, so they take effect once develop merges into main.
+review:
+  path_instructions:
+    - path: "*"
+      instructions: |
+        Block only on a correctness or security defect that this change introduces and that occurs in its intended use. Report a hypothetical edge case, a defect that predates the change, or an extra guard as an info finding with action no-op, as a follow-up note.
+        The integration branch is develop. The develop-to-main migration is not part of this change: do not report findings about it or about files the change did not touch.
+pr:
+  base_branch: develop

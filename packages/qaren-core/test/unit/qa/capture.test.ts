@@ -97,6 +97,8 @@ test('an incomplete native capture names its causes as content-free codes', asyn
     'reason=snapshot-ref-freshness-unknown',
     'reason=unrecognized',
     'reason=unrecognized',
+    'keyboard-state-unknown',
+    'snapshot-generation-unknown',
     'node-count-mismatch',
     'presence-incomplete',
     'presence-ms=5012',

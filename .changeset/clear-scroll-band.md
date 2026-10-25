@@ -1,5 +1,5 @@
 ---
-'qaren': patch
+"qaren": patch
 ---
 
-Keep scroll-until drags inside the list and clear of front overlays, refusing when no safe band can host a real drag.
+Keep scroll-until drags and targets clear of overlays without adding presence captures for quoted targets.

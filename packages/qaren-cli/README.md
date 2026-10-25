@@ -577,12 +577,59 @@ that control's echo only when native presence proves its label comes from descen
 With the same proven descendant provenance, quoted label presses can also collapse
 an identified native container into a smaller, enabled, visible, hittable descendant
 control when tree ancestry, frame containment and whole label segments agree.
-Quoted label presses request platform-presence capture to obtain this provenance
-without requiring the complete native presence that phrase targets require;
-native acquisition and privacy admission still apply. Direct or unknown label
+Quoted label presses first use an ordinary capture with the full native privacy
+admission. A potential merged-label container candidate then requests label
+provenance metadata only for the named candidates. This read takes no screenshot,
+reads no React tree, and cannot authorize media or replace the ordinary privacy
+observation. It retains that snapshot's references, generation and dispatch
+expiry. The native provenance deadline is 1.5 seconds earlier than the walker
+deadline, leaving time for samples or timeout diagnostics to return. Both native
+producers require live candidate observations that match the ordinary identities and agree across their last two samples; changes to unrelated
+nodes do not invalidate that agreement. On iOS, candidate indices and parent
+indices use the ordinary snapshot's retained filtering and deduplication options,
+rather than raw-tree positions. iOS sample stability compares label source,
+parent link and frame; ordinary identity guards and each live candidate observation
+remain mandatory, while unrelated value or enabled-state changes between samples
+do not invalidate provenance. Only an explicit `deadline-clean` native outcome
+can enable containment fallback before the ordinary observation expires; exactly
+two native candidates can then resolve by strict frame containment: one enabled, visible, hittable interactive control inside one
+non-interactive container (such as Other, group, cell or scroll container). Both
+frames must be finite, and every inner edge must lie strictly inside the outer
+frame. Distinct twins, two interactive candidates, additional candidates and an
+unhittable inner candidate remain `TARGET_AMBIGUOUS`. A fallback requires bounded
+direct-label facts from the producer and no direct outer-container label in any
+completed sample; a direct inner-control label is allowed. Each producer emits
+`deadline-clean` only when its between-sample polling deadline expires after a
+complete checked sample. Root reads, partial enumeration, live-read timeouts,
+legacy `deadline`, missing and unknown outcomes cannot enable fallback. Available
+provenance keeps its existing authority; identity/process mismatches and expired observations do
+not use the fallback. Other missing or changing candidate provenance fails as
+`TARGET_AMBIGUOUS`, with no press and no `PRIVATE_INPUT_CAPTURE_UNKNOWN` from the
+metadata read. Ordinary privacy failures
+still refuse that capture. A subsequent ordinary capture must pass admission
+before screenshots can resume. A private `label-provenance` diagnostic records
+whether a read was requested, the sample count, candidate index, differing field
+names, deadline state and a fixed outcome code, without labels, identifiers,
+values or pixels; unavailable counts and deadline state are `null`. These events
+are retained in `core-diagnostics.jsonl` even without runtime inputs. A containment
+fallback retains the `deadline-clean` outcome and records `resolvedBy: containment`;
+a quoted scroll-until can also confirm one on-screen container carrying a whole
+label segment on an ordinary capture without requesting candidate provenance,
+provided no observed provenance or visibility contradicts it. Several matching
+containers refuse. This confirms visibility only and records
+`resolvedBy: aggregate-visibility` without labels or references;
+it changes target identity only, without adding provenance or changing capture
+comparisons and media admission.
+
+Unique quoted targets that ordinary capture resolves need no provenance read.
+Post-action effects use the ordinary projection on both sides of a quoted press,
+so metadata alone cannot prove navigation or an alert callback. Semantic
+phrase-action readbacks retain their existing full presence and privacy admission.
+Available direct or none label
 provenance keeps differently framed candidates distinct. A native ancestor and
 hittable descendant with the exact same label and frame are one tap target and
-resolve to the inner control. Multiple distinct children remain ambiguous.
+resolve to the inner control without a provenance read, including repeated merged
+labels. Multiple distinct children remain ambiguous.
 Android's blank containers with proven descendant provenance acquire a bounded label
 from visible observed children during screen projection; input and secure content
 is excluded, and a container's own label is never reclassified.
@@ -1022,9 +1069,7 @@ Android phrase steps resolve against these observations. A valid capture whose
 interactive React hosts cannot all be associated (a mounted `Modal`, or inputs
 the keyboard covers) keeps the `SCREEN_EVIDENCE_INCOMPLETE` presence gap, as on
 iOS; stale or incomplete captures refuse with `NATIVE_PRESENCE_UNUSABLE`. Quoted
-press, fill and wait targets and literal checks remain usable without requesting
-presence. Scroll-until combines ordinary geometry with platform presence as
-described in the scroll safety rules below, including quoted targets and refreshes.
+targets and literal checks remain usable without requesting presence.
 
 Context-bound iOS QA reads require the unchanged target app already in the
 foreground. They never activate or relaunch it, or retry a failed read through
@@ -1165,10 +1210,8 @@ Literal checks, quoted waits and scroll-until text do not count text or merged
 labels whose centre lies under a captured keyboard unless the keyboard is
 proven hidden. A docked full-width keyboard covers from its frame's top to the
 screen bottom, because its chrome paints below the frame XCUI reports. The
-keyboard's own keys and the chrome in its window stay visible. For literal checks
-and quoted waits, overlays are not occlusion evidence: see
-[Limitations](#limitations-recorded-not-papered-over). Scroll-until additionally
-checks front-overlay overlap during target confirmation, as described below.
+keyboard's own keys and the chrome in its window stay visible. Overlays are not
+occlusion evidence: see [Limitations](#limitations-recorded-not-papered-over).
 Quoted and phrase target resolution scrolls up when the target's centre lies at
 or above the top of its effective trusted clipping viewport, and down otherwise;
 without a known clip, the boundary remains screen y=0. Quoted scroll-until targets use that
@@ -1178,63 +1221,24 @@ the viewport but it is reported not visible, as with an Android heading under
 the status bar, scrolling uses the clearance direction described above, regardless
 of the requested direction. With no single matching identity, an already visible
 target or no known viewport, the requested direction is retained. The
-scroll-until direction, drag band, overlay clearance and navigation markers come
-from one ordinary capture per iteration, including replay and freshness refreshes.
-After that capture finds a quoted text or identity candidate, a separate platform
-presence capture confirms target visibility; phrase predicates confirm the ordinary
-capture's named native candidates through the semantic visibility judgment.
-Presence nodes never supply gesture geometry or navigation markers. Confirmation
-is followed by a fresh ordinary capture, which supplies the next drag's geometry
-and retains its own acquisition time and expiry; expired evidence must refresh
-before dispatch. See the
-[capture authority regressions](../qaren-core/test/unit/qa/scroll-capture-authority.test.ts).
-Before accepting a confirmed target, the walker checks for contradictory target
-visibility in that newer ordinary capture. For phrase targets, established changes
-to text, enabled/disabled state or element kind re-evaluate the whole supported
-claim: a visible “Welcome” becoming “Welcome back” can still satisfy “the welcome
-message”, while a button becoming static text cannot satisfy “the continue button”.
-Unknown facts and missing labels do not establish a contradiction, and unrelated
-content changes do not invalidate the target. Re-evaluation preserves the original
-qualified evidence and privacy masking. Quoted and text-replay targets retain
-strict matching; ID-only replay retains identity and visibility semantics.
-If a confirmed target's frame overlaps a front overlay, even partially, the walker
-can use a remaining safe drag within the existing six-drag limit and deadline,
-accepting the target only once clear. This continuation requires current visibility
-and viewport facts to remain valid; offscreen, hidden, missing-identity and
-content/state/kind contradictions still refuse. For phrase targets, established
-assertion updates are checked against the whole claim, so unrelated updates do not
-block continuation. Navigation and freshness checks still apply.
-The scroll-until drag starts inside the list it is meant to move (the target's own
+scroll-until drag starts inside the list it is meant to move (the target's own
 scroll container, or the frontmost one above the keyboard), not at the screen
-centre. A row scrolled out of its list drags inside that list; a row covered
-inside it drags inside its clearance band. For each selected-list band, including
-keyboard-clipped clearance bands, the screen model removes the padded rows of
-hittable non-text elements drawn after the selected list, outside its subtree,
-that overlap the band horizontally, including across windows and roots.
-The largest remaining vertical span becomes the drag band; window ancestors and
-the list's own rows do not cut it. Padding uses four points, scaled by the captured
-display density on Android when available. An exhausted clear span refuses with
-`SCROLL_BAND_TOO_SMALL`; a screen without a scroll container retains the centred
-window drag. After each scroll-until drag, every fresh observation, including
-visibility-probe refreshes for expired or uncertain evidence, is checked against
-the pre-drag screen. After target confirmation, a fresh ordinary capture supplies
-geometry and navigation checks before target acceptance or another drag. A changed
-selected element outside the lists (such as a tab) or scrolled list refuses
-with `SCROLL_NAVIGATED` before looking
-for the target on the destination screen. An identified list retains its identity
-through keyboard or header resizing when its type and testID remain present;
-unidentified lists require the same type and a frame within two points. Moving
-rows and header resizing do not count as navigation. A fading, translated,
-shrinking or disappearing title does not count as navigation while the selected
-tab and dragged list remain unchanged. Native titles from ordinary iOS
-navigation-bar or Android toolbar/action-bar captures are compared as sets:
-removing titles alone is allowed, but any newly observed non-empty title refuses
-with `SCROLL_NAVIGATED`, even when the list and tab are unchanged. JS-only headers
-have no native title marker; their
-title-only navigation remains tracked in
-[this follow-up](https://github.com/Lykhoyda/rn-dev-agent/issues/1281).
-End-of-list stop follows separately. One clearance swipe lifts a
-covered row by at most the height of its list's visible band above the keyboard.
+centre. The band excludes padded hittable non-text elements drawn after that
+list, outside its subtree, including controls in other windows. Its largest
+remaining vertical span supplies the drag band; an exhausted span refuses
+`SCROLL_BAND_TOO_SMALL`. Padding uses four points, scaled by the captured Android
+display density when available. Without a scroll container, the centred window
+drag is retained.
+Quoted scroll-until uses the current ordinary capture for target visibility and
+geometry, with no additional platform-presence confirmation. A target overlapping
+a front overlay, even partially, requires another safe drag within the original
+six-drag and time budgets. Phrase capture policy is unchanged.
+Selected-tab changes or disappearance/replacement of the dragged list refuse
+`SCROLL_NAVIGATED` before searching a different screen. An identified list matches
+by type and testID through keyboard/header resizing; unidentified lists retain the
+two-point frame tolerance. Native navigation-title text is not a screen marker.
+One clearance swipe lifts a covered row by at most its list's visible band above
+the keyboard.
 A uniquely name-matched off-screen row further away is scrolled toward again,
 at most six times, stopping on an unchanged screen or the existing deadline;
 covered rows and other scroll origins still get one clearance swipe. See the
@@ -1408,9 +1412,12 @@ acquisition failures also refuse without reinjection or a public-tree fallback.
 
 A required private capture re-reads a canonical empty snapshot (`nodes=[]`,
 verdict `degraded`, `nodeCount=0`, reasons exactly `empty-capture`, no truncation
-or dropped nodes), or an iOS `RN_FAST_RUNNER_DOWN` failure marked as pending
-runner relaunch recovery, at 500 ms intervals within the existing 6-second settle
-budget and remaining total capture budget. Both conditions share one retry
+or dropped nodes), a structurally valid incomplete version-2 snapshot on the
+platform-presence route with no truncation or dropped nodes, a consistent node
+count, a known matching generation and withheld keyboard state, or an iOS
+`RN_FAST_RUNNER_DOWN` failure marked as pending runner relaunch recovery, at
+500 ms intervals within the existing 6-second settle budget and remaining total
+capture budget. These conditions share one retry
 deadline; re-reads on both ordinary and platform-presence routes, including
 readiness probes and snapshot transport, stop waiting at that deadline.
 After timeout containment relaunches the iOS reader, it waits for an `alive`
@@ -1420,8 +1427,26 @@ the type call retains its existing result. Persistent runner unavailability
 refuses with `NATIVE_CAPTURE_UNAVAILABLE` after the capture retry budget.
 An empty snapshot's unchanged ref map and zero-node count
 diagnostics do not prevent this read-only retry; persistent emptiness still
-refuses with the same code and message, and other incomplete captures refuse
-immediately.
+refuses with the same code and message. Persistent incomplete presence refuses
+with `PRIVATE_INPUT_CAPTURE_UNKNOWN`, naming the unknown keyboard state and any
+known acquisition phase, failure reason or deadline read using fixed codes.
+If the retry deadline cuts off a read, the refusal retains the last incomplete
+presence snapshot's fixed causes and adds `retry-deadline` without returning that
+snapshot as usable evidence.
+Where presence is required after a system dialog closes, iOS native preparation
+compares consecutive full enumerations and waits for a 500 ms quiet window before
+observing candidates. Any descriptor or hierarchy change resets that quiet window
+without renewing the existing presence deadline. Revalidation after observation
+still rejects a changed enumeration. For candidate-only label provenance, follow
+the quoted-label contract in [Check a plan](#check-a-plan); metadata cannot replace
+ordinary privacy admission or lift screenshot withholding. Semantic phrase-action
+readbacks still require full platform presence and privacy admission.
+Only a fresh, complete snapshot can establish privacy or admit a newly arrived
+system alert; partial presence never authorizes actions, screenshots or model
+evidence. Malformed, truncated, dropped-node and other incomplete captures refuse
+immediately. The [capture implementation](../qaren-core/src/qa/capture.ts) owns
+retry eligibility; [settle regressions](../qaren-core/test/unit/qa/private-empty-reread.test.ts)
+cover these boundaries.
 
 A non-advisory platform-presence response with `RUNNER_TIMEOUT` or a message
 containing `main thread execution timed out` now attempts the same poisoning,
@@ -1835,8 +1860,8 @@ Inputs are strict unless their named Fill explicitly opts in, for example
 staging fixture. The flag relaxes only execution hash and echo checks: pure fixture
 labels, identifiers and types retain their original hash operands, even at the filled
 field, and a redundant expected-echo declaration does not mask them to a constant.
-Strict matches win on equal or overlapping values; a non-secret alias cannot authorize a
-strict echo. Repeated declarations across the plan and configured login block must agree
+Strict matches win on equal or overlapping values; a non-secret alias cannot leave a
+strict value unmasked in a label hash. Repeated declarations across the plan and configured login block must agree
 before device selection. There is no config, global switch or inferred environment policy.
 All values still receive log, model and artifact redaction; screenshots and video stay
 withheld. Never annotate real credentials: qaren cannot establish whether a backend is
@@ -1913,19 +1938,22 @@ that secret despite artifact redaction.
 - Before a strict or literal fill dispatch, the walker registers the target's identifier when available.
   Snapshot hashing replaces a registered target's label with a constant marker when it
   contains a whole strict runtime input value. The value never enters the hash; different values
-  produce the same marker. Labels without a registered identifier, and all identifiers
-  and types, remain subject to the guard below.
+  produce the same marker. Other labels containing a known input use a redacted projection,
+  verified by the same guard before hashing. This includes later account screens and inputs
+  supplied by a configured login block that was never replayed. No echo declaration is
+  required for this masking; screenshots, video and output redaction stay withheld or masked.
 - After a block's `Expect input NAME on screen` line, until the block ends, a label whose
   whole-value strict echoes are all of declared inputs hashes as the same constant marker; a
-  label that also holds an undeclared input's value, and every identifier and type, stay
-  guarded. Replay uses the same block scope; resuming from a patched line restores earlier
+  label that also holds an undeclared input's value uses verified redaction instead. Every
+  identifier and type stays guarded. Replay uses the same block scope; resuming from a patched line restores earlier
   declarations, and a nested login replay gets its own scope.
 - Snapshot hashes refuse `CORE_REFUSED` before any hashing when an identifier, type or
   unmasked label contains a strict input's whole value in its raw, trimmed, NFC, NFD or JSON-escaped form, or a numeric
   value's complete digit sequence with only separators between; partial echoes do not
   refuse. Plan hashes do the same for plan text. The refusal detail starts
   `runtime input privacy refused` and never names the value. The same guard applies to
-  the configured login block and app id. Apart from the registered and declared label projections,
+  the configured login block and app id. If a label's redaction cannot be proven safe, it
+  still refuses. Apart from these label projections,
   accepted operands and digests are unchanged. Repository and host provenance hashes, such
   as the lockfile, dirty-file, config and session-path hashes, keep their exact bytes. The
   settle engine no longer uses the iOS screenshot-equality tier; it settles on the Android
@@ -2398,8 +2426,8 @@ testIDs can use stored visible labels (`text`) instead of IDs. Runtime-input fil
 still require the [runtime-input prerequisites](#runtime-inputs), including a
 supported React TextInput; a label alone does not establish private-fill admission.
 
-1. Start on the sign-in screen and write `.qaren/plans/sign-in.md`. If the app
-   echoes the username, declare that before filling it:
+1. Start on the sign-in screen and write `.qaren/plans/sign-in.md`. The optional
+   echo declaration below follows the [runtime-input hash protections](#runtime-inputs):
 
    ```markdown
    ## QA
