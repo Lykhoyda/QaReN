@@ -312,3 +312,72 @@ for (const available of [true, false]) {
     }
   });
 }
+
+test('an anonymous full-screen wrapper echoing one control resolves to that control once its provenance arrives', async () => {
+  const screenFrame = { x: 0, y: 0, width: 402, height: 874 };
+  const control = {
+    x: 331.6666564941406,
+    y: 70,
+    width: 54.333343505859375,
+    height: 31.666664123535156,
+  };
+  const echo = () =>
+    join(
+      [
+        {
+          ref: '@e0',
+          type: 'Other',
+          label: 'rn-dev-agent-test',
+          hittable: true,
+          rect: screenFrame,
+        },
+        {
+          ref: '@e3',
+          parentIndex: 0,
+          type: 'Other',
+          label: 'Skip',
+          hittable: true,
+          rect: screenFrame,
+        },
+        {
+          ref: '@e5',
+          parentIndex: 1,
+          type: 'Other',
+          identifier: 'qa-skip-echo-outer',
+          label: 'Skip',
+          hittable: true,
+          rect: control,
+        },
+        {
+          ref: '@e6',
+          parentIndex: 2,
+          type: 'Button',
+          identifier: 'qa-skip-echo-button',
+          label: 'Skip',
+          hittable: true,
+          rect: control,
+        },
+      ],
+      [],
+      'app',
+      { native: 'complete', react: 'complete' },
+    );
+  const f = walker(
+    [],
+    scriptedJudge(() => assert.fail('quoted target needs no model')),
+  );
+  const read: string[][] = [];
+  f.deps.captureScreen = async () => echo();
+  f.deps.readLabelProvenance = async (refs) => {
+    read.push(refs);
+    return refs.map((ref) => ({ ref, labelSource: ref === '@e3' ? 'descendant' : 'direct' }));
+  };
+  f.deps.press = async (ref) => {
+    f.actions.push(`press ${ref}`);
+    return { ok: true, proven: true };
+  };
+  const result = await runPlan(parsePlan('1. Tap "Skip"').blocks!, f.deps);
+  assert.equal(result.verdict, 'PASS', JSON.stringify(result));
+  assert.deepEqual(read, [['@e3', '@e6']]);
+  assert.deepEqual(f.actions, ['press @e6']);
+});

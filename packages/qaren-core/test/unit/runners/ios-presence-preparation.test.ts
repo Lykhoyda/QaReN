@@ -331,6 +331,35 @@ for unstable in [false, true] {
     "hasTree": result.nodes != nil, "hasKeyboard": result.keyboardVisible != nil]
   print(String(data: try JSONSerialization.data(withJSONObject: output, options: [.sortedKeys]), encoding: .utf8)!)
 }
+do {
+  func echoTree() -> XCUIElementSnapshot {
+    let root = tree()
+    let window = root.children[0]
+    func wrapper() -> XCUIElementSnapshot {
+      let node = XCUIElementSnapshot(); node.elementType = .other; node.identifier = ""; node.label = ""; node.value = nil
+      node.frame = window.frame
+      return node
+    }
+    let echo = wrapper(), twin = wrapper()
+    let button = XCUIElementSnapshot(); button.identifier = "skip-button"; button.label = "Skip"; button.value = nil
+    button.frame = CGRect(x: 331.6666564941406, y: 70, width: 54.333343505859375, height: 31.666664123535156)
+    echo.children = [button]
+    window.children = [twin, echo]
+    return root
+  }
+  let h = Harness(); h.useLiveReads = true
+  let app = XCUIApplication([echoTree()])
+  let ordinary = h.snapshotFast(app: app, options: SnapshotOptions(interactiveOnly: true, compact: false, depth: nil, scope: nil, raw: false))
+  h.retainSnapshotTargets(ordinary.nodes ?? [])
+  let indices = (ordinary.nodes ?? []).filter { $0.label == "Skip" }.map { $0.index }
+  precondition(indices.count == 2 && ordinary.nodes?.first { $0.index == indices[0] }?.identifier == nil)
+  app.snapshots = [echoTree(), echoTree()]; app.reads = 0
+  let result = h.snapshotCandidateLabelProvenance(app: app, indices: indices, budgetMs: 300)
+  let output: [String: Any] = ["name": "anonymous-echo-wrapper",
+    "sources": result.labelProvenance?.map { $0.labelSource.rawValue } ?? [], "observations": h.observations,
+    "diagnostic": try JSONSerialization.jsonObject(with: JSONEncoder().encode(result.labelProvenanceDiagnostics!))]
+  print(String(data: try JSONSerialization.data(withJSONObject: output, options: [.sortedKeys]), encoding: .utf8)!)
+}
 for name in ["candidate-timeout", "candidate-direct-timeout", "candidate-alternating-source"] {
   let h = Harness()
   let first = candidateTree(sibling: 10), second = candidateTree(sibling: 11)
@@ -578,6 +607,11 @@ do {
     hasTree: false,
     hasKeyboard: false,
   });
+  const echo = rows.get('anonymous-echo-wrapper');
+  assert.deepEqual(echo.sources, ['descendant', 'direct'], JSON.stringify(echo));
+  assert.equal(echo.observations, 2);
+  assert.equal(echo.diagnostic.outcome, 'available');
+  rows.delete('anonymous-echo-wrapper');
   for (const name of ['card-value', 'card-enabled', 'container-enabled']) {
     assert.deepEqual(rows.get(name).indices, [2, 3], name);
     assert.equal(rows.get(name).reads, 2, name);

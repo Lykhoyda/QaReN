@@ -589,7 +589,9 @@ nodes do not invalidate that agreement. On iOS, candidate indices and parent
 indices use the ordinary snapshot's retained filtering and deduplication options,
 rather than raw-tree positions. iOS sample stability compares label source,
 parent link and frame; ordinary identity guards and each live candidate observation
-remain mandatory, while unrelated value or enabled-state changes between samples
+remain mandatory, except that a candidate with neither an identifier nor its own
+label, whose live query would match every such wrapper, is identified by those
+guards across both samples instead. Unrelated value or enabled-state changes between samples
 do not invalidate provenance. Only an explicit `deadline-clean` native outcome
 can enable containment fallback before the ordinary observation expires; exactly
 two native candidates can then resolve by strict frame containment: one enabled, visible, hittable interactive control inside one
