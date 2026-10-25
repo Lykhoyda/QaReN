@@ -670,7 +670,10 @@ An unproven press passes only when the screen changes. That comparison includes
 each control's selected state (the iOS selected trait or Android accessibility
 selection), so a control that shows
 selection alone proves its press by becoming selected; a press that leaves it
-unchanged still fails, naming whether the target stayed selected.
+unchanged still fails, naming whether the target stayed selected. A press also
+counts a change in any React host's `accessibilityState` checked or selected flag,
+such as a checkbox nested inside an accessible row, when both captures carry
+complete React host evidence; only those value-free flags are captured.
 Before its one retry, the walker re-captures until the same target (resolved
 through the same exact-identity rules as the step) holds one native frame
 across two captures, within the

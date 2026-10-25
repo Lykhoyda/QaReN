@@ -594,6 +594,61 @@ test('a not-ok press on an unchanged screen retries once and fails naming the ha
   );
 });
 
+function checkboxRow(checked: boolean | undefined, selected?: boolean): Screen {
+  return screen(['Alone', 'With partner'], {
+    reactHostEvidence: {
+      hosts: [
+        { role: null, roleSource: 'none', capabilities: { press: true } },
+        {
+          role: 'checkbox',
+          roleSource: 'accessibilityRole',
+          capabilities: {},
+          ...(checked !== undefined ? { checked } : {}),
+        },
+        {
+          role: 'checkbox',
+          roleSource: 'accessibilityRole',
+          capabilities: {},
+          ...(selected !== undefined ? { selected } : {}),
+        },
+      ],
+      complete: true,
+    },
+  });
+}
+
+test('a checkbox tap whose only effect is a checked or selected state flip passes on the first press', async () => {
+  for (const [before, after] of [
+    [checkboxRow(false), checkboxRow(true)],
+    [checkboxRow(undefined, false), checkboxRow(undefined, true)],
+  ]) {
+    const f = fake([before, after]);
+    const outcome = await walkBlock(block('1. Tap "Alone"\n'), f.deps);
+    assert.equal(
+      outcome.block.outcome,
+      'pass',
+      renderReason(outcome.failure?.seen ?? '', (text) => text),
+    );
+    assert.equal(f.calls.filter((c) => c.startsWith('press')).length, 1);
+  }
+});
+
+test('a checkbox tap with no state flip, or state on only one side, still reports no change', async () => {
+  for (const screens of [
+    [checkboxRow(false)],
+    [checkboxRow(false), screen(['Alone', 'With partner'])],
+  ]) {
+    const f = fake(screens);
+    const outcome = await walkBlock(block('1. Tap "Alone"\n'), f.deps);
+    assert.equal(outcome.block.outcome, 'fail');
+    assert.equal(f.calls.filter((c) => c.startsWith('press')).length, 2);
+    assert.match(
+      renderReason(outcome.failure?.seen ?? '', (text) => text),
+      /the screen did not change after two attempts/,
+    );
+  }
+});
+
 // The runner reports keyboardShown false when a tap on an editable field opened no keyboard within its settle budget.
 test('a press whose keyboard never opened fails naming the absent keyboard, never a pass', async () => {
   const f = fake([screen(['Email'])], {

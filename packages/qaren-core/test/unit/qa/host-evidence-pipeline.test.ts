@@ -106,6 +106,36 @@ test('the component tree handler forwards host capture only with the interactive
   assert.equal(envelope.meta.treeVerdict.complete, true);
 });
 
+test('host capture carries checked and selected flags but no other accessibility state', async () => {
+  const tree = producer([
+    {
+      hostType: 'RCTView',
+      props: {
+        accessibilityRole: 'checkbox',
+        accessibilityState: { checked: true, selected: false, expanded: true },
+      },
+    },
+    { hostType: 'RCTView', props: { accessibilityState: { checked: 'mixed' } } },
+    { hostType: 'RCTView', props: { accessibilityState: { checked: 'yes', selected: 1 } } },
+  ]);
+  const envelope = parseEnvelope(
+    await tree({ depth: 4, interactiveOnly: true, semanticEvidence: true }),
+  );
+  assert.deepEqual(envelope.data.hostEvidence.hosts, [
+    {
+      role: 'checkbox',
+      roleSource: 'accessibilityRole',
+      capabilities: {},
+      checked: true,
+      selected: false,
+      order: 0,
+    },
+    { role: null, roleSource: 'none', capabilities: {}, checked: 'mixed', order: 1 },
+    { role: null, roleSource: 'none', capabilities: {}, order: 2 },
+  ]);
+  assert.ok(validateReactHostEvidence(envelope.data.hostEvidence));
+});
+
 test('host admission rejects malformed facts and retains independent identities without coercion', () => {
   const host = {
     testID: 'same',
@@ -130,6 +160,8 @@ test('host admission rejects malformed facts and retains independent identities 
     { hosts: [{ ...host, zIndex: Number.POSITIVE_INFINITY }], complete: true },
     { hosts: [{ ...host, order: -1 }], complete: true },
     { hosts: [{ ...host, order: 1.5 }], complete: true },
+    { hosts: [{ ...host, checked: 'yes' }], complete: true },
+    { hosts: [{ ...host, selected: 'mixed' }], complete: true },
     {
       hosts: [{ ...host, roleSource: { toString: () => assert.fail('no coercion') } }],
       complete: true,
@@ -141,7 +173,14 @@ test('host admission rejects malformed facts and retains independent identities 
     },
   ])
     assert.equal(validateReactHostEvidence(invalid), undefined);
-  const touch = { ...host, pointerEvents: 'box-none', zIndex: -2, order: 3 };
+  const touch = {
+    ...host,
+    pointerEvents: 'box-none',
+    zIndex: -2,
+    order: 3,
+    checked: 'mixed',
+    selected: false,
+  };
   assert.deepEqual(validateReactHostEvidence({ hosts: [touch], complete: true }), {
     hosts: [touch],
     complete: true,

@@ -21,6 +21,7 @@ import {
   type Screen,
   type NativeNode,
   type VisibilityBlockerDiagnostic,
+  hostStateChanged,
   screenSignature,
   alertPressEffect,
   insideAlert,
@@ -2540,7 +2541,9 @@ async function walkBlockScoped(
             before.platformPresence ? 'provenance' : 'resolve',
           );
           // NOTE: a not-ok result is not a verdict; an act that timed out may still have landed.
-          const changed = screenSignature(after.screen) !== screenSignature(before.screen);
+          const changed =
+            screenSignature(after.screen) !== screenSignature(before.screen) ||
+            (item.kind === 'press' && hostStateChanged(before.screen, after.screen));
           usable(after, item);
           diagnostic(item, after, 'decision', 'ACCEPTED');
           metric('readback', after);

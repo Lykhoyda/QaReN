@@ -3,7 +3,7 @@ import { TYPOGRAPHY_TEXT_LIMITS } from './qa/host-typography.js';
 import { INPUT_HOST_TYPES } from './qa/input-host-types.js';
 
 // Bump when the injected surface changes so warm runtimes replace stale helpers.
-export const HELPERS_VERSION = 101;
+export const HELPERS_VERSION = 102;
 
 export const INJECTED_HELPERS = `
 (function() {
@@ -1462,7 +1462,7 @@ export const INJECTED_HELPERS = `
               if (keys[i] === 'placeholder' && isHostFiber(fiber) && imageSourcePlaceholderFacts(fiber, props)) continue;
               throw new Error('Opaque digest string');
             }
-            if (keys[i] === 'accessibilityState' && value && typeof value === 'object') value = { disabled: qaData(value, 'disabled', true) };
+            if (keys[i] === 'accessibilityState' && value && typeof value === 'object') value = { disabled: qaData(value, 'disabled', true), checked: qaData(value, 'checked', true), selected: qaData(value, 'selected', true) };
             safe[keys[i]] = value;
           } catch (_) { typographyIncomplete('digest-prop-opaque'); }
         }
@@ -1537,6 +1537,9 @@ export const INJECTED_HELPERS = `
         if (typeof props.onPress === 'function' || typeof props.onClick === 'function') host.capabilities.press = true;
         if (props.disabled === true || props['aria-disabled'] === true || (props.accessibilityState && props.accessibilityState.disabled === true)) host.disabled = true;
         if (props.editable === false || props.readOnly === true || props['aria-readonly'] === true) host.readOnly = true;
+        var hostState = props.accessibilityState || {};
+        if (typeof hostState.checked === 'boolean' || hostState.checked === 'mixed') host.checked = hostState.checked;
+        if (typeof hostState.selected === 'boolean') host.selected = hostState.selected;
         if ((privateCapture ? HOST_KIND_LOOKUP[qaHostType(fiber)] : hostKind(fiber)) === 'textinput'
           && (props.editable == null || props.editable === true)
           && (props.readOnly == null || props.readOnly === false)

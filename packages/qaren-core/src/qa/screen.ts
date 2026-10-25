@@ -237,6 +237,9 @@ export interface ReactHostObservation {
   disabled?: true;
   readOnly?: true;
   hidden?: true;
+  // Value-free accessibility state, so a host hidden under an accessible row still proves a toggle.
+  checked?: boolean | 'mixed';
+  selected?: boolean;
   // Touch facts for the React hit test: absent pointerEvents is auto and absent zIndex is 0.
   pointerEvents?: (typeof POINTER_EVENTS)[number];
   zIndex?: number;
@@ -282,6 +285,10 @@ export function validateReactHostEvidence(value: unknown): ReactHostEvidence | u
       ['disabled', 'readOnly', 'hidden'].some(
         (key) => host[key] !== undefined && host[key] !== true,
       ) ||
+      (host.checked !== undefined &&
+        typeof host.checked !== 'boolean' &&
+        host.checked !== 'mixed') ||
+      (host.selected !== undefined && typeof host.selected !== 'boolean') ||
       (host.pointerEvents !== undefined &&
         !POINTER_EVENTS.includes(host.pointerEvents as (typeof POINTER_EVENTS)[number])) ||
       (host.zIndex !== undefined &&
@@ -299,6 +306,8 @@ export function validateReactHostEvidence(value: unknown): ReactHostEvidence | u
       ...(host.disabled === true ? { disabled: true } : {}),
       ...(host.readOnly === true ? { readOnly: true } : {}),
       ...(host.hidden === true ? { hidden: true as const } : {}),
+      ...(host.checked !== undefined ? { checked: host.checked as boolean | 'mixed' } : {}),
+      ...(host.selected !== undefined ? { selected: host.selected as boolean } : {}),
       ...(host.pointerEvents !== undefined
         ? { pointerEvents: host.pointerEvents as (typeof POINTER_EVENTS)[number] }
         : {}),
@@ -1518,6 +1527,26 @@ export function screenSignature(screen: Screen): string {
         e.side ?? null,
       ]),
   });
+}
+
+// Only both-sided complete host evidence can show a toggle, so a React coverage flap never reads as one.
+export function hostStateChanged(before: Screen, after: Screen): boolean {
+  const states = (screen: Screen) =>
+    screen.reactHostEvidence?.complete
+      ? JSON.stringify(
+          screen.reactHostEvidence.hosts
+            .filter((h) => h.checked !== undefined || h.selected !== undefined)
+            .map((h) => [
+              h.testID ?? h.nativeID ?? null,
+              h.role,
+              h.checked ?? null,
+              h.selected ?? null,
+            ]),
+        )
+      : undefined;
+  const was = states(before);
+  const now = states(after);
+  return was !== undefined && now !== undefined && was !== now;
 }
 
 // The iOS runner sends an app's alert and action sheet as raw XCUIElement types 7 and 5.
