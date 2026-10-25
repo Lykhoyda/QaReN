@@ -92,9 +92,10 @@ for (const value of [
   'SYNTHETICWRAX',
   '',
 ]) {
-  test('a stable changed or shortened readback fails without retyping or exposing text', async () => {
+  test('a stable changed or shortened readback stays unverified without retyping or exposing text', async () => {
     const { raw, env, dispatched, attempts } = await run({ valueAfter: () => value });
-    assert.equal(env.code, 'TEXT_ENTRY_UNVERIFIED');
+    assert.equal(env.ok, true);
+    assert.equal(env.data.verified, false);
     assert.deepEqual(dispatched, [[TEXT]]);
     assert.deepEqual(attempts, [[TEXT]]);
     assert.doesNotMatch(raw, /SYNTH|WRAP|ETIC|ABCD/);
@@ -104,7 +105,7 @@ for (const value of [
 test('readback metrics contain only verdict and duration', async () => {
   const metrics: Array<Record<string, unknown>> = [];
   const { env, dispatched } = await run({ valueAfter: () => 'SYNTH', metrics });
-  assert.equal(env.code, 'TEXT_ENTRY_UNVERIFIED');
+  assert.equal(env.ok, true);
   assert.equal(dispatched.length, 1);
   const readbacks = metrics.filter((event) => event.stage === 'type-readback');
   assert.deepEqual(

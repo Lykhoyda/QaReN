@@ -1247,6 +1247,8 @@ for (const route of ['transition', 'keyboard-up', 'no-target'] as const) {
       'exact',
       'unreadable',
       'retained-prefix',
+      'recovered-exact',
+      'recovered-formatting',
       'missing-prefix',
       'shorter',
       'formatting',
@@ -1262,12 +1264,19 @@ for (const route of ['transition', 'keyboard-up', 'no-target'] as const) {
         const { okResult } = await import('../../../dist/utils.js');
         const before = 'synthetic-prefill';
         const text = 'synthetic-replacement';
-        const fails = readback !== 'exact' && readback !== 'unreadable';
-        const unverified = readback === 'unreadable';
+        const retained = ['retained-prefix', 'recovered-exact', 'recovered-formatting'].includes(
+          readback,
+        );
+        const fails = runtimePrivate
+          ? readback !== 'exact' && readback !== 'unreadable'
+          : readback === 'retained-prefix';
+        const unverified = !fails && readback !== 'exact' && readback !== 'recovered-exact';
         const finalValue = {
           exact: text,
           unreadable: null,
           'retained-prefix': before + text,
+          'recovered-exact': text,
+          'recovered-formatting': 'synthetic replacement',
           'missing-prefix': text.slice(3),
           shorter: 'synthetic',
           formatting: 'synthetic replacement',
@@ -1318,7 +1327,7 @@ for (const route of ['transition', 'keyboard-up', 'no-target'] as const) {
           assert.ok(args.includes('--clear-first'));
           current = '';
           assert.equal(await options.focusedProof(true), true);
-          current = finalValue;
+          current = retained && dispatches === 1 ? before + text : finalValue;
           return okResult({ typed: true });
         });
         fake.deps.typeFocused = async (
@@ -1329,7 +1338,7 @@ for (const route of ['transition', 'keyboard-up', 'no-target'] as const) {
           requireFocused,
           privateValue,
         ) => {
-          await type(ref, value, testID, context, requireFocused);
+          await type(ref, value, testID, context, requireFocused, privateValue);
           const result = await performFocusedFill(
             {
               ref,
@@ -1372,7 +1381,7 @@ for (const route of ['transition', 'keyboard-up', 'no-target'] as const) {
             ? withInputs(new RunInputs({ EMAIL: text }, ['EMAIL']), run)
             : run());
           assert.equal(ledger.verdict, fails ? 'FAIL' : 'PASS');
-          assert.equal(dispatches, 1);
+          assert.equal(dispatches, !runtimePrivate && retained ? 2 : 1);
           assert.equal(fake.typed.length, 1);
           assert.equal(fake.log.includes('press @submit'), !fails);
           assert.equal(ledger.videoPublication, 'withheld-fill');
@@ -1414,7 +1423,7 @@ for (const route of ['transition', 'keyboard-up', 'no-target'] as const) {
   }
 }
 
-test('a normalizing readable fallback fails exact readback without continuing', async () => {
+test('a normalizing readable fallback continues honestly unverified', async () => {
   const { performFocusedFill } = await import('../../../dist/handlers/device-interact.js');
   const { _setActiveSessionForTest, _setRunAgentDeviceForTest } =
     await import('../../../dist/agent-device-wrapper.js');
@@ -1442,7 +1451,7 @@ test('a normalizing readable fallback fails exact readback without continuing', 
     return okResult({ typed: true });
   });
   fake.deps.typeFocused = async (ref, text, testID, context, requireFocused, privateValue) => {
-    await type(ref, text, testID, context, requireFocused);
+    await type(ref, text, testID, context, requireFocused, privateValue);
     const result = await performFocusedFill(
       {
         ref,
@@ -1469,10 +1478,11 @@ test('a normalizing readable fallback fails exact readback without continuing', 
   };
   try {
     const result = await walkBlock(blocks(plan('123456'))[0], fake.deps);
-    assert.equal(result.block.outcome, 'fail');
+    assert.equal(result.block.outcome, 'pass');
+    assert.match(result.rows[0].reason ?? '', /UNVERIFIED_FILL/);
     assert.ok(reads > 1, 'the typed value is read back');
     assert.equal(fills, 1);
-    assert.equal(fake.state(), 'typed');
+    assert.equal(fake.state(), 'accepted');
   } finally {
     _setRunAgentDeviceForTest(null);
     _setActiveSessionForTest(null);

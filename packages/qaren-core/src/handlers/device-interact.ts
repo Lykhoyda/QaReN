@@ -1551,7 +1551,7 @@ async function awaitReactInputValue(
   readInput: () => Promise<{ value: string | null; controlled: boolean } | null>,
   expected: string,
   signal?: AbortSignal,
-): Promise<{ verdict: ReactValueVerification }> {
+): Promise<{ verdict: ReactValueVerification; observed?: string }> {
   let previous: { value: string | null; controlled: boolean } | null = null;
   let last: { value: string | null; controlled: boolean } | null = null;
   for (let attempt = 0; attempt < 6; attempt++) {
@@ -1579,7 +1579,7 @@ async function awaitReactInputValue(
     previous?.controlled === true &&
     last.value !== null &&
     last.value === previous.value
-    ? { verdict: 'mismatch' }
+    ? { verdict: 'mismatch', observed: last.value }
     : { verdict: 'unreadable' };
 }
 
@@ -1664,8 +1664,8 @@ export async function performFocusedFill(
       (expectedBeforeClear === undefined || before === expectedBeforeClear)
     );
   };
-  const dispatchFill = async (): Promise<ToolResult> => {
-    let deleteCount: number | undefined;
+  const dispatchFill = async (deleteCount?: number, observed?: string): Promise<ToolResult> => {
+    expectedBeforeClear = observed;
     expectedContentLength = undefined;
     if (args.clearFirst) {
       if (!(await focusedProof())) {
@@ -1684,7 +1684,7 @@ export async function performFocusedFill(
           { mutation: 'none' },
         );
       }
-      deleteCount = contentLength || undefined;
+      deleteCount ??= contentLength || undefined;
       if (deleteCount !== undefined && deleteCount > 256) {
         return failResult(
           'Focused replacement exceeds its bounded clear budget.',
@@ -1832,10 +1832,31 @@ export async function performFocusedFill(
     });
   const verification = await readBack();
   if (verification.verdict === 'exact') return verified();
-  if (verification.verdict === 'mismatch') {
+  const retainedPrefix = (result: Awaited<ReturnType<typeof readBack>>) =>
+    args.clearFirst &&
+    initialBefore.length > 0 &&
+    result.verdict === 'mismatch' &&
+    result.observed !== undefined &&
+    result.observed.startsWith(initialBefore) &&
+    result.observed.endsWith(args.text) &&
+    result.observed.length > args.text.length;
+  if (retainedPrefix(verification)) {
+    const observed = verification.observed!;
+    if (observed.length <= 256 && !args.qaContext?.expired) {
+      const replacement = await dispatchFill(observed.length, observed);
+      if (replacement.isError) {
+        return fillFailure('TEXT_ENTRY_UNVERIFIED', extractErrorText(replacement), {
+          mutation: extractMutationDisposition(replacement) === 'none' ? 'observed' : 'possible',
+          pathsTried,
+        });
+      }
+      const recovered = await readBack();
+      if (recovered.verdict === 'exact') return verified();
+      if (!retainedPrefix(recovered)) return unverified();
+    }
     return fillFailure(
       'TEXT_ENTRY_UNVERIFIED',
-      'The input differs from the requested text; not retrying.',
+      'The input retained its prior value after bounded replacement; not retrying.',
       { mutation: 'observed', pathsTried },
     );
   }
