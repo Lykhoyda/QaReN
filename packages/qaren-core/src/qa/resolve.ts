@@ -539,7 +539,7 @@ function clearOfFrontOverlays(
   return best ? { ...band, y: best.top, height: best.bottom - best.top } : undefined;
 }
 
-function scrollTargetCovered(element: Element, screen: Screen): boolean {
+export function scrollTargetCovered(element: Element, screen: Screen): boolean {
   if (centreCovered(element, screen)) return true;
   const container = ancestorsOf(element).find(isScrollContainer);
   const frame = elementFrame(element);
@@ -919,7 +919,7 @@ export function aggregateScrollTargetVisible(target: Target, screen: Screen): bo
     !element.secure &&
     !nativeLabelMayBeValue(element) &&
     !keyboardCoversElement(element) &&
-    !centreCovered(element, screen)
+    !scrollTargetCovered(element, screen)
   );
 }
 

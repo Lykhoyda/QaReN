@@ -46,6 +46,7 @@ import {
   stepTarget,
   scrollUntilBand,
   scrollUntilEvidence,
+  scrollTargetCovered,
   scrollUntilContainer,
   scrollUntilDirection,
   targetEvidence,
@@ -1122,6 +1123,23 @@ async function walkBlockScoped(
         checkObservation?.(observation.screen);
         try {
           decision = await decide(observation, undefined, item, deadline, decision);
+          if (
+            item.kind === 'scroll' &&
+            decision.visibility &&
+            'verdict' in decision.visibility &&
+            decision.visibility.verdict === 'present'
+          ) {
+            const elements = observation.screen.elements.filter(
+              (element) => !scrollTargetCovered(element, observation.screen),
+            );
+            if (elements.length !== observation.screen.elements.length)
+              decision = await decide(
+                { ...observation, screen: { ...observation.screen, elements } },
+                undefined,
+                item,
+                deadline,
+              );
+          }
         } catch (error) {
           if (isAbort(error)) throw error;
           if (!(error instanceof EvidenceExpired)) throw error;
@@ -1936,9 +1954,11 @@ async function walkBlockScoped(
           const held = cached?.item === item ? cached : undefined;
           let observation = held?.observation ?? (await capture(item));
           cached = undefined;
-          let beforeScroll: { screen: Screen; container?: Element } | undefined;
+          let beforeScroll = {
+            screen: observation.screen,
+            container: scrollUntilContainer(item.until, observation.screen),
+          };
           const probe = visibilityProbe(item, deadline, (screen) => {
-            if (!beforeScroll) return;
             const navigation = scrollNavigationChange(
               beforeScroll.screen,
               screen,

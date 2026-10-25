@@ -14,6 +14,7 @@ type Snapshot = {
   footer?: boolean;
   footerY?: number;
   footerHeight?: number;
+  footerLabel?: string;
   listID?: string;
   listFrame?: NonNullable<NativeNode['rect']>;
   tab?: string;
@@ -21,7 +22,7 @@ type Snapshot = {
   overlays?: NonNullable<NativeNode['rect']>[];
 };
 
-function fixture() {
+function fixture(established = false) {
   let drags = 0;
   const modes: boolean[] = [];
   const endpoints: number[][] = [];
@@ -55,10 +56,10 @@ function fixture() {
         rect: state.listFrame ?? frame,
       },
       {
-        type: 'StaticText',
+        type: state.footerLabel ? 'Other' : 'StaticText',
         parentIndex: 2,
         identifier: state.footer ? 'footer' : 'loading',
-        label: state.footer ? 'Footer' : 'Loading',
+        label: state.footer ? (state.footerLabel ?? 'Footer') : 'Loading',
         rect: { x: 10, y: state.footerY ?? 200, width: 100, height: state.footerHeight ?? 30 },
       },
       ...(state.overlays ?? []).map((rect) => ({ type: 'Button', parentIndex: 1, rect })),
@@ -91,7 +92,7 @@ function fixture() {
       ...(presence ? { presence: { ...source.nodes[1].presence, nodeIndex: index } } : {}),
     }));
     updateRefMapFromFlat(nodes);
-    return captureScreen({
+    const screen = await captureScreen({
       appId: 'com.test',
       platformPresence: presence,
       now: f.deps.now,
@@ -106,6 +107,19 @@ function fixture() {
         verdict: { state: 'ok', path: 'interactive', complete: true },
       }),
     });
+    if (established)
+      for (const element of screen.elements) {
+        element.semantic = {
+          ...element.semantic!,
+          visibility: 'visible',
+          nativePresence: {
+            kind: element.kind,
+            labelSource: 'direct',
+            structural: !['text', 'button'].includes(element.kind),
+          },
+        };
+      }
+    return screen;
   };
   f.deps.scroll = async (direction, context, _distance, band) => {
     context!.authorize();
@@ -131,7 +145,7 @@ function fixture() {
 async function run(
   f: ReturnType<typeof fixture>,
   direction: 'up' | 'down',
-  mode: 'quoted' | 'phrase' | 'replay' | 'text-replay',
+  mode: 'quoted' | 'phrase' | 'aggregate' | 'replay' | 'text-replay',
   phrase = 'the footer text',
 ) {
   const block = parsePlan(`1. Scroll ${direction} until ${mode === 'phrase' ? phrase : '"Footer"'}`)
@@ -180,13 +194,14 @@ test('sixth-drag target confirmation uses ordinary captures within the item dead
 });
 
 for (const direction of ['up', 'down'] as const) {
-  for (const mode of ['quoted', 'replay', 'text-replay'] as const) {
+  for (const mode of ['quoted', 'phrase', 'aggregate', 'replay', 'text-replay'] as const) {
     for (const partial of [false, true]) {
       test(`overlapping target gets another bounded drag: ${direction}, ${mode}, partial=${partial}`, async () => {
-        const f = fixture();
+        const f = fixture(mode === 'phrase');
         const overlay = { x: 21, y: direction === 'down' ? 791 : 80, width: 360, height: 70 };
         f.setSnapshot(async () => ({
           footer: mode === 'text-replay' || f.drags() > 0,
+          footerLabel: mode === 'aggregate' ? 'Summary, Footer, Details' : undefined,
           footerY:
             f.drags() === 1 || (mode === 'text-replay' && f.drags() === 0)
               ? direction === 'down'
@@ -206,7 +221,7 @@ for (const direction of ['up', 'down'] as const) {
           assert.equal(result.failure, undefined);
           assert.equal(result.block.outcome, 'pass');
           assert.equal(f.drags(), 2);
-          assert.ok(f.modes.every((presence) => !presence));
+          assert.ok(f.modes.every((presence) => presence === (mode === 'phrase')));
           assert.ok(
             f.endpoints.every(([, start, , end]) =>
               direction === 'down'
@@ -214,6 +229,36 @@ for (const direction of ['up', 'down'] as const) {
                 : start > overlay.y + overlay.height + 4 && end > overlay.y + overlay.height + 4,
             ),
           );
+        } finally {
+          clearRefMap();
+        }
+      });
+    }
+  }
+  for (const refresh of ['reask', 'expired'] as const) {
+    for (const navigation of ['tab', 'list'] as const) {
+      test(`initial phrase ${refresh} refuses changed ${navigation} before scrolling: ${direction}`, async () => {
+        const f = fixture(true);
+        let captures = 0;
+        f.setSnapshot(async () => ({
+          footer: ++captures > 1,
+          tab: navigation === 'tab' && captures > 1 ? 'B' : 'A',
+          listID: navigation === 'list' && captures > 1 ? 'destination' : 'feed',
+        }));
+        f.f.deps.judge = scriptedJudge((questions, index) => {
+          if (index === 0 && refresh === 'expired') void f.f.deps.sleep(10_001);
+          return Object.fromEntries(
+            Object.keys(questions).map((id) => [
+              id,
+              { type: 'noul', noul: index === 0 ? 0.5 : 0.9 },
+            ]),
+          );
+        });
+        try {
+          const result = await run(f, direction, 'phrase');
+          assert.equal(result.refusal?.code, 'SCROLL_NAVIGATED', JSON.stringify(result));
+          assert.equal(f.drags(), 0);
+          assert.equal(captures, 2);
         } finally {
           clearRefMap();
         }
