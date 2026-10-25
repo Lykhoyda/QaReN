@@ -34,6 +34,7 @@ import {
 import {
   type Identity,
   PRESSABLE_SUFFIX,
+  encloses,
   exactIdentities,
   needsLabelProvenance,
   focusIdentityOf,
@@ -888,13 +889,21 @@ export function aggregateScrollTargetVisible(target: Target, screen: Screen): bo
     (screen.captureCoverage?.native ?? screen.coverage?.native) !== 'complete'
   )
     return false;
-  const matches = screen.elements.filter(
+  const carriers = screen.elements.filter(
     (element) =>
       !element.ref.startsWith('react:') &&
       ['other', 'cell'].includes(element.nativeKind ?? element.kind) &&
       !element.offscreen &&
       screen.labelText?.includes(element.label ?? '') &&
       element.label?.split(',').some((part) => part.trim() === target.quoted),
+  );
+  // A container that only echoes an enclosed carrier's label is that carrier, not a second one.
+  const matches = carriers.filter(
+    (outer) =>
+      (outer.semantic?.nativePresence?.labelSource ?? 'descendant') !== 'descendant' ||
+      !carriers.some(
+        (inner) => inner !== outer && inner.label === outer.label && encloses(outer, inner),
+      ),
   );
   if (matches.length > 1)
     throw new ResolutionError({

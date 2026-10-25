@@ -79,6 +79,54 @@ for (const contradiction of ['multiple', 'direct', 'value', 'none', 'unresolved'
   });
 }
 
+for (const source of [undefined, 'descendant', 'direct'] as const) {
+  test(`aggregate scroll with an identified container carrying its card's label (${source})`, async () => {
+    const [app, window, card] = nodes();
+    const s = join(
+      [
+        app,
+        window,
+        {
+          ref: '@scroll',
+          parentIndex: 1,
+          type: 'Other',
+          identifier: 'home_scroll',
+          label: card.label,
+          rect: { x: 0, y: 0, width: 400, height: 800 },
+        },
+        { ...card, parentIndex: 2 },
+      ],
+      [],
+      'app',
+      { native: 'complete', react: 'complete' },
+    );
+    if (source)
+      s.elements[2].semantic!.nativePresence = {
+        kind: 'other',
+        structural: false,
+        labelSource: source,
+      };
+    const f = walker(
+      [s],
+      scriptedJudge(() => assert.fail('quoted visibility needs no model')),
+    );
+    const diagnostics: LabelProvenanceDiagnostic[] = [];
+    f.deps.labelProvenanceDiagnostic = (event) => diagnostics.push(event);
+    const result = await runPlan(parsePlan('1. Scroll down until "Add policy"').blocks!, f.deps);
+    assert.deepEqual(f.actions, []);
+    if (source === 'direct') {
+      assert.match(JSON.stringify(result), /TARGET_AMBIGUOUS: multiple on-screen containers/);
+      return;
+    }
+    assert.equal(result.verdict, 'PASS', JSON.stringify(result));
+    assert.equal(diagnostics[0]?.resolvedBy, 'aggregate-visibility');
+    assert.doesNotMatch(
+      JSON.stringify(diagnostics),
+      /Add policy|Your policies|home_scroll|@e|@scroll/,
+    );
+  });
+}
+
 test('aggregate scroll visibility does not broaden quoted waits or press resolution', async () => {
   const s = screen();
   assert.equal(targetEvidence(target, s), 'fail');

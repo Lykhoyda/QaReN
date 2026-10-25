@@ -139,7 +139,7 @@ export function echoControl(
   return control !== element ? control : undefined;
 }
 
-function encloses(container: Element, element: Element): boolean {
+export function encloses(container: Element, element: Element): boolean {
   if (ancestorsOf(element).includes(container)) return true;
   if (ancestorsOf(container).length && ancestorsOf(element).length) return false;
   const outer = elementFrame(container);
