@@ -167,6 +167,28 @@ test('later plan targets prevent dismissal, including targets in another block',
   }
 });
 
+test('a later step naming a decline label does not stop an earlier step from closing the sheet', async () => {
+  for (const text of [
+    '1. Tap "Settings"\n✓ "Done"',
+    '1. Tap "Settings"\n✓ "Done"\n### Offer\n2. Tap "Maybe later"',
+    '1. Tap "Settings"\n✓ "Done"\n2. Tap "maybe later"',
+  ]) {
+    const f = app(
+      screen([element('@close', 'Close'), element('@later', 'Maybe later', { kind: 'text' })]),
+    );
+    const result = await runPlan(parsePlan(text).blocks!, f.deps);
+    assert.deepEqual(f.actions.slice(0, 2), ['press @close', 'press @settings'], text);
+    assert.equal(result.recoveries, 1, text);
+  }
+});
+
+test('a step that taps a decline label reaches the sheet without auto-dismissal', async () => {
+  const f = app(screen([element('@close', 'Close'), element('@later', 'Maybe later')]));
+  const result = await runPlan(parsePlan('1. Tap "Maybe later"').blocks!, f.deps);
+  assert.deepEqual(f.actions, ['press @later']);
+  assert.equal(result.recoveries, 0);
+});
+
 test('disabled, offscreen and non-control decline words are never tapped', async () => {
   for (const candidate of [
     element('@close', 'Close', { disabled: true }),

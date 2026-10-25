@@ -76,6 +76,7 @@ const DECLINE_LABELS = new Set([
   'Dismiss',
   'Cancel',
 ]);
+const DECLINE_LOWER = new Set([...DECLINE_LABELS].map((label) => label.toLowerCase()));
 
 export interface InterruptionDiagnostic {
   veto: 'front' | 'coverage' | 'current-target' | 'later-target' | 'no-candidate';
@@ -127,10 +128,16 @@ export function dismissCandidate(
     return rejected('coverage');
   if (!planTargets.length) return rejected('current-target', 0);
   const targetIndex = planTargets.findIndex(
-    (target) =>
-      target.quoted === undefined ||
-      literalEvidence(screen, target.quoted, 'contains').verdict !== 'fail' ||
-      screen.elements.some((e) => !e.offscreen && e.testID === target.quoted),
+    (target, index) =>
+      // A later step that declines a sheet says nothing about whether this one is in the way.
+      !(
+        index > 0 &&
+        target.quoted !== undefined &&
+        DECLINE_LOWER.has(target.quoted.toLowerCase())
+      ) &&
+      (target.quoted === undefined ||
+        literalEvidence(screen, target.quoted, 'contains').verdict !== 'fail' ||
+        screen.elements.some((e) => !e.offscreen && e.testID === target.quoted)),
   );
   if (targetIndex !== -1)
     return rejected(targetIndex === 0 ? 'current-target' : 'later-target', targetIndex);
