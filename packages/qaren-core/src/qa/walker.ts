@@ -45,6 +45,9 @@ import {
   bindDispatchIdentity,
   stepTarget,
   scrollUntilBand,
+  scrollUntilEvidence,
+  scrollTargetCovered,
+  scrollUntilContainer,
   scrollUntilDirection,
   targetEvidence,
   aggregateScrollTargetVisible,
@@ -53,6 +56,7 @@ import {
   visibleSelector,
 } from './resolve.js';
 import { literalEvidence, type LiteralNearMiss } from './evidence.js';
+import { scrollNavigationChange } from './scroll-navigation.js';
 import { applyContainmentFallback, exactIdentities, focusIdentityOf } from './identity.js';
 import {
   type BlockPlatform,
@@ -348,6 +352,7 @@ const promptSignature = (screen: Screen): string =>
 
 // Capture and process refusals, ambiguity and the replay-miss path are never recovered.
 const UNRECOVERABLE = new Set([
+  'SCROLL_NAVIGATED',
   'SCROLL_UNSETTLED',
   'REPLAY_SELECTOR',
   'TARGET_AMBIGUOUS',
@@ -1104,7 +1109,11 @@ async function walkBlockScoped(
     assertActive();
     return shot;
   };
-  const visibilityProbe = (item: Item & { kind: 'wait' | 'scroll' }, deadline = Infinity) => {
+  const visibilityProbe = (
+    item: Item & { kind: 'wait' | 'scroll' },
+    deadline = Infinity,
+    checkObservation?: (screen: Screen) => void,
+  ) => {
     let reasks = 0;
     return async (
       observation: Observation,
@@ -1112,8 +1121,26 @@ async function walkBlockScoped(
     ): Promise<{ observation: Observation; found: boolean; unsure?: boolean }> => {
       let decision = initial;
       while (deps.now() < deadline) {
+        checkObservation?.(observation.screen);
         try {
           decision = await decide(observation, undefined, item, deadline, decision);
+          if (
+            item.kind === 'scroll' &&
+            decision.visibility &&
+            'verdict' in decision.visibility &&
+            decision.visibility.verdict === 'present'
+          ) {
+            const elements = observation.screen.elements.filter(
+              (element) => !scrollTargetCovered(element, observation.screen),
+            );
+            if (elements.length !== observation.screen.elements.length)
+              decision = await decide(
+                { ...observation, screen: { ...observation.screen, elements } },
+                undefined,
+                item,
+                deadline,
+              );
+          }
         } catch (error) {
           if (isAbort(error)) throw error;
           if (!(error instanceof EvidenceExpired)) throw error;
@@ -1144,7 +1171,13 @@ async function walkBlockScoped(
             } catch {}
             return { observation, found: true };
           }
-          return { observation, found: evidence === 'pass', unsure: evidence === 'unsure' };
+          const scrollEvidence =
+            item.kind === 'scroll' ? scrollUntilEvidence(target, observation.screen) : evidence;
+          return {
+            observation,
+            found: scrollEvidence === 'pass',
+            unsure: scrollEvidence === 'unsure',
+          };
         }
         const visibility = decision.visibility;
         if (!visibility)
@@ -1923,7 +1956,19 @@ async function walkBlockScoped(
           const held = cached?.item === item ? cached : undefined;
           let observation = held?.observation ?? (await capture(item));
           cached = undefined;
-          const probe = visibilityProbe(item, deadline);
+          let beforeScroll = {
+            screen: observation.screen,
+            container: scrollUntilContainer(item.until, observation.screen),
+          };
+          const probe = visibilityProbe(item, deadline, (screen) => {
+            const navigation = scrollNavigationChange(
+              beforeScroll.screen,
+              screen,
+              beforeScroll.container,
+            );
+            if (navigation)
+              throw new ResolutionError({ refuse: 'SCROLL_NAVIGATED', reason: navigation });
+          });
           let replayMiss: ResolutionError | undefined;
           let unsure = false;
           const visible = async (s: Observation, initial?: ScreenDecision): Promise<boolean> => {
@@ -1950,7 +1995,9 @@ async function walkBlockScoped(
           };
           let found = await visible(observation, held?.decision);
           let attempts = 0;
+          const container = scrollUntilContainer(item.until, observation.screen);
           while (!found && attempts < SCROLL_ATTEMPTS && deps.now() < deadline) {
+            beforeScroll = { screen: observation.screen, container };
             const beforeSignature = screenSignature(observation.screen);
             let act: ActResult;
             if (observation.screen.front === 'dialog') throw dialogInFront(item.until.phrase);
@@ -2721,8 +2768,9 @@ async function walkBlockScoped(
           item.kind !== 'check' &&
           error instanceof ResolutionError &&
           error.code === 'REPLAY_SELECTOR';
-        const unknownProcess =
-          error instanceof ResolutionError && error.code === 'APP_PROCESS_UNKNOWN'
+        const resolutionRefusal =
+          error instanceof ResolutionError &&
+          (error.code === 'APP_PROCESS_UNKNOWN' || error.code === 'SCROLL_NAVIGATED')
             ? { code: error.code, message: error.message }
             : undefined;
         const caughtOutcome = failed(
@@ -2738,7 +2786,7 @@ async function walkBlockScoped(
           ...(error instanceof ResolutionError && error.missing
             ? judged(caughtOutcome, latest)
             : caughtOutcome),
-          ...(refusal || unknownProcess ? { refusal: refusal ?? unknownProcess } : {}),
+          ...(refusal || resolutionRefusal ? { refusal: refusal ?? resolutionRefusal } : {}),
         };
       }
     }

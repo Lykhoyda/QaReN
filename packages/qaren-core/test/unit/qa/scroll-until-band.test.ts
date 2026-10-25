@@ -271,6 +271,7 @@ function bandDrag(
   band: NonNullable<ReturnType<typeof scrollUntilBand>>,
   window: { width: number; height: number },
   keyboardTop: number,
+  direction: 'up' | 'down' = 'down',
 ): number[] {
   clearRefMap();
   updateRefMapFromFlat(
@@ -285,7 +286,7 @@ function bandDrag(
     { snapshotGeneration: 1, keyboardVisible: true },
   );
   try {
-    return buildDirectionalScrollCliArgs('down', 0.6, undefined, undefined, band)
+    return buildDirectionalScrollCliArgs(direction, 0.6, undefined, undefined, band)
       .slice(1, 5)
       .map(Number);
   } finally {
@@ -301,11 +302,11 @@ test('(p) that drag spans the visible list and cannot land as a tap', () => {
   const band = scrollUntilBand(option20, androidOptionSheet())!;
   const [x1, y1, x2, y2] = bandDrag(band, { width: 1080, height: 2424 }, 1541);
   assert.deepEqual([x1, x2], [540, 540]);
-  assert.ok(y1 - y2 >= 500, `${y1} -> ${y2}`);
+  assert.ok(y1 - y2 >= Math.floor(band.height * 0.9) - 2, `${y1} -> ${y2}`);
   for (const y of [y1, y2]) assert.ok(y > 949 && y < 1453, `${y}`);
 });
 
-test('(r) an offscreen target ignores overlays, a covered row still stops at a footer after the list', () => {
+test('(r) an offscreen target clears front overlays, a covered row still stops at a footer after the list', () => {
   const footer: NativeNode = {
     ref: '@footer',
     index: 31,
@@ -315,7 +316,7 @@ test('(r) an offscreen target ignores overlays, a covered row still stops at a f
     rect: { x: 37, y: 1300, width: 1006, height: 153 },
   };
   const screen = androidOptionSheet(0, [footer]);
-  assert.deepEqual(scrollUntilBand(option20, screen), ANDROID_LIST);
+  assert.deepEqual(scrollUntilBand(option20, screen), { ...ANDROID_LIST, height: 347 });
   assert.deepEqual(clearanceBand(byRef(screen, '@option-2'), screen), {
     ...ANDROID_LIST,
     height: 1300 - 949,
@@ -327,6 +328,315 @@ test('(v) an iOS row below a stretched list drags across the band, clear of the 
   const band = scrollUntilBand(until('Scroll down until "qa-sheet-capture-option-17"'), screen)!;
   assert.deepEqual(band, { ...IOS_LIST, height: 568 - 48 - 357 });
   const [, y1, , y2] = bandDrag(band, { width: 402, height: 874 }, 568);
-  assert.deepEqual([y1, y2], [519, 358]);
+  assert.deepEqual([y1, y2], [503, 358]);
   assert.ok(y1 <= 568 - KEYBOARD_EDGE_INSET, `${y1}`);
 });
+
+test('a keyboard-covered target clears a floating toolbar before building the drag', () => {
+  const frame = { x: 0, y: 0, width: 390, height: 844 };
+  const screen = join(
+    [
+      { ref: '@window', index: 0, type: 'Window', rect: frame },
+      {
+        ref: '@list',
+        index: 1,
+        parentIndex: 0,
+        type: 'ScrollView',
+        rect: { x: 0, y: 300, width: 390, height: 500 },
+      },
+      {
+        ref: '@target',
+        index: 2,
+        parentIndex: 1,
+        type: 'Button',
+        identifier: 'go',
+        hittable: true,
+        rect: { x: 20, y: 518, width: 300, height: 44 },
+      },
+      {
+        ref: '@toolbar',
+        index: 3,
+        parentIndex: 0,
+        type: 'Toolbar',
+        hittable: true,
+        rect: { x: 0, y: 425, width: 390, height: 25 },
+      },
+      {
+        ref: '@keyboard',
+        index: 4,
+        parentIndex: 0,
+        type: 'Keyboard',
+        rect: { x: 0, y: 508, width: 390, height: 336 },
+      },
+    ],
+    [],
+  );
+  const band = scrollUntilBand(until('Scroll down until "go"'), screen)!;
+  assert.deepEqual(band, { x: 0, y: 300, width: 390, height: 121 });
+  for (const direction of ['up', 'down'] as const) {
+    const [, y1, , y2] = bandDrag(band, frame, 508, direction);
+    assert.deepEqual([y1, y2], direction === 'down' ? [408, 301] : [313, 420]);
+    for (const y of [y1, y2]) assert.ok(y < 425 || y > 450, `${y}`);
+    assert.ok(Math.abs(y1 - y2) >= 48);
+  }
+});
+
+test('a no-container fallback stays centred with a separate keyboard window', () => {
+  const frame = { x: 0, y: 0, width: 390, height: 844 };
+  const nodes: NativeNode[] = [
+    { ref: '@window', index: 0, type: 'Window', rect: frame },
+    { ref: '@keyboard-window', index: 1, type: 'Window', rect: frame },
+    {
+      ref: '@keyboard',
+      index: 2,
+      parentIndex: 1,
+      type: 'Keyboard',
+      rect: { x: 0, y: 508, width: 390, height: 336 },
+    },
+  ];
+  const band = scrollUntilBand(option20, join(nodes, []));
+  assert.equal(band, undefined);
+  clearRefMap();
+  updateRefMapFromFlat(nodes, { snapshotGeneration: 1, keyboardVisible: true });
+  try {
+    assert.deepEqual(buildDirectionalScrollCliArgs('down', 0.6, undefined, undefined, band), [
+      'scroll',
+      '195',
+      '315',
+      '195',
+      '193',
+      '300',
+    ]);
+    assert.deepEqual(buildDirectionalScrollCliArgs('up', 0.6, undefined, undefined, band), [
+      'scroll',
+      '195',
+      '193',
+      '195',
+      '315',
+      '300',
+    ]);
+  } finally {
+    clearRefMap();
+  }
+});
+
+function floatingTabScreen(barHittable: boolean, presenceWindow = false): Screen {
+  const frame = { x: 0, y: 0, width: 402, height: 874 };
+  return join(
+    [
+      { ref: '@app', index: 0, type: 'Application', rect: frame },
+      { ref: '@window', index: 1, parentIndex: 0, type: 'Window', rect: frame },
+      { ref: '@list', index: 2, parentIndex: 1, type: 'ScrollView', rect: frame },
+      {
+        ref: '@bar',
+        index: 3,
+        parentIndex: 1,
+        type: 'TabBar',
+        hittable: barHittable,
+        rect: { x: 20, y: 780, width: 362, height: 60 },
+      },
+      ...[0, 1].map((i) => ({
+        ref: `@tab-${i}`,
+        index: 4 + i,
+        parentIndex: 3,
+        type: 'Button',
+        hittable: true,
+        rect: { x: 20 + 181 * i, y: 780, width: 181, height: 60 },
+      })),
+      ...(presenceWindow
+        ? [
+            { ref: '@presence-window', index: 6, parentIndex: 0, type: 'Window', rect: frame },
+            {
+              ref: '@presence-root',
+              index: 7,
+              parentIndex: 6,
+              type: 'Other',
+              hittable: true,
+              rect: frame,
+            },
+            {
+              ref: '@presence-child',
+              index: 8,
+              parentIndex: 7,
+              type: 'Button',
+              hittable: true,
+              rect: frame,
+            },
+          ]
+        : []),
+    ],
+    [],
+  );
+}
+
+for (const [label, hittable] of [
+  ['w', true],
+  ['x', false],
+] as const) {
+  test(`(${label}) floating tab controls are outside the scroll-until band when bar hittable=${hittable}`, () => {
+    const band = scrollUntilBand(option20, floatingTabScreen(hittable));
+    assert.ok(band && band.height > 0);
+    assert.ok(band.y + band.height <= 776, JSON.stringify(band));
+  });
+
+  test(`a full-screen overlay in a second window erases the band when bar hittable=${hittable}`, () => {
+    assert.equal(scrollUntilBand(option20, floatingTabScreen(hittable, true))?.height, 0);
+  });
+}
+
+test('(y) list rows and a header drawn before the list do not cut the band', () => {
+  const frame = { x: 0, y: 0, width: 402, height: 874 };
+  const screen = join(
+    [
+      { ref: '@app', index: 0, type: 'Application', rect: frame },
+      { ref: '@window', index: 1, parentIndex: 0, type: 'Window', rect: frame },
+      {
+        ref: '@header',
+        index: 2,
+        parentIndex: 1,
+        type: 'Button',
+        hittable: true,
+        rect: { x: 0, y: 790, width: 402, height: 40 },
+      },
+      { ref: '@list', index: 3, parentIndex: 1, type: 'ScrollView', rect: frame },
+      {
+        ref: '@row',
+        index: 4,
+        parentIndex: 3,
+        type: 'Button',
+        hittable: true,
+        rect: { x: 0, y: 750, width: 402, height: 60 },
+      },
+    ],
+    [],
+  );
+  assert.deepEqual(scrollUntilBand(option20, screen), frame);
+});
+
+for (const scale of [1, 3]) {
+  test(`a full-screen overlay in another Android root erases the band at scale ${scale}`, () => {
+    const frame = { x: 0, y: 0, width: 402 * scale, height: 874 * scale };
+    const screen = join(
+      [
+        { ref: '@root', index: 0, type: 'android.widget.FrameLayout', hittable: true, rect: frame },
+        { ref: '@list', index: 1, parentIndex: 0, type: 'android.widget.ScrollView', rect: frame },
+        {
+          ref: '@bar',
+          index: 2,
+          parentIndex: 0,
+          type: 'android.widget.Button',
+          hittable: true,
+          rect: { x: 20 * scale, y: 780 * scale, width: 362 * scale, height: 60 * scale },
+        },
+        {
+          ref: '@presence-root',
+          index: 3,
+          type: 'android.view.ViewGroup',
+          hittable: true,
+          rect: frame,
+        },
+        {
+          ref: '@presence-child',
+          index: 4,
+          parentIndex: 3,
+          type: 'android.widget.Button',
+          hittable: true,
+          rect: frame,
+        },
+      ],
+      [],
+    );
+    screen.pointScale = scale;
+    assert.equal(scrollUntilBand(option20, screen)?.height, 0);
+  });
+}
+
+for (const overlayTop of [0, 48]) {
+  test(`a large list refuses when overlays leave less than a drag, top=${overlayTop}`, () => {
+    const frame = { x: 0, y: 0, width: 402, height: 874 };
+    const screen = join(
+      [
+        { ref: '@app', index: 0, type: 'Application', rect: frame },
+        { ref: '@window', index: 1, parentIndex: 0, type: 'Window', rect: frame },
+        { ref: '@list', index: 2, parentIndex: 1, type: 'ScrollView', rect: frame },
+        {
+          ref: '@overlay',
+          index: 3,
+          parentIndex: 1,
+          type: 'Button',
+          hittable: true,
+          rect: { ...frame, y: overlayTop, height: frame.height - overlayTop },
+        },
+      ],
+      [],
+    );
+    const band = scrollUntilBand(option20, screen);
+    assert.ok(band && band.height < 50);
+    clearRefMap();
+    updateRefMapFromFlat([{ ref: '@window', type: 'Window', rect: frame }]);
+    try {
+      for (const direction of ['up', 'down'] as const) {
+        assert.throws(
+          () => buildDirectionalScrollCliArgs(direction, 0.6, undefined, undefined, band),
+          /SCROLL_BAND_TOO_SMALL/,
+        );
+      }
+    } finally {
+      clearRefMap();
+    }
+  });
+}
+
+test('an intrinsically small list still refuses after overlay subtraction', () => {
+  const frame = { x: 0, y: 0, width: 402, height: 874 };
+  const screen = join(
+    [
+      { ref: '@window', index: 0, type: 'Window', rect: frame },
+      {
+        ref: '@list',
+        index: 1,
+        parentIndex: 0,
+        type: 'ScrollView',
+        rect: { ...frame, y: 200, height: 49 },
+      },
+    ],
+    [],
+  );
+  const band = scrollUntilBand(option20, screen);
+  clearRefMap();
+  updateRefMapFromFlat([{ ref: '@window', type: 'Window', rect: frame }]);
+  try {
+    assert.throws(
+      () => buildDirectionalScrollCliArgs('down', 0.6, undefined, undefined, band),
+      /SCROLL_BAND_TOO_SMALL/,
+    );
+  } finally {
+    clearRefMap();
+  }
+});
+
+for (const direction of ['up', 'down'] as const) {
+  test(`a toolbar in a front window cuts the ${direction} gesture band`, () => {
+    const frame = { x: 0, y: 0, width: 402, height: 874 };
+    const screen = join(
+      [
+        { ref: '@window', index: 0, type: 'Window', rect: frame },
+        { ref: '@list', index: 1, parentIndex: 0, type: 'ScrollView', rect: frame },
+        { ref: '@front', index: 2, type: 'Window', rect: frame },
+        {
+          ref: '@toolbar',
+          index: 3,
+          parentIndex: 2,
+          type: 'Button',
+          hittable: true,
+          rect: { x: 0, y: 730, width: 402, height: 70 },
+        },
+      ],
+      [],
+    );
+    const band = scrollUntilBand(option20, screen);
+    assert.ok(band && band.y + band.height <= 726);
+    const [, y1, , y2] = bandDrag(band, frame, frame.height, direction);
+    assert.ok(y1 < 730 && y2 < 730);
+  });
+}

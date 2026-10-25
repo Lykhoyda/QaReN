@@ -768,15 +768,22 @@ Android, using the snapshot's display density, and 20 pt from the top and 34 pt
 from the bottom on iOS. Callers passing no band
 use the existing keyboard-safe band. On both iOS and Android, a target whose centre
 is covered by the observed keyboard or a sticky overlay gets a scroll sized to move that centre
-toward the middle of that band, and the drag may span the band with both endpoints
-at least one pixel inside its edges after rounding. A clearance scroll without
-a band keeps the cap of 60% of the screen area above the keyboard.
+toward the middle of that band. Precise vertical drags normally keep a 10% dead zone at
+touch-down and stop at least one pixel inside the far band edge; short bands shrink the
+start inset to allow at least 48 px of travel. A clearance scroll without
+a band keeps the cap of 60% of the screen area above the keyboard, without a
+minimum-distance clamp.
 Scrolls without a clearance distance keep the fixed amount of `0.6` on the window
-band; inside a caller band they span the band a pixel inside each edge, except
+band; inside a caller band they span its clear interior, except
 a keyboard-bound edge, which the band clears by 48 pt so the drag never starts on
 the keyboard. One scroll-until attempt moves the list by one visible band and
-cannot carry the target past it. A band shorter than 50 px refuses `SCROLL_BAND_TOO_SMALL` before
-anything is sent, because a drag under the touch slop would land as a tap.
+cannot carry the target past it. An explicit band shorter than 50 px or narrower
+than 2 px refuses `SCROLL_BAND_TOO_SMALL` before anything is sent. A vertical drag
+inside an explicit band also refuses if its rounded endpoints leave less than
+48 px of travel, including when fractional band coordinates pass the size check,
+because a drag under the touch slop would land as a tap.
+For scroll-until capture, overlay clearance and navigation safeguards, see
+[Plan checks and screen evidence](#plan-checks-and-screen-evidence).
 Successful iOS fast-runner scrolls now run the same bounded settle wait as taps
 before returning, using snapshot equality. Results
 include `meta.settle` and `meta.timings_ms.settle`; a timeout reports unsettled
@@ -1205,8 +1212,10 @@ Literal checks, quoted waits and scroll-until text do not count text or merged
 labels whose centre lies under a captured keyboard unless the keyboard is
 proven hidden. A docked full-width keyboard covers from its frame's top to the
 screen bottom, because its chrome paints below the frame XCUI reports. The
-keyboard's own keys and the chrome in its window stay visible. Overlays are not
-occlusion evidence: see [Limitations](#limitations-recorded-not-papered-over).
+keyboard's own keys and the chrome in its window stay visible. Literal checks and
+waits do not treat other overlays as occlusion evidence: see
+[Limitations](#limitations-recorded-not-papered-over). Scroll-until uses the
+overlay clearance policy below.
 Quoted and phrase target resolution scrolls up when the target's centre lies at
 or above the top of its effective trusted clipping viewport, and down otherwise;
 without a known clip, the boundary remains screen y=0. Quoted scroll-until targets use that
@@ -1218,9 +1227,24 @@ of the requested direction. With no single matching identity, an already visible
 target or no known viewport, the requested direction is retained. The
 scroll-until drag starts inside the list it is meant to move (the target's own
 scroll container, or the frontmost one above the keyboard), not at the screen
-centre. A row scrolled out of its list drags inside that list; a row covered
-inside it drags inside its clearance band. One clearance swipe lifts a covered
-row by at most the height of its list's visible band above the keyboard.
+centre. The band excludes padded hittable non-text elements drawn after that
+list, outside its subtree, including controls in other windows. Its largest
+remaining vertical span supplies the drag band; an exhausted span refuses
+`SCROLL_BAND_TOO_SMALL`. Padding uses four points, scaled by the captured Android
+display density when available. Without a scroll container, the centred window
+drag is retained.
+Quoted scroll-until uses the current ordinary capture for target visibility and
+geometry, with no additional platform-presence confirmation. A target whose tap
+point is covered by a front overlay requires another safe drag within the original
+six-drag and time budgets. An edge can remain under a floating control when the
+tap point is clear; drag bands still exclude the overlay frame. Phrase capture
+policy is unchanged.
+Selected-tab changes or disappearance/replacement of the dragged list refuse
+`SCROLL_NAVIGATED` before searching a different screen. An identified list matches
+by type and testID through keyboard/header resizing; unidentified lists retain the
+two-point frame tolerance. Native navigation-title text is not a screen marker.
+One clearance swipe lifts a covered row by at most its list's visible band above
+the keyboard.
 A uniquely name-matched off-screen row further away is scrolled toward again,
 at most six times, stopping on an unchanged screen or the existing deadline;
 covered rows and other scroll origins still get one clearance swipe. See the
@@ -3648,7 +3672,8 @@ now encoded once and replayed deterministically.
   screen, window and scroll clip counts as visible even when an overlay paints
   over it, such as an absolutely positioned sticky footer or another later
   sibling that XCUI still reports hittable. Only the keyboard is treated as an
-  occluder.
+  occluder for literal checks and waits; scroll-until follows the
+  [overlay clearance policy](#plan-checks-and-screen-evidence).
 - The historical Expo SDK 56 artifact-discovery gap in the timing evidence
   predates the current finite iOS build path. Those measurements do not validate
   this implementation; exact-head device acceptance remains separate.

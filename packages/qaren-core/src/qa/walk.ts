@@ -575,6 +575,7 @@ async function openSession(
     >(result);
     return {
       appProcessIdentifier: data.appProcessIdentifier,
+      pointScale: data.pointScale,
       keyboardVisible: data.keyboardVisible,
       nodes: data.nodes,
       presenceCapture: data.presenceCapture,
