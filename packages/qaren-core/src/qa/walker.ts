@@ -83,7 +83,6 @@ import {
   concealsScreen,
   isPrivateInput,
   MASK,
-  SCREEN_TEXT_WITHHELD,
   ObservedPrivacy,
   matchPrivate,
   projectPlanLine,
@@ -1035,6 +1034,7 @@ async function walkBlockScoped(
         // Diagnostics cannot change the failed step's outcome.
       }
     }
+    const withheld = privacy.textWithheld(screen);
     emit({
       ...base(item, attempt),
       ...(ref ? { ref } : {}),
@@ -1055,7 +1055,7 @@ async function walkBlockScoped(
           '; historical context, previously on screen: ',
           {
             app: privacy.screenText(screen).slice(0, 40).join(' | '),
-            ...(concealsScreen(screen) ? { withheld: SCREEN_TEXT_WITHHELD } : {}),
+            ...(withheld ? { withheld } : {}),
           },
         ],
         ...(screenshot ? { screenshot } : {}),
