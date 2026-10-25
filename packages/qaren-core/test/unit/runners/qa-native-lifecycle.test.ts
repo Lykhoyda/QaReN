@@ -43,7 +43,8 @@ import Foundation
 ${section(read('Models'), 'enum CommandType:', 'struct Response:')}
 ${section(read('Models'), 'struct SnapshotRect:', 'struct SnapshotNode:')}
 struct ErrorPayload { var code: String? = nil; let message: String; var mutation: String? = nil; var reason: String? = nil }
-struct DataPayload { var nodes: [Int]? = nil }
+struct CandidateLabelProvenanceDiagnostics { var outcome: String }
+struct DataPayload { var nodes: [Int]? = nil; var labelProvenanceDiagnostics: CandidateLabelProvenanceDiagnostics? = nil }
 func runnerPayload(_ payload: DataPayload, appProcessIdentifier: Int?) -> DataPayload { payload }
 struct Response { let ok: Bool; var data: DataPayload? = nil; var error: ErrorPayload? = nil }
 enum RunnerErrorDomain { static let exception = "exception"; static let general = "general" }
@@ -96,6 +97,12 @@ class Harness {
   }
   func platformPresenceFailure() -> Response { Response(ok: false) }
   func snapshotPlatformPresence(app: XCUIApplication, appId: String, presenceBudgetMs: Int) -> DataPayload { DataPayload() }
+  var metadataReads = 0
+  func snapshotCandidateLabelProvenance(app: XCUIApplication, indices: [Int], budgetMs: Int) -> DataPayload {
+    metadataReads += 1
+    precondition(indices == [2] && budgetMs == 777)
+    return DataPayload()
+  }
   func retainSnapshotTargets(_ nodes: [Int]) {}
   func observedProcessIdentifier(_ target: XCUIApplication) -> Int? { 7 }
   var alertTaps = 0
@@ -141,6 +148,13 @@ for verb in ["snapshot", "verifyInput", "isScreenStatic"] {
   let admitted = try h.run(command(verb))
   precondition(admitted.ok)
   precondition(h.reads == 1)
+}
+for generation in [0, 1] {
+  let h = Harness(); let original = h.currentApp; let before = activations
+  let request = try decoder.decode(Command.self, from: Data("{\\"command\\":\\"snapshot\\",\\"qaReadOnly\\":true,\\"appBundleId\\":\\"qa.app\\",\\"platformPresence\\":true,\\"presenceBudgetMs\\":777,\\"snapshotGeneration\\":\\(generation),\\"labelProvenance\\":[2]}".utf8))
+  let response = try h.run(request)
+  precondition(response.ok && h.metadataReads == (generation == 0 ? 1 : 0))
+  precondition(h.currentSnapshotGeneration == 0 && h.currentApp === original && activations == before)
 }
 let wrong = Harness()
 let rejected = try wrong.run(command("tap"))

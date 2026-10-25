@@ -25,7 +25,7 @@ function passingJudge() {
   );
 }
 
-test('mixed plans acquire provenance for quoted presses and presence for phrase targets', async () => {
+test('mixed plans use ordinary capture for unique quoted presses and presence for phrase targets', async () => {
   const f = walker([screen([element('@save', 'Save')])], passingJudge());
   const modes = traceCaptures(f);
   const result = await runPlan(
@@ -33,11 +33,11 @@ test('mixed plans acquire provenance for quoted presses and presence for phrase 
     f.deps,
   );
   assert.equal(result.verdict, 'PASS');
-  assert.deepEqual(modes, [true, true, true, true, false, false, false]);
+  assert.deepEqual(modes, [false, false, true, true, false, false, false]);
   assert.deepEqual(f.actions, ['press @save', 'press @save', 'back']);
 });
 
-test('literal-only plans acquire provenance only for quoted presses', async () => {
+test('literal-only plans with unique quoted targets use ordinary capture', async () => {
   const judge = scriptedJudge(() => assert.fail('literal-only plans must not ask Jev'));
   const f = walker(
     [screen([element('@save', 'Save'), element('@name', 'Name', { kind: 'input' })])],
@@ -51,7 +51,7 @@ test('literal-only plans acquire provenance only for quoted presses', async () =
     f.deps,
   );
   assert.equal(result.verdict, 'PASS');
-  assert.deepEqual(modes, [false, true, true, ...Array(10).fill(false)]);
+  assert.deepEqual(modes, Array(13).fill(false));
   assert.equal(result.jev.calls, 0);
   assert.equal(JSON.stringify(result).includes('private-value'), false);
 });
@@ -66,7 +66,7 @@ test('standalone semantic checks and checks batched with targetless steps retain
     const modes = traceCaptures(f);
     const result = await runPlan(parsePlan(`✓ The screen is ready${next}`).blocks!, f.deps);
     assert.equal(result.verdict, 'PASS');
-    assert.deepEqual(modes, next ? [true, true, false] : [true, true]);
+    assert.deepEqual(modes, next ? [true, true, true] : [true, true]);
     assert.equal(f.deps.now(), WAIT_POLL_MS);
   }
 });
@@ -106,7 +106,7 @@ test('semantic checks retain presence while quoted next steps select their captu
         modes,
         quoted
           ? mutates
-            ? [true, true, kind === 'press', kind === 'press']
+            ? [true, true, false, false]
             : [true, true, false]
           : mutates
             ? [true, true, true]
@@ -143,9 +143,9 @@ test('semantic checks retain presence through independent freshness refreshes an
       assert.deepEqual(
         modes,
         next.includes('Tap')
-          ? [true, true, true, true, true]
+          ? [true, true, true, false, false]
           : next
-            ? [true, true, true, false]
+            ? [true, true, true, true]
             : [true, true, true],
       );
       assert.equal(judge.requests.length, 3);
@@ -255,7 +255,7 @@ test('phrase waits and scroll-until retain presence mode for re-asks and subsequ
   }
 });
 
-test('uncertain visibility cached by a passed check re-asks then acquires quoted press provenance', async () => {
+test('uncertain visibility cached by a passed check re-asks then uses ordinary capture for a unique quoted press', async () => {
   for (const line of ['Wait for the save control', 'Scroll until the save control']) {
     const judge = scriptedJudge((questions, index) => {
       assert.deepEqual(
@@ -274,7 +274,7 @@ test('uncertain visibility cached by a passed check re-asks then acquires quoted
       f.deps,
     );
     assert.equal(result.verdict, 'PASS');
-    assert.deepEqual(modes, [true, true, true, true]);
+    assert.deepEqual(modes, [true, true, false, false]);
     assert.deepEqual(f.actions, ['press @save']);
     assert.equal(result.jev.calls, 2);
     assert.equal(f.deps.now(), WAIT_POLL_MS);

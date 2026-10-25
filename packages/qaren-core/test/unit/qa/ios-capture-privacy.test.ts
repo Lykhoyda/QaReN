@@ -20,7 +20,7 @@ import {
 import { clearRefMap, getCachedMetadata } from '../../../dist/fast-runner-ref-map.js';
 import { parseEnvelope } from '../../helpers/result-helpers.js';
 import { nativeCapture } from './platform-presence-fixtures.ts';
-import { scriptedJudge, walker } from './judgment-fixtures.ts';
+import { choice, scriptedJudge, walker } from './judgment-fixtures.ts';
 
 beforeEach(() => {
   clearRefMap();
@@ -48,6 +48,110 @@ afterEach(() => {
   _setActiveSessionForTest(null);
   setSnapshotAuthorityProvider(null);
   clearRefMap();
+});
+
+test('a walked sign-in code fill waits for a complete post-fill presence capture', async () => {
+  const secret = 'walked-code-canary';
+  let filled = false;
+  let presenceReads = 0;
+  const budgets: number[] = [];
+  _setFetchForTest(async (url, init) => {
+    if (String(url).endsWith('/health'))
+      return Response.json({
+        ok: true,
+        protocolVersion: 2,
+        commands: REQUIRED_IOS_COMMANDS,
+        capabilities: [...REQUIRED_IOS_FEATURES, 'QA_READ_ONLY_V1', 'PLATFORM_PRESENCE_V2'],
+      });
+    const request = JSON.parse(String(init?.body));
+    assert.equal(request.command, 'snapshot');
+    assert.equal(request.qaReadOnly, true);
+    const data = nativeCapture();
+    if (!request.platformPresence) {
+      return Response.json({
+        ok: true,
+        data: {
+          ...data,
+          nodes: [
+            data.nodes[0],
+            {
+              ...data.nodes[1],
+              type: 'TextField',
+              identifier: 'code',
+              label: 'Sign-in code',
+              ...(filled ? { value: secret } : {}),
+            },
+          ],
+          presenceCapture: undefined,
+        },
+      });
+    }
+    assert.equal(filled, true);
+    budgets.push(request.presenceBudgetMs);
+    data.nodes[1].label = 'Notification permission';
+    data.presenceCapture.appliedBudgetMs = request.presenceBudgetMs;
+    if (++presenceReads === 1)
+      return Response.json({
+        ok: true,
+        data: {
+          ...data,
+          keyboardVisible: undefined,
+          presenceCapture: {
+            ...data.presenceCapture,
+            complete: false,
+            diagnostics: { failure: { phase: 'revalidation', reason: 'enumeration-changed' } },
+          },
+        },
+      });
+    return Response.json({ ok: true, data });
+  });
+  const judge = scriptedJudge((questions) =>
+    Object.fromEntries(Object.entries(questions).map(([id, question]) => [id, choice(question)])),
+  );
+  const f = walker([], judge);
+  const fill = f.deps.fill;
+  f.deps.fill = async (...args) => {
+    filled = true;
+    return fill(...args);
+  };
+  f.deps.screenshot = async () => assert.fail('private fill still withholds screenshots');
+  const snapshot = createDeviceSnapshotHandler();
+  f.deps.captureScreen = (options) =>
+    captureScreen({
+      ...options,
+      requirePrivateInputs: true,
+      appId: 'com.test',
+      native: async (presenceBudgetMs) => {
+        const result = parseEnvelope(
+          await snapshot({
+            action: 'snapshot',
+            qaReadOnly: true,
+            ...(options?.platformPresence ? { platformPresence: true, presenceBudgetMs } : {}),
+          }),
+        );
+        assert.equal(result.ok, true);
+        return { ...result.data, snapshotVerdict: result.meta.snapshotVerdict };
+      },
+      react: async () => ({
+        interactive: [],
+        verdict: { state: 'ok', path: 'interactive', complete: true },
+        hostEvidence: { complete: true, hosts: [] },
+      }),
+    });
+  const result = await runPlan(
+    parsePlan(`1. Type "${secret}" into "Sign-in code"\n2. Tap the notification permission button`)
+      .blocks!,
+    f.deps,
+  );
+  assert.equal(result.verdict, 'PASS', JSON.stringify(result));
+  assert.ok(presenceReads >= 2);
+  assert.ok(budgets[1] < budgets[0]);
+  assert.ok(budgets.every(Number.isSafeInteger));
+  assert.equal(
+    JSON.stringify({ result, rows: f.rows, requests: judge.requests }).includes(secret),
+    false,
+  );
+  assert.ok(f.actions.includes('press @e1'));
 });
 
 for (const terminated of [true, false]) {

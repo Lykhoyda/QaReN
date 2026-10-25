@@ -10,7 +10,7 @@ import { parsePlan } from '../../../dist/qa/plan.js';
 import type { Block, Step } from '../../../dist/qa/plan.js';
 import { join as joinScreen } from '../../../dist/qa/screen.js';
 import type { Element, NativeNode, ReactHostObservation, Screen } from '../../../dist/qa/screen.js';
-import { ObservedPrivacy, codeBoxRows } from '../../../dist/qa/privacy.js';
+import { MASK, ObservedPrivacy, codeBoxRows } from '../../../dist/qa/privacy.js';
 import { describe } from '../../../dist/qa/screen.js';
 import { exactIdentities } from '../../../dist/qa/identity.js';
 import { keyboardFallbackTarget, prepareTarget } from '../../../dist/qa/resolve.js';
@@ -2670,7 +2670,7 @@ test('annotated wrapper and focused slots replay current fixtures with symbolic 
       names.push(inputName);
       register(identifier, inputName);
       const candidate = { identifier, label: 'strict-canary' };
-      assert.equal(inputs.maskFilledEcho(candidate), candidate);
+      assert.deepEqual(inputs.maskFilledEcho(candidate), { identifier, label: MASK });
     };
     const outcome = await withInputs(inputs, () =>
       walkBlock(loginBlock(slug, stored), f.deps, 0, [], undefined, undefined, {

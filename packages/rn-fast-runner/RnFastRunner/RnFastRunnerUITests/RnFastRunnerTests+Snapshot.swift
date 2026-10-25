@@ -38,6 +38,7 @@ extension RnFastRunnerTests {
   }
 
   func snapshotFast(app: XCUIApplication, options: SnapshotOptions, includeDiagnostics: Bool = false) -> DataPayload {
+    retainedFastSnapshotOptions = nil
     if let blocking = blockingSystemAlertSnapshot() {
       return blocking
     }
@@ -51,6 +52,25 @@ extension RnFastRunnerTests {
       ), app: app)
     }
 
+    retainedFastSnapshotOptions = options
+    let (nodes, truncated) = fastSnapshotNodes(context: context, options: options)
+
+    return withSystemModalDiagnostic(DataPayload(
+      nodes: nodes,
+      truncated: truncated,
+      keyboardVisible: isKeyboardVisible(app: app),
+      snapshotGeneration: currentSnapshotGeneration,
+      snapshotDiagnostics: includeDiagnostics ? context.viewportSource.flatMap {
+        SnapshotDiagnostics(viewport: context.viewport, source: $0)
+      } : nil
+    ), app: app)
+  }
+
+  private func fastSnapshotNodes(
+    context: SnapshotTraversalContext, options: SnapshotOptions,
+    canContinue: () -> Bool = { true },
+    visit: (XCUIElementSnapshot, SnapshotNode) -> Void = { _, _ in }
+  ) -> ([SnapshotNode], Bool) {
     var cachedDescendantElements: [XCUIElement]?
     func collapsedTabDescendants() -> [XCUIElement] {
       if let cachedDescendantElements {
@@ -75,6 +95,7 @@ extension RnFastRunnerTests {
         parentIndex: nil
       )
     )
+    visit(context.rootSnapshot, nodes[0])
     if context.maxDepth > 0 {
       let didTruncateFallback = appendCollapsedTabFallbackNodes(
         to: &nodes,
@@ -94,6 +115,7 @@ extension RnFastRunnerTests {
     }
 
     while let (snapshot, depth, visibleDepth, parentIndex) = stack.popLast() {
+      if !canContinue() { return (nodes, true) }
       if nodes.count >= fastSnapshotLimit {
         truncated = true
         break
@@ -142,6 +164,7 @@ extension RnFastRunnerTests {
           parentIndex: parentIndex
         )
       )
+      visit(snapshot, nodes[nodes.count - 1])
       if visibleDepth < context.maxDepth {
         let didTruncateFallback = appendCollapsedTabFallbackNodes(
           to: &nodes,
@@ -157,18 +180,11 @@ extension RnFastRunnerTests {
 
     }
 
-    return withSystemModalDiagnostic(DataPayload(
-      nodes: nodes,
-      truncated: truncated,
-      keyboardVisible: isKeyboardVisible(app: app),
-      snapshotGeneration: currentSnapshotGeneration,
-      snapshotDiagnostics: includeDiagnostics ? context.viewportSource.flatMap {
-        SnapshotDiagnostics(viewport: context.viewport, source: $0)
-      } : nil
-    ), app: app)
+    return (nodes, truncated)
   }
 
   func snapshotRaw(app: XCUIApplication, options: SnapshotOptions) -> DataPayload {
+    retainedFastSnapshotOptions = nil
     if let blocking = blockingSystemAlertSnapshot() {
       return blocking
     }
@@ -329,9 +345,9 @@ extension RnFastRunnerTests {
     if let deadline, timing.deadlineReached(deadline, read: kind, edge: .before) { return nil }
     var result: T?
     let exception = RunnerObjCExceptionCatcher.catchException({
-      result = try? read()
+      do { result = try read() } catch { timing.fail(.readUnavailable) }
     })
-    guard exception == nil else { return nil }
+    guard exception == nil else { timing.fail(.readUnavailable); return nil }
     if let deadline, timing.deadlineReached(deadline, read: kind, edge: .after) { return nil }
     return result
   }
@@ -339,7 +355,11 @@ extension RnFastRunnerTests {
   private func presenceAppIsEligible(
     _ app: XCUIApplication, deadline: Double, timing: PresenceCaptureTiming
   ) -> Bool? {
-    guard let state = presenceRead(deadline: deadline, timing: timing, read: .appState, { app.state }) else {
+    guard let state = presenceRead(deadline: deadline, timing: timing, read: .appState, {
+      let state = app.state
+      if state != .runningForeground { timing.fail(.ineligible) }
+      return state
+    }) else {
       timing.fail(.readUnavailable)
       return nil
     }
@@ -348,8 +368,16 @@ extension RnFastRunnerTests {
       return false
     }
     #if !os(macOS)
-      guard let alerts = presenceRead(deadline: deadline, timing: timing, read: .alerts, { self.springboard.alerts.count }),
-            let sheets = presenceRead(deadline: deadline, timing: timing, read: .sheets, { self.springboard.sheets.count }) else {
+      guard let alerts = presenceRead(deadline: deadline, timing: timing, read: .alerts, {
+        let count = self.springboard.alerts.count
+        if count != 0 { timing.fail(.ineligible) }
+        return count
+      }),
+            let sheets = presenceRead(deadline: deadline, timing: timing, read: .sheets, {
+        let count = self.springboard.sheets.count
+        if count != 0 { timing.fail(.ineligible) }
+        return count
+      }) else {
         timing.fail(.readUnavailable)
         return nil
       }
@@ -416,7 +444,130 @@ extension RnFastRunnerTests {
     return aggregatedLabel(for: snapshot) == nil ? .none : .descendant
   }
 
+  func snapshotCandidateLabelProvenance(app: XCUIApplication, indices: [Int], budgetMs: Int) -> DataPayload {
+    var result = DataPayload()
+    var diagnostic = CandidateLabelProvenanceDiagnostics()
+    let started = presenceUptimeMs()
+    let deadline = started + Double(budgetMs)
+    let timing = PresenceCaptureTiming(started: started, now: presenceUptimeMs)
+    func finish(_ outcome: String) -> DataPayload {
+      diagnostic.deadlineExpired = presenceUptimeMs() >= deadline
+      let failure = timing.diagnostics(complete: false).failure
+      let timedOutRead = failure?.reason == .deadline && [
+        "ineligible", "read-unavailable", "enumeration-incomplete", "observation-unavailable"
+      ].contains(outcome)
+      diagnostic.outcome = timedOutRead || (diagnostic.deadlineExpired && ["available", "unavailable"].contains(outcome)) ? "deadline" : outcome
+      if outcome == "read-unavailable", failure?.reason == .enumerationChanged,
+         let mismatch = failure?.mismatch {
+        diagnostic.outcome = "identity-mismatch"
+        diagnostic.fieldMask |= mismatch.fieldMask
+      }
+      var payload = result
+      payload.labelProvenanceDiagnostics = diagnostic
+      if diagnostic.deadlineExpired { payload.labelProvenance = nil }
+      return payload
+    }
+    guard let options = retainedFastSnapshotOptions,
+          !indices.isEmpty, indices.count <= 64, Set(indices).count == indices.count,
+          indices.allSatisfy({ retainedSnapshotTargets[$0]?.generation == currentSnapshotGeneration }) else {
+      return finish("baseline-unavailable")
+    }
+    var previous: [PresenceEntry]?
+    var previousSources: [PlatformPresenceObservation.LabelSource]?
+    while !timing.deadlineReached(deadline, read: .preparationPoll, edge: .before) {
+      guard presenceAppIsEligible(app, deadline: deadline, timing: timing) == true else { return finish("ineligible") }
+      guard let context = presenceRead(deadline: deadline, timing: timing, read: .rootSnapshot, {
+        let context = self.makeSnapshotTraversalContext(app: app, options: options)
+        if context == nil { timing.fail(.readUnavailable) }
+        return context
+      }) ?? nil else { return finish("read-unavailable") }
+      diagnostic.sampleCount += 1
+      var selected: [Int: (XCUIElementSnapshot, PresenceEntry)] = [:]
+      var count = 1
+      let (_, truncated) = fastSnapshotNodes(context: context, options: options, canContinue: {
+        count += 1
+        return count <= self.maxSnapshotElements
+          && !timing.deadlineReached(deadline, read: .enumeration, edge: .before)
+      }, visit: { snapshot, node in
+        if indices.contains(node.index), let descriptor = PresenceDescriptor(snapshot) {
+          selected[node.index] = (snapshot, PresenceEntry(
+            descriptor: descriptor, depth: node.depth, parentIndex: node.parentIndex
+          ))
+        }
+      })
+      guard !truncated else { return finish("enumeration-incomplete") }
+      for index in indices {
+        if let (snapshot, _) = selected[index], presenceLabelSource(snapshot) == .direct,
+           !diagnostic.directLabelIndices.contains(index) { diagnostic.directLabelIndices.append(index) }
+      }
+      var entries: [PresenceEntry] = []
+      var sources: [PlatformPresenceObservation.LabelSource] = []
+      for index in indices {
+        guard let (snapshot, entry) = selected[index], let target = retainedSnapshotTargets[index] else {
+          diagnostic.nodeIndex = index
+          return finish("baseline-unavailable")
+        }
+        var mask = 0
+        if target.type != elementTypeName(snapshot.elementType) { mask |= 1 }
+        let identifier = snapshot.identifier.trimmingCharacters(in: .whitespacesAndNewlines)
+        if target.identifier != (identifier.isEmpty ? nil : identifier) { mask |= 2 }
+        if target.label != aggregatedLabel(for: snapshot) { mask |= 4 }
+        if target.rect != snapshotRect(from: snapshot.frame) { mask |= 16 }
+        if target.parentIndex != entry.parentIndex { mask |= 128 }
+        if mask != 0 {
+          diagnostic.nodeIndex = index; diagnostic.fieldMask = mask
+          return finish("identity-mismatch")
+        }
+        let source = presenceLabelSource(snapshot)
+        if let previousSources, previousSources[entries.count] != source {
+          diagnostic.nodeIndex = index; diagnostic.fieldMask = 256
+          return finish("source-changed")
+        }
+        var unknown: PlatformPresenceObservation.UnknownReason?
+        guard observePresence(entry.descriptor, count: 1, app: app, deadline: deadline, timing: timing,
+          unknownReason: { unknown = $0 }) != nil else {
+          diagnostic.nodeIndex = index
+          return finish(unknown?.rawValue ?? "observation-unavailable")
+        }
+        entries.append(entry)
+        sources.append(source)
+      }
+      guard presenceAppIsEligible(app, deadline: deadline, timing: timing) == true else { return finish("ineligible") }
+      let stable = previous != nil
+      if let previous {
+        for offset in entries.indices {
+          let entry = entries[offset], prior = previous[offset]
+          var mask = entry.descriptor.changedFields(from: prior.descriptor)
+          if entry.depth != prior.depth { mask |= 64 }
+          if entry.parentIndex != prior.parentIndex { mask |= 128 }
+          if mask != 0 { diagnostic.nodeIndex = indices[offset]; diagnostic.fieldMask = mask }
+        }
+      }
+      guard !timing.deadlineReached(deadline, read: .finalization, edge: .after) else { return finish("unavailable") }
+      if stable {
+        result.labelProvenance = zip(indices, sources).map { CandidateLabelProvenance(index: $0.0, labelSource: $0.1) }
+        return finish("available")
+      }
+      previous = entries
+      previousSources = sources
+      let remaining = deadline - presenceUptimeMs()
+      if remaining <= 0 { return finish("unavailable") }
+      sleepFor(min(0.1, remaining / 1000))
+    }
+    guard previous?.count == indices.count, diagnostic.fieldMask == 0,
+          timing.diagnostics(complete: false).failure?.reason == .deadline else { return finish("deadline") }
+    for index in indices {
+      var child = index
+      while let parent = retainedSnapshotTargets[child]?.parentIndex, parent < child {
+        if diagnostic.directLabelIndices.contains(parent) { return finish("deadline") }
+        child = parent
+      }
+    }
+    return finish("deadline-clean")
+  }
+
   func snapshotPlatformPresence(app: XCUIApplication, appId: String, presenceBudgetMs: Int) -> DataPayload {
+    retainedFastSnapshotOptions = nil
     // A recognised SpringBoard alert is the observation in every snapshot flavour; it has no Keyboard node.
     if let blocking = blockingSystemAlertSnapshot() {
       return DataPayload(nodes: blocking.nodes, truncated: false, keyboardVisible: false,
@@ -670,18 +821,42 @@ extension RnFastRunnerTests {
     else { unknownReason?(.readUnavailable); return nil }
     var matches: [XCUIElement] = []
     for element in elements {
-      guard let snapshot = presenceRead(deadline: deadline, timing: timing, read: .candidateSnapshot, { try element.snapshot() })
+      guard let snapshot = presenceRead(deadline: deadline, timing: timing, read: .candidateSnapshot, {
+        let snapshot = try element.snapshot()
+        if self.presenceUptimeMs() >= deadline {
+          if let current = PresenceDescriptor(snapshot) {
+            let mask = current.changedFields(from: descriptor)
+            if mask != 0 { timing.fail(.enumerationChanged, mismatch: .init(kind: .node, fieldMask: mask)) }
+          } else {
+            timing.fail(.readUnavailable)
+          }
+        }
+        return snapshot
+      })
       else { unknownReason?(.readUnavailable); return nil }
       if PresenceDescriptor(snapshot) == descriptor { matches.append(element) }
     }
     guard matches.count == count else { unknownReason?(.matchCountMismatch); return nil }
     var readUnavailable = false
     for element in matches {
-      let hittable = presenceRead(deadline: deadline, timing: timing, read: .candidateHit, { element.isHittable })
+      let hittable = presenceRead(deadline: deadline, timing: timing, read: .candidateHit, {
+        let hittable = element.isHittable
+        if !hittable { timing.fail(.readUnavailable) }
+        return hittable
+      })
       if hittable == nil { readUnavailable = true }
       guard hittable == true else { continue }
       let observed = presenceUptimeMs()
-      guard let after = presenceRead(deadline: deadline, timing: timing, read: .postHitSnapshot, { try element.snapshot() })
+      guard let after = presenceRead(deadline: deadline, timing: timing, read: .postHitSnapshot, {
+        let after = try element.snapshot()
+        let current = PresenceDescriptor(after)
+        if current != descriptor {
+          timing.fail(.enumerationChanged, mismatch: .init(
+            kind: .node, fieldMask: current?.changedFields(from: descriptor) ?? 0
+          ))
+        }
+        return after
+      })
       else { unknownReason?(.readUnavailable); return nil }
       guard PresenceDescriptor(after) == descriptor else { unknownReason?(.postHitMismatch); return nil }
       return observed
@@ -715,7 +890,8 @@ extension RnFastRunnerTests {
             index: node.index,
             parentOf: { byIndex[$0]?.parentIndex },
             typeOf: { byIndex[$0]?.type }
-          )
+          ),
+          parentIndex: node.parentIndex
         )
       )
     })

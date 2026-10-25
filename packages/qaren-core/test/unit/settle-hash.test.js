@@ -112,5 +112,5 @@ test('a code that only spans adjacent quantized coordinates still hashes', () =>
       hashSnapshotNodes([node({ rect: { x: 232, y: 156, width: 40, height: 20 }, label })]),
     );
   assert.equal(coded('5839'), coded('2468'));
-  assert.throws(() => coded('5839', '58 39'), /runtime input privacy refused/);
+  assert.equal(coded('5839', '58 39'), coded('2468', '24 68'));
 });

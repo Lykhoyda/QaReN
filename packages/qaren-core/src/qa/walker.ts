@@ -1,4 +1,12 @@
 import {
+  applyLabelProvenance,
+  type LabelProvenance,
+  cleanProvenanceReadDiagnostic,
+  unavailableProvenance,
+  type ProvenanceReporter,
+  type LabelProvenanceDiagnostic,
+} from './label-provenance.js';
+import {
   fillText,
   InputPrivacyRefusal,
   currentInputs,
@@ -6,7 +14,7 @@ import {
   throwIfInputPrivacyRefused,
   withEchoScope,
 } from './inputs.js';
-import { isAbort, cancellationSignal } from '../domain/cancellation.js';
+import { isAbort, cancellationSignal, withDeadline } from '../domain/cancellation.js';
 import type { Block, Item, Target } from './plan.js';
 import {
   type Element,
@@ -39,11 +47,13 @@ import {
   scrollUntilBand,
   scrollUntilDirection,
   targetEvidence,
+  aggregateScrollTargetVisible,
+  targetNeedsPresence,
   presenceMiss,
   visibleSelector,
 } from './resolve.js';
 import { literalEvidence, type LiteralNearMiss } from './evidence.js';
-import { exactIdentities, focusIdentityOf } from './identity.js';
+import { applyContainmentFallback, exactIdentities, focusIdentityOf } from './identity.js';
 import {
   type BlockPlatform,
   type StoredBlock,
@@ -137,6 +147,11 @@ export interface ActResult {
 }
 
 export interface WalkerDeps {
+  readLabelProvenance?(
+    refs: string[],
+    deadline: number,
+    report: ProvenanceReporter,
+  ): Promise<LabelProvenance[] | undefined>;
   privacy?: ObservedPrivacy;
   mediaWithheld?(event: MediaWithheldDiagnostic): void;
   judge?: Judge;
@@ -181,6 +196,7 @@ export interface WalkerDeps {
   cancelled?(): boolean;
   diagnostic?(event: WalkerTimingDiagnostic): void;
   targetMiss?(event: TargetMissDiagnostic): void;
+  labelProvenanceDiagnostic?(event: LabelProvenanceDiagnostic): void;
   blockOutcome?(event: BlockOutcomeDiagnostic): void;
   loginOutcome?(outcome: BlockOutcome): void;
   timing?: TimingObserver;
@@ -226,6 +242,7 @@ interface Observation {
   id: number;
   screen: Screen;
   timing: ObservationTiming;
+  platformPresence: boolean;
 }
 
 const ITEM_DEADLINE_EXCEEDED = 'VISIBILITY_UNSURE: ITEM_DEADLINE_EXCEEDED';
@@ -406,6 +423,7 @@ async function walkBlockScoped(
   let mutationStarted = false;
   let latestObservation = 0;
   let recoveries = 0;
+  let metadataOnly = false;
   const captureScreen: WalkerDeps['captureScreen'] = async (options) => {
     const screen = await deps.captureScreen(options);
     const react = screen.reactConnection ?? screen.captureCoverage?.react;
@@ -449,18 +467,18 @@ async function walkBlockScoped(
     await deps.sleep(ms);
     assertActive();
   };
-  const capture = async (
+  const captureOnce = async (
     step?: Exclude<Item, { kind: 'check' }>,
     assertion = false,
     recovery = false,
+    purpose: 'resolve' | 'provenance' = 'resolve',
   ): Promise<Observation> => {
     assertActive();
     cached = undefined;
     const target =
       step && ('target' in step ? step.target : step.kind === 'scroll' ? step.until : undefined);
     const requirePresence = assertion || (!!target && target.quoted === undefined);
-    const platformPresence =
-      requirePresence || (!!target && step?.kind === 'press' && target.exact !== 'id');
+    const platformPresence = requirePresence || purpose === 'provenance';
     const startedAt = deps.now();
     const id = ++sequence.observation;
     latestObservation = id;
@@ -524,14 +542,15 @@ async function walkBlockScoped(
           refuse: 'SYSTEM_DIALOG_INTERRUPTED',
           reason: 'a system dialog is in front of the step target',
         });
-      if (requirePresence && latest.front !== 'dialog' && latest.coverage?.native !== 'complete')
+      if (platformPresence && latest.front !== 'dialog' && latest.coverage?.native !== 'complete')
         throw new ResolutionError({
           refuse: 'SCREEN_EVIDENCE_INCOMPLETE',
           reason: 'NATIVE_PRESENCE_UNUSABLE',
         });
       admitted = true;
+      metadataOnly = false;
       emitCaptureDiagnostics(latest);
-      return { screen: latest, timing, id };
+      return { screen: latest, timing, id, platformPresence };
     } catch (error) {
       if (isAbort(error)) throw error;
       if (error instanceof ResolutionError && error.code === 'APP_PROCESS_CHANGED')
@@ -550,6 +569,86 @@ async function walkBlockScoped(
         });
       }
     }
+  };
+  const capture = async (
+    step?: Exclude<Item, { kind: 'check' }>,
+    assertion = false,
+    recovery = false,
+  ): Promise<Observation> => {
+    const observation = await captureOnce(step, assertion, recovery);
+    if (!step || step.kind !== 'press' || !targetNeedsPresence(step, observation.screen))
+      return observation;
+    const refs = exactIdentities(observation.screen, step.target, 'press')
+      .map(({ element }) => element.ref)
+      .filter((ref) => !ref.startsWith('react:'));
+    const deadline = observationDeadline(observation.timing);
+    metadataOnly = true;
+    let provenance: LabelProvenance[] | undefined;
+    let provenanceDiagnostic = {
+      ...unavailableProvenance('adapter-unavailable'),
+      requested: false,
+    };
+    const report: ProvenanceReporter = (event) => {
+      const clean = cleanProvenanceReadDiagnostic(event);
+      if (clean) provenanceDiagnostic = clean;
+    };
+    const provenanceTimeout = new Error('candidate-provenance-deadline');
+    try {
+      provenance = await withDeadline(
+        performance.now() + Math.max(0, deadline - deps.now()),
+        provenanceTimeout,
+        async () => {
+          if (!deps.readLabelProvenance) return undefined;
+          provenanceDiagnostic = unavailableProvenance();
+          // Leave time for the native timeout diagnostic to reach the walker.
+          return deps.readLabelProvenance(refs, deadline - 1_500, report);
+        },
+      );
+    } catch (error) {
+      if (isAbort(error)) throw error;
+      if (error instanceof AppProcessGoneError) throw processChanged();
+      if (provenanceDiagnostic.outcome === 'unavailable')
+        provenanceDiagnostic.outcome = error === provenanceTimeout ? 'deadline' : 'read-failed';
+      if (error === provenanceTimeout) provenanceDiagnostic.deadlineExpired = true;
+    }
+    assertActive();
+    if (deps.now() >= deadline) {
+      provenanceDiagnostic.deadlineExpired = true;
+      if (['available', 'unavailable'].includes(provenanceDiagnostic.outcome))
+        provenanceDiagnostic.outcome = 'deadline';
+    }
+    const provenanceAdmitted =
+      deps.now() < deadline && applyLabelProvenance(observation.screen, refs, provenance);
+    if (provenanceAdmitted) provenanceDiagnostic.outcome = 'available';
+    const containment =
+      !provenanceAdmitted &&
+      provenance === undefined &&
+      deps.now() < deadline &&
+      provenanceDiagnostic.outcome === 'deadline-clean' &&
+      provenanceDiagnostic.deadlineExpired === true &&
+      provenanceDiagnostic.differedFields.length === 0 &&
+      provenanceDiagnostic.directLabelIndices !== undefined &&
+      applyContainmentFallback(
+        observation.screen,
+        step.target,
+        provenanceDiagnostic.directLabelIndices,
+      );
+    try {
+      deps.labelProvenanceDiagnostic?.({
+        kind: 'label-provenance',
+        line: step.line,
+        ...provenanceDiagnostic,
+        ...(containment ? { resolvedBy: 'containment' as const } : {}),
+      });
+    } catch {
+      /* Diagnostics cannot change admission. */
+    }
+    if (!provenanceAdmitted && !containment)
+      throw new ResolutionError({
+        refuse: 'TARGET_AMBIGUOUS',
+        reason: 'candidate label provenance was unavailable within the observation budget',
+      });
+    return observation;
   };
   const diagnostic = (
     item: Item,
@@ -983,6 +1082,10 @@ async function walkBlockScoped(
       withheldRows.set(item.line, latch.reason);
       return undefined;
     }
+    if (metadataOnly) {
+      metric('screenshot', undefined, { outcome: 'withheld' });
+      return undefined;
+    }
     shots += 1;
     const started = deps.timing ? deps.now() : 0;
     metric('screenshot', undefined, { edge: 'start' });
@@ -1024,6 +1127,22 @@ async function walkBlockScoped(
         const target = item.kind === 'wait' ? item.target : item.until!;
         if (target.quoted !== undefined) {
           const evidence = targetEvidence(target, observation.screen);
+          if (
+            evidence !== 'pass' &&
+            item.kind === 'scroll' &&
+            aggregateScrollTargetVisible(target, observation.screen)
+          ) {
+            try {
+              deps.labelProvenanceDiagnostic?.({
+                kind: 'label-provenance',
+                line: item.line,
+                ...unavailableProvenance(),
+                requested: false,
+                resolvedBy: 'aggregate-visibility',
+              });
+            } catch {}
+            return { observation, found: true };
+          }
           return { observation, found: evidence === 'pass', unsure: evidence === 'unsure' };
         }
         const visibility = decision.visibility;
@@ -2364,7 +2483,12 @@ async function walkBlockScoped(
             }
           }
           if (outcome || typedUnverified) break;
-          const after = await capture(item);
+          const after = await captureOnce(
+            item,
+            false,
+            false,
+            before.platformPresence ? 'provenance' : 'resolve',
+          );
           // NOTE: a not-ok result is not a verdict; an act that timed out may still have landed.
           const changed = screenSignature(after.screen) !== screenSignature(before.screen);
           usable(after, item);

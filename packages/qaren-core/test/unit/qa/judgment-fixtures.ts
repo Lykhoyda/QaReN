@@ -131,5 +131,13 @@ export function walker(
       rows.push(row);
     },
   };
+  deps.readLabelProvenance = async (refs) => {
+    const screen = await deps.captureScreen({ platformPresence: true });
+    return refs.flatMap((ref) => {
+      const source = screen.elements.find((element) => element.ref === ref)?.semantic
+        ?.nativePresence?.labelSource;
+      return source ? [{ ref, labelSource: source }] : [];
+    });
+  };
   return { deps, actions, rows, captures: () => captures };
 }

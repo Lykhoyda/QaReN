@@ -69,6 +69,7 @@ class RnFastRunnerTests: XCTestCase {
   let scrollInteractionIdleTimeoutDefault: TimeInterval = 1.0
   var needsPostSnapshotInteractionDelay = false
   var currentSnapshotGeneration = 0
+  var retainedFastSnapshotOptions: SnapshotOptions?
   var retainedSnapshotTargets: [Int: RetainedSnapshotTarget] = [:]
   // Set only by the latest live target check that proved movement.
   var lastMovedFrames: (

@@ -126,6 +126,14 @@ function descendantContainer() {
   return fixture;
 }
 
+function capturingModes(fixture: () => Fixture) {
+  return async (options?: { platformPresence?: boolean }) => {
+    const snapshot = structuredClone(fixture());
+    if (!options?.platformPresence) Reflect.deleteProperty(snapshot.data, 'presenceCapture');
+    return capturing(() => snapshot)(options);
+  };
+}
+
 test('Android projects a blank descendant-labelled container through the runner wire and selects its card', async () => {
   const fixture = descendantContainer();
   assert.equal(fixture.data.nodes[2].label, '');
@@ -148,6 +156,94 @@ test('Android projects a blank descendant-labelled container through the runner 
     'PASS',
   );
   assert.deepEqual(f.actions, ['press @e3']);
+});
+
+for (const changed of [false, true]) {
+  test(`Android provenance readback ${changed ? 'proves changed content' : 'rejects a projection-only change'}`, async () => {
+    const fixture = descendantContainer();
+    fixture.data.nodes[3].type = 'android.view.ViewGroup';
+    fixture.data.nodes[3].label = 'Add coverage, Details';
+    const read = capturingModes(() => fixture);
+    assert.equal((await read()).elements[2].label, undefined);
+    assert.equal(
+      (await read({ platformPresence: true })).elements[2].label,
+      'Add coverage, Details',
+    );
+    const f = walker(
+      [],
+      scriptedJudge(() => assert.fail('quoted press must be model-free')),
+    );
+    const modes: boolean[] = [];
+    f.deps.captureScreen = (options) => {
+      modes.push(options?.platformPresence === true);
+      return read(options);
+    };
+    f.deps.press = async (ref) => {
+      f.actions.push(`press ${ref}`);
+      if (changed) fixture.data.nodes[3].label = 'Home';
+      return { ok: true, proven: false };
+    };
+    const result = await runPlan(parsePlan('1. Tap "Add coverage"').blocks!, f.deps);
+    assert.equal(result.verdict, changed ? 'PASS' : 'FAIL', JSON.stringify(result));
+    assert.deepEqual(
+      modes,
+      changed ? [false, true, false] : [false, true, false, false, true, false],
+    );
+    assert.deepEqual(f.actions, changed ? ['press @e3'] : ['press @e3', 'press @e3']);
+    assert.deepEqual(
+      result.steps.map((row) => row.outcome),
+      changed ? ['pass'] : ['retry', 'fail'],
+    );
+  });
+}
+
+test('Android alert dismissal cannot count a descendant projection change as a callback effect', async () => {
+  const fixture = descendantContainer();
+  fixture.data.nodes[3].label = 'Coverage';
+  const alert = structuredClone(fixture.data.nodes[2]);
+  Object.assign(alert, { index: 4, type: 'Alert', label: 'Confirm coverage' });
+  alert.presence.nodeIndex = 4;
+  alert.presence.labelSource = 'direct';
+  const container = structuredClone(fixture.data.nodes[2]);
+  Object.assign(container, {
+    index: 5,
+    parentIndex: 4,
+    depth: 3,
+    rect: { x: 0, y: 800, width: 1080, height: 800 },
+  });
+  container.presence.nodeIndex = 5;
+  const card = structuredClone(fixture.data.nodes[3]);
+  Object.assign(card, {
+    index: 6,
+    parentIndex: 5,
+    depth: 4,
+    type: 'android.view.ViewGroup',
+    label: 'Add coverage, Details',
+    rect: { x: 42, y: 1000, width: 1008, height: 105 },
+  });
+  card.presence.nodeIndex = 6;
+  fixture.data.nodes.push(alert, container, card);
+  const f = walker(
+    [],
+    scriptedJudge(() => assert.fail('quoted alert press must be model-free')),
+  );
+  const read = capturingModes(() => fixture);
+  const modes: boolean[] = [];
+  f.deps.captureScreen = (options) => {
+    modes.push(options?.platformPresence === true);
+    return read(options);
+  };
+  f.deps.press = async (ref) => {
+    f.actions.push(`press ${ref}`);
+    fixture.data.nodes.splice(4);
+    return { ok: true, proven: false };
+  };
+  const result = await runPlan(parsePlan('1. Tap "Add coverage"').blocks!, f.deps);
+  assert.equal(result.verdict, 'PASS', JSON.stringify(result));
+  assert.deepEqual(f.actions, ['press @e6']);
+  assert.equal(result.steps[0].unverifiedPress, true);
+  assert.match(result.steps[0].reason ?? '', /UNVERIFIED_PRESS: .*nothing behind it changed/);
+  assert.deepEqual(modes, [false, true, false]);
 });
 
 test('Android retains ambiguity between real siblings under a derived container label', async () => {
@@ -425,7 +521,7 @@ test('a runner advertising only the earlier presence rule is stale: no QA read, 
   });
 });
 
-test('a quoted Android press requests presence and retains literal targeting', async () => {
+test('a unique quoted Android press uses ordinary capture and retains literal targeting', async () => {
   const requests: Record<string, unknown>[] = [];
   const f = walker(
     [],
@@ -435,7 +531,8 @@ test('a quoted Android press requests presence and retains literal targeting', a
   const result = await runPlan(parsePlan('1. Tap "home-pager-qa-btn"').blocks!, f.deps);
   assert.equal(result.verdict, 'PASS', result.failure?.seen);
   assert.deepEqual(f.actions, ['press @e3']);
-  assert.equal(requests[0].platformPresence, true);
+  assert.equal(requests[0].platformPresence, undefined);
+  assert.ok(requests.every((request) => request.platformPresence !== true));
 });
 
 async function runAndroidPresence(capabilities: string[]) {
