@@ -170,7 +170,14 @@ export function dismissCandidate(
         message: 'several decline controls are visible; nothing was tapped',
       },
     };
-  if (candidates.length === 1) return { label: candidates[0].label! };
+  if (candidates.length === 1) {
+    const label = candidates[0].label!.toLowerCase();
+    const plannedIndex = planTargets.findIndex(
+      (target, index) => index > 0 && target.quoted?.toLowerCase() === label,
+    );
+    if (plannedIndex !== -1) return rejected('later-target', plannedIndex);
+    return { label: candidates[0].label! };
+  }
   return rejected(
     'no-candidate',
     undefined,

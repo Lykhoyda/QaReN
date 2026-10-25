@@ -182,6 +182,17 @@ test('a later step naming a decline label does not stop an earlier step from clo
   }
 });
 
+test('a later step that taps the same decline control keeps it for that step', async () => {
+  for (const text of [
+    '1. Tap "Settings"\n2. Tap "Close"',
+    '1. Tap "Settings"\n### Offer\n2. Tap "close"',
+  ]) {
+    const f = app(promo());
+    assert.equal((await runPlan(parsePlan(text).blocks!, f.deps)).verdict, 'FAIL', text);
+    assert.deepEqual(f.actions, [], text);
+  }
+});
+
 test('a step that taps a decline label reaches the sheet without auto-dismissal', async () => {
   const f = app(screen([element('@close', 'Close'), element('@later', 'Maybe later')]));
   const result = await runPlan(parsePlan('1. Tap "Maybe later"').blocks!, f.deps);
