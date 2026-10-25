@@ -615,8 +615,11 @@ are retained in `core-diagnostics.jsonl` even without runtime inputs. A containm
 fallback retains the `deadline-clean` outcome and records `resolvedBy: containment`;
 a quoted scroll-until can also confirm one on-screen container carrying a whole
 label segment on an ordinary capture without requesting candidate provenance,
-provided no observed provenance or visibility contradicts it. Several matching
-containers refuse. This confirms visibility only and records
+provided no observed provenance or visibility contradicts it. An enclosing
+container with the same full label as an enclosed matching container is collapsed
+when its label source is absent or descendant-derived, even if it has its own
+identifier. Matching siblings, differing full labels and observed contradictory
+provenance still refuse as `TARGET_AMBIGUOUS`. This confirms visibility only and records
 `resolvedBy: aggregate-visibility` without labels or references;
 it changes target identity only, without adding provenance or changing capture
 comparisons and media admission.
