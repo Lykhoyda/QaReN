@@ -84,6 +84,7 @@ files imported once:
 - `RunnerSynthesizedTextEntry.h`
 - `RunnerSynthesizedTextEntry.m`
 
-See `LICENSE` for the required attribution. Event-record names were rewritten
-to the `rn-dev-agent-*` prefix. `replaceTextWithApplication:text:` backs focused fills that replace a field.
+See `LICENSE` for the required attribution. Event records use project-specific
+names; see the [focused fill contract](../qaren-cli/README.md#fill-verification-and-keyboard-fallback)
+for replacement behavior.
 No upstream-sync relationship is maintained.

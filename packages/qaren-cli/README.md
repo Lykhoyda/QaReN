@@ -880,7 +880,7 @@ mutation disposition. The [focused replacement tests](../qaren-core/test/unit/de
 cover these guards and mutation reporting.
 An unverified keyboard step records a passing row with reason `UNVERIFIED_FILL`,
 allowing later plan steps to continue; it does not establish the field's final
-value. Apart from that one replacement recovery or dropped-keystroke retype, failed keyboard typing is not retried. Before the fallback tap or
+value. Apart from that one replacement recovery, failed keyboard typing is not retried. Before the fallback tap or
 no-target typing dispatch, the value is protected under the
 [shared masking rules](#input-value-masking), and screenshots are withheld for the rest
 of the walk. For block persistence after fallback, see [Saved blocks](#saved-blocks).
