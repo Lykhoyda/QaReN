@@ -1165,8 +1165,10 @@ Literal checks, quoted waits and scroll-until text do not count text or merged
 labels whose centre lies under a captured keyboard unless the keyboard is
 proven hidden. A docked full-width keyboard covers from its frame's top to the
 screen bottom, because its chrome paints below the frame XCUI reports. The
-keyboard's own keys and the chrome in its window stay visible. Overlays are not
-occlusion evidence: see [Limitations](#limitations-recorded-not-papered-over).
+keyboard's own keys and the chrome in its window stay visible. For literal checks
+and quoted waits, overlays are not occlusion evidence: see
+[Limitations](#limitations-recorded-not-papered-over). Scroll-until additionally
+checks front-overlay overlap during target confirmation, as described below.
 Quoted and phrase target resolution scrolls up when the target's centre lies at
 or above the top of its effective trusted clipping viewport, and down otherwise;
 without a known clip, the boundary remains screen y=0. Quoted scroll-until targets use that
@@ -1195,6 +1197,13 @@ Unknown facts and missing labels do not establish a contradiction, and unrelated
 content changes do not invalidate the target. Re-evaluation preserves the original
 qualified evidence and privacy masking. Quoted and text-replay targets retain
 strict matching; ID-only replay retains identity and visibility semantics.
+If a confirmed target's frame overlaps a front overlay, even partially, the walker
+can use a remaining safe drag within the existing six-drag limit and deadline,
+accepting the target only once clear. This continuation requires current visibility
+and viewport facts to remain valid; offscreen, hidden, missing-identity and
+content/state/kind contradictions still refuse. For phrase targets, established
+assertion updates are checked against the whole claim, so unrelated updates do not
+block continuation. Navigation and freshness checks still apply.
 The scroll-until drag starts inside the list it is meant to move (the target's own
 scroll container, or the frontmost one above the keyboard), not at the screen
 centre. A row scrolled out of its list drags inside that list; a row covered
