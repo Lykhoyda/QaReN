@@ -1256,6 +1256,8 @@ test('a shell running a -c string is classified by kernel identity, never by tha
     ['/bin/zsh', `/bin/zsh -lc "${script}"`],
     ['/bin/bash', `/bin/bash -c '${script} ${'x'.repeat(9_000)}'`],
     ['/bin/sh', `sh -eu -c '${script}'`],
+    ['/bin/bash', `/bin/sh -eu -c '${script}'`],
+    ['/bin/bash', `sh -eu -c '${script}'`],
   ]) {
     const row = `20 ${command}\n`;
     const observed: Array<boolean | undefined> = [];
@@ -1290,6 +1292,8 @@ test('a shell running a -c string is classified by kernel identity, never by tha
   }
   for (const [executable, command] of [
     ['/bin/sh', `/bin/sh /opt/homebrew/bin/maestro test --device ${OTHER}`],
+    ['/bin/bash', `/bin/sh /opt/homebrew/bin/maestro test --device ${OTHER}`],
+    ['/bin/bash', `/tmp/sh -c "${script}"`],
     ['/bin/zsh', `/bin/bash -lc "${script}"`],
     ['/bin/zsh', `/tmp/agent -lc "${script}"`],
     ['/tmp/XCTRunner.app/zsh', `/tmp/XCTRunner.app/zsh -c "${script}"`],

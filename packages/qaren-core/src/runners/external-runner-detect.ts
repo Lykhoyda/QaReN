@@ -434,7 +434,9 @@ function identityRulesOutDriver(value: unknown, line: string, scanStartedAt: num
     const argv0 = leadingShellWord(command)?.word;
     return (
       argv0 !== undefined &&
-      executableBasename(argv0) === name &&
+      (executableBasename(argv0) === name ||
+        // macOS reports the system sh process as /bin/bash.
+        (executable === '/bin/bash' && (argv0 === '/bin/sh' || argv0 === 'sh'))) &&
       !hasUnresolvedIosPathPattern(executable) &&
       !hasUnresolvedIosShellScript(command)
     );
