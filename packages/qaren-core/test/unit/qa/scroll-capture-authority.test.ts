@@ -254,6 +254,26 @@ for (const direction of ['up', 'down'] as const) {
       });
     }
   }
+  for (const mode of ['quoted', 'replay'] as const) {
+    test(`post-drag title replacement refuses with the same list: ${direction}, ${mode}`, async () => {
+      const f = fixture();
+      f.setSnapshot(async () => ({
+        footer: f.drags() > 0,
+        tab: 'Policies',
+        title: f.drags() > 0 ? 'Claims' : 'Policies',
+        listID: 'policies',
+      }));
+      try {
+        const result = await run(f, direction, mode);
+        assert.equal(result.refusal?.code, 'SCROLL_NAVIGATED', JSON.stringify(result));
+        assert.equal(result.block.outcome, 'fail');
+        assert.equal(f.drags(), 1);
+        assert.ok(f.f.rows.every((row) => row.outcome !== 'pass'));
+      } finally {
+        clearRefMap();
+      }
+    });
+  }
   for (const mode of ['quoted', 'phrase', 'replay', 'text-replay'] as const) {
     test(`slow presence confirmation uses fresh ordinary evidence: ${direction}, ${mode}`, async () => {
       const f = fixture();
@@ -452,7 +472,7 @@ for (const direction of ['up', 'down'] as const) {
     });
 
     for (const replacedList of [false, true]) {
-      test(`confirmation title change needs list corroboration: ${direction}, ${mode}, replaced=${replacedList}`, async () => {
+      test(`confirmation title change refuses independently of list replacement: ${direction}, ${mode}, replaced=${replacedList}`, async () => {
         const f = fixture();
         let confirmed = false;
         f.setSnapshot(async (presence) => {
@@ -466,10 +486,10 @@ for (const direction of ['up', 'down'] as const) {
         });
         try {
           const result = await run(f, direction, mode);
-          assert.equal(result.refusal?.code, replacedList ? 'SCROLL_NAVIGATED' : undefined);
-          assert.equal(result.block.outcome, replacedList ? 'fail' : 'pass');
+          assert.equal(result.refusal?.code, 'SCROLL_NAVIGATED');
+          assert.equal(result.block.outcome, 'fail');
           assert.equal(f.drags(), 0);
-          if (replacedList) assert.ok(f.f.rows.every((row) => row.outcome !== 'pass'));
+          assert.ok(f.f.rows.every((row) => row.outcome !== 'pass'));
         } finally {
           clearRefMap();
         }

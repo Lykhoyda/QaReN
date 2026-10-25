@@ -104,11 +104,15 @@ test('a fading custom title does not navigate while the tab and dragged list rem
   }
 });
 
-test('native navigation-bar label and identifier changes need a second marker', () => {
-  assert.equal(change(screen(), screen({ title: 'Claims' })), undefined);
-  assert.equal(
-    change(screen({ titleIdentifier: 'Policies' }), screen({ titleIdentifier: 'Claims' })),
-    undefined,
+test('non-empty native title changes refuse independently of the dragged list', () => {
+  assert.match(change(screen(), screen({ title: 'Claims' }))!, /title/);
+  assert.match(
+    change(screen({ listID: false }), screen({ listID: false, title: 'Claims' }))!,
+    /title/,
+  );
+  assert.match(
+    change(screen({ titleIdentifier: 'Policies' }), screen({ titleIdentifier: 'Claims' }))!,
+    /title/,
   );
   assert.equal(
     change(
@@ -117,17 +121,17 @@ test('native navigation-bar label and identifier changes need a second marker', 
     ),
     undefined,
   );
-  assert.match(change(screen(), screen({ title: 'Claims', list: false }))!, /title.*list/);
+  assert.match(change(screen(), screen({ title: 'Claims', list: false }))!, /title/);
   assert.match(change(screen(), screen({ title: 'Claims', tab: 'Claims' }))!, /selected/);
 });
 
-test('a changed title label with a stable bar identifier does not navigate alone', () => {
+test('a changed non-empty title label with a stable bar identifier refuses', () => {
   const before = screen({ titleIdentifier: 'main-navigation', title: 'Policies' });
   const after = screen({ titleIdentifier: 'main-navigation', title: 'Claims' });
-  assert.equal(change(before, after), undefined);
+  assert.match(change(before, after)!, /title/);
   assert.match(
     change(before, screen({ titleIdentifier: 'main-navigation', title: 'Claims', list: false }))!,
-    /title.*list/,
+    /title/,
   );
   assert.equal(
     change(before, screen({ titleIdentifier: 'main-navigation', title: 'Policies' })),
@@ -155,7 +159,7 @@ for (const type of [
   'android.app.ActionBar',
   'com.android.internal.widget.ActionBarView',
 ]) {
-  test(`ordinary Android title text needs a second marker: ${type}`, () => {
+  test(`ordinary Android title changes refuse without another marker: ${type}`, () => {
     const android = (label: string) =>
       join(
         [
@@ -170,10 +174,18 @@ for (const type of [
         ],
         [],
       );
-    assert.equal(change(android('Policies'), android('Claims')), undefined);
+    assert.match(change(android('Policies'), android('Claims'))!, /title/);
+    assert.equal(change(android('Policies'), android('')), undefined);
     assert.equal(change(android('Policies'), android('Policies')), undefined);
   });
 }
+
+test('a disappeared title still refuses when the list or tab changes', () => {
+  for (const titleType of ['NavigationBar', 'Other']) {
+    assert.match(change(screen(), screen({ title: '', titleType, list: false }))!, /list/);
+    assert.match(change(screen(), screen({ title: '', titleType, tab: 'Claims' }))!, /selected/);
+  }
+});
 
 test('a disappeared, replaced or differently typed dragged list stops scrolling', () => {
   for (const after of [

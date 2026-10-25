@@ -2,4 +2,4 @@
 "qaren": patch
 ---
 
-Keep scroll-until running through fading or moving navigation titles unless the selected tab or dragged list also changes.
+Keep scroll-until running through fading or moving navigation titles while refusing changed non-empty titles, selected tabs, or dragged lists.
