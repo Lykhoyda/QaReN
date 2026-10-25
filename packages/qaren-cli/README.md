@@ -896,8 +896,8 @@ no secure or disabled element carries the quoted
 testID and React reports that exact input focused. The guard and proof use the
 quoted ID unchanged, including a literal `-pressable` suffix. Only an
 observed wrapper in the tap path establishes a wrapper-to-base identity mapping.
-The final focus reads run after runner readiness and health checks, before clearing
-and again before inserting text. Every fallback path, including a keyboard-down
+Focus is checked before clearing and, after runner readiness and health checks,
+again before inserting text. Every fallback path, including a keyboard-down
 transition, requires positive proof that the intended input is focused before
 either mutation. A false, unbound, unreadable or failed read before clearing returns
 `NO_TEXT_INPUT_TARGET` with no mutation. An unknown keyboard state still refuses.
@@ -905,12 +905,11 @@ Each walker focus decision logs one value-free `fallback-focus` line.
 
 For non-secure focused fields, QaReN checks the current content before typing.
 An empty field receives text directly. A nonempty controlled field (at most 256
-characters) is cleared through the input's own change handler inside the app, after
-confirming that it is focused and its content has not changed; the clear returns
-no value. Synthesized Delete keys are not used: they remove only the characters
-before the caret, and a tap into a value wider than the field leaves the caret
-mid-text. The host requires two consecutive empty observations before sending the
-first character, and re-proves focus before both clearing and insertion. A prefill
+characters), including a private runtime input, is cleared through the input's own
+change handler inside the app. The clear checks that the input is still focused
+and controlled and returns no value. The host requires two consecutive empty
+observations before sending the first character, and re-proves focus before both
+clearing and insertion. A prefill
 exceeding the bound, an unavailable initial content state, or a field the clear
 refuses to reach (unfocused or uncontrolled) refuses with `TEXT_ENTRY_UNVERIFIED`
 and no mutation; a clear with any other outcome reports a possible mutation. If the cleared
