@@ -5,7 +5,9 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { loadBlock } from '../../../dist/qa/blocks.js';
 import { parsePlan } from '../../../dist/qa/plan.js';
-import { runPlan } from '../../../dist/qa/walker.js';
+import { loginBlock, replayBlock, runPlan } from '../../../dist/qa/walker.js';
+import type { StoredBlock } from '../../../dist/qa/blocks.js';
+import type { Block } from '../../../dist/qa/plan.js';
 import { NativeSnapshotIncomplete } from '../../../dist/qa/private-input.js';
 import type { Screen } from '../../../dist/qa/screen.js';
 import type { WalkerDeps } from '../../../dist/qa/walker.js';
@@ -191,6 +193,70 @@ test('a later step that taps the same decline control keeps it for that step', a
     assert.equal((await runPlan(parsePlan(text).blocks!, f.deps)).verdict, 'FAIL', text);
     assert.deepEqual(f.actions, [], text);
   }
+});
+
+test('replayed decline intent survives stored selectors during recovery and revalidation', async () => {
+  for (const replay of [
+    replayBlock,
+    (block: Block, stored: StoredBlock) => loginBlock(block.slug, stored),
+  ]) {
+    for (const selector of [{ id: 'offer-decline' }, { text: 'Maybe later' }]) {
+      for (const separate of [false, true]) {
+        const blocks = parsePlan(
+          `✓ "Settings"\n${separate ? '### Offer\n' : ''}1. Tap "Maybe later"`,
+        ).blocks!;
+        const replayed = blocks.map((block) => {
+          const stored: StoredBlock = {
+            header: { appId: 'app', plan: block.slug, planHash: block.planHash, platform: 'ios' },
+            steps: block.items.map((item) =>
+              item.kind === 'check'
+                ? { raw: item.raw, kind: 'check', text: item.text }
+                : { raw: item.raw, kind: 'press', selector },
+            ),
+          };
+          return replay(block, stored);
+        });
+        const f = app(
+          screen([
+            element('@close', 'Close'),
+            element('@later', 'Maybe later', { kind: 'text', testID: 'offer-decline' }),
+          ]),
+        );
+        const press = f.deps.press;
+        f.deps.press = async (ref, context) => {
+          const result = await press(ref, context);
+          if (ref === '@close')
+            f.show(
+              screen([
+                element('@settings', 'Settings'),
+                element('@later', 'Maybe later', { testID: 'offer-decline' }),
+              ]),
+            );
+          return result;
+        };
+        const result = await runPlan(replayed, f.deps);
+        assert.equal(result.verdict, 'PASS');
+        assert.equal(result.recoveries, 1);
+        assert.deepEqual(f.actions, ['press @close', 'press @later']);
+      }
+    }
+  }
+});
+
+test('a replayed later decline keeps its stored control even when its label changes', async () => {
+  const block = parsePlan('✓ "Settings"\n1. Tap "Maybe later"').blocks![0];
+  const replayed = replayBlock(block, {
+    header: { appId: 'app', plan: block.slug, planHash: block.planHash, platform: 'ios' },
+    steps: [
+      { kind: 'check', raw: block.items[0].raw, text: 'Settings' },
+      { kind: 'press', raw: block.items[1].raw, selector: { id: 'offer-decline' } },
+    ],
+  });
+  const f = app(screen([element('@close', 'Close', { testID: 'offer-decline' })]));
+  const result = await runPlan([replayed], f.deps);
+  assert.equal(result.verdict, 'FAIL');
+  assert.equal(result.recoveries, 0);
+  assert.deepEqual(f.actions, []);
 });
 
 test('a step that taps a decline label reaches the sheet without auto-dismissal', async () => {

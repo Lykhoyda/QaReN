@@ -10,6 +10,10 @@ export interface LoginMarker {
   text?: string;
 }
 
+export interface RecoveryTarget extends Target {
+  declared?: Target;
+}
+
 export type LoginReplay =
   | 'pass'
   | 'fail'
@@ -34,7 +38,7 @@ export async function recover(
   screen: Screen,
   deps: RecoverDeps,
   marker?: LoginMarker,
-  planTargets: readonly Target[] = [],
+  planTargets: readonly RecoveryTarget[] = [],
 ): Promise<Recovery | undefined> {
   if (screen.front === 'dialog') {
     const acted = await deps.dialog();
@@ -98,7 +102,7 @@ export interface InterruptionDiagnostic {
 
 export function dismissCandidate(
   screen: Screen,
-  planTargets: readonly Target[],
+  planTargets: readonly RecoveryTarget[],
   diagnostic?: (record: InterruptionDiagnostic) => void,
 ): { label: string } | { refuse: { code: string; message: string } } | undefined {
   const rejected = (
@@ -129,15 +133,17 @@ export function dismissCandidate(
   if (!planTargets.length) return rejected('current-target', 0);
   const targetIndex = planTargets.findIndex(
     (target, index) =>
-      // A later step that declines a sheet says nothing about whether this one is in the way.
       !(
         index > 0 &&
-        target.quoted !== undefined &&
-        DECLINE_LOWER.has(target.quoted.toLowerCase())
+        (target.declared ?? target).exact !== 'id' &&
+        DECLINE_LOWER.has((target.declared ?? target).quoted?.toLowerCase() ?? '')
       ) &&
       (target.quoted === undefined ||
-        literalEvidence(screen, target.quoted, 'contains').verdict !== 'fail' ||
-        screen.elements.some((e) => !e.offscreen && e.testID === target.quoted)),
+        (target.exact !== 'id' &&
+          literalEvidence(screen, target.quoted, 'contains').verdict !== 'fail') ||
+        screen.elements.some(
+          (e) => !e.offscreen && target.exact !== 'text' && e.testID === target.quoted,
+        )),
   );
   if (targetIndex !== -1)
     return rejected(targetIndex === 0 ? 'current-target' : 'later-target', targetIndex);
@@ -152,9 +158,7 @@ export function dismissCandidate(
     if (e.secure) return 'secure';
     if (
       ancestorsOf(e).some((ancestor) =>
-        planTargets.some(
-          (target) => ancestor.testID === target.quoted || ancestor.label === target.quoted,
-        ),
+        planTargets.some((target) => matchesTarget(ancestor, target)),
       )
     )
       return 'target-ancestor';
@@ -173,7 +177,10 @@ export function dismissCandidate(
   if (candidates.length === 1) {
     const label = candidates[0].label!.toLowerCase();
     const plannedIndex = planTargets.findIndex(
-      (target, index) => index > 0 && target.quoted?.toLowerCase() === label,
+      (target, index) =>
+        index > 0 &&
+        (matchesTarget(candidates[0], target) ||
+          (target.exact !== 'id' && target.quoted?.toLowerCase() === label)),
     );
     if (plannedIndex !== -1) return rejected('later-target', plannedIndex);
     return { label: candidates[0].label! };
@@ -187,6 +194,14 @@ export function dismissCandidate(
       const association = failed === 'press-not-supported' ? hostAssociationIdentity(e) : undefined;
       return [{ index, failed, ...(association ? { association } : {}) }];
     }),
+  );
+}
+
+function matchesTarget(element: Element, target: Target): boolean {
+  return (
+    target.quoted !== undefined &&
+    ((target.exact !== 'text' && element.testID === target.quoted) ||
+      (target.exact !== 'id' && element.label === target.quoted))
   );
 }
 

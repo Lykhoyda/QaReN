@@ -16,6 +16,7 @@ import {
 } from './inputs.js';
 import { isAbort, cancellationSignal, withDeadline } from '../domain/cancellation.js';
 import type { Block, Item, Target } from './plan.js';
+import { parseStep } from './plan.js';
 import {
   type Element,
   type Screen,
@@ -76,7 +77,7 @@ import {
   INTERRUPTION_QUESTION,
   checkVerdict,
 } from './questions.js';
-import { type LoginMarker, dismissCandidate, recover } from './recover.js';
+import { type LoginMarker, type RecoveryTarget, dismissCandidate, recover } from './recover.js';
 import type {
   BlockOutcome,
   BlockOutcomeDiagnostic,
@@ -91,6 +92,7 @@ import {
   ObservedPrivacy,
   matchPrivate,
   projectPlanLine,
+  planLineBody,
 } from './privacy.js';
 import { renderReason, segments, type Reason } from './untrusted.js';
 import { NativeSnapshotIncomplete, PrivateInputCaptureError } from './private-input.js';
@@ -302,15 +304,20 @@ export interface WalkOptions {
   recover?: boolean;
   login?: boolean;
   singleAttempt?: boolean;
-  laterTargets?: readonly Target[];
+  laterTargets?: readonly RecoveryTarget[];
 }
 
-const recoveryTarget = (item: Item): Target | undefined =>
-  item.kind === 'check'
-    ? item.literal
-      ? { quoted: item.text, phrase: item.text }
-      : undefined
-    : stepTarget(item);
+const recoveryTarget = (item: Item): RecoveryTarget | undefined => {
+  if (item.kind === 'check')
+    return item.literal ? { quoted: item.text, phrase: item.text } : undefined;
+  const target = stepTarget(item);
+  if (!target) return undefined;
+  const declared = parseStep(planLineBody(item.raw));
+  return {
+    ...target,
+    ...(declared && !('refuse' in declared) ? { declared: stepTarget(declared) } : {}),
+  };
+};
 
 export interface WalkSequence {
   observation: number;
