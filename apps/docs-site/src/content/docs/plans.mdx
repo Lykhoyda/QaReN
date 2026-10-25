@@ -128,12 +128,12 @@ There is no `no longer` form or heading-level declaration.
   (`xcrun simctl erase <udid>`) when that matters. The runner's XCTest result bundles are
   removed after every runner session.
 - The field a strict-input step fills may display the value; that field's own text is hashed as a
-  constant marker so the run continues. If the app shows an input's value in another
-  label, declare it before the step that reveals it: `Expect input NAME on screen` lets
-  that value appear in labels from that line to the end of the block; qaren hashes such a
-  label as a constant marker and keeps masking the value in every output, and the
-  declaration is saved in the block as plan text. A later block that shows the value
-  needs its own line. An undeclared echo, a value in an
+  constant marker so the run continues. Other labels containing a known input are redacted
+  and checked before hashing, including later account screens and inputs from a configured
+  login block that was never replayed. No echo declaration is required to continue safely.
+  `Expect input NAME on screen` still makes the declared label hash as a constant from that
+  line until the block ends, and is saved as plan text. Output stays masked and media stays
+  withheld in either case. An unprovably masked label, a value in an
   identifier or type, or the value in the plan, the login block or the app id still refuses
   `CORE_REFUSED` with `runtime input privacy refused`. See the CLI guide's
   [runtime-input hash protections](https://github.com/Lykhoyda/rn-dev-agent/blob/develop/packages/qaren-cli/README.md#runtime-inputs).

@@ -110,7 +110,7 @@ export class RunInputs {
     if (inputName !== undefined && this.#nonSecret.includes(inputName)) return;
     if (identifier) this.#filled.add(identifier);
   }
-  // A registered fill target, or a label the block declared, shows a value by design: it hashes as a constant.
+  // Declared echoes hash as a constant; other labels must prove their redacted projection safe.
   maskFilledEcho<T extends { identifier?: string; label?: string }>(node: T): T {
     const label = node.label;
     if (label === undefined || this.#privacy.assertInputHashSafe(label, [...this.#strict.values()]))
@@ -121,7 +121,10 @@ export class RunInputs {
       [...this.#strict].every(
         ([name, value]) => declared?.has(name) || this.#privacy.assertInputHashSafe(label, [value]),
       );
-    return allowed ? { ...node, label: INPUT_ECHO_MARKER } : node;
+    const masked = allowed ? INPUT_ECHO_MARKER : this.#privacy.redact(label);
+    return this.#privacy.assertInputHashSafe(masked, [...this.#strict.values()])
+      ? { ...node, label: masked }
+      : node;
   }
   toJSON(): never {
     throw new Error('runtime inputs cannot be serialized');

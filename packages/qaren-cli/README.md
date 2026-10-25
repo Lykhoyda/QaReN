@@ -1840,8 +1840,8 @@ Inputs are strict unless their named Fill explicitly opts in, for example
 staging fixture. The flag relaxes only execution hash and echo checks: pure fixture
 labels, identifiers and types retain their original hash operands, even at the filled
 field, and a redundant expected-echo declaration does not mask them to a constant.
-Strict matches win on equal or overlapping values; a non-secret alias cannot authorize a
-strict echo. Repeated declarations across the plan and configured login block must agree
+Strict matches win on equal or overlapping values; a non-secret alias cannot leave a
+strict value unmasked in a label hash. Repeated declarations across the plan and configured login block must agree
 before device selection. There is no config, global switch or inferred environment policy.
 All values still receive log, model and artifact redaction; screenshots and video stay
 withheld. Never annotate real credentials: qaren cannot establish whether a backend is
@@ -1918,19 +1918,22 @@ that secret despite artifact redaction.
 - Before a strict or literal fill dispatch, the walker registers the target's identifier when available.
   Snapshot hashing replaces a registered target's label with a constant marker when it
   contains a whole strict runtime input value. The value never enters the hash; different values
-  produce the same marker. Labels without a registered identifier, and all identifiers
-  and types, remain subject to the guard below.
+  produce the same marker. Other labels containing a known input use a redacted projection,
+  verified by the same guard before hashing. This includes later account screens and inputs
+  supplied by a configured login block that was never replayed. No echo declaration is
+  required for this masking; screenshots, video and output redaction stay withheld or masked.
 - After a block's `Expect input NAME on screen` line, until the block ends, a label whose
   whole-value strict echoes are all of declared inputs hashes as the same constant marker; a
-  label that also holds an undeclared input's value, and every identifier and type, stay
-  guarded. Replay uses the same block scope; resuming from a patched line restores earlier
+  label that also holds an undeclared input's value uses verified redaction instead. Every
+  identifier and type stays guarded. Replay uses the same block scope; resuming from a patched line restores earlier
   declarations, and a nested login replay gets its own scope.
 - Snapshot hashes refuse `CORE_REFUSED` before any hashing when an identifier, type or
   unmasked label contains a strict input's whole value in its raw, trimmed, NFC, NFD or JSON-escaped form, or a numeric
   value's complete digit sequence with only separators between; partial echoes do not
   refuse. Plan hashes do the same for plan text. The refusal detail starts
   `runtime input privacy refused` and never names the value. The same guard applies to
-  the configured login block and app id. Apart from the registered and declared label projections,
+  the configured login block and app id. If a label's redaction cannot be proven safe, it
+  still refuses. Apart from these label projections,
   accepted operands and digests are unchanged. Repository and host provenance hashes, such
   as the lockfile, dirty-file, config and session-path hashes, keep their exact bytes. The
   settle engine no longer uses the iOS screenshot-equality tier; it settles on the Android
