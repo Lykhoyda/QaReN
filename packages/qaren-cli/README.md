@@ -1234,9 +1234,11 @@ remaining vertical span supplies the drag band; an exhausted span refuses
 display density when available. Without a scroll container, the centred window
 drag is retained.
 Quoted scroll-until uses the current ordinary capture for target visibility and
-geometry, with no additional platform-presence confirmation. A target overlapping
-a front overlay, even partially, requires another safe drag within the original
-six-drag and time budgets. Phrase capture policy is unchanged.
+geometry, with no additional platform-presence confirmation. A target whose tap
+point is covered by a front overlay requires another safe drag within the original
+six-drag and time budgets. An edge can remain under a floating control when the
+tap point is clear; drag bands still exclude the overlay frame. Phrase capture
+policy is unchanged.
 Selected-tab changes or disappearance/replacement of the dragged list refuse
 `SCROLL_NAVIGATED` before searching a different screen. An identified list matches
 by type and testID through keyboard/header resizing; unidentified lists retain the

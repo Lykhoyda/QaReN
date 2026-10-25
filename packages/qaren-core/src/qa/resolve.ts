@@ -544,12 +544,14 @@ export function scrollTargetCovered(element: Element, screen: Screen): boolean {
   const container = ancestorsOf(element).find(isScrollContainer);
   const frame = elementFrame(element);
   if (!container || !frame) return false;
+  const x = Math.round(frame.x + frame.width / 2);
+  const y = Math.round(frame.y + frame.height / 2);
   return frontOverlayFrames(container, frame, screen).some(
     (overlay) =>
-      frame.x < overlay.x + overlay.width &&
-      frame.x + frame.width > overlay.x &&
-      frame.y < overlay.y + overlay.height &&
-      frame.y + frame.height > overlay.y,
+      x >= overlay.x &&
+      x < overlay.x + overlay.width &&
+      y >= overlay.y &&
+      y < overlay.y + overlay.height,
   );
 }
 

@@ -5,7 +5,7 @@ import { parsePlan } from '../../../dist/qa/plan.js';
 import type { NativeNode } from '../../../dist/qa/screen.js';
 import { walkBlock } from '../../../dist/qa/walker.js';
 import { buildDirectionalScrollCliArgs } from '../../../dist/handlers/device-interact.js';
-import { clearRefMap, updateRefMapFromFlat } from '../../../dist/fast-runner-ref-map.js';
+import { clearRefMap, refCenter, updateRefMapFromFlat } from '../../../dist/fast-runner-ref-map.js';
 import { scriptedJudge, walker } from './judgment-fixtures.ts';
 import { attested, nativeCapture } from './platform-presence-fixtures.ts';
 
@@ -15,6 +15,8 @@ type Snapshot = {
   footerY?: number;
   footerHeight?: number;
   footerLabel?: string;
+  footerType?: NativeNode['type'];
+  footerRect?: NonNullable<NativeNode['rect']>;
   listID?: string;
   listFrame?: NonNullable<NativeNode['rect']>;
   tab?: string;
@@ -56,11 +58,16 @@ function fixture(established = false) {
         rect: state.listFrame ?? frame,
       },
       {
-        type: state.footerLabel ? 'Other' : 'StaticText',
+        type: state.footerType ?? (state.footerLabel ? 'Other' : 'StaticText'),
         parentIndex: 2,
         identifier: state.footer ? 'footer' : 'loading',
         label: state.footer ? (state.footerLabel ?? 'Footer') : 'Loading',
-        rect: { x: 10, y: state.footerY ?? 200, width: 100, height: state.footerHeight ?? 30 },
+        rect: state.footerRect ?? {
+          x: 10,
+          y: state.footerY ?? 200,
+          width: 100,
+          height: state.footerHeight ?? 30,
+        },
       },
       ...(state.overlays ?? []).map((rect) => ({ type: 'Button', parentIndex: 1, rect })),
     ];
@@ -163,6 +170,41 @@ async function run(
   });
 }
 
+test('Home button partly overlapped by Quick add is reached and tapped after two drags', async () => {
+  const f = fixture();
+  const quickAdd = { x: 318, y: 730, width: 64, height: 64 };
+  f.setSnapshot(async () => ({
+    footer: f.drags() >= 2,
+    footerType: 'Button',
+    footerLabel: 'Input Libraries',
+    footerRect: { x: 20, y: 744, width: 360, height: 48 },
+    listID: 'home',
+    tab: 'Home',
+    overlays: [quickAdd],
+  }));
+  const press = f.f.deps.press;
+  f.f.deps.press = async (ref, context) => {
+    assert.equal(f.drags(), 2);
+    assert.deepEqual(refCenter(ref), { x: 200, y: 768 });
+    context!.authorize();
+    return press(ref, context);
+  };
+  try {
+    const result = await walkBlock(
+      parsePlan('1. Scroll down until "Input Libraries"\n2. Tap "Input Libraries"').blocks![0],
+      f.f.deps,
+    );
+    assert.equal(result.failure, undefined);
+    assert.equal(result.block.outcome, 'pass');
+    assert.equal(f.drags(), 2);
+    assert.deepEqual(f.f.actions, ['press @e3']);
+    assert.ok(f.modes.every((presence) => !presence));
+    assert.ok(f.endpoints.every(([, start, , end]) => start < 726 && end < 726));
+  } finally {
+    clearRefMap();
+  }
+});
+
 test('sixth-drag target confirmation uses ordinary captures within the item deadline', async () => {
   const f = fixture();
   const scroll = f.f.deps.scroll;
@@ -193,10 +235,43 @@ test('sixth-drag target confirmation uses ordinary captures within the item dead
   }
 });
 
+test('row 58 under the floating tab bar is tapped only after the sixth drag clears its tap point', async () => {
+  const f = fixture();
+  f.setSnapshot(async () => ({
+    footer: f.drags() >= 5,
+    footerType: 'Button',
+    footerRect: { x: 20, y: f.drags() === 5 ? 818.7 : 200, width: 360, height: 64 },
+    listID: 'feed',
+    tab: 'A',
+    overlays: [{ x: 21, y: 791, width: 360, height: 70 }],
+  }));
+  const press = f.f.deps.press;
+  f.f.deps.press = async (ref, context) => {
+    assert.equal(f.drags(), 6);
+    assert.deepEqual(refCenter(ref), { x: 200, y: 232 });
+    context!.authorize();
+    return press(ref, context);
+  };
+  try {
+    const result = await walkBlock(
+      parsePlan('1. Scroll down until "Footer"\n2. Tap "Footer"').blocks![0],
+      f.f.deps,
+    );
+    assert.equal(result.failure, undefined);
+    assert.equal(result.block.outcome, 'pass');
+    assert.equal(f.drags(), 6);
+    assert.deepEqual(f.f.actions, ['press @e3']);
+    assert.ok(f.modes.every((presence) => !presence));
+    assert.ok(f.endpoints.every(([, start, , end]) => start < 787 && end < 787));
+  } finally {
+    clearRefMap();
+  }
+});
+
 for (const direction of ['up', 'down'] as const) {
   for (const mode of ['quoted', 'phrase', 'aggregate', 'replay', 'text-replay'] as const) {
     for (const partial of [false, true]) {
-      test(`overlapping target gets another bounded drag: ${direction}, ${mode}, partial=${partial}`, async () => {
+      test(`overlapping target scrolls until its tap point is clear: ${direction}, ${mode}, partial=${partial}`, async () => {
         const f = fixture(mode === 'phrase');
         const overlay = { x: 21, y: direction === 'down' ? 791 : 80, width: 360, height: 70 };
         f.setSnapshot(async () => ({
@@ -220,7 +295,7 @@ for (const direction of ['up', 'down'] as const) {
           const result = await run(f, direction, mode);
           assert.equal(result.failure, undefined);
           assert.equal(result.block.outcome, 'pass');
-          assert.equal(f.drags(), 2);
+          assert.equal(f.drags(), partial ? (mode === 'text-replay' ? 0 : 1) : 2);
           assert.ok(f.modes.every((presence) => presence === (mode === 'phrase')));
           assert.ok(
             f.endpoints.every(([, start, , end]) =>
