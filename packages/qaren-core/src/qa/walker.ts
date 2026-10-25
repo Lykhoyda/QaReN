@@ -1078,7 +1078,7 @@ async function walkBlockScoped(
               witness.testID !== undefined &&
               beforeConfirmation.elements.some((element) => element.testID === witness.testID)
             );
-          const available = matches.filter(
+          let available = matches.filter(
             (element) =>
               !element.offscreen &&
               element.visibilityEvidence !== 'offscreen' &&
@@ -1087,9 +1087,10 @@ async function walkBlockScoped(
               !scrollConfirmationCovered(element, ordinary.screen),
           );
           if (!available.length) {
-            if (matches.every((element) => scrollConfirmationOccluded(element, ordinary.screen)))
-              occluded.add(witness);
-            return true;
+            if (!matches.every((element) => scrollConfirmationOccluded(element, ordinary.screen)))
+              return true;
+            occluded.add(witness);
+            available = matches;
           }
           const disabled = disabledStateOf(available[0]);
           if (
@@ -1123,7 +1124,7 @@ async function walkBlockScoped(
               !nativeLabelMayBeValue(element) &&
               element.label !== witness.label,
           );
-          if (!changed) return false;
+          if (!changed) return occluded.has(witness);
           if (
             target.quoted === undefined &&
             available.every((element) => element.label === available[0].label)
@@ -1132,8 +1133,9 @@ async function walkBlockScoped(
               ...assertionUpdates.get(witness),
               label: available[0].label!,
             });
-            return false;
+            return occluded.has(witness);
           }
+          occluded.delete(witness);
           return true;
         };
         try {
@@ -1188,10 +1190,26 @@ async function walkBlockScoped(
                 ) {
                   if (
                     contradicted.length > 0 &&
-                    contradicted.every((element) => occluded.has(element)) &&
-                    assertionUpdates.size === 0
-                  )
-                    return { observation: ordinary, found: false };
+                    contradicted.every((element) => occluded.has(element))
+                  ) {
+                    const updated = assertionUpdates.size
+                      ? await decide(
+                          observation,
+                          undefined,
+                          item,
+                          deadline,
+                          undefined,
+                          assertionUpdates,
+                        )
+                      : decision;
+                    usable(ordinary, item, deadline);
+                    if (
+                      updated.visibility &&
+                      !('refuse' in updated.visibility) &&
+                      updated.visibility.verdict === 'present'
+                    )
+                      return { observation: ordinary, found: false };
+                  }
                   throw new ResolutionError({
                     refuse: 'VISIBILITY_UNSURE',
                     reason:

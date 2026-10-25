@@ -29,6 +29,7 @@ type Snapshot = {
   footerUnidentified?: boolean;
   loading?: boolean;
   loadingY?: number;
+  loadingLabel?: string;
   loadingUnidentified?: boolean;
   keyboardY?: number;
   listID?: string;
@@ -120,7 +121,7 @@ function fixture() {
         type: 'StaticText',
         parentIndex: 2,
         identifier: state.loadingUnidentified ? undefined : 'loading-extra',
-        label: 'Loading',
+        label: state.loadingLabel ?? 'Loading',
         rect: { x: 10, y: state.loadingY ?? 300, width: 100, height: 30 },
       });
     if (state.terms)
@@ -225,6 +226,87 @@ async function run(
   return walkBlock(block, f.f.deps, 0, [], undefined, undefined, {
     mode: mode === 'replay' || mode === 'text-replay' ? 'replay' : 'walk',
   });
+}
+
+for (const direction of ['up', 'down'] as const) {
+  for (const mode of ['quoted', 'phrase', 'replay', 'text-replay'] as const) {
+    test(`overlay cannot conceal an outside-list contradiction: ${direction}, ${mode}`, async () => {
+      const f = fixture();
+      let confirmed = false;
+      f.setSnapshot(async (presence) => {
+        if (presence) confirmed = true;
+        return {
+          footer: true,
+          listID: 'feed',
+          listFrame: { x: 0, y: 100, width: 402, height: 600 },
+          footerY: confirmed && !presence ? (direction === 'down' ? 800 : 50) : 200,
+          overlays: [{ x: 21, y: direction === 'down' ? 791 : 40, width: 360, height: 70 }],
+        };
+      });
+      try {
+        const result = await run(f, direction, mode);
+        assert.equal(result.block.outcome, 'fail');
+        assert.match(JSON.stringify(result.failure), /VISIBILITY_UNSURE/);
+        assert.equal(f.drags(), 0);
+      } finally {
+        clearRefMap();
+      }
+    });
+  }
+  for (const change of ['unrelated', 'label', 'state', 'kind'] as const) {
+    test(`occluded semantic target reconciles ${change} updates: ${direction}`, async () => {
+      const f = fixture();
+      let confirmed = false;
+      f.f.deps.judge = scriptedJudge((questions, _index, state) => {
+        const evidence = JSON.stringify(state);
+        const present =
+          evidence.includes('Footer') &&
+          (change !== 'state' || !evidence.includes('disabled')) &&
+          (change !== 'kind' || evidence.includes('button'));
+        return Object.fromEntries(
+          Object.keys(questions).map((id) => [id, { type: 'noul', noul: present ? 0.9 : 0.1 }]),
+        );
+      });
+      f.setSnapshot(async (presence) => {
+        if (presence) confirmed = true;
+        const changed = confirmed && !presence && f.drags() === 0;
+        return {
+          footer: true,
+          footerY: changed ? (direction === 'down' ? 800 : 100) : 200,
+          footerLabel: changed && change === 'label' ? 'Loading' : 'Footer',
+          footerControl: change === 'state' || change === 'kind',
+          footerType: changed && change === 'kind' ? 'StaticText' : undefined,
+          footerEnabled: !(changed && change === 'state'),
+          loading: true,
+          loadingLabel: changed ? 'Loaded' : 'Loading',
+          listID: 'feed',
+          overlays: [{ x: 21, y: direction === 'down' ? 791 : 80, width: 360, height: 70 }],
+        };
+      });
+      try {
+        const result = await run(
+          f,
+          direction,
+          'phrase',
+          change === 'state'
+            ? 'the enabled footer button'
+            : change === 'kind'
+              ? 'the footer button'
+              : 'the footer text',
+        );
+        assert.equal(
+          result.block.outcome,
+          change === 'unrelated' ? 'pass' : 'fail',
+          JSON.stringify(result),
+        );
+        assert.equal(f.drags(), change === 'unrelated' ? 1 : 0);
+        if (change !== 'unrelated')
+          assert.match(JSON.stringify(result.failure), /VISIBILITY_UNSURE/);
+      } finally {
+        clearRefMap();
+      }
+    });
+  }
 }
 
 test('scroll continues when row 58 lands under a floating bar with one drag left', async () => {

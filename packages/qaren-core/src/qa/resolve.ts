@@ -507,11 +507,18 @@ function frontOverlayFrames(
 }
 
 export function scrollConfirmationOccluded(element: Element, screen: Screen): boolean {
-  let keyboardCovered = false;
+  if (
+    element.offscreen ||
+    element.visibilityEvidence === 'offscreen' ||
+    element.semantic?.visibility === 'hidden' ||
+    element.semantic?.visibility === 'offscreen'
+  )
+    return false;
+  let otherwiseCovered = false;
   centreCovered(element, screen, (facts) => {
-    keyboardCovered = facts.branch === 'keyboard';
+    otherwiseCovered = facts.branch === 'keyboard' || facts.branch === 'viewport';
   });
-  if (keyboardCovered) return false;
+  if (otherwiseCovered) return false;
   const ancestors = ancestorsOf(element);
   const container = ancestors.find(isScrollContainer) ?? ancestors.find(isWindow);
   const frame = elementFrame(element);
