@@ -746,7 +746,7 @@ async function openSession(
                   requireFocused,
                   skipFinalValidation: true,
                   clearFirst: true,
-                  privateValue: privateValue || currentInputs()?.hasInputs === true,
+                  privateValue,
                   qaContext,
                   qaTiming: { now, observe: timing },
                 }),

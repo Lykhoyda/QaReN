@@ -144,13 +144,12 @@ for (const value of [
   'real @example.test',
   '',
 ]) {
-  test('a stable readable mismatch stays unverified without exposing values', async () => {
+  test('a stable readable mismatch fails without retyping or exposing values', async () => {
     const { env, dispatched } = await run(
       { value: 'old', focused: true },
       { after: { value, focused: true } },
     );
-    assert.equal(env.ok, true);
-    assert.equal(env.data.verified, false);
+    assert.equal(env.code, 'TEXT_ENTRY_UNVERIFIED');
     assert.deepEqual(dispatched, [REPLACE]);
     assert.doesNotMatch(JSON.stringify(env), /real@example|decoy@example|eal@example/);
   });
@@ -231,31 +230,7 @@ for (const mutation of ['none', 'possible'] as const) {
   });
 }
 
-for (const afterRecovery of [TEXT, 'real @example.test', 'old' + TEXT]) {
-  test(`proven retained prefix permits only one recovery: ${afterRecovery}`, async () => {
-    const { env, dispatched, clearCounts } = await run(
-      { value: 'old', focused: true },
-      {
-        after: [
-          { value: 'old' + TEXT, focused: true },
-          { value: afterRecovery, focused: true },
-        ],
-      },
-    );
-    assert.deepEqual(dispatched, [REPLACE, REPLACE]);
-    assert.deepEqual(clearCounts, [3, ('old' + TEXT).length]);
-    if (afterRecovery === TEXT) assert.equal(env.meta.verify, 'exact');
-    else if (afterRecovery === 'old' + TEXT) {
-      assert.equal(env.ok, false);
-      assert.equal(env.code, 'TEXT_ENTRY_UNVERIFIED');
-    } else {
-      assert.equal(env.ok, true);
-      assert.equal(env.data.verified, false);
-    }
-  });
-}
-
-test('retained-prefix recovery refuses when intended-field focus is lost', async () => {
+test('a retained prefix fails without a second dispatch', async () => {
   const { env, dispatched } = await run(
     { value: 'old', focused: true },
     { after: { value: 'old' + TEXT, focused: false } },
@@ -265,12 +240,11 @@ test('retained-prefix recovery refuses when intended-field focus is lost', async
   assert.deepEqual(dispatched, [REPLACE]);
 });
 
-test('formatting an initially empty readable field stays unverified without recovery', async () => {
+test('formatting an initially empty readable field fails exact readback', async () => {
   const { env, dispatched } = await run(
     { value: '', focused: true },
     { text: '123456', after: { value: '123 456', focused: true } },
   );
-  assert.equal(env.ok, true);
-  assert.equal(env.data.verified, false);
+  assert.equal(env.code, 'TEXT_ENTRY_UNVERIFIED');
   assert.deepEqual(dispatched, [['123456']]);
 });

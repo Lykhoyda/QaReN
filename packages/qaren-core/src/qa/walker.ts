@@ -1352,7 +1352,7 @@ async function walkBlockScoped(
           again.oracleTestID,
           context,
           proofMode,
-          isPrivateInput(again.element),
+          item.input !== undefined,
         ),
       );
     } catch (error) {
@@ -1414,7 +1414,7 @@ async function walkBlockScoped(
     currentInputs()?.expectEcho(quoted, item.input);
     try {
       entry = await mutate(item, before, (context) =>
-        deps.typeFocused!(quoted, fillText(item), quoted, context, true),
+        deps.typeFocused!(quoted, fillText(item), quoted, context, true, item.input !== undefined),
       );
     } catch (error) {
       if (isAbort(error)) throw error;
