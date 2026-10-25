@@ -173,6 +173,7 @@ export interface WalkerDeps {
     testID: string | undefined,
     context: QaDispatchContext,
     requireFocused?: boolean,
+    privateValue?: boolean,
   ): Promise<ActResult>;
   // iOS only: positive React proof that the input with this testID is focused.
   reactFocused?(testID: string): Promise<boolean>;
@@ -1351,6 +1352,7 @@ async function walkBlockScoped(
           again.oracleTestID,
           context,
           proofMode,
+          item.input !== undefined,
         ),
       );
     } catch (error) {
@@ -1412,7 +1414,7 @@ async function walkBlockScoped(
     currentInputs()?.expectEcho(quoted, item.input);
     try {
       entry = await mutate(item, before, (context) =>
-        deps.typeFocused!(quoted, fillText(item), quoted, context, true),
+        deps.typeFocused!(quoted, fillText(item), quoted, context, true, item.input !== undefined),
       );
     } catch (error) {
       if (isAbort(error)) throw error;

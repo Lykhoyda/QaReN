@@ -32,6 +32,7 @@ test('a runner without FILL_EVIDENCE_V1 is incompatible on both platforms', () =
       REQUIRED_IOS_FEATURES,
       [
         'EXACT_KEYBOARD_TARGET_GUARD',
+        'FOCUSED_REPLACE_V2',
         'HIT_TESTED_DISPATCH_V1',
         'TARGET_FRAME_GUARD_V1',
         'SNAPSHOT_FIDELITY_V1',
@@ -70,7 +71,9 @@ test('a runner without FILL_EVIDENCE_V1 is incompatible on both platforms', () =
 for (const capable of [false, true]) {
   test(`a focused replace ${capable ? 'reaches' : 'never reaches'} a runner ${capable ? 'with' : 'without'} FILL_EVIDENCE_V1`, async () => {
     _setFastRunnerStateForTest(state);
-    _setCapabilitiesForTest(capable ? ['EXACT_KEYBOARD_TARGET_GUARD', 'FILL_EVIDENCE_V1'] : []);
+    _setCapabilitiesForTest(
+      capable ? ['EXACT_KEYBOARD_TARGET_GUARD', 'FILL_EVIDENCE_V1', 'FOCUSED_REPLACE_V2'] : [],
+    );
     const bodies: Record<string, unknown>[] = [];
     _setFetchForTest(async (_url, init) => {
       bodies.push(JSON.parse(String(init?.body)) as Record<string, unknown>);
@@ -85,6 +88,7 @@ for (const capable of [false, true]) {
         text: 'replacement',
         focused: true,
         clearFirst: true,
+        _focusedProof: async () => true,
       } as never);
       if (!capable) {
         assert.equal(result.isError, true);
@@ -95,9 +99,13 @@ for (const capable of [false, true]) {
         return;
       }
       assert.equal(result.isError, undefined);
-      assert.equal(bodies.length, 1);
+      assert.equal(bodies.length, 2);
       assert.equal(bodies[0].focused, true);
       assert.equal(bodies[0].clearFirst, true);
+      assert.equal(bodies[0].prepareReplacement, true);
+      assert.equal(bodies[0].text, '');
+      assert.equal(bodies[1].clearFirst, false);
+      assert.equal(bodies[1].text, 'replacement');
     } finally {
       _setFetchForTest(globalThis.fetch);
       _setFastRunnerStateForTest(null);
@@ -106,7 +114,7 @@ for (const capable of [false, true]) {
   });
 }
 
-for (const feature of ['FILL_EVIDENCE_V1', 'TARGET_FRAME_GUARD_V1']) {
+for (const feature of ['FILL_EVIDENCE_V1', 'TARGET_FRAME_GUARD_V1', 'FOCUSED_REPLACE_V2']) {
   test(`iOS missing ${feature} rebuilds once at open`, async () => {
     const { ensureRunnerForCommand } = await import('../../dist/agent-device-wrapper.js');
     const events: string[] = [];
@@ -138,6 +146,36 @@ for (const feature of ['FILL_EVIDENCE_V1', 'TARGET_FRAME_GUARD_V1']) {
     assert.deepEqual(events, ['reap', 'invalidate', 'build']);
   });
 }
+
+test('focus moving after the clear refuses the string record without another mutation', async () => {
+  _setFastRunnerStateForTest(state);
+  _setCapabilitiesForTest([...REQUIRED_IOS_FEATURES]);
+  const bodies: Record<string, unknown>[] = [];
+  _setFetchForTest(async (_url, init) => {
+    bodies.push(JSON.parse(String(init?.body)));
+    return new Response(JSON.stringify({ ok: true, v: 2, data: { message: 'cleared' } }));
+  });
+  try {
+    const result = await runIOS({
+      command: 'type',
+      text: 'replacement',
+      focused: true,
+      clearFirst: true,
+      _focusedProof: async (focusOnly) => !focusOnly,
+    });
+    const envelope = JSON.parse(result.content[0].text);
+    assert.equal(envelope.ok, false);
+    assert.equal(envelope.meta.mutation, 'possible');
+    assert.match(envelope.error, /Focus left the intended field after clearing/);
+    assert.equal(bodies.length, 1);
+    assert.equal(bodies[0].prepareReplacement, true);
+    assert.equal(bodies[0].text, '');
+  } finally {
+    _setFetchForTest(globalThis.fetch);
+    _setFastRunnerStateForTest(null);
+    _setCapabilitiesForTest([]);
+  }
+});
 
 test('Android reusable runner with missing fill evidence emits the bounded rebuild signal', async () => {
   const {

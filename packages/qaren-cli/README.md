@@ -817,7 +817,7 @@ expects exactly the plan text. For keyboard fallback's replacement request and
 read-back policy, see below.
 Rebinding an input without a testID requires its original label and native type;
 the same frame alone cannot substitute a different input.
-Only a stable exact read-back
+For strict fills, only a stable exact read-back
 verifies a fill. A masked secure read-back or an unreadable one records a
 passing row with reason `UNVERIFIED_FILL`, never a verified pass; an empty or
 placeholder read-back of a non-empty fill on any field, a secure mask whose
@@ -827,8 +827,7 @@ by letter case (same length, equal ignoring case) means the app re-cased the
 value: it records a passing `UNVERIFIED_FILL` row, never a verified fill and never
 a refusal, with `caseNormalized: { chars }` beside the reason and a receipt and
 report detail such as `field case-normalized 12 chars`. The iOS runner makes that
-comparison itself (verdict `case-normalized`), so the value never leaves it;
-keyboard fallback applies the same rule to its React read-back. A different
+comparison itself (verdict `case-normalized`), so the value never leaves it. A different
 letter is still a mismatch. A screen change alone never verifies a fill. A quoted
 iOS fill can use keyboard fallback when no observable native input resolves, or
 strict binding refuses `NO_TEXT_INPUT_TARGET` before any text mutation for a
@@ -882,52 +881,53 @@ no secure or disabled element carries the quoted
 testID and React reports that exact input focused. The guard and proof use the
 quoted ID unchanged, including a literal `-pressable` suffix. Only an
 observed wrapper in the tap path establishes a wrapper-to-base identity mapping.
-The final focus read runs after runner readiness and health checks, in the
-call that sends the native typing command. Both keyboard-up paths require this
-read to be positive; the keyboard-down transition path vetoes a contradictory
-unfocused read. A false, unbound, unreadable or failed read at either proof stage
-on a keyboard-up path types nothing; failure of the pre-dispatch read returns
+The final focus reads run after runner readiness and health checks, before clearing
+and again before inserting text. Every fallback path, including a keyboard-down
+transition, requires positive proof that the intended input is focused before
+either mutation. A false, unbound, unreadable or failed read before clearing returns
 `NO_TEXT_INPUT_TARGET` with no mutation. An unknown keyboard state still refuses.
 Each walker focus decision logs one value-free `fallback-focus` line.
 
-QaReN then requests replacement of the focused field's content: the runner synthesizes
-select-all and types the plan text in one sequence. When the input is a
-controlled React field, its value is then read back locally and compared, never
-logged: an exact match verifies the fill. A stable controlled read-back exactly equal
-to the prior nonempty value followed by the requested text fails with
-`TEXT_ENTRY_UNVERIFIED` and an observed mutation, without retrying or continuing to
-submit. This detects a retained-prefix concatenation after typing; it does not
-repair the native replacement mechanism or cover unreadable values.
-The same check runs after the bounded retype below, comparing against the preserved
-initial value and the retype's fresh controlled, focused value before dispatch.
-A stable, nonempty read-back holding a
-strictly shorter, in-order part of the text is ambiguous: keystrokes dropped under
-host load and a field that strips characters or limits length look alike. QaReN
-requests one clear-and-retype with the same text within the same step budget. A match then
-verifies the fill. A second loss of a different length points to dropped
-keystrokes and fails with `TEXT_ENTRY_UNVERIFIED` naming only the typed and held
-lengths. The same loss twice points to the field's own transformation and stays
-unverified. Its row reason ends `the field kept the same shorter value on every
-attempt`, and the counts travel beside it as numbers, `kept: { typed, observed }`
-with one held count per attempt, because masking a private value may hide any
-digit in the reason text. Any other normalized, empty, uncontrolled or unreadable
-value also stays unverified. A later plan check still decides whether the value
-is acceptable. The receipt's `ledger.unverified_fills` lists each passing fill
-left unverified with its line and value-free reason, plus `kept` and a `detail`
-such as `field kept 10 of 13 chars on 2 attempts` when counts exist; the report
-line shows the same detail. Fill character counts are omitted when the run requires
-runtime inputs. The list is omitted when empty. A runner
-must advertise `FILL_EVIDENCE_V1` on both iOS and Android. Session startup routes
-a missing capability through the bounded source-rebuild path instead of
+For non-secure focused fields, QaReN checks the current content before typing.
+An empty field receives text directly, with no selection or Delete. A nonempty
+controlled field is cleared by moving to the end and deleting its measured length
+(at most 256 keys), after confirming that its content has not changed. The host
+requires two consecutive empty observations before sending the first character,
+and re-proves focus before both clearing and insertion. A prefill exceeding the
+bound or an unavailable initial content state refuses with `TEXT_ENTRY_UNVERIFIED`
+and no mutation. If clearing does not settle, focus moves, or the step budget
+expires, no replacement text is sent; clearing may already have mutated the field.
+
+After typing, an exact controlled non-secure value verifies the fill. Readable
+mismatches, including dropped characters and app formatting such as `123456`
+becoming `123 456`, remain honestly unverified. Only a proven retained prefix from
+the prior value followed by the requested text permits one bounded clear-and-retype,
+with the same focus and empty-state proofs. A retained prefix after that recovery
+fails with `TEXT_ENTRY_UNVERIFIED`; other mismatches remain unverified. Unreadable
+final values also remain unverified. Private non-secure runtime inputs instead
+require an exact length/content match and fail a confirmed mismatch without
+retyping. These comparisons run inside the app; only state and comparison metadata
+leave the process, never the value. Literal Fill values keep ordinary readback even when unrelated runtime
+inputs exist. Private character counts are omitted from the
+run's public output.
+
+Secure fields retain direct typing: they receive no selection or Delete, their
+values are never read, and the result stays unverified. **Known limit:** a prefilled
+secure field is not replaced. Use the app's own reset or recovery path to reach an
+empty secure field before filling it; automatic secure clearing needs a future
+value-free content-state source. A runner
+must advertise `FILL_EVIDENCE_V1` on both iOS and Android, and `FOCUSED_REPLACE_V2`
+on iOS. Session startup routes a missing capability through the bounded
+source-rebuild path instead of
 accepting the released artifact; see [prebuilt runner selection](../../README.md#prebuilt-runners)
-for persistent rejection of stale iOS prebuilts. An active iOS runner missing it refuses focused
-replacement with `RN_FAST_RUNNER_STALE`
+for persistent rejection of stale iOS prebuilts. An active iOS runner missing either
+capability refuses focused replacement with `RN_FAST_RUNNER_STALE`
 and no mutation instead of appending. A refused replacement keeps the runner's
 mutation disposition. The [focused replacement tests](../qaren-core/test/unit/device-fill-focused-replace.test.ts)
 cover these guards and mutation reporting.
 An unverified keyboard step records a passing row with reason `UNVERIFIED_FILL`,
 allowing later plan steps to continue; it does not establish the field's final
-value. Apart from that one retype, failed keyboard typing is not retried. Before the fallback tap or
+value. Apart from that one replacement recovery, failed keyboard typing is not retried. Before the fallback tap or
 no-target typing dispatch, the value is protected under the
 [shared masking rules](#input-value-masking), and screenshots are withheld for the rest
 of the walk. For block persistence after fallback, see [Saved blocks](#saved-blocks).

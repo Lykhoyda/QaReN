@@ -1851,7 +1851,8 @@ export async function runNative(
     exactTarget?: ExactTargetOpts;
     /** Type into the already focused field; skip exact-target decoration. */
     focusedType?: boolean;
-    focusedProof?: () => Promise<boolean>;
+    focusedProof?: (focusOnly?: boolean) => Promise<boolean>;
+    focusedDeleteCount?: number;
   } = {},
 ): Promise<ToolResult> {
   const qa = opts.qaContext !== undefined || opts.qaReadOnly === true;
@@ -1934,6 +1935,7 @@ export async function runNative(
     if (ios.command === 'type' && opts.focusedType) {
       ios.focused = true;
       ios._focusedProof = opts.focusedProof;
+      ios.replacementDeleteCount = opts.focusedDeleteCount;
       delete ios._staleRef;
     } else if ((ios.command === 'type' || ios.command === 'verifyInput') && opts.exactTarget) {
       const decorated = decorateExactTargetIOS(ios, opts.exactTarget);
