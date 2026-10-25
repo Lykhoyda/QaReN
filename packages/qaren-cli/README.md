@@ -669,11 +669,13 @@ screen change cannot turn a proven no-mutation refusal into a passing action.
 An unproven press passes only when the screen changes. That comparison includes
 each control's selected state (the iOS selected trait or Android accessibility
 selection), so a control that shows
-selection alone proves its press by becoming selected; a press that leaves it
-unchanged still fails, naming whether the target stayed selected. A press also
+selection alone proves its press by becoming selected or deselected; a press that
+leaves it unchanged still fails, naming whether the target stayed selected. A press also
 counts a change in any React host's `accessibilityState` checked or selected flag,
 such as a checkbox nested inside an accessible row, when both captures carry
-complete React host evidence; only those value-free flags are captured.
+complete React host evidence. The value-free `checked` flag accepts `true`,
+`false`, or `mixed`; `selected` accepts `true` or `false`. Missing or incomplete
+host evidence on either side cannot prove this state change.
 Before its one retry, the walker re-captures until the same target (resolved
 through the same exact-identity rules as the step) holds one native frame
 across two captures, within the

@@ -594,7 +594,7 @@ test('a not-ok press on an unchanged screen retries once and fails naming the ha
   );
 });
 
-function checkboxRow(checked: boolean | undefined, selected?: boolean): Screen {
+function checkboxRow(checked: boolean | 'mixed' | undefined, selected?: boolean): Screen {
   return screen(['Alone', 'With partner'], {
     reactHostEvidence: {
       hosts: [
@@ -620,7 +620,10 @@ function checkboxRow(checked: boolean | undefined, selected?: boolean): Screen {
 test('a checkbox tap whose only effect is a checked or selected state flip passes on the first press', async () => {
   for (const [before, after] of [
     [checkboxRow(false), checkboxRow(true)],
+    [checkboxRow(true), checkboxRow(false)],
+    [checkboxRow('mixed'), checkboxRow(true)],
     [checkboxRow(undefined, false), checkboxRow(undefined, true)],
+    [checkboxRow(undefined, true), checkboxRow(undefined, false)],
   ]) {
     const f = fake([before, after]);
     const outcome = await walkBlock(block('1. Tap "Alone"\n'), f.deps);
@@ -634,9 +637,14 @@ test('a checkbox tap whose only effect is a checked or selected state flip passe
 });
 
 test('a checkbox tap with no state flip, or state on only one side, still reports no change', async () => {
+  const incomplete = checkboxRow(true);
+  incomplete.reactHostEvidence!.complete = false;
   for (const screens of [
     [checkboxRow(false)],
     [checkboxRow(false), screen(['Alone', 'With partner'])],
+    [screen(['Alone', 'With partner']), checkboxRow(true)],
+    [checkboxRow(false), incomplete],
+    [incomplete, checkboxRow(false)],
   ]) {
     const f = fake(screens);
     const outcome = await walkBlock(block('1. Tap "Alone"\n'), f.deps);
