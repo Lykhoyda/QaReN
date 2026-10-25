@@ -35,6 +35,7 @@ type Snapshot = {
   listFrame?: NonNullable<NativeNode['rect']>;
   tab?: string;
   title?: string;
+  titleY?: number;
   toolbarY?: number;
   toolbarHittable?: boolean;
   overlays?: NonNullable<NativeNode['rect']>[];
@@ -143,14 +144,14 @@ function fixture() {
         label: state.tab,
         rect: { x: 0, y: 820, width: 100, height: 40 },
       });
-    if (state.title)
+    if (state.title !== undefined)
       rawNodes.push({
         type: 'NavigationBar',
         hittable: false,
         parentIndex: 1,
         identifier: 'main-navigation',
         label: state.title,
-        rect: { x: 0, y: 0, width: 402, height: 60 },
+        rect: { x: 0, y: state.titleY ?? 0, width: 402, height: 60 },
       });
     const depth = (index: number): number => {
       const parent = rawNodes[index].parentIndex;
@@ -226,6 +227,33 @@ async function run(
 }
 
 for (const direction of ['up', 'down'] as const) {
+  for (const mode of ['quoted', 'replay'] as const) {
+    for (const animation of ['fade', 'translate', 'disappear'] as const) {
+      test(`scroll finds its target after a custom title ${animation}: ${direction}, ${mode}`, async () => {
+        const f = fixture();
+        f.setSnapshot(async () => ({
+          footer: f.drags() > 0,
+          tab: 'Home',
+          listID: 'feed',
+          title:
+            f.drags() === 0 || animation === 'translate'
+              ? 'Home'
+              : animation === 'fade'
+                ? ''
+                : undefined,
+          titleY: f.drags() > 0 ? -20 : 0,
+        }));
+        try {
+          const result = await run(f, direction, mode);
+          assert.equal(result.refusal, undefined);
+          assert.equal(result.block.outcome, 'pass', JSON.stringify(result.failure));
+          assert.equal(f.drags(), 1);
+        } finally {
+          clearRefMap();
+        }
+      });
+    }
+  }
   for (const mode of ['quoted', 'phrase', 'replay', 'text-replay'] as const) {
     test(`slow presence confirmation uses fresh ordinary evidence: ${direction}, ${mode}`, async () => {
       const f = fixture();
@@ -423,23 +451,30 @@ for (const direction of ['up', 'down'] as const) {
       }
     });
 
-    test(`stable navigation identifier cannot mask confirmation title changes: ${direction}, ${mode}`, async () => {
-      const f = fixture();
-      let navigated = false;
-      f.setSnapshot(async (presence) => {
-        if (presence) navigated = true;
-        return { footer: true, tab: 'Policies', title: navigated ? 'Claims' : 'Policies' };
+    for (const replacedList of [false, true]) {
+      test(`confirmation title change needs list corroboration: ${direction}, ${mode}, replaced=${replacedList}`, async () => {
+        const f = fixture();
+        let confirmed = false;
+        f.setSnapshot(async (presence) => {
+          if (presence) confirmed = true;
+          return {
+            footer: true,
+            tab: 'Policies',
+            title: confirmed ? 'Claims' : 'Policies',
+            listID: confirmed && replacedList ? 'claims' : 'policies',
+          };
+        });
+        try {
+          const result = await run(f, direction, mode);
+          assert.equal(result.refusal?.code, replacedList ? 'SCROLL_NAVIGATED' : undefined);
+          assert.equal(result.block.outcome, replacedList ? 'fail' : 'pass');
+          assert.equal(f.drags(), 0);
+          if (replacedList) assert.ok(f.f.rows.every((row) => row.outcome !== 'pass'));
+        } finally {
+          clearRefMap();
+        }
       });
-      try {
-        const result = await run(f, direction, mode);
-        assert.equal(result.refusal?.code, 'SCROLL_NAVIGATED');
-        assert.equal(result.block.outcome, 'fail');
-        assert.equal(f.drags(), 0);
-        assert.ok(f.f.rows.every((row) => row.outcome !== 'pass'));
-      } finally {
-        clearRefMap();
-      }
-    });
+    }
 
     for (const refresh of [false, true]) {
       test(`confirmation navigation precedes target acceptance: ${direction}, ${mode}, refresh=${refresh}`, async () => {

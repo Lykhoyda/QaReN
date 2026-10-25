@@ -30,11 +30,6 @@ export function scrollNavigationChange(
     );
   if (selected(before) !== selected(after))
     return 'selected element outside the scroll list changed';
-  const titles = (screen: Screen) => identities(screen.elements.map(navigationBarTitle));
-  const beforeTitles = titles(before);
-  const afterTitles = titles(after);
-  if (beforeTitles !== '[]' && afterTitles !== '[]' && beforeTitles !== afterTitles)
-    return 'native navigation-bar title changed';
   if (container) {
     const frame = elementFrame(container);
     const tolerance = 2 * (before.pointScale ?? 1);
@@ -54,6 +49,13 @@ export function scrollNavigationChange(
         )
       );
     });
-    if (!present) return 'scrolled list disappeared or changed';
+    if (!present) {
+      const titles = (screen: Screen) => identities(screen.elements.map(navigationBarTitle));
+      const beforeTitles = titles(before);
+      const afterTitles = titles(after);
+      return beforeTitles !== '[]' && afterTitles !== '[]' && beforeTitles !== afterTitles
+        ? 'native navigation-bar title changed and scrolled list disappeared or changed'
+        : 'scrolled list disappeared or changed';
+    }
   }
 }

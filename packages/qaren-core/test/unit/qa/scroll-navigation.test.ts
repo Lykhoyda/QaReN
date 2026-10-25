@@ -10,6 +10,7 @@ function screen(
     tab?: string;
     title?: string;
     titleHeight?: number;
+    titleY?: number;
     titleType?: string;
     titleIdentifier?: string;
     rowY?: number;
@@ -40,7 +41,7 @@ function screen(
       type: options.titleType ?? 'NavigationBar',
       identifier: options.titleIdentifier,
       label: options.title ?? 'Policies',
-      rect: { x: 0, y: 20, width: 390, height: options.titleHeight ?? 70 },
+      rect: { x: 0, y: options.titleY ?? 20, width: 390, height: options.titleHeight ?? 70 },
     },
   ];
   if (options.list !== false) {
@@ -92,25 +93,42 @@ test('selected tab changes stop scrolling', () => {
   assert.match(change(screen(), screen({ tab: 'Claims' }))!, /selected/);
 });
 
-test('native navigation-bar label and identifier changes stop scrolling', () => {
-  assert.match(change(screen(), screen({ title: 'Claims' }))!, /title/);
-  assert.match(
-    change(screen({ titleIdentifier: 'Policies' }), screen({ titleIdentifier: 'Claims' }))!,
-    /title/,
+test('a fading custom title does not navigate while the tab and dragged list remain', () => {
+  const before = screen({ titleIdentifier: 'main-navigation' });
+  for (const after of [
+    screen({ titleIdentifier: 'main-navigation', title: '', titleY: -20 }),
+    screen({ titleIdentifier: 'main-navigation', title: 'Policies', titleY: -20 }),
+    screen({ titleType: 'Other', titleIdentifier: '', title: '' }),
+  ]) {
+    assert.equal(change(before, after), undefined);
+  }
+});
+
+test('native navigation-bar label and identifier changes need a second marker', () => {
+  assert.equal(change(screen(), screen({ title: 'Claims' })), undefined);
+  assert.equal(
+    change(screen({ titleIdentifier: 'Policies' }), screen({ titleIdentifier: 'Claims' })),
+    undefined,
   );
-  assert.match(
+  assert.equal(
     change(
       screen({ title: '', titleIdentifier: 'Policies' }),
       screen({ title: '', titleIdentifier: 'Claims' }),
-    )!,
-    /title/,
+    ),
+    undefined,
   );
+  assert.match(change(screen(), screen({ title: 'Claims', list: false }))!, /title.*list/);
+  assert.match(change(screen(), screen({ title: 'Claims', tab: 'Claims' }))!, /selected/);
 });
 
-test('a stable navigation-bar identifier cannot mask a changed title label', () => {
+test('a changed title label with a stable bar identifier does not navigate alone', () => {
   const before = screen({ titleIdentifier: 'main-navigation', title: 'Policies' });
   const after = screen({ titleIdentifier: 'main-navigation', title: 'Claims' });
-  assert.match(change(before, after)!, /title/);
+  assert.equal(change(before, after), undefined);
+  assert.match(
+    change(before, screen({ titleIdentifier: 'main-navigation', title: 'Claims', list: false }))!,
+    /title.*list/,
+  );
   assert.equal(
     change(before, screen({ titleIdentifier: 'main-navigation', title: 'Policies' })),
     undefined,
@@ -137,7 +155,7 @@ for (const type of [
   'android.app.ActionBar',
   'com.android.internal.widget.ActionBarView',
 ]) {
-  test(`ordinary Android title text stops navigation: ${type}`, () => {
+  test(`ordinary Android title text needs a second marker: ${type}`, () => {
     const android = (label: string) =>
       join(
         [
@@ -152,7 +170,7 @@ for (const type of [
         ],
         [],
       );
-    assert.match(change(android('Policies'), android('Claims'))!, /title/);
+    assert.equal(change(android('Policies'), android('Claims')), undefined);
     assert.equal(change(android('Policies'), android('Policies')), undefined);
   });
 }
