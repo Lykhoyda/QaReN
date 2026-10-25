@@ -291,10 +291,10 @@ for (const android of [false, true]) {
           });
         const result = await runPlan(
           parsePlan(
-            kind === 'wait'
-              ? '1. Wait for "Add coverage"'
-              : expected === 'only-in-aggregated-label'
-                ? '1. Scroll down until "coverage"'
+            expected === 'only-in-aggregated-label'
+              ? `1. ${kind === 'wait' ? 'Wait for' : 'Scroll down until'} "coverage"`
+              : kind === 'wait'
+                ? '1. Wait for "Add coverage"'
                 : '1. Scroll down until "Add coverage"',
           ).blocks!,
           f.deps,

@@ -615,8 +615,8 @@ names, deadline state and a fixed outcome code, without labels, identifiers,
 values or pixels; unavailable counts and deadline state are `null`. These events
 are retained in `core-diagnostics.jsonl` even without runtime inputs. A containment
 fallback retains the `deadline-clean` outcome and records `resolvedBy: containment`;
-a quoted scroll-until can also confirm one on-screen container carrying a whole
-label segment on an ordinary capture without requesting candidate provenance,
+a quoted wait or scroll-until can also confirm one on-screen container carrying a
+whole label segment on an ordinary capture without requesting candidate provenance,
 provided no observed provenance or visibility contradicts it. An enclosing
 container with the same full label as an enclosed matching container is collapsed
 when its label source is absent or descendant-derived, even if it has its own

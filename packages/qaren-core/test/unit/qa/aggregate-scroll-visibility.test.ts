@@ -127,7 +127,73 @@ for (const source of [undefined, 'descendant', 'direct'] as const) {
   });
 }
 
-test('aggregate scroll visibility does not broaden quoted waits or press resolution', async () => {
+function addressScreen(label = 'Name, Address, Phone') {
+  return join(
+    [
+      ...nodes().slice(0, 2),
+      {
+        ref: '@row',
+        parentIndex: 1,
+        type: 'Other',
+        label,
+        hittable: true,
+        rect: { x: 20, y: 100, width: 360, height: 150 },
+      },
+    ],
+    [],
+    'app',
+    { native: 'complete', react: 'complete' },
+  );
+}
+
+test('quoted wait confirms a whole component of one aggregate container', async () => {
+  const s = addressScreen();
+  assert.equal(targetEvidence({ phrase: 'Address', quoted: 'Address' }, s), 'fail');
+  const f = walker(
+    [s],
+    scriptedJudge(() => assert.fail('quoted visibility needs no model')),
+  );
+  const diagnostics: LabelProvenanceDiagnostic[] = [];
+  f.deps.labelProvenanceDiagnostic = (event) => diagnostics.push(event);
+  const result = await runPlan(parsePlan('1. Wait for "Address"').blocks!, f.deps);
+  assert.equal(result.verdict, 'PASS', JSON.stringify(result));
+  assert.deepEqual(f.actions, []);
+  assert.equal(diagnostics[0]?.resolvedBy, 'aggregate-visibility');
+  assert.doesNotMatch(JSON.stringify(diagnostics), /Address|Phone|@row/);
+});
+
+for (const [quoted, why] of [
+  ['dress', 'substring of a word'],
+  ['Add', 'prefix of a word'],
+  ['Address', 'secure container'],
+  ['Address', 'value-derived label'],
+] as const) {
+  test(`quoted wait does not pass on an aggregate ${why}`, async () => {
+    const s = addressScreen();
+    if (why === 'secure container') s.elements[2].secure = true;
+    if (why === 'value-derived label')
+      s.elements[2].semantic!.nativePresence = {
+        kind: 'other',
+        structural: false,
+        labelSource: 'value',
+      };
+    const f = walker(
+      [],
+      scriptedJudge(() => assert.fail('quoted visibility needs no model')),
+    );
+    let now = 0;
+    f.deps.now = () => now;
+    f.deps.captureScreen = async () => {
+      now += 5_000;
+      return s;
+    };
+    const result = await runPlan(parsePlan(`1. Wait for "${quoted}"`).blocks!, f.deps);
+    assert.notEqual(result.verdict, 'PASS', JSON.stringify(result));
+    assert.deepEqual(f.actions, []);
+  });
+}
+
+test('aggregate visibility does not broaden press resolution', async () => {
   const s = screen();
   assert.equal(targetEvidence(target, s), 'fail');
   const f = walker(

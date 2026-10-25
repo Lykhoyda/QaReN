@@ -50,7 +50,7 @@ import {
   scrollUntilContainer,
   scrollUntilDirection,
   targetEvidence,
-  aggregateScrollTargetVisible,
+  aggregateTargetVisible,
   targetNeedsPresence,
   presenceMiss,
   visibleSelector,
@@ -1156,11 +1156,7 @@ async function walkBlockScoped(
         const target = item.kind === 'wait' ? item.target : item.until!;
         if (target.quoted !== undefined) {
           const evidence = targetEvidence(target, observation.screen);
-          if (
-            evidence !== 'pass' &&
-            item.kind === 'scroll' &&
-            aggregateScrollTargetVisible(target, observation.screen)
-          ) {
+          if (evidence !== 'pass' && aggregateTargetVisible(target, observation.screen)) {
             try {
               deps.labelProvenanceDiagnostic?.({
                 kind: 'label-provenance',
