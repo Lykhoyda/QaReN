@@ -2,4 +2,4 @@
 "qaren": patch
 ---
 
-A later plan step that taps a decline label such as "Maybe later" no longer stops an earlier step from closing an app sheet that covers its target.
+A later decline-label target such as "Maybe later" no longer blocks earlier sheet recovery through a different eligible control, while the control targeted by the later step remains protected.
