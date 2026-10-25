@@ -584,12 +584,14 @@ reads no React tree, and cannot authorize media or replace the ordinary privacy
 observation. It retains that snapshot's references, generation and dispatch
 expiry. The native provenance deadline is 1.5 seconds earlier than the walker
 deadline, leaving time for samples or timeout diagnostics to return. Both native
-producers require live candidate observations that match the ordinary identities and agree across their last two samples; changes to unrelated
+producers re-read the named candidates and require them to match the ordinary identities and agree across their last two samples; changes to unrelated
 nodes do not invalidate that agreement. On iOS, candidate indices and parent
 indices use the ordinary snapshot's retained filtering and deduplication options,
 rather than raw-tree positions. iOS sample stability compares label source,
-parent link and frame; ordinary identity guards and each live candidate observation
-remain mandatory, while unrelated value or enabled-state changes between samples
+parent link and frame; ordinary identity guards remain mandatory for every candidate.
+Candidates with an identifier or their own label also require a live hit check.
+A candidate with neither is identified by the baseline guards across both samples,
+because its live query would match every such wrapper. Unrelated value or enabled-state changes between samples
 do not invalidate provenance. Only an explicit `deadline-clean` native outcome
 can enable containment fallback before the ordinary observation expires; exactly
 two native candidates can then resolve by strict frame containment: one enabled, visible, hittable interactive control inside one

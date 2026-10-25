@@ -523,8 +523,10 @@ extension RnFastRunnerTests {
           diagnostic.nodeIndex = index; diagnostic.fieldMask = 256
           return finish("source-changed")
         }
+        // An anonymous unlabelled descriptor matches every such wrapper; the baseline-checked samples identify it instead.
+        let queryable = !entry.descriptor.identifier.isEmpty || !entry.descriptor.label.isEmpty
         var unknown: PlatformPresenceObservation.UnknownReason?
-        guard observePresence(entry.descriptor, count: 1, app: app, deadline: deadline, timing: timing,
+        guard !queryable || observePresence(entry.descriptor, count: 1, app: app, deadline: deadline, timing: timing,
           unknownReason: { unknown = $0 }) != nil else {
           diagnostic.nodeIndex = index
           return finish(unknown?.rawValue ?? "observation-unavailable")
