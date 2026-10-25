@@ -193,8 +193,7 @@ for (const type of ['NavigationBar', 'android.widget.Toolbar']) {
           rect: { x: 0, y: 780, width: 150, height: 44 },
         },
       ];
-      if (list)
-        nodes.push({ type: 'ScrollView', parentIndex: 0, identifier: listID, rect: frame });
+      if (list) nodes.push({ type: 'ScrollView', parentIndex: 0, identifier: listID, rect: frame });
       for (const label of titles) {
         const parentIndex = nodes.length;
         nodes.push({
@@ -232,7 +231,10 @@ for (const type of ['NavigationBar', 'android.widget.Toolbar']) {
 
     test(`new non-empty native titles refuse scrolling: ${type}, list=${listID}`, () => {
       const before = captured(['Policies', 'Actions']);
-      for (const titles of [['Claims', 'Actions'], ['Policies', 'Actions', 'Claims']]) {
+      for (const titles of [
+        ['Claims', 'Actions'],
+        ['Policies', 'Actions', 'Claims'],
+      ]) {
         assert.match(change(before, captured(titles))!, /title/);
       }
       assert.match(change(captured([]), captured(['Policies']))!, /title/);
