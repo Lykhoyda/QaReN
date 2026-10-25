@@ -40,6 +40,7 @@ import {
   bindDispatchIdentity,
   stepTarget,
   scrollConfirmationCovered,
+  scrollConfirmationOccluded,
   scrollConfirmationEvidence,
   scrollUntilBand,
   scrollUntilContainer,
@@ -1047,6 +1048,7 @@ async function walkBlockScoped(
         let ordinary = observation;
         const target = item.kind === 'wait' ? item.target : item.until!;
         const assertionUpdates = new Map<Element, AssertionUpdate>();
+        const occluded = new Set<Element>();
         const isContradicted = (witness: Element): boolean => {
           const frame = frameKey(witness);
           const identified =
@@ -1084,7 +1086,11 @@ async function walkBlockScoped(
               element.semantic?.visibility !== 'offscreen' &&
               !scrollConfirmationCovered(element, ordinary.screen),
           );
-          if (!available.length) return true;
+          if (!available.length) {
+            if (matches.every((element) => scrollConfirmationOccluded(element, ordinary.screen)))
+              occluded.add(witness);
+            return true;
+          }
           const disabled = disabledStateOf(available[0]);
           if (
             target.quoted === undefined &&
@@ -1179,12 +1185,19 @@ async function walkBlockScoped(
                   !rechecked.visibility ||
                   'refuse' in rechecked.visibility ||
                   rechecked.visibility.verdict !== 'present'
-                )
+                ) {
+                  if (
+                    contradicted.length > 0 &&
+                    contradicted.every((element) => occluded.has(element)) &&
+                    assertionUpdates.size === 0
+                  )
+                    return { observation: ordinary, found: false };
                   throw new ResolutionError({
                     refuse: 'VISIBILITY_UNSURE',
                     reason:
                       'the newer ordinary observation contradicts confirmed target visibility',
                   });
+                }
               }
             }
           }
@@ -1200,15 +1213,18 @@ async function walkBlockScoped(
           decision = undefined;
           continue;
         }
-        const confirmed = (): { observation: Observation; found: true } => {
+        const confirmed = (): { observation: Observation; found: boolean } => {
           if (item.kind === 'scroll' && target.quoted !== undefined) {
             const witnesses = scrollConfirmationEvidence(target, observation.screen);
             const contradicted = witnesses.length > 0 && witnesses.every(isContradicted);
-            if (contradicted)
+            if (contradicted) {
+              if (witnesses.every((element) => occluded.has(element)))
+                return { observation: ordinary, found: false };
               throw new ResolutionError({
                 refuse: 'VISIBILITY_UNSURE',
                 reason: 'the newer ordinary observation contradicts confirmed target visibility',
               });
+            }
           }
           return { observation: item.kind === 'scroll' ? ordinary : observation, found: true };
         };

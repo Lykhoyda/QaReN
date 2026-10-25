@@ -506,21 +506,27 @@ function frontOverlayFrames(
   return frames;
 }
 
-export function scrollConfirmationCovered(element: Element, screen: Screen): boolean {
-  if (centreCovered(element, screen)) return true;
+export function scrollConfirmationOccluded(element: Element, screen: Screen): boolean {
+  let keyboardCovered = false;
+  centreCovered(element, screen, (facts) => {
+    keyboardCovered = facts.branch === 'keyboard';
+  });
+  if (keyboardCovered) return false;
   const ancestors = ancestorsOf(element);
   const container = ancestors.find(isScrollContainer) ?? ancestors.find(isWindow);
   const frame = elementFrame(element);
   if (!container || !frame) return false;
-  const x = frame.x + frame.width / 2;
-  const y = frame.y + frame.height / 2;
   return frontOverlayFrames(container, frame, screen).some(
     (overlay) =>
-      x >= overlay.x &&
-      x < overlay.x + overlay.width &&
-      y >= overlay.y &&
-      y < overlay.y + overlay.height,
+      frame.x < overlay.x + overlay.width &&
+      frame.x + frame.width > overlay.x &&
+      frame.y < overlay.y + overlay.height &&
+      frame.y + frame.height > overlay.y,
   );
+}
+
+export function scrollConfirmationCovered(element: Element, screen: Screen): boolean {
+  return centreCovered(element, screen) || scrollConfirmationOccluded(element, screen);
 }
 
 function clearOfFrontOverlays(

@@ -17,6 +17,7 @@ const frame = { x: 0, y: 0, width: 402, height: 874 };
 type Snapshot = {
   footer?: boolean;
   footerY?: number;
+  footerHeight?: number;
   footerLabel?: string;
   footerControl?: boolean;
   footerType?: string;
@@ -92,7 +93,7 @@ function fixture() {
               : 'loading',
         rect: state.footerMissing
           ? undefined
-          : { x: 10, y: state.footerY ?? 200, width: 100, height: 30 },
+          : { x: 10, y: state.footerY ?? 200, width: 100, height: state.footerHeight ?? 30 },
       },
       ...(presence
         ? [
@@ -226,6 +227,85 @@ async function run(
   });
 }
 
+test('scroll continues when row 58 lands under a floating bar with one drag left', async () => {
+  const f = fixture();
+  f.setSnapshot(async () => ({
+    footer: f.drags() >= 5,
+    footerY: f.drags() === 5 ? 818.7 : 200,
+    footerHeight: 64,
+    listID: 'feed',
+    tab: 'A',
+    listFrame: { x: 0, y: 106.67, width: 402, height: 767.33 },
+    overlays: [{ x: 21, y: 791, width: 360, height: 70 }],
+  }));
+  try {
+    const result = await run(f, 'down', 'quoted');
+    assert.equal(result.failure, undefined);
+    assert.equal(result.block.outcome, 'pass');
+    assert.equal(f.drags(), 6);
+    assert.ok(f.endpoints.every(([, start, , end]) => start < 787 && end < 787));
+  } finally {
+    clearRefMap();
+  }
+});
+
+for (const direction of ['up', 'down'] as const) {
+  for (const mode of ['quoted', 'phrase', 'replay', 'text-replay'] as const) {
+    for (const partial of [false, true]) {
+      test(`target overlapping a floating overlay needs another drag: ${direction}, ${mode}, partial=${partial}`, async () => {
+        const f = fixture();
+        const overlay = { x: 21, y: direction === 'down' ? 791 : 80, width: 360, height: 70 };
+        f.setSnapshot(async () => ({
+          footer: mode === 'text-replay' || mode === 'phrase' || f.drags() > 0,
+          footerY:
+            f.drags() === 1 || ((mode === 'text-replay' || mode === 'phrase') && f.drags() === 0)
+              ? direction === 'down'
+                ? partial
+                  ? 770
+                  : 800
+                : partial
+                  ? 145
+                  : 100
+              : 200,
+          listID: 'feed',
+          tab: 'A',
+          overlays: [overlay],
+        }));
+        try {
+          const result = await run(f, direction, mode);
+          assert.equal(result.failure, undefined);
+          assert.equal(result.block.outcome, 'pass');
+          assert.equal(f.drags(), 2);
+          assert.ok(
+            f.endpoints.every(([, start, , end]) =>
+              direction === 'down'
+                ? start < overlay.y - 4 && end < overlay.y - 4
+                : start > overlay.y + overlay.height + 4 && end > overlay.y + overlay.height + 4,
+            ),
+          );
+        } finally {
+          clearRefMap();
+        }
+      });
+    }
+    test(`a newly covering full-screen overlay refuses before another drag: ${direction}, ${mode}`, async () => {
+      const f = fixture();
+      let confirmed = false;
+      f.setSnapshot(async (presence) => {
+        if (presence) confirmed = true;
+        return { footer: true, listID: 'feed', overlays: confirmed && !presence ? [frame] : [] };
+      });
+      try {
+        await assert.rejects(run(f, direction, mode), /SCROLL_BAND_TOO_SMALL/);
+        assert.equal(f.drags(), 0);
+        assert.deepEqual(f.endpoints, []);
+      } finally {
+        clearRefMap();
+      }
+    });
+  }
+}
+
 for (const direction of ['up', 'down'] as const) {
   for (const mode of ['quoted', 'replay'] as const) {
     for (const animation of ['fade', 'translate', 'disappear'] as const) {
@@ -330,7 +410,7 @@ for (const direction of ['up', 'down'] as const) {
       }
     }
 
-    for (const contradiction of ['outside-list', 'keyboard', 'overlay', 'disappeared'] as const) {
+    for (const contradiction of ['outside-list', 'keyboard', 'disappeared'] as const) {
       test(`new ordinary ${contradiction} vetoes positive confirmation: ${direction}, ${mode}`, async () => {
         const f = fixture();
         let confirmed = false;
@@ -347,7 +427,6 @@ for (const direction of ['up', 'down'] as const) {
               changed && contradiction === 'outside-list' ? (direction === 'down' ? 750 : 50) : 200,
             footerMissing: changed && contradiction === 'disappeared',
             keyboardY: changed && contradiction === 'keyboard' ? 180 : undefined,
-            overlays: changed && contradiction === 'overlay' ? [frame] : [],
           };
         });
         try {
