@@ -428,10 +428,10 @@ function identityRulesOutDriver(value: unknown, line: string, scanStartedAt: num
   const executable = observedExecutable(value, line, scanStartedAt);
   if (!executable) return false;
   const name = executable.slice(executable.lastIndexOf('/') + 1);
-  // The kernel executable decides; argv[0] may name a symlink such as a versioned CLI.
+  // Kernel identity rules out interpreter prompts; argv[0] may be a versioned CLI symlink.
   return !(
     SHELL_WRAPPERS.test(name) ||
-    /^(?:java|node|nodejs|python[\d.]*|ruby[\d.]*|perl[\d.]*|osascript)$/i.test(name) ||
+    /^(?:java|osascript)$/i.test(name) ||
     /UITests-?Runner$/i.test(name) ||
     hasUnresolvedIosPathPattern(executable)
   );
@@ -648,15 +648,28 @@ export async function probeIosExternalRunnerAdmission(
       const remaining = Math.floor(deadline - candidateStartedAt);
       if (remaining <= 0) return unknown('deadline_exceeded');
       const pid = Number(/^\s*(\d+)/.exec(line)![1]);
-      const observation = await observe(
-        pid,
-        Math.min(1_000, remaining),
-        MAESTRO_JAVA_ENTRYPOINT_RE.test(line) || undefined,
-      );
+      const controller = isUnscopedMcpControl(line);
+      let observation = await observe(pid, Math.min(1_000, remaining), controller || undefined);
       if (performance.now() >= deadline) return unknown('deadline_exceeded', pid);
-      const failed = observationFailure(observation);
+      let failed = observationFailure(observation);
       if (failed) return unknown(failed, pid);
       const executable = observedExecutable(observation, line, scanStartedAt);
+      // Only a kernel-proven JVM needs exact argv; a long prompt naming the entrypoint would exceed its cap.
+      if (
+        !controller &&
+        MAESTRO_JAVA_ENTRYPOINT_RE.test(line) &&
+        executable?.slice(executable.lastIndexOf('/') + 1) === 'java'
+      ) {
+        const argvRemaining = Math.floor(candidateDeadline - performance.now());
+        if (argvRemaining <= 0) return unknown('observer_timeout', pid);
+        observation = await observe(pid, argvRemaining, true);
+        if (performance.now() >= deadline) return unknown('deadline_exceeded', pid);
+        failed = observationFailure(observation);
+        if (failed) return unknown(failed, pid);
+        if (performance.now() >= candidateDeadline) return unknown('observer_timeout', pid);
+        if (observedExecutable(observation, line, scanStartedAt) !== executable)
+          return unknown('executable_identity_unproven', pid);
+      }
       if (executable?.slice(executable.lastIndexOf('/') + 1) === 'xcodebuild') {
         if (SIMULATOR_CONTAINER.test(executable))
           return unknown('executable_identity_unproven', pid);
@@ -694,7 +707,7 @@ export async function probeIosExternalRunnerAdmission(
       if (
         !(
           identityProvesMcpControl(observation, line, scanStartedAt) ||
-          (!isUnscopedMcpControl(line) && identityRulesOutDriver(observation, line, scanStartedAt))
+          (!controller && identityRulesOutDriver(observation, line, scanStartedAt))
         )
       )
         return unknown('executable_identity_unproven', pid);

@@ -69,26 +69,41 @@ test('the kernel executable decides a symlinked launcher whose argv[0] differs',
     ),
     'clear',
   );
-  for (const name of ['node', 'java', 'bash', 'xcodebuild', 'maestro', 'ExampleUITestsRunner']) {
+  for (const [name, expected] of [
+    ['node', 'clear'],
+    ['java', 'unknown'],
+    ['bash', 'unknown'],
+    ['xcodebuild', 'unknown'],
+    ['maestro', 'unknown'],
+    ['ExampleUITestsRunner', 'unknown'],
+  ]) {
     assert.equal(
       await probeIosExternalRunnerStrict(scan, device, async () => identity(20, `/tools/${name}`)),
-      'unknown',
+      expected,
       name,
     );
   }
 });
 
-test('observed drivers and interpreters remain unknown without inspecting their arguments', async () => {
+test('script interpreters clear by kernel identity without inspecting their arguments', async () => {
+  for (const name of ['node', 'nodejs', 'python3', 'python3.12', 'ruby', 'perl']) {
+    assert.equal(
+      await probeIosExternalRunnerStrict(ps(`20 ${name} ${prompt}\n`), device, async () =>
+        identity(20, `/tools/${name}`),
+      ),
+      'clear',
+      name,
+    );
+  }
+});
+
+test('observed drivers, shells and Java remain unknown without inspecting their arguments', async () => {
   for (const name of [
     'java',
     'sh',
     'bash',
     'zsh',
     'env',
-    'node',
-    'python3',
-    'ruby',
-    'perl',
     'xcodebuild',
     'maestro',
     'maestro.sh',

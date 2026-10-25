@@ -124,17 +124,27 @@ test('long unrelated inline programs admit without kernel inspection', async () 
   assert.equal(calls, 0);
 });
 
-test('inspection cannot override native paths, shell ambiguity, drivers or invalid identities', async () => {
+test('interpreter identity admits argument paths; shell ambiguity, drivers and invalid identities refuse', async () => {
   for (const command of [
     `node -e ${program}/usr/bin/xcodebuild`,
     `node -e /tmp/WebDriverAgent ${program}`,
     'node -e /tmp/WebDriverAgent',
-    `/bin/sh --unknown ${program}`,
-    `xcodebuild test ${program}`,
-    `java -classpath lib maestro.cli.AppKt test ${program}`,
   ]) {
     assert.equal(
       await probeIosExternalRunnerStrict(ps(command), device, async () => identity),
+      'clear',
+    );
+  }
+  for (const [command, executable] of [
+    [`/bin/sh --unknown ${program}`, '/bin/sh'],
+    [`xcodebuild test ${program}`, identity.executable],
+    [`java -classpath lib maestro.cli.AppKt test ${program}`, identity.executable],
+  ]) {
+    assert.equal(
+      await probeIosExternalRunnerStrict(ps(command), device, async () => ({
+        ...identity,
+        executable,
+      })),
       'unknown',
     );
   }
