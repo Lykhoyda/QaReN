@@ -1546,6 +1546,23 @@ export async function readReactInputValue(
   }
 }
 
+async function clearReactInput(
+  client: CDPClient | null,
+  testID: string | null,
+): Promise<{ cleared: boolean; reason?: string }> {
+  if (!client || !testID) return { cleared: false, reason: 'unbound' };
+  try {
+    const result = await client.evaluate(`__QAREN.clearInputValue(${JSON.stringify(testID)})`);
+    if (result.error || typeof result.value !== 'string') return { cleared: false };
+    const parsed = JSON.parse(result.value) as { cleared?: unknown; reason?: unknown };
+    return parsed.cleared === true
+      ? { cleared: true }
+      : { cleared: false, ...(typeof parsed.reason === 'string' ? { reason: parsed.reason } : {}) };
+  } catch {
+    return { cleared: false };
+  }
+}
+
 type ReactValueVerification = 'exact' | 'mismatch' | 'unreadable';
 
 async function awaitReactInputValue(
@@ -1665,9 +1682,10 @@ export async function performFocusedFill(
       (expectedBeforeClear === undefined || before === expectedBeforeClear)
     );
   };
-  const dispatchFill = async (deleteCount?: number, observed?: string): Promise<ToolResult> => {
+  const dispatchFill = async (observed?: string): Promise<ToolResult> => {
     expectedBeforeClear = observed;
     expectedContentLength = undefined;
+    awaitingClear = false;
     if (args.clearFirst) {
       if (!(await focusedProof())) {
         return failResult(
@@ -1685,25 +1703,47 @@ export async function performFocusedFill(
           { mutation: 'none' },
         );
       }
-      deleteCount ??= contentLength || undefined;
-      if (deleteCount !== undefined && deleteCount > 256) {
+      if ((observed?.length ?? contentLength ?? 0) > 256) {
         return failResult(
           'Focused replacement exceeds its bounded clear budget.',
           'TEXT_ENTRY_UNVERIFIED',
           { mutation: 'none' },
         );
       }
+      if (!secure && contentLength !== 0) {
+        // Synthesized keys delete only before the caret, which the tap leaves mid-text in a long value.
+        args.qaContext?.authorize();
+        const clear = await clearReactInput(client, oracleTestId);
+        if (!clear.cleared) {
+          return failResult(
+            'The input could not be cleared; no text was entered.',
+            'TEXT_ENTRY_UNVERIFIED',
+            {
+              mutation: ['unbound', 'uncontrolled', 'unfocused'].includes(clear.reason ?? '')
+                ? 'none'
+                : 'possible',
+            },
+          );
+        }
+        awaitingClear = true;
+      }
     }
-    const clear = args.clearFirst && !secure && contentLength !== 0;
-    awaitingClear = clear === true;
-    return runNative(['fill', args.ref, args.text, ...(clear ? ['--clear-first'] : [])], {
+    const cleared = awaitingClear;
+    const result = await runNative(['fill', args.ref, args.text], {
       qaContext: args.qaContext,
       qaTiming: args.qaTiming,
       focusedType: true,
-      focusedProof,
-      focusedDeleteCount: deleteCount,
+      focusedProof: cleared ? () => focusedProof(true) : focusedProof,
       settle: { enabled: false },
     });
+    if (cleared && result.isError && extractMutationDisposition(result) === 'none') {
+      return failResult(
+        'The field was cleared but not proven empty; no replacement text was entered.',
+        'TEXT_ENTRY_UNVERIFIED',
+        { mutation: 'possible' },
+      );
+    }
+    return result;
   };
   const native = await dispatchFill();
   if (native.isError) {
@@ -1844,7 +1884,7 @@ export async function performFocusedFill(
   if (retainedPrefix(verification)) {
     const observed = verification.observed!;
     if (observed.length <= 256 && !args.qaContext?.expired) {
-      const replacement = await dispatchFill(observed.length, observed);
+      const replacement = await dispatchFill(observed);
       if (replacement.isError) {
         return fillFailure('TEXT_ENTRY_UNVERIFIED', extractErrorText(replacement), {
           mutation: extractMutationDisposition(replacement) === 'none' ? 'observed' : 'possible',

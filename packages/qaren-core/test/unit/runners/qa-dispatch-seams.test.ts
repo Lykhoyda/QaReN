@@ -1194,16 +1194,16 @@ for (const applies of [true, false]) {
     const bodies: Array<Record<string, unknown>> = [];
     const sends = runner((body) => {
       bodies.push(body);
-      if (body.prepareReplacement) {
-        preparation = true;
-      } else {
-        assert.equal(value, '');
-        value = 'replacement';
-      }
+      assert.equal(value, '');
+      value = 'replacement';
       return { ok: true, data: { typed: true } };
     });
     const client = {
       evaluate: async (expression: string) => {
+        if (expression.startsWith('__QAREN.clearInputValue(')) {
+          preparation = true;
+          return { value: JSON.stringify({ cleared: true }) };
+        }
         const [, options] = JSON.parse(
           '[' + expression.slice('__QAREN.readInputValue('.length, -1) + ']',
         );
@@ -1241,11 +1241,55 @@ for (const applies of [true, false]) {
     );
     const envelope = JSON.parse(result.content[0].text);
     assert.equal(envelope.ok, applies);
-    assert.deepEqual(sends, applies ? ['type', 'type'] : ['type']);
-    assert.equal(bodies[0].text, '');
-    assert.equal(bodies[0].replacementDeleteCount, 3);
-    if (applies) assert.equal(bodies[1].clearFirst, false);
+    assert.deepEqual(sends, applies ? ['type'] : []);
+    if (applies) assert.equal(bodies[0].text, 'replacement');
+    assert.ok(bodies.every((body) => !body.prepareReplacement && !body.clearFirst));
     assert.ok(clearReads >= 3);
-    assert.equal(context.authorizations, sends.length);
+    assert.equal(context.authorizations, sends.length + 1);
   });
 }
+
+test('an expired focused replacement refuses before clearing', async () => {
+  session();
+  const sends = runner(() => ({ ok: true, data: { typed: true } }));
+  let cleared = false;
+  let now = 1;
+  const context = new QaDispatchContext(5_000, () => now);
+  const client = {
+    evaluate: async (expression: string) => {
+      if (expression.startsWith('__QAREN.clearInputValue(')) {
+        cleared = true;
+        return { value: JSON.stringify({ cleared: true }) };
+      }
+      now = 10_000;
+      return {
+        value: JSON.stringify({
+          value: null,
+          controlled: true,
+          focused: true,
+          secure: false,
+          privateValue: true,
+          contentLength: 3,
+        }),
+      };
+    },
+  } as never;
+  await assert.rejects(
+    performFocusedFill(
+      {
+        ref: 'field',
+        testID: 'field',
+        text: 'replacement',
+        privateValue: true,
+        clearFirst: true,
+        qaContext: context,
+        skipFinalValidation: true,
+      },
+      client,
+    ),
+    (error: unknown) => (error as { code?: string }).code === 'EVIDENCE_EXPIRED',
+  );
+  assert.equal(cleared, false);
+  assert.deepEqual(sends, []);
+  assert.equal(context.authorizations, 0);
+});

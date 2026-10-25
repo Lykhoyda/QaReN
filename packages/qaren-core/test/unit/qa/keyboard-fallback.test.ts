@@ -1295,6 +1295,10 @@ for (const route of ['transition', 'keyboard-up', 'no-target'] as const) {
         const client = {
           isConnected: true,
           evaluate: async (expression: string) => {
+            if (expression.startsWith('__QAREN.clearInputValue(')) {
+              current = '';
+              return { value: JSON.stringify({ cleared: true }) };
+            }
             const [, options] = JSON.parse(
               '[' + expression.slice('__QAREN.readInputValue('.length, -1) + ']',
             );
@@ -1324,9 +1328,9 @@ for (const route of ['transition', 'keyboard-up', 'no-target'] as const) {
         _setRunAgentDeviceForTest(async (args, options) => {
           if (args[0] !== 'fill') return okResult({ nodes: native });
           dispatches += 1;
-          assert.ok(args.includes('--clear-first'));
-          current = '';
-          assert.equal(await options.focusedProof(true), true);
+          assert.equal(args.includes('--clear-first'), false);
+          assert.equal(current, '');
+          assert.equal(await options.focusedProof(), true);
           current = retained && dispatches === 1 ? before + text : finalValue;
           return okResult({ typed: true });
         });

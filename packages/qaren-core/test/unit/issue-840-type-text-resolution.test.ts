@@ -1516,3 +1516,36 @@ test('press keeps its existing first strict-testID match semantics', () => {
   assert.equal(result.success, true);
   assert.deepEqual(calls, ['first']);
 });
+
+test('clearInputValue empties only a focused controlled input and returns no value', async () => {
+  const calls: string[] = [];
+  const root = makeFiber('Root');
+  const field = (testID: string, props: Record<string, unknown>, focused: boolean) => {
+    const fiber = appendChild(
+      root,
+      makeFiber('RCTSinglelineTextInputView', {
+        testID,
+        onChangeText: (text: string) => calls.push(`${testID}:${text}`),
+        ...props,
+      }),
+    );
+    fiber.stateNode = { isFocused: () => focused };
+  };
+  field('kept-email', { value: 'kept.private@example.test' }, true);
+  field('idle-email', { value: 'idle@example.test' }, false);
+  field('free-email', { defaultValue: 'free@example.test' }, true);
+  field('secret', { value: 'hunter2', secureTextEntry: true }, true);
+  const agent = createAgent(root);
+  const clear = async (testID: string) => {
+    const result = await agent.evaluate(`__QAREN.clearInputValue(${JSON.stringify(testID)})`);
+    assert.doesNotMatch(String(result.value), /example\.test|hunter2/);
+    return JSON.parse(String(result.value));
+  };
+
+  assert.deepEqual(await clear('kept-email'), { cleared: true });
+  assert.deepEqual(await clear('idle-email'), { cleared: false, reason: 'unfocused' });
+  assert.deepEqual(await clear('free-email'), { cleared: false, reason: 'uncontrolled' });
+  assert.deepEqual(await clear('secret'), { cleared: false, reason: 'uncontrolled' });
+  assert.deepEqual(await clear('missing'), { cleared: false, reason: 'unbound' });
+  assert.deepEqual(calls, ['kept-email:']);
+});

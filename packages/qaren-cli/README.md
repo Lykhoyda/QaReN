@@ -904,14 +904,18 @@ either mutation. A false, unbound, unreadable or failed read before clearing ret
 Each walker focus decision logs one value-free `fallback-focus` line.
 
 For non-secure focused fields, QaReN checks the current content before typing.
-An empty field receives text directly, with no selection or Delete. A nonempty
-controlled field is cleared by moving to the end and deleting its measured length
-(at most 256 keys), after confirming that its content has not changed. The host
-requires two consecutive empty observations before sending the first character,
-and re-proves focus before both clearing and insertion. A prefill exceeding the
-bound or an unavailable initial content state refuses with `TEXT_ENTRY_UNVERIFIED`
-and no mutation. If clearing does not settle, focus moves, or the step budget
-expires, no replacement text is sent; clearing may already have mutated the field.
+An empty field receives text directly. A nonempty controlled field (at most 256
+characters) is cleared through the input's own change handler inside the app, after
+confirming that it is focused and its content has not changed; the clear returns
+no value. Synthesized Delete keys are not used: they remove only the characters
+before the caret, and a tap into a value wider than the field leaves the caret
+mid-text. The host requires two consecutive empty observations before sending the
+first character, and re-proves focus before both clearing and insertion. A prefill
+exceeding the bound, an unavailable initial content state, or a field the clear
+refuses to reach (unfocused or uncontrolled) refuses with `TEXT_ENTRY_UNVERIFIED`
+and no mutation; a clear with any other outcome reports a possible mutation. If the cleared
+field is not proven empty, focus moves, or the step budget expires, no replacement
+text is sent and the refusal reports a possible mutation.
 
 After typing, an exact controlled non-secure value verifies the fill. Readable
 mismatches, including dropped characters and app formatting such as `123456`
@@ -926,7 +930,7 @@ leave the process, never the value. Literal Fill values keep ordinary readback e
 inputs exist. Private character counts are omitted from the
 run's public output.
 
-Secure fields retain direct typing: they receive no selection or Delete, their
+Secure fields retain direct typing: they are never cleared, their
 values are never read, and the result stays unverified. **Known limit:** a prefilled
 secure field is not replaced. Use the app's own reset or recovery path to reach an
 empty secure field before filling it; automatic secure clearing needs a future
@@ -935,10 +939,8 @@ must advertise `FILL_EVIDENCE_V1` on both iOS and Android, and `FOCUSED_REPLACE_
 on iOS. Session startup routes a missing capability through the bounded
 source-rebuild path instead of
 accepting the released artifact; see [prebuilt runner selection](../../README.md#prebuilt-runners)
-for persistent rejection of stale iOS prebuilts. An active iOS runner missing either
-capability refuses focused replacement with `RN_FAST_RUNNER_STALE`
-and no mutation instead of appending. A refused replacement keeps the runner's
-mutation disposition. The [focused replacement tests](../qaren-core/test/unit/device-fill-focused-replace.test.ts)
+for persistent rejection of stale iOS prebuilts. A refused insertion on an empty
+field keeps the runner's mutation disposition. The [focused replacement tests](../qaren-core/test/unit/device-fill-focused-replace.test.ts)
 cover these guards and mutation reporting.
 An unverified keyboard step records a passing row with reason `UNVERIFIED_FILL`,
 allowing later plan steps to continue; it does not establish the field's final

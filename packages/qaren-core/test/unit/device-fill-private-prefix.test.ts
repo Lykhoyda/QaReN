@@ -89,9 +89,8 @@ for (const applyClear of [true, false]) {
           focusedProof?: (focusOnly?: boolean) => Promise<boolean>;
         },
       ) => {
-        assert.equal(args.includes('--clear-first'), true);
-        clearing = true;
-        if (!(await options.focusedProof?.(true))) {
+        assert.equal(args.includes('--clear-first'), false);
+        if (!(await options.focusedProof?.())) {
           return failResult('Clear not confirmed', 'TEXT_ENTRY_UNVERIFIED', {
             mutation: 'possible',
           });
@@ -104,6 +103,10 @@ for (const applyClear of [true, false]) {
     );
     const client = {
       evaluate: async (expression: string) => {
+        if (expression.startsWith('__QAREN.clearInputValue(')) {
+          clearing = true;
+          return { value: JSON.stringify({ cleared: true }) };
+        }
         const [, options] = JSON.parse(
           '[' + expression.slice('__QAREN.readInputValue('.length, -1) + ']',
         );
