@@ -16,7 +16,7 @@ import {
 } from './judgment-fixtures.ts';
 import { RunInputs, withInputs, InputPrivacyRefusal } from '../../../dist/qa/inputs.js';
 import { hashSnapshotNodes } from '../../../dist/lifecycle/settle-hash.js';
-import { MASK, ObservedPrivacy } from '../../../dist/qa/privacy.js';
+import { INPUT_SCREEN_TEXT_WITHHELD, MASK, ObservedPrivacy } from '../../../dist/qa/privacy.js';
 import { renderReason } from '../../../dist/qa/untrusted.js';
 import type { WalkSequence } from '../../../dist/qa/walker.js';
 import type { ActResult, WalkerDeps } from '../../../dist/qa/walker.js';
@@ -937,6 +937,68 @@ function movedScreen(y: number, secure: boolean): Screen {
 }
 
 for (const refusal of ['unsettled', 'different retry'] as const) {
+  test(`a moved-target ${refusal} run withholds undeclared identity labels with runtime inputs`, async () => {
+    for (const inputs of [false, true]) {
+      const frames = refusal === 'unsettled' ? [400, 400, 402, 404, 406, 408] : [400];
+      const f = fake(
+        frames.map((y) => movedScreen(y, false)),
+        {
+          press: {
+            ok: false,
+            proven: false,
+            mutation: 'none',
+            error: 'TARGET_MOVED_BEFORE_DISPATCH: target moved before dispatch',
+          },
+        },
+      );
+      if (refusal === 'different retry') {
+        f.deps.judge = scriptedJudge((questions, index) =>
+          Object.fromEntries(
+            Object.entries(questions).map(([id, question]) => [
+              id,
+              choice(question, index === 0 ? 'e0' : 'e1'),
+            ]),
+          ),
+        );
+      }
+      const privacy = new ObservedPrivacy();
+      f.deps.privacy = privacy;
+      const run = () =>
+        runPlan(
+          [block(refusal === 'unsettled' ? '1. Tap "action0"' : '1. Tap the button')],
+          f.deps,
+        );
+      const result = inputs
+        ? await withInputs(
+            new RunInputs({ FIXTURE: 'unrelated-runtime-value' }, ['FIXTURE'], privacy),
+            run,
+          )
+        : await run();
+      assert.equal(result.verdict, 'FAIL');
+      assert.equal(f.calls.filter((call) => call.startsWith('press')).length, 1);
+      for (const output of [
+        result.steps.findLast((row) => row.outcome === 'fail')?.reason ?? '',
+        result.failure?.seen ?? '',
+      ]) {
+        assert.match(output, /TARGET_MOVED_BEFORE_DISPATCH/);
+        assert.match(
+          output,
+          refusal === 'unsettled' ? /did not settle/ : /not the target that settled/,
+        );
+        assert.match(output, /20,40[028],300,44/);
+        assert.equal(output.includes('Saved password: pf-s3cret-91'), !inputs, output);
+        if (inputs) assert.ok(!output.includes('Other action'), output);
+        else if (refusal === 'different retry') assert.ok(output.includes('Other action'), output);
+        assert.equal(output.includes(INPUT_SCREEN_TEXT_WITHHELD), inputs, output);
+      }
+      if (inputs) {
+        const durable = JSON.stringify(result);
+        assert.ok(!durable.includes('Saved password: pf-s3cret-91'));
+        assert.ok(!durable.includes('Other action'));
+      }
+    }
+  });
+
   test(`a moved-target ${refusal} refusal conceals secure-screen identity labels`, async () => {
     for (const secure of [false, true]) {
       const frames = refusal === 'unsettled' ? [400, 400, 402, 404, 406, 408] : [400];

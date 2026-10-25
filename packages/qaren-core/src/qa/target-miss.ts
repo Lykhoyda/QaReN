@@ -1,6 +1,6 @@
 import type { Target } from './plan.js';
 import type { Screen } from './screen.js';
-import { ObservedPrivacy, MASK, concealsScreen, isPossibleInput } from './privacy.js';
+import { ObservedPrivacy, MASK, isPossibleInput } from './privacy.js';
 import { scrollUntilBand } from './resolve.js';
 import { isRecord } from './questions.js';
 
@@ -51,7 +51,7 @@ export function targetMissDiagnostic(
   let unresolved = false;
   let scanIncomplete = screen.elements.length > SCAN_LIMIT || query.length > MATCH_TEXT;
   let truncated = scanIncomplete;
-  const withheld = concealsScreen(screen);
+  const withheld = privacy.textWithheld(screen) !== undefined;
   const display = (text: string) =>
     privacy
       .redact(text)

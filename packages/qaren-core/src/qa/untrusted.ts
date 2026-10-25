@@ -19,12 +19,17 @@ function escapeAppText(text: string): string {
   );
 }
 
-export function renderReason(reason: Reason, redact: (text: string) => string): string {
+export function renderReason(
+  reason: Reason,
+  redact: (text: string) => string,
+  withheld?: string,
+): string {
   return segments(reason)
     .map((segment) =>
       typeof segment === 'string'
         ? redact(segment)
         : (segment.withheld ??
+          withheld ??
           `${APP_TEXT_OPEN}${escapeAppText(redact(segment.app))}${APP_TEXT_CLOSE}`),
     )
     .join('');

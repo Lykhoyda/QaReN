@@ -37,6 +37,7 @@ export interface MediaLatch {
 
 export const MASK = '•••';
 export const SCREEN_TEXT_WITHHELD = '[screen text withheld: a secure field is on screen]';
+export const INPUT_SCREEN_TEXT_WITHHELD = '[screen text withheld: the run holds runtime inputs]';
 
 export function concealsScreen(screen: Screen): boolean {
   return screen.elements.some((element) => element.secure);
@@ -918,8 +919,15 @@ export class ObservedPrivacy {
     return matchPrivate(text, this.privateSet(), 'durable').text;
   }
 
+  // Undeclared personal data shown beside runtime inputs cannot be masked by value, so no screen text leaves.
+  textWithheld(screen: Screen): string | undefined {
+    if (concealsScreen(screen)) return SCREEN_TEXT_WITHHELD;
+    if (this.inputValues.size) return INPUT_SCREEN_TEXT_WITHHELD;
+  }
+
   screenText(screen: Screen): string[] {
-    if (concealsScreen(screen)) return [SCREEN_TEXT_WITHHELD];
+    const withheld = this.textWithheld(screen);
+    if (withheld) return [withheld];
     const rows = this.codeRows.get(screen) ?? [];
     const first = new Set(rows.map((row) => row[0]));
     const represented = new Set<string>();
