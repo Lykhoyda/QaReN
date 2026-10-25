@@ -915,14 +915,17 @@ for (const refusal of ['unsettled', 'different retry'] as const) {
   test(`a moved-target ${refusal} run withholds undeclared identity labels with runtime inputs`, async () => {
     for (const inputs of [false, true]) {
       const frames = refusal === 'unsettled' ? [400, 400, 402, 404, 406, 408] : [400];
-      const f = fake(frames.map((y) => movedScreen(y, false)), {
-        press: {
-          ok: false,
-          proven: false,
-          mutation: 'none',
-          error: 'TARGET_MOVED_BEFORE_DISPATCH: target moved before dispatch',
+      const f = fake(
+        frames.map((y) => movedScreen(y, false)),
+        {
+          press: {
+            ok: false,
+            proven: false,
+            mutation: 'none',
+            error: 'TARGET_MOVED_BEFORE_DISPATCH: target moved before dispatch',
+          },
         },
-      });
+      );
       if (refusal === 'different retry') {
         f.deps.judge = scriptedJudge((questions, index) =>
           Object.fromEntries(
