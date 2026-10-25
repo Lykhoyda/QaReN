@@ -2400,8 +2400,8 @@ testIDs can use stored visible labels (`text`) instead of IDs. Runtime-input fil
 still require the [runtime-input prerequisites](#runtime-inputs), including a
 supported React TextInput; a label alone does not establish private-fill admission.
 
-1. Start on the sign-in screen and write `.qaren/plans/sign-in.md`. If the app
-   echoes the username, declare that before filling it:
+1. Start on the sign-in screen and write `.qaren/plans/sign-in.md`. The optional
+   echo declaration below follows the [runtime-input hash protections](#runtime-inputs):
 
    ```markdown
    ## QA
