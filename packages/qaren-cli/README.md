@@ -1210,8 +1210,10 @@ Literal checks, quoted waits and scroll-until text do not count text or merged
 labels whose centre lies under a captured keyboard unless the keyboard is
 proven hidden. A docked full-width keyboard covers from its frame's top to the
 screen bottom, because its chrome paints below the frame XCUI reports. The
-keyboard's own keys and the chrome in its window stay visible. Overlays are not
-occlusion evidence: see [Limitations](#limitations-recorded-not-papered-over).
+keyboard's own keys and the chrome in its window stay visible. Literal checks and
+waits do not treat other overlays as occlusion evidence: see
+[Limitations](#limitations-recorded-not-papered-over). Scroll-until uses the
+overlay clearance policy below.
 Quoted and phrase target resolution scrolls up when the target's centre lies at
 or above the top of its effective trusted clipping viewport, and down otherwise;
 without a known clip, the boundary remains screen y=0. Quoted scroll-until targets use that
@@ -3666,7 +3668,8 @@ now encoded once and replayed deterministically.
   screen, window and scroll clip counts as visible even when an overlay paints
   over it, such as an absolutely positioned sticky footer or another later
   sibling that XCUI still reports hittable. Only the keyboard is treated as an
-  occluder.
+  occluder for literal checks and waits; scroll-until follows the
+  [overlay clearance policy](#plan-checks-and-screen-evidence).
 - The historical Expo SDK 56 artifact-discovery gap in the timing evidence
   predates the current finite iOS build path. Those measurements do not validate
   this implementation; exact-head device acceptance remains separate.
