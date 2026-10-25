@@ -23,7 +23,7 @@ import {
   runPlan,
   walkBlock,
 } from '../../../dist/qa/walker.js';
-import { RunInputs, currentInputs, withInputs } from '../../../dist/qa/inputs.js';
+import { RunInputs, withInputs } from '../../../dist/qa/inputs.js';
 import { readBlock, storedFits, storedMatches } from '../../../dist/qa/blocks.js';
 import type { ActResult, BlockStore, WalkerDeps } from '../../../dist/qa/walker.js';
 import type { Ledger, LedgerRow, WalkResult } from '../../../dist/qa/ledger.js';
@@ -1216,13 +1216,37 @@ for (const strict of [false, true]) {
 }
 
 for (const route of ['transition', 'keyboard-up', 'no-target'] as const) {
+  for (const runtimeValue of [false, true]) {
+    test(`${route} derives focused Fill privacy from its own value source`, async () => {
+      const fake = app({
+        ...(route === 'no-target' ? { initial: [submit] } : {}),
+        initialKeyboard: route !== 'transition',
+        reactFocused: true,
+      });
+      const type = fake.deps.typeFocused!;
+      const flags: Array<boolean | undefined> = [];
+      fake.deps.typeFocused = async (ref, text, testID, context, focused, privateValue) => {
+        flags.push(privateValue);
+        return type(ref, text, testID, context, focused, privateValue);
+      };
+      const target = route === 'no-target' ? 'qa-otp-code' : 'qa-hidden-email';
+      const markdown = runtimeValue ? slotPlan('EMAIL', target) : plan(EMAIL, target, '');
+      const result = await withInputs(
+        new RunInputs({ EMAIL: runtimeValue ? EMAIL : 'other@example.test' }, ['EMAIL']),
+        () => walkBlock(blocks(markdown)[0], fake.deps),
+      );
+      assert.equal(result.block.outcome, 'pass');
+      assert.deepEqual(flags, [runtimeValue]);
+    });
+  }
+}
+
+for (const route of ['transition', 'keyboard-up', 'no-target'] as const) {
   for (const runtimePrivate of [false, true]) {
     for (const readback of [
       'exact',
       'unreadable',
       'retained-prefix',
-      'recovered-exact',
-      'recovered-formatting',
       'missing-prefix',
       'shorter',
       'formatting',
@@ -1238,19 +1262,12 @@ for (const route of ['transition', 'keyboard-up', 'no-target'] as const) {
         const { okResult } = await import('../../../dist/utils.js');
         const before = 'synthetic-prefill';
         const text = 'synthetic-replacement';
-        const retained = ['retained-prefix', 'recovered-exact', 'recovered-formatting'].includes(
-          readback,
-        );
-        const fails = runtimePrivate
-          ? readback !== 'exact' && readback !== 'unreadable'
-          : readback === 'retained-prefix';
-        const unverified = !fails && readback !== 'exact' && readback !== 'recovered-exact';
+        const fails = readback !== 'exact' && readback !== 'unreadable';
+        const unverified = readback === 'unreadable';
         const finalValue = {
           exact: text,
           unreadable: null,
           'retained-prefix': before + text,
-          'recovered-exact': text,
-          'recovered-formatting': 'synthetic replacement',
           'missing-prefix': text.slice(3),
           shorter: 'synthetic',
           formatting: 'synthetic replacement',
@@ -1301,7 +1318,7 @@ for (const route of ['transition', 'keyboard-up', 'no-target'] as const) {
           assert.ok(args.includes('--clear-first'));
           current = '';
           assert.equal(await options.focusedProof(true), true);
-          current = retained && dispatches === 1 ? before + text : finalValue;
+          current = finalValue;
           return okResult({ typed: true });
         });
         fake.deps.typeFocused = async (
@@ -1323,7 +1340,7 @@ for (const route of ['transition', 'keyboard-up', 'no-target'] as const) {
               requireFocused,
               skipFinalValidation: true,
               clearFirst: true,
-              privateValue: privateValue || currentInputs()?.hasInputs === true,
+              privateValue,
               qaContext: context,
             },
             client,
@@ -1355,7 +1372,7 @@ for (const route of ['transition', 'keyboard-up', 'no-target'] as const) {
             ? withInputs(new RunInputs({ EMAIL: text }, ['EMAIL']), run)
             : run());
           assert.equal(ledger.verdict, fails ? 'FAIL' : 'PASS');
-          assert.equal(dispatches, !runtimePrivate && retained ? 2 : 1);
+          assert.equal(dispatches, 1);
           assert.equal(fake.typed.length, 1);
           assert.equal(fake.log.includes('press @submit'), !fails);
           assert.equal(ledger.videoPublication, 'withheld-fill');
@@ -1397,7 +1414,7 @@ for (const route of ['transition', 'keyboard-up', 'no-target'] as const) {
   }
 }
 
-test('a normalizing readable fallback continues honestly unverified', async () => {
+test('a normalizing readable fallback fails exact readback without continuing', async () => {
   const { performFocusedFill } = await import('../../../dist/handlers/device-interact.js');
   const { _setActiveSessionForTest, _setRunAgentDeviceForTest } =
     await import('../../../dist/agent-device-wrapper.js');
@@ -1452,11 +1469,10 @@ test('a normalizing readable fallback continues honestly unverified', async () =
   };
   try {
     const result = await walkBlock(blocks(plan('123456'))[0], fake.deps);
-    assert.equal(result.block.outcome, 'pass');
-    assert.match(result.rows[0].reason ?? '', /UNVERIFIED_FILL/);
+    assert.equal(result.block.outcome, 'fail');
     assert.ok(reads > 1, 'the typed value is read back');
     assert.equal(fills, 1);
-    assert.equal(fake.state(), 'accepted');
+    assert.equal(fake.state(), 'typed');
   } finally {
     _setRunAgentDeviceForTest(null);
     _setActiveSessionForTest(null);
@@ -2926,7 +2942,7 @@ test('a runtime email missing its first character stops the plan before submissi
         ref,
         text,
         testID,
-        privateValue: privateValue || currentInputs()?.hasInputs === true,
+        privateValue,
         requireFocused,
         clearFirst: true,
         qaContext: dispatchContext,

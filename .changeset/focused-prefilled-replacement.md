@@ -2,4 +2,4 @@
 'qaren': patch
 ---
 
-Fix iOS Fill for empty and prefilled non-secure inputs by confirming clear completion before typing and failing private value mismatches while preserving direct secure typing.
+Fix iOS Fill to clear prefilled non-secure fields before typing, verify exact readback without retries, and keep privacy specific to runtime input values.
