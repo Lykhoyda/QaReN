@@ -1578,6 +1578,13 @@ can still reach the judge. Literal checks still evaluate the raw screen against
 the author-provided plan text. Values held only in app state, never placed in a
 secure field, are outside this presence-based rule.
 
+**Runs with runtime inputs.** Undeclared personal data shown beside a runtime
+input cannot be masked by value, so for the whole run failure screen-text
+evidence becomes `[screen text withheld: the run holds runtime inputs]` and
+target-miss diagnostic candidate labels become `•••`. The step, its target and
+the failure reason remain. Runs without runtime inputs keep their screen-text
+context.
+
 The Android runner keeps exact-fill values and reconstructable fallback
 keycodes out of device logs. Its device-tool snapshots also avoid logging
 off-screen node text while preserving the snapshot's node fields and order.
