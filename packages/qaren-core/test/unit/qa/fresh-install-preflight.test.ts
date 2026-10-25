@@ -1246,6 +1246,69 @@ test('an agent CLI is classified by kernel identity, never by its one-argument p
   }
 });
 
+test('a shell running a -c string is classified by kernel identity, never by that string', async () => {
+  const source = '/repo/packages/rn-fast-runner/RnFastRunner/RnFastRunnerUITests/Runner.swift';
+  const script = `sed -n 1,80p ${source}; /opt/homebrew/bin/maestro test --device ${UDID} /tmp/XCTRunner`;
+  const xcodebuild = '/Applications/Xcode.app/Contents/Developer/usr/bin/xcodebuild';
+  const realXcode = [xcodebuild, 'test-without-building', '-destination', `id=${UDID}`];
+  const runner = driver('RnFastRunnerUITests-Runner').slice(3, -1);
+  for (const [executable, command] of [
+    ['/bin/zsh', `/bin/zsh -lc "${script}"`],
+    ['/bin/bash', `/bin/bash -c '${script} ${'x'.repeat(9_000)}'`],
+    ['/bin/sh', `sh -eu -c '${script}'`],
+  ]) {
+    const row = `20 ${command}\n`;
+    const observed: Array<boolean | undefined> = [];
+    const observe = async (pid: number, _timeout: number, withArgv?: boolean) => {
+      if (pid === 20) observed.push(withArgv);
+      return {
+        v: 1,
+        pid,
+        birth: { seconds: 1, micros: 0 },
+        executable: pid === 21 ? xcodebuild : pid === 22 ? runner : executable,
+        ...(pid === 21 && withArgv ? { argv: realXcode } : {}),
+      };
+    };
+    assert.deepEqual(
+      await probeIosExternalRunnerAdmission(fakePs(row), UDID, observe),
+      { status: 'clear' },
+      command.slice(0, 40),
+    );
+    assert.deepEqual(observed, [undefined], 'the command string never needs exact argv');
+    assert.deepEqual(
+      await probeIosExternalRunnerAdmission(
+        fakePs(`${row}21 ${realXcode.join(' ')}\n`),
+        UDID,
+        observe,
+      ),
+      { status: 'busy', evidence: { reason: 'driver_on_selected_device', pid: 21 } },
+    );
+    assert.deepEqual(
+      await probeIosExternalRunnerAdmission(fakePs(`${row}22 ${runner}\n`), UDID, observe),
+      { status: 'busy', evidence: { reason: 'driver_on_selected_device', pid: 22 } },
+    );
+  }
+  for (const [executable, command] of [
+    ['/bin/sh', `/bin/sh /opt/homebrew/bin/maestro test --device ${OTHER}`],
+    ['/bin/zsh', `/bin/bash -lc "${script}"`],
+    ['/bin/zsh', `/tmp/agent -lc "${script}"`],
+    ['/tmp/XCTRunner.app/zsh', `/tmp/XCTRunner.app/zsh -c "${script}"`],
+    ['/usr/bin/env', `/usr/bin/env -S "${script}"`],
+  ]) {
+    const observe = async (pid: number) => ({
+      v: 1,
+      pid,
+      birth: { seconds: 1, micros: 0 },
+      executable,
+    });
+    assert.deepEqual(
+      await probeIosExternalRunnerAdmission(fakePs(`20 ${command}\n`), UDID, observe),
+      { status: 'unknown', evidence: { reason: 'executable_identity_unproven', pid: 20 } },
+      command,
+    );
+  }
+});
+
 test('strict path ambiguity scans long commands without treating length alone as relevant', async () => {
   const command = `/usr/bin/agent ${'word '.repeat(4_000)}`;
   assert.equal(await probeIosExternalRunnerStrict(fakePs(`20 ${command}\n`), UDID), 'clear');

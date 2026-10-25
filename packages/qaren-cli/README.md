@@ -1997,8 +1997,10 @@ A process is classified by its kernel executable, not by free-text arguments:
 a script interpreter such as `node` or `python3` (for example an agent CLI
 that takes its whole prompt as one argument) coexists even when those arguments
 name drivers, their paths or the selected simulator, because a real driver it
-starts appears as its own process. A kernel identity of a shell wrapper, Java
-or `osascript` alone does not rule out automation.
+starts appears as its own process. A kernel-proven shell running a `-c` command
+string coexists for the same reason; a shell running a script operand is
+classified by that operand. A kernel identity of `env`, Java or `osascript`
+alone does not rule out automation.
 Unknown identity or scope for an automation candidate, or an incomplete process table, refuses.
 The scan cannot exclude uncooperative automation inside an otherwise admitted
 process and is not an external coordination lease.
