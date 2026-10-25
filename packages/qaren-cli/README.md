@@ -1355,7 +1355,7 @@ diagnostic errors do not change the failed step's outcome. The
 Failed waits and scroll-until steps also retain a `target-miss` event in the private
 `logs/core-diagnostics.jsonl`, including runs without runtime inputs. It contains
 at most 20 nearby candidate labels and identifiers, each limited to 256 characters
-after input masking; secure-screen and input labels are withheld. Exact identifier
+after [input value masking](#input-value-masking). Exact identifier
 selectors match identifiers only, and exact text selectors match labels only;
 ordinary quoted targets can match either. Direct matches and containment within
 a larger label preserve case and punctuation; only near matches normalize them.
@@ -1565,7 +1565,8 @@ private-value masking described below.
 
 ### Input value masking
 
-**Screens with a secure field.** Failure screen-text evidence becomes
+**Screens with a secure field.** Target-miss diagnostic candidate labels are
+withheld as `•••`. Failure screen-text evidence becomes
 `[screen text withheld: a secure field is on screen]`, and moved-target identity
 labels become `•••`, whenever the capture contains any secure field, including
 empty or offscreen fields. The failure reason remains available, but its appended
@@ -1580,10 +1581,15 @@ secure field, are outside this presence-based rule.
 
 **Runs with runtime inputs.** Undeclared personal data shown beside a runtime
 input cannot be masked by value, so for the whole run failure screen-text
-evidence becomes `[screen text withheld: the run holds runtime inputs]` and
-target-miss diagnostic candidate labels become `•••`. The step, its target and
-the failure reason remain. Runs without runtime inputs keep their screen-text
-context.
+evidence and app-derived identities in failure reasons, including moved-target
+identities, become `[screen text withheld: the run holds runtime inputs]`.
+Existing secure-screen replacements take precedence. Target-miss diagnostic
+candidate labels become `•••`; possible-input labels are also withheld without
+runtime inputs. These failure-text replacements reach all outputs described in
+[App-derived failure text](#app-derived-failure-text). The step, its plan target,
+failure reason and geometry remain, subject to known-value masking. Runs without
+runtime inputs keep their screen-text context under the other masking rules below
+and the secure-field rule above.
 
 The Android runner keeps exact-fill values and reconstructable fallback
 keycodes out of device logs. Its device-tool snapshots also avoid logging
