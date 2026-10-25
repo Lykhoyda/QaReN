@@ -817,7 +817,7 @@ expects exactly the plan text. For keyboard fallback's replacement request and
 read-back policy, see below.
 Rebinding an input without a testID requires its original label and native type;
 the same frame alone cannot substitute a different input.
-Only a stable exact read-back
+For strict fills, only a stable exact read-back
 verifies a fill. A masked secure read-back or an unreadable one records a
 passing row with reason `UNVERIFIED_FILL`, never a verified pass; an empty or
 placeholder read-back of a non-empty fill on any field, a secure mask whose
@@ -827,8 +827,7 @@ by letter case (same length, equal ignoring case) means the app re-cased the
 value: it records a passing `UNVERIFIED_FILL` row, never a verified fill and never
 a refusal, with `caseNormalized: { chars }` beside the reason and a receipt and
 report detail such as `field case-normalized 12 chars`. The iOS runner makes that
-comparison itself (verdict `case-normalized`), so the value never leaves it;
-keyboard fallback applies the same rule to its React read-back. A different
+comparison itself (verdict `case-normalized`), so the value never leaves it. A different
 letter is still a mismatch. A screen change alone never verifies a fill. A quoted
 iOS fill can use keyboard fallback when no observable native input resolves, or
 strict binding refuses `NO_TEXT_INPUT_TARGET` before any text mutation for a
