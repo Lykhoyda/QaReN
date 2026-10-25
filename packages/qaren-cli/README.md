@@ -1216,10 +1216,12 @@ for the target on the destination screen. An identified list retains its identit
 through keyboard or header resizing when its type and testID remain present;
 unidentified lists require the same type and a frame within two points. Moving
 rows and header resizing do not count as navigation. A fading, translated,
-disappearing or otherwise changed title alone does not prove navigation. Native
-title changes are supporting evidence when the dragged list also changes, using
-an iOS navigation-bar title or Android toolbar/action-bar title present in both
-ordinary snapshots. JS-only headers have no native title marker; their
+shrinking or disappearing title does not count as navigation while the selected
+tab and dragged list remain unchanged. Native titles from ordinary iOS
+navigation-bar or Android toolbar/action-bar captures are compared as sets:
+removing titles alone is allowed, but any newly observed non-empty title refuses
+with `SCROLL_NAVIGATED`, even when the list and tab are unchanged. JS-only headers
+have no native title marker; their
 title-only navigation remains tracked in
 [this follow-up](https://github.com/Lykhoyda/rn-dev-agent/issues/1281).
 End-of-list stop follows separately. One clearance swipe lifts a

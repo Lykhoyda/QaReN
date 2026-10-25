@@ -2,4 +2,4 @@
 "qaren": patch
 ---
 
-Keep scroll-until running through fading or moving navigation titles while refusing changed non-empty titles, selected tabs, or dragged lists.
+Keep scroll-until running when native titles only disappear while refusing newly observed non-empty titles, changed selected tabs, or changed dragged lists.

@@ -180,6 +180,67 @@ for (const type of [
   });
 }
 
+for (const type of ['NavigationBar', 'android.widget.Toolbar']) {
+  for (const listID of ['policies', undefined]) {
+    const captured = (titles: string[], list = true, tab = 'Policies'): Screen => {
+      const nodes: NativeNode[] = [
+        { type: 'Window', rect: { x: 0, y: 0, width: 390, height: 844 } },
+        {
+          type: 'Button',
+          parentIndex: 0,
+          selected: true,
+          label: tab,
+          rect: { x: 0, y: 780, width: 150, height: 44 },
+        },
+      ];
+      if (list)
+        nodes.push({ type: 'ScrollView', parentIndex: 0, identifier: listID, rect: frame });
+      for (const label of titles) {
+        const parentIndex = nodes.length;
+        nodes.push({
+          type,
+          parentIndex: 0,
+          label: type === 'NavigationBar' ? label : undefined,
+          rect: { x: 0, y: 0, width: 390, height: 80 },
+        });
+        if (type !== 'NavigationBar')
+          nodes.push({
+            type: 'android.widget.TextView',
+            parentIndex,
+            label,
+            rect: { x: 40, y: 20, width: 200, height: 30 },
+          });
+      }
+      return join(nodes, []);
+    };
+
+    test(`native title removal-only subsets allow scrolling: ${type}, list=${listID}`, () => {
+      const before = captured(['Policies', 'Actions']);
+      for (const titles of [
+        ['', 'Actions'],
+        ['Actions'],
+        ['Policies'],
+        [],
+        ['Actions', 'Policies'],
+        ['Policies', 'Actions', 'Actions'],
+      ]) {
+        assert.equal(change(before, captured(titles)), undefined);
+      }
+      assert.match(change(before, captured(['', 'Actions'], false))!, /list/);
+      assert.match(change(before, captured(['', 'Actions'], true, 'Claims'))!, /selected/);
+    });
+
+    test(`new non-empty native titles refuse scrolling: ${type}, list=${listID}`, () => {
+      const before = captured(['Policies', 'Actions']);
+      for (const titles of [['Claims', 'Actions'], ['Policies', 'Actions', 'Claims']]) {
+        assert.match(change(before, captured(titles))!, /title/);
+      }
+      assert.match(change(captured([]), captured(['Policies']))!, /title/);
+      assert.match(change(captured(['']), captured(['Policies']))!, /title/);
+    });
+  }
+}
+
 test('a disappeared title still refuses when the list or tab changes', () => {
   for (const titleType of ['NavigationBar', 'Other']) {
     assert.match(change(screen(), screen({ title: '', titleType, list: false }))!, /list/);

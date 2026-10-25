@@ -2,4 +2,4 @@
 'qaren': patch
 ---
 
-Stop scroll-until when the selected tab, native navigation-bar title, or scrolled list changes instead of searching another screen.
+Stop scroll-until when a new non-empty native navigation-bar title appears or the selected tab or scrolled list changes instead of searching another screen.
