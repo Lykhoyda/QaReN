@@ -615,16 +615,19 @@ names, deadline state and a fixed outcome code, without labels, identifiers,
 values or pixels; unavailable counts and deadline state are `null`. These events
 are retained in `core-diagnostics.jsonl` even without runtime inputs. A containment
 fallback retains the `deadline-clean` outcome and records `resolvedBy: containment`;
-a quoted scroll-until can also confirm one on-screen container carrying a whole
-label segment on an ordinary capture without requesting candidate provenance,
-provided no observed provenance or visibility contradicts it. An enclosing
+a quoted wait or scroll-until can also confirm one on-screen native container carrying a
+whole comma-separated label segment on an ordinary capture without requesting candidate provenance.
+Segment matching trims surrounding whitespace and preserves case; substrings within a
+segment do not qualify. This requires complete native coverage on the app surface,
+a finite positive frame, no secure or value-derived label, no keyboard or overlay
+covering the target, and no contradictory provenance or visibility. Stored exact
+selectors do not use this fallback. An enclosing
 container with the same full label as an enclosed matching container is collapsed
 when its label source is absent or descendant-derived, even if it has its own
 identifier. Matching siblings, differing full labels and observed contradictory
 provenance still refuse as `TARGET_AMBIGUOUS`. This confirms visibility only and records
 `resolvedBy: aggregate-visibility` without labels or references;
-it changes target identity only, without adding provenance or changing capture
-comparisons and media admission.
+it adds no provenance and does not change capture comparisons or media admission.
 
 Unique quoted targets that ordinary capture resolves need no provenance read.
 Post-action effects use the ordinary projection on both sides of a quoted press,
@@ -1151,7 +1154,9 @@ Literal checks, quoted text waits, quoted scroll-until-text and replay text wait
 share [`literalEvidence`](../qaren-core/src/qa/evidence.ts): a trusted visible
 occurrence passes; otherwise matching unresolved text is unsure; otherwise
 complete native coverage proves failure. Literal checks match substrings;
-text targets match the whole contribution. React-only text, structural and
+text targets match the whole contribution, with an additional
+[aggregate visibility fallback](#check-a-plan) for quoted waits and scroll-until.
+React-only text, structural and
 container echoes, non-content wrappers, images and system scroll-bar labels
 contribute no literal evidence. A supplied frame must have positive width and
 height to contribute literal evidence; a missing frame alone does not exclude

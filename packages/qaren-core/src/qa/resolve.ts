@@ -881,7 +881,7 @@ export function presenceMiss(target: Target, screen: Screen): string | undefined
   return `no captured element carries the identifier "${quoted}"`;
 }
 
-export function aggregateScrollTargetVisible(target: Target, screen: Screen): boolean {
+export function aggregateTargetVisible(target: Target, screen: Screen): boolean {
   if (
     target.quoted === undefined ||
     target.exact !== undefined ||
