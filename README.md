@@ -3,8 +3,8 @@
 QA a React Native app on a simulator from a Markdown plan, and read back PASS or FAIL
 with evidence.
 
-[![CI](https://github.com/Lykhoyda/QaReN/actions/workflows/ci.yml/badge.svg)](https://github.com/Lykhoyda/QaReN/actions/workflows/ci.yml)
-[![Docs](https://img.shields.io/badge/docs-lykhoyda.github.io%2FQaReN-blue)](https://lykhoyda.github.io/QaReN/)
+[![CI](https://github.com/Lykhoyda/rn-dev-agent/actions/workflows/ci.yml/badge.svg)](https://github.com/Lykhoyda/rn-dev-agent/actions/workflows/ci.yml)
+[![Docs](https://img.shields.io/badge/docs-lykhoyda.github.io%2Frn--dev--agent-blue)](https://lykhoyda.github.io/rn-dev-agent/)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
 
 QaReN is the `qaren` command-line tool and a plugin for Claude Code and Codex.
@@ -39,19 +39,21 @@ Install the plugin:
 
 ```sh
 # Claude Code
-claude plugin marketplace add Lykhoyda/QaReN
+claude plugin marketplace add Lykhoyda/rn-dev-agent
 claude plugin install qaren@qaren
 # Codex
-codex plugin marketplace add Lykhoyda/QaReN
+codex plugin marketplace add Lykhoyda/rn-dev-agent
 codex plugin add qaren@qaren
 ```
 
 Then, from your app's root, run `/qaren:setup` (in Codex, ask it to set up QaReN). Setup
-installs the `qaren` CLI from the GitHub release, verifying the tarball against the
-plugin's [runner manifest](packages/qaren-plugin/runner-manifest.json), runs
+installs the `qaren` CLI when the matching GitHub release asset is available,
+verifying the tarball against the plugin's
+[runner manifest](packages/qaren-plugin/runner-manifest.json), runs
 `qaren doctor`, writes `.qaren/config.yaml` and a smoke plan, picks a simulator and runs
 the first check. The [setup skill](packages/qaren-plugin/skills/setup/SKILL.md) owns
-the details.
+the details. If the installed plugin has no QaReN tarball yet, use the
+[source installation](#install-from-source) below.
 
 Setup prepares an iOS simulator. `qaren check` and `qaren pr` can also borrow a booted
 Android emulator with `--platform android`, given the Android SDK and a running adb
@@ -129,13 +131,13 @@ layer: it does not read 1.x configuration, caches or learned actions. Remove 1.x
 then install 2.0 as a new product; follow
 [Upgrading from rn-dev-agent 1.x](packages/qaren-cli/README.md#upgrading-from-rn-dev-agent-1x-1014-to-20).
 The 1.x source stays on the
-[`rn-dev-agent-1.0`](https://github.com/Lykhoyda/QaReN/tree/rn-dev-agent-1.0) branch.
+[`rn-dev-agent-1.0`](https://github.com/Lykhoyda/rn-dev-agent/tree/rn-dev-agent-1.0) branch.
 
 ## Development
 
 See the [CLI build instructions](packages/qaren-cli/README.md#build) and the
 [repository guide](AGENTS.md) for package ownership, validation commands and changesets.
-Report bugs in [GitHub Issues](https://github.com/Lykhoyda/QaReN/issues) or with
+Report bugs in [GitHub Issues](https://github.com/Lykhoyda/rn-dev-agent/issues) or with
 `/qaren:feedback`; see [SECURITY.md](SECURITY.md) for vulnerabilities.
 
 QaReN is released under the [MIT License](LICENSE).
