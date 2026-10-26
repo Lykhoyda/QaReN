@@ -336,6 +336,7 @@ test('formatting an initially empty readable field stays unverified without reco
 
 for (const [reply, mutation] of [
   [{ value: JSON.stringify({ cleared: false, reason: 'unfocused' }) }, 'none'],
+  [{ value: JSON.stringify({ cleared: false, reason: 'disabled' }) }, 'none'],
   [{ value: JSON.stringify({ cleared: false, reason: 'handler-threw' }) }, 'possible'],
   [{ error: 'transport lost' }, 'possible'],
 ] as const) {
@@ -379,4 +380,20 @@ test('the first typed unit is a whole grapheme, not a code point', async () => {
   const { env, raw } = await run({ value: '', focused: true }, { text });
   assert.equal(env.meta.verify, 'exact');
   assert.deepEqual(raw, [['é'], [text.slice(2)]]);
+});
+
+for (const [before, method] of [
+  ['', 'keyboard'],
+  ['private-prefill', 'clear-type'],
+] as const) {
+  test(`a focused fill reports its ladder rung (${method})`, async () => {
+    const { env } = await run({ value: before, focused: true }, { privateValue: true });
+    assert.equal(env.meta.fillMethod, method);
+  });
+}
+
+test('a focused refusal after clearing still reports the clear-then-type rung', async () => {
+  const { env } = await run({ value: 'old', focused: true }, { mutation: 'possible' });
+  assert.equal(env.ok, false);
+  assert.equal(env.meta.fillMethod, 'clear-type');
 });

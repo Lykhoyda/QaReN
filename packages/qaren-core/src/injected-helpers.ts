@@ -3,7 +3,7 @@ import { TYPOGRAPHY_TEXT_LIMITS } from './qa/host-typography.js';
 import { INPUT_HOST_TYPES } from './qa/input-host-types.js';
 
 // Bump when the injected surface changes so warm runtimes replace stale helpers.
-export const HELPERS_VERSION = 102;
+export const HELPERS_VERSION = 103;
 
 export const INJECTED_HELPERS = `
 (function() {
@@ -4620,24 +4620,34 @@ export const INJECTED_HELPERS = `
     return JSON.stringify({ value: null, controlled: false, focused: focused });
   }
 
-  // Empties a focused controlled input through its own change handler; the result carries no value.
-  function clearInputValue(testID) {
-    if (!testID) return JSON.stringify({ cleared: false, reason: 'unbound' });
+  // Writes a controlled non-secure input through its own change handler; the outcome carries no value.
+  function applyInputValue(testID, text, requireFocused) {
+    if (!testID || typeof text !== 'string') return { ok: false, reason: 'unbound' };
     var resolution = resolveTypeTextTarget({ testID: testID, omitValue: true });
-    if (resolution.error || !resolution.binding) return JSON.stringify({ cleared: false, reason: 'unbound' });
+    if (resolution.error || !resolution.binding) return { ok: false, reason: 'unbound' };
     var binding = resolution.binding;
     var props = binding.candidateFiber.memoizedProps || {};
-    if (props.secureTextEntry === true || typeof props.value !== 'string') {
-      return JSON.stringify({ cleared: false, reason: 'uncontrolled' });
-    }
-    if (!hostIsFocused(binding.candidateFiber)) return JSON.stringify({ cleared: false, reason: 'unfocused' });
+    if (props.secureTextEntry === true) return { ok: false, reason: 'secure' };
+    if (typeof props.value !== 'string') return { ok: false, reason: 'uncontrolled' };
+    if (requireFocused && !hostIsFocused(binding.candidateFiber)) return { ok: false, reason: 'unfocused' };
+    if (textInputDesignationDisabled(props)) return { ok: false, reason: 'disabled' };
     try {
-      if (binding.contract === 'onChangeText:string') binding.handler('');
-      else binding.handler({ nativeEvent: { text: '' } });
+      if (binding.contract === 'onChangeText:string') binding.handler(text);
+      else binding.handler({ nativeEvent: { text: text } });
     } catch (_) {
-      return JSON.stringify({ cleared: false, reason: 'handler-threw' });
+      return { ok: false, reason: 'handler-threw' };
     }
-    return JSON.stringify({ cleared: true });
+    return { ok: true };
+  }
+
+  function clearInputValue(testID) {
+    var outcome = applyInputValue(testID, '', true);
+    return JSON.stringify(outcome.ok ? { cleared: true } : { cleared: false, reason: outcome.reason });
+  }
+
+  function setInputValue(testID, text) {
+    var outcome = applyInputValue(testID, text, false);
+    return JSON.stringify(outcome.ok ? { set: true } : { set: false, reason: outcome.reason });
   }
 
   // Task 8 — bounded fiber.return ancestor walk producing the bundle's
@@ -5877,6 +5887,7 @@ export const INJECTED_HELPERS = `
     getComponentState: getComponentState,
     readInputValue: readInputValue,
     clearInputValue: clearInputValue,
+    setInputValue: setInputValue,
     releaseInputDesignation: releaseInputDesignation,
     dispatchAction: dispatchAction,
     getErrors: getErrors,

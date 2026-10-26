@@ -252,6 +252,7 @@ function act(
           tappedLabel?: unknown;
           tappedRect?: unknown;
         }>(result);
+        const method = fillMethodOf(meta);
         logActionSettle(meta, timing);
         const keyboard = actionKeyboard(meta);
         if (data?.executed === false || data?.tapped === false)
@@ -261,6 +262,7 @@ function act(
             executed: false,
             mutation: 'none',
             error: 'the action did not execute',
+            ...(method ? { method } : {}),
           };
         const verified = meta?.verify === 'exact';
         const rect = data?.tappedRect as Record<string, unknown> | undefined;
@@ -290,6 +292,7 @@ function act(
           ...(dialog ? { dialog } : {}),
           ...(kept ? { kept } : {}),
           ...(typeof chars === 'number' ? { caseNormalized: { chars } } : {}),
+          ...(method ? { method } : {}),
         };
       } catch (error) {
         logActionSettle(error instanceof HandlerError ? error.meta : undefined, timing);
@@ -303,6 +306,9 @@ function act(
           ...(keyboard !== undefined ? { keyboardShown: keyboard } : {}),
           ...(fillEvidence(error) ? { evidence: fillEvidence(error) } : {}),
           ...(code === 'TARGET_AMBIGUOUS' ? { ambiguous: true } : {}),
+          ...(fillMethodOf(error instanceof HandlerError ? error.meta : undefined)
+            ? { method: fillMethodOf((error as HandlerError).meta) }
+            : {}),
         };
       }
     },
@@ -328,6 +334,9 @@ function act(
         error: `${code}: ${message}`,
         ...(fillEvidence(error) ? { evidence: fillEvidence(error) } : {}),
         ...(code === 'TARGET_AMBIGUOUS' ? { ambiguous: true } : {}),
+        ...(fillMethodOf(error instanceof HandlerError ? error.meta : undefined)
+          ? { method: fillMethodOf((error as HandlerError).meta) }
+          : {}),
       };
     },
   );
@@ -395,6 +404,13 @@ function logActionSettle(meta?: Record<string, unknown>, timing?: TimingContext)
   } catch {
     // Diagnostics cannot change an action's outcome.
   }
+}
+
+function fillMethodOf(meta: Record<string, unknown> | undefined): ActResult['method'] {
+  const method = meta?.fillMethod;
+  return method === 'keyboard' || method === 'clear-type' || method === 'set-handler'
+    ? method
+    : undefined;
 }
 
 // Attach over CDP, prove the bundle, open the device session, then hand the walker plain functions.
@@ -750,6 +766,21 @@ async function openSession(
                   requireFocused,
                   skipFinalValidation: true,
                   clearFirst: true,
+                  privateValue,
+                  qaContext,
+                  qaTiming: { now, observe: timing },
+                }),
+              false,
+              { now, observe: timing },
+            ),
+          setByHandler: (testID, text, qaContext, privateValue) =>
+            act(
+              () =>
+                fill({
+                  ref: testID,
+                  text,
+                  testID,
+                  setByHandler: true,
                   privateValue,
                   qaContext,
                   qaTiming: { now, observe: timing },

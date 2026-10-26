@@ -1038,8 +1038,23 @@ export interface FillArgs {
   /** Replace the field's content instead of appending. */
   clearFirst?: boolean;
   privateValue?: boolean;
+  /** Fill ladder rung 3: set the value through the input's change handler, then verify it. */
+  setByHandler?: boolean;
   /** Story 04 (#385): per-call settle budget override in ms. */
   settleTimeoutMs?: number;
+}
+
+// The Fill ladder rung a result came from, carried as meta.fillMethod.
+export type FillRung = 'keyboard' | 'clear-type' | 'set-handler';
+
+function withFillMethod(result: ToolResult, method: FillRung): ToolResult {
+  try {
+    const envelope = JSON.parse(result.content[0].text) as { meta?: Record<string, unknown> };
+    envelope.meta = { ...envelope.meta, fillMethod: method };
+    return { ...result, content: [{ ...result.content[0], text: JSON.stringify(envelope) }] };
+  } catch {
+    return result;
+  }
 }
 
 function isSetTextRejectedError(result: ToolResult): boolean {
@@ -1195,7 +1210,7 @@ async function finalVerification(
   );
 }
 
-type FillMethod = 'native';
+type FillMethod = 'native' | 'handler';
 
 // The ONLY producer of public fill success (single-success-rule invariant).
 function verifiedFillResult(
@@ -1568,6 +1583,157 @@ async function clearReactInput(
 
 type ReactValueVerification = 'exact' | 'mismatch' | 'unreadable';
 
+async function setReactInput(
+  client: CDPClient,
+  testID: string,
+  text: string,
+): Promise<{ set: boolean; reason?: string }> {
+  try {
+    const result = await client.evaluate(
+      `__QAREN.setInputValue(${JSON.stringify(testID)},${JSON.stringify(text)})`,
+    );
+    if (result.error || typeof result.value !== 'string') return { set: false };
+    const parsed = JSON.parse(result.value) as { set?: unknown; reason?: unknown };
+    return parsed.set === true
+      ? { set: true }
+      : { set: false, ...(typeof parsed.reason === 'string' ? { reason: parsed.reason } : {}) };
+  } catch {
+    return { set: false };
+  }
+}
+
+// Exact in-app comparison of a private value: two consecutive exact reads, never the value itself.
+async function comparePrivateInput(
+  client: CDPClient | null,
+  testID: string | null,
+  args: Pick<FillArgs, 'text' | 'qaContext' | 'qaTiming'>,
+): Promise<ReactValueVerification> {
+  return measureTiming(
+    args.qaTiming?.observe,
+    args.qaTiming?.now ?? (() => performance.now()),
+    'type-readback',
+    async (): Promise<ReactValueVerification> => {
+      let mismatch = false;
+      for (let attempt = 0; attempt < 6; attempt++) {
+        if (args.qaContext?.expired) break;
+        const state = await readReactInputValue(client, testID, {
+          protectSecure: true,
+          privateValue: true,
+          valueState: true,
+          compareTo: args.text,
+        });
+        if (state?.exact === true) {
+          await cancellableSleep(150);
+          if (args.qaContext?.expired) break;
+          const confirm = await readReactInputValue(client, testID, {
+            protectSecure: true,
+            privateValue: true,
+            valueState: true,
+            compareTo: args.text,
+          });
+          if (confirm?.exact === true) return 'exact';
+          mismatch ||= confirm?.exact === false;
+        }
+        mismatch ||= state?.exact === false;
+        if (attempt < 5) await cancellableSleep(100);
+      }
+      return mismatch ? 'mismatch' : 'unreadable';
+    },
+    (result) => (result === 'exact' ? 'ok' : result === 'mismatch' ? 'failed' : 'unavailable'),
+  );
+}
+
+// Fill ladder rung 3: the input's own change handler receives the whole value, then the same exact verification decides.
+export async function performSetFill(
+  args: FillArgs,
+  client: CDPClient | null,
+): Promise<ToolResult> {
+  const pathsTried = ['set-handler'];
+  const testID = focusedFillOracleTestId(args);
+  const done = (result: ToolResult) => withFillMethod(result, 'set-handler');
+  if (!client || !testID) {
+    return done(
+      fillFailure(
+        'NO_TEXT_INPUT_TARGET',
+        'Rung 3 (set through the change handler) has no React identity for the input; nothing was set.',
+        { mutation: 'none', pathsTried },
+      ),
+    );
+  }
+  args.qaContext?.authorize();
+  const set = await setReactInput(client, testID, args.text);
+  if (!set.set) {
+    const refused = ['unbound', 'uncontrolled', 'secure', 'disabled'].includes(set.reason ?? '');
+    return done(
+      fillFailure(
+        'TEXT_ENTRY_UNVERIFIED',
+        refused
+          ? 'Rung 3 refused to set the input through its change handler; nothing was set.'
+          : 'Rung 3 could not confirm setting the input through its change handler.',
+        { mutation: refused ? 'none' : 'possible', pathsTried },
+      ),
+    );
+  }
+  const unverified = () =>
+    done(
+      warnResult(
+        { set: true, chars: args.text.length, verified: false, verifiedOracle: 'none' },
+        'Set through the change handler; the value could not be confirmed.',
+      ),
+    );
+  if (args.privateValue) {
+    const comparison = await comparePrivateInput(client, testID, args);
+    if (comparison === 'exact')
+      return done(
+        verifiedFillResult('handler', args.text.length, {
+          textEntryPath: 'set-handler',
+          verifiedOracle: 'react-tree',
+        }),
+      );
+    if (comparison === 'mismatch')
+      return done(
+        fillFailure(
+          'TEXT_ENTRY_UNVERIFIED',
+          'The private input differs from the requested text after rung 3 (set through the change handler); not retrying.',
+          { mutation: 'observed', pathsTried },
+        ),
+      );
+    return unverified();
+  }
+  const verification = await measureTiming(
+    args.qaTiming?.observe,
+    args.qaTiming?.now ?? (() => performance.now()),
+    'type-readback',
+    () =>
+      awaitReactInputValue(
+        () => readReactInputValue(client, testID, { protectSecure: true }),
+        args.text,
+      ),
+    (result) =>
+      result.verdict === 'exact'
+        ? 'ok'
+        : result.verdict === 'unreadable'
+          ? 'unavailable'
+          : 'failed',
+  );
+  if (verification.verdict === 'exact')
+    return done(
+      verifiedFillResult('handler', args.text.length, {
+        textEntryPath: 'set-handler',
+        verifiedOracle: 'react-tree',
+      }),
+    );
+  return verification.verdict === 'mismatch'
+    ? done(
+        fillFailure(
+          'TEXT_ENTRY_UNVERIFIED',
+          'The input differs from the requested text after rung 3 (set through the change handler); not retrying.',
+          { mutation: 'observed', pathsTried },
+        ),
+      )
+    : unverified();
+}
+
 async function awaitReactInputValue(
   readInput: () => Promise<{ value: string | null; controlled: boolean } | null>,
   expected: string,
@@ -1634,6 +1800,16 @@ function controlledReactValue(
 export async function performFocusedFill(
   args: FillArgs,
   client: CDPClient | null,
+): Promise<ToolResult> {
+  const rung = { cleared: false };
+  const result = await focusedFill(args, client, rung);
+  return withFillMethod(result, rung.cleared ? 'clear-type' : 'keyboard');
+}
+
+async function focusedFill(
+  args: FillArgs,
+  client: CDPClient | null,
+  rung: { cleared: boolean },
 ): Promise<ToolResult> {
   const pathsTried = ['focused'];
   if (getActiveSession()?.platform === 'android') {
@@ -1724,12 +1900,15 @@ export async function performFocusedFill(
             'The input could not be cleared; no text was entered.',
             'TEXT_ENTRY_UNVERIFIED',
             {
-              mutation: ['unbound', 'uncontrolled', 'unfocused'].includes(clear.reason ?? '')
+              mutation: ['unbound', 'uncontrolled', 'secure', 'unfocused', 'disabled'].includes(
+                clear.reason ?? '',
+              )
                 ? 'none'
                 : 'possible',
             },
           );
         }
+        rung.cleared = true;
         awaiting = 'empty';
       }
     }
@@ -1803,39 +1982,7 @@ export async function performFocusedFill(
     );
   const initialBefore = before as string | null;
   if (privateValue && !secure && args.clearFirst) {
-    const comparison = await measureTiming(
-      args.qaTiming?.observe,
-      args.qaTiming?.now ?? (() => performance.now()),
-      'type-readback',
-      async (): Promise<ReactValueVerification> => {
-        let mismatch = false;
-        for (let attempt = 0; attempt < 6; attempt++) {
-          if (args.qaContext?.expired) break;
-          const state = await readReactInputValue(client, oracleTestId, {
-            protectSecure: true,
-            privateValue: true,
-            valueState: true,
-            compareTo: args.text,
-          });
-          if (state?.exact === true) {
-            await cancellableSleep(150);
-            if (args.qaContext?.expired) break;
-            const confirm = await readReactInputValue(client, oracleTestId, {
-              protectSecure: true,
-              privateValue: true,
-              valueState: true,
-              compareTo: args.text,
-            });
-            if (confirm?.exact === true) return 'exact';
-            mismatch ||= confirm?.exact === false;
-          }
-          mismatch ||= state?.exact === false;
-          if (attempt < 5) await cancellableSleep(100);
-        }
-        return mismatch ? 'mismatch' : 'unreadable';
-      },
-      (result) => (result === 'exact' ? 'ok' : result === 'mismatch' ? 'failed' : 'unavailable'),
-    );
+    const comparison = await comparePrivateInput(client, oracleTestId, args);
     if (comparison === 'exact') {
       return verifiedFillResult('native', args.text.length, {
         textEntryPath: 'focused-synthesized',
@@ -2096,9 +2243,11 @@ export function createDeviceFillHandler(
   getClient: () => CDPClient,
 ): (args: FillArgs) => Promise<ToolResult> {
   return withQaSession(async (args) =>
-    args.focused === true
-      ? performFocusedFill(args, cdpClientOrNull(getClient))
-      : performExactFill(args, null, {}),
+    args.setByHandler === true
+      ? performSetFill(args, cdpClientOrNull(getClient))
+      : args.focused === true
+        ? performFocusedFill(args, cdpClientOrNull(getClient))
+        : withFillMethod(await performExactFill(args, null, {}), 'keyboard'),
   );
 }
 

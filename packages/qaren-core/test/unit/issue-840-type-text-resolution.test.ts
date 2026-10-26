@@ -1545,7 +1545,79 @@ test('clearInputValue empties only a focused controlled input and returns no val
   assert.deepEqual(await clear('kept-email'), { cleared: true });
   assert.deepEqual(await clear('idle-email'), { cleared: false, reason: 'unfocused' });
   assert.deepEqual(await clear('free-email'), { cleared: false, reason: 'uncontrolled' });
-  assert.deepEqual(await clear('secret'), { cleared: false, reason: 'uncontrolled' });
+  assert.deepEqual(await clear('secret'), { cleared: false, reason: 'secure' });
   assert.deepEqual(await clear('missing'), { cleared: false, reason: 'unbound' });
   assert.deepEqual(calls, ['kept-email:']);
 });
+
+test('setInputValue sends the whole value through the handler, needs no focus and returns no value', async () => {
+  const calls: string[] = [];
+  const root = makeFiber('Root');
+  const field = (testID: string, props: Record<string, unknown>) => {
+    const fiber = appendChild(
+      root,
+      makeFiber('RCTSinglelineTextInputView', {
+        testID,
+        onChangeText: (text: string) => calls.push(`${testID}:${text}`),
+        ...props,
+      }),
+    );
+    fiber.stateNode = { isFocused: () => false };
+  };
+  field('idle-email', { value: 'kept@example.test' });
+  field('free-email', { defaultValue: 'free@example.test' });
+  field('secret', { value: 'hunter2', secureTextEntry: true });
+  const agent = createAgent(root);
+  const set = async (testID: string) => {
+    const result = await agent.evaluate(
+      `__QAREN.setInputValue(${JSON.stringify(testID)}, "new.value@example.test")`,
+    );
+    assert.doesNotMatch(String(result.value), /example\.test|hunter2/);
+    return JSON.parse(String(result.value));
+  };
+
+  assert.deepEqual(await set('idle-email'), { set: true });
+  assert.deepEqual(await set('free-email'), { set: false, reason: 'uncontrolled' });
+  assert.deepEqual(await set('secret'), { set: false, reason: 'secure' });
+  assert.deepEqual(await set('missing'), { set: false, reason: 'unbound' });
+  assert.deepEqual(calls, ['idle-email:new.value@example.test']);
+});
+
+for (const disabledProps of [
+  { disabled: true },
+  { editable: false },
+  { readOnly: true },
+  { accessibilityState: { disabled: true } },
+]) {
+  for (const handler of ['onChangeText', 'onChange']) {
+    test(`handler writes reject ${JSON.stringify(disabledProps)} through ${handler}`, async () => {
+      const calls: unknown[] = [];
+      const root = makeFiber('Root');
+      const props = {
+        testID: 'email',
+        value: 'prior',
+        [handler]: (value: unknown) => calls.push(value),
+      };
+      const field = appendChild(root, makeFiber('RCTSinglelineTextInputView', props));
+      field.stateNode = { isFocused: () => true };
+      const agent = createAgent(root);
+
+      for (const [expression, key, value] of [
+        ['__QAREN.setInputValue("email", "replacement")', 'set', 'replacement'],
+        ['__QAREN.clearInputValue("email")', 'cleared', ''],
+      ]) {
+        calls.length = 0;
+        const write = async () => JSON.parse(String((await agent.evaluate(expression)).value));
+        assert.deepEqual(await write(), { [key]: true });
+        field.memoizedProps = { ...props, ...disabledProps };
+        assert.deepEqual(await write(), { [key]: false, reason: 'disabled' });
+        assert.deepEqual(JSON.parse(JSON.stringify(calls)), [
+          handler === 'onChangeText' ? value : { nativeEvent: { text: value } },
+        ]);
+        field.memoizedProps = props;
+        assert.deepEqual(await write(), { [key]: true });
+        assert.equal(calls.length, 2);
+      }
+    });
+  }
+}

@@ -21,6 +21,8 @@ import { renderReason } from '../../../dist/qa/untrusted.js';
 import type { WalkSequence } from '../../../dist/qa/walker.js';
 import type { ActResult, WalkerDeps } from '../../../dist/qa/walker.js';
 import type { LedgerRow } from '../../../dist/qa/ledger.js';
+import { ledgerWithoutResult } from '../../../dist/qa/ledger.js';
+import { NativeCaptureError } from '../../../dist/qa/capture.js';
 
 function screen(labels: string[], extra: Partial<Screen> = {}): Screen {
   return {
@@ -1236,3 +1238,130 @@ test('annotated fixture reaches the next capture, fill row and authenticated ass
   assert.equal(result.videoPublication, 'withheld-fill');
   assert.ok(!JSON.stringify(result).includes(value));
 });
+
+test('a native fill refusal steps once to the change handler for an input with a testID', async () => {
+  const email: Screen = {
+    ...screen(['Email']),
+    elements: [
+      {
+        ref: '@e0',
+        kind: 'input',
+        label: 'Email',
+        testID: 'email-input',
+        hittable: true,
+        disabled: false,
+        secure: false,
+        offscreen: false,
+        semantic: { press: 'unsupported', fill: 'supported', visibility: 'visible' },
+        where: 'middle',
+        side: 'center',
+      },
+    ],
+  };
+  const f = fake([email], {
+    fill: {
+      ok: false,
+      proven: false,
+      mutation: 'observed',
+      evidence: 'mismatch',
+      error:
+        'TEXT_ENTRY_UNVERIFIED: device_fill typed a different value on the retained native target; not retrying.',
+    },
+  });
+  const calls: string[] = [];
+  f.deps.setByHandler = async (testID, text, context) => {
+    context.authorize();
+    calls.push(`${testID} ${text}`);
+    return { ok: true, proven: true };
+  };
+  const outcome = await walkBlock(block('1. Type "ab@example.test" into "email-input"\n'), f.deps);
+  assert.equal(outcome.block.outcome, 'pass', JSON.stringify(outcome.failure));
+  assert.deepEqual(calls, ['email-input ab@example.test']);
+  assert.equal(outcome.rows[0].method, 'set-handler');
+  assert.match(outcome.rows[0].reason ?? '', /^FILL_SET_BY_HANDLER: /);
+});
+
+for (const method of ['keyboard', 'clear-type', 'set-handler'] as const) {
+  for (const captureFails of [false, true]) {
+    test(`${method} survives streamed reconstruction after ${captureFails ? 'failed' : 'successful'} capture`, async () => {
+      const field = fixtureElement('@email', 'Email', { kind: 'input', testID: 'email' });
+      const f = fake([fixtureScreen([field])]);
+      let dispatched = false;
+      f.deps.fill = async () => {
+        dispatched = true;
+        return { ok: true, proven: method !== 'set-handler', evidence: 'unavailable', method };
+      };
+      const capture = f.deps.captureScreen;
+      f.deps.captureScreen = async (...args) => {
+        if (dispatched && captureFails) throw new NativeCaptureError();
+        return capture(...args);
+      };
+      const outcome = await walkBlock(block('1. Fill "email" with "canary-value"\n'), f.deps);
+      assert.equal(dispatched, true);
+      assert.equal(outcome.rows[0].method, method);
+      assert.equal(outcome.block.outcome, captureFails ? 'fail' : 'pass');
+      if (method === 'set-handler' && !captureFails) {
+        const reason = renderReason(outcome.rows[0].reason ?? '', (text) => text);
+        assert.match(reason, /^UNVERIFIED_FILL: set through the change handler/);
+        assert.match(reason, /FILL_SET_BY_HANDLER/);
+      }
+      const rebuilt = ledgerWithoutResult(JSON.parse(JSON.stringify(f.rows)), 'run interrupted');
+      assert.equal(rebuilt.steps[0].method, method);
+      assert.equal(rebuilt.verdict, 'FAIL');
+      assert.doesNotMatch(JSON.stringify(rebuilt), /canary-value/);
+    });
+  }
+}
+
+for (const retrySucceeds of [false, true]) {
+  test(`a refused handler is tried once per Fill item when native retry ${retrySucceeds ? 'succeeds' : 'refuses'}`, async () => {
+    const field = fixtureElement('@email', 'Email', {
+      kind: 'input',
+      testID: 'email-input',
+    });
+    const refusal: ActResult = {
+      ok: false,
+      proven: false,
+      mutation: 'none',
+      error: 'TEXT_ENTRY_UNVERIFIED: native typing refused',
+    };
+    const f = fake([fixtureScreen([field])]);
+    let nativeCalls = 0;
+    let handlerCalls = 0;
+    f.deps.fill = async () => {
+      nativeCalls++;
+      return retrySucceeds && nativeCalls === 2 ? { ok: true, proven: true } : refusal;
+    };
+    f.deps.setByHandler = async () => {
+      handlerCalls++;
+      return {
+        ok: false,
+        proven: false,
+        mutation: 'none',
+        error: 'TEXT_ENTRY_UNVERIFIED: uncontrolled input; nothing was set',
+      };
+    };
+    const line = 'Fill "email-input" with "private-canary"';
+    const plan = retrySucceeds ? `1. ${line}\n2. ${line}\n` : `1. ${line}\n`;
+    const outcome = await walkBlock(block(plan), f.deps);
+
+    assert.equal(outcome.block.outcome, 'fail');
+    assert.equal(nativeCalls, retrySucceeds ? 4 : 2);
+    assert.equal(handlerCalls, retrySucceeds ? 2 : 1);
+    assert.deepEqual(
+      outcome.rows.map((row) => row.outcome),
+      retrySucceeds ? ['retry', 'pass', 'retry', 'fail'] : ['retry', 'fail'],
+    );
+    for (const row of outcome.rows) {
+      const reason = renderReason(row.reason ?? '', (text) => text);
+      assert.match(reason, /FILL_HANDLER_REFUSED: rung 3 was attempted and refused/);
+      if (row.outcome !== 'pass') assert.match(reason, /native typing refused/);
+      assert.equal(row.method, 'keyboard');
+      assert.doesNotMatch(reason, /private-canary|uncontrolled input/);
+    }
+    assert.deepEqual(
+      f.rows.map((row) => row.outcome),
+      outcome.rows.map((row) => row.outcome),
+    );
+  });
+}

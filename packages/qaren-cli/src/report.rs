@@ -253,6 +253,10 @@ fn row_line_with(row: &Row, prose: &dyn Fn(&str) -> String) -> String {
         .fill_detail()
         .map(|detail| format!("; {detail}"))
         .unwrap_or_default();
+    let method = row
+        .method
+        .map(|method| format!("; via {}", method.as_str()))
+        .unwrap_or_default();
     let coverage = row
         .react_coverage
         .map(|coverage| format!("; React coverage {}", coverage.as_str()))
@@ -267,7 +271,7 @@ fn row_line_with(row: &Row, prose: &dyn Fn(&str) -> String) -> String {
         ""
     };
     format!(
-        "- {mark} line {}{text}{retry}{reason}{kept}{coverage}{reconnect}\n",
+        "- {mark} line {}{text}{retry}{reason}{kept}{method}{coverage}{reconnect}\n",
         row.line
     )
 }
@@ -915,5 +919,31 @@ mod tests {
         let json = serde_json::to_value(fill).unwrap();
         assert_eq!(json["caseNormalized"]["chars"], 12);
         assert!(row_line(&ledger.steps[0]).ends_with("; field case-normalized 12 chars\n"));
+    }
+
+    #[test]
+    fn fill_rows_show_their_ladder_rung_and_ignore_an_unknown_one() {
+        let qualifier = "FILL_SET_BY_HANDLER: the value was set through the input's change handler, not typed; label the step (any method) to count it as proof";
+        let ledger: Ledger = serde_json::from_value(serde_json::json!({
+            "verdict": "PASS", "path": "walk", "blocks": [],
+            "steps": [
+                { "block": "b", "line": 4, "attempt": 1, "kind": "step", "resolvedBy": "exact",
+                  "t": 0, "outcome": "pass", "reason": qualifier, "method": "set-handler" },
+                { "block": "b", "line": 5, "attempt": 1, "kind": "step", "resolvedBy": "exact",
+                  "t": 0, "outcome": "pass", "method": "clear-type" },
+                { "block": "b", "line": 6, "attempt": 1, "kind": "step", "resolvedBy": "exact",
+                  "t": 0, "outcome": "pass", "method": "telepathy" },
+            ],
+            "jev": { "calls": 0, "medianMs": 0 }, "llmTurns": 0, "escapes": 0, "recoveries": 0,
+        }))
+        .unwrap();
+        assert!(row_line(&ledger.steps[0]).ends_with("; via set-handler\n"));
+        assert!(row_line(&ledger.steps[1]).ends_with("; via clear-type\n"));
+        assert_eq!(ledger.steps[2].method, None);
+        assert!(!row_line(&ledger.steps[2]).contains("via"));
+        assert_eq!(
+            serde_json::to_value(&ledger.steps[0]).unwrap()["method"],
+            "set-handler"
+        );
     }
 }

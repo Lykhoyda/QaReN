@@ -58,7 +58,10 @@ copy; see the [saved-block contract](https://github.com/Lykhoyda/rn-dev-agent/bl
 | Dialog   | accept, allow, dismiss, deny, decline, cancel with dialog, prompt, alert or permission | `Accept the permission dialog` |
 | Echo     | expect input NAME on screen, expect input NAME on this screen          | `Expect input USERNAME on screen`   |
 
-A fill needs its text in quotes, or a [runtime input](#runtime-inputs). A dialog step needs exactly one unconditional
+A fill needs its text in quotes, or a [runtime input](#runtime-inputs). For iOS entry methods, handler recovery,
+verification and the `(any method)` label, see the authoritative
+[Fill ladder contract](https://github.com/Lykhoyda/rn-dev-agent/blob/develop/packages/qaren-cli/README.md#fill-ladder).
+A dialog step needs exactly one unconditional
 action: `Accept the dialog if it appears` and `Do not dismiss the alert` refuse.
 
 ## Runtime inputs
