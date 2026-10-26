@@ -1617,6 +1617,65 @@ test('an unproven selection that outlasts the deadline refuses with its inferenc
   assert.equal(record.budgetMs, 2_500);
 });
 
+for (const exhausted of ['attach deadline', 'remaining run budget'] as const) {
+  test(`a selection refusal skips liveness after exhausting the ${exhausted}`, async (t) => {
+    let now = 0;
+    let remaining = 2_500;
+    let livenessProbes = 0;
+    t.mock.method(performance, 'now', () => now);
+    const { stop, steps } = harness({
+      remainingMs: () => remaining,
+      attach: async () => {
+        if (exhausted === 'attach deadline') now = 3_000;
+        else remaining = 0;
+        throw unprovenSelection();
+      },
+      appAlive: async () => {
+        livenessProbes++;
+        return true;
+      },
+      bundleRequested: async () => true,
+    });
+    const error = await refusalOf(admit(steps, stop));
+    assert.equal(error.code, 'CDP_NOT_CONNECTED');
+    assert.equal(error.meta?.inner, 'target_selection_platform_not_found');
+    assert.equal(error.meta?.liveness, 'not_probed');
+    assert.equal(error.meta?.bundleRequest, 'received');
+    assert.equal(livenessProbes, 0);
+  });
+}
+
+test('refusal liveness is cancelled at the remaining budget and preserves the selection evidence', async (t) => {
+  const clock = mockClock(t);
+  let remaining = 2_500;
+  let probeSignal: AbortSignal | undefined;
+  const { stop, steps } = harness({
+    remainingMs: () => remaining,
+    attach: async () => {
+      remaining = 500;
+      throw new TargetSelectionError('PLATFORM_TARGET_NOT_FOUND', 'x', [], SUMMARY);
+    },
+    appAlive: () =>
+      interruptible(async (signal) => {
+        probeSignal = signal;
+        return new Promise<boolean>(() => {});
+      }),
+    bundleRequested: async () => false,
+  });
+  const refused = refusalOf(admit(steps, stop));
+  clock.cleanup(stop, refused);
+  await nextTurn();
+  assert.equal(probeSignal?.aborted, false);
+  await clock.advance(500);
+  const error = await refused;
+  assert.equal(probeSignal?.aborted, true);
+  assert.equal(error.code, 'CDP_NOT_CONNECTED');
+  assert.equal(error.meta?.inner, 'target_selection_platform_not_found');
+  assert.equal(error.meta?.liveness, 'not_probed');
+  assert.equal(error.meta?.bundleRequest, 'not_received');
+  assert.deepEqual(error.meta?.inference, SUMMARY);
+});
+
 test('a refusal with no bundle request carries the last manifest warm-up and names the likely cause', async () => {
   const { stop, steps } = harness({
     launchWarm: { ms: 7_100, attempts: 2 },

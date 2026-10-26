@@ -674,9 +674,14 @@ async function attach(steps: AdmissionSteps, signal: AbortSignal): Promise<Prove
     const inner = admissionInnerClass(cause);
     // A refusal says whether the app ran and asked Metro for its bundle, whatever stopped the attach.
     if (attaching) {
-      // Past the deadline only the request-count read fits before the CLI's own walk deadline.
-      if (liveness === 'not_probed' && error !== attachTimeout)
-        liveness = await probeLiveness(steps);
+      const probeDeadline = Math.min(deadline, performance.now() + steps.remainingMs());
+      if (liveness === 'not_probed' && probeDeadline > performance.now()) {
+        try {
+          liveness = await withDeadline(probeDeadline, attachTimeout, () => probeLiveness(steps));
+        } catch (probeError) {
+          if (probeError !== attachTimeout) throw probeError;
+        }
+      }
       if (liveness !== 'dead' && bundleRequest === 'not_probed' && steps.bundleRequested)
         bundleRequest = await probeBundleRequest(steps);
     }
