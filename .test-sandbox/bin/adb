@@ -1,7 +1,0 @@
-#!/usr/bin/env bash
-case "${1:-}" in
-  devices) echo "List of devices attached"; echo; exit 0 ;;
-  version) echo "Android Debug Bridge version 0.0.0 (qaren-sim-sandbox)"; exit 0 ;;
-esac
-echo "qaren-sim-sandbox: refused adb $*" >&2
-exit 1

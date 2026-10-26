@@ -1,3 +1,0 @@
-#!/usr/bin/env bash
-echo "qaren-sim-sandbox: refused devicectl $*" >&2
-exit 1

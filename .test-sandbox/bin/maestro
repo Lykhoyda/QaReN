@@ -1,3 +1,0 @@
-#!/usr/bin/env bash
-echo "qaren-sim-sandbox: maestro is not available" >&2
-exit 127

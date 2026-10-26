@@ -8,6 +8,9 @@ packages/qaren-cli/observe/dist/
 packages/qaren-cli/observe/node_modules/
 packages/qaren-cli/target/
 
+# Local stub toolchains written by validation sandboxes.
+.test-sandbox/
+
 .claude/*
 !.claude/commands/
 !.claude/skills/
