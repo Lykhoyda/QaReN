@@ -295,7 +295,7 @@ fn prepare_validated(
             runner,
             scenario.ios.as_mut().expect("validated ios scenario"),
         ))
-    .then_some(POOL_FALLBACK);
+    .then(|| POOL_FALLBACK.to_string());
     let pool_mode = pool_mode && pool_fallback.is_none();
     // An observation only: custody comes from the lease, and the target is re-proven under it.
     let selected = match borrowed.as_deref() {
@@ -347,7 +347,7 @@ fn prepare_validated(
     let run_id = format!("{}-{}", scenario.name, timefmt::compact_utc(started_ms));
 
     if args.dry_run {
-        let mut dry_outcome = pool_fallback.map(str::to_string);
+        let mut dry_outcome = pool_fallback.clone();
         let (dry_selected, dry_boot, dry_name) = match &pool_scan {
             Some(scan) => match dry_run_pool_member(runner, scan, &args.lock_root, &args.runs_root)
             {
@@ -361,7 +361,8 @@ fn prepare_validated(
                     (Some(sim), true, ios::sim_name(&run_id))
                 }
                 None if scan.present.len() as u32 >= pool_cap => {
-                    return Err(pool_refusal(scan, pool_cap, &[]))
+                    dry_outcome = Some(pool_cap_fallback(scan, pool_cap, &[]));
+                    (None, false, ios::sim_name(&run_id))
                 }
                 None => (None, false, ios::pool_sim_name(&run_id)),
             },
@@ -430,7 +431,7 @@ fn prepare_validated(
     let identity = capture_pid_identity(runner, self_pid);
     if pool_scan.is_some() && identity.is_none() {
         pool_scan = None;
-        pool_fallback = Some(POOL_IDENTITY_FALLBACK);
+        pool_fallback = Some(POOL_IDENTITY_FALLBACK.to_string());
     }
     if selected.is_some() && identity.is_none() {
         // Like check's run-directory claim, an unrecorded claim is dropped on refusal.
@@ -477,7 +478,8 @@ fn prepare_validated(
                 Ok(Some((lease, sim)))
             }
             Ok(PoolClaim::Occupied(occupied)) if scan.present.len() as u32 >= pool_cap => {
-                Err(pool_refusal(scan, pool_cap, &occupied))
+                pool_fallback = Some(pool_cap_fallback(scan, pool_cap, &occupied));
+                Ok(None)
             }
             Ok(PoolClaim::Occupied(_)) => {
                 pool_create = true;
@@ -566,8 +568,7 @@ fn prepare_validated(
         ctx.notes
             .push(("device_pool".to_string(), "fresh".to_string()));
     } else if let Some(fallback) = pool_fallback {
-        ctx.notes
-            .push(("device_pool".to_string(), fallback.to_string()));
+        ctx.notes.push(("device_pool".to_string(), fallback));
     }
     if pool_claimed {
         let udid = ctx
@@ -1010,7 +1011,7 @@ pub(crate) fn check_port_free(runner: &mut dyn Runner, port: u16) -> Result<(), 
 }
 
 // `pool` = (pool root, device lock root): create a pool member under the creation lock instead of a temporary.
-fn allocate_ios(ctx: &mut Ctx, pool: Option<(&Path, &Path)>) -> Result<(), Failure> {
+fn allocate_ios(ctx: &mut Ctx, mut pool: Option<(&Path, &Path)>) -> Result<(), Failure> {
     ensure_running(ctx.runner, "allocate")?;
     let ios = ctx
         .record
@@ -1021,14 +1022,20 @@ fn allocate_ios(ctx: &mut Ctx, pool: Option<(&Path, &Path)>) -> Result<(), Failu
     if let Some((pool_root, _)) = pool {
         claim_pool_create_lock(ctx, pool_root)?;
         let cap = pool::default_cap(&ios);
-        let refusal = match scan_pool(ctx.runner, pool_root, &ios, true) {
-            Err(f) => Some(f),
-            Ok(scan) if scan.present.len() as u32 >= cap => Some(pool_refusal(&scan, cap, &[])),
-            Ok(_) => None,
-        };
-        if let Some(f) = refusal {
-            release_pool_create_lock(ctx);
-            return Err(f);
+        match scan_pool(ctx.runner, pool_root, &ios, true) {
+            Err(f) => {
+                release_pool_create_lock(ctx);
+                return Err(f);
+            }
+            Ok(scan) if scan.present.len() as u32 >= cap => {
+                release_pool_create_lock(ctx);
+                ctx.notes.push((
+                    "device_pool".to_string(),
+                    pool_cap_fallback(&scan, cap, &[]),
+                ));
+                pool = None;
+            }
+            Ok(_) => {}
         }
     }
     let name = match pool {
@@ -1205,35 +1212,23 @@ fn scan_pool(
     })
 }
 
-fn pool_refusal(scan: &PoolScan, cap: u32, occupied: &[String]) -> Failure {
-    let raise = "raise ios.max_devices, or pass --new for a temporary simulator";
-    if scan.candidates.is_empty() {
+fn pool_cap_fallback(scan: &PoolScan, cap: u32, occupied: &[String]) -> String {
+    let reason = if scan.candidates.is_empty() {
         let members: Vec<String> = scan
             .present
             .iter()
             .map(|m| format!("{} ({}, {}, {})", m.udid, m.name, m.device_type, m.runtime))
             .collect();
-        return Failure::new(
-            "device",
-            FailureCode::DeviceUnavailable,
-            format!(
-                "the QaReN simulator pool is at ios.max_devices {cap} and no member matches the scenario's device type and runtime: {}",
-                members.join("; ")
-            ),
-            format!("delete an unused member with `xcrun simctl delete <UDID>`, {raise}"),
-        );
-    }
-    let detail = if occupied.is_empty() {
-        "no member is free".to_string()
+        format!(
+            "no member matches the scenario's device type and runtime: {}",
+            members.join("; ")
+        )
+    } else if occupied.is_empty() {
+        "no matching member is free".to_string()
     } else {
-        occupied.join("; ")
+        format!("every matching member is occupied: {}", occupied.join("; "))
     };
-    Failure::new(
-        "device",
-        FailureCode::DeviceBusy,
-        format!("the QaReN simulator pool is at ios.max_devices {cap} and every matching member is occupied: {detail}"),
-        format!("wait for or clean up the holding run, {raise}"),
-    )
+    format!("fresh: the QaReN simulator pool is at ios.max_devices {cap} and {reason}, so this run uses a temporary simulator")
 }
 
 // Read-only, in the claim's order: a dead holder whose run never reached ready is reclaimed, and its cleanup shuts the member down only if its stop is armed; the member must then be Shutdown.

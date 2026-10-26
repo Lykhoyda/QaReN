@@ -3142,10 +3142,11 @@ one, pass it with `--device`.
   device-wide settings survive. Use `--new` when a run needs factory state.
 - **Cap and creation.** `ios.max_devices` (default `1`, at least `1`) caps the
   number of present members of any device type or runtime. It limits creation
-  only, never reuse. With no free member and the pool at the cap, `prepare`
-  refuses before any run record: `DEVICE_BUSY` when a matching member exists,
-  else `DEVICE_UNAVAILABLE` listing the members with `xcrun simctl delete
-  <UUID>`. Below the cap, `prepare` takes the per-home creation lock
+  only, never reuse. With no free member and the pool at the cap, including a
+  recount under the creation lock that finds a parallel prepare's new member,
+  the run keeps the temporary `qaren-<run-id>` path, and `device_pool` reports
+  `fresh:` with the occupied members or, when none matches the scenario, the
+  present ones. Below the cap, `prepare` takes the per-home creation lock
   `~/.qaren/pool/create-ios`, recounts, creates `qaren-pool-<run-id>`, takes
   its device lease, writes its record, arms its stop and releases the lock
   before booting. A held creation lock refuses with `DEVICE_BUSY` naming the
@@ -3164,9 +3165,10 @@ one, pass it with `--device`.
   (exit `2`, no receipt); with an Android scenario it refuses
   `PLATFORM_UNSUPPORTED`. `build.owner: qaren` handoff always uses a temporary
   simulator.
-- **`--dry-run`** names the member it would claim and the reset commands, or
-  the `simctl create qaren-pool-<run-id>` it would run, and claims, writes and
-  prunes nothing. A member whose dead holder's run never reached `ready` is
+- **`--dry-run`** names the member it would claim and the reset commands, the
+  `simctl create qaren-pool-<run-id>` it would run, or, at the cap, the
+  temporary `simctl create qaren-<run-id>` with the `fresh:` reason, and
+  claims, writes and prunes nothing. A member whose dead holder's run never reached `ready` is
   reported as reused after reclaiming that run; a Booted one counts only if
   that run armed its stop, since cleanup shuts down nothing else.
 - **Unproven process identity.** When `ps` cannot prove this prepare's own
@@ -3174,9 +3176,11 @@ one, pass it with `--device`.
   temporary `qaren-<run-id>` path and `device_pool` reports `fresh:` with the
   reason.
 
-The pool and its cap are per QaReN home: another `HOME` never scans these
-records, and its leases live under its own lock root unless `QAREN_LOCK_ROOT`
-is shared.
+The pool records and the cap are per QaReN home: another `HOME` never scans
+these records. Device leases follow the
+[lock-root contract](#ios-admission-and-cleanup) and are machine-wide by
+default, so a run under another `HOME` that borrows a pool member with
+`--device` contends on the same lease.
 
 ### Existing iOS simulator
 

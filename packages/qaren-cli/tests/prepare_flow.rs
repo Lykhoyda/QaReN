@@ -4392,6 +4392,37 @@ fn labels(mock: &MockRunner) -> Vec<String> {
     mock.calls.iter().map(|c| c.label.clone()).collect()
 }
 
+fn script_cap_fallback_tail(mock: &mut MockRunner) {
+    mock.expect_run("lsof", free_port());
+    common::script_ios_deps(mock);
+    mock.expect_run("ls-files", CmdOutput::success(""));
+    common::script_xcode(mock);
+    mock.expect_run("simctl create", CmdOutput::failed(1, "boom"));
+}
+
+fn assert_cap_fallback(repo: &std::path::Path, receipt: &qaren::receipt::Receipt, reason: &str) {
+    assert_eq!(
+        receipt.result,
+        ReceiptResult::Failed,
+        "{}",
+        receipt.to_json()
+    );
+    let outcome = &receipt.outcomes["device_pool"];
+    assert!(
+        outcome.starts_with("fresh: the QaReN simulator pool is at ios.max_devices 1 and "),
+        "{outcome}"
+    );
+    assert!(outcome.contains(reason), "{outcome}");
+    let record = RunRecord::load(repo, &receipt.run_id).unwrap();
+    assert_eq!(
+        record.resources.ios_simulator.as_ref().unwrap().name,
+        format!("qaren-{}", receipt.run_id)
+    );
+    assert!(record.resources.lease.is_none());
+    assert!(!record.resources.device_borrowed);
+    assert!(record.resources.pool_create_lock.is_none());
+}
+
 fn assert_no_simulator_power(mock: &MockRunner) {
     for call in &mock.calls {
         let rendered = call.rendered();
@@ -5492,22 +5523,22 @@ fn pool_skips_a_member_whose_name_changed_and_counts_it_at_the_cap() {
     );
     mock.expect_run("ps", CmdOutput::success("Wed Aug 12 15:59:00 2026\n"));
     mock.expect_run("ps", CmdOutput::success("qaren prepare\n"));
+    script_cap_fallback_tail(&mut mock);
 
     let receipt = prepare(&mut mock, &pool_args(&scenario_path));
 
-    assert_eq!(receipt.result, ReceiptResult::Refused);
-    let failure = receipt.failure.unwrap();
-    assert_eq!(failure.code, FailureCode::DeviceUnavailable);
-    assert!(failure.detail.to_string().contains(BORROWED));
-    assert!(failure.next_action.to_string().contains("ios.max_devices"));
     assert_eq!(mock.remaining(), 0);
-    assert!(no_run_dir(&repo));
+    assert_cap_fallback(
+        &repo,
+        &receipt,
+        &format!("no member matches the scenario's device type and runtime: {BORROWED}"),
+    );
     assert!(!pool_lease_dir(&repo, BORROWED).exists());
     assert!(qaren::pool::record_path(&repo.join(".pool"), BORROWED).exists());
 }
 
 #[test]
-fn pool_at_cap_refuses_a_live_held_member_before_any_run_record() {
+fn pool_at_cap_falls_back_to_a_temporary_simulator_past_a_live_held_member() {
     let repo = common::temp_repo();
     plant_member(&repo, BORROWED);
     let held = plant_pool_holder(&repo, BORROWED, Phase::Walking);
@@ -5519,16 +5550,12 @@ fn pool_at_cap_refuses_a_live_held_member_before_any_run_record() {
     mock.expect_run("ps", CmdOutput::success("qaren prepare\n"));
     mock.expect_run("ps", CmdOutput::success("Wed Aug 12 15:00:00 2026\n")); // holder alive
     mock.expect_run("ps", CmdOutput::success("S\n"));
+    script_cap_fallback_tail(&mut mock);
 
     let receipt = prepare(&mut mock, &pool_args(&scenario_path));
 
-    assert_eq!(receipt.result, ReceiptResult::Refused);
-    let failure = receipt.failure.unwrap();
-    assert_eq!(failure.code, FailureCode::DeviceBusy, "{failure:?}");
-    assert!(failure.next_action.to_string().contains("--new"));
     assert_eq!(mock.remaining(), 0);
-    assert!(no_run_dir(&repo));
-    assert!(!labels(&mock).iter().any(|l| l == "simctl-create"));
+    assert_cap_fallback(&repo, &receipt, BORROWED);
     assert_eq!(
         qaren::buildplan::read_holder(&held.lock_dir)
             .unwrap()
@@ -5605,20 +5632,12 @@ fn pool_treats_a_dead_ready_holder_as_occupied() {
     mock.expect_run("ps", CmdOutput::success("Wed Aug 12 15:59:00 2026\n"));
     mock.expect_run("ps", CmdOutput::success("qaren prepare\n"));
     mock.expect_run("ps", CmdOutput::success("")); // the ready run's prepare exited
+    script_cap_fallback_tail(&mut mock);
 
     let receipt = prepare(&mut mock, &pool_args(&scenario_path));
 
-    assert_eq!(receipt.result, ReceiptResult::Refused);
-    let failure = receipt.failure.unwrap();
-    assert_eq!(failure.code, FailureCode::DeviceBusy);
-    assert!(
-        failure
-            .detail
-            .to_string()
-            .contains("qaren cleanup check-earlier"),
-        "{failure:?}"
-    );
     assert_eq!(mock.remaining(), 0);
+    assert_cap_fallback(&repo, &receipt, "qaren cleanup check-earlier");
     assert_eq!(
         std::fs::read(RunRecord::path(&repo, "check-earlier")).unwrap(),
         before,
@@ -5630,7 +5649,41 @@ fn pool_treats_a_dead_ready_holder_as_occupied() {
             .run_id,
         "check-earlier"
     );
-    assert!(no_run_dir(&repo));
+}
+
+#[test]
+fn pool_recount_under_the_creation_lock_falls_back_when_a_parallel_prepare_filled_the_cap() {
+    let repo = common::temp_repo();
+    let scenario_path = write_scenario(&repo, &ios_scenario_yaml(8791));
+    let mut mock = MockRunner::new();
+    script_validation(&mut mock, &repo, IOS_TOOLS);
+    mock.expect_run("ps", CmdOutput::success("Wed Aug 12 15:59:00 2026\n"));
+    mock.expect_run("ps", CmdOutput::success("qaren prepare\n"));
+    mock.expect_run("lsof", free_port());
+    common::script_ios_deps(&mut mock);
+    mock.expect_run("ls-files", CmdOutput::success(""));
+    common::script_xcode(&mut mock);
+    mock.expect_run("simctl list devices -j", member_inventory("Booted"));
+    mock.expect_run("simctl create", CmdOutput::failed(1, "boom"));
+    let parallel = repo.clone();
+    let mut enrolled = false;
+    mock.observe = Some(Box::new(move |spec| {
+        if !enrolled && spec.label == "lsof-port" {
+            enrolled = true;
+            plant_member(&parallel, BORROWED);
+        }
+    }));
+
+    let receipt = prepare(&mut mock, &pool_args(&scenario_path));
+
+    assert_eq!(mock.remaining(), 0);
+    assert_cap_fallback(&repo, &receipt, "no matching member is free");
+    assert!(
+        !repo.join(".pool").join("create-ios").exists(),
+        "creation lock released"
+    );
+    assert!(!pool_lease_dir(&repo, BORROWED).exists());
+    assert!(qaren::pool::record_path(&repo.join(".pool"), BORROWED).exists());
 }
 
 #[test]
@@ -5687,20 +5740,24 @@ fn pool_skips_a_booted_member_with_no_holder() {
     mock.expect_run("ps", CmdOutput::success("Wed Aug 12 15:59:00 2026\n"));
     mock.expect_run("ps", CmdOutput::success("qaren prepare\n"));
     mock.expect_run("simctl list devices -j", member_inventory("Booted"));
+    script_cap_fallback_tail(&mut mock);
 
     let receipt = prepare(&mut mock, &pool_args(&scenario_path));
 
-    assert_eq!(receipt.result, ReceiptResult::Refused);
-    let failure = receipt.failure.unwrap();
-    assert_eq!(failure.code, FailureCode::DeviceBusy);
-    assert!(failure
-        .detail
-        .to_string()
-        .contains(&format!("xcrun simctl shutdown {BORROWED}")));
     assert_eq!(mock.remaining(), 0);
+    assert_cap_fallback(
+        &repo,
+        &receipt,
+        &format!("xcrun simctl shutdown {BORROWED}"),
+    );
     assert!(!pool_lease_dir(&repo, BORROWED).exists(), "lease released");
-    assert_no_simulator_power(&mock);
-    assert!(no_run_dir(&repo));
+    assert!(!mock.calls.iter().any(|c| {
+        let rendered = c.rendered();
+        rendered.contains(BORROWED)
+            && ["boot", "shutdown", "delete", "erase"]
+                .iter()
+                .any(|v| rendered.contains(v))
+    }));
 }
 
 #[test]
@@ -5974,8 +6031,13 @@ fn pool_dry_run_reports_reclaiming_a_dead_holder_whose_run_never_reached_ready()
         let receipt = prepare(&mut mock, &args);
 
         if state == "Booted" && !armed {
-            assert_eq!(receipt.result, ReceiptResult::Refused);
-            assert_eq!(receipt.failure.unwrap().code, FailureCode::DeviceBusy);
+            assert_eq!(receipt.result, ReceiptResult::Planned);
+            assert!(receipt.outcomes["device_pool"].starts_with("fresh: "));
+            let planned = receipt.planned_commands.join("\n");
+            assert!(
+                planned.contains(&format!("simctl create qaren-{} ", receipt.run_id)),
+                "{planned}"
+            );
             continue;
         }
         assert_eq!(mock.remaining(), 0);
@@ -6081,9 +6143,20 @@ fn pool_dry_run_skips_a_booted_member_like_the_claim() {
 
     let receipt = prepare(&mut mock, &args);
 
-    assert_eq!(receipt.result, ReceiptResult::Refused);
-    let failure = receipt.failure.unwrap();
-    assert_eq!(failure.code, FailureCode::DeviceBusy, "{failure:?}");
+    assert_eq!(
+        receipt.result,
+        ReceiptResult::Planned,
+        "{:?}",
+        receipt.failure
+    );
+    assert_eq!(mock.remaining(), 0);
+    assert!(receipt.outcomes["device_pool"]
+        .starts_with("fresh: the QaReN simulator pool is at ios.max_devices 1"));
+    let planned = receipt.planned_commands.join("\n");
+    assert!(
+        planned.contains(&format!("simctl create qaren-{} ", receipt.run_id)),
+        "{planned}"
+    );
     assert!(no_run_dir(&repo));
 }
 
