@@ -1,0 +1,9 @@
+{
+  "screen": {
+    "front": "app",
+    "elements": [],
+    "visibleText": ["Profile", "Unable to save changes. Please try again.", "Save"]
+  },
+  "line": "✓ A confirmation says the profile changes were saved",
+  "expected": { "kind": "check", "verdict": "fail" }
+}

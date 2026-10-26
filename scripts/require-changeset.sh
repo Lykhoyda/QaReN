@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# CI guard (GH #189 / v0.44.45 post-mortem): a PR that changes shippable MCP
+# CI guard (GH #189 / v0.44.45 post-mortem): a PR that changes shippable
 # source MUST include a changeset, so the change earns a version bump + release.
 # Without this, behavior fixes merge to main unversioned and never reach
 # marketplace installs — #188 shipped the runFlow fix with no bump, so users
@@ -15,12 +15,10 @@ set -uo pipefail
 
 ROOT="${REPO_ROOT:-$(cd "$(dirname "$0")/.." && pwd)}"
 BASE_REF="${BASE_REF:-origin/main}"
-# Shippable surface: core MCP source PLUS the hand-authored plugin surface
-# (commands/hooks/agents/skills) that marketplace installs run directly (GH #439
-# — those dirs could previously merge unversioned, the #189/#361 gap). Tests,
-# docs, CI, the plugin manifests/CHANGELOGs (which ARE the changeset output),
-# and the rn-dev-agent-core/scripts build-output mirrors stay excluded.
-WATCHED='^packages/rn-dev-agent-core/src/|^packages/(claude-plugin|codex-plugin|shared-agent-knowledge)/(commands|hooks|agents|skills)/'
+# Shippable surface: the core and CLI sources plus the hand-authored plugin
+# surface (commands/skills/hooks/scripts) that marketplace installs run directly. Tests,
+# docs, CI, and the plugin manifests/CHANGELOGs (the changeset output) stay excluded.
+WATCHED='^packages/qaren-core/src/|^packages/qaren-cli/src/|^packages/qaren-plugin/(commands|skills|hooks|scripts)/'
 
 git_diff_mode=false
 if [ -n "${CHANGED_FILES+x}" ]; then
@@ -69,7 +67,7 @@ if [ "$git_diff_mode" = true ] && [ -n "$src_changed" ]; then
   release_src_changed=""
   while IFS= read -r source_file; do
     [ -n "$source_file" ] || continue
-    if [[ "$source_file" != packages/rn-dev-agent-core/src/*.ts ]] ||
+    if [[ "$source_file" != packages/qaren-core/src/*.ts && "$source_file" != packages/qaren-cli/src/*.rs ]] ||
       ! git -C "$ROOT" diff --no-ext-diff --unified=999999 \
         "${BASE_REF}...HEAD" -- "$source_file" |
         awk '
@@ -126,48 +124,37 @@ MSG
   exit 1
 fi
 
-# A changeset exists — but the core MCP server ships to users ONLY via the plugin manifest
-# (plugin.json / marketplace.json), which is versioned by the synthetic
-# `rn-dev-agent-plugin` package. A changeset that bumps only `rn-dev-agent-core`
-# (the internal package) advances the bundled dist but leaves the manifest pinned,
-# so `/plugin update` never delivers the change to installs (#361/#363 delivery
-# gap). Require a `rn-dev-agent-plugin` entry so the manifest bumps and ships.
-#
-# Parse ONLY the frontmatter package keys (the lines strictly between the first
-# and second `---`), not the whole file — otherwise a core-only changeset whose
-# release-note body merely mentions `"rn-dev-agent-plugin"` would falsely pass
-# (Codex PR #364 P1). Same frontmatter extraction as validate-changeset-names.sh.
+# A changeset exists — but only the `qaren` package (the plugin, versioned
+# through packages/qaren-plugin/package.json) is released; a changeset that
+# bumps only `qaren-core` leaves the manifests pinned and ships nothing.
+# Parse ONLY the frontmatter package keys, not the whole file (Codex PR #364 P1).
 plugin_changeset=""
 while IFS= read -r file; do
   [ -n "$file" ] || continue
   frontmatter="$(awk '$0 ~ /^---[[:space:]]*$/ { d++; next } d==1 { print }' "$file")"
-  if printf '%s\n' "$frontmatter" | grep -Eq "^[[:space:]]*[\"']?rn-dev-agent-plugin[\"']?[[:space:]]*:"; then
+  if printf '%s\n' "$frontmatter" | grep -Eq "^[[:space:]]*[\"']?qaren[\"']?[[:space:]]*:"; then
     plugin_changeset="$file"
     break
   fi
 done < <(printf '%s\n' "$changesets")
 
 if [ -z "$plugin_changeset" ]; then
-  echo "ERROR: this PR changes shippable source but no changeset bumps rn-dev-agent-plugin:" >&2
+  echo "ERROR: this PR changes shippable source but no changeset bumps qaren:" >&2
   printf '%s\n' "$src_changed" | sed 's/^/  /' >&2
   cat >&2 <<'MSG'
 
-A `rn-dev-agent-core`-only changeset bumps the internal package but NOT the plugin
-manifest (plugin.json / marketplace.json) — so the change ships to main but never
-reaches marketplace installs via `/plugin update` (#361/#363 post-mortem: the
-core MCP package advanced through 0.48→0.49 while the plugin stayed pinned at 0.55.5).
+A `qaren-core`-only changeset bumps an internal package but NOT the plugin
+manifests, so the change ships to main but never reaches an install.
 
-Fix: add a `rn-dev-agent-plugin` entry to a changeset (typically alongside the
-`rn-dev-agent-core` bump), e.g.:
+Fix: add a `qaren` entry to a changeset, e.g.:
 
   ---
-  "rn-dev-agent-core": patch
-  "rn-dev-agent-plugin": patch
+  "qaren": patch
   ---
 MSG
   exit 1
 fi
 
-echo "require-changeset: shippable src changed AND a rn-dev-agent-plugin changeset is present — OK."
+echo "require-changeset: shippable src changed AND a qaren changeset is present — OK."
 printf '%s\n' "$changesets" | sed 's/^/  /'
 exit 0

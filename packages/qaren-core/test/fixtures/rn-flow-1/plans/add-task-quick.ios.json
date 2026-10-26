@@ -1,0 +1,116 @@
+{
+  "schema": "rn-flow/1",
+  "actionId": "add-task-quick",
+  "appId": "com.rndevagent.testapp",
+  "platform": "ios",
+  "steps": [
+    {
+      "id": "s1",
+      "source": {
+        "line": 9
+      },
+      "domain": "native",
+      "optional": false,
+      "budgetMs": 15000,
+      "op": "launchApp",
+      "stopApp": false,
+      "clearState": false
+    },
+    {
+      "id": "s2",
+      "source": {
+        "line": 11
+      },
+      "domain": "native",
+      "optional": false,
+      "budgetMs": 17000,
+      "op": "tapOn",
+      "selector": {
+        "id": "tab-tasks"
+      }
+    },
+    {
+      "id": "s3",
+      "source": {
+        "line": 13
+      },
+      "domain": "native",
+      "optional": false,
+      "budgetMs": 5000,
+      "op": "waitForAnimationToEnd"
+    },
+    {
+      "id": "s4",
+      "source": {
+        "line": 14
+      },
+      "domain": "react-tree",
+      "optional": false,
+      "budgetMs": 17000,
+      "op": "assertVisible",
+      "selector": {
+        "id": "task-screen"
+      }
+    },
+    {
+      "id": "s5",
+      "source": {
+        "line": 16
+      },
+      "domain": "native",
+      "optional": false,
+      "budgetMs": 17000,
+      "op": "tapOn",
+      "selector": {
+        "id": "task-input"
+      }
+    },
+    {
+      "id": "s6",
+      "source": {
+        "line": 18
+      },
+      "domain": "native",
+      "optional": false,
+      "budgetMs": 10000,
+      "op": "inputText",
+      "text": "mttr-experiment-task"
+    },
+    {
+      "id": "s7",
+      "source": {
+        "line": 19
+      },
+      "domain": "native",
+      "optional": false,
+      "budgetMs": 17000,
+      "op": "tapOn",
+      "selector": {
+        "id": "task-add-btn"
+      }
+    },
+    {
+      "id": "s8",
+      "source": {
+        "line": 21
+      },
+      "domain": "native",
+      "optional": false,
+      "budgetMs": 5000,
+      "op": "waitForAnimationToEnd"
+    },
+    {
+      "id": "s9",
+      "source": {
+        "line": 22
+      },
+      "domain": "native",
+      "optional": false,
+      "budgetMs": 17000,
+      "op": "assertVisible",
+      "selector": {
+        "text": "mttr-experiment-task"
+      }
+    }
+  ]
+}

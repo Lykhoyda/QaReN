@@ -2,9 +2,14 @@ node_modules/
 .yarn/cache/
 .yarn/install-state.gz
 
-# Core tsc/Vite output. The one marketplace runtime lives under
-# packages/claude-plugin/rn-dev-agent-core/dist/ and stays committed.
-packages/rn-dev-agent-core/dist/
+# Build outputs: core tsc output, the Observe SPA bundle, the Rust target dir.
+packages/qaren-core/dist/
+packages/qaren-cli/observe/dist/
+packages/qaren-cli/observe/node_modules/
+packages/qaren-cli/target/
+
+# Local stub toolchains written by validation sandboxes.
+.test-sandbox/
 
 .claude/*
 !.claude/commands/
@@ -25,24 +30,16 @@ reports
 # Vendored native drivers (installed by agent-device)
 drivers/
 
-# Xcode build artifacts for the imported iOS runner (source package + the
-# generated host-package copies, which users may self-build in place)
+# Xcode build artifacts for the iOS runner
 packages/rn-fast-runner/build/
 packages/rn-fast-runner/**/xcuserdata/
 packages/rn-fast-runner/**/DerivedData/
 packages/rn-fast-runner/**/project.xcworkspace/xcshareddata/
-packages/*/scripts/rn-fast-runner/build/
-packages/*/scripts/rn-fast-runner/**/xcuserdata/
-packages/*/scripts/rn-fast-runner/**/DerivedData/
-packages/*/scripts/rn-fast-runner/**/project.xcworkspace/xcshareddata/
 
-# Gradle build artifacts for the imported Android runner (source + host copies)
+# Gradle build artifacts for the Android runner
 packages/rn-android-runner/.gradle/
 packages/rn-android-runner/.kotlin/
 packages/rn-android-runner/**/build/
-packages/*/scripts/rn-android-runner/.gradle/
-packages/*/scripts/rn-android-runner/.kotlin/
-packages/*/scripts/rn-android-runner/**/build/
 
 # Local worktrees for isolated feature work
 .worktrees/
@@ -56,15 +53,7 @@ packages/*/scripts/rn-android-runner/**/build/
 # line covers everything including future additions.
 .codex-pair/
 
-# core eval harnesses (local-only dev scaffolding — live-gate scripts
-# driven against booted devices, e.g. eval/live-gate-gh253.mjs; not shipped)
-packages/rn-dev-agent-core/eval/
 .brainstorm-tmp/
-
-# E2E regression run records (machine state); locked tests under .rn-agent/e2e/ stay tracked
-.rn-agent/state/e2e-runs/
-# E2E param values (may hold secrets) — local/personal, never committed
-.rn-agent/e2e.config.json
 
 # Story 06 Phase B fixtures (#387)
 test-fixtures/ios-fixture/build/
@@ -74,5 +63,5 @@ test-fixtures/android-fixture/**/build/
 # Playwright MCP session artifacts (screenshots/snapshots from browser automation)
 .playwright-mcp/
 
-# Story 06 Phase C (#387) eval-run results (regenerated per run)
-packages/rn-dev-agent-core/test/evals/results/
+# Riptide artifacts (cloud-synced)
+.humanlayer/tasks/

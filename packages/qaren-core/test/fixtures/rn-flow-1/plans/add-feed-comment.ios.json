@@ -1,0 +1,175 @@
+{
+  "schema": "rn-flow/1",
+  "actionId": "add-feed-comment",
+  "appId": "com.rndevagent.testapp",
+  "platform": "ios",
+  "steps": [
+    {
+      "id": "s1",
+      "source": {
+        "line": 9
+      },
+      "domain": "native",
+      "optional": false,
+      "budgetMs": 15000,
+      "op": "launchApp",
+      "stopApp": false,
+      "clearState": false
+    },
+    {
+      "id": "s2",
+      "source": {
+        "line": 11
+      },
+      "domain": "native",
+      "optional": false,
+      "budgetMs": 17000,
+      "op": "tapOn",
+      "selector": {
+        "id": "tab-home"
+      }
+    },
+    {
+      "id": "s3",
+      "source": {
+        "line": 13
+      },
+      "domain": "native",
+      "optional": false,
+      "budgetMs": 5000,
+      "op": "waitForAnimationToEnd"
+    },
+    {
+      "id": "s4",
+      "source": {
+        "line": 14
+      },
+      "domain": "native",
+      "optional": false,
+      "budgetMs": 17000,
+      "op": "tapOn",
+      "selector": {
+        "id": "home-feed-btn"
+      }
+    },
+    {
+      "id": "s5",
+      "source": {
+        "line": 16
+      },
+      "domain": "native",
+      "optional": false,
+      "budgetMs": 5000,
+      "op": "waitForAnimationToEnd"
+    },
+    {
+      "id": "s6",
+      "source": {
+        "line": 17
+      },
+      "domain": "react-tree",
+      "optional": false,
+      "budgetMs": 17000,
+      "op": "assertVisible",
+      "selector": {
+        "id": "feed-screen"
+      }
+    },
+    {
+      "id": "s7",
+      "source": {
+        "line": 19
+      },
+      "domain": "native",
+      "optional": false,
+      "budgetMs": 17000,
+      "op": "tapOn",
+      "selector": {
+        "id": "feed-comment-1"
+      }
+    },
+    {
+      "id": "s8",
+      "source": {
+        "line": 21
+      },
+      "domain": "native",
+      "optional": false,
+      "budgetMs": 5000,
+      "op": "waitForAnimationToEnd"
+    },
+    {
+      "id": "s9",
+      "source": {
+        "line": 22
+      },
+      "domain": "react-tree",
+      "optional": false,
+      "budgetMs": 17000,
+      "op": "assertVisible",
+      "selector": {
+        "id": "comment-modal"
+      }
+    },
+    {
+      "id": "s10",
+      "source": {
+        "line": 24
+      },
+      "domain": "native",
+      "optional": false,
+      "budgetMs": 17000,
+      "op": "tapOn",
+      "selector": {
+        "id": "comment-input"
+      }
+    },
+    {
+      "id": "s11",
+      "source": {
+        "line": 26
+      },
+      "domain": "native",
+      "optional": false,
+      "budgetMs": 10000,
+      "op": "inputText",
+      "text": "mttr-experiment-comment"
+    },
+    {
+      "id": "s12",
+      "source": {
+        "line": 27
+      },
+      "domain": "native",
+      "optional": false,
+      "budgetMs": 17000,
+      "op": "tapOn",
+      "selector": {
+        "id": "comment-submit"
+      }
+    },
+    {
+      "id": "s13",
+      "source": {
+        "line": 29
+      },
+      "domain": "native",
+      "optional": false,
+      "budgetMs": 5000,
+      "op": "waitForAnimationToEnd"
+    },
+    {
+      "id": "s14",
+      "source": {
+        "line": 30
+      },
+      "domain": "native",
+      "optional": false,
+      "budgetMs": 17000,
+      "op": "assertVisible",
+      "selector": {
+        "text": "mttr-experiment-comment"
+      }
+    }
+  ]
+}

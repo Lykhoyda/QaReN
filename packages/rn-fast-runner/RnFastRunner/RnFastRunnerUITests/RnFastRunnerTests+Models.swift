@@ -1,3 +1,4 @@
+import CoreGraphics
 import XCTest
 
 // MARK: - Wire Models
@@ -25,7 +26,7 @@ enum CommandType: String, Codable, CaseIterable {
   case rotate
   case appSwitcher
   case keyboardDismiss
-  case alert
+  case systemAlertTap
   case pinch
   case isScreenStatic
   case uptime
@@ -61,6 +62,10 @@ struct Command: Codable {
   let depth: Int?
   let scope: String?
   let raw: Bool?
+  var platformPresence: Bool? = nil
+  var qaReadOnly: Bool? = nil
+  var presenceBudgetMs: Int? = nil
+  var labelProvenance: [Int]? = nil
   let fullscreen: Bool?
   var guardKeyboard: Bool? = nil
   var targetBounds: SnapshotRect? = nil
@@ -77,6 +82,8 @@ struct Command: Codable {
   var focusY: Double? = nil
   var focusWaitMs: Int? = nil
   var focused: Bool? = nil
+  var prepareReplacement: Bool? = nil
+  var replacementDeleteCount: Int? = nil
   var operationToken: String? = nil
 }
 
@@ -128,6 +135,44 @@ struct Response: Codable {
   }
 }
 
+enum SnapshotViewportSource: String, Codable {
+  case firstNonemptyWindow = "first-nonempty-window"
+  case app
+  case unbounded
+}
+
+struct SnapshotDiagnostics: Codable {
+  let v: Int
+  let viewportSource: SnapshotViewportSource
+  let viewport: [Double]?
+
+  init?(viewport frame: CGRect, source: SnapshotViewportSource) {
+    v = 1
+    viewportSource = source
+    if source == .unbounded {
+      guard frame == .infinite else { return nil }
+      viewport = nil
+    } else {
+      let coordinates = [frame.origin.x, frame.origin.y, frame.size.width, frame.size.height]
+      guard coordinates.allSatisfy({ $0.isFinite }), frame.size.width >= 0, frame.size.height >= 0 else {
+        return nil
+      }
+      viewport = coordinates.map { Double($0.rounded()) }
+    }
+  }
+
+  func encode(to encoder: Encoder) throws {
+    var container = encoder.container(keyedBy: CodingKeys.self)
+    try container.encode(v, forKey: .v)
+    try container.encode(viewportSource, forKey: .viewportSource)
+    if let viewport {
+      try container.encode(viewport, forKey: .viewport)
+    } else {
+      try container.encodeNil(forKey: .viewport)
+    }
+  }
+}
+
 struct DataPayload: Codable {
   let message: String?
   let text: String?
@@ -152,6 +197,8 @@ struct DataPayload: Codable {
   let keyboardGuardMs: Double?
   let keyboardVisible: Bool?
   let snapshotGeneration: Int?
+  let snapshotDiagnostics: SnapshotDiagnostics?
+  let presenceCapture: PlatformPresenceCapture?
   let via: String?
   let `static`: Bool?
   // Story 10 (#391): typing telemetry — whether the two-burst recipe ran and
@@ -166,6 +213,14 @@ struct DataPayload: Codable {
   let verifyVerdict: String?
   let verifyStable: Bool?
   let textEntryRoute: String?
+  let occlusionCheck: String?
+  var appProcessIdentifier: Int? = nil
+  var tappedLabel: String? = nil
+  var tappedRect: SnapshotRect? = nil
+  var alertClosed: Bool? = nil
+  var systemModal: SystemModalDiagnostic? = nil
+  var labelProvenance: [CandidateLabelProvenance]? = nil
+  var labelProvenanceDiagnostics: CandidateLabelProvenanceDiagnostics? = nil
 
   init(
     message: String? = nil,
@@ -191,6 +246,8 @@ struct DataPayload: Codable {
     keyboardGuardMs: Double? = nil,
     keyboardVisible: Bool? = nil,
     snapshotGeneration: Int? = nil,
+    snapshotDiagnostics: SnapshotDiagnostics? = nil,
+    presenceCapture: PlatformPresenceCapture? = nil,
     via: String? = nil,
     `static`: Bool? = nil,
     typingBurst: Bool? = nil,
@@ -199,7 +256,8 @@ struct DataPayload: Codable {
     focusTap: String? = nil,
     verifyVerdict: String? = nil,
     verifyStable: Bool? = nil,
-    textEntryRoute: String? = nil
+    textEntryRoute: String? = nil,
+    occlusionCheck: String? = nil
   ) {
     self.message = message
     self.text = text
@@ -224,6 +282,8 @@ struct DataPayload: Codable {
     self.keyboardGuardMs = keyboardGuardMs
     self.keyboardVisible = keyboardVisible
     self.snapshotGeneration = snapshotGeneration
+    self.snapshotDiagnostics = snapshotDiagnostics
+    self.presenceCapture = presenceCapture
     self.via = via
     self.`static` = `static`
     self.typingBurst = typingBurst
@@ -233,6 +293,7 @@ struct DataPayload: Codable {
     self.verifyVerdict = verifyVerdict
     self.verifyStable = verifyStable
     self.textEntryRoute = textEntryRoute
+    self.occlusionCheck = occlusionCheck
   }
 }
 
@@ -283,7 +344,7 @@ func runnerErrorPayload(_ error: Error, command: String? = nil) -> ErrorPayload 
   return ErrorPayload(message: "\(error)")
 }
 
-struct SnapshotRect: Codable {
+struct SnapshotRect: Codable, Equatable {
   let x: Double
   let y: Double
   let width: Double
@@ -304,6 +365,191 @@ struct SnapshotNode: Codable {
   let parentIndex: Int?
   let hiddenContentAbove: Bool?
   let hiddenContentBelow: Bool?
+  // Only true is sent: the selected trait, e.g. React Native accessibilityState.selected.
+  var selected: Bool? = nil
+  var presence: PlatformPresenceObservation? = nil
+}
+
+struct SystemModalDiagnostic: Codable {
+  enum AppState: String, Codable {
+    case unknown, notRunning, runningBackgroundSuspended, runningBackground, runningForeground
+  }
+  struct DescendantType: Codable {
+    let type: UInt
+    let count: Int
+  }
+  struct Modal: Codable {
+    let exists: Bool
+    let frameEmpty: Bool
+    let centerInViewport: Bool
+    let springboardFrameEmpty: Bool
+    let descendantTypes: [DescendantType]
+    let hittableDescendantCount: Int
+  }
+  let appState: AppState
+  let alertCount: Int
+  let sheetCount: Int
+  let modals: [Modal]
+
+  static func make(recognized: Bool, appState: AppState, alertCount: Int, sheetCount: Int,
+    modals: [Modal]) -> SystemModalDiagnostic? {
+    guard !recognized, alertCount + sheetCount > 0 else { return nil }
+    return .init(appState: appState, alertCount: alertCount, sheetCount: sheetCount, modals: modals)
+  }
+}
+
+struct PlatformPresenceCapture: Codable {
+  let version: Int
+  let source: String
+  let captureId: String
+  let appId: String
+  let generation: Int
+  let startedUptimeMs: Double
+  let endedUptimeMs: Double
+  let enumeration: String
+  let complete: Bool
+  let appliedBudgetMs: Int
+  var diagnostics: PlatformPresenceDiagnostics? = nil
+}
+
+struct PlatformPresenceDiagnostics: Codable {
+  enum Phase: String, Codable {
+    case initialEligibility = "initial-eligibility"
+    case preparation, enumeration, observation
+    case finalEligibility = "final-eligibility"
+    case revalidation, finalization
+  }
+
+  enum Reason: String, Codable {
+    case deadline
+    case readUnavailable = "read-unavailable"
+    case ineligible
+    case nodeLimit = "node-limit"
+    case enumerationChanged = "enumeration-changed"
+  }
+
+  enum Read: String, Codable {
+    case appState = "app-state"
+    case alerts, sheets
+    case rootSnapshot = "root-snapshot"
+    case preparationPoll = "preparation-poll"
+    case enumeration
+    case observationLoop = "observation-loop"
+    case observation
+    case firstMatch = "first-match"
+    case allMatches = "all-matches"
+    case candidateSnapshot = "candidate-snapshot"
+    case candidateHit = "candidate-hit"
+    case postHitSnapshot = "post-hit-snapshot"
+    case revalidation, finalization
+  }
+
+  enum Edge: String, Codable {
+    case before, after
+  }
+
+  struct Failure: Codable {
+    let phase: Phase
+    let reason: Reason
+    var mismatch: Mismatch? = nil
+  }
+
+  struct Mismatch: Codable {
+    enum Kind: String, Codable {
+      case descriptorCount = "descriptor-count"
+      case addedNode = "added-node"
+      case missingNode = "missing-node"
+      case node
+    }
+
+    enum Field: Int {
+      case type = 1, identifier = 2, label = 4, value = 8, frame = 16, enabled = 32
+      case depth = 64, parentIndex = 128, initialDescriptorUnavailable = 256
+    }
+
+    struct Geometry: Codable {
+      // Component masks use x=1, y=2, width=4, height=8.
+      var changedMask = 0
+      var beforeFiniteMask = 0
+      var afterFiniteMask = 0
+      var deltaFiniteMask = 0
+      var dx: Double?
+      var dy: Double?
+      var dWidth: Double?
+      var dHeight: Double?
+      let beforeNull: Bool
+      let afterNull: Bool
+      let beforeInfinite: Bool
+      let afterInfinite: Bool
+      let beforeInvalidSize: Bool
+      let afterInvalidSize: Bool
+    }
+
+    let kind: Kind
+    var index: Int? = nil
+    var fieldMask: Int = 0
+    var beforeType: UInt? = nil
+    var afterType: UInt? = nil
+    var geometry: Geometry? = nil
+    var ancestorTypes: [UInt]? = nil
+    var ancestorsTruncated: Bool? = nil
+  }
+
+  struct Deadline: Codable {
+    let phase: Phase
+    let read: Read
+    let edge: Edge
+  }
+
+  var phaseMs: [String: Double]
+  var preparationSamples: Int?
+  var preparationResets: Int?
+  var preparationQuietWindowMs: Double?
+  var preparationQuietElapsedMs: Double?
+  var failure: Failure?
+  var deadline: Deadline?
+}
+
+struct PlatformPresenceObservation: Codable {
+  enum Status: String, Codable {
+    case observed, unknown
+  }
+
+  enum LabelSource: String, Codable {
+    case direct, value, descendant, none
+  }
+
+  enum UnknownReason: String, Codable {
+    case emptyFrame = "empty-frame"
+    case clipped
+    case ambiguousDescriptor = "ambiguous-descriptor"
+    case notHittable = "not-hittable"
+    case readUnavailable = "read-unavailable"
+    case matchCountMismatch = "match-count-mismatch"
+    case postHitMismatch = "post-hit-mismatch"
+  }
+
+  let captureId: String
+  let generation: Int
+  let nodeIndex: Int
+  var status: Status
+  let labelSource: LabelSource
+  var observedUptimeMs: Double? = nil
+  var unknownReason: UnknownReason? = nil
+}
+
+struct CandidateLabelProvenance: Codable {
+  let index: Int
+  let labelSource: PlatformPresenceObservation.LabelSource
+}
+
+struct CandidateLabelProvenanceDiagnostics: Codable {
+  var directLabelIndices: [Int] = []
+  var sampleCount = 0
+  var nodeIndex: Int? = nil
+  var fieldMask = 0
+  var deadlineExpired = false
+  var outcome = "unavailable"
 }
 
 struct RetainedSnapshotTarget {
@@ -313,6 +559,11 @@ struct RetainedSnapshotTarget {
   let label: String?
   let identifier: String?
   let rect: SnapshotRect
+  // Frame of the nearest same-type, same-label ancestor of a label-only node in the same snapshot.
+  var ownerRect: SnapshotRect? = nil
+  // A Button with a Keyboard ancestor in the same snapshot, such as an iOS Return key.
+  var keyboardOwned: Bool = false
+  var parentIndex: Int? = nil
 }
 
 struct RecordedExactTypeTarget {

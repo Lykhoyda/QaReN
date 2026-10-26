@@ -1,0 +1,10 @@
+{
+  "screen": {
+    "front": "app",
+    "elements": [{ "ref": "@name", "kind": "input", "label": "Name", "value": "Anton", "hittable": true, "disabled": false, "secure": false, "offscreen": false }],
+    "visibleText": ["Name: Anton"]
+  },
+  "typedValues": ["Anton"],
+  "line": "✓ The name field starts with A",
+  "expected": { "kind": "check", "verdict": "unsure" }
+}

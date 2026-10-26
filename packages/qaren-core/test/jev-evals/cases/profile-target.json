@@ -1,0 +1,12 @@
+{
+  "screen": {
+    "front": "app",
+    "elements": [
+      { "ref": "@home", "kind": "button", "label": "Home", "testID": "tab-home", "hittable": true, "disabled": false, "secure": false, "offscreen": false, "where": "bottom", "side": "left" },
+      { "ref": "@profile", "kind": "button", "label": "Profile", "testID": "tab-profile", "hittable": true, "disabled": false, "secure": false, "offscreen": false, "where": "bottom", "side": "right" }
+    ],
+    "visibleText": ["Home", "Profile"]
+  },
+  "line": "Open the profile tab",
+  "expected": { "kind": "target", "ref": "@profile" }
+}

@@ -1,0 +1,16 @@
+schema: qaren/1
+name: ios-simulator
+platform: ios
+candidate:
+  project_root: test-app
+  app_id: com.rndevagent.testapp
+  revision: HEAD
+metro:
+  port: 8791
+ios:
+  device_type: com.apple.CoreSimulator.SimDeviceType.iPhone-17-Pro
+  runtime: com.apple.CoreSimulator.SimRuntime.iOS-26-4
+deadlines:
+  install_deps_seconds: 900
+  build_seconds: 2400
+  device_boot_seconds: 420

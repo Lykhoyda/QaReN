@@ -1,0 +1,20 @@
+# Cooperative handoff on a physical USB Android phone (workspace issue #34).
+# qaren takes only the exclusive qaren-level claim lock — it starts NO adb
+# server and never contacts the device, so the qaren session's global
+# adb server keeps uncontended access (a USB interface can be held by exactly
+# one adb server). Presence/authorization is proven by rn_session bind_device.
+# No `metro:`, no `adb_server_port`, no `dev_client_scheme`: those name
+# qaren-owned lifecycles that the session owns in this mode. The placeholder
+# serial deliberately fails validation so an unedited scenario refuses before
+# claiming anything.
+schema: qaren/1
+name: coop-usb-android
+platform: android
+candidate:
+  project_root: test-app
+  app_id: com.rndevagent.testapp
+  revision: HEAD
+build:
+  owner: qaren
+android_usb:
+  serial: "<replace-with-device-serial>"

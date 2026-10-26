@@ -3,7 +3,6 @@
   "ignorePatterns": [
     "node_modules/",
     "dist/",
-    "packages/claude-plugin/bin/plugin-health.js",
     "WebDriverAgent/",
     ".claude/worktrees/",
     ".astro/",

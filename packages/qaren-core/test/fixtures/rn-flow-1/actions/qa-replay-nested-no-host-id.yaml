@@ -1,0 +1,19 @@
+appId: com.rndevagent.testapp
+---
+# id: qa-replay-nested-no-host-id
+# intent: Refuse distinct nested controls when the outer host omits its testID without changing any fixture counter.
+# tags: [qa, replay, ambiguity, regression]
+# mutates: true
+# status: experimental
+# enginePin: maestro-runner@1.1.27
+# appId: com.rndevagent.testapp
+#
+# [QaAcceptanceStart] all six counters zero after UI reset
+# │ assertVisible qa-replay-ambiguity-fixture
+# │ tapOn qa-replay-nested-no-host-id
+# ▼
+# [expected refusal] counters and route unchanged; inspect outside replay
+- assertVisible:
+    id: "qa-replay-ambiguity-fixture"
+- tapOn:
+    id: "qa-replay-nested-no-host-id"

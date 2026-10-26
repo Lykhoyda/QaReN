@@ -1,0 +1,62 @@
+{
+  "_provenance": {
+    "capturedAt": "2026-08-04T16:02:38.936Z",
+    "capturedBy": "test/contract/capture-goldens.ts — captured, never hand-edit",
+    "recapture": "re-run when RUNNER_PROTOCOL_VERSION bumps or the runner wire shape changes (GOLDEN_PLATFORM=ios node test/contract/capture-goldens.ts)",
+    "platform": "ios",
+    "device": "rn581-golden-recap (C5AB15DE-4805-48A5-9C9A-62C4E1F3B8BA)",
+    "os": "iOS-26-2",
+    "appId": "dev.lykhoyda.rndevagent.fixture",
+    "httpStatus": 200,
+    "runnerVersion": "0.71.4",
+    "protocolVersion": 2,
+    "runnerPort": 23584
+  },
+  "payload": {
+    "appId": "dev.lykhoyda.rndevagent.fixture",
+    "runnerVersion": "0.71.4",
+    "claimEpoch": 1,
+    "v": 2,
+    "ok": true,
+    "commands": [
+      "tap",
+      "mouseClick",
+      "tapSeries",
+      "longPress",
+      "interactionFrame",
+      "drag",
+      "dragSeries",
+      "remotePress",
+      "type",
+      "verifyInput",
+      "swipe",
+      "findText",
+      "readText",
+      "snapshot",
+      "screenshot",
+      "back",
+      "backInApp",
+      "backSystem",
+      "home",
+      "rotate",
+      "appSwitcher",
+      "keyboardDismiss",
+      "systemAlertTap",
+      "pinch",
+      "isScreenStatic",
+      "uptime",
+      "status",
+      "shutdown"
+    ],
+    "protocolVersion": 2,
+    "instanceId": "recap581",
+    "deviceId": "C5AB15DE-4805-48A5-9C9A-62C4E1F3B8BA",
+    "capabilities": [
+      "QUIESCENCE_BYPASS",
+      "SCREEN_STATIC",
+      "HONEST_HITTABLE",
+      "EXACT_KEYBOARD_TARGET_GUARD"
+    ],
+    "sessionId": "recap581-session"
+  }
+}

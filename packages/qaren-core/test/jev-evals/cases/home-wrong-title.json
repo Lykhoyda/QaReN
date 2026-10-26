@@ -1,0 +1,769 @@
+{
+  "screen": {
+    "elements": [
+      {
+        "ref": "@e36",
+        "kind": "text",
+        "hittable": true,
+        "disabled": false,
+        "secure": false,
+        "offscreen": false,
+        "semantic": {
+          "press": "unsupported",
+          "fill": "unsupported",
+          "visibility": "visible",
+          "disabled": false,
+          "nativePresence": {
+            "kind": "text",
+            "labelSource": "direct",
+            "structural": false
+          }
+        },
+        "label": "Welcome",
+        "where": "top",
+        "side": "center"
+      },
+      {
+        "ref": "@e38",
+        "kind": "text",
+        "hittable": true,
+        "disabled": false,
+        "secure": false,
+        "offscreen": false,
+        "semantic": {
+          "press": "unsupported",
+          "fill": "unsupported",
+          "visibility": "visible",
+          "disabled": false,
+          "nativePresence": {
+            "kind": "text",
+            "labelSource": "direct",
+            "structural": false
+          }
+        },
+        "label": "rn-dev-agent test fixture",
+        "where": "top",
+        "side": "center"
+      },
+      {
+        "ref": "@e40",
+        "kind": "other",
+        "hittable": true,
+        "disabled": false,
+        "secure": false,
+        "offscreen": false,
+        "semantic": {
+          "press": "supported",
+          "fill": "unsupported",
+          "visibility": "visible",
+          "disabled": false,
+          "nativePresence": {
+            "kind": "other",
+            "labelSource": "direct",
+            "structural": false
+          }
+        },
+        "label": "Search tasks, notifications, feed...",
+        "testID": "home-search-btn",
+        "where": "top",
+        "side": "center"
+      },
+      {
+        "ref": "@e41",
+        "kind": "other",
+        "hittable": true,
+        "disabled": false,
+        "secure": false,
+        "offscreen": false,
+        "semantic": {
+          "press": "supported",
+          "fill": "unsupported",
+          "visibility": "visible",
+          "disabled": false,
+          "nativePresence": {
+            "kind": "other",
+            "labelSource": "none",
+            "structural": false
+          }
+        },
+        "testID": "command-palette-btn",
+        "where": "top",
+        "side": "right"
+      },
+      {
+        "ref": "@e46",
+        "kind": "button",
+        "hittable": true,
+        "disabled": false,
+        "secure": false,
+        "offscreen": false,
+        "semantic": {
+          "press": "supported",
+          "fill": "unsupported",
+          "visibility": "visible",
+          "disabled": false,
+          "nativePresence": {
+            "kind": "button",
+            "labelSource": "direct",
+            "structural": false
+          }
+        },
+        "label": "Open QA Acceptance Fixture",
+        "testID": "home-qa-acceptance-btn",
+        "where": "top",
+        "side": "center"
+      },
+      {
+        "ref": "@e49",
+        "kind": "text",
+        "hittable": true,
+        "disabled": false,
+        "secure": false,
+        "offscreen": false,
+        "semantic": {
+          "press": "unsupported",
+          "fill": "unsupported",
+          "visibility": "visible",
+          "disabled": false,
+          "nativePresence": {
+            "kind": "text",
+            "labelSource": "direct",
+            "structural": false
+          }
+        },
+        "label": "TASK OVERVIEW",
+        "testID": "task-stats-title",
+        "where": "top",
+        "side": "center"
+      },
+      {
+        "ref": "@e50",
+        "kind": "text",
+        "hittable": true,
+        "disabled": false,
+        "secure": false,
+        "offscreen": false,
+        "semantic": {
+          "press": "unsupported",
+          "fill": "unsupported",
+          "visibility": "visible",
+          "disabled": false,
+          "nativePresence": {
+            "kind": "text",
+            "labelSource": "direct",
+            "structural": false
+          }
+        },
+        "label": "TASK OVERVIEW",
+        "where": "top",
+        "side": "center"
+      },
+      {
+        "ref": "@e53",
+        "kind": "text",
+        "hittable": true,
+        "disabled": false,
+        "secure": false,
+        "offscreen": false,
+        "semantic": {
+          "press": "unsupported",
+          "fill": "unsupported",
+          "visibility": "visible",
+          "disabled": false,
+          "nativePresence": {
+            "kind": "text",
+            "labelSource": "direct",
+            "structural": false
+          }
+        },
+        "label": "3",
+        "where": "top",
+        "side": "left"
+      },
+      {
+        "ref": "@e56",
+        "kind": "text",
+        "hittable": true,
+        "disabled": false,
+        "secure": false,
+        "offscreen": false,
+        "semantic": {
+          "press": "unsupported",
+          "fill": "unsupported",
+          "visibility": "visible",
+          "disabled": false,
+          "nativePresence": {
+            "kind": "text",
+            "labelSource": "direct",
+            "structural": false
+          }
+        },
+        "label": "2",
+        "where": "top",
+        "side": "center"
+      },
+      {
+        "ref": "@e59",
+        "kind": "text",
+        "hittable": true,
+        "disabled": false,
+        "secure": false,
+        "offscreen": false,
+        "semantic": {
+          "press": "unsupported",
+          "fill": "unsupported",
+          "visibility": "visible",
+          "disabled": false,
+          "nativePresence": {
+            "kind": "text",
+            "labelSource": "direct",
+            "structural": false
+          }
+        },
+        "label": "1",
+        "where": "top",
+        "side": "right"
+      },
+      {
+        "ref": "@e61",
+        "kind": "text",
+        "hittable": true,
+        "disabled": false,
+        "secure": false,
+        "offscreen": false,
+        "semantic": {
+          "press": "unsupported",
+          "fill": "unsupported",
+          "visibility": "visible",
+          "disabled": false,
+          "nativePresence": {
+            "kind": "text",
+            "labelSource": "direct",
+            "structural": false
+          }
+        },
+        "label": "Total",
+        "where": "middle",
+        "side": "left"
+      },
+      {
+        "ref": "@e63",
+        "kind": "text",
+        "hittable": true,
+        "disabled": false,
+        "secure": false,
+        "offscreen": false,
+        "semantic": {
+          "press": "unsupported",
+          "fill": "unsupported",
+          "visibility": "visible",
+          "disabled": false,
+          "nativePresence": {
+            "kind": "text",
+            "labelSource": "direct",
+            "structural": false
+          }
+        },
+        "label": "Active",
+        "where": "middle",
+        "side": "center"
+      },
+      {
+        "ref": "@e65",
+        "kind": "text",
+        "hittable": true,
+        "disabled": false,
+        "secure": false,
+        "offscreen": false,
+        "semantic": {
+          "press": "unsupported",
+          "fill": "unsupported",
+          "visibility": "visible",
+          "disabled": false,
+          "nativePresence": {
+            "kind": "text",
+            "labelSource": "direct",
+            "structural": false
+          }
+        },
+        "label": "Done",
+        "where": "middle",
+        "side": "right"
+      },
+      {
+        "ref": "@e70",
+        "kind": "text",
+        "hittable": true,
+        "disabled": false,
+        "secure": false,
+        "offscreen": false,
+        "semantic": {
+          "press": "unsupported",
+          "fill": "unsupported",
+          "visibility": "visible",
+          "disabled": false,
+          "nativePresence": {
+            "kind": "text",
+            "labelSource": "direct",
+            "structural": false
+          }
+        },
+        "label": "33% complete",
+        "testID": "task-stats-progress-label",
+        "where": "middle",
+        "side": "center"
+      },
+      {
+        "ref": "@e71",
+        "kind": "text",
+        "hittable": true,
+        "disabled": false,
+        "secure": false,
+        "offscreen": false,
+        "semantic": {
+          "press": "unsupported",
+          "fill": "unsupported",
+          "visibility": "visible",
+          "disabled": false,
+          "nativePresence": {
+            "kind": "text",
+            "labelSource": "direct",
+            "structural": false
+          }
+        },
+        "label": "33% complete",
+        "where": "middle",
+        "side": "center"
+      },
+      {
+        "ref": "@e75",
+        "kind": "text",
+        "hittable": true,
+        "disabled": false,
+        "secure": false,
+        "offscreen": false,
+        "semantic": {
+          "press": "unsupported",
+          "fill": "unsupported",
+          "visibility": "visible",
+          "disabled": false,
+          "nativePresence": {
+            "kind": "text",
+            "labelSource": "direct",
+            "structural": false
+          }
+        },
+        "label": "High 1",
+        "where": "middle",
+        "side": "left"
+      },
+      {
+        "ref": "@e79",
+        "kind": "text",
+        "hittable": true,
+        "disabled": false,
+        "secure": false,
+        "offscreen": false,
+        "semantic": {
+          "press": "unsupported",
+          "fill": "unsupported",
+          "visibility": "visible",
+          "disabled": false,
+          "nativePresence": {
+            "kind": "text",
+            "labelSource": "direct",
+            "structural": false
+          }
+        },
+        "label": "Med 1",
+        "where": "middle",
+        "side": "left"
+      },
+      {
+        "ref": "@e83",
+        "kind": "text",
+        "hittable": true,
+        "disabled": false,
+        "secure": false,
+        "offscreen": false,
+        "semantic": {
+          "press": "unsupported",
+          "fill": "unsupported",
+          "visibility": "visible",
+          "disabled": false,
+          "nativePresence": {
+            "kind": "text",
+            "labelSource": "direct",
+            "structural": false
+          }
+        },
+        "label": "Low 1",
+        "where": "middle",
+        "side": "center"
+      },
+      {
+        "ref": "@e87",
+        "kind": "text",
+        "hittable": true,
+        "disabled": false,
+        "secure": false,
+        "offscreen": false,
+        "semantic": {
+          "press": "unsupported",
+          "fill": "unsupported",
+          "visibility": "visible",
+          "disabled": false,
+          "nativePresence": {
+            "kind": "text",
+            "labelSource": "direct",
+            "structural": false
+          },
+          "heading": {
+            "hostIndex": 105,
+            "anchorRef": "@e32",
+            "bodyRefs": [
+              "@e38"
+            ],
+            "kind": "typographic-title"
+          }
+        },
+        "label": "Component Tree",
+        "where": "middle",
+        "side": "center"
+      },
+      {
+        "ref": "@e89",
+        "kind": "text",
+        "hittable": true,
+        "disabled": false,
+        "secure": false,
+        "offscreen": false,
+        "semantic": {
+          "press": "unsupported",
+          "fill": "unsupported",
+          "visibility": "visible",
+          "disabled": false,
+          "nativePresence": {
+            "kind": "text",
+            "labelSource": "direct",
+            "structural": false
+          }
+        },
+        "label": "Tests cdp_component_tree with nested testIDs",
+        "where": "middle",
+        "side": "center"
+      },
+      {
+        "ref": "@e92",
+        "kind": "text",
+        "hittable": true,
+        "disabled": false,
+        "secure": false,
+        "offscreen": false,
+        "semantic": {
+          "press": "unsupported",
+          "fill": "unsupported",
+          "visibility": "visible",
+          "disabled": false,
+          "nativePresence": {
+            "kind": "text",
+            "labelSource": "direct",
+            "structural": false
+          }
+        },
+        "label": "Navigation State",
+        "where": "middle",
+        "side": "center"
+      },
+      {
+        "ref": "@e94",
+        "kind": "text",
+        "hittable": true,
+        "disabled": false,
+        "secure": false,
+        "offscreen": false,
+        "semantic": {
+          "press": "unsupported",
+          "fill": "unsupported",
+          "visibility": "visible",
+          "disabled": false,
+          "nativePresence": {
+            "kind": "text",
+            "labelSource": "direct",
+            "structural": false
+          }
+        },
+        "label": "Tests cdp_navigation_state across tabs and stacks",
+        "where": "middle",
+        "side": "center"
+      },
+      {
+        "ref": "@e97",
+        "kind": "text",
+        "hittable": true,
+        "disabled": false,
+        "secure": false,
+        "offscreen": false,
+        "semantic": {
+          "press": "unsupported",
+          "fill": "unsupported",
+          "visibility": "visible",
+          "disabled": false,
+          "nativePresence": {
+            "kind": "text",
+            "labelSource": "direct",
+            "structural": false
+          }
+        },
+        "label": "Store State",
+        "where": "middle",
+        "side": "center"
+      },
+      {
+        "ref": "@e99",
+        "kind": "text",
+        "hittable": true,
+        "disabled": false,
+        "secure": false,
+        "offscreen": false,
+        "semantic": {
+          "press": "unsupported",
+          "fill": "unsupported",
+          "visibility": "visible",
+          "disabled": false,
+          "nativePresence": {
+            "kind": "text",
+            "labelSource": "direct",
+            "structural": false
+          }
+        },
+        "label": "Tests cdp_store_state with Redux Toolkit slices",
+        "where": "bottom",
+        "side": "center"
+      },
+      {
+        "ref": "@e101",
+        "kind": "button",
+        "hittable": true,
+        "disabled": false,
+        "secure": false,
+        "offscreen": false,
+        "semantic": {
+          "press": "supported",
+          "fill": "unsupported",
+          "visibility": "visible",
+          "disabled": false,
+          "nativePresence": {
+            "kind": "button",
+            "labelSource": "direct",
+            "structural": false
+          }
+        },
+        "label": "Open Login / OTP QA",
+        "testID": "home-login-btn",
+        "where": "bottom",
+        "side": "center"
+      },
+      {
+        "ref": "@e102",
+        "kind": "other",
+        "hittable": true,
+        "disabled": false,
+        "secure": false,
+        "offscreen": false,
+        "semantic": {
+          "press": "supported",
+          "fill": "unsupported",
+          "visibility": "visible",
+          "disabled": false,
+          "nativePresence": {
+            "kind": "other",
+            "labelSource": "direct",
+            "structural": false
+          }
+        },
+        "label": "Go to Feed",
+        "testID": "home-feed-btn",
+        "where": "bottom",
+        "side": "center"
+      },
+      {
+        "ref": "@e103",
+        "kind": "other",
+        "hittable": true,
+        "disabled": false,
+        "secure": false,
+        "offscreen": false,
+        "semantic": {
+          "press": "supported",
+          "fill": "unsupported",
+          "visibility": "visible",
+          "disabled": false,
+          "nativePresence": {
+            "kind": "other",
+            "labelSource": "direct",
+            "structural": false
+          }
+        },
+        "label": "Go to Dashboard",
+        "testID": "go-to-dashboard",
+        "where": "bottom",
+        "side": "center"
+      },
+      {
+        "ref": "@e124",
+        "kind": "button",
+        "hittable": true,
+        "disabled": false,
+        "secure": false,
+        "offscreen": false,
+        "semantic": {
+          "press": "supported",
+          "fill": "unsupported",
+          "visibility": "visible",
+          "disabled": false,
+          "nativePresence": {
+            "kind": "button",
+            "labelSource": "direct",
+            "structural": false
+          }
+        },
+        "label": "Quick add",
+        "testID": "quick-add-fab",
+        "where": "bottom",
+        "side": "right"
+      },
+      {
+        "ref": "@e130",
+        "kind": "button",
+        "hittable": true,
+        "disabled": false,
+        "secure": false,
+        "offscreen": false,
+        "semantic": {
+          "press": "supported",
+          "fill": "unsupported",
+          "visibility": "visible",
+          "disabled": false,
+          "nativePresence": {
+            "kind": "button",
+            "labelSource": "direct",
+            "structural": false
+          }
+        },
+        "label": "Home, tab, 1 of 4",
+        "testID": "tab-home",
+        "where": "bottom",
+        "side": "left"
+      },
+      {
+        "ref": "@e136",
+        "kind": "button",
+        "hittable": true,
+        "disabled": false,
+        "secure": false,
+        "offscreen": false,
+        "semantic": {
+          "press": "supported",
+          "fill": "unsupported",
+          "visibility": "visible",
+          "disabled": false,
+          "nativePresence": {
+            "kind": "button",
+            "labelSource": "direct",
+            "structural": false
+          }
+        },
+        "label": "Notifications, tab, 2 of 4",
+        "testID": "tab-notifications",
+        "where": "bottom",
+        "side": "center"
+      },
+      {
+        "ref": "@e141",
+        "kind": "button",
+        "hittable": true,
+        "disabled": false,
+        "secure": false,
+        "offscreen": false,
+        "semantic": {
+          "press": "supported",
+          "fill": "unsupported",
+          "visibility": "visible",
+          "disabled": false,
+          "nativePresence": {
+            "kind": "button",
+            "labelSource": "direct",
+            "structural": false
+          }
+        },
+        "label": "Tasks, tab, 3 of 4",
+        "testID": "tab-tasks",
+        "where": "bottom",
+        "side": "center"
+      },
+      {
+        "ref": "@e146",
+        "kind": "button",
+        "hittable": true,
+        "disabled": false,
+        "secure": false,
+        "offscreen": false,
+        "semantic": {
+          "press": "supported",
+          "fill": "unsupported",
+          "visibility": "visible",
+          "disabled": false,
+          "nativePresence": {
+            "kind": "button",
+            "labelSource": "direct",
+            "structural": false
+          }
+        },
+        "label": "Profile, tab, 4 of 4",
+        "testID": "tab-profile",
+        "where": "bottom",
+        "side": "right"
+      }
+    ],
+    "visibleText": [
+      "Welcome",
+      "rn-dev-agent test fixture",
+      "Open QA Acceptance Fixture",
+      "TASK OVERVIEW",
+      "3",
+      "2",
+      "1",
+      "Total",
+      "Active",
+      "Done",
+      "33% complete",
+      "High 1",
+      "Med 1",
+      "Low 1",
+      "Component Tree",
+      "Tests cdp_component_tree with nested testIDs",
+      "Navigation State",
+      "Tests cdp_navigation_state across tabs and stacks",
+      "Store State",
+      "Tests cdp_store_state with Redux Toolkit slices",
+      "Open Login / OTP QA",
+      "Quick add",
+      "Home, tab, 1 of 4",
+      "Notifications, tab, 2 of 4",
+      "Tasks, tab, 3 of 4",
+      "Profile, tab, 4 of 4"
+    ],
+    "front": "app",
+    "coverage": {
+      "native": "complete",
+      "react": "complete"
+    },
+    "semanticUnassociatedReact": 0
+  },
+  "line": "Wait for the welcome heading to appear",
+  "expected": {
+    "kind": "visibility",
+    "verdict": "pending"
+  }
+}

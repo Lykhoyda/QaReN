@@ -7,18 +7,10 @@
 # and tracked for migration; anything not in that baseline fails this check.
 #
 # Excluded from the rule (generated or vendored, never hand-written):
-#   packages/rn-dev-agent-core/dist/ — tsc output (gitignored; generated)
-#   packages/claude-plugin/rn-dev-agent-core/dist/ — the one bundled plugin runtime
-#   packages/claude-plugin/scripts/ — generated copies of repo scripts
-#     (single writer: scripts/build-host-runtimes.ts)
-#   packages/codex-plugin/bin/cdp-supervisor.js — Codex launcher source; must be
-#     plain .js so `node <file>` works before the runtime support check
-#   packages/claude-plugin/bin/ — generated launcher copy and esbuild health
-#     output owned by build-host-runtimes.ts (source: packages/codex-plugin)
-#   **/web-dist/               — vite bundle output
-#   .yarn/releases/            — pinned Yarn binary selected by yarnPath
-#   third_party/               — vendored upstream
-#   node_modules               — never tracked anyway
+#   packages/qaren-core/dist/          — tsc output (gitignored; generated)
+#   packages/qaren-cli/observe/dist/   — vite bundle output
+#   .yarn/releases/                    — pinned Yarn binary selected by yarnPath
+#   node_modules                       — never tracked anyway
 #
 # Shrinking the baseline (migrating a file to TS) is always allowed; growing
 # it requires editing the baseline in the same PR — a visible, reviewable act.
@@ -37,7 +29,7 @@ if [ ! -f "$BASELINE" ]; then
 fi
 
 current="$(git -C "$ROOT" ls-files '*.js' '*.mjs' '*.cjs' |
-  grep -v -E '^packages/rn-dev-agent-core/dist/|^packages/claude-plugin/rn-dev-agent-core/dist/|^packages/claude-plugin/scripts/|^packages/codex-plugin/bin/cdp-supervisor\.js$|^packages/claude-plugin/bin/(cdp-supervisor|plugin-health)\.js$|/web-dist/|^\.yarn/releases/|^third_party/|(^|/)node_modules/' || true)"
+  grep -v -E '^packages/qaren-core/dist/|^packages/qaren-cli/observe/dist/|^\.yarn/releases/|(^|/)node_modules/' || true)"
 
 violations="$(comm -23 <(printf '%s\n' "$current" | sort) <(sort "$BASELINE"))"
 

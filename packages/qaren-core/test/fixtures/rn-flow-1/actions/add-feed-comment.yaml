@@ -1,0 +1,30 @@
+appId: com.rndevagent.testapp
+---
+# id: add-feed-comment
+# intent: Add a fixed-string comment to feed post #1 via the comment modal.
+# tags: [feed, comment, modal]
+# mutates: true
+# status: active
+# enginePin: maestro-runner@1.1.27
+- launchApp:
+    stopApp: false
+- tapOn:
+    id: "tab-home"
+- waitForAnimationToEnd
+- tapOn:
+    id: "home-feed-btn"
+- waitForAnimationToEnd
+- assertVisible:
+    id: "feed-screen"
+- tapOn:
+    id: "feed-comment-1"
+- waitForAnimationToEnd
+- assertVisible:
+    id: "comment-modal"
+- tapOn:
+    id: "comment-input"
+- inputText: "mttr-experiment-comment"
+- tapOn:
+    id: "comment-submit"
+- waitForAnimationToEnd
+- assertVisible: "mttr-experiment-comment"

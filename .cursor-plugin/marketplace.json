@@ -1,17 +1,17 @@
 {
-  "name": "rn-dev-agent",
+  "name": "qaren",
   "owner": {
     "name": "Anton Lykhoyda"
   },
   "metadata": {
-    "description": "React Native development and testing plugin"
+    "description": "QaReN: QA companion for React Native harnesses"
   },
   "plugins": [
     {
-      "name": "rn-dev-agent",
-      "source": "./packages/claude-plugin",
-      "description": "AI agent that fully tests React Native features on simulator/emulator — navigates the app, verifies UI, walks user flows, and confirms internal state.",
-      "version": "1.0.14",
+      "name": "qaren",
+      "source": "./packages/qaren-plugin",
+      "description": "QaReN: a QA companion for React Native harnesses \u2014 walks a plan on the simulator or emulator, records the run, and reports PASS/FAIL with video.",
+      "version": "1.0.13",
       "homepage": "https://github.com/Lykhoyda/rn-dev-agent"
     }
   ]

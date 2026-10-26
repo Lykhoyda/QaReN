@@ -1,0 +1,71 @@
+appId: com.rndevagent.testapp
+---
+# id: login-create-task
+# intent: Clear the onboarding gate (this app's login), then create a task end-to-end via the 3-step wizard.
+# tags: [auth, onboarding, tasks, wizard, create]
+# mutates: true
+# status: experimental
+# enginePin: maestro-runner@1.1.27
+# params: [TITLE, DESC, PRIORITY, TAG]
+# appId: com.rndevagent.testapp
+- launchApp:
+    stopApp: false
+# "Login" — clear the onboarding gate only if it is showing (fresh start).
+- runFlow:
+    when:
+      visible:
+        id: "onboarding-screen"
+    commands:
+      - tapOn:
+          id: "onboarding-done"
+      - waitForAnimationToEnd
+# Ensure the Tasks tab is the active route, then open the wizard.
+- runFlow:
+    when:
+      visible:
+        id: "tab-tasks"
+    commands:
+      - tapOn:
+          id: "tab-tasks"
+- waitForAnimationToEnd
+- assertVisible:
+    id: "task-screen"
+- tapOn:
+    id: "fab-create-task"
+- waitForAnimationToEnd
+- assertVisible:
+    id: "wizard-step-1"
+# Step 1 — Title & Description
+- tapOn:
+    id: "wizard-title-input"
+- inputText: ${TITLE}
+- tapOn:
+    id: "wizard-desc-input"
+- inputText: ${DESC}
+- hideKeyboard
+- tapOn:
+    id: "wizard-next-btn"
+- waitForAnimationToEnd
+- assertVisible:
+    id: "wizard-step-2"
+# Step 2 — Priority & Tags
+- tapOn:
+    id: "wizard-priority-${PRIORITY}"
+- tapOn:
+    id: "wizard-tag-${TAG}"
+- tapOn:
+    id: "wizard-next-btn"
+- waitForAnimationToEnd
+- assertVisible:
+    id: "wizard-step-3"
+# Step 3 — Review & Create
+- tapOn:
+    id: "wizard-create-btn"
+- waitForAnimationToEnd
+- extendedWaitUntil:
+    visible:
+      id: "task-screen"
+    timeout: 10000
+- scrollUntilVisible:
+    element:
+      text: ${TITLE}

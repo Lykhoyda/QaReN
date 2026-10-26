@@ -1,8 +1,0 @@
-{
-  "mcpServers": {
-    "cdp": {
-      "command": "node",
-      "args": ["${CURSOR_PLUGIN_ROOT}/rn-dev-agent-core/dist/supervisor.js"]
-    }
-  }
-}

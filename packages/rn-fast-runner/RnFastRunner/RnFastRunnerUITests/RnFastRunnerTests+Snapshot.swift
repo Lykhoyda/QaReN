@@ -18,6 +18,7 @@ extension RnFastRunnerTests {
     let queryRoot: XCUIElement
     let rootSnapshot: XCUIElementSnapshot
     let viewport: CGRect
+    var viewportSource: SnapshotViewportSource? = nil
     let maxDepth: Int
   }
 
@@ -33,59 +34,43 @@ extension RnFastRunnerTests {
   // MARK: - Snapshot Entry
 
   func elementTypeName(_ type: XCUIElement.ElementType) -> String {
-    switch type {
-    case .application: return "Application"
-    case .window: return "Window"
-    case .button: return "Button"
-    case .cell: return "Cell"
-    case .staticText: return "StaticText"
-    case .textField: return "TextField"
-    case .textView: return "TextView"
-    case .secureTextField: return "SecureTextField"
-    case .switch: return "Switch"
-    case .slider: return "Slider"
-    case .link: return "Link"
-    case .image: return "Image"
-    case .navigationBar: return "NavigationBar"
-    case .tabBar: return "TabBar"
-    case .collectionView: return "CollectionView"
-    case .table: return "Table"
-    case .scrollView: return "ScrollView"
-    case .searchField: return "SearchField"
-    case .segmentedControl: return "SegmentedControl"
-    case .stepper: return "Stepper"
-    case .picker: return "Picker"
-    case .checkBox: return "CheckBox"
-    case .menuItem: return "MenuItem"
-    case .other: return "Other"
-    default:
-      switch type.rawValue {
-      case 19:
-        return "Keyboard"
-      case 20:
-        return "Key"
-      case 24:
-        return "SearchField"
-      default:
-        return "Element(\(type.rawValue))"
-      }
-    }
+    snapshotTypeName(type)
   }
 
-  func snapshotFast(app: XCUIApplication, options: SnapshotOptions) -> DataPayload {
+  func snapshotFast(app: XCUIApplication, options: SnapshotOptions, includeDiagnostics: Bool = false) -> DataPayload {
+    retainedFastSnapshotOptions = nil
     if let blocking = blockingSystemAlertSnapshot() {
       return blocking
     }
 
     guard let context = makeSnapshotTraversalContext(app: app, options: options) else {
-      return DataPayload(
+      return withSystemModalDiagnostic(DataPayload(
         nodes: [],
         truncated: false,
         keyboardVisible: isKeyboardVisible(app: app),
         snapshotGeneration: currentSnapshotGeneration
-      )
+      ), app: app)
     }
 
+    retainedFastSnapshotOptions = options
+    let (nodes, truncated) = fastSnapshotNodes(context: context, options: options)
+
+    return withSystemModalDiagnostic(DataPayload(
+      nodes: nodes,
+      truncated: truncated,
+      keyboardVisible: isKeyboardVisible(app: app),
+      snapshotGeneration: currentSnapshotGeneration,
+      snapshotDiagnostics: includeDiagnostics ? context.viewportSource.flatMap {
+        SnapshotDiagnostics(viewport: context.viewport, source: $0)
+      } : nil
+    ), app: app)
+  }
+
+  private func fastSnapshotNodes(
+    context: SnapshotTraversalContext, options: SnapshotOptions,
+    canContinue: () -> Bool = { true },
+    visit: (XCUIElementSnapshot, SnapshotNode) -> Void = { _, _ in }
+  ) -> ([SnapshotNode], Bool) {
     var cachedDescendantElements: [XCUIElement]?
     func collapsedTabDescendants() -> [XCUIElement] {
       if let cachedDescendantElements {
@@ -110,6 +95,7 @@ extension RnFastRunnerTests {
         parentIndex: nil
       )
     )
+    visit(context.rootSnapshot, nodes[0])
     if context.maxDepth > 0 {
       let didTruncateFallback = appendCollapsedTabFallbackNodes(
         to: &nodes,
@@ -123,12 +109,13 @@ extension RnFastRunnerTests {
       truncated = truncated || didTruncateFallback
     }
 
-    var seen = Set<String>()
+    var seen = Set<SnapshotDedupeKey>()
     var stack: [(XCUIElementSnapshot, Int, Int, Int?)] = context.rootSnapshot.children.map {
       ($0, 1, 1, 0)
     }
 
     while let (snapshot, depth, visibleDepth, parentIndex) = stack.popLast() {
+      if !canContinue() { return (nodes, true) }
       if nodes.count >= fastSnapshotLimit {
         truncated = true
         break
@@ -145,7 +132,13 @@ extension RnFastRunnerTests {
         visible: evaluation.visible
       )
 
-      let key = "\(snapshot.elementType)-\(evaluation.label)-\(evaluation.identifier)-\(snapshot.frame.origin.x)-\(snapshot.frame.origin.y)"
+      let key = snapshotDedupeKey(
+        type: snapshot.elementType,
+        label: evaluation.label,
+        identifier: evaluation.identifier,
+        value: evaluation.valueText,
+        frame: snapshot.frame
+      )
       let isDuplicate = seen.contains(key)
       if !isDuplicate {
         seen.insert(key)
@@ -171,6 +164,7 @@ extension RnFastRunnerTests {
           parentIndex: parentIndex
         )
       )
+      visit(snapshot, nodes[nodes.count - 1])
       if visibleDepth < context.maxDepth {
         let didTruncateFallback = appendCollapsedTabFallbackNodes(
           to: &nodes,
@@ -186,26 +180,22 @@ extension RnFastRunnerTests {
 
     }
 
-    return DataPayload(
-      nodes: nodes,
-      truncated: truncated,
-      keyboardVisible: isKeyboardVisible(app: app),
-      snapshotGeneration: currentSnapshotGeneration
-    )
+    return (nodes, truncated)
   }
 
   func snapshotRaw(app: XCUIApplication, options: SnapshotOptions) -> DataPayload {
+    retainedFastSnapshotOptions = nil
     if let blocking = blockingSystemAlertSnapshot() {
       return blocking
     }
 
     guard let context = makeSnapshotTraversalContext(app: app, options: options) else {
-      return DataPayload(
+      return withSystemModalDiagnostic(DataPayload(
         nodes: [],
         truncated: false,
         keyboardVisible: isKeyboardVisible(app: app),
         snapshotGeneration: currentSnapshotGeneration
-      )
+      ), app: app)
     }
 
     var nodes: [SnapshotNode] = []
@@ -248,17 +238,646 @@ extension RnFastRunnerTests {
     }
 
     walk(context.rootSnapshot, depth: 0, parentIndex: nil)
-    return DataPayload(
+    return withSystemModalDiagnostic(DataPayload(
       nodes: nodes,
       truncated: truncated,
       keyboardVisible: isKeyboardVisible(app: app),
       snapshotGeneration: currentSnapshotGeneration
+    ), app: app)
+  }
+
+  private struct PresenceDescriptor: Equatable {
+    enum Value: Equatable {
+      case absent
+      case text(String)
+      case number(String, String)
+    }
+
+    let type: XCUIElement.ElementType
+    let identifier: String
+    let label: String
+    let value: Value
+    let frame: CGRect
+    let enabled: Bool
+
+    init?(_ snapshot: XCUIElementSnapshot) {
+      type = snapshot.elementType
+      identifier = snapshot.identifier
+      label = snapshot.label
+      frame = snapshot.frame
+      enabled = snapshot.isEnabled
+      if let original = snapshot.value {
+        if let text = original as? String {
+          value = .text(text)
+        } else if let number = original as? NSNumber, number.doubleValue.isFinite {
+          value = .number(String(cString: number.objCType), number.stringValue)
+        } else {
+          return nil
+        }
+      } else {
+        value = .absent
+      }
+    }
+
+    func changedFields(from previous: PresenceDescriptor?) -> Int {
+      typealias Field = PlatformPresenceDiagnostics.Mismatch.Field
+      guard let previous else { return Field.initialDescriptorUnavailable.rawValue }
+      var mask = 0
+      if type != previous.type { mask |= Field.type.rawValue }
+      if identifier != previous.identifier { mask |= Field.identifier.rawValue }
+      if label != previous.label { mask |= Field.label.rawValue }
+      if value != previous.value { mask |= Field.value.rawValue }
+      if frame != previous.frame { mask |= Field.frame.rawValue }
+      if enabled != previous.enabled { mask |= Field.enabled.rawValue }
+      return mask
+    }
+
+    func geometryDifference(from previous: PresenceDescriptor) -> PlatformPresenceDiagnostics.Mismatch.Geometry {
+      let before = previous.frame
+      let old = [before.origin.x, before.origin.y, before.size.width, before.size.height]
+      let new = [frame.origin.x, frame.origin.y, frame.size.width, frame.size.height]
+      var result = PlatformPresenceDiagnostics.Mismatch.Geometry(
+        beforeNull: before.isNull, afterNull: frame.isNull,
+        beforeInfinite: before.isInfinite, afterInfinite: frame.isInfinite,
+        beforeInvalidSize: !old[2].isFinite || !old[3].isFinite || old[2] < 0 || old[3] < 0,
+        afterInvalidSize: !new[2].isFinite || !new[3].isFinite || new[2] < 0 || new[3] < 0
+      )
+      var deltas: [Double?] = Array(repeating: nil, count: 4)
+      for index in 0..<4 {
+        let bit = 1 << index
+        if old[index] != new[index] { result.changedMask |= bit }
+        if old[index].isFinite { result.beforeFiniteMask |= bit }
+        if new[index].isFinite { result.afterFiniteMask |= bit }
+        let delta = new[index] - old[index]
+        if old[index].isFinite && new[index].isFinite && delta.isFinite {
+          result.deltaFiniteMask |= bit
+          deltas[index] = Double(delta)
+        }
+      }
+      result.dx = deltas[0]
+      result.dy = deltas[1]
+      result.dWidth = deltas[2]
+      result.dHeight = deltas[3]
+      return result
+    }
+  }
+
+  private struct PresenceEntry: Equatable {
+    let descriptor: PresenceDescriptor
+    let depth: Int
+    let parentIndex: Int?
+  }
+
+  func platformPresenceFailure() -> Response {
+    Response(ok: false, error: ErrorPayload(
+      code: "PLATFORM_PRESENCE_FAILED", message: "native platform presence capture failed"
+    ))
+  }
+
+  private func presenceUptimeMs() -> Double {
+    ProcessInfo.processInfo.systemUptime * 1000
+  }
+
+  private func presenceRead<T>(
+    deadline: Double? = nil, timing: PresenceCaptureTiming, read kind: PlatformPresenceDiagnostics.Read,
+    _ read: () throws -> T
+  ) -> T? {
+    if let deadline, timing.deadlineReached(deadline, read: kind, edge: .before) { return nil }
+    var result: T?
+    let exception = RunnerObjCExceptionCatcher.catchException({
+      do { result = try read() } catch { timing.fail(.readUnavailable) }
+    })
+    guard exception == nil else { timing.fail(.readUnavailable); return nil }
+    if let deadline, timing.deadlineReached(deadline, read: kind, edge: .after) { return nil }
+    return result
+  }
+
+  private func presenceAppIsEligible(
+    _ app: XCUIApplication, deadline: Double, timing: PresenceCaptureTiming
+  ) -> Bool? {
+    guard let state = presenceRead(deadline: deadline, timing: timing, read: .appState, {
+      let state = app.state
+      if state != .runningForeground { timing.fail(.ineligible) }
+      return state
+    }) else {
+      timing.fail(.readUnavailable)
+      return nil
+    }
+    guard state == .runningForeground else {
+      timing.fail(.ineligible)
+      return false
+    }
+    #if !os(macOS)
+      guard let alerts = presenceRead(deadline: deadline, timing: timing, read: .alerts, {
+        let count = self.springboard.alerts.count
+        if count != 0 { timing.fail(.ineligible) }
+        return count
+      }),
+            let sheets = presenceRead(deadline: deadline, timing: timing, read: .sheets, {
+        let count = self.springboard.sheets.count
+        if count != 0 { timing.fail(.ineligible) }
+        return count
+      }) else {
+        timing.fail(.readUnavailable)
+        return nil
+      }
+      if alerts != 0 || sheets != 0 { timing.fail(.ineligible) }
+      return alerts == 0 && sheets == 0
+    #else
+      return true
+    #endif
+  }
+
+  private func preparePresenceEnumeration(
+    app: XCUIApplication, deadline: Double, timing: PresenceCaptureTiming, truncated: inout Bool
+  ) -> [(snapshot: XCUIElementSnapshot, entry: PresenceEntry)]? {
+    let quietWindowMs = 500.0
+    timing.preparationStarted(quietWindowMs: quietWindowMs)
+    var previous: [PresenceEntry]?
+    var quietStarted: Double?
+    while true {
+      guard let root = presenceRead(deadline: deadline, timing: timing, read: .rootSnapshot, {
+        timing.preparationSampleStarted()
+        return try app.snapshot()
+      }) else {
+        timing.fail(.readUnavailable)
+        return nil
+      }
+      var sample: [(snapshot: XCUIElementSnapshot, entry: PresenceEntry)] = []
+      var stack: [(XCUIElementSnapshot, Int, Int?)] = [(root, 0, nil)]
+      while let (snapshot, depth, parentIndex) = stack.popLast() {
+        guard !timing.deadlineReached(deadline, read: .enumeration, edge: .before) else { return nil }
+        guard sample.count < maxSnapshotElements else {
+          truncated = true
+          timing.fail(.nodeLimit)
+          return nil
+        }
+        guard let descriptor = PresenceDescriptor(snapshot) else {
+          timing.fail(.readUnavailable)
+          return nil
+        }
+        let index = sample.count
+        sample.append((snapshot, PresenceEntry(descriptor: descriptor, depth: depth, parentIndex: parentIndex)))
+        for child in snapshot.children.reversed() {
+          stack.append((child, depth + 1, index))
+        }
+      }
+      let entries = sample.map { $0.entry }
+      let stable = previous == entries
+      let completed = presenceUptimeMs()
+      guard !timing.deadlineReached(deadline, read: .enumeration, edge: .after, at: completed) else { return nil }
+      if !stable { quietStarted = completed }
+      let quietElapsedMs = completed - (quietStarted ?? completed)
+      timing.preparationSampleCompleted(reset: previous != nil && !stable, quietElapsedMs: quietElapsedMs)
+      if stable && quietElapsedMs >= quietWindowMs { return sample }
+      previous = entries
+      let polling = presenceUptimeMs()
+      guard !timing.deadlineReached(deadline, read: .preparationPoll, edge: .before, at: polling) else { return nil }
+      sleepFor(min(0.1, (deadline - polling) / 1000))
+      guard !timing.deadlineReached(deadline, read: .preparationPoll, edge: .after) else { return nil }
+    }
+  }
+
+  private func presenceLabelSource(_ snapshot: XCUIElementSnapshot) -> PlatformPresenceObservation.LabelSource {
+    if !snapshot.label.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { return .direct }
+    if snapshotValueText(snapshot) != nil { return .value }
+    return aggregatedLabel(for: snapshot) == nil ? .none : .descendant
+  }
+
+  func snapshotCandidateLabelProvenance(app: XCUIApplication, indices: [Int], budgetMs: Int) -> DataPayload {
+    var result = DataPayload()
+    var diagnostic = CandidateLabelProvenanceDiagnostics()
+    let started = presenceUptimeMs()
+    let deadline = started + Double(budgetMs)
+    let timing = PresenceCaptureTiming(started: started, now: presenceUptimeMs)
+    func finish(_ outcome: String) -> DataPayload {
+      diagnostic.deadlineExpired = presenceUptimeMs() >= deadline
+      let failure = timing.diagnostics(complete: false).failure
+      let timedOutRead = failure?.reason == .deadline && [
+        "ineligible", "read-unavailable", "enumeration-incomplete", "observation-unavailable"
+      ].contains(outcome)
+      diagnostic.outcome = timedOutRead || (diagnostic.deadlineExpired && ["available", "unavailable"].contains(outcome)) ? "deadline" : outcome
+      if outcome == "read-unavailable", failure?.reason == .enumerationChanged,
+         let mismatch = failure?.mismatch {
+        diagnostic.outcome = "identity-mismatch"
+        diagnostic.fieldMask |= mismatch.fieldMask
+      }
+      var payload = result
+      payload.labelProvenanceDiagnostics = diagnostic
+      if diagnostic.deadlineExpired { payload.labelProvenance = nil }
+      return payload
+    }
+    guard let options = retainedFastSnapshotOptions,
+          !indices.isEmpty, indices.count <= 64, Set(indices).count == indices.count,
+          indices.allSatisfy({ retainedSnapshotTargets[$0]?.generation == currentSnapshotGeneration }) else {
+      return finish("baseline-unavailable")
+    }
+    var previous: [PresenceEntry]?
+    var previousSources: [PlatformPresenceObservation.LabelSource]?
+    while !timing.deadlineReached(deadline, read: .preparationPoll, edge: .before) {
+      guard presenceAppIsEligible(app, deadline: deadline, timing: timing) == true else { return finish("ineligible") }
+      guard let context = presenceRead(deadline: deadline, timing: timing, read: .rootSnapshot, {
+        let context = self.makeSnapshotTraversalContext(app: app, options: options)
+        if context == nil { timing.fail(.readUnavailable) }
+        return context
+      }) ?? nil else { return finish("read-unavailable") }
+      diagnostic.sampleCount += 1
+      var selected: [Int: (XCUIElementSnapshot, PresenceEntry)] = [:]
+      var count = 1
+      let (_, truncated) = fastSnapshotNodes(context: context, options: options, canContinue: {
+        count += 1
+        return count <= self.maxSnapshotElements
+          && !timing.deadlineReached(deadline, read: .enumeration, edge: .before)
+      }, visit: { snapshot, node in
+        if indices.contains(node.index), let descriptor = PresenceDescriptor(snapshot) {
+          selected[node.index] = (snapshot, PresenceEntry(
+            descriptor: descriptor, depth: node.depth, parentIndex: node.parentIndex
+          ))
+        }
+      })
+      guard !truncated else { return finish("enumeration-incomplete") }
+      for index in indices {
+        if let (snapshot, _) = selected[index], presenceLabelSource(snapshot) == .direct,
+           !diagnostic.directLabelIndices.contains(index) { diagnostic.directLabelIndices.append(index) }
+      }
+      var entries: [PresenceEntry] = []
+      var sources: [PlatformPresenceObservation.LabelSource] = []
+      for index in indices {
+        guard let (snapshot, entry) = selected[index], let target = retainedSnapshotTargets[index] else {
+          diagnostic.nodeIndex = index
+          return finish("baseline-unavailable")
+        }
+        var mask = 0
+        if target.type != elementTypeName(snapshot.elementType) { mask |= 1 }
+        let identifier = snapshot.identifier.trimmingCharacters(in: .whitespacesAndNewlines)
+        if target.identifier != (identifier.isEmpty ? nil : identifier) { mask |= 2 }
+        if target.label != aggregatedLabel(for: snapshot) { mask |= 4 }
+        if target.rect != snapshotRect(from: snapshot.frame) { mask |= 16 }
+        if target.parentIndex != entry.parentIndex { mask |= 128 }
+        if mask != 0 {
+          diagnostic.nodeIndex = index; diagnostic.fieldMask = mask
+          return finish("identity-mismatch")
+        }
+        let source = presenceLabelSource(snapshot)
+        if let previousSources, previousSources[entries.count] != source {
+          diagnostic.nodeIndex = index; diagnostic.fieldMask = 256
+          return finish("source-changed")
+        }
+        // An anonymous unlabelled descriptor matches every such wrapper; the baseline-checked samples identify it instead.
+        let queryable = !entry.descriptor.identifier.isEmpty || !entry.descriptor.label.isEmpty
+        var unknown: PlatformPresenceObservation.UnknownReason?
+        guard !queryable || observePresence(entry.descriptor, count: 1, app: app, deadline: deadline, timing: timing,
+          unknownReason: { unknown = $0 }) != nil else {
+          diagnostic.nodeIndex = index
+          return finish(unknown?.rawValue ?? "observation-unavailable")
+        }
+        entries.append(entry)
+        sources.append(source)
+      }
+      guard presenceAppIsEligible(app, deadline: deadline, timing: timing) == true else { return finish("ineligible") }
+      let stable = previous != nil
+      if let previous {
+        for offset in entries.indices {
+          let entry = entries[offset], prior = previous[offset]
+          var mask = entry.descriptor.changedFields(from: prior.descriptor)
+          if entry.depth != prior.depth { mask |= 64 }
+          if entry.parentIndex != prior.parentIndex { mask |= 128 }
+          if mask != 0 { diagnostic.nodeIndex = indices[offset]; diagnostic.fieldMask = mask }
+        }
+      }
+      guard !timing.deadlineReached(deadline, read: .finalization, edge: .after) else { return finish("unavailable") }
+      if stable {
+        result.labelProvenance = zip(indices, sources).map { CandidateLabelProvenance(index: $0.0, labelSource: $0.1) }
+        return finish("available")
+      }
+      previous = entries
+      previousSources = sources
+      let remaining = deadline - presenceUptimeMs()
+      if remaining <= 0 { return finish("unavailable") }
+      sleepFor(min(0.1, remaining / 1000))
+    }
+    guard previous?.count == indices.count, diagnostic.fieldMask == 0,
+          timing.diagnostics(complete: false).failure?.reason == .deadline else { return finish("deadline") }
+    for index in indices {
+      var child = index
+      while let parent = retainedSnapshotTargets[child]?.parentIndex, parent < child {
+        if diagnostic.directLabelIndices.contains(parent) { return finish("deadline") }
+        child = parent
+      }
+    }
+    return finish("deadline-clean")
+  }
+
+  func snapshotPlatformPresence(app: XCUIApplication, appId: String, presenceBudgetMs: Int) -> DataPayload {
+    retainedFastSnapshotOptions = nil
+    // A recognised SpringBoard alert is the observation in every snapshot flavour; it has no Keyboard node.
+    if let blocking = blockingSystemAlertSnapshot() {
+      return DataPayload(nodes: blocking.nodes, truncated: false, keyboardVisible: false,
+        snapshotGeneration: currentSnapshotGeneration)
+    }
+    let started = presenceUptimeMs()
+    let deadline = started + Double(presenceBudgetMs)
+    let timing = PresenceCaptureTiming(started: started, now: presenceUptimeMs)
+    let captureId = UUID().uuidString
+    let generation = currentSnapshotGeneration
+    var nodes: [SnapshotNode] = []
+    var descriptors: [PresenceDescriptor?] = []
+    var truncated = false
+    var complete = false
+    var viewport = CGRect.infinite
+
+    let enumerated = presenceRead(timing: timing, read: .enumeration) { () -> Bool in
+      guard self.presenceAppIsEligible(app, deadline: deadline, timing: timing) == true else { return false }
+      timing.endPhase()
+      timing.begin(.preparation)
+      guard let sample = self.preparePresenceEnumeration(
+        app: app, deadline: deadline, timing: timing, truncated: &truncated
+      ), let root = sample.first?.snapshot else { return false }
+      timing.endPhase()
+      timing.begin(.enumeration)
+      let windowFrame = root.children.first {
+        $0.elementType == .window && !$0.frame.isNull && !$0.frame.isEmpty
+      }?.frame
+      let appFrame = root.frame
+      viewport = windowFrame ?? (appFrame.isNull || appFrame.isEmpty ? .infinite : appFrame)
+      let context = SnapshotTraversalContext(
+        queryRoot: app, rootSnapshot: root, viewport: viewport, maxDepth: Int.max
+      )
+      for (snapshot, entry) in sample {
+        guard !timing.deadlineReached(deadline, read: .enumeration, edge: .before) else { return false }
+        var node = self.makeSnapshotNode(
+          snapshot: snapshot, evaluation: self.evaluateSnapshot(snapshot, in: context),
+          depth: entry.depth, index: nodes.count, parentIndex: entry.parentIndex
+        )
+        node.presence = PlatformPresenceObservation(
+          captureId: captureId, generation: generation, nodeIndex: node.index,
+          status: .unknown, labelSource: self.presenceLabelSource(snapshot)
+        )
+        nodes.append(node)
+        descriptors.append(entry.descriptor)
+      }
+      return !timing.deadlineReached(deadline, read: .enumeration, edge: .after)
+    }
+    timing.endPhase()
+    if let enumerated {
+      complete = enumerated
+    } else {
+      timing.fail(.readUnavailable)
+      nodes.removeAll()
+      descriptors.removeAll()
+    }
+
+    // A capped tree cannot establish descriptor uniqueness in the whole raw snapshot.
+    if complete {
+      timing.begin(.observation)
+      var handled = Set<Int>()
+      for index in nodes.indices where !handled.contains(index) {
+        if timing.deadlineReached(deadline, read: .observationLoop, edge: .before) { break }
+        // Observe association anchors; skip inert or clipped nodes.
+        let labelSource = nodes[index].presence?.labelSource
+        guard nodes[index].depth > 0,
+              let descriptor = descriptors[index],
+              labelSource != .descendant || !descriptor.identifier.isEmpty,
+              !(labelSource == PlatformPresenceObservation.LabelSource.none
+                && descriptor.identifier.isEmpty
+                && descriptor.type == .other),
+              descriptor.type != .application, descriptor.type != .window else { continue }
+        guard !descriptor.frame.isEmpty else {
+          nodes[index].presence?.unknownReason = .emptyFrame
+          continue
+        }
+        guard presenceClip(index, nodes: nodes, descriptors: descriptors, viewport: viewport)
+          .intersects(descriptor.frame) else {
+          nodes[index].presence?.unknownReason = .clipped
+          continue
+        }
+        let group = descriptors.indices.filter { descriptors[$0] == descriptor }
+        guard group.count == 1 || isNestedTextChain(group, nodes: nodes) else {
+          nodes[index].presence?.unknownReason = .ambiguousDescriptor
+          continue
+        }
+        handled.formUnion(group)
+        var unknownReason: PlatformPresenceObservation.UnknownReason?
+        let observation = presenceRead(deadline: deadline, timing: timing, read: .observation) {
+          self.observePresence(
+            descriptor, count: group.count,
+            app: app, deadline: deadline, timing: timing, unknownReason: { unknownReason = $0 }
+          )
+        }
+        if let observed = observation ?? nil {
+          for member in group {
+            nodes[member].presence?.status = .observed
+            nodes[member].presence?.observedUptimeMs = observed
+            nodes[member].presence?.unknownReason = nil
+          }
+        } else {
+          for member in group {
+            nodes[member].presence?.unknownReason = observation == nil ? .readUnavailable : unknownReason
+          }
+        }
+      }
+      timing.endPhase()
+      timing.begin(.finalEligibility)
+      complete = presenceAppIsEligible(app, deadline: deadline, timing: timing) == true
+      timing.endPhase()
+      if complete {
+        timing.begin(.revalidation)
+        complete = presenceEnumerationIsUnchanged(
+          app: app, nodes: nodes, descriptors: descriptors, deadline: deadline, timing: timing
+        )
+        timing.endPhase()
+      }
+    }
+    let ended = presenceUptimeMs()
+    complete = complete && !timing.deadlineReached(
+      deadline, read: .finalization, edge: .after, phase: .finalization, at: ended
     )
+    if !complete {
+      for index in nodes.indices {
+        nodes[index].presence?.status = .unknown
+        nodes[index].presence?.observedUptimeMs = nil
+      }
+    }
+    var payload = makePlatformPresencePayload(
+      nodes: nodes, truncated: truncated,
+      capture: PlatformPresenceCapture(
+        version: 2, source: "xcui-live", captureId: captureId, appId: appId,
+        generation: generation, startedUptimeMs: started, endedUptimeMs: ended,
+        enumeration: "raw-unfiltered", complete: complete, appliedBudgetMs: presenceBudgetMs,
+        diagnostics: timing.diagnostics(complete: complete)
+      )
+    )
+    if !complete, blockingSystemAlertSnapshot() == nil {
+      payload = withSystemModalDiagnostic(payload, app: app)
+    }
+    return payload
+  }
+
+  private func presenceEnumerationIsUnchanged(
+    app: XCUIApplication, nodes: [SnapshotNode], descriptors: [PresenceDescriptor?], deadline: Double,
+    timing: PresenceCaptureTiming
+  ) -> Bool {
+    guard nodes.count == descriptors.count else {
+      timing.fail(.enumerationChanged, mismatch: .init(kind: .descriptorCount))
+      return false
+    }
+    let unchanged = presenceRead(deadline: deadline, timing: timing, read: .revalidation) {
+      let root = try app.snapshot()
+      var stack: [(XCUIElementSnapshot, Int, Int?)] = [(root, 0, nil)]
+      var index = 0
+      while let (snapshot, depth, parentIndex) = stack.popLast() {
+        guard !timing.deadlineReached(deadline, read: .revalidation, edge: .before) else { return false }
+        guard index < self.maxSnapshotElements else {
+          timing.fail(.nodeLimit)
+          return false
+        }
+        guard index < nodes.count else {
+          timing.fail(.enumerationChanged, mismatch: .init(kind: .addedNode, index: index))
+          return false
+        }
+        guard let descriptor = PresenceDescriptor(snapshot) else {
+          timing.fail(.readUnavailable)
+          return false
+        }
+        guard descriptors[index] == descriptor,
+              nodes[index].depth == depth, nodes[index].parentIndex == parentIndex else {
+          typealias Field = PlatformPresenceDiagnostics.Mismatch.Field
+          var mask = descriptor.changedFields(from: descriptors[index])
+          if nodes[index].depth != depth { mask |= Field.depth.rawValue }
+          if nodes[index].parentIndex != parentIndex { mask |= Field.parentIndex.rawValue }
+          let ancestors = self.presenceMismatchAncestors(index, nodes: nodes, descriptors: descriptors)
+          timing.fail(.enumerationChanged, mismatch: .init(
+            kind: .node, index: index, fieldMask: mask,
+            beforeType: descriptors[index]?.type.rawValue, afterType: descriptor.type.rawValue,
+            geometry: descriptors[index].map { descriptor.geometryDifference(from: $0) },
+            ancestorTypes: ancestors.types, ancestorsTruncated: ancestors.truncated
+          ))
+          return false
+        }
+        for child in snapshot.children.reversed() {
+          stack.append((child, depth + 1, index))
+        }
+        index += 1
+      }
+      if index != nodes.count {
+        timing.fail(.enumerationChanged, mismatch: .init(
+          kind: .missingNode, index: index, beforeType: descriptors[index]?.type.rawValue
+        ))
+      }
+      return index == nodes.count
+    }
+    if unchanged == nil { timing.fail(.readUnavailable) }
+    return unchanged == true
+  }
+
+  private func presenceMismatchAncestors(
+    _ index: Int, nodes: [SnapshotNode], descriptors: [PresenceDescriptor?]
+  ) -> (types: [UInt], truncated: Bool) {
+    var types: [UInt] = []
+    var child = index
+    var parent = nodes[index].parentIndex
+    while let ancestor = parent {
+      guard types.count < 16, ancestor >= 0, ancestor < child,
+            let descriptor = descriptors[ancestor] else { return (types, true) }
+      types.append(descriptor.type.rawValue)
+      child = ancestor
+      parent = nodes[ancestor].parentIndex
+    }
+    return (types, false)
+  }
+
+  private func presenceClip(
+    _ index: Int, nodes: [SnapshotNode], descriptors: [PresenceDescriptor?], viewport: CGRect
+  ) -> CGRect {
+    var clip = viewport
+    var parent = nodes[index].parentIndex
+    while let current = parent {
+      if let frame = descriptors[current]?.frame, descriptors[current]?.type == .scrollView {
+        clip = clip.intersection(frame)
+      }
+      parent = nodes[current].parentIndex
+    }
+    return clip
+  }
+
+  // XCUI reports a React Native text as a text holding an identical text; the chain is one element.
+  // Members must also agree on every fact the consumer compares before merging them.
+  private func isNestedTextChain(_ group: [Int], nodes: [SnapshotNode]) -> Bool {
+    zip(group, group.dropFirst()).allSatisfy { parent, child in
+      nodes[child].parentIndex == parent && nodes[child].type == "StaticText"
+        && nodes[child].hittable == nodes[parent].hittable
+        && nodes[child].presence?.labelSource == nodes[parent].presence?.labelSource
+    }
+  }
+
+  // Attribute hits only after full live descriptor and group-count checks, then recheck the hit element.
+  private func observePresence(
+    _ descriptor: PresenceDescriptor, count: Int,
+    app: XCUIApplication, deadline: Double, timing: PresenceCaptureTiming,
+    unknownReason: ((PlatformPresenceObservation.UnknownReason) -> Void)? = nil
+  ) -> Double? {
+    // Callers never pass application or window descriptors, so the app root cannot be a match.
+    let query = app.descendants(matching: descriptor.type)
+      .matching(NSPredicate(format: "identifier == %@ AND label == %@", descriptor.identifier, descriptor.label))
+    guard let elements = presenceRead(deadline: deadline, timing: timing, read: .allMatches, { query.allElementsBoundByAccessibilityElement })
+    else { unknownReason?(.readUnavailable); return nil }
+    var matches: [XCUIElement] = []
+    for element in elements {
+      guard let snapshot = presenceRead(deadline: deadline, timing: timing, read: .candidateSnapshot, {
+        let snapshot = try element.snapshot()
+        if self.presenceUptimeMs() >= deadline {
+          if let current = PresenceDescriptor(snapshot) {
+            let mask = current.changedFields(from: descriptor)
+            if mask != 0 { timing.fail(.enumerationChanged, mismatch: .init(kind: .node, fieldMask: mask)) }
+          } else {
+            timing.fail(.readUnavailable)
+          }
+        }
+        return snapshot
+      })
+      else { unknownReason?(.readUnavailable); return nil }
+      if PresenceDescriptor(snapshot) == descriptor { matches.append(element) }
+    }
+    guard matches.count == count else { unknownReason?(.matchCountMismatch); return nil }
+    var readUnavailable = false
+    for element in matches {
+      let hittable = presenceRead(deadline: deadline, timing: timing, read: .candidateHit, {
+        let hittable = element.isHittable
+        if !hittable { timing.fail(.readUnavailable) }
+        return hittable
+      })
+      if hittable == nil { readUnavailable = true }
+      guard hittable == true else { continue }
+      let observed = presenceUptimeMs()
+      guard let after = presenceRead(deadline: deadline, timing: timing, read: .postHitSnapshot, {
+        let after = try element.snapshot()
+        let current = PresenceDescriptor(after)
+        if current != descriptor {
+          timing.fail(.enumerationChanged, mismatch: .init(
+            kind: .node, fieldMask: current?.changedFields(from: descriptor) ?? 0
+          ))
+        }
+        return after
+      })
+      else { unknownReason?(.readUnavailable); return nil }
+      guard PresenceDescriptor(after) == descriptor else { unknownReason?(.postHitMismatch); return nil }
+      return observed
+    }
+    unknownReason?(readUnavailable ? .readUnavailable : .notHittable)
+    return nil
   }
 
   func retainSnapshotTargets(_ nodes: [SnapshotNode]) {
+    let byIndex = Dictionary(nodes.map { ($0.index, $0) }, uniquingKeysWith: { first, _ in first })
     retainedSnapshotTargets = Dictionary(uniqueKeysWithValues: nodes.map { node in
-      (
+      let owner = node.identifier == nil && node.label != nil
+        ? DispatchGuard.nearestOwner(
+          of: node.index,
+          parentOf: { byIndex[$0]?.parentIndex },
+          owns: { byIndex[$0]?.type == node.type && byIndex[$0]?.label == node.label }
+        ).flatMap { byIndex[$0]?.rect }
+        : nil
+      return (
         node.index,
         RetainedSnapshotTarget(
           generation: currentSnapshotGeneration,
@@ -266,7 +885,15 @@ extension RnFastRunnerTests {
           type: node.type,
           label: node.label,
           identifier: node.identifier,
-          rect: node.rect
+          rect: node.rect,
+          ownerRect: owner,
+          keyboardOwned: KeyboardGuard.isKeyboardOwnedButton(
+            type: node.type,
+            index: node.index,
+            parentOf: { byIndex[$0]?.parentIndex },
+            typeOf: { byIndex[$0]?.type }
+          ),
+          parentIndex: node.parentIndex
         )
       )
     })
@@ -320,7 +947,8 @@ extension RnFastRunnerTests {
     return SnapshotTraversalContext(
       queryRoot: queryRoot,
       rootSnapshot: rootSnapshot,
-      viewport: viewport,
+      viewport: viewport.frame,
+      viewportSource: viewport.source,
       maxDepth: options.depth ?? Int.max
     )
   }
@@ -366,7 +994,8 @@ extension RnFastRunnerTests {
       depth: depth,
       parentIndex: parentIndex,
       hiddenContentAbove: nil,
-      hiddenContentBelow: nil
+      hiddenContentBelow: nil,
+      selected: snapshot.isSelected ? true : nil
     )
   }
 
@@ -376,16 +1005,16 @@ extension RnFastRunnerTests {
     return text.isEmpty ? nil : text
   }
 
-  private func snapshotViewport(app: XCUIApplication) -> CGRect {
+  private func snapshotViewport(app: XCUIApplication) -> (frame: CGRect, source: SnapshotViewportSource) {
     let windows = app.windows.allElementsBoundByIndex
     if let window = windows.first(where: { $0.exists && !$0.frame.isNull && !$0.frame.isEmpty }) {
-      return window.frame
+      return (window.frame, .firstNonemptyWindow)
     }
     let appFrame = app.frame
     if !appFrame.isNull && !appFrame.isEmpty {
-      return appFrame
+      return (appFrame, .app)
     }
-    return .infinite
+    return (.infinite, .unbounded)
   }
 
   func aggregatedLabel(for snapshot: XCUIElementSnapshot, depth: Int = 0) -> String? {
@@ -622,4 +1251,101 @@ extension RnFastRunnerTests {
     if !Self.scrollContainerTypes.contains(snapshot.elementType) { return false }
     return !snapshot.children.isEmpty
   }
+}
+
+final class PresenceCaptureTiming {
+  private let now: () -> Double
+  private var lastCheckedTime: Double
+  private var invalidClock = false
+  private var phase: PlatformPresenceDiagnostics.Phase = .initialEligibility
+  private var phaseStarted: Double?
+  private var recorded = PlatformPresenceDiagnostics(phaseMs: [:])
+
+  init(started: Double, now: @escaping () -> Double) {
+    self.now = now
+    lastCheckedTime = started
+    phaseStarted = started
+  }
+
+  func begin(_ phase: PlatformPresenceDiagnostics.Phase) {
+    self.phase = phase
+    phaseStarted = now()
+  }
+
+  func preparationStarted(quietWindowMs: Double) {
+    recorded.preparationSamples = 0
+    recorded.preparationResets = 0
+    recorded.preparationQuietWindowMs = quietWindowMs
+    recorded.preparationQuietElapsedMs = 0
+  }
+
+  func preparationSampleStarted() {
+    recorded.preparationSamples = (recorded.preparationSamples ?? 0) + 1
+  }
+
+  func preparationSampleCompleted(reset: Bool, quietElapsedMs: Double) {
+    if reset { recorded.preparationResets = (recorded.preparationResets ?? 0) + 1 }
+    recorded.preparationQuietElapsedMs = quietElapsedMs
+  }
+
+  func endPhase() {
+    guard let started = phaseStarted else { return }
+    let elapsed = now() - started
+    if elapsed.isFinite { recorded.phaseMs[phase.rawValue] = max(0, elapsed) }
+    phaseStarted = nil
+  }
+
+  func fail(
+    _ reason: PlatformPresenceDiagnostics.Reason, phase: PlatformPresenceDiagnostics.Phase? = nil,
+    mismatch: PlatformPresenceDiagnostics.Mismatch? = nil
+  ) {
+    if recorded.failure == nil {
+      recorded.failure = .init(phase: phase ?? self.phase, reason: reason, mismatch: mismatch)
+    }
+  }
+
+  func deadlineReached(
+    _ deadline: Double, read: PlatformPresenceDiagnostics.Read, edge: PlatformPresenceDiagnostics.Edge,
+    phase: PlatformPresenceDiagnostics.Phase? = nil, at time: Double? = nil
+  ) -> Bool {
+    let checked = time ?? now()
+    guard !invalidClock, deadline.isFinite, deadline >= 0,
+          lastCheckedTime.isFinite, lastCheckedTime >= 0,
+          checked.isFinite, checked >= lastCheckedTime else {
+      invalidClock = true
+      fail(.readUnavailable, phase: phase)
+      return true
+    }
+    lastCheckedTime = checked
+    guard checked >= deadline else { return false }
+    if recorded.deadline == nil {
+      recorded.deadline = .init(phase: phase ?? self.phase, read: read, edge: edge)
+    }
+    fail(.deadline, phase: phase)
+    return true
+  }
+
+  func diagnostics(complete: Bool) -> PlatformPresenceDiagnostics {
+    PlatformPresenceDiagnostics(
+      phaseMs: recorded.phaseMs, preparationSamples: recorded.preparationSamples,
+      preparationResets: recorded.preparationResets,
+      preparationQuietWindowMs: recorded.preparationQuietWindowMs,
+      preparationQuietElapsedMs: recorded.preparationQuietElapsedMs,
+      failure: complete ? nil : recorded.failure, deadline: recorded.deadline
+    )
+  }
+}
+
+func makePlatformPresencePayload(
+  nodes: [SnapshotNode], truncated: Bool, capture: PlatformPresenceCapture
+) -> DataPayload {
+  let keyboardVisible: Bool? = capture.complete ? nodes.contains { node in
+    node.type == "Keyboard" && !CGRect(
+      x: node.rect.x, y: node.rect.y, width: node.rect.width, height: node.rect.height
+    ).isEmpty
+  } : nil
+  return DataPayload(
+    nodes: nodes, truncated: truncated, keyboardVisible: keyboardVisible,
+    snapshotGeneration: capture.generation, presenceCapture: capture
+  )
 }

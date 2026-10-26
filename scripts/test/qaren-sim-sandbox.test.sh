@@ -23,7 +23,7 @@ tmp="$(cd "$(mktemp -d)" && pwd -P)"
 trap 'rm -rf "$tmp"' EXIT
 # Stand-in for the host xcrun: records what the sandbox forwards, never touches a simulator.
 mkdir -p "$tmp/host"
-for tool in xcrun xcodebuild simctl maestro idb idb_companion idb-companion; do
+for tool in xcrun xcodebuild simctl maestro; do
   printf '#!/usr/bin/env bash\necho "%s $*" >> "%s/host/calls"\n' "$tool" "$tmp" >"$tmp/host/$tool"
   chmod +x "$tmp/host/$tool"
 done
@@ -33,6 +33,7 @@ forwarded() { cat "$tmp/host/calls" 2>/dev/null; }
 check "xcrun resolves to the sandbox shim" "$tmp/sb/bin/xcrun" "$(run sh -c 'command -v xcrun')"
 check "adb resolves to the sandbox shim" "$tmp/sb/bin/adb" "$(run sh -c 'command -v adb')"
 check "HOME is isolated" "$tmp/sb/home" "$(run sh -c 'echo "$HOME"')"
+check "locks stay in the sandbox" "$tmp/sb/locks" "$(QAREN_LOCK_ROOT=/private/var/tmp run sh -c 'echo "$QAREN_LOCK_ROOT"')"
 check "ANDROID_HOME is the fake SDK" "$tmp/sb/android-sdk" "$(run sh -c 'echo "$ANDROID_HOME"')"
 check "CARGO_HOME stays on the real home" "${CARGO_HOME:-$HOME/.cargo}" "$(run sh -c 'echo "$CARGO_HOME"')"
 
@@ -73,14 +74,6 @@ run xcodebuild -showBuildSettings -scheme App -destination "id=$FAKE_UDID"
 check "build settings for a device destination are refused" 1 $?
 run xcrun devicectl list devices
 check "xcrun devicectl is refused" 1 $?
-run idb list-targets
-check "idb is refused" 1 $?
-run idb ui tap 10 10 --udid "$FAKE_UDID"
-check "idb ui is refused" 1 $?
-run idb_companion --list 1
-check "idb_companion is refused" 1 $?
-run idb-companion --udid "$FAKE_UDID"
-check "idb-companion is refused" 1 $?
 RN_IOS_TEST_RESULTS="$tmp/native.xcresult" run bash "$(dirname "$SANDBOX")/test-native-ios.sh"
 check "the native iOS suite is refused" 1 $?
 run simctl boot "$FAKE_UDID"

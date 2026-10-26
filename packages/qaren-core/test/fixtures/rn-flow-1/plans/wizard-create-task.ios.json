@@ -1,0 +1,227 @@
+{
+  "schema": "rn-flow/1",
+  "actionId": "wizard-create-task",
+  "appId": "com.rndevagent.testapp",
+  "platform": "ios",
+  "steps": [
+    {
+      "id": "s1",
+      "source": {
+        "line": 37
+      },
+      "domain": "native",
+      "optional": false,
+      "budgetMs": 15000,
+      "op": "launchApp",
+      "stopApp": false,
+      "clearState": false
+    },
+    {
+      "id": "s2",
+      "source": {
+        "line": 39
+      },
+      "domain": "react-tree",
+      "optional": false,
+      "budgetMs": 0,
+      "op": "runFlow",
+      "when": {
+        "visible": {
+          "id": "tab-tasks"
+        }
+      },
+      "steps": [
+        {
+          "id": "s3",
+          "source": {
+            "line": 44
+          },
+          "domain": "native",
+          "optional": false,
+          "budgetMs": 17000,
+          "op": "tapOn",
+          "selector": {
+            "id": "tab-tasks"
+          }
+        }
+      ]
+    },
+    {
+      "id": "s4",
+      "source": {
+        "line": 46
+      },
+      "domain": "native",
+      "optional": false,
+      "budgetMs": 5000,
+      "op": "waitForAnimationToEnd"
+    },
+    {
+      "id": "s5",
+      "source": {
+        "line": 47
+      },
+      "domain": "native",
+      "optional": false,
+      "budgetMs": 17000,
+      "op": "tapOn",
+      "selector": {
+        "id": "fab-create-task"
+      }
+    },
+    {
+      "id": "s6",
+      "source": {
+        "line": 49
+      },
+      "domain": "native",
+      "optional": false,
+      "budgetMs": 5000,
+      "op": "waitForAnimationToEnd"
+    },
+    {
+      "id": "s7",
+      "source": {
+        "line": 51
+      },
+      "domain": "native",
+      "optional": false,
+      "budgetMs": 17000,
+      "op": "tapOn",
+      "selector": {
+        "id": "wizard-title-input"
+      }
+    },
+    {
+      "id": "s8",
+      "source": {
+        "line": 53
+      },
+      "domain": "native",
+      "optional": false,
+      "budgetMs": 10000,
+      "op": "inputText",
+      "text": "Ship it"
+    },
+    {
+      "id": "s9",
+      "source": {
+        "line": 54
+      },
+      "domain": "native",
+      "optional": false,
+      "budgetMs": 17000,
+      "op": "tapOn",
+      "selector": {
+        "id": "wizard-desc-input"
+      }
+    },
+    {
+      "id": "s10",
+      "source": {
+        "line": 56
+      },
+      "domain": "native",
+      "optional": false,
+      "budgetMs": 10000,
+      "op": "inputText",
+      "text": "From the plan"
+    },
+    {
+      "id": "s11",
+      "source": {
+        "line": 57
+      },
+      "domain": "native",
+      "optional": false,
+      "budgetMs": 10000,
+      "op": "hideKeyboard",
+      "fallbackDomain": "react-tree"
+    },
+    {
+      "id": "s12",
+      "source": {
+        "line": 58
+      },
+      "domain": "native",
+      "optional": false,
+      "budgetMs": 17000,
+      "op": "tapOn",
+      "selector": {
+        "id": "wizard-next-btn"
+      }
+    },
+    {
+      "id": "s13",
+      "source": {
+        "line": 60
+      },
+      "domain": "native",
+      "optional": false,
+      "budgetMs": 5000,
+      "op": "waitForAnimationToEnd"
+    },
+    {
+      "id": "s14",
+      "source": {
+        "line": 62
+      },
+      "domain": "native",
+      "optional": false,
+      "budgetMs": 17000,
+      "op": "tapOn",
+      "selector": {
+        "id": "wizard-priority-high"
+      }
+    },
+    {
+      "id": "s15",
+      "source": {
+        "line": 64
+      },
+      "domain": "native",
+      "optional": false,
+      "budgetMs": 17000,
+      "op": "tapOn",
+      "selector": {
+        "id": "wizard-tag-bug"
+      }
+    },
+    {
+      "id": "s16",
+      "source": {
+        "line": 66
+      },
+      "domain": "native",
+      "optional": false,
+      "budgetMs": 17000,
+      "op": "tapOn",
+      "selector": {
+        "id": "wizard-next-btn"
+      }
+    },
+    {
+      "id": "s17",
+      "source": {
+        "line": 68
+      },
+      "domain": "native",
+      "optional": false,
+      "budgetMs": 5000,
+      "op": "waitForAnimationToEnd"
+    },
+    {
+      "id": "s18",
+      "source": {
+        "line": 70
+      },
+      "domain": "native",
+      "optional": false,
+      "budgetMs": 17000,
+      "op": "tapOn",
+      "selector": {
+        "id": "wizard-create-btn"
+      }
+    }
+  ]
+}

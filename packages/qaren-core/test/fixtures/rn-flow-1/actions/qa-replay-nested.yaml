@@ -1,0 +1,19 @@
+appId: com.rndevagent.testapp
+---
+# id: qa-replay-nested
+# intent: Refuse distinct nested buttons sharing a testID without changing any fixture counter.
+# tags: [qa, replay, ambiguity, regression]
+# mutates: true
+# status: experimental
+# enginePin: maestro-runner@1.1.27
+# appId: com.rndevagent.testapp
+#
+# [QaAcceptanceStart] all six counters zero after UI reset
+# │ assertVisible qa-replay-ambiguity-fixture
+# │ tapOn qa-replay-nested
+# ▼
+# [expected refusal] counters and route unchanged; inspect outside replay
+- assertVisible:
+    id: "qa-replay-ambiguity-fixture"
+- tapOn:
+    id: "qa-replay-nested"

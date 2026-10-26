@@ -16,15 +16,11 @@ trap 'rm -rf "$TMP"' EXIT
 # Fixture repo: a git repo with a mix of baseline, new, and excluded JS.
 git -C "$TMP" init -q
 git -C "$TMP" config commit.gpgsign false
-mkdir -p "$TMP/packages/rn-dev-agent-core/dist" "$TMP/packages/claude-plugin/rn-dev-agent-core/dist" "$TMP/packages/claude-plugin/bin" "$TMP/packages/codex-plugin/bin" "$TMP/third_party/x" "$TMP/.yarn/releases" "$TMP/test/unit" "$TMP/scripts"
+mkdir -p "$TMP/packages/qaren-core/dist" "$TMP/packages/qaren-cli/observe/dist" "$TMP/.yarn/releases" "$TMP/test/unit" "$TMP/scripts"
 echo "x" > "$TMP/test/unit/legacy.test.js"
 echo "x" > "$TMP/scripts/tool.mjs"
-echo "x" > "$TMP/packages/rn-dev-agent-core/dist/generated.js"
-echo "x" > "$TMP/packages/claude-plugin/rn-dev-agent-core/dist/generated.js"
-echo "x" > "$TMP/packages/claude-plugin/bin/plugin-health.js"
-echo "x" > "$TMP/packages/claude-plugin/bin/cdp-supervisor.js"
-echo "x" > "$TMP/packages/codex-plugin/bin/cdp-supervisor.js"
-echo "x" > "$TMP/third_party/x/vendored.js"
+echo "x" > "$TMP/packages/qaren-core/dist/generated.js"
+echo "x" > "$TMP/packages/qaren-cli/observe/dist/generated.js"
 echo "x" > "$TMP/.yarn/releases/yarn-4.17.0.cjs"
 git -C "$TMP" add -A
 git -C "$TMP" -c user.email=t@t -c user.name=t commit -qm fixture
@@ -32,7 +28,7 @@ git -C "$TMP" -c user.email=t@t -c user.name=t commit -qm fixture
 BASE="$TMP/baseline.txt"
 printf 'test/unit/legacy.test.js\nscripts/tool.mjs\n' > "$BASE"
 
-# 1. Baseline-covered JS passes; dist/, third_party/, and Yarn releases are ignored.
+# 1. Baseline-covered JS passes; dist/ outputs and Yarn releases are ignored.
 if REPO_ROOT="$TMP" BASELINE_FILE="$BASE" bash "$SCRIPT" >/dev/null; then
   ok "baseline + exclusions pass"
 else bad "expected pass with full baseline"; fi

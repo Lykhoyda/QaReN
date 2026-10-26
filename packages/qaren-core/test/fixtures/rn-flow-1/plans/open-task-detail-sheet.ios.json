@@ -1,0 +1,293 @@
+{
+  "schema": "rn-flow/1",
+  "actionId": "open-task-detail-sheet",
+  "appId": "com.rndevagent.testapp",
+  "platform": "ios",
+  "steps": [
+    {
+      "id": "s1",
+      "source": {
+        "line": 15
+      },
+      "domain": "native",
+      "optional": false,
+      "budgetMs": 15000,
+      "op": "launchApp",
+      "stopApp": false,
+      "clearState": false
+    },
+    {
+      "id": "s2",
+      "source": {
+        "line": 17
+      },
+      "domain": "native",
+      "optional": false,
+      "budgetMs": 17000,
+      "op": "tapOn",
+      "selector": {
+        "id": "tab-tasks"
+      }
+    },
+    {
+      "id": "s3",
+      "source": {
+        "line": 19
+      },
+      "domain": "native",
+      "optional": false,
+      "budgetMs": 5000,
+      "op": "waitForAnimationToEnd"
+    },
+    {
+      "id": "s4",
+      "source": {
+        "line": 20
+      },
+      "domain": "react-tree",
+      "optional": false,
+      "budgetMs": 17000,
+      "op": "assertVisible",
+      "selector": {
+        "id": "task-screen"
+      }
+    },
+    {
+      "id": "s5",
+      "source": {
+        "line": 22
+      },
+      "domain": "native",
+      "optional": false,
+      "budgetMs": 7000,
+      "op": "assertNotVisible",
+      "selector": {
+        "id": "task-sheet-title"
+      }
+    },
+    {
+      "id": "s6",
+      "source": {
+        "line": 25
+      },
+      "domain": "native",
+      "optional": false,
+      "budgetMs": 17000,
+      "op": "tapOn",
+      "selector": {
+        "id": "task-row-pressable-1"
+      }
+    },
+    {
+      "id": "s7",
+      "source": {
+        "line": 27
+      },
+      "domain": "native",
+      "optional": false,
+      "budgetMs": 5000,
+      "op": "waitForAnimationToEnd"
+    },
+    {
+      "id": "s8",
+      "source": {
+        "line": 28
+      },
+      "domain": "react-tree",
+      "optional": false,
+      "budgetMs": 17000,
+      "op": "assertVisible",
+      "selector": {
+        "id": "task-sheet-handle"
+      }
+    },
+    {
+      "id": "s9",
+      "source": {
+        "line": 30
+      },
+      "domain": "react-tree",
+      "optional": false,
+      "budgetMs": 17000,
+      "op": "assertVisible",
+      "selector": {
+        "id": "task-sheet-title"
+      }
+    },
+    {
+      "id": "s10",
+      "source": {
+        "line": 32
+      },
+      "domain": "native",
+      "optional": false,
+      "budgetMs": 17000,
+      "op": "assertVisible",
+      "selector": {
+        "text": "Review pull request"
+      }
+    },
+    {
+      "id": "s11",
+      "source": {
+        "line": 33
+      },
+      "domain": "react-tree",
+      "optional": false,
+      "budgetMs": 17000,
+      "op": "assertVisible",
+      "selector": {
+        "id": "task-sheet-delete"
+      }
+    },
+    {
+      "id": "s12",
+      "source": {
+        "line": 36
+      },
+      "domain": "native",
+      "optional": false,
+      "budgetMs": 17000,
+      "op": "tapOn",
+      "selector": {
+        "id": "task-sheet-note-input"
+      }
+    },
+    {
+      "id": "s13",
+      "source": {
+        "line": 38
+      },
+      "domain": "native",
+      "optional": false,
+      "budgetMs": 10000,
+      "op": "inputText",
+      "text": "viewport-probe"
+    },
+    {
+      "id": "s14",
+      "source": {
+        "line": 39
+      },
+      "domain": "native",
+      "optional": false,
+      "budgetMs": 17000,
+      "op": "assertVisible",
+      "selector": {
+        "text": "viewport-probe"
+      }
+    },
+    {
+      "id": "s15",
+      "source": {
+        "line": 40
+      },
+      "domain": "native",
+      "optional": false,
+      "budgetMs": 10000,
+      "op": "eraseText",
+      "characters": 14
+    },
+    {
+      "id": "s16",
+      "source": {
+        "line": 42
+      },
+      "domain": "native",
+      "optional": false,
+      "budgetMs": 10000,
+      "op": "hideKeyboard",
+      "fallbackDomain": "react-tree"
+    },
+    {
+      "id": "s17",
+      "source": {
+        "line": 44
+      },
+      "domain": "native",
+      "optional": false,
+      "budgetMs": 17400,
+      "op": "swipe",
+      "direction": "DOWN",
+      "from": {
+        "id": "task-sheet-handle"
+      },
+      "durationMs": 400
+    },
+    {
+      "id": "s18",
+      "source": {
+        "line": 48
+      },
+      "domain": "native",
+      "optional": false,
+      "budgetMs": 5000,
+      "op": "waitForAnimationToEnd"
+    },
+    {
+      "id": "s19",
+      "source": {
+        "line": 49
+      },
+      "domain": "native",
+      "optional": false,
+      "budgetMs": 7000,
+      "op": "assertNotVisible",
+      "selector": {
+        "id": "task-sheet-title"
+      }
+    },
+    {
+      "id": "s20",
+      "source": {
+        "line": 51
+      },
+      "domain": "native",
+      "optional": false,
+      "budgetMs": 7000,
+      "op": "assertNotVisible",
+      "selector": {
+        "id": "task-sheet-delete"
+      }
+    },
+    {
+      "id": "s21",
+      "source": {
+        "line": 53
+      },
+      "domain": "react-tree",
+      "optional": false,
+      "budgetMs": 17000,
+      "op": "assertVisible",
+      "selector": {
+        "id": "task-screen"
+      }
+    },
+    {
+      "id": "s22",
+      "source": {
+        "line": 55
+      },
+      "domain": "react-tree",
+      "optional": false,
+      "budgetMs": 17000,
+      "op": "assertVisible",
+      "selector": {
+        "id": "task-list"
+      }
+    },
+    {
+      "id": "s23",
+      "source": {
+        "line": 57
+      },
+      "domain": "native",
+      "optional": false,
+      "budgetMs": 17000,
+      "op": "assertVisible",
+      "selector": {
+        "text": "Review pull request"
+      }
+    }
+  ]
+}

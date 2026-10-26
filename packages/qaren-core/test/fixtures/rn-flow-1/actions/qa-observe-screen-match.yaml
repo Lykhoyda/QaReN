@@ -1,0 +1,52 @@
+appId: com.rndevagent.testapp
+---
+# id: qa-observe-screen-match
+# intent: Open the QA acceptance fixture and visibly transition from its baseline screen to its result screen.
+# tags: [qa, acceptance, observe, navigation, regression]
+# mutates: false
+# status: experimental
+# enginePin: maestro-runner@1.1.27
+# appId: com.rndevagent.testapp
+# produces: { acceptancePhase: result, route: QaAcceptanceResult }
+# startRoute: HomeMain
+#
+# [attached app on HomeMain] anchor: tab-home
+# │ pass onboarding only when its fixture gate is visible
+# │ tapOn tab-home
+# ▼
+# [HomeMain] anchor: home-welcome
+# │ tapOn home-qa-acceptance-btn
+# ▼
+# [QaAcceptanceStart] anchor: qa-acceptance-start-screen
+# │ tapOn qa-acceptance-continue
+# ▼
+# [QaAcceptanceResult] anchor: qa-acceptance-result-screen
+- runFlow:
+    when:
+      visible:
+        id: "onboarding-screen"
+    commands:
+      - tapOn:
+          id: "onboarding-skip"
+      - tapOn:
+          id: "onboarding-done"
+      - waitForAnimationToEnd
+- tapOn:
+    id: "tab-home"
+- waitForAnimationToEnd
+- assertVisible:
+    id: "home-welcome"
+- tapOn:
+    id: "home-qa-acceptance-btn"
+- waitForAnimationToEnd
+- assertVisible:
+    id: "qa-acceptance-start-screen"
+- assertVisible:
+    id: "qa-acceptance-start-state"
+- tapOn:
+    id: "qa-acceptance-continue"
+- waitForAnimationToEnd
+- assertVisible:
+    id: "qa-acceptance-result-screen"
+- assertVisible:
+    id: "qa-acceptance-result-state"

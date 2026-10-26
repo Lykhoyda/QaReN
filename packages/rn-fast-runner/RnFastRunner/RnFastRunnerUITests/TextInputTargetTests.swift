@@ -282,6 +282,26 @@ final class TextInputTargetTests: XCTestCase {
     )
   }
 
+  // A field that only changed letter case is reported as such, never as exact and never as a mismatch.
+  func testCaseOnlyDifferenceIsCaseNormalized() {
+    let classify = { (raw: String, placeholder: String?) in
+      TextInputTarget.classifyValue(expected: "Hello Ada", rawValue: raw, placeholder: placeholder, isSecure: false)
+    }
+    XCTAssertEqual(classify("HELLO ADA", nil), .caseNormalized)
+    XCTAssertEqual(classify("hello ada", nil), .caseNormalized)
+    XCTAssertEqual(classify("HELLO ADX", nil), .mismatch)
+    XCTAssertEqual(classify("HELLO AD", nil), .mismatch)
+    XCTAssertEqual(classify("HELLO ADA", "HELLO ADA"), .mismatch)
+    XCTAssertEqual(
+      TextInputTarget.classifyValue(expected: "stra\u{00DF}e", rawValue: "STRASSE", placeholder: nil, isSecure: false),
+      .mismatch
+    )
+    XCTAssertEqual(
+      TextInputTarget.classifyValue(expected: "Hello", rawValue: "HELLO", placeholder: nil, isSecure: true),
+      .secureMasked
+    )
+  }
+
   func testSecureFieldsNeverProveContent() {
     XCTAssertEqual(
       TextInputTarget.classifyValue(expected: "value-a", rawValue: "•••••••", placeholder: nil, isSecure: true),
@@ -292,6 +312,33 @@ final class TextInputTargetTests: XCTestCase {
       TextInputTarget.classifyValue(expected: "•••••••", rawValue: "•••••••", placeholder: nil, isSecure: true),
       .secureMasked
     )
+  }
+
+  func testSecureReadsThatProveTheValueDidNotLand() {
+    for raw in ["", "Password"] {
+      XCTAssertEqual(
+        TextInputTarget.classifyValue(expected: "value-a", rawValue: raw, placeholder: "Password", isSecure: true),
+        .mismatch,
+        raw
+      )
+    }
+    XCTAssertEqual(
+      TextInputTarget.classifyValue(expected: "value-a", rawValue: "•••", placeholder: nil, isSecure: true),
+      .mismatch
+    )
+    XCTAssertEqual(
+      TextInputTarget.classifyValue(expected: "pässwörd👍🏽", rawValue: "••••", placeholder: nil, isSecure: true),
+      .mismatch
+    )
+  }
+
+  func testUnicodeMaskLengthsMustMatchAPlausibleRepresentation() {
+    for length in [4, 5, 6, 7] {
+      XCTAssertEqual(
+        TextInputTarget.classifyValue(expected: "pass👍", rawValue: String(repeating: "•", count: length), placeholder: nil, isSecure: true),
+        length == 5 || length == 6 ? .secureMasked : .mismatch
+      )
+    }
   }
 
   func testEmptyClearVerification() {
@@ -314,11 +361,14 @@ final class TextInputTargetTests: XCTestCase {
     )
   }
 
-  func testPlaceholderEqualTypedValueIsAmbiguous() {
-    XCTAssertEqual(
-      TextInputTarget.classifyValue(expected: "Enter name", rawValue: "Enter name", placeholder: "Enter name", isSecure: false),
-      .ambiguous
-    )
+  func testPlaceholderOrEmptyReadNeverProvesATypedValue() {
+    for raw in ["Enter name", ""] {
+      XCTAssertEqual(
+        TextInputTarget.classifyValue(expected: "Enter name", rawValue: raw, placeholder: "Enter name", isSecure: false),
+        .mismatch,
+        raw
+      )
+    }
   }
 
   func testVerifyObservationIncludesPlaceholderAndVerdict() {

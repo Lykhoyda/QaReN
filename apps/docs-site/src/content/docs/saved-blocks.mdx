@@ -1,0 +1,118 @@
+---
+title: Saved blocks
+description: How a passing block is saved, replayed on the next run, and patched when the app changes.
+---
+
+A block that passes is saved, unless one of the [conditions below](#when-a-block-is-not-saved)
+applies, so the next run can replay it by the exact identities
+it used instead of resolving each target again.
+
+## Where blocks live
+
+A passing block eligible under the [persistence conditions below](#when-a-block-is-not-saved)
+is written to `.qaren/actions/<slug>.yaml` in the app directory, the one that
+holds `.qaren/config.yaml`. The slug is the block's ID from its heading; see
+[Write a plan](../plans/#structure). Very long slugs are shortened with a hash
+suffix.
+
+The file is a Maestro-shaped action: each plan line as a comment, followed by the commands
+with the exact `testID` the step used, or its label when it had no `testID`. The walk replays
+the file by those stored identities; the [rn-flow/1 dialect](../actions/rn-flow-1/) is the
+separate compile contract for saved actions.
+
+## Replay, then walk
+
+On the next run, a block whose plan lines, platform, app and runtime input policy are unchanged
+is replayed by its stored identities. For Jev requirements, including the optional interruption safety veto,
+see the [plan readiness contract](https://github.com/Lykhoyda/rn-dev-agent/blob/develop/packages/qaren-cli/README.md#plan-checks-and-screen-evidence).
+
+Start declarations retain their plan target on replay; see the authoritative
+[saved-block contract](https://github.com/Lykhoyda/rn-dev-agent/blob/develop/packages/qaren-cli/README.md#saved-blocks)
+for start waits and refusal behavior.
+
+| Situation                                                        | Outcome                                                         |
+| ---------------------------------------------------------------- | --------------------------------------------------------------- |
+| A stored identity resolves                                       | The step replays                                                |
+| A stored identity no longer resolves, before the step changed the app | The block is walked again from that line; earlier steps stay done |
+| A stored identity is ambiguous                                   | `TARGET_AMBIGUOUS`, without walking again                        |
+| A check fails after any eligible recovery                        | FAIL; the block is never walked again or rewritten               |
+
+When a re-walked block passes, only the commands from the re-walked line on are rewritten,
+and every `✓` comment stays byte-identical. A failing block is never saved; earlier passing
+blocks remain subject to the [persistence conditions below](#when-a-block-is-not-saved).
+
+The ledger's `path` is `walk`, `replay` or `replay→walk@<line>`, and each block reports its
+`source` as `discovered`, `replayed` or `patched`. The receipt lists `blocks_written`.
+
+## When a block is not saved
+
+A block that passed is left unsaved, and `blocks_not_saved` gives the reason without naming
+any value, when:
+
+- a step had neither a `testID` nor a label to store;
+- it has a phrase wait;
+- a fill meets the [private-input or keyboard-fallback persistence restrictions](https://github.com/Lykhoyda/rn-dev-agent/blob/develop/packages/qaren-cli/README.md#saved-blocks);
+- a protected value from the plan or the run appears in the block, which reports
+  `contains a protected plan-typed value`;
+- a quoted wait or scroll target has no unique `testID` or unique visible text;
+- the [React coverage contract](https://github.com/Lykhoyda/rn-dev-agent/blob/develop/packages/qaren-cli/README.md#check-a-plan)
+  withholds persistence for the block or walk.
+
+A fill from a [runtime input](../plans/#runtime-inputs) is saved by name only, as
+`inputText: { input: "PASSWORD" }`, and replays with the current run's value.
+A fixture annotated `(non-secret)` retains its classification as
+`inputText: { input: "FIXTURE_CODE", sensitivity: "non-secret" }`; neither form stores values.
+An effective non-secret policy gives every block a versioned `ns1:` plan hash, binding
+its source steps and the sorted non-secret names for the whole run. Changing a later
+block's policy can therefore invalidate an earlier block, including when the last opt-in
+is removed. Ordinary blocks re-walk on a mismatch; a configured login block with stale
+policy refuses before the session opens and needs an explicit refresh. Legacy strict-only
+hashes and login admission stay unchanged. An
+`Expect input NAME on screen` line is saved as its plan line and a `# qaren: echo NAME`
+marker. Older qaren versions cannot replay such a block.
+
+An edited or incompatible block file is treated as new and walked again. Existing saved
+blocks are never removed.
+
+## Inspecting blocks
+
+```sh
+qaren actions list [--json]
+qaren actions show <slug>
+```
+
+Both read the `.qaren/actions/` directory of the current directory. `.yaml` and `.yml` files
+are both read; a slug with both extensions is refused. These inspection commands accept the
+verified main-copy link for Git worktrees and refuse other corpus links and symlinked action
+files; see the authoritative
+[action corpus contract](https://github.com/Lykhoyda/rn-dev-agent/blob/develop/packages/qaren-cli/README.md#saved-blocks).
+
+## Login recovery
+
+For recovery triggers, ordering, default permission decline, optional app interruptions,
+and terminal failures, see the authoritative
+[step recovery contract](https://github.com/Lykhoyda/rn-dev-agent/blob/develop/packages/qaren-cli/README.md#step-recovery).
+Login recovery uses a saved sign-in block when its configured marker is visible.
+Follow the [reusable sign-in worked example](https://github.com/Lykhoyda/rn-dev-agent/blob/develop/packages/qaren-cli/README.md#reusable-sign-in-example) to save, configure and replay it.
+
+Configure the login block in `.qaren/config.yaml`:
+
+```yaml
+loginBlock: sign-in
+loginMarker:
+  id: login-screen
+```
+
+`loginBlock` names a saved block, `.qaren/actions/sign-in.yaml` here, saved for this app and
+platform. `loginMarker` has exactly one of `id` (a `testID`) or `text` (a label). The two keys
+are set together. A missing or incompatible login block fails when login recovery is needed.
+qaren reads the login block before it selects a device, so the runtime inputs it names are
+required for every run. `qaren pr` reads it at the pull request head and refuses a symlinked
+or unreadable `.qaren/actions` there. That block may only use inputs your plan or your
+checked-out login block already names; any other name refuses `PLAN_INPUT_MISSING`.
+Its effective sensitivity must also match for every required input, including the strict
+default, so a pull request cannot downgrade an owner's secret slot.
+
+An observed React Native red box fails the current step at once and never triggers recovery.
+On iOS, a change of the app's process between captures, such as a crash or restart, fails the
+walk with `APP_PROCESS_CHANGED`.

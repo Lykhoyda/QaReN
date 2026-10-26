@@ -1,283 +1,143 @@
 ---
-title: Getting Started
-description: Install and configure rn-dev-agent for your React Native project.
+title: Getting started
+description: Install qaren and the QaReN plugin, run /qaren:setup and reach a first passing check.
 ---
 
-import VerifyLoopScene from '../../components/concepts/VerifyLoopScene.astro';
 import { Steps } from '@astrojs/starlight/components';
 
 ## Requirements
 
-| Requirement | Notes |
-|-------------|-------|
-| Node.js >= 24 | For the CDP bridge MCP server; every later major is supported |
-| Claude Code, Codex, or Cursor | Use the host agent you want to run rn-dev-agent from |
-| iOS Simulator or Android Emulator | At least one platform |
-| Session-bound Metro | Setup previews the project integration; literal `pnpm ios` or `pnpm android` starts or validates the allocated Metro |
+- An Apple silicon Mac with Xcode.
+- Node 24 or newer, with Corepack.
+- Rust and Cargo from [rustup.rs](https://rustup.rs), for the source install below.
+- `pnpm` on `PATH`; with Corepack, `corepack enable pnpm` provides it.
+- An Expo app that uses `expo-dev-client` and pnpm, with a `pnpm-lock.yaml`.
 
-**maestro-runner `>= 1.1.27`** is installed into rn-dev-agent's versioned pin-cache as attested `1.1.27` by the host setup workflow. Claude's SessionStart hook only verifies the pin-cache offline and prints the explicit pinned install command when remediation is needed. In Codex, invoke `$rn-dev-agent:setup`; after its read-only diagnosis, setup converges and verifies that attested runner before previewing project changes for consent. Replay never resolves from PATH, `~/.maestro-runner`, or brew Maestro. Device control ships in-tree through the iOS/Android runners. Use the matching host setup workflow for guided remediation.
+Setup prepares an iOS simulator. To check on a booted Android emulator instead, see
+[Check a plan](../check/).
 
-## Installation
+## Install
 
-Jump to your host: **[Claude Code](#claude-code)** · **[Cursor](#cursor)** · **[Codex](#codex)** — or [keeping up to date](#keeping-up-to-date) if it's already installed.
-
-### Claude Code
-
-From inside Claude Code:
+No QaReN release has been published yet, so the plugin carries no `qaren` build to download.
+Install from a `develop` checkout of the
+[repository](https://github.com/Lykhoyda/rn-dev-agent/tree/develop):
 
 <Steps>
 
-1. Add the marketplace:
+1. Clone the checkout and install `qaren` from it:
 
-   ```bash
-   /plugin marketplace add Lykhoyda/rn-dev-agent
+   ```sh
+   git clone --branch develop https://github.com/Lykhoyda/rn-dev-agent.git qaren-src
+   cd qaren-src
+   bash scripts/install-qaren-from-source.sh
    ```
 
-2. Install the plugin:
+   The installer builds the runtime tarball, verifies it against a manifest it writes for
+   that build, and unpacks it under `~/.qaren/runtime/<version>/`. It prints the installed
+   binary path.
 
-   ```bash
-   /plugin install rn-dev-agent@rn-dev-agent
+2. From your app's root directory, start Claude Code with the checkout's plugin:
+
+   ```sh
+   claude --plugin-dir <checkout>/packages/qaren-plugin
    ```
 
-3. Reload plugins to activate:
+   `<checkout>` is the absolute path of `qaren-src`.
 
-   ```bash
-   /reload-plugins
+3. Run the setup skill:
+
+   ```text
+   /qaren:setup
    ```
 
 </Steps>
 
-For local source development, point Claude Code at the repository root:
+### Where `qaren` lands on PATH
 
-```bash
-claude --plugin-dir /path/to/rn-dev-agent
+The installer links `qaren` into a directory on your `PATH`:
+
+1. The first of `~/.local/bin`, `~/bin`, `/opt/homebrew/bin` and `/usr/local/bin` that is
+   on `PATH`, exists and is writable. An earlier IDE or toolchain directory is passed over.
+2. Otherwise, the first writable absolute directory on `PATH`. Empty and relative entries
+   are skipped.
+3. Otherwise, it links `~/.local/bin/qaren` and prints the line to run:
+
+   ```sh
+   export PATH="$HOME/.local/bin:$PATH"
+   ```
+
+It never edits shell startup files. It replaces only a link it made into
+`~/.qaren/runtime/`; any other `qaren` file in that directory is left alone with a notice.
+A link problem never fails the install: run `qaren` by the binary path the installer
+printed. If an earlier `PATH` directory already holds another `qaren`, that one still runs:
+check `command -v qaren`, and use the printed path when it differs. Re-run the installer to
+recover an interrupted install.
+
+## What `/qaren:setup` does
+
+Setup runs six steps from the app's root directory. When a step stops, it gives the one
+reason and the fix.
+
+1. **CLI.** It finds the `qaren` binary the plugin verifies. Until a release is published
+   it accepts the `qaren` on `PATH` when that binary lives under `~/.qaren/runtime/` and
+   its version matches the plugin's. Otherwise it gives you the source install line above
+   and offers to run it for you.
+2. **App.** It checks that `package.json` lists `expo` and `expo-dev-client` and that
+   `pnpm-lock.yaml` exists. It asks before running `pnpm install`. It reads the bundle
+   identifier and the app's `slug` from `pnpm exec expo config`; when that fails, it asks
+   you for both values rather than guessing.
+3. **Config.** It writes `.qaren/config.yaml`:
+
+   ```yaml
+   appId: <bundle identifier>
+   devClientScheme: exp+<slug>
+   ```
+
+   `exp+<slug>` is the scheme `expo-dev-client` generates. When the app's config turns that
+   scheme off, setup asks you for the scheme the app registers instead. An existing config
+   is shown next to the detected values and changed only with your consent. See [Configuration](../configuration/) for every key.
+4. **Device.** It reads the simulator inventory and never boots, shuts down or erases a
+   simulator itself. With one booted simulator it passes no device flag. With none, it
+   picks the newest available iPhone and passes `--boot-device --device <udid>`, so
+   `qaren` boots it under its device lease. With several, it asks you which one.
+5. **Smoke plan.** It reads the app's launch path in source, picks a text shown on the
+   first screen, and writes `.qaren/plans/smoke.md`. This plan needs no
+   `TYPESAFE_API_KEY`.
+6. **Run.** It starts the first `qaren check` detached, because a cold native build can
+   take longer than the host's command limit, and follows the run until it ends. Within a
+   minute the progress log names the run, and you can watch it in your own terminal with
+   `qaren watch <run-id>`. It then reports the receipt's `result`, `run_id` and
+   `next_action`.
+
+On `pass`, QaReN is set up. If the receipt's `next_action` is a `qaren cleanup` command,
+teardown was incomplete and setup offers to run it.
+
+## First check
+
+Setup writes the smoke plan in this shape, with the text it picked from your first screen:
+
+```md title=".qaren/plans/smoke.md"
+## QA
+
+### First screen
+
+1. Wait for "<text>" to appear
+✓ "<text>"
 ```
 
-The root `.claude-plugin/marketplace.json` resolves the actual Claude package
-from `packages/claude-plugin/`. Use
-`/path/to/rn-dev-agent/packages/claude-plugin` only when a tool asks for the
-plugin package root directly.
+Run it again yourself from the app's root directory, on the simulator setup used:
 
-### Cursor
-
-Install from **Customize → Plugins** (Cursor Marketplace or a team marketplace
-that imports this GitHub repo). The repo's `.cursor-plugin/marketplace.json`
-resolves the plugin from `packages/claude-plugin/`.
-
-For a local checkout, load that package directory, not the repository root:
-
-```text
-/path/to/rn-dev-agent/packages/claude-plugin
+```sh
+qaren check --plan-file .qaren/plans/smoke.md --device <udid> --json
 ```
 
-That directory owns `.cursor-plugin/plugin.json` and `mcp.json`. Cursor
-spawns `cdp` with `${CURSOR_PLUGIN_ROOT}/rn-dev-agent-core/dist/supervisor.js`.
-Claude SessionStart hooks are not loaded (`No plugin hooks` is expected).
-Requires Node.js >= 24. Reload the window after install if MCP does not appear.
+`<udid>` is the simulator setup chose or booted. With exactly one booted simulator you can
+leave `--device <udid>` out; with several, `qaren check` refuses without it.
 
-**Limitation: the Cursor Plugin spawn does not bind the exact app.** rn-dev-agent
-binds source identity from the supervisor's working directory and keys its process
-lock on `CLAUDE_USER_CWD` or that directory. Cursor does not document a working
-directory for plugin MCP servers, and the observed spawn starts from the user home,
-so the lock is keyed on the home directory and source authority for the open app
-is unavailable. Consequences:
+Follow it from a second terminal:
 
-- One rn-dev-agent server per user across Cursor windows. A second window stays
-  connected read-only and refuses every call with `SAME_ROOT_OWNER_LIVE` naming the
-  owner; use that session or quit it, and the waiting window takes over. The lock
-  is not bypassed for Cursor.
-- Device and proof work for an exact app checkout uses the project-rooted host
-  workflow: `claude` or `codex` started in the app root. A project-scoped
-  `.cursor/mcp.json` in the app checkout only helps if Cursor starts that server
-  from the workspace folder, which Cursor does not document and this project has
-  not verified.
-
-### Codex
-
-Install from the marketplace (recommended):
-
-```bash
-codex plugin marketplace add Lykhoyda/rn-dev-agent
-codex plugin add rn-dev-agent@rn-dev-agent --json
+```sh
+qaren watch --latest
 ```
 
-The repo's `.agents/plugins/marketplace.json` resolves the Codex payload from
-`packages/claude-plugin/`, the same directory Claude installs. The installed
-plugin is fully self-contained (one bundled MCP runtime, native runner sources,
-workflow helpers, health program, and runner manifest); Codex selects its own
-surface from it through `.codex-plugin/plugin.json`.
-
-For a local checkout instead, register that same package directory:
-
-```text
-/path/to/rn-dev-agent/packages/claude-plugin
-```
-
-When installing locally through Codex, select or register
-`packages/claude-plugin`, not the repository root. That directory owns
-`.codex-plugin/plugin.json`, `codex.mcp.json`, the package-local
-`codex-skills/`, the launcher `bin/cdp-supervisor.js`, and the bundled MCP
-runtime at `rn-dev-agent-core/dist/supervisor.js`. If an older registration
-points at `packages/codex-plugin`, remove it and add the new path: that
-directory is now authoring material and no longer carries a runtime.
-
-Codex does not load Claude Code hooks. If the detail screen says `No plugin
-hooks`, that is expected. Codex exposes the `cdp` MCP server, eleven domain skills,
-and seventeen explicit workflow skills (28 total):
-
-```text
-$rn-dev-agent:setup
-```
-
-Codex 0.145.0 is the live-refresh floor. Older hosts are restart-only. A
-same-app install/enable can update a subsequent turn; external CLI/manual
-changes require exiting and relaunching Codex. `/mcp verbose` inspects inventory
-only.
-
-Codex setup first runs multi-axis read-only health, then manages a sentinel-
-bounded `AGENTS.md` block and other project wiring only after preview/consent.
-Claude setup continues to manage `CLAUDE.md`.
-
-### Keeping up to date
-
-Enable auto-update in the host plugin manager. Manual update:
-
-```text
-Claude: /plugin update rn-dev-agent@rn-dev-agent
-        /reload-plugins
-Cursor: Customize → Plugins, then Developer: Reload Window
-Codex:  codex plugin marketplace upgrade rn-dev-agent
-        codex plugin add rn-dev-agent@rn-dev-agent --json
-        # relaunch after this external mutation
-```
-
-## What happens after install
-
-<VerifyLoopScene />
-
-## Setup for your app
-
-### No setup needed for most apps
-
-The plugin connects to your running app via Metro's CDP endpoint and reads the React fiber tree directly.
-
-### Zustand stores (one bridge call)
-
-Run the matching setup workflow (`/rn-dev-agent:setup` in Claude or Cursor, or
-`$rn-dev-agent:setup` in Codex) to scaffold `.rn-agent/dev-bridge.ts` and
-`.rn-agent/globals.d.ts`. Then add a single registration call alongside your
-store definitions:
-
-```typescript
-// App.tsx or app/_layout.tsx
-import { getBridge } from './.rn-agent/dev-bridge';
-
-getBridge()?.registerStores({
-  auth: useAuthStore,
-  cart: useCartStore,
-});
-```
-
-No `__DEV__` guard at the call site — `getBridge()` returns `null` in production and the optional chain is a no-op. Zero production cost. The bridge handles the dev-only global assignment internally.
-
-Both setup workflows preview this edit and ask before applying it.
-
-### Redux
-
-Auto-detected. No setup needed.
-
-### testIDs
-
-Add `testID` to interactive elements for reliable component queries:
-
-```tsx
-<Pressable testID="checkout-button" onPress={handleCheckout}>
-  <Text testID="cart-badge">{itemCount}</Text>
-</Pressable>
-```
-
-## Project instructions: let setup manage the host-owned file
-
-- Claude `/rn-dev-agent:setup` manages the rn-dev-agent block in `CLAUDE.md`.
-- Codex `$rn-dev-agent:setup` manages only the sentinel-bounded rn-dev-agent
-  block in `AGENTS.md`; it never changes Claude instruction files.
-
-Both paths preview changes for confirmation and are idempotent: re-running setup
-skips an in-sync managed block and existing scaffold files.
-
-Inspect the [Claude template](https://github.com/Lykhoyda/rn-dev-agent/blob/main/CLAUDE-MD-TEMPLATE.md)
-or the [Codex AGENTS.md template](https://github.com/Lykhoyda/rn-dev-agent/blob/main/packages/codex-plugin/src/AGENTS-MD-TEMPLATE.md)
-before running setup.
-
-## Your agent's saved flows live in `.rn-agent/`
-
-The plugin's home in your project is `.rn-agent/`. Saved actions, the UI skeleton,
-navigation graph, and runtime state all live there. The matching setup workflow
-scaffolds the directory; [`doctor`](/rn-dev-agent/commands/doctor/) reports on
-its health.
-
-See the [Actions guide](/rn-dev-agent/actions/) for what an action is, how to record one, and how the agent uses them.
-
-## First run
-
-Navigate to your React Native project and start building:
-
-```bash
-cd /path/to/your-rn-app
-claude # or: cursor / codex
-```
-
-Claude's SessionStart hook auto-detects the project and prepares supported
-dependencies. Cursor and Codex do not load Claude plugin hooks. For any host,
-invoke its setup workflow when onboarding is incomplete:
-
-```text
-Claude / Cursor: /rn-dev-agent:setup
-Codex:  $rn-dev-agent:setup
-```
-
-Claude walks its prerequisite checks and retries supported installations. Codex
-runs passive multi-axis health and recommends user-confirmed recovery without
-executing it. Both preview project wiring before writing. Once setup is ready:
-
-```text
-Claude / Cursor: /rn-dev-agent:rn-feature-dev add task priority levels with color coding and sort
-Codex:  $rn-dev-agent:rn-feature-dev add task priority levels with color coding and sort
-```
-
-The plugin handles the rest — 8 phases from understanding to verified code with proof screenshots.
-
-Want to watch it work? The [observability web UI](/rn-dev-agent/commands/observe/)
-autostarts with the session. Invoke the matching `observe` workflow to get the
-URL and follow the live tool-call timeline, device mirror, and app-state panels
-in your browser.
-
-## Install from source (development)
-
-```bash
-git clone https://github.com/Lykhoyda/rn-dev-agent.git
-cd rn-dev-agent
-corepack enable
-corepack yarn install --immutable
-corepack yarn workspace rn-dev-agent-core build
-corepack yarn build:host-runtimes
-```
-
-Claude Code local path:
-
-```bash
-cd /path/to/your-rn-app
-claude --plugin-dir /path/to/rn-dev-agent
-```
-
-Cursor local plugin package path:
-
-```text
-/path/to/rn-dev-agent/packages/claude-plugin
-```
-
-Codex local plugin package path (the same directory Claude installs):
-
-```text
-/path/to/rn-dev-agent/packages/claude-plugin
-```
+Next, [write a plan](../plans/) for a feature, or ask the `using-qaren` skill to write one.

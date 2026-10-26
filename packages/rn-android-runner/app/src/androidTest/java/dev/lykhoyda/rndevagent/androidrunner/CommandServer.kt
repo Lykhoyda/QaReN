@@ -40,7 +40,7 @@ class CommandServer(
             val body = JSONObject()
                 .put("ok", true)
                 .put("protocolVersion", RunnerProtocol.VERSION)
-                .put("capabilities", JSONArray(listOf("WINDOW_UPDATE", "HONEST_HITTABLE", "APP_SCOPED_EXACT_INTERACTION")))
+                .put("capabilities", JSONArray(listOf("WINDOW_UPDATE", "HONEST_HITTABLE", "APP_SCOPED_EXACT_INTERACTION", "QA_READ_ONLY_V1", "FILL_EVIDENCE_V1", "DISPATCH_OCCLUSION_GUARD_V1", "SYSTEM_ALERT_TAP_V1", "A11Y_PRESENCE_V2")))
                 .put("commands", JSONArray(CommandDispatcher.SUPPORTED_COMMANDS))
                 .put("instanceId", authority.instanceId)
                 .put("sessionId", authority.sessionId)
@@ -76,8 +76,6 @@ class CommandServer(
             json(Response.Status.OK, body)
         } catch (e: TypedRunnerException) {
             errorResponse(command, e.code, e.message ?: e.code, Response.Status.OK, e.mutation.wire)
-        } catch (e: SnapshotParseException) {
-            errorResponse(command, "SNAPSHOT_PARSE_FAILED", e.message ?: "snapshot parse failed", Response.Status.OK)
         } catch (e: ExactPressException) {
             errorResponse(
                 command,

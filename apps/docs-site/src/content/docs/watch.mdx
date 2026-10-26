@@ -1,0 +1,60 @@
+---
+title: Watch a run
+description: Follow a qaren check or qaren pr run live, locally or over ssh.
+---
+
+```sh
+qaren watch <run-id>
+qaren watch --latest
+ssh -t host qaren watch --latest
+ssh host qaren watch <run-id> --plain
+qaren watch <run-id> --json
+```
+
+`qaren watch` reads one run under `~/.qaren/runs/`. It takes no lock or device lease, so it
+never disturbs the run. `check` and `pr` print the command to watch their run when they
+start; only those two verbs produce the event stream it reads.
+
+`--latest` picks the run whose `run.json` changed most recently. Running `qaren watch` with
+neither a run ID nor `--latest` is a usage error.
+
+## What it shows
+
+- Each stage from preflight through cleanup. A stage that was not needed says so; one that
+  was never observed stays unobserved.
+- Each step's outcome and its act, capture and Jev timings, including steps that ran during
+  login recovery.
+- Recording, and the verdict with the exit code `qaren check` will return.
+
+Step text and reasons appear only once the run has ended, taken from the final
+privacy-projected ledger. For what live events retain, see the CLI guide's
+[run identity and privacy contract](https://github.com/Lykhoyda/rn-dev-agent/blob/develop/packages/qaren-cli/README.md#watch-a-run).
+
+## Output modes
+
+| Mode            | Behaviour                                                                                 |
+| --------------- | ----------------------------------------------------------------------------------------- |
+| Terminal        | Redraws every 250 ms and fits the rows to the terminal size. Ctrl-C exits only the viewer. |
+| `--plain`       | Prints each final stage and each passed or failed step once, without escape codes.        |
+| `--json`        | Prints one snapshot of the run and exits without following it.                            |
+
+Output that is not a terminal, or `CI` or `NO_COLOR` in the environment, also selects plain
+output. A terminal narrower than 32 columns or shorter than 18 rows switches to plain output.
+
+## Run states
+
+| State                     | Meaning                                                                   |
+| ------------------------- | ------------------------------------------------------------------------- |
+| Live                      | The run has not ended and its process is alive or unknown                 |
+| Finished                  | The run's final event is present                                          |
+| Ended without final event | The run's process is gone; its telemetry is incomplete                    |
+| Telemetry unavailable     | The run has no event stream, for example a run from before watch support  |
+
+## Exit codes
+
+| Exit | Meaning                                                            |
+| ---- | ------------------------------------------------------------------ |
+| `0`  | The run finished or ended incomplete, whatever its verdict          |
+| `1`  | No such run                                                         |
+| `2`  | Usage error                                                         |
+| `3`  | Telemetry unavailable                                               |

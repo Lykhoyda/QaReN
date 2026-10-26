@@ -1,0 +1,12 @@
+{
+  "screen": {
+    "front": "app",
+    "elements": [
+      { "ref": "@top-save", "kind": "button", "label": "Save", "hittable": true, "disabled": false, "secure": false, "offscreen": false, "where": "top", "side": "right" },
+      { "ref": "@bottom-save", "kind": "button", "label": "Save", "hittable": true, "disabled": false, "secure": false, "offscreen": false, "where": "bottom", "side": "center" }
+    ],
+    "visibleText": ["Save", "Profile settings", "Save"]
+  },
+  "line": "Tap \"Save\" at the bottom",
+  "expected": { "kind": "target", "refuse": "TARGET_AMBIGUOUS" }
+}

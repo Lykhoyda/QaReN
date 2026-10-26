@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # CI guard (GH #316 / B215 / PR #314 post-mortem): every package name in a
 # pending .changeset/*.md frontmatter MUST be a real workspace package. A typo
-# (e.g. "rn-dev-agent" instead of the version-source package "rn-dev-agent-plugin")
+# (e.g. "qaren-plugin" instead of the version-source package "qaren")
 # passes the existence-only require-changeset gate, then aborts release.yml's
 # `changeset version` on main with "Found changeset … for package X which is not
 # in the workspace" — silently blocking every subsequent release until fixed.
@@ -93,7 +93,7 @@ A changeset with an unknown package name passes PR CI but aborts
 release (GH #316 / B215 / PR #314).
 
 Fix: edit the changeset frontmatter to use a real workspace package name
-(see the list above). The version-source package is "rn-dev-agent-plugin".
+(see the list above). The version-source package is "qaren".
 MSG
   exit 1
 fi

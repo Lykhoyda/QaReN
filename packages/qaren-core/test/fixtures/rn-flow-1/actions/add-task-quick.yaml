@@ -1,0 +1,22 @@
+appId: com.rndevagent.testapp
+---
+# id: add-task-quick
+# intent: Add a task via the inline input on Tasks screen (3-step: tap input, type, submit).
+# tags: [tasks, create, inline]
+# mutates: true
+# status: active
+# enginePin: maestro-runner@1.1.27
+- launchApp:
+    stopApp: false
+- tapOn:
+    id: "tab-tasks"
+- waitForAnimationToEnd
+- assertVisible:
+    id: "task-screen"
+- tapOn:
+    id: "task-input"
+- inputText: "mttr-experiment-task"
+- tapOn:
+    id: "task-add-btn"
+- waitForAnimationToEnd
+- assertVisible: "mttr-experiment-task"

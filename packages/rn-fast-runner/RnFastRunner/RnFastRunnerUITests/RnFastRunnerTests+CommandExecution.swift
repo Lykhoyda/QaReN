@@ -26,12 +26,15 @@ extension RnFastRunnerTests {
     }
   }
 
-  private func executeFocusedType(app: XCUIApplication, text: String) -> Response {
+  private func executeFocusedType(app: XCUIApplication, text: String, replace: Bool, prepareReplacement: Bool = false, deleteCount: Int = 0) -> Response {
+    guard (0...256).contains(deleteCount), prepareReplacement || deleteCount == 0 else {
+      return Response(ok: false, error: ErrorPayload(code: "INVALID_ARGUMENT", message: "focused clear exceeds the 256-key budget", mutation: "none"))
+    }
     var keyboardVisible = false
     withTemporaryScrollIdleTimeoutIfSupported(app) {
       keyboardVisible = app.keyboards.count > 0
     }
-    switch TypingRecipe.focusedTypeDecision(textIsEmpty: text.isEmpty, keyboardVisible: keyboardVisible) {
+    switch TypingRecipe.focusedTypeDecision(textIsEmpty: text.isEmpty && !prepareReplacement, keyboardVisible: keyboardVisible) {
     case .refuseEmptyText:
       return Response(
         ok: false,
@@ -53,7 +56,18 @@ extension RnFastRunnerTests {
     case .type:
       var synthesis: RunnerSynthesizedTextEntryResult?
       withTemporaryScrollIdleTimeoutIfSupported(app) {
-        synthesis = RunnerSynthesizedTextEntry.synthesizeText(withApplication: app, text: text)
+        gesture {
+          if prepareReplacement {
+            synthesis = RunnerSynthesizedTextEntry.prepareReplacement(
+              withApplication: app, deleteCount: UInt(deleteCount),
+              endKey: XCUIKeyboardKey.end.rawValue, deleteKey: XCUIKeyboardKey.delete.rawValue
+            )
+          } else {
+            synthesis = replace
+              ? RunnerSynthesizedTextEntry.replaceText(withApplication: app, text: text)
+              : RunnerSynthesizedTextEntry.synthesizeText(withApplication: app, text: text)
+          }
+        }
       }
       let result = synthesis!
       switch TypingRecipe.focusedTypeOutcome(
@@ -64,7 +78,7 @@ extension RnFastRunnerTests {
         return Response(
           ok: true,
           data: DataPayload(
-            message: "typed",
+            message: prepareReplacement ? "cleared" : "typed",
             typingBurst: false,
             keyboardWaitMs: 0,
             inputResolution: "focused-first-responder",
@@ -135,6 +149,36 @@ extension RnFastRunnerTests {
 
   // MARK: - Command Handling
 
+  private func qaReadOnlyRefusal(appNotRunning: Bool = false) -> Response {
+    Response(ok: false, error: ErrorPayload(
+      code: "ACTION_CONTEXT_CHANGED", message: "QA read requires the unchanged foreground target; no recovery attempted",
+      mutation: "none", reason: appNotRunning ? "app-not-running" : nil
+    ))
+  }
+
+  // Reads the cached target's state only; a read never activates or relaunches the app.
+  private func qaReadOnlyTargetNotRunning(command: Command) -> Bool {
+    guard let bundleId = command.appBundleId?.trimmingCharacters(in: .whitespacesAndNewlines),
+          !bundleId.isEmpty, currentBundleId == bundleId, let target = currentApp else { return false }
+    return target.state == .notRunning
+  }
+
+  private func qaReadOnlyTarget(command: Command) -> XCUIApplication? {
+    guard [.snapshot, .verifyInput, .isScreenStatic, .interactionFrame, .findText, .readText, .screenshot, .uptime, .status].contains(command.command),
+          let bundleId = command.appBundleId?.trimmingCharacters(in: .whitespacesAndNewlines),
+          !bundleId.isEmpty, currentBundleId == bundleId,
+          let target = currentApp, target.state == .runningForeground, target.exists else { return nil }
+    return target
+  }
+
+  private func gestureIssueResponse(_ command: Command) -> Response {
+    Response(ok: false, error: ErrorPayload(
+      code: "GESTURE_ISSUE_RAISED",
+      message: "GESTURE_ISSUE_RAISED: XCTest raised an issue during the \(command.command.rawValue) gesture; it may have been partly performed",
+      mutation: "possible"
+    ))
+  }
+
   private func executeOnMainSafely(command: Command) throws -> Response {
 #if RN_FAST_RUNNER_TEST_FAULTS
     // Deterministic, test-only wedge. The branch is compile-time absent from
@@ -150,6 +194,8 @@ extension RnFastRunnerTests {
     while true {
       var response: Response?
       var swiftError: Error?
+      appAlertInterruptions = 0
+      gestureIssueRaised = false
       let exceptionMessage = RunnerObjCExceptionCatcher.catchException({
         do {
           response = try self.executeOnMain(command: command)
@@ -157,8 +203,18 @@ extension RnFastRunnerTests {
           swiftError = error
         }
       })
+      inGesture = false
 
       if let exceptionMessage {
+        // XCTest aborts the gesture before synthesizing it when our monitor claimed an app alert.
+        if appAlertInterruptions > 0 {
+          return Self.appAlertInterruptionResponse(singleGesture: [.tap, .longPress, .drag].contains(command.command))
+        }
+        if gestureIssueRaised { return gestureIssueResponse(command) }
+        if command.qaReadOnly == true { return qaReadOnlyRefusal() }
+        if command.platformPresence == true {
+          return platformPresenceFailure()
+        }
         currentApp = nil
         currentBundleId = nil
         if !hasRetried, shouldRetryException(command, message: exceptionMessage) {
@@ -177,6 +233,10 @@ extension RnFastRunnerTests {
         )
       }
       if let swiftError {
+        if command.qaReadOnly == true { return qaReadOnlyRefusal() }
+        if command.platformPresence == true {
+          return platformPresenceFailure()
+        }
         throw swiftError
       }
       guard let response else {
@@ -185,6 +245,10 @@ extension RnFastRunnerTests {
           code: RunnerErrorCode.commandReturnedNoResponse,
           userInfo: [NSLocalizedDescriptionKey: "command returned no response"]
         )
+      }
+      if response.ok, gestureIssueRaised { return gestureIssueResponse(command) }
+      if command.qaReadOnly == true, !response.ok {
+        return qaReadOnlyRefusal(appNotRunning: response.error?.reason == "app-not-running")
       }
       if !hasRetried, shouldRetryCommand(command), shouldRetryResponse(response) {
         NSLog(
@@ -202,8 +266,59 @@ extension RnFastRunnerTests {
   }
 
   private func executeOnMain(command: Command) throws -> Response {
-    var activeApp = currentApp ?? app
-    if !isRunnerLifecycleCommand(command.command) {
+    var readOnlyApp: XCUIApplication?
+    if command.qaReadOnly == true {
+      guard let target = qaReadOnlyTarget(command: command) else {
+        return qaReadOnlyRefusal(appNotRunning: qaReadOnlyTargetNotRunning(command: command))
+      }
+      readOnlyApp = target
+    }
+    if command.platformPresence == true {
+      // Presence adapters must omit filters; this mode always enumerates the raw app tree.
+      guard command.command == .snapshot,
+            let presenceBudgetMs = command.presenceBudgetMs,
+            presenceBudgetMs > 0,
+            presenceBudgetMs <= Int(mainThreadExecutionTimeout * 1000) - 5_000,
+            command.raw != false, command.compact != true, command.interactiveOnly != true,
+            command.depth == nil, command.scope == nil,
+            let appId = command.appBundleId,
+            !appId.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+        return Response(ok: false, error: ErrorPayload(
+          code: "INVALID_ARGUMENT",
+          message: "platformPresence requires an explicit supported presenceBudgetMs, appBundleId and an unfiltered raw snapshot"
+        ))
+      }
+      let bundleId = appId.trimmingCharacters(in: .whitespacesAndNewlines)
+      let target = currentBundleId == bundleId
+        ? (currentApp ?? XCUIApplication(bundleIdentifier: bundleId))
+        : XCUIApplication(bundleIdentifier: bundleId)
+      if let indices = command.labelProvenance {
+        guard command.snapshotGeneration == currentSnapshotGeneration else {
+          var payload = DataPayload()
+          payload.labelProvenanceDiagnostics = CandidateLabelProvenanceDiagnostics(outcome: "baseline-unavailable")
+          return Response(ok: true, data: payload)
+        }
+        return Response(ok: true, data: runnerPayload(
+          snapshotCandidateLabelProvenance(app: target, indices: indices, budgetMs: presenceBudgetMs),
+          appProcessIdentifier: observedProcessIdentifier(target)
+        ))
+      }
+      currentSnapshotGeneration += 1
+      // Observation must not activate or relaunch the app to manufacture presence.
+      let payload = runnerPayload(
+        snapshotPlatformPresence(app: target, appId: bundleId, presenceBudgetMs: presenceBudgetMs),
+        appProcessIdentifier: observedProcessIdentifier(target)
+      )
+      retainSnapshotTargets(payload.nodes ?? [])
+      needsPostSnapshotInteractionDelay = true
+      return Response(ok: true, data: payload)
+    }
+    // Selecting or activating the app could let XCTest resolve the blocking alert first.
+    if command.command == .systemAlertTap, readOnlyApp == nil {
+      return systemAlertTap(label: command.text)
+    }
+    var activeApp = readOnlyApp ?? currentApp ?? app
+    if readOnlyApp == nil, !isRunnerLifecycleCommand(command.command) {
       let normalizedBundleId = command.appBundleId?
         .trimmingCharacters(in: .whitespacesAndNewlines)
       let requestedBundleId = (normalizedBundleId?.isEmpty == true) ? nil : normalizedBundleId
@@ -225,10 +340,11 @@ extension RnFastRunnerTests {
         activeApp = app
       }
 
-      if !activeApp.waitForExistence(timeout: appExistenceTimeout) {
+      // waitForExistence costs a ~1 s poll even for a present app, so check exists first.
+      if !(activeApp.exists || activeApp.waitForExistence(timeout: appExistenceTimeout)) {
         if let bundleId = requestedBundleId {
           activeApp = activateTarget(bundleId: bundleId, reason: "missing_after_wait")
-          guard activeApp.waitForExistence(timeout: appExistenceTimeout) else {
+          guard activeApp.exists || activeApp.waitForExistence(timeout: appExistenceTimeout) else {
             return Response(ok: false, error: ErrorPayload(message: "app '\(bundleId)' is not available"))
           }
         } else {
@@ -243,7 +359,7 @@ extension RnFastRunnerTests {
           app.activate()
           activeApp = app
         }
-        if !activeApp.waitForExistence(timeout: 2) {
+        if !(activeApp.exists || activeApp.waitForExistence(timeout: 2)) {
           if let bundleId = requestedBundleId {
             return Response(ok: false, error: ErrorPayload(message: "app '\(bundleId)' is not available"))
           }
@@ -360,10 +476,28 @@ extension RnFastRunnerTests {
         case .proceed(let status):
           keyboardGuardStatus = status
         }
+        let liveCheck = liveTargetCheck(app: activeApp, command: command, deadline: ProcessInfo.processInfo.systemUptime + 0.3)
+        switch DispatchGuard.decide(liveHittable: liveCheck.hittable, keyboardContainsPoint: false, targetMoved: liveCheck == .moved) {
+        case .moved:
+          return movedDispatchResponse()
+        case .occluded:
+          return Response(
+            ok: false,
+            error: ErrorPayload(code: "FOCUS_TARGET_OCCLUDED", message: Self.occludedDispatchMessage, mutation: "none")
+          )
+        case .proceed:
+          break
+        }
+        var anchor: XCUIElement?
+#if !os(tvOS)
+        let resolved = coordinateAnchor(app: activeApp, point: CGPoint(x: x, y: y), liveTarget: lastLiveTarget)
+        if resolved.decision == .outsideAlerts { return Self.appAlertInterruptionResponse() }
+        anchor = resolved.element
+#endif
         var outcome = RunnerInteractionOutcome.performed
         let timing = measureGesture {
           withTemporaryScrollIdleTimeoutIfSupported(activeApp) {
-            outcome = tapAt(app: activeApp, x: x, y: y)
+            outcome = tapAt(app: activeApp, x: x, y: y, anchor: anchor)
           }
         }
         if let response = unsupportedResponse(for: outcome) {
@@ -380,7 +514,8 @@ extension RnFastRunnerTests {
             referenceWidth: touchFrame.referenceWidth,
             referenceHeight: touchFrame.referenceHeight,
             keyboardGuard: keyboardGuardStatus,
-            keyboardGuardMs: keyboardGuardMs
+            keyboardGuardMs: keyboardGuardMs,
+            occlusionCheck: liveCheck.hittable == nil ? "unavailable" : "hit-tested"
           )
         )
       }
@@ -645,16 +780,26 @@ extension RnFastRunnerTests {
         return Response(ok: false, error: ErrorPayload(message: "type requires text"))
       }
       let delaySeconds = Double(max(command.delayMs ?? 0, 0)) / 1000.0
-      if command.focused == true { return executeFocusedType(app: activeApp, text: text) }
+      if command.focused == true {
+        return executeFocusedType(
+          app: activeApp, text: text, replace: command.clearFirst == true,
+          prepareReplacement: command.prepareReplacement == true,
+          deleteCount: command.replacementDeleteCount ?? 0
+        )
+      }
       // GH #581: one exact operation — bind the declared input (never an
       // ambient-focused substitute), skip the focus tap only when THAT input
       // is proven focused, otherwise tap the declared focus target and prove
       // the same input gained focus before any keystroke.
+      let hitTestDeadline = ProcessInfo.processInfo.systemUptime + 0.3
       var resolved: TypeTargetOutcome = .failure(
         Response(ok: false, error: ErrorPayload(code: "NO_TEXT_INPUT_TARGET", message: "NO_TEXT_INPUT_TARGET: target resolution did not run", mutation: "none"))
       )
       withTemporaryScrollIdleTimeoutIfSupported(activeApp) {
         resolved = resolveTypeCommandTarget(app: activeApp, command: command)
+      }
+      if liveTargetCheck(app: activeApp, command: command, deadline: hitTestDeadline, checkHittability: false) == .moved {
+        return movedDispatchResponse()
       }
       let target: XCUIElement
       let inputResolution: String
@@ -676,15 +821,13 @@ extension RnFastRunnerTests {
           let frame = target.frame
           focusPoint = CGPoint(x: frame.midX, y: frame.midY)
         }
-        if let keyboardFrame = keyboardFrameIfVisible(app: activeApp),
-           keyboardFrame.contains(focusPoint) {
+        let keyboardContainsPoint = keyboardFrameIfVisible(app: activeApp)?.contains(focusPoint) == true
+        // The input's own hit test speaks for the focus point only when that point is on the input.
+        let liveHittable = target.frame.contains(focusPoint) ? boundedHittable(target, deadline: hitTestDeadline) : nil
+        if DispatchGuard.decide(liveHittable: liveHittable, keyboardContainsPoint: keyboardContainsPoint) == .occluded {
           return Response(
             ok: false,
-            error: ErrorPayload(
-              code: "FOCUS_TARGET_OCCLUDED",
-              message: "FOCUS_TARGET_OCCLUDED: the focus tap point sits inside the visible keyboard; no tap or typing was performed. Dismiss the keyboard or scroll the input into view, then retry.",
-              mutation: "none"
-            )
+            error: ErrorPayload(code: "FOCUS_TARGET_OCCLUDED", message: Self.occludedDispatchMessage, mutation: "none")
           )
         }
         withTemporaryScrollIdleTimeoutIfSupported(activeApp) {
@@ -753,7 +896,7 @@ extension RnFastRunnerTests {
           // contract) wins over the two-burst recipe.
           let chunks = Array(text)
           for (index, character) in chunks.enumerated() {
-            target.typeText(String(character))
+            gesture { target.typeText(String(character)) }
             if index + 1 < chunks.count {
               Thread.sleep(forTimeInterval: delaySeconds)
             }
@@ -761,12 +904,12 @@ extension RnFastRunnerTests {
         } else if let bursts = TypingRecipe.bursts(for: text) {
           // Story 10 (#391): two-burst send — first character alone, sit out
           // the post-appearance drop window, then stream the remainder.
-          target.typeText(bursts.first)
+          gesture { target.typeText(bursts.first) }
           Thread.sleep(forTimeInterval: TypingRecipe.interBurstDelay)
-          target.typeText(bursts.remainder)
+          gesture { target.typeText(bursts.remainder) }
           usedBurst = true
         } else {
-          target.typeText(text)
+          gesture { target.typeText(text) }
         }
       }
       withTemporaryScrollIdleTimeoutIfSupported(activeApp) {
@@ -943,9 +1086,12 @@ extension RnFastRunnerTests {
         scope: command.scope,
         raw: command.raw ?? false
       )
-      let payload = options.raw
-        ? snapshotRaw(app: activeApp, options: options)
-        : snapshotFast(app: activeApp, options: options)
+      let payload = runnerPayload(
+        options.raw
+          ? snapshotRaw(app: activeApp, options: options)
+          : snapshotFast(app: activeApp, options: options, includeDiagnostics: command.qaReadOnly == true),
+        appProcessIdentifier: observedProcessIdentifier(activeApp)
+      )
       retainSnapshotTargets(payload.nodes ?? [])
       needsPostSnapshotInteractionDelay = true
       return Response(ok: true, data: payload)
@@ -953,7 +1099,7 @@ extension RnFastRunnerTests {
       let screenshot: XCUIScreenshot
 #if os(macOS)
       // macOS keeps the app-targeted capture behavior for window-level screenshots.
-      if let bundleId = command.appBundleId, !bundleId.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+      if command.qaReadOnly != true, let bundleId = command.appBundleId, !bundleId.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
         let targetApp = XCUIApplication(bundleIdentifier: bundleId)
         targetApp.activate()
         activeApp = targetApp
@@ -1061,34 +1207,8 @@ extension RnFastRunnerTests {
           via: result.via
         )
       )
-    case .alert:
-      let action = (command.action ?? "get").lowercased()
-      let alert = activeApp.alerts.firstMatch
-      if !alert.exists {
-        return Response(ok: false, error: ErrorPayload(message: "alert not found"))
-      }
-      if action == "accept" {
-        guard let button = alert.buttons.allElementsBoundByIndex.first else {
-          return Response(ok: false, error: ErrorPayload(message: "alert accept button not found"))
-        }
-        let outcome = activateElement(app: activeApp, element: button, action: "alert accept")
-        if let response = unsupportedResponse(for: outcome) {
-          return response
-        }
-        return Response(ok: true, data: DataPayload(message: "accepted"))
-      }
-      if action == "dismiss" {
-        guard let button = alert.buttons.allElementsBoundByIndex.last else {
-          return Response(ok: false, error: ErrorPayload(message: "alert dismiss button not found"))
-        }
-        let outcome = activateElement(app: activeApp, element: button, action: "alert dismiss")
-        if let response = unsupportedResponse(for: outcome) {
-          return response
-        }
-        return Response(ok: true, data: DataPayload(message: "dismissed"))
-      }
-      let buttonLabels = alert.buttons.allElementsBoundByIndex.map { $0.label }
-      return Response(ok: true, data: DataPayload(message: alert.label, items: buttonLabels))
+    case .systemAlertTap:
+      return systemAlertTap(label: command.text)
     case .pinch:
       guard let scale = command.scale, scale > 0 else {
         return Response(ok: false, error: ErrorPayload(message: "pinch requires scale > 0"))

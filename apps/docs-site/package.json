@@ -1,11 +1,11 @@
 {
-  "name": "rn-dev-agent-docs",
+  "name": "qaren-docs",
   "type": "module",
   "private": true,
   "scripts": {
-    "generate": "node scripts/generate-tool-docs.mjs",
+    "generate": "node scripts/generate-changelog.ts",
     "dev": "yarn generate && astro dev",
-    "build": "yarn generate && astro build",
+    "build": "yarn generate && astro build && node scripts/verify-site.ts",
     "verify": "node scripts/verify-site.ts",
     "preview": "astro preview"
   },

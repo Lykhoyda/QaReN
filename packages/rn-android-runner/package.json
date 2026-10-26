@@ -1,8 +1,8 @@
 {
-  "name": "rn-dev-agent-android-runner",
+  "name": "qaren-android-runner",
   "version": "0.0.0",
   "private": true,
-  "description": "Android UiAutomator runner source project for rn-dev-agent device control.",
+  "description": "Android UiAutomator runner source project for QaReN device control.",
   "license": "MIT",
   "scripts": {
     "build": "./gradlew assembleDebug assembleDebugAndroidTest --no-daemon",

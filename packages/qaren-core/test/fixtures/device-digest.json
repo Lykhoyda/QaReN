@@ -1,0 +1,13 @@
+{
+  "interactive": [
+    { "role": "button", "testID": "fixture_button", "text": "Increment" },
+    { "role": "textinput", "testID": "fixture_input", "placeholder": "type here", "value": "" },
+    { "role": "button", "text": "Tap", "label": "Tap" },
+    { "role": "textinput", "testID": "fixture_bottom_input", "placeholder": "bottom" },
+    { "role": "button", "testID": "fixture_hidden_cta", "text": "Load more", "disabled": false },
+    { "role": "switch", "testID": "fixture_hidden_toggle", "value": true },
+    { "role": "button", "text": "Nameless offscreen button" }
+  ],
+  "totalNodes": 412,
+  "rootsSeeded": 1
+}

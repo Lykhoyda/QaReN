@@ -1,0 +1,115 @@
+{
+  "schema": "rn-flow/1",
+  "actionId": "toggle-theme",
+  "appId": "com.rndevagent.testapp",
+  "platform": "android",
+  "steps": [
+    {
+      "id": "s1",
+      "source": {
+        "line": 9
+      },
+      "domain": "native",
+      "optional": false,
+      "budgetMs": 15000,
+      "op": "launchApp",
+      "stopApp": false,
+      "clearState": false
+    },
+    {
+      "id": "s2",
+      "source": {
+        "line": 11
+      },
+      "domain": "native",
+      "optional": false,
+      "budgetMs": 17000,
+      "op": "tapOn",
+      "selector": {
+        "id": "tab-profile"
+      }
+    },
+    {
+      "id": "s3",
+      "source": {
+        "line": 13
+      },
+      "domain": "native",
+      "optional": false,
+      "budgetMs": 5000,
+      "op": "waitForAnimationToEnd"
+    },
+    {
+      "id": "s4",
+      "source": {
+        "line": 14
+      },
+      "domain": "native",
+      "optional": false,
+      "budgetMs": 17000,
+      "op": "tapOn",
+      "selector": {
+        "id": "profile-settings-btn"
+      }
+    },
+    {
+      "id": "s5",
+      "source": {
+        "line": 16
+      },
+      "domain": "native",
+      "optional": false,
+      "budgetMs": 5000,
+      "op": "waitForAnimationToEnd"
+    },
+    {
+      "id": "s6",
+      "source": {
+        "line": 17
+      },
+      "domain": "native",
+      "optional": false,
+      "budgetMs": 17000,
+      "op": "assertVisible",
+      "selector": {
+        "id": "settings-theme-toggle"
+      }
+    },
+    {
+      "id": "s7",
+      "source": {
+        "line": 19
+      },
+      "domain": "native",
+      "optional": false,
+      "budgetMs": 17000,
+      "op": "tapOn",
+      "selector": {
+        "id": "settings-theme-toggle"
+      }
+    },
+    {
+      "id": "s8",
+      "source": {
+        "line": 21
+      },
+      "domain": "native",
+      "optional": false,
+      "budgetMs": 5000,
+      "op": "waitForAnimationToEnd"
+    },
+    {
+      "id": "s9",
+      "source": {
+        "line": 22
+      },
+      "domain": "native",
+      "optional": false,
+      "budgetMs": 17000,
+      "op": "assertVisible",
+      "selector": {
+        "id": "settings-theme-label"
+      }
+    }
+  ]
+}

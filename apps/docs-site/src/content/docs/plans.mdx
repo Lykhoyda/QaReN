@@ -1,0 +1,216 @@
+---
+title: Write a plan
+description: The Markdown grammar qaren walks, and what a check reads from the screen.
+---
+
+A plan is a Markdown file. `qaren check` and `qaren pr` take it with `--plan-file`.
+
+```md
+# Test App smoke
+
+## QA
+
+### Onboarding to the tasks tab
+
+1. Tap "onboarding-skip"
+2. Tap "onboarding-done"
+3. Wait for "Welcome" to appear
+✓ "Welcome"
+4. Tap "tab-tasks"
+5. Wait for "task-header" to appear
+✓ "Tasks ("
+```
+
+## Structure
+
+- When the plan has a `## QA` section, only the lines under it are read, up to the next
+  `##` heading. Without one, the whole file is read.
+- Each `###` heading starts a named block. Steps before the first `###` heading form a
+  block named after the plan's `#` title, or `plan` when there is none.
+- Other headings are skipped. Every other non-empty line is a numbered step (`1.` or `1)`),
+  a check that starts with `✓` or `✔` (optionally after a `-` or `*` bullet), or a
+  `Starts on:` line. Any other line refuses the plan with "not a numbered step or a ✓ line".
+- HTML comments are ignored.
+- A block with no steps, two blocks with the same title, or two titles that produce the
+  same block ID refuse the plan.
+
+Open a block that continues a journey with `starts on: <testID or text>` before its
+steps. The value is a literal testID or visible text, with optional quotes. The start
+line alone does not count as a block's steps. For start waits, refusals and replay,
+see the authoritative [saved-block contract](https://github.com/Lykhoyda/rn-dev-agent/blob/develop/packages/qaren-cli/README.md#saved-blocks).
+
+The block ID is the heading in lowercase, with every run of characters outside `a-z` and
+`0-9` replaced by a hyphen. It names the [saved block](../saved-blocks/) file.
+
+Linked Git worktrees can share saved steps through a `.qaren/actions` link to the main
+copy; see the [saved-block contract](https://github.com/Lykhoyda/rn-dev-agent/blob/develop/packages/qaren-cli/README.md#saved-blocks).
+
+## Steps
+
+| Kind     | Verbs                                                                   | Example                              |
+| -------- | ----------------------------------------------------------------------- | ------------------------------------ |
+| Press    | tap, press, click, open, select, choose, toggle, hit, go to             | `Tap "tab-tasks"`                    |
+| Fill     | type, enter, input, write, fill in                                      | `Type "Buy milk" into "task-input"`  |
+| Fill     | the same verbs, target first                                            | `Fill "task-input" with "Buy milk"`  |
+| Scroll   | scroll, scroll down, scroll up, optionally `until` a target             | `Scroll down until "Settings"`       |
+| Wait     | wait for, wait until, optionally ending `to appear` or `is visible`     | `Wait for "Welcome" to appear`       |
+| Back     | back, go back, navigate back, press back, tap back button               | `Go back`                            |
+| Dialog   | accept, allow, dismiss, deny, decline, cancel with dialog, prompt, alert or permission | `Accept the permission dialog` |
+| Echo     | expect input NAME on screen, expect input NAME on this screen          | `Expect input USERNAME on screen`   |
+
+A fill needs its text in quotes, or a [runtime input](#runtime-inputs). For iOS entry methods, handler recovery,
+verification and the `(any method)` label, see the authoritative
+[Fill ladder contract](https://github.com/Lykhoyda/rn-dev-agent/blob/develop/packages/qaren-cli/README.md#fill-ladder).
+A dialog step needs exactly one unconditional
+action: `Accept the dialog if it appears` and `Do not dismiss the alert` refuse.
+
+## Runtime inputs
+
+A fill can take its value from the environment instead of the plan, so a login block with
+staging credentials can be saved and replayed:
+
+```md
+1. Fill "staging-user" with input USERNAME
+2. Fill "staging-password" with input PASSWORD
+3. Expect input USERNAME on screen
+4. Tap "sign-in"
+```
+
+The name is 1–32 characters of `A-Z`, `0-9` and `_`, starting with a letter. qaren reads
+the value of `QAREN_INPUT_<NAME>` once when the run starts, here `QAREN_INPUT_USERNAME` and
+`QAREN_INPUT_PASSWORD`. Resolve the value before you run qaren, for example with your
+password manager's CLI; qaren does not read `.env` files or resolve references.
+
+Inputs are strict by default. For an operator-designated non-secret dev or staging fixture,
+use the exact suffix on its named Fill:
+
+```md
+1. Fill "code-field" with input FIXTURE_CODE (non-secret)
+```
+
+This relaxes only execution hash and echo protection for that input. Its labels,
+identifiers and types keep their original hash operands, including at the filled field;
+an `Expect input FIXTURE_CODE on screen` line is unnecessary and does not constant-mask
+its echo. Every use of a name across the plan and configured login block must agree;
+conflicts refuse before device selection. When values overlap, strict inputs win, so a
+non-secret alias or echo declaration cannot exempt a strict value. There is no global,
+config or environment-based opt-in, and unused environment variables declare no policy.
+
+All inputs still receive log, report and model redaction, and input-run screenshots and
+video remain withheld. Saved blocks contain the symbolic slot and sensitivity only and
+rebind the current run's value. Policy changes invalidate saved evidence across the run;
+a configured login block with stale policy must be explicitly refreshed before replay.
+Use this annotation only for fixtures: qaren cannot identify a production backend or
+prove a value is non-secret. Misclassifying a real secret allows it into execution hash
+operands; output redaction cannot undo that loss of protection. Runs without an opt-in
+keep the strict protections below.
+
+`Expect input NAME on screen` (also `on this screen`, with case-insensitive keywords)
+declares an expected label echo; it does not assert that the value is visible. Its row
+passes without capturing the screen or dispatching an action. The name must follow the
+input-name rules above and be used by a fill in this plan. Malformed declarations and
+names unused by any fill refuse `PLAN_UNPARSEABLE`, without falling back to Jev.
+There is no `no longer` form or heading-level declaration.
+
+- Every input the plan or the configured login block names must be set and non-empty, even
+  when login recovery never happens. Otherwise the run refuses `PLAN_INPUT_MISSING`, naming
+  every missing input, before a device is selected.
+- At most 64 distinct inputs may be required. A value is one line of printable text,
+  at least three characters after trimming, at most 4096 bytes and 64 KiB across all
+  required inputs.
+  Whitespace is kept exactly. A value that looks like an unresolved reference, starting with
+  a scheme such as `op://` or `vault:` or containing `${`, `$(` or `{{`, refuses
+  `CORE_REFUSED`. Invalid values refuse with `runtime inputs are invalid`.
+- The value is masked in every output and never written by qaren to a file, log, saved
+  block or report, or sent to Jev; strict inputs are also protected from execution hashing. A run with inputs takes no screenshots, records
+  no video and withholds the logs of the processes it starts. For the value-free events retained
+  in `logs/core-diagnostics.jsonl`, see the CLI guide's
+  [runtime-input diagnostics](https://github.com/Lykhoyda/rn-dev-agent/blob/develop/packages/qaren-cli/README.md#runtime-inputs).
+- The iOS simulator's own system log may record text the app displays, including a filled
+  field's value, as it does for every XCTest-driven run; erase a dedicated QA simulator
+  (`xcrun simctl erase <udid>`) when that matters. The runner's XCTest result bundles are
+  removed after every runner session.
+- For masking input echoes on later screens, optional echo declarations and privacy
+  refusals before hashing, follow the CLI guide's
+  [runtime-input hash protections](https://github.com/Lykhoyda/rn-dev-agent/blob/develop/packages/qaren-cli/README.md#runtime-inputs).
+- `QAREN_INPUT_*` variables required by neither the plan nor the compatible configured
+  login block are not used for fills. The whole namespace is removed from every
+  process qaren starts; its presence still withholds subprocess logs.
+- `Fill "note" with "input PASSWORD"` types the quoted text.
+
+A qaren runtime without input support refuses a plan that names inputs.
+
+## Quoted and phrase targets
+
+A **quoted** target, such as `Tap "tab-tasks"`, resolves locally against the labels and
+test IDs on screen. Two or more distinct matches refuse with `TARGET_AMBIGUOUS`; that
+refusal is never retried or re-walked.
+
+A **phrase** target, such as `Tap the tasks tab`, has no quotes. Jev, QaReN's screen
+judge, picks the element, which must carry the phrase's
+[naming words](https://github.com/Lykhoyda/rn-dev-agent/blob/develop/packages/qaren-cli/README.md#plan-checks-and-screen-evidence)
+or the step refuses `TARGET_NOT_FOUND`.
+
+## Checks
+
+A check is **literal** only when its whole payload is one quoted string: `✓ "Welcome"`.
+It passes when that text is visible on screen as a substring. Text hidden under the
+keyboard, React-only text and images do not count.
+
+Any other check is a **phrase** check, such as `✓ The tasks screen shows the task count`.
+Jev judges it against the captured screen.
+
+A failing check or an unmet quoted wait can enter [step recovery](https://github.com/Lykhoyda/rn-dev-agent/blob/develop/packages/qaren-cli/README.md#step-recovery)
+before failing the plan. A literal check that still cannot be decided after a fresh
+capture ends `CHECK_UNSURE` if recovery cannot resolve it.
+
+## When the plan needs `TYPESAFE_API_KEY`
+
+Phrase targets, phrase checks and lines with no verb the grammar knows need Jev, so they
+need `TYPESAFE_API_KEY`. A plan with any of them runs a Jev readiness probe first; a
+missing or rejected key refuses `JEV_UNREACHABLE` before a device is selected.
+
+A plan with only quoted targets and literal checks needs no key; without one it makes no
+Jev calls. Back, dialog, echo and plain scroll steps never call Jev. For key-free steps and
+the optional Jev safety veto during interruption recovery, see the CLI guide's
+[plan readiness contract](https://github.com/Lykhoyda/rn-dev-agent/blob/develop/packages/qaren-cli/README.md#plan-checks-and-screen-evidence).
+
+## Refusals before the walk
+
+An unparseable line refuses the plan with `PLAN_UNPARSEABLE` before a device is leased.
+The refusal lists each line and its reason. A screen target that does not resolve refuses
+during the walk instead.
+
+## Saved plans
+
+After a fully passing `qaren check`, QaReN saves the plan into the app's `.qaren/plans/` as a
+canonical copy: the `#` title, `## QA`, and each block's `###` title and plan lines, with prose
+and comments dropped. A copy that would hold a private value is not saved. An existing file is
+never overwritten: a file that matches apart from its `qaren:broken` marker lines is left alone,
+and a different plan with the same name is saved as `<name>-2.md`, `<name>-3.md` and so on.
+`qaren pr` does not save plans.
+
+`qaren plans` (or `qaren plans --json`), run from the app directory, lists the saved plans with
+their titles, blocks and the platforms they are flagged broken on. Pass a listed file to
+`--plan-file` to run it again.
+
+When a saved plan runs on a clean checkout whose `HEAD` is the default-branch commit
+(`origin/HEAD`), a step failure inserts `<!-- qaren:broken ios -->` (or `android`) as a new first line,
+and the next such PASS removes it. Only a definite failure flags the plan: a check judged to fail,
+or an action that demonstrably did not take effect. An uncertain check, an unverified action, a
+system dialog in front of the app, an outage of the judgment service, a device or runner error, or a
+refusal leaves it unflagged. On any other commit or with local changes the file is left alone. The receipt's `recipe` field and the `plan:` line on stderr report what happened. Set
+`savePlans: false` in [configuration](../configuration/) to turn saving and flagging off. The CLI
+guide's [saved plans](https://github.com/Lykhoyda/rn-dev-agent/blob/develop/packages/qaren-cli/README.md#saved-plans)
+section lists every outcome.
+
+## Platform notes
+
+- On iOS, an accept or dismiss step against a system alert taps one button by exact
+  English label, so `Allow` never matches `Allow Once`. A localized alert fails
+  `DIALOG_BUTTON_NOT_FOUND`. Assert the permission's effect with the next step.
+- For Android dialog and modal limits, snapshot visibility and covered-target recovery,
+  see the CLI guide's [walk contract](https://github.com/Lykhoyda/rn-dev-agent/blob/develop/packages/qaren-cli/README.md#check-a-plan)
+  and [occluded taps and focus](https://github.com/Lykhoyda/rn-dev-agent/blob/develop/packages/qaren-cli/README.md#occluded-taps-and-focus).
+- A plan with any fill step keeps a pull request's video local; see
+  [Test a pull request](../pull-requests/#video).

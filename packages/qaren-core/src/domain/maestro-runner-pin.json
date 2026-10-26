@@ -1,0 +1,22 @@
+{
+  "version": "1.1.28",
+  "sha256": {
+    "darwin-arm64": "2f6e3e9d72f99d001e6bf9a3d2939f8274ce9ff5169dc5411d6aa362c8c85d84",
+    "darwin-x64": "5a6a9b74511cf6f531f723733db055b952e8137b021f0ce362b735b043a1039e",
+    "linux-x64": "7a781bdfa0dcf191baab4481904fe35fc8935072170e4ca62287cc57318c5db4",
+    "linux-arm64": "3ed1949dca03aec77a545a85c3a3bc1ebc9642b04023aea06a06c1ab15e5da3e"
+  },
+  "archiveSha256": {
+    "darwin-arm64": "2670df92f15d164a9f1a3fa8e5397b1aecbb4ff6e12894ed74380cac9f16f924",
+    "darwin-x64": "8ca04fc7d882def955ef28ee79f45f508ef56899824029ba31bf6a860cbb2752",
+    "linux-x64": "48d370d5dbf98ac019df59fe1c7d328dc1b9304cbe823a735e07054eef6c6b9d",
+    "linux-arm64": "49e50c46ac7ade700a61a570ca17d0d2807522d424ea162f631e73196656fa8f"
+  },
+  "knownQuirks": [
+    {
+      "id": "android-pre-o-unsupported",
+      "ref": "GH #741",
+      "note": "bundled UiAutomator2 server APK declares minSdk 26; API 23-25 installs fail with INSTALL_FAILED_OLDER_SDK"
+    }
+  ]
+}

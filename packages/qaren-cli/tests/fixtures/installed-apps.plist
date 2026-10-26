@@ -1,0 +1,12 @@
+{
+    "com.rndevagent.testapp" = {
+        CFBundleIdentifier = "com.rndevagent.testapp";
+        CFBundleDisplayName = "Private fixture app";
+        Path = "/private/fixture/Applications/Test.app";
+    };
+    "com.private.unrelated" = {
+        CFBundleIdentifier = "com.private.unrelated";
+        CFBundleDisplayName = "Unrelated private fixture";
+        DataContainer = "file:///private/fixture/Data/OTHER";
+    };
+}

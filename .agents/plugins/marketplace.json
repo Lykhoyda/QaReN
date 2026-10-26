@@ -1,12 +1,14 @@
 {
-  "name": "rn-dev-agent",
-  "interface": { "displayName": "rn-dev-agent" },
+  "name": "qaren",
+  "interface": {
+    "displayName": "QaReN"
+  },
   "plugins": [
     {
-      "name": "rn-dev-agent",
+      "name": "qaren",
       "source": {
         "source": "local",
-        "path": "./packages/claude-plugin"
+        "path": "./packages/qaren-plugin"
       },
       "policy": {
         "installation": "AVAILABLE",

@@ -1,0 +1,144 @@
+---
+title: Check a plan
+description: Run qaren check against the working tree, read the receipt and find the run's evidence.
+---
+
+`qaren check` walks a plan on a borrowed device against the app's working tree. Run it from
+the app's directory, next to `.qaren/config.yaml`:
+
+```sh
+qaren check --plan-file plan.md --json
+qaren check --plan-file plan.md --device <simulator-UUID> --json
+qaren check --platform android --plan-file plan.md --device emulator-5554 --json
+```
+
+The [configuration](../configuration/) needs at least `appId` and
+`devClientScheme`. Optional [`deadlines`](../configuration/#deadlines) in that
+file set the preparation budgets `check` and `pr` store on the run record.
+
+## What a run does
+
+```text
+plan preflight -> device selection -> lease + durable run record
+               -> app preparation -> screen proof -> walk -> teardown
+```
+
+The plan is parsed first, so an unparseable plan or a missing Jev key refuses before any
+device is touched. The run then leases the device, prepares the app and its own Metro,
+walks the plan and tears down what it started. By default, the simulator or emulator
+stays running and the installed app stays.
+See [CLI-owned iOS build routes](https://github.com/Lykhoyda/rn-dev-agent/blob/develop/packages/qaren-cli/README.md#cli-owned-ios-build-routes)
+for iOS startup ordering.
+
+## Choosing the device
+
+### iOS
+
+`check` borrows the only booted simulator, or the booted simulator named by
+`--device <simulator-UUID>`. With no simulator booted, or more than one booted and no
+`--device`, it refuses `DEVICE_UNAVAILABLE`.
+
+For explicit boot, restart or exit shutdown, follow the
+[iOS simulator lifecycle contract](https://github.com/Lykhoyda/rn-dev-agent/blob/develop/packages/qaren-cli/README.md#ios-simulator-lifecycle).
+
+### Android
+
+`--platform android` borrows one booted emulator through the adb server that is already
+running. qaren never starts or stops the adb server; with none answering, or with an `adb`
+under `ANDROID_HOME` whose version differs from the server's, it refuses
+`DEVICE_UNAVAILABLE`.
+
+Automatic selection counts only emulators that have finished booting. Exactly one must
+qualify; with several, pass `--device emulator-NNNN`. Physical devices are not supported.
+
+The build runs Gradle `:app:assembleDebug` for the emulator's ABI, after
+`expo prebuild --platform android --clean` when `android/` is absent. An absent `android/`
+must be git-ignored; otherwise the build fails `BUILD_FAILED` before generating it.
+
+## Flags
+
+| Flag                            | Meaning                                                                            |
+| ------------------------------- | ---------------------------------------------------------------------------------- |
+| `--plan-file <plan.md>`         | The plan to walk. Required.                                                        |
+| `--platform ios\|android`       | Defaults to `ios`.                                                                 |
+| `--device <id>`                 | A simulator UUID on iOS, an emulator serial on Android.                            |
+| `--config <path>`               | Another configuration file. Defaults to `.qaren/config.yaml`.                      |
+| `--fresh-install`               | See the [fresh-install contract](https://github.com/Lykhoyda/rn-dev-agent/blob/develop/packages/qaren-cli/README.md#fresh-install). |
+| `--boot-device`, `--restart-device`, `--shutdown-device-on-exit` | See the [iOS simulator lifecycle contract](https://github.com/Lykhoyda/rn-dev-agent/blob/develop/packages/qaren-cli/README.md#ios-simulator-lifecycle). |
+| `--json`                        | Accepted for scripts; the receipt is always JSON on stdout.                        |
+
+## The receipt
+
+Every run prints one `qaren/1` JSON receipt on stdout and a one-line summary on stderr.
+The fields you read most:
+
+| Field                  | Meaning                                                                    |
+| ---------------------- | -------------------------------------------------------------------------- |
+| `result`               | `pass`, `fail`, `failed` or `refused`                                      |
+| `run_id`               | The run's ID; its evidence is under `~/.qaren/runs/<run-id>/`              |
+| `failure.code`         | The typed failure or refusal code                                          |
+| `failure.detail`       | What happened                                                              |
+| `next_action`          | What to do next                                                            |
+| `artifacts.report`     | The path of `report.md`                                                    |
+| `ledger`               | The verdict, the walk path, step and Jev counts, recoveries                |
+| `ledger.blocks`        | Counts of `replayed`, `patched` and `discovered` blocks reached by the run |
+| `blocks_written`       | Blocks saved under `.qaren/actions/`                                       |
+| `blocks_not_saved`     | Blocks that passed but were not saved, each with a value-free reason       |
+| `recipe`               | Whether the plan was saved, flagged or cleared under `.qaren/plans/`; see [saved plans](../plans/#saved-plans) |
+| `worktree_drift`       | App files whose `git status` changed during the walk; never changes the verdict |
+
+See [Troubleshooting](../troubleshooting/) for the common codes.
+
+The local report and PR comment show how many blocks were replayed; see the
+[saved-block contract](https://github.com/Lykhoyda/rn-dev-agent/blob/develop/packages/qaren-cli/README.md#saved-blocks).
+
+For interpreting app-derived failure evidence, follow the
+[app-derived failure text contract](https://github.com/Lykhoyda/rn-dev-agent/blob/develop/packages/qaren-cli/README.md#app-derived-failure-text).
+
+## Exit codes
+
+| Exit | Meaning                                                                     |
+| ---- | --------------------------------------------------------------------------- |
+| `0`  | `pass`                                                                      |
+| `1`  | `fail`: the app or the plan failed, or the run failed                       |
+| `2`  | Usage error: help on stderr, nothing on stdout                              |
+| `3`  | `unknown`                                                                   |
+| `4`  | `refused`: a typed refusal, such as a busy device or a missing Jev key      |
+
+## The run directory
+
+Each run writes to `~/.qaren/runs/<run-id>/`. The receipt names the artifacts that exist.
+
+| Path               | Contents                                                         |
+| ------------------ | ---------------------------------------------------------------- |
+| `run.json`         | The durable run record                                           |
+| `ledger.json`      | Every walked step with its outcome, timing and evidence          |
+| `report.md`        | The human-readable report, value-free                            |
+| `logs/events.jsonl`| The local event stream that `qaren watch` reads; see the [run identity and privacy contract](https://github.com/Lykhoyda/rn-dev-agent/blob/develop/packages/qaren-cli/README.md#watch-a-run) |
+| `logs/core.log`    | The screen child's private log                                   |
+| `logs/core-diagnostics.jsonl` | Private [media-withheld diagnostics](https://github.com/Lykhoyda/rn-dev-agent/blob/develop/packages/qaren-cli/README.md#why-were-my-screenshots-withheld), [target-miss diagnostics](https://github.com/Lykhoyda/rn-dev-agent/blob/develop/packages/qaren-cli/README.md#plan-checks-and-screen-evidence) and [runtime-input diagnostics](https://github.com/Lykhoyda/rn-dev-agent/blob/develop/packages/qaren-cli/README.md#runtime-inputs), when emitted |
+
+## The tested candidate
+
+`check` records the commit, the lockfile hash and a fingerprint of the working tree before
+the walk and checks them again after it. A change in between fails the run with
+`CANDIDATE_DRIFTED`, which can never be a pass. Edits to saved block files under
+`.qaren/actions/` are not counted as drift.
+
+## Leases, cancellation and cleanup
+
+One run holds a device at a time within the
+[configured lock namespace](https://github.com/Lykhoyda/rn-dev-agent/blob/develop/packages/qaren-cli/README.md#ios-admission-and-cleanup),
+which owns root selection, the machine-wide default and its opt-out, switching and recovery requirements.
+A second run on the same device in that namespace
+refuses `DEVICE_BUSY`; a lease whose holder has died is reclaimed by running that run's own
+cleanup.
+
+A signal, or the calling process going away, ends the run as `RUN_CANCELLED` after normal teardown.
+When teardown cannot prove a resource is gone, the lease stays and the receipt says so:
+run `qaren cleanup <run-id>`. Never delete lock files to get around it.
+
+## Time budgets
+
+`QAREN_WALK_SECONDS` bounds the whole walk and `QAREN_STEP_SECONDS` bounds one step. Both
+take positive whole seconds and default to `1200`.

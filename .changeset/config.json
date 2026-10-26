@@ -8,10 +8,9 @@
   "baseBranch": "main",
   "updateInternalDependencies": "patch",
   "ignore": [
-    "rn-dev-agent-codex-plugin",
-    "rn-dev-agent-android-runner",
-    "rn-dev-agent-ios-runner",
-    "rn-dev-agent-shared-agent-knowledge",
-    "rn-dev-agent-docs"
+    "qaren-core",
+    "qaren-ios-runner",
+    "qaren-android-runner",
+    "qaren-docs"
   ]
 }

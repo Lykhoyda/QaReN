@@ -5,12 +5,9 @@ on:
     branches: [main]
     paths:
       - 'apps/docs-site/**'
-      - 'packages/rn-dev-agent-core/src/**'
-      - 'packages/shared-agent-knowledge/agents/*.md'
-      - 'packages/shared-agent-knowledge/commands/*.md'
-      - 'packages/shared-agent-knowledge/skills/**'
-      - 'CHANGELOG.md'
-      - 'packages/*/CHANGELOG.md'
+      - 'packages/qaren-plugin/CHANGELOG.md'
+      - 'packages/qaren-core/CHANGELOG.md'
+      - 'packages/qaren-cli/src/main.rs'
       - '.github/workflows/deploy-docs.yml'
 
 # Phase 134.5 (deepsec MEDIUM): least-privilege permissions. The deploy
@@ -42,7 +39,7 @@ jobs:
       - run: corepack yarn install --immutable
 
       - name: Build docs
-        run: corepack yarn workspace rn-dev-agent-docs build
+        run: corepack yarn workspace qaren-docs build
 
       - uses: actions/upload-pages-artifact@fc324d3547104276b827a68afc52ff2a11cc49c9  # v5.0.0 — Phase 134.5 SHA pin
         with:

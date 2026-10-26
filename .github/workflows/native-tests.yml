@@ -7,9 +7,9 @@ name: Native tests
 
 on:
   pull_request:
-    branches: [ main ]
+    branches: [ main, develop ]
   push:
-    branches: [ main ]
+    branches: [ main, develop ]
 
 concurrency:
   group: native-tests-${{ github.ref }}
@@ -72,8 +72,8 @@ jobs:
           set -euo pipefail
           node scripts/build-darwin-process-birth-helper.ts --force-rebuild
           git diff --exit-code -- \
-            packages/rn-dev-agent-core/native/darwin-process-birth \
-            packages/rn-dev-agent-core/native/darwin-process-birth.json
+            packages/qaren-core/native/darwin-process-birth \
+            packages/qaren-core/native/darwin-process-birth.json
 
   android-unit:
     name: Android unit (JVM)

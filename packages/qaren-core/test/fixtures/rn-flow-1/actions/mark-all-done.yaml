@@ -1,0 +1,15 @@
+appId: com.rndevagent.testapp
+---
+# id: mark-all-done
+# intent: Tap "Mark all done" on Tasks screen and confirm the empty state.
+# tags: [tasks, bulk, complete]
+# mutates: true
+# status: active
+# enginePin: maestro-runner@1.1.27
+- launchApp
+- tapOn:
+    id: "tab-tasks"
+- assertVisible: "Tasks"
+- tapOn:
+    id: "task-mark-all-done"
+- assertVisible: "All done"

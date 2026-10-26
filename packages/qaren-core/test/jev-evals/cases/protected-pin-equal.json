@@ -1,0 +1,10 @@
+{
+  "screen": {
+    "front": "app",
+    "elements": [{ "ref": "@pin", "kind": "input", "label": "PIN", "value": "4839", "hittable": true, "disabled": false, "secure": false, "offscreen": false }],
+    "visibleText": ["PIN: 4839"]
+  },
+  "typedValues": ["4839"],
+  "line": "✓ The PIN field contains 4839",
+  "expected": { "kind": "check", "verdict": "pass" }
+}

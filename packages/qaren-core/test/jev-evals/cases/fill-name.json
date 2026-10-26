@@ -1,0 +1,12 @@
+{
+  "screen": {
+    "front": "app",
+    "elements": [
+      { "ref": "@name", "kind": "input", "label": "Full name", "placeholder": "Your name", "hittable": true, "disabled": false, "secure": false, "offscreen": false, "where": "top" },
+      { "ref": "@email", "kind": "input", "label": "Email address", "placeholder": "Email", "hittable": true, "disabled": false, "secure": false, "offscreen": false, "where": "middle" }
+    ],
+    "visibleText": ["Full name", "Email address"]
+  },
+  "line": "Type \"Sample Person\" into the name field",
+  "expected": { "kind": "target", "ref": "@name" }
+}

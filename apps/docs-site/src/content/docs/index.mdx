@@ -1,0 +1,56 @@
+---
+title: QaReN
+description: QaReN walks a plan on the simulator or emulator, records the run, and reports PASS/FAIL with video.
+template: splash
+hero:
+  tagline: QA a React Native app on a device from a Markdown plan, and read back PASS or FAIL with evidence.
+  actions:
+    - text: Get started
+      link: getting-started/
+      icon: right-arrow
+    - text: Write a plan
+      link: plans/
+      variant: minimal
+    - text: Check a plan
+      link: check/
+      variant: minimal
+---
+
+QaReN is the `qaren` command-line tool for a React Native app. `qaren check` borrows a
+booted iOS simulator or Android emulator, builds and installs the app from your working
+tree, starts Metro, walks a Markdown plan on the device, writes evidence under
+`~/.qaren/runs/<run-id>/` and tears down what it started. `qaren pr` does the same for a
+pull request's head and records the screen, and `qaren publish` posts the result to the
+pull request.
+
+A plan names what to do and what to check:
+
+```md
+# Test App smoke
+
+## QA
+
+### Onboarding to the tasks tab
+
+1. Tap "onboarding-skip"
+2. Tap "onboarding-done"
+3. Wait for "Welcome" to appear
+✓ "Welcome"
+4. Tap "tab-tasks"
+5. Wait for "task-header" to appear
+✓ "Tasks ("
+```
+
+Run it from the app's directory:
+
+```sh
+qaren check --plan-file plan.md --json
+```
+
+The receipt reports the outcome, names the run, and gives the next action when something
+went wrong. A passing block eligible for [persistence](saved-blocks/#when-a-block-is-not-saved)
+is saved under `.qaren/actions/` and replayed on the next run.
+
+- [Write a plan](plans/): the plan grammar and what a check reads.
+- [Check a plan](check/): devices, flags, the receipt and exit codes.
+- [Test a pull request](pull-requests/): `qaren pr`, `qaren publish` and video.

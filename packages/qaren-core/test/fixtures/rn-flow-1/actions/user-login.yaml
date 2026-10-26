@@ -1,0 +1,78 @@
+appId: com.rndevagent.testapp
+---
+# id: user-login
+# intent: Establish the Test App's synthetic logged-in state (Login -> OTP -> login_done) for authenticated journeys.
+# tags: [auth, login, prologue, qa]
+# mutates: true
+# status: experimental
+# enginePin: maestro-runner@1.1.27
+# appId: com.rndevagent.testapp
+# produces: { authenticated: true, route: Login }
+# expectedRouteSequence: [Tabs, Login]
+#
+# [entry] fresh app process (the iOS native segment relaunches the app before its first command)
+# │ extendedWaitUntil "Welcome" (Onboarding page 0 title and the Home header share it) so the
+# │ onboarding condition is not evaluated while the bundle is still loading
+# │ Onboarding gate when present: tapOn "Skip" (last page), tapOn "Get Started" index 1
+# │ (index 1: the screen container also carries the "Get Started" label in the native tree)
+# ▼
+# [HomeMain] anchor: text "Open Login / OTP QA" (scrollUntilVisible, it sits below the feature list)
+# │ tapOn "Open Login / OTP QA"
+# ▼
+# [Login] anchor: label "Email"
+# │ tapOn "Email", inputText; tapOn "Password", inputText; hideKeyboard (it covers the button); tapOn "Sign in"
+# │ wait "One-time code" (OTP modal); tapOn it, inputText; tapOn "Verify code"
+# ▼
+# [Login done] anchor: login_done (React-tree postcondition), native anchor "Login complete"
+#
+# Selectors are accessibility labels / visible text on purpose: iOS replay partitions
+# testID commands into a React-tree segment whose typeText resolver cannot reach this
+# app's inputs, and every native segment starts from a relaunched app, so the whole
+# walk has to run natively. Only the final postcondition uses the testID.
+- extendedWaitUntil:
+    visible:
+      text: "Welcome"
+    timeout: 20000
+- runFlow:
+    when:
+      visible:
+        text: "Skip"
+    commands:
+      - tapOn:
+          text: "Skip"
+      - waitForAnimationToEnd
+      - tapOn:
+          text: "Get Started"
+          index: 1
+      - waitForAnimationToEnd
+- scrollUntilVisible:
+    element:
+      text: "Open Login / OTP QA"
+- tapOn:
+    text: "Open Login / OTP QA"
+- waitForAnimationToEnd
+- assertVisible:
+    text: "Email"
+- tapOn:
+    text: "Email"
+- inputText: "qa@example.test"
+- tapOn:
+    text: "Password"
+- inputText: "qa-password"
+- hideKeyboard
+- tapOn:
+    text: "Sign in"
+- extendedWaitUntil:
+    visible:
+      text: "One-time code"
+    timeout: 5000
+- tapOn:
+    text: "One-time code"
+- inputText: "123456"
+- tapOn:
+    text: "Verify code"
+- waitForAnimationToEnd
+- assertVisible:
+    text: "Login complete"
+- assertVisible:
+    id: "login_done"

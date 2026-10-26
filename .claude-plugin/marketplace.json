@@ -1,16 +1,16 @@
 {
   "$schema": "https://anthropic.com/claude-code/marketplace.schema.json",
-  "name": "rn-dev-agent",
-  "description": "React Native development and testing plugin for Claude Code",
+  "name": "qaren",
+  "description": "QaReN: QA companion for React Native harnesses",
   "owner": {
     "name": "Anton Lykhoyda"
   },
   "plugins": [
     {
-      "name": "rn-dev-agent",
-      "description": "AI agent that fully tests React Native features on simulator/emulator — navigates the app, verifies UI, walks user flows, and confirms internal state.",
-      "version": "1.0.14",
-      "source": "./packages/claude-plugin",
+      "name": "qaren",
+      "description": "QaReN: a QA companion for React Native harnesses \u2014 walks a plan on the simulator or emulator, records the run, and reports PASS/FAIL with video.",
+      "version": "1.0.13",
+      "source": "./packages/qaren-plugin",
       "category": "mobile-development",
       "homepage": "https://github.com/Lykhoyda/rn-dev-agent"
     }

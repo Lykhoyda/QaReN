@@ -1,0 +1,57 @@
+appId: com.rndevagent.testapp
+---
+# id: open-task-detail-sheet
+# intent: Open the TaskDetail bottom sheet from a task row, prove it expanded inside the
+#         device viewport, then close it and prove the Tasks baseline is restored.
+# tags: [tasks, bottom-sheet, viewport, regression]
+# mutates: false
+# status: experimental
+# enginePin: maestro-runner@1.1.27
+#
+# Viewport proof: the note input sits below the sheet handle, so tapping it and reading
+# the typed value back can only succeed when the sheet is on screen. A sheet parked at
+# the closed detent (y ~= containerHeight, below the viewport) fails these steps even
+# though its fibers exist and hold the correct task.
+- launchApp:
+    stopApp: false
+- tapOn:
+    id: "tab-tasks"
+- waitForAnimationToEnd
+- assertVisible:
+    id: "task-screen"
+- assertNotVisible:
+    id: "task-sheet-title"
+
+- tapOn:
+    id: "task-row-pressable-1"
+- waitForAnimationToEnd
+- assertVisible:
+    id: "task-sheet-handle"
+- assertVisible:
+    id: "task-sheet-title"
+- assertVisible: "Review pull request"
+- assertVisible:
+    id: "task-sheet-delete"
+
+- tapOn:
+    id: "task-sheet-note-input"
+- inputText: "viewport-probe"
+- assertVisible: "viewport-probe"
+- eraseText:
+    charactersToErase: 14
+- hideKeyboard
+
+- swipe:
+    from:
+      id: "task-sheet-handle"
+    direction: DOWN
+- waitForAnimationToEnd
+- assertNotVisible:
+    id: "task-sheet-title"
+- assertNotVisible:
+    id: "task-sheet-delete"
+- assertVisible:
+    id: "task-screen"
+- assertVisible:
+    id: "task-list"
+- assertVisible: "Review pull request"

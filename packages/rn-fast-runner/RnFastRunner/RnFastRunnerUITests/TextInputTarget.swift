@@ -111,6 +111,7 @@ enum TextInputTarget {
   enum VerifyVerdict: String {
     case exact
     case mismatch
+    case caseNormalized = "case-normalized"
     case unreadable
     case secureMasked = "secure-masked"
     case targetLost = "target-lost"
@@ -123,10 +124,6 @@ enum TextInputTarget {
     let verdict: VerifyVerdict
   }
 
-  // Secret-free read classification. An empty XCUI text field reports its
-  // placeholder as `value`, so a placeholder-equal read cannot prove either
-  // emptiness or a typed value — both cases classify `ambiguous`; secure
-  // fields expose bullets, so any non-empty expectation is `secure-masked`.
   static func classifyValue(
     expected: String,
     rawValue: String?,
@@ -141,14 +138,25 @@ enum TextInputTarget {
         if rawValue.isEmpty { return .exact }
         return placeholderEqual ? .ambiguous : .mismatch
       }
-      return .secureMasked
+      // An empty or placeholder read, or a mask of another length, proves the value did not land.
+      if rawValue.isEmpty || placeholderEqual { return .mismatch }
+      let maskedLength = rawValue.allSatisfy { $0 == "\u{2022}" }
+      return maskedLength && rawValue.count != expected.count && rawValue.count != expected.utf16.count
+        ? .mismatch : .secureMasked
     }
     if expected.isEmpty {
       if rawValue.isEmpty { return .exact }
       return placeholderEqual ? .ambiguous : .mismatch
     }
+    // A placeholder read cannot prove a typed value, even one equal to the placeholder.
     if rawValue == expected {
-      return placeholderEqual ? .ambiguous : .exact
+      return placeholderEqual ? .mismatch : .exact
+    }
+    // The app changed only letter case (same length, case-insensitively equal); a different letter is a mismatch.
+    if !placeholderEqual,
+       rawValue.count == expected.count,
+       rawValue.lowercased() == expected.lowercased() {
+      return .caseNormalized
     }
     return .mismatch
   }

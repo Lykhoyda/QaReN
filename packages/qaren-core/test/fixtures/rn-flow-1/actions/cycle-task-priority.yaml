@@ -1,0 +1,26 @@
+appId: com.rndevagent.testapp
+---
+# id: cycle-task-priority
+# intent: Tasks > Calendar > back to Tasks (multi-screen navigation).
+# tags: [tasks, calendar, navigation]
+# mutates: false
+# status: active
+# enginePin: maestro-runner@1.1.27
+- launchApp:
+    stopApp: false
+- tapOn:
+    id: "tab-tasks"
+- waitForAnimationToEnd
+- assertVisible:
+    id: "task-screen"
+- tapOn:
+    id: "calendar-nav-btn"
+- waitForAnimationToEnd
+- assertVisible:
+    id: "calendar-header"
+- assertVisible: "Weekly Schedule"
+- tapOn:
+    text: "Tasks"
+- waitForAnimationToEnd
+- assertVisible:
+    id: "task-screen"

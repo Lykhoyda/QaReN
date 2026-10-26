@@ -34,7 +34,7 @@ if (misplacedDocuments.length > 0) {
   console.error('Top-level docs/ is not an owned documentation surface:');
   for (const path of misplacedDocuments) console.error(`  ${path}`);
   console.error(
-    'Use https://github.com/Lykhoyda/rn-dev-agent-workspace/tree/main/docs/ for engineering material, https://github.com/Lykhoyda/anton-factory/tree/main/architect-docs/ for approved architecture records, or apps/docs-site for product documentation.',
+    'Engineering material belongs in the sibling workspace repository docs/ tree, approved architecture records in https://github.com/Lykhoyda/anton-factory/tree/main/architect-docs/, and product documentation in apps/docs-site.',
   );
   process.exitCode = 1;
 } else {

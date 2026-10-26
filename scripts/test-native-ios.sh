@@ -47,6 +47,7 @@ xcodebuild test \
   -project RnFastRunner.xcodeproj \
   -scheme RnFastRunner \
   -destination "$DEST" \
+  -parallel-testing-enabled NO \
   -derivedDataPath ../build/DerivedData-native-tests \
   -resultBundlePath "$RESULTS" \
   CODE_SIGNING_ALLOWED=NO CODE_SIGN_IDENTITY="" CODE_SIGNING_REQUIRED=NO \

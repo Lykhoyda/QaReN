@@ -101,8 +101,94 @@ final class SnapshotInclusionTests: XCTestCase {
     XCTAssertTrue(include(type: .staticText, hasContent: true, interactiveOnly: true))
   }
 
+  // QA capture measures the visible screen against the window frame, so the content-less window stays.
+  func testInteractiveOnlyKeepsContentlessWindow() {
+    XCTAssertTrue(include(type: .window, interactiveOnly: true))
+  }
+
   func testInteractiveOnlyExcludesContentlessNonInteractive() {
     XCTAssertFalse(include(type: .image, interactiveOnly: true))
     XCTAssertFalse(include(interactiveOnly: true))
+  }
+
+  func testDedupeKeyKeepsTwinFieldsWithDifferentValues() {
+    let frame = CGRect(x: 10, y: 100, width: 300, height: 44)
+    let first = snapshotDedupeKey(
+      type: .textField, label: "Email", identifier: "email", value: "first@example.test", frame: frame)
+    let second = snapshotDedupeKey(
+      type: .textField, label: "Email", identifier: "email", value: "second@example.test", frame: frame)
+    XCTAssertNotEqual(first, second)
+  }
+
+  func testDedupeKeyKeepsFieldsWithDelimiterCollisions() {
+    let frame = CGRect(x: 10, y: 100, width: 300, height: 44)
+    let first = snapshotDedupeKey(
+      type: .textField, label: "Email", identifier: "otp", value: "prefix-654321", frame: frame)
+    let second = snapshotDedupeKey(
+      type: .textField, label: "Email", identifier: "otp-prefix", value: "654321", frame: frame)
+    XCTAssertNotEqual(first, second)
+    XCTAssertEqual(Set([first, second]).count, 2)
+  }
+
+  func testDedupeKeyStillCollapsesIdenticalNodes() {
+    let frame = CGRect(x: 10, y: 100, width: 300, height: 44)
+    XCTAssertEqual(
+      snapshotDedupeKey(type: .textField, label: "Email", identifier: "email", value: "same", frame: frame),
+      snapshotDedupeKey(type: .textField, label: "Email", identifier: "email", value: "same", frame: frame))
+    XCTAssertEqual(
+      snapshotDedupeKey(type: .staticText, label: "Title", identifier: "", value: nil, frame: frame),
+      snapshotDedupeKey(type: .staticText, label: "Title", identifier: "", value: nil, frame: frame))
+  }
+
+  func testDedupeKeyKeepsNestedSameOriginScrollViewsOfDifferentSizes() {
+    let outer = snapshotDedupeKey(
+      type: .scrollView, label: "", identifier: "", value: nil,
+      frame: CGRect(x: 0, y: 100, width: 402, height: 700))
+    let inner = snapshotDedupeKey(
+      type: .scrollView, label: "", identifier: "", value: nil,
+      frame: CGRect(x: 0, y: 100, width: 402, height: 200))
+    XCTAssertNotEqual(outer, inner)
+    XCTAssertNotEqual(
+      outer,
+      snapshotDedupeKey(
+        type: .scrollView, label: "", identifier: "", value: nil,
+        frame: CGRect(x: 0, y: 100, width: 300, height: 700)))
+  }
+
+  func testToolbarIsNamedToolbarNotSearchField() {
+    XCTAssertEqual(snapshotTypeName(.toolbar), "Toolbar")
+    XCTAssertEqual(snapshotTypeName(XCUIElement.ElementType(rawValue: 24)!), "Toolbar")
+    XCTAssertEqual(snapshotTypeName(.searchField), "SearchField")
+    XCTAssertFalse(TextInputTarget.inputTypeNames.contains(snapshotTypeName(.toolbar)))
+  }
+
+  func testKeyboardRawTypesKeepTheirNames() {
+    XCTAssertEqual(snapshotTypeName(XCUIElement.ElementType(rawValue: 19)!), "Keyboard")
+    XCTAssertEqual(snapshotTypeName(XCUIElement.ElementType(rawValue: 20)!), "Key")
+  }
+}
+
+final class SnapshotDiagnosticsTests: XCTestCase {
+  func testViewportEncodingPreservesSourceAndActualRoundedFrame() throws {
+    let diagnostic = SnapshotDiagnostics(
+      viewport: CGRect(x: -12.4, y: 31.6, width: 123, height: 456),
+      source: .firstNonemptyWindow
+    )
+    let encoded = try JSONEncoder().encode(diagnostic)
+    let object = try XCTUnwrap(JSONSerialization.jsonObject(with: encoded) as? [String: Any])
+    XCTAssertEqual(object["v"] as? Int, 1)
+    XCTAssertEqual(object["viewportSource"] as? String, "first-nonempty-window")
+    XCTAssertEqual(object["viewport"] as? [Double], [-12, 32, 123, 456])
+  }
+
+  func testUnboundedIsExplicitNullAndMissingIsOmitted() throws {
+    let diagnostic = SnapshotDiagnostics(viewport: .infinite, source: .unbounded)
+    let encoded = try JSONEncoder().encode(diagnostic)
+    let object = try XCTUnwrap(JSONSerialization.jsonObject(with: encoded) as? [String: Any])
+    XCTAssertTrue(object["viewport"] is NSNull)
+    XCTAssertEqual(object["viewportSource"] as? String, "unbounded")
+    let missing = try JSONSerialization.jsonObject(with: JSONEncoder().encode(DataPayload())) as? [String: Any]
+    XCTAssertNil(missing?["snapshotDiagnostics"])
+    XCTAssertNil(SnapshotDiagnostics(viewport: .null, source: .app))
   }
 }

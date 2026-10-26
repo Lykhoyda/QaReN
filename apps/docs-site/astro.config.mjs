@@ -10,9 +10,9 @@ export default defineConfig({
   integrations: [
     starlight({
       plugins: [starlightLlmsTxt()],
-      title: 'rn-dev-agent',
+      title: 'QaReN',
       description:
-        'Claude Code, Codex, and Cursor plugin for React Native development — 78 MCP tools, 6 agents, 17 commands. Explore, build, verify, and test features live on iOS Simulator and Android Emulator via Chrome DevTools Protocol.',
+        'QaReN walks a plan on the simulator or emulator, records the run, and reports PASS/FAIL with video.',
       social: [
         { icon: 'github', label: 'GitHub', href: 'https://github.com/Lykhoyda/rn-dev-agent' },
       ],
@@ -22,7 +22,7 @@ export default defineConfig({
           attrs: {
             name: 'keywords',
             content:
-              'react native, claude code, codex, cursor, plugin, mcp, chrome devtools protocol, expo, ios simulator, android emulator, ai testing, mobile development',
+              'react native, qa, expo, ios simulator, android emulator, test plan, pull request, video, claude code, codex, cursor',
           },
         },
         {
@@ -40,11 +40,11 @@ export default defineConfig({
           content: JSON.stringify({
             '@context': 'https://schema.org',
             '@type': 'SoftwareApplication',
-            name: 'rn-dev-agent',
+            name: 'QaReN',
             description:
-              'Claude Code, Codex, and Cursor plugin for React Native development with 78 MCP tools for live app verification via Chrome DevTools Protocol.',
+              'QaReN walks a plan on the simulator or emulator, records the run, and reports PASS/FAIL with video.',
             applicationCategory: 'DeveloperApplication',
-            operatingSystem: 'macOS, Linux',
+            operatingSystem: 'macOS',
             url: 'https://lykhoyda.github.io/rn-dev-agent/',
             author: {
               '@type': 'Person',
@@ -74,102 +74,30 @@ export default defineConfig({
       },
       sidebar: [
         {
-          label: 'Start Here',
-          items: [{ label: 'Getting Started', slug: 'getting-started' }],
-        },
-        {
-          label: 'Core Concepts',
+          label: 'Start here',
           items: [
-            { label: 'Architecture', slug: 'architecture' },
-            { label: 'Parallel session authority', slug: 'session-authority' },
-            { label: 'Actions', slug: 'actions' },
-            { label: 'Troubleshooting Memory', slug: 'troubleshooting-memory' },
+            { label: 'What QaReN does', slug: 'index' },
+            { label: 'Getting started', slug: 'getting-started' },
           ],
         },
         {
-          label: 'Guides',
+          label: 'Using QaReN',
           items: [
-            { label: 'React Native DevTools coexistence', slug: 'guides/devtools-coexistence' },
-            { label: 'maestro-mcp interop', slug: 'guides/maestro-interop' },
-            { label: 'Dev Client coverage', slug: 'dev-client-coverage' },
+            { label: 'Write a plan', slug: 'plans' },
+            { label: 'Check a plan', slug: 'check' },
+            { label: 'Test a pull request', slug: 'pull-requests' },
+            { label: 'Watch a run', slug: 'watch' },
+            { label: 'Saved blocks', slug: 'saved-blocks' },
+            { label: 'rn-flow/1 replay dialect', slug: 'actions/rn-flow-1' },
           ],
         },
         {
           label: 'Reference',
           items: [
-            {
-              label: 'Commands',
-              collapsed: false,
-              items: [
-                { label: 'Overview', slug: 'commands' },
-                { label: 'run-workflow', slug: 'commands/run-workflow' },
-                { label: 'rn-feature-dev', slug: 'commands/rn-feature-dev' },
-                { label: 'test-feature', slug: 'commands/test-feature' },
-                { label: 'qa-pr', slug: 'commands/qa-pr' },
-                { label: 'build-and-test', slug: 'commands/build-and-test' },
-                { label: 'debug-screen', slug: 'commands/debug-screen' },
-                { label: 'check-env', slug: 'commands/check-env' },
-                { label: 'setup', slug: 'commands/setup' },
-                { label: 'doctor', slug: 'commands/doctor' },
-                { label: 'observe', slug: 'commands/observe' },
-                { label: 'list-learned-actions', slug: 'commands/list-learned-actions' },
-                { label: 'run-action', slug: 'commands/run-action' },
-                { label: 'lock-e2e', slug: 'commands/lock-e2e' },
-                { label: 'proof-capture', slug: 'commands/proof-capture' },
-                { label: 'nav-graph', slug: 'commands/nav-graph' },
-                { label: 'check-vercel-rules', slug: 'commands/check-vercel-rules' },
-                { label: 'send-feedback', slug: 'commands/send-feedback' },
-              ],
-            },
-            {
-              label: 'MCP Tools',
-              items: [
-                { label: 'Overview', slug: 'tools' },
-                { label: 'CDP Tools', collapsed: true, autogenerate: { directory: 'tools/cdp' } },
-                {
-                  label: 'Device Tools',
-                  collapsed: true,
-                  autogenerate: { directory: 'tools/device' },
-                },
-                {
-                  label: 'Testing Tools',
-                  collapsed: true,
-                  autogenerate: { directory: 'tools/testing' },
-                },
-              ],
-            },
-            {
-              label: 'Agents',
-              collapsed: true,
-              items: [
-                { label: 'Overview', slug: 'agents' },
-                { label: 'rn-tester', slug: 'agents/rn-tester' },
-                { label: 'rn-pr-qa', slug: 'agents/rn-pr-qa' },
-                { label: 'rn-debugger', slug: 'agents/rn-debugger' },
-                { label: 'rn-code-explorer', slug: 'agents/rn-code-explorer' },
-                { label: 'rn-code-architect', slug: 'agents/rn-code-architect' },
-                { label: 'rn-code-reviewer', slug: 'agents/rn-code-reviewer' },
-              ],
-            },
-            {
-              label: 'Skills',
-              collapsed: true,
-              items: [
-                { label: 'Overview', slug: 'skills' },
-                { label: 'Device Control', slug: 'skills/rn-device-control' },
-                { label: 'Testing', slug: 'skills/rn-testing' },
-                { label: 'Debugging', slug: 'skills/rn-debugging' },
-                { label: 'Best Practices', slug: 'skills/rn-best-practices' },
-              ],
-            },
-            { label: 'Best Practices', slug: 'best-practices' },
-          ],
-        },
-        {
-          label: 'Project',
-          items: [
-            { label: 'Benchmarks', slug: 'benchmarks' },
+            { label: 'Configuration', slug: 'configuration' },
+            { label: 'CLI', slug: 'cli' },
             { label: 'Troubleshooting', slug: 'troubleshooting' },
+            { label: 'Plugin', slug: 'plugin' },
             { label: 'Changelog', slug: 'changelog' },
           ],
         },

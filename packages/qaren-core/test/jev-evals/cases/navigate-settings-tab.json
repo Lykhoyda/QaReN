@@ -1,0 +1,12 @@
+{
+  "screen": {
+    "front": "app",
+    "elements": [
+      { "ref": "@profile", "kind": "button", "label": "Profile", "hittable": true, "disabled": false, "secure": false, "offscreen": false, "where": "bottom" },
+      { "ref": "@settings", "kind": "button", "label": "Settings", "hittable": true, "disabled": false, "secure": false, "offscreen": false, "where": "bottom" }
+    ],
+    "visibleText": ["Profile", "Settings"]
+  },
+  "line": "Switch to the settings tab",
+  "expected": { "kind": "target", "ref": "@settings" }
+}

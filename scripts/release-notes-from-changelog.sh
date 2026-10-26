@@ -6,7 +6,7 @@
 set -uo pipefail
 
 VERSION="${1:?usage: $0 <version> [changelog-path]}"
-CHANGELOG="${2:-$(cd "$(dirname "$0")/.." && pwd)/packages/claude-plugin/CHANGELOG.md}"
+CHANGELOG="${2:-$(cd "$(dirname "$0")/.." && pwd)/packages/qaren-plugin/CHANGELOG.md}"
 FOOTER="Prebuilt runner artifacts for v$VERSION (rn-fast-runner iOS, rn-android-runner)."
 
 entries=""

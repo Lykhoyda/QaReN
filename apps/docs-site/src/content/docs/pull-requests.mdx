@@ -1,0 +1,86 @@
+---
+title: Test a pull request
+description: Walk a plan at a pull request's head with qaren pr, then post the result with qaren publish.
+---
+
+```sh
+qaren pr <number|url> --plan-file plan.md --device <simulator-UUID> --json
+qaren publish <run-id> --json
+```
+
+Both use the GitHub CLI, so `gh` must be installed and signed in.
+
+:::caution
+Plans, reports and recordings of a private app stay private. Publication removes machine
+details and withholds typed values, but that does not make a private app's material safe
+to post on a public repository.
+:::
+
+## qaren pr
+
+`qaren pr` runs the same pipeline as [`qaren check`](../check/), from the app's
+directory with the same `.qaren/config.yaml` and plan. It walks a detached worktree at the
+pull request's head under `~/.qaren/runs/<run-id>/wt` instead of your working tree.
+
+- It refuses unless origin's `pull/<n>/head` is the head GitHub reports and the worktree is
+  clean at that commit, both before the lease and again before the walk.
+- When the pull request moves during the run, the receipt names the tested commit in
+  `tested_older_commit`.
+- Blocks the walk saved are copied to the run's `blocks/` directory before the worktree is
+  removed.
+- Teardown removes the worktree only after the run's build, core, Metro, recorder and runner
+  host are proven gone. Otherwise it stays recorded for `qaren cleanup <run-id>`.
+
+See the authoritative [PR recording contract](https://github.com/Lykhoyda/rn-dev-agent/blob/develop/packages/qaren-cli/README.md#test-a-pull-request)
+for platform and Android API requirements, media tools, video-unavailable outcomes and
+recorder cleanup recovery.
+
+## qaren publish
+
+`qaren publish <run-id>` publishes a finished `qaren pr` run. It refuses before any upload,
+comment, label change or block write-back when:
+
+| Condition                                    | Result                        |
+| -------------------------------------------- | ----------------------------- |
+| The run has no persisted terminal result     | `RUN_RECORD_INVALID`          |
+| The run was cancelled                        | `RUN_CANCELLED` (exit 4)      |
+| The tested candidate did not verify unchanged | `CANDIDATE_DRIFTED` (exit 1) |
+| Teardown did not prove ownership             | `OWNERSHIP_UNPROVEN` (exit 4) |
+
+A plain QA fail can still be published as a report. A later recovery does not upgrade the
+original result; re-run `qaren pr` to get publishable evidence.
+
+### The comment
+
+Publish posts one comment with:
+
+- the PASS, FAIL or REFUSED verdict and the refusal code;
+- the tested commit;
+- the video, when it is eligible;
+- the plan with ✓ or ✗ per walked line, taken from the walk's own rows, never from the raw
+  plan file, so typed values stay out;
+- the failing screenshot, when one is available;
+- collapsed run details.
+
+The host name, home directory, user name, absolute paths, device IDs, serials, ports and
+private network addresses are removed from the comment. Publish then removes the `needs-qa`
+label, but only when the pull request's head is still the tested commit.
+
+### Saved blocks
+
+A block the walk saved is published only verbatim, and only when the walk's video was
+eligible and redaction would leave the block unchanged. Other blocks stay in the run's
+`blocks/` directory, and the receipt records `withheld <slug>: <reason>`.
+
+Published blocks are committed to the pull request branch with a `Qaren-Run: <run-id>`
+trailer, using your own git identity and a push lease on the tested commit. When the branch
+moved, the pull request comes from a fork, or the push destination cannot be verified, a
+second comment carries the blocks' YAML instead.
+
+Only one publisher runs per run at a time. Retrying `qaren publish` reuses a comment it
+already posted rather than posting a duplicate.
+
+## Video
+
+See the authoritative [video publication contract](https://github.com/Lykhoyda/rn-dev-agent/blob/develop/packages/qaren-cli/README.md#video-publication)
+for trim boundaries, withholding rules and public reason codes, login replay behavior and local recording privacy limits.

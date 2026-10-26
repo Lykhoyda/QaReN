@@ -1,0 +1,18 @@
+schema: qaren/1
+name: nuc-android
+platform: android
+candidate:
+  project_root: test-app
+  app_id: com.rndevagent.testapp
+  revision: HEAD
+metro:
+  port: 8792
+android:
+  ssh_host: nuc
+  farm_path: bin/android-farm
+  slot: 1
+  adb_server_port: 15037
+deadlines:
+  install_deps_seconds: 900
+  build_seconds: 2400
+  device_boot_seconds: 420

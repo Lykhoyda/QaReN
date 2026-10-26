@@ -1,0 +1,141 @@
+{
+  "schema": "rn-flow/1",
+  "actionId": "cycle-task-priority",
+  "appId": "com.rndevagent.testapp",
+  "platform": "ios",
+  "steps": [
+    {
+      "id": "s1",
+      "source": {
+        "line": 9
+      },
+      "domain": "native",
+      "optional": false,
+      "budgetMs": 15000,
+      "op": "launchApp",
+      "stopApp": false,
+      "clearState": false
+    },
+    {
+      "id": "s2",
+      "source": {
+        "line": 11
+      },
+      "domain": "native",
+      "optional": false,
+      "budgetMs": 17000,
+      "op": "tapOn",
+      "selector": {
+        "id": "tab-tasks"
+      }
+    },
+    {
+      "id": "s3",
+      "source": {
+        "line": 13
+      },
+      "domain": "native",
+      "optional": false,
+      "budgetMs": 5000,
+      "op": "waitForAnimationToEnd"
+    },
+    {
+      "id": "s4",
+      "source": {
+        "line": 14
+      },
+      "domain": "react-tree",
+      "optional": false,
+      "budgetMs": 17000,
+      "op": "assertVisible",
+      "selector": {
+        "id": "task-screen"
+      }
+    },
+    {
+      "id": "s5",
+      "source": {
+        "line": 16
+      },
+      "domain": "native",
+      "optional": false,
+      "budgetMs": 17000,
+      "op": "tapOn",
+      "selector": {
+        "id": "calendar-nav-btn"
+      }
+    },
+    {
+      "id": "s6",
+      "source": {
+        "line": 18
+      },
+      "domain": "native",
+      "optional": false,
+      "budgetMs": 5000,
+      "op": "waitForAnimationToEnd"
+    },
+    {
+      "id": "s7",
+      "source": {
+        "line": 19
+      },
+      "domain": "react-tree",
+      "optional": false,
+      "budgetMs": 17000,
+      "op": "assertVisible",
+      "selector": {
+        "id": "calendar-header"
+      }
+    },
+    {
+      "id": "s8",
+      "source": {
+        "line": 21
+      },
+      "domain": "native",
+      "optional": false,
+      "budgetMs": 17000,
+      "op": "assertVisible",
+      "selector": {
+        "text": "Weekly Schedule"
+      }
+    },
+    {
+      "id": "s9",
+      "source": {
+        "line": 22
+      },
+      "domain": "native",
+      "optional": false,
+      "budgetMs": 17000,
+      "op": "tapOn",
+      "selector": {
+        "text": "Tasks"
+      }
+    },
+    {
+      "id": "s10",
+      "source": {
+        "line": 24
+      },
+      "domain": "native",
+      "optional": false,
+      "budgetMs": 5000,
+      "op": "waitForAnimationToEnd"
+    },
+    {
+      "id": "s11",
+      "source": {
+        "line": 25
+      },
+      "domain": "react-tree",
+      "optional": false,
+      "budgetMs": 17000,
+      "op": "assertVisible",
+      "selector": {
+        "id": "task-screen"
+      }
+    }
+  ]
+}

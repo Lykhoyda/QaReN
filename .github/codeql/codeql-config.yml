@@ -1,4 +1,4 @@
-name: rn-dev-agent JavaScript/TypeScript CodeQL config
+name: qaren JavaScript/TypeScript CodeQL config
 
 # NOTE: this repo commits ~19 MB of built bundles (packages/*/dist) and vendors
 # the Yarn release; an alert inside a single-line bundle embeds a multi-megabyte

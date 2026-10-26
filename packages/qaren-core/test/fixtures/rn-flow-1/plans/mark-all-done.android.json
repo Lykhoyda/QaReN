@@ -1,0 +1,72 @@
+{
+  "schema": "rn-flow/1",
+  "actionId": "mark-all-done",
+  "appId": "com.rndevagent.testapp",
+  "platform": "android",
+  "steps": [
+    {
+      "id": "s1",
+      "source": {
+        "line": 9
+      },
+      "domain": "lifecycle",
+      "optional": false,
+      "budgetMs": 15000,
+      "op": "launchApp",
+      "stopApp": true,
+      "clearState": false
+    },
+    {
+      "id": "s2",
+      "source": {
+        "line": 10
+      },
+      "domain": "native",
+      "optional": false,
+      "budgetMs": 17000,
+      "op": "tapOn",
+      "selector": {
+        "id": "tab-tasks"
+      }
+    },
+    {
+      "id": "s3",
+      "source": {
+        "line": 12
+      },
+      "domain": "native",
+      "optional": false,
+      "budgetMs": 17000,
+      "op": "assertVisible",
+      "selector": {
+        "text": "Tasks"
+      }
+    },
+    {
+      "id": "s4",
+      "source": {
+        "line": 13
+      },
+      "domain": "native",
+      "optional": false,
+      "budgetMs": 17000,
+      "op": "tapOn",
+      "selector": {
+        "id": "task-mark-all-done"
+      }
+    },
+    {
+      "id": "s5",
+      "source": {
+        "line": 15
+      },
+      "domain": "native",
+      "optional": false,
+      "budgetMs": 17000,
+      "op": "assertVisible",
+      "selector": {
+        "text": "All done"
+      }
+    }
+  ]
+}

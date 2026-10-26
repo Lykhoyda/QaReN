@@ -1,9 +1,0 @@
-{
-  "name": "rn-dev-agent-core",
-  "version": "1.0.13",
-  "private": true,
-  "type": "module",
-  "engines": {
-    "node": ">=24"
-  }
-}

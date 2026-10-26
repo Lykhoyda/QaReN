@@ -1,587 +1,93 @@
 ---
 title: Troubleshooting
-description: Symptom → fix quick reference, error-code catalog, and per-area fixes for rn-dev-agent.
+description: The refusals and failures you meet most, and what to do about each.
 ---
 
-Find your symptom in the quick reference, or jump to the
-[error-code catalog](#error-codes) if a tool returned a code in
-SCREAMING_SNAKE_CASE.
+Every receipt that is not a pass carries `failure.code`, `failure.detail` and a
+`next_action`. Start with `next_action`; it names the exact step for that run. The report at
+`~/.qaren/runs/<run-id>/report.md` shows each walked line.
 
-## Quick reference
+Refusals exit `4` and mean the run could not start or could not decide; failures exit `1`.
 
-| Symptom | Go to |
-|---|---|
-| CDP won't connect / 1006 | [Connection](#connection) |
-| DevTools keeps disconnecting | [Connection](#connection) |
-| `cdp_store_state` empty or errors | [Store state](#store-state) |
-| Plugin/skills not detected | [Plugin install](#plugin-install) |
-| Install/update fails (ENOTEMPTY, ENAMETOOLONG) | [Plugin install](#plugin-install) |
-| Taps/flows fail on the device | [Device & flows](#device--flows) |
-| A tool returned `RN_…`/`BUSY_…`/`RUNNER_…` | [Error codes](#error-codes) |
-| Action replay fails | [Actions & setup](#actions--setup) |
+## Before the walk
 
-## Connection
+| Code                       | What happened                                                    | What to do                                                                                  |
+| -------------------------- | ---------------------------------------------------------------- | ------------------------------------------------------------------------------------------- |
+| `PLAN_UNPARSEABLE`         | A plan line has no step or check the grammar knows               | Fix each listed line; see [Write a plan](../plans/)                              |
+| `PLAN_INPUT_MISSING`       | A runtime input is unset or empty, or a PR login block names an undeclared one | Set each listed `QAREN_INPUT_<NAME>`; see [Runtime inputs](../plans/#runtime-inputs)       |
+| `JEV_UNREACHABLE`          | The plan needs Jev and the readiness probe did not succeed       | Set a valid `TYPESAFE_API_KEY`, or quote every target and `✓` line                          |
+| `JEV_AUTH_FAILED`          | Jev rejected the key                                             | Check `TYPESAFE_API_KEY`                                                                    |
+| `SCENARIO_UNREADABLE`      | `.qaren/config.yaml` cannot be read                              | Create it with at least `appId`                                                             |
+| `SCENARIO_INVALID`         | The configuration does not parse or fails validation            | Fix the key a validation detail names; see [Configuration](../configuration/)    |
+| `DEV_CLIENT_SCHEME_REQUIRED` | `devClientScheme` is missing or malformed                      | Set it to the app's registered URI scheme                                                   |
+| `NODE_UNSUPPORTED`         | Node is older than 24                                            | Point `nodePath` at Node 24 or newer                                                        |
+| `DISK_BUDGET_EXCEEDED`     | Under 1 GiB free for `~/.qaren/runs` or the app, or under about 10 GiB for a clean iOS build | Free space on the volume `failure.detail` names, then re-run                                |
 
-### Metro not found
+## Devices
 
-Run `rn_session(action="status")` first. For an integrated session, use literal
-`pnpm ios` or `pnpm android`; the package adapter starts or validates Metro on
-the session's allocated port. Ambient default-port discovery is diagnostic
-only and cannot establish authority. See
-[Parallel session authority](/rn-dev-agent/session-authority/).
+For `FRESH_INSTALL_ADMISSION_UNKNOWN` or a strict-admission `DEVICE_BUSY`, read the
+probe diagnostics in `failure.detail`; see the authoritative
+[fresh-install contract](https://github.com/Lykhoyda/rn-dev-agent/blob/develop/packages/qaren-cli/README.md#fresh-install)
+and [iOS admission diagnostics](https://github.com/Lykhoyda/rn-dev-agent/blob/develop/packages/qaren-cli/README.md#ios-admission-and-cleanup).
 
-### No Hermes target
+| Code                 | What happened                                                       | What to do                                                                          |
+| -------------------- | ------------------------------------------------------------------- | ----------------------------------------------------------------------------------- |
+| `DEVICE_UNAVAILABLE` | No booted simulator, more than one, or the named one is not booted  | Boot the simulator to walk on, or shut down the ones you are not testing on        |
+| `DEVICE_UNAVAILABLE` | On Android: no adb server answering, a version mismatch, or not exactly one booted emulator | Start the emulator, or pass `--device emulator-NNNN`                 |
+| `DEVICE_BUSY`        | Another run holds the device's lease                                | Wait for that run to finish, or clean it up with `qaren cleanup <its-run-id>`; a live holder is never stolen |
+| `ARTIFACT_INSTALL_FAILED` | The cached dev-client verification or installation failed | Follow `next_action`; see the [cached-install recovery contract](https://github.com/Lykhoyda/rn-dev-agent/blob/develop/packages/qaren-cli/README.md#check-a-plan) |
+| `APP_EXITED_AT_LAUNCH` | The launched app exited before it became ready; on iOS the detail cites the simulator crash report | Follow `next_action`, which for a missing app-embedded framework is a CocoaPods reinstall; see the [launch readiness contract](https://github.com/Lykhoyda/rn-dev-agent/blob/develop/packages/qaren-cli/README.md#ios-simulator-lifecycle) |
 
-Open the app on the simulator and ensure Hermes is enabled. Check your `app.json` or `metro.config.js` for Hermes configuration.
+## During the walk
 
-### CDP connection rejected (1006)
+| Code                     | What happened                                                    | What to do                                              |
+| ------------------------ | ---------------------------------------------------------------- | ------------------------------------------------------- |
+| `PLAN_STEP_FAILED`       | A step or check failed; the detail names the line and what was seen | Read the report, fix the app or the plan, then re-run |
+| `CORE_REFUSED`           | The screen layer refused; the detail starts with its own code    | Resolve that refusal, then re-run                       |
+| `BLOCK_START_MISSING`    | The block's declared start was absent; this is a typed refusal with exit code 4 | Follow the [saved-block contract](https://github.com/Lykhoyda/rn-dev-agent/blob/develop/packages/qaren-cli/README.md#saved-blocks) |
+| `WALK_DEADLINE_EXCEEDED` | The walk ran out of time                                         | Raise `QAREN_WALK_SECONDS`, or split the plan           |
+| `CANDIDATE_DRIFTED`      | The working tree changed during the run                          | Re-run against an unchanged checkout                    |
 
-Close React Native DevTools, Flipper, or Chrome DevTools — only one debugger can connect at a time. The 1006 close code means session conflict.
+The screen layer's own codes appear at the start of `failure.detail` or in the report, not in
+`failure.code`:
 
-### DevTools shows "Disconnected due to opening a second DevTools window"
+| Screen code                  | Meaning                                                                       |
+| ---------------------------- | ----------------------------------------------------------------------------- |
+| `TARGET_AMBIGUOUS`           | A quoted target, or a phrase target's scrolled-out name matches, matched two or more elements; each candidate is listed by kind, `testID` and frame. Use a unique `testID` or label. |
+| `TARGET_NOT_FOUND`           | A target did not resolve on screen                                            |
+| `CHECK_UNSURE`               | A literal check could not be decided from a fresh capture                     |
+| `VISIBILITY_UNSURE`          | A wait ended with the target's visibility still unsure                        |
+| `SCREEN_EVIDENCE_INCOMPLETE` | The captured screen was not complete enough to act on safely                  |
+| `APP_PROCESS_CHANGED`        | On iOS, the app crashed or restarted between captures                         |
+| `CDP_NOT_CONNECTED`          | The app's JavaScript runtime did not attach in time, or a target wait made no progress past [`deadlines.attach_seconds`](../configuration/#deadlines); the detail names the stalled boundary, app liveness, bundle request and host load |
+| `REACT_COVERAGE_LOST`        | The JS/React connection remained lost at the end of an otherwise passing walk; the walk saves no new blocks. See the [React coverage contract](https://github.com/Lykhoyda/rn-dev-agent/blob/develop/packages/qaren-cli/README.md#check-a-plan) |
 
-The bridge auto-reconnects by default and evicts the visual React Native DevTools from the single debugger seat. Set `RN_CDP_AUTOCONNECT=0` (or `.rn-agent/config.json` → `{ "cdp": { "autoConnect": false } }`) to let DevTools hold the seat — the bridge then connects only when a CDP tool runs. Full guide: [React Native DevTools coexistence](/rn-dev-agent/guides/devtools-coexistence/).
+## Teardown, cleanup and publish
 
-### Expo dev-menu sheet, onboarding tutorial, or gear appears after a managed launch
+| Code                  | What happened                                                        | What to do                                                       |
+| --------------------- | -------------------------------------------------------------------- | ---------------------------------------------------------------- |
+| `CLEANUP_INCOMPLETE`  | `qaren cleanup` could not resolve some resources                     | Re-run `qaren cleanup <run-id> --json`                           |
+| `OWNERSHIP_UNPROVEN`  | The run's processes were not proven gone                             | Run `qaren cleanup <run-id>`, then re-run `qaren pr`             |
+| `RUN_CANCELLED`       | The run was cancelled                                                | Re-run when ready; the cleanup map names anything retained       |
+| `PR_UNAVAILABLE`      | `gh` could not read the pull request                                 | Check `gh auth status` and the pull request, then re-run         |
 
-For a sheet or tutorial, check whether `autoHideDevMenu` in `.rn-agent/config.json` is off for that target class. It defaults to on: managed launches add `disableOnboarding=1` to the launch URL, pass the Android `EXDevMenuDisableAutoLaunch` intent extra, and on iOS simulators persist `EXDevMenuShowsAtLaunch=NO`, `EXDevMenuIsOnboardingFinished=YES`, and `EXDevMenuShowFloatingActionButton=NO` before launching. The iOS simulator gear is controlled by that last default; on Android and physical devices, the app owns the gear setting (see [QA prerequisites](/rn-dev-agent/commands/qa-pr/)). Remove the key or set `{ "autoHideDevMenu": true }`, or a per-target object such as `{ "autoHideDevMenu": { "simulators": true, "devices": false } }` (`simulators`: iOS simulators and Android emulators; `devices`: physical Android, a no-op on iPhones). `cdp_dev_settings` with `hideDevMenu` closes a menu that is already open.
+## Incomplete teardown
 
-### CDP connection lost after reload
+When a run cannot prove that a process is gone, it keeps the device lease and records what it
+kept. A PR worktree it cannot remove stays recorded for `qaren cleanup` without holding the
+lease. The next run on that device refuses `DEVICE_BUSY` until the lease is
+released. Run:
 
-This is normal. `cdp_reload` reconnects the authority-bound target within 15
-seconds. If it fails, call `cdp_status` for passive diagnostics, then
-`cdp_connect` to pin the exact signed target again.
-
-### MCP server died when Metro was restarted
-
-Fixed since #264: the bridge entry point is a stdio supervisor that holds no network sockets, so port-based kills (`lsof -ti tcp:8081 | xargs kill -9`) only take the worker process — the supervisor respawns it automatically and the session keeps its tools. If tools error with "worker is crash-looping", check the bridge log (`LOG_LEVEL=info` writes one) and restart the Claude Code session. `RN_BRIDGE_SUPERVISOR=0` opts back into the legacy single-process bridge.
-
-## Store state
-
-### cdp_store_state error for Zustand
-
-Run `/rn-dev-agent:setup` — it scaffolds the dev-bridge and proposes a `getBridge()?.registerStores({ ... })` line in your app entry. The bridge call replaces the older `globalThis.__ZUSTAND_STORES__` pattern.
-
-Manual fallback if you want to wire it yourself:
-
-```typescript
-import { getBridge } from './.rn-agent/dev-bridge';
-
-getBridge()?.registerStores({
-  auth: useAuthStore,
-  cart: useCartStore,
-});
+```sh
+qaren cleanup <run-id> --json
 ```
 
-Redux is auto-detected — no setup needed.
-
-### cdp_store_state returns empty for React Query
-
-Use `storeType: 'react-query'` explicitly. React Query state is read from the QueryClient, which requires the provider to be mounted.
-
-## Plugin install
-
-### Plugin not detected
-
-**Claude:** run `/plugin install rn-dev-agent@rn-dev-agent`, then
-`/reload-plugins`. Local development uses
-`claude --plugin-dir /path/to/rn-dev-agent`.
-
-**Cursor:** install from Customize → Plugins. Local development uses
-`/path/to/rn-dev-agent/packages/claude-plugin` (`.cursor-plugin/plugin.json` +
-`mcp.json`), not the repository root. Reload the window after install. Requires
-Node.js >= 24. If every tool refuses with `SAME_ROOT_OWNER_LIVE`, another server
-already owns the same root; see
-[Another MCP already owns this project root](#another-mcp-already-owns-this-project-root).
-
-**Codex:** inspect `codex plugin list --json` and `/mcp verbose`. The latter is
-inventory only, never reconnect. Local development uses
-`/path/to/rn-dev-agent/packages/claude-plugin` (the same directory Claude
-installs; `packages/codex-plugin` is authoring only). If materialization is absent,
-user-confirm:
-
-```bash
-codex plugin marketplace upgrade rn-dev-agent
-codex plugin add rn-dev-agent@rn-dev-agent --json
-```
-
-Codex 0.145.0 is the live-refresh floor. A change made through the same running
-app can affect a subsequent turn; external CLI/manual changes and older hosts
-require exiting and relaunching Codex. Never kill a bridge owned by another
-Claude, Cursor, or Codex process.
-
-### Another MCP already owns this project root
-
-The supervisor keeps one process lock per project root (`CLAUDE_USER_CWD`, else
-its working directory). A second Claude or Cursor server for the same root stays
-connected read-only: it lists every tool, refuses every call with
-`SAME_ROOT_OWNER_LIVE` naming the owner's PID, host, and age, and writes the owning
-PID, project, and lock path to the MCP log. Codex starts the supervisor with
-`--no-lock` and does not acquire this lock.
-
-Use the session that already owns the root, or quit that session's window or MCP
-client. The waiting server retries the lock on every heartbeat, so within seconds
-of the owner exiting, cleanly or by crash, it takes over in place: its next call
-works without a restart or `/mcp` reconnect. A live owner is never taken over. Do
-not kill the owner, delete the lock file, or add `--no-lock` to a Claude or Cursor
-host config; each of those lets two servers race for one CDP slot.
-
-`Project:` showing your home directory means the server was started outside an
-app checkout, so every session launched that way shares one lock. The Cursor
-Plugin spawn currently starts this way; see the Cursor limitation in
-[Getting Started](/rn-dev-agent/getting-started/#cursor).
-
-If the plugin is materialized but this task has no rn-dev-agent skills, invoke
-the package health program by the exact configured cache version:
-
-```bash
-VERSION="$(codex plugin list --json | jq -er \
-  '[.[] | select(.pluginId == "rn-dev-agent@rn-dev-agent" and .enabled != false)] | \
-   if length == 1 then .[0].version else error("expected one enabled rn-dev-agent row") end')"
-case "$VERSION" in (*[!0-9A-Za-z._+-]*|'') echo "invalid plugin version" >&2; exit 2;; esac
-PLUGIN_ROOT="${CODEX_HOME:-$HOME/.codex}/plugins/cache/rn-dev-agent/rn-dev-agent/$VERSION"
-test "$(jq -r '.name + "@" + .version' "$PLUGIN_ROOT/.codex-plugin/plugin.json")" = \
-  "rn-dev-agent@$VERSION" || exit 2
-node "$PLUGIN_ROOT/bin/plugin-health.js" --json
-```
-
-This fails closed on zero/multiple rows or a manifest mismatch and never runs
-`plugin add` just to discover a path. If the cache root is absent, the plugin is
-not materialized: review `codex plugin list --json` and user-confirm the install
-sequence instead.
-
-Health reports independent install/materialization/registration/contract/schema
-axes; unknown task facts are never called stale. It is read-only and does not
-attach to the app or change plugin/process state.
-
-### /plugin command not found
-
-Update Claude Code to v1.0.33+: `npm update -g @anthropic-ai/claude-code`
-
-### Plugin skills not appearing
-
-Claude: run `/reload-plugins` or clear its plugin cache. Codex: a supported
-same-app mutation should appear on a later turn; otherwise relaunch. A supported
-Codex install exposes exactly 28 rn-dev-agent skills and no
-`source-command-*` skills.
-
-### Plugin update fails with ENOTEMPTY
-
-Clear the stale cache first:
-
-```bash
-rm -rf ~/.claude/plugins/cache/rn-dev-agent
-```
-
-Then retry the update.
-
-### ENAMETOOLONG on install/update
-
-Clear stale cache:
-
-```bash
-rm -rf ~/.claude/plugins/cache/rn-dev-agent ~/.claude/plugins/data/rn-dev-agent-*
-```
-
-Then re-add marketplace and install.
-
-## Device & flows
-
-### Maestro runner pin is missing or below the floor
-
-Run the host setup workflow. It installs and verifies attested maestro-runner `1.1.27`
-(floor `>= 1.1.27`) in
-rn-dev-agent's versioned pin-cache. Do not add an ambient runner to PATH or install brew
-Maestro as a substitute; replay accepts only a `pinned-ok` pin-cache diagnosis.
-
-### Empty error log but app crashed
-
-The crash is native, not JavaScript. Use `adb logcat -b crash` (Android) or check Xcode console (iOS) for native crash logs.
-
-### Android emulator not detected
-
-Use `device_list` to diagnose connected emulators, then bind the intended serial
-and app ID with `rn_session(action="bind_device", ...)`. The plugin never turns
-the first available device or `ANDROID_SERIAL` into session authority. Without a
-bound session, `maestro_run` still needs one exact serial and accepts an explicit
-`deviceId` or `ANDROID_SERIAL` as its runner target only; an ambient or default
-adb target is never selected.
-
-### Maestro gRPC error on Android
-
-Run the flow through rn-dev-agent's replay tools. They use the pin-cache
-maestro-runner and never fall back to classic Maestro.
-
-### `UiAutomation not connected` when a flow starts on Android
-
-An MCP reconnect can leave plugin-owned Android instrumentation behind, so
-maestro-runner fails session creation with `failed to create driver: create
-session: session not created: java.lang.IllegalStateException: UiAutomation not
-connected`. Recovery triggers only when the Maestro subprocess exits nonzero and
-that structured session-creation record is its entire stderr. `maestro_run` then
-force-stops only the two rn-dev-agent runner packages on the exact bound serial
-and retries the flow once. On a successful or warning response,
-`data.androidUiAutomationRecovery` reports `retried` and `retryCount` (never more
-than 1); on a failed or refused response, the same diagnostic is under
-`meta.androidUiAutomationRecovery`. Maestro's own orphaned session self-heals,
-so no Maestro, Appium, or foreign package is ever killed. A copy of the same text
-anywhere else — app logcat, console or network output, a partially executed flow's
-step output, or stderr mixed with other records — is not the wedge and never
-retries or releases packages.
-
-Recovery never extends the flow: both the cleanup and the retry run inside the
-original `maestro_run` deadline. With no budget left the cleanup is skipped
-without touching the device; if the cleanup fails or the budget lapses while it
-runs, the retry is never dispatched and the timeout or release failure is
-attached to the returned error as its cause. Every one of these paths preserves
-the original wedge failure, exposes a release warning, and truthfully reports
-`retried: false` / `retryCount: 0`. The diagnostic is present whenever recovery
-was attempted, including these skipped cases; `retried` becomes true only when a
-second Maestro subprocess actually runs.
-
-Pre-flow and recovery release problems are not swallowed. Successful and warning
-responses expose them as `data.androidSlotReleaseWarnings` and in the response
-warning text; failed and refused responses expose them as
-`meta.androidSlotReleaseWarnings`. If the same wedge survives the single retry,
-re-open the device session (`device_snapshot action=open`) on that serial and
-retry.
-
-## Error codes
-
-Codes returned by `cdp_*`/`device_*`/flow tools, what they mean, and the fix.
-
-### Session authority errors
-
-| Codes | Meaning and repair |
-|---|---|
-| `SESSION_NOT_INITIALIZED` | No fenced session is available. Run setup for the intended worktree instead of selecting ambient state. |
-| `SESSION_AUTHORITY_REQUIRED` | The requested operation lacks authority. Inspect `rn_session(action="status")`; when `state` is `blocked`, follow `recoveryRequirement.nextAction` exactly. `unrecoverable-in-band` means the retained cleanup evidence cannot be reconstructed, so preserve the authority state and report `startupCleanupBlocked` instead of restarting or repairing. Never rebind around a blocked session. For other states, follow the operation's exact refusal and next action. A headless session that cannot run `/mcp` uses the packaged recovery commands only when status names a recoverable path — see [recovering a wedged source root](/rn-dev-agent/session-authority/#recovering-a-wedged-source-root). |
-| `SESSION_OWNER_LOST` | The supervised session is terminal. Start a new supervisor to create a successor session. |
-| `SESSION_CLI_TIMEOUT` | The generated build adapter's bounded `prepare-build`, `resolve-metro-readiness`, or `complete-build` session-CLI call did not return within 120 seconds. `ensure-metro` is the exception: its bound is derived from the readiness budget as `readinessTimeoutMs + 100 s`, and the refusal names the bound it actually waited for. Inspect `rn_session(action="status")`; retry only after the named authority step is healthy. The build fails instead of treating truncated output as success. |
-| `SESSION_INITIALIZATION_ROLLBACK_FAILED` | Session startup failed and could not prove that every partial claim was released. Do not retry against the same resources until `rn_session(action="status")` shows their ownership clearly. |
-| `SESSION_INTEGRATION_PATH_UNSAFE` | `.rn-agent`, its integration directory, or a retained path ancestor was symlinked, replaced, or changed during a fenced operation. Restore the intended real directory tree, inspect any preserved recovery journal, and retry. |
-| `AUTHORITY_STORE_UNAVAILABLE` | The SQLite registry could not be opened or read. SQLite I/O, corruption, and not-a-database errors return this typed refusal from `rn_session` status, `cdp_status`, and gated tools instead of a bare SQLite error. Preserve the registry and diagnose the storage failure before retrying; this code alone does not prove on-disk corruption. There is no JSON or warning-only fallback. |
-| `AUTHORITY_STORE_BUSY` | The SQLite registry is busy. Retry once contention clears. |
-| `PROCESS_BIRTH_UNAVAILABLE` | A required process identity cannot be read conservatively, including at controller, Metro, and runner authority checkpoints. Restore process-birth probing for the installed rn-dev-agent runtime, restart the MCP transport, then retry; there is no PID-only or warning-only fallback. |
-| `SOURCE_WORKTREE_MISMATCH`, `SOURCE_REVISION_NOT_BUNDLED`, `SOURCE_ROOT_UNAVAILABLE` | The session or strict-proof source does not match the running bundle. Return to the intended worktree and load a fresh initial bundle before retrying. The supervisor also refuses this way when it starts a worker: the bound source root is re-proven at spawn time, so a root that was deleted or made unreadable fails every gated tool with `SOURCE_ROOT_UNAVAILABLE`, and a different repository recreated at that path (or a symlink swung to a sibling worktree) fails with `SOURCE_WORKTREE_MISMATCH` — the worker is never silently run in the transport's startup checkout. Restore the bound root, or restart the MCP transport in the worktree you intend to use. |
-| `SOURCE_ROOT_DIVERGENCE` | The `projectRoot` declared on `bind_device`, `preview_integration`, or `apply_integration` is not the session's exact source root — a different git worktree, or a different app package inside the same worktree — so the call refuses instead of mutating the bound tree. The refusal names both paths. Rebind with `rn_session(action="bind_source", projectRoot="<declared root>")`, which releases the session so its successor mints on that root, then retry; restore package integration first if it is applied. `bind_source` itself returns this code when the declared root cannot be resolved or belongs to a different repository — a foreign tree is never attached. |
-| `NON_GIT_MANIFEST_REQUIRED`, `NON_GIT_ROOT_MISMATCH`, `NON_GIT_MANIFEST_OUTSIDE_ROOT` | Repair `RN_DEV_AGENT_DECLARED_ROOT` and `RN_DEV_AGENT_DECLARED_MANIFESTS`, then restart the supervisor. See [parallel session authority](/rn-dev-agent/session-authority/) for the required values, containment rules, and refusal contract. |
-| `METRO_PORT_CLAIM_CONFLICT`, `PORT_OCCUPIED_UNOWNED`, `METRO_AUTHORITY_MISMATCH`, `METRO_INSTANCE_CHANGED`, `METRO_START_CLEANUP_UNPROVEN` | The allocated port conflicts, the bound Metro identity is disproved or mismatched, or failed startup cleanup could not prove both managed processes and the port stopped. A readiness-deadline cleanup that cannot prove the port free names the same pre-kill launcher state and probe tallies (`listener absent … / probe unknown … / unowned listener …`) so a squatting process or a consistently slow `lsof` is visible instead of an empty cleanup error. Use the session's literal `pnpm ios`/`pnpm android` integration; never adopt or signal the first listening process. |
-| `METRO_ORIGIN_MISMATCH` | The actual first bundle or a later live native-origin probe does not match this session's Metro. Raw `device_*` control reports this code from its live sibling-Metro scan — that scan is what catches a dev client which fell back to another worktree's Metro — while unprovable evidence remains `originAuthority: "not-proven"`. Re-point the app at the session Metro and retry. During `cdp_run_action` replay (and `cdp_login_prologue` through it) on an `expo` dev-client install, an unproven mismatch after the flow's own relaunching `launchApp`, with no origin claim succeeding since, names that relaunch as the cause in the message and `meta.flowRelaunch`, keeping the original `nextAction`: start the action with `launchApp: { stopApp: false }` — reset with `device_reset_state` beforehand if state must be cleared — rather than re-pointing anything. See [parallel session authority](/rn-dev-agent/session-authority/). |
-| `METRO_LAUNCHER_ENVIRONMENT_INVALID`, `METRO_LAUNCHER_EVIDENCE_UNAVAILABLE`, `METRO_LAUNCHER_ENFORCEMENT_REFUSED`, `METRO_LAUNCHER_CHILD_SPAWN_FAILED`, `METRO_LAUNCHER_PRE_EVIDENCE_FAILED`, `METRO_LAUNCHER_POLICY_UNAVAILABLE` | Managed Metro failed before authoritative runtime evidence was available. The bounded diagnostic names the failed stage without exposing credentials or local paths. For a policy failure, restore a real, private `.rn-agent/integration` directory without symlinks or hard-linked policy files; otherwise repair the named stage, then retry the literal package script. |
-| `METRO_START_UNAVAILABLE` | The managed Metro could not be proven authoritative. When the detail reads `launcher alive at deadline; readiness deadline N ms expired: listener absent … probes, probe unknown …, unowned listener …`, no launcher-owned listener was observed before the readiness budget ran out; the probe tallies distinguish absence, unreadable probes, and an unowned listener. The `Metro log tail` is the pre-shutdown snapshot, so anything Metro printed while being stopped (an `EPIPE` on its evidence socket, for example) is a consequence of that stop, not the cause. The budget defaults to a provisional 90 seconds pending independent cold-start measurement; set `.rn-agent/config.json` → `{ "metro": { "readinessTimeoutMs": 150000 } }` (an integer, 1000–600000) for a project that needs longer. The generated adapter's `ensure-metro` SIGKILL bound is that budget plus 100 s of headroom for the work outside the readiness loop, so a 150000 ms readiness budget gives the outer CLI call a 250 s limit. It is a timeout only and never relaxes any proof; a malformed value refuses with `METRO_READINESS_TIMEOUT_INVALID` rather than silently using the default. `probe unknown` counts listener probes that could not complete (a slow `lsof` on macOS); an `unowned listener` names another process on the allocated port. The pre-start advisory `install receipt generation not preserved (no-install-receipt)` on a session's first build is expected and is not a second failure. |
-| `METRO_LAUNCHER_EXITED`, `METRO_LISTENER_EXITED` | The authenticated managed Metro launcher or listener exited. Inspect `rn_session(action="status")` and its bounded `metroTerminal.attribution`; see [parallel session authority](/rn-dev-agent/session-authority/) for what it can safely contain. Close the native runner if necessary, call `stop_metro` to complete exact-generation cleanup, repair the attributed cause, and retry the literal package script. |
-| `MANAGED_TRANSFORM_CHANNEL_STALLED` | An authenticated transform child exited or did not complete its first exchange before the watchdog expired. Inspect the Metro log for the failing transformer, stop the managed Metro generation, repair the transformer or dependency, and retry the literal package script; strict proof remains unavailable for the violated generation. |
-| `DEVICE_CLAIM_CONFLICT`, `DEVICE_AUTHORITY_MISMATCH`, `PLATFORM_AUTHORITY_MISMATCH`, `APP_INSTALL_IDENTITY_CHANGED` | The exact UUID/serial, platform, or app differs, or the installed artifact is no longer the attested session build. Bind the intended device and rebuild or reinstall that generation. A byte-identical reinstall is re-issued automatically on the next gated call, except while a strict proof run is bound; see [parallel session authority](/rn-dev-agent/session-authority/). `bind_device` also refuses with `DEVICE_AUTHORITY_MISMATCH` while an Observe instance you started yourself holds the device axis — run `observe` action `stop`, then retry. Only the session-autostarted Observe yields automatically, and the `bind_device` result then reports `observeYielded` with the stopped `observePort` so you can reopen it — an Observe you bring back yourself, with `start` or `restart`, counts as caller-started and no longer yields automatically. |
-| `DEVICE_AUTHORITY_UNBOUND` | An authority session is present but no device binding is provable, so Observe's device mirror and its per-tool live frame refuse instead of guessing an ambient device (the live frame logs `live frame unavailable (DEVICE_AUTHORITY_UNBOUND)`). The session may be unbound, its prior owner unprovable, or the authority store unavailable — the mirror cannot tell them apart. Run `rn_session(action="status")` and repair the authority axis it names; the mirror clears itself on its own retry loop once the axis is bound, and the live frame retries on the next state-changing tool call. |
-| `EXPO_DEVICE_IDENTITY_MISMATCH` | Expo Android could not uniquely map the bound adb serial to its required model/AVD display name, or that mapping changed immediately before launch. Keep the same exact serial bound, disconnect duplicate model/AVD names, authorize or reconnect that device, and retry literal `pnpm android`; never pass a display name as session authority or let Expo choose an ambient device. |
-| `EXACT_ANDROID_DEVICE_REQUIRED` | Releasing the plugin-owned Android interaction slot needs one exact serial, and none was available (typically several adb targets attached with no bound session). Nothing on any device was mutated. Bind the intended device with `rn_session(action="bind_device", ...)`, pass `deviceId` to `maestro_run`, or set `ANDROID_SERIAL`, then retry. An ambient or default adb target is never selected. |
-| `BUNDLE_HANDSHAKE_UNAVAILABLE`, `BUNDLE_IDENTITY_MISMATCH`, `CDP_TARGET_AUTHORITY_MISMATCH`, `TARGET_CLAIM_CONFLICT` | The signed initial-bundle marker or exact CDP target is absent, changed, unresponsive, or owned elsewhere. Exact pinning serially resets an inspector that handshakes but fails its mandatory `Runtime.evaluate('1+1')` probe, then re-lists only the allocated Metro and retries the same app/device authority. Every exact-target refusal names the stage that actually failed: Metro advertises no debuggable targets, no target carries the proven app identity, the platform association is unproven, no session-matched target is provably on the bound device, or the selection is ambiguous on that device — so a target Metro still lists is never reported as a bare "found 0", and an expired Android deadline retains that probe-timeout leaf. The session's own reconnect and relaunch recovery surfaces that connect refusal directly as `CDP_TARGET_AUTHORITY_MISMATCH`. `cdp_connect` runs `pin_dev_client`, the single bundle-authority owner, which normalizes the connect-stage failure's *code* to `BUNDLE_HANDSHAKE_UNAVAILABLE` — `METRO_ORIGIN_MISMATCH` and `BUNDLE_HANDSHAKE_UNAVAILABLE` pass through unchanged — while retaining the failing stage in the message after `Exact-connect stage:`, so the same diagnostic reaches you under the handshake code. Retrying `cdp_connect` against the same runtime therefore repeats that refusal — relaunch the intended app from the bound Metro through the session's literal `pnpm ios`/`pnpm android` integration first, then re-pin; never choose another target. |
-| `RUNNER_OWNERSHIP_MISMATCH`, `RUNNER_ADOPTION_REQUIRED`, `RUNNER_CLAIM_CONFLICT` | Native-runner capability or ownership differs. For `RUNNER_OWNERSHIP_MISMATCH`, re-open the device with `device_snapshot(action="open", …)` on the same platform, `deviceId`, and `appId` — that restarts and rebinds the interaction runner; `rn_session(action="status")` only reports state and cannot rebind it. Otherwise rebind the exact runner or complete the explicit handoff/adoption flow. A live runner is never force-stolen; see [parallel session authority](/rn-dev-agent/session-authority/) for the unsupported legacy split-store case. When `RUNNER_ADOPTION_REQUIRED` appears as `startupCleanupBlocked` on a blocked contender, the prior owner is already proven dead but its runner could not be proven stopped — run the packaged recovery in [recovering a wedged source root](/rn-dev-agent/session-authority/#recovering-a-wedged-source-root). |
-| `OBSERVE_AUTHORITY_MISMATCH`, `OBSERVE_PORT_CLAIM_CONFLICT`, `PROOF_AUTHORITY_MISMATCH` | Observe or proof belongs to another fenced generation. Start a session-scoped instance or proof run. |
-| `PROJECT_ROOT_UNAVAILABLE` | The Observe actions/E2E endpoints could not prove one project root, so they refuse (HTTP 503) rather than serve another checkout's actions. The root is taken from the bound session's declared app root, then `RN_PROJECT_ROOT`, then discovery from the working directory. Bind the intended worktree with `rn_session`, or set `RN_PROJECT_ROOT` to that checkout when several declare the same app id. The reason is shown verbatim in the UI. |
-| `HANDOFF_NOT_AUTHORIZED`, `STALE_LEASE_NOT_RECLAIMABLE` | The handoff/adoption token is invalid, or the prior owner's death is not proven. Lease expiry alone never authorizes reclamation. Grouped sessions mint no adoption handles at all: `adopt_stale` always refuses there, and a proven-dead owner is released by startup cleanup or by the packaged recovery in [recovering a wedged source root](/rn-dev-agent/session-authority/#recovering-a-wedged-source-root). |
-| `AUTHORITY_LOST_DURING_OPERATION`, `OPERATION_ALREADY_IN_PROGRESS` | Authority changed or another fenced operation is active. Treat any apparent handler success as failed, inspect status, and retry only after the session is stable. |
-
-### PLATFORM_TARGET_NOT_FOUND / TARGET_PLATFORM_CONFLICT
-
-`cdp_connect` refused to connect (or disconnected right after connecting)
-because the requested platform or bundleId could not be
-**proven** for any live Metro target. A target only proves its identity
-through one internally consistent Metro field — `appId`, an exact bundle-id
-`description`, or the canonical `<bundleId> (<device>)` title; a defaulted
-or ambiguous platform guess never satisfies a platform filter. A `deviceName`
-that carries no platform token — a custom simulator name such as `rn-qa` —
-is proven against the live device inventory (booted `simctl` simulator names
-and, only when the session authority binds that exact Android serial, that one
-device's `adb` model — any other initialized authority, including one that binds
-no device at all, one whose session owner was lost, one whose worker birth or
-authority store failed to open, or one whose binding cannot be read, fences
-`adb` entirely and an ambient adb device is never queried; only a runtime that
-was never initialized (`SESSION_NOT_INITIALIZED`) keeps the legacy ambient
-read); a name that matches both inventories, or neither, stays on the
-fail-closed bundle inference. Raw `device_*` tools are not fenced by this rule.
-The refusal lists the candidate targets with their inference confidence. Run
-`cdp_targets` only to diagnose the mismatch, relaunch the authority-bound app,
-and call `cdp_connect` again. Omitted values come only from the fenced session;
-no-filter or explicit ambient-target selection is diagnostic legacy behavior,
-not authoritative success.
-
-### TARGET_SESSION_MISMATCH
-
-The requested platform or bundle ID conflicts with the active device session's
-binding. Inspect passive `cdp_status`, then request the same platform/bundle or
-explicitly rebind the session. Cross-platform fallback is refused.
-
-### RN_FAST_RUNNER_DOWN / RN_ANDROID_RUNNER_DOWN
-
-The in-tree device runner couldn't start. Check that the simulator/emulator
-is booted and (Android) the SDK is available. iOS self-builds on first use —
-a cold build takes several minutes; if it times out, pre-build once with
-`xcodebuild build-for-testing` (see Getting Started) and re-open the device
-session. On iOS a freshly created simulator's first XCTest bootstrap can
-overrun the warm ready gate; the bridge absorbs that with exactly one internal
-retry, so a message ending in `(one internal retry included)` means two spawn
-attempts already failed — fix the runner build or the simulator rather than
-retrying by hand.
-
-### APP_LAUNCH_FAILED
-
-The native runner started, but launching the app itself failed
-(`device_snapshot action=open` on Android) — reported separately from
-`RN_ANDROID_RUNNER_DOWN` so a launcher problem isn't mistaken for a runner
-problem. Check that the exact `appId` is installed on the selected device
-(`adb -s <serial> shell pm list packages`). Keyless AVDs are handled
-automatically: the launcher runs `monkey` with `--pct-syskeys 0`, so
-missing physical system keys no longer abort the launch with exit 251.
-
-### BUSY_FOREIGN_FLOW
-
-A foreign Maestro/XCUITest session (e.g. a standalone maestro-mcp) is
-driving the same simulator. Wait for it to finish (the guard clears within
-~5 s), use CDP reads and `device_screenshot` meanwhile, or disable the
-guard with `RN_IOS_FOREIGN_GUARD=0`.
-
-### BUSY_FLOW_ACTIVE
-
-Your own Maestro flow holds the device (L3 is exclusive). Conditional picker,
-fill, and dialog fallbacks dynamically enter this plane only when inline
-Maestro actually dispatches. Reads (`cdp_component_tree`, `cdp_store_state`)
-still work mid-flow; taps are refused on purpose until the flow ends.
-
-### AUTOMATION_CLEANUP_UNPROVEN
-
-A plugin-owned Maestro subprocess ended or timed out, but bounded SIGTERM /
-SIGKILL cleanup could not positively confirm that its detached process group
-is absent. The response includes a redacted process-group identity and a manual
-`kill -TERM -<pgid>` command. Run that command and retry in the same bridge;
-the bridge refuses another inline run for the device until absence is observed.
-
-### DEVICE_AUTHORITY_MISMATCH
-
-`maestro_run`/`maestro_test_all`/`cdp_run_action` forwarded the active
-session's exact device ID (`--device`/`--udid`) but maestro-runner's own
-report/log did not prove it ran there: the selected device was missing,
-ambiguous, different from the request, carried only a weak identity, or an
-iOS WDA build/start line named another device. The replay is refused even
-when the runner exited 0, because requested metadata is never execution
-proof — `meta.deviceAuthority` carries the observed IDs and the exact reason.
-Re-open the device session on the intended simulator/emulator
-(`device_snapshot action=open`), shut down stray devices, and retry; pass
-`deviceId` explicitly to `maestro_run` or `maestro_test_all` to pin the
-target.
-
-`reason: 'reported-device-weak-identity'` is the one case where stray devices
-are **not** the cause. Your maestro-runner build's report writer emitted only
-a last-resort identifier — a bare model name such as `iPhone-16-Pro`, or an
-`id` field naming the run rather than the device — so nothing was proven
-either way and the replay fails closed. Shutting down simulators will not
-clear it; run the current host setup workflow to converge the pin-cache to
-attested `1.1.27` (floor `>= 1.1.27`) and retry. If that attested build still emits only a weak
-identity, the replay remains terminal rather than substituting another engine.
-
-### ANDROID_API_UNSUPPORTED
-
-The Android target runs below API 26, which the pinned maestro-runner cannot
-drive — its bundled UiAutomator2 server APK declares `minSdk 26`, so the install
-is rejected with `INSTALL_FAILED_OLDER_SDK`. When the exact serial is known,
-`maestro_run` probes the target's API level up front (`adb shell getprop
-ro.build.version.sdk`) and refuses before the flow starts; a runtime install
-reject maps to the same code, so this never surfaces as an opaque runner error
-or a false ownership mismatch. A probe that cannot answer fails open, so probe
-flakiness never blocks a supported device.
-
-There is no repair for the pinned engine: use the `device_*` interaction tier
-instead, which drives API 23+ through `rn-android-runner`. The few `device_*`
-paths that fall back to maestro (dev-client picker and system dialogs) hit the
-same limit. See [engine version pinning](/rn-dev-agent/actions/#engine-version-pinning).
-
-### RUNNER_PROTOCOL_MISMATCH
-
-The bridge and the native runner disagree on the wire protocol and the
-automatic reinstall didn't clear it. iOS: delete
-`scripts/rn-fast-runner/build/DerivedData` and re-open the device session
-(cold rebuild). Android: rebuild the runner APKs
-(`./gradlew :app:assembleDebug :app:assembleDebugAndroidTest`).
-
-### RUNNER_COMMANDS_STALE / UNSUPPORTED_COMMAND
-
-The runner build predates a newer command verb. Re-open the device session
-(`device_snapshot action=open`) — the stale artifact is rebuilt
-automatically (one multi-minute build on iOS). If a cold build still
-reports missing commands, update the plugin checkout.
-
-### RUNNER_TIMEOUT
-
-The iOS runner didn't answer within the command budget. On a
-non-cancellable `type`/`fill` main-thread timeout the runner is poisoned
-and reaped, and `device_fill` fails closed with a possible mutation outcome.
-Further commands are refused before dispatch while the poisoned runner is
-being reaped. Inspect the current field state before deciding whether a new
-fill is safe, then re-open the device session and use a fresh snapshot — do
-not re-type blindly.
-
-### NO_TEXT_INPUT_TARGET / TEXT_TARGET_LOST / TEXT_TARGET_FOCUS_FAILED / TEXT_ENTRY_UNVERIFIED
-
-By default `device_fill` refuses anything it cannot prove. `NO_TEXT_INPUT_TARGET` means no
-single exact editable target could be bound from the fresh snapshot (missing
-identity, ambiguous testID, target lost, or a non-text-input node).
-`TEXT_TARGET_LOST` means the bound owner disappeared during the fill.
-`TEXT_TARGET_FOCUS_FAILED` means focus on that exact owner could not be proven.
-`TEXT_ENTRY_UNVERIFIED` covers everything else that ends without stable exact
-read-back: secure or occluded fields, unreadable values, transformed input, and
-uncertain dispatch.
-
-Every failure carries `meta.mutation`. `none` means nothing was typed — refresh
-the snapshot, resolve one exact input, and retry. `observed` or `possible` means
-the field may already have changed; inspect current state before issuing any new
-fill. There is no automatic retype, adb input, or Maestro fallback.
-
-When `NO_TEXT_INPUT_TARGET` names a `-pressable` wrapper or a node that is not a
-text input, the inner TextInput is missing from the snapshot and a retry cannot
-bind it. On iOS, tap the field so the software keyboard is up, then call
-`device_fill` with `focused: true`. `typed: true, verified: false` means the
-text was typed but not confirmed. Its append and read-back rules are on the
-[device_fill](/rn-dev-agent/tools/device/device_fill/) page.
-
-If that `focused: true` call itself answers `NO_TEXT_INPUT_TARGET` saying text
-synthesis is unavailable, this Xcode cannot synthesize text: nothing was typed,
-and retrying `focused: true` cannot succeed.
-
-### KEYBOARD_DISMISS_FAILED
-
-A visible software keyboard could not be proven dismissed. iOS automatically
-tries only a positively identified hide/dismiss button inside the keyboard,
-then (when CDP is connected) injected `Keyboard.dismiss()` with a fresh
-hidden-state post-check. It never swipes through keys, presses Return/Done, or
-activates an app accessory toolbar. If those safe tiers fail, the guarded app
-tap is refused. Connect CDP for the JS tier, or dismiss manually and retry from
-a fresh snapshot/ref.
-
-### KEYBOARD_TARGET_STALE
-
-An iOS `Key`/`Keyboard` ref no longer uniquely matches the runner's retained
-latest-snapshot record and the operation-local live keyboard. A missing
-software keyboard, changed layout/identity/frame, ambiguous match, forged
-metadata, or stale generation produces this mutation-free refusal; it does not
-enter keyboard-dismiss healing. Capture a fresh snapshot and retry the new ref.
-Raw coordinates and custom-keyboard Button/Other nodes never qualify as exact
-keyboard targets. A stale runner missing `EXACT_KEYBOARD_TARGET_GUARD` must be
-rebuilt by reopening the exact-device session before dispatch.
-
-### DEVICE_BUSY / DEVICE_CLAIM_CONFLICT
-
-A `DEVICE_BUSY` refusal reports whether the holder is alive and its heartbeat
-age bounded to 0–90s. It does not expose the holder PID, project path, or app ID,
-and it does not mutate the holder.
-
-From the holder worktree, run `device_snapshot action=close` to release it safely.
-
-Alternatively, boot a dedicated simulator (or emulator), bind its exact ID with `rn_session action=bind_device`, run the normal managed build/install there, then select that exact ID with `device_snapshot action=open ... attachOnly=true` when the app is already running.
-
-Dead holders self-heal on the next open attempt; live holders self-heal once their heartbeat is stale beyond the existing 90s recovery window.
-
-A healthy live holder is never stolen or changed by this refusal.
-
-`DEVICE_CLAIM_CONFLICT` is separate: another live worktree session owns the
-resource and requires explicit handoff or conservatively proven stale adoption;
-heartbeat or sleep expiry alone does not reclaim it. Do not force-steal or
-manually install an unrelated snapshot to bypass authority.
-
-### Native iOS deep-link dialog remains visible
-
-Prefer `device_deeplink`; on an open exact iOS session it uses the native runner
-to accept SpringBoard **Open** and reports `meta.openDialogTapped`. If the URL
-was opened externally or the confirmation remains, call
-`device_accept_system_dialog(label="Open")`. A
-`DIALOG_BUTTON_NOT_FOUND` result includes `availableButtons`; retry one exact
-label and never use coordinate guesses.
-
-### STALE_REF
-
-An `@ref` from an old snapshot no longer resolves uniquely. Re-run
-`device_snapshot` and use a fresh ref; unique testID/label matches are
-re-bound automatically, so persistent `STALE_REF` with a `candidates` list
-means the match is ambiguous — disambiguate by testID.
-
-## Actions & setup
-
-### Action replay fails with SELECTOR_NOT_FOUND
-
-The plugin attempts to self-repair small UI drift: it looks at the live UI, finds the renamed `testID` via fuzzy match, patches the action YAML, and retries.
-
-Self-repair refuses if the file has been hand-edited (mtime check), or after 3 repairs in 24h. If repair is refused or fails, the plugin asks before forcing. If the underlying flow has changed structurally (extra step, removed screen), re-record with `/rn-dev-agent:test-feature`.
-
-See the [Actions guide](/rn-dev-agent/actions/) for full details.
-
-### Action replay refused: frontmost proof cannot cover every mounted renderer
-
-The React-tree prover refused with `ASSERTION_FAILED` because it could not cover every mounted renderer. Read `meta.coverage.reasons`:
-
-- `renderer-error`: reading a renderer's roots or walking its tree threw (`erroredRendererIds`), the registry could not be fully read (`registeredRendererIds` is `null`), or resolving or walking `__RN_AGENT_EXTRA_ROOTS__` threw (`extraRootsError`).
-- `root-enumeration-incomplete`: root enumeration did not finish (`scanFinished` is `false`).
-- `renderers-unscanned`: a registered renderer was never visited (`unscannedRendererIds`).
-
-`meta.coverage.scanErrors` retains at most five scan errors, each with `rendererId`, `phase`, and a message capped at 200 characters. The phases are `roots` for reading renderer roots, `walk` for iterating those roots or walking their trees, and `extra-roots` for resolving or walking extra roots (whose `rendererId` is `-1`). `rendererErrors` counts caught scan errors, including extra-root failures; an unreadable registry can cause refusal without a `scanErrors` entry. Successful frontmost checks omit `coverage`.
-
-### Action replay refused with WDA_BOOTSTRAP_FAILED
-
-The iOS Maestro driver (WebDriverAgent) failed to bootstrap before the
-first replay step ran, so the flow was refused and no self-repair was attempted.
-The verified runner payload remains sealed; rn-dev-agent provisions a separate
-per-spawn WDA cache and removes it with the runner snapshot after the attempt.
-Completed WDA builds are kept in a persistent store next to the pin-cache
-(`.wda-store-<runner version>/<host platform-architecture>/<xcode fingerprint>/`)
-and seed later compatible spawns best-effort, so subsequent invocations can
-reuse a completed build instead of rebuilding. Incomplete, corrupt, or
-incompatible entries are skipped and rebuild cold; a later complete build
-replaces the damaged key. If the Xcode fingerprint changes during a run, that
-run's artifacts are not published. A seeding failure also falls back to a cold
-build; a publication failure leaves the current run result intact but may make a
-later invocation build cold again. If a reused build misbehaves, delete that
-store directory to force a cold rebuild.
-Re-run the replay (bootstrap retries itself), check network access, and re-run
-setup to verify the pin-cache maestro-runner. If the failure detail includes
-`RUNNER_CACHE_UNAVAILABLE`, verify that the runner cache parent is writable;
-the runner was not spawned and any owned snapshot or cache was removed.
-
-### Replay refused by the engine floor preflight
-
-Replay requires maestro-runner `>= 1.1.27` from rn-dev-agent's pin-cache and an
-owned action carrying `enginePin: maestro-runner@1.1.27` or newer. Missing, older,
-checksum-mismatched, unverified, unknown, or unsupported runner states
-are terminal. Regex text selectors are also refused because the pinned runner
-does not have a validated implementation for them. Run setup to converge the
-runner; see [engine version pinning](../actions/#engine-version-pinning) for action
-migration and selector repair. No UI mutation occurs before these checks pass.
-
-### Replay refused with DEV_CLIENT_CLEARSTATE_REFUSED
-
-`cdp_run_action` — and `cdp_login_prologue` through it — refuses a flow that
-clears app state when the session's install receipt attests an Expo dev-client
-build: the `clearState` relaunch uninstalls the app and strands the dev client
-at its picker, so the relaunched app cannot re-attach to the authority-bound
-Metro. No runner is invoked and the app is not touched. Remove `clearState`
-from the action so it starts from the attached app, and run
-`device_reset_state` before the replay when a state reset is needed. The
-reinstall path stays open to `maestro_run`, `maestro_test_all`, and
-`cdp_run_action` on a `bare-react-native` install — see
-[parallel session authority](/rn-dev-agent/session-authority/).
-
-### `/setup` skipped a step
-
-Re-run `/rn-dev-agent:setup`. It's idempotent — already-injected blocks are detected and skipped, so only the missing pieces get applied.
-
-### .rn-agent/state/ showing up in git status
-
-That directory is the runtime-state fallback for an unfenced compatibility process, not the run-history location for an authority-fenced session. Check that `.rn-agent/.gitignore` contains `state/`, `recordings/`, `snapshots/`, `diag/`, and `index.json`; `/setup` restores missing scaffold files.
-
-For a fenced replay that wrote runtime state, read the exact sidecar from
-`data.writes.runtimeStatePath` on success or
-`meta.writes.runtimeStatePath` on failure. It resolves under
-`<state-home>/v2/sessions/<sessionId>/runtime/state/`, not the project. With the
-current storage layout, a new fenced session starts at revision 1 with empty run
-and repair history and does not read sidecar history or revisions from an
-earlier session. The tracked YAML lifecycle status is shared worktree
-knowledge, so later sessions still see an action that an earlier clean replay
-promoted to `active`.
+It finishes the teardown from the run's own records and releases the lease once every resource
+is accounted for. Do not delete locks in the
+[configured namespace](https://github.com/Lykhoyda/rn-dev-agent/blob/develop/packages/qaren-cli/README.md#ios-admission-and-cleanup)
+to get around it.
+
+## Why were my screenshots withheld?
+
+See the authoritative [withheld media guide](https://github.com/Lykhoyda/rn-dev-agent/blob/develop/packages/qaren-cli/README.md#why-were-my-screenshots-withheld)
+for reason codes, remedies, diagnostic locations and how screenshots and video retain their first cause.

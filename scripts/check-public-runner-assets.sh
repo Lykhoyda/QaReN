@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 # Postpublication readiness: the plugin version this checkout advertises must
-# already have its exact runner bytes public. Fetches the zips named by the
-# committed trust root from release v<plugin version> and fails on a missing
-# release or asset, a draft, or any SHA-256 / length difference. Nothing here
-# ever rebuilds, replaces or re-hashes a public byte.
+# already have its exact runner bytes public. Fetches the runner zips and qaren
+# tarballs named by the committed trust root from release v<plugin version> and
+# fails on a missing release or asset, a draft, or any SHA-256 / length
+# difference. Nothing here ever rebuilds, replaces or re-hashes a public byte.
 #
 # A checkout whose version AND root manifest equal its base (BASE_REF for pull
 # requests, EVENT_BEFORE for pushes) stays offline: those bytes were asserted
@@ -25,13 +25,13 @@ done
 
 fail() { echo "::error::$*" >&2; exit 1; }
 
-PLUGIN="$ROOT/packages/claude-plugin/plugin.json"
+PLUGIN="$ROOT/packages/qaren-plugin/.claude-plugin/plugin.json"
 MANIFEST="$ROOT/runner-manifest.json"
 V=$(jq -r '.version' "$PLUGIN")
 MV=$(jq -r '.version // empty' "$MANIFEST")
 [ "$MV" = "$V" ] || fail "runner-manifest.json vouches for v$MV while plugin.json advertises v$V — the trust root is stale"
-cmp -s "$MANIFEST" "$ROOT/packages/claude-plugin/runner-manifest.json" \
-  || fail "packages/claude-plugin/runner-manifest.json differs from the root trust root"
+cmp -s "$ROOT/packages/qaren-plugin/runner-manifest.json" "$MANIFEST" \
+  || fail "packages/qaren-plugin/runner-manifest.json is missing or differs from the root trust root"
 
 BASE=""
 if [ -n "${BASE_REF:-}" ]; then
@@ -45,7 +45,7 @@ fi
 # Offline only when the base already carried this exact version AND root:
 # a manifest edit without a version bump must still face the public bytes.
 if [ -n "$BASE" ] \
-   && [ "$(git -C "$ROOT" show "$BASE:packages/claude-plugin/plugin.json" | jq -r '.version')" = "$V" ] \
+   && [ "$(git -C "$ROOT" show "$BASE:packages/qaren-plugin/.claude-plugin/plugin.json" 2>/dev/null | jq -r '.version')" = "$V" ] \
    && [ "$(git -C "$ROOT" show "$BASE:runner-manifest.json")" = "$(cat "$MANIFEST")" ]; then
   echo "the base already carried this exact v$V trust root; its public assets were asserted when it landed — staying offline"
   exit 0
@@ -65,22 +65,27 @@ if ! gh api "repos/{owner}/{repo}/releases/tags/v$V" > "$TMP/release.json" 2> "$
 fi
 jq -e '.draft == false' "$TMP/release.json" >/dev/null || fail "release v$V is still a draft"
 
-IOS=$(jq -r '.assets.ios[0].name' "$MANIFEST")
-ANDROID=$(jq -r '.assets.android[0].name' "$MANIFEST")
-# The listing is the only thing that may say an asset is absent: a transfer
-# that never completed says nothing about the public bytes.
-for NAME in "$IOS" "$ANDROID"; do
+# Every asset the trust root names: both runner zips, plus the qaren tarballs
+# once the root lists them (runner-manifest-publication.mts requires them for a release).
+LISTING=$(jq -r '[.assets.ios[0], .assets.android[0]] + [(.assets.qaren // {})[]] | .[] | "\(.name) \(.sha256) \(.bytes)"' "$MANIFEST") \
+  || fail "runner-manifest.json does not list its assets as name/sha256/bytes entries"
+ASSETS=()
+while IFS= read -r A; do ASSETS+=("$A"); done <<< "$LISTING"
+PATTERNS=()
+for A in "${ASSETS[@]}"; do
+  NAME=${A%% *}
+  # The listing is the only thing that may say an asset is absent: a transfer
+  # that never completed says nothing about the public bytes.
   jq -e --arg name "$NAME" 'any(.assets[]; .name == $name)' "$TMP/release.json" >/dev/null \
     || fail "release v$V carries no $NAME"
+  PATTERNS+=(--pattern "$NAME")
 done
-if ! gh release download "v$V" --dir "$TMP" --pattern "$IOS" --pattern "$ANDROID" 2> "$TMP/download.err"; then
+if ! gh release download "v$V" --dir "$TMP" "${PATTERNS[@]}" 2> "$TMP/download.err"; then
   cat "$TMP/download.err" >&2
   fail "could not download the runner assets release v$V lists — a failed transfer is not divergence"
 fi
-for P in ios android; do
-  NAME=$(jq -r ".assets.${P}[0].name" "$MANIFEST")
-  SHA=$(jq -r ".assets.${P}[0].sha256" "$MANIFEST")
-  BYTES=$(jq -r ".assets.${P}[0].bytes" "$MANIFEST")
+for A in "${ASSETS[@]}"; do
+  read -r NAME SHA BYTES <<< "$A"
   ACTUAL_SHA=$(shasum -a 256 "$TMP/$NAME" | cut -d' ' -f1)
   ACTUAL_BYTES=$(wc -c < "$TMP/$NAME" | tr -d ' ')
   [ "$ACTUAL_SHA" = "$SHA" ] || fail "$NAME: public sha256 $ACTUAL_SHA != trust root $SHA"
@@ -98,4 +103,5 @@ else
   fail "release v$V carries no runner-manifest.json asset"
 fi
 
-echo "public runner assets for v$V match the trust root ($IOS, $ANDROID)"
+NAMES=$(for A in "${ASSETS[@]}"; do printf '%s, ' "${A%% *}"; done)
+echo "public runner assets for v$V match the trust root (${NAMES%, })"

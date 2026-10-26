@@ -1,0 +1,10 @@
+{
+  "screen": {
+    "front": "app",
+    "elements": [{ "ref": "@name", "kind": "input", "label": "Name", "value": "Anton", "hittable": true, "disabled": false, "secure": false, "offscreen": false }],
+    "visibleText": ["Name: Anton", "Welcome, Bob"]
+  },
+  "typedValues": ["Anton"],
+  "line": "✓ The greeting says Welcome, Anton",
+  "expected": { "kind": "check", "verdict": "fail" }
+}

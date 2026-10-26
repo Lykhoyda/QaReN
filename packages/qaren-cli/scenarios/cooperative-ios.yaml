@@ -1,0 +1,22 @@
+# Cooperative handoff (workspace issue #34): qaren validates, prepares deps,
+# fingerprints, and allocates the run-scoped simulator, then stops and issues
+# a typed handoff. The qaren session performs the one authoritative
+# managed build/install and owns Metro; `qaren complete <run-id> <build-log>`
+# binds the session's signed receipt back to this run. No `metro:` section:
+# the session allocates its own Metro port.
+schema: qaren/1
+name: coop-ios
+platform: ios
+candidate:
+  project_root: test-app
+  app_id: com.rndevagent.testapp
+  revision: HEAD
+build:
+  owner: qaren
+ios:
+  device_type: com.apple.CoreSimulator.SimDeviceType.iPhone-17-Pro
+  runtime: com.apple.CoreSimulator.SimRuntime.iOS-26-4
+deadlines:
+  install_deps_seconds: 900
+  build_seconds: 2400
+  device_boot_seconds: 420

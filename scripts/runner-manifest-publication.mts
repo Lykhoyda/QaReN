@@ -1,11 +1,8 @@
 #!/usr/bin/env node
 // Decision seam for the release trust-root transaction (.github/workflows/release.yml).
 //
-// A release candidate H is a Version Packages commit whose runner-manifest.json
-// already vouches for the runner zips retained from the producer that built it.
-// Every decision here compares mutable state (release assets, drafts, tags)
-// against that immutable candidate, never the other way round: nothing that is
-// already public may become the authority for what gets published.
+// release.yml binds finalized head H to producer candidate P by allowing only the trust-root delta.
+// Retained producer digests are the authority; public assets never redefine what gets published.
 //
 // Stages:
 //   prepared  H is self-consistent and matches the producer handoff (offline).
@@ -16,8 +13,9 @@
 //   node scripts/runner-manifest-publication.mts --stage prepared|publish \
 //     --candidate-sha <H> --plugin-version <V> --advertised-version <main V> \
 //     --repo-manifest runner-manifest.json \
-//     --plugin-manifest packages/claude-plugin/runner-manifest.json \
+//     --plugin-manifest packages/qaren-plugin/runner-manifest.json \
 //     --ios-sha256 <hex> --ios-bytes <n> --android-sha256 <hex> --android-bytes <n> \
+//     --qaren-darwin-arm64-sha256 <hex> --qaren-darwin-arm64-bytes <n> \
 //     [--release release.json --tag-sha <sha-or-empty> --published-manifest published.json]
 
 import { readFileSync, appendFileSync } from 'node:fs';
@@ -38,11 +36,16 @@ export function assertVersion(version) {
   return version;
 }
 
+export const QAREN_PLATFORMS = ['darwin-arm64'];
+
 export function expectedRunnerAssets(version) {
   assertVersion(version);
   return {
     ios: `rn-fast-runner-${version}-sim.zip`,
     android: `rn-android-runner-${version}.zip`,
+    qaren: Object.fromEntries(
+      QAREN_PLATFORMS.map((platform) => [platform, `qaren-${version}-${platform}.tar.gz`]),
+    ),
     manifest: 'runner-manifest.json',
   };
 }
@@ -133,8 +136,6 @@ function assertBytes(label, value) {
   return n;
 }
 
-// The candidate is only ever accepted as a whole: version, exact asset names,
-// both platforms, an identical packages/claude-plugin copy and the producer's own digests.
 export function assertPreparedCandidate(input) {
   const candidateSha = assertSha('candidate SHA', input.candidateSha);
   const version = assertVersion(input.pluginVersion);
@@ -150,31 +151,51 @@ export function assertPreparedCandidate(input) {
   if (manifest.version !== version) {
     refuse(`the candidate trust root is v${manifest.version} while plugin.json is v${version}`);
   }
-  // packages/claude-plugin is the one directory both marketplaces install (GH #892).
+  // packages/qaren-plugin is the one directory every host installs.
   const pluginCopy = parseManifest(input.pluginManifest);
   if (pluginCopy === null || canonical(pluginCopy) !== canonical(manifest)) {
     refuse('the plugin runner-manifest.json copy is missing or differs from the candidate root');
   }
   const producer = input.producer ?? {};
+  const matchHandoff = (label, asset, expectedName, handoff) => {
+    if (asset?.name !== expectedName) {
+      refuse(`the candidate ${label} asset is ${asset?.name}, expected ${expectedName}`);
+    }
+    if (!handoff) refuse(`no producer handoff identity for ${label}`);
+    const sha256 = assertDigest(`producer ${label} sha256`, handoff.sha256);
+    const bytes = assertBytes(`producer ${label} bytes`, handoff.bytes);
+    if (asset.sha256 !== sha256 || asset.bytes !== bytes) {
+      refuse(
+        `the candidate ${label} digest (${asset.sha256}/${asset.bytes}) does not match the ` +
+          `producer handoff (${sha256}/${bytes})`,
+      );
+    }
+  };
   for (const platform of ['ios', 'android']) {
     const assets = manifest.assets?.[platform];
     if (!Array.isArray(assets) || assets.length !== 1) {
       refuse(`the candidate trust root must list exactly one ${platform} asset`);
     }
-    const [asset] = assets;
-    if (asset.name !== expected[platform]) {
-      refuse(`the candidate ${platform} asset is ${asset.name}, expected ${expected[platform]}`);
-    }
-    const handoff = producer[platform];
-    if (!handoff) refuse(`no producer handoff identity for ${platform}`);
-    const sha256 = assertDigest(`producer ${platform} sha256`, handoff.sha256);
-    const bytes = assertBytes(`producer ${platform} bytes`, handoff.bytes);
-    if (asset.sha256 !== sha256 || asset.bytes !== bytes) {
-      refuse(
-        `the candidate ${platform} digest (${asset.sha256}/${asset.bytes}) does not match the ` +
-          `producer handoff (${sha256}/${bytes})`,
-      );
-    }
+    matchHandoff(platform, assets[0], expected[platform], producer[platform]);
+  }
+  const qaren = manifest.assets?.qaren;
+  if (!qaren || typeof qaren !== 'object' || Array.isArray(qaren)) {
+    refuse('the candidate trust root lists no qaren tarballs');
+  }
+  const platforms = Object.keys(qaren).sort();
+  if (canonical(platforms) !== canonical([...QAREN_PLATFORMS].sort())) {
+    refuse(
+      'the candidate trust root must list exactly the Apple silicon qaren tarball ' +
+        `(${QAREN_PLATFORMS.join(', ')}), got ${platforms.join(', ') || 'none'}`,
+    );
+  }
+  for (const platform of QAREN_PLATFORMS) {
+    matchHandoff(
+      `qaren ${platform}`,
+      qaren[platform],
+      expected.qaren[platform],
+      producer.qaren?.[platform],
+    );
   }
   return { candidateSha, version, expected, manifest };
 }
@@ -226,13 +247,15 @@ export function decideRunnerPublication(input) {
       ? `release v${version} is published from ${identity}, not the candidate ${candidateSha}`
       : !names.has(expected.ios) || !names.has(expected.android)
         ? `release v${version} is published without both runner zips`
-        : !names.has(expected.manifest)
-          ? `release v${version} is published without its runner-manifest.json`
-          : published === null
-            ? `the published runner-manifest.json for v${version} could not be read`
-            : canonical(published) !== canonical(manifest)
-              ? `the published runner-manifest.json for v${version} differs from the candidate`
-              : null;
+        : Object.values(expected.qaren).some((name) => !names.has(name))
+          ? `release v${version} is published without the Apple silicon qaren tarball`
+          : !names.has(expected.manifest)
+            ? `release v${version} is published without its runner-manifest.json`
+            : published === null
+              ? `the published runner-manifest.json for v${version} could not be read`
+              : canonical(published) !== canonical(manifest)
+                ? `the published runner-manifest.json for v${version} differs from the candidate`
+                : null;
   if (divergence) {
     refuse(
       `${divergence}. A published release is never replaced: ` +
@@ -284,6 +307,15 @@ function main() {
     producer: {
       ios: { sha256: args['ios-sha256'], bytes: args['ios-bytes'] },
       android: { sha256: args['android-sha256'], bytes: args['android-bytes'] },
+      qaren: Object.fromEntries(
+        QAREN_PLATFORMS.map((platform) => [
+          platform,
+          {
+            sha256: args[`qaren-${platform}-sha256`],
+            bytes: args[`qaren-${platform}-bytes`],
+          },
+        ]),
+      ),
     },
   };
   const stage = args.stage ?? 'prepared';
@@ -309,6 +341,7 @@ function main() {
     `action=${decision.action}`,
     `ios=${decision.expected.ios}`,
     `android=${decision.expected.android}`,
+    ...QAREN_PLATFORMS.map((platform) => `qaren-${platform}=${decision.expected.qaren[platform]}`),
   ];
   if (process.env.GITHUB_OUTPUT) appendFileSync(process.env.GITHUB_OUTPUT, lines.join('\n') + '\n');
   console.log(decision.reason);

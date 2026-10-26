@@ -1,8 +1,8 @@
 {
-  "name": "rn-dev-agent-ios-runner",
+  "name": "qaren-ios-runner",
   "version": "0.0.0",
   "private": true,
-  "description": "iOS XCTest runner source project for rn-dev-agent device control.",
+  "description": "iOS XCTest runner source project for QaReN device control.",
   "license": "MIT",
   "scripts": {
     "test": "bash ../../scripts/test-native-ios.sh"

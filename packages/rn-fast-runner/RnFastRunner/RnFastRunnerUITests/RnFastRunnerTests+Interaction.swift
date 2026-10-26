@@ -76,7 +76,7 @@ extension RnFastRunnerTests {
     return .unsupported("\(action) is not supported on tvOS; move focus with swipe or scroll, then select the focused element")
 #else
     if element.isHittable {
-      element.tap()
+      gesture { element.tap() }
       return .performed
     }
     let frame = element.frame
@@ -120,7 +120,7 @@ extension RnFastRunnerTests {
 #else
     let buttons = app.navigationBars.buttons.allElementsBoundByIndex
     if let back = buttons.first(where: { $0.isHittable }) {
-      back.tap()
+      gesture { back.tap() }
       return true
     }
     return false
@@ -139,7 +139,7 @@ extension RnFastRunnerTests {
     let target = app.windows.firstMatch.exists ? app.windows.firstMatch : app
     let start = target.coordinate(withNormalizedOffset: CGVector(dx: 0.05, dy: 0.5))
     let end = target.coordinate(withNormalizedOffset: CGVector(dx: 0.8, dy: 0.5))
-    start.press(forDuration: 0.05, thenDragTo: end)
+    gesture { start.press(forDuration: 0.05, thenDragTo: end) }
 #endif
   }
 
@@ -169,7 +169,7 @@ extension RnFastRunnerTests {
     let target = app.windows.firstMatch.exists ? app.windows.firstMatch : app
     let start = target.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.99))
     let end = target.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.7))
-    start.press(forDuration: 0.6, thenDragTo: end)
+    gesture { start.press(forDuration: 0.6, thenDragTo: end) }
 #endif
   }
 
@@ -251,7 +251,7 @@ extension RnFastRunnerTests {
 #endif
     let count = estimatedDeleteCount(for: element)
     let deletes = String(repeating: XCUIKeyboardKey.delete.rawValue, count: count)
-    element.typeText(deletes)
+    gesture { element.typeText(deletes) }
   }
 
   // MARK: - Exact text-input targeting (GH #581)
@@ -662,6 +662,113 @@ extension RnFastRunnerTests {
 #endif
   }
 
+  static let occludedDispatchMessage =
+    "FOCUS_TARGET_OCCLUDED: the focus or tap point is covered by another element (keyboard, bar or overlay); no tap or typing was performed. Scroll the target clear, then retry."
+
+  // A blocked gesture is never synthesized, but a multi-gesture command may already have run earlier ones.
+  static func appAlertInterruptionResponse(singleGesture: Bool = true) -> Response {
+    let performed = singleGesture ? "no gesture was performed" : "earlier gestures of this command may have run"
+    return Response(ok: false, error: ErrorPayload(
+      code: "APP_ALERT_INTERRUPTION",
+      message: "APP_ALERT_INTERRUPTION: an open app alert blocks the gesture point and no alert button was pressed; \(performed). Snapshot the alert and tap one of its buttons.",
+      mutation: singleGesture ? "none" : "possible"
+    ))
+  }
+
+  static let movedDispatchMessage =
+    "TARGET_MOVED_BEFORE_DISPATCH: target moved before dispatch; no tap or typing was performed. Refresh the snapshot and retry."
+
+  // nil when the hit test is unavailable: unresolvable, ambiguous, thrown or over budget.
+  func boundedHittable(_ element: XCUIElement, deadline: Double) -> Bool? {
+    DispatchGuard.hitTest(
+      deadline: deadline,
+      now: { ProcessInfo.processInfo.systemUptime },
+      resolve: { element },
+      read: { target in
+        var hittable: Bool?
+        let exception = RunnerObjCExceptionCatcher.catchException({ hittable = target.isHittable })
+        return exception == nil ? hittable : nil
+      }
+    ).hittable
+  }
+
+  func liveTargetCheck(app: XCUIApplication, command: Command, deadline: Double, checkHittability: Bool = true) -> DispatchGuard.TargetCheck {
+    lastMovedFrames = nil
+    lastLiveTarget = nil
+    guard let index = command.snapshotNodeIndex,
+          let retained = retainedSnapshotTargets[index],
+          retained.generation == currentSnapshotGeneration,
+          command.snapshotGeneration == retained.generation
+    else { return .unavailable }
+    let predicate: NSPredicate
+    if let identifier = retained.identifier {
+      predicate = NSPredicate(format: "identifier == %@", identifier)
+    } else if let label = retained.label {
+      predicate = NSPredicate(format: "label == %@", label)
+    } else {
+      return .unavailable
+    }
+    let expected = CGRect(
+      x: retained.rect.x, y: retained.rect.y,
+      width: retained.rect.width, height: retained.rect.height
+    )
+    var live: CGRect?
+    var liveIdentity: DispatchGuard.NodeIdentity?
+    let check = DispatchGuard.hitTest(
+      deadline: deadline,
+      now: { ProcessInfo.processInfo.systemUptime },
+      resolve: {
+        var matches: [XCUIElement] = []
+        let exception = RunnerObjCExceptionCatcher.catchException({
+          matches = app.descendants(matching: .any).matching(predicate).allElementsBoundByIndex.filter {
+            self.elementTypeName($0.elementType) == retained.type
+          }
+        })
+        return exception == nil && matches.count == 1 ? matches[0] : nil
+      },
+      matchesFrame: { target in
+        var matches: Bool?
+        let exception = RunnerObjCExceptionCatcher.catchException({
+          let frame = target.frame
+          live = frame
+          let owner = retained.ownerRect.map { CGRect(x: $0.x, y: $0.y, width: $0.width, height: $0.height) }
+          let agree = DispatchGuard.framesAgree(retained: expected, live: frame, owner: owner)
+          if agree { self.lastLiveTarget = target }
+          if !agree {
+            let label = target.label
+            let identifier = target.identifier
+            liveIdentity = DispatchGuard.NodeIdentity(
+              type: self.elementTypeName(target.elementType),
+              label: label.isEmpty ? nil : label,
+              identifier: identifier.isEmpty ? nil : identifier
+            )
+          }
+          matches = agree
+        })
+        return exception == nil ? matches : nil
+      },
+      checkHittability: checkHittability,
+      read: { target in self.boundedHittable(target, deadline: deadline) }
+    )
+    if check == .moved, let live {
+      lastMovedFrames = (
+        expected, live,
+        DispatchGuard.NodeIdentity(type: retained.type, label: retained.label, identifier: retained.identifier),
+        liveIdentity
+      )
+    }
+    return check
+  }
+
+  func movedDispatchResponse() -> Response {
+    let message = lastMovedFrames.map {
+      DispatchGuard.movedMessage(
+        retained: $0.retained, live: $0.live,
+        retainedIdentity: $0.retainedIdentity, liveIdentity: $0.liveIdentity)
+    } ?? Self.movedDispatchMessage
+    return Response(ok: false, error: ErrorPayload(code: "TARGET_MOVED_BEFORE_DISPATCH", message: message, mutation: "none"))
+  }
+
   private func resolveLiveKeyboardTarget(
     app: XCUIApplication,
     retained: RetainedSnapshotTarget
@@ -672,6 +779,8 @@ extension RnFastRunnerTests {
         candidates = app.keyboards.allElementsBoundByIndex
       } else if retained.type == "Key" {
         candidates = app.keyboards.keys.allElementsBoundByIndex
+      } else if retained.type == "Button" {
+        candidates = app.keyboards.buttons.allElementsBoundByIndex
       }
     })
     guard exceptionMessage == nil else { return nil }
@@ -721,9 +830,9 @@ extension RnFastRunnerTests {
       point: point
     ) else { return false }
     if let duration {
-      element.press(forDuration: duration)
+      gesture { element.press(forDuration: duration) }
     } else {
-      element.tap()
+      gesture { element.tap() }
     }
     return true
   }
@@ -743,7 +852,7 @@ extension RnFastRunnerTests {
           insideKeyboard: true
         )
       }) {
-        hittable.tap()
+        gesture { hittable.tap() }
         return true
       }
     }
@@ -758,14 +867,14 @@ extension RnFastRunnerTests {
 #else
     let frame = element.frame
     guard !frame.isEmpty else {
-      element.tap()
+      gesture { element.tap() }
       return
     }
     let origin = element.coordinate(withNormalizedOffset: CGVector(dx: 0, dy: 0))
     let target = origin.withOffset(
       CGVector(dx: max(2, frame.width - 4), dy: max(2, frame.height / 2))
     )
-    target.tap()
+    gesture { target.tap() }
 #endif
   }
 
@@ -812,11 +921,11 @@ extension RnFastRunnerTests {
     return element.exists ? element : nil
   }
 
-  func tapAt(app: XCUIApplication, x: Double, y: Double) -> RunnerInteractionOutcome {
+  func tapAt(app: XCUIApplication, x: Double, y: Double, anchor: XCUIElement? = nil) -> RunnerInteractionOutcome {
     if let outcome = selectFocusedTvElement(app: app, point: CGPoint(x: x, y: y), action: "tap") {
       return outcome
     }
-    return performCoordinateTap(app: app, x: x, y: y)
+    return performCoordinateTap(app: app, x: x, y: y, anchor: anchor)
   }
 
   func mouseClickAt(app: XCUIApplication, x: Double, y: Double, button: String) throws {
@@ -824,9 +933,9 @@ extension RnFastRunnerTests {
     let coordinate = interactionCoordinate(app: app, x: x, y: y)
     switch button {
     case "primary":
-      coordinate.tap()
+      gesture { coordinate.tap() }
     case "secondary":
-      coordinate.rightClick()
+      gesture { coordinate.rightClick() }
     case "middle":
       throw NSError(
         domain: "RnFastRunner",
@@ -1013,10 +1122,10 @@ extension RnFastRunnerTests {
     let endPoint = target.coordinate(withNormalizedOffset: CGVector(dx: centerX, dy: max(0.1, min(0.9, endY))))
 
     // Tap first (first tap of double-tap)
-    center.tap()
+    gesture { center.tap() }
 
     // Immediately press and drag (second tap + drag)
-    center.press(forDuration: 0.05, thenDragTo: endPoint)
+    gesture { center.press(forDuration: 0.05, thenDragTo: endPoint) }
     return .performed
 #endif
   }
@@ -1029,11 +1138,12 @@ extension RnFastRunnerTests {
     return app
   }
 
-  private func performCoordinateTap(app: XCUIApplication, x: Double, y: Double) -> RunnerInteractionOutcome {
+  private func performCoordinateTap(app: XCUIApplication, x: Double, y: Double, anchor: XCUIElement?) -> RunnerInteractionOutcome {
 #if os(tvOS)
     return .unsupported("coordinate tap is not supported on tvOS; move focus with swipe or scroll, then select the focused element")
 #else
-    interactionCoordinate(app: app, x: x, y: y).tap()
+    let coordinate = interactionCoordinate(app: app, x: x, y: y, anchor: anchor)
+    gesture { coordinate.tap() }
     return .performed
 #endif
   }
@@ -1042,7 +1152,8 @@ extension RnFastRunnerTests {
 #if os(tvOS)
     return .unsupported("coordinate double tap is not supported on tvOS; move focus with swipe or scroll, then select the focused element")
 #else
-    interactionCoordinate(app: app, x: x, y: y).doubleTap()
+    let coordinate = interactionCoordinate(app: app, x: x, y: y)
+    gesture { coordinate.doubleTap() }
     return .performed
 #endif
   }
@@ -1051,7 +1162,8 @@ extension RnFastRunnerTests {
 #if os(tvOS)
     return .unsupported("coordinate long press is not supported on tvOS; move focus with swipe or scroll, then long-select the focused element")
 #else
-    interactionCoordinate(app: app, x: x, y: y).press(forDuration: duration)
+    let coordinate = interactionCoordinate(app: app, x: x, y: y)
+    gesture { coordinate.press(forDuration: duration) }
     return .performed
 #endif
   }
@@ -1069,19 +1181,37 @@ extension RnFastRunnerTests {
 #else
     let start = interactionCoordinate(app: app, x: x, y: y)
     let end = interactionCoordinate(app: app, x: x2, y: y2)
-    start.press(forDuration: holdDuration, thenDragTo: end)
+    gesture { start.press(forDuration: holdDuration, thenDragTo: end) }
     return .performed
 #endif
   }
 
 #if !os(tvOS)
-  private func interactionCoordinate(app: XCUIApplication, x: Double, y: Double) -> XCUICoordinate {
-    let root = interactionRoot(app: app)
+  private func interactionCoordinate(app: XCUIApplication, x: Double, y: Double, anchor: XCUIElement? = nil) -> XCUICoordinate {
+    let root = anchor ?? coordinateAnchor(app: app, point: CGPoint(x: x, y: y), liveTarget: nil).element
     let origin = root.coordinate(withNormalizedOffset: CGVector(dx: 0, dy: 0))
     let rootFrame = root.frame
     let offsetX = x - Double(rootFrame.origin.x)
     let offsetY = y - Double(rootFrame.origin.y)
     return origin.withOffset(CGVector(dx: offsetX, dy: offsetY))
+  }
+
+  func coordinateAnchor(app: XCUIApplication, point: CGPoint, liveTarget: XCUIElement?) -> (decision: DispatchGuard.TapAnchor, element: XCUIElement) {
+    var alerts: [XCUIElement] = []
+    var alertFrames: [CGRect] = []
+    var liveFrame: CGRect?
+    let exception = RunnerObjCExceptionCatcher.catchException({
+      alerts = app.alerts.allElementsBoundByIndex
+      alertFrames = alerts.map(\.frame)
+      liveFrame = liveTarget?.frame
+    })
+    guard exception == nil else { return (.firstWindow, interactionRoot(app: app)) }
+    let decision = DispatchGuard.tapAnchor(point: point, liveTarget: liveFrame, alerts: alertFrames)
+    switch decision {
+    case .liveTarget: return (decision, liveTarget ?? interactionRoot(app: app))
+    case .alert(let index): return (decision, alerts[index])
+    case .firstWindow, .outsideAlerts: return (decision, interactionRoot(app: app))
+    }
   }
 #endif
 
@@ -1092,7 +1222,7 @@ extension RnFastRunnerTests {
       return
     }
 #if !os(tvOS)
-    element.tap()
+    gesture { element.tap() }
 #endif
   }
 

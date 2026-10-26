@@ -13,7 +13,7 @@ const { createHash } = require('node:crypto');
 const { dirname, join } = require('node:path');
 
 const repoRoot = dirname(__dirname);
-const output = join(repoRoot, 'packages', 'rn-dev-agent-core', 'native', 'darwin-process-birth');
+const output = join(repoRoot, 'packages', 'qaren-core', 'native', 'darwin-process-birth');
 const manifestOutput = `${output}.json`;
 const temporaryOutput = `${output}.tmp-${process.pid}`;
 const temporarySource = `${output}.c.tmp-${process.pid}`;

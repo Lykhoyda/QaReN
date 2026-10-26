@@ -13,7 +13,7 @@ tmp="$(mktemp -d)"
 trap 'rm -rf "$tmp"' EXIT
 
 cat > "$tmp/CHANGELOG.md" <<'MD'
-# rn-dev-agent-plugin
+# qaren
 
 ## 1.0.8
 
@@ -24,14 +24,14 @@ cat > "$tmp/CHANGELOG.md" <<'MD'
 - bc86d57: Add the `rn-pr-qa` agent and `/qa-pr` workflow so a GitHub PR can be device-tested on iOS simulator, Android emulator, and physical device.
 - Updated dependencies [f1d414e]
 - Updated dependencies [fa2cd21]
-  - rn-dev-agent-core@1.0.8
+  - qaren-core@1.0.8
 
 ## 1.0.7
 
 ### Patch Changes
 
 - Updated dependencies [b352043]
-  - rn-dev-agent-core@1.0.7
+  - qaren-core@1.0.7
 MD
 
 expected_108="## What's changed

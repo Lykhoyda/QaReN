@@ -1,0 +1,32 @@
+{
+  "name": "qaren-core",
+  "version": "1.0.11",
+  "private": true,
+  "type": "module",
+  "description": "QaReN core: the screen-reading engine spawned by the qaren CLI.",
+  "main": "dist/injected-helpers.js",
+  "scripts": {
+    "build": "rm -rf dist && tsc && mkdir -p dist/native && cp -R native/. dist/native/",
+    "dev": "tsc --watch",
+    "test": "yarn build:test && node --test --test-concurrency=2 'test/unit/*.test.js' 'test/unit/**/*.test.js' 'test/unit/*.test.ts' 'test/unit/**/*.test.ts'",
+    "test:coverage": "yarn build:test && node --test --test-concurrency=2 --experimental-test-coverage --test-coverage-exclude='test/**' ${UNIT_TEST_SHARD:+--test-shard=$UNIT_TEST_SHARD} 'test/unit/*.test.js' 'test/unit/**/*.test.js' 'test/unit/*.test.ts' 'test/unit/**/*.test.ts'",
+    "test:contract": "yarn build:test && node --test test/unit/gh-383-protocol-sync.test.js test/unit/gh-418-command-surface-sync.test.js",
+    "test:integration": "yarn build:test && node --test 'test/integration/*.test.js' 'test/integration/**/*.test.js' 'test/integration/*.test.ts' 'test/integration/**/*.test.ts'",
+    "test:all": "yarn build:test && node --test 'test/unit/*.test.js' 'test/unit/**/*.test.js' 'test/unit/*.test.ts' 'test/unit/**/*.test.ts' 'test/integration/*.test.js' 'test/integration/**/*.test.js' 'test/integration/*.test.ts' 'test/integration/**/*.test.ts'",
+    "build:test": "yarn build",
+    "qa:walk": "node dist/qa/walk.js",
+    "jev:evals": "node test/jev-evals/run.ts"
+  },
+  "dependencies": {
+    "ws": "^8.18.0",
+    "yaml": "^2.8.3"
+  },
+  "devDependencies": {
+    "@types/node": "^24.0.0",
+    "@types/ws": "^8.5.0",
+    "typescript": "^5.4.0"
+  },
+  "engines": {
+    "node": ">=24"
+  }
+}

@@ -1,0 +1,24 @@
+{
+  "name": "qaren",
+  "version": "1.0.13",
+  "description": "QaReN: a QA companion for React Native harnesses \u2014 walks a plan on the simulator or emulator, records the run, and reports PASS/FAIL with video.",
+  "author": {
+    "name": "Anton Lykhoyda",
+    "url": "https://github.com/Lykhoyda"
+  },
+  "homepage": "https://github.com/Lykhoyda/rn-dev-agent",
+  "repository": "https://github.com/Lykhoyda/rn-dev-agent",
+  "license": "MIT",
+  "keywords": [
+    "react-native",
+    "expo",
+    "qa",
+    "testing",
+    "simulator",
+    "emulator",
+    "maestro"
+  ],
+  "hooks": {
+    "hooks": {}
+  }
+}

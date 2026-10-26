@@ -1,0 +1,293 @@
+{
+  "schema": "rn-flow/1",
+  "actionId": "user-login",
+  "appId": "com.rndevagent.testapp",
+  "platform": "android",
+  "steps": [
+    {
+      "id": "s1",
+      "source": {
+        "line": 32
+      },
+      "domain": "native",
+      "optional": false,
+      "budgetMs": 20000,
+      "op": "assertVisible",
+      "selector": {
+        "text": "Welcome"
+      }
+    },
+    {
+      "id": "s2",
+      "source": {
+        "line": 36
+      },
+      "domain": "native",
+      "optional": false,
+      "budgetMs": 0,
+      "op": "runFlow",
+      "when": {
+        "visible": {
+          "text": "Skip"
+        }
+      },
+      "steps": [
+        {
+          "id": "s3",
+          "source": {
+            "line": 41
+          },
+          "domain": "native",
+          "optional": false,
+          "budgetMs": 17000,
+          "op": "tapOn",
+          "selector": {
+            "text": "Skip"
+          }
+        },
+        {
+          "id": "s4",
+          "source": {
+            "line": 43
+          },
+          "domain": "native",
+          "optional": false,
+          "budgetMs": 5000,
+          "op": "waitForAnimationToEnd"
+        },
+        {
+          "id": "s5",
+          "source": {
+            "line": 44
+          },
+          "domain": "native",
+          "optional": false,
+          "budgetMs": 17000,
+          "op": "tapOn",
+          "selector": {
+            "text": "Get Started",
+            "index": 1
+          }
+        },
+        {
+          "id": "s6",
+          "source": {
+            "line": 47
+          },
+          "domain": "native",
+          "optional": false,
+          "budgetMs": 5000,
+          "op": "waitForAnimationToEnd"
+        }
+      ]
+    },
+    {
+      "id": "s7",
+      "source": {
+        "line": 48
+      },
+      "domain": "native",
+      "optional": false,
+      "budgetMs": 20000,
+      "op": "scrollUntilVisible",
+      "selector": {
+        "text": "Open Login / OTP QA"
+      },
+      "direction": "DOWN"
+    },
+    {
+      "id": "s8",
+      "source": {
+        "line": 51
+      },
+      "domain": "native",
+      "optional": false,
+      "budgetMs": 17000,
+      "op": "tapOn",
+      "selector": {
+        "text": "Open Login / OTP QA"
+      }
+    },
+    {
+      "id": "s9",
+      "source": {
+        "line": 53
+      },
+      "domain": "native",
+      "optional": false,
+      "budgetMs": 5000,
+      "op": "waitForAnimationToEnd"
+    },
+    {
+      "id": "s10",
+      "source": {
+        "line": 54
+      },
+      "domain": "native",
+      "optional": false,
+      "budgetMs": 17000,
+      "op": "assertVisible",
+      "selector": {
+        "text": "Email"
+      }
+    },
+    {
+      "id": "s11",
+      "source": {
+        "line": 56
+      },
+      "domain": "native",
+      "optional": false,
+      "budgetMs": 17000,
+      "op": "tapOn",
+      "selector": {
+        "text": "Email"
+      }
+    },
+    {
+      "id": "s12",
+      "source": {
+        "line": 58
+      },
+      "domain": "native",
+      "optional": false,
+      "budgetMs": 10000,
+      "op": "inputText",
+      "text": "qa@example.test"
+    },
+    {
+      "id": "s13",
+      "source": {
+        "line": 59
+      },
+      "domain": "native",
+      "optional": false,
+      "budgetMs": 17000,
+      "op": "tapOn",
+      "selector": {
+        "text": "Password"
+      }
+    },
+    {
+      "id": "s14",
+      "source": {
+        "line": 61
+      },
+      "domain": "native",
+      "optional": false,
+      "budgetMs": 10000,
+      "op": "inputText",
+      "text": "qa-password"
+    },
+    {
+      "id": "s15",
+      "source": {
+        "line": 62
+      },
+      "domain": "native",
+      "optional": false,
+      "budgetMs": 10000,
+      "op": "hideKeyboard",
+      "fallbackDomain": "react-tree"
+    },
+    {
+      "id": "s16",
+      "source": {
+        "line": 63
+      },
+      "domain": "native",
+      "optional": false,
+      "budgetMs": 17000,
+      "op": "tapOn",
+      "selector": {
+        "text": "Sign in"
+      }
+    },
+    {
+      "id": "s17",
+      "source": {
+        "line": 65
+      },
+      "domain": "native",
+      "optional": false,
+      "budgetMs": 5000,
+      "op": "assertVisible",
+      "selector": {
+        "text": "One-time code"
+      }
+    },
+    {
+      "id": "s18",
+      "source": {
+        "line": 69
+      },
+      "domain": "native",
+      "optional": false,
+      "budgetMs": 17000,
+      "op": "tapOn",
+      "selector": {
+        "text": "One-time code"
+      }
+    },
+    {
+      "id": "s19",
+      "source": {
+        "line": 71
+      },
+      "domain": "native",
+      "optional": false,
+      "budgetMs": 10000,
+      "op": "inputText",
+      "text": "123456"
+    },
+    {
+      "id": "s20",
+      "source": {
+        "line": 72
+      },
+      "domain": "native",
+      "optional": false,
+      "budgetMs": 17000,
+      "op": "tapOn",
+      "selector": {
+        "text": "Verify code"
+      }
+    },
+    {
+      "id": "s21",
+      "source": {
+        "line": 74
+      },
+      "domain": "native",
+      "optional": false,
+      "budgetMs": 5000,
+      "op": "waitForAnimationToEnd"
+    },
+    {
+      "id": "s22",
+      "source": {
+        "line": 75
+      },
+      "domain": "native",
+      "optional": false,
+      "budgetMs": 17000,
+      "op": "assertVisible",
+      "selector": {
+        "text": "Login complete"
+      }
+    },
+    {
+      "id": "s23",
+      "source": {
+        "line": 77
+      },
+      "domain": "native",
+      "optional": false,
+      "budgetMs": 17000,
+      "op": "assertVisible",
+      "selector": {
+        "id": "login_done"
+      }
+    }
+  ]
+}

@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Run a command where no real simulator or emulator is reachable: an isolated
-# HOME plus xcrun, simctl, devicectl, xcodebuild, idb and adb shims that report
-# one fake booted iPhone and no Android device and refuse every other device
+# HOME plus xcrun, simctl, devicectl, xcodebuild and adb shims that report one
+# fake booted iPhone and no Android device and refuse every other device
 # command, and a maestro that reports itself unavailable. The no-mistakes
 # Test step routes device commands through this (see .no-mistakes.yaml).
 #
@@ -16,7 +16,8 @@ real_home="$HOME"
 real_xcrun="$(command -v xcrun || true)"
 real_xcodebuild="$(command -v xcodebuild || true)"
 dir="${QAREN_SANDBOX_DIR:-$(mktemp -d "${TMPDIR:-/tmp}/qaren-sim-sandbox.XXXXXX")}"
-mkdir -p "$dir/home" "$dir/bin" "$dir/android-sdk/platform-tools"
+mkdir -p "$dir/home" "$dir/bin" "$dir/locks" "$dir/android-sdk/platform-tools"
+chmod 700 "$dir/locks"
 dir="$(cd "$dir" && pwd -P)"
 
 # Concurrent calls may share one sandbox: publish each shim complete and executable.
@@ -105,14 +106,6 @@ echo "qaren-sim-sandbox: refused devicectl $*" >&2
 exit 1
 EOF
 
-for tool in idb idb_companion idb-companion; do
-  shim "$tool" <<EOF
-#!/usr/bin/env bash
-echo "qaren-sim-sandbox: refused $tool \$*" >&2
-exit 1
-EOF
-done
-
 shim maestro <<'EOF'
 #!/usr/bin/env bash
 echo "qaren-sim-sandbox: maestro is not available" >&2
@@ -132,6 +125,8 @@ unset ADB_SERVER_SOCKET
 export ANDROID_ADB_SERVER_PORT=1
 export PATH="$dir/bin:$PATH"
 export QAREN_SANDBOX_DIR="$dir"
-unset QAREN_LOCK_ROOT
+# Keep device and build locks out of the machine-wide namespace other sessions share.
+export QAREN_LOCK_ROOT="$dir/locks"
+unset QAREN_MACHINE_LOCKS
 echo "qaren-sim-sandbox: $dir (fake iOS UDID $FAKE_UDID, no Android device)" >&2
 exec "$@"

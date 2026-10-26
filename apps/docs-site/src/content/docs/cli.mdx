@@ -1,0 +1,169 @@
+---
+title: CLI
+description: Every qaren verb, its arguments and its flags.
+---
+
+Every verb except `watch`, `actions`, `plans`, `update` and `doctor` prints one `qaren/1` JSON receipt on stdout and its
+narration on stderr. A usage error exits `2` with help on stderr and nothing on stdout.
+`qaren --help` prints the usage.
+
+## qaren check
+
+```sh
+qaren check --plan-file <plan.md> [options]
+```
+
+Walks the plan on a borrowed simulator or emulator against the working tree. Runs land in
+`~/.qaren/runs/<run-id>/`. See [Check a plan](../check/#flags) for available options.
+
+## qaren pr
+
+```sh
+qaren pr <number|url> --plan-file <plan.md> [options]
+```
+
+Walks the plan on a detached worktree at the pull request's head. Takes the same flags as
+[`check`](../check/#flags). See [Test a pull request](../pull-requests/) for recording support.
+
+## qaren publish
+
+```sh
+qaren publish <run-id> [--json]
+```
+
+Posts the reviewer comment for a finished `qaren pr` run and saves its discovered blocks to the
+pull request branch. See [Test a pull request](../pull-requests/#qaren-publish).
+
+## qaren watch
+
+```sh
+qaren watch [<run-id> | --latest] [--plain] [--json]
+```
+
+Follows a `check` or `pr` run. See [Watch a run](../watch/).
+
+## qaren actions
+
+```sh
+qaren actions list [--json]
+qaren actions show <slug>
+```
+
+Lists the saved blocks in the current directory's `.qaren/actions/`, or prints one. See
+[Saved blocks](../saved-blocks/#inspecting-blocks).
+
+## qaren plans
+
+```sh
+qaren plans [--json]
+```
+
+Lists the saved plans in the current directory's `.qaren/plans/` with their blocks and the
+platforms they are flagged broken on. See [Saved plans](../plans/#saved-plans).
+
+## qaren cleanup
+
+```sh
+qaren cleanup <run-id> [--json]
+qaren cleanup <run-id> [--json] --remove-app --confirm-remove-app <run-id>/<remote-serial>/<app-id>
+```
+
+Releases what a run left behind when its teardown could not prove a resource gone, then
+releases its device lease. Use it when a receipt's `next_action` names it. Cleanup only
+touches resources the run recorded as its own; anything it cannot prove is listed and left
+alone.
+
+`--remove-app` also uninstalls the app, and its data, that the run installed on its leased
+Android emulator. It needs `--confirm-remove-app` naming exactly this run, its recorded
+emulator serial and its app ID. The two flags go together and only on `cleanup`.
+
+## qaren update
+
+```sh
+qaren update
+```
+
+Run from the rn-dev-agent checkout root. Fast-forwards the checkout with `git pull --ff-only`
+from its tracked upstream, then rebuilds and reinstalls qaren through the source installer. It
+refuses outside a checkout, with local changes, or when the pull fails, leaving your working
+tree, branch and installed qaren unchanged.
+Prints one line saying whether the build is already current, updated or newly installed.
+
+## qaren doctor
+
+```sh
+qaren doctor [--json] [--config .qaren/config.yaml]
+```
+
+Diagnoses setup problems and rn-dev-agent 1.x leftovers. See
+[Doctor](https://github.com/Lykhoyda/rn-dev-agent/blob/develop/packages/qaren-cli/README.md#doctor)
+for the authoritative checks, manual fixes, output contract and exit codes, including
+the privacy contract's exception for configured iOS runtime and Android AVD names.
+
+## qaren --version
+
+```sh
+qaren --version
+```
+
+Prints `qaren` and its version.
+
+## Preparation verbs
+
+These verbs prepare a device and the app from a scenario file instead of walking a plan. A
+scenario is a strictly validated YAML file with `schema: qaren/1`.
+
+### qaren prepare
+
+```sh
+qaren prepare <scenario.yaml> [--device <udid> [--boot-device]] [--json] [--dry-run]
+```
+
+Validates the scenario and the checked-out candidate, allocates the device, prepares the
+app and owned Metro, and emits a `ready` receipt with the run's device and Metro
+endpoint. `--dry-run` validates and prints the planned commands without allocating anything.
+For `--device` selection, boot permission and cleanup, see the authoritative
+[existing iOS simulator contract](https://github.com/Lykhoyda/rn-dev-agent/blob/develop/packages/qaren-cli/README.md#existing-ios-simulator).
+See [CLI-owned iOS build routes](https://github.com/Lykhoyda/rn-dev-agent/blob/develop/packages/qaren-cli/README.md#cli-owned-ios-build-routes)
+for iOS startup ordering and failure cleanup.
+
+### qaren prewarm
+
+```sh
+qaren prewarm <scenario.yaml> [--json]
+```
+
+Installs the app's dependencies ahead of time for a scenario with
+`deps.policy: require-prewarm`. See the authoritative
+[dependency prewarming contract](https://github.com/Lykhoyda/rn-dev-agent/blob/develop/packages/qaren-cli/README.md#native-fingerprint-build-selection)
+for registry access restrictions, prewarm records and offline preparation.
+
+### qaren status
+
+```sh
+qaren status <run-id> [--json]
+```
+
+Reads a prepared run's record and reports whether it is still ready.
+
+### qaren complete
+
+```sh
+qaren complete <run-id> <build-log> [--json]
+```
+
+Only for a scenario with `build.owner: qaren`, where `prepare` stops after allocating the
+device and another session builds the app. `complete` binds that session's build log to the
+run and refuses missing, stale, ambiguous or mismatched evidence.
+
+## Exit codes
+
+| Exit | Meaning                                                                       |
+| ---- | ----------------------------------------------------------------------------- |
+| `0`  | `pass`, `published`, `ready`, `cleaned`, `planned`, `prewarmed` or `working`  |
+| `1`  | `fail` or `failed`                                                            |
+| `2`  | Usage error                                                                   |
+| `3`  | `unknown`                                                                     |
+| `4`  | `refused`                                                                     |
+
+`qaren watch` has [its own exit codes](../watch/#exit-codes).

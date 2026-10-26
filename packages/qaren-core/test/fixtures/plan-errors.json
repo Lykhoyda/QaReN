@@ -1,0 +1,152 @@
+[
+  {
+    "name": "duplicate block",
+    "plan": "### Login\n1. Tap \"A\"\n### Login\n1. Tap \"B\"",
+    "line": 3,
+    "reason": "another block is already named",
+    "nextAction": "give each block a distinct heading"
+  },
+  {
+    "name": "action ID collision",
+    "plan": "### aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\n1. Tap \"A\"\n### aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-635361c48bb9eab1\n1. Tap \"B\"",
+    "line": 3,
+    "reason": "distinct block titles produce the same action ID",
+    "nextAction": "rename one block so its action ID is distinct",
+    "phase": "plan-preflight"
+  },
+  {
+    "name": "empty block",
+    "plan": "### Login\n### Next\n1. Tap \"A\"",
+    "line": 1,
+    "reason": "this block has no steps",
+    "nextAction": "add a numbered step or a ✓ check to the block"
+  },
+  {
+    "name": "late precondition",
+    "plan": "1. Tap \"A\"\nstarts on: Home",
+    "line": 2,
+    "reason": "starts on must come before the block's steps",
+    "nextAction": "move starts on: before the first step in the block"
+  },
+  {
+    "name": "unnumbered step",
+    "plan": "## QA\nTap \"A\"",
+    "line": 2,
+    "reason": "not a numbered step or a ✓ line",
+    "nextAction": "prefix the step with a number such as 1. or use ✓ for a check"
+  },
+  {
+    "name": "missing input name",
+    "plan": "1. Fill \"field\" with input",
+    "line": 1,
+    "reason": "fill needs a target and a valid input name",
+    "nextAction": "use Fill \"field\" with input NAME, where NAME matches [A-Z][A-Z0-9_]{0,31}"
+  },
+  {
+    "name": "invalid annotation",
+    "plan": "1. Fill \"field\" with \"literal\" (non-secret)",
+    "line": 1,
+    "reason": "invalid runtime input declaration",
+    "nextAction": "remove the invalid annotation; declare runtime inputs with Fill \"field\" with input NAME, optionally followed by (non-secret)"
+  },
+  {
+    "name": "missing quoted fill",
+    "plan": "1. Type value into field",
+    "line": 1,
+    "reason": "fill needs the text in quotes",
+    "nextAction": "put the fill text in quotes: Type \"text\" into \"field\""
+  },
+  {
+    "name": "missing target after text",
+    "plan": "1. Type \"value\"",
+    "line": 1,
+    "reason": "fill needs a target after the quoted text",
+    "nextAction": "add the target after the text: Type \"text\" into \"field\""
+  },
+  {
+    "name": "invalid echo",
+    "plan": "1. Expect input CODE",
+    "line": 1,
+    "reason": "expect input needs a declared input name and \"on screen\"",
+    "nextAction": "use Expect input NAME on screen with a name declared by a fill step"
+  },
+  {
+    "name": "undeclared echo",
+    "plan": "1. Expect input CODE on screen",
+    "line": 1,
+    "reason": "expect input names an input no fill step in this plan uses",
+    "nextAction": "add a Fill \"field\" with input NAME step for this input, or use an already declared name"
+  },
+  {
+    "name": "conflicting declarations",
+    "plan": "1. Fill \"field\" with input CODE\n2. Fill \"other\" with input CODE (non-secret)",
+    "line": 2,
+    "reason": "conflicting runtime input declarations",
+    "nextAction": "use the same sensitivity annotation for every fill of this input"
+  },
+  {
+    "name": "conditional dialog",
+    "plan": "1. Accept the dialog if visible",
+    "line": 1,
+    "reason": "dialog needs one explicit accept or dismiss action without conditions or negation",
+    "nextAction": "use Accept the dialog or Dismiss the dialog without conditions or negation"
+  },
+  {
+    "name": "empty plan",
+    "plan": "# Empty\n",
+    "line": 1,
+    "reason": "the plan has no steps",
+    "nextAction": "add a numbered step such as 1. Tap \"target\""
+  },
+  {
+    "name": "unsupported verb",
+    "plan": "1. Frobnicate the widget",
+    "line": 1,
+    "reason": "the line is unsupported or the verb judgment is unsure",
+    "nextAction": "rewrite as one supported operation: Tap, Type, Scroll, Wait, Go back, Accept or Dismiss the dialog",
+    "choice": "unsupported",
+    "phase": "plan-preflight"
+  },
+  {
+    "name": "fallback fill",
+    "plan": "1. Populate the field",
+    "line": 1,
+    "reason": "fill fallback needs Verb \"text\" into/in target or target with text/value \"text\"; use Type \"text\" into target otherwise",
+    "nextAction": "use Type \"text\" into \"field\"",
+    "choice": "fill",
+    "phase": "plan-preflight"
+  },
+  {
+    "name": "fallback fill beside a typed value that occurs in the reason",
+    "plan": "1. Type \"text\" into \"Notes\"\n2. Provide hello as a greeting",
+    "line": 2,
+    "reason": "fill fallback needs Verb \"text\" into/in target or target with text/value \"text\"; use Type \"text\" into target otherwise",
+    "nextAction": "use Type \"text\" into \"field\"",
+    "choice": "fill",
+    "phase": "plan-preflight"
+  },
+  {
+    "name": "action ID collision beside a typed value that occurs in the reason",
+    "plan": "### aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\n1. Type \"same\" into \"A\"\n### aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-635361c48bb9eab1\n1. Type \"action\" into \"B\"",
+    "line": 3,
+    "reason": "distinct block titles produce the same action ID",
+    "nextAction": "rename one block so its action ID is distinct",
+    "phase": "plan-preflight"
+  },
+  {
+    "name": "fallback scroll",
+    "plan": "1. Swipe around",
+    "line": 1,
+    "reason": "scroll fallback needs an explicit until target or a bare direction",
+    "nextAction": "use Scroll down, Scroll up, or Scroll down until \"target\"",
+    "choice": "scroll",
+    "phase": "plan-preflight"
+  },
+  {
+    "name": "annotation on heading",
+    "plan": "### Login (non-secret)\n1. Tap \"A\"",
+    "line": 1,
+    "reason": "invalid runtime input declaration",
+    "nextAction": "remove the invalid annotation; declare runtime inputs with Fill \"field\" with input NAME, optionally followed by (non-secret)"
+  }
+]

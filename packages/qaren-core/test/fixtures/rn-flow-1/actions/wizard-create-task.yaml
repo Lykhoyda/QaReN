@@ -1,0 +1,71 @@
+appId: com.rndevagent.testapp
+---
+# id: wizard-create-task
+# intent: Create a task end-to-end via the blue + FAB on the Tasks screen.
+# tags: [tasks, wizard, create]
+# mutates: true
+# status: active
+# enginePin: maestro-runner@1.1.27
+# params: [TITLE, DESC, PRIORITY, TAG]
+#
+# Create a task end-to-end via the blue + FAB on the Tasks screen.
+#
+# Parameters (pass via maestro -e):
+#   TITLE     — required. Note: Maestro `inputText` on iOS occasionally
+#               drops/reorders characters under load
+#               (mobile-dev-inc/Maestro#2382 — XCUITest pointer-event-race
+#               with the iOS keyboard listener at typingSpeed=30). Prefer
+#               short strings; if you see jumbled output, switch to the
+#               per-char retry pattern documented in
+#               feedback_maestro_patterns.md (item 9).
+#   DESC      — required, the task description
+#   PRIORITY  — required, one of {low, medium, high}
+#   TAG       — required, one of {bug, feature, chore}
+#
+# Example replay:
+#   maestro test .maestro/flows/wizard-create-task.yaml \
+#     -e TITLE="Ship the demo" \
+#     -e DESC="End-to-end via flow runner" \
+#     -e PRIORITY=high \
+#     -e TAG=feature
+#
+# Self-bootstrapping: foregrounds the app (without resetting state if
+# already running — `stopApp: false`) and ensures Tasks tab is the
+# active route before opening the wizard. Safe to invoke from any
+# starting screen, including as a sub-flow inside a longer scenario.
+
+- launchApp:
+    stopApp: false
+- runFlow:
+    when:
+      visible:
+        id: "tab-tasks"
+    commands:
+      - tapOn:
+          id: "tab-tasks"
+- waitForAnimationToEnd
+- tapOn:
+    id: "fab-create-task"
+- waitForAnimationToEnd
+# Step 1 — Title & Description
+- tapOn:
+    id: "wizard-title-input"
+- inputText: ${TITLE}
+- tapOn:
+    id: "wizard-desc-input"
+- inputText: ${DESC}
+- hideKeyboard
+- tapOn:
+    id: "wizard-next-btn"
+- waitForAnimationToEnd
+# Step 2 — Priority & Tags
+- tapOn:
+    id: "wizard-priority-${PRIORITY}"
+- tapOn:
+    id: "wizard-tag-${TAG}"
+- tapOn:
+    id: "wizard-next-btn"
+- waitForAnimationToEnd
+# Step 3 — Review & Create
+- tapOn:
+    id: "wizard-create-btn"

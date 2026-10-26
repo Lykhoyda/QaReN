@@ -56,6 +56,7 @@ class RnFastRunnerTests: XCTestCase {
   private var listenerStartupFailure: String?
 #if RN_FAST_RUNNER_TEST_FAULTS
   var testFaultConsumed = false
+  var beforeNextGesture: (() -> Void)?
 #endif
   let maxRequestBytes = 2 * 1024 * 1024
   let maxSnapshotElements = 600
@@ -68,7 +69,20 @@ class RnFastRunnerTests: XCTestCase {
   let scrollInteractionIdleTimeoutDefault: TimeInterval = 1.0
   var needsPostSnapshotInteractionDelay = false
   var currentSnapshotGeneration = 0
+  var retainedFastSnapshotOptions: SnapshotOptions?
   var retainedSnapshotTargets: [Int: RetainedSnapshotTarget] = [:]
+  // Set only by the latest live target check that proved movement.
+  var lastMovedFrames: (
+    retained: CGRect, live: CGRect,
+    retainedIdentity: DispatchGuard.NodeIdentity, liveIdentity: DispatchGuard.NodeIdentity?
+  )?
+  // The live element the latest target check resolved with the retained frame.
+  var lastLiveTarget: XCUIElement?
+  var appAlertInterruptions = 0
+  var servingCommands = false
+  var containedIssues = 0
+  var gestureIssueRaised = false
+  var inGesture = false
   var lastExactTypeTarget: RecordedExactTypeTarget?
   var needsFirstInteractionDelay = false
   let interactiveTypes: Set<XCUIElement.ElementType> = [
@@ -127,6 +141,45 @@ class RnFastRunnerTests: XCTestCase {
 
   override func setUp() {
     continueAfterFailure = true
+    // Claim target-app alerts untouched so XCTest's default handler never presses their cancel button.
+    addUIInterruptionMonitor(withDescription: "rn-fast-runner target app alert") { [weak self] element in
+      guard let self, self.isTargetAppAlert(element) else { return false }
+      self.appAlertInterruptions += 1
+      return true
+    }
+  }
+
+  // XCTest interrupts the test after a UI automation issue even with continueAfterFailure, ending the listener.
+  override func record(_ issue: XCTIssue) {
+    guard servingCommands else { return super.record(issue) }
+    containedIssues += 1
+    if inGesture { gestureIssueRaised = true }
+    NSLog("RN_FAST_RUNNER_ISSUE_CONTAINED=%ld", issue.type.rawValue)
+  }
+
+  @discardableResult
+  func gesture(_ body: () -> Void) -> Bool {
+#if RN_FAST_RUNNER_TEST_FAULTS
+    if let fault = beforeNextGesture {
+      beforeNextGesture = nil
+      fault()
+    }
+#endif
+    let before = containedIssues
+    inGesture = true
+    body()
+    inGesture = false
+    return containedIssues != before
+  }
+
+  func isTargetAppAlert(_ element: XCUIElement) -> Bool {
+    var owned = false
+    _ = RunnerObjCExceptionCatcher.catchException({
+      guard element.elementType == .alert else { return }
+      let frame = element.frame
+      owned = (self.currentApp ?? self.app).alerts.allElementsBoundByIndex.contains { $0.frame == frame }
+    })
+    return owned
   }
 
   @MainActor
@@ -189,7 +242,9 @@ class RnFastRunnerTests: XCTestCase {
       return
     }
     NSLog("RN_FAST_RUNNER_WAITING")
+    servingCommands = true
     let result = XCTWaiter.wait(for: [expectation], timeout: 24 * 60 * 60)
+    servingCommands = false
     NSLog("RN_FAST_RUNNER_WAIT_RESULT=%@", String(describing: result))
     if let failure = runnerListenerWaitFailure(
       listenerError: currentListenerStartupFailure(),

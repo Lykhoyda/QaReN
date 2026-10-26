@@ -14,6 +14,12 @@ func runnerAttachOnlyTargetIsRunning(_ state: XCUIApplication.State) -> Bool {
   }
 }
 
+func runnerPayload(_ payload: DataPayload, appProcessIdentifier: Int?) -> DataPayload {
+  var observed = payload
+  observed.appProcessIdentifier = appProcessIdentifier.flatMap { $0 > 0 ? $0 : nil }
+  return observed
+}
+
 func runnerPngData(for image: RunnerImage) -> Data? {
 #if canImport(UIKit)
   return image.pngData()
@@ -33,7 +39,8 @@ func runnerCGImage(from image: RunnerImage) -> CGImage? {
 }
 
 extension RnFastRunnerTests {
-  private func observedProcessIdentifier(_ target: XCUIApplication) -> Int? {
+  // Reads the process only; it never activates or launches the target.
+  func observedProcessIdentifier(_ target: XCUIApplication) -> Int? {
     let selector = NSSelectorFromString("processID")
     guard target.responds(to: selector) else { return nil }
     return (target.value(forKey: "processID") as? NSNumber)?.intValue
@@ -211,9 +218,6 @@ extension RnFastRunnerTests {
     switch command.command {
     case .interactionFrame, .findText, .readText, .snapshot, .screenshot:
       return true
-    case .alert:
-      let action = (command.action ?? "get").lowercased()
-      return action == "get"
     default:
       return false
     }

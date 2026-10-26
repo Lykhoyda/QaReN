@@ -1,0 +1,195 @@
+{
+  "schema": "rn-flow/1",
+  "actionId": "qa-observe-screen-match",
+  "appId": "com.rndevagent.testapp",
+  "platform": "ios",
+  "steps": [
+    {
+      "id": "s1",
+      "source": {
+        "line": 24
+      },
+      "domain": "react-tree",
+      "optional": false,
+      "budgetMs": 0,
+      "op": "runFlow",
+      "when": {
+        "visible": {
+          "id": "onboarding-screen"
+        }
+      },
+      "steps": [
+        {
+          "id": "s2",
+          "source": {
+            "line": 29
+          },
+          "domain": "native",
+          "optional": false,
+          "budgetMs": 17000,
+          "op": "tapOn",
+          "selector": {
+            "id": "onboarding-skip"
+          }
+        },
+        {
+          "id": "s3",
+          "source": {
+            "line": 31
+          },
+          "domain": "native",
+          "optional": false,
+          "budgetMs": 17000,
+          "op": "tapOn",
+          "selector": {
+            "id": "onboarding-done"
+          }
+        },
+        {
+          "id": "s4",
+          "source": {
+            "line": 33
+          },
+          "domain": "native",
+          "optional": false,
+          "budgetMs": 5000,
+          "op": "waitForAnimationToEnd"
+        }
+      ]
+    },
+    {
+      "id": "s5",
+      "source": {
+        "line": 34
+      },
+      "domain": "native",
+      "optional": false,
+      "budgetMs": 17000,
+      "op": "tapOn",
+      "selector": {
+        "id": "tab-home"
+      }
+    },
+    {
+      "id": "s6",
+      "source": {
+        "line": 36
+      },
+      "domain": "native",
+      "optional": false,
+      "budgetMs": 5000,
+      "op": "waitForAnimationToEnd"
+    },
+    {
+      "id": "s7",
+      "source": {
+        "line": 37
+      },
+      "domain": "react-tree",
+      "optional": false,
+      "budgetMs": 17000,
+      "op": "assertVisible",
+      "selector": {
+        "id": "home-welcome"
+      }
+    },
+    {
+      "id": "s8",
+      "source": {
+        "line": 39
+      },
+      "domain": "native",
+      "optional": false,
+      "budgetMs": 17000,
+      "op": "tapOn",
+      "selector": {
+        "id": "home-qa-acceptance-btn"
+      }
+    },
+    {
+      "id": "s9",
+      "source": {
+        "line": 41
+      },
+      "domain": "native",
+      "optional": false,
+      "budgetMs": 5000,
+      "op": "waitForAnimationToEnd"
+    },
+    {
+      "id": "s10",
+      "source": {
+        "line": 42
+      },
+      "domain": "react-tree",
+      "optional": false,
+      "budgetMs": 17000,
+      "op": "assertVisible",
+      "selector": {
+        "id": "qa-acceptance-start-screen"
+      }
+    },
+    {
+      "id": "s11",
+      "source": {
+        "line": 44
+      },
+      "domain": "react-tree",
+      "optional": false,
+      "budgetMs": 17000,
+      "op": "assertVisible",
+      "selector": {
+        "id": "qa-acceptance-start-state"
+      }
+    },
+    {
+      "id": "s12",
+      "source": {
+        "line": 46
+      },
+      "domain": "native",
+      "optional": false,
+      "budgetMs": 17000,
+      "op": "tapOn",
+      "selector": {
+        "id": "qa-acceptance-continue"
+      }
+    },
+    {
+      "id": "s13",
+      "source": {
+        "line": 48
+      },
+      "domain": "native",
+      "optional": false,
+      "budgetMs": 5000,
+      "op": "waitForAnimationToEnd"
+    },
+    {
+      "id": "s14",
+      "source": {
+        "line": 49
+      },
+      "domain": "react-tree",
+      "optional": false,
+      "budgetMs": 17000,
+      "op": "assertVisible",
+      "selector": {
+        "id": "qa-acceptance-result-screen"
+      }
+    },
+    {
+      "id": "s15",
+      "source": {
+        "line": 51
+      },
+      "domain": "react-tree",
+      "optional": false,
+      "budgetMs": 17000,
+      "op": "assertVisible",
+      "selector": {
+        "id": "qa-acceptance-result-state"
+      }
+    }
+  ]
+}

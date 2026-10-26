@@ -2,13 +2,13 @@ name: CI
 
 on:
   push:
-    branches: [main]
+    branches: [main, develop]
   pull_request:
-    branches: [main]
+    branches: [main, develop]
 
 # CodeQL actions/missing-workflow-permissions (alerts #27 #28):
-# declare minimal permissions at the workflow level. Both jobs only
-# read source and run tests — they never push, comment, or release.
+# declare minimal permissions at the workflow level. Every job only
+# reads source and runs tests — none pushes, comments, or releases.
 permissions:
   contents: read
 
@@ -30,29 +30,14 @@ jobs:
       - run: corepack enable
       - run: corepack yarn install --immutable
 
-      # GH#432/#622: build + host-runtime freshness. Marketplace users run the
-      # committed HOST bundles; core dist is generated in this gate and must
-      # not be committed. An unconditional rebuild without a porcelain check
-      # would repair a stale host artifact in CI while shipping it broken.
-      - name: TypeScript build + dist freshness gate
-        run: bash scripts/check-dist-fresh.sh
-
-      - name: Core dist packaging contract
-        run: bash scripts/check-core-dist-contract.sh
+      - name: Build core and the Observe SPA
+        run: corepack yarn build
 
       # GH#437 (audit P0-B): wire-contract drift must fail a NAMED gate, not
       # hide in the unit blob — tri-file command-enum/protocol sync (#418/#383)
       # plus golden contract tests over payloads captured from live runners.
-      # The broad unit shards also include these files, preserving the named
-      # contract gate while keeping the authoritative unit-test globs unchanged.
       - name: Runner wire-contract gate
-        run: corepack yarn workspace rn-dev-agent-core test:contract
-
-      - name: Inherited action inventory serial regression
-        run: corepack yarn workspace rn-dev-agent-core exec node --test --test-concurrency=1 test/serial/gh-812-inherited-action-inventory.test.ts
-
-      - name: Install proof-media integration dependency
-        run: sudo apt-get update && sudo apt-get install --yes ffmpeg
+        run: corepack yarn workspace qaren-core test:contract
 
       - name: Integration tests
         run: corepack yarn test:integration
@@ -65,55 +50,9 @@ jobs:
       - name: Changeset-name validator unit test
         run: bash scripts/test/validate-changeset-names.test.sh
 
-      # GH#252/B196: SessionStart must stay bounded (hook timeout + curl time limits).
-      - name: SessionStart bounded-startup guard
-        run: bash scripts/test/session-start-bounded.test.sh
-
-      # GH#266: feedback collector must not present stale/orphaned telemetry as recent.
-      - name: Feedback telemetry staleness guard
-        run: bash scripts/test/telemetry-staleness.test.sh
-
-      # GH#419: upgrade notice must recommend /mcp reconnect before restart; the
-      # SessionStart banner must not assert a static tool count; the lockfile
-      # probe must flag a live bridge from a previous plugin install.
-      - name: MCP upgrade-notice + bridge-probe guard
-        run: bash scripts/test/mcp-upgrade-notice.test.sh
-
-      # GH#578: an installed-but-crashing idb client must be reported as an
-      # interpreter incompatibility, never as "idb missing" with an install
-      # hint that reinstalls the same broken combination.
-      - name: ensure-idb client-state guard
-        run: bash scripts/test/ensure-idb.test.sh
-
-      # GH#432/#622: the freshness gate is itself tested (house rule for CI guards).
-      - name: Dist-freshness guard unit test
-        run: bash scripts/test/check-dist-fresh.test.sh
-
-      - name: Web-bundle guard unit test
-        run: bash scripts/test/check-web-bundle.test.sh
-
-      - name: Core dist contract unit test
-        run: bash scripts/test/check-core-dist-contract.test.sh
-
       # Release notes for release.yml's publish job render from the plugin CHANGELOG.
       - name: Release-notes renderer unit test
         run: bash scripts/test/release-notes-from-changelog.test.sh
-
-      # GH#377: convert-gif must mkdir an explicit gifPath's parent before ffmpeg.
-      - name: record_proof convert-gif output-dir guard
-        run: bash scripts/test/record-proof-convert-gif.test.sh
-
-      # GH#498: workspace package split contract for core/shared/host adapters.
-      - name: Agent package split guard
-        run: bash scripts/check-agent-package-sync.sh
-
-      - name: Agent package split guard unit test
-        run: bash scripts/test/check-agent-package-sync.test.sh
-
-      # GH#1037: --fix must survive GNU sed so Ubuntu Version Packages can
-      # rewrite the generated Codex copies before build:host-runtimes.
-      - name: Version-sync fixer portable-sed guard
-        run: bash scripts/test/sync-versions.test.sh
 
       # Postpublication readiness of the release trust root: a checkout that
       # advertises a plugin version must already have that version's exact
@@ -134,9 +73,20 @@ jobs:
       - name: Documentation ownership gate unit test
         run: node --test scripts/test/check-document-ownership.test.ts
 
-      # GH#498: docs-site is now a deliverable app workspace.
+      - name: QaReN device-gate and native-command unit tests
+        run: node --test scripts/test/assert-qaren-check.test.ts scripts/test/gate-qaren-check.test.ts scripts/test/native-ios-command.test.ts
+
+      - name: qaren tarball, SessionStart hook and install unit tests
+        run: |
+          node --test scripts/test/build-qaren-tarball.test.ts
+          bash scripts/test/session-start-bounded.test.sh
+          bash scripts/test/ensure-qaren-install.test.sh
+
       - name: Docs app build
-        run: corepack yarn workspace rn-dev-agent-docs build
+        run: corepack yarn workspace qaren-docs build
+
+      - name: Docs site verifier unit test
+        run: node --test scripts/test/verify-site.test.ts
 
   unit-tests:
     name: Unit tests (batch ${{ matrix.batch }}/5)
@@ -166,7 +116,7 @@ jobs:
           UNIT_TEST_BATCHES: 5
           UNIT_TEST_SHARD: ${{ matrix.batch }}/5
         run: |
-          TOTAL_TEST_FILES=$(find packages/rn-dev-agent-core/test/unit -type f \( -name '*.test.js' -o -name '*.test.ts' \) | wc -l | tr -d ' ')
+          TOTAL_TEST_FILES=$(find packages/qaren-core/test/unit -type f \( -name '*.test.js' -o -name '*.test.ts' \) | wc -l | tr -d ' ')
           BASE_BATCH_SIZE=$((TOTAL_TEST_FILES / UNIT_TEST_BATCHES))
           EXTRA_BATCHES=$((TOTAL_TEST_FILES % UNIT_TEST_BATCHES))
           SELECTED_TEST_FILES=$BASE_BATCH_SIZE
@@ -176,44 +126,110 @@ jobs:
           echo "Unit-test batch $UNIT_TEST_SHARD: discovered $TOTAL_TEST_FILES files; selected $SELECTED_TEST_FILES files"
           corepack yarn test:coverage
 
-  descendant-spawn-convention:
-    name: Metro descendant spawn convention (Node ${{ matrix.node }})
+  cargo-test:
+    name: cargo-test
     runs-on: ubuntu-latest
-    strategy:
-      fail-fast: false
-      matrix:
-        # Node changed ChildProcess.prototype.spawn -> handle.spawn() from one
-        # options object to eight positional arguments, landing on the 24 line at
-        # 24.19.0. The managed-Metro descendant fence authenticates both shapes by
-        # argument content, so both sides of that boundary have to stay covered.
-        # 25 is a representative odd major the pinned drift table does not list:
-        # admission must not depend on it being listed.
-        node: ['24.18', '24', '25', '26']
-
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2 — Phase 134.5 SHA pin
-
       - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e  # v6.4.0 — Phase 134.5 SHA pin
         with:
-          node-version: ${{ matrix.node }}
+          node-version: 24
           cache: yarn
           cache-dependency-path: yarn.lock
-
       - run: corepack enable
       - run: corepack yarn install --immutable
-      - run: corepack yarn build:core
+      - name: Build core for CLI integration tests
+        run: corepack yarn build:core
+      - uses: dtolnay/rust-toolchain@stable
+      - name: cargo test (locked)
+        run: cargo test --manifest-path packages/qaren-cli/Cargo.toml --locked
 
-      - name: Descendant fence, convention probe and drift detector
+  qaren-tarball:
+    name: qaren tarball smoke (macOS)
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2 — Phase 134.5 SHA pin
+      - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e  # v6.4.0 — Phase 134.5 SHA pin
+        with:
+          node-version: 24
+          cache: yarn
+          cache-dependency-path: yarn.lock
+      - run: corepack enable
+      - run: corepack yarn install --immutable
+      - name: Rust target for Apple silicon
+        run: rustup target add aarch64-apple-darwin
+      - name: Two builds of one commit are byte-identical, the second with a relocated toolchain
         run: |
-          node --test \
-            packages/rn-dev-agent-core/test/unit/session/metro-spawn-convention-table.test.ts \
-            packages/rn-dev-agent-core/test/unit/session/metro-descendant-spawn-convention.test.ts \
-            packages/rn-dev-agent-core/test/unit/session/managed-metro-launcher-exit-attribution.test.ts \
-            packages/rn-dev-agent-core/test/unit/session/package-integration.test.ts
+          V=$(jq -r '.version' packages/qaren-plugin/.claude-plugin/plugin.json)
+          echo "V=$V" >> "$GITHUB_ENV"
+          node scripts/build-qaren-tarball.ts --version "$V" --platform darwin-arm64 --out-dir "$RUNNER_TEMP/first"
+          cp -Rp "$(rustc --print sysroot)" "$RUNNER_TEMP/relocated-toolchain"
+          RELOCATED="$RUNNER_TEMP/relocated-toolchain/bin/rustc"
+          echo "global sysroot: $(rustc --print sysroot)"
+          echo "relocated sysroot: $("$RELOCATED" --print sysroot)"
+          # Equal sysroots would make the comparison below prove nothing.
+          [ "$(rustc --print sysroot)" != "$("$RELOCATED" --print sysroot)" ] \
+            || { echo "::error::the relocated toolchain reports the global sysroot" >&2; exit 1; }
+          RUSTC="$RELOCATED" CARGO_TARGET_DIR="$RUNNER_TEMP/fresh-target" \
+            node scripts/build-qaren-tarball.ts --version "$V" --platform darwin-arm64 --out-dir "$RUNNER_TEMP/second"
+          cmp "$RUNNER_TEMP/first/qaren-$V-darwin-arm64.tar.gz" "$RUNNER_TEMP/second/qaren-$V-darwin-arm64.tar.gz"
+      - name: SessionStart hook, verified install, then qaren --version (no device)
+        run: |
+          TARBALL="$RUNNER_TEMP/first/qaren-$V-darwin-arm64.tar.gz"
+          PLUGIN="$RUNNER_TEMP/plugin"
+          cp -R packages/qaren-plugin "$PLUGIN"
+          node scripts/build-runner-manifest.mts --version "$V" --qaren-darwin-arm64 "$TARBALL" --out "$PLUGIN/runner-manifest.json"
+          export HOME="$RUNNER_TEMP/home"
+          mkdir -p "$HOME"
+          HOOK=$(bash "$PLUGIN/scripts/ensure-qaren.sh" --print-bin)
+          echo "$HOOK"
+          case "$HOOK" in *"--install"*) ;; *) echo "::error::the hook did not print the install command" >&2; exit 1 ;; esac
+          BIN=$(bash "$PLUGIN/scripts/ensure-qaren.sh" --install --from-file "$TARBALL")
+          [ "$(bash "$PLUGIN/scripts/ensure-qaren.sh" --print-bin)" = "$BIN" ]
+          GOT=$(env -u QAREN_RUNTIME "$BIN" --version)
+          [ "$GOT" = "qaren $V" ] || { echo "::error::qaren --version printed '$GOT'" >&2; exit 1; }
+          # Headroom under the installer's 512 MiB unpacked-size ceiling stays visible.
+          KIB=$(du -sk "$(dirname "$(dirname "$BIN")")" | cut -f1)
+          echo "installed runtime: $KIB KiB"
+          [ "$KIB" -lt 262144 ] || { echo "::error::the runtime unpacks to $KIB KiB, above half the 512 MiB ceiling" >&2; exit 1; }
+          # The release binary carries no builder home or toolchain paths.
+          if strings "$BIN" | grep -E '/Users/|lib/rustlib/src'; then
+            echo "::error::bin/qaren embeds builder paths" >&2
+            exit 1
+          fi
+      - name: Source install links qaren onto PATH, finds its runtime through the link, and qaren update reinstalls it
+        run: |
+          # The toolchain stays where the runner installed it; only the install home is fresh.
+          export CARGO_HOME="${CARGO_HOME:-$HOME/.cargo}" RUSTUP_HOME="${RUSTUP_HOME:-$HOME/.rustup}"
+          export HOME="$RUNNER_TEMP/home2"
+          # The fresh ~/bin leads the standard bins on PATH, so it receives the link ahead of the runner's /usr/local/bin.
+          export PATH="$HOME/bin:$PATH"
+          mkdir -p "$HOME/bin"
+          BIN=$(bash scripts/install-qaren-from-source.sh)
+          [ "$(readlink "$HOME/bin/qaren")" = "$BIN" ] || { echo "::error::qaren is not linked into the first standard bin directory on PATH" >&2; exit 1; }
+          GOT=$(env -u QAREN_RUNTIME qaren --version)
+          [ "$GOT" = "qaren $V" ] || { echo "::error::qaren from PATH printed '$GOT'" >&2; exit 1; }
+          # qaren update fast-forwards first, so give the checkout a local upstream to pull from.
+          git checkout -q -B ci-update
+          git init -q --bare "$RUNNER_TEMP/upstream.git"
+          # The checkout is shallow; the empty upstream must accept its grafted history.
+          git -C "$RUNNER_TEMP/upstream.git" config receive.shallowUpdate true
+          git push -q "$RUNNER_TEMP/upstream.git" ci-update
+          git remote add upstream "$RUNNER_TEMP/upstream.git"
+          git fetch -q upstream
+          git branch -u upstream/ci-update
+          OUT=$(qaren update); echo "$OUT"
+          case "$OUT" in *"already current"*) ;; *) echo "::error::update after a fresh install did not report current" >&2; exit 1 ;; esac
+          # A different tarball mtime is a different build, so this replaces the runtime the running qaren update started from.
+          OUT=$(SOURCE_DATE_EPOCH=1 qaren update); echo "$OUT"
+          case "$OUT" in *"updated qaren"*) ;; *) echo "::error::a changed build was not reported as updated" >&2; exit 1 ;; esac
+          [ "$(readlink "$HOME/bin/qaren")" = "$BIN" ] || { echo "::error::qaren update moved the PATH link" >&2; exit 1; }
+          GOT=$(env -u QAREN_RUNTIME qaren --version)
+          [ "$GOT" = "qaren $V" ] || { echo "::error::qaren from PATH printed '$GOT' after update" >&2; exit 1; }
 
   test:
     name: Build & Test
-    needs: [core-tests, unit-tests, descendant-spawn-convention]
+    needs: [core-tests, unit-tests, cargo-test, qaren-tarball]
     if: ${{ always() }}
     runs-on: ubuntu-latest
     steps:
@@ -221,14 +237,17 @@ jobs:
         env:
           CORE_TESTS_RESULT: ${{ needs.core-tests.result }}
           UNIT_TESTS_RESULT: ${{ needs.unit-tests.result }}
-          SPAWN_CONVENTION_RESULT: ${{ needs.descendant-spawn-convention.result }}
+          CARGO_TEST_RESULT: ${{ needs.cargo-test.result }}
+          QAREN_TARBALL_RESULT: ${{ needs.qaren-tarball.result }}
         run: |
           echo "Core/integration/docs: $CORE_TESTS_RESULT"
           echo "Five unit-test batches: $UNIT_TESTS_RESULT"
-          echo "Descendant spawn convention matrix: $SPAWN_CONVENTION_RESULT"
+          echo "cargo test: $CARGO_TEST_RESULT"
+          echo "qaren tarball smoke: $QAREN_TARBALL_RESULT"
           test "$CORE_TESTS_RESULT" = success
           test "$UNIT_TESTS_RESULT" = success
-          test "$SPAWN_CONVENTION_RESULT" = success
+          test "$CARGO_TEST_RESULT" = success
+          test "$QAREN_TARBALL_RESULT" = success
 
   lint-format:
     name: Lint & format
@@ -248,6 +267,8 @@ jobs:
         run: corepack yarn format:check
       - name: typescript-only gate
         run: bash scripts/check-typescript-only.sh
+      - name: typescript-only gate unit test
+        run: bash scripts/test/check-typescript-only.test.sh
 
   version-sync:
     name: Version sync check
@@ -258,6 +279,8 @@ jobs:
         with:
           node-version: 24
       - run: bash scripts/sync-versions.sh
+      - name: Version-sync fixer portable-sed guard
+        run: bash scripts/test/sync-versions.test.sh
 
   require-changeset:
     name: Require changeset
@@ -280,29 +303,3 @@ jobs:
       # package, so a typo fails the PR instead of release.yml's `changeset version`.
       - name: Validate changeset package names
         run: bash scripts/validate-changeset-names.sh
-
-  web-bundle:
-    name: Web bundle freshness
-    runs-on: ubuntu-latest
-    # PR-only: rebuilds the observability SPA and fails if the committed HOST
-    # copies drifted from source. The SPA still ships inside each host package
-    # runtime; core dist is generated locally in this job.
-    if: github.event_name == 'pull_request'
-    steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2 — Phase 134.5 SHA pin
-      - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e  # v6.4.0 — Phase 134.5 SHA pin
-        with:
-          node-version: 24
-          cache: yarn
-          cache-dependency-path: yarn.lock
-      - run: bash scripts/check-web-bundle.sh
-      # GH#438: observe-UI e2e — boots the real ObservabilityServer with a
-      # seeded recorder + stub e2e deps and drives the committed SPA bundle
-      # headless. Lives here (not Build & Test) because it shares this job's
-      # web-bundle rebuild concern and needs a browser install.
-      - run: corepack enable
-      - run: corepack yarn install --immutable
-      - name: Install Playwright chromium
-        run: corepack yarn workspace rn-dev-agent-core exec playwright install --with-deps chromium
-      - name: Observe UI e2e (Playwright)
-        run: corepack yarn workspace rn-dev-agent-core test:e2e-web

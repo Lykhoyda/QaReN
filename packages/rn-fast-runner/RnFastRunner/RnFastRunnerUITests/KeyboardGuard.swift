@@ -9,6 +9,20 @@ enum KeyboardTargetValidation: Equatable {
 enum KeyboardGuard {
   static let canonicalKeyboardTypes: Set<String> = ["Key", "Keyboard"]
 
+  static func isKeyboardOwnedButton(
+    type: String,
+    index: Int,
+    parentOf: (Int) -> Int?,
+    typeOf: (Int) -> String?
+  ) -> Bool {
+    type == "Button"
+      && DispatchGuard.nearestOwner(of: index, parentOf: parentOf, owns: { typeOf($0) == "Keyboard" }) != nil
+  }
+
+  static func isKeyboardTarget(_ retained: RetainedSnapshotTarget) -> Bool {
+    canonicalKeyboardTypes.contains(retained.type) || retained.keyboardOwned
+  }
+
   static func validateKeyboardDescriptor(
     command: Command,
     retained: RetainedSnapshotTarget?,
@@ -17,13 +31,14 @@ enum KeyboardGuard {
   ) -> KeyboardTargetValidation {
     let claimedType = command.snapshotElementType
     let claimedKeyboardTarget = claimedType.map(canonicalKeyboardTypes.contains) == true
-    let retainedKeyboardTarget = retained.map { canonicalKeyboardTypes.contains($0.type) } == true
+    let retainedKeyboardTarget = retained.map(isKeyboardTarget) == true
     guard claimedKeyboardTarget || retainedKeyboardTarget else {
       return .ordinary
     }
+    // Keyboard status comes from the retained node, never the claimed type.
     guard let claimedType,
-          canonicalKeyboardTypes.contains(claimedType),
           let retained,
+          isKeyboardTarget(retained),
           command.snapshotGeneration == currentGeneration,
           command.snapshotGeneration == retained.generation,
           command.snapshotNodeIndex == retained.index,

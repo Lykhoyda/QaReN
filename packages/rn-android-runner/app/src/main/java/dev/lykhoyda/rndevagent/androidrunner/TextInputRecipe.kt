@@ -1,8 +1,9 @@
 package dev.lykhoyda.rndevagent.androidrunner
 
 // Story 10 (#391): text-input recipe helpers for the `type` command. RN
-// TextInput is EditText-backed, so the focused node accepts ACTION_SET_TEXT
-// (UiObject2.setText) — atomic, full-Unicode, fires RN's onChangeText. This
+// TextInput is EditText-backed, so the bound node accepts ACTION_SET_TEXT
+// (performed on its AccessibilityNodeInfo, never through UiObject2.setText,
+// which logs the value) — atomic, full-Unicode, fires RN's onChangeText. This
 // object holds the pure logic around that primary path: classifying the
 // read-back outcome and mapping ASCII characters to keyevents for the
 // fallback tier (Maestro's 75 ms pacing). Kept free of android.* imports so
@@ -53,6 +54,16 @@ object TextInputRecipe {
             SetTextOutcome.REJECTED -> false
         }
 
+    // A read of the bound input's accessibility node. Android reports null text
+    // for an empty field that shows no hint, so a fresh read of a field known
+    // not to show one is "". Stale nodes are always unreadable; fresh nodes
+    // with unknown hint state (API < 26) or a showing hint keep their raw text,
+    // so null stays unreadable there.
+    fun readableText(fresh: Boolean, text: String?, showingHint: Boolean?): String? {
+        if (!fresh) return null
+        return if (showingHint == false) text.orEmpty() else text
+    }
+
     fun classifyVerify(
         expected: String,
         raw: String?,
@@ -67,13 +78,18 @@ object TextInputRecipe {
                 if (raw.isEmpty()) return "exact"
                 return if (!hintKnown || placeholderEqual) "ambiguous" else "mismatch"
             }
-            return "secure-masked"
+            // An empty or hint read, or a mask of another length, proves the value did not land.
+            if (raw.isEmpty() || placeholderEqual) return "mismatch"
+            val maskedLength = raw.all { it == '\u2022' }
+            return if (maskedLength && raw.length != expected.length &&
+                raw.length != expected.codePointCount(0, expected.length)) "mismatch" else "secure-masked"
         }
         if (expected.isEmpty()) {
             if (raw.isEmpty()) return "exact"
             return if (!hintKnown || placeholderEqual) "ambiguous" else "mismatch"
         }
-        if (raw == expected) return if (!hintKnown || placeholderEqual) "ambiguous" else "exact"
+        // A placeholder read cannot prove a typed value, even one equal to the placeholder.
+        if (raw == expected) return if (placeholderEqual) "mismatch" else if (!hintKnown) "ambiguous" else "exact"
         return "mismatch"
     }
 

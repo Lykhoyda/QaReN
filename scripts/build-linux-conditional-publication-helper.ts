@@ -13,7 +13,7 @@ const { createHash } = require('node:crypto');
 const { dirname, join } = require('node:path');
 
 const repoRoot = dirname(__dirname);
-const outputDirectory = join(repoRoot, 'packages', 'rn-dev-agent-core', 'native');
+const outputDirectory = join(repoRoot, 'packages', 'qaren-core', 'native');
 const source = `typedef unsigned long u64;
 typedef long i64;
 typedef unsigned int u32;

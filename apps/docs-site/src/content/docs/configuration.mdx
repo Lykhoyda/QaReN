@@ -1,0 +1,121 @@
+---
+title: Configuration
+description: Every key in .qaren/config.yaml, with its type, default and meaning.
+---
+
+`qaren check` and `qaren pr` read `.qaren/config.yaml` from the directory they run in;
+`--config <path>` selects another file. Unknown keys are rejected.
+
+```yaml
+appId: com.example.testapp
+devClientScheme: testapp
+metroPort: 8791
+loginBlock: sign-in
+loginMarker:
+  id: login-screen
+```
+
+## Keys
+
+| Key               | Type             | Default | Meaning                                                                                       |
+| ----------------- | ---------------- | ------- | --------------------------------------------------------------------------------------------- |
+| `appId`           | string           | —       | Required. The app's bundle ID on iOS or package name on Android.                              |
+| `devClientScheme` | string           | —       | Required for `check` and `pr`. The app's registered dev-client URI scheme, 1–128 bytes matching `[A-Za-z][A-Za-z0-9+.-]*`. |
+| `packageManager`  | string           | `pnpm`  | The app's package manager. Only `pnpm` is supported.                                          |
+| `metroPort`       | integer          | `8791`  | The port of the Metro server the run starts. At least `1024`.                                 |
+| `nodePath`        | string           | `node` on `PATH` | An absolute path to the Node binary to use. It must be Node 24 or newer.             |
+| `registryAuthEnv` | list of strings  | `[]`    | Names, never values, of extra environment variables kept for private-registry auth during dependency install and Expo prebuild, whose output is then withheld; see the [registry-auth policy](https://github.com/Lykhoyda/rn-dev-agent/blob/develop/packages/qaren-cli/README.md#check-a-plan). |
+| `loginBlock`      | string           | —       | The slug of a saved block that signs in; see [login recovery](../saved-blocks/#login-recovery). |
+| `loginMarker`     | object           | —       | What shows the login screen: exactly one non-empty `id` (a `testID`) or `text` (a label).     |
+| `savePlans`       | boolean          | `true`  | Whether `check` saves fully passing plans into `.qaren/plans/` and flags or clears saved plans; see [saved plans](../plans/#saved-plans). |
+| `ios`             | object           | —       | iOS settings, below.                                                                          |
+| `android`         | object           | —       | Android settings, below.                                                                      |
+| `deadlines`       | object           | See below | Preparation budgets; see [deadlines](#deadlines).                                           |
+
+`loginBlock` and `loginMarker` are set together. `loginBlock` must be an action slug: it
+starts with a letter or digit, then letters, digits, `_`, `.` or `-`, at most 64 characters,
+without `..`.
+
+## `ios`
+
+| Key               | Type   | Meaning                                                                    |
+| ----------------- | ------ | -------------------------------------------------------------------------- |
+| `deviceType`      | string | Accepted, but not used by `check` or `pr`, which borrow a booted simulator. |
+| `runtime`         | string | Accepted, but not used by `check` or `pr`.                                 |
+| `build.workspace` | string | An existing `ios/*.xcworkspace`, relative to the app directory.            |
+| `build.scheme`    | string | The Xcode scheme to build in that workspace, 1–256 bytes.                  |
+
+By default the iOS build uses the app's Expo CLI in generic build-only mode. Older Expo CLIs
+lack that mode: set `ios.build` with both `workspace` and `scheme` to build an existing Xcode
+workspace instead.
+
+```yaml
+appId: com.example.testapp
+devClientScheme: testapp
+ios:
+  build:
+    workspace: ios/TestApp.xcworkspace
+    scheme: TestApp
+```
+
+The workspace route builds Debug for the iOS Simulator with ad-hoc simulator signing. It runs no
+CocoaPods or codegen step of its own, so the workspace's native dependencies must already be
+ready for Xcode.
+
+## `android`
+
+| Key   | Type   | Meaning                 |
+| ----- | ------ | ----------------------- |
+| `avd` | string | Accepted, but not used by `check` or `pr`. |
+
+`check` and `pr` on Android borrow an emulator that is already booted; see
+[Check a plan](../check/#android).
+
+## deadlines
+
+Optional preparation budgets for `check` and `pr`: a native build time limit,
+a dependency-install time limit, a simulator-boot time limit, and a dev-client
+attach limit after which an attach without a target is refused when the app has
+exited or Metro has received no bundle request since launch.
+
+| Key                    | Default (seconds) |
+| ---------------------- | ----------------- |
+| `install_deps_seconds`  | `900`             |
+| `build_seconds`         | `2400`            |
+| `device_boot_seconds`  | `420`             |
+| `attach_seconds`       | `120`             |
+
+Each limit is a whole number of seconds from 30 through 7200 inclusive.
+Omit the block, write `deadlines: {}`, or write a bare
+`deadlines:` to keep every default. A field that is present overrides only
+that field.
+
+Out-of-range values are refused with `SCENARIO_INVALID`, rather than clamped.
+A null, tilde, blank, negative, fractional, quoted, boolean, list, or object
+field value is a parse refusal, as is an unknown key, a camelCase alias, or a
+duplicate key. Explicit `deadlines: null` and `deadlines: ~` are also refused.
+`check` and `pr` store the effective budgets at `scenario.deadlines` in
+`run.json`. For `pr`, these budgets come from the operator-selected
+configuration, even if the candidate worktree contains different deadlines.
+`prepare` keeps the deadlines in its scenario file, independently of app
+configuration.
+
+```yaml
+appId: com.example.testapp
+devClientScheme: testapp
+deadlines:
+  build_seconds: 5400
+```
+
+## Environment
+
+| Variable              | Meaning                                                                         |
+| --------------------- | ------------------------------------------------------------------------------- |
+| `TYPESAFE_API_KEY`    | Required by plans with phrase steps or phrase checks; see [Write a plan](../plans/#when-the-plan-needs-typesafe_api_key). |
+| `ANDROID_HOME`        | The Android SDK whose `platform-tools/adb` reaches the running adb server.      |
+| `QAREN_NODE`          | The Node binary to use; it takes precedence over `nodePath`.                    |
+| `QAREN_LOCK_ROOT`     | Explicit lock namespace; see the [lock-root contract](https://github.com/Lykhoyda/rn-dev-agent/blob/develop/packages/qaren-cli/README.md#ios-admission-and-cleanup) for precedence and validation. |
+| `QAREN_MACHINE_LOCKS` | Machine-wide locks are on by default; `0` opts out to per-home locks; see the [lock-root contract](https://github.com/Lykhoyda/rn-dev-agent/blob/develop/packages/qaren-cli/README.md#ios-admission-and-cleanup) for safe switching. |
+| `QAREN_NATIVE_CACHE_ROOT` | An exact private absolute directory for reusable iOS builds. Defaults on macOS to `/private/var/tmp/qaren-native-cache-<uid>`, shared across HOME values for that user. |
+| `QAREN_WALK_SECONDS`  | The walk budget in seconds. Defaults to `1200`.                                 |
+| `QAREN_STEP_SECONDS`  | The per-step budget in seconds. Defaults to `1200`.                             |

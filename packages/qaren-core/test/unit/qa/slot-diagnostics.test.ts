@@ -1,0 +1,378 @@
+import { test } from 'node:test';
+import assert from 'node:assert/strict';
+import { createWriter } from '../../../dist/qa/wire.js';
+import { InputPrivacyRefusal, RunInputs, withInputs } from '../../../dist/qa/inputs.js';
+import { ObservedPrivacy } from '../../../dist/qa/privacy.js';
+import { parsePlan } from '../../../dist/qa/plan.js';
+import { runPlan } from '../../../dist/qa/walker.js';
+import { PrivateInputCaptureError } from '../../../dist/qa/private-input.js';
+import { createTimingObserver } from '../../../dist/qa/timing.js';
+import { element, screen, scriptedJudge, walker } from './judgment-fixtures.ts';
+
+test('the slot diagnostic wire projects only fixed vocabulary and measured numbers', () => {
+  const outputs = ['private-user@example.test', 'quote"slash\\sentinel'].map((secret) => {
+    const lines: string[] = [];
+    const writer = createWriter((line) => lines.push(line), 'run');
+    withInputs(new RunInputs({ PASSWORD: secret }, ['PASSWORD'], undefined, ['PASSWORD']), () => {
+      writer.diagnostic({
+        kind: 'metric',
+        stage: 'capture',
+        edge: 'end',
+        outcome: 'ok',
+        at: 200,
+        ms: 100,
+        text: secret,
+        hash: Buffer.from(secret).toString('hex'),
+      });
+      writer.diagnostic({
+        kind: 'timing',
+        stage: 'dispatch',
+        code: 'ACTION_INTERRUPTED',
+        line: 2,
+        at: 220,
+        acquisitionMs: 100,
+        observationAgeMs: 120,
+        authorizations: 1,
+        refusalDiagnostic: {
+          nativeCode: 'RUNNER_TIMEOUT',
+          nativeMutation: 'possible',
+          message: secret,
+        },
+        ref: secret,
+      });
+      writer.diagnostic({ kind: 'block-outcome', line: 2, outcome: 'pass', title: secret });
+      writer.diagnostic({ kind: 'login-outcome', outcome: 'refused', message: secret });
+      for (const payload of [
+        { kind: 'metric', stage: secret, edge: 'end', outcome: 'ok', at: 1 },
+        {
+          kind: 'timing',
+          stage: 'dispatch',
+          code: secret,
+          line: 2,
+          at: 1,
+          acquisitionMs: 0,
+          observationAgeMs: 0,
+        },
+        { kind: 'block-outcome', line: secret, outcome: 'pass' },
+        { kind: 'login-outcome', outcome: secret },
+        { kind: 'metric', stage: 'capture', edge: 'end', outcome: 'ok', at: NaN },
+      ])
+        writer.diagnostic(payload);
+      writer.result({
+        verdict: 'REFUSED',
+        code: 'CORE_REFUSED',
+        message: 'stopped',
+        lease: 'lease',
+      });
+      writer.diagnostic({ kind: 'login-outcome', outcome: 'pass' });
+    });
+    const events = lines.map((line) => JSON.parse(line));
+    assert.equal(events.length, 5);
+    assert.deepEqual(
+      events.map((event) => event.seq),
+      [2, 3, 4, 5, 6],
+    );
+    assert.deepEqual(events[1].payload, {
+      kind: 'timing',
+      stage: 'dispatch',
+      code: 'ACTION_INTERRUPTED',
+      line: 2,
+      at: 220,
+      acquisitionMs: 100,
+      observationAgeMs: 120,
+      authorizations: 1,
+      nativeCode: 'RUNNER_TIMEOUT',
+      nativeMutation: 'possible',
+    });
+    const output = lines.join('');
+    assert.ok(!output.includes(secret));
+    assert.ok(!output.includes(Buffer.from(secret).toString('hex')));
+    return output;
+  });
+  assert.equal(outputs[0], outputs[1]);
+});
+
+test('slot blocks emit their existing pass, fail and refusal outcomes without identities or values', async () => {
+  for (const outcome of ['pass', 'fail', 'refused'] as const) {
+    for (const secret of ['first-private-value', 'second-private-value']) {
+      const privacy = new ObservedPrivacy();
+      const inputs = new RunInputs({ PASSWORD: secret }, ['PASSWORD'], privacy);
+      const field = screen([element('@field', 'Field', { kind: 'input', testID: 'field' })]);
+      const f = walker(
+        [field],
+        scriptedJudge(() => ({})),
+      );
+      const events: unknown[] = [];
+      f.deps.privacy = privacy;
+      f.deps.blockOutcome = (event) => events.push(event);
+      if (outcome === 'fail')
+        f.deps.fill = async () => ({ ok: false, proven: false, mutation: 'none' });
+      if (outcome === 'refused')
+        f.deps.captureScreen = async () => {
+          throw new PrivateInputCaptureError(secret);
+        };
+      const result = await withInputs(inputs, () =>
+        runPlan(parsePlan('# Private form\n1. Fill "field" with input PASSWORD').blocks!, f.deps),
+      );
+      assert.equal(result.verdict, { pass: 'PASS', fail: 'FAIL', refused: 'REFUSED' }[outcome]);
+      assert.deepEqual(events, [{ kind: 'block-outcome', line: 2, outcome }]);
+      assert.ok(!JSON.stringify({ events, result }).includes(secret));
+    }
+  }
+});
+
+test('slot block diagnostics are passive and absent for literal-only blocks', async () => {
+  const field = screen([element('@field', 'Field', { kind: 'input', testID: 'field' })]);
+  for (const slot of [false, true]) {
+    const f = walker(
+      [field],
+      scriptedJudge(() => ({})),
+    );
+    let calls = 0;
+    f.deps.blockOutcome = () => {
+      calls++;
+      throw Error('sink failed');
+    };
+    const result = await withInputs(
+      new RunInputs({ PASSWORD: 'private-value' }, ['PASSWORD']),
+      () =>
+        runPlan(
+          parsePlan(`1. Fill "field" with ${slot ? 'input PASSWORD' : '"literal"'}`).blocks!,
+          f.deps,
+        ),
+    );
+    assert.equal(result.verdict, 'PASS');
+    assert.equal(calls, slot ? 1 : 0);
+  }
+});
+
+test('a thrown input-privacy refusal reports the block refusal and preserves the original exception', async () => {
+  const f = walker(
+    [screen([element('@field', 'Field', { kind: 'input', testID: 'field' })])],
+    scriptedJudge(() => ({})),
+  );
+  const error = new InputPrivacyRefusal();
+  const events: unknown[] = [];
+  f.deps.fill = async () => {
+    throw error;
+  };
+  f.deps.blockOutcome = (event) => events.push(event);
+  await assert.rejects(
+    withInputs(new RunInputs({ PASSWORD: 'private-value' }, ['PASSWORD']), () =>
+      runPlan(parsePlan('1. Fill "field" with input PASSWORD').blocks!, f.deps),
+    ),
+    (caught) => caught === error,
+  );
+  assert.deepEqual(events, [{ kind: 'block-outcome', line: 1, outcome: 'refused' }]);
+});
+
+test('slot dispatches emit measured timing and outcomes through the wire, independent of the input value', async () => {
+  const outputs: string[] = [];
+  for (const value of ['first-private-value', 'other-private-value']) {
+    const lines: string[] = [];
+    const writer = createWriter((line) => lines.push(line), 'run');
+    const privacy = new ObservedPrivacy();
+    const inputs = new RunInputs({ PASSWORD: value }, ['PASSWORD'], privacy);
+    const field = screen([element('@field', 'Field', { kind: 'input', testID: 'field' })]);
+    const f = walker(
+      [field],
+      scriptedJudge(() => ({})),
+    );
+    f.deps.privacy = privacy;
+    f.deps.timing = createTimingObserver((event) =>
+      writer.diagnostic({ kind: 'metric', ...event }),
+    );
+    f.deps.diagnostic = (event) => writer.diagnostic({ kind: 'timing', ...event });
+    f.deps.blockOutcome = writer.diagnostic;
+    f.deps.fill = async (_ref, text, context) => {
+      assert.equal(text, value);
+      context.authorize();
+      return { ok: true, proven: true };
+    };
+    const result = await withInputs(inputs, () =>
+      runPlan(parsePlan('1. Fill "field" with input PASSWORD').blocks!, f.deps),
+    );
+    assert.equal(result.verdict, 'PASS');
+    const events = lines.map((line) => JSON.parse(line).payload);
+    assert.ok(events.some((event) => event.kind === 'metric' && event.stage === 'capture'));
+    assert.ok(
+      events.some(
+        (event) =>
+          event.kind === 'timing' && event.stage === 'dispatch' && event.code === 'ACCEPTED',
+      ),
+    );
+    assert.ok(
+      events.some(
+        (event) =>
+          event.kind === 'timing' && event.stage === 'dispatch' && event.code === 'COMPLETED',
+      ),
+    );
+    assert.ok(events.some((event) => event.kind === 'block-outcome' && event.outcome === 'pass'));
+    assert.ok(!lines.join('').includes(value));
+    outputs.push(lines.join(''));
+  }
+  assert.equal(outputs[0], outputs[1]);
+});
+
+test('timing volume cannot suppress block and login outcomes, and ordinary runs emit no extra wire events', () => {
+  const lines: string[] = [];
+  const writer = createWriter((line) => lines.push(line), 'run');
+  writer.diagnostic({ kind: 'login-outcome', outcome: 'pass' });
+  assert.equal(lines.length, 0);
+  withInputs(new RunInputs({ PASSWORD: 'private-value' }, ['PASSWORD']), () => {
+    for (let i = 0; i < 20_010; i++)
+      writer.diagnostic({ kind: 'metric', stage: 'capture', edge: 'end', outcome: 'ok', at: i });
+    writer.diagnostic({ kind: 'block-outcome', line: 1, outcome: 'pass' });
+    writer.diagnostic({ kind: 'login-outcome', outcome: 'pass' });
+  });
+  assert.equal(lines.length, 20_002);
+  assert.equal(JSON.parse(lines.at(-2)!).payload.kind, 'block-outcome');
+  assert.equal(JSON.parse(lines.at(-1)!).payload.kind, 'login-outcome');
+});
+
+test('runner termination diagnostics cross the slot wire as fixed words and counts only', () => {
+  const secret = 'private-otp-123456';
+  const lines: string[] = [];
+  const writer = createWriter((line) => lines.push(line), 'run');
+  const rows = [
+    {
+      kind: 'metric',
+      stage: 'native-readiness',
+      edge: 'end',
+      outcome: 'failed',
+      at: 200,
+      ms: 2,
+      count: 1,
+      readinessReason: 'health',
+      healthDetail: 'refused',
+    },
+    {
+      kind: 'metric',
+      stage: 'runner-post-mortem',
+      edge: 'point',
+      outcome: 'failed',
+      at: 201,
+      count: 1,
+      hostChild: 'alive',
+      appProcess: 'same',
+      markerReady: 1,
+      markerWaiting: 1,
+      markerWaitResult: 0,
+      markerListenerFailed: 0,
+      markerSendFailed: 0,
+    },
+    { kind: 'metric', stage: 'dispatch-native', edge: 'end', outcome: 'ok', at: 190, ms: 17_600 },
+  ];
+  withInputs(new RunInputs({ OTP: secret }, ['OTP'], undefined, ['OTP']), () => {
+    for (const row of rows) writer.diagnostic({ ...row, tail: secret, text: secret });
+    writer.diagnostic({ ...rows[1], hostChild: secret });
+    writer.diagnostic({ ...rows[0], healthDetail: secret });
+  });
+  assert.deepEqual(
+    lines.map((line) => JSON.parse(line).payload),
+    rows,
+  );
+  assert.ok(!lines.join('').includes(secret));
+});
+
+test('failure-path diagnostics retain finite stages and scrub adversarial values', () => {
+  const outputs = ['private-one/"\\', 'private-two+@example.test'].map((secret) => {
+    const lines: string[] = [];
+    const writer = createWriter((line) => lines.push(line), 'run');
+    withInputs(new RunInputs({ PASSWORD: secret }, ['PASSWORD']), () => {
+      for (const stage of ['type-call', 'type-readback', 'relayout-retap', 'settle', 'keyboard']) {
+        writer.diagnostic({
+          kind: 'metric',
+          stage,
+          edge: 'end',
+          outcome: 'failed',
+          at: 16000,
+          ms: 10000,
+          method: 'timeout',
+          settled: false,
+          hierarchyChanged: 'unknown',
+          event: 'relayout',
+          proof: 'not-proven',
+          keyboard: true,
+          path: secret,
+          hash: Buffer.from(secret).toString('hex'),
+        });
+      }
+      for (const stage of ['dispatch-error', 'native-response']) {
+        writer.diagnostic({
+          kind: 'timing',
+          stage: 'dispatch',
+          code: 'ACTION_INTERRUPTED',
+          line: 17,
+          at: 16000,
+          acquisitionMs: 1,
+          observationAgeMs: 16000,
+          authorizations: 1,
+          refusalDiagnostic: {
+            stage,
+            mutating: true,
+            nativeCode: 'RUNNER_TIMEOUT',
+            nativeMutation: 'possible',
+            message: secret,
+          },
+        });
+      }
+      writer.diagnostic({
+        kind: 'metric',
+        stage: 'type-readback',
+        edge: 'end',
+        outcome: 'unavailable',
+        at: 16000,
+        ms: 0,
+      });
+      writer.diagnostic({ kind: 'metric', stage: secret, edge: 'end', outcome: 'ok', at: 1 });
+      writer.diagnostic({
+        kind: 'metric',
+        stage: 'settle',
+        edge: 'end',
+        outcome: 'ok',
+        at: 1,
+        method: secret,
+        settled: secret,
+        hierarchyChanged: secret,
+        event: secret,
+        proof: secret,
+        keyboard: secret,
+      });
+    });
+    const events = lines.map((line) => JSON.parse(line).payload);
+    assert.equal(events.length, 9);
+    assert.deepEqual(
+      events.slice(0, 5).map((event) => event.stage),
+      ['type-call', 'type-readback', 'relayout-retap', 'settle', 'keyboard'],
+    );
+    assert.equal(events[3].method, 'timeout');
+    assert.equal(events[3].settled, false);
+    assert.equal(events[3].hierarchyChanged, 'unknown');
+    assert.equal(events[4].event, 'relayout');
+    assert.equal(events[4].proof, 'not-proven');
+    assert.equal(events[4].keyboard, true);
+    assert.equal(events[5].refusalStage, 'dispatch-error');
+    assert.equal(events[6].refusalStage, 'native-response');
+    assert.equal(events[5].mutating, true);
+    assert.equal(events[5].nativeCode, 'RUNNER_TIMEOUT');
+    assert.equal(events[7].outcome, 'unavailable');
+    assert.deepEqual(events[8], {
+      kind: 'metric',
+      stage: 'settle',
+      edge: 'end',
+      outcome: 'ok',
+      at: 1,
+    });
+    for (const token of [
+      secret,
+      JSON.stringify(secret).slice(1, -1),
+      Buffer.from(secret).toString('hex'),
+      Buffer.from(secret).toString('base64'),
+      encodeURIComponent(secret),
+    ])
+      assert.ok(!lines.join('').includes(token));
+    return lines.join('');
+  });
+  assert.equal(outputs[0], outputs[1]);
+});

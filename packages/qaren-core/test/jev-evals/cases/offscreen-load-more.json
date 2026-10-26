@@ -1,0 +1,12 @@
+{
+  "screen": {
+    "front": "app",
+    "elements": [
+      { "ref": "@back", "kind": "button", "label": "Back", "hittable": true, "disabled": false, "secure": false, "offscreen": false, "where": "top" },
+      { "ref": "react:load-more", "kind": "button", "label": "Load more", "testID": "load-more", "hittable": false, "disabled": false, "secure": false, "offscreen": true, "semantic": { "press": "supported", "fill": "unsupported", "visibility": "offscreen" } }
+    ],
+    "visibleText": ["Back", "Recent tasks"]
+  },
+  "line": "Tap the load more control",
+  "expected": { "kind": "target", "scroll": "down" }
+}

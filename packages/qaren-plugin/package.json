@@ -1,0 +1,10 @@
+{
+  "name": "qaren",
+  "version": "1.0.13",
+  "private": true,
+  "description": "QaReN plugin package for Claude Code, Cursor and Codex; the changesets version source for every host manifest.",
+  "license": "MIT",
+  "engines": {
+    "node": ">=24"
+  }
+}

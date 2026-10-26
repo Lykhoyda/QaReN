@@ -1,8 +1,0 @@
-{
-  "mcpServers": {
-    "rn-dev-agent": {
-      "command": "node",
-      "args": ["packages/rn-dev-agent-core/dist/supervisor.js", "--no-lock"]
-    }
-  }
-}

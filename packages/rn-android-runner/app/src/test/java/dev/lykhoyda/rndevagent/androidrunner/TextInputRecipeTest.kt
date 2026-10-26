@@ -182,6 +182,39 @@ class TextInputRecipeTest {
         assertFalse(TextInputRecipe.isKeyEventTypable(""))
     }
 
+    // A fresh read of an empty field that shows no hint reports null
+    // accessibility text; it reads as "". Stale reads and reads without hint
+    // state (API < 26) stay null, so they stay unreadable.
+    @Test
+    fun freshHintlessEmptyReadIsEmptyText() {
+        assertEquals("", TextInputRecipe.readableText(fresh = true, text = null, showingHint = false))
+        assertEquals("typed", TextInputRecipe.readableText(fresh = true, text = "typed", showingHint = false))
+    }
+
+    @Test
+    fun staleOrHintUnknownReadsStayNull() {
+        assertNull(TextInputRecipe.readableText(fresh = false, text = null, showingHint = false))
+        assertNull(TextInputRecipe.readableText(fresh = false, text = "typed", showingHint = false))
+        assertNull(TextInputRecipe.readableText(fresh = true, text = null, showingHint = null))
+        assertEquals("typed", TextInputRecipe.readableText(fresh = true, text = "typed", showingHint = null))
+    }
+
+    @Test
+    fun hintShowingReadKeepsTheHintText() {
+        assertEquals("Placeholder", TextInputRecipe.readableText(fresh = true, text = "Placeholder", showingHint = true))
+        assertNull(TextInputRecipe.readableText(fresh = true, text = null, showingHint = true))
+    }
+
+    @Test
+    fun emptyClearsVerifyThroughTheNormalizedRead() {
+        val plain = TextInputRecipe.readableText(fresh = true, text = null, showingHint = false)
+        assertEquals("exact", TextInputRecipe.classifyVerify("", plain, null, true, secure = false))
+        val placeholder = TextInputRecipe.readableText(fresh = true, text = "Placeholder", showingHint = true)
+        assertEquals("ambiguous", TextInputRecipe.classifyVerify("", placeholder, "Placeholder", true, secure = false))
+        val stale = TextInputRecipe.readableText(fresh = false, text = null, showingHint = false)
+        assertEquals("unreadable", TextInputRecipe.classifyVerify("", stale, null, true, secure = false))
+    }
+
     // GH #581: verifyInput classification — exact-only truth, secure fields
     // never prove content, empty-expectation reads are hint-ambiguous.
     @Test
@@ -196,6 +229,13 @@ class TextInputRecipeTest {
     fun classifyVerifySecureNeverProvesContent() {
         assertEquals("secure-masked", TextInputRecipe.classifyVerify("value-a", "•••••••", "Password", true, secure = true))
         assertEquals("secure-masked", TextInputRecipe.classifyVerify("value-a", "value-a", "Password", true, secure = true))
+        assertEquals("mismatch", TextInputRecipe.classifyVerify("value-a", "", "Password", true, secure = true))
+        assertEquals("mismatch", TextInputRecipe.classifyVerify("value-a", "Password", "Password", true, secure = true))
+        assertEquals("mismatch", TextInputRecipe.classifyVerify("value-a", "•••", "Password", true, secure = true))
+        assertEquals("mismatch", TextInputRecipe.classifyVerify("pass👍", "••••", "Password", true, secure = true))
+        for (mask in listOf("•••••", "••••••")) {
+            assertEquals("secure-masked", TextInputRecipe.classifyVerify("pass👍", mask, "Password", true, secure = true))
+        }
         assertEquals("exact", TextInputRecipe.classifyVerify("", "", "Password", true, secure = true))
         assertEquals("ambiguous", TextInputRecipe.classifyVerify("", "Password", "Password", true, secure = true))
         assertEquals("mismatch", TextInputRecipe.classifyVerify("", "•••", "Password", true, secure = true))
@@ -206,7 +246,9 @@ class TextInputRecipeTest {
         assertEquals("exact", TextInputRecipe.classifyVerify("", "", "Enter name", true, secure = false))
         assertEquals("ambiguous", TextInputRecipe.classifyVerify("", "Enter name", "Enter name", true, secure = false))
         assertEquals("mismatch", TextInputRecipe.classifyVerify("", "stale", "Enter name", true, secure = false))
-        assertEquals("ambiguous", TextInputRecipe.classifyVerify("Search", "Search", "Search", true, secure = false))
+        assertEquals("mismatch", TextInputRecipe.classifyVerify("Search", "Search", "Search", true, secure = false))
+        assertEquals("mismatch", TextInputRecipe.classifyVerify("Search", "", "Search", true, secure = false))
+        assertEquals("ambiguous", TextInputRecipe.classifyVerify("Search", "Search", null, false, secure = false))
     }
 
     @Test

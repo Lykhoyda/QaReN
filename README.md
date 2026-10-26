@@ -1,3 +1,56 @@
+This checkout develops **QaReN**, a CLI that checks Markdown QA plans, replays
+saved blocks and persists eligible passing blocks. For current build and usage
+instructions, read the [QaReN CLI guide](packages/qaren-cli/README.md). QaReN 2.0.0 has no
+backward compatibility with rn-dev-agent 1.x; to move from 1.0.14, follow
+[Upgrading from rn-dev-agent 1.x](packages/qaren-cli/README.md#upgrading-from-rn-dev-agent-1x-1014-to-20).
+
+## Set up QaReN
+
+Until a QaReN release asset is published, install from this checkout's root:
+
+```sh
+bash scripts/install-qaren-from-source.sh
+```
+
+The source installer requires an Apple silicon Mac, Node 24 or newer, Corepack
+and Rust/Cargo. It builds and verifies the runtime; see the
+[installation contract](packages/qaren-cli/README.md#plugin-runtime-installation)
+for PATH linking, the fallback export and existing-command protection.
+
+To update later, run `qaren update` from the same checkout root: it fast-forwards
+the checkout (refusing when it has local changes), rebuilds and reinstalls, and
+reports whether the build is already current, updated or newly installed.
+
+Run `qaren doctor` to diagnose setup problems and rn-dev-agent 1.x leftovers;
+see [Doctor](packages/qaren-cli/README.md#doctor) for checks and output options.
+
+From your app's root, load the checkout's plugin in Claude Code:
+
+```sh
+claude --plugin-dir /absolute/path/to/rn-dev-agent/packages/qaren-plugin
+```
+
+Then run `/qaren:setup`. The [setup skill](packages/qaren-plugin/skills/setup/SKILL.md)
+owns app requirements and onboarding: it writes `.qaren/config.yaml` and a smoke
+plan, selects a simulator and runs the first check. The
+[using-qaren skill](packages/qaren-plugin/skills/using-qaren/SKILL.md) writes
+subsequent feature plans. These replace `rn-setup` and `using-rn-dev-agent`
+without aliases. For manual runs, see [Check a plan](packages/qaren-cli/README.md#check-a-plan).
+
+## Watch a QaReN run
+
+Watch test stages in a second terminal:
+
+```sh
+qaren watch --latest
+```
+
+See the [watch guide](packages/qaren-cli/README.md#watch-a-run) for selecting a
+run, SSH usage, output modes, privacy, stage semantics and exit codes.
+
+The rn-dev-agent product and marketplace instructions below describe the
+published 1.x release, not this QaReN checkout.
+
 <div align="center">
 
 # rn-dev-agent
@@ -57,8 +110,8 @@ benchmarks.
 | **Verified, not claimed** | After implementing, the agent connects over CDP, walks the screen, reads the component tree and store, exercises the interaction, and screenshots the result — before it says "done" |
 | **210× faster replays** | A 3-step wizard that took ~14 min as an interactive walk replays in **~4 s** as a saved action. Average session time across the measured features dropped from ~12 min to ~4 min once actions existed |
 | **Flows that repair themselves** | When a `testID` drifts, the saved action fuzzy-matches the live snapshot, patches its own YAML, and retries. Cosmetic drift is absorbed; genuinely broken product logic is surfaced, never auto-fixed |
-| **Minutes, not sessions** | Simple features land in 3–5 min, complex multi-step flows in 11–25 min. **Zero crashes and zero manual interventions across all 35 measured features** |
-| **iOS and Android, one contract** | In-tree XCTest and UiAutomator runners give real taps, typing, scrolling, and screenshots — shipped as prebuilt artifacts so first use skips the cold build |
+| **Minutes, not sessions** | Simple features land in 3–5 min, complex multi-step flows in 11–25 min. **Zero crashes and zero manual interventions** |
+| **iOS and Android, one contract** | In-tree XCTest and UiAutomator runners give real taps, typing, scrolling, and screenshots; see [Android runner provisioning](packages/qaren-cli/README.md#android-runner-provisioning) for Android setup |
 | **Claude, Codex, and Cursor** | Claude and Cursor: 17 slash commands + 11 skills + 6 agents. Codex: 28 native skills (17 workflow + 11 domain). The same MCP tools on every host |
 
 [Full benchmarks and methodology →](https://lykhoyda.github.io/rn-dev-agent/benchmarks/)
@@ -184,18 +237,16 @@ phases also apply a bundled set of React Native and React
 | **Testing** | E2E replay and PR-ready proof | `proof_step`, `cross_platform_verify`, `maestro_run`, `maestro_test_all` (`cdp_auto_login` is legacy per-call recovery, not a failed-login fallback or PR proof) |
 | **Macro-Asserts** | State-assertive replays — internal state, not pixels | `expect_redux`, `expect_route`, `expect_visible_by_testid`, `expect_text` |
 
-The committed tool surface is asserted in CI against a golden registry
-(`packages/rn-dev-agent-core/test/fixtures/tool-registry.json`), so tool additions and removals
-can't silently drift. [Full tool reference →](https://lykhoyda.github.io/rn-dev-agent/tools/)
+[Published 1.x tool reference →](https://lykhoyda.github.io/rn-dev-agent/tools/)
 
 </details>
 
 <details>
 <summary><strong>Reliability baked into the tool layer</strong></summary>
 
-- **Self-healing taps** — a stale `@ref` is re-bound by identity (testID/label/role, unique match only). Opt out with `RN_SELF_HEAL=0`. A dispatched tap is never replayed because its effect is uncertain: on iOS an unchanged tap stays a success carrying `meta.noUiChange`, and on Android a tap whose effect cannot be observed fails (`INTERACTION_EFFECT_UNVERIFIED`, `mutation: possible`) rather than reporting success.
+- **Self-healing taps** — a stale `@ref` is re-bound by identity (testID/label/role, unique match only). Opt out with `RN_SELF_HEAL=0`. A dispatched tap is never replayed because its effect is uncertain: on iOS an unchanged tap stays a success carrying `meta.noUiChange`, and on Android a tap whose effect cannot be observed fails (`INTERACTION_EFFECT_UNVERIFIED`, `mutation: possible`) rather than reporting success. If Android's first window check reports idle and the hierarchy hash still matches the supplied pre-tap hash, settle waits once more for a window update, for up to the smaller of 2,000 ms and the remaining settle budget, then re-hashes only if an update arrives. This gives a delayed render time to become observable without dispatching another tap; an already changed hierarchy or a call without a pre-tap hash incurs no extra window wait.
 - **Quiescence bypass (iOS)** — XCTest's private idle-wait is disabled by default so apps with Reanimated or looping animations can't hang queries. Opt out with `RN_QUIESCENCE_BYPASS=0`.
-- **Engine pinning** — setup installs attested [maestro-runner](https://github.com/devicelab-dev/maestro-runner) `1.1.27` in the versioned pin-cache (floor `>= 1.1.27`) and verifies its checksum fail-closed; replay and `/doctor` refuse missing, older, or unattested engines.
+- **Engine pinning** — setup installs attested [maestro-runner](https://github.com/devicelab-dev/maestro-runner) `1.1.28` in the versioned pin-cache (floor `>= 1.1.28`) and verifies its checksum fail-closed; replay and `/doctor` refuse missing, older, or unattested engines.
 - **Degraded-runtime detection** — when taps succeed but the app doesn't respond, results carry a "simulator likely wedged, reboot it" hint instead of a misleading "element not found."
 
 </details>
@@ -237,7 +288,7 @@ Claude Code / Codex
      iOS Simulator           Android Emulator
 
       Device lifecycle (boot / install / launch): xcrun simctl + adb
-      E2E test execution: maestro-runner 1.1.27 (pin-cache only)
+      E2E test execution: maestro-runner 1.1.28 (pin-cache only)
 ```
 
 [Architecture details →](https://lykhoyda.github.io/rn-dev-agent/architecture/)
@@ -256,17 +307,9 @@ Claude Code / Codex
 /reload-plugins
 ```
 
-Local checkout: `claude --plugin-dir /path/to/rn-dev-agent` (the root `.claude-plugin/marketplace.json`
-resolves the plugin package from `packages/claude-plugin/`).
-
 ### Cursor
 
-Install from **Customize → Plugins**. This repo's `.cursor-plugin/marketplace.json` resolves
-`packages/claude-plugin/`.
-
-Local checkout: load `/path/to/rn-dev-agent/packages/claude-plugin` — not the repository root.
-Cursor starts `cdp` from `${CURSOR_PLUGIN_ROOT}/rn-dev-agent-core/dist/supervisor.js`. Claude
-SessionStart hooks are not loaded. Requires Node.js >= 24.
+Install the published rn-dev-agent release from **Customize → Plugins**.
 
 ### Codex
 
@@ -275,11 +318,6 @@ codex plugin marketplace add Lykhoyda/rn-dev-agent
 codex plugin add rn-dev-agent@rn-dev-agent
 ```
 
-Local checkout: register the package directory `/path/to/rn-dev-agent/packages/claude-plugin` — the
-same directory Claude installs, not the repository root. Codex selects its own surface from it
-(`.codex-plugin/plugin.json`, `codex-skills/`, `codex.mcp.json`, `bin/cdp-supervisor.js`) and runs
-the one bundled MCP runtime under `rn-dev-agent-core/dist/`. A registration that still points at
-`packages/codex-plugin` must be re-added: that directory is now authoring material only.
 Codex does not load Claude Code hooks — `No plugin hooks` is expected. Codex 0.145.0 is the
 live-refresh floor; older hosts are restart-only. An external CLI or manual plugin change always
 requires exiting and relaunching Codex.
@@ -309,8 +347,8 @@ recovery diagnosis read-only and prints the exact commands for you to confirm an
 | Node.js ≥ 24 | Yes | No |
 | CDP bridge deps | Yes | Yes |
 | rn-fast-runner (iOS) | iOS targets only | Prebuilt artifact on releases; one-time `xcodebuild build-for-testing` fallback |
-| rn-android-runner (Android) | Android targets only | Prebuilt artifact on releases; Gradle build fallback on first use |
-| [maestro-runner](https://github.com/devicelab-dev/maestro-runner) | Yes | Yes (pin-cache engine `>= 1.1.27`, attested 1.1.27 checksum-verified) |
+| rn-android-runner (Android) | Android targets only | See [Android runner provisioning](packages/qaren-cli/README.md#android-runner-provisioning) |
+| [maestro-runner](https://github.com/devicelab-dev/maestro-runner) | Yes | Yes (pin-cache engine `>= 1.1.28`, attested 1.1.28 checksum-verified) |
 | iOS Simulator / Android Emulator | One platform | No |
 | Session-bound Metro | Yes | Project integration starts or validates it through literal `pnpm ios` / `pnpm android` |
 | CDP connection | Yes | `rn_session` owns the binding; `cdp_status` is passive and `cdp_connect` pins the exact target |
@@ -320,12 +358,27 @@ recovery diagnosis read-only and prints the exact commands for you to confirm an
 Claude automation failures and Codex missing prerequisites are reported with step-by-step manual
 instructions.
 
-**Prebuilt runners:** on a released version, the device runners install from a verified prebuilt
-artifact (SHA-256-checked local cache, then the GitHub Release asset for your exact plugin
-version), so the first `device_snapshot action=open` skips the cold build. Resolution is fail-open
-— offline, a checksum mismatch, or a dev checkout falls back transparently to the on-machine build
-(the host's `doctor` workflow reports which one you got). Force local builds with
-`RN_RUNNER_BUILD=local`.
+<a id="prebuilt-runners"></a>
+
+**Prebuilt iOS runner:** QaReN accepts only artifacts for its exact runtime version,
+including the prerelease suffix, downloaded from that version's release tag and matching the
+manifest's SHA-256. A matching manifest that names another release's archive refuses with
+`RUNNER_VERSION_MISMATCH`. Legacy 1.x release versions always select the shipped source, so an
+unreleased QaReN build that still reports a 1.x version cannot download or reuse a published 1.x
+runner. A manifest for another version, offline downloads, checksum failures and checkouts
+without a runner manifest fall back to building locally. Force local builds with `RN_RUNNER_BUILD=local`.
+
+For Android, see [Android runner provisioning](packages/qaren-cli/README.md#android-runner-provisioning).
+
+When an iOS runner launched from a prebuilt lacks required capabilities or commands,
+startup attempts to persist a `stale` marker under
+`~/.qaren/runtime/runners/<plugin-version>/ios/` before checking the one-rebuild-per-version
+budget. With that marker present, later starts select the local runner without reusing or
+downloading that version's prebuilt, including after a process restart; cached products
+remain intact and other versions are unaffected. A spent rebuild budget still refuses
+the current start. Authority mismatches and stale local runners do not mark the prebuilt.
+If the marker cannot be written, the rebuild budget still applies, but persistent
+rejection is not guaranteed.
 
 </details>
 
@@ -354,8 +407,6 @@ if (__DEV__) {
 ---
 
 ## Benchmarks
-
-35 features completed on the public test app.
 
 | Complexity | Time | Crashes | Manual interventions |
 |-----------|------|---------|---------------------|
@@ -422,7 +473,7 @@ session. The command never updates the evidence store or uploads data.
 | CDP rejected (1006) | Close React Native DevTools, Flipper, or Chrome DevTools |
 | Zustand store error | Add `global.__ZUSTAND_STORES__` ([setup](https://lykhoyda.github.io/rn-dev-agent/getting-started/#zustand-stores-one-bridge-call)) |
 | Plugin not detected (Claude) | `/plugin install rn-dev-agent@rn-dev-agent` then `/reload-plugins` |
-| Plugin not detected (Cursor) | Customize → Plugins; local path is `packages/claude-plugin`. Reload the window. Requires Node.js >= 24 |
+| Plugin not detected (Cursor) | Customize → Plugins. Reload the window. Requires Node.js >= 24 |
 | Subagent says "MCP tools unavailable" | Never spawn `rn-tester`/`rn-pr-qa`/`rn-debugger` via the Task tool — use `/rn-dev-agent:test-feature`, `/rn-dev-agent:qa-pr`, or `/rn-dev-agent:debug-screen` instead (GH #31) |
 
 <details>
@@ -459,42 +510,14 @@ Codex:  codex plugin marketplace upgrade rn-dev-agent
         # relaunch after this external mutation
 ```
 
-Release notes: [GitHub Releases](https://github.com/Lykhoyda/rn-dev-agent/releases) · [core changelog](packages/rn-dev-agent-core/CHANGELOG.md)
+Release notes: [GitHub Releases](https://github.com/Lykhoyda/rn-dev-agent/releases) · [core changelog](packages/qaren-core/CHANGELOG.md)
 
 <details>
 <summary><strong>Development — building from source</strong></summary>
 
-This is a Yarn workspace monorepo:
-
-| Package | What it is |
-|---------|------------|
-| `packages/rn-dev-agent-core` | The MCP server (CDP bridge, device control, actions, testing) — all TypeScript source and tests |
-| `packages/claude-plugin` | The one plugin package Claude, Cursor, and Codex install — Claude/Cursor manifests, commands, agents, skills, hooks, generated Codex adapters (`.codex-plugin/`, `codex-*`, `bin/`), one bundled runtime |
-| `packages/codex-plugin` | Codex authoring source (manifest, playbooks, adapted skills, launcher, health) generated into `packages/claude-plugin` |
-| `packages/shared-agent-knowledge` | [Canonical workflow knowledge and host adaptation guidance](packages/shared-agent-knowledge/README.md) |
-| `packages/rn-fast-runner` | In-tree iOS XCTest device runner |
-| `packages/rn-android-runner` | In-tree Android UiAutomator device runner |
-| `apps/docs-site` | Astro Starlight docs → [lykhoyda.github.io/rn-dev-agent](https://lykhoyda.github.io/rn-dev-agent/) |
-
-```bash
-git clone https://github.com/Lykhoyda/rn-dev-agent.git
-cd rn-dev-agent
-corepack enable
-corepack yarn install --immutable
-corepack yarn build:host-runtimes   # builds core + generates the distributed plugin package
-```
-
-Run locally: `claude --plugin-dir /path/to/rn-dev-agent` (Claude Code), load
-`packages/claude-plugin` (Cursor), or register `packages/claude-plugin` (Codex).
-
-```bash
-corepack yarn test          # complete unit-test suite
-corepack yarn lint          # oxlint
-corepack yarn format:check  # oxfmt
-```
-
-Versioning uses [changesets](https://github.com/changesets/changesets); every tool-surface change
-must update the golden registry (`node scripts/update-tool-registry.mjs`).
+See the [CLI build instructions](packages/qaren-cli/README.md#build) for the
+current checkout and [repository guide](AGENTS.md) for package ownership,
+validation commands and changeset mechanics.
 
 </details>
 

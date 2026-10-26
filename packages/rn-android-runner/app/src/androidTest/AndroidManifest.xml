@@ -1,5 +1,7 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
     <uses-permission android:name="android.permission.INTERNET" />
+    <!-- SystemDialogFixtureActivity raises its prompt on API 33 and later. -->
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
     <application>
         <activity
             android:name="dev.lykhoyda.rndevagent.androidrunner.ExactFillPrivacyFixtureActivity"
@@ -10,5 +12,13 @@
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
         </activity>
+        <activity
+            android:name="dev.lykhoyda.rndevagent.androidrunner.QaHierarchyFixtureActivity"
+            android:exported="true"
+            android:theme="@android:style/Theme.Material.Light.NoActionBar" />
+        <activity
+            android:name="dev.lykhoyda.rndevagent.androidrunner.SystemDialogFixtureActivity"
+            android:exported="true"
+            android:theme="@android:style/Theme.Material.Light.NoActionBar" />
     </application>
 </manifest>
