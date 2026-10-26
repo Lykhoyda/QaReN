@@ -12,6 +12,8 @@ export interface LoginMarker {
 
 export interface RecoveryTarget extends Target {
   declared?: Target;
+  // A target from a later block keeps its own control but never vetoes recovery by mere presence.
+  laterBlock?: boolean;
 }
 
 export type LoginReplay =
@@ -82,8 +84,16 @@ const DECLINE_LABELS = new Set([
 ]);
 const DECLINE_LOWER = new Set([...DECLINE_LABELS].map((label) => label.toLowerCase()));
 
+export const INTERRUPTION_VETOES = [
+  'front',
+  'coverage',
+  'current-target',
+  'later-target',
+  'no-candidate',
+] as const;
+
 export interface InterruptionDiagnostic {
-  veto: 'front' | 'coverage' | 'current-target' | 'later-target' | 'no-candidate';
+  veto: (typeof INTERRUPTION_VETOES)[number];
   targetIndex?: number;
   exactDeclineCount: number;
   elements: Array<{
@@ -133,6 +143,7 @@ export function dismissCandidate(
   if (!planTargets.length) return rejected('current-target', 0);
   const targetIndex = planTargets.findIndex(
     (target, index) =>
+      !(index > 0 && target.laterBlock) &&
       !(
         index > 0 &&
         (target.declared ?? target).exact !== 'id' &&

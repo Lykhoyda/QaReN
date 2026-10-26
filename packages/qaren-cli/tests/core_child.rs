@@ -394,6 +394,10 @@ fn slot_diagnostics_retain_only_allowlisted_events_without_affecting_the_result(
             r#"{"kind":"timing","stage":"dispatch","code":"ACTION_INTERRUPTED","line":2,"at":220,"acquisitionMs":100,"observationAgeMs":120,"nativeCode":"RUNNER_TIMEOUT","nativeMutation":"possible"}"#.into(),
             r#"{"kind":"block-outcome","line":2,"outcome":"pass"}"#.into(),
             r#"{"kind":"login-outcome","outcome":"refused"}"#.into(),
+            r#"{"kind":"interruption-rejected","line":2,"veto":"later-target","exactDeclineCount":1,"targetIndex":1}"#.into(),
+            format!(r#"{{"kind":"interruption-rejected","line":2,"veto":"{secret}","exactDeclineCount":1}}"#),
+            r#"{"kind":"interruption-rejected","line":2,"veto":"no-candidate","exactDeclineCount":1,"label":"Maybe later"}"#.into(),
+            r#"{"kind":"interruption-rejected","line":2,"veto":"no-candidate","exactDeclineCount":0.5}"#.into(),
             format!(r#"{{"kind":"metric","stage":"relaunch","edge":"end","outcome":"failed","at":200,"relaunch":"{secret}"}}"#),
             format!(r#"{{"kind":"login-outcome","outcome":"{secret}"}}"#),
             format!(r#"{{"kind":"block-outcome","line":2,"outcome":"pass","title":"{secret}"}}"#),
@@ -421,7 +425,8 @@ fn slot_diagnostics_retain_only_allowlisted_events_without_affecting_the_result(
             .lines()
             .map(|line| serde_json::from_str(line).unwrap())
             .collect();
-        assert_eq!(got.len(), 4);
+        assert_eq!(got.len(), 5);
+        assert!(!stored.contains("Maybe later"));
         for (event, expected) in got.iter().zip(&payloads) {
             assert_eq!(
                 *event,

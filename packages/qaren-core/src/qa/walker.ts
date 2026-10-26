@@ -77,10 +77,17 @@ import {
   INTERRUPTION_QUESTION,
   checkVerdict,
 } from './questions.js';
-import { type LoginMarker, type RecoveryTarget, dismissCandidate, recover } from './recover.js';
+import {
+  type InterruptionDiagnostic,
+  type LoginMarker,
+  type RecoveryTarget,
+  dismissCandidate,
+  recover,
+} from './recover.js';
 import type {
   BlockOutcome,
   BlockOutcomeDiagnostic,
+  InterruptionRejectedDiagnostic,
   MediaWithheldDiagnostic,
 } from './diagnostics.js';
 import { targetMissDiagnostic, type TargetMissDiagnostic } from './target-miss.js';
@@ -205,6 +212,7 @@ export interface WalkerDeps {
   targetMiss?(event: TargetMissDiagnostic): void;
   labelProvenanceDiagnostic?(event: LabelProvenanceDiagnostic): void;
   blockOutcome?(event: BlockOutcomeDiagnostic): void;
+  interruptionRejected?(event: InterruptionRejectedDiagnostic): void;
   loginOutcome?(outcome: BlockOutcome): void;
   timing?: TimingObserver;
   rowTiming?(t: number): RowTiming;
@@ -1595,6 +1603,22 @@ async function walkBlockScoped(
       }),
       ...(opts.laterTargets ?? []),
     ];
+    const interruptionRejected = (record: InterruptionDiagnostic, observation?: number) => {
+      try {
+        deps.note?.(
+          `interruption-rejected=${JSON.stringify({ line: item.line, ...(observation === undefined ? {} : { observation }), ...record })}`,
+        );
+        deps.interruptionRejected?.({
+          kind: 'interruption-rejected',
+          line: item.line,
+          veto: record.veto,
+          ...(record.targetIndex === undefined ? {} : { targetIndex: record.targetIndex }),
+          exactDeclineCount: record.exactDeclineCount,
+        });
+      } catch {
+        /* Diagnostics cannot change recovery. */
+      }
+    };
     let interruptionShot: string | undefined;
     let dialogAct: ActResult | undefined;
     let declineAttempted = false;
@@ -1602,15 +1626,7 @@ async function walkBlockScoped(
       fresh.screen,
       {
         hideDevMenu: deps.hideDevMenu,
-        interruptionDiagnostic: (record) => {
-          try {
-            deps.note?.(
-              `interruption-rejected=${JSON.stringify({ line: item.line, observation: fresh.id, ...record })}`,
-            );
-          } catch {
-            /* Diagnostics cannot change recovery. */
-          }
-        },
+        interruptionDiagnostic: (record) => interruptionRejected(record, fresh.id),
         dialog: async () => {
           declineAttempted = true;
           recoveries += 1;
@@ -1668,15 +1684,9 @@ async function walkBlockScoped(
               captureScreen: async (options) => {
                 const screen = await captureScreen({ ...options, platformPresence: true });
                 if (!dispatched) {
-                  const candidate = dismissCandidate(screen, planTargets, (record) => {
-                    try {
-                      deps.note?.(
-                        `interruption-rejected=${JSON.stringify({ line: item.line, ...record })}`,
-                      );
-                    } catch {
-                      /* Diagnostics cannot change recovery. */
-                    }
-                  });
+                  const candidate = dismissCandidate(screen, planTargets, (record) =>
+                    interruptionRejected(record),
+                  );
                   if (!candidate || 'refuse' in candidate || candidate.label !== label)
                     throw new ResolutionError({
                       refuse: 'INTERRUPTION_CHANGED',
@@ -3000,7 +3010,7 @@ export async function runPlan(
             .flatMap((later) =>
               later.items.flatMap((item) => {
                 const target = recoveryTarget(item);
-                return target?.quoted !== undefined ? [target] : [];
+                return target?.quoted !== undefined ? [{ ...target, laterBlock: true }] : [];
               }),
             ),
         },

@@ -720,6 +720,7 @@ async function openSession(
       else log(`timing ${JSON.stringify(event)}`);
     },
     blockOutcome: diagnostic,
+    interruptionRejected: diagnostic,
     targetMiss: diagnostic,
     labelProvenanceDiagnostic: diagnostic,
     loginOutcome: (outcome) => diagnostic({ kind: 'login-outcome', outcome }),
