@@ -207,8 +207,6 @@ Suite records and redacted logs live under `~/.qaren/native-suites/<run-id>`. Un
   which keeps the three manifests, both marketplaces, `Cargo.toml` and the
   `qaren` entry in `Cargo.lock` on that version with a GNU/BSD-portable
   in-place edit and re-checks itself (`scripts/test/sync-versions.test.sh`).
-- The QaReN migration has merged into `main`; the release workflow opens
-  the Version Packages PR for 2.0.0.
 - Docs, tests, CI-only changes, and generated-artifact cleanup do not need a
   changeset unless they alter shippable behavior.
 

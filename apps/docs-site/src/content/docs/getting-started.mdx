@@ -18,16 +18,18 @@ Setup prepares an iOS simulator. To check on a booted Android emulator instead, 
 
 ## Install
 
-No QaReN release has been published yet, so the plugin carries no `qaren` build to download.
-Install from a `develop` checkout of the
-[repository](https://github.com/Lykhoyda/QaReN/tree/develop):
+For plugin installation and the matching release download, follow the
+[root README](https://github.com/Lykhoyda/QaReN#set-up-qaren).
+
+For an unreleased build or when the matching release asset is unavailable, install
+from a checkout of the [repository](https://github.com/Lykhoyda/QaReN):
 
 <Steps>
 
 1. Clone the checkout and install `qaren` from it:
 
    ```sh
-   git clone --branch develop https://github.com/Lykhoyda/QaReN.git qaren-src
+   git clone https://github.com/Lykhoyda/QaReN.git qaren-src
    cd qaren-src
    bash scripts/install-qaren-from-source.sh
    ```
@@ -78,10 +80,9 @@ recover an interrupted install.
 Setup runs six steps from the app's root directory. When a step stops, it gives the one
 reason and the fix.
 
-1. **CLI.** It finds the `qaren` binary the plugin verifies. Until a release is published
-   it accepts the `qaren` on `PATH` when that binary lives under `~/.qaren/runtime/` and
-   its version matches the plugin's. Otherwise it gives you the source install line above
-   and offers to run it for you.
+1. **CLI.** It verifies or installs the plugin's matching `qaren` runtime; follow the
+   [installation contract](https://github.com/Lykhoyda/QaReN/blob/main/packages/qaren-cli/README.md#plugin-runtime-installation)
+   for verification, PATH linking and the source fallback.
 2. **App.** It checks that `package.json` lists `expo` and `expo-dev-client` and that
    `pnpm-lock.yaml` exists. It asks before running `pnpm install`. It reads the bundle
    identifier and the app's `slug` from `pnpm exec expo config`; when that fails, it asks
