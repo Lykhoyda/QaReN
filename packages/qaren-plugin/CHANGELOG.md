@@ -1,5 +1,335 @@
 # qaren
 
+## 2.0.0
+
+### Major Changes
+
+- b832ecb: Rename the plugin to QaReN and cut it to three packages: the `qaren` CLI, a `qaren-core` screen layer that builds and tests without the MCP server or the session stack, and a `qaren-plugin` host package with five skills; the shared-knowledge mirror, the Codex package, the committed host bundles and their sync gates are removed.
+
+### Minor Changes
+
+- dc494f1: Let `qaren check` and `qaren pr` run on Android by borrowing one booted emulator on the host's running adb server, building the debug APK with Gradle (prebuilding an absent `android/`) and installing it by serial.
+- 9eddb3b: Android phrase steps now resolve on screens whose only covers are transparent, non-interactive chrome, such as the dev client's overlay, React Native's debugging overlay or a parked bottom sheet. A control counts as observed only when both the Android runner and React Native's own hit test agree that a touch at its centre reaches it. A control whose touch a React overlay takes keeps its identity but cannot be pressed or filled in that capture, so a phrase step naming it refuses while the rest of the screen stays usable. The Android runner must be rebuilt for this release; an earlier runner is refused as stale. iOS, literal plans and controls under the keyboard are unchanged.
+- 7dcf000: `qaren check` saves a fully passing plan into `.qaren/plans/` and flags or clears a saved plan as broken for a platform when it fails or passes on an unchanged default-branch commit, `qaren plans` lists saved plans, and the using-qaren skill has the agent reuse a matching saved plan from `qaren plans` while leaving saving and flagging to QaReN.
+- e7d9b71: `qaren check` persists eligible passing blocks and replays compatible saved actions before discovery, recovering from selector misses before mutation authorization as described in the CLI guide's Saved blocks section.
+- dc494f1: An unavailable device (`DEVICE_UNAVAILABLE`) is now a refusal that exits 4 on every platform instead of a failure that exits 1.
+- 3d3b341: Allow named runtime inputs to opt into non-secret fixture hashing while preserving strict defaults, redaction, media withholding and symbolic replay.
+- 31b18b4: `qaren check` finishes a quoted iOS fill whose field is not an observable native input by tapping the field's one element and typing through the keyboard once, recording the step as an unverified pass instead of refusing it.
+- 61d63f4: Add named runtime input slots: `Fill "field" with input NAME` types `QAREN_INPUT_NAME` without storing, logging or hashing it, lets a plan declare `Expect input NAME on screen` where the app shows a value, saves login blocks by input name, and refuses `PLAN_INPUT_MISSING` before device selection when a value is missing.
+- 520749e: QaReN refuses an exact target whenever two distinct elements share its name, maps a field to its wrapper only when both are observed, replaces focused fills instead of appending, and reports masked or unreadable fills as unverified instead of passed, requiring a runner rebuilt with `FILL_EVIDENCE_V1`.
+- 547d3e3: A step that does not go to plan gets one recovery (system dialog, dev menu, or the configured login block) before it fails, a React Native red box fails at that step with its message, and `.qaren/config.yaml` gains `loginBlock` and `loginMarker`.
+- 1304943: Add `qaren doctor`, a read-only check of the host toolchain, the installed qaren, the app config and rn-dev-agent 1.x leftovers.
+- a01bdf5: Use the app's Expo fingerprint alongside native inputs and Xcode for iOS build reuse, with a recorded native-input fallback for static configs when Expo evaluation is unavailable.
+- c750bb2: Each release ships a verified qaren tarball for Apple silicon Macs, installed explicitly with `ensure-qaren.sh --install` into `~/.qaren/runtime/<version>/` while SessionStart checks stay offline.
+- b7b4f5e: qaren reuses a verified iOS native build from a per-user machine store, keyed by the native fingerprint plus the Xcode version, so a fresh clone or `qaren pr` worktree with unchanged native inputs installs it instead of rebuilding.
+- 6156956: Add `qaren check`, which leases the booted simulator, builds and launches the working tree, spawns the core walker over a one-line-per-JSON wire, walks a literal plan with exact targets and quoted ✓ lines, and writes a ledger and report under `~/.qaren/runs/<run-id>/`.
+- f13667a: `qaren pr` runs the plan on a PR head with a local screen recording, and `qaren publish` posts the reviewer comment with eligible video and saves discovered blocks back to the PR branch.
+- 0621740: Add `qaren update`, which fast-forwards the rn-dev-agent checkout it is run from, rebuilds and reinstalls qaren, and reports whether the build is already current, updated or newly installed.
+- ca9a48c: Add a read-only terminal viewer for value-free live QA stages, step timings, cleanup and verdicts with plain and JSON modes.
+- 4666c24: Resolve phrase targets and checks with pinned Jev judgments, preflight credentials before device claims, and report bounded model calls with masked inputs.
+- 5b7eab4: CLI inspection and pull-request block preservation now accept verified main-copy saved-block links, and receipts, run reports and pull-request comments report how many blocks replayed.
+- 61d63f4: Save and replay a runtime-input fill typed through the keyboard fallback or proven focus by the field testID the focus proof used.
+- 2979b0a: Screen privacy now comes from the native snapshot plus typed and previously seen values, so large apps no longer refuse at step one, a missing React digest only reduces semantics, and text outside the native viewport no longer satisfies literal checks.
+
+### Patch Changes
+
+- 99b0805: Prevent cancelled walks from continuing setup or saving actions, bound attachment by its remaining budget, and refuse reuse for unscanned native dependencies.
+- 9c83b42: Phrase steps ignore React elements under a view hidden from accessibility, such as an inactive navigation tab, when accounting for on-screen controls and evidence.
+- 963a75f: A failed Android farm key fetch no longer records any key bytes, and any command output or evidence that mentions a private key is withheld whole from run records, receipts and logs.
+- 046b14c: Stop iOS fresh-install admission from refusing when an agent CLI running under a script interpreter carries driver names, paths or the simulator ID in its prompt arguments.
+- e8996e1: Retain value-free admission facts in private diagnostics at each attach retry and on cancellation or refusal, report failed iOS liveness probes as `probe_failed`, and record an unanswered pre-attach runner-host probe in the receipt.
+- 00a8296: Classify pre-admission deadlines as environment refusals and withhold publication handoffs when cancellation arrives during terminal persistence.
+- 4cb6e35: Stream iOS admission process scans so large host process tables no longer cause fresh-install refusal.
+- bd3f941: Core CDP attachment refusals now attempt one value-free record in the run's core log naming the last admission boundary, the typed error class and any available platform-inference evidence, with refusal codes and exit behavior unchanged.
+- 1041a4d: Stop iOS fresh-install admission from refusing when a shell, including macOS `/bin/sh`, runs a `-c` command string mentioning runner names, runner paths or the simulator ID.
+- babe9e3: Keep the iOS screen reader running when an advisory settle snapshot times out, leaving recovery to the next real command.
+- 7944172: Confirm unique aggregate-labelled scroll targets on ordinary captures without granting press authority or weakening privacy and contradictory-evidence refusals.
+- 19d41fb: Let quoted waits pass when the text is a whole segment of one visible aggregated accessibility label, as quoted scroll-until already does.
+- b9be8c4: Prevent native-client reuse when a local config plugin reads ambient process inputs.
+- d052343: Stop runner setup, artifact fallback, and port acquisition through ambient walk cancellation even when callers omit an explicit signal.
+- 0dbf84c: Leave a borrowed Android emulator as it was found: teardown and `qaren cleanup` remove the run's Metro reverse and its runner while the run holds the device lease, `adb reverse` never rebinds an existing mapping and a run cancelled before its reverse leaves the port alone, `--remove-app` refuses on a borrowed emulator, and `qaren status` probes it through the borrowed adb server.
+- 2f3bd11: Android dev-client launches pass Expo's `EXDevMenuDisableAutoLaunch` extra so the dev menu no longer opens over the app at launch.
+- 3082f5f: Keep typed values out of Android device logs: the Android runner's exact fill writes through the bound field's accessibility node, its key-event fallback injects keys without logging their codes, and its device-tool snapshot reads the windows itself so off-screen text is never logged; the snapshot's output is unchanged. A cleared Android field that is empty and shows no hint now reads back as empty, so a plain clear verifies as exact.
+- abbce70: Let `--fresh-install` run on Android in `qaren check` and `qaren pr`: the CLI first proves no other UI driver (UIAutomator, Maestro or another instrumentation) is running on the borrowed emulator, refusing when the process scan is busy or unreadable, then uninstalls the app with its data and proves it absent before the walk continues.
+- 693be73: Recognize Android header-role text on API 28+ and explain literal-check near misses. A button whose header title repeats its label stays pressable by that label. See the [screen-evidence contract](https://github.com/Lykhoyda/rn-dev-agent/blob/develop/packages/qaren-cli/README.md#plan-checks-and-screen-evidence) for eligibility and diagnostic rules.
+- a388081: Prevent Android keyboard dismissal from pressing BACK when the keyboard is hidden and require hidden-state and unchanged-screen evidence before reporting success.
+- 3820416: Android QA snapshots now carry a validated native presence capture: the runner observes each element under the display density and refuses what it cannot prove, scrolled-out elements read as off screen, and elements under the keyboard read as covered, not scrolled out.
+- fa63876: Serialize Android runner APK refresh, hash comparison and installation with stale-retry invalidation within each worktree. Concurrent starts on different devices wait for the same outputs, with a bounded `ANDROID_RUNNER_APK_LOCK_TIMEOUT` refusal, while the rebuild budget and cleanup transitions remain unchanged.
+
+  Record Android APK fence ownership by process birth and group. Cancellation stops owned build/install children before release; follow-up starts reclaim only proven-dead owners with no surviving group. Live-owner waits disclose owner and fence, and unprovable liveness refuses immediately with recovery steps.
+
+- dc494f1: The Android runner is always built from the shipped source instead of installing a published runner APK.
+- 1ab08b0: Safe-area roots associate on Android as well
+- 974eb9b: On Android, rows scrolled out of a scroll container such as a ScrollView, ListView or RecyclerView are treated as offscreen and clipped to that container, as on iOS.
+- b3c91d6: Android QA can now accept or dismiss a system dialog, such as the notification permission prompt: the runner taps exactly one labelled button in the dialog above the app, including a prompt that takes the app's place on screen, and the step passes only when that dialog is gone and the app is back in front. `Don't allow` is now a dismiss label. While a system dialog is in front, QA sends no scroll or back to the app, ends a step that would tap the dialog's own button with `OUTSIDE_APP_WINDOW`, and leaves a prompt to the plan's next dialog step when there is one.
+- 3c5c1ba: Verify an Android tap whose screen draws after the first window check: when the hierarchy still looks unchanged, wait once more for a window update inside the remaining settle budget before reporting that the tap had no effect.
+- c6f06b0: Give Android walks the same visibility, keyboard, occlusion and foreign-driver answers as iOS: QA reads on Android take one live traversal of the accessibility windows with roots, ancestry, a keyboard node and a snapshot generation, a tap whose only visible effect is opening the keyboard counts as a screen change, and the runner's exact tap on an editable field returns once that keyboard is shown, within the tap's post-act settle budget, with a failed step naming a keyboard that did not open, a front dialog of another app reads as a dialog, a control not visible to the user counts as off screen unless the keyboard covers it, which reads as keyboard-covered as on iOS and gets one clearance scroll sized to clear the keyboard, the runner refuses a covered tap or focus tap as `FOCUS_TARGET_OCCLUDED` so the walker scrolls once and retries, and admission refuses when another automation driver holds the emulator.
+- d31c304: On iOS, read label provenance for an unidentified, unlabelled wrapper that echoes one control's label, so a quoted press on that single visible control no longer refuses as `TARGET_AMBIGUOUS`.
+- 014536c: Fail a check within seconds with `APP_EXITED_AT_LAUNCH` when the launched app exits, naming the crash report's missing library on iOS, instead of polling until the readiness deadline.
+- da37455: Keep verified dev-client artifacts on `ARTIFACT_INSTALL_FAILED` (`install-failed` and `install-timeout`) and recommend target/package-service/transport diagnosis after cleanup, reserving rebuild advice for `artifact-invalid`.
+- b557725: Preserve the previous native cache when cancellation interrupts staged build publication.
+- fb085be: During launch, the dev-build check and helper injection wait for the app's answer until the existing attach deadline instead of a fixed 5 s, so a slow but live app attaches, and an expired wait is classified as a readiness timeout.
+- dc6ecdb: Warm iOS dev-client launches and the single admission relaunch with margin, record each preparation attempt within its budget, retry matching candidates with failed platform evidence, and include manifest timing in attach refusals.
+- 0f105f5: Wait for a Metro target matching the requested `appId` bundle (and on iOS, the run's simulator name on that same target) before exact target selection and record value-free device/bundle selection refusal diagnostics.
+- b260643: Allow attested unscoped Maestro MCP control processes to coexist with QaReN checks while preserving refusal for observed active or unproven device automation.
+- 0a13863: Wait briefly for initial debug-target registration on the owned Metro port before applying unchanged app-identity checks during QA startup.
+- fee9d54: Mask short filled codes in Button-cell rows with blank siblings across outward evidence.
+- df796f4: Keep same-label siblings distinct and let a wrapper around a text input stand for that input in the keyboard fallback.
+- 6f20158: Add explicit `--restart-device` and `--shutdown-device-on-exit` options for borrowed iOS simulators on `qaren check` and `qaren pr`, gated by an exact `--device <UUID>`, strict foreign-driver admission, verified `Shutdown`/`Booted` readbacks, and lease-held teardown and recovery.
+- 7085bb5: Allow up to 64 combined iOS admission candidates under unchanged identity, scoping, privacy, and time bounds, refusing larger scans before observation.
+- c3c3d87: Refuse a dev-client attach with no target whose app exited or never requested a bundle after the configurable `deadlines.attach_seconds`, retain attach-state diagnostics, and re-prove transient runner-host cleanup failures before retaining the device lease.
+- 04792af: Provide bounded, content-free kernel inspection of oversized iOS process arguments without relaxing native-driver scoping or exact-argv limits.
+- 0a13863: Resolve ambiguous iOS driver scans with bounded native executable identity while preserving unknown-driver refusals.
+- b39d6ff: Bound whole-assertion and visibility judgments to established private-safe screen evidence, propagating content-free refusal diagnostics and pinning final input association and frozen eval regressions.
+- e7f7d4b: Enforce finite-build lifecycle transitions in the run resource model and retain build locks and device leases until proven cancellation or process-group retirement is durably recorded.
+- e305093: Revalidate unpushed saved-block commits against current privacy admission before retrying publication.
+- 8f14428: Refuse publication of cancelled runs and keep static accessibility roles noninteractive unless press handlers are observed.
+- 7944172: Reserve time for native candidate provenance replies and resolve equal-frame ancestor echoes without a provenance read.
+- f498a9b: Preserve canonical saved-block identifiers for file operations while masking display output.
+- 08c6619: Keep content-free native containers out of phrase-check contributions when only a screen-wide React capability gap leaves their press or fill unknown.
+- 3a0198c: Keep QA capture, hidden-aware presence association, quiet preparation, observation-use deadlines and native mutation lifecycle guards aligned with bounded content-free diagnostics.
+- 1df2be4: A fill whose read-back differs from the typed text only by letter case passes as unverified with its character count instead of failing, on both the native and keyboard-fallback paths.
+- 640ac51: Restore centred scroll drags when no container band is supplied.
+- 2c774aa: The iOS runner observes a nested React Native text once and skips nodes outside the window or their scroll view.
+- e7f7d4b: Recheck strict external-driver admission after dependency installation and Expo probing before selected-device boot or reset, and enforce CLI-owned iOS launch-scheme requirements in configuration and scenario validation.
+- 28a0b58: Show live `qaren check` progress on stderr: each command that takes over a second with its duration and each plan step as it resolves, with `QAREN_PROGRESS=plain|off` to force line output or disable it.
+- cbdfb68: `qaren cleanup` now refuses before resource teardown and leaves the run record unchanged when a core is recorded and its qaren owner's process identity is proven still alive.
+- d5897c8: Clarify Jev navigation and masked-value equality judgments without changing decision thresholds or exposing private values.
+- 02d6521: Report malformed plans with their file, line, problem and repair, and honour CLAUDE_CONFIG_DIR throughout doctor’s Claude configuration checks.
+- b33365b: Keep scroll-until drags and target tap points clear of overlays without adding presence captures for quoted targets.
+- 21efd3b: Allow screen capture through composite components with non-string display props while retaining strict host and identity checks.
+- a25dad8: Allow check and pull-request runs to configure bounded preparation deadlines while preserving existing defaults.
+- 7944172: Resolve a single interactive control strictly inside a non-interactive container only when candidate provenance explicitly reports a clean between-sample deadline without contradictory evidence or a directly labelled outer container, retaining ambiguity refusals and value-free private diagnostics.
+- e47cb21: Tapping the first labelled control on a screen no longer refuses as ambiguous when iOS exposes an unidentified full-screen container with the same label.
+- 7696865: A `SCREEN_EVIDENCE_INCOMPLETE` refusal now names the coverage of each side, the codes that made a native capture incomplete, and the element whose capability is unknown.
+- 67605ff: A tap or fill whose target centre lies past its visible scroll area (behind a tab bar) or under the keyboard now scrolls once before any dispatch, and refuses without dispatching if it stays covered.
+- cedaa3b: Exclude unidentified custom React wrappers with separately observed interactive descendants from unmatched-control accounting while retaining views and known controls.
+- 7a8403d: A slow or failing Expo dev-client floating-button preferences call is retried up to three times before `qaren check` refuses `DEV_MENU_HIDE_UNVERIFIED`.
+- 0c078ff: A `DEV_MENU_HIDE_UNVERIFIED` refusal from the floating-button hide now says whether the preferences call failed or the preferences did not read back hidden.
+- 6ad1c3e: Launch Expo dev clients with `disableOnboarding=1` so the dev-menu tutorial never covers the app on a fresh install.
+- 93c9d3b: Phrase steps count a navigation tab once, no longer treat a React nativeID as a testID, and do not require a native match for interactive digest entries that have no testID and no handler.
+- b4c7229: Preserve unrelated same-frame text witnesses and scroll toward quoted targets using their clipping viewport.
+- 99150a5: QaReN no longer adopts a session left at the 1.x `/tmp/qaren-session.json` location, and only `RN_IOS_FOREIGN_GUARD=0` disables the foreign-flow gate; the `RN_IOS_FOREIGN_WARN` alias is gone.
+- 6dcf6f1: When a matching native fingerprint is incomplete because of a dynamic `app.config.*`, the build decision now says so instead of reporting changed native inputs.
+- f9edf2f: Start owned Metro alongside iOS native builds and cached-app installation while preserving readiness proofs and cleaning it up on failure.
+- aaa8f84: A fill naming a hidden field whose observed `-pressable` wrapper echoes that name again reaches the wrapper's one-tap keyboard fallback, unless React places the field outside that wrapper.
+- e0f8beb: Mask embedded contiguous secret fragments while preserving unrelated saved blocks.
+- 1f8f6a3: Exclude legacy runner releases and use a prebuilt runner only when its manifest, archive name and checksum match the exact runtime version, including prerelease versions.
+- c29d2e8: An iOS app with a dynamic `app.config.*` can now reuse its verified native build when the app's own `@expo/fingerprint` evaluation, Xcode version and native inputs are unchanged.
+- 326c879: Speed up iOS steps by skipping existence waits for present apps and preferring runner screenshots with a simctl fallback under the existing privacy gate.
+- 07e4bb6: Record each Fill's ladder rung (`keyboard`, `clear-type` or `set-handler`) and, when typing cannot be verified on iOS, set the value once through the input's change handler, counting that pass as proof only for steps labelled `(any method)`.
+- 0f270cd: A strict fill now clears the bound input before typing, so refilling an already-filled field replaces its content and verifies the exact plan text.
+- 12aea9e: Mask fragments of dispatched protected code and secure-field fills across model input and public evidence regardless of layout.
+- 6761475: Preflight app-local Expo build-only support, verify finite generic iOS simulator artifacts and direct Metro launcher support before exact-target installation and prompt-free launch, and retire known pre-spawn failures durably and run-local output only after verified cache publication while retaining unproven ownership.
+- 1b99413: Admission now waits, within the walk budget, for React to become ready on the attached dev client before proving the bundle origin, so the first launch of a new build no longer refuses `METRO_ORIGIN_MISMATCH` while Metro is still building the bundle.
+- 3d49474: Make focused iOS Fill replace a prefilled value wider than the field and stop dropping the characters typed right after the first one, so a private runtime input such as a sign-in email verifies exactly.
+- 0259714: Fix iOS Fill to clear prefilled non-secure fields before typing, verify exact readback with one bounded retained-prefix recovery, and keep privacy specific to runtime input values.
+- 0a13863: Consolidate forwarded React control identities along single-child wrapper chains so phrase targets resolve without hiding genuinely ambiguous controls.
+- 66d0198: Preserve frameless literal text while excluding nodes with zero-area frames.
+- 40b696f: Doctor now says how to finish pnpm's first-run download, warns when there is too little disk for a clean iOS build (which `check` and `pr` now refuse up front), and no longer tells you to delete 1.x files from an app repository.
+- f6cbf1b: Phrase visibility on screens with more than 30 contributions asks Jev one question per group of at most 30 in the same request, instead of refusing.
+- 9c6ae2a: Keep a phrase wait for a heading polling for its whole budget while the heading is not yet established, ending unsure instead of refusing at once or claiming absence.
+- 466ef2e: On iOS, prepare writes the Expo dev-menu preferences before launch and the walk hides the floating dev-menu button through Expo's own preferences module, so the gear stays out of QA screenshots and video.
+- 7de6323: On iOS a tap or focus tap whose target is covered by a bar, overlay or keyboard is refused before dispatch and retried once after scrolling the target clear.
+- 2ff2ef4: Report bounded host memory, device inventory, simulator responsiveness and CPU load diagnostics during doctor and setup, and preserve tracked project files in the upgrade guide.
+- b260643: Raise the React host evidence cap from 200 to 1,000 hosts and serialize interactive evidence without silently truncating arrays, so screens with lazily mounted tabs stay capturable.
+- 7270fff: Mark in-app alert and action sheet presses as unverified when closure alone does not prove the action, and preserve their receipt warnings when reason text is redacted.
+- d8e338e: Unlabeled, unidentified plain native views count as neither pressable nor fillable while React evidence accounts for every offering host, and the runner no longer spends presence time on them.
+- 180573f: Step recovery declines a second, different pop-up after the first, declines each system prompt at most once per run, logs the declined dialog button, and no longer treats the app screen behind a modal as covering its header controls.
+- 65ed249: On iOS, taps inside app alerts now anchor on the intended target or alert, blocked gestures refuse with `APP_ALERT_INTERRUPTION` without choosing an alert button, and workspace simulator builds use ad-hoc signing to preserve keychain entitlements.
+- 0e369a8: Build iOS apps for `qaren check` through the app-local Expo CLI or an explicitly configured Xcode workspace into run-local products, without passing `CI` to prebuild, Xcode builds or Metro.
+- 0f8463e: Retry the simulator's transient install-coordination refusal of the cached iOS dev client within the preparation budget.
+- 4c0d8b5: Retry a timed-out cached iOS dev-client install within the preparation budget, accepting it once the installed app matches the cached build.
+- a858b26: On iOS, install/launch/ready now streams a stage event per substage, and status and cancel or deadline receipts name the substage in flight.
+- cdd39f6: Size the iOS keyboard clearance scroll from the target's keyboard overlap, as Android does, wait for the screen to settle after an iOS scroll, as after a tap, and clear a keyboard-covered keyboard-fallback wrapper with the same sized scroll before tapping it.
+- e85a599: iOS action replay now refuses a native-only command placed after exact-testID steps, which previously relaunched the app mid-flow.
+- 3954293: The iOS runner's XCTest result bundles, whose activity logs record typed and displayed field text, are removed when the runner stops and before it starts, keeping the built runner warm.
+- ab92c9b: iOS system scroll-bar indicators no longer trigger private-input screenshot withholding under the exception documented in the [capture and privacy contract](https://github.com/Lykhoyda/rn-dev-agent/blob/develop/packages/qaren-cli/README.md#check-a-plan).
+- 238fe9c: `qaren check` needs a TypeSafe key only for plans with phrase or unrecognised lines; fully quoted plans run without Jev.
+- b260643: Let fresh-install admission clear long-argv processes launched through a symlink when their kernel executable is proven to be neither a device driver, shell nor interpreter.
+- 974eb9b: Keyboard clearance now ends the visible band at a sticky footer and starts it below a sticky header, aims the target at the middle of that band, and lets the one clearance drag span the whole band while starting and ending inside its edges, so a field under the keyboard clears above an absolutely positioned Submit bar.
+- 24597dc: Keyboard clearance scrolls now start inside the covered target's own scroll container and move its content toward the visible area, so a list row under the keyboard is lifted by the one existing clearance scroll.
+- 2eb6a74: Literal checks, quoted waits and scroll-until text no longer count text painted under a visible keyboard, including the docked keyboard's chrome below its reported frame.
+- e9b600f: Text outside the cumulative screen, scroll-container and window bounds no longer satisfies literal checks, quoted waits or scroll-until when the keyboard is up or window ancestry is missing.
+- 8dc8003: When the iOS keyboard is already up, a quoted fill that falls back to keyboard typing now types once into the field React positively reports focused, and otherwise types nothing.
+- cf57943: A quoted target resolves to the nearest labelled control when its single text descendant and matching outer wrappers echo its label, while distinct controls remain ambiguous with value-free candidate listings.
+- bfbeba2: A text-labelled control whose label is exposed inside it no longer fails its moved-target retry: the walker re-identifies the target with the same exact-identity rules as the step, the runner accepts the control that owned the label in the snapshot, and refusals record both elements' identity and frames.
+- 3969ab0: Text from a later plan block that is visible on an app sheet no longer stops an earlier block from closing that sheet, and input runs record why an interruption was left in place in `core-diagnostics.jsonl`.
+- 3969ab0: A later decline-label target such as "Maybe later" no longer blocks earlier sheet recovery through a different eligible control, while the control targeted by the later step remains protected.
+- 2947e20: Preserve a live iOS dev client during missing-target admission waits and accept its app-job receipt after a timed-out launch instead of retrying the launch.
+- 2686711: A dev-client launch that times out under host load is retried once and otherwise refused as an environment condition with the host-load reading, instead of being reported as a build failure.
+- cbdfb68: Filter the iOS launcher symbol and string probes inside the child so large debug images stay under the 16 MiB capture cap.
+- 4183664: Relaunch an iOS dev client that is alive but stalled on its launcher when Metro has seen no bundle request since launch, while a slow bundle with a request in flight still keeps its load.
+- dfab1ca: Add opt-in iOS simulator booting to qaren check under its borrowed device lease with strict admission and exact-target readiness verification.
+- 83d5a14: Record where each walked step spent its time in the ledger and report the median and p95 step time and the walk time.
+- 943221d: Bound unresolved iOS path matching to linear time while preserving driver-pattern semantics and admission limits.
+- fe15b7e: Share literal visibility evidence across checks, text waits, scroll-until-text and replay text waits, accepting visible merged accessibility labels and keeping contradictory frames uncertain while preserving unique testID waits and native acquisition safeguards.
+- f99fadf: Refuse cached native reuse for worktree-local package plugins and bare imports whose executable inputs are not traced.
+- 826e004: Each check and pr run now records local run identity metadata and the core's specific refusal code without recording flag values or harness session keys.
+- 0f9418c: Exclude structural plan list numbers from protected-value matching so ordinary blocks remain savable while protected code content stays masked.
+- cae9a94: Pin maestro-runner 1.1.28 as the attested runner and saved-action floor, and keep executable payload scripts executable in the sealed runner snapshot.
+- 3b30124: Restore Git-proven main-copy action links with clear refusal guidance and retain fresh-install admission probe evidence in refusals and run records.
+- 7944172: Mask known runtime-input values on later screens before snapshot hashing so account details can be captured safely without replaying login.
+- aa6b938: A quoted tap can name a merged-label row by one whole segment such as Item 2, and those rows keep reporting that a check matched an accessibility label.
+- ab28182: Mask an input label that mirrors its typed or private value at any length, so a partially entered code never appears in failure output or model evidence.
+- 3fbcbd4: A tap or fill the device runner refuses because its target moved, and attests it changed nothing, now fails as `TARGET_MOVED_BEFORE_DISPATCH` instead of `ACTION_OUTCOME_UNCERTAIN`, still without retry or fallback.
+- ad47da2: A tap or fill refused because its target moved now records the retained and live frames, and the one retry waits until the same target holds one frame across two captures before dispatching again, failing with the observed frames if it never settles.
+- 72bc4e7: Phrase heading waits ask Jev one narrow question, whether one of the qualified on-screen titles is the requested heading, so a real title is recognized instead of staying unestablished.
+- 21efd3b: Allow complete React capture to omit non-string image-source placeholders on verified native Expo image hosts while preserving input and identity refusals.
+- 8d9272d: Prevent native-client reuse for unbound Node inputs and resolve nested same-label controls to the innermost control.
+- 8d7b6b3: Phrase taps treat native text, images and plain views as not pressable once complete React evidence accounts for every interactive host.
+- bd93fe6: Retain a finite native readiness reason in private capture diagnostics and restore the existing target binding when the iOS reader recovers from a timeout.
+- 7d2a845: Prevent unproven legacy process signals and readiness persistence after cancellation while preserving loaded handshake timeout refusals.
+- 0a13863: Run the developer-only native iOS suite under the same device lease as qaren check with durable startup and ownership-checked recovery.
+- 7ddf3f2: Phrase heading steps accept an observed iOS navigation bar title as heading evidence, and treat a navigation bar itself as a plain container.
+- 2be39a4: Phrase steps count a native node that is identical to its parent, as XCUI reports React Native text, as one observation.
+- bb57340: Refuse complete fingerprints for nested package resolution and show generated native regeneration before compilation in dry-run plans.
+- 8715b55: Count nested unidentified text echoes as one target for actions and saved selectors while retaining identified text nodes without verified presence evidence.
+- 0cc5338: Keep headings and images noninteractive when resolving screen actions.
+- 7a4e813: Text whose container lies wholly outside the screen no longer satisfies literal checks, quoted waits or scroll-until, even when its own native frame reports an on-screen position.
+- 26a6940: Phrase steps treat native content lying wholly outside the window or its scroll view as off screen, so visibility checks skip it and taps scroll toward it instead of refusing.
+- 83c15c5: Centralize value matching and stream value-free progress while rendering reports and comments from the projected ledger.
+- ca1d205: Count only on-screen controls toward the phrase-action candidate bound and scroll toward a uniquely name-matching off-screen control up to six times with settled re-reads and unchanged-screen stopping.
+- e4b65cd: Project protected values and geometric code rows without treating hidden content as assertion evidence.
+- 56a9f1c: Outbound model requests mask marker-looking free text and keep a real element's structured testID readable unless it contains a whole protected value of three or more characters, while short protected values stay masked in visible text.
+- 21efd3b: Skip inactive, natively detached route screens in the error-overlay check of strict React captures, so retained tabs no longer refuse a capture of a small focused screen. Visible error overlays are still detected.
+- 0a13863: Add an explicit fresh-install check that holds the device lease through reset and execution, refuses uncertain driver or app inventory observations, and requires durable reset and cleanup evidence for the phase gate.
+- a42b5e3: Cleanup after a cancelled run or a dead owner terminates the iOS runner host the run launched, on its exact simulator, and releases the device lease instead of leaving the lane busy.
+- 1dfda8d: A core whose qaren owner vanished mid-walk no longer crashes on the closed wire before its teardown, so the first `qaren cleanup` finds its process group gone or proven ours.
+- 84ed016: Warm runs can reuse a cached native build again when app.json names package plugins or local plugins import packages: those are bound by the lockfile and the resolved package version.
+- c18c2c5: A saved text wait now replays when container labels echo its one painted line, and a wait whose text is painted more than once is no longer saved for replay.
+- 4f4ca0a: Mask partial protected codes in associated cells regardless of glyph count across failure history and model descriptions.
+- 342fc92: Conceal partially filled code boxes and separated three-digit values in failure history and model requests.
+- 36dd474: Retain bounded value-free native capture boundary counts and actual viewport provenance in correlated private QA diagnostics.
+- b96facd: Refuse phrase actions when the selected control lacks the requested name and stop treating Header control names as heading claims.
+- 7827025: Bind placeholder-labelled input wrappers and conceal nested code-box echoes and merged digits in failure history and model requests.
+- df721c3: Phrase visibility checks skip plain native containers that offer no operation and have no name of their own, instead of refusing on them.
+- a257ea1: Save ordinary blocks after a numeric code fill instead of withholding them because their generated plan hash shares digits with the code.
+- b6897ec: Exclude zero-area literal frames, scroll relative to trusted clips, report admitted media, and fingerprint optional native dependencies.
+- 26a224f: Allow CLI-owned preparation to borrow an exact existing iOS simulator with explicit boot permission and lease-safe cleanup.
+- 1494fb0: Reap and relaunch the iOS reader when a platform-presence capture hits the runner's main-thread timeout, so later reads are not refused by a runner that has wedged itself.
+- 36dd474: Retain finite private predicate and scroll-origin facts when a target centre remains covered after its existing one-scroll allowance.
+- 36dd474: Retain bounded, value-free first-refusal facts in the private QA dispatch log without changing action outcomes or retry behavior.
+- a7cf89c: Re-read transitional empty private snapshots within the existing settle and capture budgets before refusing incomplete capture.
+- a53ea4a: Reuse verified iOS builds across isolated macOS homes through a private per-UID native cache with an explicit QAREN_NATIVE_CACHE_ROOT override.
+- 7944172: Resolve quoted container targets with bounded candidate-only label provenance after ordinary privacy admission, refusing unavailable provenance as target ambiguity with value-free diagnostics and provenance-relevant sample stability while preserving private-input masking and screenshot withholding.
+- 0a13863: Capture React input values and secure flags through a bounded private QA channel for masking and protected checks, refusing incomplete capture and withholding sensitive screenshots.
+- 24a8fca: Withhold saved blocks containing protected values and mask their display names while preserving operational identifiers.
+- 5ab3ea9: Protect formatted code fragments, overlapping secure fragments, and whole-token short fills proven by observed code rows.
+- dfb1369: Associate React hosts within their proven native window so role-less controls remain eligible in multi-window captures while ambiguous ownership stays refused.
+- 2532631: Release the publication lock when the publisher finishes even if a concurrent child inherits its descriptor.
+- 965db66: The video `qaren publish` uploads now starts when the app was admitted, so launcher and server-picker frames recorded before admission stay in the local recording only.
+- cf06a1e: The posted PR video now ends on the app at the last checked step instead of showing the device session closing.
+- 21efd3b: Allow strict React captures to use the existing 5,000-fiber ceiling for a single renderer root while preserving visibility rules, time limits, and refusal on incomplete evidence.
+- 1b61d07: Explicit keyboard targets are no longer rejected as covered by their own keyboard.
+- 95170b0: Explicit taps on keyboard-owned iOS Buttons such as Return now use the exact keyboard-target path instead of being refused as covered app content.
+- 507064a: Add bounded content-free calibration timing across screen walking and native capture adapters without changing capture, dispatch, or verdict policy.
+- cf022d3: On Android, `qaren check` now waits for the JS reload that turning Fast Refresh off triggers, and re-proves the reloaded bundle before step 1, so the first step no longer reads the dev client's loading screen. Dev-menu recovery on Android no longer turns Fast Refresh off again mid-walk.
+- 810af8a: Select the installed Android runner by the SHA-256 identity of both APKs after refreshing the shipped-source build. Reinstall older or unprovable builds even when their package versions match, and reuse a matching installed pair.
+- 6d435a2: Frame app-derived text as untrusted data in check failures and explain the boundary in reports and agent guidance.
+- a8b5639: Check a saved block's declared start screen before acting and report BLOCK_START_MISSING when it is absent.
+- 9623c78: The feedback skill now drafts a sanitized QaReN issue and files it only after confirmation.
+- 0e94148: Store device and host locks machine-wide by default, so any home on the machine sees an existing lease and refuses it; QAREN_MACHINE_LOCKS=0 keeps per-home locks.
+- 42d6dfc: Reduce dev-client Refreshing banners in PR videos; see the [walk-start clearance contract](https://github.com/Lykhoyda/rn-dev-agent/blob/develop/packages/qaren-cli/README.md#check-a-plan) for Fast Refresh handling and platform-specific recovery behavior.
+- 0369e83: The plugin now ships only the setup, using-qaren and feedback skills.
+- de3d5fc: Withhold failure screen text and mask moved-target labels whenever a captured screen contains a secure field.
+- b70ca0a: `/qaren:setup` installs qaren onto PATH, writes `.qaren/config.yaml` and runs a first smoke check on the simulator.
+- 8f5da5e: An iOS prebuilt runner that reported missing required capabilities is no longer reselected after the local rebuild, so later checks use the rebuilt runner instead of refusing `RN_FAST_RUNNER_STALE`.
+- 7ff2c82: The using-qaren skill now explains how to plan around permission prompts and opt-in screens that may appear at uncertain times.
+- ed2d67d: The using-qaren skill now plans conditional screens from source, asks for missing `Fill` values, and reports a correct path that stops on an unplanned screen as a plan gap rather than an app defect.
+- f628a45: `qaren watch` now shows the step that is running and stops probing the run owner once the run has ended, probing a live owner at most every two seconds.
+- 8ea7c46: Keep watch stages and current or recent steps within the current terminal viewport, with omitted-row counts and compact or plain output for small terminals.
+- c287a58: Allow iOS fresh-install admission when unrelated long-command processes have unreadable identities while still refusing unproven automation candidates.
+- 3a91d99: Resolve aggregated container labels to their hittable child controls and retain bounded, masked target-miss evidence in private run diagnostics.
+- 847f205: Keep iOS settle snapshot failures advisory so the walker's after-capture decides the step after an acknowledged action.
+- dfb1369: Report value-free system-modal recognition, dialog refusal stage and interruption rejection diagnostics without changing recovery guards.
+- dfb1369: Decline system permission prompts by default and recover from eligible optional app interruptions under the [step recovery contract](https://github.com/Lykhoyda/rn-dev-agent/blob/develop/packages/qaren-cli/README.md#step-recovery).
+- bd93fe6: Wait for relaunched iOS runner readiness and retry private native capture within the existing settle budget before refusing.
+- 985852f: Allocate distinct run directories when parallel QaReN checks start in the same second.
+- 0d6f453: Retry the post-scroll screen capture once within the existing freshness allowance when association gaps for the step's kind or unresolved React identities increase or the target's visibility remains unknown.
+- 5b69415: `Wait for "<testID>"` no longer passes for an element whose centre is under the keyboard; plans that relied on that pass need a clearance step or a text wait.
+- b03e881: A quoted wait or tap now matches a visible native element whose identifier a React-only element also carries, and a missed wait on an unchanged screen says whether the identifier was absent, ambiguous, React-only, offscreen or covered.
+- 21efd3b: The "interactive digest unavailable" warning now names a fixed cause code and the capture's numeric counters, so a lost React digest can be traced to its limit, deadline or transport failure without exposing screen content.
+- 6b9c687: Refuse otherwise passing walks whose JS/React connection remains lost, preserve loss and recovery facts per line in receipts and reports, and withhold learned blocks from degraded blocks and from walks that lost the connection.
+- c2d3892: A quoted fill whose testID matches both a native input and a React-only input is refused as ambiguous again before any tap, while a sole React-only match still routes to the keyboard fallback.
+- d23ae86: A fill whose field is wrapped by components that forward its testID, and that have no native input, now resolves to that one field instead of refusing as ambiguous, and ambiguity refusals say which candidates are native, React-only or proven wrappers.
+- 58a663a: Share the existing reader relaunch deadline with startup and retain value-free relaunch outcomes in private diagnostics.
+- f365339: Classify transport timeouts and HTTP protocol errors as finite health details in private native readiness diagnostics.
+- 2d253a0: Retry transient CDP startup, socket closure and Android Fast Refresh reload failures within the remaining run budget so concurrent runs can wait for their own app runtime to become ready.
+- 180573f: Identify repeated system prompts by title and buttons, count attempted declines when read-back refuses, and explain repeated prompts after the recovery limit.
+- fa6a094: Preserve contained label-echo identity when refreshing native references without tap eligibility data.
+- 7911b66: A QA walk now refuses with `DEV_MENU_HIDE_UNVERIFIED` before its first step when the dev-menu floating button or open menu cannot be proven hidden, re-checks clearance after a dev-menu recovery, and withholds published video if dev chrome is observed after admission.
+- ef8048b: Regenerate generated native directories when native fingerprints change or are incomplete while retaining existing build caches.
+- 702d744: Allow explicitly named registry auth environment variables for dependency install and prebuild while withholding their output.
+- c6217c1: Relaunch the native screen reader after timeout containment reaps it so subsequent captures can proceed.
+- 65ed249: The iOS runner no longer has the positional alert command, whose dismiss tapped the last button (Allow on a permission prompt).
+- a3d723e: Resolve a stored testID on replay to its one native element instead of refusing it as ambiguous when the only other match is a React-only copy.
+- a79dce8: Replayed waits and scroll-until steps on a stored testID poll their existing budgets before reporting a missing identity.
+- b260643: Admit private screen capture on React Native dev builds, whose renderer deep-freezes host props into identity accessors and whose Fragment fibers carry child arrays, instead of refusing every screen with `PRIVATE_INPUT_CAPTURE_UNKNOWN`.
+- 596c9d6: The core compiles a saved action into an `rn-flow/1` replay plan with `walk.js --compile`, refusing any command, selector or parameter outside the `rn-flow@1` dialect with its line.
+- 26e4a97: Phrase steps no longer treat a plain native view as possibly pressable because of a React host or digest entry that has no testID and is interactive only by role.
+- b7b4f5e: An iOS check now attaches only to its own simulator's runtime, so another booted simulator running the same app on the shared Metro port can no longer satisfy the bundle proof while the run's app is still loading.
+- 725846e: Guard process signals and setup continuations, refuse incomplete native fingerprints, and report reclaimed cleanup storage.
+- bc36e41: A run now decides publication from one final result saved after video finalization and teardown, so a late cancellation, a changed candidate or unproven process ownership is never published, and setup stops before every effect once a cancel arrives.
+- 1f60728: The iOS runner no longer stops answering when XCTest records a UI automation issue during a command, such as reading a field that vanished after an auto-submitting fill, and a tap, press, drag or typing gesture that raises one now fails with `GESTURE_ISSUE_RAISED` and mutation `possible` instead of reporting success.
+- 58149bc: The iOS runner's `xcodebuild` driver now runs in its own recorded process group, so `qaren cleanup` reclaims it by identity after its qaren owner is killed instead of refusing `OWNERSHIP_UNPROVEN`.
+- 409bdc9: Record why the iOS runner stopped answering — the readiness failure kind, a value-free runner post-mortem with app-process continuity, and per-phase fill dispatch timings — in private-run diagnostics.
+- 20213a4: A failed step in a run with runtime inputs no longer writes on-screen text into its failure context or target-miss diagnostics.
+- a579343: Add the hermetic Rust replay engine that interprets compiled rn-flow/1 plans over native runners with interpreter-owned waits, single-dispatch mutations, and trace rows shaped like the existing ledger rows.
+- 5feb017: Adds `RNCSafeAreaView` and `RNCSafeAreaProvider` as view-like hosts for native association and names the blocking association stage, including the nearest identified ancestor's, in value-free step refusal diagnostics.
+- 160166f: Keep scroll drags clear of Android system gesture edges and iOS status-bar and home-indicator edges.
+- 13f97b2: Runs and `qaren doctor` now point out a likely saved login block with the exact `loginBlock`/`loginMarker` lines to confirm, and warn when the configured marker differs from its first screen, it fills no inputs, it signs out first, or saved blocks stay only in a throwaway worktree or PR run.
+- b19268b: Fresh-install admission no longer refuses because of an automation driver that the kernel shows targeting only other simulators.
+- 6ec7b55: The wholly-offscreen-container rule now applies only to text inputs, so on-screen rows under a stale off-screen container stay visible, and the viewport diagnostic names the rule and ancestor behind each excluded in-app node.
+- 1951e64: Scroll-until drags inside a list span its visible band clear of the keyboard edge, content behind the list no longer shrinks the clearance band, and a band too short for a drag refuses instead of tapping.
+- f40bbbb: Scroll-until no longer refuses as ambiguous when a scroll container only echoes the label of the card inside it.
+- 8596898: Phrase steps treat identical unidentified views repeated directly under a native scroll view, as iOS reports its scroll indicators, as platform chrome rather than screen content.
+- 11e0455: A tap or fill after an explicit `Scroll` step now waits for the scrolled frame to settle before dispatching, instead of targeting a field still moving from the scroll's momentum.
+- ac0c4c4: Scroll toward a `Scroll until` target that sits inside the screen but is covered at its top or bottom, such as an Android heading under the status bar, instead of scrolling away from it.
+- 1951e64: Start the scroll-until drag inside the list it is meant to move instead of at the screen centre.
+- 9672a5a: Phrase steps associate a React Native scroll view with the native container view that carries its testID, so controls inside it are no longer left unassociated.
+- 2dd650e: Remove secret-named environment variables from child processes while preserving model authentication, log redaction and scoped registry access during dependency preparation.
+- ed9d689: A fill into an iOS secure field passes again on the runner's stable masked read-back instead of failing `TEXT_ENTRY_UNVERIFIED`.
+- c879ded: Keep unrelated QA phrases and saved blocks readable by matching contiguous secret fragments.
+- f8ec115: Mask every contiguous three-character fragment of a secure value, including fragments that start or end with punctuation.
+- a50db6d: A press on a control whose only visible change is its selected state (such as a chip in a choice group) now proves itself by that change, and a press that leaves it unchanged still fails, naming whether it stayed selected.
+- a5aac2b: Reclaim a device lease held by a dead run through that run's own cleanup, and end a run with `RUN_CANCELLED` after normal teardown when it is signalled or its caller exits.
+- 0a13863: Separate phrase presence judgments from action selection with bounded host evidence, opt-in iOS platform observations, proven host capabilities, and native-bound typographic titles that remain distinct from declared accessibility headings.
+- 1532f07: The private `sensitive-pixels` diagnostic now also lists up to four value-free carrier shapes (type code, scroll-bar label class, value shape and length bucket, size, parent type, identifier presence and value source) without any label or value text.
+- 7b6ad8b: Admitted complete, within-budget native captures whose own privacy verdict marks their pixels sensitive now log one bounded, value-free `sensitive-pixels` diagnostic line to the private core log.
+- 5f40981: A tap or fill that first scrolls its target into view or clear of the keyboard now dispatches only after two agreeing screen readbacks, so it no longer acts on a target still moving with scroll momentum.
+- 7019831: Cancel walk I/O through one signal, bound admission retries, refuse guessed native dependencies, and withhold publication until all producers are proven gone.
+- e4699f3: Retain value-free timing, dispatch and existing block and saved-login recovery outcomes for input-slot runs while preserving private-output withholding.
+- ecf7c2b: The iOS runner names toolbars `Toolbar` instead of a text input and keeps nested same-origin containers apart in snapshots, and core now requires its `SNAPSHOT_FIDELITY_V1` capability so an older runner is rebuilt instead of reused.
+- a9182bd: Protect codes shown in separate digit boxes from leaking through QA reporting.
+- c618467: One-time-code rows whose character text is narrower than its evenly spread cell are now recognized and shown as `[code]` in failure history instead of leaking characters.
+- ce28db2: A literal wait whose target stays absent on an unchanged screen until its deadline now fails with "did not appear" instead of `VISIBILITY_UNSURE: ITEM_DEADLINE_EXCEEDED`.
+- 974eb9b: A press or fill target whose centre sits under a sticky footer or header inside its list now gets one clearance scroll toward the middle of the touchable band before dispatch, the same as a target under the keyboard.
+- d0dea68: Associate known React Native input hosts with explicit native text inputs only when existing identity, geometry, ancestry and presence proofs agree.
+- 537fd3d: Host association accepts identified ancestors that match native ancestry structurally, so a covered root container no longer blocks every identified host beneath it.
+- 65ed249: An iOS system dialog step taps the SpringBoard button element by its exact label and passes only when the runner proves that label was tapped and the alert closed, recording the tapped label and frame in the ledger and receipt.
+- f662eb0: Admit attested automation controllers across launcher path aliases and release device leases using owned-resource cleanup evidence instead of unrelated session activity.
+- b260643: Terminate the iOS runner's host app on the exact simulator when a session closes, so a kept simulator does not block the next check as a foreign automation flow.
+- 3730528: Log value-free native match, frame, depth, hittability and viewport diagnostics when a quoted target fails.
+- 2aefe14: Clear the current command when a piped or grouped child completes or fails to spawn.
+- c76f02d: Treat rows whose centres lie outside the visible list as offscreen scroll hints so untappable edge rows do not block capture.
+- d9f37b2: Retry dev-client launch and iOS dev-menu defaults timeouts regardless of host load within the remaining preparation budget, recording every attempt while preserving per-call timeouts, cancellation checks, readiness proof, and cleanup.
+- 68f7358: Retain value-free typing refusal stages, native codes, and typing, readback, relayout, settle, and keyboard diagnostics in private-input runs.
+- 554de1b: Compare screen state using its canonical in-memory content without hashing input text.
+- 23d5e9a: A saved wait stores a testID only when no other on-screen element shares it, so a uniquely labelled control with a shared testID replays by its text instead of re-walking.
+- 75b6eb1: Tell Jev that unmasked text never equals a protected value, so a check naming a typed value fails when the screen shows a different value in that place.
+- 878af9b: Keep a phrase check unsure instead of asking Jev when it names a protected value that the observed screen does not show.
+- 02fde6b: A build plan after an incomplete cached run no longer reports fingerprint parts the recorded build never captured, such as the toolchain, as changed native inputs; it names them as unrecorded instead.
+- 240cfa2: Cleanup no longer retains a finished run's device lease when the process inventory lists a process whose state macOS cannot report.
+- 6fdd880: The receipt lists each passing fill left unverified with its line and reason, and a fill the field kept short on both attempts carries its typed and held counts as numbers that masking cannot hide.
+- 0453ca5: Runs that log in through the saved login block before the plan starts now publish a video that begins after login.
+- fd43d37: Admitted complete, within-budget native captures now log one bounded, value-free viewport-geometry diagnostic line to the private core log.
+- ffcf328: React-tree walk-up presses treat nested components that forward one testID and one press handler as one control even when their ancestry passes through React fiber alternates, instead of refusing them as ambiguous.
+- 38863ef: Say accurately why a video is withheld for input: the plan has a fill or type step, or a login replay typed into a field.
+- 5b63647: Withheld screenshots and videos now carry a value-free reason code in core.log, the ledger, the receipt and the report, and the pull request comment names the code.
+- c3f97d2: When React reads are unavailable, a keyboard fill of "X" can target the single native "X-pressable" wrapper that encloses no other text entry, reported as an unverified fill.
+- fe1c24c: Fresh-install admission no longer refuses because of an xcodebuild build that cannot drive a simulator.
+
 ## 1.0.13
 
 ### Patch Changes
