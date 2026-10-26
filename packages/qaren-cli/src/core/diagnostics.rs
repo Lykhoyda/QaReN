@@ -477,6 +477,7 @@ fn clean(value: &Value) -> Option<Value> {
             ],
         ),
         "block-outcome" => (&["line", "outcome"], &[]),
+        "interruption-rejected" => (&["line", "veto", "exactDeclineCount"], &["targetIndex"]),
         "login-outcome" => (&["outcome"], &[]),
         _ => return None,
     };
@@ -535,6 +536,13 @@ fn clean(value: &Value) -> Option<Value> {
                 Some(&["reaped", "already-absent", "replacement-preserved"])
             }
             "edge" => Some(&["start", "end", "point"]),
+            "veto" => Some(&[
+                "front",
+                "coverage",
+                "current-target",
+                "later-target",
+                "no-candidate",
+            ]),
             "outcome" if kind == "metric" => {
                 Some(&["ok", "failed", "unknown", "withheld", "unavailable"])
             }
@@ -586,7 +594,10 @@ fn clean(value: &Value) -> Option<Value> {
             let number = value.as_f64()?;
             if !number.is_finite()
                 || !(0.0..=MAX_NUMBER).contains(&number)
-                || (kind == "block-outcome" && key == "line" && number == 0.0)
+                || (["block-outcome", "interruption-rejected"].contains(&kind)
+                    && key == "line"
+                    && number == 0.0)
+                || (kind == "interruption-rejected" && number.fract() != 0.0)
             {
                 return None;
             }

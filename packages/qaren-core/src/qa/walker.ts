@@ -16,6 +16,7 @@ import {
 } from './inputs.js';
 import { isAbort, cancellationSignal, withDeadline } from '../domain/cancellation.js';
 import type { Block, Item, Target } from './plan.js';
+import { parseStep } from './plan.js';
 import {
   type Element,
   type Screen,
@@ -76,10 +77,17 @@ import {
   INTERRUPTION_QUESTION,
   checkVerdict,
 } from './questions.js';
-import { type LoginMarker, dismissCandidate, recover } from './recover.js';
+import {
+  type InterruptionDiagnostic,
+  type LoginMarker,
+  type RecoveryTarget,
+  dismissCandidate,
+  recover,
+} from './recover.js';
 import type {
   BlockOutcome,
   BlockOutcomeDiagnostic,
+  InterruptionRejectedDiagnostic,
   MediaWithheldDiagnostic,
 } from './diagnostics.js';
 import { targetMissDiagnostic, type TargetMissDiagnostic } from './target-miss.js';
@@ -91,6 +99,7 @@ import {
   ObservedPrivacy,
   matchPrivate,
   projectPlanLine,
+  planLineBody,
 } from './privacy.js';
 import { renderReason, segments, type Reason } from './untrusted.js';
 import { NativeSnapshotIncomplete, PrivateInputCaptureError } from './private-input.js';
@@ -203,6 +212,7 @@ export interface WalkerDeps {
   targetMiss?(event: TargetMissDiagnostic): void;
   labelProvenanceDiagnostic?(event: LabelProvenanceDiagnostic): void;
   blockOutcome?(event: BlockOutcomeDiagnostic): void;
+  interruptionRejected?(event: InterruptionRejectedDiagnostic): void;
   loginOutcome?(outcome: BlockOutcome): void;
   timing?: TimingObserver;
   rowTiming?(t: number): RowTiming;
@@ -302,15 +312,20 @@ export interface WalkOptions {
   recover?: boolean;
   login?: boolean;
   singleAttempt?: boolean;
-  laterTargets?: readonly Target[];
+  laterTargets?: readonly RecoveryTarget[];
 }
 
-const recoveryTarget = (item: Item): Target | undefined =>
-  item.kind === 'check'
-    ? item.literal
-      ? { quoted: item.text, phrase: item.text }
-      : undefined
-    : stepTarget(item);
+const recoveryTarget = (item: Item): RecoveryTarget | undefined => {
+  if (item.kind === 'check')
+    return item.literal ? { quoted: item.text, phrase: item.text } : undefined;
+  const target = stepTarget(item);
+  if (!target) return undefined;
+  const declared = parseStep(planLineBody(item.raw));
+  return {
+    ...target,
+    ...(declared && !('refuse' in declared) ? { declared: stepTarget(declared) } : {}),
+  };
+};
 
 export interface WalkSequence {
   observation: number;
@@ -1588,6 +1603,22 @@ async function walkBlockScoped(
       }),
       ...(opts.laterTargets ?? []),
     ];
+    const interruptionRejected = (record: InterruptionDiagnostic, observation?: number) => {
+      try {
+        deps.note?.(
+          `interruption-rejected=${JSON.stringify({ line: item.line, ...(observation === undefined ? {} : { observation }), ...record })}`,
+        );
+        deps.interruptionRejected?.({
+          kind: 'interruption-rejected',
+          line: item.line,
+          veto: record.veto,
+          ...(record.targetIndex === undefined ? {} : { targetIndex: record.targetIndex }),
+          exactDeclineCount: record.exactDeclineCount,
+        });
+      } catch {
+        /* Diagnostics cannot change recovery. */
+      }
+    };
     let interruptionShot: string | undefined;
     let dialogAct: ActResult | undefined;
     let declineAttempted = false;
@@ -1595,15 +1626,7 @@ async function walkBlockScoped(
       fresh.screen,
       {
         hideDevMenu: deps.hideDevMenu,
-        interruptionDiagnostic: (record) => {
-          try {
-            deps.note?.(
-              `interruption-rejected=${JSON.stringify({ line: item.line, observation: fresh.id, ...record })}`,
-            );
-          } catch {
-            /* Diagnostics cannot change recovery. */
-          }
-        },
+        interruptionDiagnostic: (record) => interruptionRejected(record, fresh.id),
         dialog: async () => {
           declineAttempted = true;
           recoveries += 1;
@@ -1661,15 +1684,9 @@ async function walkBlockScoped(
               captureScreen: async (options) => {
                 const screen = await captureScreen({ ...options, platformPresence: true });
                 if (!dispatched) {
-                  const candidate = dismissCandidate(screen, planTargets, (record) => {
-                    try {
-                      deps.note?.(
-                        `interruption-rejected=${JSON.stringify({ line: item.line, ...record })}`,
-                      );
-                    } catch {
-                      /* Diagnostics cannot change recovery. */
-                    }
-                  });
+                  const candidate = dismissCandidate(screen, planTargets, (record) =>
+                    interruptionRejected(record),
+                  );
                   if (!candidate || 'refuse' in candidate || candidate.label !== label)
                     throw new ResolutionError({
                       refuse: 'INTERRUPTION_CHANGED',
@@ -2993,7 +3010,7 @@ export async function runPlan(
             .flatMap((later) =>
               later.items.flatMap((item) => {
                 const target = recoveryTarget(item);
-                return target?.quoted !== undefined ? [target] : [];
+                return target?.quoted !== undefined ? [{ ...target, laterBlock: true }] : [];
               }),
             ),
         },

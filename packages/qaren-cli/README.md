@@ -2409,15 +2409,28 @@ and [freshness regressions](../qaren-core/test/unit/qa/temporal-walker.test.ts).
 
 App interruptions need no app-specific configuration. Recovery requires complete
 native capture and React coverage, with the current quoted target (or literal
-check) and every later quoted plan target, including later blocks, absent from
-a fresh capture. Exactly one eligible control must be visible, hittable, enabled,
+check) and the later quoted targets of the current block absent from a fresh
+capture. Targets in later blocks never block recovery by being visible; they
+only keep their own planned control and controls inside them. A later target
+declared as a decline label from the list below
+(case-insensitive, unless explicitly targeted by ID) is exempt from this absence
+guard, so non-control text such as `Maybe later` does not prevent closing a sheet
+with `Close`. The current target is never exempt. ID-only targets are checked by
+test ID, text-only targets by text, and unqualified targets by either.
+Exactly one eligible control must be visible, hittable, enabled,
 non-secure and have proven press support, with one of these exact English labels:
 `Close`, `Not now`, `Not Now`, `Maybe later`, `Later`, `Skip`, `No thanks`,
 `Dismiss`, `Cancel`.
 Zero candidates leave the original failure in place; several refuse
-`INTERRUPTION_AMBIGUOUS` without tapping. A visible plan target, uncertain absence,
-or a control inside the target prevents dismissal. Phrase-only targets cannot
-establish this deterministic absence guard.
+`INTERRUPTION_AMBIGUOUS` without tapping. A candidate matching a later target's
+effective selector is left for that step; decline-label matching is case-insensitive.
+Within a replayed block, recovery retains the declared target for the exemption
+and uses its stored selector to protect the planned control. Targets in later
+blocks use their declared identities until those blocks are prepared for replay.
+A visible non-exempt target in the current block, uncertain absence for a target
+subject to the absence guard, or a control inside any plan target prevents
+dismissal. Phrase-only current targets cannot establish this
+deterministic absence guard.
 
 With `TYPESAFE_API_KEY`, Jev may veto a selected control when the screen may be
 related to the step or its purpose is uncertain. It never chooses a control,
@@ -2440,7 +2453,9 @@ including when its read-back refuses incomplete capture.
 
 `logs/core.log` includes value-free diagnostics for failed interruption admission:
 `interruption-rejected` reports a front, coverage, indexed target or no-candidate
-veto and the exact-decline-label element count. A no-candidate veto also reports
+veto and the exact-decline-label element count; the same veto kind, step line,
+target index and count are also retained as an `interruption-rejected` event in
+`core-diagnostics.jsonl` for runs with inputs. A no-candidate veto also reports
 each decline-labelled element's first failed predicate; press capability failures
 include the existing host association identity when available.
 `presence-system-modal` reports an unrecognized SpringBoard modal's

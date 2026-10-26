@@ -4,12 +4,21 @@ import { cleanTimingEvent } from './timing.js';
 import { MEDIA_KINDS, MEDIA_SOURCES, WITHHOLD_CAUSES, type MediaLatch } from './privacy.js';
 import { isRecord } from './questions.js';
 import { cleanTargetMiss } from './target-miss.js';
+import { INTERRUPTION_VETOES, type InterruptionDiagnostic } from './recover.js';
 
 export interface MediaWithheldDiagnostic {
   kind: 'media-withheld';
   scope: 'screenshots' | 'video';
   cause: MediaLatch;
   line: number;
+}
+
+export interface InterruptionRejectedDiagnostic {
+  kind: 'interruption-rejected';
+  line: number;
+  veto: InterruptionDiagnostic['veto'];
+  targetIndex?: number;
+  exactDeclineCount: number;
 }
 
 export type BlockOutcome = 'pass' | 'fail' | 'refused';
@@ -62,6 +71,24 @@ export function cleanDiagnostic(value: unknown): Record<string, unknown> | undef
     Number.isFinite(value[key]) &&
     value[key] >= 0 &&
     value[key] <= Number.MAX_SAFE_INTEGER;
+  if (value.kind === 'interruption-rejected') {
+    const index = (key: string): boolean => number(key) && Number.isSafeInteger(value[key]);
+    if (
+      !INTERRUPTION_VETOES.includes(value.veto as never) ||
+      !index('line') ||
+      value.line === 0 ||
+      !index('exactDeclineCount') ||
+      (value.targetIndex !== undefined && !index('targetIndex'))
+    )
+      return undefined;
+    return {
+      kind: value.kind,
+      line: value.line,
+      veto: value.veto,
+      ...(value.targetIndex !== undefined ? { targetIndex: value.targetIndex } : {}),
+      exactDeclineCount: value.exactDeclineCount,
+    };
+  }
   if (value.kind === 'media-withheld') {
     const cause = value.cause;
     if (
