@@ -16,4 +16,4 @@ Security updates ship only on the latest QaReN version advertised on `main`. Pub
 
 ## Reporting
 
-Submit with GitHub [private vulnerability reporting](https://github.com/Lykhoyda/rn-dev-agent/security/advisories/new) only. Do not open a public issue.
+Submit with GitHub [private vulnerability reporting](https://github.com/Lykhoyda/QaReN/security/advisories/new) only. Do not open a public issue.

@@ -12,7 +12,7 @@
       "version": "2.0.0",
       "source": "./packages/qaren-plugin",
       "category": "mobile-development",
-      "homepage": "https://github.com/Lykhoyda/rn-dev-agent"
+      "homepage": "https://github.com/Lykhoyda/QaReN"
     }
   ]
 }

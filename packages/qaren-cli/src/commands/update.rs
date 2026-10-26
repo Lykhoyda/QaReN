@@ -9,7 +9,7 @@ pub fn update(cwd: &Path, home: &Path) -> Result<String, (u8, String)> {
     if !cwd.join(INSTALLER).is_file() {
         return Err((
             2,
-            "qaren update pulls and rebuilds an rn-dev-agent checkout; run it from the checkout root.\n\
+            "qaren update pulls and rebuilds a QaReN checkout; run it from the checkout root.\n\
              A plugin install updates with the host's plugin update, then\n\
              bash <plugin>/scripts/ensure-qaren.sh --install"
                 .to_string(),
@@ -270,7 +270,7 @@ mod tests {
         let home = root.join("home");
         let (code, msg) = update(&root, &home).unwrap_err();
         assert_eq!(code, 2);
-        assert!(msg.contains("rn-dev-agent checkout"), "{msg}");
+        assert!(msg.contains("QaReN checkout"), "{msg}");
         assert!(!home.exists());
     }
 

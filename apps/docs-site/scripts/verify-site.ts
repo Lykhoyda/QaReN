@@ -6,7 +6,7 @@ const HERE = dirname(fileURLToPath(import.meta.url));
 const DIST = process.env.DOCS_DIST ?? resolve(HERE, '../dist');
 const MAIN_RS = resolve(HERE, '../../../packages/qaren-cli/src/main.rs');
 const PLUGIN_JSON = resolve(HERE, '../../../packages/qaren-plugin/.claude-plugin/plugin.json');
-const BASE = '/rn-dev-agent';
+const BASE = '/QaReN';
 let failed = 0;
 
 function check(name, cond) {
@@ -97,7 +97,7 @@ for (const slug of [
 console.log('\nverify-site: links');
 checkInternalLinks();
 const unbased = htmlFiles().filter((file) =>
-  /href="\/(?!\/|rn-dev-agent(?:\/|"))/.test(readFileSync(file, 'utf8')),
+  /href="\/(?!\/|QaReN(?:\/|"))/.test(readFileSync(file, 'utf8')),
 );
 check('internal links carry the base path', unbased.length === 0);
 for (const file of unbased) console.error(`  link without base in ${relative(DIST, file)}`);

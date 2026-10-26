@@ -37,13 +37,13 @@ A plan is a Markdown file. `qaren check` and `qaren pr` take it with `--plan-fil
 Open a block that continues a journey with `starts on: <testID or text>` before its
 steps. The value is a literal testID or visible text, with optional quotes. The start
 line alone does not count as a block's steps. For start waits, refusals and replay,
-see the authoritative [saved-block contract](https://github.com/Lykhoyda/rn-dev-agent/blob/develop/packages/qaren-cli/README.md#saved-blocks).
+see the authoritative [saved-block contract](https://github.com/Lykhoyda/QaReN/blob/develop/packages/qaren-cli/README.md#saved-blocks).
 
 The block ID is the heading in lowercase, with every run of characters outside `a-z` and
 `0-9` replaced by a hyphen. It names the [saved block](../saved-blocks/) file.
 
 Linked Git worktrees can share saved steps through a `.qaren/actions` link to the main
-copy; see the [saved-block contract](https://github.com/Lykhoyda/rn-dev-agent/blob/develop/packages/qaren-cli/README.md#saved-blocks).
+copy; see the [saved-block contract](https://github.com/Lykhoyda/QaReN/blob/develop/packages/qaren-cli/README.md#saved-blocks).
 
 ## Steps
 
@@ -60,7 +60,7 @@ copy; see the [saved-block contract](https://github.com/Lykhoyda/rn-dev-agent/bl
 
 A fill needs its text in quotes, or a [runtime input](#runtime-inputs). For iOS entry methods, handler recovery,
 verification and the `(any method)` label, see the authoritative
-[Fill ladder contract](https://github.com/Lykhoyda/rn-dev-agent/blob/develop/packages/qaren-cli/README.md#fill-ladder).
+[Fill ladder contract](https://github.com/Lykhoyda/QaReN/blob/develop/packages/qaren-cli/README.md#fill-ladder).
 A dialog step needs exactly one unconditional
 action: `Accept the dialog if it appears` and `Do not dismiss the alert` refuse.
 
@@ -125,14 +125,14 @@ There is no `no longer` form or heading-level declaration.
   block or report, or sent to Jev; strict inputs are also protected from execution hashing. A run with inputs takes no screenshots, records
   no video and withholds the logs of the processes it starts. For the value-free events retained
   in `logs/core-diagnostics.jsonl`, see the CLI guide's
-  [runtime-input diagnostics](https://github.com/Lykhoyda/rn-dev-agent/blob/develop/packages/qaren-cli/README.md#runtime-inputs).
+  [runtime-input diagnostics](https://github.com/Lykhoyda/QaReN/blob/develop/packages/qaren-cli/README.md#runtime-inputs).
 - The iOS simulator's own system log may record text the app displays, including a filled
   field's value, as it does for every XCTest-driven run; erase a dedicated QA simulator
   (`xcrun simctl erase <udid>`) when that matters. The runner's XCTest result bundles are
   removed after every runner session.
 - For masking input echoes on later screens, optional echo declarations and privacy
   refusals before hashing, follow the CLI guide's
-  [runtime-input hash protections](https://github.com/Lykhoyda/rn-dev-agent/blob/develop/packages/qaren-cli/README.md#runtime-inputs).
+  [runtime-input hash protections](https://github.com/Lykhoyda/QaReN/blob/develop/packages/qaren-cli/README.md#runtime-inputs).
 - `QAREN_INPUT_*` variables required by neither the plan nor the compatible configured
   login block are not used for fills. The whole namespace is removed from every
   process qaren starts; its presence still withholds subprocess logs.
@@ -148,7 +148,7 @@ refusal is never retried or re-walked.
 
 A **phrase** target, such as `Tap the tasks tab`, has no quotes. Jev, QaReN's screen
 judge, picks the element, which must carry the phrase's
-[naming words](https://github.com/Lykhoyda/rn-dev-agent/blob/develop/packages/qaren-cli/README.md#plan-checks-and-screen-evidence)
+[naming words](https://github.com/Lykhoyda/QaReN/blob/develop/packages/qaren-cli/README.md#plan-checks-and-screen-evidence)
 or the step refuses `TARGET_NOT_FOUND`.
 
 ## Checks
@@ -160,7 +160,7 @@ keyboard, React-only text and images do not count.
 Any other check is a **phrase** check, such as `✓ The tasks screen shows the task count`.
 Jev judges it against the captured screen.
 
-A failing check or an unmet quoted wait can enter [step recovery](https://github.com/Lykhoyda/rn-dev-agent/blob/develop/packages/qaren-cli/README.md#step-recovery)
+A failing check or an unmet quoted wait can enter [step recovery](https://github.com/Lykhoyda/QaReN/blob/develop/packages/qaren-cli/README.md#step-recovery)
 before failing the plan. A literal check that still cannot be decided after a fresh
 capture ends `CHECK_UNSURE` if recovery cannot resolve it.
 
@@ -173,7 +173,7 @@ missing or rejected key refuses `JEV_UNREACHABLE` before a device is selected.
 A plan with only quoted targets and literal checks needs no key; without one it makes no
 Jev calls. Back, dialog, echo and plain scroll steps never call Jev. For key-free steps and
 the optional Jev safety veto during interruption recovery, see the CLI guide's
-[plan readiness contract](https://github.com/Lykhoyda/rn-dev-agent/blob/develop/packages/qaren-cli/README.md#plan-checks-and-screen-evidence).
+[plan readiness contract](https://github.com/Lykhoyda/QaReN/blob/develop/packages/qaren-cli/README.md#plan-checks-and-screen-evidence).
 
 ## Refusals before the walk
 
@@ -201,7 +201,7 @@ or an action that demonstrably did not take effect. An uncertain check, an unver
 system dialog in front of the app, an outage of the judgment service, a device or runner error, or a
 refusal leaves it unflagged. On any other commit or with local changes the file is left alone. The receipt's `recipe` field and the `plan:` line on stderr report what happened. Set
 `savePlans: false` in [configuration](../configuration/) to turn saving and flagging off. The CLI
-guide's [saved plans](https://github.com/Lykhoyda/rn-dev-agent/blob/develop/packages/qaren-cli/README.md#saved-plans)
+guide's [saved plans](https://github.com/Lykhoyda/QaReN/blob/develop/packages/qaren-cli/README.md#saved-plans)
 section lists every outcome.
 
 ## Platform notes
@@ -210,7 +210,7 @@ section lists every outcome.
   English label, so `Allow` never matches `Allow Once`. A localized alert fails
   `DIALOG_BUTTON_NOT_FOUND`. Assert the permission's effect with the next step.
 - For Android dialog and modal limits, snapshot visibility and covered-target recovery,
-  see the CLI guide's [walk contract](https://github.com/Lykhoyda/rn-dev-agent/blob/develop/packages/qaren-cli/README.md#check-a-plan)
-  and [occluded taps and focus](https://github.com/Lykhoyda/rn-dev-agent/blob/develop/packages/qaren-cli/README.md#occluded-taps-and-focus).
+  see the CLI guide's [walk contract](https://github.com/Lykhoyda/QaReN/blob/develop/packages/qaren-cli/README.md#check-a-plan)
+  and [occluded taps and focus](https://github.com/Lykhoyda/QaReN/blob/develop/packages/qaren-cli/README.md#occluded-taps-and-focus).
 - A plan with any fill step keeps a pull request's video local; see
   [Test a pull request](../pull-requests/#video).

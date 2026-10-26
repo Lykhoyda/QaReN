@@ -7,15 +7,15 @@ description: "Set up QaReN in this app: install the qaren CLI onto PATH, write .
 
 Run these steps in order from the app's root directory. Each step names when to stop; when you stop, tell the user the one reason and the fix.
 
-QaReN 2.0 needs an Apple silicon Mac with Xcode, Node 24 or newer, pnpm, and an Expo app that uses `expo-dev-client`. This setup prepares an iOS simulator; for a booted Android emulator, see the CLI README's [Check a plan](https://github.com/Lykhoyda/rn-dev-agent/blob/develop/packages/qaren-cli/README.md#check-a-plan).
+QaReN 2.0 needs an Apple silicon Mac with Xcode, Node 24 or newer, pnpm, and an Expo app that uses `expo-dev-client`. This setup prepares an iOS simulator; for a booted Android emulator, see the CLI README's [Check a plan](https://github.com/Lykhoyda/QaReN/blob/develop/packages/qaren-cli/README.md#check-a-plan).
 
 ## 1. CLI
 
 The plugin root is two directories above this skill's base directory. Resolve one absolute qaren path and use it for every later `qaren` command in this session:
 
 1. Run `bash <plugin root>/scripts/ensure-qaren.sh --print-bin`. If it prints an absolute path ending in `/bin/qaren`, that is the plugin-verified binary; use it and go to step 2.
-2. Otherwise run `bash <plugin root>/scripts/ensure-qaren.sh --install`. Use its printed binary path and pass the user any stderr notice about PATH or an existing command. The [CLI installation guide](https://github.com/Lykhoyda/rn-dev-agent/blob/develop/packages/qaren-cli/README.md#plugin-runtime-installation) owns the verification, PATH-linking and fallback contract.
-3. If it refuses because this plugin version carries no qaren tarball, QaReN is not released yet. If `command -v qaren` resolves, through links, to a binary under `~/.qaren/runtime/` and `qaren --version` prints `qaren <version>` with the `version` in `<plugin root>/.claude-plugin/plugin.json`, it is a source install made through the same verified installer; use that resolved path. Otherwise tell the user the one line to run from a `develop` checkout of `Lykhoyda/rn-dev-agent`, and offer to run it for them if they give the checkout path; it needs Rust (https://rustup.rs) as well and prints the binary path to use:
+2. Otherwise run `bash <plugin root>/scripts/ensure-qaren.sh --install`. Use its printed binary path and pass the user any stderr notice about PATH or an existing command. The [CLI installation guide](https://github.com/Lykhoyda/QaReN/blob/develop/packages/qaren-cli/README.md#plugin-runtime-installation) owns the verification, PATH-linking and fallback contract.
+3. If it refuses because this plugin version carries no qaren tarball, QaReN is not released yet. If `command -v qaren` resolves, through links, to a binary under `~/.qaren/runtime/` and `qaren --version` prints `qaren <version>` with the `version` in `<plugin root>/.claude-plugin/plugin.json`, it is a source install made through the same verified installer; use that resolved path. Otherwise tell the user the one line to run from a `develop` checkout of `Lykhoyda/QaReN`, and offer to run it for them if they give the checkout path; it needs Rust (https://rustup.rs) as well and prints the binary path to use:
 
    ```sh
    bash scripts/install-qaren-from-source.sh
@@ -26,7 +26,7 @@ The plugin root is two directories above this skill's base directory. Resolve on
 Run `<qaren path> doctor` before setup continues. Stop on a `FAIL` and give its fix.
 Present `host-memory`, `host-devices`, `simulator-service` and `host-load` warnings
 with their next steps before the smoke run; use the conservative lane recommendation
-in the [host budget](https://github.com/Lykhoyda/rn-dev-agent/blob/develop/packages/qaren-cli/README.md#host-budget).
+in the [host budget](https://github.com/Lykhoyda/QaReN/blob/develop/packages/qaren-cli/README.md#host-budget).
 If memory or CPU is constrained, recommend fewer concurrent lanes and closing
 unneeded apps. Ask the owner to shut down an affected borrowed device; restarting
 CoreSimulatorService stops every simulator on the machine. Setup never performs
@@ -48,14 +48,14 @@ appId: <bundle identifier>
 devClientScheme: exp+<slug>
 ```
 
-The keys and their validation are owned by the CLI's [`config.rs`](https://github.com/Lykhoyda/rn-dev-agent/blob/develop/packages/qaren-cli/src/config.rs).
+The keys and their validation are owned by the CLI's [`config.rs`](https://github.com/Lykhoyda/QaReN/blob/develop/packages/qaren-cli/src/config.rs).
 
 If the operator supplies custom registry credential environment names, optionally
 add `registryAuthEnv: [PRIVATE_REGISTRY_TOKEN]` using names only, never values.
 Keep the default configuration above minimal; obtain names from the operator
 rather than reading auth stores to detect them. The list exposes inherited
 variables to install/prebuild descendants and withholds their output; follow the
-[CLI registry-auth policy](https://github.com/Lykhoyda/rn-dev-agent/blob/develop/packages/qaren-cli/README.md#check-a-plan), including reserved names and the prewarm-fetch exclusion.
+[CLI registry-auth policy](https://github.com/Lykhoyda/QaReN/blob/develop/packages/qaren-cli/README.md#check-a-plan), including reserved names and the prewarm-fetch exclusion.
 
 ## 4. Device
 
@@ -124,8 +124,8 @@ If the launch path read in step 5 has no auth gate, setup is complete; use `usin
 ✓ "<signed-in text>"
 ```
 
-For input echoes and optional echo declarations, follow the [runtime-input hash protections](https://github.com/Lykhoyda/rn-dev-agent/blob/develop/packages/qaren-cli/README.md#runtime-inputs). Ask the user to export `QAREN_INPUT_USERNAME` and `QAREN_INPUT_PASSWORD` from their password manager in their own shell; keep values out of plans, messages and tool output. Ensure the check inherits that shell's inputs. Use the same app configuration and device flags as step 6; for a label-only app, follow the README's [runtime-input prerequisites](https://github.com/Lykhoyda/rn-dev-agent/blob/develop/packages/qaren-cli/README.md#runtime-inputs).
+For input echoes and optional echo declarations, follow the [runtime-input hash protections](https://github.com/Lykhoyda/QaReN/blob/develop/packages/qaren-cli/README.md#runtime-inputs). Ask the user to export `QAREN_INPUT_USERNAME` and `QAREN_INPUT_PASSWORD` from their password manager in their own shell; keep values out of plans, messages and tool output. Ensure the check inherits that shell's inputs. Use the same app configuration and device flags as step 6; for a label-only app, follow the README's [runtime-input prerequisites](https://github.com/Lykhoyda/QaReN/blob/develop/packages/qaren-cli/README.md#runtime-inputs).
 
 Run this plan once using step 6's run-and-wait procedure. Read the receipt's `hints` and stderr: when `LOGIN_BLOCK_CANDIDATE` names a likely login block and prints `loginBlock` and `loginMarker`, ask the user to confirm that block signs in, then show those lines and paste them into `.qaren/config.yaml` only with the user's consent, as in step 3. When `LOGIN_MARKER_MISMATCH` appears, confirm with the user that the configured marker is visible only on the sign-in screen, or switch to the printed first selector. When `LOGIN_BLOCK_NO_INPUTS` appears, re-save the block as it says. When `LOGIN_BLOCK_RUN_ONLY` appears, the block exists only in that PR run's evidence: save it with `qaren check` in the main copy before configuring login. If `LOGIN_BLOCK_SIGNS_OUT` appears, split out the sign-out steps and re-save the sign-in block before configuring it. Follow `CORPUS_NOT_SHARED` when working in a linked worktree. If no block was saved, read `blocks_not_saved` and resolve its reason; do not invent a marker or login configuration.
 
-Confirm `<qaren path> doctor` reports the saved login for the selected platform. Every later run needs the configured login block's `QAREN_INPUT_<NAME>` variables. The [worked example](https://github.com/Lykhoyda/rn-dev-agent/blob/develop/packages/qaren-cli/README.md#reusable-sign-in-example) covers setup, replay and worktrees. QaReN is now set up; use `using-qaren` for a feature plan.
+Confirm `<qaren path> doctor` reports the saved login for the selected platform. Every later run needs the configured login block's `QAREN_INPUT_<NAME>` variables. The [worked example](https://github.com/Lykhoyda/QaReN/blob/develop/packages/qaren-cli/README.md#reusable-sign-in-example) covers setup, replay and worktrees. QaReN is now set up; use `using-qaren` for a feature plan.

@@ -3,8 +3,8 @@
 QA a React Native app on a simulator from a Markdown plan, and read back PASS or FAIL
 with evidence.
 
-[![CI](https://github.com/Lykhoyda/rn-dev-agent/actions/workflows/ci.yml/badge.svg)](https://github.com/Lykhoyda/rn-dev-agent/actions/workflows/ci.yml)
-[![Docs](https://img.shields.io/badge/docs-lykhoyda.github.io%2Frn--dev--agent-blue)](https://lykhoyda.github.io/rn-dev-agent/)
+[![CI](https://github.com/Lykhoyda/QaReN/actions/workflows/ci.yml/badge.svg)](https://github.com/Lykhoyda/QaReN/actions/workflows/ci.yml)
+[![Docs](https://img.shields.io/badge/docs-lykhoyda.github.io%2FQaReN-blue)](https://lykhoyda.github.io/QaReN/)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
 
 QaReN is the `qaren` command-line tool and a plugin for Claude Code and Codex.
@@ -39,10 +39,10 @@ Install the plugin:
 
 ```sh
 # Claude Code
-claude plugin marketplace add Lykhoyda/rn-dev-agent
+claude plugin marketplace add Lykhoyda/QaReN
 claude plugin install qaren@qaren
 # Codex
-codex plugin marketplace add Lykhoyda/rn-dev-agent
+codex plugin marketplace add Lykhoyda/QaReN
 codex plugin add qaren@qaren
 ```
 
@@ -137,7 +137,7 @@ The 1.x source stays on the
 
 See the [CLI build instructions](packages/qaren-cli/README.md#build) and the
 [repository guide](AGENTS.md) for package ownership, validation commands and changesets.
-Report bugs in [GitHub Issues](https://github.com/Lykhoyda/rn-dev-agent/issues) or with
+Report bugs in [GitHub Issues](https://github.com/Lykhoyda/QaReN/issues) or with
 `/qaren:feedback`; see [SECURITY.md](SECURITY.md) for vulnerabilities.
 
 QaReN is released under the [MIT License](LICENSE).

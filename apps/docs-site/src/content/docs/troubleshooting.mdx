@@ -27,16 +27,16 @@ Refusals exit `4` and mean the run could not start or could not decide; failures
 
 For `FRESH_INSTALL_ADMISSION_UNKNOWN` or a strict-admission `DEVICE_BUSY`, read the
 probe diagnostics in `failure.detail`; see the authoritative
-[fresh-install contract](https://github.com/Lykhoyda/rn-dev-agent/blob/develop/packages/qaren-cli/README.md#fresh-install)
-and [iOS admission diagnostics](https://github.com/Lykhoyda/rn-dev-agent/blob/develop/packages/qaren-cli/README.md#ios-admission-and-cleanup).
+[fresh-install contract](https://github.com/Lykhoyda/QaReN/blob/develop/packages/qaren-cli/README.md#fresh-install)
+and [iOS admission diagnostics](https://github.com/Lykhoyda/QaReN/blob/develop/packages/qaren-cli/README.md#ios-admission-and-cleanup).
 
 | Code                 | What happened                                                       | What to do                                                                          |
 | -------------------- | ------------------------------------------------------------------- | ----------------------------------------------------------------------------------- |
 | `DEVICE_UNAVAILABLE` | No booted simulator, more than one, or the named one is not booted  | Boot the simulator to walk on, or shut down the ones you are not testing on        |
 | `DEVICE_UNAVAILABLE` | On Android: no adb server answering, a version mismatch, or not exactly one booted emulator | Start the emulator, or pass `--device emulator-NNNN`                 |
 | `DEVICE_BUSY`        | Another run holds the device's lease                                | Wait for that run to finish, or clean it up with `qaren cleanup <its-run-id>`; a live holder is never stolen |
-| `ARTIFACT_INSTALL_FAILED` | The cached dev-client verification or installation failed | Follow `next_action`; see the [cached-install recovery contract](https://github.com/Lykhoyda/rn-dev-agent/blob/develop/packages/qaren-cli/README.md#check-a-plan) |
-| `APP_EXITED_AT_LAUNCH` | The launched app exited before it became ready; on iOS the detail cites the simulator crash report | Follow `next_action`, which for a missing app-embedded framework is a CocoaPods reinstall; see the [launch readiness contract](https://github.com/Lykhoyda/rn-dev-agent/blob/develop/packages/qaren-cli/README.md#ios-simulator-lifecycle) |
+| `ARTIFACT_INSTALL_FAILED` | The cached dev-client verification or installation failed | Follow `next_action`; see the [cached-install recovery contract](https://github.com/Lykhoyda/QaReN/blob/develop/packages/qaren-cli/README.md#check-a-plan) |
+| `APP_EXITED_AT_LAUNCH` | The launched app exited before it became ready; on iOS the detail cites the simulator crash report | Follow `next_action`, which for a missing app-embedded framework is a CocoaPods reinstall; see the [launch readiness contract](https://github.com/Lykhoyda/QaReN/blob/develop/packages/qaren-cli/README.md#ios-simulator-lifecycle) |
 
 ## During the walk
 
@@ -44,7 +44,7 @@ and [iOS admission diagnostics](https://github.com/Lykhoyda/rn-dev-agent/blob/de
 | ------------------------ | ---------------------------------------------------------------- | ------------------------------------------------------- |
 | `PLAN_STEP_FAILED`       | A step or check failed; the detail names the line and what was seen | Read the report, fix the app or the plan, then re-run |
 | `CORE_REFUSED`           | The screen layer refused; the detail starts with its own code    | Resolve that refusal, then re-run                       |
-| `BLOCK_START_MISSING`    | The block's declared start was absent; this is a typed refusal with exit code 4 | Follow the [saved-block contract](https://github.com/Lykhoyda/rn-dev-agent/blob/develop/packages/qaren-cli/README.md#saved-blocks) |
+| `BLOCK_START_MISSING`    | The block's declared start was absent; this is a typed refusal with exit code 4 | Follow the [saved-block contract](https://github.com/Lykhoyda/QaReN/blob/develop/packages/qaren-cli/README.md#saved-blocks) |
 | `WALK_DEADLINE_EXCEEDED` | The walk ran out of time                                         | Raise `QAREN_WALK_SECONDS`, or split the plan           |
 | `CANDIDATE_DRIFTED`      | The working tree changed during the run                          | Re-run against an unchanged checkout                    |
 
@@ -60,7 +60,7 @@ The screen layer's own codes appear at the start of `failure.detail` or in the r
 | `SCREEN_EVIDENCE_INCOMPLETE` | The captured screen was not complete enough to act on safely                  |
 | `APP_PROCESS_CHANGED`        | On iOS, the app crashed or restarted between captures                         |
 | `CDP_NOT_CONNECTED`          | The app's JavaScript runtime did not attach in time, or a target wait made no progress past [`deadlines.attach_seconds`](../configuration/#deadlines); the detail names the stalled boundary, app liveness, bundle request and host load |
-| `REACT_COVERAGE_LOST`        | The JS/React connection remained lost at the end of an otherwise passing walk; the walk saves no new blocks. See the [React coverage contract](https://github.com/Lykhoyda/rn-dev-agent/blob/develop/packages/qaren-cli/README.md#check-a-plan) |
+| `REACT_COVERAGE_LOST`        | The JS/React connection remained lost at the end of an otherwise passing walk; the walk saves no new blocks. See the [React coverage contract](https://github.com/Lykhoyda/QaReN/blob/develop/packages/qaren-cli/README.md#check-a-plan) |
 
 ## Teardown, cleanup and publish
 
@@ -84,10 +84,10 @@ qaren cleanup <run-id> --json
 
 It finishes the teardown from the run's own records and releases the lease once every resource
 is accounted for. Do not delete locks in the
-[configured namespace](https://github.com/Lykhoyda/rn-dev-agent/blob/develop/packages/qaren-cli/README.md#ios-admission-and-cleanup)
+[configured namespace](https://github.com/Lykhoyda/QaReN/blob/develop/packages/qaren-cli/README.md#ios-admission-and-cleanup)
 to get around it.
 
 ## Why were my screenshots withheld?
 
-See the authoritative [withheld media guide](https://github.com/Lykhoyda/rn-dev-agent/blob/develop/packages/qaren-cli/README.md#why-were-my-screenshots-withheld)
+See the authoritative [withheld media guide](https://github.com/Lykhoyda/QaReN/blob/develop/packages/qaren-cli/README.md#why-were-my-screenshots-withheld)
 for reason codes, remedies, diagnostic locations and how screenshots and video retain their first cause.

@@ -83,8 +83,8 @@ test('verifyChecksums: flags mismatch and missing', () => {
 
 test('releaseAssetUrl: builds a v-prefixed release download URL', () => {
   assert.equal(
-    releaseAssetUrl('Lykhoyda/rn-dev-agent', '2.0.0-beta.3', 'rn-fast-runner-2.0.0-beta.3-sim.zip'),
-    'https://github.com/Lykhoyda/rn-dev-agent/releases/download/v2.0.0-beta.3/rn-fast-runner-2.0.0-beta.3-sim.zip',
+    releaseAssetUrl('Lykhoyda/QaReN', '2.0.0-beta.3', 'rn-fast-runner-2.0.0-beta.3-sim.zip'),
+    'https://github.com/Lykhoyda/QaReN/releases/download/v2.0.0-beta.3/rn-fast-runner-2.0.0-beta.3-sim.zip',
   );
 });
 
@@ -111,7 +111,7 @@ test('artifactProvenanceToState: cache/downloaded -> prebuilt, build-local -> lo
 });
 
 test('RUNNER_REPO points at the plugin repo', () => {
-  assert.equal(RUNNER_REPO, 'Lykhoyda/rn-dev-agent');
+  assert.equal(RUNNER_REPO, 'Lykhoyda/QaReN');
 });
 
 // --- Fake ArtifactDeps for orchestrator tests ---
@@ -361,7 +361,7 @@ test('iOS: download ok -> downloaded, cached DD, fetch+unzip called, size-cap pa
   assert.equal(calls.fetch.length, 1);
   assert.equal(
     calls.fetch[0].url,
-    'https://github.com/Lykhoyda/rn-dev-agent/releases/download/v2.0.0-beta.3/rn-fast-runner-2.0.0-beta.3-sim.zip',
+    'https://github.com/Lykhoyda/QaReN/releases/download/v2.0.0-beta.3/rn-fast-runner-2.0.0-beta.3-sim.zip',
   );
   assert.ok(calls.fetch[0].opts.maxBytes >= 4_200_000);
   assert.ok(calls.fetch[0].opts.timeoutMs > 0);
