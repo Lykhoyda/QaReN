@@ -131,7 +131,7 @@ layer: it does not read 1.x configuration, caches or learned actions. Remove 1.x
 then install 2.0 as a new product; follow
 [Upgrading from rn-dev-agent 1.x](packages/qaren-cli/README.md#upgrading-from-rn-dev-agent-1x-1014-to-20).
 The 1.x source stays on the
-[`rn-dev-agent-1.0`](https://github.com/Lykhoyda/rn-dev-agent/tree/rn-dev-agent-1.0) branch.
+[`rn-dev-agent-1.0`](https://github.com/Lykhoyda/QaReN/tree/rn-dev-agent-1.0) branch.
 
 ## Development
 

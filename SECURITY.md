@@ -8,7 +8,7 @@ Run it only against development apps you control, without real user data. It bui
 
 **In scope:** vulnerabilities in the CLI, host plugin, `qaren-core`, packaged native runners, and local Observe UI as shipped from this repo.
 
-**Out of scope:** a cloud backend (this repo has none) and operator-driven use of these local tools against an app the operator chose. For the legacy MCP plugin's operator limits, see [1.x security guidance](https://github.com/Lykhoyda/rn-dev-agent/blob/rn-dev-agent-1.0/README.md#security).
+**Out of scope:** a cloud backend (this repo has none) and operator-driven use of these local tools against an app the operator chose. For the legacy MCP plugin's operator limits, see [1.x security guidance](https://github.com/Lykhoyda/QaReN/blob/rn-dev-agent-1.0/README.md#security).
 
 ## Support
 
