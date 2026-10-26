@@ -4,7 +4,7 @@
 borrowed iOS simulator or Android emulator, prepares the app and Metro,
 starts the TypeScript screen child, walks a Markdown plan, writes evidence,
 and tears down owned resources.
-QaReN is still in development; this checkout is not the published 1.x MCP plugin.
+For the product introduction and installation, see the [root README](../../README.md).
 The scenario-based preparation verbs remain available for explicit iOS,
 NUC Android and USB Android setup experiments.
 
@@ -279,7 +279,7 @@ It never edits shell rc files. Link problems are stderr notices and do not fail
 installation; stdout remains exactly the installed binary path, which you can
 use directly if linking fails.
 This development checkout's manifest does not imply that a QaReN release asset
-has been published; use the [source installation](../../README.md#set-up-qaren)
+has been published; use the [source installation](../../README.md#install-from-source)
 while that asset is unavailable.
 
 ## Upgrading from rn-dev-agent 1.x (1.0.14) to 2.0
