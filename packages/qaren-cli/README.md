@@ -962,30 +962,37 @@ covered by the [fallback tests](../qaren-core/test/unit/qa/keyboard-fallback.tes
 
 #### Fill ladder
 
-Every dispatched Fill records the rung it used as `method` on its ledger row, and the
-report shows it as `via <method>`:
+Every dispatched Fill records the rung it used as `method` on its ledger row, including
+streamed rows, interrupted-run reconstruction and capture-failure rows. The report
+shows it as `via <method>`:
 
 1. `keyboard`: typed through the keyboard (native element typing, or focused typing into an
    empty field).
 2. `clear-type`: the field held text, so it was cleared through the input's own change
    handler and then typed through the keyboard.
-3. `set-handler`: the whole value was set through the input's change handler, then verified.
+3. `set-handler`: entry through the input's change handler was attempted, followed by exact verification if set.
 
 When rung 1 or 2 refuses with `TEXT_ENTRY_UNVERIFIED` and a mutation of `none` or
 `observed` (never `possible`), iOS steps once to rung 3 inside a 2-minute budget from the
 step's start. The step needs the input's testID, a fresh capture that has not lost the
 target (a natively visible target must still be on screen; a hidden input must still
 resolve by its testID in the app, or the step sets nothing), and a controlled non-secure
-input; secure fields never reach it. Rung 3 uses the
+editable input; secure and disabled fields never reach it. Rung 3 uses the
 same exact verification: a private or readable mismatch after it fails the step without a
-further attempt, and a rung 3 that set nothing leaves the original refusal standing. A
-value-free `fill-ladder` line in the run log records each step.
+further handler attempt. A rung 3 refused without mutation leaves the original typing
+result and method standing, with the value-free `FILL_HANDLER_REFUSED` qualifier.
+That handler attempt is not repeated by an ordinary step retry; the allowance resets
+only for a new Fill item. A value-free `fill-ladder` line in the run log records each
+handler result.
 
-Rungs 1 and 2 count as proof that the value was typed as a user would. A rung-3 pass counts
+Verified rungs 1 and 2 count as proof that the value was typed as a user would. A verified rung-3 pass counts
 only when the plan labels the step `(any method)`, for example
 `Fill "email" with input EMAIL (any method)`; otherwise the row passes with reason
 `FILL_SET_BY_HANDLER`. The label is read from the plan line and is not stored in saved
-blocks. Android has no rung 3 yet.
+blocks. An unreadable handler result never establishes the final value: focused-input
+fallback rows describe it as set through the change handler with `UNVERIFIED_FILL`,
+retaining `FILL_SET_BY_HANDLER` unless labelled `(any method)`. The label does not make
+an unverified result proof. Android has no rung 3 yet.
 
 ### Plan checks and screen evidence
 

@@ -1611,7 +1611,7 @@ for (const disabledProps of [
         assert.deepEqual(await write(), { [key]: true });
         field.memoizedProps = { ...props, ...disabledProps };
         assert.deepEqual(await write(), { [key]: false, reason: 'disabled' });
-        assert.deepEqual(calls, [
+        assert.deepEqual(JSON.parse(JSON.stringify(calls)), [
           handler === 'onChangeText' ? value : { nativeEvent: { text: value } },
         ]);
         field.memoizedProps = props;

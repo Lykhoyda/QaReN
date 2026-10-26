@@ -58,14 +58,10 @@ copy; see the [saved-block contract](https://github.com/Lykhoyda/rn-dev-agent/bl
 | Dialog   | accept, allow, dismiss, deny, decline, cancel with dialog, prompt, alert or permission | `Accept the permission dialog` |
 | Echo     | expect input NAME on screen, expect input NAME on this screen          | `Expect input USERNAME on screen`   |
 
-A fill needs its text in quotes, or a [runtime input](#runtime-inputs). On iOS, an eligible fill whose typing cannot be
-verified steps once to setting the value through the input's change handler: a non-secure input with a testID, a
-`TEXT_ENTRY_UNVERIFIED` refusal whose mutation is `none` or `observed` (an uncertain outcome never steps up), the
-target still present on a fresh capture or, for a hidden input, still bound by its testID in the app, inside a 2-minute
-step budget; see the CLI README's Fill ladder. When that step
-verifies the whole value, an unlabelled fill passes with a value-free `FILL_SET_BY_HANDLER` qualifier, and ending the
-fill line with `(any method)`, for example `Fill "email" with input EMAIL (any method)`, makes it count as the step's
-proof. A refused or mismatched step fails the fill. A dialog step needs exactly one unconditional
+A fill needs its text in quotes, or a [runtime input](#runtime-inputs). For iOS entry methods, handler recovery,
+verification and the `(any method)` label, see the authoritative
+[Fill ladder contract](https://github.com/Lykhoyda/rn-dev-agent/blob/develop/packages/qaren-cli/README.md#fill-ladder).
+A dialog step needs exactly one unconditional
 action: `Accept the dialog if it appears` and `Do not dismiss the alert` refuse.
 
 ## Runtime inputs
