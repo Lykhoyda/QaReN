@@ -21,6 +21,8 @@ import { renderReason } from '../../../dist/qa/untrusted.js';
 import type { WalkSequence } from '../../../dist/qa/walker.js';
 import type { ActResult, WalkerDeps } from '../../../dist/qa/walker.js';
 import type { LedgerRow } from '../../../dist/qa/ledger.js';
+import { ledgerWithoutResult } from '../../../dist/qa/ledger.js';
+import { NativeCaptureError } from '../../../dist/qa/capture.js';
 
 function screen(labels: string[], extra: Partial<Screen> = {}): Screen {
   return {
@@ -1278,6 +1280,38 @@ test('a native fill refusal steps once to the change handler for an input with a
   assert.equal(outcome.rows[0].method, 'set-handler');
   assert.match(outcome.rows[0].reason ?? '', /^FILL_SET_BY_HANDLER: /);
 });
+
+for (const method of ['keyboard', 'clear-type', 'set-handler'] as const) {
+  for (const captureFails of [false, true]) {
+    test(`${method} survives streamed reconstruction after ${captureFails ? 'failed' : 'successful'} capture`, async () => {
+      const field = fixtureElement('@email', 'Email', { kind: 'input', testID: 'email' });
+      const f = fake([fixtureScreen([field])]);
+      let dispatched = false;
+      f.deps.fill = async () => {
+        dispatched = true;
+        return { ok: true, proven: method !== 'set-handler', evidence: 'unavailable', method };
+      };
+      const capture = f.deps.captureScreen;
+      f.deps.captureScreen = async (...args) => {
+        if (dispatched && captureFails) throw new NativeCaptureError();
+        return capture(...args);
+      };
+      const outcome = await walkBlock(block('1. Fill "email" with "canary-value"\n'), f.deps);
+      assert.equal(dispatched, true);
+      assert.equal(outcome.rows[0].method, method);
+      assert.equal(outcome.block.outcome, captureFails ? 'fail' : 'pass');
+      if (method === 'set-handler' && !captureFails) {
+        const reason = renderReason(outcome.rows[0].reason ?? '', (text) => text);
+        assert.match(reason, /^UNVERIFIED_FILL: set through the change handler/);
+        assert.match(reason, /FILL_SET_BY_HANDLER/);
+      }
+      const rebuilt = ledgerWithoutResult(JSON.parse(JSON.stringify(f.rows)), 'run interrupted');
+      assert.equal(rebuilt.steps[0].method, method);
+      assert.equal(rebuilt.verdict, 'FAIL');
+      assert.doesNotMatch(JSON.stringify(rebuilt), /canary-value/);
+    });
+  }
+}
 
 for (const retrySucceeds of [false, true]) {
   test(`a refused handler is tried once per Fill item when native retry ${retrySucceeds ? 'succeeds' : 'refuses'}`, async () => {

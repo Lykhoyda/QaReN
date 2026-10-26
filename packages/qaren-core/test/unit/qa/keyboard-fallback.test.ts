@@ -3053,6 +3053,31 @@ test('a step labelled (any method) counts a change-handler pass as proof', async
   assert.equal(outcome.rows[0].reason, undefined);
 });
 
+for (const focused of [false, true]) {
+  for (const anyMethod of [false, true]) {
+    test(`unreadable handler entry stays unverified through ${focused ? 'proven focus' : 'tap fallback'} with any method ${anyMethod}`, async () => {
+      const fake = app({
+        type: MISMATCH,
+        ...(focused ? { initial: [submit], initialKeyboard: true, reactFocused: true } : {}),
+      });
+      const calls = ladder(fake, { ok: true, proven: false, evidence: 'unavailable' });
+      const target = focused ? 'qa-otp-code' : 'qa-hidden-email';
+      const markdown = `1. Fill "${target}" with "${EMAIL}"${anyMethod ? ' (any method)' : ''}\n`;
+      const outcome = await walkBlock(blocks(markdown)[0], fake.deps);
+      assert.equal(outcome.block.outcome, 'pass', JSON.stringify(outcome.failure));
+      assert.equal(calls.length, 1);
+      const row = outcome.rows[0];
+      assert.equal(row.method, 'set-handler');
+      assert.equal(fake.rows[0].method, 'set-handler');
+      const reason = renderReason(row.reason ?? '', (text) => text);
+      assert.match(reason, /^UNVERIFIED_FILL: set through the change handler/);
+      assert.doesNotMatch(reason, /typed with the keyboard/);
+      assert.equal(reason.includes('FILL_SET_BY_HANDLER'), !anyMethod);
+      assert.equal(JSON.stringify(outcome).includes(EMAIL), false);
+    });
+  }
+}
+
 test('keyboard and clear-then-type rows record their rung and count as proof', async () => {
   for (const method of ['keyboard', 'clear-type'] as const) {
     const fake = app({ type: { ok: true, proven: true, method } });

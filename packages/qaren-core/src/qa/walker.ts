@@ -1003,6 +1003,7 @@ async function walkBlockScoped(
     const reactCoverage = reactGaps.get(row.line);
     row = {
       ...row,
+      ...(fillMethod ? { method: fillMethod } : {}),
       operationId: operationFor(row.line),
       ...(reactCoverage ? { reactCoverage } : {}),
       ...(reactCoverage || reactConnections.length ? { reactConnections } : {}),
@@ -1046,7 +1047,6 @@ async function walkBlockScoped(
     kind: item.kind === 'check' ? 'check' : 'step',
     resolvedBy,
     t: deps.now(),
-    ...(item.kind === 'fill' && fillMethod ? { method: fillMethod } : {}),
   });
   const failed = (
     item: Item,
@@ -1344,6 +1344,14 @@ async function walkBlockScoped(
     fillMethod === 'set-handler' && !item.anyMethod
       ? "FILL_SET_BY_HANDLER: the value was set through the input's change handler, not typed; label the step (any method) to count it as proof"
       : undefined;
+  const handlerReason = (item: Item & { kind: 'fill' }, entry: ActResult): string | undefined => {
+    if (fillMethod !== 'set-handler') return undefined;
+    const qualifier = methodQualifier(item);
+    if (entry.proven) return qualifier;
+    const unverified =
+      'UNVERIFIED_FILL: set through the change handler; its final value could not be validated';
+    return qualifier ? `${unverified}; ${qualifier}` : unverified;
+  };
   // Best effort: the field is not an observable native input, so only the tap and the keyboard prove anything.
   const keyboardFallback = async (
     item: Item & { kind: 'fill' },
@@ -1501,25 +1509,21 @@ async function walkBlockScoped(
         undefined,
       );
     await capture(item);
-    const qualifier = methodQualifier(item);
+    const reason =
+      handlerReason(item, entry) ??
+      (entry.proven
+        ? undefined
+        : (proofMode
+            ? focusedReason(quoted)
+            : `UNVERIFIED_FILL: typed with the keyboard after tapping "${quoted}"; the field is not an observable native input, so its final value was not validated`) +
+          keptNote(entry));
     emit({
       ...base(item, attempt),
       ref: again.element.ref,
       ...stored({ id: again.oracleTestID }),
       outcome: 'pass',
       ...keptCounts(entry),
-      ...(entry.proven
-        ? qualifier
-          ? { reason: redact(qualifier) }
-          : {}
-        : {
-            reason: redact(
-              (proofMode
-                ? focusedReason(quoted)
-                : `UNVERIFIED_FILL: typed with the keyboard after tapping "${quoted}"; the field is not an observable native input, so its final value was not validated`) +
-                keptNote(entry),
-            ),
-          }),
+      ...(reason ? { reason: redact(reason) } : {}),
     });
     return 'typed';
   };
@@ -1579,17 +1583,15 @@ async function walkBlockScoped(
         undefined,
       );
     await capture(item);
-    const qualifier = methodQualifier(item);
+    const reason =
+      handlerReason(item, entry) ??
+      (entry.proven ? undefined : focusedReason(quoted) + keptNote(entry));
     emit({
       ...base(item, attempt),
       ...stored({ id: quoted }),
       outcome: 'pass',
       ...keptCounts(entry),
-      ...(entry.proven
-        ? qualifier
-          ? { reason: redact(qualifier) }
-          : {}
-        : { reason: redact(focusedReason(quoted) + keptNote(entry)) }),
+      ...(reason ? { reason: redact(reason) } : {}),
     });
     return 'typed';
   };
@@ -2539,6 +2541,7 @@ async function walkBlockScoped(
                         ? deps.back(context)
                         : deps.dialog(item.action, context),
               );
+              if (item.kind === 'fill') fillMethod = act.method ?? 'keyboard';
               if (!act.ok && act.ambiguous) {
                 outcome = failed(
                   item,
@@ -2664,7 +2667,6 @@ async function walkBlockScoped(
           diagnostic(item, after, 'decision', 'ACCEPTED');
           metric('readback', after);
           if (item.kind === 'fill') {
-            fillMethod = act!.method ?? 'keyboard';
             const target = element;
             act =
               (await stepUpFill(
@@ -2691,6 +2693,7 @@ async function walkBlockScoped(
               ? alertPressEffect(before.screen, after.screen)
               : undefined;
           const alertOnly = alertEffect !== undefined && alertEffect !== 'changed';
+          const fillReason = item.kind === 'fill' ? handlerReason(item, act!) : undefined;
           if (
             !noMutationRefusal &&
             !dialogRefused &&
@@ -2711,23 +2714,23 @@ async function walkBlockScoped(
               ),
               outcome: 'pass',
               ...(act!.dialog ? { dialog: act!.dialog } : {}),
-              ...(unverified && recased
-                ? {
-                    reason: redact(
-                      'UNVERIFIED_FILL: the field changed only the letter case, so the fill was not verified',
-                    ),
-                    ...(!currentInputs()?.hasInputs
-                      ? { caseNormalized: { chars: [...fillText(item)].length } }
-                      : {}),
-                  }
-                : unverified
+              ...(fillReason
+                ? { reason: redact(fillReason) }
+                : unverified && recased
                   ? {
                       reason: redact(
-                        `UNVERIFIED_FILL: the field's final value ${act!.evidence === 'masked' ? 'reads back masked' : 'could not be read back'}, so the fill was not verified`,
+                        'UNVERIFIED_FILL: the field changed only the letter case, so the fill was not verified',
                       ),
+                      ...(!currentInputs()?.hasInputs
+                        ? { caseNormalized: { chars: [...fillText(item)].length } }
+                        : {}),
                     }
-                  : item.kind === 'fill' && methodQualifier(item)
-                    ? { reason: redact(methodQualifier(item)!) }
+                  : unverified
+                    ? {
+                        reason: redact(
+                          `UNVERIFIED_FILL: the field's final value ${act!.evidence === 'masked' ? 'reads back masked' : 'could not be read back'}, so the fill was not verified`,
+                        ),
+                      }
                     : alertOnly
                       ? {
                           unverifiedPress: true,
@@ -2965,6 +2968,7 @@ function valueFree(row: Omit<LedgerRow, 'reason'>): LedgerRow {
     t,
     outcome,
     ...(row.unverifiedPress ? { unverifiedPress: true } : {}),
+    ...(row.method ? { method: row.method } : {}),
     ...(row.screenshotWithheld ? { screenshotWithheld: row.screenshotWithheld } : {}),
     ...(screenshot ? { screenshot } : {}),
     ...(timing ? { timing } : {}),
