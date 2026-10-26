@@ -891,14 +891,16 @@ test('the relaunch opens the run’s own Metro, never a launcher-remembered serv
   assert.doesNotMatch(argv.join(' '), /8791/, 'a stale recent entry never reaches the relaunch');
 });
 
-test('a failing liveness probe relaunches and records the failure without its detail', async () => {
+test('a failed liveness probe is reset after a relaunch exhausts the budget', async () => {
   let remaining = 90_000;
+  let probes = 0;
   const { stop, steps } = harness({
     remainingMs: () => remaining,
     attach: async () => {
       throw new TargetReadinessTimeoutError('no target');
     },
     appAlive: async () => {
+      probes++;
       throw new Error('launchctl PRIVATE-udid failed');
     },
     relaunch: async () => {
@@ -915,8 +917,9 @@ test('a failing liveness probe relaunches and records the failure without its de
     inner: 'target_readiness_timeout',
     relaunches: 1,
     relaunchFailed: false,
-    liveness: 'probe_failed',
+    liveness: 'not_probed',
   });
+  assert.equal(probes, 1, 'the exhausted budget prevents probing the relaunched app');
   assert.doesNotMatch(JSON.stringify(error.meta) + error.message, /PRIVATE/);
 });
 
