@@ -896,22 +896,32 @@ no secure or disabled element carries the quoted
 testID and React reports that exact input focused. The guard and proof use the
 quoted ID unchanged, including a literal `-pressable` suffix. Only an
 observed wrapper in the tap path establishes a wrapper-to-base identity mapping.
-The final focus reads run after runner readiness and health checks, before clearing
-and again before inserting text. Every fallback path, including a keyboard-down
+Focus is checked before clearing and, after runner readiness and health checks,
+again before inserting text. Every fallback path, including a keyboard-down
 transition, requires positive proof that the intended input is focused before
 either mutation. A false, unbound, unreadable or failed read before clearing returns
 `NO_TEXT_INPUT_TARGET` with no mutation. An unknown keyboard state still refuses.
 Each walker focus decision logs one value-free `fallback-focus` line.
 
 For non-secure focused fields, QaReN checks the current content before typing.
-An empty field receives text directly, with no selection or Delete. A nonempty
-controlled field is cleared by moving to the end and deleting its measured length
-(at most 256 keys), after confirming that its content has not changed. The host
-requires two consecutive empty observations before sending the first character,
-and re-proves focus before both clearing and insertion. A prefill exceeding the
-bound or an unavailable initial content state refuses with `TEXT_ENTRY_UNVERIFIED`
-and no mutation. If clearing does not settle, focus moves, or the step budget
-expires, no replacement text is sent; clearing may already have mutated the field.
+An empty field receives text directly. A nonempty controlled field (at most 256
+characters), including a private runtime input, is cleared through the input's own
+change handler inside the app. The clear checks that the input is still focused
+and controlled and returns no value. The host requires two consecutive empty
+observations before sending the first character, and re-proves focus before both
+clearing and insertion. A prefill
+exceeding the bound, an unavailable initial content state, or a field the clear
+refuses to reach (unfocused or uncontrolled) refuses with `TEXT_ENTRY_UNVERIFIED`
+and no mutation; a clear with any other outcome reports a possible mutation. If the cleared
+field is not proven empty, focus moves, or the step budget expires, no replacement
+text is sent and the refusal reports a possible mutation.
+
+A non-secure replacement containing more than one grapheme is typed in two bursts,
+including when the field starts empty. As with element typing, QaReN types the
+first grapheme alone to avoid keys being dropped while the app renders its first
+change, waits 500 ms and requires two consecutive observations of the same nonempty
+content length with focus kept, then types the rest. If the first burst never
+settles, the remaining text is not sent and the refusal reports a possible mutation.
 
 After typing, an exact controlled non-secure value verifies the fill. Readable
 mismatches, including dropped characters and app formatting such as `123456`
@@ -926,7 +936,7 @@ leave the process, never the value. Literal Fill values keep ordinary readback e
 inputs exist. Private character counts are omitted from the
 run's public output.
 
-Secure fields retain direct typing: they receive no selection or Delete, their
+Secure fields retain direct typing: they are never cleared, their
 values are never read, and the result stays unverified. **Known limit:** a prefilled
 secure field is not replaced. Use the app's own reset or recovery path to reach an
 empty secure field before filling it; automatic secure clearing needs a future
@@ -935,10 +945,8 @@ must advertise `FILL_EVIDENCE_V1` on both iOS and Android, and `FOCUSED_REPLACE_
 on iOS. Session startup routes a missing capability through the bounded
 source-rebuild path instead of
 accepting the released artifact; see [prebuilt runner selection](../../README.md#prebuilt-runners)
-for persistent rejection of stale iOS prebuilts. An active iOS runner missing either
-capability refuses focused replacement with `RN_FAST_RUNNER_STALE`
-and no mutation instead of appending. A refused replacement keeps the runner's
-mutation disposition. The [focused replacement tests](../qaren-core/test/unit/device-fill-focused-replace.test.ts)
+for persistent rejection of stale iOS prebuilts. A refused insertion on an empty
+field keeps the runner's mutation disposition. The [focused replacement tests](../qaren-core/test/unit/device-fill-focused-replace.test.ts)
 cover these guards and mutation reporting.
 An unverified keyboard step records a passing row with reason `UNVERIFIED_FILL`,
 allowing later plan steps to continue; it does not establish the field's final

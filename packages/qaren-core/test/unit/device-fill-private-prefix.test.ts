@@ -11,9 +11,11 @@ async function fillPrivate(dropPrefix: number) {
   let value = '';
   const dispatches: string[][] = [];
   _setActiveSessionForTest({ platform: 'ios', deviceId: 'TEST', appId: 'com.test' });
+  let typed = '';
   _setRunAgentDeviceForTest(async (args: string[]) => {
     dispatches.push(args);
-    value = requested.slice(dropPrefix);
+    typed += args[2];
+    value = typed === requested ? requested.slice(dropPrefix) : typed;
     return okResult({ typed: true, textEntryRoute: 'synthesized-first-responder' });
   });
   const client = {
@@ -58,7 +60,10 @@ async function fillPrivate(dropPrefix: number) {
 test('an empty private non-secure field receives the full input without any clear sequence', async () => {
   const { envelope, dispatches, value, requested } = await fillPrivate(0);
   assert.equal(value, requested);
-  assert.equal(dispatches.length, 1);
+  assert.deepEqual(
+    dispatches.map((args) => args[2]),
+    [requested[0], requested.slice(1)],
+  );
   assert.equal(dispatches[0].includes('--clear-first'), false);
   assert.equal(envelope.meta?.verify, 'exact');
   assert.doesNotMatch(JSON.stringify(envelope), /person@example/);
@@ -69,7 +74,10 @@ for (const dropped of [1, 3]) {
     const { envelope, dispatches, requested } = await fillPrivate(dropped);
     assert.equal(envelope.ok, false);
     assert.equal(envelope.code, 'TEXT_ENTRY_UNVERIFIED');
-    assert.equal(dispatches.length, 1);
+    assert.deepEqual(
+      dispatches.map((args) => args[2]),
+      [requested[0], requested.slice(1)],
+    );
     assert.equal(JSON.stringify(envelope).includes(requested), false);
     assert.equal(JSON.stringify(envelope).includes(requested.slice(dropped)), false);
   });
@@ -89,25 +97,28 @@ for (const applyClear of [true, false]) {
           focusedProof?: (focusOnly?: boolean) => Promise<boolean>;
         },
       ) => {
-        assert.equal(args.includes('--clear-first'), true);
-        clearing = true;
-        if (!(await options.focusedProof?.(true))) {
+        assert.equal(args.includes('--clear-first'), false);
+        if (!(await options.focusedProof?.())) {
           return failResult('Clear not confirmed', 'TEXT_ENTRY_UNVERIFIED', {
             mutation: 'possible',
           });
         }
-        assert.equal(value, '');
+        if (typed === 0) assert.equal(value, '');
         typed++;
-        value = 'person@example.test';
+        value += args[2];
         return okResult({ typed: true });
       },
     );
     const client = {
       evaluate: async (expression: string) => {
+        if (expression.startsWith('__QAREN.clearInputValue(')) {
+          clearing = true;
+          return { value: JSON.stringify({ cleared: true }) };
+        }
         const [, options] = JSON.parse(
           '[' + expression.slice('__QAREN.readInputValue('.length, -1) + ']',
         );
-        if (clearing && options.compareTo === '') {
+        if (clearing && typed === 0 && options.compareTo === '') {
           clearProbes++;
           if (applyClear && clearProbes >= 2) value = '';
         }
@@ -141,7 +152,7 @@ for (const applyClear of [true, false]) {
       );
       const envelope = JSON.parse(result.content[0].text);
       assert.equal(envelope.ok, applyClear);
-      assert.equal(typed, applyClear ? 1 : 0);
+      assert.equal(typed, applyClear ? 2 : 0);
       assert.ok(clearProbes >= 3);
       assert.doesNotMatch(JSON.stringify(envelope), /person@example/);
     } finally {

@@ -1295,6 +1295,10 @@ for (const route of ['transition', 'keyboard-up', 'no-target'] as const) {
         const client = {
           isConnected: true,
           evaluate: async (expression: string) => {
+            if (expression.startsWith('__QAREN.clearInputValue(')) {
+              current = '';
+              return { value: JSON.stringify({ cleared: true }) };
+            }
             const [, options] = JSON.parse(
               '[' + expression.slice('__QAREN.readInputValue('.length, -1) + ']',
             );
@@ -1323,10 +1327,16 @@ for (const route of ['transition', 'keyboard-up', 'no-target'] as const) {
         updateRefMapFromFlat(native as never, { snapshotGeneration: 7, keyboardVisible: true });
         _setRunAgentDeviceForTest(async (args, options) => {
           if (args[0] !== 'fill') return okResult({ nodes: native });
+          assert.equal(args.includes('--clear-first'), false);
+          assert.equal(await options.focusedProof(), true);
+          if (args[2] === text[0]) {
+            assert.equal(current, '');
+            current = text[0];
+            return okResult({ typed: true });
+          }
           dispatches += 1;
-          assert.ok(args.includes('--clear-first'));
-          current = '';
-          assert.equal(await options.focusedProof(true), true);
+          assert.equal(args[2], text.slice(1));
+          assert.equal(current, text[0]);
           current = retained && dispatches === 1 ? before + text : finalValue;
           return okResult({ typed: true });
         });
@@ -1441,6 +1451,7 @@ test('a normalizing readable fallback continues honestly unverified', async () =
           value: fills === 0 ? '' : '123 456',
           controlled: true,
           focused: true,
+          contentLength: fills === 0 ? 0 : 7,
         }),
       };
     },
@@ -1481,7 +1492,7 @@ test('a normalizing readable fallback continues honestly unverified', async () =
     assert.equal(result.block.outcome, 'pass');
     assert.match(result.rows[0].reason ?? '', /UNVERIFIED_FILL/);
     assert.ok(reads > 1, 'the typed value is read back');
-    assert.equal(fills, 1);
+    assert.equal(fills, 2);
     assert.equal(fake.state(), 'accepted');
   } finally {
     _setRunAgentDeviceForTest(null);
@@ -2931,11 +2942,13 @@ test('a runtime email missing its first character stops the plan before submissi
   fake.deps.reactFocused = (testID) => reactFocused(client, testID);
   const type = fake.deps.typeFocused!;
   let dispatches = 0;
+  let typed = '';
   _setActiveSessionForTest({ platform: 'ios', deviceId: 'TEST', appId: 'com.test' });
   _setRunAgentDeviceForTest(async (args: string[]) => {
     assert.equal(args.includes('--clear-first'), false);
     dispatches++;
-    value = EMAIL.slice(1);
+    typed += args[2];
+    value = typed === EMAIL ? EMAIL.slice(1) : typed;
     return okResult({ typed: true });
   });
   fake.deps.typeFocused = async (
@@ -2975,7 +2988,7 @@ test('a runtime email missing its first character stops the plan before submissi
       walkBlock(blocks(slotPlan())[0], fake.deps),
     );
     assert.equal(outcome.block.outcome, 'fail');
-    assert.equal(dispatches, 1);
+    assert.equal(dispatches, 2);
     assert.equal(fake.log.includes('press @submit'), false);
     assert.match(
       renderReason(outcome.failure?.seen ?? '', (text) => text),

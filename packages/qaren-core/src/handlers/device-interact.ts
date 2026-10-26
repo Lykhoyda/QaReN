@@ -1546,6 +1546,26 @@ export async function readReactInputValue(
   }
 }
 
+// Matches the runner's TypingRecipe.interBurstDelay for element typing.
+const FIRST_BURST_PAUSE_MS = 500;
+
+async function clearReactInput(
+  client: CDPClient | null,
+  testID: string | null,
+): Promise<{ cleared: boolean; reason?: string }> {
+  if (!client || !testID) return { cleared: false, reason: 'unbound' };
+  try {
+    const result = await client.evaluate(`__QAREN.clearInputValue(${JSON.stringify(testID)})`);
+    if (result.error || typeof result.value !== 'string') return { cleared: false };
+    const parsed = JSON.parse(result.value) as { cleared?: unknown; reason?: unknown };
+    return parsed.cleared === true
+      ? { cleared: true }
+      : { cleared: false, ...(typeof parsed.reason === 'string' ? { reason: parsed.reason } : {}) };
+  } catch {
+    return { cleared: false };
+  }
+}
+
 type ReactValueVerification = 'exact' | 'mismatch' | 'unreadable';
 
 async function awaitReactInputValue(
@@ -1629,11 +1649,11 @@ export async function performFocusedFill(
   let secure = false;
   let contentLength: number | undefined;
   let expectedContentLength: number | undefined;
-  let awaitingClear = false;
+  let awaiting: 'empty' | 'typed' | undefined;
   let expectedBeforeClear: string | null | undefined;
   const focusedProof = async (focusOnly = false): Promise<boolean> => {
-    if (focusOnly && awaitingClear && !secure) {
-      let empty = false;
+    if (focusOnly && awaiting && !secure) {
+      let settledLength: number | undefined;
       for (let attempt = 0; attempt < 6; attempt++) {
         if (args.qaContext?.expired) return false;
         const state = await readReactInputValue(client, oracleTestId, {
@@ -1643,8 +1663,10 @@ export async function performFocusedFill(
           compareTo: '',
         });
         if (state?.focused !== true) return false;
-        if (state.exact === true && empty) return !args.qaContext?.expired;
-        empty = state.exact === true;
+        const settled =
+          awaiting === 'empty' ? state.exact === true : (state.contentLength ?? 0) > 0;
+        if (settled && settledLength === state.contentLength) return !args.qaContext?.expired;
+        settledLength = settled ? state.contentLength : undefined;
         if (attempt < 5) await cancellableSleep(100);
       }
       return false;
@@ -1665,9 +1687,10 @@ export async function performFocusedFill(
       (expectedBeforeClear === undefined || before === expectedBeforeClear)
     );
   };
-  const dispatchFill = async (deleteCount?: number, observed?: string): Promise<ToolResult> => {
+  const dispatchFill = async (observed?: string): Promise<ToolResult> => {
     expectedBeforeClear = observed;
     expectedContentLength = undefined;
+    awaiting = undefined;
     if (args.clearFirst) {
       if (!(await focusedProof())) {
         return failResult(
@@ -1685,25 +1708,59 @@ export async function performFocusedFill(
           { mutation: 'none' },
         );
       }
-      deleteCount ??= contentLength || undefined;
-      if (deleteCount !== undefined && deleteCount > 256) {
+      if ((observed?.length ?? contentLength ?? 0) > 256) {
         return failResult(
           'Focused replacement exceeds its bounded clear budget.',
           'TEXT_ENTRY_UNVERIFIED',
           { mutation: 'none' },
         );
       }
+      if (!secure && contentLength !== 0) {
+        // Synthesized keys delete only before the caret, which the tap leaves mid-text in a long value.
+        args.qaContext?.authorize();
+        const clear = await clearReactInput(client, oracleTestId);
+        if (!clear.cleared) {
+          return failResult(
+            'The input could not be cleared; no text was entered.',
+            'TEXT_ENTRY_UNVERIFIED',
+            {
+              mutation: ['unbound', 'uncontrolled', 'unfocused'].includes(clear.reason ?? '')
+                ? 'none'
+                : 'possible',
+            },
+          );
+        }
+        awaiting = 'empty';
+      }
     }
-    const clear = args.clearFirst && !secure && contentLength !== 0;
-    awaitingClear = clear === true;
-    return runNative(['fill', args.ref, args.text, ...(clear ? ['--clear-first'] : [])], {
-      qaContext: args.qaContext,
-      qaTiming: args.qaTiming,
-      focusedType: true,
-      focusedProof,
-      focusedDeleteCount: deleteCount,
-      settle: { enabled: false },
-    });
+    const type = async (text: string): Promise<ToolResult> => {
+      const changed = awaiting;
+      const result = await runNative(['fill', args.ref, text], {
+        qaContext: args.qaContext,
+        qaTiming: args.qaTiming,
+        focusedType: true,
+        focusedProof: changed ? () => focusedProof(true) : focusedProof,
+        settle: { enabled: false },
+      });
+      if (changed && result.isError && extractMutationDisposition(result) === 'none') {
+        return failResult(
+          changed === 'empty'
+            ? 'The field was cleared but not proven empty; no replacement text was entered.'
+            : 'The first character was entered but the field did not settle; no further text was entered.',
+          'TEXT_ENTRY_UNVERIFIED',
+          { mutation: 'possible' },
+        );
+      }
+      return result;
+    };
+    const first = new Intl.Segmenter().segment(args.text)[Symbol.iterator]().next().value?.segment;
+    if (!args.clearFirst || secure || !first || first === args.text) return type(args.text);
+    // Keys synthesized while the app renders its first change are dropped (the runner's two-burst recipe).
+    const warm = await type(first);
+    if (warm.isError) return warm;
+    await cancellableSleep(FIRST_BURST_PAUSE_MS);
+    awaiting = 'typed';
+    return type(args.text.slice(first.length));
   };
   const native = await dispatchFill();
   if (native.isError) {
@@ -1844,7 +1901,7 @@ export async function performFocusedFill(
   if (retainedPrefix(verification)) {
     const observed = verification.observed!;
     if (observed.length <= 256 && !args.qaContext?.expired) {
-      const replacement = await dispatchFill(observed.length, observed);
+      const replacement = await dispatchFill(observed);
       if (replacement.isError) {
         return fillFailure('TEXT_ENTRY_UNVERIFIED', extractErrorText(replacement), {
           mutation: extractMutationDisposition(replacement) === 'none' ? 'observed' : 'possible',

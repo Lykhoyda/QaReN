@@ -3,7 +3,7 @@ import { TYPOGRAPHY_TEXT_LIMITS } from './qa/host-typography.js';
 import { INPUT_HOST_TYPES } from './qa/input-host-types.js';
 
 // Bump when the injected surface changes so warm runtimes replace stale helpers.
-export const HELPERS_VERSION = 101;
+export const HELPERS_VERSION = 102;
 
 export const INJECTED_HELPERS = `
 (function() {
@@ -4620,6 +4620,26 @@ export const INJECTED_HELPERS = `
     return JSON.stringify({ value: null, controlled: false, focused: focused });
   }
 
+  // Empties a focused controlled input through its own change handler; the result carries no value.
+  function clearInputValue(testID) {
+    if (!testID) return JSON.stringify({ cleared: false, reason: 'unbound' });
+    var resolution = resolveTypeTextTarget({ testID: testID, omitValue: true });
+    if (resolution.error || !resolution.binding) return JSON.stringify({ cleared: false, reason: 'unbound' });
+    var binding = resolution.binding;
+    var props = binding.candidateFiber.memoizedProps || {};
+    if (props.secureTextEntry === true || typeof props.value !== 'string') {
+      return JSON.stringify({ cleared: false, reason: 'uncontrolled' });
+    }
+    if (!hostIsFocused(binding.candidateFiber)) return JSON.stringify({ cleared: false, reason: 'unfocused' });
+    try {
+      if (binding.contract === 'onChangeText:string') binding.handler('');
+      else binding.handler({ nativeEvent: { text: '' } });
+    } catch (_) {
+      return JSON.stringify({ cleared: false, reason: 'handler-threw' });
+    }
+    return JSON.stringify({ cleared: true });
+  }
+
   // Task 8 — bounded fiber.return ancestor walk producing the bundle's
   // anchor trail. Mirrors the setFieldValue ancestor walk (cap + .return
   // chain) at the ANCESTOR_DEPTH_CAP loop, but records nearest-first
@@ -5856,6 +5876,7 @@ export const INJECTED_HELPERS = `
     getStoreState: getStoreState,
     getComponentState: getComponentState,
     readInputValue: readInputValue,
+    clearInputValue: clearInputValue,
     releaseInputDesignation: releaseInputDesignation,
     dispatchAction: dispatchAction,
     getErrors: getErrors,

@@ -29,34 +29,45 @@ async function run(
     privateValue?: boolean;
     secureValue?: boolean;
     text?: string;
+    clearLeaves?: Read;
+    clearReply?: { value?: string; error?: string };
+    warmLost?: boolean;
   } = {},
-): Promise<{ env: any; dispatched: string[][]; clearCounts: (number | undefined)[] }> {
+): Promise<{ env: any; dispatched: string[][]; clears: number[]; raw: string[][] }> {
   _setActiveSessionForTest({ platform: 'ios', deviceId: 'TEST-DEVICE', appId: 'com.test' });
   clearRefMap();
   markSnapshotDirty();
   updateRefMapFromFlat(WRAPPER_ONLY as never, { snapshotGeneration: 7, keyboardVisible: true });
+  const requested = options.text ?? 'real@example.test';
   const dispatched: string[][] = [];
-  const clearCounts: (number | undefined)[] = [];
+  const raw: string[][] = [];
+  const clears: number[] = [];
   let current = before;
+  let warmed = '';
   _setRunAgentDeviceForTest(
     async (
       cliArgs: string[],
-      opts: {
-        focusedDeleteCount?: number;
-        focusedProof?: (focusOnly?: boolean) => Promise<boolean>;
-      },
+      opts: { focusedProof?: (focusOnly?: boolean) => Promise<boolean> },
     ) => {
       if (cliArgs[0] !== 'fill') return okResult({ nodes: WRAPPER_ONLY });
-      dispatched.push(cliArgs.slice(2));
-      clearCounts.push(opts.focusedDeleteCount);
-      if (options.mutation)
+      if (opts.focusedProof && !(await opts.focusedProof()))
+        return failResult('Focus proof refused', 'NO_TEXT_INPUT_TARGET', { mutation: 'none' });
+      const typed = cliArgs[2];
+      raw.push(cliArgs.slice(2));
+      if (options.mutation) {
+        dispatched.push([typed]);
         return failResult('Replacement refused', 'TEXT_SYNTHESIS_UNAVAILABLE', {
           mutation: options.mutation,
         });
-      if (cliArgs.includes('--clear-first')) {
-        current = { value: '', focused: true };
-        assert.equal(await opts.focusedProof?.(true), true);
       }
+      if (!warmed && typed !== requested && requested.startsWith(typed)) {
+        warmed = typed;
+        if (!options.warmLost)
+          current = { value: (current?.value ?? '') + typed, focused: current?.focused === true };
+        return okResult({ typed: true, textEntryRoute: 'synthesized-first-responder' });
+      }
+      dispatched.push([warmed + typed]);
+      warmed = '';
       const after = options.after;
       current =
         'after' in options
@@ -70,6 +81,18 @@ async function run(
   const client = {
     isConnected: true,
     evaluate: async (expression: string) => {
+      if (expression.startsWith('__QAREN.clearInputValue(')) {
+        assert.doesNotMatch(expression, /real@example|private-prefill/);
+        clears.push(current?.value?.length ?? -1);
+        if (options.clearReply) return options.clearReply;
+        const ok = current?.focused === true && current.value !== null && !options.secureValue;
+        if (ok)
+          current =
+            'clearLeaves' in options ? (options.clearLeaves ?? null) : { value: '', focused: true };
+        return {
+          value: JSON.stringify(ok ? { cleared: true } : { cleared: false, reason: 'unfocused' }),
+        };
+      }
       const [, probeOptions] = JSON.parse(
         '[' + expression.slice('__QAREN.readInputValue('.length, -1) + ']',
       );
@@ -115,7 +138,7 @@ async function run(
       },
       client,
     );
-    return { env: JSON.parse(result.content[0].text), dispatched, clearCounts };
+    return { env: JSON.parse(result.content[0].text), dispatched, clears, raw };
   } finally {
     _setRunAgentDeviceForTest(null);
     _setActiveSessionForTest(null);
@@ -124,15 +147,15 @@ async function run(
 }
 
 const TEXT = 'real@example.test';
-const REPLACE = [TEXT, '--clear-first'];
+const LONG = 'qa-tests+m9271792187899724906001234@long-example-domain.test';
 
-for (const before of ['', 'decoy@example.test', TEXT]) {
+for (const before of ['', 'decoy@example.test', TEXT, LONG]) {
   test(`a non-secure input verifies exactly from ${before === '' ? 'empty' : before === TEXT ? 'already-equal' : 'prefilled'} content`, async () => {
-    const { env, dispatched, clearCounts } = await run({ value: before, focused: true });
+    const { env, dispatched, clears } = await run({ value: before, focused: true });
     assert.equal(env.ok, true);
     assert.equal(env.meta.verify, 'exact');
-    assert.deepEqual(dispatched, [before ? REPLACE : [TEXT]]);
-    assert.deepEqual(clearCounts, [before ? before.length : undefined]);
+    assert.deepEqual(dispatched, [[TEXT]]);
+    assert.deepEqual(clears, before ? [before.length] : []);
   });
 }
 
@@ -151,44 +174,71 @@ for (const value of [
     );
     assert.equal(env.ok, true);
     assert.equal(env.data.verified, false);
-    assert.deepEqual(dispatched, [REPLACE]);
+    assert.deepEqual(dispatched, [[TEXT]]);
     assert.doesNotMatch(JSON.stringify(env), /real@example|decoy@example|eal@example/);
   });
 }
 
-for (const before of ['', 'private-prefill']) {
+for (const before of ['', 'private-prefill', 'private-prefill'.repeat(4)]) {
   test('private non-secure input uses value-free metadata and exact verification', async () => {
-    const { env, dispatched, clearCounts } = await run(
+    const { env, dispatched, clears } = await run(
       { value: before, focused: true },
       { privateValue: true },
     );
     assert.equal(env.ok, true);
     assert.equal(env.meta.verify, 'exact');
-    assert.deepEqual(dispatched, [before ? REPLACE : [TEXT]]);
-    assert.deepEqual(clearCounts, [before ? before.length : undefined]);
+    assert.deepEqual(dispatched, [[TEXT]]);
+    assert.deepEqual(clears, before ? [before.length] : []);
     assert.doesNotMatch(JSON.stringify(env), /private-prefill|real@example/);
   });
   test('secure input types directly and stays unverified even when prefilled', async () => {
-    const { env, dispatched, clearCounts } = await run(
+    const { env, dispatched, clears } = await run(
       { value: before, focused: true },
       { secureValue: true },
     );
     assert.equal(env.ok, true);
     assert.equal(env.data.verified, false);
     assert.deepEqual(dispatched, [[TEXT]]);
-    assert.deepEqual(clearCounts, [undefined]);
+    assert.deepEqual(clears, []);
+  });
+}
+
+test('a genuine private mismatch after clearing still fails the step', async () => {
+  const { env, dispatched } = await run(
+    { value: 'private-prefill', focused: true },
+    { privateValue: true, after: { value: 'real@exampl.test', focused: true } },
+  );
+  assert.equal(env.ok, false);
+  assert.equal(env.code, 'TEXT_ENTRY_UNVERIFIED');
+  assert.equal(env.meta.mutation, 'observed');
+  assert.deepEqual(dispatched, [[TEXT]]);
+  assert.doesNotMatch(JSON.stringify(env), /private-prefill|real@exampl/);
+});
+
+for (const privateValue of [false, true]) {
+  test(`a clear that leaves text refuses before typing (private: ${privateValue})`, async () => {
+    const { env, dispatched, clears } = await run(
+      { value: 'private-prefill', focused: true },
+      { privateValue, clearLeaves: { value: 'prefill', focused: true } },
+    );
+    assert.equal(env.code, 'TEXT_ENTRY_UNVERIFIED');
+    assert.equal(env.meta.mutation, 'possible');
+    assert.deepEqual(clears, ['private-prefill'.length]);
+    assert.deepEqual(dispatched, []);
+    assert.doesNotMatch(JSON.stringify(env), /private-prefill|prefill"/);
   });
 }
 
 test('a focused readable prefill beyond the clear budget refuses without mutation', async () => {
-  const { env, dispatched } = await run({ value: 'x'.repeat(257), focused: true });
+  const { env, dispatched, clears } = await run({ value: 'x'.repeat(257), focused: true });
   assert.equal(env.code, 'TEXT_ENTRY_UNVERIFIED');
   assert.equal(env.meta.mutation, 'none');
   assert.deepEqual(dispatched, []);
+  assert.deepEqual(clears, []);
 });
 
 test('an explicit non-private insertion verifies the appended readback', async () => {
-  const { env, dispatched } = await run(
+  const { env, dispatched, clears } = await run(
     { value: 'old', focused: true },
     {
       after: { value: 'old' + TEXT, focused: true },
@@ -197,43 +247,52 @@ test('an explicit non-private insertion verifies the appended readback', async (
   );
   assert.equal(env.meta.verify, 'exact');
   assert.deepEqual(dispatched, [[TEXT]]);
+  assert.deepEqual(clears, []);
 });
 
 test('an unreadable final value stays honestly unverified', async () => {
   const { env, dispatched } = await run({ value: 'old', focused: true }, { after: null });
   assert.equal(env.ok, true);
   assert.equal(env.data.verified, false);
-  assert.deepEqual(dispatched, [REPLACE]);
+  assert.deepEqual(dispatched, [[TEXT]]);
 });
 
-for (const before of [null, { value: '', focused: false }]) {
+for (const before of [null, { value: '', focused: false }, { value: 'old', focused: false }]) {
   test('unavailable or lost initial focus refuses before any mutation', async () => {
-    const { env, dispatched } = await run(before);
+    const { env, dispatched, clears } = await run(before);
     assert.equal(env.code, 'NO_TEXT_INPUT_TARGET');
     assert.equal(env.meta.mutation, 'none');
     assert.deepEqual(dispatched, []);
+    assert.deepEqual(clears, []);
   });
 }
 
 test('unknown non-secure content refuses before any clear or insertion', async () => {
-  const { env, dispatched } = await run({ value: null, focused: true });
+  const { env, dispatched, clears } = await run({ value: null, focused: true });
   assert.equal(env.code, 'TEXT_ENTRY_UNVERIFIED');
   assert.equal(env.meta.mutation, 'none');
   assert.deepEqual(dispatched, []);
+  assert.deepEqual(clears, []);
 });
 
 for (const mutation of ['none', 'possible'] as const) {
-  test(`native refusal preserves mutation ${mutation}`, async () => {
+  test(`native refusal after clearing reports possible mutation (native ${mutation})`, async () => {
     const { env, dispatched } = await run({ value: 'old', focused: true }, { mutation });
+    assert.equal(env.code, 'TEXT_ENTRY_UNVERIFIED');
+    assert.equal(env.meta.mutation, 'possible');
+    assert.deepEqual(dispatched, [[TEXT[0]]]);
+  });
+  test(`native refusal on an empty field preserves mutation ${mutation}`, async () => {
+    const { env, dispatched } = await run({ value: '', focused: true }, { mutation });
     assert.equal(env.code, mutation === 'none' ? 'NO_TEXT_INPUT_TARGET' : 'TEXT_ENTRY_UNVERIFIED');
     assert.equal(env.meta.mutation, mutation);
-    assert.deepEqual(dispatched, [REPLACE]);
+    assert.deepEqual(dispatched, [[TEXT[0]]]);
   });
 }
 
 for (const afterRecovery of [TEXT, 'real @example.test', 'old' + TEXT]) {
   test(`proven retained prefix permits only one recovery: ${afterRecovery}`, async () => {
-    const { env, dispatched, clearCounts } = await run(
+    const { env, dispatched, clears } = await run(
       { value: 'old', focused: true },
       {
         after: [
@@ -242,8 +301,8 @@ for (const afterRecovery of [TEXT, 'real @example.test', 'old' + TEXT]) {
         ],
       },
     );
-    assert.deepEqual(dispatched, [REPLACE, REPLACE]);
-    assert.deepEqual(clearCounts, [3, ('old' + TEXT).length]);
+    assert.deepEqual(dispatched, [[TEXT], [TEXT]]);
+    assert.deepEqual(clears, [3, ('old' + TEXT).length]);
     if (afterRecovery === TEXT) assert.equal(env.meta.verify, 'exact');
     else if (afterRecovery === 'old' + TEXT) {
       assert.equal(env.ok, false);
@@ -262,7 +321,7 @@ test('retained-prefix recovery refuses when intended-field focus is lost', async
   );
   assert.equal(env.code, 'TEXT_ENTRY_UNVERIFIED');
   assert.equal(env.meta.mutation, 'observed');
-  assert.deepEqual(dispatched, [REPLACE]);
+  assert.deepEqual(dispatched, [[TEXT]]);
 });
 
 test('formatting an initially empty readable field stays unverified without recovery', async () => {
@@ -273,4 +332,51 @@ test('formatting an initially empty readable field stays unverified without reco
   assert.equal(env.ok, true);
   assert.equal(env.data.verified, false);
   assert.deepEqual(dispatched, [['123456']]);
+});
+
+for (const [reply, mutation] of [
+  [{ value: JSON.stringify({ cleared: false, reason: 'unfocused' }) }, 'none'],
+  [{ value: JSON.stringify({ cleared: false, reason: 'handler-threw' }) }, 'possible'],
+  [{ error: 'transport lost' }, 'possible'],
+] as const) {
+  test(`an unproven clear refuses before typing with mutation ${mutation}`, async () => {
+    const { env, dispatched } = await run(
+      { value: 'private-prefill', focused: true },
+      { privateValue: true, clearReply: reply },
+    );
+    assert.equal(env.code, 'TEXT_ENTRY_UNVERIFIED');
+    assert.equal(env.meta.mutation, mutation);
+    assert.deepEqual(dispatched, []);
+  });
+}
+
+for (const before of ['', 'private-prefill']) {
+  test(`the rest of the text waits for the first character to settle (${before ? 'prefilled' : 'empty'})`, async () => {
+    const { env, raw } = await run({ value: before, focused: true }, { privateValue: true });
+    assert.equal(env.meta.verify, 'exact');
+    assert.deepEqual(raw, [[TEXT[0]], [TEXT.slice(1)]]);
+  });
+}
+
+test('a first character the field never shows refuses before the rest is typed', async () => {
+  const { env, raw } = await run(
+    { value: '', focused: true },
+    { privateValue: true, warmLost: true },
+  );
+  assert.equal(env.code, 'TEXT_ENTRY_UNVERIFIED');
+  assert.equal(env.meta.mutation, 'possible');
+  assert.deepEqual(raw, [[TEXT[0]]]);
+});
+
+test('a one-character fill is typed in one dispatch', async () => {
+  const { env, raw } = await run({ value: '', focused: true }, { text: '7' });
+  assert.equal(env.meta.verify, 'exact');
+  assert.deepEqual(raw, [['7']]);
+});
+
+test('the first typed unit is a whole grapheme, not a code point', async () => {
+  const text = 'éclair@example.test';
+  const { env, raw } = await run({ value: '', focused: true }, { text });
+  assert.equal(env.meta.verify, 'exact');
+  assert.deepEqual(raw, [['é'], [text.slice(2)]]);
 });

@@ -30,25 +30,46 @@ async function run(options: Options) {
   clearRefMap();
   markSnapshotDirty();
   updateRefMapFromFlat(NODES as never, { snapshotGeneration: 7, keyboardVisible: true });
+  const requested = options.text ?? TEXT;
   const dispatched: string[][] = [];
   const attempts: string[][] = [];
+  let warmed = '';
   const clock = 0;
   const context = new QaDispatchContext(1_000, () => clock);
   _setRunAgentDeviceForTest(async (cliArgs: string[]) => {
     if (cliArgs[0] !== 'fill') return okResult({ nodes: NODES });
+    const typed = cliArgs[2];
     attempts.push(cliArgs.slice(2));
-    dispatched.push(cliArgs.slice(2));
+    if (!warmed && typed !== requested && requested.startsWith(typed)) warmed = typed;
+    else {
+      dispatched.push([warmed + typed]);
+      warmed = '';
+    }
     return okResult({ typed: true, textEntryRoute: 'synthesized-first-responder' });
   });
   const client = {
     isConnected: true,
-    evaluate: async () => ({
-      value: JSON.stringify({
-        value: dispatched.length === 0 ? '' : options.valueAfter(dispatched.length),
-        controlled: true,
-        focused: true,
-      }),
-    }),
+    evaluate: async (expression: string) => {
+      const [, probe] = JSON.parse(
+        '[' + expression.slice('__QAREN.readInputValue('.length, -1) + ']',
+      );
+      const value = dispatched.length === 0 ? warmed : options.valueAfter(dispatched.length);
+      return {
+        value: JSON.stringify({
+          value,
+          controlled: true,
+          focused: true,
+          ...(probe?.valueState
+            ? {
+                contentLength: value.length,
+                ...(typeof probe.compareTo === 'string'
+                  ? { exact: value === probe.compareTo }
+                  : {}),
+              }
+            : {}),
+        }),
+      };
+    },
   } as never;
   try {
     const result = await performFocusedFill(
@@ -77,7 +98,7 @@ async function run(options: Options) {
   }
 }
 
-test('an exact read-back verifies in one dispatch without clearing the initially empty field', async () => {
+test('an exact read-back verifies without clearing the initially empty field', async () => {
   const { env, dispatched } = await run({ valueAfter: () => TEXT });
   assert.equal(env.ok, true);
   assert.equal(env.meta?.verify, 'exact');
@@ -97,7 +118,7 @@ for (const value of [
     assert.equal(env.ok, true);
     assert.equal(env.data.verified, false);
     assert.deepEqual(dispatched, [[TEXT]]);
-    assert.deepEqual(attempts, [[TEXT]]);
+    assert.deepEqual(attempts, [[TEXT[0]], [TEXT.slice(1)]]);
     assert.doesNotMatch(raw, /SYNTH|WRAP|ETIC|ABCD/);
   });
 }

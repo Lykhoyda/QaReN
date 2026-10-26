@@ -734,9 +734,9 @@ for (const mode of ['proof', 'transition'] as const) {
       let currentFocus: boolean | null = true;
       let currentValue = '';
       const sends = runner(
-        () => {
+        (body) => {
           events.push('type');
-          currentValue = 'replacement';
+          currentValue += String(body.text);
           return { ok: true, data: { typed: true, textEntryRoute: 'synthesized-first-responder' } };
         },
         async () => {
@@ -756,6 +756,7 @@ for (const mode of ['proof', 'transition'] as const) {
                   value: currentValue,
                   controlled: true,
                   focused: currentFocus,
+                  contentLength: currentValue.length,
                 }),
               };
         },
@@ -780,8 +781,8 @@ for (const mode of ['proof', 'transition'] as const) {
         ? ['focus', 'health', 'focus', 'type', 'health']
         : ['focus', 'health', 'focus'];
       assert.deepEqual(events.slice(0, prefix.length), prefix);
-      assert.ok(events.slice(prefix.length).every((event) => event === 'focus'));
-      assert.deepEqual(sends, allowed ? ['type'] : []);
+      if (!allowed) assert.ok(events.slice(prefix.length).every((event) => event === 'focus'));
+      assert.deepEqual(sends, allowed ? ['type', 'type'] : []);
       assert.equal(context.authorizations, sends.length);
       assert.equal(env.ok, allowed);
       if (!allowed) {
@@ -1193,21 +1194,21 @@ for (const applies of [true, false]) {
     let clearReads = 0;
     const bodies: Array<Record<string, unknown>> = [];
     const sends = runner((body) => {
+      if (bodies.length === 0) assert.equal(value, '');
       bodies.push(body);
-      if (body.prepareReplacement) {
-        preparation = true;
-      } else {
-        assert.equal(value, '');
-        value = 'replacement';
-      }
+      value += String(body.text);
       return { ok: true, data: { typed: true } };
     });
     const client = {
       evaluate: async (expression: string) => {
+        if (expression.startsWith('__QAREN.clearInputValue(')) {
+          preparation = true;
+          return { value: JSON.stringify({ cleared: true }) };
+        }
         const [, options] = JSON.parse(
           '[' + expression.slice('__QAREN.readInputValue('.length, -1) + ']',
         );
-        if (preparation && options.compareTo === '') {
+        if (preparation && bodies.length === 0 && options.compareTo === '') {
           clearReads++;
           if (applies && clearReads >= 2) value = '';
         }
@@ -1241,11 +1242,59 @@ for (const applies of [true, false]) {
     );
     const envelope = JSON.parse(result.content[0].text);
     assert.equal(envelope.ok, applies);
-    assert.deepEqual(sends, applies ? ['type', 'type'] : ['type']);
-    assert.equal(bodies[0].text, '');
-    assert.equal(bodies[0].replacementDeleteCount, 3);
-    if (applies) assert.equal(bodies[1].clearFirst, false);
+    assert.deepEqual(sends, applies ? ['type', 'type'] : []);
+    if (applies)
+      assert.deepEqual(
+        bodies.map((body) => body.text),
+        ['r', 'eplacement'],
+      );
+    assert.ok(bodies.every((body) => !body.prepareReplacement && !body.clearFirst));
     assert.ok(clearReads >= 3);
-    assert.equal(context.authorizations, sends.length);
+    assert.equal(context.authorizations, sends.length + 1);
   });
 }
+
+test('an expired focused replacement refuses before clearing', async () => {
+  session();
+  const sends = runner(() => ({ ok: true, data: { typed: true } }));
+  let cleared = false;
+  let now = 1;
+  const context = new QaDispatchContext(5_000, () => now);
+  const client = {
+    evaluate: async (expression: string) => {
+      if (expression.startsWith('__QAREN.clearInputValue(')) {
+        cleared = true;
+        return { value: JSON.stringify({ cleared: true }) };
+      }
+      now = 10_000;
+      return {
+        value: JSON.stringify({
+          value: null,
+          controlled: true,
+          focused: true,
+          secure: false,
+          privateValue: true,
+          contentLength: 3,
+        }),
+      };
+    },
+  } as never;
+  await assert.rejects(
+    performFocusedFill(
+      {
+        ref: 'field',
+        testID: 'field',
+        text: 'replacement',
+        privateValue: true,
+        clearFirst: true,
+        qaContext: context,
+        skipFinalValidation: true,
+      },
+      client,
+    ),
+    (error: unknown) => (error as { code?: string }).code === 'EVIDENCE_EXPIRED',
+  );
+  assert.equal(cleared, false);
+  assert.deepEqual(sends, []);
+  assert.equal(context.authorizations, 0);
+});
