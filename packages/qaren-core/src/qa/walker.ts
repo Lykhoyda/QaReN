@@ -455,6 +455,8 @@ async function walkBlockScoped(
   let mutationStarted = false;
   // The Fill ladder rung of the current item's last fill dispatch, and when the item began.
   let fillMethod: FillMethod | undefined;
+  let fillHandlerAttempted = false;
+  let fillHandlerRefused = false;
   let itemStartedAt = 0;
   let latestObservation = 0;
   let recoveries = 0;
@@ -987,6 +989,14 @@ async function walkBlockScoped(
   };
   const withheldRows = new Map<number, NonNullable<LedgerRow['screenshotWithheld']>>();
   const emit = (row: WalkRow): void => {
+    if (fillHandlerRefused)
+      row = {
+        ...row,
+        reason: [
+          ...(row.reason ? [...segments(row.reason), '; '] : []),
+          'FILL_HANDLER_REFUSED: rung 3 was attempted and refused without mutation',
+        ],
+      };
     const withheld = withheldRows.get(row.line);
     withheldRows.delete(row.line);
     if (withheld) row = { ...row, screenshotWithheld: withheld };
@@ -1293,6 +1303,7 @@ async function walkBlockScoped(
   ): Promise<ActResult | undefined> => {
     const deadline = itemStartedAt + FILL_LADDER_BUDGET_MS;
     if (
+      fillHandlerAttempted ||
       !deps.setByHandler ||
       !testID ||
       failure.ok ||
@@ -1309,14 +1320,19 @@ async function walkBlockScoped(
       const result = await mutate(
         item,
         fresh,
-        (context) => deps.setByHandler!(testID, fillText(item), context, item.input !== undefined),
+        (context) => {
+          fillHandlerAttempted = true;
+          return deps.setByHandler!(testID, fillText(item), context, item.input !== undefined);
+        },
         deadline,
       );
       deps.note?.(
         `fill-ladder ${JSON.stringify({ v: 1, line: item.line, from: failure.method ?? 'keyboard', to: 'set-handler', ok: result.ok, mutation: result.mutation ?? null })}`,
       );
-      // A rung 3 that set nothing leaves the original refusal standing.
-      if (!result.ok && result.mutation === 'none') return undefined;
+      if (!result.ok && result.mutation === 'none') {
+        fillHandlerRefused = true;
+        return undefined;
+      }
       fillMethod = 'set-handler';
       return { ...result, method: 'set-handler' };
     } catch (error) {
@@ -1875,6 +1891,8 @@ async function walkBlockScoped(
     }
     mutationStarted = false;
     fillMethod = undefined;
+    fillHandlerAttempted = false;
+    fillHandlerRefused = false;
     itemStartedAt = deps.now();
     attempts: for (;;) {
       line = item.line;

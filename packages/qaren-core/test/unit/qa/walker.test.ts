@@ -1278,3 +1278,58 @@ test('a native fill refusal steps once to the change handler for an input with a
   assert.equal(outcome.rows[0].method, 'set-handler');
   assert.match(outcome.rows[0].reason ?? '', /^FILL_SET_BY_HANDLER: /);
 });
+
+for (const retrySucceeds of [false, true]) {
+  test(`a refused handler is tried once per Fill item when native retry ${retrySucceeds ? 'succeeds' : 'refuses'}`, async () => {
+    const field = fixtureElement('@email', 'Email', {
+      kind: 'input',
+      testID: 'email-input',
+    });
+    const refusal: ActResult = {
+      ok: false,
+      proven: false,
+      mutation: 'none',
+      error: 'TEXT_ENTRY_UNVERIFIED: native typing refused',
+    };
+    const f = fake([fixtureScreen([field])]);
+    let nativeCalls = 0;
+    let handlerCalls = 0;
+    f.deps.fill = async () => {
+      nativeCalls++;
+      return retrySucceeds && nativeCalls === 2
+        ? { ok: true, proven: true }
+        : refusal;
+    };
+    f.deps.setByHandler = async () => {
+      handlerCalls++;
+      return {
+        ok: false,
+        proven: false,
+        mutation: 'none',
+        error: 'TEXT_ENTRY_UNVERIFIED: uncontrolled input; nothing was set',
+      };
+    };
+    const line = 'Fill "email-input" with "private-canary"';
+    const plan = retrySucceeds ? `1. ${line}\n2. ${line}\n` : `1. ${line}\n`;
+    const outcome = await walkBlock(block(plan), f.deps);
+
+    assert.equal(outcome.block.outcome, 'fail');
+    assert.equal(nativeCalls, retrySucceeds ? 4 : 2);
+    assert.equal(handlerCalls, retrySucceeds ? 2 : 1);
+    assert.deepEqual(
+      outcome.rows.map((row) => row.outcome),
+      retrySucceeds ? ['retry', 'pass', 'retry', 'fail'] : ['retry', 'fail'],
+    );
+    for (const row of outcome.rows) {
+      const reason = renderReason(row.reason ?? '', (text) => text);
+      assert.match(reason, /FILL_HANDLER_REFUSED: rung 3 was attempted and refused/);
+      if (row.outcome !== 'pass') assert.match(reason, /native typing refused/);
+      assert.equal(row.method, 'keyboard');
+      assert.doesNotMatch(reason, /private-canary|uncontrolled input/);
+    }
+    assert.deepEqual(
+      f.rows.map((row) => row.outcome),
+      outcome.rows.map((row) => row.outcome),
+    );
+  });
+}
