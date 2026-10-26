@@ -41,6 +41,8 @@ export interface WireTarget {
   worktree: string;
   // The CLI's Metro drain count of bundle requests, and its value when the app launched.
   metroBundleRequests?: { path: string; atLaunch: number };
+  // The CLI's last dev client manifest warm-up before launch.
+  manifestWarm?: { ms: number; attempts: number };
 }
 
 export interface WireRequest {
@@ -227,6 +229,11 @@ export function parsePublicRequest(line: string): WireRequest {
         !isAbsolute(target.metroBundleRequests.path) ||
         !Number.isSafeInteger(target.metroBundleRequests.atLaunch) ||
         target.metroBundleRequests.atLaunch < 0)) ||
+    (target.manifestWarm !== undefined &&
+      (!Number.isSafeInteger(target.manifestWarm?.ms) ||
+        target.manifestWarm.ms < 0 ||
+        !Number.isSafeInteger(target.manifestWarm.attempts) ||
+        target.manifestWarm.attempts < 1)) ||
     (p.loginBlock !== undefined && (!isValidActionId(p.loginBlock) || !p.loginMarker)) ||
     (p.loginMarker !== undefined && !validMarker(p.loginMarker));
   if (bad) throw new WireError('the request payload is missing required fields');

@@ -464,6 +464,7 @@ async function openSession(
         metroPort: target.metroPort,
         readinessMs: REACT_READY_TIMEOUT_MS,
         attachBudgetMs: request.attachBudgetMs,
+        ...(target.manifestWarm ? { launchWarm: target.manifestWarm } : {}),
         remainingMs,
         attach: async (deadline) => {
           attachStage = 'wait_targets';
@@ -496,7 +497,8 @@ async function openSession(
                   `relaunching after the manifest answered in ${manifest.ms} ms (attempt ${manifest.attempts})`,
                 );
                 bundleRequests?.relaunching();
-                return relaunchIosDevClient(appId, target.deviceId, url);
+                await relaunchIosDevClient(appId, target.deviceId, url);
+                return manifest;
               },
               appAlive: async () => {
                 const alive = await isAppRunning('ios', appId, undefined, target.deviceId);

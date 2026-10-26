@@ -1774,16 +1774,18 @@ device lease remain claimed for `qaren cleanup`. The developer
 [check gate](../../scripts/gate-qaren-check.sh) forwards the boot opt-in with
 `QAREN_BOOT_DEVICE=1` alongside `QAREN_DEVICE_UDID`.
 
-iOS preparation, borrowed-emulator builds and cached Android preparation
-request the dev-client manifest from Metro with the `expo-platform` header
-before launch until one answer arrives inside the dev client's own 10-second
-request timeout, so the client's first request does not time out to its
-launcher. Each request is recorded; slower answers and request timeouts are
-repeated, and a manifest that never answers that fast within the remaining
+iOS preparation requests the dev-client manifest from Metro with the
+`expo-platform` header before launch until two consecutive answers arrive in
+under 5 seconds, half the dev client's own 10-second request timeout, because
+Metro rebuilds the manifest
+per request and one answer does not predict the client's own. Each request is
+recorded; slower answers and request timeouts restart the count, and a manifest
+that never answers twice in a row that fast within the remaining
 `build_seconds` budget refuses with `CORE_REFUSED` and the measured times.
-The 10 seconds only gates the launch; it never shortens a request or ends a
-wait. Fresh Android scenario-based
-`prepare` keeps launch and Metro under `expo run:android` and does not perform
+The margin only gates the launch; it never shortens a request or ends a
+wait. Borrowed-emulator builds and cached Android preparation retain
+one manifest answer under the dev client's 10-second timeout. Fresh Android
+scenario-based `prepare` keeps launch and Metro under `expo run:android` and does not perform
 this warmup.
 Dev-client launch and iOS
 dev-menu defaults timeouts retry regardless of host load until the remaining
@@ -2665,9 +2667,15 @@ ambiguous only once both have registered.
 Transient target-list, WebSocket-handshake and runtime-probe timeouts, along with
 inspector page closure or replacement, retry within that same deadline regardless
 of host load, with bounded polling and exact-port rediscovery between attachment
-attempts. If a bounded discovery wait ends with only other-bundle targets (or
+attempts. A platform-filtered selection retries when the candidates matching the
+requested device and bundle all have defaulted platforms and a package or device
+inventory probe needed to prove their platform failed. Unrelated Metro targets
+and successful readers do not block this retry. Retries back off from 1 s to
+15 s within the same deadline and probe again instead of reusing a cached
+failure. Matching candidates proven on another platform, or a selection with
+no matching candidate or no relevant failed probe, stay terminal. If a bounded discovery wait ends with only other-bundle targets (or
 targets with missing, malformed or conflicting bundle identity) on the selected
-device, admission refuses `CDP_NOT_CONNECTED` before liveness probing, relaunch or
+device, admission refuses `CDP_NOT_CONNECTED` without relaunch or
 another attachment attempt. Exhausted readiness also refuses `CDP_NOT_CONNECTED`;
 malformed target-list responses and deterministic attachment rejections refuse
 immediately. Host load is diagnostic and does not decide whether the app is ready.
@@ -2698,13 +2706,12 @@ probe permits recovery as before. Skipping
 does not consume the one relaunch for persistent runtime-probe or
 WebSocket-handshake timeouts, and a target that registers late gets the same
 readiness window before a stalled handshake triggers the one relaunch. For retained admission facts,
-see [runtime-input diagnostics](#runtime-inputs). Before the liveness check or
-relaunch, admission checks for a foreign driver;
+see [runtime-input diagnostics](#runtime-inputs). Before probing liveness for
+relaunch or relaunching, admission checks for a foreign driver;
 a conflict refuses `BUSY_FOREIGN_FLOW`
-without relaunching. Like the CLI's launch, the relaunch first waits until Metro
-answers the dev client's manifest request in under 10 s: the dev client gives
-each manifest request 10 s, then stays on its launcher without requesting a
-bundle. It retries slow answers until the attach limit (or one readiness window,
+without relaunching. The relaunch uses the same
+[manifest readiness margin as iOS preparation](#ios-simulator-lifecycle).
+It retries slow answers until the attach limit (or one readiness window,
 if that limit has passed); a manifest error, an unreachable Metro or no answer in
 time fails the relaunch. It relaunches on the exact simulator with the CLI's
 original `initialUrl` using `simctl launch --terminate-running-process` within
@@ -2716,7 +2723,14 @@ also returns `CDP_NOT_CONNECTED` with measured host load (or an explicit
 unavailable measurement), regardless of load. After admission, deadline
 expiry remains `WALK_DEADLINE_EXCEEDED`.
 The refusal names the observed boundary, typed failure, app liveness and request
-observation; the deadline preserves the latest retry's failure class instead of
+observation, probing liveness within the remaining deadline if this launch had
+not yet done so, and reading an unprobed request signal unless the app is proven
+dead. When available, `warmMs` records the final answer's milliseconds and
+`warmAttempts` the total request count from the CLI's successful manifest warm-up;
+a completed admission relaunch replaces them with its warm-up measurements.
+A failed relaunch retains the CLI measurements. With no bundle request it
+names the likely cause: the dev client's manifest request outlasted its timeout.
+The deadline preserves the latest retry's failure class instead of
 replacing it with a generic probe timeout. Empty target lists, targets on another
 device, another bundle and unanswered list requests have distinct classes.
 The refusal also carries the measured load; the

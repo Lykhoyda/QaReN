@@ -587,6 +587,7 @@ fn run_inner(
         notes: Vec::new(),
         verb: verb(req),
         bundle_requests_at_launch: None,
+        manifest_warm: None,
     };
     let finish_failed =
         |ctx: Ctx, failure: Failure| finish_failed(ctx, &node, &req.runtime_dir, failure, false);
@@ -908,6 +909,7 @@ fn run_inner(
                     path: crate::exec::log::bundle_requests_path(&metro.log),
                     at_launch,
                 }),
+            manifest_warm: ctx.manifest_warm.clone(),
         },
     };
     let spec = core::spawn_spec(

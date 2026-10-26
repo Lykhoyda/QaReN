@@ -63,6 +63,8 @@ pub(crate) struct Ctx<'a> {
     pub(crate) verb: &'static str,
     // Metro's drained bundle-request count when the CLI launched the app.
     pub(crate) bundle_requests_at_launch: Option<u64>,
+    // The dev client manifest warm-up that cleared the launch.
+    pub(crate) manifest_warm: Option<crate::core::ManifestWarm>,
 }
 
 impl<'a> Ctx<'a> {
@@ -457,6 +459,7 @@ fn prepare_validated(
         notes: Vec::new(),
         verb: "prepare",
         bundle_requests_at_launch: None,
+        manifest_warm: None,
     };
     let t = ctx.mark("validate", started_ms);
     if let Some(earlier) = recovered {
@@ -2189,19 +2192,31 @@ pub(crate) fn run_reuse_path(ctx: &mut Ctx, plan: &BuildPlan, t: u64) -> Result<
     }
     let manifest = metro::manifest_spec(metro_port, platform_dir(ctx.record.scenario.platform));
     let mut attempts = 0;
-    let mut slow = None;
+    let mut in_margin = 0;
+    let mut last = None;
     loop {
         let Some(warmed) = run_budgeted_attempt(ctx, &manifest, deadline, &mut attempts)? else {
-            let slow = slow.ok_or_else(|| launch_deadline_spent(&ctx.record.run_id))?;
+            let last = last.ok_or_else(|| launch_deadline_spent(&ctx.record.run_id))?;
             return Err(launch_failure(
                 "dev client manifest",
-                &slow,
+                &last,
                 crate::core::host_load_1m(),
                 attempts,
                 &ctx.record.run_id,
             ));
         };
-        if warmed.ok() && warmed.duration_ms < DEV_CLIENT_REQUEST_TIMEOUT_MS {
+        let ready = match ctx.record.scenario.platform {
+            Platform::Ios => {
+                in_margin = manifest_in_margin(in_margin, &warmed);
+                in_margin == DEV_CLIENT_MANIFEST_ANSWERS
+            }
+            Platform::Android => warmed.ok() && warmed.duration_ms < DEV_CLIENT_REQUEST_TIMEOUT_MS,
+        };
+        if ready {
+            ctx.manifest_warm = Some(crate::core::ManifestWarm {
+                ms: warmed.duration_ms,
+                attempts,
+            });
             break;
         }
         if !warmed.ok() && !warmed.timed_out {
@@ -2213,7 +2228,7 @@ pub(crate) fn run_reuse_path(ctx: &mut Ctx, plan: &BuildPlan, t: u64) -> Result<
                 &ctx.record.run_id,
             ));
         }
-        slow = Some(warmed);
+        last = Some(warmed);
     }
     let launch = match ctx.record.scenario.platform {
         Platform::Ios => {
@@ -3950,6 +3965,18 @@ fn run_budgeted_attempt(
 
 // expo-dev-launcher abandons its first manifest fetch after EXDevLauncherDefaultRequestTimeout (10 s); launch only once Metro answers inside it.
 const DEV_CLIENT_REQUEST_TIMEOUT_MS: u64 = 10_000;
+// Metro rebuilds the manifest per request, so one fast answer does not predict the dev client's own.
+const DEV_CLIENT_MANIFEST_MARGIN_MS: u64 = DEV_CLIENT_REQUEST_TIMEOUT_MS / 2;
+const DEV_CLIENT_MANIFEST_ANSWERS: usize = 2;
+
+// Consecutive manifest answers inside the margin; any other outcome restarts the count.
+fn manifest_in_margin(in_margin: usize, warmed: &crate::exec::CmdOutput) -> usize {
+    if warmed.ok() && warmed.duration_ms < DEV_CLIENT_MANIFEST_MARGIN_MS {
+        in_margin + 1
+    } else {
+        0
+    }
+}
 
 // A launch timeout or a too-slow answer is the CDP leg's environmental refusal; any other launch error stays a build failure.
 fn launch_failure(
@@ -3976,8 +4003,7 @@ fn launch_failure(
             "build",
             FailureCode::CoreRefused,
             format!(
-                "{what} never answered inside the dev client's {}s request timeout: last {}ms after {attempts} attempts ({measured}); an environment refusal",
-                DEV_CLIENT_REQUEST_TIMEOUT_MS / 1000,
+                "{what} did not become ready within the preparation budget: last {}ms after {attempts} attempts ({measured}); an environment refusal",
                 launched.duration_ms
             ),
             format!("run qaren cleanup {run_id} --json, then retry prepare"),
@@ -4159,7 +4185,9 @@ mod launch_tests {
         assert_eq!(late.code, FailureCode::CoreRefused);
         let detail = late.detail.to_string();
         assert!(
-            detail.starts_with("dev client manifest never answered inside"),
+            detail.starts_with(
+                "dev client manifest did not become ready within the preparation budget"
+            ),
             "{detail}"
         );
         assert!(detail.contains("last 11573ms after 3 attempts"), "{detail}");
