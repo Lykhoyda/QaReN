@@ -1330,9 +1330,7 @@ for (const retrySucceeds of [false, true]) {
     let handlerCalls = 0;
     f.deps.fill = async () => {
       nativeCalls++;
-      return retrySucceeds && nativeCalls === 2
-        ? { ok: true, proven: true }
-        : refusal;
+      return retrySucceeds && nativeCalls === 2 ? { ok: true, proven: true } : refusal;
     };
     f.deps.setByHandler = async () => {
       handlerCalls++;
