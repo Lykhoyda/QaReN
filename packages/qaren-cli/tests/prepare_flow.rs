@@ -1198,7 +1198,7 @@ fn ios_prepare_refuses_when_the_manifest_never_answers_twice_inside_half_the_dev
     assert!(
         failure
             .detail
-            .starts_with("dev client manifest never answered 2 times in a row inside 5s"),
+            .starts_with("dev client manifest did not become ready within the preparation budget"),
         "{failure:?}"
     );
     assert!(failure.detail.contains("after 4 attempts"), "{failure:?}");

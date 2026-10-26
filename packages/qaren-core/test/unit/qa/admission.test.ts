@@ -7,6 +7,7 @@ import {
   TargetReadinessTimeoutError,
   TargetSelectionError,
   cachedPackageProbe,
+  inferPlatforms,
   clearPackageProbeCache,
 } from '../../../dist/cdp/discovery.js';
 import { test } from 'node:test';
@@ -1289,10 +1290,10 @@ type Refusal = Error & { code?: string; meta?: Record<string, unknown> };
 
 const SUMMARY = {
   readers: {
-    androidPackages: 'null',
+    androidPackages: 'empty',
     iosPackages: 'nonempty',
-    iosDeviceNames: 'null',
-    androidDeviceModels: 'null',
+    iosDeviceNames: 'empty',
+    androidDeviceModels: 'empty',
   },
   targets: [
     {
@@ -1512,11 +1513,86 @@ test('a platform selection with every probe failed retries with backoff, then at
   assert.deepEqual(decisions, Array(2).fill('retry:target_selection_platform_not_found'));
 });
 
+for (const reader of [
+  'androidPackages',
+  'iosPackages',
+  'iosDeviceNames',
+  'androidDeviceModels',
+] as const) {
+  test(`a matching defaulted candidate retries when ${reader} answered without proving its platform`, async (t) => {
+    const clock = mockClock(t);
+    let attempts = 0;
+    const inference = { ...UNPROVEN, readers: { ...UNPROVEN.readers, [reader]: 'nonempty' } };
+    const { stop, steps } = harness({
+      attach: async () => {
+        if (++attempts === 1) throw unprovenSelection(inference);
+      },
+    });
+    const admitted = admit(steps, stop);
+    clock.cleanup(stop, admitted);
+    await nextTurn();
+    assert.equal(attempts, 1);
+    await clock.advance(1_000);
+    assert.deepEqual(await admitted, PROVEN);
+    assert.equal(attempts, 2);
+  });
+}
+
+for (const mismatch of ['deviceMatch', 'bundleMatch'] as const) {
+  test(`a sibling iPhone 17 target with a ${mismatch} mismatch does not block retry`, async (t) => {
+    const clock = mockClock(t);
+    const targets = ['qa-device', 'iPhone 17'].map((deviceName, index) => ({
+      id: `${index}-1`,
+      title: 'Hermes',
+      appId: 'com.example.app',
+      deviceName,
+      webSocketDebuggerUrl: `ws://localhost:8081/${index}`,
+    }));
+    const inference = inferPlatforms(targets, {
+      readAndroid: () => null,
+      readIOS: () => null,
+      readIOSDeviceNames: () => null,
+      readAndroidDeviceModels: () => null,
+    });
+    inference.targets.forEach((target, index) => {
+      target.deviceMatch = true;
+      target.bundleMatch = true;
+      if (index === 1) target[mismatch] = false;
+    });
+    assert.equal(inference.targets[0]?.confidence, 'defaulted');
+    assert.equal(inference.targets[1]?.confidence, 'probed');
+    let attempts = 0;
+    const { stop, steps } = harness({
+      attach: async () => {
+        if (++attempts === 1) throw unprovenSelection(inference);
+      },
+    });
+    const admitted = admit(steps, stop);
+    clock.cleanup(stop, admitted);
+    await nextTurn();
+    assert.equal(attempts, 1);
+    await clock.advance(1_000);
+    assert.deepEqual(await admitted, PROVEN);
+    assert.equal(attempts, 2);
+  });
+}
+
 for (const [name, error] of [
-  ['a probe reader answered', unprovenSelection(SUMMARY)],
+  ['all relevant probe readers answered', unprovenSelection(SUMMARY)],
   [
     'the candidate is another app',
     unprovenSelection({ ...UNPROVEN, targets: [{ ...UNPROVEN.targets[0], bundleMatch: false }] }),
+  ],
+  [
+    'the candidate is another device',
+    unprovenSelection({ ...UNPROVEN, targets: [{ ...UNPROVEN.targets[0], deviceMatch: false }] }),
+  ],
+  [
+    'the failed readers cannot prove the missing name or identity',
+    unprovenSelection({
+      ...UNPROVEN,
+      targets: [{ ...UNPROVEN.targets[0], name: 'absent', identity: 'missing' }],
+    }),
   ],
   [
     'the candidate was proven on the other platform',

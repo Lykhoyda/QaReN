@@ -2205,8 +2205,14 @@ pub(crate) fn run_reuse_path(ctx: &mut Ctx, plan: &BuildPlan, t: u64) -> Result<
                 &ctx.record.run_id,
             ));
         };
-        in_margin = manifest_in_margin(in_margin, &warmed);
-        if in_margin == DEV_CLIENT_MANIFEST_ANSWERS {
+        let ready = match ctx.record.scenario.platform {
+            Platform::Ios => {
+                in_margin = manifest_in_margin(in_margin, &warmed);
+                in_margin == DEV_CLIENT_MANIFEST_ANSWERS
+            }
+            Platform::Android => warmed.ok() && warmed.duration_ms < DEV_CLIENT_REQUEST_TIMEOUT_MS,
+        };
+        if ready {
             ctx.manifest_warm = Some(crate::core::ManifestWarm {
                 ms: warmed.duration_ms,
                 attempts,
@@ -3997,9 +4003,7 @@ fn launch_failure(
             "build",
             FailureCode::CoreRefused,
             format!(
-                "{what} never answered {DEV_CLIENT_MANIFEST_ANSWERS} times in a row inside {}s, half the dev client's {}s request timeout: last {}ms after {attempts} attempts ({measured}); an environment refusal",
-                DEV_CLIENT_MANIFEST_MARGIN_MS / 1000,
-                DEV_CLIENT_REQUEST_TIMEOUT_MS / 1000,
+                "{what} did not become ready within the preparation budget: last {}ms after {attempts} attempts ({measured}); an environment refusal",
                 launched.duration_ms
             ),
             format!("run qaren cleanup {run_id} --json, then retry prepare"),
@@ -4182,7 +4186,7 @@ mod launch_tests {
         let detail = late.detail.to_string();
         assert!(
             detail.starts_with(
-                "dev client manifest never answered 2 times in a row inside 5s, half the dev client's 10s request timeout"
+                "dev client manifest did not become ready within the preparation budget"
             ),
             "{detail}"
         );

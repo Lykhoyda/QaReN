@@ -237,21 +237,25 @@ function transientReadinessFailure(error: unknown): boolean {
   );
 }
 
-// Every platform probe failed and no candidate was proven either way: the host was too loaded to tell, not a wrong app.
 export function unprovenPlatformSelection(error: unknown): boolean {
   if (!(error instanceof TargetSelectionError) || error.code !== 'PLATFORM_TARGET_NOT_FOUND')
     return false;
   const inference = error.inference;
-  if (!inference || inference.targets.length === 0) return false;
+  if (!inference) return false;
+  const candidates = inference.targets.filter(
+    (target) => target.deviceMatch !== false && target.bundleMatch !== false,
+  );
   const { androidPackages, iosPackages, iosDeviceNames, androidDeviceModels } = inference.readers;
   return (
-    androidPackages === 'null' &&
-    iosPackages === 'null' &&
-    [iosDeviceNames, androidDeviceModels].every(
-      (reader) => reader === 'null' || reader === 'not_consumed',
-    ) &&
-    inference.targets.every((target) => target.confidence === 'defaulted') &&
-    inference.targets.some((target) => target.deviceMatch !== false && target.bundleMatch !== false)
+    candidates.length > 0 &&
+    candidates.every(
+      (target) =>
+        target.confidence === 'defaulted' &&
+        ((target.identity === 'present' &&
+          (androidPackages === 'null' || iosPackages === 'null')) ||
+          (target.name === 'neither' &&
+            (iosDeviceNames === 'null' || androidDeviceModels === 'null'))),
+    )
   );
 }
 

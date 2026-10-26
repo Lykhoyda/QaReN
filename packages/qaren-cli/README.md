@@ -1766,9 +1766,8 @@ device lease remain claimed for `qaren cleanup`. The developer
 [check gate](../../scripts/gate-qaren-check.sh) forwards the boot opt-in with
 `QAREN_BOOT_DEVICE=1` alongside `QAREN_DEVICE_UDID`.
 
-iOS preparation, borrowed-emulator builds and cached Android preparation
-request the dev-client manifest from Metro with the `expo-platform` header
-before launch until two consecutive answers arrive in under 5 seconds, half the
+iOS preparation requests the dev-client manifest from Metro with the
+`expo-platform` header before launch until two consecutive answers arrive in under 5 seconds, half the
 dev client's own 10-second request timeout, because Metro rebuilds the manifest
 per request and one answer does not predict the client's own. Each request is
 recorded; slower answers and request timeouts restart the count, and a manifest
@@ -1776,8 +1775,9 @@ that never answers twice in a row that fast within the remaining
 `build_seconds` budget refuses with `CORE_REFUSED` and the measured times.
 The margin only gates the launch; it never shortens a request or ends a
 wait. The last warm-up's milliseconds and attempts go to the core for its
-attach refusal. Fresh Android scenario-based
-`prepare` keeps launch and Metro under `expo run:android` and does not perform
+attach refusal. Borrowed-emulator builds and cached Android preparation retain
+one manifest answer under the dev client's 10-second timeout. Fresh Android
+scenario-based `prepare` keeps launch and Metro under `expo run:android` and does not perform
 this warmup.
 Dev-client launch and iOS
 dev-menu defaults timeouts retry regardless of host load until the remaining
@@ -2644,13 +2644,13 @@ ambiguous only once both have registered.
 Transient target-list, WebSocket-handshake and runtime-probe timeouts, along with
 inspector page closure or replacement, retry within that same deadline regardless
 of host load, with bounded polling and exact-port rediscovery between attachment
-attempts. A platform-filtered selection that found no proven target because every
-platform probe failed (no package, inventory or device-model reader answered and
-every candidate's platform was defaulted, with none mismatching the device or
-bundle) also retries within that deadline, backing off from 1 s to 15 s and
-probing again instead of reusing a cached failure; a reader that answered, a
-candidate proven on another platform or a device or bundle mismatch stays
-terminal. If a bounded discovery wait ends with only other-bundle targets (or
+attempts. A platform-filtered selection retries when the candidates matching the
+requested device and bundle all have defaulted platforms and a package or device
+inventory probe needed to prove their platform failed. Unrelated Metro targets
+and successful readers do not block this retry. Retries back off from 1 s to
+15 s within the same deadline and probe again instead of reusing a cached
+failure. Matching candidates proven on another platform, or a selection with
+no matching candidate or no relevant failed probe, stay terminal. If a bounded discovery wait ends with only other-bundle targets (or
 targets with missing, malformed or conflicting bundle identity) on the selected
 device, admission refuses `CDP_NOT_CONNECTED` before liveness probing, relaunch or
 another attachment attempt. Exhausted readiness also refuses `CDP_NOT_CONNECTED`;
