@@ -31,15 +31,19 @@ async function run(
     text?: string;
     clearLeaves?: Read;
     clearReply?: { value?: string; error?: string };
+    warmLost?: boolean;
   } = {},
-): Promise<{ env: any; dispatched: string[][]; clears: number[] }> {
+): Promise<{ env: any; dispatched: string[][]; clears: number[]; raw: string[][] }> {
   _setActiveSessionForTest({ platform: 'ios', deviceId: 'TEST-DEVICE', appId: 'com.test' });
   clearRefMap();
   markSnapshotDirty();
   updateRefMapFromFlat(WRAPPER_ONLY as never, { snapshotGeneration: 7, keyboardVisible: true });
+  const requested = options.text ?? 'real@example.test';
   const dispatched: string[][] = [];
+  const raw: string[][] = [];
   const clears: number[] = [];
   let current = before;
+  let warmed = '';
   _setRunAgentDeviceForTest(
     async (
       cliArgs: string[],
@@ -48,11 +52,22 @@ async function run(
       if (cliArgs[0] !== 'fill') return okResult({ nodes: WRAPPER_ONLY });
       if (opts.focusedProof && !(await opts.focusedProof()))
         return failResult('Focus proof refused', 'NO_TEXT_INPUT_TARGET', { mutation: 'none' });
-      dispatched.push(cliArgs.slice(2));
-      if (options.mutation)
+      const typed = cliArgs[2];
+      raw.push(cliArgs.slice(2));
+      if (options.mutation) {
+        dispatched.push([typed]);
         return failResult('Replacement refused', 'TEXT_SYNTHESIS_UNAVAILABLE', {
           mutation: options.mutation,
         });
+      }
+      if (!warmed && typed !== requested && requested.startsWith(typed)) {
+        warmed = typed;
+        if (!options.warmLost)
+          current = { value: (current?.value ?? '') + typed, focused: current?.focused === true };
+        return okResult({ typed: true, textEntryRoute: 'synthesized-first-responder' });
+      }
+      dispatched.push([warmed + typed]);
+      warmed = '';
       const after = options.after;
       current =
         'after' in options
@@ -123,7 +138,7 @@ async function run(
       },
       client,
     );
-    return { env: JSON.parse(result.content[0].text), dispatched, clears };
+    return { env: JSON.parse(result.content[0].text), dispatched, clears, raw };
   } finally {
     _setRunAgentDeviceForTest(null);
     _setActiveSessionForTest(null);
@@ -265,13 +280,13 @@ for (const mutation of ['none', 'possible'] as const) {
     const { env, dispatched } = await run({ value: 'old', focused: true }, { mutation });
     assert.equal(env.code, 'TEXT_ENTRY_UNVERIFIED');
     assert.equal(env.meta.mutation, 'possible');
-    assert.deepEqual(dispatched, [[TEXT]]);
+    assert.deepEqual(dispatched, [[TEXT[0]]]);
   });
   test(`native refusal on an empty field preserves mutation ${mutation}`, async () => {
     const { env, dispatched } = await run({ value: '', focused: true }, { mutation });
     assert.equal(env.code, mutation === 'none' ? 'NO_TEXT_INPUT_TARGET' : 'TEXT_ENTRY_UNVERIFIED');
     assert.equal(env.meta.mutation, mutation);
-    assert.deepEqual(dispatched, [[TEXT]]);
+    assert.deepEqual(dispatched, [[TEXT[0]]]);
   });
 }
 
@@ -334,3 +349,34 @@ for (const [reply, mutation] of [
     assert.deepEqual(dispatched, []);
   });
 }
+
+for (const before of ['', 'private-prefill']) {
+  test(`the rest of the text waits for the first character to settle (${before ? 'prefilled' : 'empty'})`, async () => {
+    const { env, raw } = await run({ value: before, focused: true }, { privateValue: true });
+    assert.equal(env.meta.verify, 'exact');
+    assert.deepEqual(raw, [[TEXT[0]], [TEXT.slice(1)]]);
+  });
+}
+
+test('a first character the field never shows refuses before the rest is typed', async () => {
+  const { env, raw } = await run(
+    { value: '', focused: true },
+    { privateValue: true, warmLost: true },
+  );
+  assert.equal(env.code, 'TEXT_ENTRY_UNVERIFIED');
+  assert.equal(env.meta.mutation, 'possible');
+  assert.deepEqual(raw, [[TEXT[0]]]);
+});
+
+test('a one-character fill is typed in one dispatch', async () => {
+  const { env, raw } = await run({ value: '', focused: true }, { text: '7' });
+  assert.equal(env.meta.verify, 'exact');
+  assert.deepEqual(raw, [['7']]);
+});
+
+test('the first typed unit is a whole grapheme, not a code point', async () => {
+  const text = 'éclair@example.test';
+  const { env, raw } = await run({ value: '', focused: true }, { text });
+  assert.equal(env.meta.verify, 'exact');
+  assert.deepEqual(raw, [['é'], [text.slice(2)]]);
+});
