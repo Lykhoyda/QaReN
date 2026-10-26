@@ -14,6 +14,7 @@ import {
   TargetReadinessTimeoutError,
   TargetListAttemptTimeoutError,
   TargetSelectionError,
+  clearFailedPackageProbes,
   type PlatformInferenceSummary,
 } from '../cdp/discovery.js';
 import {
@@ -45,7 +46,9 @@ export interface AdmissionSteps {
   // Inside the attach deadline: the attached client must have run its bundle before anything reads it.
   bundleReady?(deadline: number): Promise<void>;
   // A stalled launch gets one relaunch after its readiness wait; it may wait for Metro until the deadline.
-  relaunch?(deadline: number): Promise<void>;
+  relaunch?(deadline: number): Promise<ManifestWarm | void>;
+  // The launch's last manifest warm-up, replaced by the relaunch's.
+  launchWarm?: ManifestWarm;
   // Before relaunching without a target, preserve a live app with a bundle request.
   appAlive?(): Promise<boolean>;
   // No request permits relaunch; a received request does not prove that a bundle finished loading.
@@ -60,6 +63,8 @@ export interface AdmissionSteps {
 }
 
 type Proven = Extract<ProveOutcome, { ok: true }>;
+
+export type ManifestWarm = { ms: number; attempts: number };
 
 export type AdmissionBoundary = (typeof ADMISSION_BOUNDARIES)[number];
 export type AdmissionInnerClass = (typeof ADMISSION_INNER_CLASSES)[number];
@@ -79,6 +84,8 @@ export type AdmissionRefusalFacts = {
   remainingMs: number;
   budgetMs: number;
   inference?: PlatformInferenceSummary;
+  warmMs?: number;
+  warmAttempts?: number;
 };
 
 // Classified by type only; an error's message or name never reaches the record.
@@ -160,6 +167,8 @@ export function formatAdmissionRefusal(
     elapsedMs: count(facts.elapsedMs),
     remainingMs: count(facts.remainingMs),
     budgetMs: count(facts.budgetMs),
+    ...(facts.warmMs === undefined ? {} : { warmMs: count(facts.warmMs) }),
+    ...(facts.warmAttempts === undefined ? {} : { warmAttempts: count(facts.warmAttempts) }),
   };
   if (isObject(facts.inference)) {
     const readers = isObject(facts.inference.readers) ? facts.inference.readers : {};
@@ -206,7 +215,7 @@ export function admissionMetric(
   attachStage: 'wait_targets' | 'connect_exact' | undefined,
   at: number,
 ): TimingEvent {
-  const { inference: _inference, ...rest } = facts;
+  const { inference: _inference, warmMs: _warmMs, warmAttempts: _warmAttempts, ...rest } = facts;
   return {
     stage: 'admission',
     edge: 'point',
@@ -227,6 +236,30 @@ function transientReadinessFailure(error: unknown): boolean {
     error instanceof CDPRequestTimeoutError
   );
 }
+
+// Every platform probe failed and no candidate was proven either way: the host was too loaded to tell, not a wrong app.
+export function unprovenPlatformSelection(error: unknown): boolean {
+  if (!(error instanceof TargetSelectionError) || error.code !== 'PLATFORM_TARGET_NOT_FOUND')
+    return false;
+  const inference = error.inference;
+  if (!inference || inference.targets.length === 0) return false;
+  const { androidPackages, iosPackages, iosDeviceNames, androidDeviceModels } = inference.readers;
+  return (
+    androidPackages === 'null' &&
+    iosPackages === 'null' &&
+    [iosDeviceNames, androidDeviceModels].every(
+      (reader) => reader === 'null' || reader === 'not_consumed',
+    ) &&
+    inference.targets.every((target) => target.confidence === 'defaulted') &&
+    inference.targets.some((target) => target.deviceMatch !== false && target.bundleMatch !== false)
+  );
+}
+
+// Each unproven selection re-runs synchronous simctl/adb probes, so its retries back off.
+const SELECTION_RETRY_BASE_MS = 1_000;
+const SELECTION_RETRY_MAX_MS = 15_000;
+export const selectionRetryDelayMs = (retry: number): number =>
+  Math.min(SELECTION_RETRY_BASE_MS * 2 ** Math.max(0, retry - 1), SELECTION_RETRY_MAX_MS);
 
 // iOS simulators share host loopback, so a sibling's runtime registers on the run's Metro; Android's Metro device name is a model, not the serial.
 export function metroDevicePin(
@@ -429,13 +462,14 @@ export const devClientLaunchUrl = (target: { metroUrlForDevice: string }): strin
 
 // The dev client waits this long for each manifest answer, then stays on its launcher without requesting a bundle.
 export const DEV_CLIENT_REQUEST_TIMEOUT_MS = 10_000;
+// Metro rebuilds the manifest per request, so one fast answer does not predict the dev client's own.
+export const DEV_CLIENT_MANIFEST_MARGIN_MS = DEV_CLIENT_REQUEST_TIMEOUT_MS / 2;
+export const DEV_CLIENT_MANIFEST_ANSWERS = 2;
 
-// Like the CLI's launch: (re)launch only once Metro answers the dev client's own manifest request in time.
-export async function awaitDevClientManifest(
-  url: string,
-  deadline: number,
-): Promise<{ ms: number; attempts: number }> {
+// Like the CLI's launch: (re)launch only once Metro answers the dev client's own manifest request with margin, twice in a row.
+export async function awaitDevClientManifest(url: string, deadline: number): Promise<ManifestWarm> {
   let attempts = 0;
+  let inMargin = 0;
   let ms: number | undefined;
   while (performance.now() < deadline) {
     attempts++;
@@ -456,10 +490,11 @@ export async function awaitDevClientManifest(
     ms = Math.round(performance.now() - startedAt);
     if (response && !response.ok)
       throw new Error(`dev client manifest answered HTTP ${response.status}`);
-    if (response && ms < DEV_CLIENT_REQUEST_TIMEOUT_MS) return { ms, attempts };
+    inMargin = response && ms < DEV_CLIENT_MANIFEST_MARGIN_MS ? inMargin + 1 : 0;
+    if (inMargin === DEV_CLIENT_MANIFEST_ANSWERS) return { ms, attempts };
   }
   throw new Error(
-    `dev client manifest never answered inside the dev client's ${DEV_CLIENT_REQUEST_TIMEOUT_MS / 1000}s request timeout: ${ms === undefined ? 'no request' : `last ${ms} ms`} after ${attempts} attempts`,
+    `dev client manifest never answered ${DEV_CLIENT_MANIFEST_ANSWERS} times in a row inside ${DEV_CLIENT_MANIFEST_MARGIN_MS / 1000}s, half the dev client's ${DEV_CLIENT_REQUEST_TIMEOUT_MS / 1000}s request timeout: ${ms === undefined ? 'no request' : `last ${ms} ms`} after ${attempts} attempts`,
   );
 }
 
@@ -481,6 +516,8 @@ async function attach(steps: AdmissionSteps, signal: AbortSignal): Promise<Prove
   let lastStarted: AdmissionBoundary = 'attach';
   let lastCompleted: AdmissionBoundary | 'none' = 'none';
   let retried: unknown;
+  let selectionRetries = 0;
+  let warm = steps.launchWarm;
   const attachTimeout = new CDPProbeTimeoutError('CDP attach deadline exceeded');
   const facts = (inner: AdmissionInnerClass): AdmissionRefusalFacts => {
     const now = performance.now();
@@ -545,9 +582,10 @@ async function attach(steps: AdmissionSteps, signal: AbortSignal): Promise<Prove
         } catch (error) {
           if (isAbort(error)) throw error;
           const remaining = Math.min(deadline - performance.now(), steps.remainingMs());
+          const unproven = unprovenPlatformSelection(error);
           if (
             error instanceof BundleReadinessTimeoutError ||
-            !transientReadinessFailure(error) ||
+            !(transientReadinessFailure(error) || unproven) ||
             remaining <= 0
           )
             throw error;
@@ -588,8 +626,10 @@ async function attach(steps: AdmissionSteps, signal: AbortSignal): Promise<Prove
                 lastStarted = 'relaunch';
                 const relaunch = steps.relaunch;
                 const until = Math.max(refuseStalledAt, performance.now() + steps.readinessMs);
-                await interruptible(() => relaunch(until));
+                const warmed = await interruptible(() => relaunch(until));
+                if (warmed) warm = warmed;
                 lastCompleted = 'relaunch';
+                liveness = 'not_probed';
                 bundleRequest = 'not_probed';
               } catch (relaunchError) {
                 if (isAbort(relaunchError)) throw relaunchError;
@@ -611,7 +651,9 @@ async function attach(steps: AdmissionSteps, signal: AbortSignal): Promise<Prove
           }
           observe('retry', facts(admissionInnerClass(error)));
           lastStarted = 'retry_wait';
-          await sleep(Math.min(REACT_READY_POLL_MS, remaining));
+          if (unproven) clearFailedPackageProbes();
+          const pause = unproven ? selectionRetryDelayMs(++selectionRetries) : REACT_READY_POLL_MS;
+          await sleep(Math.min(pause, remaining));
           lastCompleted = 'retry_wait';
         }
       }
@@ -625,18 +667,27 @@ async function attach(steps: AdmissionSteps, signal: AbortSignal): Promise<Prove
     if (!attaching && !transientReadinessFailure(error)) throw error;
     const load = (steps.load ?? (() => loadavg()[0]))();
     const boundary = facts('none').lastStarted;
-    const inner = admissionInnerClass(
+    const cause =
       error === attachTimeout && (boundary === 'attach' || boundary === 'retry_wait')
         ? (retried ?? error)
-        : error,
-    );
+        : error;
+    const inner = admissionInnerClass(cause);
+    // A refusal says whether the app ran and asked Metro for its bundle, whatever stopped the attach.
+    if (attaching) {
+      // Past the deadline only the request-count read fits before the CLI's own walk deadline.
+      if (liveness === 'not_probed' && error !== attachTimeout)
+        liveness = await probeLiveness(steps);
+      if (liveness !== 'dead' && bundleRequest === 'not_probed' && steps.bundleRequested)
+        bundleRequest = await probeBundleRequest(steps);
+    }
     let refusal: AdmissionRefusalFacts | undefined;
     try {
       refusal = {
         ...facts(inner),
-        ...(error instanceof TargetSelectionError && error.inference
-          ? { inference: error.inference }
+        ...(cause instanceof TargetSelectionError && cause.inference
+          ? { inference: cause.inference }
           : {}),
+        ...(warm ? { warmMs: warm.ms, warmAttempts: warm.attempts } : {}),
       };
       observe('refused', refusal);
     } catch {
@@ -644,7 +695,7 @@ async function attach(steps: AdmissionSteps, signal: AbortSignal): Promise<Prove
     }
     throw new HandlerError(
       'CDP_NOT_CONNECTED',
-      `cannot attach to the dev client through Metro ${steps.metroPort}: ${describeError(error).message} (observed ${refusal?.lastStarted ?? lastStarted}: ${inner}; app ${liveness}; bundle request ${bundleRequest}; host 1-minute load ${load.toFixed(1)}${relaunchFailure === undefined ? '' : `; relaunch failed: ${relaunchFailure}`})`,
+      `cannot attach to the dev client through Metro ${steps.metroPort}: ${describeError(error).message} (observed ${refusal?.lastStarted ?? lastStarted}: ${inner}; app ${liveness}; bundle request ${bundleRequest}${warm ? `; last manifest warm-up ${warm.ms} ms after ${warm.attempts} attempts` : ''}${bundleRequest === 'not_received' ? `; likely cause: the dev client's manifest request outlasted its ${DEV_CLIENT_REQUEST_TIMEOUT_MS / 1000}s timeout, so it never requested a bundle` : ''}; host 1-minute load ${load.toFixed(1)}${relaunchFailure === undefined ? '' : `; relaunch failed: ${relaunchFailure}`})`,
       refusal,
     );
   } finally {

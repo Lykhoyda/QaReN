@@ -3,7 +3,12 @@ import { createStop } from '../../../dist/qa/stop.js';
 import { RunInputs, withInputs } from '../../../dist/qa/inputs.js';
 import { createWriter } from '../../../dist/qa/wire.js';
 import { getEventListeners } from 'node:events';
-import { TargetReadinessTimeoutError, TargetSelectionError } from '../../../dist/cdp/discovery.js';
+import {
+  TargetReadinessTimeoutError,
+  TargetSelectionError,
+  cachedPackageProbe,
+  clearPackageProbeCache,
+} from '../../../dist/cdp/discovery.js';
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
@@ -1463,6 +1468,190 @@ test('a deadline during the retry pause records the pause, not the attach', asyn
   assert.equal(rest.inner, 'cdp_handshake_timeout');
   assert.equal(rest.attempt, 2);
   assert.equal(remainingMs, 0);
+});
+
+const UNPROVEN = {
+  readers: {
+    androidPackages: 'null',
+    iosPackages: 'null',
+    iosDeviceNames: 'null',
+    androidDeviceModels: 'not_consumed',
+  },
+  targets: [{ ...SUMMARY.targets[0] }],
+} as const;
+const unprovenSelection = (inference: object = UNPROVEN) =>
+  new TargetSelectionError(
+    'PLATFORM_TARGET_NOT_FOUND',
+    'PLATFORM_TARGET_NOT_FOUND: x',
+    [],
+    inference as typeof SUMMARY,
+  );
+
+test('a platform selection with every probe failed retries with backoff, then attaches', async (t) => {
+  const clock = mockClock(t);
+  let attempts = 0;
+  const decisions: string[] = [];
+  const { stop, steps } = harness({
+    attach: async () => {
+      if (++attempts <= 2) throw unprovenSelection();
+    },
+    observe: (decision, facts) => decisions.push(`${decision}:${facts.inner}`),
+  });
+  const admitted = admit(steps, stop);
+  clock.cleanup(stop, admitted);
+  await nextTurn();
+  assert.equal(attempts, 1);
+  await clock.advance(999);
+  assert.equal(attempts, 1);
+  await clock.advance(1);
+  assert.equal(attempts, 2);
+  await clock.advance(1_999);
+  assert.equal(attempts, 2, 'the second pause doubles');
+  await clock.advance(1);
+  assert.deepEqual(await admitted, PROVEN);
+  assert.deepEqual(decisions, Array(2).fill('retry:target_selection_platform_not_found'));
+});
+
+for (const [name, error] of [
+  ['a probe reader answered', unprovenSelection(SUMMARY)],
+  [
+    'the candidate is another app',
+    unprovenSelection({ ...UNPROVEN, targets: [{ ...UNPROVEN.targets[0], bundleMatch: false }] }),
+  ],
+  [
+    'the candidate was proven on the other platform',
+    unprovenSelection({ ...UNPROVEN, targets: [{ ...UNPROVEN.targets[0], confidence: 'probed' }] }),
+  ],
+  [
+    'the device has no target',
+    new TargetSelectionError('DEVICE_TARGET_NOT_FOUND', 'x', [], UNPROVEN as typeof SUMMARY),
+  ],
+  ['no inference was recorded', new TargetSelectionError('PLATFORM_TARGET_NOT_FOUND', 'x', [])],
+] as const) {
+  test(`a selection refusal stays terminal when ${name}`, async () => {
+    let attempts = 0;
+    const { calls, stop, steps } = harness({
+      attach: async () => {
+        attempts++;
+        throw error;
+      },
+    });
+    const refused = await refusalOf(admit(steps, stop));
+    assert.equal(refused.code, 'CDP_NOT_CONNECTED');
+    assert.equal(attempts, 1);
+    assert.deepEqual(calls, ['close']);
+  });
+}
+
+test('a cached failed probe is probed again on the unproven-selection retry; a cached answer is kept', async (t) => {
+  clearPackageProbeCache();
+  t.after(clearPackageProbeCache);
+  let now = 0;
+  const probeClock = () => now;
+  let failed = 0;
+  let answered = 0;
+  const slowFailure = () => {
+    failed++;
+    now += 1_000;
+    return null;
+  };
+  const answer = () => {
+    answered++;
+    return new Set(['com.example']);
+  };
+  const readAll = () => {
+    cachedPackageProbe('ios-test', slowFailure, probeClock);
+    cachedPackageProbe('android-test', answer, probeClock);
+  };
+  readAll();
+  readAll();
+  assert.deepEqual([failed, answered], [1, 1], 'a slow failure is cached for the long TTL');
+
+  const clock = mockClock(t);
+  let attempts = 0;
+  const { stop, steps } = harness({
+    attach: async () => {
+      readAll();
+      if (++attempts === 1) throw unprovenSelection();
+    },
+  });
+  const admitted = admit(steps, stop);
+  clock.cleanup(stop, admitted);
+  await nextTurn();
+  await clock.advance(1_000);
+  assert.deepEqual(await admitted, PROVEN);
+  assert.deepEqual([failed, answered], [2, 1]);
+});
+
+test('an unproven selection that outlasts the deadline refuses with its inference and bundle request, without a late liveness probe', async (t) => {
+  const clock = mockClock(t);
+  let attempts = 0;
+  let livenessProbes = 0;
+  const { stop, steps } = harness({
+    remainingMs: () => 2_500,
+    attach: async () => {
+      attempts++;
+      throw unprovenSelection();
+    },
+    appAlive: async () => {
+      livenessProbes++;
+      return true;
+    },
+    bundleRequested: async () => true,
+  });
+  const admitted = refusalOf(admit(steps, stop));
+  clock.cleanup(stop, admitted);
+  await nextTurn();
+  await clock.advance(1_000);
+  await clock.advance(1_500);
+  const error = await admitted;
+  assert.equal(error.code, 'CDP_NOT_CONNECTED');
+  assert.equal(attempts, 2);
+  const record = JSON.parse(formatAdmissionRefusal(error.meta, 'connect_exact'));
+  assert.equal(record.inner, 'target_selection_platform_not_found');
+  assert.equal(record.attempt, 2);
+  assert.equal(record.liveness, 'not_probed');
+  assert.equal(livenessProbes, 0);
+  assert.equal(record.bundleRequest, 'received');
+  assert.deepEqual(record.inference.readers, UNPROVEN.readers);
+  assert.equal(record.budgetMs, 2_500);
+});
+
+test('a refusal with no bundle request carries the last manifest warm-up and names the likely cause', async () => {
+  const { stop, steps } = harness({
+    launchWarm: { ms: 7_100, attempts: 2 },
+    attach: async () => {
+      throw new Error('no target');
+    },
+    appAlive: async () => true,
+    bundleRequested: async () => false,
+  });
+  const error = await refusalOf(admit(steps, stop));
+  assert.match(
+    error.message,
+    /bundle request not_received; last manifest warm-up 7100 ms after 2 attempts; likely cause: the dev client's manifest request outlasted its 10s timeout/,
+  );
+  const record = JSON.parse(formatAdmissionRefusal(error.meta));
+  assert.equal(record.warmMs, 7_100);
+  assert.equal(record.warmAttempts, 2);
+  assert.equal(record.bundleRequest, 'not_received');
+  assert.equal(record.liveness, 'alive');
+  assert.ok(cleanTimingEvent(admissionMetric('refused', error.meta as never, undefined, 1)));
+});
+
+test('the relaunch warm-up replaces the launch warm-up in the refusal', async () => {
+  let attempts = 0;
+  const { stop, steps } = harness({
+    launchWarm: { ms: 7_100, attempts: 2 },
+    attach: async () => {
+      if (++attempts === 1) throw new TargetReadinessTimeoutError('stuck on the launcher');
+      throw new Error('no target');
+    },
+    relaunch: async () => ({ ms: 900, attempts: 3 }),
+  });
+  const error = await refusalOf(admit(steps, stop));
+  assert.deepEqual([error.meta?.warmMs, error.meta?.warmAttempts], [900, 3]);
+  assert.doesNotMatch(error.message, /likely cause/);
 });
 
 test('a relaunch followed by a deterministic failure records one relaunch and two attempts', async () => {

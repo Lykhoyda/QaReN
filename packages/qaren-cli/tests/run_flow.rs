@@ -2062,6 +2062,10 @@ fn check_runs_the_phases_in_order_and_ends_pass_with_a_report() {
         .unwrap()
         .ends_with("/logs/metro.bundle-requests"));
     assert_eq!(
+        request_line["payload"]["target"]["manifestWarm"],
+        serde_json::json!({ "ms": 0, "attempts": 2 })
+    );
+    assert_eq!(
         request_line["payload"]["preflightCalls"],
         probe_json()["callDetails"]
     );
@@ -3343,6 +3347,7 @@ fn script_android_launch(mock: &mut MockRunner, no_pid_ticks: usize) {
     mock.expect_run("lsof", CmdOutput::success("6001"));
     mock.expect_run("ps", CmdOutput::success("6000"));
     mock.expect_run("curl", CmdOutput::success("packager-status:running"));
+    mock.expect_run("expo-platform", CmdOutput::success(""));
     mock.expect_run("expo-platform", CmdOutput::success(""));
     mock.expect_run("am start", CmdOutput::success("Starting: Intent"));
     for _ in 0..no_pid_ticks {
@@ -5000,6 +5005,7 @@ fn fresh_install_resets_or_proves_absence_before_cached_install_under_the_same_l
             mock.expect_run("curl", CmdOutput::success("packager-status:running"));
             if launch {
                 mock.expect_run("qaren-request-probe", CmdOutput::success(""));
+                mock.expect_run("expo-platform", CmdOutput::success(""));
                 mock.expect_run("expo-platform", CmdOutput::success(""));
                 common::script_devmenu_defaults(&mut mock, CmdOutput::success(""));
                 mock.expect_run(
@@ -8447,6 +8453,9 @@ fn a_cancel_during_a_cached_ios_install_names_the_substage() {
             mock.expect_run("qaren-request-probe", CmdOutput::success(""));
             mock.expect_run("expo-platform", CmdOutput::success(""));
         }
+        if index > 1 {
+            mock.expect_run("expo-platform", CmdOutput::success(""));
+        }
         if index == 2 {
             mock.expect_run("defaults write", CmdOutput::success(""));
         }
@@ -8526,6 +8535,7 @@ fn check_fails_fast_when_the_launched_ios_app_exits_and_names_the_missing_framew
     mock.expect_run("curl", CmdOutput::success("packager-status:running"));
     mock.expect_run("qaren-request-probe", CmdOutput::success(""));
     mock.expect_run("expo-platform", CmdOutput::success(""));
+    mock.expect_run("expo-platform", CmdOutput::success(""));
     common::script_devmenu_defaults(&mut mock, CmdOutput::success(""));
     common::script_ios_launch(&mut mock);
     for _ in 0..2 {
@@ -8595,6 +8605,7 @@ fn script_warm_launch_after_one_metro_retry(mock: &mut MockRunner) {
         );
     }
     mock.expect_run("qaren-request-probe", CmdOutput::success(""));
+    mock.expect_run("expo-platform", CmdOutput::success(""));
     mock.expect_run("expo-platform", CmdOutput::success(""));
     common::script_devmenu_defaults(mock, CmdOutput::success(""));
     mock.expect_run(
@@ -8881,6 +8892,7 @@ fn script_android_pr_ready(mock: &mut MockRunner) {
     mock.expect_run("lsof", CmdOutput::success("6001"));
     mock.expect_run("ps", CmdOutput::success("6000"));
     mock.expect_run("curl", CmdOutput::success("packager-status:running"));
+    mock.expect_run("expo-platform", CmdOutput::success(""));
     mock.expect_run("expo-platform", CmdOutput::success(""));
     mock.expect_run("am start", CmdOutput::success("Starting: Intent"));
     mock.expect_run("ps", CmdOutput::success(&format!("{LSTART}\n")));

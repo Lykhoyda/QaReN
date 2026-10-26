@@ -382,18 +382,20 @@ async function metro(t: TestContext, answer: RequestListener): Promise<string> {
   return `http://127.0.0.1:${(server.address() as AddressInfo).port}/?disableOnboarding=1`;
 }
 
-test('a relaunch waits for a manifest answer inside the dev client request timeout', async (t) => {
+test('a relaunch waits for two consecutive manifest answers inside half the dev client request timeout', async (t) => {
   let clock = 0;
   t.mock.method(performance, 'now', () => clock);
   const seen: unknown[] = [];
+  // 7 s fits the dev client's 10 s limit but not the 5 s margin, so it restarts the streak.
+  const answers = [12_000, 1_000, 7_000, 1_000, 1_000];
   const url = await metro(t, (req, res) => {
     seen.push([req.method, req.url, req.headers['expo-platform'], req.headers.accept]);
-    clock += seen.length === 1 ? 12_000 : 1_000;
+    clock += answers[seen.length - 1]!;
     res.end('{}');
   });
-  assert.deepEqual(await awaitDevClientManifest(url, 60_000), { ms: 1_000, attempts: 2 });
+  assert.deepEqual(await awaitDevClientManifest(url, 60_000), { ms: 1_000, attempts: 5 });
   const request = ['GET', '/?disableOnboarding=1', 'ios', 'application/expo+json,application/json'];
-  assert.deepEqual(seen, [request, request]);
+  assert.deepEqual(seen, Array(5).fill(request));
 });
 
 test('a manifest slower than the dev client timeout until the deadline fails the relaunch', async (t) => {
@@ -405,7 +407,7 @@ test('a manifest slower than the dev client timeout until the deadline fails the
   });
   await assert.rejects(
     awaitDevClientManifest(url, 30_000),
-    /never answered inside the dev client's 10s request timeout: last 12000 ms after 3 attempts/,
+    /never answered 2 times in a row inside 5s, half the dev client's 10s request timeout: last 12000 ms after 3 attempts/,
   );
 });
 
@@ -413,7 +415,7 @@ test('an unanswered manifest request ends at the deadline', async (t) => {
   const url = await metro(t, () => undefined);
   await assert.rejects(
     awaitDevClientManifest(url, performance.now() + 100),
-    /never answered inside the dev client's 10s request timeout: last \d+ ms after \d+ attempts/,
+    /never answered 2 times in a row inside 5s, half the dev client's 10s request timeout: last \d+ ms after \d+ attempts/,
   );
 });
 

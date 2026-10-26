@@ -359,6 +359,12 @@ export function clearPackageProbeCache(): void {
   packageProbeCache.clear();
 }
 
+// A caller that paces its own retries re-pays a failed probe instead of reading the cached failure.
+export function clearFailedPackageProbes(): void {
+  for (const [key, entry] of packageProbeCache)
+    if (entry.value === null) packageProbeCache.delete(key);
+}
+
 // GH #777 QA: adb reads are fenced to the device the registry binding authorizes
 // — the same authority cdp_connect derives its exact-device proof from. Only that
 // serial may be queried; an ambient shared phone is never probed.

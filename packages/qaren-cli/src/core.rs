@@ -51,6 +51,14 @@ pub struct CoreTarget {
     pub worktree: PathBuf,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub metro_bundle_requests: Option<MetroBundleRequests>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub manifest_warm: Option<ManifestWarm>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct ManifestWarm {
+    pub ms: u64,
+    pub attempts: usize,
 }
 
 #[derive(Debug, Clone, Serialize)]

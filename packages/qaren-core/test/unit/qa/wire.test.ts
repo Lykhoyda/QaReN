@@ -258,6 +258,28 @@ test('the target may carry the value-free Metro bundle-request signal', () => {
     assert.throws(() => parseRequest(line(bad)), /missing required fields/);
 });
 
+test('the target may carry the CLI manifest warm-up as counts only', () => {
+  const line = (manifestWarm: unknown) =>
+    JSON.stringify({
+      v: 1,
+      runId: 'check-1',
+      seq: 1,
+      type: 'request',
+      payload: { ...request, target: { ...request.target, manifestWarm } },
+    });
+  const warm = { ms: 4_200, attempts: 2 };
+  assert.deepEqual(parseRequest(line(warm)).target.manifestWarm, warm);
+  for (const bad of [
+    null,
+    { ms: -1, attempts: 2 },
+    { ms: 1.5, attempts: 2 },
+    { ms: 4_200, attempts: 0 },
+    { ms: '4200', attempts: 2 },
+    { attempts: 2 },
+  ])
+    assert.throws(() => parseRequest(line(bad)), /missing required fields/);
+});
+
 test('a multibyte character split across chunks still decodes', async () => {
   const line = `${JSON.stringify({ v: 1, runId: 'check-1', seq: 1, type: 'request', payload: { ...request, plan: '✓ "Tasks"\n' } })}\n`;
   const bytes = Buffer.from(line, 'utf8');
