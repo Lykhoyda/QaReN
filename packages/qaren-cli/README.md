@@ -2419,8 +2419,9 @@ effective selector is left for that step; decline-label matching is case-insensi
 Within a replayed block, recovery retains the declared target for the exemption
 and uses its stored selector to protect the planned control. Targets in later
 blocks use their declared identities until those blocks are prepared for replay.
-A visible non-exempt plan target, uncertain absence, or a control inside a plan
-target prevents dismissal. Phrase-only current targets cannot establish this
+A visible non-exempt target in the current block, uncertain absence for a target
+subject to the absence guard, or a control inside any plan target prevents
+dismissal. Phrase-only current targets cannot establish this
 deterministic absence guard.
 
 With `TYPESAFE_API_KEY`, Jev may veto a selected control when the screen may be
