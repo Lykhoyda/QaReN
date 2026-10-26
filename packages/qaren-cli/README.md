@@ -1767,15 +1767,15 @@ device lease remain claimed for `qaren cleanup`. The developer
 `QAREN_BOOT_DEVICE=1` alongside `QAREN_DEVICE_UDID`.
 
 iOS preparation requests the dev-client manifest from Metro with the
-`expo-platform` header before launch until two consecutive answers arrive in under 5 seconds, half the
-dev client's own 10-second request timeout, because Metro rebuilds the manifest
+`expo-platform` header before launch until two consecutive answers arrive in
+under 5 seconds, half the dev client's own 10-second request timeout, because
+Metro rebuilds the manifest
 per request and one answer does not predict the client's own. Each request is
 recorded; slower answers and request timeouts restart the count, and a manifest
 that never answers twice in a row that fast within the remaining
 `build_seconds` budget refuses with `CORE_REFUSED` and the measured times.
 The margin only gates the launch; it never shortens a request or ends a
-wait. The last warm-up's milliseconds and attempts go to the core for its
-attach refusal. Borrowed-emulator builds and cached Android preparation retain
+wait. Borrowed-emulator builds and cached Android preparation retain
 one manifest answer under the dev client's 10-second timeout. Fresh Android
 scenario-based `prepare` keeps launch and Metro under `expo run:android` and does not perform
 this warmup.
@@ -2652,7 +2652,7 @@ and successful readers do not block this retry. Retries back off from 1 s to
 failure. Matching candidates proven on another platform, or a selection with
 no matching candidate or no relevant failed probe, stay terminal. If a bounded discovery wait ends with only other-bundle targets (or
 targets with missing, malformed or conflicting bundle identity) on the selected
-device, admission refuses `CDP_NOT_CONNECTED` before liveness probing, relaunch or
+device, admission refuses `CDP_NOT_CONNECTED` without relaunch or
 another attachment attempt. Exhausted readiness also refuses `CDP_NOT_CONNECTED`;
 malformed target-list responses and deterministic attachment rejections refuse
 immediately. Host load is diagnostic and does not decide whether the app is ready.
@@ -2683,13 +2683,12 @@ probe permits recovery as before. Skipping
 does not consume the one relaunch for persistent runtime-probe or
 WebSocket-handshake timeouts, and a target that registers late gets the same
 readiness window before a stalled handshake triggers the one relaunch. For retained admission facts,
-see [runtime-input diagnostics](#runtime-inputs). Before the liveness check or
-relaunch, admission checks for a foreign driver;
+see [runtime-input diagnostics](#runtime-inputs). Before probing liveness for
+relaunch or relaunching, admission checks for a foreign driver;
 a conflict refuses `BUSY_FOREIGN_FLOW`
-without relaunching. Like the CLI's launch, the relaunch first waits until Metro
-answers the dev client's manifest request twice in a row in under 5 s: the dev
-client gives each manifest request 10 s, then stays on its launcher without
-requesting a bundle. It retries slow answers until the attach limit (or one readiness window,
+without relaunching. The relaunch uses the same
+[manifest readiness margin as iOS preparation](#ios-simulator-lifecycle).
+It retries slow answers until the attach limit (or one readiness window,
 if that limit has passed); a manifest error, an unreachable Metro or no answer in
 time fails the relaunch. It relaunches on the exact simulator with the CLI's
 original `initialUrl` using `simctl launch --terminate-running-process` within
@@ -2701,9 +2700,12 @@ also returns `CDP_NOT_CONNECTED` with measured host load (or an explicit
 unavailable measurement), regardless of load. After admission, deadline
 expiry remains `WALK_DEADLINE_EXCEEDED`.
 The refusal names the observed boundary, typed failure, app liveness and request
-observation, reading the request signal at refusal (and probing liveness, unless
-the attach deadline has passed) if this launch had not yet done so, and the last manifest warm-up's milliseconds and
-attempts (the CLI's, or the relaunch's once it ran). With no bundle request it
+observation, probing liveness within the remaining deadline if this launch had
+not yet done so, and reading an unprobed request signal unless the app is proven
+dead. When available, `warmMs` records the final answer's milliseconds and
+`warmAttempts` the total request count from the CLI's successful manifest warm-up;
+a completed admission relaunch replaces them with its warm-up measurements.
+A failed relaunch retains the CLI measurements. With no bundle request it
 names the likely cause: the dev client's manifest request outlasted its timeout.
 The deadline preserves the latest retry's failure class instead of
 replacing it with a generic probe timeout. Empty target lists, targets on another
