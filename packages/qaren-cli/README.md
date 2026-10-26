@@ -916,12 +916,12 @@ and no mutation; a clear with any other outcome reports a possible mutation. If 
 field is not proven empty, focus moves, or the step budget expires, no replacement
 text is sent and the refusal reports a possible mutation.
 
-A replacement of more than one character is typed in two bursts, as element typing
-does: iOS drops keys synthesized while the app renders a field's first change, so
-QaReN types the first character alone, waits 500 ms and until the field shows a
-stable nonempty content length with focus kept, then types the rest. If the first
-character never settles, the remaining text is not sent and the refusal reports a
-possible mutation.
+A non-secure replacement containing more than one grapheme is typed in two bursts,
+including when the field starts empty. As with element typing, QaReN types the
+first grapheme alone to avoid keys being dropped while the app renders its first
+change, waits 500 ms and requires two consecutive observations of the same nonempty
+content length with focus kept, then types the rest. If the first burst never
+settles, the remaining text is not sent and the refusal reports a possible mutation.
 
 After typing, an exact controlled non-secure value verifies the fill. Readable
 mismatches, including dropped characters and app formatting such as `123456`
