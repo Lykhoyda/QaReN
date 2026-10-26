@@ -3003,3 +3003,124 @@ test('a runtime email missing its first character stops the plan before submissi
     _setActiveSessionForTest(null);
   }
 });
+
+const MISMATCH: ActResult = {
+  ok: false,
+  proven: false,
+  mutation: 'observed',
+  error: 'TEXT_ENTRY_UNVERIFIED: The private input differs from the requested text; not retrying.',
+  method: 'keyboard',
+};
+
+function ladder(
+  fake: ReturnType<typeof app>,
+  reply: ActResult = { ok: true, proven: true },
+): { testID: string; text: string; privateValue?: boolean }[] {
+  const calls: { testID: string; text: string; privateValue?: boolean }[] = [];
+  fake.deps.setByHandler = async (testID, text, context, privateValue) => {
+    context.authorize();
+    calls.push({ testID, text, ...(privateValue !== undefined ? { privateValue } : {}) });
+    return reply;
+  };
+  return calls;
+}
+
+test('a typing refusal steps once to the change handler, records set-handler and qualifies the pass', async () => {
+  const fake = app({ type: MISMATCH });
+  const calls = ladder(fake);
+  const outcome = await walkBlock(blocks(plan())[0], fake.deps);
+  assert.equal(outcome.block.outcome, 'pass', JSON.stringify(outcome.failure));
+  assert.deepEqual(calls, [{ testID: 'qa-hidden-email', text: EMAIL, privateValue: false }]);
+  const fill = outcome.rows[0];
+  assert.equal(fill.method, 'set-handler');
+  assert.match(fill.reason ?? '', /^FILL_SET_BY_HANDLER: /);
+  assert.equal(JSON.stringify(fill).includes(EMAIL), false);
+  assert.ok(fake.notes.some((note) => note.startsWith('fill-ladder ')));
+  assert.deepEqual(steps(fake.log), ['press @wrap', 'type @wrap', 'press @submit']);
+});
+
+test('a step labelled (any method) counts a change-handler pass as proof', async () => {
+  const fake = app({ type: MISMATCH });
+  ladder(fake);
+  const outcome = await walkBlock(
+    blocks(
+      `## QA\n\n### Hidden email\n\n1. Fill "qa-hidden-email" with "${EMAIL}" (any method)\n2. Tap "qa-hidden-submit"\n✓ "Form accepted"\n`,
+    )[0],
+    fake.deps,
+  );
+  assert.equal(outcome.block.outcome, 'pass', JSON.stringify(outcome.failure));
+  assert.equal(outcome.rows[0].method, 'set-handler');
+  assert.equal(outcome.rows[0].reason, undefined);
+});
+
+test('keyboard and clear-then-type rows record their rung and count as proof', async () => {
+  for (const method of ['keyboard', 'clear-type'] as const) {
+    const fake = app({ type: { ok: true, proven: true, method } });
+    const calls = ladder(fake);
+    const outcome = await walkBlock(blocks(plan())[0], fake.deps);
+    assert.equal(outcome.block.outcome, 'pass', JSON.stringify(outcome.failure));
+    assert.equal(outcome.rows[0].method, method);
+    assert.equal(outcome.rows[0].reason, undefined);
+    assert.deepEqual(calls, []);
+  }
+});
+
+test('an uncertain typing outcome never steps to the change handler', async () => {
+  const fake = app({ type: { ...MISMATCH, mutation: 'possible' } });
+  const calls = ladder(fake);
+  const outcome = await walkBlock(blocks(plan())[0], fake.deps);
+  assert.equal(outcome.block.outcome, 'fail');
+  assert.deepEqual(calls, []);
+  assert.equal(outcome.rows[0].method, 'keyboard');
+});
+
+test('a change handler that sets nothing leaves the typing refusal standing', async () => {
+  const fake = app({ type: MISMATCH });
+  const calls = ladder(fake, {
+    ok: false,
+    proven: false,
+    mutation: 'none',
+    error:
+      'TEXT_ENTRY_UNVERIFIED: Rung 3 refused to set the input through its change handler; nothing was set.',
+  });
+  const outcome = await walkBlock(blocks(plan())[0], fake.deps);
+  assert.equal(outcome.block.outcome, 'fail');
+  assert.equal(calls.length, 1);
+  assert.equal(outcome.rows[0].method, 'keyboard');
+  assert.match(JSON.stringify(outcome.failure?.seen), /private input differs/);
+  assert.equal(steps(fake.log).includes('press @submit'), false);
+});
+
+test('a mismatch after the change handler fails the step without a third attempt', async () => {
+  const fake = app({ type: MISMATCH });
+  const calls = ladder(fake, {
+    ok: false,
+    proven: false,
+    mutation: 'observed',
+    error:
+      'TEXT_ENTRY_UNVERIFIED: The private input differs from the requested text after rung 3 (set through the change handler); not retrying.',
+  });
+  const outcome = await walkBlock(blocks(plan())[0], fake.deps);
+  assert.equal(outcome.block.outcome, 'fail');
+  assert.equal(calls.length, 1);
+  assert.equal(outcome.rows[0].method, 'set-handler');
+  assert.match(JSON.stringify(outcome.failure?.seen), /rung 3/);
+  assert.equal(steps(fake.log).includes('press @submit'), false);
+});
+
+test('the change-handler step is skipped once the two-minute step budget is spent', async () => {
+  const fake = app({ type: MISMATCH });
+  const calls = ladder(fake);
+  const type = fake.deps.typeFocused!;
+  const now = fake.deps.now;
+  let late = 0;
+  fake.deps.now = () => now() + late;
+  fake.deps.typeFocused = async (...args) => {
+    const result = await type(...args);
+    late = 121_000;
+    return result;
+  };
+  const outcome = await walkBlock(blocks(plan())[0], fake.deps);
+  assert.equal(outcome.block.outcome, 'fail');
+  assert.deepEqual(calls, []);
+});

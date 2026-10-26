@@ -1236,3 +1236,45 @@ test('annotated fixture reaches the next capture, fill row and authenticated ass
   assert.equal(result.videoPublication, 'withheld-fill');
   assert.ok(!JSON.stringify(result).includes(value));
 });
+
+test('a native fill refusal steps once to the change handler for an input with a testID', async () => {
+  const email: Screen = {
+    ...screen(['Email']),
+    elements: [
+      {
+        ref: '@e0',
+        kind: 'input',
+        label: 'Email',
+        testID: 'email-input',
+        hittable: true,
+        disabled: false,
+        secure: false,
+        offscreen: false,
+        semantic: { press: 'unsupported', fill: 'supported', visibility: 'visible' },
+        where: 'middle',
+        side: 'center',
+      },
+    ],
+  };
+  const f = fake([email], {
+    fill: {
+      ok: false,
+      proven: false,
+      mutation: 'observed',
+      evidence: 'mismatch',
+      error:
+        'TEXT_ENTRY_UNVERIFIED: device_fill typed a different value on the retained native target; not retrying.',
+    },
+  });
+  const calls: string[] = [];
+  f.deps.setByHandler = async (testID, text, context) => {
+    context.authorize();
+    calls.push(`${testID} ${text}`);
+    return { ok: true, proven: true };
+  };
+  const outcome = await walkBlock(block('1. Type "ab@example.test" into "email-input"\n'), f.deps);
+  assert.equal(outcome.block.outcome, 'pass', JSON.stringify(outcome.failure));
+  assert.deepEqual(calls, ['email-input ab@example.test']);
+  assert.equal(outcome.rows[0].method, 'set-handler');
+  assert.match(outcome.rows[0].reason ?? '', /^FILL_SET_BY_HANDLER: /);
+});

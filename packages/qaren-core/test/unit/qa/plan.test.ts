@@ -433,3 +433,28 @@ test('broken markers are comments: a flagged plan parses to the same blocks', ()
   for (const marker of ['<!-- qaren:broken ios -->', '<!-- qaren:broken -->'])
     assert.deepEqual(shape(`${marker}\n${plan}`), shape(plan));
 });
+
+test('(any method) marks a literal or runtime-input fill and composes with (non-secret)', () => {
+  assert.deepEqual(parseStep('Fill "email" with "a@b.test" (any method)'), {
+    kind: 'fill',
+    target: { quoted: 'email', phrase: 'email' },
+    text: 'a@b.test',
+    anyMethod: true,
+  });
+  assert.deepEqual(parseStep('Type "a@b.test" into "email" (any method)'), {
+    kind: 'fill',
+    target: { quoted: 'email', phrase: 'email' },
+    text: 'a@b.test',
+    anyMethod: true,
+  });
+  assert.deepEqual(parseStep('Fill "code" with input FIXTURE (non-secret) (any method)'), {
+    kind: 'fill',
+    target: { quoted: 'code', phrase: 'code' },
+    input: 'FIXTURE',
+    sensitivity: 'non-secret',
+    anyMethod: true,
+  });
+  assert.equal(parseStep('Fill "email" with "a@b.test"')?.kind, 'fill');
+  assert.equal('anyMethod' in (parseStep('Fill "email" with "a@b.test"') ?? {}), false);
+  assert.equal(parseStep('Tap "Submit" (any method)')?.kind, 'press');
+});

@@ -215,6 +215,7 @@ mod tests {
             kept: None,
             case_normalized: None,
             dialog: None,
+            method: None,
         }
     }
 

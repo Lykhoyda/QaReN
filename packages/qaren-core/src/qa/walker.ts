@@ -15,8 +15,7 @@ import {
   withEchoScope,
 } from './inputs.js';
 import { isAbort, cancellationSignal, withDeadline } from '../domain/cancellation.js';
-import type { Block, Item, Target } from './plan.js';
-import { parseStep } from './plan.js';
+import { ANY_METHOD, parseStep, type Block, type Item, type Target } from './plan.js';
 import {
   type Element,
   type Screen,
@@ -132,6 +131,7 @@ import {
   type LedgerFailure,
   type LedgerPath,
   type LedgerRow,
+  type FillMethod,
   type Selector,
   type StepStart,
   REACT_GAPS,
@@ -157,6 +157,8 @@ export interface ActResult {
   dialog?: { label: string; rect: { x: number; y: number; width: number; height: number } };
   // Android exact tap on an editable field: whether its keyboard was shown within the tap's settle budget.
   keyboardShown?: boolean;
+  // The Fill ladder rung that produced this result.
+  method?: FillMethod;
 }
 
 export interface WalkerDeps {
@@ -190,6 +192,13 @@ export interface WalkerDeps {
   ): Promise<ActResult>;
   // iOS only: positive React proof that the input with this testID is focused.
   reactFocused?(testID: string): Promise<boolean>;
+  // iOS only: Fill ladder rung 3, the input's change handler receives the whole value, then it is verified.
+  setByHandler?(
+    testID: string,
+    text: string,
+    context: QaDispatchContext,
+    privateValue?: boolean,
+  ): Promise<ActResult>;
   // A value-free diagnostic line for the run log.
   note?(line: string): void;
   // clearance: pixels a keyboard-covered target's centre must travel; an adapter may size the swipe from it.
@@ -260,6 +269,8 @@ interface Observation {
   platformPresence: boolean;
 }
 
+// The Fill ladder steps to rung 3 only inside this budget from the item's start.
+const FILL_LADDER_BUDGET_MS = 120_000;
 const ITEM_DEADLINE_EXCEEDED = 'VISIBILITY_UNSURE: ITEM_DEADLINE_EXCEEDED';
 
 class EvidenceExpired extends Error {
@@ -442,6 +453,9 @@ async function walkBlockScoped(
   let latest: Screen = { elements: [], visibleText: [], front: 'app' };
   let line = 0;
   let mutationStarted = false;
+  // The Fill ladder rung of the current item's last fill dispatch, and when the item began.
+  let fillMethod: FillMethod | undefined;
+  let itemStartedAt = 0;
   let latestObservation = 0;
   let recoveries = 0;
   let metadataOnly = false;
@@ -1022,6 +1036,7 @@ async function walkBlockScoped(
     kind: item.kind === 'check' ? 'check' : 'step',
     resolvedBy,
     t: deps.now(),
+    ...(item.kind === 'fill' && fillMethod ? { method: fillMethod } : {}),
   });
   const failed = (
     item: Item,
@@ -1269,6 +1284,50 @@ async function walkBlockScoped(
         : entry.caseNormalized
           ? { caseNormalized: { chars: entry.caseNormalized.chars } }
           : {};
+  // Fill ladder: one automatic step to rung 3 after a typing refusal that left the field in a known state.
+  const stepUpFill = async (
+    item: Item & { kind: 'fill' },
+    failure: ActResult,
+    testID: string | undefined,
+    present: (screen: Screen) => boolean,
+  ): Promise<ActResult | undefined> => {
+    const deadline = itemStartedAt + FILL_LADDER_BUDGET_MS;
+    if (
+      !deps.setByHandler ||
+      !testID ||
+      failure.ok ||
+      failure.ambiguous ||
+      !failure.error?.startsWith('TEXT_ENTRY_UNVERIFIED') ||
+      (failure.mutation !== 'none' && failure.mutation !== 'observed') ||
+      deps.now() >= deadline
+    )
+      return undefined;
+    const fresh = await settledCapture(item);
+    usable(fresh, item);
+    if (!present(fresh.screen)) return undefined;
+    try {
+      const result = await mutate(
+        item,
+        fresh,
+        (context) => deps.setByHandler!(testID, fillText(item), context, item.input !== undefined),
+        deadline,
+      );
+      deps.note?.(
+        `fill-ladder ${JSON.stringify({ v: 1, line: item.line, from: failure.method ?? 'keyboard', to: 'set-handler', ok: result.ok, mutation: result.mutation ?? null })}`,
+      );
+      // A rung 3 that set nothing leaves the original refusal standing.
+      if (!result.ok && result.mutation === 'none') return undefined;
+      fillMethod = 'set-handler';
+      return { ...result, method: 'set-handler' };
+    } catch (error) {
+      if (error instanceof EvidenceExpired) return undefined;
+      throw error;
+    }
+  };
+  const methodQualifier = (item: Item & { kind: 'fill' }): string | undefined =>
+    fillMethod === 'set-handler' && !item.anyMethod
+      ? "FILL_SET_BY_HANDLER: the value was set through the input's change handler, not typed; label the step (any method) to count it as proof"
+      : undefined;
   // Best effort: the field is not an observable native input, so only the tap and the keyboard prove anything.
   const keyboardFallback = async (
     item: Item & { kind: 'fill' },
@@ -1409,6 +1468,14 @@ async function walkBlockScoped(
         );
       throw error;
     }
+    fillMethod = entry.method ?? 'keyboard';
+    entry =
+      (await stepUpFill(
+        item,
+        entry,
+        again.oracleTestID,
+        (screen) => bindFillIdentity(item, screen, again.oracleTestID) !== undefined,
+      )) ?? entry;
     if (!entry.ok)
       return failed(
         item,
@@ -1418,6 +1485,7 @@ async function walkBlockScoped(
         undefined,
       );
     await capture(item);
+    const qualifier = methodQualifier(item);
     emit({
       ...base(item, attempt),
       ref: again.element.ref,
@@ -1425,7 +1493,9 @@ async function walkBlockScoped(
       outcome: 'pass',
       ...keptCounts(entry),
       ...(entry.proven
-        ? {}
+        ? qualifier
+          ? { reason: redact(qualifier) }
+          : {}
         : {
             reason: redact(
               (proofMode
@@ -1473,6 +1543,17 @@ async function walkBlockScoped(
         );
       throw error;
     }
+    fillMethod = entry.method ?? 'keyboard';
+    entry =
+      (await stepUpFill(
+        item,
+        entry,
+        quoted,
+        (screen) =>
+          !screen.elements.some(
+            (e) => e.testID === quoted && (e.secure || e.semantic?.disabled === true),
+          ),
+      )) ?? entry;
     if (!entry.ok)
       return failed(
         item,
@@ -1482,12 +1563,17 @@ async function walkBlockScoped(
         undefined,
       );
     await capture(item);
+    const qualifier = methodQualifier(item);
     emit({
       ...base(item, attempt),
       ...stored({ id: quoted }),
       outcome: 'pass',
       ...keptCounts(entry),
-      ...(entry.proven ? {} : { reason: redact(focusedReason(quoted) + keptNote(entry)) }),
+      ...(entry.proven
+        ? qualifier
+          ? { reason: redact(qualifier) }
+          : {}
+        : { reason: redact(focusedReason(quoted) + keptNote(entry)) }),
     });
     return 'typed';
   };
@@ -1788,6 +1874,8 @@ async function walkBlockScoped(
       continue;
     }
     mutationStarted = false;
+    fillMethod = undefined;
+    itemStartedAt = deps.now();
     attempts: for (;;) {
       line = item.line;
       deps.start?.({
@@ -2557,6 +2645,18 @@ async function walkBlockScoped(
           usable(after, item);
           diagnostic(item, after, 'decision', 'ACCEPTED');
           metric('readback', after);
+          if (item.kind === 'fill') {
+            fillMethod = act!.method ?? 'keyboard';
+            const target = element;
+            act =
+              (await stepUpFill(
+                item,
+                act!,
+                target?.testID,
+                (screen) =>
+                  target !== undefined && screen.elements.some((e) => sameIdentity(e, target)),
+              )) ?? act!;
+          }
           const shot = await shoot(item);
           const unverified =
             item.kind === 'fill' &&
@@ -2608,16 +2708,18 @@ async function walkBlockScoped(
                         `UNVERIFIED_FILL: the field's final value ${act!.evidence === 'masked' ? 'reads back masked' : 'could not be read back'}, so the fill was not verified`,
                       ),
                     }
-                  : alertOnly
-                    ? {
-                        unverifiedPress: true,
-                        reason: redact(
-                          alertEffect === 'uncaptured'
-                            ? 'UNVERIFIED_PRESS: nothing behind the alert or sheet was captured while it was open; any of its buttons closes it, so the press was not verified'
-                            : 'UNVERIFIED_PRESS: the alert or sheet closed and nothing behind it changed; any of its buttons closes it, so the press was not verified',
-                        ),
-                      }
-                    : {}),
+                  : item.kind === 'fill' && methodQualifier(item)
+                    ? { reason: redact(methodQualifier(item)!) }
+                    : alertOnly
+                      ? {
+                          unverifiedPress: true,
+                          reason: redact(
+                            alertEffect === 'uncaptured'
+                              ? 'UNVERIFIED_PRESS: nothing behind the alert or sheet was captured while it was open; any of its buttons closes it, so the press was not verified'
+                              : 'UNVERIFIED_PRESS: the alert or sheet closed and nothing behind it changed; any of its buttons closes it, so the press was not verified',
+                          ),
+                        }
+                      : {}),
             });
             break;
           }
@@ -2928,6 +3030,7 @@ export function loginBlock(slug: string, stored: StoredBlock): Block {
           ...(step.input !== undefined
             ? { input: step.input, ...(step.sensitivity ? { sensitivity: step.sensitivity } : {}) }
             : { text: step.text! }),
+          ...(ANY_METHOD.test(step.raw) ? { anyMethod: true as const } : {}),
           ...at,
         };
       case 'scroll':

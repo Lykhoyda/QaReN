@@ -12,6 +12,9 @@ export type LedgerPath = 'walk' | 'replay' | `replay→walk@${number}`;
 export const REACT_GAPS = ['unknown', 'incomplete', 'reconnected', 'lost'] as const;
 export type ReactConnectionEvent = 'lost' | 'reconnected';
 
+// The Fill ladder rung a fill row used: keyboard typing, in-app clear then typing, or the change handler.
+export type FillMethod = 'keyboard' | 'clear-type' | 'set-handler';
+
 export interface LedgerRow {
   block: string;
   operationId?: number;
@@ -37,6 +40,7 @@ export interface LedgerRow {
   caseNormalized?: { chars: number };
   // The system dialog button the runner proved it tapped.
   dialog?: { label: string; rect: { x: number; y: number; width: number; height: number } };
+  method?: FillMethod;
 }
 
 // The value-free announcement that a plan line begins; its row later carries the same operationId.

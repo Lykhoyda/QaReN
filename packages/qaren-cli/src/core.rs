@@ -385,6 +385,31 @@ pub struct Row {
     pub case_normalized: Option<CaseNormalized>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub dialog: Option<DialogTap>,
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "passive"
+    )]
+    pub method: Option<FillMethod>,
+}
+
+// The Fill ladder rung a fill row used.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "kebab-case")]
+pub enum FillMethod {
+    Keyboard,
+    ClearType,
+    SetHandler,
+}
+
+impl FillMethod {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            FillMethod::Keyboard => "keyboard",
+            FillMethod::ClearType => "clear-type",
+            FillMethod::SetHandler => "set-handler",
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord)]

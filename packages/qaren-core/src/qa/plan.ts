@@ -11,7 +11,8 @@ export interface Target {
   exact?: 'id' | 'text';
 }
 
-export type Fill = { kind: 'fill'; target: Target } & (
+// anyMethod: a value set through the input's change handler counts as this step's proof.
+export type Fill = { kind: 'fill'; target: Target; anyMethod?: true } & (
   | { text: string; input?: never; sensitivity?: never }
   | { input: string; text?: never; sensitivity?: 'non-secret' }
 );
@@ -135,7 +136,17 @@ const ECHO = /^expect\s+input\b(.*)$/i;
 
 type Grammar = Step | { refuse: string } | null;
 
-function parseFill(rest: string): Grammar {
+export const ANY_METHOD = /\s+\(any method\)\s*$/i;
+
+function parseFill(line: string): Grammar {
+  const anyMethod = ANY_METHOD.exec(line);
+  const fill = parseFillBody(anyMethod ? line.slice(0, anyMethod.index) : line);
+  return anyMethod && fill && 'kind' in fill && fill.kind === 'fill'
+    ? { ...fill, anyMethod: true }
+    : fill;
+}
+
+function parseFillBody(rest: string): Grammar {
   const slot = /^(.*?)\s+with\s+input(?:\s+([^"“”]*))?$/i.exec(rest);
   if (slot) {
     const named = /^([A-Z][A-Z0-9_]{0,31})(?:\s+\((non-secret)\))?$/i.exec(slot[2] ?? '');

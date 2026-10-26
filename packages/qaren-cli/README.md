@@ -930,8 +930,9 @@ the prior value followed by the requested text permits one bounded clear-and-ret
 with the same focus and empty-state proofs. A retained prefix after that recovery
 fails with `TEXT_ENTRY_UNVERIFIED`; other mismatches remain unverified. Unreadable
 final values also remain unverified. Private non-secure runtime inputs instead
-require an exact length/content match and fail a confirmed mismatch without
-retyping. These comparisons run inside the app; only state and comparison metadata
+require an exact length/content match; a confirmed mismatch is never retyped, and it
+fails the step unless the one [Fill ladder](#fill-ladder) step to the change handler then
+verifies exactly. These comparisons run inside the app; only state and comparison metadata
 leave the process, never the value. Literal Fill values keep ordinary readback even when unrelated runtime
 inputs exist. Private character counts are omitted from the
 run's public output.
@@ -950,7 +951,7 @@ field keeps the runner's mutation disposition. The [focused replacement tests](.
 cover these guards and mutation reporting.
 An unverified keyboard step records a passing row with reason `UNVERIFIED_FILL`,
 allowing later plan steps to continue; it does not establish the field's final
-value. Apart from that one replacement recovery, failed keyboard typing is not retried. Before the fallback tap or
+value. Apart from that one replacement recovery and the ladder step below, failed keyboard typing is not retried. Before the fallback tap or
 no-target typing dispatch, the value is protected under the
 [shared masking rules](#input-value-masking), and screenshots are withheld for the rest
 of the walk. For block persistence after fallback, see [Saved blocks](#saved-blocks).
@@ -958,6 +959,33 @@ Eligibility is owned
 by the [resolver](../qaren-core/src/qa/resolve.ts), exact identity counting by
 the [shared identity model](../qaren-core/src/qa/identity.ts), and both are
 covered by the [fallback tests](../qaren-core/test/unit/qa/keyboard-fallback.test.ts).
+
+#### Fill ladder
+
+Every dispatched Fill records the rung it used as `method` on its ledger row, and the
+report shows it as `via <method>`:
+
+1. `keyboard`: typed through the keyboard (native element typing, or focused typing into an
+   empty field).
+2. `clear-type`: the field held text, so it was cleared through the input's own change
+   handler and then typed through the keyboard.
+3. `set-handler`: the whole value was set through the input's change handler, then verified.
+
+When rung 1 or 2 refuses with `TEXT_ENTRY_UNVERIFIED` and a mutation of `none` or
+`observed` (never `possible`), iOS steps once to rung 3 inside a 2-minute budget from the
+step's start. The step needs the input's testID, a fresh capture that has not lost the
+target (a natively visible target must still be on screen; a hidden input must still
+resolve by its testID in the app, or the step sets nothing), and a controlled non-secure
+input; secure fields never reach it. Rung 3 uses the
+same exact verification: a private or readable mismatch after it fails the step without a
+further attempt, and a rung 3 that set nothing leaves the original refusal standing. A
+value-free `fill-ladder` line in the run log records each step.
+
+Rungs 1 and 2 count as proof that the value was typed as a user would. A rung-3 pass counts
+only when the plan labels the step `(any method)`, for example
+`Fill "email" with input EMAIL (any method)`; otherwise the row passes with reason
+`FILL_SET_BY_HANDLER`. The label is read from the plan line and is not stored in saved
+blocks. Android has no rung 3 yet.
 
 ### Plan checks and screen evidence
 
