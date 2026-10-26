@@ -336,6 +336,7 @@ test('formatting an initially empty readable field stays unverified without reco
 
 for (const [reply, mutation] of [
   [{ value: JSON.stringify({ cleared: false, reason: 'unfocused' }) }, 'none'],
+  [{ value: JSON.stringify({ cleared: false, reason: 'disabled' }) }, 'none'],
   [{ value: JSON.stringify({ cleared: false, reason: 'handler-threw' }) }, 'possible'],
   [{ error: 'transport lost' }, 'possible'],
 ] as const) {

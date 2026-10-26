@@ -1663,7 +1663,7 @@ export async function performSetFill(
   args.qaContext?.authorize();
   const set = await setReactInput(client, testID, args.text);
   if (!set.set) {
-    const refused = ['unbound', 'uncontrolled', 'secure'].includes(set.reason ?? '');
+    const refused = ['unbound', 'uncontrolled', 'secure', 'disabled'].includes(set.reason ?? '');
     return done(
       fillFailure(
         'TEXT_ENTRY_UNVERIFIED',
@@ -1900,7 +1900,7 @@ async function focusedFill(
             'The input could not be cleared; no text was entered.',
             'TEXT_ENTRY_UNVERIFIED',
             {
-              mutation: ['unbound', 'uncontrolled', 'secure', 'unfocused'].includes(
+              mutation: ['unbound', 'uncontrolled', 'secure', 'unfocused', 'disabled'].includes(
                 clear.reason ?? '',
               )
                 ? 'none'

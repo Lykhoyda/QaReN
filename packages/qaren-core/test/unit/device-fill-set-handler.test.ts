@@ -101,7 +101,7 @@ test('a readable value set through the handler verifies exactly', async () => {
   assert.equal(env.meta.fillMethod, 'set-handler');
 });
 
-for (const reason of ['secure', 'uncontrolled', 'unbound']) {
+for (const reason of ['secure', 'uncontrolled', 'unbound', 'disabled']) {
   test(`a ${reason} refusal sets nothing and reports no mutation`, async () => {
     const { env } = await run({ setReply: { value: JSON.stringify({ set: false, reason }) } });
     assert.equal(env.code, 'TEXT_ENTRY_UNVERIFIED');

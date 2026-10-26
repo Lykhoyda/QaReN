@@ -4630,6 +4630,7 @@ export const INJECTED_HELPERS = `
     if (props.secureTextEntry === true) return { ok: false, reason: 'secure' };
     if (typeof props.value !== 'string') return { ok: false, reason: 'uncontrolled' };
     if (requireFocused && !hostIsFocused(binding.candidateFiber)) return { ok: false, reason: 'unfocused' };
+    if (textInputDesignationDisabled(props)) return { ok: false, reason: 'disabled' };
     try {
       if (binding.contract === 'onChangeText:string') binding.handler(text);
       else binding.handler({ nativeEvent: { text: text } });
