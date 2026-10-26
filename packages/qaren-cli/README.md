@@ -3130,8 +3130,10 @@ one, pass it with `--device`.
   `ready`, `walking` or `handed_off`, is occupied: that run still owns the
   session until `qaren cleanup <run-id>`. Any other dead holder is reclaimed
   only through that run's own cleanup. Under the lease the member must be
-  Shutdown; a Booted member with no QaReN holder is released and skipped, and
-  a refusal names `xcrun simctl shutdown <UUID>`.
+  Shutdown; a Booted member with no QaReN holder is released and skipped. When
+  the pool is at its cap, each skip reason, including the
+  `xcrun simctl shutdown <UUID>` hint, appears in the `device_pool` `fresh:`
+  note.
 - **Reset.** A claimed member is booted after dependencies, strict
   foreign-driver admission and a durable pending stop, and is then reset:
   the app is uninstalled and proven absent, which clears its container and
