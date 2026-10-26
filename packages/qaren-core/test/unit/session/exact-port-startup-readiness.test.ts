@@ -472,7 +472,8 @@ for (const [label, candidates] of [
     assert.equal(outcome?.error?.meta?.inner, 'bundle_readiness_timeout');
     assert.equal(outcome?.error?.meta?.attempt, 1);
     assert.equal(outcome?.error?.meta?.relaunches, 0);
-    assert.deepEqual(admission.calls, ['wait', 'close']);
+    assert.equal(outcome?.error?.meta?.liveness, 'dead');
+    assert.deepEqual(admission.calls, ['wait', 'app_alive', 'close']);
     assert.equal(admission.elapsed(), 1000);
   });
 }
