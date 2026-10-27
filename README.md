@@ -9,8 +9,8 @@ with evidence.
 
 QaReN is the `qaren` command-line tool and a plugin for Claude Code and Codex.
 `qaren check` borrows a booted iOS simulator, builds and installs the app from your
-working tree, starts Metro, walks a plan on the device, writes evidence under
-`~/.qaren/runs/<run-id>/` and tears down what it started. `qaren pr` does the same for a
+working tree, starts Metro, walks a plan on the device, writes evidence at the artifact paths in its
+receipt and tears down what it started. `qaren pr` does the same for a
 pull request's head and tries to record the screen; `qaren publish` comments the result on the
 pull request and can push saved blocks to its branch. Eligible passing blocks are saved under `.qaren/actions/` and replayed on later
 runs.
@@ -121,7 +121,7 @@ without a runner manifest fall back to building locally. Force local builds with
 
 When an iOS runner launched from a prebuilt lacks required capabilities or commands,
 startup attempts to persist a `stale` marker under
-`~/.qaren/runtime/runners/<plugin-version>/ios/` before checking the one-rebuild-per-version
+`runtime/runners/<plugin-version>/ios/` in the [QaReN home](packages/qaren-cli/README.md#release-and-source-builds-side-by-side) before checking the one-rebuild-per-version
 budget. With that marker present, later starts select the local runner without reusing or
 downloading that version's prebuilt, including after a process restart; cached products
 remain intact and other versions are unaffected. A spent rebuild budget still refuses

@@ -11,7 +11,7 @@ ssh host qaren watch <run-id> --plain
 qaren watch <run-id> --json
 ```
 
-`qaren watch` reads one run under `~/.qaren/runs/`. It takes no lock or device lease, so it
+`qaren watch` reads one run from the [run storage root](https://github.com/Lykhoyda/QaReN/blob/develop/packages/qaren-cli/README.md#ios-admission-and-cleanup). It takes no lock or device lease, so it
 never disturbs the run. `check` and `pr` print the command to watch their run when they
 start; only those two verbs produce the event stream it reads.
 

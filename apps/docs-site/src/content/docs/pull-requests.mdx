@@ -20,7 +20,7 @@ to post on a public repository.
 
 `qaren pr` runs the same pipeline as [`qaren check`](../check/), from the app's
 directory with the same `.qaren/config.yaml` and plan. It walks a detached worktree at the
-pull request's head under `~/.qaren/runs/<run-id>/wt` instead of your working tree.
+pull request's head in the run directory's `wt/` instead of your working tree; see the [run storage contract](https://github.com/Lykhoyda/QaReN/blob/develop/packages/qaren-cli/README.md#ios-admission-and-cleanup).
 
 - It refuses unless origin's `pull/<n>/head` is the head GitHub reports and the worktree is
   clean at that commit, both before the lease and again before the walk.

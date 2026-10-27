@@ -75,7 +75,7 @@ The fields you read most:
 | Field                  | Meaning                                                                    |
 | ---------------------- | -------------------------------------------------------------------------- |
 | `result`               | `pass`, `fail`, `failed` or `refused`                                      |
-| `run_id`               | The run's ID; its evidence is under `~/.qaren/runs/<run-id>/`              |
+| `run_id`               | The run's ID; artifact paths are in the receipt              |
 | `failure.code`         | The typed failure or refusal code                                          |
 | `failure.detail`       | What happened                                                              |
 | `next_action`          | What to do next                                                            |
@@ -107,7 +107,7 @@ For interpreting app-derived failure evidence, follow the
 
 ## The run directory
 
-Each run writes to `~/.qaren/runs/<run-id>/`. The receipt names the artifacts that exist.
+The [run storage contract](https://github.com/Lykhoyda/QaReN/blob/develop/packages/qaren-cli/README.md#ios-admission-and-cleanup) determines the directory. The receipt names the artifacts that exist.
 
 | Path               | Contents                                                         |
 | ------------------ | ---------------------------------------------------------------- |

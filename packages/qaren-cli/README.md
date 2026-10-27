@@ -138,7 +138,7 @@ ssh host qaren watch <run-id> --plain
 qaren watch <run-id> --json
 ```
 
-The viewer reads one run under `~/.qaren/runs/` and takes no lock or device
+The viewer reads one run from the [run storage root](#ios-admission-and-cleanup) and takes no lock or device
 lease. `--latest` selects the newest `run.json` modification time. It shows
 explicit stages from preflight through cleanup, step outcomes and act/capture/Jev
 timings, recording, and the verdict with its expected check exit code.
@@ -226,7 +226,7 @@ Interactive controls, lanes and timed replay remain later slices.
 
 ## Build
 
-For the supported source installation, follow [Set up QaReN](../../README.md#set-up-qaren);
+For the supported source installation, follow [Install from source](../../README.md#install-from-source);
 `qaren update`, run from the checkout root, repeats it after a `git pull --ff-only`
 and refuses a checkout with local changes or a pull that cannot fast-forward.
 
@@ -305,7 +305,7 @@ build from the shipped source) and `qaren --version` prints that version. A buil
 from a checkout with local changes takes its HEAD's version and replaces that build.
 
 To keep a source build fully apart from a release install, give it its own home and
-run it by path with that home set:
+run it by path with that home set for every command:
 
 ```sh
 export QAREN_HOME=/path/to/dev-home/.qaren
@@ -324,7 +324,7 @@ and install 2.0 as a new product.
 |---|---|
 | Plugin `rn-dev-agent@rn-dev-agent` from marketplace `rn-dev-agent`, with its bundled MCP server (`cdp_*`, `device_*` tools) | Plugin `qaren@qaren` from marketplace `qaren`, and the `qaren` CLI; no MCP server |
 | `.rn-agent/config.json` and `.rn-agent/actions/` learned actions in the app | `.qaren/config.yaml` and `.qaren/actions/` saved blocks written from passing plan blocks |
-| `~/.cache/rn-dev-agent/` (maestro-runner pin cache), `~/.rn-dev-agent/` (action database, device helper state), `~/.claude/rn-agent/` | `~/.qaren/runtime/`, `~/.qaren/state/`, `~/.qaren/runs/`, and device locks in the [machine lock root](#ios-admission-and-cleanup) |
+| `~/.cache/rn-dev-agent/` (maestro-runner pin cache), `~/.rn-dev-agent/` (action database, device helper state), `~/.claude/rn-agent/` | [Per-user storage](#release-and-source-builds-side-by-side) and device locks in the [machine lock root](#ios-admission-and-cleanup) |
 
 A `.qaren/config.yaml` carrying `savePlans` needs a 2.0 CLI; an earlier CLI refuses it as an
 unknown key. Existing `.qaren/plans/*.md` files are listed and run as [saved plans](#saved-plans).
@@ -392,16 +392,14 @@ unknown key. Existing `.qaren/plans/*.md` files are listed and run as [saved pla
    - Released plugin: the plugin list shows `qaren@qaren`, and
      `bash scripts/ensure-qaren.sh --print-bin` prints a binary path whose
      `--version` reports `qaren 2.0.0` or later.
-   - Source install: the binary path printed by
-     `scripts/install-qaren-from-source.sh` reports the checkout's workspace
-     version with `--version`. The version moves to 2.0.0 only
-     when the release is cut, so a `develop` build still shows the pre-release
-     version (for example `qaren 1.0.13`). The installed runtime needs no
-     `QAREN_RUNTIME` override; see [Build](#build) for development binaries.
+   - Source install: use the binary path printed by
+     `scripts/install-qaren-from-source.sh`; its version follows the
+     [source-build contract](#release-and-source-builds-side-by-side). The installed
+     runtime needs no `QAREN_RUNTIME` override; see [Build](#build) for development binaries.
    - Run [Doctor](#doctor) to check the known 1.x leftover locations.
    - In the app, follow [Set up an app](#set-up-an-app), or write configuration
-     and run a plan manually as in [Check a plan](#check-a-plan); a PASS receipt with a run under
-     `~/.qaren/runs/` completes the upgrade.
+     and run a plan manually as in [Check a plan](#check-a-plan); a PASS receipt with its
+     artifact paths completes the upgrade.
 
 ## Check a plan
 
@@ -2141,7 +2139,7 @@ cleaned up by their original owner. Nothing scans homes, dual-claims roots,
 rewrites stored paths or retires old binaries. Processes using per-home roots,
 including older binaries and `QAREN_MACHINE_LOCKS=0` sessions, remain outside
 the shared namespace. Native suite recovery needs the original HOME and the
-original lock setting.
+original lock setting and, when set, the original `QAREN_HOME`.
 
 Checks, including `qaren pr`, claim a
 timestamped run directory atomically and retry with a numeric suffix when the
@@ -2855,7 +2853,7 @@ remain untouched.
 
 `qaren pr` runs the same pipeline as `check`, from the app's directory with the
 same `.qaren/config.yaml` and plan, but walks a detached worktree at the pull
-request head under `~/.qaren/runs/<run-id>/wt`. It refuses unless origin's
+request head in `wt/` under the [run directory](#ios-admission-and-cleanup). It refuses unless origin's
 `pull/<n>/head` is the head GitHub reports and the worktree is clean at that
 commit, both before the lease and again before the walk. Fetch verification uses
 a per-run local ref rather than shared `FETCH_HEAD`, so concurrent PR runs
