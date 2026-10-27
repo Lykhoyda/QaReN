@@ -268,6 +268,11 @@ export const SHORT = 3;
 const escape = (value: string): string => value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 const chars = (text: string): number => [...text].length;
 const whole = (pattern: string): string => `(?<![${WORD}])${pattern}(?![${WORD}])`;
+// Apps re-case declared values (e-mail normalization), so output masking matches any letter case.
+const caseless = (pattern: string): string =>
+  pattern.replace(/\p{L}/gu, (c) =>
+    c.toLowerCase() === c.toUpperCase() ? c : `[${c.toLowerCase()}${c.toUpperCase()}]`,
+  );
 
 function forms(value: string): string[] {
   return [
@@ -327,16 +332,21 @@ export function matchPrivate(
             ]
           : [form],
       );
-      const patterns = [...new Set(candidates)].map((form) =>
-        value.provenance === 'code' || (value.provenance === 'secret' && length === 1)
-          ? whole(escape(form))
-          : escape(form),
-      );
+      const anyCase = value.provenance === 'input' && policy !== 'persisted';
+      const patterns = [...new Set(candidates)].map((form) => ({
+        pattern:
+          value.provenance === 'code' || (value.provenance === 'secret' && length === 1)
+            ? whole(escape(form))
+            : anyCase
+              ? caseless(escape(form))
+              : escape(form),
+        length: form.length,
+      }));
       const digits = digitForm(value.text);
-      if (digits) patterns.push(digits);
-      return patterns.map((pattern) => ({ pattern, value: value.text }));
+      if (digits) patterns.push({ pattern: digits, length: digits.length });
+      return patterns.map(({ pattern, length }) => ({ pattern, length, value: value.text }));
     })
-    .sort((a, b) => b.pattern.length - a.pattern.length);
+    .sort((a, b) => b.length - a.length);
   const fragments = (set.fragments ?? []).flatMap(forms);
   if (!rules.length && !fragments.length) return { text, hit: false };
   let hit = false;

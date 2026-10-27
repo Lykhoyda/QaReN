@@ -96,6 +96,23 @@ test('screen text is withheld only when the run holds a SECRET input', () => {
   assert.equal(testPii.privacy.canScreenshot(), false, 'media stays withheld');
 });
 
+test('a re-cased TEST-PII e-mail is still redacted from retained screen text', () => {
+  const declared = 'QATESTER@EXAMPLE.TEST';
+  const { privacy } = privacyFor({ EMAIL: declared }, ['EMAIL']);
+  const shown = screen(
+    [
+      element('@email', 'Signed in as qatester@example.test', { kind: 'text' }),
+      element('@name', 'Welcome back, Qatester', { kind: 'text' }),
+    ],
+    ['Account'],
+  );
+  assert.equal(privacy.textWithheld(shown), undefined);
+  const text = privacy.screenText(shown).join(' | ');
+  for (const leaked of ['qatester@example.test', 'Qatester', 'example.test'])
+    assert.ok(!text.includes(leaked), `${leaked} in ${text}`);
+  assert.ok(text.includes('Signed in as'), text);
+});
+
 test('a TEST-PII run reports failure screen text redacted by the declared value', async () => {
   const f = walker(
     [accountScreen()],

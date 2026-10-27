@@ -665,6 +665,29 @@ mod tests {
             "macOS on <host>, <host>"
         );
     }
+
+    #[test]
+    fn declared_inputs_are_redacted_in_any_letter_case_without_touching_the_marker() {
+        let inputs = super::InputValues::from_values(vec![
+            "QATESTER@EXAMPLE.TEST".to_string(),
+            "Input".to_string(),
+        ]);
+        let clean = inputs
+            .redact("signed in as qatester@example.test; Qatester at Example.Test; INPUT set");
+        for leaked in [
+            "qatester@example.test",
+            "Qatester",
+            "Example.Test",
+            "INPUT set",
+        ] {
+            assert!(!clean.contains(leaked), "{leaked}: {clean}");
+        }
+        assert_eq!(clean.matches("[REDACTED_INPUT]").count(), 4, "{clean}");
+        assert!(
+            clean.starts_with("signed in as [REDACTED_INPUT]; "),
+            "{clean}"
+        );
+    }
 }
 
 pub struct InputValues {
@@ -799,9 +822,27 @@ impl InputValues {
             .collect();
         forms.sort_by_key(|value| std::cmp::Reverse(value.len()));
         forms.dedup();
-        forms.into_iter().fold(raw.to_string(), |text, value| {
-            text.replace(&value, "[REDACTED_INPUT]")
-        })
+        // Apps re-case declared values, so matching ignores ASCII case; one pass keeps markers intact.
+        let hay = raw.to_ascii_lowercase();
+        let mut spans: Vec<(usize, usize)> = Vec::new();
+        for form in forms {
+            for (start, found) in hay.match_indices(&form.to_ascii_lowercase()) {
+                let end = start + found.len();
+                if spans.iter().all(|&(a, b)| end <= a || start >= b) {
+                    spans.push((start, end));
+                }
+            }
+        }
+        spans.sort_unstable();
+        let mut out = String::with_capacity(raw.len());
+        let mut at = 0;
+        for (start, end) in spans {
+            out.push_str(&raw[at..start]);
+            out.push_str("[REDACTED_INPUT]");
+            at = end;
+        }
+        out.push_str(&raw[at..]);
+        out
     }
 }
 
