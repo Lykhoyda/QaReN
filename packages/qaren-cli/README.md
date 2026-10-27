@@ -706,8 +706,11 @@ unproven, QaReN can also verify a stable visible change within the tapped
 control's bounds, even when it exposes no accessibility state.
 
 Pixel comparison requires one uniquely identified, hittable target outside alerts
-and without a covered centre, with the app in front, a known frame and point
-scale. Its identity, frame and scale must remain unchanged across the captures.
+and without a covered centre, with the app in front and a known frame. Scale is
+either reported by the screen capture or derived from the screenshot and the
+single native application root's dimensions in points; a derived scale must
+agree on both axes. Its identity, frame and scale must remain unchanged across
+the captures.
 One screenshot immediately before the first dispatch adds about 200 ms per
 eligible press; that baseline is retained across the retry. Only an otherwise
 unproven press with an unchanged screen comparison takes two after-shots,
