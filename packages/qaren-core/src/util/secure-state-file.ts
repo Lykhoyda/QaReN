@@ -14,6 +14,9 @@ export function qarenHome(): string {
 }
 
 export function getStateDir(): string {
+  if (!process.env.QAREN_HOME && process.env.XDG_STATE_HOME) {
+    return join(process.env.XDG_STATE_HOME, 'qaren');
+  }
   return join(qarenHome(), 'state');
 }
 
