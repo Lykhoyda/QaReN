@@ -939,6 +939,7 @@ fn run_inner(
     let core_log = run_dir.join("logs").join("core.log");
     events::core_t0(core_request.t0);
     events::stage("attach", StageState::Running, None, None);
+    let runner_started_at = ctx.runner.now_epoch_ms();
     let core_child = match core::spawn_private(
         ctx.runner,
         &spec,
@@ -1127,10 +1128,9 @@ fn run_inner(
         false,
     );
     cleanup.splice(..0, early_cleanup);
-    let walk_end = t;
     let t = ctx.mark("teardown", t);
     if let Some(udid) = runner_simulator {
-        if let Some(note) = springboard_crash_after(ctx.runner, &udid, walk_end) {
+        if let Some(note) = springboard_crash_after(ctx.runner, &udid, runner_started_at) {
             let at = timefmt::iso8601_utc(ctx.runner.now_epoch_ms());
             ctx.record
                 .push_history(at, &format!("lane health: springboard_crash: {note}"));
@@ -1383,8 +1383,7 @@ const SPRINGBOARD_SCAN_SECONDS: u64 = 60;
 fn springboard_crash_after(runner: &mut dyn Runner, udid: &str, since_ms: u64) -> Option<String> {
     let reports = Path::new(&runner.env_var("HOME")?).join("Library/Logs/DiagnosticReports");
     let since = std::time::UNIX_EPOCH + std::time::Duration::from_millis(since_ms);
-    let elapsed = runner.now_epoch_ms().saturating_sub(since_ms) / 1000;
-    for left in (0..=SPRINGBOARD_SCAN_SECONDS.saturating_sub(elapsed)).rev() {
+    for left in (0..=SPRINGBOARD_SCAN_SECONDS).rev() {
         if let Some(facts) =
             ios::recent_crash_facts(&reports, ios::SPRINGBOARD_BUNDLE_ID, udid, since)
         {
@@ -1393,7 +1392,7 @@ fn springboard_crash_after(runner: &mut dyn Runner, udid: &str, since_ms: u64) -
                 .map(|e| format!(" ({e})"))
                 .unwrap_or_default();
             return Some(format!(
-                "SpringBoard crashed on this simulator after the walk{exception}; the result stands"
+                "SpringBoard crashed on this simulator during the run or teardown{exception}; the result stands"
             ));
         }
         if left == 0 || runner.cancellation().is_some() {
@@ -1579,12 +1578,20 @@ mod block_start_tests {
             .environment
             .insert("HOME".into(), home.display().to_string());
         let start = runner.now_epoch_ms();
+        let report_time = std::time::UNIX_EPOCH + std::time::Duration::from_millis(start + 1_000);
+        std::fs::File::options()
+            .write(true)
+            .open(home.join("Library/Logs/DiagnosticReports/SpringBoard-1.ips"))
+            .unwrap()
+            .set_times(std::fs::FileTimes::new().set_modified(report_time))
+            .unwrap();
+        runner.sleep(std::time::Duration::from_secs(90));
         let note = springboard_crash_after(&mut runner, udid, start);
         assert_eq!(
             note.as_deref(),
-            Some("SpringBoard crashed on this simulator after the walk (EXC_BAD_ACCESS); the result stands")
+            Some("SpringBoard crashed on this simulator during the run or teardown (EXC_BAD_ACCESS); the result stands")
         );
-        assert_eq!(runner.now_epoch_ms(), start);
+        assert_eq!(runner.now_epoch_ms(), start + 90_000);
         let _ = std::fs::remove_dir_all(home);
     }
 
@@ -1596,9 +1603,9 @@ mod block_start_tests {
             .environment
             .insert("HOME".into(), home.display().to_string());
         let start = runner.now_epoch_ms();
-        runner.sleep(std::time::Duration::from_secs(15));
+        runner.sleep(std::time::Duration::from_secs(90));
         assert_eq!(springboard_crash_after(&mut runner, "AAAA", start), None);
-        assert_eq!(runner.now_epoch_ms(), start + 60_000);
+        assert_eq!(runner.now_epoch_ms(), start + 150_000);
         let _ = std::fs::remove_dir_all(home);
     }
 }
