@@ -1392,7 +1392,7 @@ fn springboard_crash_after(runner: &mut dyn Runner, udid: &str, since_ms: u64) -
                 .map(|e| format!(" ({e})"))
                 .unwrap_or_default();
             return Some(format!(
-                "SpringBoard crashed on this simulator during the run or teardown{exception}; the result stands"
+                "Observed a SpringBoard crash report for this simulator{exception}; crash timing relative to this run is unverified; the result stands"
             ));
         }
         if left == 0 || runner.cancellation().is_some() {
@@ -1570,7 +1570,7 @@ mod block_start_tests {
     }
 
     #[test]
-    fn springboard_report_on_this_simulator_is_noted_without_waiting() {
+    fn springboard_report_after_teardown_is_not_attributed_to_this_run() {
         let udid = "AAAABBBB-1111-2222-3333-444455556666";
         let home = home_with_reports("springboard-found", &["FFFF", udid]);
         let mut runner = crate::exec::MockRunner::new();
@@ -1578,20 +1578,20 @@ mod block_start_tests {
             .environment
             .insert("HOME".into(), home.display().to_string());
         let start = runner.now_epoch_ms();
-        let report_time = std::time::UNIX_EPOCH + std::time::Duration::from_millis(start + 1_000);
+        let report_time = std::time::UNIX_EPOCH + std::time::Duration::from_millis(start + 91_000);
         std::fs::File::options()
             .write(true)
             .open(home.join("Library/Logs/DiagnosticReports/SpringBoard-1.ips"))
             .unwrap()
             .set_times(std::fs::FileTimes::new().set_modified(report_time))
             .unwrap();
-        runner.sleep(std::time::Duration::from_secs(90));
+        runner.sleep(std::time::Duration::from_secs(92));
         let note = springboard_crash_after(&mut runner, udid, start);
         assert_eq!(
             note.as_deref(),
-            Some("SpringBoard crashed on this simulator during the run or teardown (EXC_BAD_ACCESS); the result stands")
+            Some("Observed a SpringBoard crash report for this simulator (EXC_BAD_ACCESS); crash timing relative to this run is unverified; the result stands")
         );
-        assert_eq!(runner.now_epoch_ms(), start + 90_000);
+        assert_eq!(runner.now_epoch_ms(), start + 92_000);
         let _ = std::fs::remove_dir_all(home);
     }
 

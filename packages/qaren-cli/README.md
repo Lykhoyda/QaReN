@@ -2162,7 +2162,9 @@ or cancellation. It looks for a SpringBoard `.ips` report written since the core
 was spawned and matched to the selected simulator by device path or coalition.
 A match adds `outcomes.springboard_crash` to the receipt and a lane-health entry to
 `run.json` history, optionally including a sanitized exception type; report paths
-and raw contents are not copied. This observation never changes the run result,
+and raw contents are not copied. Crash timing relative to this run is unverified:
+the device lease may already be released, so a report can belong to a later run.
+This observation never changes the run result,
 and an absent note does not prove that SpringBoard stayed healthy.
 
 Cleanup proves owned process-group and exact-simulator runner-host absence
