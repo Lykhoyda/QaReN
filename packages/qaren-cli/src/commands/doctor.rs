@@ -579,6 +579,26 @@ fn installed_builds(runtime_root: &Path) -> Vec<PathBuf> {
     builds
 }
 
+// The installer keeps another QAREN_HOME's link and the other line's link (release or -dev build).
+fn separate_install(first: &Path, exe: &Path, runtime_root: &Path) -> Option<String> {
+    let line = |dir: &Path| dir.file_name()?.to_str().map(|v| v.contains("-dev."));
+    let mine = installed_version_dir(exe, runtime_root)?;
+    let theirs = first.parent()?.parent()?;
+    let their_root = theirs.parent()?;
+    let installed = first.file_name()? == "qaren"
+        && first.parent()?.file_name()? == "bin"
+        && their_root.file_name()? == "runtime";
+    let separate = their_root != runtime_root || line(theirs)? != line(&mine)?;
+    (installed && separate).then(|| {
+        let version = theirs.file_name().unwrap_or_default().to_string_lossy();
+        if their_root == runtime_root {
+            format!("qaren {version}")
+        } else {
+            format!("qaren {version} from {}", their_root.display())
+        }
+    })
+}
+
 fn evaluate_path(hits: &[PathBuf], exe: Option<&Path>, runtime_root: &Path) -> Check {
     let Some(first) = hits.first() else {
         return Check::warn(
@@ -593,6 +613,17 @@ fn evaluate_path(hits: &[PathBuf], exe: Option<&Path>, runtime_root: &Path) -> C
         // A development binary started by path while PATH runs the installed build is fine.
         let dev_beside_install = !exe.starts_with(runtime_root) && first_installed;
         if first_target != exe && !dev_beside_install {
+            if let Some(other) = separate_install(&first_target, exe, runtime_root) {
+                return Check::warn(
+                    "qaren-path",
+                    format!(
+                        "PATH runs {} ({other}), a separate install; this is {}",
+                        first.display(),
+                        exe.display()
+                    ),
+                    format!("run this build by its path, or install it with `{INSTALL} --link` to put it on PATH"),
+                );
+            }
             let wanted = hits
                 .iter()
                 .find(|hit| canonical(hit) == exe)
@@ -1488,6 +1519,35 @@ mod tests {
         let link = s.link("bin/qaren", &exe);
         let check = evaluate_path(&[link.clone(), link], Some(&exe), &s.runtime_root());
         assert_eq!(check.status, Status::Pass, "{check:?}");
+    }
+
+    #[test]
+    fn path_warns_when_a_separate_install_runs_first_but_fails_a_stale_link() {
+        let s = Scratch::new("path-side-by-side");
+        let release = s.install("2.0.0");
+        let dev = s.install("2.0.0-dev.abcdef123456");
+        let link = s.link("bin/qaren", &release);
+        let check = evaluate_path(&[link], Some(&dev), &s.runtime_root());
+        assert_eq!(check.status, Status::Warn, "{check:?}");
+        assert!(
+            check.detail.contains("(qaren 2.0.0), a separate install"),
+            "{}",
+            check.detail
+        );
+        assert!(check.fix.as_deref().unwrap().contains("--link"));
+
+        let other = s.exe("other/runtime/2.0.0/bin/qaren");
+        let link = s.link("bin2/qaren", &other);
+        let check = evaluate_path(&[link], Some(&dev), &s.runtime_root());
+        assert_eq!(check.status, Status::Warn, "{check:?}");
+        assert!(check
+            .detail
+            .contains(&format!("from {}", s.path("other/runtime").display())));
+
+        let older = s.install("1.9.9");
+        let link = s.link("bin3/qaren", &older);
+        let check = evaluate_path(&[link], Some(&release), &s.runtime_root());
+        assert_eq!(check.status, Status::Fail, "{check:?}");
     }
 
     #[test]
