@@ -136,6 +136,17 @@ test('crops in scaled coordinates, rounds, clamps, and rejects empty or transpar
   );
 });
 
+test('derives the scale from the app root size only when both axes agree', () => {
+  const bytes = png(2, 1, 3, Uint8Array.from([0, 10, 20, 30, 40, 50, 60]));
+  const frame = { x: 0, y: 0, width: 1, height: 1 / 2 };
+  assert.deepEqual(
+    [...cropPng(bytes, frame, { width: 1, height: 1 / 2 })!.rgb],
+    [10, 20, 30, 40, 50, 60],
+  );
+  assert.equal(cropPng(bytes, frame, { width: 1, height: 1 }), undefined);
+  assert.equal(cropPng(bytes, frame, { width: 0, height: 1 / 2 }), undefined);
+});
+
 test('invalid, truncated, corrupt, unsupported and oversized PNGs offer no proof', () => {
   const bytes = fixture('toggle1-before');
   const corrupt = Buffer.from(bytes);

@@ -219,6 +219,49 @@ test('runtime input runs withhold comparison shots', async () => {
   assert.equal(f.calls.includes('pixel shot'), false);
 });
 
+// The iOS runner reports no point scale, so it is derived from the app root's size in points.
+function iosOption(bytes: Uint8Array, root = { width: 0, height: 0 }): Screen {
+  const image = decodePng(bytes)!;
+  const size = { width: image.width / 3, height: image.height / 3 };
+  const nodes: NativeNode[] = [
+    {
+      ref: '@app',
+      index: 0,
+      type: 'Application',
+      rect: { x: 0, y: 0, width: root.width || size.width, height: root.height || size.height },
+    },
+    {
+      ref: '@option',
+      index: 1,
+      parentIndex: 0,
+      type: 'Button',
+      label: 'Option',
+      identifier: 'option',
+      hittable: true,
+      rect: { x: 0, y: 0, ...size },
+    },
+  ];
+  return { ...join(nodes, []), front: 'app', coverage: { native: 'complete', react: 'complete' } };
+}
+
+test('an iOS capture without a reported point scale derives it from the app root', async () => {
+  const before = fixture('toggle1-before'),
+    after = fixture('toggle1-after');
+  assert.equal(iosOption(before).pointScale, undefined);
+  const f = fake([iosOption(before)], [before, after, after]);
+  const outcome = await walkBlock(tap, f.deps);
+  assert.equal(outcome.block.outcome, 'pass', JSON.stringify(outcome));
+  assert.equal(f.calls.filter((call) => call.startsWith('press')).length, 1);
+});
+
+test('an app root that does not match the screenshot on both axes offers no proof', async () => {
+  const before = fixture('toggle1-before'),
+    after = fixture('toggle1-after');
+  const image = decodePng(before)!;
+  const skewed = { width: image.width / 3, height: image.height / 2 };
+  await expectFailure(fake([iosOption(before, skewed)], [before, after, after, after, after]));
+});
+
 test('after-capture scale must agree with the original baseline', async () => {
   const before = fixture('toggle1-before'),
     after = fixture('toggle1-after');

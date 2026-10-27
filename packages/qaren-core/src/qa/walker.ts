@@ -1,4 +1,4 @@
-import { cropPng, stablePixelChange, type PixelCrop } from './tap-pixels.js';
+import { cropPng, stablePixelChange, type PixelCrop, type PixelScale } from './tap-pixels.js';
 import {
   applyLabelProvenance,
   type LabelProvenance,
@@ -26,6 +26,7 @@ import {
   alertPressEffect,
   insideAlert,
   elementFrame,
+  applicationFrame,
   isNativeInput,
   describe,
 } from './screen.js';
@@ -770,19 +771,21 @@ async function walkBlockScoped(
       : e.testID === undefined && e.kind === target.kind && e.label === target.label;
   const pixelTarget = (screen: Screen, target: Element) => {
     const matches = screen.elements.filter((element) => sameIdentity(element, target));
-    if (
-      screen.front !== 'app' ||
-      matches.length !== 1 ||
-      !screen.pointScale ||
-      !Number.isFinite(screen.pointScale) ||
-      screen.pointScale <= 0
-    )
-      return undefined;
+    const root = applicationFrame(screen);
+    const scale: PixelScale | undefined =
+      screen.pointScale !== undefined
+        ? Number.isFinite(screen.pointScale) && screen.pointScale > 0
+          ? screen.pointScale
+          : undefined
+        : root && root.width > 0 && root.height > 0
+          ? { width: root.width, height: root.height }
+          : undefined;
+    if (screen.front !== 'app' || matches.length !== 1 || scale === undefined) return undefined;
     const element = matches[0];
     const frame = elementFrame(element);
     if (!frame || !element.hittable || insideAlert(element) || centreCovered(element, screen))
       return undefined;
-    return { target: element, frame: { ...frame }, scale: screen.pointScale };
+    return { target: element, frame: { ...frame }, scale };
   };
   const pixelShot = async (
     target: NonNullable<ReturnType<typeof pixelTarget>>,
@@ -2721,7 +2724,7 @@ async function walkBlockScoped(
             const identical = (target: ReturnType<typeof pixelTarget>) =>
               target &&
               sameIdentity(element!, baseline.target) &&
-              target.scale === baseline.scale &&
+              JSON.stringify(target.scale) === JSON.stringify(baseline.scale) &&
               target.frame.x === baseline.frame.x &&
               target.frame.y === baseline.frame.y &&
               target.frame.width === baseline.frame.width &&

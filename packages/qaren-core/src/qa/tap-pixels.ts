@@ -110,20 +110,30 @@ export interface PixelCrop {
   rgb: Uint8Array;
 }
 
+// A reported point scale, or the app root's size in points to derive one from the image.
+export type PixelScale = number | { width: number; height: number };
+
 export function cropPng(
   bytes: Uint8Array,
   frame: { x: number; y: number; width: number; height: number },
-  scale: number,
+  points: PixelScale,
 ): PixelCrop | undefined {
   if (
-    ![frame.x, frame.y, frame.width, frame.height, scale].every(Number.isFinite) ||
-    scale <= 0 ||
+    ![frame.x, frame.y, frame.width, frame.height].every(Number.isFinite) ||
     frame.width <= 0 ||
     frame.height <= 0
   )
     return undefined;
   const image = decodePng(bytes);
   if (!image) return undefined;
+  const scale = typeof points === 'number' ? points : image.width / points.width;
+  // A derived scale must agree on both axes, or the shot is not of the measured root.
+  if (
+    !Number.isFinite(scale) ||
+    scale <= 0 ||
+    (typeof points !== 'number' && Math.abs(image.height / points.height - scale) > 0.01)
+  )
+    return undefined;
   const clamp = (value: number, max: number) =>
     Math.max(0, Math.min(max, Math.round(value * scale)));
   const x = clamp(frame.x, image.width),
