@@ -403,6 +403,63 @@ fn ios_runtimes(runner: &mut dyn Runner, configured: Option<&str>) -> Check {
     }
 }
 
+// Read only: the named simulator's locale and keyboard against the pinned lane; nothing is written.
+pub fn lane_row(runner: &mut dyn Runner, home: &Path, udid: &str) -> Check {
+    let exports: Vec<Option<String>> = ios::lane_read_specs(udid)
+        .iter()
+        .map(|spec| {
+            let output = runner.run(spec);
+            output.ok().then_some(output.stdout)
+        })
+        .collect();
+    if exports.iter().all(Option::is_none) {
+        return Check::warn(
+            "ios-lane",
+            format!("cannot read the defaults of simulator {udid}; it must exist and be booted"),
+            format!("boot it with `xcrun simctl boot {udid}`, then re-run doctor"),
+        );
+    }
+    let pinned = ios::lane_defaults();
+    let unpinned: Vec<&str> = ios::lane_unpinned(&exports)
+        .into_iter()
+        .map(|entry| pinned[entry].1)
+        .collect();
+    let hardware_keyboard =
+        ios::parse_hardware_keyboard(&runner.run(&ios::hardware_keyboard_spec(home, udid)).stdout);
+    let pin = format!(
+        "pin it with `qaren prepare <scenario> --device {udid}` or `qaren check --device {udid} --boot-device`"
+    );
+    if !unpinned.is_empty() {
+        return Check::fail(
+            "ios-lane",
+            format!(
+                "simulator {udid} differs from the pinned lane in {}",
+                unpinned.join(", ")
+            ),
+            pin,
+        );
+    }
+    if hardware_keyboard == Some(true) {
+        return Check::fail(
+            "ios-lane",
+            format!("Simulator.app connects the host hardware keyboard to {udid}"),
+            "turn off I/O > Keyboard > Connect Hardware Keyboard in Simulator.app for this simulator",
+        );
+    }
+    let keyboard = match hardware_keyboard {
+        Some(false) => "disconnected",
+        _ => "unset or unreadable",
+    };
+    Check::pass(
+        "ios-lane",
+        format!(
+            "{udid}: {} keyboard, {} locale, autocorrection, prediction and autocapitalization off; hardware keyboard {keyboard}",
+            ios::LANE_LAYOUT,
+            ios::LANE_LOCALE
+        ),
+    )
+}
+
 // A nodePath named by the project config is never run, so doctor is safe on an untrusted clone.
 fn node_check(runner: &mut dyn Runner, configured: Option<&str>) -> Check {
     let env = runner.env_var("QAREN_NODE");
@@ -2980,5 +3037,85 @@ mod tests {
             saved_blocks_check(&mut runner, &linked).status,
             Status::Warn
         );
+    }
+}
+
+#[cfg(test)]
+mod lane_row_tests {
+    use super::*;
+    use crate::exec::{CmdOutput, MockRunner};
+
+    const UDID: &str = "AAAABBBB-1111-2222-3333-444455556666";
+
+    fn export(body: &str) -> CmdOutput {
+        CmdOutput::success(&format!(
+            "<plist version=\"1.0\">\n<dict>\n{body}</dict>\n</plist>\n"
+        ))
+    }
+
+    fn off() -> String {
+        [
+            "KeyboardAutocorrection",
+            "KeyboardPrediction",
+            "KeyboardShowPredictionBar",
+            "KeyboardAutocapitalization",
+        ]
+        .iter()
+        .map(|key| format!("\t<key>{key}</key>\n\t<false/>\n"))
+        .collect()
+    }
+
+    fn global(keyboard: &str) -> CmdOutput {
+        export(&format!(
+            "\t<key>AppleKeyboards</key>\n\t<array>\n\t\t<string>{keyboard}</string>\n\t</array>\n\
+             \t<key>AppleLanguages</key>\n\t<array>\n\t\t<string>en</string>\n\t</array>\n\
+             \t<key>AppleLocale</key>\n\t<string>en_US</string>\n{}",
+            off()
+        ))
+    }
+
+    fn lane(runner: &mut MockRunner, keyboard: &str, hardware: &str) -> Check {
+        runner.expect_run("defaults export -g", global(keyboard));
+        runner.expect_run("defaults export com.apple.Preferences", export(&off()));
+        runner.expect_run("PlistBuddy", CmdOutput::success(hardware));
+        lane_row(runner, Path::new("/home"), UDID)
+    }
+
+    #[test]
+    fn a_pinned_lane_passes_and_nothing_is_written() {
+        let mut runner = MockRunner::new();
+        let row = lane(&mut runner, ios::LANE_LAYOUT, "0\n");
+        assert_eq!(row.status, Status::Pass, "{}", row.detail);
+        assert!(row.detail.contains("hardware keyboard disconnected"));
+        assert!(runner
+            .calls
+            .iter()
+            .all(|c| !c.args.iter().any(|a| a == "write" || a.starts_with("Set"))));
+    }
+
+    #[test]
+    fn a_lane_that_differs_fails_and_names_the_keys() {
+        let mut runner = MockRunner::new();
+        let row = lane(&mut runner, "de_DE@sw=QWERTZ;hw=Automatic", "0\n");
+        assert_eq!(row.status, Status::Fail);
+        assert!(row.detail.contains("AppleKeyboards"), "{}", row.detail);
+        assert!(row.fix.unwrap().contains(&format!("--device {UDID}")));
+    }
+
+    #[test]
+    fn a_connected_hardware_keyboard_fails() {
+        let mut runner = MockRunner::new();
+        let row = lane(&mut runner, ios::LANE_LAYOUT, "true\n");
+        assert_eq!(row.status, Status::Fail);
+        assert!(row.detail.contains("hardware keyboard"));
+    }
+
+    #[test]
+    fn an_unreadable_simulator_warns() {
+        let mut runner = MockRunner::new();
+        runner.expect_run("defaults export", CmdOutput::failed(149, "not booted"));
+        runner.expect_run("defaults export", CmdOutput::failed(149, "not booted"));
+        let row = lane_row(&mut runner, Path::new("/home"), UDID);
+        assert_eq!(row.status, Status::Warn);
     }
 }

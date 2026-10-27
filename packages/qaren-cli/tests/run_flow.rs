@@ -2065,6 +2065,13 @@ fn check_runs_the_phases_in_order_and_ends_pass_with_a_report() {
         request_line["payload"]["target"]["manifestWarm"],
         serde_json::json!({ "ms": 0, "attempts": 2 })
     );
+    // Without an explicit lane opt-in the booted simulator's settings are never read or written.
+    assert!(request_line["payload"]["target"].get("warmLane").is_none());
+    assert!(!mock
+        .calls
+        .iter()
+        .any(|c| c.label.starts_with("simctl-lane")));
+    assert!(receipt.lane.is_none());
     assert_eq!(
         request_line["payload"]["preflightCalls"],
         probe_json()["callDetails"]
@@ -5679,6 +5686,65 @@ fn boot_device_refreshes_the_selected_state_after_reclaim_shuts_down_the_simulat
 }
 
 #[test]
+fn a_cold_first_screen_refuses_the_leg_before_row_one_and_is_recorded_once() {
+    let (repo, app) = app_repo();
+    let mut mock = MockRunner::new();
+    script_preflight_inventory(
+        &mut mock,
+        &repo,
+        "simctl list devices -j",
+        &available_inventory("Booted"),
+    );
+    script_admission(&mut mock);
+    common::script_ios_deps(&mut mock);
+    script_admission(&mut mock);
+    mock.expect_run(
+        "simctl list devices -j",
+        CmdOutput::success(&available_inventory("Booted")),
+    );
+    script_provision_after_deps(&mut mock);
+    script_drift_status(&mut mock);
+    script_host_probe(&mut mock, UDID, hosts_absent());
+    let refusal = serde_json::json!({"verdict":"REFUSED","code":"LANE_NOT_WARM",
+        "message":"no text was observed on the app's first screen","lease":"fixture-lease"});
+    mock.expect_spawn_piped(
+        "walk.js",
+        9000,
+        &format!("{}\n", envelope(2, "result", &refusal.to_string())),
+        Some(4),
+    );
+    script_core_identity(&mut mock);
+    script_teardown(&mut mock);
+    let mut runner = LeaseObservedRunner {
+        mock,
+        repo: repo.clone(),
+        wire: None,
+        observed: Vec::new(),
+        expect_fresh_install: false,
+    };
+    let mut req = request(&repo, &app, 30);
+    req.device = Some(UDID.to_string());
+    req.boot_device = true;
+
+    let receipt = run(&mut runner, &req);
+
+    assert_eq!(
+        receipt.result,
+        ReceiptResult::Refused,
+        "{}",
+        receipt.to_json()
+    );
+    assert_eq!(receipt.outcomes["core_exit"], "4");
+    let failure = receipt.failure.as_ref().unwrap();
+    assert_eq!(failure.code, FailureCode::LaneNotWarm);
+    assert!(failure.code.is_refusal());
+    let lane = receipt.lane.as_ref().expect("the warm-lane record");
+    assert_eq!(lane.first_screen, Some(false));
+    assert_eq!(receipt.ledger.as_ref().unwrap().steps, 0);
+    assert_eq!(runner.mock.remaining(), 0);
+}
+
+#[test]
 fn boot_device_admission_boot_readback_and_walk_share_a_durable_borrowed_lease() {
     for fresh in [false, true] {
         for initial in ["Shutdown", "Booted"] {
@@ -5736,6 +5802,20 @@ fn boot_device_admission_boot_readback_and_walk_share_a_durable_borrowed_lease()
                 receipt.failure
             );
             assert_eq!(runner.mock.remaining(), 0);
+            let lane = receipt.lane.as_ref().expect("an owned lane is pinned");
+            assert_eq!(lane.device_id, UDID);
+            assert_eq!(lane.first_screen, Some(true));
+            let request_line: serde_json::Value =
+                serde_json::from_str(runner.mock.piped_stdin_text(1).trim()).unwrap();
+            assert_eq!(request_line["payload"]["target"]["warmLane"], true);
+            let lane_reads: Vec<_> = runner
+                .mock
+                .calls
+                .iter()
+                .filter(|c| c.label == "simctl-lane-read")
+                .collect();
+            assert_eq!(lane_reads.len(), 2);
+            assert!(lane_reads.iter().all(|c| c.args[2] == UDID));
             assert_eq!(receipt.cleanup["device_lease"], "removed");
             assert_eq!(receipt.cleanup["simulator"], "kept");
             let mut phases = vec![

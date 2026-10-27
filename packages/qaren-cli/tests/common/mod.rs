@@ -392,6 +392,41 @@ pub struct IosBuildRunner {
     pub container_is_installed_app: bool,
     // Called before each run command, e.g. to inspect the durable record at the moment of an effect.
     pub observe: Option<Box<dyn FnMut(&qaren::exec::CmdSpec) + Send>>,
+    // How the owned simulator answers lane reads; writes always succeed.
+    pub lane: Lane,
+    // Simulator.app's host keyboard is connected to the lane.
+    pub hardware_keyboard: bool,
+}
+
+#[derive(Clone, Copy, Default, PartialEq)]
+pub enum Lane {
+    #[default]
+    Pinned,
+    // A fresh simulator: unpinned until the first write.
+    Fresh,
+    // Keeps reading unpinned whatever is written.
+    Stuck,
+}
+
+// A `defaults export` plist for one lane domain, with every pinned value or none.
+pub fn lane_export(domain: &str, pinned: bool) -> String {
+    let index = usize::from(domain != "-g");
+    let body: String = qaren::adapters::ios::lane_defaults()
+        .into_iter()
+        .filter(|entry| pinned && entry.0 == index)
+        .map(|(_, key, _, exported)| format!("\t<key>{key}</key>\n\t{exported}\n"))
+        .collect();
+    format!("<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<plist version=\"1.0\">\n<dict>\n{body}</dict>\n</plist>\n")
+}
+
+// A pinned lane on a plain MockRunner: both domain reads, nothing written.
+pub fn script_pinned_lane(mock: &mut MockRunner) {
+    for domain in ["-g", "com.apple.Preferences"] {
+        mock.expect_run(
+            "defaults export",
+            CmdOutput::success(&lane_export(domain, true)),
+        );
+    }
 }
 
 #[derive(Clone)]
@@ -560,6 +595,36 @@ impl qaren::exec::Runner for IosBuildRunner {
                 duration_ms,
                 ..Default::default()
             };
+        }
+        if spec.label == "plistbuddy-hardware-keyboard" {
+            self.inner.calls.push(spec.clone());
+            return CmdOutput::success(if self.hardware_keyboard {
+                "true\n"
+            } else {
+                "0\n"
+            });
+        }
+        if matches!(
+            spec.label.as_str(),
+            "simctl-lane-read" | "simctl-lane-defaults"
+        ) {
+            let written = self
+                .inner
+                .calls
+                .iter()
+                .filter(|call| call.label == "simctl-lane-defaults")
+                .count();
+            self.inner.calls.push(spec.clone());
+            let pinned = match self.lane {
+                Lane::Pinned => true,
+                Lane::Fresh => written >= qaren::adapters::ios::lane_defaults().len(),
+                Lane::Stuck => false,
+            };
+            return CmdOutput::success(&if spec.label == "simctl-lane-read" {
+                lane_export(&spec.args[5], pinned)
+            } else {
+                String::new()
+            });
         }
         if self.container_is_installed_app && spec.label == "simctl-app-container" {
             self.container_is_installed_app = false;

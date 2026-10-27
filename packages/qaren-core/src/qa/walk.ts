@@ -80,6 +80,7 @@ import { summarizeJev } from './ledger.js';
 import { isSecretEnvName, redactApiKey, setRedactionKey } from '../util/redact.js';
 import { createStop, watchOwnerPipe, watchParent } from './stop.js';
 import { prove } from './prove.js';
+import { firstScreenFacts, warmLaneRefusal } from './warm-lane.js';
 import {
   admissionMetric,
   admit,
@@ -1052,6 +1053,24 @@ async function mainRequest(
     return refuse('RUN_CANCELLED', 'the run was cancelled before the walk started', () =>
       opened.close(),
     );
+  // A pinned lane proves its first screen once, before row 1, through the projection rows read.
+  if (request.target.warmLane) {
+    let refusal: string | undefined;
+    try {
+      const screen = await stop.track(() =>
+        opened.deps.captureScreen({ platformPresence: request.platform === 'ios' }),
+      );
+      log(`warm lane first screen: ${firstScreenFacts(screen)}`);
+      refusal = warmLaneRefusal(screen);
+    } catch (error) {
+      refusal = `the first screen could not be read (${describeError(error).code})`;
+    }
+    if (stop.stopping)
+      return refuse('RUN_CANCELLED', 'the run was cancelled before the walk started', () =>
+        opened.close(),
+      );
+    if (refusal) return refuse('LANE_NOT_WARM', refusal, () => opened.close());
+  }
   writer.admitted();
   try {
     const ledger = await stop.track(() =>

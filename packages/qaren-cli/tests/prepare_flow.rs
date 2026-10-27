@@ -335,6 +335,123 @@ fn ios_launch_error_stays_a_build_failure_without_a_receipt() {
     assert_eq!(mock.remaining(), 0);
 }
 
+#[test]
+fn ios_prepare_pins_a_fresh_lane_before_the_dev_menu_defaults_and_launch() {
+    let repo = common::temp_repo();
+    let scenario = write_scenario(&repo, &ios_scenario_yaml(8791));
+    let mut mock = MockRunner::new();
+    mock.lane = common::Lane::Fresh;
+    script_ios_prepare(&mut mock, &repo, CmdOutput::success(""));
+
+    let receipt = prepare(&mut mock, &prepare_args(&scenario, false, None));
+
+    assert_eq!(
+        receipt.result,
+        ReceiptResult::Ready,
+        "{}",
+        receipt.to_json()
+    );
+    let labels: Vec<&str> = mock.calls.iter().map(|c| c.label.as_str()).collect();
+    let writes: Vec<usize> = (0..labels.len())
+        .filter(|&i| labels[i] == "simctl-lane-defaults")
+        .collect();
+    assert_eq!(writes.len(), qaren::adapters::ios::lane_defaults().len());
+    let devmenu = labels
+        .iter()
+        .position(|l| *l == "simctl-devmenu-defaults")
+        .unwrap();
+    assert!(writes.iter().all(|&i| i < devmenu));
+    assert_eq!(
+        labels.iter().filter(|l| **l == "simctl-lane-read").count(),
+        4
+    );
+    assert!(mock
+        .calls
+        .iter()
+        .filter(|c| c.label.starts_with("simctl-lane"))
+        .all(|c| c.args[2] == UDID));
+    let lane = receipt.lane.expect("warm-lane record");
+    assert_eq!(lane.device_id, UDID);
+    assert_eq!(lane.layout, "en_US@sw=QWERTY;hw=Automatic");
+    assert_eq!(lane.normalized.len(), writes.len());
+    assert_eq!(
+        lane.normalized[..3],
+        ["AppleLanguages", "AppleLocale", "AppleKeyboards"]
+    );
+    assert_eq!(lane.first_screen, None);
+    assert!(receipt.outcomes["lane"].contains("value(s) normalized"));
+}
+
+#[test]
+fn ios_prepare_leaves_a_pinned_lane_unwritten() {
+    let repo = common::temp_repo();
+    let scenario = write_scenario(&repo, &ios_scenario_yaml(8791));
+    let mut mock = MockRunner::new();
+    script_ios_prepare(&mut mock, &repo, CmdOutput::success(""));
+
+    let receipt = prepare(&mut mock, &prepare_args(&scenario, false, None));
+
+    assert_eq!(
+        receipt.result,
+        ReceiptResult::Ready,
+        "{}",
+        receipt.to_json()
+    );
+    let count = |label: &str| mock.calls.iter().filter(|c| c.label == label).count();
+    assert_eq!(count("simctl-lane-read"), 2);
+    assert_eq!(count("simctl-lane-defaults"), 0);
+    assert!(receipt
+        .lane
+        .expect("warm-lane record")
+        .normalized
+        .is_empty());
+}
+
+#[test]
+fn ios_prepare_refuses_a_lane_that_keeps_its_unpinned_values_before_launch() {
+    for hardware_keyboard in [false, true] {
+        let repo = common::temp_repo();
+        let scenario = write_scenario(&repo, &ios_scenario_yaml(8791));
+        let mut mock = MockRunner::new();
+        if hardware_keyboard {
+            mock.hardware_keyboard = true;
+            mock.inner
+                .environment
+                .insert("HOME".into(), repo.display().to_string());
+        } else {
+            mock.lane = common::Lane::Stuck;
+        }
+        script_ios_prepare_before_devmenu(&mut mock, &repo);
+        common::script_ios_metro_cleanup(&mut mock);
+
+        let receipt = prepare(&mut mock, &prepare_args(&scenario, false, None));
+
+        assert_eq!(
+            receipt.result,
+            ReceiptResult::Refused,
+            "{}",
+            receipt.to_json()
+        );
+        let failure = receipt.failure.as_ref().unwrap();
+        assert_eq!(failure.code, FailureCode::LaneNotWarm);
+        assert!(failure.code.is_refusal());
+        let detail = failure.detail.to_string();
+        assert!(
+            detail.contains(if hardware_keyboard {
+                "hardware keyboard"
+            } else {
+                "AppleKeyboards"
+            }),
+            "{detail}"
+        );
+        let count = |label: &str| mock.calls.iter().filter(|c| c.label == label).count();
+        assert_eq!(count("simctl-devmenu-defaults"), 0);
+        assert_eq!(count("simctl-launch"), 0);
+        assert!(receipt.lane.is_none());
+        assert_eq!(mock.remaining(), 0);
+    }
+}
+
 const APP_EXITED: &str = "-\t0\tUIKitApplication:com.rndevagent.testapp[abc]";
 
 fn script_ios_app_tick(mock: &mut qaren::exec::MockRunner, launchctl: &str) {
@@ -3084,6 +3201,7 @@ fn ios_reuse_dry_run_lists_each_launch_step_once_in_execution_order() {
         metro::request_probe_spec(8791),
         metro::manifest_spec(8791, "ios"),
     ];
+    expected.extend(ios::lane_read_specs("<udid>"));
     expected.extend(ios::devmenu_defaults_specs("<udid>", &cache.app_id));
     expected.extend([
         ios::launch_spec("<udid>", &cache.app_id, 8791),

@@ -65,6 +65,8 @@ pub(crate) struct Ctx<'a> {
     pub(crate) bundle_requests_at_launch: Option<u64>,
     // The dev client manifest warm-up that cleared the launch.
     pub(crate) manifest_warm: Option<crate::core::ManifestWarm>,
+    // The run owns this exact iOS simulator and pins its locale and keyboard before launch.
+    pub(crate) lane_owned: bool,
 }
 
 impl<'a> Ctx<'a> {
@@ -180,6 +182,7 @@ pub(crate) fn finish_receipt(ctx: Ctx, result: ReceiptResult, failure: Option<Fa
     receipt.build = ctx.record.build.clone();
     receipt.core_cleanup = ctx.record.resources.core_cleanup.clone();
     receipt.fresh_install = ctx.record.resources.fresh_install.clone();
+    receipt.lane = ctx.record.resources.lane.clone();
     for (name, value) in &ctx.notes {
         receipt.outcomes.insert(name.clone(), value.clone());
     }
@@ -460,6 +463,7 @@ fn prepare_validated(
         verb: "prepare",
         bundle_requests_at_launch: None,
         manifest_warm: None,
+        lane_owned: scenario.platform == Platform::Ios,
     };
     let t = ctx.mark("validate", started_ms);
     if let Some(earlier) = recovered {
@@ -2241,6 +2245,10 @@ pub(crate) fn run_reuse_path(ctx: &mut Ctx, plan: &BuildPlan, t: u64) -> Result<
                 .ios_simulator
                 .clone()
                 .expect("ios allocated");
+            if ctx.lane_owned {
+                enter_substage(ctx, Some("lane_normalize"));
+                normalize_lane(ctx, &sim.udid, deadline)?;
+            }
             enter_substage(ctx, Some("dev_menu_defaults"));
             let defaults = ios::devmenu_defaults_specs(&sim.udid, &ctx.record.candidate.app_id);
             let mut failed = 0;
@@ -2339,6 +2347,112 @@ pub(crate) fn run_reuse_path(ctx: &mut Ctx, plan: &BuildPlan, t: u64) -> Result<
     ctx.mark("ready_probes", t);
     enter_substage(ctx, None);
     Ok(())
+}
+
+// Pins the owned simulator's locale and keyboard before launch; the readback, not the write, decides.
+fn normalize_lane(ctx: &mut Ctx, udid: &str, deadline: u64) -> Result<(), Failure> {
+    let started = ctx.runner.monotonic_ms();
+    let unpinned = read_lane(ctx, udid, deadline)?;
+    for &entry in &unpinned {
+        lane_command(ctx, &ios::lane_write_spec(udid, entry), deadline)?;
+    }
+    let pinned = ios::lane_defaults();
+    let still = if unpinned.is_empty() {
+        Vec::new()
+    } else {
+        read_lane(ctx, udid, deadline)?
+    };
+    if !still.is_empty() {
+        let keys: Vec<&str> = still.iter().map(|&entry| pinned[entry].1).collect();
+        return Err(lane_not_warm(
+            format!(
+                "the simulator did not keep the pinned value for {}",
+                keys.join(", ")
+            ),
+            "check the simulator with `xcrun simctl spawn <udid> defaults read -g`, or erase it, then re-run",
+        ));
+    }
+    let hardware_keyboard = match ctx.runner.env_var("HOME") {
+        Some(home) => {
+            let output = lane_command(
+                ctx,
+                &ios::hardware_keyboard_spec(Path::new(&home), udid),
+                deadline,
+            )?;
+            ios::parse_hardware_keyboard(&output.stdout)
+        }
+        None => None,
+    };
+    if hardware_keyboard == Some(true) {
+        return Err(lane_not_warm(
+            "Simulator.app connects the host hardware keyboard to this simulator, so typing bypasses the pinned layout",
+            "turn off I/O > Keyboard > Connect Hardware Keyboard in Simulator.app for this simulator, then re-run",
+        ));
+    }
+    let normalized: Vec<String> = unpinned
+        .iter()
+        .map(|&entry| pinned[entry].1.to_string())
+        .collect();
+    ctx.notes.push((
+        "lane".to_string(),
+        format!(
+            "pinned {} keyboard, {} locale; {} value(s) normalized",
+            ios::LANE_LAYOUT,
+            ios::LANE_LOCALE,
+            normalized.len()
+        ),
+    ));
+    ctx.record.resources.lane = Some(crate::runrecord::LaneEvidence {
+        device_id: udid.to_string(),
+        build: ctx
+            .record
+            .build
+            .as_ref()
+            .map(|plan| plan.fingerprint.clone())
+            .unwrap_or_default(),
+        layout: ios::LANE_LAYOUT.to_string(),
+        locale: ios::LANE_LOCALE.to_string(),
+        normalized,
+        hardware_keyboard,
+        pinned_at: timefmt::iso8601_utc(ctx.runner.now_epoch_ms()),
+        first_screen: None,
+    });
+    ctx.timings.push((
+        "lane_normalize".to_string(),
+        ctx.runner.monotonic_ms().saturating_sub(started),
+    ));
+    ctx.save()
+}
+
+fn read_lane(ctx: &mut Ctx, udid: &str, deadline: u64) -> Result<Vec<usize>, Failure> {
+    let mut exports = Vec::new();
+    for spec in ios::lane_read_specs(udid) {
+        let output = lane_command(ctx, &spec, deadline)?;
+        exports.push(output.ok().then_some(output.stdout));
+    }
+    Ok(ios::lane_unpinned(&exports))
+}
+
+// Bounded by the launch budget; unlike run_budgeted_attempt it records no output, which holds device preferences.
+fn lane_command(
+    ctx: &mut Ctx,
+    spec: &CmdSpec,
+    deadline: u64,
+) -> Result<crate::exec::CmdOutput, Failure> {
+    ensure_running(ctx.runner, "build")?;
+    let remaining_s = deadline.saturating_sub(ctx.runner.monotonic_ms()) / 1000;
+    if remaining_s == 0 {
+        return Err(launch_deadline_spent(&ctx.record.run_id));
+    }
+    let mut bounded = spec.clone();
+    bounded.timeout_seconds = bounded.timeout_seconds.min(remaining_s);
+    let output = ctx.runner.run(&bounded);
+    ensure_running(ctx.runner, "build")?;
+    Ok(output)
+}
+
+pub(crate) fn lane_not_warm(detail: impl Into<String>, next_action: &str) -> Failure {
+    Failure::new("lane", FailureCode::LaneNotWarm, detail, next_action)
 }
 
 // Let the owned install use the remaining preparation budget before checking its receipt.
@@ -3703,6 +3817,7 @@ fn dry_run_receipt(
             ));
             planned.push(metro::request_probe_spec(port));
             planned.push(metro::manifest_spec(port, "ios"));
+            planned.extend(ios::lane_read_specs(udid));
             planned.extend(ios::devmenu_defaults_specs(udid, &cand.app_id));
             planned.push(ios::launch_spec(udid, &cand.app_id, port));
             planned.push(ios::app_container_spec(udid, &cand.app_id));
@@ -3830,6 +3945,7 @@ fn dry_run_receipt(
                     | "expo-start"
                     | "metro-request-probe"
                     | "metro-manifest"
+                    | "simctl-lane-read"
                     | "simctl-devmenu-defaults"
                     | "simctl-app-container"
                     | "simctl-launchctl"
@@ -3842,6 +3958,7 @@ fn dry_run_receipt(
                 planned.push(ios::install_app_spec(udid, &artifact_path));
                 planned.push(metro::request_probe_spec(port));
                 planned.push(metro::manifest_spec(port, "ios"));
+                planned.extend(ios::lane_read_specs(udid));
                 planned.extend(ios::devmenu_defaults_specs(udid, &cand.app_id));
                 planned.push(ios::launch_spec(udid, &cand.app_id, port));
                 planned.push(ios::app_container_spec(udid, &cand.app_id));

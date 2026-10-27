@@ -126,6 +126,8 @@ pub struct Receipt {
     pub core_cleanup: Option<crate::runrecord::CoreCleanupEvidence>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub fresh_install: Option<crate::runrecord::FreshInstallEvidence>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub lane: Option<crate::runrecord::LaneEvidence>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub planned_commands: Vec<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -176,6 +178,7 @@ impl Receipt {
             cleanup: BTreeMap::new(),
             core_cleanup: None,
             fresh_install: None,
+            lane: None,
             planned_commands: Vec::new(),
             ledger: None,
             preflight_jev: None,

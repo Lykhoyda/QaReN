@@ -139,6 +139,7 @@ fn request() -> CoreRequest {
             worktree: PathBuf::from("/tmp/app"),
             metro_bundle_requests: None,
             manifest_warm: None,
+            warm_lane: false,
         },
     }
 }
