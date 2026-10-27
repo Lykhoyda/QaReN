@@ -33,6 +33,17 @@ async function fillPrivate(dropPrefix: number) {
           ...(typeof options.compareTo === 'string'
             ? { exact: value.length === options.compareTo.length && value === options.compareTo }
             : {}),
+          ...(typeof options.compareTo === 'string' && value !== options.compareTo
+            ? {
+                mismatch: {
+                  len: value.length,
+                  exp: options.compareTo.length,
+                  prefix: 0,
+                  suffix: Math.min(value.length, options.compareTo.length),
+                  caseEq: false,
+                },
+              }
+            : {}),
         }),
       };
     },
@@ -80,6 +91,18 @@ for (const dropped of [1, 3]) {
     );
     assert.equal(JSON.stringify(envelope).includes(requested), false);
     assert.equal(JSON.stringify(envelope).includes(requested.slice(dropped)), false);
+    const facts = {
+      len: requested.length - dropped,
+      exp: requested.length,
+      prefix: 0,
+      suffix: requested.length - dropped,
+      caseEq: false,
+    };
+    assert.deepEqual(envelope.meta?.entryMismatch, facts);
+    assert.match(
+      envelope.error,
+      new RegExp(`len ${facts.len}, exp ${facts.exp}, prefix 0, suffix ${facts.suffix}`),
+    );
   });
 }
 

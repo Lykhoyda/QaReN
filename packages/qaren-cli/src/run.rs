@@ -351,6 +351,7 @@ fn run_inner(
     }
     let input_owner = crate::redact::capture_input_scope().expect("run input scope");
     let resolved_inputs = input_owner.admit(&names)?;
+    resolved_inputs.declare_test_pii(&non_secret_names(&inventory, &names)?);
     let login_snapshot = inventory.get("loginSnapshot").cloned();
     let prepared = preflight_inputs(
         runner,

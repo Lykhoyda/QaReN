@@ -37,7 +37,8 @@ export interface MediaLatch {
 
 export const MASK = '•••';
 export const SCREEN_TEXT_WITHHELD = '[screen text withheld: a secure field is on screen]';
-export const INPUT_SCREEN_TEXT_WITHHELD = '[screen text withheld: the run holds runtime inputs]';
+export const INPUT_SCREEN_TEXT_WITHHELD =
+  '[screen text withheld: the run holds secret runtime inputs]';
 
 export function concealsScreen(screen: Screen): boolean {
   return screen.elements.some((element) => element.secure);
@@ -276,6 +277,23 @@ function forms(value: string): string[] {
   ].filter(Boolean);
 }
 
+// Apps show a declared e-mail in parts or encoded, so each derived form is masked with it.
+export function emailForms(value: string): string[] {
+  const email = /^([^@\s]+)@([^@\s]+\.[^@\s]+)$/u.exec(value.trim());
+  if (!email) return [];
+  const [whole, local, domain] = email;
+  return [
+    ...new Set([
+      encodeURIComponent(whole),
+      ...['&#64;', '&#x40;', '&commat;'].map((at) => whole.replace('@', at)),
+      local,
+      encodeURIComponent(local),
+      local.split('+')[0],
+      domain,
+    ]),
+  ].filter((form) => chars(form) >= SHORT && form !== whole);
+}
+
 const DIGIT_GAP = '[\\s\\p{White_Space}\\p{P}\\p{S}]';
 function digitForm(value: string): string | undefined {
   const digits = value.trim().replace(new RegExp(DIGIT_GAP, 'gu'), '');
@@ -300,7 +318,14 @@ export function matchPrivate(
       )
         return [];
       const candidates = forms(value.text).flatMap((form) =>
-        value.provenance === 'input' ? [form, JSON.stringify(form).slice(1, -1)] : [form],
+        value.provenance === 'input'
+          ? [
+              form,
+              JSON.stringify(form).slice(1, -1),
+              // Derived forms widen output masking only; persisted decisions match the value itself.
+              ...(policy === 'persisted' ? [] : emailForms(form)),
+            ]
+          : [form],
       );
       const patterns = [...new Set(candidates)].map((form) =>
         value.provenance === 'code' || (value.provenance === 'secret' && length === 1)
@@ -691,6 +716,7 @@ export function formatSensitivePixels(
 
 export class ObservedPrivacy {
   private readonly inputValues = new Set<string>();
+  private readonly strictInputValues = new Set<string>();
   private readonly observed = new Set<string>();
   private readonly concealed = new Set<string>();
   private readonly secret = new Set<string>();
@@ -717,8 +743,9 @@ export class ObservedPrivacy {
     this.preclassified.push(...values.filter(Boolean));
   }
 
-  classifyInputs(values: readonly string[]): void {
+  classifyInputs(values: readonly string[], strict: readonly string[] = values): void {
     values.filter(Boolean).forEach((value) => this.inputValues.add(value));
+    strict.filter(Boolean).forEach((value) => this.strictInputValues.add(value));
     if (this.inputValues.size) this.mark({ reason: 'runtime-input' });
   }
 
@@ -919,10 +946,10 @@ export class ObservedPrivacy {
     return matchPrivate(text, this.privateSet(), 'durable').text;
   }
 
-  // Undeclared personal data shown beside runtime inputs cannot be masked by value, so no screen text leaves.
+  // Beside a SECRET input undeclared personal data cannot be masked by value; TEST-PII runs accept that.
   textWithheld(screen: Screen): string | undefined {
     if (concealsScreen(screen)) return SCREEN_TEXT_WITHHELD;
-    if (this.inputValues.size) return INPUT_SCREEN_TEXT_WITHHELD;
+    if (this.strictInputValues.size) return INPUT_SCREEN_TEXT_WITHHELD;
   }
 
   screenText(screen: Screen): string[] {

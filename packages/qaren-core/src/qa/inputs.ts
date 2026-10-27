@@ -71,7 +71,7 @@ export class RunInputs {
     this.#nonSecret = Object.freeze([...new Set(nonSecretInputs)].sort());
     this.#strict = new Map([...this.#values].filter(([name]) => !this.#nonSecret.includes(name)));
     this.#privacy = privacy;
-    privacy.classifyInputs([...this.#values.values()]);
+    privacy.classifyInputs([...this.#values.values()], [...this.#strict.values()]);
   }
 
   names(): string[] {
@@ -82,6 +82,9 @@ export class RunInputs {
   }
   get hasInputs(): boolean {
     return this.#values.size > 0;
+  }
+  get hasStrictInputs(): boolean {
+    return this.#strict.size > 0;
   }
   get terminal(): InputPrivacyRefusal | undefined {
     return this.#terminal;

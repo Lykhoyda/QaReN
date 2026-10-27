@@ -1070,3 +1070,51 @@ fn registry_output_policy_fixture_worker() {
         }
     }
 }
+
+#[test]
+fn a_test_pii_only_run_keeps_subprocess_logs_redacted_by_value_instead_of_withheld() {
+    const EMAIL: &str = "qa.tester+run7@staging.example.test";
+    const PASSWORD: &str = "fake-pass-0000";
+    let dir = common::temp_repo();
+    let script = format!(
+        "printf 'typed {EMAIL} as %s and %s with %s and qa.tester%%2Brun7%%40staging.example.test\\n' qa.tester staging.example.test {PASSWORD} >&2"
+    );
+    let drained = |name: &str, test_pii: &[&str], unused_secret: bool| {
+        let mut entries = vec![("QAREN_INPUT_EMAIL".into(), EMAIL.into())];
+        if unused_secret {
+            entries.push(("QAREN_INPUT_PASSWORD".into(), PASSWORD.into()));
+        }
+        let inputs = Arc::new(qaren::redact::InputValues::from_entries(entries));
+        qaren::redact::with_input_scope(inputs.clone(), || {
+            let resolved = inputs.admit(&["EMAIL".to_string()]).unwrap();
+            resolved.declare_test_pii(&test_pii.iter().map(|n| n.to_string()).collect::<Vec<_>>());
+            let mut runner = RealRunner::with_log_executable(env!("CARGO_BIN_EXE_qaren").into());
+            let log = dir.join(name);
+            let mut child = runner.spawn_piped(&shell(&script, &dir), &log).unwrap();
+            let mut wire = String::new();
+            child.stdout.read_to_string(&mut wire).unwrap();
+            until(|| child.handle.try_wait().unwrap().is_some());
+            drop(child);
+            runner.flush_logs().unwrap();
+            std::fs::read_to_string(&log).unwrap()
+        })
+    };
+    let strict = drained("strict.log", &[], false);
+    assert_eq!(strict, "[private output withheld]\n");
+    let unused_secret = drained("unused-secret.log", &["EMAIL"], true);
+    assert_eq!(unused_secret, "[private output withheld]\n");
+    let test_pii = drained("test-pii.log", &["EMAIL"], false);
+    assert!(
+        test_pii.starts_with("typed [REDACTED_INPUT] as"),
+        "{test_pii}"
+    );
+    for leaked in [
+        EMAIL,
+        "qa.tester",
+        "staging.example.test",
+        "%40staging",
+    ] {
+        assert!(!test_pii.contains(leaked), "{leaked} in {test_pii}");
+    }
+    std::fs::remove_dir_all(dir).unwrap();
+}

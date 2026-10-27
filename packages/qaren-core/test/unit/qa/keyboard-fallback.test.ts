@@ -1216,6 +1216,29 @@ for (const strict of [false, true]) {
 }
 
 for (const route of ['transition', 'keyboard-up', 'no-target'] as const) {
+  test(`${route} types a TEST-PII input as a readable value`, async () => {
+    const fake = app({
+      ...(route === 'no-target' ? { initial: [submit] } : {}),
+      initialKeyboard: route !== 'transition',
+      reactFocused: true,
+    });
+    const type = fake.deps.typeFocused!;
+    const flags: Array<boolean | undefined> = [];
+    fake.deps.typeFocused = async (ref, text, testID, context, focused, privateValue) => {
+      flags.push(privateValue);
+      return type(ref, text, testID, context, focused, privateValue);
+    };
+    const target = route === 'no-target' ? 'qa-otp-code' : 'qa-hidden-email';
+    const markdown = slotPlan('EMAIL', target).replace('input EMAIL', 'input EMAIL (test-pii)');
+    const result = await withInputs(new RunInputs({ EMAIL }, ['EMAIL'], undefined, ['EMAIL']), () =>
+      walkBlock(blocks(markdown)[0], fake.deps),
+    );
+    assert.equal(result.block.outcome, 'pass');
+    assert.deepEqual(flags, [false]);
+  });
+}
+
+for (const route of ['transition', 'keyboard-up', 'no-target'] as const) {
   for (const runtimeValue of [false, true]) {
     test(`${route} derives focused Fill privacy from its own value source`, async () => {
       const fake = app({

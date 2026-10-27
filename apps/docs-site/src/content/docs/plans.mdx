@@ -81,29 +81,48 @@ the value of `QAREN_INPUT_<NAME>` once when the run starts, here `QAREN_INPUT_US
 `QAREN_INPUT_PASSWORD`. Resolve the value before you run qaren, for example with your
 password manager's CLI; qaren does not read `.env` files or resolve references.
 
-Inputs are strict by default. For an operator-designated non-secret dev or staging fixture,
-use the exact suffix on its named Fill:
+Every input has one of three tiers:
+
+- **SECRET** (the default; passwords, OTP codes, API keys, payment data). The value is never
+  read back or logged: typing is verified inside the app, and a mismatch reports only counts
+  (observed and expected length, matching prefix and suffix lengths, whether only letter case
+  differs). A runtime input with no annotation, or with `(secret)`, is SECRET. A field the
+  app marks secure is SECRET whatever the plan says.
+- **TEST-PII** (staging test e-mails, test addresses and similar test-account data). Opt in
+  per Fill with `(test-pii)`; `(non-secret)` is the older spelling of the same tier.
+- **PUBLIC**: literal text in the plan, such as `Fill "Search" with "shoes"`.
 
 ```md
-1. Fill "code-field" with input FIXTURE_CODE (non-secret)
+1. Fill "email-field" with input TEST_EMAIL (test-pii)
+2. Fill "password-field" with input PASSWORD
 ```
 
-This relaxes only execution hash and echo protection for that input. Its labels,
+A TEST-PII value is read back in memory to verify typing and diagnose a mismatch. Run logs,
+failure screen text and reports come back redacted by the declared values, including an
+e-mail's local part, plus-less local part, domain and percent- or HTML-encoded forms.
+Screenshots and video stay withheld in any run that holds an input. A run that holds any
+SECRET input keeps failure screen text and logs withheld as before. Any other
+`QAREN_INPUT_` variable set in the environment, even one the plan does not use, keeps the
+logs withheld.
+
+Declared-value redaction only masks the values you declared. Other personal data the app
+shows next to them, such as the account holder's name, phone number or address, is not
+covered and can appear in the logs and failure text of a TEST-PII run. Use TEST-PII only
+for accounts whose on-screen data is test data.
+
+The tier also relaxes execution hash and echo protection for that input. Its labels,
 identifiers and types keep their original hash operands, including at the filled field;
-an `Expect input FIXTURE_CODE on screen` line is unnecessary and does not constant-mask
+an `Expect input TEST_EMAIL on screen` line is unnecessary and does not constant-mask
 its echo. Every use of a name across the plan and configured login block must agree;
-conflicts refuse before device selection. When values overlap, strict inputs win, so a
-non-secret alias or echo declaration cannot exempt a strict value. There is no global,
+conflicts refuse before device selection. When values overlap, SECRET inputs win, so a
+TEST-PII alias or echo declaration cannot exempt a SECRET value. There is no global,
 config or environment-based opt-in, and unused environment variables declare no policy.
 
-All inputs still receive log, report and model redaction, and input-run screenshots and
-video remain withheld. Saved blocks contain the symbolic slot and sensitivity only and
-rebind the current run's value. Policy changes invalidate saved evidence across the run;
+Saved blocks contain the symbolic slot and tier only and rebind the current run's value.
+Changing a name's tier changes the saved plan hash, so blocks that fill it re-walk once;
 a configured login block with stale policy must be explicitly refreshed before replay.
-Use this annotation only for fixtures: qaren cannot identify a production backend or
-prove a value is non-secret. Misclassifying a real secret allows it into execution hash
-operands; output redaction cannot undo that loss of protection. Runs without an opt-in
-keep the strict protections below.
+Never mark real credentials TEST-PII: qaren cannot identify a production backend or prove
+that a value is test data, and a misclassified secret is read and only redacted by value.
 
 `Expect input NAME on screen` (also `on this screen`, with case-insensitive keywords)
 declares an expected label echo; it does not assert that the value is visible. Its row

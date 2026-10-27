@@ -29,6 +29,7 @@ import {
   createDevicePressHandler,
   createDeviceScrollHandler,
   readReactInputValue,
+  entryMismatchOf,
 } from '../handlers/device-interact.js';
 import { captureQaScreenshot } from './screenshot.js';
 import {
@@ -309,6 +310,7 @@ function act(
           ...(fillMethodOf(error instanceof HandlerError ? error.meta : undefined)
             ? { method: fillMethodOf((error as HandlerError).meta) }
             : {}),
+          ...entryMismatchFrom(error),
         };
       }
     },
@@ -337,6 +339,7 @@ function act(
         ...(fillMethodOf(error instanceof HandlerError ? error.meta : undefined)
           ? { method: fillMethodOf((error as HandlerError).meta) }
           : {}),
+        ...entryMismatchFrom(error),
       };
     },
   );
@@ -404,6 +407,12 @@ function logActionSettle(meta?: Record<string, unknown>, timing?: TimingContext)
   } catch {
     // Diagnostics cannot change an action's outcome.
   }
+}
+
+function entryMismatchFrom(error: unknown): Pick<ActResult, 'entryMismatch'> {
+  const entryMismatch =
+    error instanceof HandlerError ? entryMismatchOf(error.meta?.entryMismatch) : undefined;
+  return entryMismatch ? { entryMismatch } : {};
 }
 
 function fillMethodOf(meta: Record<string, unknown> | undefined): ActResult['method'] {

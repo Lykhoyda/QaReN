@@ -77,6 +77,14 @@ impl LogDrain {
         let key = serde_json::to_vec(&std::env::var("TYPESAFE_API_KEY").ok())
             .map_err(io::Error::other)?;
         let key_len = u32::try_from(key.len()).map_err(io::Error::other)?;
+        let withheld = withhold || crate::redact::private_output_mode();
+        let values = serde_json::to_vec(&if withheld {
+            Vec::new()
+        } else {
+            crate::redact::log_redaction_values()
+        })
+        .map_err(io::Error::other)?;
+        let values_len = u32::try_from(values.len()).map_err(io::Error::other)?;
         let mut command = Command::new(executable);
         command
             .arg(HELPER_ARG)
@@ -102,7 +110,7 @@ impl LogDrain {
                 });
             }
         }
-        if withhold || crate::redact::private_output_mode() {
+        if withheld {
             command.arg(WITHHOLD_ARG);
         }
         if count_bundle_requests {
@@ -121,6 +129,8 @@ impl LogDrain {
             .control
             .write_all(&key_len.to_be_bytes())
             .and_then(|_| drain.control.write_all(&key))
+            .and_then(|_| drain.control.write_all(&values_len.to_be_bytes()))
+            .and_then(|_| drain.control.write_all(&values))
             .and_then(|_| drain.flush());
         if let Err(failure) = initialized {
             drop(output);
@@ -286,17 +296,30 @@ impl Lines {
     }
 }
 
+fn read_framed(control: &mut UnixStream) -> io::Result<Vec<u8>> {
+    let mut length = [0; 4];
+    control.read_exact(&mut length)?;
+    let mut bytes = vec![0; u32::from_be_bytes(length) as usize];
+    control.read_exact(&mut bytes)?;
+    Ok(bytes)
+}
+
 pub fn run_helper(paired: bool) -> io::Result<()> {
     let mut control = UnixStream::from(std::io::stdout().as_fd().try_clone_to_owned()?);
-    let key = if std::env::args().any(|arg| arg == KEY_CONTROL_ARG) {
-        let mut length = [0; 4];
-        control.read_exact(&mut length)?;
-        let mut key = vec![0; u32::from_be_bytes(length) as usize];
-        control.read_exact(&mut key)?;
-        serde_json::from_slice::<Option<String>>(&key).map_err(io::Error::other)?
+    let (key, values) = if std::env::args().any(|arg| arg == KEY_CONTROL_ARG) {
+        let key = serde_json::from_slice::<Option<String>>(&read_framed(&mut control)?)
+            .map_err(io::Error::other)?;
+        let values = serde_json::from_slice::<Vec<String>>(&read_framed(&mut control)?)
+            .map_err(io::Error::other)?;
+        (key, values)
     } else {
-        std::env::var("TYPESAFE_API_KEY").ok()
+        (std::env::var("TYPESAFE_API_KEY").ok(), Vec::new())
     };
+    let scope = std::sync::Arc::new(crate::redact::InputValues::from_values(values));
+    crate::redact::with_input_scope(scope, || drain(paired, control, key))
+}
+
+fn drain(paired: bool, mut control: UnixStream, key: Option<String>) -> io::Result<()> {
     if key.as_ref().is_some_and(|key| key.contains(['\r', '\n'])) {
         return Err(io::Error::other(
             "cannot stream-redact a multiline configured key",

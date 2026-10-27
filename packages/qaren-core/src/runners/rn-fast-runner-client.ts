@@ -306,22 +306,26 @@ function appendRunnerOutput(stream: 'stdout' | 'stderr', chunk: string): void {
       string,
     ][])
       if (line.includes(marker)) runnerMarkers[key] += 1;
-  if (currentInputs()?.hasInputs) {
+  if (currentInputs()?.hasStrictInputs) {
     runnerOutputTail = '[private output withheld]';
     return;
   }
-  runnerOutputTail = `${runnerOutputTail}${stream}: ${chunk}`.slice(-8_000);
+  const tail = `${runnerOutputTail}${stream}: ${chunk}`;
+  // A cut tail restarts at a line, so a value split by the cut cannot slip past later redaction.
+  runnerOutputTail = tail.length > 8_000 ? tail.slice(-8_000).replace(/^[^\n]*\n?/, '') : tail;
 }
 
 export function getRunnerPostMortem(): RunnerPostMortem {
-  if (currentInputs()?.hasInputs)
+  const inputs = currentInputs();
+  if (inputs?.hasStrictInputs)
     return { available: false, provenance: runnerProcess ? 'spawned' : 'adopted' };
-  return (
-    lastRunnerPostMortem ?? {
-      available: false,
-      provenance: runnerProcess ? 'spawned' : 'adopted',
-    }
-  );
+  const postMortem: RunnerPostMortem = lastRunnerPostMortem ?? {
+    available: false,
+    provenance: runnerProcess ? 'spawned' : 'adopted',
+  };
+  return inputs?.hasInputs && postMortem.outputTail !== undefined
+    ? { ...postMortem, outputTail: inputs.redact(postMortem.outputTail) }
+    : postMortem;
 }
 
 // Story 04 (#385): capabilities from the last successful /health probe. Warm

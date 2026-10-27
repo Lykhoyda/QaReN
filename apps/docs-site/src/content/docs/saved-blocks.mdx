@@ -60,10 +60,10 @@ any value, when:
 
 A fill from a [runtime input](../plans/#runtime-inputs) is saved by name only, as
 `inputText: { input: "PASSWORD" }`, and replays with the current run's value.
-A fixture annotated `(non-secret)` retains its classification as
-`inputText: { input: "FIXTURE_CODE", sensitivity: "non-secret" }`; neither form stores values.
-An effective non-secret policy gives every block a versioned `ns1:` plan hash, binding
-its source steps and the sorted non-secret names for the whole run. Changing a later
+A TEST-PII input, annotated `(test-pii)` or `(non-secret)`, retains its tier as
+`inputText: { input: "TEST_EMAIL", sensitivity: "non-secret" }` whichever spelling the plan
+uses; neither form stores values. An effective TEST-PII policy gives every block a versioned
+`ns1:` plan hash, binding its source steps and the sorted TEST-PII names for the whole run. Changing a later
 block's policy can therefore invalidate an earlier block, including when the last opt-in
 is removed. Ordinary blocks re-walk on a mismatch; a configured login block with stale
 policy refuses before the session opens and needs an explicit refresh. Legacy strict-only

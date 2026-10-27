@@ -383,6 +383,12 @@ pub struct Row {
     pub kept: Option<KeptCounts>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub case_normalized: Option<CaseNormalized>,
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "passive"
+    )]
+    pub entry_mismatch: Option<EntryMismatch>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub dialog: Option<DialogTap>,
     #[serde(
@@ -449,14 +455,46 @@ pub struct CaseNormalized {
     pub chars: u64,
 }
 
+// How a refused private fill differed from the requested text, as counts only.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct EntryMismatch {
+    pub len: u64,
+    pub exp: u64,
+    pub prefix: u64,
+    pub suffix: u64,
+    pub case_eq: bool,
+}
+
+impl EntryMismatch {
+    pub fn detail(&self) -> String {
+        format!(
+            "field held {} of {} chars, first {} and last {} matching{}",
+            self.len,
+            self.exp,
+            self.prefix,
+            self.suffix,
+            if self.case_eq {
+                ", letter case only"
+            } else {
+                ""
+            }
+        )
+    }
+}
+
 impl Row {
     // The value-free count line for an unverified fill, rendered from numbers the masking never saw.
     pub fn fill_detail(&self) -> Option<String> {
-        self.kept.as_ref().and_then(KeptCounts::detail).or_else(|| {
-            self.case_normalized
-                .as_ref()
-                .map(|n| format!("field case-normalized {} chars", n.chars))
-        })
+        self.kept
+            .as_ref()
+            .and_then(KeptCounts::detail)
+            .or_else(|| {
+                self.case_normalized
+                    .as_ref()
+                    .map(|n| format!("field case-normalized {} chars", n.chars))
+            })
+            .or_else(|| self.entry_mismatch.as_ref().map(EntryMismatch::detail))
     }
 }
 

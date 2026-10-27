@@ -3,7 +3,7 @@ import { TYPOGRAPHY_TEXT_LIMITS } from './qa/host-typography.js';
 import { INPUT_HOST_TYPES } from './qa/input-host-types.js';
 
 // Bump when the injected surface changes so warm runtimes replace stale helpers.
-export const HELPERS_VERSION = 103;
+export const HELPERS_VERSION = 104;
 
 export const INJECTED_HELPERS = `
 (function() {
@@ -4591,6 +4591,21 @@ export const INJECTED_HELPERS = `
     }
   }
 
+  // Value-free counts that tell a dropped, truncated or recased entry apart.
+  function mismatchFacts(observed, expected) {
+    var prefix = 0;
+    while (prefix < observed.length && prefix < expected.length && observed[prefix] === expected[prefix]) prefix++;
+    var suffix = 0;
+    while (
+      suffix < observed.length - prefix && suffix < expected.length - prefix &&
+      observed[observed.length - 1 - suffix] === expected[expected.length - 1 - suffix]
+    ) suffix++;
+    return {
+      len: observed.length, exp: expected.length, prefix: prefix, suffix: suffix,
+      caseEq: observed.toLowerCase() === expected.toLowerCase()
+    };
+  }
+
   function readInputValue(testID, options) {
     if (!testID) return JSON.stringify({ __agent_error: 'testID is required' });
     var resolution = resolveTypeTextTarget({ testID: testID, omitValue: true });
@@ -4602,13 +4617,16 @@ export const INJECTED_HELPERS = `
     if (options && options.valueState && props.secureTextEntry !== true) {
       var localValue = props.value;
       var readable = typeof localValue === 'string';
+      var expected = options.compareTo;
+      var exact = readable && typeof expected === 'string'
+        ? localValue.length === expected.length && localValue === expected
+        : undefined;
       return JSON.stringify({
         value: null, controlled: readable, focused: focused, secure: false,
         privateValue: options.privateValue === true,
         contentLength: readable ? localValue.length : undefined,
-        exact: readable && typeof options.compareTo === 'string'
-          ? localValue.length === options.compareTo.length && localValue === options.compareTo
-          : undefined
+        exact: exact,
+        mismatch: exact === false ? mismatchFacts(localValue, expected) : undefined
       });
     }
     if (options && (options.privateValue || (options.protectSecure && props.secureTextEntry === true))) {

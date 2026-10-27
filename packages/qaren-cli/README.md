@@ -1685,16 +1685,17 @@ can still reach the judge. Literal checks still evaluate the raw screen against
 the author-provided plan text. Values held only in app state, never placed in a
 secure field, are outside this presence-based rule.
 
-**Runs with runtime inputs.** Undeclared personal data shown beside a runtime
+**Runs with SECRET runtime inputs.** Undeclared personal data shown beside a runtime
 input cannot be masked by value, so for the whole run failure screen-text
 evidence and app-derived identities in failure reasons, including moved-target
-identities, become `[screen text withheld: the run holds runtime inputs]`.
+identities, become `[screen text withheld: the run holds secret runtime inputs]`.
+A run whose inputs are all TEST-PII keeps that text, redacted by the declared values only.
 Existing secure-screen replacements take precedence. Target-miss diagnostic
 candidate labels become `•••`; possible-input labels are also withheld without
 runtime inputs. These failure-text replacements reach all outputs described in
 [App-derived failure text](#app-derived-failure-text). The step, its plan target,
 failure reason and geometry remain, subject to known-value masking. Runs without
-runtime inputs keep their screen-text context under the other masking rules below
+SECRET runtime inputs keep their screen-text context under the other masking rules below
 and the secure-field rule above.
 
 The Android runner keeps exact-fill values and reconstructable fallback
@@ -1956,18 +1957,25 @@ see the [plan guide](../../apps/docs-site/src/content/docs/plans.mdx) for the gr
 value bounds. The owner resolves the value before running qaren; qaren reads no `.env`
 file, reference or secret store.
 
-Inputs are strict unless their named Fill explicitly opts in, for example
-`Fill "code-field" with input FIXTURE_CODE (non-secret)` for an operator-designated dev or
-staging fixture. The flag relaxes only execution hash and echo checks: pure fixture
-labels, identifiers and types retain their original hash operands, even at the filled
-field, and a redundant expected-echo declaration does not mask them to a constant.
-Strict matches win on equal or overlapping values; a non-secret alias cannot leave a
-strict value unmasked in a label hash. Repeated declarations across the plan and configured login block must agree
-before device selection. There is no config, global switch or inferred environment policy.
-All values still receive log, model and artifact redaction; screenshots and video stay
-withheld. Never annotate real credentials: qaren cannot establish whether a backend is
-production or an input is a fixture, and misclassification permits execution hashing of
-that secret despite artifact redaction.
+Inputs are SECRET unless their named Fill explicitly opts in to TEST-PII with
+`(test-pii)` (or the older spelling `(non-secret)`), for example
+`Fill "email-field" with input TEST_EMAIL (test-pii)` for a staging test account; `(secret)`
+states the default. A secure field is SECRET whatever the plan says, and literal plan text is
+PUBLIC. A SECRET value is never read back: the app compares it in place, and a mismatch
+records only `entryMismatch` counts (`len`, `exp`, `prefix`, `suffix`, `caseEq`) on the
+ledger row. A TEST-PII value is read back in memory like literal text. The tier also relaxes
+execution hash and echo checks: pure fixture labels, identifiers and types retain their
+original hash operands, even at the filled field, and a redundant expected-echo declaration
+does not mask them to a constant. SECRET matches win on equal or overlapping values; a
+TEST-PII alias cannot leave a SECRET value unmasked in a label hash. Repeated declarations
+across the plan and configured login block must agree before device selection. There is no
+config, global switch or inferred environment policy. All values still receive log, model
+and artifact redaction, including an e-mail's local part, plus-less local part, domain and
+percent- or HTML-encoded forms; screenshots and video stay withheld. Declared-value
+redaction does not cover undeclared personal data the app shows beside a TEST-PII value.
+Never annotate real credentials: qaren cannot establish whether a backend is production or
+an input is a fixture, and misclassification permits reading and execution hashing of that
+secret despite artifact redaction.
 
 - `main` captures the `QAREN_INPUT_` namespace once into the
   [invocation-scoped redaction owner](src/redact.rs). Every child spawned by the CLI has the
@@ -1996,7 +2004,10 @@ that secret despite artifact redaction.
   and must be explicitly refreshed. Legacy strict-only hashes and login admission stay unchanged.
   Private literal fills stay unsavable.
 - With any input namespace present, subprocess logs hold one withheld marker, preflight and
-  core output excerpts are withheld, and native runner output tails are not retained. A run
+  core output excerpts are withheld, and native runner output tails are not retained. Once
+  admission proves that every required input is TEST-PII and the namespace holds no other
+  value, later subprocess logs, core output excerpts and runner tails are kept instead,
+  redacted by those values. A run
   that requires inputs skips recording and screenshots.
 - Slot runs retain value-free structured events in `core-diagnostics.jsonl` beside `core.log`:
   `metric` has measured stage timings, and `timing` has decision/dispatch timing, finite outcome

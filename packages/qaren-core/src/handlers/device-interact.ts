@@ -2,6 +2,7 @@ import { sleep as cancellableSleep } from '../domain/cancellation.js';
 import { MIN_DRAG_TRAVEL, MIN_SCROLL_BAND_HEIGHT } from '../domain/scroll-gesture.js';
 import { randomUUID } from 'node:crypto';
 import { measureDispatchPhase, measureTiming, type TimingContext } from '../qa/timing.js';
+import type { EntryMismatch } from '../qa/ledger.js';
 import type { QaDispatchContext } from '../domain/qa-dispatch.js';
 import { execFile as execFileCb } from '../domain/cancellation.js';
 import { promisify } from 'node:util';
@@ -1229,6 +1230,7 @@ interface FillFailureOpts {
   pathsTried: string[];
   verification?: NativeVerification;
   hint?: string;
+  entryMismatch?: EntryMismatch;
 }
 
 function fillFailure(
@@ -1243,6 +1245,7 @@ function fillFailure(
   return failResult(message, code, {
     mutation: opts.mutation,
     pathsTried: opts.pathsTried,
+    ...(opts.entryMismatch ? { entryMismatch: opts.entryMismatch } : {}),
     ...(opts.verification
       ? {
           verification: {
@@ -1524,6 +1527,7 @@ export async function readReactInputValue(
   secure?: boolean;
   contentLength?: number;
   exact?: boolean;
+  mismatch?: EntryMismatch;
 } | null> {
   if (!client || !testID) return null;
   try {
@@ -1542,8 +1546,10 @@ export async function readReactInputValue(
       secure?: boolean;
       contentLength?: number;
       exact?: boolean;
+      mismatch?: Record<string, unknown>;
       __agent_error?: string;
     } = JSON.parse(result.value);
+    const mismatch = parsed.exact === false ? entryMismatchOf(parsed.mismatch) : undefined;
     if (parsed.__agent_error) return null;
     return {
       value: parsed.value ?? null,
@@ -1555,6 +1561,7 @@ export async function readReactInputValue(
         ? { contentLength: parsed.contentLength }
         : {}),
       ...(typeof parsed.exact === 'boolean' ? { exact: parsed.exact } : {}),
+      ...(mismatch ? { mismatch } : {}),
     };
   } catch {
     return null;
@@ -1583,6 +1590,25 @@ async function clearReactInput(
 
 type ReactValueVerification = 'exact' | 'mismatch' | 'unreadable';
 
+export function entryMismatchOf(value: unknown): EntryMismatch | undefined {
+  if (!value || typeof value !== 'object') return undefined;
+  const facts = value as Record<string, unknown>;
+  const count = (key: string) => Number.isSafeInteger(facts[key]) && (facts[key] as number) >= 0;
+  return ['len', 'exp', 'prefix', 'suffix'].every(count) && typeof facts.caseEq === 'boolean'
+    ? {
+        len: facts.len as number,
+        exp: facts.exp as number,
+        prefix: facts.prefix as number,
+        suffix: facts.suffix as number,
+        caseEq: facts.caseEq,
+      }
+    : undefined;
+}
+
+export function describeEntryMismatch(facts: EntryMismatch): string {
+  return `len ${facts.len}, exp ${facts.exp}, prefix ${facts.prefix}, suffix ${facts.suffix}${facts.caseEq ? ', case only' : ''}`;
+}
+
 async function setReactInput(
   client: CDPClient,
   testID: string,
@@ -1607,13 +1633,14 @@ async function comparePrivateInput(
   client: CDPClient | null,
   testID: string | null,
   args: Pick<FillArgs, 'text' | 'qaContext' | 'qaTiming'>,
-): Promise<ReactValueVerification> {
+): Promise<{ verdict: ReactValueVerification; mismatch?: EntryMismatch }> {
   return measureTiming(
     args.qaTiming?.observe,
     args.qaTiming?.now ?? (() => performance.now()),
     'type-readback',
-    async (): Promise<ReactValueVerification> => {
+    async (): Promise<{ verdict: ReactValueVerification; mismatch?: EntryMismatch }> => {
       let mismatch = false;
+      let facts: EntryMismatch | undefined;
       for (let attempt = 0; attempt < 6; attempt++) {
         if (args.qaContext?.expired) break;
         const state = await readReactInputValue(client, testID, {
@@ -1631,15 +1658,20 @@ async function comparePrivateInput(
             valueState: true,
             compareTo: args.text,
           });
-          if (confirm?.exact === true) return 'exact';
+          if (confirm?.exact === true) return { verdict: 'exact' };
           mismatch ||= confirm?.exact === false;
+          facts = confirm?.mismatch ?? facts;
         }
         mismatch ||= state?.exact === false;
+        facts = state?.mismatch ?? facts;
         if (attempt < 5) await cancellableSleep(100);
       }
-      return mismatch ? 'mismatch' : 'unreadable';
+      return mismatch
+        ? { verdict: 'mismatch', ...(facts ? { mismatch: facts } : {}) }
+        : { verdict: 'unreadable' };
     },
-    (result) => (result === 'exact' ? 'ok' : result === 'mismatch' ? 'failed' : 'unavailable'),
+    ({ verdict }) =>
+      verdict === 'exact' ? 'ok' : verdict === 'mismatch' ? 'failed' : 'unavailable',
   );
 }
 
@@ -1682,7 +1714,7 @@ export async function performSetFill(
       ),
     );
   if (args.privateValue) {
-    const comparison = await comparePrivateInput(client, testID, args);
+    const { verdict: comparison, mismatch } = await comparePrivateInput(client, testID, args);
     if (comparison === 'exact')
       return done(
         verifiedFillResult('handler', args.text.length, {
@@ -1694,8 +1726,8 @@ export async function performSetFill(
       return done(
         fillFailure(
           'TEXT_ENTRY_UNVERIFIED',
-          'The private input differs from the requested text after rung 3 (set through the change handler); not retrying.',
-          { mutation: 'observed', pathsTried },
+          `The private input differs from the requested text after rung 3 (set through the change handler)${mismatch ? ` (${describeEntryMismatch(mismatch)})` : ''}; not retrying.`,
+          { mutation: 'observed', pathsTried, ...(mismatch ? { entryMismatch: mismatch } : {}) },
         ),
       );
     return unverified();
@@ -1982,7 +2014,7 @@ async function focusedFill(
     );
   const initialBefore = before as string | null;
   if (privateValue && !secure && args.clearFirst) {
-    const comparison = await comparePrivateInput(client, oracleTestId, args);
+    const { verdict: comparison, mismatch } = await comparePrivateInput(client, oracleTestId, args);
     if (comparison === 'exact') {
       return verifiedFillResult('native', args.text.length, {
         textEntryPath: 'focused-synthesized',
@@ -1993,8 +2025,8 @@ async function focusedFill(
     if (comparison === 'mismatch') {
       return fillFailure(
         'TEXT_ENTRY_UNVERIFIED',
-        'The private input differs from the requested text; not retrying.',
-        { mutation: 'observed', pathsTried },
+        `The private input differs from the requested text${mismatch ? ` (${describeEntryMismatch(mismatch)})` : ''}; not retrying.`,
+        { mutation: 'observed', pathsTried, ...(mismatch ? { entryMismatch: mismatch } : {}) },
       );
     }
     return unverified();
