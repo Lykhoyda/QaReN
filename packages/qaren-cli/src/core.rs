@@ -885,7 +885,9 @@ pub fn spawn_private(
     login_snapshot: Option<&Value>,
 ) -> Result<CoreChild, Failure> {
     crate::cancel::ensure_running(runner, "core")?;
-    let mut child = runner.spawn_piped(spec, stderr_log).map_err(|e| {
+    let mut core_spec = spec.clone();
+    core_spec.core_log = true;
+    let mut child = runner.spawn_piped(&core_spec, stderr_log).map_err(|e| {
         Failure::new(
             "core",
             FailureCode::CoreSpawnFailed,
@@ -1006,13 +1008,6 @@ impl Inbox {
             }
         }
         match (kind, value.get("payload")) {
-            (Some("resource"), Some(payload))
-                if payload.get("kind").and_then(Value::as_str) == Some("strict_inputs")
-                    && payload.as_object().is_some_and(|p| p.len() == 1) =>
-            {
-                crate::redact::promote_strict_inputs();
-                true
-            }
             (Some("diagnostic"), Some(payload)) => {
                 self.diagnostics.accept(payload);
                 false
@@ -1115,7 +1110,7 @@ impl Inbox {
 }
 
 fn excerpt(line: &str) -> String {
-    if crate::redact::private_output_mode() {
+    if crate::redact::input_namespace_present() {
         return "[private output withheld]".into();
     }
     redact_secrets(line).chars().take(120).collect()

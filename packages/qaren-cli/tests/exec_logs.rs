@@ -202,9 +202,8 @@ fn bundle_suffixes_in_directories_and_queries_do_not_change_the_request_path() {
             ("/apps/app.bundle/index.assets", "0\n"),
             ("/qaren-request-probe", "0\n"),
         ] {
-            let line = format!(
-                "2026-10-22T08:46:09.200Z Metro:Server Handling request: {path}{suffix}"
-            );
+            let line =
+                format!("2026-10-22T08:46:09.200Z Metro:Server Handling request: {path}{suffix}");
             let (count, _) = drained_bundle_requests(&[&line], true);
             assert_eq!(count.as_deref(), Some(expected), "{path}{suffix}");
         }
@@ -1072,12 +1071,12 @@ fn registry_output_policy_fixture_worker() {
 }
 
 #[test]
-fn a_test_pii_only_run_keeps_subprocess_logs_redacted_by_value_instead_of_withheld() {
+fn a_test_pii_only_run_withholds_subprocess_logs_and_summaries_from_startup() {
     const EMAIL: &str = "qa.tester+run7@staging.example.test";
     const PASSWORD: &str = "fake-pass-0000";
     let dir = common::temp_repo();
     let script = format!(
-        "printf 'typed {EMAIL} as %s and %s with %s and qa.tester%%2Brun7%%40staging.example.test\\n' qa.tester staging.example.test {PASSWORD} >&2"
+        "printf 'typed {EMAIL} as %s and %s with %s and qa.tester%%2Brun7%%40staging.example.test\\n' qa.tester staging.example.test {PASSWORD} >&2; read release; printf 'Account phone and address\\n' >&2"
     );
     let drained = |name: &str, test_pii: &[&str], unused_secret: bool| {
         let mut entries = vec![("QAREN_INPUT_EMAIL".into(), EMAIL.into())];
@@ -1091,6 +1090,16 @@ fn a_test_pii_only_run_keeps_subprocess_logs_redacted_by_value_instead_of_withhe
             let mut runner = RealRunner::with_log_executable(env!("CARGO_BIN_EXE_qaren").into());
             let log = dir.join(name);
             let mut child = runner.spawn_piped(&shell(&script, &dir), &log).unwrap();
+            until(|| {
+                std::fs::read_to_string(&log)
+                    .unwrap_or_default()
+                    .contains("[private output withheld]")
+            });
+            assert_eq!(
+                CmdOutput::failed(1, "Account phone and address").summary(),
+                "[private output withheld]"
+            );
+            child.stdin.write_all(b"release\n").unwrap();
             let mut wire = String::new();
             child.stdout.read_to_string(&mut wire).unwrap();
             until(|| child.handle.try_wait().unwrap().is_some());
@@ -1103,18 +1112,7 @@ fn a_test_pii_only_run_keeps_subprocess_logs_redacted_by_value_instead_of_withhe
     assert_eq!(strict, "[private output withheld]\n");
     let unused_secret = drained("unused-secret.log", &["EMAIL"], true);
     assert_eq!(unused_secret, "[private output withheld]\n");
-    let test_pii = drained("test-pii.log", &["EMAIL"], false);
-    assert!(
-        test_pii.starts_with("typed [REDACTED_INPUT] as"),
-        "{test_pii}"
-    );
-    for leaked in [
-        EMAIL,
-        "qa.tester",
-        "staging.example.test",
-        "%40staging",
-    ] {
-        assert!(!test_pii.contains(leaked), "{leaked} in {test_pii}");
-    }
+    let test_pii = drained("metro.log", &["EMAIL"], false);
+    assert_eq!(test_pii, "[private output withheld]\n");
     std::fs::remove_dir_all(dir).unwrap();
 }

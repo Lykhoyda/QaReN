@@ -1969,8 +1969,10 @@ original hash operands, even at the filled field, and a redundant expected-echo 
 does not mask them to a constant. SECRET matches win on equal or overlapping values; a
 TEST-PII alias cannot leave a SECRET value unmasked in a label hash. Repeated declarations
 across the plan and configured login block must agree before device selection. There is no
-config, global switch or inferred environment policy. All values still receive log, model
-and artifact redaction, including an e-mail's local part, plus-less local part, domain and
+config, global switch or inferred environment policy. In a TEST-PII run only `core.log`,
+failure screen text and Fill readback come back redacted by the declared values; Metro and
+other subprocess logs stay withheld as in a SECRET run. Declared-value redaction includes
+an e-mail's local part, plus-less local part, domain and
 percent- or HTML-encoded forms; screenshots and video stay withheld. Derived e-mail forms
 shorter than 3 characters (for example a 2-letter local part) are not redacted on their own,
 while the full address and every longer derived form always are. Declared-value
@@ -2005,12 +2007,12 @@ secret despite artifact redaction.
   Ordinary blocks re-walk; policy-stale configured login evidence refuses before session open
   and must be explicitly refreshed. Legacy strict-only hashes and login admission stay unchanged.
   Private literal fills stay unsavable.
-- With any input namespace present, subprocess logs hold one withheld marker, preflight and
-  core output excerpts are withheld, and native runner output tails are not retained. Once
-  admission proves that every required input is TEST-PII and the namespace holds no other
-  value, later subprocess logs, core output excerpts and runner tails are kept instead,
-  redacted by those values. A run
-  that requires inputs skips recording and screenshots.
+- With any input namespace present, Metro and other subprocess logs hold one withheld
+  marker, preflight/subprocess output excerpts and command summaries are withheld, and
+  native runner output tails are not retained. In a TEST-PII run only `core.log`, failure
+  screen text and Fill readback come back redacted by the declared values. Filling a secure
+  field promotes that input to SECRET before typing; subsequent core log writes and failure
+  screen text are withheld. A run that requires inputs skips recording and screenshots.
 - Slot runs retain value-free structured events in `core-diagnostics.jsonl` beside `core.log`:
   `metric` has measured stage timings, and `timing` has decision/dispatch timing, finite outcome
   codes and allowlisted native refusal codes. Dispatch refusals retain `refusalStage` and

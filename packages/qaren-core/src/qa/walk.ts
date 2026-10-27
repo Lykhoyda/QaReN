@@ -2,7 +2,7 @@ import { QaDispatchError } from '../domain/qa-dispatch.js';
 import { ownedLogin, parseInputPreflight } from './input-preflight.js';
 import { readAndroidLabelProvenance } from '../runners/rn-android-runner-client.js';
 import { ObservedPrivacy } from './privacy.js';
-import { InputPrivacyRefusal, withInputs, currentInputs } from './inputs.js';
+import { InputPrivacyRefusal, withInputs, currentInputs, type RunInputs } from './inputs.js';
 import {
   cancellationSignal,
   interruptible,
@@ -109,6 +109,18 @@ const log = (message: string): void => {
     `qaren-core: ${redactApiKey(currentInputs()?.redact(message) ?? message)}\n`,
   );
 };
+
+export function guardCoreLog(inputs: RunInputs): void {
+  if (!inputs.hasInputs) return;
+  const write = process.stderr.write.bind(process.stderr);
+  process.stderr.write = ((chunk: unknown, ...args: unknown[]) => {
+    if (inputs.hasStrictInputs) {
+      const callback = args.find((arg) => typeof arg === 'function') as (() => void) | undefined;
+      return write('[private output withheld]\n', callback);
+    }
+    return Reflect.apply(write, process.stderr, [chunk, ...args]);
+  }) as typeof process.stderr.write;
+}
 
 export async function reactFocused(client: CDPClient | null, testID: string): Promise<boolean> {
   return (await readReactInputValue(client, testID, { focusOnly: true }))?.focused === true;
@@ -870,6 +882,7 @@ async function main(): Promise<void> {
     );
   }
   privateRun = parsed.inputs.hasInputs;
+  guardCoreLog(parsed.inputs);
   parsed.inputs.onRefusal((reason) => stop.begin(reason));
   return withInputs(parsed.inputs, () =>
     mainRequest(parsed.request, parsed.privacy, cliParent, apiKey),
@@ -898,14 +911,6 @@ async function mainRequest(
         : loginBlock(actual.slug, readBlock(actual.content) as import('./blocks.js').StoredBlock);
   }
   const writer = createWriter((line) => process.stdout.write(redactApiKey(line)), request.runId);
-  currentInputs()?.onPromotion(() => {
-    const write = process.stderr.write.bind(process.stderr);
-    process.stderr.write = ((_chunk: unknown, ...args: unknown[]) => {
-      const callback = args.find((arg) => typeof arg === 'function') as (() => void) | undefined;
-      return write('[private output withheld]\n', callback);
-    }) as typeof process.stderr.write;
-    writer.strictInputs();
-  });
   observeRunnerDrivers((pid) => writer.runnerDriver(pid));
   const rows: LedgerRow[] = [];
   const emitRow = (row: LedgerRow): void => {

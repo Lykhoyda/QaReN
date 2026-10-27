@@ -306,7 +306,7 @@ function appendRunnerOutput(stream: 'stdout' | 'stderr', chunk: string): void {
       string,
     ][])
       if (line.includes(marker)) runnerMarkers[key] += 1;
-  if (currentInputs()?.hasStrictInputs) {
+  if (currentInputs()?.hasInputs) {
     runnerOutputTail = '[private output withheld]';
     return;
   }
@@ -317,15 +317,14 @@ function appendRunnerOutput(stream: 'stdout' | 'stderr', chunk: string): void {
 
 export function getRunnerPostMortem(): RunnerPostMortem {
   const inputs = currentInputs();
-  if (inputs?.hasStrictInputs)
+  if (inputs?.hasInputs)
     return { available: false, provenance: runnerProcess ? 'spawned' : 'adopted' };
-  const postMortem: RunnerPostMortem = lastRunnerPostMortem ?? {
-    available: false,
-    provenance: runnerProcess ? 'spawned' : 'adopted',
-  };
-  return inputs?.hasInputs && postMortem.outputTail !== undefined
-    ? { ...postMortem, outputTail: inputs.redact(postMortem.outputTail) }
-    : postMortem;
+  return (
+    lastRunnerPostMortem ?? {
+      available: false,
+      provenance: runnerProcess ? 'spawned' : 'adopted',
+    }
+  );
 }
 
 // Story 04 (#385): capabilities from the last successful /health probe. Warm

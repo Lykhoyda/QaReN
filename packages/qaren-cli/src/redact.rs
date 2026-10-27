@@ -818,7 +818,6 @@ impl ResolvedInputs<'_> {
     pub fn has_inputs(&self) -> bool {
         !self.names.is_empty()
     }
-    // Only TEST-PII inputs, with no other value in the namespace: run logs come back redacted by value instead of withheld.
     pub fn declare_test_pii(&self, test_pii: &[String]) {
         let only = self.has_inputs()
             && self.owner.entries.keys().all(|key| {
@@ -922,14 +921,6 @@ pub fn private_output_mode() -> bool {
                 .test_pii_only
                 .load(std::sync::atomic::Ordering::SeqCst)
     })
-}
-
-pub fn promote_strict_inputs() {
-    if let Some(scope) = capture_input_scope() {
-        scope
-            .test_pii_only
-            .store(false, std::sync::atomic::Ordering::SeqCst);
-    }
 }
 
 pub fn input_namespace_present() -> bool {

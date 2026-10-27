@@ -28,8 +28,9 @@ impl LogDrain {
         executable: &Path,
         path: &Path,
         withhold: bool,
+        core_log: bool,
     ) -> io::Result<(Self, UnixStream)> {
-        let (drain, output, _) = Self::start(executable, path, false, withhold, false)?;
+        let (drain, output, _) = Self::start(executable, path, false, withhold, false, core_log)?;
         Ok((drain, output))
     }
 
@@ -40,8 +41,14 @@ impl LogDrain {
         withhold: bool,
         count_bundle_requests: bool,
     ) -> io::Result<(Self, UnixStream, UnixStream)> {
-        let (drain, output, error) =
-            Self::start(executable, path, true, withhold, count_bundle_requests)?;
+        let (drain, output, error) = Self::start(
+            executable,
+            path,
+            true,
+            withhold,
+            count_bundle_requests,
+            false,
+        )?;
         Ok((
             drain,
             output,
@@ -55,6 +62,7 @@ impl LogDrain {
         paired: bool,
         withhold: bool,
         count_bundle_requests: bool,
+        core_log: bool,
     ) -> io::Result<(Self, UnixStream, Option<UnixStream>)> {
         let log = std::fs::OpenOptions::new()
             .create(true)
@@ -77,11 +85,16 @@ impl LogDrain {
         let key = serde_json::to_vec(&std::env::var("TYPESAFE_API_KEY").ok())
             .map_err(io::Error::other)?;
         let key_len = u32::try_from(key.len()).map_err(io::Error::other)?;
-        let withheld = withhold || crate::redact::private_output_mode();
-        let values = serde_json::to_vec(&if withheld {
-            Vec::new()
-        } else {
+        let withheld = withhold
+            || if core_log {
+                crate::redact::private_output_mode()
+            } else {
+                crate::redact::input_namespace_present()
+            };
+        let values = serde_json::to_vec(&if core_log && !withheld {
             crate::redact::log_redaction_values()
+        } else {
+            Vec::new()
         })
         .map_err(io::Error::other)?;
         let values_len = u32::try_from(values.len()).map_err(io::Error::other)?;

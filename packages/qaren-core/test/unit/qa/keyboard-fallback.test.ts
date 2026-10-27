@@ -3266,8 +3266,6 @@ test('secure discovery without a screen target withholds the later Account failu
         )
       : screen;
   };
-  let promotions = 0;
-  inputs.onPromotion(() => promotions++);
   const seam = await secureFocusedSeam(fake, inputs);
   try {
     const result = await withInputs(inputs, () =>
@@ -3280,7 +3278,6 @@ test('secure discovery without a screen target withholds the later Account failu
     );
     assert.equal(result.verdict, 'FAIL');
     assert.equal(inputs.hasStrictInputs, true);
-    assert.equal(promotions, 1);
     assert.equal(seam.dispatches(), 1);
     assert.ok(result.failure?.seen.includes(INPUT_SCREEN_TEXT_WITHHELD));
     const evidence = JSON.stringify({ result, rows: fake.rows });

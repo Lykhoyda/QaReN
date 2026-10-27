@@ -29,7 +29,6 @@ export class RunInputs {
   #privacy: ObservedPrivacy;
   #refuse?: (reason: InputPrivacyRefusal) => void;
   #terminal?: InputPrivacyRefusal;
-  #promoted?: () => void;
 
   constructor(
     value: unknown,
@@ -81,17 +80,12 @@ export class RunInputs {
   nonSecretNames(): readonly string[] {
     return this.#nonSecret;
   }
-  onPromotion(promoted: () => void): void {
-    this.#promoted = promoted;
-  }
   protectFill(name: string, privateTarget = false): boolean {
     const value = this.#values.get(name);
     if (value === undefined) throw new Error('runtime inputs are invalid');
     if (privateTarget && !this.#strict.has(name)) {
-      const wasStrict = this.hasStrictInputs;
       this.#strict.set(name, value);
       this.#privacy.classifyInputs([], [value]);
-      if (!wasStrict) this.#promoted?.();
     }
     return this.#strict.has(name);
   }

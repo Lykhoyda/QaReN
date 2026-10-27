@@ -9,7 +9,6 @@ import {
 } from '../../../dist/qa/privacy.js';
 import { describeError } from '../../../dist/qa/adapt.js';
 import { runPlan } from '../../../dist/qa/walker.js';
-import { createWriter } from '../../../dist/qa/wire.js';
 import { element, screen, scriptedJudge, walker } from './judgment-fixtures.ts';
 
 const EMAIL = 'qa.tester+run7@staging.example.test';
@@ -126,9 +125,6 @@ test('a secure TEST-PII Fill promotes the run before typing and withholds later 
     scriptedJudge(() => assert.fail('model-free')),
   );
   const { privacy, inputs } = privacyFor({ CODE: '123456' }, ['CODE']);
-  const wire: string[] = [];
-  const writer = createWriter((line) => wire.push(line), 'secure-fill');
-  inputs.onPromotion(() => writer.strictInputs());
   f.deps.privacy = privacy;
   let account = false;
   f.deps.captureScreen = async () => (account ? accountScreen() : login);
@@ -137,10 +133,6 @@ test('a secure TEST-PII Fill promotes the run before typing and withholds later 
     assert.equal(inputs.hasStrictInputs, true);
     assert.equal(privateValue, true);
     assert.equal(inputs.protectFill('CODE'), true);
-    assert.deepEqual(
-      wire.map((line) => JSON.parse(line).payload),
-      [{ kind: 'strict_inputs' }],
-    );
     typed = true;
     return { ok: true, proven: true };
   };
@@ -161,7 +153,6 @@ test('a secure TEST-PII Fill promotes the run before typing and withholds later 
   assert.equal(result.verdict, 'FAIL');
   assert.ok(result.failure?.seen.includes(INPUT_SCREEN_TEXT_WITHHELD));
   assert.equal(inputs.protectFill('CODE'), true);
-  assert.equal(wire.length, 1);
   const evidence = JSON.stringify({ result, rows: f.rows });
   for (const text of [PHONE, 'Signed in as', '123456']) assert.ok(!evidence.includes(text), text);
   assert.deepEqual(
