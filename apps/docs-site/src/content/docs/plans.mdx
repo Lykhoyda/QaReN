@@ -99,10 +99,8 @@ Every input has one of three tiers:
 A TEST-PII value is read back in memory to verify typing and diagnose a mismatch. In a
 TEST-PII run only `core.log`, failure screen text and Fill readback come back redacted by
 the declared values; Metro and other subprocess logs stay withheld as in a SECRET run.
-Declared-value redaction includes an
-e-mail's local part, plus-less local part, domain and percent- or HTML-encoded forms.
-Derived e-mail forms shorter than 3 characters (for example a 2-letter local part) are not
-redacted on their own, while the full address and every longer derived form always are.
+For derived e-mail forms, Unicode case variants and the distinction between masking and
+model equality, follow the CLI guide's [declared-value redaction rules](https://github.com/Lykhoyda/QaReN/blob/develop/packages/qaren-cli/README.md#runtime-inputs).
 Screenshots and video stay withheld in any run that holds an input. A run that holds any
 SECRET input keeps failure screen text and logs withheld as before. Any other
 `QAREN_INPUT_` variable set in the environment, even one the plan does not use, keeps the

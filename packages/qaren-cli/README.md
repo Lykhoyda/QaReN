@@ -1686,7 +1686,7 @@ the author-provided plan text. Values held only in app state, never placed in a
 secure field, are outside this presence-based rule.
 
 **Runs with SECRET runtime inputs.** Undeclared personal data shown beside a runtime
-input cannot be masked by value, so for the whole run failure screen-text
+input cannot be masked by value, so while the run holds a SECRET input, failure screen-text
 evidence and app-derived identities in failure reasons, including moved-target
 identities, become `[screen text withheld: the run holds secret runtime inputs]`.
 A run whose inputs are all TEST-PII keeps that text, redacted by the declared values only.
@@ -1713,8 +1713,10 @@ of them applies to output before dispatch, and hash and saved-block decisions us
 the whole value. The length thresholds and dispatch timing below describe literal fills
 and observed values.
 The shared [privacy matcher](../qaren-core/src/qa/privacy.ts) protects complete values of
-three or more characters after trimming, using case-sensitive substring matches
-for raw and trimmed NFC/NFD forms. Values containing at least three digits after
+three or more characters after trimming, using substring matches
+for raw and trimmed NFC/NFD forms. Literal and observed values match case-sensitively;
+runtime inputs follow the broader [declared-value redaction rules](#runtime-inputs).
+Values containing at least three digits after
 removing whitespace, punctuation and symbols also match with any sequence of
 those separators between digits. Model requests use
 opaque identity tokens; durable text uses `•••`; a match withholds saved blocks.
@@ -1722,7 +1724,7 @@ Displayed identifiers use the same matcher while operational identifiers remain
 usable. After dispatching a numeric code of at least three digits or a secure
 field fill, the same matcher also masks contiguous fragments in every outward
 projection, independent of layout or semantic kind. Complete-value matching runs
-first, preserving identity tokens even in quoted or prefixed text; fragment
+first, preserving identity tokens for exact values even in quoted or prefixed text; fragment
 matching processes only the text left unmasked. A fragment match masks the whole
 whitespace-delimited token containing it. Numeric runs must occur contiguously
 in the code after removing whitespace, punctuation and symbols, including single
@@ -1977,7 +1979,12 @@ other subprocess logs stay withheld as in a SECRET run. Declared-value redaction
 an e-mail's local part, plus-less local part, domain and
 percent- or HTML-encoded forms; screenshots and video stay withheld. Derived e-mail forms
 shorter than 3 characters (for example a 2-letter local part) are not redacted on their own,
-while the full address and every longer derived form always are. Declared-value
+while the full address and every longer derived form always are. Core evidence and CLI
+logs also redact Unicode case variants, including length-changing mappings such as
+`ß` to `SS`. Broader masking does not establish model equality: a derived e-mail form
+or case variant gets a plain mask, not the full value's identity token. Only the exact
+value and its trimmed NFC/NFD forms retain that identity; if an exact declared value
+and another input's derived form match the same span, the exact value wins. Declared-value
 redaction does not cover undeclared personal data the app shows beside a TEST-PII value.
 Never annotate real credentials: qaren cannot establish whether a backend is production or
 an input is a fixture, and misclassification permits reading and execution hashing of that
