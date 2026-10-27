@@ -165,6 +165,11 @@ function publicObservation(tree: unknown): ReactObservation {
       }
       result.capabilities = { press: entry.capabilities.press, fill: entry.capabilities.fill };
     }
+    if (entry.rendered !== undefined) {
+      if (typeof entry.rendered !== 'string' || !/^[0-9a-f]{8}$/.test(entry.rendered))
+        throw entryShape();
+      result.rendered = entry.rendered;
+    }
     if (entry.hidden !== undefined) {
       if (entry.hidden !== true) throw entryShape();
       result.hidden = true;

@@ -761,6 +761,12 @@ test('each consumer refusal site carries one fixed cause and integer counters', 
       'entry-shape',
       treeCounters,
     ],
+    [
+      'rendered shape',
+      readyWith(countedTree({ interactive: [{ role: 'button', rendered: sentinel }] })),
+      'entry-shape',
+      treeCounters,
+    ],
   ];
   for (const [name, responses, reason, counters] of cases) {
     const mock = mockClient(responses);

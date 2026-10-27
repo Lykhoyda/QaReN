@@ -27,6 +27,7 @@ import {
   elementFrame,
   isNativeInput,
   describe,
+  renderedFingerprintOf,
 } from './screen.js';
 import {
   type Resolution,
@@ -766,6 +767,16 @@ async function walkBlockScoped(
     target.testID !== undefined
       ? e.testID === target.testID && e.kind === target.kind
       : e.testID === undefined && e.kind === target.kind && e.label === target.label;
+  // The tapped control itself redrew: found once by identity on each side, with differing rendered subtrees.
+  const targetRedrawn = (before: Screen, after: Screen, target: Element): boolean => {
+    const fingerprint = (screen: Screen): string | undefined => {
+      const matches = screen.elements.filter((e) => sameIdentity(e, target));
+      return matches.length === 1 ? renderedFingerprintOf(matches[0]) : undefined;
+    };
+    const was = fingerprint(before);
+    const now = fingerprint(after);
+    return was !== undefined && now !== undefined && was !== now;
+  };
   const frameKey = (e: Element): string | undefined => {
     const rect = elementFrame(e);
     return rect ? [rect.x, rect.y, rect.width, rect.height].join(',') : undefined;
@@ -2662,7 +2673,11 @@ async function walkBlockScoped(
             before.platformPresence ? 'provenance' : 'resolve',
           );
           // NOTE: a not-ok result is not a verdict; an act that timed out may still have landed.
-          const changed = screenSignature(after.screen) !== screenSignature(before.screen);
+          const changed =
+            screenSignature(after.screen) !== screenSignature(before.screen) ||
+            (item.kind === 'press' &&
+              element !== undefined &&
+              targetRedrawn(before.screen, after.screen, element));
           usable(after, item);
           diagnostic(item, after, 'decision', 'ACCEPTED');
           metric('readback', after);

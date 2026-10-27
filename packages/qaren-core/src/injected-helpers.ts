@@ -3,7 +3,7 @@ import { TYPOGRAPHY_TEXT_LIMITS } from './qa/host-typography.js';
 import { INPUT_HOST_TYPES } from './qa/input-host-types.js';
 
 // Bump when the injected surface changes so warm runtimes replace stale helpers.
-export const HELPERS_VERSION = 103;
+export const HELPERS_VERSION = 104;
 
 export const INJECTED_HELPERS = `
 (function() {
@@ -1514,6 +1514,7 @@ export const INJECTED_HELPERS = `
       };
 
       var salient = [];
+      var salientFibers = [];
       var typographyDigestVisits = 0;
       var hostEvidence = opts.semanticEvidence === true ? { hosts: [], complete: true } : null;
       var hostRoles = 'adjustable alert alertdialog application article banner blockquote button caption cell checkbox code columnheader combobox complementary contentinfo definition deletion dialog directory document emphasis feed figure form generic grid gridcell group header heading image imagebutton img insertion keyboardkey link list listbox listitem log main marquee math menu menubar menuitem menuitemcheckbox menuitemradio meter navigation none note option paragraph presentation progressbar radio radiogroup region row rowgroup rowheader scrollbar search searchbox separator slider spinbutton status strong subscript summary superscript switch tab table tablist tabpanel term text textbox time timer togglebutton toolbar tooltip tree treegrid treeitem'.split(' ');
@@ -1637,6 +1638,7 @@ export const INJECTED_HELPERS = `
             if (entry.hidden) forwarded.hidden = true;
           } else {
             salient.push(entry);
+            salientFibers.push(ifiber);
             forwarded = entry;
             if (wrapperCandidate) wrapperCandidate.compositeWrapper = true;
             var componentName = getName(ifiber);
@@ -1663,6 +1665,56 @@ export const INJECTED_HELPERS = `
           if (typography && (++iEnqueued > iBudget || Date.now() >= typography.deadline)) { iEnqueueTruncated = true; break; }
           iQueue.push({ fiber: ich, forwarded: nextForwarded, wrapperCandidate: wrapperCandidate, inputAncestors: inputAncestors, parentFiber: ifiber, parentHostIndex: parentHostIndex, textOwnerHostIndex: textOwnerHostIndex, rootIndex: iframe.rootIndex, animatedTypography: typographyRecord && typographyRecord.animated, hidden: hidden, orderPath: childOrderBase ? childOrderBase.concat([childOrdinal++]) : null });
           ich = ich.sibling;
+        }
+      }
+      // Each control's own rendered host subtree as a short hash (structure, image and vector sources, colours),
+      // so a press that only redraws its target is still observed; a capped or unreadable subtree gets none.
+      if (privateCapture) {
+        var RENDERED_STYLE_KEYS = ['backgroundColor', 'borderColor', 'color', 'tintColor'];
+        var RENDERED_PROP_KEYS = ['source', 'src', 'd', 'fill', 'stroke', 'tintColor'];
+        var renderedVisits = 0;
+        var renderedChars = 0;
+        var renderedFact = function(value, depth) {
+          if (typeof value === 'string' && (value.length > 4096 || (renderedChars += value.length) > 262144)) throw new Error('Capture refused');
+          if (value == null || typeof value === 'boolean' || typeof value === 'number' || typeof value === 'string') return typeof value + ':' + String(value);
+          if (depth > 3 || typeof value !== 'object') throw new Error('Capture refused');
+          var fact = '';
+          if (Array.isArray(value)) {
+            var length = qaData(value, 'length', true);
+            if (length > 16) throw new Error('Capture refused');
+            for (var vi = 0; vi < length; vi++) fact += renderedFact(qaData(value, String(vi), true), depth + 1) + ',';
+            return '[' + fact + ']';
+          }
+          var objectKeys = ['uri', 'type', 'payload'];
+          for (var ki = 0; ki < objectKeys.length; ki++) fact += objectKeys[ki] + '=' + renderedFact(qaData(value, objectKeys[ki], true), depth + 1) + ';';
+          return '{' + fact + '}';
+        };
+        var renderedFingerprint = function(root) {
+          var hash = 0x811c9dc5;
+          var visits = 0;
+          var fold = function(text) {
+            if ((renderedChars += text.length) > 262144) throw new Error('Capture refused');
+            for (var ci = 0; ci < text.length; ci++) hash = Math.imul(hash ^ text.charCodeAt(ci), 16777619) >>> 0;
+          };
+          var visit = function(fiber, depth) {
+            if (++renderedVisits > 4000 || ++visits > 400 || depth > 64 || Date.now() >= typography.deadline) throw new Error('Capture refused');
+            if (fiber.tag === 6) fold('#' + depth + '|');
+            else if (isHostFiber(fiber)) {
+              var props = qaData(fiber, 'memoizedProps', true);
+              var style = qaData(props, 'style', true);
+              var fact = depth + ':' + qaHostType(fiber);
+              for (var si = 0; si < RENDERED_STYLE_KEYS.length; si++) fact += ';' + renderedFact(qaStyleFact(style, RENDERED_STYLE_KEYS[si], 0), 0);
+              for (var pi = 0; pi < RENDERED_PROP_KEYS.length; pi++) fact += ';' + renderedFact(qaData(props, RENDERED_PROP_KEYS[pi], true), 0);
+              fold(fact + '|');
+            }
+            for (var child = fiber.child; child; child = child.sibling) visit(child, depth + 1);
+          };
+          try { visit(root, 0); } catch (_) { return null; }
+          return ('0000000' + hash.toString(16)).slice(-8);
+        };
+        for (var ri = 0; ri < salient.length; ri++) {
+          var rendered = renderedFingerprint(salientFibers[ri]);
+          if (rendered !== null) salient[ri].rendered = rendered;
         }
       }
       // Signal truncation rather than silently dropping actionable nodes (a hit

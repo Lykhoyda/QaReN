@@ -114,6 +114,13 @@ export function reactInputHostOf(element: Element): number | undefined {
   return reactInputHosts.get(element);
 }
 
+// Only an element joined to exactly one React control, under an identity no other node shares, carries one.
+const renderedFingerprints = new WeakMap<Element, string>();
+
+export function renderedFingerprintOf(element: Element): string | undefined {
+  return renderedFingerprints.get(element);
+}
+
 const labelAncestors = new WeakMap<Element, Element[]>();
 const soleLabelTexts = new WeakMap<Element, Element>();
 const elementFrames = new WeakMap<Element, NonNullable<NativeNode['rect']>>();
@@ -226,6 +233,8 @@ export interface DigestEntry {
   inputHostIndices?: number[];
   // Under a host view that hides its subtree from accessibility.
   hidden?: boolean;
+  // Hash of the control's own rendered host subtree, absent when the producer could not read all of it.
+  rendered?: string;
 }
 
 export interface ReactHostObservation {
@@ -973,6 +982,13 @@ export function join(
       // Diagnostics cannot change host association.
     }
     localCapabilities.set(element, local);
+    const soleNative =
+      testID !== undefined
+        ? nativeIds.get(testID) === 1
+        : label !== undefined &&
+          nodes.filter((other) => nonEmpty(other.label) === label).length === 1;
+    if (match?.rendered !== undefined && reactCandidates.length === 1 && soleNative)
+      renderedFingerprints.set(element, match.rendered);
     return element;
   });
   for (const [index, label] of androidDescendantLabels(
@@ -1005,6 +1021,8 @@ export function join(
         disabled: !presenceMode && d.disabled === true,
       },
     };
+    if (d.rendered !== undefined && reactIds.get(d.testID) === 1)
+      renderedFingerprints.set(element, d.rendered);
     // Screen text comes only from the native tree, so a React-only element shows no user-visible string;
     // its value still joins the mask set, which can only reduce what is written.
     const value = digestValue(d.value);
