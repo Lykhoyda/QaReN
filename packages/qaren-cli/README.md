@@ -1971,7 +1971,9 @@ TEST-PII alias cannot leave a SECRET value unmasked in a label hash. Repeated de
 across the plan and configured login block must agree before device selection. There is no
 config, global switch or inferred environment policy. All values still receive log, model
 and artifact redaction, including an e-mail's local part, plus-less local part, domain and
-percent- or HTML-encoded forms; screenshots and video stay withheld. Declared-value
+percent- or HTML-encoded forms; screenshots and video stay withheld. Derived e-mail forms
+shorter than 3 characters (for example a 2-letter local part) are not redacted on their own,
+while the full address and every longer derived form always are. Declared-value
 redaction does not cover undeclared personal data the app shows beside a TEST-PII value.
 Never annotate real credentials: qaren cannot establish whether a backend is production or
 an input is a fixture, and misclassification permits reading and execution hashing of that

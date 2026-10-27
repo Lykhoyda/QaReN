@@ -100,6 +100,8 @@ Every input has one of three tiers:
 A TEST-PII value is read back in memory to verify typing and diagnose a mismatch. Run logs,
 failure screen text and reports come back redacted by the declared values, including an
 e-mail's local part, plus-less local part, domain and percent- or HTML-encoded forms.
+Derived e-mail forms shorter than 3 characters (for example a 2-letter local part) are not
+redacted on their own, while the full address and every longer derived form always are.
 Screenshots and video stay withheld in any run that holds an input. A run that holds any
 SECRET input keeps failure screen text and logs withheld as before. Any other
 `QAREN_INPUT_` variable set in the environment, even one the plan does not use, keeps the
