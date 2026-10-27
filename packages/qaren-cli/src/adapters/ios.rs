@@ -974,6 +974,9 @@ pub struct CrashFacts {
 
 const CRASH_REPORT_MAX_BYTES: u64 = 8 * 1024 * 1024;
 
+pub const SPRINGBOARD_BUNDLE_ID: &str = "com.apple.springboard";
+
+// A simulator .ips report: a JSON header line, then a JSON body whose procPath or, for system processes, coalition names the device.
 pub fn parse_crash_report(text: &str, app_id: &str, udid: &str) -> Option<CrashFacts> {
     let (header, body) = text.split_once('\n')?;
     let header: serde_json::Value = serde_json::from_str(header).ok()?;
@@ -985,7 +988,12 @@ pub fn parse_crash_report(text: &str, app_id: &str, udid: &str) -> Option<CrashF
     let on_device = body
         .get("procPath")
         .and_then(|p| p.as_str())
-        .is_some_and(|p| p.contains(&format!("/Devices/{udid}/")));
+        .is_some_and(|p| p.contains(&format!("/Devices/{udid}/")))
+        || app_id == SPRINGBOARD_BUNDLE_ID
+            && body
+                .get("coalitionName")
+                .and_then(|c| c.as_str())
+                .is_some_and(|c| c.ends_with(&format!(".{udid}")));
     if bundle != Some(app_id) || !on_device {
         return None;
     }
