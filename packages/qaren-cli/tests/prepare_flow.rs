@@ -4919,7 +4919,7 @@ fn borrowed_prepare_without_a_proven_process_birth_refuses_before_the_lease() {
 fn plant_borrowed_holder(repo: &std::path::Path) -> qaren::lease::Lease {
     let identity = common::identity(4242, "Wed Aug 12 15:00:00 2026");
     let held = qaren::lease::acquire(
-        &mut MockRunner::new(),
+        &mut qaren::exec::MockRunner::new(),
         &repo.join(".locks"),
         qaren::scenario::Platform::Ios,
         BORROWED,
