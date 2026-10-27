@@ -918,7 +918,7 @@ extension RnFastRunnerTests {
           element: target,
           generation: currentSnapshotGeneration,
           nodeIndex: command.snapshotNodeIndex,
-          attributes: liveAttributes(of: target)
+          attributes: target.exists ? liveAttributes(of: target) : nil
         )
       }
       return Response(
@@ -996,12 +996,26 @@ extension RnFastRunnerTests {
           data: DataPayload(verifyVerdict: lostVerdict.rawValue, verifyStable: false)
         )
       }
+      // A vanished field (auto-submitted code) costs seconds per failed read and would end unreadable anyway; never exact.
+      var present = false
+      withTemporaryScrollIdleTimeoutIfSupported(activeApp) { present = verifyElement.exists }
+      guard present else {
+        return Response(
+          ok: true,
+          data: DataPayload(verifyVerdict: TextInputTarget.VerifyVerdict.unreadable.rawValue, verifyStable: false)
+        )
+      }
       let isSecure = verifyElement.elementType == .secureTextField
       var verdict = TextInputTarget.VerifyVerdict.unreadable
       var stable = false
       withTemporaryScrollIdleTimeoutIfSupported(activeApp) {
         var previous: TextInputTarget.VerifyObservation?
         for attempt in 0..<3 {
+          guard verifyElement.exists else {
+            verdict = .unreadable
+            stable = false
+            break
+          }
           let read = readExactInputValue(verifyElement)
           let observation = TextInputTarget.verifyObservation(
             expected: expected,

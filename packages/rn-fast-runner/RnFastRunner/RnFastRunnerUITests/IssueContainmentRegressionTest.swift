@@ -129,9 +129,35 @@ final class IssueContainmentRegressionTest: RnFastRunnerTests {
     let response = try serve(#"{"command":"type","text":"1234","x":\#(center.x),"y":\#(center.y)}"#)
     XCTAssertTrue(response.ok, "error=\(String(describing: response.error?.message))")
     XCTAssertEqual(response.data?.message, "typed")
-    XCTAssertGreaterThan(containedIssues, 0, "the post-type read of the vanished field should raise a contained issue")
+    XCTAssertEqual(containedIssues, 0, "the vanished field's attributes should not be read after typing")
     // status is answered by the transport, so uptime is the next command execute(command:) serves.
     let next = try serve(#"{"command":"uptime"}"#)
-    XCTAssertTrue(next.ok, "the runner should keep serving after a contained issue")
+    XCTAssertTrue(next.ok, "the runner should keep serving after the field vanished")
+  }
+
+  @MainActor
+  func testVerifyInputOfFieldVanishedAfterTypingIsUnreadableWithoutReads() throws {
+    let center = try launchVanishFixture(length: 4)
+    let typed = try serve(#"{"command":"type","text":"1234","x":\#(center.x),"y":\#(center.y),"operationToken":"vanish-op"}"#)
+    XCTAssertTrue(typed.ok, "error=\(String(describing: typed.error?.message))")
+    let started = ProcessInfo.processInfo.systemUptime
+    let verify = try serve(#"{"command":"verifyInput","text":"1234","operationToken":"vanish-op"}"#)
+    let elapsed = ProcessInfo.processInfo.systemUptime - started
+    XCTAssertTrue(verify.ok)
+    XCTAssertEqual(verify.data?.verifyVerdict, "unreadable", "a vanished field is unread, never verified or reported moved")
+    XCTAssertEqual(verify.data?.verifyStable, false)
+    XCTAssertEqual(containedIssues, 0, "no attribute of the vanished field should be read")
+    // One failed element read costs XCTest about two seconds of retries.
+    XCTAssertLessThan(elapsed, 1.5, "verifyInput should not wait on the vanished field")
+  }
+
+  @MainActor
+  func testVerifyInputOfFieldThatStaysIsExactAndStable() throws {
+    let center = try launchVanishFixture(length: 99)
+    let typed = try serve(#"{"command":"type","text":"1234","x":\#(center.x),"y":\#(center.y),"operationToken":"stay-op"}"#)
+    XCTAssertTrue(typed.ok, "error=\(String(describing: typed.error?.message))")
+    let verify = try serve(#"{"command":"verifyInput","text":"1234","operationToken":"stay-op"}"#)
+    XCTAssertEqual(verify.data?.verifyVerdict, "exact")
+    XCTAssertEqual(verify.data?.verifyStable, true)
   }
 }

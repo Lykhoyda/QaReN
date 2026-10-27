@@ -471,6 +471,7 @@ test('I5: the real fill envelope carries the evidence class the walker maps', as
     { verdict: 'ambiguous', stable: true, expected: 'unavailable' },
     { verdict: 'target-lost', stable: false, expected: 'unavailable' },
     { verdict: 'unreadable', stable: true, expected: 'unavailable' },
+    { verdict: 'unreadable', stable: false, expected: 'unavailable' },
   ];
   for (const { verdict, stable, expected } of cases) {
     const { result } = await withFillSeam(
