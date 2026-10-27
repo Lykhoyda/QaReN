@@ -906,6 +906,13 @@ this fallback; a stored testID replays through it exactly as the walk did, and
 the saved block stores the field's testID the focus proof used. Ambiguous targets
 and potentially mutated fills still fail.
 
+On iOS, if the bound field disappears after typing (for example, an auto-submitting
+code field), the runner skips its post-type attribute read and stops verification
+at the existence check instead of retrying value reads. Verification returns
+`unreadable` with `verifyStable: false`, preserving the `UNVERIFIED_FILL`
+classification above; disappearance does not prove the entered value or the
+submission outcome.
+
 On Android API 26 and later, a fresh read of the bound input with null text
 and no hint showing counts as empty, so clearing a plain field verifies as
 `exact`. A clear that reads back the placeholder remains `ambiguous`. Stale
