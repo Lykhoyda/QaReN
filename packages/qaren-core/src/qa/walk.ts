@@ -11,6 +11,7 @@ import {
 } from '../domain/cancellation.js';
 import { readFileSync, realpathSync } from 'node:fs';
 import { join } from 'node:path';
+import { mkdtemp, readFile, rm } from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
 import { parseArgs } from 'node:util';
 import { CDPClient } from '../cdp-client.js';
@@ -722,6 +723,21 @@ async function openSession(
             : dismiss({ platform, qaContext, note: log }),
         false,
       ),
+    async comparisonScreenshot() {
+      if (stop.stopping || currentInputs()?.hasInputs) return undefined;
+      const directory = await mkdtemp(join(request.runDir, '.tap-pixels-'));
+      try {
+        return await stop.track(async () => {
+          const path = join(directory, 'capture.png');
+          const shot = await captureQaScreenshot(platform, path, target.deviceId, appId);
+          return shot.ok && !stop.stopping && !currentInputs()?.hasInputs
+            ? await readFile(path)
+            : undefined;
+        });
+      } finally {
+        await rm(directory, { recursive: true, force: true });
+      }
+    },
     async screenshot(name) {
       if (stop.stopping || currentInputs()?.hasInputs) return undefined;
       const path = join(request.runDir, name);
