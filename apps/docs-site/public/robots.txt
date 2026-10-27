@@ -1,4 +1,4 @@
 User-agent: *
 Allow: /
 
-Sitemap: https://lykhoyda.github.io/rn-dev-agent/sitemap-index.xml
+Sitemap: https://lykhoyda.github.io/QaReN/sitemap-index.xml

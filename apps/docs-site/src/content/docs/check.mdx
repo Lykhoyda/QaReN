@@ -27,7 +27,7 @@ The plan is parsed first, so an unparseable plan or a missing Jev key refuses be
 device is touched. The run then leases the device, prepares the app and its own Metro,
 walks the plan and tears down what it started. By default, the simulator or emulator
 stays running and the installed app stays.
-See [CLI-owned iOS build routes](https://github.com/Lykhoyda/rn-dev-agent/blob/develop/packages/qaren-cli/README.md#cli-owned-ios-build-routes)
+See [CLI-owned iOS build routes](https://github.com/Lykhoyda/QaReN/blob/develop/packages/qaren-cli/README.md#cli-owned-ios-build-routes)
 for iOS startup ordering.
 
 ## Choosing the device
@@ -39,7 +39,7 @@ for iOS startup ordering.
 `--device`, it refuses `DEVICE_UNAVAILABLE`.
 
 For explicit boot, restart or exit shutdown, follow the
-[iOS simulator lifecycle contract](https://github.com/Lykhoyda/rn-dev-agent/blob/develop/packages/qaren-cli/README.md#ios-simulator-lifecycle).
+[iOS simulator lifecycle contract](https://github.com/Lykhoyda/QaReN/blob/develop/packages/qaren-cli/README.md#ios-simulator-lifecycle).
 
 ### Android
 
@@ -63,8 +63,8 @@ must be git-ignored; otherwise the build fails `BUILD_FAILED` before generating 
 | `--platform ios\|android`       | Defaults to `ios`.                                                                 |
 | `--device <id>`                 | A simulator UUID on iOS, an emulator serial on Android.                            |
 | `--config <path>`               | Another configuration file. Defaults to `.qaren/config.yaml`.                      |
-| `--fresh-install`               | See the [fresh-install contract](https://github.com/Lykhoyda/rn-dev-agent/blob/develop/packages/qaren-cli/README.md#fresh-install). |
-| `--boot-device`, `--restart-device`, `--shutdown-device-on-exit` | See the [iOS simulator lifecycle contract](https://github.com/Lykhoyda/rn-dev-agent/blob/develop/packages/qaren-cli/README.md#ios-simulator-lifecycle). |
+| `--fresh-install`               | See the [fresh-install contract](https://github.com/Lykhoyda/QaReN/blob/develop/packages/qaren-cli/README.md#fresh-install). |
+| `--boot-device`, `--restart-device`, `--shutdown-device-on-exit` | See the [iOS simulator lifecycle contract](https://github.com/Lykhoyda/QaReN/blob/develop/packages/qaren-cli/README.md#ios-simulator-lifecycle). |
 | `--json`                        | Accepted for scripts; the receipt is always JSON on stdout.                        |
 
 ## The receipt
@@ -90,10 +90,10 @@ The fields you read most:
 See [Troubleshooting](../troubleshooting/) for the common codes.
 
 The local report and PR comment show how many blocks were replayed; see the
-[saved-block contract](https://github.com/Lykhoyda/rn-dev-agent/blob/develop/packages/qaren-cli/README.md#saved-blocks).
+[saved-block contract](https://github.com/Lykhoyda/QaReN/blob/develop/packages/qaren-cli/README.md#saved-blocks).
 
 For interpreting app-derived failure evidence, follow the
-[app-derived failure text contract](https://github.com/Lykhoyda/rn-dev-agent/blob/develop/packages/qaren-cli/README.md#app-derived-failure-text).
+[app-derived failure text contract](https://github.com/Lykhoyda/QaReN/blob/develop/packages/qaren-cli/README.md#app-derived-failure-text).
 
 ## Exit codes
 
@@ -114,9 +114,9 @@ Each run writes to `~/.qaren/runs/<run-id>/`. The receipt names the artifacts th
 | `run.json`         | The durable run record                                           |
 | `ledger.json`      | Every walked step with its outcome, timing and evidence          |
 | `report.md`        | The human-readable report, value-free                            |
-| `logs/events.jsonl`| The local event stream that `qaren watch` reads; see the [run identity and privacy contract](https://github.com/Lykhoyda/rn-dev-agent/blob/develop/packages/qaren-cli/README.md#watch-a-run) |
+| `logs/events.jsonl`| The local event stream that `qaren watch` reads; see the [run identity and privacy contract](https://github.com/Lykhoyda/QaReN/blob/develop/packages/qaren-cli/README.md#watch-a-run) |
 | `logs/core.log`    | The screen child's private log                                   |
-| `logs/core-diagnostics.jsonl` | Private [media-withheld diagnostics](https://github.com/Lykhoyda/rn-dev-agent/blob/develop/packages/qaren-cli/README.md#why-were-my-screenshots-withheld), [target-miss diagnostics](https://github.com/Lykhoyda/rn-dev-agent/blob/develop/packages/qaren-cli/README.md#plan-checks-and-screen-evidence) and [runtime-input diagnostics](https://github.com/Lykhoyda/rn-dev-agent/blob/develop/packages/qaren-cli/README.md#runtime-inputs), when emitted |
+| `logs/core-diagnostics.jsonl` | Private [media-withheld diagnostics](https://github.com/Lykhoyda/QaReN/blob/develop/packages/qaren-cli/README.md#why-were-my-screenshots-withheld), [target-miss diagnostics](https://github.com/Lykhoyda/QaReN/blob/develop/packages/qaren-cli/README.md#plan-checks-and-screen-evidence) and [runtime-input diagnostics](https://github.com/Lykhoyda/QaReN/blob/develop/packages/qaren-cli/README.md#runtime-inputs), when emitted |
 
 ## The tested candidate
 
@@ -128,7 +128,7 @@ the walk and checks them again after it. A change in between fails the run with
 ## Leases, cancellation and cleanup
 
 One run holds a device at a time within the
-[configured lock namespace](https://github.com/Lykhoyda/rn-dev-agent/blob/develop/packages/qaren-cli/README.md#ios-admission-and-cleanup),
+[configured lock namespace](https://github.com/Lykhoyda/QaReN/blob/develop/packages/qaren-cli/README.md#ios-admission-and-cleanup),
 which owns root selection, the machine-wide default and its opt-out, switching and recovery requirements.
 A second run on the same device in that namespace
 refuses `DEVICE_BUSY`; a lease whose holder has died is reclaimed by running that run's own

@@ -38,7 +38,7 @@ done
 
 PLUGIN_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 MANIFEST="$PLUGIN_ROOT/runner-manifest.json"
-RELEASES="https://github.com/Lykhoyda/rn-dev-agent/releases/download"
+RELEASES="https://github.com/Lykhoyda/QaReN/releases/download"
 RUNTIME_ROOT="${HOME:-}/.qaren/runtime"
 RECORD=".tarball-sha256"
 INSTALL_COMMAND="bash $(printf %q "$PLUGIN_ROOT/scripts/ensure-qaren.sh") --install"

@@ -20,7 +20,7 @@ import {
 export type { RunnerPlatform } from '../domain/runner-artifact-identity.js';
 export type ArtifactProvenance = 'cache' | 'downloaded' | 'build-local';
 
-export const RUNNER_REPO = 'Lykhoyda/rn-dev-agent';
+export const RUNNER_REPO = 'Lykhoyda/QaReN';
 
 const DOWNLOAD_TIMEOUT_MS = 60_000;
 // The manifest records exact byte counts; a small slack absorbs boundary/overhead

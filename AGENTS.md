@@ -6,13 +6,10 @@ notes here.
 
 ## Where the repository is
 
-The repository is mid-pivot from rn-dev-agent (an MCP server plus host plugins
-that drive React Native apps on simulators) to QaReN: a Rust CLI that owns the
-run and spawns a TypeScript child that reads the screen. `main` still ships
-rn-dev-agent 1.0.x; `develop` carries the migration as one PR per phase and
-merges into `main` as 2.0.0 once the label path runs end to end. The QaReN
-structure outline and TDD that the phase PRs cite are the specification; each
-phase PR names its Linear issue in the QaReN project.
+The repository develops QaReN: a Rust CLI that owns the run and spawns a
+TypeScript child that reads the screen. `main` carries QaReN 2.0;
+rn-dev-agent 1.x is preserved on `rn-dev-agent-1.0`. See the
+[README](README.md) for product usage and migration guidance.
 
 The package cut, literal `qaren check`, Jev seam, Phase 4 blocks, and PR run/publication commands are implemented. For saved-block replay, persistence, recovery and action inspection, read the [saved-block contract](packages/qaren-cli/README.md#saved-blocks); for `qaren pr` and `qaren publish`, the [CLI README](packages/qaren-cli/README.md#test-a-pull-request). Live model and device acceptance are separate from hermetic tests; [Packaging](packages/qaren-cli/README.md#plugin-runtime-installation) is implemented; `qaren listen` is not implemented.
 
@@ -31,8 +28,7 @@ The package cut, literal `qaren check`, Jev seam, Phase 4 blocks, and PR run/pub
 - `packages/rn-fast-runner/` (package `qaren-ios-runner`) and
   `packages/rn-android-runner/` (package `qaren-android-runner`): native
   runner sources.
-- `apps/docs-site/` (package `qaren-docs`): deliverable documentation site;
-  its content still describes rn-dev-agent until Phase 8.
+- `apps/docs-site/` (package `qaren-docs`): deliverable QaReN documentation site.
 - Engineering processes, plans, stories, audits and research live in the
   workspace [`docs/`](https://github.com/Lykhoyda/rn-dev-agent-workspace/tree/main/docs/);
   never add a top-level `docs/` tree here. Captain-approved architecture records
@@ -55,9 +51,7 @@ The package cut, literal `qaren check`, Jev seam, Phase 4 blocks, and PR run/pub
   per-file symlinks are refused by `src/domain/action-store.ts`), `~/.qaren/runtime` for the
   installed runtime, `~/.qaren/state` for per-user state, `__QAREN` for the
   injected global. Do not reintroduce an old name there or add a shim for one.
-  Old names that remain on purpose: the plugin skill text (Phase 8), the GitHub slug
-  `Lykhoyda/rn-dev-agent` in `RUNNER_REPO` and the manifest URLs until the
-  repository is renamed after the `develop` → `main` merge, and the codesign
+  The old name remains on purpose in the codesign
   identifier of the committed darwin process-birth helper until CI rebuilds it.
 - Do not commit generated artifacts: `packages/qaren-core/dist/`,
   `packages/qaren-cli/target/`, `packages/qaren-cli/observe/dist/`, simulator
@@ -213,8 +207,6 @@ Suite records and redacted logs live under `~/.qaren/native-suites/<run-id>`. Un
   which keeps the three manifests, both marketplaces, `Cargo.toml` and the
   `qaren` entry in `Cargo.lock` on that version with a GNU/BSD-portable
   in-place edit and re-checks itself (`scripts/test/sync-versions.test.sh`).
-- During the pivot changesets accumulate on `develop`; the `develop` → `main`
-  merge produces one Version Packages PR for 2.0.0.
 - Docs, tests, CI-only changes, and generated-artifact cleanup do not need a
   changeset unless they alter shippable behavior.
 

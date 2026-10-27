@@ -24,10 +24,10 @@ separate compile contract for saved actions.
 
 On the next run, a block whose plan lines, platform, app and runtime input policy are unchanged
 is replayed by its stored identities. For Jev requirements, including the optional interruption safety veto,
-see the [plan readiness contract](https://github.com/Lykhoyda/rn-dev-agent/blob/develop/packages/qaren-cli/README.md#plan-checks-and-screen-evidence).
+see the [plan readiness contract](https://github.com/Lykhoyda/QaReN/blob/develop/packages/qaren-cli/README.md#plan-checks-and-screen-evidence).
 
 Start declarations retain their plan target on replay; see the authoritative
-[saved-block contract](https://github.com/Lykhoyda/rn-dev-agent/blob/develop/packages/qaren-cli/README.md#saved-blocks)
+[saved-block contract](https://github.com/Lykhoyda/QaReN/blob/develop/packages/qaren-cli/README.md#saved-blocks)
 for start waits and refusal behavior.
 
 | Situation                                                        | Outcome                                                         |
@@ -51,11 +51,11 @@ any value, when:
 
 - a step had neither a `testID` nor a label to store;
 - it has a phrase wait;
-- a fill meets the [private-input or keyboard-fallback persistence restrictions](https://github.com/Lykhoyda/rn-dev-agent/blob/develop/packages/qaren-cli/README.md#saved-blocks);
+- a fill meets the [private-input or keyboard-fallback persistence restrictions](https://github.com/Lykhoyda/QaReN/blob/develop/packages/qaren-cli/README.md#saved-blocks);
 - a protected value from the plan or the run appears in the block, which reports
   `contains a protected plan-typed value`;
 - a quoted wait or scroll target has no unique `testID` or unique visible text;
-- the [React coverage contract](https://github.com/Lykhoyda/rn-dev-agent/blob/develop/packages/qaren-cli/README.md#check-a-plan)
+- the [React coverage contract](https://github.com/Lykhoyda/QaReN/blob/develop/packages/qaren-cli/README.md#check-a-plan)
   withholds persistence for the block or walk.
 
 A fill from a [runtime input](../plans/#runtime-inputs) is saved by name only, as
@@ -85,15 +85,15 @@ Both read the `.qaren/actions/` directory of the current directory. `.yaml` and 
 are both read; a slug with both extensions is refused. These inspection commands accept the
 verified main-copy link for Git worktrees and refuse other corpus links and symlinked action
 files; see the authoritative
-[action corpus contract](https://github.com/Lykhoyda/rn-dev-agent/blob/develop/packages/qaren-cli/README.md#saved-blocks).
+[action corpus contract](https://github.com/Lykhoyda/QaReN/blob/develop/packages/qaren-cli/README.md#saved-blocks).
 
 ## Login recovery
 
 For recovery triggers, ordering, default permission decline, optional app interruptions,
 and terminal failures, see the authoritative
-[step recovery contract](https://github.com/Lykhoyda/rn-dev-agent/blob/develop/packages/qaren-cli/README.md#step-recovery).
+[step recovery contract](https://github.com/Lykhoyda/QaReN/blob/develop/packages/qaren-cli/README.md#step-recovery).
 Login recovery uses a saved sign-in block when its configured marker is visible.
-Follow the [reusable sign-in worked example](https://github.com/Lykhoyda/rn-dev-agent/blob/develop/packages/qaren-cli/README.md#reusable-sign-in-example) to save, configure and replay it.
+Follow the [reusable sign-in worked example](https://github.com/Lykhoyda/QaReN/blob/develop/packages/qaren-cli/README.md#reusable-sign-in-example) to save, configure and replay it.
 
 Configure the login block in `.qaren/config.yaml`:
 

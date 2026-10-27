@@ -6,16 +6,14 @@ import remarkGfm from 'remark-gfm';
 export default defineConfig({
   markdown: { remarkPlugins: [remarkGfm] },
   site: 'https://lykhoyda.github.io',
-  base: '/rn-dev-agent',
+  base: '/QaReN',
   integrations: [
     starlight({
       plugins: [starlightLlmsTxt()],
       title: 'QaReN',
       description:
         'QaReN walks a plan on the simulator or emulator, records the run, and reports PASS/FAIL with video.',
-      social: [
-        { icon: 'github', label: 'GitHub', href: 'https://github.com/Lykhoyda/rn-dev-agent' },
-      ],
+      social: [{ icon: 'github', label: 'GitHub', href: 'https://github.com/Lykhoyda/QaReN' }],
       head: [
         {
           tag: 'meta',
@@ -29,7 +27,7 @@ export default defineConfig({
           tag: 'meta',
           attrs: {
             property: 'og:image',
-            content: 'https://lykhoyda.github.io/rn-dev-agent/og-image.png',
+            content: 'https://lykhoyda.github.io/QaReN/og-image.png',
           },
         },
         { tag: 'meta', attrs: { property: 'og:type', content: 'website' } },
@@ -45,7 +43,7 @@ export default defineConfig({
               'QaReN walks a plan on the simulator or emulator, records the run, and reports PASS/FAIL with video.',
             applicationCategory: 'DeveloperApplication',
             operatingSystem: 'macOS',
-            url: 'https://lykhoyda.github.io/rn-dev-agent/',
+            url: 'https://lykhoyda.github.io/QaReN/',
             author: {
               '@type': 'Person',
               name: 'Anton Lykhoyda',

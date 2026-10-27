@@ -50,7 +50,7 @@ environment from step 1 and the run fields from step 2.
 Only after the user confirms the exact draft:
 
 ```sh
-gh issue create --repo Lykhoyda/rn-dev-agent --title "<title>" --body-file <file>
+gh issue create --repo Lykhoyda/QaReN --title "<title>" --body-file <file>
 ```
 
 If the user asks for changes, update the file and show it again before filing.

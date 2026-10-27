@@ -768,7 +768,7 @@ fn runtime_dirs(runtime_root: &Path) -> Check {
 fn source_checkout(runner: &mut dyn Runner, cwd: &Path) -> Check {
     let manifest = cwd.join(PLUGIN_MANIFEST);
     if !cwd.join(INSTALLER).is_file() || !manifest.is_file() {
-        return Check::skip("source-checkout", "not in an rn-dev-agent checkout");
+        return Check::skip("source-checkout", "not in a QaReN checkout");
     }
     let version = serde_json::from_str::<serde_json::Value>(&read(&manifest))
         .ok()

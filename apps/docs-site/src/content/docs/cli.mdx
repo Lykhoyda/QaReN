@@ -83,7 +83,7 @@ emulator serial and its app ID. The two flags go together and only on `cleanup`.
 qaren update
 ```
 
-Run from the rn-dev-agent checkout root. Fast-forwards the checkout with `git pull --ff-only`
+Run from the QaReN checkout root. Fast-forwards the checkout with `git pull --ff-only`
 from its tracked upstream, then rebuilds and reinstalls qaren through the source installer. It
 refuses outside a checkout, with local changes, or when the pull fails, leaving your working
 tree, branch and installed qaren unchanged.
@@ -96,7 +96,7 @@ qaren doctor [--json] [--config .qaren/config.yaml]
 ```
 
 Diagnoses setup problems and rn-dev-agent 1.x leftovers. See
-[Doctor](https://github.com/Lykhoyda/rn-dev-agent/blob/develop/packages/qaren-cli/README.md#doctor)
+[Doctor](https://github.com/Lykhoyda/QaReN/blob/develop/packages/qaren-cli/README.md#doctor)
 for the authoritative checks, manual fixes, output contract and exit codes, including
 the privacy contract's exception for configured iOS runtime and Android AVD names.
 
@@ -123,8 +123,8 @@ Validates the scenario and the checked-out candidate, allocates the device, prep
 app and owned Metro, and emits a `ready` receipt with the run's device and Metro
 endpoint. `--dry-run` validates and prints the planned commands without allocating anything.
 For `--device` selection, boot permission and cleanup, see the authoritative
-[existing iOS simulator contract](https://github.com/Lykhoyda/rn-dev-agent/blob/develop/packages/qaren-cli/README.md#existing-ios-simulator).
-See [CLI-owned iOS build routes](https://github.com/Lykhoyda/rn-dev-agent/blob/develop/packages/qaren-cli/README.md#cli-owned-ios-build-routes)
+[existing iOS simulator contract](https://github.com/Lykhoyda/QaReN/blob/develop/packages/qaren-cli/README.md#existing-ios-simulator).
+See [CLI-owned iOS build routes](https://github.com/Lykhoyda/QaReN/blob/develop/packages/qaren-cli/README.md#cli-owned-ios-build-routes)
 for iOS startup ordering and failure cleanup.
 
 ### qaren prewarm
@@ -135,7 +135,7 @@ qaren prewarm <scenario.yaml> [--json]
 
 Installs the app's dependencies ahead of time for a scenario with
 `deps.policy: require-prewarm`. See the authoritative
-[dependency prewarming contract](https://github.com/Lykhoyda/rn-dev-agent/blob/develop/packages/qaren-cli/README.md#native-fingerprint-build-selection)
+[dependency prewarming contract](https://github.com/Lykhoyda/QaReN/blob/develop/packages/qaren-cli/README.md#native-fingerprint-build-selection)
 for registry access restrictions, prewarm records and offline preparation.
 
 ### qaren status
