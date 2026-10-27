@@ -700,9 +700,32 @@ live frame equals that owner's frame; the tap goes to the unchanged point. A lat
 screen change cannot turn a proven no-mutation refusal into a passing action.
 An unproven press passes only when the screen changes. That comparison includes
 each control's selected state (the iOS selected trait or Android accessibility
-selection), so a control that shows
-selection alone proves its press by becoming selected; a press that leaves it
-unchanged still fails, naming whether the target stayed selected.
+selection), so becoming selected can prove a press.
+When that comparison is unchanged and the runner explicitly reports the press
+unproven, QaReN can also verify a stable visible change within the tapped
+control's bounds, even when it exposes no accessibility state.
+
+Pixel comparison requires one uniquely identified, hittable target outside alerts
+and without a covered centre, with the app in front, a known frame and point
+scale. Its identity, frame and scale must remain unchanged across the captures.
+One screenshot immediately before the first dispatch adds about 200 ms per
+eligible press; that baseline is retained across the retry. Only an otherwise
+unproven press with an unchanged screen comparison takes two after-shots,
+200 ms apart. The two control crops must agree and differ sufficiently from the
+original baseline; an unchanged selected chip or an unstable animation supplies
+no pixel proof. The [pixel comparator](../qaren-core/src/qa/tap-pixels.ts) owns
+the thresholds and supported PNG formats, and the
+[press regression tests](../qaren-core/test/unit/qa/option-redraw-press.test.ts)
+cover the retry and withholding boundaries.
+
+Comparison screenshots obey the ordinary screenshot privacy gates: no runtime
+inputs, no metadata-only capture and no active screenshot withholding. They use
+temporary files under the run directory that are removed after reading, and are
+not retained with ledger screenshots. Missing, failed or unsupported captures,
+ineligible targets and insufficient pixel change provide no proof; the existing
+retry and failure behavior remains. A press that leaves the screen unchanged
+still fails, naming whether the target stayed selected.
+
 Before its one retry, the walker re-captures until the same target (resolved
 through the same exact-identity rules as the step) holds one native frame
 across two captures, within the
