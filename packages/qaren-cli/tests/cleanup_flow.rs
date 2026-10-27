@@ -3584,6 +3584,7 @@ fn crashed_pool_creation_deletes_the_owned_simulator_and_releases_the_creation_l
         identity: None,
         at: "2026-10-22T00:00:00Z".into(),
         home: None,
+        qaren_home: None,
         group: None,
     };
     let pool_root = repo.join(".pool");

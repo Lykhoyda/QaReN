@@ -5769,6 +5769,7 @@ fn pool_creation_lock_held_refuses() {
         identity: None,
         at: "2026-10-22T00:00:00Z".to_string(),
         home: None,
+        qaren_home: None,
         group: None,
     };
     assert!(matches!(
