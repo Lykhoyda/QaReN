@@ -95,11 +95,21 @@ happened.
 
 ## Get started
 
-Follow the [README's installation steps](https://github.com/Lykhoyda/QaReN#set-up-qaren)
-for your agent, including the source fallback when a matching release asset is unavailable.
-Then run `/qaren:setup` from your app's root (in Codex or Cursor, ask it to set up QaReN).
-Setup verifies the `qaren` command, writes the app's config, picks a simulator and runs a
-first smoke check.
+Install the plugin in your agent, then run `/qaren:setup` from your app's root (in Codex or
+Cursor, ask it to set up QaReN). Setup installs
+the `qaren` command, writes the app's config, picks a simulator and runs a first smoke check.
+
+```sh
+# Claude Code
+claude plugin marketplace add Lykhoyda/QaReN
+claude plugin install qaren@qaren
+# Codex
+codex plugin marketplace add Lykhoyda/QaReN
+codex plugin add qaren@qaren
+# Cursor: add the marketplace, then install qaren from /plugin > Marketplace in
+# cursor-agent, or from Customize > Plugins in the editor
+cursor-agent plugin marketplace add https://github.com/Lykhoyda/QaReN
+```
 
 <LinkCard title="Getting started" description="Requirements, setup and your first passing check." href="getting-started/" />
 
