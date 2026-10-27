@@ -3110,7 +3110,8 @@ finishes at phase `handed_off`; see the cooperative handoff section below.)
 For a `build.owner: cli` iOS scenario without `--device` or `--new`, `prepare`
 reuses a QaReN-created simulator from this QaReN home's pool. A member is a
 simulator QaReN created as `qaren-pool-<run-id>`, recorded in
-`~/.qaren/pool/ios/<UUID>.json` (mode 0600). A simulator without a record is
+`pool/ios/<UUID>.json` under the [QaReN home](#release-and-source-builds-side-by-side)
+(mode 0600). A simulator without a record is
 never scanned, claimed, reset, powered or deleted, whatever its name; to use
 one, pass it with `--device`.
 
@@ -3144,15 +3145,15 @@ one, pass it with `--device`.
   not erase: trusted root certificates, device-level defaults, other apps,
   Safari and WebKit data, the pasteboard, photos, location and other
   device-wide settings survive. Use `--new` when a run needs factory state.
-- **Cap and creation.** `ios.max_devices` (default `1`, at least `1`) caps the
-  number of present members of any device type or runtime. It limits creation
+- **Cap and creation.** The scenario's `ios.max_devices` (default `1`, at least
+  `1`) caps the number of present members of any device type or runtime. It limits creation
   only, never reuse. With no free member and the pool at the cap, including a
   recount under the creation lock that finds a parallel prepare's new member,
   the run keeps the temporary `qaren-<run-id>` path, and `device_pool` reports
   `fresh:` with the occupied members or, when none matches the scenario, the
   present ones. Below the cap, `prepare` takes the per-home creation lock
-  `~/.qaren/pool/create-ios`, recounts, creates `qaren-pool-<run-id>`, takes
-  its device lease, writes its record, arms its stop and releases the lock
+  `pool/create-ios` under the same QaReN home, recounts, creates
+  `qaren-pool-<run-id>`, takes its device lease, writes its record, arms its stop and releases the lock
   before booting. A held creation lock refuses with `DEVICE_BUSY` naming the
   holding run and `qaren cleanup <run-id>` as the recovery; a creator that
   failed or crashed keeps the lock, and pool creation stays blocked until that
@@ -3180,10 +3181,10 @@ one, pass it with `--device`.
   temporary `qaren-<run-id>` path and `device_pool` reports `fresh:` with the
   reason.
 
-The pool records and the cap are per QaReN home: another `HOME` never scans
-these records. Device leases follow the
+The pool records and the cap are per QaReN home: runs using a different
+QaReN home never scan these records. Device leases follow the
 [lock-root contract](#ios-admission-and-cleanup) and are machine-wide by
-default, so a run under another `HOME` that borrows a pool member with
+default, so a run using another QaReN home that borrows a pool member with
 `--device` contends on the same lease.
 
 ### Existing iOS simulator
