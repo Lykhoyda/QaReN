@@ -3076,8 +3076,8 @@ prepare ──► validate (scenario schema, candidate git sha, lockfile sha256)
         ──► plan     native fingerprint + machine store + cache state ──► reuse | incremental | clean
                      (decision + evidence recorded; non-reuse takes the
                       host-level build serialization lock)
-        ──► allocate  iOS:  claim a free pool simulator, or create one below
-                            ios.max_devices (see iOS simulator pool); with
+        ──► allocate  iOS:  reuse, create or fall back to a temporary simulator
+                            (see iOS simulator pool); with
                             --new, create + boot a temporary qaren-<run-id>;
                             with --device, borrow the exact simulator (see
                             Existing iOS simulator)
@@ -3553,8 +3553,8 @@ A scenario with `deps.policy: require-prewarm` then refuses to prepare without a
 (`DEPS_NOT_PREWARMED`) and installs with `--offline`, so no mid-run
 credential prompt can ever occur.
 
-**Booted simulator lanes (deferred).** Default iOS prepare already reuses a
-shut-down QaReN-created simulator instead of creating one; see
+**Booted simulator lanes (deferred).** Default iOS prepare can reuse a
+shut-down QaReN-created simulator; see
 [iOS simulator pool](#ios-simulator-pool). Keeping a pool member booted
 between runs, to skip its boot as well, is deferred: cleanup shuts every
 member down so no booted resource outlives its run. A caller-maintained
