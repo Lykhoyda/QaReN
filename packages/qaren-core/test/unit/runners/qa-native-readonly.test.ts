@@ -182,8 +182,12 @@ for (const platform of ['ios', 'android'] as const) {
       data: { verifyVerdict: 'unreadable', verifyStable: false },
     });
     const context = new QaDispatchContext(10, () => 1);
-    await run({ command: 'verifyInput', bundleId: 'qa.app', qaContext: context });
+    const result = await run({ command: 'verifyInput', bundleId: 'qa.app', qaContext: context });
     assert.doesNotThrow(() => context.assertComplete());
+    assert.ok(!result.isError);
+    const data = JSON.parse(result.content[0].text).data;
+    assert.equal(data.verifyVerdict, 'unreadable');
+    assert.equal(data.verifyStable, false);
   });
 }
 
