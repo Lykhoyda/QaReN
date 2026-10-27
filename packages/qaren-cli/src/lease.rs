@@ -192,7 +192,14 @@ pub fn orphan_note(lock_dir: &Path, run_id: &str) -> String {
     )
 }
 
+// Under QAREN_HOME no HOME is recorded, so no reader ever takes HOME/.qaren's missing records for gone.
 pub fn holder_home(runner: &dyn Runner) -> Option<PathBuf> {
+    if runner
+        .env_var_os("QAREN_HOME")
+        .is_some_and(|value| !value.is_empty())
+    {
+        return None;
+    }
     runner
         .env_var("HOME")
         .map(PathBuf::from)

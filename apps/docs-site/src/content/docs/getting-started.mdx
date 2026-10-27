@@ -34,9 +34,11 @@ from a checkout of the [repository](https://github.com/Lykhoyda/QaReN):
    bash scripts/install-qaren-from-source.sh
    ```
 
-   The installer builds the runtime tarball, verifies it against a manifest it writes for
-   that build, and unpacks it under `~/.qaren/runtime/<version>/`. It prints the installed
-   binary path.
+   The installer builds the runtime tarball as version `<plugin version>-dev.<commit>`,
+   verifies it against a manifest it writes for that build, and unpacks it under
+   `~/.qaren/runtime/<version>-dev.<commit>/`, beside any released install. It prints the
+   installed binary path, and `qaren --version` names the commit. A source build always
+   builds its iOS runner from source.
 
 2. From your app's root directory, start Claude Code with the checkout's plugin:
 
@@ -68,12 +70,30 @@ The installer links `qaren` into a directory on your `PATH`:
    export PATH="$HOME/.local/bin:$PATH"
    ```
 
-It never edits shell startup files. It replaces only a link it made into
-`~/.qaren/runtime/`; any other `qaren` file in that directory is left alone with a notice.
-A link problem never fails the install: run `qaren` by the binary path the installer
-printed. If an earlier `PATH` directory already holds another `qaren`, that one still runs:
-check `command -v qaren`, and use the printed path when it differs. Re-run the installer to
-recover an interrupted install.
+It never edits shell startup files. When `PATH` already holds a `qaren`, the installer
+considers only the first one, so it never adds a second link that hides it. It replaces
+that link only when it points into the same QaReN home and the same line: a release
+replaces a release, and a source build replaces a source build. A link to another
+`QAREN_HOME`, or a working link of the other line, is kept with a notice; pass `--link`
+to replace it. Any other `qaren` file is left alone with a notice. A link problem never
+fails the install: run `qaren` by the binary path the installer printed. Re-run the
+installer to recover an interrupted install.
+
+### Run a release and a source build side by side
+
+`QAREN_HOME` moves everything QaReN keeps per user (runs, state, installed runtimes and
+the runner cache) from `~/.qaren` to another absolute directory whose parent exists.
+Device locks and the native build cache stay machine-wide, so a release install and a
+source build in different homes still refuse each other's simulators:
+
+```sh
+export QAREN_HOME=/path/to/dev-home/.qaren
+bash scripts/install-qaren-from-source.sh
+"$QAREN_HOME/runtime/<version>-dev.<commit>/bin/qaren" doctor
+```
+
+Keep `QAREN_HOME` set for every command that uses that install; `qaren doctor` names the
+home in use.
 
 ## What `/qaren:setup` does
 

@@ -20,7 +20,8 @@ owns the guided onboarding procedure; [Check a plan](#check-a-plan) covers manua
 qaren doctor [--json] [--config .qaren/config.yaml]
 ```
 
-Doctor prints the running binary's version, path, build and runtime, then one
+Doctor prints the running binary's version, path, build, runtime and the
+[`QAREN_HOME`](#release-and-source-builds-side-by-side) in use, then one
 `PASS`, `WARN`, `FAIL` or `SKIP` row per check, each problem with its manual fix.
 It only reads files and runs bounded version, inventory and host-statistics probes:
 it never writes, deletes, starts a device or restarts a service. It does not run ADB
@@ -45,9 +46,9 @@ that can conflict with a session or is hygiene; `SKIP` is not applicable.
 | `host-load` | One-, five- and fifteen-minute load averages, logical CPU count and sampled CPU idle; warns about readiness deadlines under load |
 | `android-sdk`, `android-avd` | When `android` is configured: `ANDROID_HOME`, an executable `adb` file (never run; its version is not checked), the emulator binary and the configured AVD via `emulator -list-avds` |
 | `qaren-path` | The first `qaren` on `PATH` is this binary and the installed build; later copies warn |
-| `installed-build` | The runtime under `~/.qaren/runtime/<version>/` and the runtime `check` would use (`QAREN_RUNTIME` when set) are complete; a binary outside it that `PATH` runs instead of an install fails |
-| `runtime-dirs` | Interrupted installs and other versions under `~/.qaren/runtime/` |
-| `source-checkout` | From a QaReN checkout: its version matches this binary |
+| `installed-build` | The runtime under `$QAREN_HOME/runtime/<version>/` and the runtime `check` would use (`QAREN_RUNTIME` when set) are complete; a binary outside it that `PATH` runs instead of an install fails |
+| `runtime-dirs` | Interrupted installs and other versions under `$QAREN_HOME/runtime/` |
+| `source-checkout` | From a QaReN checkout: its source version (`<version>-dev.<commit>`) matches this binary |
 | `config` | `.qaren/config.yaml` (or `--config`) loads and validates |
 | `1x-claude-plugin`, `1x-codex-plugin` | The rn-dev-agent 1.x plugin, marketplace and caches in Claude Code, Codex and Cursor |
 | `1x-mcp` | A hand-registered 1.x MCP server in `~/.claude.json`, `.mcp.json`, `~/.cursor/mcp.json` or `$CODEX_HOME/config.toml` |
@@ -259,7 +260,7 @@ bash scripts/ensure-qaren.sh --print-bin
 
 `--install` verifies the tarball's SHA-256 and byte length against the plugin's
 [`runner-manifest.json`](../qaren-plugin/runner-manifest.json) before installing
-under `~/.qaren/runtime/<version>/`. `--install --from-file <tarball>` uses a
+under `$QAREN_HOME/runtime/<version>/`. `--install --from-file <tarball>` uses a
 local asset with the same verification. Re-run `--install` to recover an
 interrupted installation. The installed binary discovers its adjacent runtime;
 it does not require the source checkout's `dist/` or `QAREN_RUNTIME` override.
@@ -271,8 +272,13 @@ instruction, or nothing, so its exit status alone does not prove installation.
 on PATH, exists and is writable: `~/.local/bin`, `~/bin`, `/opt/homebrew/bin` or
 `/usr/local/bin`, so an earlier IDE or toolchain bin is passed over. With none of
 those on PATH it uses the first writable absolute PATH directory, so the bare
-command still works at once; empty and relative entries are skipped. It replaces only
-a link into `~/.qaren/runtime/`; any other file there is left alone with a notice.
+command still works at once; empty and relative entries are skipped. When a `qaren`
+is already on PATH, only the first one is considered, so an install never shadows
+another. That link is replaced when it points into this `QAREN_HOME`'s runtime at the
+same line: a release replaces a release, and a source build (`<version>-dev.<commit>`)
+replaces a source build. A link into another `QAREN_HOME`, or a working link of the
+other line, is kept with a notice unless `--install --link` is passed; any other file
+is left alone with a notice.
 If no PATH directory qualifies, it links `~/.local/bin/qaren` and prints
 `export PATH="$HOME/.local/bin:$PATH"`; run that line to use the bare command.
 It never edits shell rc files. Link problems are stderr notices and do not fail
@@ -281,6 +287,29 @@ use directly if linking fails.
 This development checkout's manifest does not imply that a QaReN release asset
 has been published; use the [source installation](../../README.md#install-from-source)
 while that asset is unavailable.
+
+### Release and source builds side by side
+
+`QAREN_HOME`, an absolute path that defaults to `~/.qaren`, holds runs, state,
+native-suite records, installed runtimes and the prebuilt runner cache; every `qaren`
+command and the installer read it, and a relative value refuses. Its parent directory
+must already exist. Device locks and the native build cache never follow it, so
+installs in two homes still refuse each other's simulators.
+
+`scripts/install-qaren-from-source.sh` and `qaren update` name a source build
+`<plugin version>-dev.<12-character commit>`. It installs into its own runtime
+directory beside any release, never matches a published runner manifest (its runners
+build from the shipped source) and `qaren --version` prints that version. A build
+from a checkout with local changes takes its HEAD's version and replaces that build.
+
+To keep a source build fully apart from a release install, give it its own home and
+run it by path with that home set:
+
+```sh
+export QAREN_HOME=/path/to/dev-home/.qaren
+bash scripts/install-qaren-from-source.sh
+"$QAREN_HOME/runtime/<version>-dev.<commit>/bin/qaren" doctor
+```
 
 ## Upgrading from rn-dev-agent 1.x (1.0.14) to 2.0
 
@@ -2072,10 +2101,11 @@ invalid or mismatched evidence is reported as `unavailable`, `invalid_evidence`,
 `envelope_mismatch` or `invalid_response`. These diagnostics do not relax
 admission: resolve the refusal and start a new run.
 
-Runs and evidence live under `~/.qaren/runs/<run-id>/`. Device and
+Runs and evidence live under `$QAREN_HOME/runs/<run-id>/` (`~/.qaren` by default).
+Device and
 native-build locks are machine-wide by default.
 `QAREN_MACHINE_LOCKS` is on when unset, empty or `1`; `0` opts out to the
-per-home `~/.qaren/locks`, and any other value refuses. An absolute
+per-home `$HOME/.qaren/locks` (never `QAREN_HOME`), and any other value refuses. An absolute
 `QAREN_LOCK_ROOT` takes precedence in either mode: sessions using different
 roots do not share locks. Empty, relative, NUL and literal `.` or `..` path
 segments refuse before normalization in every mode, as does a HOME with them.

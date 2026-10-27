@@ -67,6 +67,11 @@ To run an unreleased build, install from a checkout's root (needs Rust/Cargo as 
 bash scripts/install-qaren-from-source.sh
 ```
 
+The build is versioned `<plugin version>-dev.<commit>`, so it installs beside a released
+`qaren` instead of replacing it, builds its runners from source and never relinks a
+release's `qaren` without `--link`. Set `QAREN_HOME` to keep its runs and state apart as
+well; see [release and source builds side by side](packages/qaren-cli/README.md#release-and-source-builds-side-by-side).
+
 Load that checkout's plugin with
 `claude --plugin-dir /absolute/path/to/checkout/packages/qaren-plugin`. The
 [installation contract](packages/qaren-cli/README.md#plugin-runtime-installation) covers

@@ -52,6 +52,20 @@ fn acquire_writes_a_holder_and_release_removes_it() {
 }
 
 #[test]
+fn a_holder_under_qaren_home_records_no_home_and_its_records_are_never_gone() {
+    let root = common::temp_repo().join("locks");
+    let mut mock = MockRunner::new();
+    mock.environment.insert("HOME".into(), "/home-a".into());
+    mock.environment
+        .insert("QAREN_HOME".into(), "/side-home".into());
+    let lease = acquire(&mut mock, &root, Platform::Ios, UDID, "check-q", None).unwrap();
+    let holder = read_holder(&lease.lock_dir).unwrap();
+    assert_eq!(holder.home, None);
+    assert!(!qaren::lease::records_gone(&holder));
+    assert_eq!(release(&lease), ReleaseOutcome::Removed);
+}
+
+#[test]
 fn contention_is_device_busy_and_a_live_holder_is_never_stolen() {
     let root = common::temp_repo().join("locks");
     let mut first = MockRunner::new();

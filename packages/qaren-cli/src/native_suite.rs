@@ -64,7 +64,11 @@ fn roots(runner: &dyn Runner) -> Result<(PathBuf, PathBuf), String> {
         Some(advice) => format!("{error}; {advice}"),
         None => error,
     })?;
-    Ok((home.join(".qaren").join("native-suites"), locks))
+    let qaren_home = crate::qaren_home(
+        runner.env_var_os("QAREN_HOME").as_deref(),
+        Some(home.as_os_str()),
+    )?;
+    Ok((qaren_home.join("native-suites"), locks))
 }
 
 fn checkout() -> &'static Path {
@@ -454,6 +458,25 @@ mod lock_root_tests {
         assert_eq!(via_suite, via_resolver);
         assert_eq!(via_suite.as_os_str(), expected.as_os_str());
         println!("nonutf8-ok");
+    }
+
+    #[test]
+    fn suites_follow_qaren_home_but_the_lock_root_does_not() {
+        let mut runner = crate::exec::MockRunner::new();
+        runner.environment.insert("HOME".into(), "/home-a".into());
+        runner
+            .environment
+            .insert("QAREN_LOCK_ROOT".into(), "/locks-a".into());
+        let (suites, locks) = roots(&runner).unwrap();
+        assert_eq!(suites, std::path::Path::new("/home-a/.qaren/native-suites"));
+        runner
+            .environment
+            .insert("QAREN_HOME".into(), "/side-home".into());
+        let (side, side_locks) = roots(&runner).unwrap();
+        assert_eq!(side, std::path::Path::new("/side-home/native-suites"));
+        assert_eq!(side_locks, locks);
+        runner.environment.insert("QAREN_HOME".into(), "rel".into());
+        assert!(roots(&runner).unwrap_err().contains("QAREN_HOME"));
     }
 
     #[test]

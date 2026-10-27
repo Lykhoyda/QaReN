@@ -824,6 +824,81 @@ write_manifest "$tmp/good.tgz" 1
 run_link_install "$tmp/good.tgz" >/dev/null; rc=$?
 check "link: a refused install creates no link" "1 no" "$rc $([ -e "$LINK" ] || [ -L "$LINK" ] && echo yes || echo no)"
 
+# QAREN_HOME holds its own runtime; ~/.qaren is never written. Every PATH below names only test directories.
+REAL_TMP="$(cd -P "$tmp" && pwd -P)"
+SIDE_DEST="$REAL_TMP/side/qaren-home/runtime/$VERSION"
+reset_home
+write_manifest "$tmp/good.tgz"
+mkdir -p "$tmp/side"
+out=$(QAREN_HOME="$tmp/side/qaren-home" run_link_install "$tmp/good.tgz"); rc=$?
+check "QAREN_HOME: install prints the binary under it" "0 $SIDE_DEST/bin/qaren" "$rc $out"
+check "QAREN_HOME: ~/.qaren is never created" no "$([ -e "$tmp/home/.qaren" ] && echo yes || echo no)"
+check "QAREN_HOME: print-bin finds it" "$SIDE_DEST/bin/qaren" \
+  "$(QAREN_HOME="$tmp/side/qaren-home" HOME="$tmp/home" bash "$tmp/plugin/scripts/ensure-qaren.sh" --print-bin 2>/dev/null)"
+out=$(QAREN_HOME=relative HOME="$tmp/home" bash "$tmp/plugin/scripts/ensure-qaren.sh" --print-bin 2>"$tmp/stderr"); rc=$?
+check "relative QAREN_HOME: hook exits 0 with empty stdout" "0 " "$rc $out"
+check "relative QAREN_HOME: hook names it" "qaren: QAREN_HOME is not an absolute path" "$(cat "$tmp/stderr")"
+QAREN_HOME=relative run_link_install "$tmp/good.tgz" >/dev/null; rc=$?
+check "relative QAREN_HOME: install refuses" "1 yes" \
+  "$rc $(grep -q 'QAREN_HOME is not an absolute path' "$tmp/stderr" && echo yes || echo no)"
+check "--link is refused outside --install" 2 \
+  "$(HOME="$tmp/home" bash "$tmp/plugin/scripts/ensure-qaren.sh" --print-bin --link 2>/dev/null; echo $?)"
+
+# A release and a -dev source build never relink each other's working link unless --link is passed.
+with_version() { VERSION="$1"; NAME="qaren-$VERSION-darwin-arm64.tar.gz"; TOP="qaren-$VERSION-darwin-arm64"; }
+RELEASE=$VERSION
+DEV="$RELEASE-dev.abcdef123456"
+DEV_DEST="$REAL_TMP/home/.qaren/runtime/$DEV"
+with_version "$DEV"
+make_tarball "$tmp/dev.tgz" good
+with_version "$RELEASE"
+LINE_PATH="$tmp/read-only-tools:$tmp/home/.local/bin"
+install_as() {
+  with_version "$1"
+  write_manifest "$2"
+  PATH="$LINE_PATH" HOME="$tmp/home" bash "$tmp/plugin/scripts/ensure-qaren.sh" --install --from-file "$2" ${3:+"$3"} 2>"$tmp/stderr"
+  local rc=$?
+  with_version "$RELEASE"
+  return "$rc"
+}
+reset_home
+mkdir -p "$tmp/home/.local/bin"
+install_as "$RELEASE" "$tmp/good.tgz" >/dev/null
+check "lines: the release is linked" "$REAL_DEST/bin/qaren" "$(readlink "$LINK")"
+out=$(install_as "$DEV" "$tmp/dev.tgz"); rc=$?
+check "lines: a dev install beside the release succeeds" "0 $DEV_DEST/bin/qaren" "$rc $out"
+check "lines: the release link is kept" "$REAL_DEST/bin/qaren" "$(readlink "$LINK")"
+check "lines: the release runtime is kept" "$GOOD_SHA" "$(cat "$DEST/.tarball-sha256")"
+check "lines: the refusal names --link" yes "$(grep -q -- '--link' "$tmp/stderr" && echo yes || echo "no: $(cat "$tmp/stderr")")"
+install_as "$DEV" "$tmp/dev.tgz" --link >/dev/null
+check "lines: --link moves the link to the dev build" "$DEV_DEST/bin/qaren" "$(readlink "$LINK")"
+install_as "$RELEASE" "$tmp/good.tgz" >/dev/null
+check "lines: a release install keeps a dev link" "$DEV_DEST/bin/qaren" "$(readlink "$LINK")"
+rm -rf "$tmp/home/.qaren/runtime/$DEV"
+install_as "$RELEASE" "$tmp/good.tgz" >/dev/null
+check "lines: a dangling link of the other line here is replaced" "$REAL_DEST/bin/qaren" "$(readlink "$LINK")"
+mkdir -p "$tmp/home/.qaren/runtime/9.8.6/bin"
+cp "$DEST/bin/qaren" "$tmp/home/.qaren/runtime/9.8.6/bin/qaren"
+rm "$LINK" && ln -s "$REAL_TMP/home/.qaren/runtime/9.8.6/bin/qaren" "$LINK"
+install_as "$RELEASE" "$tmp/good.tgz" >/dev/null
+check "lines: a release upgrade still relinks the working older release" "$REAL_DEST/bin/qaren" "$(readlink "$LINK")"
+
+# A qaren already first on PATH is the only link touched, so no install ever shadows it.
+mkdir -p "$tmp/app-bin" "$tmp/other/.qaren/runtime/2.0.0/bin"
+cp "$DEST/bin/qaren" "$tmp/other/.qaren/runtime/2.0.0/bin/qaren"
+rm -f "$tmp/app-bin/qaren" "$LINK" "$tmp/home/bin/qaren"
+ln -s "$tmp/other/.qaren/runtime/2.0.0/bin/qaren" "$tmp/app-bin/qaren"
+SHADOW_PATH="$tmp/read-only-tools:$tmp/app-bin:$tmp/home/bin:$tmp/home/.local/bin"
+PATH="$SHADOW_PATH" run_install "$tmp/good.tgz" >/dev/null; rc=$?
+check "no shadow: the install succeeds" 0 "$rc"
+check "no shadow: the other home's link is kept" "$tmp/other/.qaren/runtime/2.0.0/bin/qaren" "$(readlink "$tmp/app-bin/qaren")"
+check "no shadow: no second link is made" "no no" \
+  "$([ -e "$tmp/home/bin/qaren" ] && echo yes || echo no) $([ -e "$LINK" ] && echo yes || echo no)"
+check "no shadow: names the other QAREN_HOME" yes "$(grep -q 'another QAREN_HOME' "$tmp/stderr" && echo yes || echo "no: $(cat "$tmp/stderr")")"
+PATH="$SHADOW_PATH" HOME="$tmp/home" bash "$tmp/plugin/scripts/ensure-qaren.sh" --install --from-file "$tmp/good.tgz" --link >/dev/null 2>"$tmp/stderr"
+check "no shadow: --link replaces the first qaren on PATH" "$REAL_DEST/bin/qaren" "$(readlink "$tmp/app-bin/qaren")"
+rm -f "$tmp/app-bin/qaren"
+
 chmod 755 "$tmp/read-only-tools"
 leaked=""
 IFS=: read -r -a real_dirs <<< "${PATH#"$tmp/stubs:$tmp/home/bin:"}"

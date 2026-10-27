@@ -8,7 +8,7 @@ import {
 import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
-import { homedir } from 'node:os';
+import { qarenHome } from '../util/secure-state-file.js';
 import { dirname, join } from 'node:path';
 import { candidateRunnerManifestFiles, firstExistingFile } from './runtime-paths.js';
 import {
@@ -118,13 +118,13 @@ export function releaseAssetUrl(repo: string, version: string, assetName: string
 }
 
 export function cacheDirFor(
-  home: string,
+  qarenHomeDir: string,
   platformOS: string,
   version: string,
   platform: RunnerPlatform,
 ): string {
   void platformOS;
-  return join(home, '.qaren', 'runtime', 'runners', version, platform);
+  return join(qarenHomeDir, 'runtime', 'runners', version, platform);
 }
 
 // Where xcodebuild writes XCTest result bundles for either runner root chosen by resolveIosRunnerArtifacts.
@@ -135,7 +135,7 @@ export function iosRunnerResultBundleDirs(
   const dirs = [join(localDerivedDataPath, 'Logs', 'Test')];
   if (version) {
     dirs.push(
-      join(cacheDirFor(homedir(), process.platform, version, 'ios'), 'products', 'Logs', 'Test'),
+      join(cacheDirFor(qarenHome(), process.platform, version, 'ios'), 'products', 'Logs', 'Test'),
     );
   }
   return dirs;
@@ -375,7 +375,7 @@ export function defaultArtifactDeps(): ArtifactDeps {
   return {
     env: process.env,
     readManifest: readCommittedManifest,
-    cacheDir: (version, platform) => cacheDirFor(homedir(), process.platform, version, platform),
+    cacheDir: (version, platform) => cacheDirFor(qarenHome(), process.platform, version, platform),
     existsSync,
     sha256File,
     listFiles: (dir) => {
