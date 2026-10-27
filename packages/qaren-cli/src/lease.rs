@@ -63,12 +63,18 @@ pub fn cleanup_command(run_id: &str, home: Option<&Path>) -> String {
     let env = home
         .map(|home| format!("HOME='{}' ", home.display()))
         .unwrap_or_default();
+    // A holder under QAREN_HOME records no HOME, so only its owner knows where its records are.
+    let home_note = if home.is_none() {
+        ", with the QAREN_HOME that run used if it set one"
+    } else {
+        ""
+    };
     if run_id.starts_with("native-ios-") {
         format!(
-            "`{env}cargo run --manifest-path packages/qaren-cli/Cargo.toml --locked --example native-ios-suite -- recover --run-id {run_id}` from the repository root"
+            "`{env}cargo run --manifest-path packages/qaren-cli/Cargo.toml --locked --example native-ios-suite -- recover --run-id {run_id}` from the repository root{home_note}"
         )
     } else {
-        format!("`{env}qaren cleanup {run_id}`")
+        format!("`{env}qaren cleanup {run_id}`{home_note}")
     }
 }
 

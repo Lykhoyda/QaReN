@@ -62,6 +62,10 @@ fn a_holder_under_qaren_home_records_no_home_and_its_records_are_never_gone() {
     let holder = read_holder(&lease.lock_dir).unwrap();
     assert_eq!(holder.home, None);
     assert!(!qaren::lease::records_gone(&holder));
+    assert!(
+        qaren::lease::cleanup_command("check-q", holder.home.as_deref())
+            .ends_with("`qaren cleanup check-q`, with the QAREN_HOME that run used if it set one")
+    );
     assert_eq!(release(&lease), ReleaseOutcome::Removed);
 }
 

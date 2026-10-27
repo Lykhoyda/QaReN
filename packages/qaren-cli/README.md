@@ -293,7 +293,7 @@ while that asset is unavailable.
 `QAREN_HOME`, an absolute path that defaults to `~/.qaren`, holds runs, state,
 native-suite records, installed runtimes and the prebuilt runner cache; every `qaren`
 command and the installer read it, and a relative value refuses. Its parent directory
-must already exist. Device locks and the native build cache never follow it, so
+must already exist. State no longer follows `XDG_STATE_HOME`; set `QAREN_HOME` to move it. Device locks and the native build cache never follow it, so
 installs in two homes still refuse each other's simulators.
 
 `scripts/install-qaren-from-source.sh` and `qaren update` name a source build

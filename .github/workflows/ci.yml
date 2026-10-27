@@ -197,6 +197,9 @@ jobs:
             echo "::error::bin/qaren embeds builder paths" >&2
             exit 1
           fi
+          # The installer never relinks another home's qaren, so the next step's fresh home needs this link gone.
+          LINKED=$(command -v qaren || true)
+          if [ -n "$LINKED" ] && [ "$(readlink "$LINKED")" = "$BIN" ]; then rm "$LINKED"; fi
       - name: Source install links qaren onto PATH, finds its runtime through the link, and qaren update reinstalls it
         run: |
           # The toolchain stays where the runner installed it; only the install home is fresh.
