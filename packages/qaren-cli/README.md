@@ -2190,6 +2190,12 @@ rewrites stored paths or retires old binaries. Processes using per-home roots,
 including older binaries and `QAREN_MACHINE_LOCKS=0` sessions, remain outside
 the shared namespace. Native suite recovery needs the original HOME and the
 original lock setting and, when set, the original `QAREN_HOME`.
+The native suite's `recover --run-id <ID>` also releases a `spawn_pending`
+claim after proving the original owner gone, matching the canonical holder,
+finding no recorded process group, and proving exact-simulator runner hosts
+absent. The suite cannot pass its start gate before `spawned` is saved; recovery
+saves `not_spawned` before releasing this claim and preserves its unknown suite
+exit. Live, unknown or foreign holders still refuse recovery.
 
 Checks, including `qaren pr`, claim a
 timestamped run directory atomically and retry with a numeric suffix when the

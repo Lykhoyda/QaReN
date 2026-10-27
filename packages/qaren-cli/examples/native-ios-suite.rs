@@ -10,11 +10,9 @@ fn main() -> ExitCode {
     {
         return ExitCode::from(process_observation::run_helper(&raw));
     }
-    if raw.len() == 1 && raw[0] == log::HELPER_ARG {
-        return ExitCode::from(u8::from(log::run_helper(false).is_err()));
-    }
-    if raw.len() == 2 && raw[0] == log::HELPER_ARG && raw[1] == log::PAIRED_ARG {
-        return ExitCode::from(u8::from(log::run_helper(true).is_err()));
+    if raw.first().is_some_and(|arg| arg == log::HELPER_ARG) {
+        let paired = raw.iter().any(|arg| arg == log::PAIRED_ARG);
+        return ExitCode::from(u8::from(log::run_helper(paired).is_err()));
     }
     let args: Vec<_> = raw.iter().map(|arg| arg.to_str().unwrap_or("")).collect();
     let mut runner = RealRunner::new();

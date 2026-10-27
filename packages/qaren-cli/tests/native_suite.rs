@@ -752,7 +752,7 @@ fn persistence_refusals_before_spawn_release_the_claim() {
 }
 
 #[test]
-fn spawn_and_identity_persistence_gaps_retain_the_lease_without_sending_start() {
+fn spawn_and_identity_persistence_gaps_recover_after_owner_death_without_sending_start() {
     for fault in [Fault::SpawnGap, Fault::IdentitySave] {
         let (mut mock, home) = setup();
         preflight(&mut mock, "Shutdown");
@@ -773,13 +773,171 @@ fn spawn_and_identity_persistence_gaps_retain_the_lease_without_sending_start() 
         let lock = Path::new(record["lock_dir"].as_str().unwrap());
         assert!(lock.exists());
         runner.mock.expect_run("lstart=", CmdOutput::failed(1, ""));
-        assert!(
-            native_suite::recover(&mut runner.mock, record["run_id"].as_str().unwrap()).is_err()
-        );
-        assert!(lock.exists());
+        absent_hosts(&mut runner.mock);
+        let recovered =
+            native_suite::recover(&mut runner.mock, record["run_id"].as_str().unwrap()).unwrap();
+        assert!(!lock.exists());
+        assert_eq!(recovered.suite_exit, None);
+        assert!(matches!(
+            recovered.process,
+            native_suite::SuiteProcess::NotSpawned
+        ));
+        runner.mock.expect_run("lstart=", CmdOutput::failed(1, ""));
+        native_suite::recover(&mut runner.mock, &recovered.run_id).unwrap();
         assert_eq!(runner.mock.remaining(), 0);
         assert!(runner.mock.calls.iter().all(|c| c.program != "/bin/kill"));
     }
+}
+
+fn pending_spawn() -> Witness {
+    let (mut mock, home) = setup();
+    preflight(&mut mock, "Shutdown");
+    admission(&mut mock, "clear");
+    mock.expect_spawn_piped("/bin/bash", 9000, "", None);
+    let mut runner = Witness::new(mock, &home, Fault::SpawnGap);
+    assert!(native_suite::run(&mut runner, DEVICE).is_err());
+    runner
+}
+
+#[test]
+fn pending_recovery_refuses_live_unknown_or_foreign_holders_without_mutation() {
+    for fault in ["live", "unknown", "foreign", "birth", "group"] {
+        let mut runner = pending_spawn();
+        let record = runner.record();
+        let lock = Path::new(record["lock_dir"].as_str().unwrap());
+        let mut holder = qaren::buildplan::read_holder(lock).unwrap();
+        match fault {
+            "live" => {
+                runner.mock.expect_run("lstart=", CmdOutput::success(BIRTH));
+                runner.mock.expect_run("stat=", CmdOutput::success("S"));
+            }
+            "unknown" => runner
+                .mock
+                .expect_run("lstart=", CmdOutput::failed(1, "unreadable")),
+            _ => {
+                runner.mock.expect_run("lstart=", CmdOutput::failed(1, ""));
+                match fault {
+                    "foreign" => holder.run_id = "another-suite".into(),
+                    "birth" => holder.identity.as_mut().unwrap().started_at = "other birth".into(),
+                    "group" => holder.group = Some(9000),
+                    _ => unreachable!(),
+                }
+                qaren::buildplan::save_json(&lock.join("holder.json"), &holder).unwrap();
+            }
+        }
+        let claim = std::fs::read(lock.join("holder.json")).unwrap();
+        assert!(
+            native_suite::recover(&mut runner.mock, record["run_id"].as_str().unwrap()).is_err()
+        );
+        assert_eq!(std::fs::read(lock.join("holder.json")).unwrap(), claim);
+        assert_eq!(runner.record(), record);
+        assert_eq!(runner.mock.remaining(), 0);
+        assert!(runner.mock.calls.iter().all(|c| c.program != "/bin/kill"));
+    }
+}
+
+#[test]
+fn pending_recovery_requires_runner_host_absence() {
+    for (output, reads) in [
+        (
+            CmdOutput::success(
+                "PID Status Label\n42 0 UIKitApplication:dev.lykhoyda.rndevagent.fastrunner[abc]\n",
+            ),
+            1,
+        ),
+        (CmdOutput::failed(1, "unknown inventory"), 3),
+    ] {
+        let mut runner = pending_spawn();
+        let record = runner.record();
+        runner.mock.expect_run("lstart=", CmdOutput::failed(1, ""));
+        for _ in 0..reads {
+            scoped_hosts(&mut runner.mock, output.clone());
+        }
+        assert!(
+            native_suite::recover(&mut runner.mock, record["run_id"].as_str().unwrap()).is_err()
+        );
+        assert!(Path::new(record["lock_dir"].as_str().unwrap()).exists());
+        assert_eq!(runner.record(), record);
+        assert_eq!(runner.mock.remaining(), 0);
+        assert!(runner.mock.calls.iter().all(|c| c.program != "/bin/kill"));
+    }
+}
+
+#[test]
+fn pending_recovery_retains_the_lease_when_its_transition_cannot_be_saved() {
+    let mut runner = pending_spawn();
+    let record = runner.record();
+    runner.fault = Fault::CleanupSave;
+    runner.mock.expect_run("lstart=", CmdOutput::failed(1, ""));
+    absent_hosts(&mut runner.mock);
+    assert!(native_suite::recover(&mut runner, record["run_id"].as_str().unwrap()).is_err());
+    runner.restore_save();
+    assert_eq!(runner.record(), record);
+    assert!(Path::new(record["lock_dir"].as_str().unwrap()).exists());
+    assert_eq!(runner.mock.remaining(), 0);
+}
+
+#[test]
+fn example_log_helper_supports_control_arguments_and_paired_streams() {
+    assert!(std::process::Command::new(env!("CARGO"))
+        .args(["build", "--locked", "--example", "native-ios-suite"])
+        .current_dir(env!("CARGO_MANIFEST_DIR"))
+        .status()
+        .unwrap()
+        .success());
+    let executable = std::env::current_exe()
+        .unwrap()
+        .parent()
+        .unwrap()
+        .parent()
+        .unwrap()
+        .join("examples/native-ios-suite");
+    let dir = common::temp_repo();
+    let mut runner = RealRunner::with_log_executable(executable);
+    let log = dir.join("suite.log");
+    let mut child = runner
+        .spawn_piped(
+            &CmdSpec::new(
+                "suite-fixture",
+                "/bin/sh",
+                &[
+                    "-c",
+                    "printf 'stdout ready\\n'; printf 'stderr ready\\n' >&2",
+                ],
+                10,
+            ),
+            &log,
+        )
+        .unwrap();
+    drop(child.stdin);
+    let mut output = String::new();
+    std::io::Read::read_to_string(&mut child.stdout, &mut output).unwrap();
+    wait_for_fixture(|| child.handle.try_wait().unwrap() == Some(0));
+    runner.flush_logs().unwrap();
+    assert_eq!(output, "stdout ready\n");
+    assert!(std::fs::read_to_string(log)
+        .unwrap()
+        .contains("stderr ready"));
+    let paired_log = dir.join("paired.log");
+    runner
+        .spawn_group(
+            &CmdSpec::new(
+                "suite-paired-fixture",
+                "/bin/sh",
+                &[
+                    "-c",
+                    "printf 'paired stdout\\n'; printf 'paired stderr\\n' >&2",
+                ],
+                10,
+            ),
+            &paired_log,
+        )
+        .unwrap();
+    wait_for_fixture(|| {
+        runner.flush_logs().unwrap();
+        let stored = std::fs::read_to_string(&paired_log).unwrap();
+        stored.contains("paired stdout") && stored.contains("paired stderr")
+    });
 }
 
 #[test]
