@@ -4897,6 +4897,19 @@ fn fresh_install_reset_build_readiness_walk_and_teardown_share_one_durable_lease
     let receipt = run(&mut runner, &req);
     assert_eq!(receipt.result, ReceiptResult::Pass, "{:?}", receipt.failure);
     assert_eq!(receipt.outcomes["fresh_install"], "proven_absent");
+    let lane = receipt
+        .lane
+        .as_ref()
+        .expect("auto-selected fresh install owns the lane");
+    assert_eq!(lane.device_id, UDID);
+    assert_eq!(lane.hardware_keyboard, Some(false));
+    assert_eq!(lane.first_screen, Some(true));
+    assert!(runner
+        .mock
+        .calls
+        .iter()
+        .filter(|c| c.label == "simctl-lane-read")
+        .all(|c| c.args[2] == UDID));
     assert_eq!(receipt.cleanup["device_lease"], "removed");
     assert_eq!(runner.mock.remaining(), 0);
     assert_direct_ios_launch(&runner.mock);
@@ -4919,6 +4932,7 @@ fn fresh_install_reset_build_readiness_walk_and_teardown_share_one_durable_lease
     let child_request: serde_json::Value =
         serde_json::from_str(runner.mock.piped_stdin_text(1).trim()).unwrap();
     assert_eq!(child_request["payload"]["lease"], runner.wire.unwrap());
+    assert_eq!(child_request["payload"]["target"]["warmLane"], true);
     let record = RunRecord::load(&req.runs_root, &run_id()).unwrap();
     assert_eq!(record.phase, Phase::Cleaned);
     assert!(record.resources.lease.is_none());

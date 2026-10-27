@@ -425,7 +425,7 @@ pub fn lane_row(runner: &mut dyn Runner, home: &Path, udid: &str) -> Check {
         .map(|entry| pinned[entry].1)
         .collect();
     let hardware_keyboard =
-        ios::parse_hardware_keyboard(&runner.run(&ios::hardware_keyboard_spec(home, udid)).stdout);
+        ios::parse_hardware_keyboard(&runner.run(&ios::hardware_keyboard_spec(home, udid)));
     let pin = format!(
         "pin it with `qaren prepare <scenario> --device {udid}` or `qaren check --device {udid} --boot-device`"
     );
@@ -439,21 +439,17 @@ pub fn lane_row(runner: &mut dyn Runner, home: &Path, udid: &str) -> Check {
             pin,
         );
     }
-    if hardware_keyboard == Some(true) {
+    if hardware_keyboard != Some(false) {
         return Check::fail(
             "ios-lane",
-            format!("Simulator.app connects the host hardware keyboard to {udid}"),
+            format!("cannot prove the hardware keyboard disconnected for {udid}"),
             "turn off I/O > Keyboard > Connect Hardware Keyboard in Simulator.app for this simulator",
         );
     }
-    let keyboard = match hardware_keyboard {
-        Some(false) => "disconnected",
-        _ => "unset or unreadable",
-    };
     Check::pass(
         "ios-lane",
         format!(
-            "{udid}: {} keyboard, {} locale, autocorrection, prediction and autocapitalization off; hardware keyboard {keyboard}",
+            "{udid}: {} keyboard, {} locale, autocorrection, prediction and autocapitalization off; hardware keyboard disconnected",
             ios::LANE_LAYOUT,
             ios::LANE_LOCALE
         ),
@@ -3108,6 +3104,26 @@ mod lane_row_tests {
         let row = lane(&mut runner, ios::LANE_LAYOUT, "true\n");
         assert_eq!(row.status, Status::Fail);
         assert!(row.detail.contains("hardware keyboard"));
+    }
+
+    #[test]
+    fn unreadable_or_failed_hardware_keyboard_reads_fail() {
+        for mut output in [
+            CmdOutput::success(""),
+            CmdOutput::success("unknown"),
+            CmdOutput::failed(1, "unreadable"),
+        ] {
+            if !output.ok() {
+                output.stdout = "false\n".into();
+            }
+            let mut runner = MockRunner::new();
+            runner.expect_run("defaults export -g", global(ios::LANE_LAYOUT));
+            runner.expect_run("defaults export com.apple.Preferences", export(&off()));
+            runner.expect_run("PlistBuddy", output);
+            let row = lane_row(&mut runner, Path::new("/home"), UDID);
+            assert_eq!(row.status, Status::Fail);
+            assert!(row.detail.contains("hardware keyboard"));
+        }
     }
 
     #[test]

@@ -2372,6 +2372,10 @@ fn normalize_lane(ctx: &mut Ctx, udid: &str, deadline: u64) -> Result<(), Failur
             "check the simulator with `xcrun simctl spawn <udid> defaults read -g`, or erase it, then re-run",
         ));
     }
+    let mut normalized: Vec<String> = unpinned
+        .iter()
+        .map(|&entry| pinned[entry].1.to_string())
+        .collect();
     let hardware_keyboard = match ctx.runner.env_var("HOME") {
         Some(home) => {
             let output = lane_command(
@@ -2379,20 +2383,39 @@ fn normalize_lane(ctx: &mut Ctx, udid: &str, deadline: u64) -> Result<(), Failur
                 &ios::hardware_keyboard_spec(Path::new(&home), udid),
                 deadline,
             )?;
-            ios::parse_hardware_keyboard(&output.stdout)
+            let initial = ios::parse_hardware_keyboard(&output);
+            if initial == Some(false) {
+                initial
+            } else {
+                let set = lane_command(
+                    ctx,
+                    &ios::hardware_keyboard_write_spec(Path::new(&home), udid, false),
+                    deadline,
+                )?;
+                if !set.ok() {
+                    lane_command(
+                        ctx,
+                        &ios::hardware_keyboard_write_spec(Path::new(&home), udid, true),
+                        deadline,
+                    )?;
+                }
+                normalized.push("ConnectHardwareKeyboard".to_string());
+                let readback = lane_command(
+                    ctx,
+                    &ios::hardware_keyboard_spec(Path::new(&home), udid),
+                    deadline,
+                )?;
+                ios::parse_hardware_keyboard(&readback)
+            }
         }
         None => None,
     };
-    if hardware_keyboard == Some(true) {
+    if hardware_keyboard != Some(false) {
         return Err(lane_not_warm(
-            "Simulator.app connects the host hardware keyboard to this simulator, so typing bypasses the pinned layout",
+            "could not prove the hardware keyboard disconnected for this simulator after normalization",
             "turn off I/O > Keyboard > Connect Hardware Keyboard in Simulator.app for this simulator, then re-run",
         ));
     }
-    let normalized: Vec<String> = unpinned
-        .iter()
-        .map(|&entry| pinned[entry].1.to_string())
-        .collect();
     ctx.notes.push((
         "lane".to_string(),
         format!(

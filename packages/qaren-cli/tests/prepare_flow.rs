@@ -408,6 +408,81 @@ fn ios_prepare_leaves_a_pinned_lane_unwritten() {
 }
 
 #[test]
+fn ios_prepare_disconnects_the_exact_device_hardware_keyboard_and_reads_it_back() {
+    for missing in [false, true] {
+        let repo = common::temp_repo();
+        let scenario = write_scenario(&repo, &ios_scenario_yaml(8791));
+        let mut mock = MockRunner::new();
+        mock.hardware_keyboard = true;
+        mock.hardware_keyboard_missing = missing;
+        script_ios_prepare(&mut mock, &repo, CmdOutput::success(""));
+        let receipt = prepare(&mut mock, &prepare_args(&scenario, false, None));
+        assert_eq!(
+            receipt.result,
+            ReceiptResult::Ready,
+            "{}",
+            receipt.to_json()
+        );
+        let lane = receipt.lane.unwrap();
+        assert_eq!(lane.hardware_keyboard, Some(false));
+        assert_eq!(lane.normalized, ["ConnectHardwareKeyboard"]);
+        let calls: Vec<_> = mock
+            .calls
+            .iter()
+            .filter(|c| c.label.starts_with("plistbuddy-hardware-keyboard"))
+            .collect();
+        assert_eq!(calls.len(), if missing { 4 } else { 3 });
+        assert_eq!(
+            calls[0].args[1],
+            format!("Print :DevicePreferences:{UDID}:ConnectHardwareKeyboard")
+        );
+        assert_eq!(
+            calls[1].args[1],
+            format!("Set :DevicePreferences:{UDID}:ConnectHardwareKeyboard false")
+        );
+        if missing {
+            assert_eq!(
+                calls[2].args[1],
+                format!("Add :DevicePreferences:{UDID}:ConnectHardwareKeyboard bool false")
+            );
+        }
+        assert_eq!(calls.last().unwrap().args, calls[0].args);
+        assert_eq!(mock.remaining(), 0);
+    }
+}
+
+#[test]
+fn ios_prepare_refuses_missing_or_unreadable_hardware_keyboard_proof_before_launch() {
+    for output in [
+        None,
+        Some(CmdOutput::success("")),
+        Some(CmdOutput::failed(1, "unreadable")),
+    ] {
+        let repo = common::temp_repo();
+        let scenario = write_scenario(&repo, &ios_scenario_yaml(8791));
+        let mut mock = MockRunner::new();
+        if let Some(output) = output {
+            mock.hardware_keyboard_read = Some(output);
+        } else {
+            mock.environment.remove("HOME");
+        }
+        script_ios_prepare_before_devmenu(&mut mock, &repo);
+        common::script_ios_metro_cleanup(&mut mock);
+        let receipt = prepare(&mut mock, &prepare_args(&scenario, false, None));
+        assert_eq!(
+            receipt.result,
+            ReceiptResult::Refused,
+            "{}",
+            receipt.to_json()
+        );
+        assert_eq!(receipt.failure.unwrap().code, FailureCode::LaneNotWarm);
+        assert!(receipt.lane.is_none());
+        assert!(!mock.calls.iter().any(|c| c.label == "simctl-launch"));
+        assert_eq!(mock.remaining(), 0);
+    }
+}
+
+#[test]
 fn ios_prepare_refuses_a_lane_that_keeps_its_unpinned_values_before_launch() {
     for hardware_keyboard in [false, true] {
         let repo = common::temp_repo();
@@ -415,6 +490,7 @@ fn ios_prepare_refuses_a_lane_that_keeps_its_unpinned_values_before_launch() {
         let mut mock = MockRunner::new();
         if hardware_keyboard {
             mock.hardware_keyboard = true;
+            mock.hardware_keyboard_stuck = true;
             mock.inner
                 .environment
                 .insert("HOME".into(), repo.display().to_string());

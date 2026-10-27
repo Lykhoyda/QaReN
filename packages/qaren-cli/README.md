@@ -50,7 +50,7 @@ that can conflict with a session or is hygiene; `SKIP` is not applicable.
 | `runtime-dirs` | Interrupted installs and other versions under `$QAREN_HOME/runtime/` |
 | `source-checkout` | From a QaReN checkout: its source version (`<version>-dev.<commit>`) matches this binary |
 | `config` | `.qaren/config.yaml` (or `--config`) loads and validates |
-| `ios-lane` | Only with `--device`: that booted simulator's locale and keyboard equal the [warm lane](#warm-lane) and Simulator.app does not connect the host hardware keyboard to it; a lane that differs fails and names the keys; read only |
+| `ios-lane` | Only with `--device`: that booted simulator's locale and keyboard equal the [warm lane](#warm-lane) and a successful per-device read proves Simulator.app has disconnected the host hardware keyboard; a lane that differs fails and names the keys; read only |
 | `1x-claude-plugin`, `1x-codex-plugin` | The rn-dev-agent 1.x plugin, marketplace and caches in Claude Code, Codex and Cursor |
 | `1x-mcp` | A hand-registered 1.x MCP server in `~/.claude.json`, `.mcp.json`, `~/.cursor/mcp.json` or `$CODEX_HOME/config.toml` |
 | `1x-binaries`, `1x-home-dirs` | The 1.x npm bins on `PATH`; `~/.rn-dev-agent/`, `~/.cache/rn-dev-agent/`, `~/Library/Caches/rn-dev-agent/`, `~/Library/Application Support/rn-dev-agent/` (or `$XDG_STATE_HOME/rn-dev-agent/`) and `~/.claude/rn-agent/` |
@@ -1984,8 +1984,9 @@ clearance evidence is not obtained within the reads, the walk refuses with
 A simulator the run explicitly owns is pinned before launch and, on `check`,
 its first screen is proven before row 1, so the leg starts on a pinned, launched
 app rather than an unknown device. Ownership means `prepare` on iOS (its created
-simulator or `--device <UUID>`), or `check`/`pr` with an exact `--device` and
-`--fresh-install`, `--boot-device` or `--restart-device`. Plain `check` on the
+simulator or `--device <UUID>`), or any `check`/`pr --fresh-install` on its
+resolved simulator, including automatic selection, or `--boot-device` or
+`--restart-device` with an exact `--device`. Plain `check` on the
 booted simulator reads and writes none of its locale or keyboard settings.
 
 Before launch, on that UUID only, QaReN reads the device's global domain and
@@ -2007,8 +2008,11 @@ readback decides: a value the simulator does not keep refuses the run with
 `LANE_NOT_WARM` (exit 4) before the dev-menu defaults or launch. Simulator.app's
 hardware-keyboard switch lives in the host's
 `~/Library/Preferences/com.apple.iphonesimulator.plist`, shared by every
-simulator; QaReN only reads it (the per-device entry, else the global one) and
-refuses when it is on. An unreadable or unset switch is recorded as `null`.
+simulator; QaReN changes only `DevicePreferences:<UUID>:ConnectHardwareKeyboard`
+for the resolved simulator to `false`, preserving the rest of the dictionary and
+all other devices. A successful per-device read must prove `false`; an enabled,
+unset, failed or unreadable readback refuses with `LANE_NOT_WARM`. Doctor only
+reads the per-device key and fails unless it proves `false`.
 
 `check` then launches the app once and, before row 1, the core captures the first
 screen through the same projection the rows read: the app must be in front,

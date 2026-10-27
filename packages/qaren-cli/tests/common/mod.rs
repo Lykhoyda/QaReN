@@ -396,6 +396,9 @@ pub struct IosBuildRunner {
     pub lane: Lane,
     // Simulator.app's host keyboard is connected to the lane.
     pub hardware_keyboard: bool,
+    pub hardware_keyboard_stuck: bool,
+    pub hardware_keyboard_missing: bool,
+    pub hardware_keyboard_read: Option<CmdOutput>,
 }
 
 #[derive(Clone, Copy, Default, PartialEq)]
@@ -421,12 +424,15 @@ pub fn lane_export(domain: &str, pinned: bool) -> String {
 
 // A pinned lane on a plain MockRunner: both domain reads, nothing written.
 pub fn script_pinned_lane(mock: &mut MockRunner) {
+    mock.environment
+        .insert("HOME".into(), "/hermetic-home".into());
     for domain in ["-g", "com.apple.Preferences"] {
         mock.expect_run(
             "defaults export",
             CmdOutput::success(&lane_export(domain, true)),
         );
     }
+    mock.expect_run("PlistBuddy", CmdOutput::success("false\n"));
 }
 
 #[derive(Clone)]
@@ -444,7 +450,12 @@ pub enum BuildSpawnFault {
 
 impl IosBuildRunner {
     pub fn new() -> Self {
-        Self::default()
+        let mut runner = Self::default();
+        runner
+            .inner
+            .environment
+            .insert("HOME".into(), "/hermetic-home".into());
+        runner
     }
 }
 
@@ -596,8 +607,25 @@ impl qaren::exec::Runner for IosBuildRunner {
                 ..Default::default()
             };
         }
+        if spec.label == "plistbuddy-hardware-keyboard-write" {
+            self.inner.calls.push(spec.clone());
+            if self.hardware_keyboard_missing && spec.args[1].starts_with("Set ") {
+                return CmdOutput::failed(1, "entry does not exist");
+            }
+            if !self.hardware_keyboard_stuck {
+                self.hardware_keyboard = false;
+                self.hardware_keyboard_missing = false;
+            }
+            return CmdOutput::success("");
+        }
         if spec.label == "plistbuddy-hardware-keyboard" {
             self.inner.calls.push(spec.clone());
+            if self.hardware_keyboard_missing {
+                return CmdOutput::failed(1, "entry does not exist");
+            }
+            if let Some(output) = &self.hardware_keyboard_read {
+                return output.clone();
+            }
             return CmdOutput::success(if self.hardware_keyboard {
                 "true\n"
             } else {

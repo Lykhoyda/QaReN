@@ -590,7 +590,6 @@ fn run_inner(
         bundle_requests_at_launch: None,
         manifest_warm: None,
         lane_owned: req.platform == Platform::Ios
-            && req.device.is_some()
             && (req.boot_device || req.restart_device || req.fresh_install),
     };
     let finish_failed =

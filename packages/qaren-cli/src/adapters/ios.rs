@@ -597,7 +597,6 @@ pub fn lane_unpinned(exports: &[Option<String>]) -> Vec<usize> {
         .collect()
 }
 
-// Read only: Simulator.app's per-device entry wins over its global switch.
 pub fn hardware_keyboard_spec(home: &Path, udid: &str) -> CmdSpec {
     let plist = home.join("Library/Preferences/com.apple.iphonesimulator.plist");
     CmdSpec::new(
@@ -606,18 +605,30 @@ pub fn hardware_keyboard_spec(home: &Path, udid: &str) -> CmdSpec {
         &[
             "-c",
             &format!("Print :DevicePreferences:{udid}:ConnectHardwareKeyboard"),
-            "-c",
-            "Print :ConnectHardwareKeyboard",
             &plist.to_string_lossy(),
         ],
         10,
     )
 }
 
-pub fn parse_hardware_keyboard(stdout: &str) -> Option<bool> {
-    match stdout.lines().map(str::trim).find(|line| !line.is_empty()) {
-        Some("true" | "1") => Some(true),
-        Some("false" | "0") => Some(false),
+pub fn hardware_keyboard_write_spec(home: &Path, udid: &str, create: bool) -> CmdSpec {
+    let mut spec = hardware_keyboard_spec(home, udid);
+    spec.label = "plistbuddy-hardware-keyboard-write".to_string();
+    spec.args[1] = if create {
+        format!("Add :DevicePreferences:{udid}:ConnectHardwareKeyboard bool false")
+    } else {
+        format!("Set :DevicePreferences:{udid}:ConnectHardwareKeyboard false")
+    };
+    spec
+}
+
+pub fn parse_hardware_keyboard(output: &crate::exec::CmdOutput) -> Option<bool> {
+    if !output.ok() {
+        return None;
+    }
+    match output.stdout.trim() {
+        "true" | "1" => Some(true),
+        "false" | "0" => Some(false),
         _ => None,
     }
 }
@@ -1419,19 +1430,44 @@ mod lane_tests {
     }
 
     #[test]
-    fn the_per_device_hardware_keyboard_entry_wins() {
-        assert_eq!(parse_hardware_keyboard("true\n0\n"), Some(true));
-        assert_eq!(parse_hardware_keyboard("0\n"), Some(false));
-        assert_eq!(parse_hardware_keyboard("false\n1\n"), Some(false));
-        assert_eq!(parse_hardware_keyboard(""), None);
-        let spec = hardware_keyboard_spec(Path::new("/h"), "UDID-1");
+    fn hardware_keyboard_requires_one_successful_per_device_value() {
+        use crate::exec::CmdOutput;
+        for (value, expected) in [
+            ("true\n", Some(true)),
+            ("0\n", Some(false)),
+            ("false\n", Some(false)),
+            ("", None),
+            ("false\n1\n", None),
+        ] {
+            assert_eq!(
+                parse_hardware_keyboard(&CmdOutput::success(value)),
+                expected
+            );
+        }
+        let mut failed = CmdOutput::failed(1, "unreadable");
+        failed.stdout = "false\n".into();
+        assert_eq!(parse_hardware_keyboard(&failed), None);
+        for create in [false, true] {
+            let spec = hardware_keyboard_write_spec(Path::new("/h"), "UDID-1", create);
+            let command = if create { "Add" } else { "Set" };
+            let value = if create { "bool false" } else { "false" };
+            assert_eq!(
+                spec.args,
+                [
+                    "-c",
+                    &format!("{command} :DevicePreferences:UDID-1:ConnectHardwareKeyboard {value}"),
+                    "/h/Library/Preferences/com.apple.iphonesimulator.plist"
+                ]
+            );
+        }
+        let read = hardware_keyboard_spec(Path::new("/h"), "UDID-1");
         assert_eq!(
-            spec.args[1],
-            "Print :DevicePreferences:UDID-1:ConnectHardwareKeyboard"
+            read.args,
+            [
+                "-c",
+                "Print :DevicePreferences:UDID-1:ConnectHardwareKeyboard",
+                "/h/Library/Preferences/com.apple.iphonesimulator.plist"
+            ]
         );
-        assert!(!spec
-            .args
-            .iter()
-            .any(|arg| arg.contains("Set") || arg.contains("Add")));
     }
 }
