@@ -118,7 +118,17 @@ export function guardCoreLog(inputs: RunInputs): void {
       const callback = args.find((arg) => typeof arg === 'function') as (() => void) | undefined;
       return write('[private output withheld]\n', callback);
     }
-    return Reflect.apply(write, process.stderr, [chunk, ...args]);
+    // The core matcher also covers trimmed and Unicode-normalized forms the CLI redactor cannot.
+    const text =
+      typeof chunk === 'string'
+        ? chunk
+        : chunk instanceof Uint8Array
+          ? Buffer.from(chunk).toString('utf8')
+          : undefined;
+    return Reflect.apply(write, process.stderr, [
+      text === undefined ? chunk : inputs.redact(text),
+      ...args,
+    ]);
   }) as typeof process.stderr.write;
 }
 

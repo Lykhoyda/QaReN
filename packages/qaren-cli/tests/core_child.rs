@@ -1954,9 +1954,9 @@ fn core_log_redacts_test_pii_and_withholds_each_write_after_secure_promotion() {
         assert_eq!(outcome.verdict, Verdict::Pass);
         runner.flush_logs().unwrap();
         let stored = std::fs::read_to_string(log).unwrap();
-        assert!(stored.contains("before [REDACTED_INPUT]"), "{stored}");
+        assert!(stored.starts_with("before "), "{stored}");
         assert!(stored.contains("[private output withheld]"), "{stored}");
-        for text in [CODE, "Account phone", "42 Test Street"] {
+        for text in [CODE, "synthet", "123456", "Account phone", "42 Test Street"] {
             assert!(!stored.contains(text), "{stored}");
         }
     });

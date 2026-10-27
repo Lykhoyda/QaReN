@@ -667,6 +667,13 @@ mod tests {
     }
 
     #[test]
+    fn a_padded_declared_input_is_redacted_in_its_trimmed_form() {
+        let inputs = super::InputValues::from_values(vec![" Alice Example ".to_string()]);
+        let clean = inputs.redact("Signed in as Alice Example");
+        assert_eq!(clean, "Signed in as [REDACTED_INPUT]");
+    }
+
+    #[test]
     fn declared_inputs_are_redacted_in_any_letter_case_without_touching_the_marker() {
         let inputs = super::InputValues::from_values(vec![
             "QATESTER@EXAMPLE.TEST".to_string(),
@@ -708,7 +715,6 @@ mod tests {
             }
         }
     }
-
 }
 
 pub struct InputValues {
@@ -837,7 +843,12 @@ impl InputValues {
             .flat_map(|value| {
                 let encoded = serde_json::to_string(&value).unwrap_or_default();
                 let mut forms = email_forms(&value);
-                forms.extend([encoded[1..encoded.len() - 1].to_string(), value]);
+                forms.extend([
+                    encoded[1..encoded.len() - 1].to_string(),
+                    value.trim().to_string(),
+                    value,
+                ]);
+                forms.retain(|form| !form.is_empty());
                 forms
             })
             .collect();
@@ -852,7 +863,10 @@ impl InputValues {
         let mut offsets = Vec::new();
         for (start, c) in raw.char_indices() {
             let folded = fold(&c.to_string());
-            offsets.extend(std::iter::repeat_n((start, start + c.len_utf8()), folded.len()));
+            offsets.extend(std::iter::repeat_n(
+                (start, start + c.len_utf8()),
+                folded.len(),
+            ));
             hay.push_str(&folded);
         }
         let mut spans: Vec<(usize, usize)> = Vec::new();

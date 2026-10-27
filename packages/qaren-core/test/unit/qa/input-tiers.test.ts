@@ -348,3 +348,25 @@ test('a refused SECRET fill carries its value-free mismatch counts on the failed
   assert.deepEqual(failed[0].entryMismatch, entryMismatch);
   assert.ok(!JSON.stringify({ result, rows: f.rows }).includes(PASSWORD));
 });
+
+test('a TEST-PII run redacts trimmed and Unicode-normalized echoes on the core log stream', async () => {
+  const { guardCoreLog } = await import('../../../dist/qa/walk.js');
+  const { inputs } = privacyFor({ NAME: ' Café Owner ' }, ['NAME']);
+  const original = process.stderr.write;
+  const written: string[] = [];
+  process.stderr.write = ((chunk: unknown) => {
+    written.push(String(chunk));
+    return true;
+  }) as typeof process.stderr.write;
+  try {
+    guardCoreLog(inputs);
+    process.stderr.write('Signed in as Café Owner\n');
+    process.stderr.write(Buffer.from('Hello Café Owner\n'));
+  } finally {
+    process.stderr.write = original;
+  }
+  const text = written.join('');
+  for (const leaked of ['Café Owner', 'Café Owner'])
+    assert.ok(!text.includes(leaked), `${JSON.stringify(leaked)} in ${JSON.stringify(text)}`);
+  assert.ok(text.includes('Signed in as'), text);
+});
