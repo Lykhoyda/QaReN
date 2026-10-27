@@ -11,21 +11,13 @@ QaReN 2.0 needs an Apple silicon Mac with Xcode, Node 24 or newer, pnpm, and an 
 
 ## 1. CLI
 
-The plugin root is two directories above this skill's base directory. Resolve one absolute qaren path and use it for every later `qaren` command in this session:
+The plugin root is two directories above this skill's base directory. Resolve one absolute qaren path and use it for every later `qaren` command in this session. Read `version` from `<plugin root>/.claude-plugin/plugin.json`; QaReN home is `$QAREN_HOME` (`~/.qaren` when unset):
 
-1. Run `bash <plugin root>/scripts/ensure-qaren.sh --print-bin`. If it prints an absolute path ending in `/bin/qaren`, that is the plugin-verified binary; use it and go to step 2.
-2. Otherwise run `bash <plugin root>/scripts/ensure-qaren.sh --install`. Use its printed binary path and pass the user any stderr notice about PATH or an existing command. The [CLI installation guide](https://github.com/Lykhoyda/QaReN/blob/develop/packages/qaren-cli/README.md#plugin-runtime-installation) owns the verification, PATH-linking and fallback contract.
-3. If it refuses because this plugin version carries no qaren tarball, use a matching source install; `version` is the one in `<plugin root>/.claude-plugin/plugin.json` and the QaReN home is `$QAREN_HOME` (`~/.qaren` when unset).
-   - When the plugin root is `packages/qaren-plugin` of a QaReN checkout (two directories up holds `scripts/install-qaren-from-source.sh`), its build is `<QaReN home>/runtime/<version>-dev.<commit>/bin/qaren` with `<commit>` from `git -C <plugin root> rev-parse --short=12 HEAD`. If that file's `--version` prints exactly `qaren <version>-dev.<commit>`, use it even when `qaren` on PATH is another install; otherwise offer to run the command below from that checkout and use the path it prints.
-   - Otherwise, if `command -v qaren` resolves, through links, under `<QaReN home>/runtime/` and prints `qaren <version>-dev.<commit>`, use that resolved path. If not, tell the user the one line to run from a checkout of `Lykhoyda/QaReN` matching the plugin's version, offer to run it for them if they give the checkout path, and use the path it prints.
-
-   The command needs Rust (https://rustup.rs) as well and prints the binary path to use:
-
-   ```sh
-   bash scripts/install-qaren-from-source.sh
-   ```
-
-4. Any other refusal: stop and quote the installer's message.
+1. First check whether the plugin root is `packages/qaren-plugin` of a QaReN checkout (two directories up holds `scripts/install-qaren-from-source.sh`). If so, use the checkout build instead of the release installer: get `<commit>` with `git -C <plugin root> rev-parse --short=12 HEAD`, and resolve `<QaReN home>/runtime/<version>-dev.<commit>/bin/qaren`. If its `--version` prints exactly `qaren <version>-dev.<commit>`, use it and continue to doctor. Otherwise offer to run `bash scripts/install-qaren-from-source.sh` from that checkout; it needs Rust (https://rustup.rs) and prints the binary path to use. Stop until that matching build is installed; then continue to doctor.
+2. For a packaged plugin, run `bash <plugin root>/scripts/ensure-qaren.sh --print-bin`. If it prints an absolute path ending in `/bin/qaren`, use that plugin-verified binary and continue to doctor.
+3. Otherwise run `bash <plugin root>/scripts/ensure-qaren.sh --install`. Use its printed binary path and pass the user any stderr notice about PATH or an existing command. The [CLI installation guide](https://github.com/Lykhoyda/QaReN/blob/develop/packages/qaren-cli/README.md#plugin-runtime-installation) owns the verification, PATH-linking and fallback contract.
+4. If it refuses because this plugin version carries no qaren tarball, use a matching source install. If `command -v qaren` resolves, through links, under `<QaReN home>/runtime/` and prints `qaren <version>-dev.<commit>`, use that resolved path. Otherwise ask for a checkout of `Lykhoyda/QaReN` matching the plugin's version and offer to run `bash scripts/install-qaren-from-source.sh` there; use the path it prints.
+5. Any other refusal: stop and quote the installer's message.
 
 Run `<qaren path> doctor` before setup continues. Stop on a `FAIL` and give its fix.
 Present `host-memory`, `host-devices`, `simulator-service` and `host-load` warnings

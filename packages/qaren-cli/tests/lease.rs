@@ -68,15 +68,27 @@ fn a_holder_under_qaren_home_records_that_home_instead_of_home() {
     std::fs::create_dir_all(side.join("runs/check-q")).unwrap();
     std::fs::write(side.join("runs/check-q/run.json"), "{}").unwrap();
     assert!(!qaren::lease::records_gone(&holder));
+    let binary = std::env::current_exe().unwrap();
+    let binary = binary.display().to_string().replace('\'', "'\\''");
     assert_eq!(
         qaren::lease::cleanup_command("check-q", &holder),
-        format!("`QAREN_HOME='{}' qaren cleanup check-q`", side.display())
+        format!("`QAREN_HOME='{}' '{binary}' cleanup check-q`", side.display())
     );
     let mut quoted = holder.clone();
     quoted.qaren_home = Some("/it's; touch x".into());
     assert_eq!(
         qaren::lease::cleanup_command("check-q", &quoted),
-        "`QAREN_HOME='/it'\\''s; touch x' qaren cleanup check-q`"
+        format!("`QAREN_HOME='/it'\\''s; touch x' '{binary}' cleanup check-q`")
+    );
+    assert_eq!(
+        qaren::lease::cleanup_command("native-ios-q", &quoted),
+        "`QAREN_HOME='/it'\\''s; touch x' cargo run --manifest-path packages/qaren-cli/Cargo.toml --locked --example native-ios-suite -- recover --run-id native-ios-q` from the repository root"
+    );
+    quoted.qaren_home = None;
+    quoted.home = Some("/home-a".into());
+    assert_eq!(
+        qaren::lease::cleanup_command("check-q", &quoted),
+        "`QAREN_HOME= HOME='/home-a' qaren cleanup check-q`"
     );
     assert_eq!(release(&lease), ReleaseOutcome::Removed);
 }

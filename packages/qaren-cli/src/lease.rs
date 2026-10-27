@@ -72,7 +72,17 @@ pub fn cleanup_command(run_id: &str, held: &LockHolder) -> String {
             "`{env}cargo run --manifest-path packages/qaren-cli/Cargo.toml --locked --example native-ios-suite -- recover --run-id {run_id}` from the repository root"
         )
     } else {
-        format!("`{env}qaren cleanup {run_id}`")
+        let binary = if held.qaren_home.is_some() {
+            match std::env::current_exe() {
+                Ok(path) => quoted(&path),
+                Err(_) => {
+                    return "cleanup using an absolute path to this QAREN_HOME-aware qaren binary; its executable path could not be resolved".to_string();
+                }
+            }
+        } else {
+            "qaren".to_string()
+        };
+        format!("`{env}{binary} cleanup {run_id}`")
     }
 }
 
