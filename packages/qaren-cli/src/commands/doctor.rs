@@ -1,6 +1,6 @@
 use crate::adapters::{android, ios};
 use crate::commands::prepare::missing_android_sdk;
-use crate::commands::update::{INSTALLER, PLUGIN_MANIFEST};
+use crate::commands::update::{dev_version, DEV_COMMIT, INSTALLER, PLUGIN_MANIFEST};
 use crate::config::{AndroidConfig, CheckConfig, DEFAULT_CONFIG_PATH};
 use crate::exec::{CmdSpec, Runner};
 use crate::scenario::Platform;
@@ -10,7 +10,7 @@ use std::path::{Path, PathBuf};
 
 mod host;
 
-const VERSION: &str = env!("CARGO_PKG_VERSION");
+use crate::VERSION;
 const INSTALL: &str = "bash <plugin>/scripts/ensure-qaren.sh --install";
 const MCP_MARKERS: [&str; 2] = ["rn-dev-agent-core", "cdp-supervisor"];
 const PROJECT_SENTINELS: [&str; 2] = [
@@ -92,6 +92,7 @@ pub struct Identity {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub build: Option<String>,
     pub runtime: PathBuf,
+    pub qaren_home: PathBuf,
 }
 
 #[derive(Debug, Clone)]
@@ -122,9 +123,10 @@ impl Report {
             .as_ref()
             .map_or(String::new(), |build| format!(" (build {build})"));
         let mut out = printable(&format!(
-            "qaren {} at {exe}{build}, runtime {}",
+            "qaren {} at {exe}{build}, runtime {}, QAREN_HOME {}",
             identity.version,
-            identity.runtime.display()
+            identity.runtime.display(),
+            identity.qaren_home.display()
         )) + "\n";
         for check in &self.checks {
             let label = match check.status {
@@ -174,13 +176,14 @@ impl Report {
 pub fn doctor(
     runner: &mut dyn Runner,
     home: &Path,
+    qaren_home: &Path,
     cwd: &Path,
     exe: Option<PathBuf>,
     runtime: PathBuf,
     config_path: Option<&Path>,
 ) -> Report {
     let exe = exe.map(|exe| canonical(&exe));
-    let runtime_root = canonical(&home.join(".qaren").join("runtime"));
+    let runtime_root = canonical(&qaren_home.join("runtime"));
     let config_file = cwd.join(config_path.unwrap_or(Path::new(DEFAULT_CONFIG_PATH)));
     let (config_row, config) = config_check(&config_file);
     let set = |name: &str| runner.env_var(name).filter(|value| !value.is_empty());
@@ -269,6 +272,7 @@ pub fn doctor(
             version: VERSION,
             build,
             runtime,
+            qaren_home: qaren_home.to_path_buf(),
         },
         checks,
     }
@@ -575,6 +579,26 @@ fn installed_builds(runtime_root: &Path) -> Vec<PathBuf> {
     builds
 }
 
+// The installer keeps another QAREN_HOME's link and the other line's link (release or -dev build).
+fn separate_install(first: &Path, exe: &Path, runtime_root: &Path) -> Option<String> {
+    let line = |dir: &Path| dir.file_name()?.to_str().map(|v| v.contains("-dev."));
+    let mine = installed_version_dir(exe, runtime_root)?;
+    let theirs = first.parent()?.parent()?;
+    let their_root = theirs.parent()?;
+    let installed = first.file_name()? == "qaren"
+        && first.parent()?.file_name()? == "bin"
+        && their_root.file_name()? == "runtime";
+    let separate = their_root != runtime_root || line(theirs)? != line(&mine)?;
+    (installed && separate).then(|| {
+        let version = theirs.file_name().unwrap_or_default().to_string_lossy();
+        if their_root == runtime_root {
+            format!("qaren {version}")
+        } else {
+            format!("qaren {version} from {}", their_root.display())
+        }
+    })
+}
+
 fn evaluate_path(hits: &[PathBuf], exe: Option<&Path>, runtime_root: &Path) -> Check {
     let Some(first) = hits.first() else {
         return Check::warn(
@@ -589,6 +613,17 @@ fn evaluate_path(hits: &[PathBuf], exe: Option<&Path>, runtime_root: &Path) -> C
         // A development binary started by path while PATH runs the installed build is fine.
         let dev_beside_install = !exe.starts_with(runtime_root) && first_installed;
         if first_target != exe && !dev_beside_install {
+            if let Some(other) = separate_install(&first_target, exe, runtime_root) {
+                return Check::warn(
+                    "qaren-path",
+                    format!(
+                        "PATH runs {} ({other}), a separate install; this is {}",
+                        first.display(),
+                        exe.display()
+                    ),
+                    format!("run this build by its path, or install it with `{INSTALL} --link` to put it on PATH"),
+                );
+            }
             let wanted = hits
                 .iter()
                 .find(|hit| canonical(hit) == exe)
@@ -774,12 +809,13 @@ fn source_checkout(runner: &mut dyn Runner, cwd: &Path) -> Check {
         .ok()
         .and_then(|json| json.get("version")?.as_str().map(str::to_string))
         .unwrap_or_else(|| "unknown".to_string());
-    let head = runner
-        .run(&CmdSpec::new("git-head", "git", &["rev-parse", "--short", "HEAD"], 10).cwd(cwd));
-    let head = if head.ok() {
-        head.stdout.trim().to_string()
+    let head = runner.run(&CmdSpec::new("git-head", "git", &DEV_COMMIT, 10).cwd(cwd));
+    let (head, version) = if head.ok() {
+        let head = head.stdout.trim().to_string();
+        let version = dev_version(&version, &head);
+        (head, version)
     } else {
-        "an unknown commit".to_string()
+        ("an unknown commit".to_string(), version)
     };
     if version == VERSION {
         Check::pass(
@@ -1448,7 +1484,15 @@ mod tests {
             CmdOutput::failed(128, "not a git checkout"),
         );
         script_host(runner);
-        doctor(runner, &scratch.0, cwd, exe, runtime, None)
+        doctor(
+            runner,
+            &scratch.0,
+            &scratch.0.join(".qaren"),
+            cwd,
+            exe,
+            runtime,
+            None,
+        )
     }
 
     fn script_host(runner: &mut MockRunner) {
@@ -1475,6 +1519,35 @@ mod tests {
         let link = s.link("bin/qaren", &exe);
         let check = evaluate_path(&[link.clone(), link], Some(&exe), &s.runtime_root());
         assert_eq!(check.status, Status::Pass, "{check:?}");
+    }
+
+    #[test]
+    fn path_warns_when_a_separate_install_runs_first_but_fails_a_stale_link() {
+        let s = Scratch::new("path-side-by-side");
+        let release = s.install("2.0.0");
+        let dev = s.install("2.0.0-dev.abcdef123456");
+        let link = s.link("bin/qaren", &release);
+        let check = evaluate_path(&[link], Some(&dev), &s.runtime_root());
+        assert_eq!(check.status, Status::Warn, "{check:?}");
+        assert!(
+            check.detail.contains("(qaren 2.0.0), a separate install"),
+            "{}",
+            check.detail
+        );
+        assert!(check.fix.as_deref().unwrap().contains("--link"));
+
+        let other = s.exe("other/runtime/2.0.0/bin/qaren");
+        let link = s.link("bin2/qaren", &other);
+        let check = evaluate_path(&[link], Some(&dev), &s.runtime_root());
+        assert_eq!(check.status, Status::Warn, "{check:?}");
+        assert!(check
+            .detail
+            .contains(&format!("from {}", s.path("other/runtime").display())));
+
+        let older = s.install("1.9.9");
+        let link = s.link("bin3/qaren", &older);
+        let check = evaluate_path(&[link], Some(&release), &s.runtime_root());
+        assert_eq!(check.status, Status::Fail, "{check:?}");
     }
 
     #[test]
@@ -1991,6 +2064,7 @@ mod tests {
                     version: VERSION,
                     build: None,
                     runtime: s.0.clone(),
+                    qaren_home: s.0.join(".qaren"),
                 },
                 checks: vec![mcp_servers(
                     &s.0,
@@ -2207,6 +2281,55 @@ mod tests {
             }
         );
         assert_eq!(parsed["checks"].as_array().unwrap().len(), 27);
+    }
+
+    #[test]
+    fn a_qaren_home_holds_the_installed_build_and_is_named() {
+        let s = Scratch::new("qaren-home");
+        s.install(VERSION);
+        let side = s.0.join("side-home");
+        std::fs::rename(s.path(".qaren"), &side).unwrap();
+        let exe = side.join("runtime").join(VERSION).join("bin/qaren");
+        let mut runner = MockRunner::new();
+        script_toolchain(&mut runner, Some("v24.1.0\n"), RUNTIMES);
+        runner.expect_run(
+            "--git-common-dir",
+            CmdOutput::failed(128, "not a git checkout"),
+        );
+        script_host(&mut runner);
+        let runtime = side.join("runtime").join(VERSION).join("runtime");
+        let report = doctor(&mut runner, &s.0, &side, &s.0, Some(exe), runtime, None);
+        let installed = row(&report, "installed-build");
+        assert_eq!(installed.status, Status::Pass, "{installed:?}");
+        assert!(report
+            .render()
+            .contains(&format!("QAREN_HOME {}", side.display())));
+        let json: serde_json::Value = serde_json::from_str(&report.to_json()).unwrap();
+        assert_eq!(
+            json["identity"]["qaren_home"],
+            side.display().to_string().as_str()
+        );
+    }
+
+    #[test]
+    fn a_checkout_is_current_only_for_its_own_dev_build() {
+        let s = Scratch::new("checkout-dev");
+        s.file(INSTALLER, "");
+        s.file(PLUGIN_MANIFEST, r#"{"version":"2.0.0"}"#);
+        let mut runner = MockRunner::new();
+        runner.expect_run(
+            "rev-parse --short=12 HEAD",
+            CmdOutput::success("abcdef123456\n"),
+        );
+        let check = source_checkout(&mut runner, &s.0);
+        assert_eq!(check.status, Status::Warn, "{check:?}");
+        assert!(
+            check.detail.contains(&format!(
+                "is version 2.0.0-dev.abcdef123456; this binary is {VERSION}"
+            )),
+            "{}",
+            check.detail
+        );
     }
 
     #[test]
@@ -2651,6 +2774,7 @@ mod tests {
                         version: VERSION,
                         build: None,
                         runtime: s.0.clone(),
+                        qaren_home: s.0.join(".qaren"),
                     },
                     checks: rows,
                 };
@@ -2702,6 +2826,7 @@ mod tests {
         let report = doctor(
             &mut runner,
             &s.0,
+            &s.0.join(".qaren"),
             &s.0,
             None,
             PathBuf::from("/runtime"),

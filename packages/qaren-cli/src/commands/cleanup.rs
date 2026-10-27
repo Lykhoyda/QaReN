@@ -89,7 +89,7 @@ pub fn reclaim_dead_holder_with_runtime(
             format!("the device lease is held by run {run_id}, whose qaren process is gone, but {detail}"),
             format!(
                 "run {} once its resources are accounted for",
-                crate::lease::cleanup_command(&run_id, holder.home.as_deref())
+                crate::lease::cleanup_command(&run_id, holder)
             ),
         )
     };

@@ -34,9 +34,7 @@ from a checkout of the [repository](https://github.com/Lykhoyda/QaReN):
    bash scripts/install-qaren-from-source.sh
    ```
 
-   The installer builds the runtime tarball, verifies it against a manifest it writes for
-   that build, and unpacks it under `~/.qaren/runtime/<version>/`. It prints the installed
-   binary path.
+   Use the binary path the installer prints; see the [source-build contract](https://github.com/Lykhoyda/QaReN/blob/develop/packages/qaren-cli/README.md#release-and-source-builds-side-by-side).
 
 2. From your app's root directory, start Claude Code with the checkout's plugin:
 
@@ -56,24 +54,11 @@ from a checkout of the [repository](https://github.com/Lykhoyda/QaReN):
 
 ### Where `qaren` lands on PATH
 
-The installer links `qaren` into a directory on your `PATH`:
+Follow the [installation contract](https://github.com/Lykhoyda/QaReN/blob/develop/packages/qaren-cli/README.md#plugin-runtime-installation) for PATH selection, existing-command protection, `--link` and interrupted-install recovery.
 
-1. The first of `~/.local/bin`, `~/bin`, `/opt/homebrew/bin` and `/usr/local/bin` that is
-   on `PATH`, exists and is writable. An earlier IDE or toolchain directory is passed over.
-2. Otherwise, the first writable absolute directory on `PATH`. Empty and relative entries
-   are skipped.
-3. Otherwise, it links `~/.local/bin/qaren` and prints the line to run:
+### Run a release and a source build side by side
 
-   ```sh
-   export PATH="$HOME/.local/bin:$PATH"
-   ```
-
-It never edits shell startup files. It replaces only a link it made into
-`~/.qaren/runtime/`; any other `qaren` file in that directory is left alone with a notice.
-A link problem never fails the install: run `qaren` by the binary path the installer
-printed. If an earlier `PATH` directory already holds another `qaren`, that one still runs:
-check `command -v qaren`, and use the printed path when it differs. Re-run the installer to
-recover an interrupted install.
+Follow [release and source builds side by side](https://github.com/Lykhoyda/QaReN/blob/develop/packages/qaren-cli/README.md#release-and-source-builds-side-by-side) for source versioning, `QAREN_HOME`, state lookup and shared device locks.
 
 ## What `/qaren:setup` does
 

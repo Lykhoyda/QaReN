@@ -1538,12 +1538,14 @@ fn verify_artifact(artifact: &CachedArtifact) -> ArtifactStatus {
 }
 
 fn lock_holder_for(ctx: &mut Ctx) -> LockHolder {
+    let (home, qaren_home) = crate::lease::holder_homes(ctx.runner);
     LockHolder {
         holder: android::holder(&ctx.record.run_id),
         run_id: ctx.record.run_id.clone(),
         identity: ctx.record.prepare.clone(),
         at: timefmt::iso8601_utc(ctx.runner.now_epoch_ms()),
-        home: crate::lease::holder_home(ctx.runner),
+        home,
+        qaren_home,
         group: None,
     }
 }

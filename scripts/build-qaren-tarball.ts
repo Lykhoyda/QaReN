@@ -45,9 +45,20 @@ const REQUIRE_BANNER =
   'globalThis.require ??= __qarenCreateRequire(import.meta.url);';
 
 const VERSION_RE = /^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/;
+// Source builds are <release>-dev.<commit> (scripts/install-qaren-from-source.sh).
+const DEV_SUFFIX_RE = /-dev\.[0-9a-f]+$/;
+
+export function releaseOf(version: string): string {
+  return version.replace(DEV_SUFFIX_RE, '');
+}
 
 export function tarballName(version: string, platform: QarenPlatform): string {
   return `qaren-${version}-${platform}.tar.gz`;
+}
+
+// A source build vouches for no published runner, so its runtime builds the runners from source.
+export function sourceRunnerManifest(version: string): string {
+  return JSON.stringify({ version, assets: { ios: [], android: [] } }, null, 2) + '\n';
 }
 
 // The runtime copy names only the runner zips: a tarball can never vouch for itself.
@@ -168,7 +179,7 @@ function rustSourceRemap(): string[] {
   return [`--remap-path-prefix=${join(sysroot, 'lib', 'rustlib', 'src', 'rust')}=/rustc/${hash}`];
 }
 
-function buildCli(platform: QarenPlatform): string {
+function buildCli(platform: QarenPlatform, version: string): string {
   const target = RUST_TARGETS[platform];
   const targetDir = resolve(process.env.CARGO_TARGET_DIR ?? join(CLI_DIR, 'target'));
   const cargoHome = resolve(process.env.CARGO_HOME ?? join(homedir(), '.cargo'));
@@ -189,6 +200,7 @@ function buildCli(platform: QarenPlatform): string {
   const env = {
     ...process.env,
     CARGO_ENCODED_RUSTFLAGS: flags.join('\x1f'),
+    QAREN_VERSION: version,
     QAREN_BUILD_COMMIT: execFileSync('git', ['rev-parse', 'HEAD'], {
       cwd: ROOT,
       encoding: 'utf8',
@@ -270,16 +282,29 @@ async function main(): Promise<void> {
     );
     process.exit(2);
   }
-  if (cargoVersion() !== version) {
-    throw new Error(`Cargo.toml is v${cargoVersion()}, not the requested v${version}`);
+  const release = releaseOf(version);
+  if (cargoVersion() !== release) {
+    throw new Error(`Cargo.toml is v${cargoVersion()}, not the requested v${release}`);
   }
-  const runnerManifest = resolve(args['runner-manifest'] ?? join(ROOT, 'runner-manifest.json'));
-  const runtimeManifest = runtimeRunnerManifest(readFileSync(runnerManifest, 'utf8'), version);
+  const head = run('git', ['rev-parse', '--short=12', 'HEAD']).trim();
+  if (release !== version && version !== `${release}-dev.${head}`) {
+    throw new Error(`v${version} is not this checkout's source version ${release}-dev.${head}`);
+  }
+  const runtimeManifest =
+    release === version
+      ? runtimeRunnerManifest(
+          readFileSync(
+            resolve(args['runner-manifest'] ?? join(ROOT, 'runner-manifest.json')),
+            'utf8',
+          ),
+          version,
+        )
+      : sourceRunnerManifest(version);
   const outDir = resolve(args['out-dir'] ?? join(CLI_DIR, 'target', 'qaren-tarball'));
   const mtime = sourceDateEpoch();
 
   execFileSync('corepack', ['yarn', 'build:core'], { cwd: ROOT, stdio: ['ignore', 2, 'inherit'] });
-  const binary = buildCli(platform);
+  const binary = buildCli(platform, version);
 
   const stage = mkdtempSync(join(tmpdir(), 'qaren-tarball-'));
   try {

@@ -11,10 +11,21 @@ import {
   resolveRunnerStartPlan,
 } from '../../../dist/runners/rn-fast-runner-client.js';
 
-test('result bundle dirs cover the local DerivedData and the prebuilt cache for a version', () => {
+test('result bundle dirs cover the local DerivedData and the prebuilt cache for a version', (t) => {
+  const prior = process.env.QAREN_HOME;
+  t.after(() => {
+    if (prior === undefined) delete process.env.QAREN_HOME;
+    else process.env.QAREN_HOME = prior;
+  });
+  delete process.env.QAREN_HOME;
   assert.deepEqual(iosRunnerResultBundleDirs('1.2.3', '/x/DerivedData'), [
     join('/x/DerivedData', 'Logs', 'Test'),
     join(homedir(), '.qaren', 'runtime', 'runners', '1.2.3', 'ios', 'products', 'Logs', 'Test'),
+  ]);
+  process.env.QAREN_HOME = '/side-home';
+  assert.deepEqual(iosRunnerResultBundleDirs('1.2.3', '/x/DerivedData'), [
+    join('/x/DerivedData', 'Logs', 'Test'),
+    join('/side-home', 'runtime', 'runners', '1.2.3', 'ios', 'products', 'Logs', 'Test'),
   ]);
   assert.deepEqual(iosRunnerResultBundleDirs(null, '/x/DerivedData'), [
     join('/x/DerivedData', 'Logs', 'Test'),
@@ -110,7 +121,7 @@ test('direct reap removes result bundles after stopping an adopted process', (t)
       env: {
         ...process.env,
         HOME: root,
-        XDG_STATE_HOME: join(root, 'state'),
+        QAREN_HOME: join(root, 'qaren-home'),
         QAREN_NATIVE_RUNNER_ROOT: join(root, 'runners'),
       },
       timeout: 15_000,

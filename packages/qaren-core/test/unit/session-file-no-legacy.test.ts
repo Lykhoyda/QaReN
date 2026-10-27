@@ -35,10 +35,10 @@ test('a session left at the 1.x /tmp location is neither adopted nor copied', (t
         '-e',
         `const m = await import(${JSON.stringify(WRAPPER)}); console.log(JSON.stringify(m.getActiveSession()));`,
       ],
-      { cwd: project, env: { ...process.env, XDG_STATE_HOME: state }, encoding: 'utf8' },
+      { cwd: project, env: { ...process.env, QAREN_HOME: state }, encoding: 'utf8' },
     );
     assert.equal(out.trim().split('\n').at(-1), 'null');
-    const written = existsSync(join(state, 'qaren')) ? readdirSync(join(state, 'qaren')) : [];
+    const written = existsSync(join(state, 'state')) ? readdirSync(join(state, 'state')) : [];
     assert.deepEqual(
       written.filter((name) => name.startsWith('session-')),
       [],

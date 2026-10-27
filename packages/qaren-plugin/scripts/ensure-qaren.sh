@@ -4,17 +4,22 @@
 #   ensure-qaren.sh --print-bin                   offline verification; stdout is empty or one line:
 #                                                 the binary path or an install/repair/timeout instruction;
 #                                                 other diagnostics go to stderr; always exits 0
-#   ensure-qaren.sh --install [--from-file <tgz>] downloads (or takes) the tarball, verifies its
+#   ensure-qaren.sh --install [--from-file <tgz>] [--link]
+#                                                 downloads (or takes) the tarball, verifies its
 #                                                 sha256 and length against runner-manifest.json,
-#                                                 installs it into ~/.qaren/runtime/<v>/ and links qaren onto PATH;
+#                                                 installs it into $QAREN_HOME/runtime/<v>/ (default ~/.qaren)
+#                                                 and links qaren onto PATH; --link also replaces a link to
+#                                                 another QAREN_HOME or the other line (release or -dev build);
 #                                                 stdout is exactly the binary path; rerun --install after interruption
 set -euo pipefail
 
 MODE=""
 FROM_FILE=""
+LINK=0
 while [ $# -gt 0 ]; do
   case "$1" in
     --print-bin | --install) MODE="$1" ;;
+    --link) LINK=1 ;;
     --from-file)
       [ $# -ge 2 ] || { echo "ensure-qaren: --from-file needs a path" >&2; exit 2; }
       FROM_FILE="$2"
@@ -24,7 +29,9 @@ while [ $# -gt 0 ]; do
   esac
   shift
 done
-[ -n "$MODE" ] || { echo "usage: ensure-qaren.sh --print-bin | --install [--from-file <tarball>]" >&2; exit 2; }
+USAGE="usage: ensure-qaren.sh --print-bin | --install [--from-file <tarball>] [--link]"
+[ -n "$MODE" ] || { echo "$USAGE" >&2; exit 2; }
+[ "$LINK" = 0 ] || [ "$MODE" = --install ] || { echo "$USAGE" >&2; exit 2; }
 
 # node and curl keep their own messages where they are needed.
 REQUIRED_TOOLS="uname dirname cat tar gzip shasum wc cut tr head du mktemp mkdir mv cp rm find ls sleep perl"
@@ -39,7 +46,13 @@ done
 PLUGIN_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 MANIFEST="$PLUGIN_ROOT/runner-manifest.json"
 RELEASES="https://github.com/Lykhoyda/QaReN/releases/download"
-RUNTIME_ROOT="${HOME:-}/.qaren/runtime"
+ROOT_ERROR=""
+if [ -n "${QAREN_HOME:-}" ]; then
+  [[ "$QAREN_HOME" == /?* ]] || ROOT_ERROR="QAREN_HOME is not an absolute path"
+  RUNTIME_ROOT="$QAREN_HOME/runtime"
+else
+  RUNTIME_ROOT="${HOME:-}/.qaren/runtime"
+fi
 RECORD=".tarball-sha256"
 INSTALL_COMMAND="bash $(printf %q "$PLUGIN_ROOT/scripts/ensure-qaren.sh") --install"
 # Decompression-bomb ceiling for the unpacked runtime; the manifest digest stays the trust root.
@@ -116,9 +129,9 @@ interrupted_install() {
   return 1
 }
 
-# ~/.qaren or its runtime directory may link to other storage you own. Resolve the root once and
-# work only on the real directory; returns 1 when it is not a directory, 2 when you do not own it
-# or the directory holding it.
+# The QaReN home or its runtime directory may link to other storage you own. Resolve the root once
+# and work only on the real directory; returns 1 when it is not a directory, 2 when you do not own
+# it or the directory holding it.
 real_root() {
   local real
   real=$(cd -P "$RUNTIME_ROOT" 2>/dev/null && pwd -P) || return 1
@@ -126,14 +139,14 @@ real_root() {
   RUNTIME_ROOT="$real"
 }
 
-# Creates the missing parts of ~/.qaren/runtime only inside a directory already proven to be yours.
+# Creates the missing parts of <QaReN home>/runtime only inside a directory already proven to be yours.
 make_root() {
   local parent="${RUNTIME_ROOT%/*}" real_parent
   if [ ! -e "$RUNTIME_ROOT" ] && [ ! -L "$RUNTIME_ROOT" ]; then
     if [ -e "$parent" ] || [ -L "$parent" ]; then
       real_parent=$(cd -P "$parent" 2>/dev/null && pwd -P) || return 1
     else
-      real_parent=$(cd -P "$HOME" 2>/dev/null && pwd -P) || return 1
+      real_parent=$(cd -P "${parent%/*}/" 2>/dev/null && pwd -P) || return 1
       [ -O "$real_parent" ] || return 2
       mkdir "$real_parent/${parent##*/}" 2>/dev/null || [ -d "$real_parent/${parent##*/}" ] || return 1
       real_parent="$real_parent/${parent##*/}"
@@ -147,6 +160,10 @@ make_root() {
 check_bin() {
   set +m
   local asset version name sha bytes
+  if [ -n "$ROOT_ERROR" ]; then
+    echo "qaren: $ROOT_ERROR" >&2
+    return 0
+  fi
   if [ -e "$RUNTIME_ROOT" ] && ! real_root; then
     echo "qaren: the qaren runtime directory $RUNTIME_ROOT is not a directory you own; inspect it" >&2
     return 0
@@ -246,6 +263,7 @@ install() {
   asset=$(expected_asset) || exit 1
   { read -r version; read -r name; read -r sha; read -r bytes; } <<< "$asset"
   [[ "${HOME:-}" == /?* ]] || refuse "HOME is not an absolute path"
+  [ -z "$ROOT_ERROR" ] || refuse "$ROOT_ERROR"
   local root_rc=0
   make_root || root_rc=$?
   case "$root_rc" in
@@ -373,15 +391,25 @@ install() {
   echo "$dest/bin/qaren"
 }
 
+# A release and a <release>-dev.<commit> source build are two lines that never relink each other.
+line_of() { case "$1" in *-dev.*) echo dev ;; *) echo release ;; esac; }
+
+# Only the qaren that runs first on PATH is ever (re)linked, so an install never shadows another.
 # A link problem is a stderr notice, never a failed install.
 link_on_path() {
-  local bin="$1" dir="$HOME/.local/bin" target tmp candidate pass on_path=false
+  local bin="$1" dir="" target tmp candidate pass on_path=false current linked version
   local -a path_dirs
   IFS=: read -r -a path_dirs <<< "$PATH"
+  # Empty and relative entries resolve against the caller's directory, not a stable bin.
+  for candidate in "${path_dirs[@]}"; do
+    [[ "$candidate" == /* ]] && { [ -e "$candidate/qaren" ] || [ -L "$candidate/qaren" ]; } || continue
+    dir="$candidate"
+    on_path=true
+    break
+  done
   # Prefer a standard user bin; otherwise any writable PATH entry keeps qaren invocable at once.
-  for pass in standard any; do
+  [ -n "$dir" ] || for pass in standard any; do
     for candidate in "${path_dirs[@]}"; do
-      # Empty and relative entries resolve against the caller's directory, not a stable bin.
       [[ "$candidate" == /* ]] && [ -d "$candidate" ] && [ -w "$candidate" ] || continue
       if [ "$pass" = standard ]; then
         case "$candidate" in
@@ -394,12 +422,29 @@ link_on_path() {
       break 2
     done
   done
+  dir="${dir:-$HOME/.local/bin}"
   target="$dir/qaren"
   mkdir -p "$dir" 2>/dev/null || { echo "qaren: cannot create $dir; run qaren as $bin" >&2; return 0; }
   if [ -e "$target" ] || [ -L "$target" ]; then
-    if [ ! -L "$target" ] || [[ "$(readlink "$target")" != "$RUNTIME_ROOT"/* ]]; then
+    current=$(readlink "$target" 2>/dev/null || true)
+    if [ ! -L "$target" ] || [[ "$current" != /*/runtime/*/bin/qaren ]]; then
       echo "qaren: $target already exists and is not a qaren install link; run qaren as $bin or replace that file yourself" >&2
       return 0
+    fi
+    linked="${current%/bin/qaren}"
+    linked="${linked##*/}"
+    version="${bin%/bin/qaren}"
+    version="${version##*/}"
+    if [ "$LINK" = 0 ]; then
+      if [[ "$current" != "$RUNTIME_ROOT"/* ]]; then
+        echo "qaren: $target links qaren $linked from another QAREN_HOME; run qaren as $bin, or rerun --install with --link to replace it" >&2
+        return 0
+      fi
+      # A link whose runtime here is gone serves nobody, so only a working one keeps its line.
+      if [ -e "$target" ] && [ "$(line_of "$linked")" != "$(line_of "$version")" ]; then
+        echo "qaren: $target runs qaren $linked, not this $(line_of "$version") build; run qaren as $bin, or rerun --install with --link to replace it" >&2
+        return 0
+      fi
     fi
   fi
   tmp="$dir/.qaren-link.$$"
