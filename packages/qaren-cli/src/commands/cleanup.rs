@@ -273,7 +273,9 @@ pub fn cleanup_with_runtime(
     let owner_refusal =
         || Outcome::Refused("the run's qaren process is alive or unproven gone".to_string());
     let producers = record.resources.core.is_some() || !record.resources.runner_drivers.is_empty();
+    // A held pool creation lock means the creator may still be counting, creating or enrolling.
     let guarded_simulator = !record.resources.can_release_borrowed_ios_stop()
+        || record.resources.pool_create_lock.is_some()
         || (record.resources.device_borrowed
             && record.resources.ios_simulator.is_some()
             && record.resources.lease.is_some());

@@ -1458,12 +1458,12 @@ fn claim_pool_create_lock(ctx: &mut Ctx, pool_root: &Path) -> Result<(), Failure
                     format!(
                         " (held for run {}; if it is no longer creating, recover with {})",
                         h.run_id,
-                        crate::lease::cleanup_command(&h.run_id, h.home.as_deref())
+                        crate::lease::cleanup_command(&h.run_id, &h)
                     ),
                     format!(
                         "re-run once run {} finishes creating, or clean it up with {}",
                         h.run_id,
-                        crate::lease::cleanup_command(&h.run_id, h.home.as_deref())
+                        crate::lease::cleanup_command(&h.run_id, &h)
                     ),
                 ),
                 None => (
@@ -2167,12 +2167,14 @@ fn verify_artifact(artifact: &CachedArtifact) -> ArtifactStatus {
 }
 
 fn lock_holder_for(ctx: &mut Ctx) -> LockHolder {
+    let (home, qaren_home) = crate::lease::holder_homes(ctx.runner);
     LockHolder {
         holder: android::holder(&ctx.record.run_id),
         run_id: ctx.record.run_id.clone(),
         identity: ctx.record.prepare.clone(),
         at: timefmt::iso8601_utc(ctx.runner.now_epoch_ms()),
-        home: crate::lease::holder_home(ctx.runner),
+        home,
+        qaren_home,
         group: None,
     }
 }
