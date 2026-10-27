@@ -1,5 +1,11 @@
 # qaren
 
+## 2.0.1
+
+### Patch Changes
+
+- ff0d5a5: Point runner downloads, the installer, plugin manifests and documentation links at the renamed Lykhoyda/QaReN repository and its https://lykhoyda.github.io/QaReN/ docs site.
+
 ## 2.0.0
 
 ### Major Changes

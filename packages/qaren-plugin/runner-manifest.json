@@ -1,25 +1,25 @@
 {
-  "version": "2.0.0",
+  "version": "2.0.1",
   "assets": {
     "ios": [
       {
-        "name": "rn-fast-runner-2.0.0-sim.zip",
-        "sha256": "21b525627a7bfe395e393ffa8d2263bd8df6d685318ddd7aa3f1a65bc6001ae6",
-        "bytes": 8038269
+        "name": "rn-fast-runner-2.0.1-sim.zip",
+        "sha256": "b7a67fc9779680192ceafbac28870a1355add822441de620ab0ff9e0baf154ba",
+        "bytes": 8039085
       }
     ],
     "android": [
       {
-        "name": "rn-android-runner-2.0.0.zip",
-        "sha256": "25405b3099c68aea7dbf0c6d084b200b3a294ac772023a95672c15770a6c221d",
-        "bytes": 1938727
+        "name": "rn-android-runner-2.0.1.zip",
+        "sha256": "e561b0465dcb867f21a9ecf84c24bb4aace44e06a852585f2c7b0a0474b8bed3",
+        "bytes": 1938731
       }
     ],
     "qaren": {
       "darwin-arm64": {
-        "name": "qaren-2.0.0-darwin-arm64.tar.gz",
-        "sha256": "95a06aca6ec5a2943f8b98a954c61e83fb2a03b83645bec1316bf1af9b76a554",
-        "bytes": 2778423
+        "name": "qaren-2.0.1-darwin-arm64.tar.gz",
+        "sha256": "37ec5820837cb424de77faec3330ae44c961633b079d5110026d09fcf90d37c9",
+        "bytes": 2778340
       }
     }
   }
