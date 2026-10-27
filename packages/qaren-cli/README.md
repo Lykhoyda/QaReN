@@ -2008,11 +2008,11 @@ secret despite artifact redaction.
   before the session opens.
 - The core receives the values only inside its stdin request. The walker types them, saves
   slot fills as `inputText: { input: "PASSWORD" }` and replays saved and login blocks with
-  the current run's values. A non-secret slot saves as
-  `inputText: { input: "FIXTURE_CODE", sensitivity: "non-secret" }`, with no raw value.
-  When any slot is non-secret, every block's `planHash` uses a versioned `ns1:` digest of
-  normalized source steps and the sorted non-secret names. Policy changes invalidate saved
-  evidence across the run, including unchanged earlier blocks and removal of the last opt-in.
+  the current run's values. A TEST-PII slot saves as
+  `inputText: { input: "TEST_EMAIL", sensitivity: "non-secret" }` for either opt-in spelling,
+  with no raw value. When any slot is TEST-PII, every block's `planHash` uses a versioned
+  `ns1:` digest of normalized source steps and the sorted TEST-PII names. Policy changes
+  invalidate saved evidence across the run, including unchanged earlier blocks and removal of the last opt-in.
   Ordinary blocks re-walk; policy-stale configured login evidence refuses before session open
   and must be explicitly refreshed. Legacy strict-only hashes and login admission stay unchanged.
   Private literal fills stay unsavable.
