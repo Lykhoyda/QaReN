@@ -4,7 +4,7 @@ import { test } from 'node:test';
 import { buildFiber, createSandbox } from '../helpers/inject-harness.js';
 import { renderReason } from '../../../dist/qa/untrusted.js';
 import { parsePlan } from '../../../dist/qa/plan.js';
-import { join, screenSignature } from '../../../dist/qa/screen.js';
+import { join, renderedFingerprintOf, screenSignature } from '../../../dist/qa/screen.js';
 import type { DigestEntry, NativeNode, Screen } from '../../../dist/qa/screen.js';
 import { walkBlock } from '../../../dist/qa/walker.js';
 import type { ActResult, WalkerDeps } from '../../../dist/qa/walker.js';
@@ -236,4 +236,69 @@ test('an option whose label another node shares carries no hash to compare', asy
   const f = fake([options('0000000a', shared), options('0000000b', shared)]);
   const outcome = await walkBlock(tapAlone, f.deps);
   assert.notEqual(outcome.block.outcome, 'pass');
+});
+
+test('label joins withhold hashes for normalized duplicates, even with unique native IDs', async () => {
+  for (const identified of [false, true]) {
+    for (const labels of [
+      ['Alone', 'Alone'],
+      ['Alone', ' ALONE '],
+      [' alone ', 'Alone'],
+    ]) {
+      const nodes: NativeNode[] = labels.map((label, i) => ({
+        ref: `@option${i}`,
+        index: i,
+        type: 'Button',
+        identifier: identified ? `option-${i}` : undefined,
+        label,
+        hittable: true,
+        rect: { x: 20, y: 300 + i * 60, width: 360, height: 44 },
+      }));
+      const screen = (rendered: string): Screen => ({
+        ...join(nodes, [
+          { role: 'button', text: 'Alone', capabilities: { press: true, fill: false }, rendered },
+        ]),
+        coverage: { native: 'complete', react: 'complete' },
+      });
+      const before = screen('0000000a');
+      const after = screen('0000000b');
+      for (const element of [...before.elements, ...after.elements]) {
+        assert.equal(renderedFingerprintOf(element), undefined);
+      }
+      if (identified) {
+        const f = fake([before, after]);
+        const outcome = await walkBlock(parsePlan('1. Tap "option-0"\n').blocks![0], f.deps);
+        assert.equal(outcome.block.outcome, 'fail');
+        assert.equal(f.calls.length, 2);
+        assert.match(seen(outcome), /the screen did not change after two attempts/);
+      }
+    }
+  }
+});
+
+test('exact ID joins retain redraw proof when native labels are shared', async () => {
+  const nodes: NativeNode[] = [0, 1].map((i) => ({
+    ref: `@option${i}`,
+    index: i,
+    type: 'Button',
+    identifier: `option-${i}`,
+    label: 'Alone',
+    hittable: true,
+    rect: { x: 20, y: 300 + i * 60, width: 360, height: 44 },
+  }));
+  const screen = (rendered: string): Screen => ({
+    ...join(nodes, [
+      { role: 'button', testID: 'option-0', capabilities: { press: true, fill: false }, rendered },
+    ]),
+    coverage: { native: 'complete', react: 'complete' },
+  });
+  const before = screen('0000000a');
+  const after = screen('0000000b');
+  assert.equal(renderedFingerprintOf(before.elements[0]), '0000000a');
+  assert.equal(renderedFingerprintOf(after.elements[0]), '0000000b');
+  assert.equal(renderedFingerprintOf(after.elements[1]), undefined);
+  const f = fake([before, after]);
+  const outcome = await walkBlock(parsePlan('1. Tap "option-0"\n').blocks![0], f.deps);
+  assert.equal(outcome.block.outcome, 'pass', outcome.failure?.seen);
+  assert.equal(f.calls.length, 1);
 });

@@ -982,12 +982,16 @@ export function join(
       // Diagnostics cannot change host association.
     }
     localCapabilities.set(element, local);
-    const soleNative =
-      testID !== undefined
-        ? nativeIds.get(testID) === 1
-        : label !== undefined &&
-          nodes.filter((other) => nonEmpty(other.label) === label).length === 1;
-    if (match?.rendered !== undefined && reactCandidates.length === 1 && soleNative)
+    const soleLabel =
+      label !== undefined &&
+      nodes.filter((other) => norm(other.label) === norm(label)).length === 1;
+    const soleNative = testID !== undefined ? nativeIds.get(testID) === 1 : soleLabel;
+    if (
+      match?.rendered !== undefined &&
+      reactCandidates.length === 1 &&
+      soleNative &&
+      ((testID !== undefined && match.testID === testID) || soleLabel)
+    )
       renderedFingerprints.set(element, match.rendered);
     return element;
   });
