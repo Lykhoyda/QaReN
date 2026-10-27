@@ -1674,6 +1674,8 @@ export const INJECTED_HELPERS = `
         var RENDERED_PROP_KEYS = ['source', 'src', 'd', 'fill', 'stroke', 'tintColor'];
         var renderedVisits = 0;
         var renderedChars = 0;
+        // Leaves the capture's own finish its margin: a late hash is omitted, never the capture.
+        var renderedDeadline = typography.deadline - 250;
         var renderedFact = function(value, depth) {
           if (typeof value === 'string' && (value.length > 4096 || (renderedChars += value.length) > 262144)) throw new Error('Capture refused');
           if (value == null || typeof value === 'boolean' || typeof value === 'number' || typeof value === 'string') return typeof value + ':' + String(value);
@@ -1697,7 +1699,7 @@ export const INJECTED_HELPERS = `
             for (var ci = 0; ci < text.length; ci++) hash = Math.imul(hash ^ text.charCodeAt(ci), 16777619) >>> 0;
           };
           var visit = function(fiber, depth) {
-            if (++renderedVisits > 4000 || ++visits > 400 || depth > 64 || Date.now() >= typography.deadline) throw new Error('Capture refused');
+            if (++renderedVisits > 4000 || ++visits > 400 || depth > 64 || Date.now() >= renderedDeadline) throw new Error('Capture refused');
             if (fiber.tag === 6) fold('#' + depth + '|');
             else if (isHostFiber(fiber)) {
               var props = qaData(fiber, 'memoizedProps', true);
@@ -1712,7 +1714,7 @@ export const INJECTED_HELPERS = `
           try { visit(root, 0); } catch (_) { return null; }
           return ('0000000' + hash.toString(16)).slice(-8);
         };
-        for (var ri = 0; ri < salient.length; ri++) {
+        for (var ri = 0; ri < salient.length && Date.now() < renderedDeadline; ri++) {
           var rendered = renderedFingerprint(salientFibers[ri]);
           if (rendered !== null) salient[ri].rendered = rendered;
         }
