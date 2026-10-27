@@ -373,24 +373,27 @@ export function matchPrivate(
     const matches = rules
       .flatMap((rule) =>
         [...(rule.anyCase ? folded : text).matchAll(new RegExp(rule.pattern, 'gu'))].map(
-          (match) => ({
-            start: rule.anyCase ? starts[match.index] : match.index,
-            end: rule.anyCase
+          (match) => {
+            const start = rule.anyCase ? starts[match.index] : match.index;
+            const end = rule.anyCase
               ? ends[match.index + match[0].length - 1]
-              : match.index + match[0].length,
-            rule,
-          }),
+              : match.index + match[0].length;
+            return { start, end, rule, exact: forms(rule.value).includes(text.slice(start, end)) };
+          },
         ),
       )
-      .sort((a, b) => a.start - b.start || b.end - a.end || b.rule.length - a.rule.length);
-    for (const { start, end, rule } of matches) {
+      .sort(
+        (a, b) =>
+          a.start - b.start ||
+          b.end - a.end ||
+          Number(b.exact) - Number(a.exact) ||
+          b.rule.length - a.rule.length,
+      );
+    for (const { start, end, rule, exact } of matches) {
       if (start < offset) continue;
       parts.push({ text: text.slice(offset, start), masked: false });
       parts.push({
-        text:
-          policy === 'model' && (!rule.input || text.slice(start, end) === rule.value)
-            ? (token?.(rule.value) ?? MASK)
-            : MASK,
+        text: policy === 'model' && (!rule.input || exact) ? (token?.(rule.value) ?? MASK) : MASK,
         masked: true,
       });
       offset = end;

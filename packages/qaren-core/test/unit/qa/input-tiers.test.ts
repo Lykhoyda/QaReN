@@ -163,6 +163,59 @@ test('derived and re-cased inputs mask without asserting full-value equality', a
   assert.equal(judge.requests.length, 1);
 });
 
+test('exact and normalized inputs win over derived forms independent of declaration order', async () => {
+  for (const [email, name, observed] of [
+    ['alice@example.test', 'alice', 'alice'],
+    ['alice@example.test', 'example.test', 'example.test'],
+    ['alice@example.test', 'ALICE', 'ALICE'],
+    ['café@example.test', 'café', 'cafe\u0301'],
+    ['cafe\u0301@example.test', 'cafe\u0301', 'café'],
+  ]) {
+    for (const values of [
+      { EMAIL: email, NAME: name },
+      { NAME: name, EMAIL: email },
+    ]) {
+      const { privacy } = privacyFor(values, ['EMAIL', 'NAME']);
+      const mask = privacy.maskForModel(privacy.modelValues(), []);
+      const nameToken = mask.apply(name);
+      assert.ok(mask.tokens.includes(nameToken));
+      assert.equal(mask.apply(observed), nameToken);
+      assert.notEqual(nameToken, mask.apply(email));
+      assert.equal(privacy.redact(observed), MASK);
+      assert.equal(
+        mask.describeElement(element('@name', observed, { kind: 'text' }), (e) => e.label ?? ''),
+        nameToken,
+      );
+      assert.equal(mask.applyPlanLine(`1. Tap "${observed}"`), `1. Tap "${nameToken}"`);
+      for (const kind of ['check', 'wait', 'scroll'] as const) {
+        const judge = scriptedJudge((questions) =>
+          Object.fromEntries(
+            Object.keys(questions).map((id) => [id, { type: 'noul', noul: 0.99 }]),
+          ),
+        );
+        const claim = `${name} is visible`;
+        const decision = await decideScreen(
+          screen([element('@name', observed, { kind: 'text' })]),
+          judge,
+          kind === 'check' ? { kind, text: claim, literal: false, line: 1 } : undefined,
+          kind === 'wait'
+            ? { kind, target: { phrase: claim }, line: 1 }
+            : kind === 'scroll'
+              ? { kind, direction: 'down', until: { phrase: claim }, line: 1 }
+              : undefined,
+          privacy.modelValues(),
+          privacy,
+        );
+        assert.equal(
+          kind === 'check' ? decision.check : decision.visibility?.verdict,
+          kind === 'check' ? 'pass' : 'present',
+        );
+        assert.equal(judge.requests.length, 1);
+      }
+    }
+  }
+});
+
 test('Unicode input casing redacts original screen and error spans in both directions', () => {
   for (const [declared, variant] of [
     ['Hauptstraße 42', 'HAUPTSTRASSE 42'],
