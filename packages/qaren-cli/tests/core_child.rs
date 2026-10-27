@@ -1898,6 +1898,65 @@ fn announced_runner_drivers_reach_the_recorder_in_order_and_count_as_progress() 
 }
 
 #[test]
+fn strict_input_promotion_restores_withholding_for_later_drains_and_summaries() {
+    use qaren::exec::RealRunner;
+    use qaren::redact::{private_output_mode, with_input_scope, InputValues};
+    use std::io::Read;
+    use std::sync::Arc;
+    let repo = common::temp_repo();
+    let inputs = Arc::new(InputValues::from_entries([(
+        "QAREN_INPUT_CODE".into(),
+        "123456".into(),
+    )]));
+    with_input_scope(inputs.clone(), || {
+        inputs
+            .admit(&["CODE".into()])
+            .unwrap()
+            .declare_test_pii(&["CODE".into()]);
+        assert!(!private_output_mode());
+        let stdout = format!(
+            "{}\n{}\n",
+            envelope(2, "resource", r#"{"kind":"strict_inputs"}"#),
+            envelope(3, "result", &pass_ledger(&[])),
+        );
+        let mut mock = MockRunner::new();
+        mock.expect_spawn_piped("walk.js", 9000, &stdout, Some(0));
+        let outcome = run_child(&mut mock, &repo.join("core.log"));
+        assert_eq!(outcome.verdict, Verdict::Pass);
+        assert!(private_output_mode());
+        assert!(!CmdOutput::failed(1, "undeclared Account address")
+            .summary()
+            .contains("Account"));
+        let mut runner = RealRunner::with_log_executable(env!("CARGO_BIN_EXE_qaren").into());
+        let log = repo.join("later.log");
+        let mut child = runner
+            .spawn_piped(
+                &CmdSpec::new(
+                    "later",
+                    "sh",
+                    &["-c", "printf 'undeclared Account address\\n' >&2"],
+                    5,
+                ),
+                &log,
+            )
+            .unwrap();
+        child.stdout.read_to_string(&mut String::new()).unwrap();
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        while child.handle.try_wait().unwrap().is_none() {
+            assert!(std::time::Instant::now() < deadline);
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        drop(child);
+        runner.flush_logs().unwrap();
+        assert_eq!(
+            std::fs::read_to_string(log).unwrap(),
+            "[private output withheld]\n"
+        );
+    });
+    std::fs::remove_dir_all(repo).unwrap();
+}
+
+#[test]
 fn a_malformed_runner_driver_announcement_is_a_protocol_violation() {
     for payload in [
         r#"{"kind":"runner_driver","pid":1}"#,

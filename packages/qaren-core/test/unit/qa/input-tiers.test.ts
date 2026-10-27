@@ -9,6 +9,7 @@ import {
 } from '../../../dist/qa/privacy.js';
 import { describeError } from '../../../dist/qa/adapt.js';
 import { runPlan } from '../../../dist/qa/walker.js';
+import { createWriter } from '../../../dist/qa/wire.js';
 import { element, screen, scriptedJudge, walker } from './judgment-fixtures.ts';
 
 const EMAIL = 'qa.tester+run7@staging.example.test';
@@ -113,6 +114,63 @@ test('a TEST-PII run reports failure screen text redacted by the declared value'
   const durable = JSON.stringify(result);
   for (const leaked of [EMAIL, 'qa.tester', 'staging.example.test'])
     assert.ok(!durable.includes(leaked), `leaked ${leaked}`);
+});
+
+test('a secure TEST-PII Fill promotes the run before typing and withholds later Account evidence', async () => {
+  const login = screen([
+    element('@code', 'Code', { kind: 'input', testID: 'code', secure: true }),
+    element('@continue', 'Continue', { testID: 'continue' }),
+  ]);
+  const f = walker(
+    [login],
+    scriptedJudge(() => assert.fail('model-free')),
+  );
+  const { privacy, inputs } = privacyFor({ CODE: '123456' }, ['CODE']);
+  const wire: string[] = [];
+  const writer = createWriter((line) => wire.push(line), 'secure-fill');
+  inputs.onPromotion(() => writer.strictInputs());
+  f.deps.privacy = privacy;
+  let account = false;
+  f.deps.captureScreen = async () => (account ? accountScreen() : login);
+  let typed = false;
+  f.deps.fill = async (_ref, _text, _context, privateValue) => {
+    assert.equal(inputs.hasStrictInputs, true);
+    assert.equal(privateValue, true);
+    assert.equal(inputs.protectFill('CODE'), true);
+    assert.deepEqual(
+      wire.map((line) => JSON.parse(line).payload),
+      [{ kind: 'strict_inputs' }],
+    );
+    typed = true;
+    return { ok: true, proven: true };
+  };
+  f.deps.press = async () => {
+    account = true;
+    return { ok: true, proven: true };
+  };
+  const result = await withInputs(inputs, () =>
+    runPlan(
+      parsePlan(
+        '1. Fill "code" with input CODE (test-pii)\n2. Tap "continue"\n3. Wait for "Billing address"',
+      ).blocks!,
+      f.deps,
+    ),
+  );
+  assert.equal(typed, true);
+  assert.equal(account, true);
+  assert.equal(result.verdict, 'FAIL');
+  assert.ok(result.failure?.seen.includes(INPUT_SCREEN_TEXT_WITHHELD));
+  assert.equal(inputs.protectFill('CODE'), true);
+  assert.equal(wire.length, 1);
+  const evidence = JSON.stringify({ result, rows: f.rows });
+  for (const text of [PHONE, 'Signed in as', '123456']) assert.ok(!evidence.includes(text), text);
+  assert.deepEqual(
+    withInputs(inputs, () => describeError(new Error('Account address'))),
+    {
+      code: 'UNEXPECTED_ERROR',
+      message: '[private output withheld]',
+    },
+  );
 });
 
 test('a TEST-PII run redacts handler errors instead of withholding them', () => {

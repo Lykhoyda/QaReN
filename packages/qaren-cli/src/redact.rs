@@ -924,6 +924,14 @@ pub fn private_output_mode() -> bool {
     })
 }
 
+pub fn promote_strict_inputs() {
+    if let Some(scope) = capture_input_scope() {
+        scope
+            .test_pii_only
+            .store(false, std::sync::atomic::Ordering::SeqCst);
+    }
+}
+
 pub fn input_namespace_present() -> bool {
     capture_input_scope().is_some_and(|scope| scope.has_namespace())
 }

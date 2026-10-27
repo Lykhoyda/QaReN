@@ -715,11 +715,15 @@ async function openSession(
         now,
         observe: timing,
       }),
-    fill: (ref, text, qaContext) =>
-      act(() => fill({ ref, text, qaContext, qaTiming: { now, observe: timing } }), true, {
-        now,
-        observe: timing,
-      }),
+    fill: (ref, text, qaContext, privateValue) =>
+      act(
+        () => fill({ ref, text, qaContext, privateValue, qaTiming: { now, observe: timing } }),
+        true,
+        {
+          now,
+          observe: timing,
+        },
+      ),
     scroll: (direction, qaContext, clearance, within) =>
       act(() => scroll({ ...scrollArgs(direction, clearance, within), qaContext }), false),
     back: (qaContext) => act(() => back({ qaContext }), false),
@@ -876,6 +880,14 @@ async function mainRequest(
         : loginBlock(actual.slug, readBlock(actual.content) as import('./blocks.js').StoredBlock);
   }
   const writer = createWriter((line) => process.stdout.write(redactApiKey(line)), request.runId);
+  currentInputs()?.onPromotion(() => {
+    const write = process.stderr.write.bind(process.stderr);
+    process.stderr.write = ((_chunk: unknown, ...args: unknown[]) => {
+      const callback = args.find((arg) => typeof arg === 'function') as (() => void) | undefined;
+      return write('[private output withheld]\n', callback);
+    }) as typeof process.stderr.write;
+    writer.strictInputs();
+  });
   observeRunnerDrivers((pid) => writer.runnerDriver(pid));
   const rows: LedgerRow[] = [];
   const emitRow = (row: LedgerRow): void => {

@@ -183,7 +183,12 @@ export interface WalkerDeps {
     timing?: TimingObserver;
   }): Promise<Screen>;
   press(ref: string, context: QaDispatchContext): Promise<ActResult>;
-  fill(ref: string, text: string, context: QaDispatchContext): Promise<ActResult>;
+  fill(
+    ref: string,
+    text: string,
+    context: QaDispatchContext,
+    privateValue?: boolean,
+  ): Promise<ActResult>;
   // iOS only: type, proven only by a matching React read-back; testID identifies the pre-dispatch focus veto.
   typeFocused?(
     ref: string,
@@ -283,8 +288,13 @@ class EvidenceExpired extends Error {
 }
 
 // SECRET is the default tier; a TEST-PII input is read back like literal text.
-const secretFill = (item: { input?: string; sensitivity?: 'non-secret' }): boolean =>
-  item.input !== undefined && item.sensitivity !== 'non-secret';
+const secretFill = (
+  item: { input?: string; sensitivity?: 'non-secret' },
+  element?: Element,
+): boolean =>
+  item.input !== undefined &&
+  (currentInputs()?.protectFill(item.input, element !== undefined && isPrivateInput(element)) ??
+    item.sensitivity !== 'non-secret');
 
 const unresolvedText = (quoted: string) =>
   new ResolutionError({
@@ -1326,6 +1336,10 @@ async function walkBlockScoped(
     const fresh = await settledCapture(item);
     usable(fresh, item);
     if (!present(fresh.screen)) return undefined;
+    secretFill(
+      item,
+      fresh.screen.elements.find((element) => element.testID === testID),
+    );
     try {
       const result = await mutate(
         item,
@@ -1381,6 +1395,7 @@ async function walkBlockScoped(
     | 'typed'
   > => {
     const quoted = item.target.quoted!;
+    secretFill(item, target.element);
     const nothingTyped = (reason: string, screen: Screen): WalkOutcome =>
       failed(item, attempt, `${reason}; nothing was typed`, screen, undefined);
     const proofMode = before.screen.keyboardVisible === true && deps.reactFocused !== undefined;
@@ -1490,7 +1505,7 @@ async function walkBlockScoped(
           again.oracleTestID,
           context,
           proofMode,
-          secretFill(item),
+          secretFill(item, again.element),
         ),
       );
     } catch (error) {
@@ -1552,6 +1567,10 @@ async function walkBlockScoped(
     )
       return;
     if (!(await focusProven('none', quoted))) return;
+    secretFill(
+      item,
+      before.screen.elements.find((element) => element.testID === quoted),
+    );
     privacy.concealFallback(fillText(item), false, quoted);
     recordMediaLatch(privacy, sequence, deps, line);
     if (item.input === undefined) privateFills.push(item.line);
@@ -2525,6 +2544,7 @@ async function walkBlockScoped(
                 within = clearanceBand(element, before.screen);
                 continue;
               }
+              if (item.kind === 'fill') secretFill(item, element);
               if (item.kind === 'fill' && element && isPrivateInput(element)) {
                 privacy.concealFallback(
                   fillText(item),
@@ -2545,7 +2565,7 @@ async function walkBlockScoped(
                 item.kind === 'press'
                   ? deps.press(ref!, context)
                   : item.kind === 'fill'
-                    ? deps.fill(ref!, fillText(item), context)
+                    ? deps.fill(ref!, fillText(item), context, secretFill(item))
                     : item.kind === 'scroll'
                       ? deps.scroll(item.direction, context)
                       : item.kind === 'back'

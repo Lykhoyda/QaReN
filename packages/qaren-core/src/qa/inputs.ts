@@ -24,11 +24,12 @@ export const declareEcho = (name: string): void => {
 export class RunInputs {
   #values: ReadonlyMap<string, string>;
   #filled = new Set<string>();
-  #strict: ReadonlyMap<string, string>;
+  #strict: Map<string, string>;
   #nonSecret: readonly string[];
   #privacy: ObservedPrivacy;
   #refuse?: (reason: InputPrivacyRefusal) => void;
   #terminal?: InputPrivacyRefusal;
+  #promoted?: () => void;
 
   constructor(
     value: unknown,
@@ -80,6 +81,20 @@ export class RunInputs {
   nonSecretNames(): readonly string[] {
     return this.#nonSecret;
   }
+  onPromotion(promoted: () => void): void {
+    this.#promoted = promoted;
+  }
+  protectFill(name: string, privateTarget = false): boolean {
+    const value = this.#values.get(name);
+    if (value === undefined) throw new Error('runtime inputs are invalid');
+    if (privateTarget && !this.#strict.has(name)) {
+      const wasStrict = this.hasStrictInputs;
+      this.#strict.set(name, value);
+      this.#privacy.classifyInputs([], [value]);
+      if (!wasStrict) this.#promoted?.();
+    }
+    return this.#strict.has(name);
+  }
   get hasInputs(): boolean {
     return this.#values.size > 0;
   }
@@ -110,7 +125,7 @@ export class RunInputs {
     throw this.#terminal;
   }
   expectEcho(identifier: string | undefined, inputName?: string): void {
-    if (inputName !== undefined && this.#nonSecret.includes(inputName)) return;
+    if (inputName !== undefined && !this.#strict.has(inputName)) return;
     if (identifier) this.#filled.add(identifier);
   }
   // Declared echoes hash as a constant; other labels must prove their redacted projection safe.

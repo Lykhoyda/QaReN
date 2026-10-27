@@ -348,6 +348,7 @@ export interface WireWriter {
   start(payload: StepStart): void;
   row(payload: LedgerRow): void;
   runnerDriver(pid: number): void;
+  strictInputs(): void;
   result(payload: ResultPayload): 0 | 1 | 4;
   readonly seq: number;
 }
@@ -388,6 +389,7 @@ export function createWriter(write: (line: string) => void, runId: string): Wire
       }
     },
     admitted: () => send('admitted', {}),
+    strictInputs: () => send('resource', { kind: 'strict_inputs' }),
     start: ({ operationId, line, kind, t }) => send('start', { operationId, line, kind, t }),
     row: (payload) => send('row', payload),
     // The CLI records the driver's own process group before it can outlive this child.

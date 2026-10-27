@@ -1006,6 +1006,13 @@ impl Inbox {
             }
         }
         match (kind, value.get("payload")) {
+            (Some("resource"), Some(payload))
+                if payload.get("kind").and_then(Value::as_str) == Some("strict_inputs")
+                    && payload.as_object().is_some_and(|p| p.len() == 1) =>
+            {
+                crate::redact::promote_strict_inputs();
+                true
+            }
             (Some("diagnostic"), Some(payload)) => {
                 self.diagnostics.accept(payload);
                 false
