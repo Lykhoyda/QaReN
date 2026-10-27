@@ -3553,19 +3553,12 @@ A scenario with `deps.policy: require-prewarm` then refuses to prepare without a
 (`DEPS_NOT_PREWARMED`) and installs with `--offline`, so no mid-run
 credential prompt can ever occur.
 
-**Prepared simulator lanes (evaluated, deferred).** Keeping a booted,
-pre-warmed simulator between runs would save the ~36s create+boot phase.
-The evaluation: a maintained lane needs an owner (who deletes it when its
-runtime/device-type pins change), a freshness rule (recreate on runtime
-update or after N days), and an ownership marker distinguishing it from
-user simulators — all solvable with the existing run-scoped-name machinery.
-It is deferred because native compile dominates whenever it is not already
-cached (the 2026-08-17 clean run spent 5m 42s building vs 5m 25s
-allocating) and a persistent simulator weakens the "no resource outlives
-its run" cleanup story. Once compile is short the balance flips — the
-incremental run spent 1m 31s in allocate against 1m 03s in
-build_and_ready — so revisit this once live reuse is measurable. A
-caller-maintained simulator can already be borrowed instead; see
+**Booted simulator lanes (deferred).** Default iOS prepare already reuses a
+shut-down QaReN-created simulator instead of creating one; see
+[iOS simulator pool](#ios-simulator-pool). Keeping a pool member booted
+between runs, to skip its boot as well, is deferred: cleanup shuts every
+member down so no booted resource outlives its run. A caller-maintained
+simulator can be borrowed instead; see
 [Existing iOS simulator](#existing-ios-simulator).
 
 ## Preparation ownership and safety rules
