@@ -1103,6 +1103,7 @@ fn usb_status_probes_claim_server_and_app() {
                 identity: None,
                 at: "2026-08-13T00:00:00Z".to_string(),
                 home: None,
+                qaren_home: None,
                 group: None,
             },
             buildplan::LockPolicy::Strict,
@@ -1289,6 +1290,7 @@ fn usb_claim_is_retained_while_the_build_process_group_is_unresolved() {
             identity: None,
             at: "2026-08-12T16:00:00Z".to_string(),
             home: None,
+            qaren_home: None,
             group: None,
         },
     )

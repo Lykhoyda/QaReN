@@ -52,19 +52,25 @@ fn acquire_writes_a_holder_and_release_removes_it() {
 }
 
 #[test]
-fn a_holder_under_qaren_home_records_no_home_and_its_records_are_never_gone() {
-    let root = common::temp_repo().join("locks");
+fn a_holder_under_qaren_home_records_that_home_instead_of_home() {
+    let repo = common::temp_repo();
+    let root = repo.join("locks");
+    let side = repo.join("side-home");
     let mut mock = MockRunner::new();
     mock.environment.insert("HOME".into(), "/home-a".into());
     mock.environment
-        .insert("QAREN_HOME".into(), "/side-home".into());
+        .insert("QAREN_HOME".into(), side.display().to_string());
     let lease = acquire(&mut mock, &root, Platform::Ios, UDID, "check-q", None).unwrap();
     let holder = read_holder(&lease.lock_dir).unwrap();
     assert_eq!(holder.home, None);
+    assert_eq!(holder.qaren_home.as_deref(), Some(side.as_path()));
+    assert!(qaren::lease::records_gone(&holder));
+    std::fs::create_dir_all(side.join("runs/check-q")).unwrap();
+    std::fs::write(side.join("runs/check-q/run.json"), "{}").unwrap();
     assert!(!qaren::lease::records_gone(&holder));
-    assert!(
-        qaren::lease::cleanup_command("check-q", holder.home.as_deref())
-            .ends_with("`qaren cleanup check-q`, with the QAREN_HOME that run used if it set one")
+    assert_eq!(
+        qaren::lease::cleanup_command("check-q", &holder),
+        format!("`QAREN_HOME='{}' qaren cleanup check-q`", side.display())
     );
     assert_eq!(release(&lease), ReleaseOutcome::Removed);
 }
@@ -335,6 +341,7 @@ fn reclaim_of_a_records_gone_holder_with_a_live_group_keeps_the_release_advice()
         identity: Some(common::identity(4242, "Wed Aug 12 15:00:00 2026")),
         at: "2026-10-23T00:00:00Z".into(),
         home: Some(deleted_home.clone()),
+        qaren_home: None,
         group: Some(777),
     };
     let name = lock_name(Platform::Ios, UDID);
@@ -392,6 +399,7 @@ fn a_reused_holder_pid_leading_its_own_group_does_not_keep_an_orphaned_lease() {
         identity: Some(common::identity(4242, "Wed Aug 12 15:00:00 2026")),
         at: "2026-10-23T00:00:00Z".into(),
         home: Some(repo.join("deleted-home")),
+        qaren_home: None,
         group: Some(4242),
     };
     let name = lock_name(Platform::Ios, UDID);
@@ -444,6 +452,7 @@ fn cleanup_of_a_run_without_run_json_releases_only_its_orphaned_locks() {
         identity: Some(common::identity(pid, "Wed Aug 12 15:00:00 2026")),
         at: "2026-10-23T00:00:00Z".into(),
         home: Some(holder_home.clone()),
+        qaren_home: None,
         group,
     };
     let device = lock_name(Platform::Ios, UDID);

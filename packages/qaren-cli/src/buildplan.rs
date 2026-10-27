@@ -1385,6 +1385,8 @@ pub struct LockHolder {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub home: Option<PathBuf>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub qaren_home: Option<PathBuf>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub group: Option<i32>,
 }
 
