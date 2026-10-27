@@ -1267,15 +1267,15 @@ export const INJECTED_HELPERS = `
     }
 
     // A failed safe read never skips: it only means this fiber is walked as before.
-    function routeRead(object, key) {
-      try { return qaData(object, key, true); } catch (e) { return undefined; }
+    function routeRead(object, key, strict) {
+      try { return qaData(object, key, true); } catch (e) { if (strict) throw e; return undefined; }
     }
     var UNKNOWN_DISPLAY = {};
     var MISSING_DISPLAY = {};
-    function styleRead(object, key) {
-      try { return key in object ? qaData(object, key, true) : MISSING_DISPLAY; } catch (e) { return UNKNOWN_DISPLAY; }
+    function styleRead(object, key, strict) {
+      try { return key in object ? qaData(object, key, true) : MISSING_DISPLAY; } catch (e) { if (strict) throw e; return UNKNOWN_DISPLAY; }
     }
-    function resolvedDisplay(style, depth) {
+    function resolvedDisplay(style, depth, strict) {
       if (style === UNKNOWN_DISPLAY) return UNKNOWN_DISPLAY;
       if (style === MISSING_DISPLAY || !style || typeof style !== 'object') return MISSING_DISPLAY;
       if (depth > 16) return UNKNOWN_DISPLAY;
@@ -1283,26 +1283,30 @@ export const INJECTED_HELPERS = `
         var shown = MISSING_DISPLAY;
         for (var di = 0; di < style.length; di++) {
           if (di >= 64) return UNKNOWN_DISPLAY;
-          var part = resolvedDisplay(styleRead(style, String(di)), depth + 1);
+          var part = resolvedDisplay(styleRead(style, String(di), strict), depth + 1, strict);
+          if (strict && part === UNKNOWN_DISPLAY) throw new Error('Capture refused');
           if (part !== MISSING_DISPLAY) shown = part;
         }
         return shown;
       }
-      return styleRead(style, 'display');
+      return styleRead(style, 'display', strict);
     }
     // Only proven off-screen content can be pruned from the digest and typography overlay scan.
-    function inactiveRoute(fiber) {
-      var props = routeRead(fiber, 'memoizedProps');
+    function inactiveRoute(fiber, strict) {
+      var props = routeRead(fiber, 'memoizedProps', strict);
       if (!props || typeof props !== 'object') return false;
-      var inactive = routeRead(props, 'activityState') === 0;
-      var invisible = routeRead(props, 'visible') === false;
+      var inactive = routeRead(props, 'activityState', strict) === 0;
+      var invisible = routeRead(props, 'visible', strict) === false;
       if (inactive || invisible) {
         var routeName = getName(fiber) || '';
         var routeBase = routeName.slice(routeName.lastIndexOf('.') + 1);
         if (inactive && (routeBase === 'Screen' || routeBase === 'InnerScreen' || routeBase === 'RNSScreen')) return true;
         if (invisible && (routeBase === 'MaybeScreen' || routeBase === 'ScreenContainer')) return true;
       }
-      return isHostFiber(fiber) && resolvedDisplay(routeRead(props, 'style'), 0) === 'none';
+      if (!isHostFiber(fiber)) return false;
+      var display = resolvedDisplay(routeRead(props, 'style', strict), 0, strict);
+      if (strict && display === UNKNOWN_DISPLAY) throw new Error('Capture refused');
+      return display === 'none';
     }
 
     var typographyOverlayVisits = 0;
@@ -1667,8 +1671,6 @@ export const INJECTED_HELPERS = `
           ich = ich.sibling;
         }
       }
-      // Each control's own rendered host subtree as a short hash (structure, image and vector sources, colours),
-      // so a press that only redraws its target is still observed; a capped or unreadable subtree gets none.
       if (privateCapture) {
         var RENDERED_STYLE_KEYS = ['backgroundColor', 'borderColor', 'color', 'tintColor'];
         var RENDERED_PROP_KEYS = ['source', 'src', 'd', 'fill', 'stroke', 'tintColor'];
@@ -1700,6 +1702,10 @@ export const INJECTED_HELPERS = `
           };
           var visit = function(fiber, depth) {
             if (++renderedVisits > 4000 || ++visits > 400 || depth > 64 || Date.now() >= renderedDeadline) throw new Error('Capture refused');
+            if (inactiveRoute(fiber, true)) {
+              if (fiber === root) throw new Error('Capture refused');
+              return;
+            }
             if (fiber.tag === 6) fold('#' + depth + '|');
             else if (isHostFiber(fiber)) {
               var props = qaData(fiber, 'memoizedProps', true);
