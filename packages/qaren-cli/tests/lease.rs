@@ -72,6 +72,12 @@ fn a_holder_under_qaren_home_records_that_home_instead_of_home() {
         qaren::lease::cleanup_command("check-q", &holder),
         format!("`QAREN_HOME='{}' qaren cleanup check-q`", side.display())
     );
+    let mut quoted = holder.clone();
+    quoted.qaren_home = Some("/it's; touch x".into());
+    assert_eq!(
+        qaren::lease::cleanup_command("check-q", &quoted),
+        "`QAREN_HOME='/it'\\''s; touch x' qaren cleanup check-q`"
+    );
     assert_eq!(release(&lease), ReleaseOutcome::Removed);
 }
 

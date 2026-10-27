@@ -60,10 +60,11 @@ fn fresh_token(fallback_seed: &str) -> String {
 
 // Native-suite runs keep their records outside the check runs root.
 pub fn cleanup_command(run_id: &str, held: &LockHolder) -> String {
+    let quoted = |path: &Path| format!("'{}'", path.display().to_string().replace('\'', "'\\''"));
     // An inherited QAREN_HOME would outrank HOME, so a HOME-only holder's command clears it.
     let env = match (&held.qaren_home, &held.home) {
-        (Some(qaren_home), _) => format!("QAREN_HOME='{}' ", qaren_home.display()),
-        (None, Some(home)) => format!("QAREN_HOME= HOME='{}' ", home.display()),
+        (Some(qaren_home), _) => format!("QAREN_HOME={} ", quoted(qaren_home)),
+        (None, Some(home)) => format!("QAREN_HOME= HOME={} ", quoted(home)),
         (None, None) => String::new(),
     };
     if run_id.starts_with("native-ios-") {
