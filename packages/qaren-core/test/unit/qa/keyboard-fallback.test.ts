@@ -13,7 +13,12 @@ import { parsePlan } from '../../../dist/qa/plan.js';
 import type { Block, Step } from '../../../dist/qa/plan.js';
 import { join as joinScreen } from '../../../dist/qa/screen.js';
 import type { Element, NativeNode, ReactHostObservation, Screen } from '../../../dist/qa/screen.js';
-import { MASK, ObservedPrivacy, codeBoxRows } from '../../../dist/qa/privacy.js';
+import {
+  MASK,
+  ObservedPrivacy,
+  codeBoxRows,
+  INPUT_SCREEN_TEXT_WITHHELD,
+} from '../../../dist/qa/privacy.js';
 import { describe } from '../../../dist/qa/screen.js';
 import { exactIdentities } from '../../../dist/qa/identity.js';
 import { keyboardFallbackTarget, prepareTarget } from '../../../dist/qa/resolve.js';
@@ -3172,3 +3177,220 @@ test('the change-handler step is skipped once the two-minute step budget is spen
   assert.equal(outcome.block.outcome, 'fail');
   assert.deepEqual(calls, []);
 });
+
+async function secureFocusedSeam(fake: ReturnType<typeof app>, inputs: RunInputs) {
+  const { performFocusedFill } = await import('../../../dist/handlers/device-interact.js');
+  const { _setActiveSessionForTest, _setRunAgentDeviceForTest } =
+    await import('../../../dist/agent-device-wrapper.js');
+  const { okResult } = await import('../../../dist/utils.js');
+  let dispatches = 0;
+  let privateReads = 0;
+  const client = {
+    evaluate: async (expression: string) => {
+      const [, options] = JSON.parse(
+        '[' + expression.slice('__QAREN.readInputValue('.length, -1) + ']',
+      );
+      if (options.privateValue) privateReads++;
+      return {
+        value: JSON.stringify({
+          value: null,
+          controlled: false,
+          focused: true,
+          privateValue: true,
+          secure: true,
+          contentLength: 0,
+        }),
+      };
+    },
+  } as never;
+  _setActiveSessionForTest({ platform: 'ios', deviceId: 'TEST', appId: 'com.test' });
+  _setRunAgentDeviceForTest(async (_args, options) => {
+    assert.equal(inputs.hasStrictInputs, true, 'promotion must precede the native call');
+    assert.equal(await options.focusedProof(), true);
+    assert.ok(privateReads > 0, 'the typing proof must use privateValue');
+    dispatches++;
+    return okResult({ typed: true });
+  });
+  const type = fake.deps.typeFocused!;
+  fake.deps.typeFocused = async (
+    ref,
+    text,
+    testID,
+    context,
+    requireFocused,
+    privateValue,
+    onPrivateInput,
+  ) => {
+    const result = await performFocusedFill(
+      {
+        ref,
+        text,
+        testID,
+        qaContext: context,
+        focused: true,
+        clearFirst: true,
+        requireFocused,
+        skipFinalValidation: true,
+        privateValue,
+        onPrivateInput,
+      },
+      client,
+    );
+    assert.equal(result.isError, undefined, JSON.stringify(result));
+    assert.equal(inputs.protectFill('EMAIL'), true);
+    return type(ref, text, testID, context, requireFocused, true);
+  };
+  return {
+    dispatches: () => dispatches,
+    close() {
+      _setRunAgentDeviceForTest(null);
+      _setActiveSessionForTest(null);
+    },
+  };
+}
+
+test('secure discovery without a screen target withholds the later Account failure', async () => {
+  const fake = app({ initial: [submit], initialKeyboard: true, reactFocused: true });
+  const privacy = new ObservedPrivacy();
+  const inputs = new RunInputs({ EMAIL }, ['EMAIL'], privacy, ['EMAIL']);
+  fake.deps.privacy = privacy;
+  const capture = fake.deps.captureScreen;
+  const phone = 'Phone +44 7700 900123';
+  const address = 'Address 42 Test Street';
+  fake.deps.captureScreen = async (options) => {
+    const screen = await capture(options);
+    return screen.visibleText.includes('Form accepted')
+      ? screenOf(
+          [element('@account', 'Account'), element('@phone', phone), element('@address', address)],
+          false,
+        )
+      : screen;
+  };
+  let promotions = 0;
+  inputs.onPromotion(() => promotions++);
+  const seam = await secureFocusedSeam(fake, inputs);
+  try {
+    const result = await withInputs(inputs, () =>
+      runPlan(
+        blocks(
+          '1. Fill "qa-otp-code" with input EMAIL (test-pii)\n2. Tap "qa-hidden-submit"\n3. Wait for "Billing address"',
+        ),
+        fake.deps,
+      ),
+    );
+    assert.equal(result.verdict, 'FAIL');
+    assert.equal(inputs.hasStrictInputs, true);
+    assert.equal(promotions, 1);
+    assert.equal(seam.dispatches(), 1);
+    assert.ok(result.failure?.seen.includes(INPUT_SCREEN_TEXT_WITHHELD));
+    const evidence = JSON.stringify({ result, rows: fake.rows });
+    for (const text of [phone, address, EMAIL]) assert.ok(!evidence.includes(text), text);
+    assert.ok(fake.log.includes('press @submit'));
+  } finally {
+    seam.close();
+  }
+});
+
+for (const route of [
+  'strict-ios',
+  'strict-android',
+  'retry',
+  'transition',
+  'keyboard-up',
+  'no-target',
+  'set-handler',
+  'saved-replay',
+  'login-replay',
+] as const) {
+  test(`secure discovery promotes before typing through ${route}`, async () => {
+    const strict = ['strict-ios', 'strict-android', 'retry'].includes(route);
+    const target = strict ? 'code' : route === 'no-target' ? 'qa-otp-code' : 'qa-hidden-email';
+    const markdown = slotPlan('EMAIL', target).replace('input EMAIL', 'input EMAIL (non-secret)');
+    const store = route.endsWith('replay') ? slotStore() : undefined;
+    if (store) await slotRun(store, EMAIL, {}, markdown);
+    const fake = app({
+      ...(strict
+        ? {
+            initial: [
+              element('@code', 'Code', {
+                kind: 'input',
+                nativeKind: 'input',
+                testID: target,
+                secure: true,
+              }),
+              submit,
+            ],
+          }
+        : route === 'no-target'
+          ? { initial: [submit] }
+          : {}),
+      initialKeyboard: route === 'keyboard-up' || route === 'no-target',
+      reactFocused: true,
+      ...(route === 'set-handler' ? { type: MISMATCH } : {}),
+    });
+    const privacy = new ObservedPrivacy();
+    const inputs = new RunInputs({ EMAIL }, ['EMAIL'], privacy, ['EMAIL']);
+    fake.deps.privacy = privacy;
+    let fills = 0;
+    let sets = 0;
+    const fill = fake.deps.fill;
+    fake.deps.fill = async (ref, text, context, privateValue) => {
+      assert.equal(inputs.hasStrictInputs, true);
+      assert.equal(privateValue, true);
+      fills++;
+      if (route === 'retry' && fills === 1)
+        return {
+          ok: false,
+          proven: false,
+          mutation: 'none',
+          error: 'NO_TEXT_INPUT_TARGET: refused',
+        };
+      return fill(ref, text, context, privateValue);
+    };
+    const seam = strict ? undefined : await secureFocusedSeam(fake, inputs);
+    fake.deps.setByHandler = async (_testID, _text, _context, privateValue) => {
+      assert.equal(inputs.hasStrictInputs, true);
+      assert.equal(privateValue, true);
+      sets++;
+      return {
+        ok: false,
+        proven: false,
+        mutation: 'none',
+        error: 'TEXT_ENTRY_UNVERIFIED: secure field refused',
+      };
+    };
+    if (route === 'strict-android') fake.deps.presenceUnavailable = true;
+    try {
+      const result = await withInputs(inputs, async () => {
+        if (route === 'login-replay') {
+          const stored = readBlock(savedFile(store!, 'hidden-email'));
+          assert.ok('steps' in stored);
+          return walkBlock(
+            loginBlock('hidden-email', stored),
+            fake.deps,
+            0,
+            [],
+            undefined,
+            undefined,
+            { recover: false, login: true },
+          );
+        }
+        return runPlan(blocks(markdown), fake.deps, [], store);
+      });
+      assert.equal(inputs.hasStrictInputs, true);
+      if ('verdict' in result) {
+        assert.equal(
+          result.verdict,
+          route === 'set-handler' ? 'FAIL' : 'PASS',
+          JSON.stringify(result),
+        );
+        if (route === 'saved-replay') assert.equal(result.path, 'replay');
+      } else assert.equal(result.block.outcome, 'pass');
+      assert.equal(fills, route === 'retry' ? 2 : strict ? 1 : 0);
+      if (seam) assert.equal(seam.dispatches(), 1);
+      assert.equal(sets, route === 'set-handler' ? 1 : 0);
+    } finally {
+      seam?.close();
+    }
+  });
+}

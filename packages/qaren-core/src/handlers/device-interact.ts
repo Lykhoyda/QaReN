@@ -1039,6 +1039,7 @@ export interface FillArgs {
   /** Replace the field's content instead of appending. */
   clearFirst?: boolean;
   privateValue?: boolean;
+  onPrivateInput?: () => void;
   /** Fill ladder rung 3: set the value through the input's change handler, then verify it. */
   setByHandler?: boolean;
   /** Story 04 (#385): per-call settle budget override in ms. */
@@ -1362,6 +1363,7 @@ export async function performExactFill(
     );
   }
   const binding = bind.binding;
+  if (binding.secure) args.onPrivateInput?.();
 
   if (args.testID && args.testID !== binding.inputTestId) {
     return fillFailure(
@@ -1695,6 +1697,7 @@ export async function performSetFill(
   args.qaContext?.authorize();
   const set = await setReactInput(client, testID, args.text);
   if (!set.set) {
+    if (set.reason === 'secure') args.onPrivateInput?.();
     const refused = ['unbound', 'uncontrolled', 'secure', 'disabled'].includes(set.reason ?? '');
     return done(
       fillFailure(
@@ -1859,6 +1862,13 @@ async function focusedFill(
   let expectedContentLength: number | undefined;
   let awaiting: 'empty' | 'typed' | undefined;
   let expectedBeforeClear: string | null | undefined;
+  const protect = (read: { secure?: boolean; privateValue?: boolean } | null): void => {
+    secure ||= read?.secure === true;
+    if (secure || read?.privateValue === true) {
+      privateValue = true;
+      args.onPrivateInput?.();
+    }
+  };
   const focusedProof = async (focusOnly = false): Promise<boolean> => {
     if (focusOnly && awaiting && !secure) {
       let settledLength: number | undefined;
@@ -1870,6 +1880,7 @@ async function focusedFill(
           valueState: true,
           compareTo: '',
         });
+        protect(state);
         if (state?.focused !== true) return false;
         const settled =
           awaiting === 'empty' ? state.exact === true : (state.contentLength ?? 0) > 0;
@@ -1884,9 +1895,8 @@ async function focusedFill(
       ...(focusOnly ? { focusOnly: true } : {}),
       ...(privateValue ? { privateValue: true, valueState: !focusOnly } : {}),
     });
+    protect(read);
     if (focusOnly) return read?.focused === true;
-    privateValue ||= read?.privateValue === true;
-    secure ||= read?.secure === true;
     before = controlledReactValue(read);
     contentLength = read?.contentLength ?? (before === null ? undefined : before.length);
     return (

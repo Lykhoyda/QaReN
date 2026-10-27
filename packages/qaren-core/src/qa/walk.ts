@@ -715,9 +715,17 @@ async function openSession(
         now,
         observe: timing,
       }),
-    fill: (ref, text, qaContext, privateValue) =>
+    fill: (ref, text, qaContext, privateValue, onPrivateInput) =>
       act(
-        () => fill({ ref, text, qaContext, privateValue, qaTiming: { now, observe: timing } }),
+        () =>
+          fill({
+            ref,
+            text,
+            qaContext,
+            privateValue,
+            onPrivateInput,
+            qaTiming: { now, observe: timing },
+          }),
         true,
         {
           now,
@@ -767,7 +775,15 @@ async function openSession(
       ? {
           appProcess: {},
           reactFocused: (testID: string) => reactFocused(cdpClientOrNull(getClient), testID),
-          typeFocused: (ref, text, testID, qaContext, requireFocused, privateValue) =>
+          typeFocused: (
+            ref,
+            text,
+            testID,
+            qaContext,
+            requireFocused,
+            privateValue,
+            onPrivateInput,
+          ) =>
             act(
               () =>
                 fill({
@@ -780,13 +796,14 @@ async function openSession(
                   skipFinalValidation: true,
                   clearFirst: true,
                   privateValue,
+                  onPrivateInput,
                   qaContext,
                   qaTiming: { now, observe: timing },
                 }),
               false,
               { now, observe: timing },
             ),
-          setByHandler: (testID, text, qaContext, privateValue) =>
+          setByHandler: (testID, text, qaContext, privateValue, onPrivateInput) =>
             act(
               () =>
                 fill({
@@ -795,6 +812,7 @@ async function openSession(
                   testID,
                   setByHandler: true,
                   privateValue,
+                  onPrivateInput,
                   qaContext,
                   qaTiming: { now, observe: timing },
                 }),

@@ -188,6 +188,7 @@ export interface WalkerDeps {
     text: string,
     context: QaDispatchContext,
     privateValue?: boolean,
+    onPrivateInput?: () => void,
   ): Promise<ActResult>;
   // iOS only: type, proven only by a matching React read-back; testID identifies the pre-dispatch focus veto.
   typeFocused?(
@@ -197,6 +198,7 @@ export interface WalkerDeps {
     context: QaDispatchContext,
     requireFocused?: boolean,
     privateValue?: boolean,
+    onPrivateInput?: () => void,
   ): Promise<ActResult>;
   // iOS only: positive React proof that the input with this testID is focused.
   reactFocused?(testID: string): Promise<boolean>;
@@ -206,6 +208,7 @@ export interface WalkerDeps {
     text: string,
     context: QaDispatchContext,
     privateValue?: boolean,
+    onPrivateInput?: () => void,
   ): Promise<ActResult>;
   // A value-free diagnostic line for the run log.
   note?(line: string): void;
@@ -295,6 +298,13 @@ const secretFill = (
   item.input !== undefined &&
   (currentInputs()?.protectFill(item.input, element !== undefined && isPrivateInput(element)) ??
     item.sensitivity !== 'non-secret');
+
+const promoteFill = (item: { input?: string }, identifier?: string): void => {
+  if (item.input !== undefined) {
+    currentInputs()?.protectFill(item.input, true);
+    currentInputs()?.expectEcho(identifier, item.input);
+  }
+};
 
 const unresolvedText = (quoted: string) =>
   new ResolutionError({
@@ -1346,7 +1356,9 @@ async function walkBlockScoped(
         fresh,
         (context) => {
           fillHandlerAttempted = true;
-          return deps.setByHandler!(testID, fillText(item), context, secretFill(item));
+          return deps.setByHandler!(testID, fillText(item), context, secretFill(item), () =>
+            promoteFill(item, testID),
+          );
         },
         deadline,
       );
@@ -1506,6 +1518,7 @@ async function walkBlockScoped(
           context,
           proofMode,
           secretFill(item, again.element),
+          () => promoteFill(item, again.element.testID ?? again.oracleTestID),
         ),
       );
     } catch (error) {
@@ -1578,7 +1591,9 @@ async function walkBlockScoped(
     currentInputs()?.expectEcho(quoted, item.input);
     try {
       entry = await mutate(item, before, (context) =>
-        deps.typeFocused!(quoted, fillText(item), quoted, context, true, secretFill(item)),
+        deps.typeFocused!(quoted, fillText(item), quoted, context, true, secretFill(item), () =>
+          promoteFill(item, quoted),
+        ),
       );
     } catch (error) {
       if (isAbort(error)) throw error;
@@ -2565,7 +2580,9 @@ async function walkBlockScoped(
                 item.kind === 'press'
                   ? deps.press(ref!, context)
                   : item.kind === 'fill'
-                    ? deps.fill(ref!, fillText(item), context, secretFill(item))
+                    ? deps.fill(ref!, fillText(item), context, secretFill(item), () =>
+                        promoteFill(item, element?.testID),
+                      )
                     : item.kind === 'scroll'
                       ? deps.scroll(item.direction, context)
                       : item.kind === 'back'
