@@ -3,13 +3,15 @@ title: Check a plan
 description: Run qaren check against the working tree, read the receipt and find the run's evidence.
 ---
 
+For supported platforms, see the [root README](https://github.com/Lykhoyda/QaReN#set-up-qaren).
+The Android implementation described below is experimental.
+
 `qaren check` walks a plan on a borrowed device against the app's working tree. Run it from
 the app's directory, next to `.qaren/config.yaml`:
 
 ```sh
 qaren check --plan-file plan.md --json
 qaren check --plan-file plan.md --device <simulator-UUID> --json
-qaren check --platform android --plan-file plan.md --device emulator-5554 --json
 ```
 
 The [configuration](../configuration/) needs at least `appId` and
@@ -41,7 +43,7 @@ for iOS startup ordering.
 For explicit boot, restart or exit shutdown, follow the
 [iOS simulator lifecycle contract](https://github.com/Lykhoyda/QaReN/blob/develop/packages/qaren-cli/README.md#ios-simulator-lifecycle).
 
-### Android
+### Android (experimental)
 
 `--platform android` borrows one booted emulator through the adb server that is already
 running. qaren never starts or stops the adb server; with none answering, or with an `adb`
