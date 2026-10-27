@@ -191,7 +191,7 @@ impl Events {
             "verb": token(verb),
             "platform": token(platform),
             "ownerPid": std::process::id(),
-            "qarenVersion": token(env!("CARGO_PKG_VERSION")),
+            "qarenVersion": token(crate::VERSION),
             "harness": token(client.harness),
             "markers": client.markers.iter().map(|m| token(m)).collect::<Vec<_>>(),
             "flags": flags.iter().map(|f| token(f)).collect::<Vec<_>>(),
@@ -672,7 +672,7 @@ mod tests {
         assert_eq!(got[1].payload["runId"], "check-1");
         let mut expected = json!({
             "runId": "check-1", "verb": "check", "platform": "ios",
-            "ownerPid": std::process::id(), "qarenVersion": token(env!("CARGO_PKG_VERSION")),
+            "ownerPid": std::process::id(), "qarenVersion": token(crate::VERSION),
             "harness": "unknown", "markers": [], "flags": []
         });
         if let Some(commit) = option_env!("QAREN_BUILD_COMMIT") {

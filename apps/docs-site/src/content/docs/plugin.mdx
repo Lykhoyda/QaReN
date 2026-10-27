@@ -1,5 +1,5 @@
 ---
-title: Plugin
+title: Use QaReN from your agent
 description: The QaReN plugin's three skills and what each host loads.
 ---
 
@@ -12,8 +12,10 @@ Each one runs the CLI; none of them drives a device directly.
 | `using-qaren` | `/qaren:using-qaren` | write a plan for a feature, then run `qaren check` on the working tree or `qaren pr` on a pull request, and report the receipt. |
 | `feedback`    | `/qaren:feedback`   | draft a sanitized GitHub issue about QaReN, show it in full, and file it only after you confirm.                   |
 
-Codex invokes the same skills with its own syntax. In Claude Code or Codex, you can also ask in plain words, such as "QA this pull request with QaReN"; the agent picks
-the matching skill from its description.
+Codex and Cursor invoke the same skills with their own syntax. In Claude Code, Codex or
+Cursor, you can also ask in plain words, such as "QA this pull request with QaReN"; the
+agent picks the matching skill from its description. Install steps for each host are in the
+[root README](https://github.com/Lykhoyda/QaReN#set-up-qaren).
 
 ## Hosts
 
@@ -24,7 +26,7 @@ loads.
 | ----------- | ------------------------------- | ---------------------------------------------------------------------------------------------------------------- |
 | Claude Code | `.claude-plugin/plugin.json`    | The three skills it lists, and the SessionStart hook in `hooks/hooks.json`.                                      |
 | Codex       | `.codex-plugin/plugin.json`     | Every skill under `skills/`.                                                                                     |
-| Cursor      | `.cursor-plugin/plugin.json`    | The manifest sets hooks empty and declares no skill list.                                                       |
+| Cursor      | `.cursor-plugin/plugin.json`    | Every skill under `skills/`, found in its default folder. The manifest sets hooks empty, so no SessionStart hook. |
 
 The SessionStart hook only verifies the installed runtime. It prints the verified binary
 path or the command to install or repair it, and it never downloads.

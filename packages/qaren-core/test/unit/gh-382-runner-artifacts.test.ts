@@ -88,14 +88,14 @@ test('releaseAssetUrl: builds a v-prefixed release download URL', () => {
   );
 });
 
-test('cacheDirFor: every platform caches runners under ~/.qaren/runtime', () => {
+test('cacheDirFor: every platform caches runners under the QaReN home runtime', () => {
   assert.equal(
-    cacheDirFor('/Users/x', 'darwin', '2.0.0-beta.3', 'ios'),
+    cacheDirFor('/Users/x/.qaren', 'darwin', '2.0.0-beta.3', 'ios'),
     '/Users/x/.qaren/runtime/runners/2.0.0-beta.3/ios',
   );
   assert.equal(
-    cacheDirFor('/home/x', 'linux', '2.0.0-beta.3', 'android'),
-    '/home/x/.qaren/runtime/runners/2.0.0-beta.3/android',
+    cacheDirFor('/side-home', 'linux', '2.0.0-beta.3', 'android'),
+    '/side-home/runtime/runners/2.0.0-beta.3/android',
   );
 });
 

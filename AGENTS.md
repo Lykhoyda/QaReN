@@ -18,7 +18,7 @@ The package cut, literal `qaren check`, Jev seam, Phase 4 blocks, and PR run/pub
 - Root workspace: Yarn 4 workspace, managed by `package.json` and `yarn.lock`.
   Use `corepack yarn ...` from the repository root. The Rust crate is driven
   with `cargo` directly.
-- `packages/qaren-cli/`: Rust CLI, library and binary `qaren`, `publish = false`. `src/run.rs` orchestrates `check`; the prototype debug verbs remain. Device lease root selection follows the [lock-root contract](packages/qaren-cli/README.md#ios-admission-and-cleanup). Run evidence stays under `~/.qaren/runs`. `check` reclaims a lease whose holder is proven dead by running that run's own cleanup (`commands/cleanup.rs`); a live or unprovable holder still refuses `DEVICE_BUSY`. For runner-host ownership and lease retention, follow the [iOS cleanup contract](packages/qaren-cli/README.md#ios-admission-and-cleanup). An external `qaren cleanup` refuses without signaling or saving anything while the run's core is recorded and its recorded qaren owner is proven alive. A signal or a vanished caller ends the run as `RUN_CANCELLED` after normal teardown (`src/cancel.rs`). `src/exec/log.rs` owns redaction before durable subprocess logging, including detached debug runs. `observe/` is the Observe SPA (Vite); `target/` and `observe/dist/` are ignored.
+- `packages/qaren-cli/`: Rust CLI, library and binary `qaren`, `publish = false`. `src/run.rs` orchestrates `check`; the prototype debug verbs remain. Device lease root selection follows the [lock-root contract](packages/qaren-cli/README.md#ios-admission-and-cleanup). Run evidence follows the [run storage contract](packages/qaren-cli/README.md#ios-admission-and-cleanup). `check` reclaims a lease whose holder is proven dead by running that run's own cleanup (`commands/cleanup.rs`); a live or unprovable holder still refuses `DEVICE_BUSY`. For runner-host ownership and lease retention, follow the [iOS cleanup contract](packages/qaren-cli/README.md#ios-admission-and-cleanup). An external `qaren cleanup` refuses without signaling or saving anything while the run's core is recorded and its recorded qaren owner is proven alive. A signal or a vanished caller ends the run as `RUN_CANCELLED` after normal teardown (`src/cancel.rs`). `src/exec/log.rs` owns redaction before durable subprocess logging, including detached debug runs. `observe/` is the Observe SPA (Vite); `target/` and `observe/dist/` are ignored.
 - `packages/qaren-core/`: TypeScript screen child, entered through `src/qa/walk.ts`. The `qa/` module owns parsing, judgments, screen projections, walking and the ledger, using the kept handlers, CDP helpers, native runners and learned-action domain. `corepack yarn build:core` generates uncommitted `dist/`; entries run as `node packages/qaren-core/dist/<entry>.js`. The package is private; `scripts/build-qaren-tarball.ts` bundles its spawned entries into the CLI tarball.
 - `packages/qaren-plugin/`: the one host package. Claude, Cursor and Codex
   manifests (`.claude-plugin/`, `.cursor-plugin/`, `.codex-plugin/`), a
@@ -48,8 +48,8 @@ The package cut, literal `qaren check`, Jev seam, Phase 4 blocks, and PR run/pub
   environment variables, `.qaren/` in the app repository (`.qaren/actions` is
   the action corpus, a real directory or a Git-proven direct link to the same
   app-relative corpus in this repository's main copy; other corpus symlinks and
-  per-file symlinks are refused by `src/domain/action-store.ts`), `~/.qaren/runtime` for the
-  installed runtime, `~/.qaren/state` for per-user state, `__QAREN` for the
+  per-file symlinks are refused by `src/domain/action-store.ts`), the [QaReN home contract](packages/qaren-cli/README.md#release-and-source-builds-side-by-side) for the
+  installed runtime and per-user state, `__QAREN` for the
   injected global. Do not reintroduce an old name there or add a shim for one.
   The old name remains on purpose in the codesign
   identifier of the committed darwin process-birth helper until CI rebuilds it.
@@ -192,7 +192,7 @@ cargo run --manifest-path packages/qaren-cli/Cargo.toml --locked --example nativ
 corepack yarn test:native:android
 ```
 
-Suite records and redacted logs live under `~/.qaren/native-suites/<run-id>`. Unknown cleanup retains the lease; use the same example with `recover --run-id <run-id>` after the owner exits, rather than deleting locks. Recovery proves the owned group and exact-simulator runner hosts absent, not global admission, and preserves the original test verdict. Admission's controller classification requires kernel identity plus exact argv; an attested unscoped MCP controller is not itself a device conflict, but the scan cannot exclude uncooperative in-process automation. The wrapper neither shuts down nor deletes the borrowed simulator; re-read its state before subsequent app work. Isolated CI still invokes `corepack yarn test:native:ios` directly.
+Suite records and redacted logs live in `native-suites/<run-id>` under the [QaReN home](packages/qaren-cli/README.md#release-and-source-builds-side-by-side). Unknown cleanup retains the lease; use the same example with `recover --run-id <run-id>` after the owner exits, rather than deleting locks. Recovery proves the owned group and exact-simulator runner hosts absent, not global admission, and preserves the original test verdict. Admission's controller classification requires kernel identity plus exact argv; an attested unscoped MCP controller is not itself a device conflict, but the scan cannot exclude uncooperative in-process automation. The wrapper neither shuts down nor deletes the borrowed simulator; re-read its state before subsequent app work. Isolated CI still invokes `corepack yarn test:native:ios` directly.
 
 ## Changesets And Versions
 

@@ -1,16 +1,23 @@
 import { readFileSync, writeFileSync, unlinkSync, mkdirSync, renameSync, lstatSync } from 'node:fs';
-import { join, dirname } from 'node:path';
+import { join, dirname, isAbsolute } from 'node:path';
 import { homedir } from 'node:os';
 
 // GH #383: one hardened implementation for every bridge state file (session
 // file, runner state, future state) — CDP-015 guarantees: symlink-refusing
 // reads, atomic tmp+rename writes with 0600, per-user app-support location.
 
+export function qarenHome(): string {
+  const override = process.env.QAREN_HOME;
+  if (!override) return join(homedir(), '.qaren');
+  if (!isAbsolute(override)) throw new Error('QAREN_HOME is not an absolute path');
+  return override;
+}
+
 export function getStateDir(): string {
-  if (process.env.XDG_STATE_HOME) {
+  if (!process.env.QAREN_HOME && process.env.XDG_STATE_HOME) {
     return join(process.env.XDG_STATE_HOME, 'qaren');
   }
-  return join(homedir(), '.qaren', 'state');
+  return join(qarenHome(), 'state');
 }
 
 export function runnerStatePath(key: string): string {

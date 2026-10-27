@@ -1,19 +1,40 @@
 # QaReN
 
-QA a React Native app on a simulator from a Markdown plan, and read back PASS or FAIL
-with evidence.
+**A QA engineer for your coding agent.** Claude Code, Codex or Cursor writes the React
+Native change; QaReN tries it in your app on an iOS simulator and comes back with PASS or FAIL,
+and the evidence behind it.
 
 [![CI](https://github.com/Lykhoyda/QaReN/actions/workflows/ci.yml/badge.svg)](https://github.com/Lykhoyda/QaReN/actions/workflows/ci.yml)
 [![Docs](https://img.shields.io/badge/docs-lykhoyda.github.io%2FQaReN-blue)](https://lykhoyda.github.io/QaReN/)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
 
-QaReN is the `qaren` command-line tool and a plugin for Claude Code and Codex.
-`qaren check` borrows a booted iOS simulator, builds and installs the app from your
-working tree, starts Metro, walks a plan on the device, writes evidence under
-`~/.qaren/runs/<run-id>/` and tears down what it started. `qaren pr` does the same for a
-pull request's head and tries to record the screen; `qaren publish` comments the result on the
-pull request and can push saved blocks to its branch. Eligible passing blocks are saved under `.qaren/actions/` and replayed on later
-runs.
+A coding agent checks its work with types, lint and unit tests. It does not tap through
+the app, so a screen that never appears or a flow that breaks halfway reaches review, or
+your users. QaReN is the QA engineer on your agent's team: ask your agent to QA a change,
+it writes a short plan of what to check, and QaReN runs that plan in the real app.
+
+- **A verdict, not a summary.** Every run ends in PASS, FAIL or a refusal with a typed
+  reason and the next action, as JSON for your agent and an exit code for your scripts.
+- **Evidence you can open.** Each run keeps a step-by-step ledger and a readable report.
+  A pull request run adds a screen recording when one can be captured and can post the
+  result as a comment.
+- **It tests what you changed.** QaReN builds your working tree or a pull request's head,
+  and a change to the code during the walk can never pass.
+- **Faster on every run.** Eligible passing blocks are saved and replayed next time by
+  the exact elements they used.
+
+Read the [docs](https://lykhoyda.github.io/QaReN/), or [set it up](#set-up-qaren) in your
+agent.
+
+## How it works
+
+Under the hood, QaReN is the `qaren` command-line tool and a plugin that teaches Claude
+Code, Codex and Cursor to drive it. `qaren check` borrows a booted iOS simulator, builds and
+installs the app from your working tree, starts Metro, walks a plan on the device, writes
+evidence at the artifact paths in its receipt and tears down what it started. `qaren pr` does
+the same for a pull request's head and tries to record the screen; `qaren publish`
+comments the result on the pull request and can push saved blocks to its branch. Eligible
+passing blocks are saved under `.qaren/actions/` and replayed on later runs.
 
 A plan names what to do and what to check:
 
@@ -44,9 +65,13 @@ claude plugin install qaren@qaren
 # Codex
 codex plugin marketplace add Lykhoyda/QaReN
 codex plugin add qaren@qaren
+# Cursor: add the marketplace, then install qaren from /plugin > Marketplace in
+# cursor-agent, or from Customize > Plugins in the editor
+cursor-agent plugin marketplace add https://github.com/Lykhoyda/QaReN
 ```
 
-Then, from your app's root, run `/qaren:setup` (in Codex, ask it to set up QaReN). Setup
+Then, from your app's root, run `/qaren:setup` (in Codex or Cursor, ask it to set up
+QaReN). Setup
 installs the `qaren` CLI when the matching GitHub release asset is available,
 verifying the tarball against the plugin's
 [runner manifest](packages/qaren-plugin/runner-manifest.json), runs
@@ -55,9 +80,7 @@ the first check. The [setup skill](packages/qaren-plugin/skills/setup/SKILL.md) 
 the details. If the installed plugin has no QaReN tarball yet, use the
 [source installation](#install-from-source) below.
 
-Setup prepares an iOS simulator. `qaren check` and `qaren pr` can also borrow a booted
-Android emulator with `--platform android`, given the Android SDK and a running adb
-server; see [Check a plan](packages/qaren-cli/README.md#check-a-plan).
+QaReN 2.0 supports iOS simulators on Apple silicon. Android: coming in 2.1.
 
 ### Install from source
 
@@ -66,6 +89,11 @@ To run an unreleased build, install from a checkout's root (needs Rust/Cargo as 
 ```sh
 bash scripts/install-qaren-from-source.sh
 ```
+
+The build is versioned `<plugin version>-dev.<commit>`, so it installs beside a released
+`qaren` instead of replacing it, builds its runners from source and never relinks a
+release's `qaren` without `--link`. Set `QAREN_HOME` to keep its runs and state apart as
+well; see [release and source builds side by side](packages/qaren-cli/README.md#release-and-source-builds-side-by-side).
 
 Load that checkout's plugin with
 `claude --plugin-dir /absolute/path/to/checkout/packages/qaren-plugin`. The
@@ -116,7 +144,7 @@ without a runner manifest fall back to building locally. Force local builds with
 
 When an iOS runner launched from a prebuilt lacks required capabilities or commands,
 startup attempts to persist a `stale` marker under
-`~/.qaren/runtime/runners/<plugin-version>/ios/` before checking the one-rebuild-per-version
+`runtime/runners/<plugin-version>/ios/` in the [QaReN home](packages/qaren-cli/README.md#release-and-source-builds-side-by-side) before checking the one-rebuild-per-version
 budget. With that marker present, later starts select the local runner without reusing or
 downloading that version's prebuilt, including after a process restart; cached products
 remain intact and other versions are unaffected. A spent rebuild budget still refuses

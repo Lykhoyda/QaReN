@@ -3,6 +3,12 @@ use std::process::{Command, Stdio};
 
 pub(crate) const INSTALLER: &str = "scripts/install-qaren-from-source.sh";
 pub(crate) const PLUGIN_MANIFEST: &str = "packages/qaren-plugin/.claude-plugin/plugin.json";
+// The installer names a source build with the same command: <release>-dev.<commit>.
+pub(crate) const DEV_COMMIT: [&str; 3] = ["rev-parse", "--short=12", "HEAD"];
+
+pub(crate) fn dev_version(release: &str, commit: &str) -> String {
+    format!("{release}-dev.{commit}")
+}
 
 // Fast-forwards the checkout in `cwd`, rebuilds and reinstalls it, and reports by tarball sha.
 pub fn update(cwd: &Path, home: &Path) -> Result<String, (u8, String)> {
@@ -41,7 +47,7 @@ pub fn update(cwd: &Path, home: &Path) -> Result<String, (u8, String)> {
     }
 
     let manifest = cwd.join(PLUGIN_MANIFEST);
-    let version = std::fs::read_to_string(&manifest)
+    let release = std::fs::read_to_string(&manifest)
         .ok()
         .and_then(|text| serde_json::from_str::<serde_json::Value>(&text).ok())
         .and_then(|json| json.get("version")?.as_str().map(str::to_string))
@@ -51,6 +57,15 @@ pub fn update(cwd: &Path, home: &Path) -> Result<String, (u8, String)> {
                 format!("qaren update: no version in {}", manifest.display()),
             )
         })?;
+    let head = git(cwd, &DEV_COMMIT)?;
+    if !head.status.success() {
+        return Err((
+            2,
+            format!("qaren update: git rev-parse failed: {}", stderr_of(&head)),
+        ));
+    }
+    let head = String::from_utf8_lossy(&head.stdout).trim().to_string();
+    let version = dev_version(&release, &head);
     let record = home.join("runtime").join(&version).join(".tarball-sha256");
     let read_sha = || {
         std::fs::read_to_string(&record)
@@ -88,17 +103,7 @@ pub fn update(cwd: &Path, home: &Path) -> Result<String, (u8, String)> {
             ),
         )
     })?;
-    let head = git(cwd, &["rev-parse", "--short", "HEAD"])
-        .ok()
-        .filter(|out| out.status.success())
-        .map(|out| String::from_utf8_lossy(&out.stdout).trim().to_string());
-    Ok(report(
-        &version,
-        before.as_deref(),
-        &after,
-        head.as_deref(),
-        &bin,
-    ))
+    Ok(report(&version, before.as_deref(), &after, &bin))
 }
 
 fn git(cwd: &Path, args: &[&str]) -> Result<std::process::Output, (u8, String)> {
@@ -116,33 +121,21 @@ fn stderr_of(output: &std::process::Output) -> String {
     String::from_utf8_lossy(&output.stderr).trim().to_string()
 }
 
-fn report(
-    version: &str,
-    before: Option<&str>,
-    after: &str,
-    head: Option<&str>,
-    bin: &str,
-) -> String {
+fn report(version: &str, before: Option<&str>, after: &str, bin: &str) -> String {
     let short = |sha: &str| sha.chars().take(8).collect::<String>();
-    let head = head
-        .map(|h| format!(" (checkout HEAD {h})"))
-        .unwrap_or_default();
     match before {
         Some(old) if old == after => {
             format!(
-                "qaren {version} build {} is already current{head}: {bin}",
+                "qaren {version} build {} is already current: {bin}",
                 short(after)
             )
         }
         Some(old) => format!(
-            "updated qaren {version} build {} -> {}{head}: {bin}",
+            "updated qaren {version} build {} -> {}: {bin}",
             short(old),
             short(after)
         ),
-        None => format!(
-            "installed qaren {version} build {}{head}: {bin}",
-            short(after)
-        ),
+        None => format!("installed qaren {version} build {}: {bin}", short(after)),
     }
 }
 
@@ -225,16 +218,19 @@ mod tests {
             format!("{{\"name\":\"qaren\",\"version\":\"{version}\"}}\n"),
         )
         .unwrap();
-        let record_dir = home.join("runtime").join(version);
         std::fs::write(
             dir.join("scripts/install-qaren-from-source.sh"),
             format!(
-                "set -eu\ntouch \"{marker}\"\necho building >&2\nmkdir -p \"{rd}/bin\"\nprintf '%s\\n' {sha} > \"{rd}/.tarball-sha256\"\necho \"{rd}/bin/qaren\"\n",
+                "set -eu\ntouch \"{marker}\"\necho building >&2\nrd=\"{runtime}/{version}-dev.$(git rev-parse --short=12 HEAD)\"\nmkdir -p \"$rd/bin\"\nprintf '%s\\n' {sha} > \"$rd/.tarball-sha256\"\necho \"$rd/bin/qaren\"\n",
                 marker = home.join("installer-ran").display(),
-                rd = record_dir.display(),
+                runtime = home.join("runtime").display(),
             ),
         )
         .unwrap();
+    }
+
+    fn installed_version(work: &Path, release: &str) -> String {
+        dev_version(release, &git(work, &DEV_COMMIT))
     }
 
     fn seed_record(home: &Path, version: &str, sha: &str) {
@@ -250,17 +246,18 @@ mod tests {
 
     #[test]
     fn report_wordings() {
+        let version = "2.0.0-dev.3082f5f4a1b2";
         assert_eq!(
-            report("1.0.13", Some(NEW), NEW, Some("3082f5f4"), "/b/qaren"),
-            "qaren 1.0.13 build 7f3a2c1e is already current (checkout HEAD 3082f5f4): /b/qaren"
+            report(version, Some(NEW), NEW, "/b/qaren"),
+            "qaren 2.0.0-dev.3082f5f4a1b2 build 7f3a2c1e is already current: /b/qaren"
         );
         assert_eq!(
-            report("1.0.13", Some(OLD), NEW, Some("3082f5f4"), "/b/qaren"),
-            "updated qaren 1.0.13 build 1d9e04aa -> 7f3a2c1e (checkout HEAD 3082f5f4): /b/qaren"
+            report(version, Some(OLD), NEW, "/b/qaren"),
+            "updated qaren 2.0.0-dev.3082f5f4a1b2 build 1d9e04aa -> 7f3a2c1e: /b/qaren"
         );
         assert_eq!(
-            report("1.0.13", None, NEW, None, "/b/qaren"),
-            "installed qaren 1.0.13 build 7f3a2c1e: /b/qaren"
+            report(version, None, NEW, "/b/qaren"),
+            "installed qaren 2.0.0-dev.3082f5f4a1b2 build 7f3a2c1e: /b/qaren"
         );
     }
 
@@ -344,20 +341,40 @@ mod tests {
         let root = scratch("current");
         let home = root.join("home");
         let work = checkout(&root, &home, "1.0.13", NEW);
-        seed_record(&home, "1.0.13", NEW);
+        let version = installed_version(&work, "1.0.13");
+        seed_record(&home, &version, NEW);
         let text = update(&work, &home).unwrap();
         assert!(
-            text.starts_with("qaren 1.0.13 build 7f3a2c1e is already current"),
+            text.starts_with(&format!(
+                "qaren {version} build 7f3a2c1e is already current"
+            )),
             "{text}"
         );
     }
 
     #[test]
-    fn pulls_then_reports_the_build_change() {
+    fn a_rebuild_of_the_same_commit_reports_the_build_change() {
+        let root = scratch("rebuilt");
+        let home = root.join("home");
+        let work = checkout(&root, &home, "1.0.13", NEW);
+        let version = installed_version(&work, "1.0.13");
+        seed_record(&home, &version, OLD);
+        let text = update(&work, &home).unwrap();
+        assert!(
+            text.starts_with(&format!(
+                "updated qaren {version} build 1d9e04aa -> 7f3a2c1e"
+            )),
+            "{text}"
+        );
+    }
+
+    #[test]
+    fn a_pulled_commit_installs_beside_the_previous_build() {
         let root = scratch("updated");
         let home = root.join("home");
         let work = checkout(&root, &home, "1.0.13", OLD);
-        seed_record(&home, "1.0.13", OLD);
+        let previous = installed_version(&work, "1.0.13");
+        seed_record(&home, &previous, OLD);
         let other = root.join("other");
         git(
             &root,
@@ -371,15 +388,17 @@ mod tests {
         write_checkout_files(&other, &home, "1.0.13", NEW);
         git(&other, &["commit", "-qam", "new build"]);
         git(&other, &["push", "-q", "origin", "HEAD"]);
-        let pushed = git(&other, &["rev-parse", "HEAD"]);
+        let pushed = installed_version(&other, "1.0.13");
+        assert_ne!(pushed, previous);
         let text = update(&work, &home).unwrap();
         assert!(
-            text.starts_with("updated qaren 1.0.13 build 1d9e04aa -> 7f3a2c1e"),
+            text.starts_with(&format!("installed qaren {pushed} build 7f3a2c1e")),
             "{text}"
         );
-        assert!(
-            text.contains(&format!("checkout HEAD {}", &pushed[..7])),
-            "{text}"
+        assert_eq!(
+            std::fs::read_to_string(home.join("runtime").join(&previous).join(".tarball-sha256"))
+                .unwrap(),
+            format!("{OLD}\n")
         );
     }
 
@@ -388,7 +407,7 @@ mod tests {
         let root = scratch("installed");
         let home = root.join("home");
         let work = checkout(&root, &home, "1.0.13", OLD);
-        seed_record(&home, "1.0.13", OLD);
+        std::fs::create_dir_all(&home).unwrap();
         let other = root.join("other");
         git(
             &root,
@@ -403,9 +422,10 @@ mod tests {
         git(&other, &["commit", "-qam", "version bump"]);
         git(&other, &["push", "-q", "origin", "HEAD"]);
         let text = update(&work, &home).unwrap();
+        assert!(text.starts_with("installed qaren 2.0.0-dev."), "{text}");
         assert!(
-            text.starts_with("installed qaren 2.0.0 build 7f3a2c1e"),
-            "{text}"
+            !home.join("runtime/2.0.0").exists(),
+            "a release folder was written"
         );
     }
 

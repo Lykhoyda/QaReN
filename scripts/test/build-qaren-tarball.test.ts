@@ -20,7 +20,9 @@ import test from 'node:test';
 import {
   copyDarwinNative,
   packDirectory,
+  releaseOf,
   runtimeRunnerManifest,
+  sourceRunnerManifest,
   tarballName,
 } from '../build-qaren-tarball.ts';
 
@@ -299,4 +301,15 @@ test('the runtime manifest names only the runner zips, never a qaren tarball', (
     () => runtimeRunnerManifest(JSON.stringify({ version: '1.2.3', assets: {} }), '1.2.3'),
     /no ios and android assets/,
   );
+});
+
+test('a source build is its own version and its runtime vouches for no published runner', () => {
+  const dev = '1.2.3-dev.abcdef123456';
+  assert.equal(releaseOf(dev), '1.2.3');
+  assert.equal(releaseOf('1.2.3'), '1.2.3');
+  assert.equal(releaseOf('1.2.3-beta.1'), '1.2.3-beta.1');
+  assert.deepEqual(JSON.parse(sourceRunnerManifest(dev)), {
+    version: dev,
+    assets: { ios: [], android: [] },
+  });
 });

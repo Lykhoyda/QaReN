@@ -28,9 +28,9 @@ import {
   unlinkSync,
   writeFileSync,
 } from 'node:fs';
-import { homedir } from 'node:os';
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { gunzipSync } from 'node:zlib';
+import { qarenHome } from '../util/secure-state-file.js';
 import { verifiedNativePublicationHelper } from '../lifecycle/process-birth.js';
 import { recordRunnerDiagnostic } from './runner-diagnostics.js';
 import pinManifest from './maestro-runner-pin.json' with { type: 'json' };
@@ -183,14 +183,14 @@ export interface ReplayEngineStatus {
   provenance?: RunnerProvenance;
 }
 
-export function pinCacheRoot(home = homedir()): string {
+export function pinCacheRoot(qarenHomeDir = qarenHome()): string {
   const override = process.env.QAREN_RUNNER_CACHE;
-  const base = override && override.length > 0 ? override : join(home, '.qaren', 'runtime');
+  const base = override && override.length > 0 ? override : join(qarenHomeDir, 'runtime');
   return resolve(base, 'maestro-runner', MAESTRO_RUNNER_PIN.version);
 }
 
-export function pinnedRunnerBinPath(home?: string): string {
-  return join(pinCacheRoot(home), 'bin', 'maestro-runner');
+export function pinnedRunnerBinPath(qarenHomeDir?: string): string {
+  return join(pinCacheRoot(qarenHomeDir), 'bin', 'maestro-runner');
 }
 
 type PayloadEntry = { kind: 'file'; sha256: string } | { kind: 'symlink'; target: string };

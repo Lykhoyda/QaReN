@@ -1,56 +1,128 @@
 ---
 title: QaReN
-description: QaReN walks a plan on the simulator or emulator, records the run, and reports PASS/FAIL with video.
+description: QaReN is a QA engineer for your coding agent. It tries your React Native change on an iOS simulator and reports PASS or FAIL with the evidence.
 template: splash
 hero:
-  tagline: QA a React Native app on a device from a Markdown plan, and read back PASS or FAIL with evidence.
+  title: A QA engineer for your coding agent
+  tagline: Claude Code, Codex or Cursor writes the React Native change. QaReN tries it in your app on an iOS simulator and comes back with PASS or FAIL, and the evidence behind it.
+  image:
+    html: |
+      <figure class="qa-run" aria-label="An example run: four plan steps pass and the verdict is PASS">
+        <div class="qa-run__bar"><span></span><span></span><span></span><code>Onboarding to the tasks tab</code></div>
+        <ol class="qa-run__steps">
+          <li>Tap "onboarding-skip"</li>
+          <li>Wait for "Welcome" to appear</li>
+          <li class="qa-run__check">"Welcome" is on screen</li>
+          <li>Tap "tab-tasks"</li>
+        </ol>
+        <div class="qa-run__verdict"><strong>PASS</strong><span>report.md · ledger.json · block saved</span></div>
+      </figure>
   actions:
-    - text: Get started
+    - text: Set it up
       link: getting-started/
       icon: right-arrow
-    - text: Write a plan
-      link: plans/
-      variant: minimal
-    - text: Check a plan
-      link: check/
+    - text: How it works
+      link: '#how-it-works'
       variant: minimal
 ---
 
-QaReN is the `qaren` command-line tool for a React Native app. `qaren check` borrows a
-booted iOS simulator or Android emulator, builds and installs the app from your working
-tree, starts Metro, walks a Markdown plan on the device, writes evidence under
-`~/.qaren/runs/<run-id>/` and tears down what it started. `qaren pr` does the same for a
-pull request's head and records the screen, and `qaren publish` posts the result to the
-pull request.
+import { Card, CardGrid, LinkCard, Steps } from '@astrojs/starlight/components';
 
-A plan names what to do and what to check:
+## Your agent says it is done. Did anyone open the app?
 
-```md
-# Test App smoke
+A coding agent checks its work the ways it can: types, lint, unit tests. It does not tap
+through the app. A screen that never appears, a tap that lands on nothing or a flow that
+breaks halfway gets past all of those and reaches review, or your users.
 
-## QA
+QaReN is the QA engineer on your agent's team. Your agent hands it the change and a short
+plan of what to check; QaReN runs that plan in the real app and tells both of you what
+happened.
 
-### Onboarding to the tasks tab
+## What a check looks like
 
-1. Tap "onboarding-skip"
-2. Tap "onboarding-done"
-3. Wait for "Welcome" to appear
-✓ "Welcome"
-4. Tap "tab-tasks"
-5. Wait for "task-header" to appear
-✓ "Tasks ("
-```
+<Steps>
 
-Run it from the app's directory:
+1. You ask your agent to QA a change, for example "QA the onboarding change".
+
+2. The agent writes a plan in Markdown: what to tap, what to wait for and what must be on
+   screen.
+
+   ```md
+   ### Onboarding to the tasks tab
+
+   1. Tap "onboarding-skip"
+   2. Wait for "Welcome" to appear
+   ✓ "Welcome"
+   3. Tap "tab-tasks"
+   ```
+
+3. QaReN borrows a simulator, builds and installs the app from your working tree, starts
+   Metro, walks the plan step by step and tears down what it started.
+
+4. You get PASS or FAIL with the evidence. On a pull request, QaReN can record the screen
+   and post the result as a comment.
+
+</Steps>
+
+## Why you can trust the verdict
+
+<CardGrid>
+  <Card title="A verdict, not a summary" icon="approve-check">
+    Every run ends in PASS, FAIL or a refusal with a typed reason and the next action to
+    take. Your agent reads it as JSON; your scripts read the exit code.
+  </Card>
+  <Card title="Evidence you can open" icon="magnifier">
+    Each run keeps a step-by-step ledger and a readable report at the paths its receipt
+    names. A pull request run adds a screen recording when one can be captured.
+  </Card>
+  <Card title="It tests what you changed" icon="pencil">
+    QaReN builds your working tree, or a pull request's head, and fails the run if the code
+    changes while the plan is being walked, so a drifted run can never pass.
+  </Card>
+  <Card title="Faster on every run" icon="rocket">
+    A passing block that is eligible is saved under `.qaren/actions/` and replayed next time
+    by the exact elements it used, so repeat checks skip the search.
+  </Card>
+</CardGrid>
+
+## Built for
+
+- **Your coding agent:** Claude Code, Codex or Cursor, through the QaReN plugin.
+- **Your app:** an Expo React Native app that uses `expo-dev-client` and pnpm.
+- **Your Mac:** an Apple silicon Mac with Xcode. QaReN 2.0 sets up and checks on an iOS
+  simulator.
+- **Android:** coming in 2.1.
+
+## Get started
+
+Install the plugin in your agent, then run `/qaren:setup` from your app's root (in Codex or
+Cursor, ask it to set up QaReN). Setup installs
+the `qaren` command, writes the app's config, picks a simulator and runs a first smoke check.
 
 ```sh
-qaren check --plan-file plan.md --json
+# Claude Code
+claude plugin marketplace add Lykhoyda/QaReN
+claude plugin install qaren@qaren
+# Codex
+codex plugin marketplace add Lykhoyda/QaReN
+codex plugin add qaren@qaren
+# Cursor: add the marketplace, then install qaren from /plugin > Marketplace in
+# cursor-agent, or from Customize > Plugins in the editor
+cursor-agent plugin marketplace add https://github.com/Lykhoyda/QaReN
 ```
 
-The receipt reports the outcome, names the run, and gives the next action when something
-went wrong. A passing block eligible for [persistence](saved-blocks/#when-a-block-is-not-saved)
-is saved under `.qaren/actions/` and replayed on the next run.
+<LinkCard title="Getting started" description="Requirements, setup and your first passing check." href="getting-started/" />
 
-- [Write a plan](plans/): the plan grammar and what a check reads.
-- [Check a plan](check/): devices, flags, the receipt and exit codes.
-- [Test a pull request](pull-requests/): `qaren pr`, `qaren publish` and video.
+## How it works
+
+Under the hood, QaReN is the `qaren` command-line tool. The plugin teaches your agent to
+drive it, and you can run the same commands yourself.
+
+<CardGrid>
+  <LinkCard title="The qaren CLI" description="Every command, its flags and what it refuses." href="cli/" />
+  <LinkCard title="Check a plan" description="qaren check, devices, the receipt and exit codes." href="check/" />
+  <LinkCard title="Test a pull request" description="qaren pr, screen recording and qaren publish." href="pull-requests/" />
+  <LinkCard title="Write a plan" description="The plan grammar and what a check reads." href="plans/" />
+  <LinkCard title="Saved blocks" description="How passing blocks are saved, replayed and patched." href="saved-blocks/" />
+  <LinkCard title="Use it from your agent" description="The plugin's skills in Claude Code, Codex and Cursor." href="plugin/" />
+</CardGrid>

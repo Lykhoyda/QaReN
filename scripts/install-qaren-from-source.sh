@@ -1,10 +1,18 @@
 #!/usr/bin/env bash
-# Installs qaren from this checkout the way a release would: builds the release tarball, vouches for
-# it in a temporary copy of the plugin, then installs it through ensure-qaren.sh --install.
+# Installs qaren from this checkout the way a release would: builds the tarball as version
+# <release>-dev.<commit>, vouches for it in a temporary copy of the plugin, then installs it through
+# ensure-qaren.sh --install, so it never replaces a release runtime.
 # stdout is the installed binary path; PATH linking follows packages/qaren-cli/README.md.
 #
-# Run: bash scripts/install-qaren-from-source.sh
+# Run: bash scripts/install-qaren-from-source.sh [--link]
 set -euo pipefail
+
+LINK=()
+case "${1:-}" in
+  "") ;;
+  --link) LINK=(--link) ;;
+  *) echo "usage: install-qaren-from-source.sh [--link]" >&2; exit 2 ;;
+esac
 
 cd "$(dirname "$0")/.."
 
@@ -16,7 +24,8 @@ command -v corepack >/dev/null 2>&1 || need "corepack is required; it ships with
 command -v cargo >/dev/null 2>&1 || need "Rust is required: install it from https://rustup.rs"
 
 corepack yarn install --immutable >&2
-V=$(node -p "require('./packages/qaren-plugin/.claude-plugin/plugin.json').version")
+# qaren update (packages/qaren-cli/src/commands/update.rs) derives the same version.
+V="$(node -p "require('./packages/qaren-plugin/.claude-plugin/plugin.json').version")-dev.$(git rev-parse --short=12 HEAD)"
 OUT=$(mktemp -d)
 trap 'rm -rf "$OUT"' EXIT
 TARBALL="$OUT/qaren-$V-darwin-arm64.tar.gz"
@@ -24,4 +33,4 @@ TARBALL="$OUT/qaren-$V-darwin-arm64.tar.gz"
 node scripts/build-qaren-tarball.ts --version "$V" --platform darwin-arm64 --out-dir "$OUT" >&2
 cp -R packages/qaren-plugin "$OUT/plugin"
 node scripts/build-runner-manifest.mts --version "$V" --qaren-darwin-arm64 "$TARBALL" --out "$OUT/plugin/runner-manifest.json" >&2
-bash "$OUT/plugin/scripts/ensure-qaren.sh" --install --from-file "$TARBALL"
+bash "$OUT/plugin/scripts/ensure-qaren.sh" --install --from-file "$TARBALL" ${LINK[@]+"${LINK[@]}"}

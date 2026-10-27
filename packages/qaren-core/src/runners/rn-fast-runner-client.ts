@@ -1362,7 +1362,21 @@ export interface ReapDeps {
   clearState?: (expected: StateSnapshot) => void;
   /** Time to wait between SIGTERM and SIGKILL escalation. Default 500ms. */
   graceMs?: number;
+  requestShutdown?: (state: StateSnapshot) => Promise<boolean>;
+  /** Time to wait for the runner to exit after an accepted `shutdown`. Default 3000ms. */
+  shutdownWaitMs?: number;
   signal?: AbortSignal;
+}
+
+// Ending the XCTest method lets XCTest close its automation session; signals mid-init crash SpringBoard.
+async function requestRunnerShutdown(state: StateSnapshot): Promise<boolean> {
+  if (runnerState?.pid !== state.pid || runnerState.port !== state.port) return false;
+  try {
+    const reply = await sendCommandOnce(state.port, { command: 'shutdown' }, 1_000);
+    return reply.ok === true;
+  } catch {
+    return false;
+  }
 }
 
 async function reapDelay(
@@ -1738,6 +1752,30 @@ export async function reapStaleFastRunner(deps: ReapDeps = {}): Promise<void> {
   const spawnedExit = spawnedChild
     ? new Promise<void>((resolve) => spawnedChild.once('exit', () => resolve()))
     : null;
+
+  const shutdownWaitMs = deps.shutdownWaitMs ?? 3_000;
+  const shutdownAt = Date.now();
+  const accepted =
+    !deps.signal?.aborted &&
+    (await (deps.requestShutdown ?? requestRunnerShutdown)(state).catch(() => false));
+  if (accepted) {
+    let afterShutdown = probeExpected();
+    for (let waited = 0; afterShutdown === 'match' && waited < shutdownWaitMs; waited += 100) {
+      await interruptible(() => reapDelay(sleep, 100, deps.signal));
+      if (deps.signal?.aborted) break;
+      afterShutdown = probeExpected();
+    }
+    if (afterShutdown === 'unknown') {
+      throw new Error('RUNNER_ADOPTION_REQUIRED: iOS runner termination is unproven');
+    }
+    if (afterShutdown === 'gone') {
+      await interruptible(() => reapDelay(sleep, 150, deps.signal));
+      console.error(`iOS runner exited after shutdown in ${Date.now() - shutdownAt}ms`);
+      clearState(state);
+      return;
+    }
+    console.error(`iOS runner did not exit within ${shutdownWaitMs}ms of shutdown; signalling`);
+  }
 
   // This core's own driver leads its group, so its helpers go with it.
   const signalRunner = (signal: NodeJS.Signals): void => {

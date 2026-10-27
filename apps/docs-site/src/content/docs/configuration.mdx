@@ -114,6 +114,7 @@ deadlines:
 | `TYPESAFE_API_KEY`    | Required by plans with phrase steps or phrase checks; see [Write a plan](../plans/#when-the-plan-needs-typesafe_api_key). |
 | `ANDROID_HOME`        | The Android SDK whose `platform-tools/adb` reaches the running adb server.      |
 | `QAREN_NODE`          | The Node binary to use; it takes precedence over `nodePath`.                    |
+| `QAREN_HOME`          | Selects the per-user storage root; see the [storage and state lookup contract](https://github.com/Lykhoyda/QaReN/blob/develop/packages/qaren-cli/README.md#release-and-source-builds-side-by-side). |
 | `QAREN_LOCK_ROOT`     | Explicit lock namespace; see the [lock-root contract](https://github.com/Lykhoyda/QaReN/blob/develop/packages/qaren-cli/README.md#ios-admission-and-cleanup) for precedence and validation. |
 | `QAREN_MACHINE_LOCKS` | Machine-wide locks are on by default; `0` opts out to per-home locks; see the [lock-root contract](https://github.com/Lykhoyda/QaReN/blob/develop/packages/qaren-cli/README.md#ios-admission-and-cleanup) for safe switching. |
 | `QAREN_NATIVE_CACHE_ROOT` | An exact private absolute directory for reusable iOS builds. Defaults on macOS to `/private/var/tmp/qaren-native-cache-<uid>`, shared across HOME values for that user. |

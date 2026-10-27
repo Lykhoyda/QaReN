@@ -59,22 +59,36 @@ fn fresh_token(fallback_seed: &str) -> String {
 }
 
 // Native-suite runs keep their records outside the check runs root.
-pub fn cleanup_command(run_id: &str, home: Option<&Path>) -> String {
-    let env = home
-        .map(|home| format!("HOME='{}' ", home.display()))
-        .unwrap_or_default();
+pub fn cleanup_command(run_id: &str, held: &LockHolder) -> String {
+    let quoted = |path: &Path| format!("'{}'", path.display().to_string().replace('\'', "'\\''"));
+    // An inherited QAREN_HOME would outrank HOME, so a HOME-only holder's command clears it.
+    let env = match (&held.qaren_home, &held.home) {
+        (Some(qaren_home), _) => format!("QAREN_HOME={} ", quoted(qaren_home)),
+        (None, Some(home)) => format!("QAREN_HOME= HOME={} ", quoted(home)),
+        (None, None) => String::new(),
+    };
     if run_id.starts_with("native-ios-") {
         format!(
             "`{env}cargo run --manifest-path packages/qaren-cli/Cargo.toml --locked --example native-ios-suite -- recover --run-id {run_id}` from the repository root"
         )
     } else {
-        format!("`{env}qaren cleanup {run_id}`")
+        let binary = if held.qaren_home.is_some() {
+            match std::env::current_exe() {
+                Ok(path) => quoted(&path),
+                Err(_) => {
+                    return "cleanup using an absolute path to this QAREN_HOME-aware qaren binary; its executable path could not be resolved".to_string();
+                }
+            }
+        } else {
+            "qaren".to_string()
+        };
+        format!("`{env}{binary} cleanup {run_id}`")
     }
 }
 
-fn holder_records(home: &Path, run_id: &str) -> Option<PathBuf> {
+fn holder_records(qaren_home: &Path, run_id: &str) -> Option<PathBuf> {
     let mut parts = Path::new(run_id).components();
-    if !home.is_absolute()
+    if !qaren_home.is_absolute()
         || !matches!(parts.next(), Some(std::path::Component::Normal(_)))
         || parts.next().is_some()
     {
@@ -85,14 +99,15 @@ fn holder_records(home: &Path, run_id: &str) -> Option<PathBuf> {
     } else {
         ("runs", "run.json")
     };
-    Some(home.join(".qaren").join(kind).join(run_id).join(record))
+    Some(qaren_home.join(kind).join(run_id).join(record))
 }
 
 // Judged by the record file: a run directory alone (claimed before the record, or re-created by an orphaned build) gives cleanup nothing to load.
 pub fn records_gone(held: &LockHolder) -> bool {
-    held.home
-        .as_deref()
-        .and_then(|home| holder_records(home, &held.run_id))
+    held.qaren_home
+        .clone()
+        .or_else(|| held.home.as_ref().map(|home| home.join(".qaren")))
+        .and_then(|qaren_home| holder_records(&qaren_home, &held.run_id))
         .is_some_and(|records| {
             matches!(std::fs::symlink_metadata(records), Err(error) if error.kind() == std::io::ErrorKind::NotFound)
         })
@@ -134,7 +149,7 @@ pub fn contended_advice(lock_dir: &Path, existing: Option<&LockHolder>) -> Strin
         return format!(
             "wait for run {} to finish, or clean it up with {}; a live or unproven holder is never taken",
             held.run_id,
-            cleanup_command(&held.run_id, held.home.as_deref())
+            cleanup_command(&held.run_id, held)
         );
     }
     let work = held
@@ -192,11 +207,25 @@ pub fn orphan_note(lock_dir: &Path, run_id: &str) -> String {
     )
 }
 
-pub fn holder_home(runner: &dyn Runner) -> Option<PathBuf> {
-    runner
-        .env_var("HOME")
-        .map(PathBuf::from)
-        .filter(|home| home.is_absolute())
+// (HOME, QAREN_HOME) for a holder. Under QAREN_HOME no HOME is recorded, so a binary that only
+// knows HOME/.qaren never takes the holder's records for gone.
+pub fn holder_homes(runner: &dyn Runner) -> (Option<PathBuf>, Option<PathBuf>) {
+    match runner
+        .env_var_os("QAREN_HOME")
+        .filter(|value| !value.is_empty())
+    {
+        Some(qaren_home) => (
+            None,
+            Some(PathBuf::from(qaren_home)).filter(|q| q.is_absolute()),
+        ),
+        None => (
+            runner
+                .env_var("HOME")
+                .map(PathBuf::from)
+                .filter(|home| home.is_absolute()),
+            None,
+        ),
+    }
 }
 
 // An inherited group belongs to the caller and may outlive every run, so only a group this process leads gates orphan release.
@@ -242,12 +271,14 @@ pub fn try_acquire(
         "{run_id}\0{}\0{now_ms}\0{birth}",
         std::process::id()
     ));
+    let (home, qaren_home) = holder_homes(runner);
     let holder = LockHolder {
         holder: format!("qaren-{run_id}"),
         run_id: run_id.to_string(),
         identity,
         at: timefmt::iso8601_utc(now_ms),
-        home: holder_home(runner),
+        home,
+        qaren_home,
         group: led_group(),
     };
     let name = lock_name(platform, device_id);

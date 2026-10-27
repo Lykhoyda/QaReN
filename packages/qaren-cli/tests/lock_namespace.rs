@@ -1047,6 +1047,7 @@ fn sample_holder(run: &str) -> LockHolder {
         identity: None,
         at: "2026-10-21T00:00:00Z".to_string(),
         home: None,
+        qaren_home: None,
         group: None,
     }
 }

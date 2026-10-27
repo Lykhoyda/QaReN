@@ -20,7 +20,8 @@ owns the guided onboarding procedure; [Check a plan](#check-a-plan) covers manua
 qaren doctor [--json] [--config .qaren/config.yaml]
 ```
 
-Doctor prints the running binary's version, path, build and runtime, then one
+Doctor prints the running binary's version, path, build, runtime and the
+[`QAREN_HOME`](#release-and-source-builds-side-by-side) in use, then one
 `PASS`, `WARN`, `FAIL` or `SKIP` row per check, each problem with its manual fix.
 It only reads files and runs bounded version, inventory and host-statistics probes:
 it never writes, deletes, starts a device or restarts a service. It does not run ADB
@@ -44,10 +45,10 @@ that can conflict with a session or is hygiene; `SKIP` is not applicable.
 | `simulator-service` | A five-second `simctl list devices -j` probe on macOS; attributable uninterruptible simulator process evidence when unresponsive |
 | `host-load` | One-, five- and fifteen-minute load averages, logical CPU count and sampled CPU idle; warns about readiness deadlines under load |
 | `android-sdk`, `android-avd` | When `android` is configured: `ANDROID_HOME`, an executable `adb` file (never run; its version is not checked), the emulator binary and the configured AVD via `emulator -list-avds` |
-| `qaren-path` | The first `qaren` on `PATH` is this binary and the installed build; later copies warn |
-| `installed-build` | The runtime under `~/.qaren/runtime/<version>/` and the runtime `check` would use (`QAREN_RUNTIME` when set) are complete; a binary outside it that `PATH` runs instead of an install fails |
-| `runtime-dirs` | Interrupted installs and other versions under `~/.qaren/runtime/` |
-| `source-checkout` | From a QaReN checkout: its version matches this binary |
+| `qaren-path` | The first `qaren` on `PATH` is this binary and the installed build; later copies warn, and so does a separate install that `PATH` runs instead (another `QAREN_HOME` or the other release or source-build line) |
+| `installed-build` | The runtime under `$QAREN_HOME/runtime/<version>/` and the runtime `check` would use (`QAREN_RUNTIME` when set) are complete; a binary outside it that `PATH` runs instead of an install fails |
+| `runtime-dirs` | Interrupted installs and other versions under `$QAREN_HOME/runtime/` |
+| `source-checkout` | From a QaReN checkout: its source version (`<version>-dev.<commit>`) matches this binary |
 | `config` | `.qaren/config.yaml` (or `--config`) loads and validates |
 | `1x-claude-plugin`, `1x-codex-plugin` | The rn-dev-agent 1.x plugin, marketplace and caches in Claude Code, Codex and Cursor |
 | `1x-mcp` | A hand-registered 1.x MCP server in `~/.claude.json`, `.mcp.json`, `~/.cursor/mcp.json` or `$CODEX_HOME/config.toml` |
@@ -137,7 +138,7 @@ ssh host qaren watch <run-id> --plain
 qaren watch <run-id> --json
 ```
 
-The viewer reads one run under `~/.qaren/runs/` and takes no lock or device
+The viewer reads one run from the [run storage root](#ios-admission-and-cleanup) and takes no lock or device
 lease. `--latest` selects the newest `run.json` modification time. It shows
 explicit stages from preflight through cleanup, step outcomes and act/capture/Jev
 timings, recording, and the verdict with its expected check exit code.
@@ -225,7 +226,7 @@ Interactive controls, lanes and timed replay remain later slices.
 
 ## Build
 
-For the supported source installation, follow [Set up QaReN](../../README.md#set-up-qaren);
+For the supported source installation, follow [Install from source](../../README.md#install-from-source);
 `qaren update`, run from the checkout root, repeats it after a `git pull --ff-only`
 and refuses a checkout with local changes or a pull that cannot fast-forward.
 
@@ -259,7 +260,7 @@ bash scripts/ensure-qaren.sh --print-bin
 
 `--install` verifies the tarball's SHA-256 and byte length against the plugin's
 [`runner-manifest.json`](../qaren-plugin/runner-manifest.json) before installing
-under `~/.qaren/runtime/<version>/`. `--install --from-file <tarball>` uses a
+under `$QAREN_HOME/runtime/<version>/`. `--install --from-file <tarball>` uses a
 local asset with the same verification. Re-run `--install` to recover an
 interrupted installation. The installed binary discovers its adjacent runtime;
 it does not require the source checkout's `dist/` or `QAREN_RUNTIME` override.
@@ -271,8 +272,13 @@ instruction, or nothing, so its exit status alone does not prove installation.
 on PATH, exists and is writable: `~/.local/bin`, `~/bin`, `/opt/homebrew/bin` or
 `/usr/local/bin`, so an earlier IDE or toolchain bin is passed over. With none of
 those on PATH it uses the first writable absolute PATH directory, so the bare
-command still works at once; empty and relative entries are skipped. It replaces only
-a link into `~/.qaren/runtime/`; any other file there is left alone with a notice.
+command still works at once; empty and relative entries are skipped. When a `qaren`
+is already on PATH, only the first one is considered, so an install never shadows
+another. That link is replaced when it points into this `QAREN_HOME`'s runtime at the
+same line: a release replaces a release, and a source build (`<version>-dev.<commit>`)
+replaces a source build. A link into another `QAREN_HOME`, or a working link of the
+other line, is kept with a notice unless `--install --link` is passed; any other file
+is left alone with a notice.
 If no PATH directory qualifies, it links `~/.local/bin/qaren` and prints
 `export PATH="$HOME/.local/bin:$PATH"`; run that line to use the bare command.
 It never edits shell rc files. Link problems are stderr notices and do not fail
@@ -281,6 +287,31 @@ use directly if linking fails.
 This development checkout's manifest does not imply that a QaReN release asset
 has been published; use the [source installation](../../README.md#install-from-source)
 while that asset is unavailable.
+
+### Release and source builds side by side
+
+`QAREN_HOME`, an absolute path that defaults to `~/.qaren`, holds runs, state,
+native-suite records, installed runtimes and the prebuilt runner cache; every `qaren`
+command and the installer read it, and a relative value refuses. Its parent directory
+must already exist. When `QAREN_HOME` is set, state lives under `QAREN_HOME/state`;
+otherwise state keeps using `XDG_STATE_HOME/qaren` when `XDG_STATE_HOME` is set,
+or `~/.qaren/state`. Device locks and the native build cache never follow it, so
+installs in two homes still refuse each other's simulators.
+
+`scripts/install-qaren-from-source.sh` and `qaren update` name a source build
+`<plugin version>-dev.<12-character commit>`. It installs into its own runtime
+directory beside any release, never matches a published runner manifest (its runners
+build from the shipped source) and `qaren --version` prints that version. A build
+from a checkout with local changes takes its HEAD's version and replaces that build.
+
+To keep a source build fully apart from a release install, give it its own home and
+run it by path with that home set for every command:
+
+```sh
+export QAREN_HOME=/path/to/dev-home/.qaren
+bash scripts/install-qaren-from-source.sh
+"$QAREN_HOME/runtime/<version>-dev.<commit>/bin/qaren" doctor
+```
 
 ## Upgrading from rn-dev-agent 1.x (1.0.14) to 2.0
 
@@ -293,7 +324,7 @@ and install 2.0 as a new product.
 |---|---|
 | Plugin `rn-dev-agent@rn-dev-agent` from marketplace `rn-dev-agent`, with its bundled MCP server (`cdp_*`, `device_*` tools) | Plugin `qaren@qaren` from marketplace `qaren`, and the `qaren` CLI; no MCP server |
 | `.rn-agent/config.json` and `.rn-agent/actions/` learned actions in the app | `.qaren/config.yaml` and `.qaren/actions/` saved blocks written from passing plan blocks |
-| `~/.cache/rn-dev-agent/` (maestro-runner pin cache), `~/.rn-dev-agent/` (action database, device helper state), `~/.claude/rn-agent/` | `~/.qaren/runtime/`, `~/.qaren/state/`, `~/.qaren/runs/`, and device locks in the [machine lock root](#ios-admission-and-cleanup) |
+| `~/.cache/rn-dev-agent/` (maestro-runner pin cache), `~/.rn-dev-agent/` (action database, device helper state), `~/.claude/rn-agent/` | [Per-user storage](#release-and-source-builds-side-by-side) and device locks in the [machine lock root](#ios-admission-and-cleanup) |
 
 A `.qaren/config.yaml` carrying `savePlans` needs a 2.0 CLI; an earlier CLI refuses it as an
 unknown key. Existing `.qaren/plans/*.md` files are listed and run as [saved plans](#saved-plans).
@@ -361,16 +392,14 @@ unknown key. Existing `.qaren/plans/*.md` files are listed and run as [saved pla
    - Released plugin: the plugin list shows `qaren@qaren`, and
      `bash scripts/ensure-qaren.sh --print-bin` prints a binary path whose
      `--version` reports `qaren 2.0.0` or later.
-   - Source install: the binary path printed by
-     `scripts/install-qaren-from-source.sh` reports the checkout's workspace
-     version with `--version`. The version moves to 2.0.0 only
-     when the release is cut, so a `develop` build still shows the pre-release
-     version (for example `qaren 1.0.13`). The installed runtime needs no
-     `QAREN_RUNTIME` override; see [Build](#build) for development binaries.
+   - Source install: use the binary path printed by
+     `scripts/install-qaren-from-source.sh`; its version follows the
+     [source-build contract](#release-and-source-builds-side-by-side). The installed
+     runtime needs no `QAREN_RUNTIME` override; see [Build](#build) for development binaries.
    - Run [Doctor](#doctor) to check the known 1.x leftover locations.
    - In the app, follow [Set up an app](#set-up-an-app), or write configuration
-     and run a plan manually as in [Check a plan](#check-a-plan); a PASS receipt with a run under
-     `~/.qaren/runs/` completes the upgrade.
+     and run a plan manually as in [Check a plan](#check-a-plan); a PASS receipt with its
+     artifact paths completes the upgrade.
 
 ## Check a plan
 
@@ -2072,10 +2101,11 @@ invalid or mismatched evidence is reported as `unavailable`, `invalid_evidence`,
 `envelope_mismatch` or `invalid_response`. These diagnostics do not relax
 admission: resolve the refusal and start a new run.
 
-Runs and evidence live under `~/.qaren/runs/<run-id>/`. Device and
+Runs and evidence live under `$QAREN_HOME/runs/<run-id>/` (`~/.qaren` by default).
+Device and
 native-build locks are machine-wide by default.
 `QAREN_MACHINE_LOCKS` is on when unset, empty or `1`; `0` opts out to the
-per-home `~/.qaren/locks`, and any other value refuses. An absolute
+per-home `$HOME/.qaren/locks` (never `QAREN_HOME`), and any other value refuses. An absolute
 `QAREN_LOCK_ROOT` takes precedence in either mode: sessions using different
 roots do not share locks. Empty, relative, NUL and literal `.` or `..` path
 segments refuse before normalization in every mode, as does a HOME with them.
@@ -2109,7 +2139,7 @@ cleaned up by their original owner. Nothing scans homes, dual-claims roots,
 rewrites stored paths or retires old binaries. Processes using per-home roots,
 including older binaries and `QAREN_MACHINE_LOCKS=0` sessions, remain outside
 the shared namespace. Native suite recovery needs the original HOME and the
-original lock setting.
+original lock setting and, when set, the original `QAREN_HOME`.
 
 Checks, including `qaren pr`, claim a
 timestamped run directory atomically and retry with a numeric suffix when the
@@ -2117,6 +2147,24 @@ name already exists, so same-second starts have separate run identities. Use the
 complete run ID printed by the receipt or watch hint for subsequent commands.
 The walk writes `ledger.json` and
 `report.md` when it reaches reporting; the receipt names available artifacts.
+
+The core first asks its connected iOS runner to end its XCTest method with an
+authenticated `shutdown` command, allowing XCTest to close its automation session.
+The request has a 1-second timeout; an accepted request gets up to 3 seconds for
+the driver to exit before falling back to `SIGTERM`, then `SIGKILL` after a
+500 ms grace. A failed or refused request goes directly to signals. Cancellation
+can skip the request or interrupt these waits. Unknown process identity refuses
+termination with `RUNNER_ADOPTION_REQUIRED` rather than authorizing signals.
+
+After teardown, an iOS check with a recorded runner driver polls
+`~/Library/Logs/DiagnosticReports` for up to 60 seconds, stopping early on a match
+or cancellation. It looks for a SpringBoard `.ips` report written since the core
+was spawned and matched to the selected simulator by device path or coalition.
+A match adds `outcomes.springboard_crash` to the receipt and a lane-health entry to
+`run.json` history, optionally including a sanitized exception type; report paths
+and raw contents are not copied. This observation never changes the run result,
+and an absent note does not prove that SpringBoard stayed healthy.
+
 Cleanup proves owned process-group and exact-simulator runner-host absence
 before releasing the lease. When the leased simulator had no runner host as the
 core started, the run records the host as its own; normal teardown, cancellation
@@ -2823,7 +2871,7 @@ remain untouched.
 
 `qaren pr` runs the same pipeline as `check`, from the app's directory with the
 same `.qaren/config.yaml` and plan, but walks a detached worktree at the pull
-request head under `~/.qaren/runs/<run-id>/wt`. It refuses unless origin's
+request head in `wt/` under the [run directory](#ios-admission-and-cleanup). It refuses unless origin's
 `pull/<n>/head` is the head GitHub reports and the worktree is clean at that
 commit, both before the lease and again before the walk. Fetch verification uses
 a per-run local ref rather than shared `FETCH_HEAD`, so concurrent PR runs
