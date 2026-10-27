@@ -1,6 +1,6 @@
 {
   "name": "qaren",
-  "version": "2.0.1",
+  "version": "2.0.2",
   "private": true,
   "description": "QaReN plugin package for Claude Code, Cursor and Codex; the changesets version source for every host manifest.",
   "license": "MIT",
