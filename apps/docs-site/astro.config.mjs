@@ -20,7 +20,7 @@ export default defineConfig({
           attrs: {
             name: 'keywords',
             content:
-              'react native, qa, qa agent, expo, ios simulator, test plan, pull request, claude code, codex',
+              'react native, qa, qa agent, expo, ios simulator, test plan, pull request, claude code, codex, cursor',
           },
         },
         {
