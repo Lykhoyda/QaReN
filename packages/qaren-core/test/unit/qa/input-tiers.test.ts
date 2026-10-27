@@ -4,9 +4,11 @@ import { parsePlan, parseStep } from '../../../dist/qa/plan.js';
 import { RunInputs, withInputs } from '../../../dist/qa/inputs.js';
 import {
   INPUT_SCREEN_TEXT_WITHHELD,
+  MASK,
   ObservedPrivacy,
   emailForms,
 } from '../../../dist/qa/privacy.js';
+import { decideScreen } from '../../../dist/qa/resolve.js';
 import { describeError } from '../../../dist/qa/adapt.js';
 import { runPlan } from '../../../dist/qa/walker.js';
 import { element, screen, scriptedJudge, walker } from './judgment-fixtures.ts';
@@ -111,6 +113,82 @@ test('a re-cased TEST-PII e-mail is still redacted from retained screen text', (
   for (const leaked of ['qatester@example.test', 'Qatester', 'example.test'])
     assert.ok(!text.includes(leaked), `${leaked} in ${text}`);
   assert.ok(text.includes('Signed in as'), text);
+});
+
+test('derived and re-cased inputs mask without asserting full-value equality', async () => {
+  const declared = 'qa.tester@example.test';
+  const { privacy } = privacyFor({ EMAIL: declared }, ['EMAIL']);
+  const mask = privacy.maskForModel(privacy.modelValues(), []);
+  assert.equal(mask.apply(declared), mask.tokens[0]);
+  for (const observed of [...emailForms(declared), declared.toUpperCase()]) {
+    assert.equal(mask.apply(observed), MASK, observed);
+    assert.equal(privacy.redact(observed), MASK, observed);
+    for (const [expected, actual] of [
+      [declared, observed],
+      [observed, declared],
+    ]) {
+      const judge = scriptedJudge(() => assert.fail('unequal private forms must stay unsure'));
+      const shown = screen([element('@account', `Signed in as ${actual}`, { kind: 'text' })]);
+      for (const kind of ['check', 'wait', 'scroll'] as const) {
+        const claim = `${expected} is visible`;
+        const decision = await decideScreen(
+          shown,
+          judge,
+          kind === 'check' ? { kind, text: claim, literal: false, line: 1 } : undefined,
+          kind === 'wait'
+            ? { kind, target: { phrase: claim }, line: 1 }
+            : kind === 'scroll'
+              ? { kind, direction: 'down', until: { phrase: claim }, line: 1 }
+              : undefined,
+          privacy.modelValues(),
+          privacy,
+        );
+        assert.equal(kind === 'check' ? decision.check : decision.visibility?.verdict, 'unsure');
+      }
+      assert.equal(judge.requests.length, 0);
+    }
+  }
+  const judge = scriptedJudge((questions) =>
+    Object.fromEntries(Object.keys(questions).map((id) => [id, { type: 'noul', noul: 0.99 }])),
+  );
+  const decision = await decideScreen(
+    screen([element('@account', `Signed in as ${declared}`, { kind: 'text' })]),
+    judge,
+    { kind: 'check', text: `${declared} is visible`, literal: false, line: 1 },
+    undefined,
+    privacy.modelValues(),
+    privacy,
+  );
+  assert.equal(decision.check, 'pass');
+  assert.equal(judge.requests.length, 1);
+});
+
+test('Unicode input casing redacts original screen and error spans in both directions', () => {
+  for (const [declared, variant] of [
+    ['Hauptstraße 42', 'HAUPTSTRASSE 42'],
+    ['JÖRG', 'jörg'],
+    ['ΟΣΟΣ', 'οσος'],
+    ['İSİM', 'i\u0307si\u0307m'],
+    ['𐐀𐐁𐐂', '𐐨𐐩𐐪'],
+  ]) {
+    for (const [value, echo] of [
+      [declared, variant],
+      [variant, declared],
+    ]) {
+      const { privacy, inputs } = privacyFor({ ADDRESS: value }, ['ADDRESS']);
+      const raw = `🌍 before ${echo}; ${echo} after é`;
+      const redacted = `🌍 before ${MASK}; ${MASK} after é`;
+      assert.equal(privacy.redact(raw), redacted);
+      assert.equal(privacy.redactIdentifier(raw), redacted);
+      assert.deepEqual(privacy.screenText(screen([element('@address', raw, { kind: 'text' })])), [
+        redacted,
+      ]);
+      assert.equal(withInputs(inputs, () => describeError(new Error(raw))).message, redacted);
+      const mask = privacy.maskForModel(privacy.modelValues(), []);
+      assert.equal(mask.apply(raw), redacted);
+      assert.equal(mask.apply(value), mask.tokens[0]);
+    }
+  }
 });
 
 test('a TEST-PII run reports failure screen text redacted by the declared value', async () => {

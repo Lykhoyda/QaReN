@@ -688,6 +688,27 @@ mod tests {
             "{clean}"
         );
     }
+    #[test]
+    fn unicode_input_casing_redacts_original_spans_in_both_directions() {
+        for (declared, variant) in [
+            ("Hauptstraße 42", "HAUPTSTRASSE 42"),
+            ("JÖRG", "jörg"),
+            ("ΟΣ", "ος"),
+            ("İSİM", "i\u{307}si\u{307}m"),
+            ("𐐀𐐁𐐂", "𐐨𐐩𐐪"),
+            ("JÖRG@EXAMPLE.TEST", "jörg@example.test"),
+        ] {
+            for (value, echo) in [(declared, variant), (variant, declared)] {
+                let inputs = super::InputValues::from_values(vec![value.into()]);
+                let raw = format!("🌍 before {echo}; {echo} after é");
+                assert_eq!(
+                    inputs.redact(&raw),
+                    "🌍 before [REDACTED_INPUT]; [REDACTED_INPUT] after é"
+                );
+            }
+        }
+    }
+
 }
 
 pub struct InputValues {
@@ -822,12 +843,23 @@ impl InputValues {
             .collect();
         forms.sort_by_key(|value| std::cmp::Reverse(value.len()));
         forms.dedup();
-        // Apps re-case declared values, so matching ignores ASCII case; one pass keeps markers intact.
-        let hay = raw.to_ascii_lowercase();
+        let fold = |text: &str| -> String {
+            text.chars()
+                .flat_map(|c| c.to_uppercase().flat_map(char::to_lowercase))
+                .collect()
+        };
+        let mut hay = String::new();
+        let mut offsets = Vec::new();
+        for (start, c) in raw.char_indices() {
+            let folded = fold(&c.to_string());
+            offsets.extend(std::iter::repeat_n((start, start + c.len_utf8()), folded.len()));
+            hay.push_str(&folded);
+        }
         let mut spans: Vec<(usize, usize)> = Vec::new();
         for form in forms {
-            for (start, found) in hay.match_indices(&form.to_ascii_lowercase()) {
-                let end = start + found.len();
+            for (start, found) in hay.match_indices(&fold(&form)) {
+                let end = offsets[start + found.len() - 1].1;
+                let start = offsets[start].0;
                 if spans.iter().all(|&(a, b)| end <= a || start >= b) {
                     spans.push((start, end));
                 }

@@ -268,11 +268,8 @@ export const SHORT = 3;
 const escape = (value: string): string => value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 const chars = (text: string): number => [...text].length;
 const whole = (pattern: string): string => `(?<![${WORD}])${pattern}(?![${WORD}])`;
-// Apps re-case declared values (e-mail normalization), so output masking matches any letter case.
-const caseless = (pattern: string): string =>
-  pattern.replace(/\p{L}/gu, (c) =>
-    c.toLowerCase() === c.toUpperCase() ? c : `[${c.toLowerCase()}${c.toUpperCase()}]`,
-  );
+const foldCase = (text: string): string =>
+  [...text].map((char) => char.toUpperCase().toLowerCase()).join('');
 
 function forms(value: string): string[] {
   return [
@@ -338,13 +335,18 @@ export function matchPrivate(
           value.provenance === 'code' || (value.provenance === 'secret' && length === 1)
             ? whole(escape(form))
             : anyCase
-              ? caseless(escape(form))
+              ? escape(foldCase(form))
               : escape(form),
         length: form.length,
+        anyCase,
       }));
       const digits = digitForm(value.text);
-      if (digits) patterns.push({ pattern: digits, length: digits.length });
-      return patterns.map(({ pattern, length }) => ({ pattern, length, value: value.text }));
+      if (digits) patterns.push({ pattern: digits, length: digits.length, anyCase: false });
+      return patterns.map((pattern) => ({
+        ...pattern,
+        value: value.text,
+        input: value.provenance === 'input',
+      }));
     })
     .sort((a, b) => b.length - a.length);
   const fragments = (set.fragments ?? []).flatMap(forms);
@@ -353,15 +355,45 @@ export function matchPrivate(
   const parts: { text: string; masked: boolean }[] = [];
   let offset = 0;
   if (rules.length) {
-    const pattern = new RegExp(rules.map((rule) => `(${rule.pattern})`).join('|'), 'gu');
-    for (const match of text.matchAll(pattern)) {
-      const index = rules.findIndex((_, i) => match[i + 1] !== undefined);
-      parts.push({ text: text.slice(offset, match.index), masked: false });
+    const starts: number[] = [];
+    const ends: number[] = [];
+    let folded = '';
+    let at = 0;
+    if (rules.some((rule) => rule.anyCase)) {
+      for (const char of text) {
+        const form = foldCase(char);
+        for (let i = 0; i < form.length; i++) {
+          starts.push(at);
+          ends.push(at + char.length);
+        }
+        folded += form;
+        at += char.length;
+      }
+    }
+    const matches = rules
+      .flatMap((rule) =>
+        [...(rule.anyCase ? folded : text).matchAll(new RegExp(rule.pattern, 'gu'))].map(
+          (match) => ({
+            start: rule.anyCase ? starts[match.index] : match.index,
+            end: rule.anyCase
+              ? ends[match.index + match[0].length - 1]
+              : match.index + match[0].length,
+            rule,
+          }),
+        ),
+      )
+      .sort((a, b) => a.start - b.start || b.end - a.end || b.rule.length - a.rule.length);
+    for (const { start, end, rule } of matches) {
+      if (start < offset) continue;
+      parts.push({ text: text.slice(offset, start), masked: false });
       parts.push({
-        text: policy === 'model' ? (token?.(rules[index].value) ?? MASK) : MASK,
+        text:
+          policy === 'model' && (!rule.input || text.slice(start, end) === rule.value)
+            ? (token?.(rule.value) ?? MASK)
+            : MASK,
         masked: true,
       });
-      offset = match.index + match[0].length;
+      offset = end;
       hit = true;
     }
   }
