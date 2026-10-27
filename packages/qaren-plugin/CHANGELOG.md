@@ -1,5 +1,13 @@
 # qaren
 
+## 2.0.2
+
+### Patch Changes
+
+- ae42998: iOS teardown now asks the XCUITest runner to shut down before falling back to signals, and checks record matching SpringBoard crash reports as lane-health notes without changing the run result.
+- 5520dcf: Present QaReN in the README and docs site as a QA engineer for your coding agent, with the qaren CLI reference grouped under How it works.
+- 670083e: A released qaren and a source build now install side by side: `QAREN_HOME` moves runs, state, runtimes and the runner cache, source builds are versioned `<version>-dev.<commit>`, and the installer no longer relinks the other line's `qaren` without `--link`.
+
 ## 2.0.1
 
 ### Patch Changes
