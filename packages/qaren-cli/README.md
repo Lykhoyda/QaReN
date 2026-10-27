@@ -958,13 +958,13 @@ becoming `123 456`, remain honestly unverified. Only a proven retained prefix fr
 the prior value followed by the requested text permits one bounded clear-and-retype,
 with the same focus and empty-state proofs. A retained prefix after that recovery
 fails with `TEXT_ENTRY_UNVERIFIED`; other mismatches remain unverified. Unreadable
-final values also remain unverified. Private non-secure runtime inputs instead
+final values also remain unverified. SECRET non-secure runtime inputs instead
 require an exact length/content match; a confirmed mismatch is never retyped, and it
 fails the step unless the one [Fill ladder](#fill-ladder) step to the change handler then
 verifies exactly. These comparisons run inside the app; only state and comparison metadata
-leave the process, never the value. Literal Fill values keep ordinary readback even when unrelated runtime
-inputs exist. Private character counts are omitted from the
-run's public output.
+leave the process, never the value. Literal and TEST-PII Fill values keep ordinary
+readback even when unrelated runtime inputs exist. For value-free SECRET mismatch
+facts and TEST-PII output redaction, see [Runtime inputs](#runtime-inputs).
 
 Secure fields retain direct typing: they are never cleared, their
 values are never read, and the result stays unverified. **Known limit:** a prefilled
@@ -1961,9 +1961,11 @@ Inputs are SECRET unless their named Fill explicitly opts in to TEST-PII with
 `(test-pii)` (or the older spelling `(non-secret)`), for example
 `Fill "email-field" with input TEST_EMAIL (test-pii)` for a staging test account; `(secret)`
 states the default. A secure field is SECRET whatever the plan says, and literal plan text is
-PUBLIC. A SECRET value is never read back: the app compares it in place, and a mismatch
-records only `entryMismatch` counts (`len`, `exp`, `prefix`, `suffix`, `caseEq`) on the
-ledger row. A TEST-PII value is read back in memory like literal text. The tier also relaxes
+PUBLIC. A SECRET value is never read back to the host: for a controlled non-secure field,
+the app compares it in place, and a mismatch records only value-free `entryMismatch` facts
+(`len`, `exp`, `prefix`, `suffix`, `caseEq`) on the ledger row. Secure fields retain the
+[focused-fill verification limits](#fill-verification-and-keyboard-fallback).
+A TEST-PII value is read back in memory like literal text. The tier also relaxes
 execution hash and echo checks: pure fixture labels, identifiers and types retain their
 original hash operands, even at the filled field, and a redundant expected-echo declaration
 does not mask them to a constant. SECRET matches win on equal or overlapping values; a

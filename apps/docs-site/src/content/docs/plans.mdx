@@ -84,9 +84,8 @@ password manager's CLI; qaren does not read `.env` files or resolve references.
 Every input has one of three tiers:
 
 - **SECRET** (the default; passwords, OTP codes, API keys, payment data). The value is never
-  read back or logged: typing is verified inside the app, and a mismatch reports only counts
-  (observed and expected length, matching prefix and suffix lengths, whether only letter case
-  differs). A runtime input with no annotation, or with `(secret)`, is SECRET. A field the
+  read back to the host or logged; follow the CLI guide's [verification and mismatch contract](https://github.com/Lykhoyda/QaReN/blob/develop/packages/qaren-cli/README.md#runtime-inputs), including secure-field limits.
+  A runtime input with no annotation, or with `(secret)`, is SECRET. A field the
   app marks secure is SECRET whatever the plan says.
 - **TEST-PII** (staging test e-mails, test addresses and similar test-account data). Opt in
   per Fill with `(test-pii)`; `(non-secret)` is the older spelling of the same tier.
@@ -124,9 +123,8 @@ conflicts refuse before device selection. When values overlap, SECRET inputs win
 TEST-PII alias or echo declaration cannot exempt a SECRET value. There is no global,
 config or environment-based opt-in, and unused environment variables declare no policy.
 
-Saved blocks contain the symbolic slot and tier only and rebind the current run's value.
-Changing a name's tier changes the saved plan hash, so blocks that fill it re-walk once;
-a configured login block with stale policy must be explicitly refreshed before replay.
+For saved-slot encoding, run-wide policy hashes and refreshing policy-stale login blocks,
+follow the CLI guide's [runtime-input persistence contract](https://github.com/Lykhoyda/QaReN/blob/develop/packages/qaren-cli/README.md#runtime-inputs).
 Never mark real credentials TEST-PII: qaren cannot identify a production backend or prove
 that a value is test data, and a misclassified secret is read and only redacted by value.
 
@@ -147,8 +145,8 @@ There is no `no longer` form or heading-level declaration.
   a scheme such as `op://` or `vault:` or containing `${`, `$(` or `{{`, refuses
   `CORE_REFUSED`. Invalid values refuse with `runtime inputs are invalid`.
 - The value is masked in every output and never written by qaren to a file, log, saved
-  block or report, or sent to Jev; strict inputs are also protected from execution hashing. A run with inputs takes no screenshots, records
-  no video and withholds the logs of the processes it starts. For the value-free events retained
+  block or report, or sent to Jev; strict inputs are also protected from execution hashing.
+  For log and media handling, follow the tier rules above. For the value-free events retained
   in `logs/core-diagnostics.jsonl`, see the CLI guide's
   [runtime-input diagnostics](https://github.com/Lykhoyda/QaReN/blob/develop/packages/qaren-cli/README.md#runtime-inputs).
 - The iOS simulator's own system log may record text the app displays, including a filled
