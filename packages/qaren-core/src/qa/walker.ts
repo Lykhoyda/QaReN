@@ -808,7 +808,14 @@ async function walkBlockScoped(
         : root && root.width > 0 && root.height > 0
           ? { width: root.width, height: root.height }
           : undefined;
-    if (screen.front !== 'app' || matches.length !== 1 || scale === undefined) return undefined;
+    if (
+      screen.front !== 'app' ||
+      screen.coverage?.native !== 'complete' ||
+      (screen.captureCoverage?.native ?? screen.coverage?.native) !== 'complete' ||
+      matches.length !== 1 ||
+      scale === undefined
+    )
+      return undefined;
     const element = matches[0];
     const frame = elementFrame(element);
     if (!frame || !element.hittable || insideAlert(element) || centreCovered(element, screen))
@@ -822,9 +829,23 @@ async function walkBlockScoped(
     const allowed = () => privacy.canScreenshot() && !metadataOnly && !currentInputs()?.hasInputs;
     if (!allowed() || !deps.comparisonScreenshot) return undefined;
     try {
+      const valid = async () => {
+        const observation = await captureOnce();
+        const current = pixelTarget(observation.screen, target.target);
+        return (
+          allowed() &&
+          current !== undefined &&
+          JSON.stringify(current.scale) === JSON.stringify(target.scale) &&
+          current.frame.x === target.frame.x &&
+          current.frame.y === target.frame.y &&
+          current.frame.width === target.frame.width &&
+          current.frame.height === target.frame.height
+        );
+      };
+      if (!(await valid())) return undefined;
       const bytes = await deps.comparisonScreenshot();
       assertActive();
-      return bytes && allowed() ? cropPng(bytes, target.frame, target.scale) : undefined;
+      return bytes && (await valid()) ? cropPng(bytes, target.frame, target.scale) : undefined;
     } catch (error) {
       if (isAbort(error)) throw error;
       return undefined;
@@ -2764,26 +2785,15 @@ async function walkBlockScoped(
             item.kind === 'press' &&
             act!.proven === false &&
             pixelBaseline &&
-            element
+            element &&
+            sameIdentity(element, pixelBaseline.target.target)
           ) {
             const baseline = pixelBaseline.target;
-            const previous = pixelTarget(before.screen, baseline.target);
-            const current = pixelTarget(after.screen, baseline.target);
-            const identical = (target: ReturnType<typeof pixelTarget>) =>
-              target &&
-              sameIdentity(element!, baseline.target) &&
-              JSON.stringify(target.scale) === JSON.stringify(baseline.scale) &&
-              target.frame.x === baseline.frame.x &&
-              target.frame.y === baseline.frame.y &&
-              target.frame.width === baseline.frame.width &&
-              target.frame.height === baseline.frame.height;
-            if (identical(previous) && identical(current)) {
-              const first = await pixelShot(current!);
-              if (first) {
-                await deps.sleep(200);
-                const second = await pixelShot(current!);
-                if (second) changed = stablePixelChange(pixelBaseline.crop, first, second);
-              }
+            const first = await pixelShot(baseline);
+            if (first) {
+              await deps.sleep(200);
+              const second = await pixelShot(baseline);
+              if (second) changed = stablePixelChange(pixelBaseline.crop, first, second);
             }
           }
           diagnostic(item, after, 'decision', 'ACCEPTED');

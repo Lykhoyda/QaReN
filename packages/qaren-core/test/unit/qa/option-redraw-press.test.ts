@@ -4,7 +4,7 @@ import { test } from 'node:test';
 import { decodePng } from '../../../dist/qa/tap-pixels.js';
 import { renderReason } from '../../../dist/qa/untrusted.js';
 import { parsePlan } from '../../../dist/qa/plan.js';
-import { join, screenSignature } from '../../../dist/qa/screen.js';
+import { elementFrame, join, screenSignature } from '../../../dist/qa/screen.js';
 import type { NativeNode, Screen } from '../../../dist/qa/screen.js';
 import { walkBlock } from '../../../dist/qa/walker.js';
 import type { ActResult, WalkerDeps } from '../../../dist/qa/walker.js';
@@ -15,7 +15,7 @@ const fixture = (name: string) =>
   readFileSync(new URL(`../../fixtures/tap-pixels/${name}.png`, import.meta.url));
 const tap = parsePlan('1. Tap "option"\n').blocks![0];
 
-function option(bytes: Uint8Array, moved = 0): Screen {
+function option(bytes: Uint8Array, moved = 0, covered = false): Screen {
   const image = decodePng(bytes)!;
   const nodes: NativeNode[] = [
     {
@@ -28,6 +28,7 @@ function option(bytes: Uint8Array, moved = 0): Screen {
       rect: { x: 0, y: moved, width: image.width / 3, height: image.height / 3 },
     },
   ];
+  if (covered) nodes.push({ ref: '@keyboard', type: 'Keyboard', rect: nodes[0].rect });
   return {
     ...join(nodes, []),
     front: 'app',
@@ -124,9 +125,89 @@ test('spinner and transition after-shots offer no stable proof', async () => {
 test('a moved target offers no proof despite a visible pixel delta', async () => {
   const before = fixture('moved-before'),
     after = fixture('moved-after');
-  const f = fake([option(before), option(after, 1)], [before, after, after, after, after]);
+  const initial = option(before);
+  const f = fake(
+    [initial, initial, initial, option(after, 1)],
+    [before, after, after, after, after],
+  );
   await expectFailure(f);
   assert.equal(f.calls.filter((call) => call === 'pixel shot').length, 1);
+});
+
+test('every comparison shot rejects target changes before and during acquisition', async (t) => {
+  const before = fixture('moved-before'),
+    after = fixture('moved-after');
+  const changes: Record<string, (screen: Screen) => void> = {
+    x: (s) => {
+      elementFrame(s.elements[0])!.x += 1;
+    },
+    y: (s) => {
+      elementFrame(s.elements[0])!.y += 1;
+    },
+    width: (s) => {
+      elementFrame(s.elements[0])!.width += 1;
+    },
+    height: (s) => {
+      elementFrame(s.elements[0])!.height += 1;
+    },
+    identity: (s) => {
+      s.elements[0].testID = 'another-option';
+    },
+    duplicate: (s) => {
+      s.elements.push({ ...s.elements[0], ref: '@duplicate' });
+    },
+    foreground: (s) => {
+      s.front = 'picker';
+    },
+    hittable: (s) => {
+      s.elements[0].hittable = false;
+    },
+    scale: (s) => {
+      s.pointScale = 2;
+    },
+    occlusion: (s) => {
+      Object.assign(s, option(before, 0, true));
+      s.keyboardVisible = true;
+    },
+    coverage: (s) => {
+      s.coverage = { native: 'incomplete', react: 'complete' };
+    },
+    acquisition: (s) => {
+      s.captureCoverage = { native: 'incomplete', react: 'complete' };
+    },
+  };
+  for (const [shot, captures] of [
+    [2, 3],
+    [5, 6],
+    [7, 8],
+  ].entries()) {
+    for (const [edge, invalidAt] of captures.entries()) {
+      for (const [name, change] of Object.entries(changes)) {
+        await t.test(
+          `${['baseline', 'first', 'second'][shot]} ${['before', 'during'][edge]} ${name}`,
+          async () => {
+            const f = fake([option(before)], []);
+            let captures = 0;
+            let shots = 0;
+            let invalidated = false;
+            f.deps.captureScreen = async () => {
+              const screen = option(before);
+              if (++captures === invalidAt) {
+                change(screen);
+                invalidated = true;
+              }
+              return screen;
+            };
+            f.deps.comparisonScreenshot = async () =>
+              ++shots === 1 || invalidated ? before : after;
+            const outcome = await walkBlock(tap, f.deps);
+            assert.notEqual(outcome.block.outcome, 'pass', JSON.stringify(outcome));
+            assert.equal(invalidated, true);
+          },
+        );
+      }
+    }
+  }
 });
 
 test('withheld, failed, missing and unsupported comparison shots offer no proof', async () => {
@@ -176,7 +257,7 @@ test('proven presses and changed screen signatures do not take after-shots', asy
     const initial = option(before),
       after = option(before);
     if (!proven) after.visibleText.push('Changed');
-    const f = fake([initial, after], [before], proven);
+    const f = fake([initial, initial, initial, after], [before], proven);
     const outcome = await walkBlock(tap, f.deps);
     assert.equal(outcome.block.outcome, 'pass', JSON.stringify(outcome));
     assert.equal(f.calls.filter((call) => call === 'pixel shot').length, 1);
@@ -268,7 +349,8 @@ test('after-capture scale must agree with the original baseline', async () => {
   for (const scale of [undefined, 2, NaN]) {
     const next = option(before);
     next.pointScale = scale;
-    const f = fake([option(before), next], [before, after, after]);
+    const initial = option(before);
+    const f = fake([initial, initial, initial, next], [before, after, after]);
     await expectFailure(f);
     assert.equal(f.calls.filter((call) => call === 'pixel shot').length, 1);
   }
