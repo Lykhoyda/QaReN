@@ -12,7 +12,7 @@ export default defineConfig({
       plugins: [starlightLlmsTxt()],
       title: 'QaReN',
       description:
-        'QaReN walks a plan on the simulator or emulator, records the run, and reports PASS/FAIL with video.',
+        'QaReN is a QA engineer for your coding agent. It tries your React Native change on an iOS simulator and reports PASS or FAIL with the evidence.',
       social: [{ icon: 'github', label: 'GitHub', href: 'https://github.com/Lykhoyda/QaReN' }],
       head: [
         {
@@ -20,7 +20,7 @@ export default defineConfig({
           attrs: {
             name: 'keywords',
             content:
-              'react native, qa, expo, ios simulator, android emulator, test plan, pull request, video, claude code, codex, cursor',
+              'react native, qa, qa agent, expo, ios simulator, test plan, pull request, claude code, codex',
           },
         },
         {
@@ -40,7 +40,7 @@ export default defineConfig({
             '@type': 'SoftwareApplication',
             name: 'QaReN',
             description:
-              'QaReN walks a plan on the simulator or emulator, records the run, and reports PASS/FAIL with video.',
+              'QaReN is a QA engineer for your coding agent. It tries your React Native change on an iOS simulator and reports PASS or FAIL with the evidence.',
             applicationCategory: 'DeveloperApplication',
             operatingSystem: 'macOS',
             url: 'https://lykhoyda.github.io/QaReN/',
@@ -74,30 +74,28 @@ export default defineConfig({
         {
           label: 'Start here',
           items: [
-            { label: 'What QaReN does', slug: 'index' },
+            { label: 'Why QaReN', slug: 'index' },
             { label: 'Getting started', slug: 'getting-started' },
+            { label: 'Use it from your agent', slug: 'plugin' },
           ],
         },
         {
-          label: 'Using QaReN',
+          label: 'How it works',
           items: [
-            { label: 'Write a plan', slug: 'plans' },
+            { label: 'The qaren CLI', slug: 'cli' },
             { label: 'Check a plan', slug: 'check' },
             { label: 'Test a pull request', slug: 'pull-requests' },
-            { label: 'Watch a run', slug: 'watch' },
+            { label: 'Write a plan', slug: 'plans' },
             { label: 'Saved blocks', slug: 'saved-blocks' },
             { label: 'rn-flow/1 replay dialect', slug: 'actions/rn-flow-1' },
+            { label: 'Configuration', slug: 'configuration' },
+            { label: 'Watch a run', slug: 'watch' },
+            { label: 'Troubleshooting', slug: 'troubleshooting' },
           ],
         },
         {
-          label: 'Reference',
-          items: [
-            { label: 'Configuration', slug: 'configuration' },
-            { label: 'CLI', slug: 'cli' },
-            { label: 'Troubleshooting', slug: 'troubleshooting' },
-            { label: 'Plugin', slug: 'plugin' },
-            { label: 'Changelog', slug: 'changelog' },
-          ],
+          label: 'Project',
+          items: [{ label: 'Changelog', slug: 'changelog' }],
         },
       ],
     }),
