@@ -51,9 +51,7 @@ The package cut, literal `qaren check`, Jev seam, Phase 4 blocks, and PR run/pub
   per-file symlinks are refused by `src/domain/action-store.ts`), `~/.qaren/runtime` for the
   installed runtime, `~/.qaren/state` for per-user state, `__QAREN` for the
   injected global. Do not reintroduce an old name there or add a shim for one.
-  Old names that remain on purpose: the GitHub slug
-  `Lykhoyda/rn-dev-agent` in `RUNNER_REPO` and the manifest URLs until the
-  repository is renamed after the `develop` → `main` merge, and the codesign
+  The old name remains on purpose in the codesign
   identifier of the committed darwin process-birth helper until CI rebuilds it.
 - Do not commit generated artifacts: `packages/qaren-core/dist/`,
   `packages/qaren-cli/target/`, `packages/qaren-cli/observe/dist/`, simulator
@@ -209,8 +207,6 @@ Suite records and redacted logs live under `~/.qaren/native-suites/<run-id>`. Un
   which keeps the three manifests, both marketplaces, `Cargo.toml` and the
   `qaren` entry in `Cargo.lock` on that version with a GNU/BSD-portable
   in-place edit and re-checks itself (`scripts/test/sync-versions.test.sh`).
-- The QaReN migration has merged into `main`; the release workflow opens
-  the Version Packages PR for 2.0.0.
 - Docs, tests, CI-only changes, and generated-artifact cleanup do not need a
   changeset unless they alter shippable behavior.
 

@@ -41,7 +41,7 @@ test('rejects a relative homepage link to a missing page inside the base', () =>
   const result = verifyHomepageLink('qa-missing-page/');
 
   assert.equal(result.status, 1);
-  assert.match(result.stderr, /broken link \/rn-dev-agent\/qa-missing-page in \/index\.html/);
+  assert.match(result.stderr, /broken link \/QaReN\/qa-missing-page in \/index\.html/);
   assert.match(result.stderr, /FAIL {2}no broken internal links or assets/);
 });
 

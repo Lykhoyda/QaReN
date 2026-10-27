@@ -47,7 +47,7 @@ that can conflict with a session or is hygiene; `SKIP` is not applicable.
 | `qaren-path` | The first `qaren` on `PATH` is this binary and the installed build; later copies warn |
 | `installed-build` | The runtime under `~/.qaren/runtime/<version>/` and the runtime `check` would use (`QAREN_RUNTIME` when set) are complete; a binary outside it that `PATH` runs instead of an install fails |
 | `runtime-dirs` | Interrupted installs and other versions under `~/.qaren/runtime/` |
-| `source-checkout` | From an rn-dev-agent checkout: its version matches this binary |
+| `source-checkout` | From a QaReN checkout: its version matches this binary |
 | `config` | `.qaren/config.yaml` (or `--config`) loads and validates |
 | `1x-claude-plugin`, `1x-codex-plugin` | The rn-dev-agent 1.x plugin, marketplace and caches in Claude Code, Codex and Cursor |
 | `1x-mcp` | A hand-registered 1.x MCP server in `~/.claude.json`, `.mcp.json`, `~/.cursor/mcp.json` or `$CODEX_HOME/config.toml` |
@@ -345,10 +345,10 @@ unknown key. Existing `.qaren/plans/*.md` files are listed and run as [saved pla
 
    ```sh
    # Codex
-   codex plugin marketplace add Lykhoyda/rn-dev-agent
+   codex plugin marketplace add Lykhoyda/QaReN
    codex plugin add qaren@qaren
    # Claude Code
-   claude plugin marketplace add Lykhoyda/rn-dev-agent
+   claude plugin marketplace add Lykhoyda/QaReN
    claude plugin install qaren@qaren
    # then, from the installed plugin directory
    bash scripts/ensure-qaren.sh --install

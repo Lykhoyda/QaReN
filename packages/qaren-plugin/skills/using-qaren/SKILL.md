@@ -15,7 +15,7 @@ QaReN walks a Markdown QA plan on the iOS simulator, or a booted Android emulato
 | follow a run | `qaren watch --latest` |
 | see saved blocks | `qaren actions list` |
 
-For iOS, `check` and `pr` use the one booted simulator. If none or several are booted, pick the device as the `setup` skill does and append its `--device` or `--boot-device --device` flags. For Android device selection, follow [Check a plan](https://github.com/Lykhoyda/rn-dev-agent/blob/develop/packages/qaren-cli/README.md#check-a-plan).
+For iOS, `check` and `pr` use the one booted simulator. If none or several are booted, pick the device as the `setup` skill does and append its `--device` or `--boot-device --device` flags. For Android device selection, follow [Check a plan](https://github.com/Lykhoyda/QaReN/blob/develop/packages/qaren-cli/README.md#check-a-plan).
 
 Report the receipt's `result` and `run_id`. When `result` is not `pass`, quote `failure.code` and `failure.next_action` verbatim if present; never retry a refusal by editing the plan to dodge it.
 
@@ -29,9 +29,9 @@ QaReN keeps passing plans in `.qaren/plans/`. Before writing a plan, run `qaren 
 
 1. Read the feature's screens in source for `testID`s and visible labels.
 2. Write one `###` block per user journey under `## QA`: numbered user actions such as `Tap "…"`, `Fill "…" with "…"` (or `Fill "…" with input PASSWORD` for a credential the user sets as `QAREN_INPUT_PASSWORD`; never put a real credential in a plan), `Wait for "…" to appear`, scroll and back, with `✓ "…"` checks of what the user should then see; open a block that continues a journey with `starts on: <testID or text>`.
-   For input echoes and optional `Expect input NAME on screen` declarations, follow the [runtime-input hash protections](https://github.com/Lykhoyda/rn-dev-agent/blob/develop/packages/qaren-cli/README.md#runtime-inputs).
-   For an operator-designated non-secret fixture only, use `Fill "code-field" with input FIXTURE_CODE (non-secret)`. Keep real credentials strict; never infer this annotation from OTP/code wording or an environment name. This relaxes hash/echo protection only; log/model redaction and media withholding remain. See [Runtime inputs](https://github.com/Lykhoyda/rn-dev-agent/blob/develop/apps/docs-site/src/content/docs/plans.mdx#runtime-inputs) for collisions and saved-login policy identity.
-3. Quote every action target, preferring `testID`s over labels. For `✓` checks, choose visible text according to [Plan checks and screen evidence](https://github.com/Lykhoyda/rn-dev-agent/blob/develop/packages/qaren-cli/README.md#plan-checks-and-screen-evidence).
+   For input echoes and optional `Expect input NAME on screen` declarations, follow the [runtime-input hash protections](https://github.com/Lykhoyda/QaReN/blob/develop/packages/qaren-cli/README.md#runtime-inputs).
+   For an operator-designated non-secret fixture only, use `Fill "code-field" with input FIXTURE_CODE (non-secret)`. Keep real credentials strict; never infer this annotation from OTP/code wording or an environment name. This relaxes hash/echo protection only; log/model redaction and media withholding remain. See [Runtime inputs](https://github.com/Lykhoyda/QaReN/blob/develop/apps/docs-site/src/content/docs/plans.mdx#runtime-inputs) for collisions and saved-login policy identity.
+3. Quote every action target, preferring `testID`s over labels. For `✓` checks, choose visible text according to [Plan checks and screen evidence](https://github.com/Lykhoyda/QaReN/blob/develop/packages/qaren-cli/README.md#plan-checks-and-screen-evidence).
 4. Read in source every conditional screen the flow can insert on the path, such as form validators, required fields, profile-completion and verification screens, and plan a step for each one.
 5. Take every `Fill` value as a literal from the user or the project's documented test-data source. If one is missing, ask the user before running; never invent or guess a value.
 6. Use unquoted phrase steps only when `TYPESAFE_API_KEY` is set; without it they refuse.
@@ -52,11 +52,11 @@ QaReN keeps passing plans in `.qaren/plans/`. Before writing a plan, run `qaren 
 
 ## Optional interruptions
 
-Every plan line runs; a line such as `Accept the dialog if it appears` refuses before the run (see [Plan checks and screen evidence](https://github.com/Lykhoyda/rn-dev-agent/blob/develop/packages/qaren-cli/README.md#plan-checks-and-screen-evidence)). For screens that may or may not appear, such as permission prompts or in-app opt-in screens:
+Every plan line runs; a line such as `Accept the dialog if it appears` refuses before the run (see [Plan checks and screen evidence](https://github.com/Lykhoyda/QaReN/blob/develop/packages/qaren-cli/README.md#plan-checks-and-screen-evidence)). For screens that may or may not appear, such as permission prompts or in-app opt-in screens:
 
-- If it appears at a known point on every run, write it there as a step, `Dismiss the permission dialog` or `Tap "<its later button>"`. Immediately follow that action with a `✓` check of an observable result, before any other action; a later check does not replace this check. For first-launch screens on iOS, use `--fresh-install` only when resetting app data makes their occurrence repeatable; reinstalling alone does not establish prompt timing. Follow [Check a plan](https://github.com/Lykhoyda/rn-dev-agent/blob/develop/packages/qaren-cli/README.md#check-a-plan) for reset and platform limits.
-- When the plan tests granting permission, use an explicit `Allow the permission prompt` step at a known point. For default handling and platform limits, follow the [step recovery contract](https://github.com/Lykhoyda/rn-dev-agent/blob/develop/packages/qaren-cli/README.md#step-recovery).
-- For an unpredictable in-app pop-up, keep the plan focused on the intended screen using quoted targets or literal checks. Follow the [step recovery contract](https://github.com/Lykhoyda/rn-dev-agent/blob/develop/packages/qaren-cli/README.md#step-recovery) for eligible controls, absence guards, the Jev veto, and retry limits.
+- If it appears at a known point on every run, write it there as a step, `Dismiss the permission dialog` or `Tap "<its later button>"`. Immediately follow that action with a `✓` check of an observable result, before any other action; a later check does not replace this check. For first-launch screens on iOS, use `--fresh-install` only when resetting app data makes their occurrence repeatable; reinstalling alone does not establish prompt timing. Follow [Check a plan](https://github.com/Lykhoyda/QaReN/blob/develop/packages/qaren-cli/README.md#check-a-plan) for reset and platform limits.
+- When the plan tests granting permission, use an explicit `Allow the permission prompt` step at a known point. For default handling and platform limits, follow the [step recovery contract](https://github.com/Lykhoyda/QaReN/blob/develop/packages/qaren-cli/README.md#step-recovery).
+- For an unpredictable in-app pop-up, keep the plan focused on the intended screen using quoted targets or literal checks. Follow the [step recovery contract](https://github.com/Lykhoyda/QaReN/blob/develop/packages/qaren-cli/README.md#step-recovery) for eligible controls, absence guards, the Jev veto, and retry limits.
 - If recovery cannot handle the screen, report the failed step and its `failure.seen`. Do not add conditional lines, navigation shortcuts, or a `loginMarker`/`loginBlock` for a screen that is not a login. Icon-only and localized dismiss controls need an explicit step at a predictable point.
 - When you write a step for such a screen, choose the option that changes the least, such as "Not now", "Later" or dismiss, unless the plan tests that choice.
 
@@ -67,7 +67,7 @@ For a predictable opt-in screen, pair the choice with a visible result from the 
 ✓ "<visible label on the screen returned to>"
 ```
 
-The plan grammar is owned by the CLI README's [Check a plan](https://github.com/Lykhoyda/rn-dev-agent/blob/develop/packages/qaren-cli/README.md#check-a-plan) section.
+The plan grammar is owned by the CLI README's [Check a plan](https://github.com/Lykhoyda/QaReN/blob/develop/packages/qaren-cli/README.md#check-a-plan) section.
 
 ## When a correct path stops early
 

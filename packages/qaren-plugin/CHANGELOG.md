@@ -51,7 +51,7 @@
 - 2f3bd11: Android dev-client launches pass Expo's `EXDevMenuDisableAutoLaunch` extra so the dev menu no longer opens over the app at launch.
 - 3082f5f: Keep typed values out of Android device logs: the Android runner's exact fill writes through the bound field's accessibility node, its key-event fallback injects keys without logging their codes, and its device-tool snapshot reads the windows itself so off-screen text is never logged; the snapshot's output is unchanged. A cleared Android field that is empty and shows no hint now reads back as empty, so a plain clear verifies as exact.
 - abbce70: Let `--fresh-install` run on Android in `qaren check` and `qaren pr`: the CLI first proves no other UI driver (UIAutomator, Maestro or another instrumentation) is running on the borrowed emulator, refusing when the process scan is busy or unreadable, then uninstalls the app with its data and proves it absent before the walk continues.
-- 693be73: Recognize Android header-role text on API 28+ and explain literal-check near misses. A button whose header title repeats its label stays pressable by that label. See the [screen-evidence contract](https://github.com/Lykhoyda/rn-dev-agent/blob/develop/packages/qaren-cli/README.md#plan-checks-and-screen-evidence) for eligibility and diagnostic rules.
+- 693be73: Recognize Android header-role text on API 28+ and explain literal-check near misses. A button whose header title repeats its label stays pressable by that label. See the [screen-evidence contract](https://github.com/Lykhoyda/QaReN/blob/develop/packages/qaren-cli/README.md#plan-checks-and-screen-evidence) for eligibility and diagnostic rules.
 - a388081: Prevent Android keyboard dismissal from pressing BACK when the keyboard is hidden and require hidden-state and unchanged-screen evidence before reporting success.
 - 3820416: Android QA snapshots now carry a validated native presence capture: the runner observes each element under the display density and refuses what it cannot prove, scrolled-out elements read as off screen, and elements under the keyboard read as covered, not scrolled out.
 - fa63876: Serialize Android runner APK refresh, hash comparison and installation with stale-retry invalidation within each worktree. Concurrent starts on different devices wait for the same outputs, with a bounded `ANDROID_RUNNER_APK_LOCK_TIMEOUT` refusal, while the rebuild budget and cleanup transitions remain unchanged.
@@ -144,7 +144,7 @@
 - cdd39f6: Size the iOS keyboard clearance scroll from the target's keyboard overlap, as Android does, wait for the screen to settle after an iOS scroll, as after a tap, and clear a keyboard-covered keyboard-fallback wrapper with the same sized scroll before tapping it.
 - e85a599: iOS action replay now refuses a native-only command placed after exact-testID steps, which previously relaunched the app mid-flow.
 - 3954293: The iOS runner's XCTest result bundles, whose activity logs record typed and displayed field text, are removed when the runner stops and before it starts, keeping the built runner warm.
-- ab92c9b: iOS system scroll-bar indicators no longer trigger private-input screenshot withholding under the exception documented in the [capture and privacy contract](https://github.com/Lykhoyda/rn-dev-agent/blob/develop/packages/qaren-cli/README.md#check-a-plan).
+- ab92c9b: iOS system scroll-bar indicators no longer trigger private-input screenshot withholding under the exception documented in the [capture and privacy contract](https://github.com/Lykhoyda/QaReN/blob/develop/packages/qaren-cli/README.md#check-a-plan).
 - 238fe9c: `qaren check` needs a TypeSafe key only for plans with phrase or unrecognised lines; fully quoted plans run without Jev.
 - b260643: Let fresh-install admission clear long-argv processes launched through a symlink when their kernel executable is proven to be neither a device driver, shell nor interpreter.
 - 974eb9b: Keyboard clearance now ends the visible band at a sticky footer and starts it below a sticky header, aims the target at the middle of that band, and lets the one clearance drag span the whole band while starting and ending inside its edges, so a field under the keyboard clears above an absolutely positioned Submit bar.
@@ -230,7 +230,7 @@
 - a8b5639: Check a saved block's declared start screen before acting and report BLOCK_START_MISSING when it is absent.
 - 9623c78: The feedback skill now drafts a sanitized QaReN issue and files it only after confirmation.
 - 0e94148: Store device and host locks machine-wide by default, so any home on the machine sees an existing lease and refuses it; QAREN_MACHINE_LOCKS=0 keeps per-home locks.
-- 42d6dfc: Reduce dev-client Refreshing banners in PR videos; see the [walk-start clearance contract](https://github.com/Lykhoyda/rn-dev-agent/blob/develop/packages/qaren-cli/README.md#check-a-plan) for Fast Refresh handling and platform-specific recovery behavior.
+- 42d6dfc: Reduce dev-client Refreshing banners in PR videos; see the [walk-start clearance contract](https://github.com/Lykhoyda/QaReN/blob/develop/packages/qaren-cli/README.md#check-a-plan) for Fast Refresh handling and platform-specific recovery behavior.
 - 0369e83: The plugin now ships only the setup, using-qaren and feedback skills.
 - de3d5fc: Withhold failure screen text and mask moved-target labels whenever a captured screen contains a secure field.
 - b70ca0a: `/qaren:setup` installs qaren onto PATH, writes `.qaren/config.yaml` and runs a first smoke check on the simulator.
@@ -243,7 +243,7 @@
 - 3a91d99: Resolve aggregated container labels to their hittable child controls and retain bounded, masked target-miss evidence in private run diagnostics.
 - 847f205: Keep iOS settle snapshot failures advisory so the walker's after-capture decides the step after an acknowledged action.
 - dfb1369: Report value-free system-modal recognition, dialog refusal stage and interruption rejection diagnostics without changing recovery guards.
-- dfb1369: Decline system permission prompts by default and recover from eligible optional app interruptions under the [step recovery contract](https://github.com/Lykhoyda/rn-dev-agent/blob/develop/packages/qaren-cli/README.md#step-recovery).
+- dfb1369: Decline system permission prompts by default and recover from eligible optional app interruptions under the [step recovery contract](https://github.com/Lykhoyda/QaReN/blob/develop/packages/qaren-cli/README.md#step-recovery).
 - bd93fe6: Wait for relaunched iOS runner readiness and retry private native capture within the existing settle budget before refusing.
 - 985852f: Allocate distinct run directories when parallel QaReN checks start in the same second.
 - 0d6f453: Retry the post-scroll screen capture once within the existing freshness allowance when association gaps for the step's kind or unresolved React identities increase or the target's visibility remains unknown.

@@ -67,7 +67,7 @@ const ANDROID_BYTES = 'android-runner-zip-bytes';
 const QAREN_ARM64_BYTES = 'qaren-arm64-tarball-bytes';
 const SHA_A = 'a'.repeat(40);
 const SHA_B = 'b'.repeat(40);
-const REPO = 'Lykhoyda/rn-dev-agent';
+const REPO = 'Lykhoyda/QaReN';
 
 function sha256(content: string): string {
   return createHash('sha256').update(Buffer.from(content)).digest('hex');
