@@ -50,7 +50,7 @@ that can conflict with a session or is hygiene; `SKIP` is not applicable.
 | `runtime-dirs` | Interrupted installs and other versions under `$QAREN_HOME/runtime/` |
 | `source-checkout` | From a QaReN checkout: its source version (`<version>-dev.<commit>`) matches this binary |
 | `config` | `.qaren/config.yaml` (or `--config`) loads and validates |
-| `ios-lane` | Only with `--device`: that booted simulator's locale and keyboard equal the [warm lane](#warm-lane) and a successful per-device read proves Simulator.app has disconnected the host hardware keyboard; a lane that differs fails and names the keys; read only |
+| `ios-lane` | Only with `--device`: read-only check of that simulator against the [warm-lane contract](#warm-lane) |
 | `1x-claude-plugin`, `1x-codex-plugin` | The rn-dev-agent 1.x plugin, marketplace and caches in Claude Code, Codex and Cursor |
 | `1x-mcp` | A hand-registered 1.x MCP server in `~/.claude.json`, `.mcp.json`, `~/.cursor/mcp.json` or `$CODEX_HOME/config.toml` |
 | `1x-binaries`, `1x-home-dirs` | The 1.x npm bins on `PATH`; `~/.rn-dev-agent/`, `~/.cache/rn-dev-agent/`, `~/Library/Caches/rn-dev-agent/`, `~/Library/Application Support/rn-dev-agent/` (or `$XDG_STATE_HOME/rn-dev-agent/`) and `~/.claude/rn-agent/` |
@@ -2012,7 +2012,9 @@ simulator; QaReN changes only `DevicePreferences:<UUID>:ConnectHardwareKeyboard`
 for the resolved simulator to `false`, preserving the rest of the dictionary and
 all other devices. A successful per-device read must prove `false`; an enabled,
 unset, failed or unreadable readback refuses with `LANE_NOT_WARM`. Doctor only
-reads the per-device key and fails unless it proves `false`.
+reads the per-device key and fails unless it proves `false`. Its `ios-lane` row
+fails on differing defaults and names the keys; if neither defaults domain can
+be read (for example, the simulator is shut down), it warns instead.
 
 `check` then launches the app once and, before row 1, the core captures the first
 screen through the same projection the rows read: the app must be in front,
@@ -2020,8 +2022,8 @@ in the foreground with a complete native capture, and show text. Otherwise the r
 refuses with `LANE_NOT_WARM` and no row runs. This proves a launched, visible
 app, not that the app finished loading: a splash screen with text passes.
 
-Once pinning succeeds, the receipt and `run.json` carry the record once per run
-as `lane`; a refusal while pinning leaves no `lane`, and its `failure.detail`
+Once pinning succeeds, the receipt carries `lane` and `run.json` carries
+`resources.lane`, once per run; a refusal while pinning leaves no lane record, and its `failure.detail`
 names the key or the hardware keyboard. The record holds
 `device_id`, `build` (the native fingerprint), `layout`, `locale`, `normalized`
 (the keys this run wrote), `hardware_keyboard`, `pinned_at` and, for `check`,
