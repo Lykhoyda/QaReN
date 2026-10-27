@@ -310,9 +310,7 @@ function appendRunnerOutput(stream: 'stdout' | 'stderr', chunk: string): void {
     runnerOutputTail = '[private output withheld]';
     return;
   }
-  const tail = `${runnerOutputTail}${stream}: ${chunk}`;
-  // A cut tail restarts at a line, so a value split by the cut cannot slip past later redaction.
-  runnerOutputTail = tail.length > 8_000 ? tail.slice(-8_000).replace(/^[^\n]*\n?/, '') : tail;
+  runnerOutputTail = `${runnerOutputTail}${stream}: ${chunk}`.slice(-8_000);
 }
 
 export function getRunnerPostMortem(): RunnerPostMortem {
