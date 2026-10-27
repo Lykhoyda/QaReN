@@ -2156,15 +2156,6 @@ the driver to exit before falling back to `SIGTERM`, then `SIGKILL` after a
 can skip the request or interrupt these waits. Unknown process identity refuses
 termination with `RUNNER_ADOPTION_REQUIRED` rather than authorizing signals.
 
-After teardown, an iOS check with a recorded runner driver polls
-`~/Library/Logs/DiagnosticReports` for up to 60 seconds, stopping early on a match
-or cancellation. It looks for a SpringBoard `.ips` report written since the core
-was spawned and matched to the selected simulator by device path or coalition.
-A match adds `outcomes.springboard_crash` to the receipt and a lane-health entry to
-`run.json` history, optionally including a sanitized exception type; report paths
-and raw contents are not copied. This observation never changes the run result,
-and an absent note does not prove that SpringBoard stayed healthy.
-
 Cleanup proves owned process-group and exact-simulator runner-host absence
 before releasing the lease. When the leased simulator had no runner host as the
 core started, the run records the host as its own; normal teardown, cancellation
