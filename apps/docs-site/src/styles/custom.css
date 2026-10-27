@@ -186,6 +186,86 @@ nav.sidebar summary {
   padding-block: 3rem;
 }
 
+/* Keep the headline first on narrow screens; Starlight only reorders from 50rem up. */
+.hero > .hero-html {
+  order: 2;
+}
+
+.qa-run {
+  margin: 0;
+  width: min(100%, 24rem);
+  border: 1px solid var(--sl-color-gray-5);
+  border-radius: 12px;
+  background: var(--sl-color-gray-7);
+  box-shadow: var(--rda-glow);
+  font-family: var(--sl-font-system-mono);
+  font-size: 0.8rem;
+  overflow: hidden;
+}
+
+.qa-run__bar {
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
+  padding: 0.6rem 0.9rem;
+  background: var(--sl-color-gray-6);
+  border-bottom: 1px solid var(--sl-color-gray-5);
+}
+
+.qa-run__bar span {
+  width: 0.55rem;
+  height: 0.55rem;
+  border-radius: 50%;
+  background: var(--sl-color-gray-4);
+}
+
+.qa-run__bar code {
+  margin-inline-start: 0.5rem;
+  color: var(--sl-color-gray-2);
+  background: none;
+  font-size: inherit;
+}
+
+.qa-run__steps {
+  margin: 0;
+  padding: 0.9rem 0.9rem 0.6rem 2.6rem;
+  color: var(--sl-color-gray-1);
+}
+
+.qa-run__steps li {
+  padding-block: 0.2rem;
+}
+
+.qa-run__steps li::marker {
+  content: '✓  ';
+  color: #4ade80;
+}
+
+.qa-run__check {
+  color: var(--sl-color-white);
+}
+
+.qa-run__verdict {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 0.4rem 0.8rem;
+  margin: 0 0.9rem 0.9rem;
+  padding: 0.65rem 0.8rem;
+  border: 1px solid #166534;
+  border-radius: 8px;
+  background: #0b2a1a;
+}
+
+.qa-run__verdict strong {
+  color: #4ade80;
+  letter-spacing: 0.08em;
+}
+
+.qa-run__verdict span {
+  color: var(--sl-color-gray-2);
+}
+
 /* ─── Aside (tip/caution/note) refinement ─── */
 .starlight-aside {
   border-radius: 6px;
