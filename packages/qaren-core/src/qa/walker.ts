@@ -1,3 +1,4 @@
+import { cropPng, stablePixelChange, type PixelCrop, type PixelScale } from './tap-pixels.js';
 import {
   applyLabelProvenance,
   type LabelProvenance,
@@ -25,6 +26,7 @@ import {
   alertPressEffect,
   insideAlert,
   elementFrame,
+  applicationFrame,
   isNativeInput,
   describe,
 } from './screen.js';
@@ -223,6 +225,7 @@ export interface WalkerDeps {
   back(context: QaDispatchContext): Promise<ActResult>;
   dialog(action: 'accept' | 'dismiss', context: QaDispatchContext): Promise<ActResult>;
   screenshot(name: string): Promise<string | undefined>;
+  comparisonScreenshot?(): Promise<Uint8Array | undefined>;
   now(): number;
   sleep(ms: number): Promise<void>;
   row(row: LedgerRow): void;
@@ -794,6 +797,39 @@ async function walkBlockScoped(
     target.testID !== undefined
       ? e.testID === target.testID && e.kind === target.kind
       : e.testID === undefined && e.kind === target.kind && e.label === target.label;
+  const pixelTarget = (screen: Screen, target: Element) => {
+    const matches = screen.elements.filter((element) => sameIdentity(element, target));
+    const root = applicationFrame(screen);
+    const scale: PixelScale | undefined =
+      screen.pointScale !== undefined
+        ? Number.isFinite(screen.pointScale) && screen.pointScale > 0
+          ? screen.pointScale
+          : undefined
+        : root && root.width > 0 && root.height > 0
+          ? { width: root.width, height: root.height }
+          : undefined;
+    if (screen.front !== 'app' || matches.length !== 1 || scale === undefined) return undefined;
+    const element = matches[0];
+    const frame = elementFrame(element);
+    if (!frame || !element.hittable || insideAlert(element) || centreCovered(element, screen))
+      return undefined;
+    return { target: element, frame: { ...frame }, scale };
+  };
+  const pixelShot = async (
+    target: NonNullable<ReturnType<typeof pixelTarget>>,
+  ): Promise<PixelCrop | undefined> => {
+    assertActive();
+    const allowed = () => privacy.canScreenshot() && !metadataOnly && !currentInputs()?.hasInputs;
+    if (!allowed() || !deps.comparisonScreenshot) return undefined;
+    try {
+      const bytes = await deps.comparisonScreenshot();
+      assertActive();
+      return bytes && allowed() ? cropPng(bytes, target.frame, target.scale) : undefined;
+    } catch (error) {
+      if (isAbort(error)) throw error;
+      return undefined;
+    }
+  };
   const frameKey = (e: Element): string | undefined => {
     const rect = elementFrame(e);
     return rect ? [rect.x, rect.y, rect.width, rect.height].join(',') : undefined;
@@ -1941,6 +1977,10 @@ async function walkBlockScoped(
     fillHandlerAttempted = false;
     fillHandlerRefused = false;
     itemStartedAt = deps.now();
+    let pixelBaselineTaken = false;
+    let pixelBaseline:
+      | { target: NonNullable<ReturnType<typeof pixelTarget>>; crop: PixelCrop }
+      | undefined;
     attempts: for (;;) {
       line = item.line;
       deps.start?.({
@@ -2576,8 +2616,15 @@ async function walkBlockScoped(
                 before.screen.front === 'dialog'
               )
                 throw dialogInFront();
-              act = await mutate(item, before, (context) =>
-                item.kind === 'press'
+              act = await mutate(item, before, async (context) => {
+                if (item.kind === 'press' && !pixelBaselineTaken) {
+                  pixelBaselineTaken = true;
+                  const target = element && pixelTarget(before.screen, element);
+                  // One deliberate before-shot (~200 ms) per eligible press preserves the first attempt's baseline.
+                  const crop = target && (await pixelShot(target));
+                  if (target && crop) pixelBaseline = { target, crop };
+                }
+                return item.kind === 'press'
                   ? deps.press(ref!, context)
                   : item.kind === 'fill'
                     ? deps.fill(ref!, fillText(item), context, secretFill(item), () =>
@@ -2587,8 +2634,8 @@ async function walkBlockScoped(
                       ? deps.scroll(item.direction, context)
                       : item.kind === 'back'
                         ? deps.back(context)
-                        : deps.dialog(item.action, context),
-              );
+                        : deps.dialog(item.action, context);
+              });
               if (item.kind === 'fill') fillMethod = act.method ?? 'keyboard';
               if (!act.ok && act.ambiguous) {
                 outcome = failed(
@@ -2710,8 +2757,35 @@ async function walkBlockScoped(
             before.platformPresence ? 'provenance' : 'resolve',
           );
           // NOTE: a not-ok result is not a verdict; an act that timed out may still have landed.
-          const changed = screenSignature(after.screen) !== screenSignature(before.screen);
+          let changed = screenSignature(after.screen) !== screenSignature(before.screen);
           usable(after, item);
+          if (
+            !changed &&
+            item.kind === 'press' &&
+            act!.proven === false &&
+            pixelBaseline &&
+            element
+          ) {
+            const baseline = pixelBaseline.target;
+            const previous = pixelTarget(before.screen, baseline.target);
+            const current = pixelTarget(after.screen, baseline.target);
+            const identical = (target: ReturnType<typeof pixelTarget>) =>
+              target &&
+              sameIdentity(element!, baseline.target) &&
+              JSON.stringify(target.scale) === JSON.stringify(baseline.scale) &&
+              target.frame.x === baseline.frame.x &&
+              target.frame.y === baseline.frame.y &&
+              target.frame.width === baseline.frame.width &&
+              target.frame.height === baseline.frame.height;
+            if (identical(previous) && identical(current)) {
+              const first = await pixelShot(current!);
+              if (first) {
+                await deps.sleep(200);
+                const second = await pixelShot(current!);
+                if (second) changed = stablePixelChange(pixelBaseline.crop, first, second);
+              }
+            }
+          }
           diagnostic(item, after, 'decision', 'ACCEPTED');
           metric('readback', after);
           if (item.kind === 'fill') {
