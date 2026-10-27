@@ -314,7 +314,8 @@ function appendRunnerOutput(stream: 'stdout' | 'stderr', chunk: string): void {
 }
 
 export function getRunnerPostMortem(): RunnerPostMortem {
-  if (currentInputs()?.hasInputs)
+  const inputs = currentInputs();
+  if (inputs?.hasInputs)
     return { available: false, provenance: runnerProcess ? 'spawned' : 'adopted' };
   return (
     lastRunnerPostMortem ?? {

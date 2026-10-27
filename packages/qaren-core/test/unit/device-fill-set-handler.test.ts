@@ -12,6 +12,7 @@ async function run(options: {
   setReply?: { value?: string; error?: string } | 'throw';
   after?: string | null;
   privateValue?: boolean;
+  onPrivateInput?: () => void;
   testID?: string;
 }) {
   _setActiveSessionForTest({ platform: 'ios', deviceId: 'TEST-DEVICE', appId: 'com.test' });
@@ -57,6 +58,7 @@ async function run(options: {
         ...(options.testID === '' ? {} : { testID: options.testID ?? 'email' }),
         setByHandler: true,
         privateValue: options.privateValue ?? true,
+        onPrivateInput: options.onPrivateInput,
         qaContext: context,
       },
       client,
@@ -103,10 +105,16 @@ test('a readable value set through the handler verifies exactly', async () => {
 
 for (const reason of ['secure', 'uncontrolled', 'unbound', 'disabled']) {
   test(`a ${reason} refusal sets nothing and reports no mutation`, async () => {
-    const { env } = await run({ setReply: { value: JSON.stringify({ set: false, reason }) } });
+    let discoveries = 0;
+    const { env } = await run({
+      privateValue: false,
+      onPrivateInput: () => discoveries++,
+      setReply: { value: JSON.stringify({ set: false, reason }) },
+    });
     assert.equal(env.code, 'TEXT_ENTRY_UNVERIFIED');
     assert.equal(env.meta.mutation, 'none');
     assert.match(env.error, /nothing was set/);
+    assert.equal(discoveries, reason === 'secure' ? 1 : 0);
   });
 }
 

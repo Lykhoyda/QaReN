@@ -47,7 +47,7 @@
     "plan": "1. Fill \"field\" with \"literal\" (non-secret)",
     "line": 1,
     "reason": "invalid runtime input declaration",
-    "nextAction": "remove the invalid annotation; declare runtime inputs with Fill \"field\" with input NAME, optionally followed by (non-secret)"
+    "nextAction": "remove the invalid annotation; declare runtime inputs with Fill \"field\" with input NAME, optionally followed by (test-pii) or (secret)"
   },
   {
     "name": "missing quoted fill",
@@ -147,6 +147,6 @@
     "plan": "### Login (non-secret)\n1. Tap \"A\"",
     "line": 1,
     "reason": "invalid runtime input declaration",
-    "nextAction": "remove the invalid annotation; declare runtime inputs with Fill \"field\" with input NAME, optionally followed by (non-secret)"
+    "nextAction": "remove the invalid annotation; declare runtime inputs with Fill \"field\" with input NAME, optionally followed by (test-pii) or (secret)"
   }
 ]

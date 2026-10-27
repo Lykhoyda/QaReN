@@ -65,7 +65,7 @@ const PLAN_REPAIRS: Record<string, string> = {
   'fill needs a target and a valid input name':
     'use Fill "field" with input NAME, where NAME matches [A-Z][A-Z0-9_]{0,31}',
   'invalid runtime input declaration':
-    'remove the invalid annotation; declare runtime inputs with Fill "field" with input NAME, optionally followed by (non-secret)',
+    'remove the invalid annotation; declare runtime inputs with Fill "field" with input NAME, optionally followed by (test-pii) or (secret)',
   'fill needs a target and the text in quotes': 'use Fill "field" with "text"',
   'fill needs the text in quotes': 'put the fill text in quotes: Type "text" into "field"',
   'fill needs a target after the quoted text':
@@ -137,6 +137,8 @@ const ECHO = /^expect\s+input\b(.*)$/i;
 type Grammar = Step | { refuse: string } | null;
 
 export const ANY_METHOD = /\s+\(any method\)\s*$/i;
+const TIER_NOTE = /\s+\((?:non-secret|test-pii|secret)\)\s*$/i;
+const RELAXING_NOTE = /\s+\((?:non-secret|test-pii)\)\s*$/i;
 
 function parseFill(line: string): Grammar {
   const anyMethod = ANY_METHOD.exec(line);
@@ -149,19 +151,21 @@ function parseFill(line: string): Grammar {
 function parseFillBody(rest: string): Grammar {
   const slot = /^(.*?)\s+with\s+input(?:\s+([^"“”]*))?$/i.exec(rest);
   if (slot) {
-    const named = /^([A-Z][A-Z0-9_]{0,31})(?:\s+\((non-secret)\))?$/i.exec(slot[2] ?? '');
+    const named = /^([A-Z][A-Z0-9_]{0,31})(?:\s+\((non-secret|test-pii|secret)\))?$/i.exec(
+      slot[2] ?? '',
+    );
     if (!slot[1].trim() || !named || !validInputName(named[1]))
       return { refuse: 'fill needs a target and a valid input name' };
     return {
       kind: 'fill',
       target: targetFrom(slot[1]),
       input: named[1],
-      ...(named[2] ? { sensitivity: 'non-secret' } : {}),
+      ...(named[2] && named[2].toLowerCase() !== 'secret' ? { sensitivity: 'non-secret' } : {}),
     };
   }
   if (
     /\swith\s+input\b/i.test(rest.replace(/"[^"]*"|“[^”]*”/g, '""')) ||
-    /\s+\(non-secret\)\s*$/i.test(rest) ||
+    TIER_NOTE.test(rest) ||
     /\swith\s+(?:"[^"]*"|“[^”]*”)\s+\([^)]*\)\s*$/i.test(rest)
   )
     return { refuse: 'invalid runtime input declaration' };
@@ -186,8 +190,7 @@ function parseFillBody(rest: string): Grammar {
 export function parseStep(rest: string): Grammar {
   if (
     !FILL.test(rest) &&
-    (/\s+\(non-secret\)\s*$/i.test(rest) ||
-      /\bwith\s+input\b/i.test(rest.replace(/"[^"]*"|“[^”]*”/g, '""')))
+    (RELAXING_NOTE.test(rest) || /\bwith\s+input\b/i.test(rest.replace(/"[^"]*"|“[^”]*”/g, '""')))
   )
     return { refuse: 'invalid runtime input declaration' };
   const echo = ECHO.exec(rest);
@@ -438,7 +441,7 @@ function scanPlan(
     if (heading) {
       closeDeclared();
       const title = heading[1].trim();
-      if (/\s+\(non-secret\)\s*$/i.test(title))
+      if (RELAXING_NOTE.test(title))
         refused.push({ line, text, reason: 'invalid runtime input declaration' });
       open(title, line, text);
       declaredAt = line;

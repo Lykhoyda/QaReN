@@ -2,7 +2,7 @@ import { QaDispatchError } from '../domain/qa-dispatch.js';
 import { ownedLogin, parseInputPreflight } from './input-preflight.js';
 import { readAndroidLabelProvenance } from '../runners/rn-android-runner-client.js';
 import { ObservedPrivacy } from './privacy.js';
-import { InputPrivacyRefusal, withInputs, currentInputs } from './inputs.js';
+import { InputPrivacyRefusal, withInputs, currentInputs, type RunInputs } from './inputs.js';
 import {
   cancellationSignal,
   interruptible,
@@ -29,6 +29,7 @@ import {
   createDevicePressHandler,
   createDeviceScrollHandler,
   readReactInputValue,
+  entryMismatchOf,
 } from '../handlers/device-interact.js';
 import { captureQaScreenshot } from './screenshot.js';
 import {
@@ -108,6 +109,28 @@ const log = (message: string): void => {
     `qaren-core: ${redactApiKey(currentInputs()?.redact(message) ?? message)}\n`,
   );
 };
+
+export function guardCoreLog(inputs: RunInputs): void {
+  if (!inputs.hasInputs) return;
+  const write = process.stderr.write.bind(process.stderr);
+  process.stderr.write = ((chunk: unknown, ...args: unknown[]) => {
+    if (inputs.hasStrictInputs) {
+      const callback = args.find((arg) => typeof arg === 'function') as (() => void) | undefined;
+      return write('[private output withheld]\n', callback);
+    }
+    // The core matcher also covers trimmed and Unicode-normalized forms the CLI redactor cannot.
+    const text =
+      typeof chunk === 'string'
+        ? chunk
+        : chunk instanceof Uint8Array
+          ? Buffer.from(chunk).toString('utf8')
+          : undefined;
+    return Reflect.apply(write, process.stderr, [
+      text === undefined ? chunk : inputs.redact(text),
+      ...args,
+    ]);
+  }) as typeof process.stderr.write;
+}
 
 export async function reactFocused(client: CDPClient | null, testID: string): Promise<boolean> {
   return (await readReactInputValue(client, testID, { focusOnly: true }))?.focused === true;
@@ -309,6 +332,7 @@ function act(
           ...(fillMethodOf(error instanceof HandlerError ? error.meta : undefined)
             ? { method: fillMethodOf((error as HandlerError).meta) }
             : {}),
+          ...entryMismatchFrom(error),
         };
       }
     },
@@ -337,6 +361,7 @@ function act(
         ...(fillMethodOf(error instanceof HandlerError ? error.meta : undefined)
           ? { method: fillMethodOf((error as HandlerError).meta) }
           : {}),
+        ...entryMismatchFrom(error),
       };
     },
   );
@@ -404,6 +429,12 @@ function logActionSettle(meta?: Record<string, unknown>, timing?: TimingContext)
   } catch {
     // Diagnostics cannot change an action's outcome.
   }
+}
+
+function entryMismatchFrom(error: unknown): Pick<ActResult, 'entryMismatch'> {
+  const entryMismatch =
+    error instanceof HandlerError ? entryMismatchOf(error.meta?.entryMismatch) : undefined;
+  return entryMismatch ? { entryMismatch } : {};
 }
 
 function fillMethodOf(meta: Record<string, unknown> | undefined): ActResult['method'] {
@@ -706,11 +737,23 @@ async function openSession(
         now,
         observe: timing,
       }),
-    fill: (ref, text, qaContext) =>
-      act(() => fill({ ref, text, qaContext, qaTiming: { now, observe: timing } }), true, {
-        now,
-        observe: timing,
-      }),
+    fill: (ref, text, qaContext, privateValue, onPrivateInput) =>
+      act(
+        () =>
+          fill({
+            ref,
+            text,
+            qaContext,
+            privateValue,
+            onPrivateInput,
+            qaTiming: { now, observe: timing },
+          }),
+        true,
+        {
+          now,
+          observe: timing,
+        },
+      ),
     scroll: (direction, qaContext, clearance, within) =>
       act(() => scroll({ ...scrollArgs(direction, clearance, within), qaContext }), false),
     back: (qaContext) => act(() => back({ qaContext }), false),
@@ -754,7 +797,15 @@ async function openSession(
       ? {
           appProcess: {},
           reactFocused: (testID: string) => reactFocused(cdpClientOrNull(getClient), testID),
-          typeFocused: (ref, text, testID, qaContext, requireFocused, privateValue) =>
+          typeFocused: (
+            ref,
+            text,
+            testID,
+            qaContext,
+            requireFocused,
+            privateValue,
+            onPrivateInput,
+          ) =>
             act(
               () =>
                 fill({
@@ -767,13 +818,14 @@ async function openSession(
                   skipFinalValidation: true,
                   clearFirst: true,
                   privateValue,
+                  onPrivateInput,
                   qaContext,
                   qaTiming: { now, observe: timing },
                 }),
               false,
               { now, observe: timing },
             ),
-          setByHandler: (testID, text, qaContext, privateValue) =>
+          setByHandler: (testID, text, qaContext, privateValue, onPrivateInput) =>
             act(
               () =>
                 fill({
@@ -782,6 +834,7 @@ async function openSession(
                   testID,
                   setByHandler: true,
                   privateValue,
+                  onPrivateInput,
                   qaContext,
                   qaTiming: { now, observe: timing },
                 }),
@@ -839,6 +892,7 @@ async function main(): Promise<void> {
     );
   }
   privateRun = parsed.inputs.hasInputs;
+  guardCoreLog(parsed.inputs);
   parsed.inputs.onRefusal((reason) => stop.begin(reason));
   return withInputs(parsed.inputs, () =>
     mainRequest(parsed.request, parsed.privacy, cliParent, apiKey),

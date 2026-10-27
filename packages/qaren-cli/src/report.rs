@@ -898,6 +898,32 @@ mod tests {
     }
 
     #[test]
+    fn entry_mismatch_counts_survive_a_masked_reason_in_the_report() {
+        let ledger: Ledger = serde_json::from_value(serde_json::json!({
+            "verdict": "FAIL", "path": "walk", "blocks": [],
+            "steps": [{
+                "block": "b", "line": 5, "attempt": 1, "kind": "step", "resolvedBy": "exact",
+                "t": 0, "outcome": "fail",
+                "reason": "TEXT_ENTRY_UNVERIFIED: The private input differs from the requested text (len •••, exp •••, prefix •••, suffix •••); not retrying.",
+                "entryMismatch": { "len": 17, "exp": 22, "prefix": 2, "suffix": 15, "caseEq": false },
+            }],
+            "jev": { "calls": 0, "medianMs": 0 }, "llmTurns": 0, "escapes": 0, "recoveries": 0,
+        }))
+        .unwrap();
+        let line = row_line(&ledger.steps[0]);
+        assert!(
+            line.ends_with("; field held 17 of 22 chars, first 2 and last 15 matching\n"),
+            "{line}"
+        );
+        let malformed: crate::core::Row = serde_json::from_value(serde_json::json!({
+            "block": "b", "line": 5, "attempt": 1, "kind": "step", "resolvedBy": "exact",
+            "t": 0, "outcome": "fail", "entryMismatch": { "len": "seventeen" },
+        }))
+        .unwrap();
+        assert_eq!(malformed.entry_mismatch, None);
+    }
+
+    #[test]
     fn case_normalized_count_reaches_the_receipt_and_report() {
         let reason =
             "UNVERIFIED_FILL: the field changed only the letter case, so the fill was not verified";

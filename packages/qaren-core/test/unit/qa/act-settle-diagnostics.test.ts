@@ -18,7 +18,10 @@ import {
   getPluginVersion,
 } from '../../../dist/runners/protocol.js';
 import { runInNewContext } from 'node:vm';
-import { extractMutationDisposition } from '../../../dist/handlers/device-interact.js';
+import {
+  entryMismatchOf,
+  extractMutationDisposition,
+} from '../../../dist/handlers/device-interact.js';
 import { HandlerError, describeError, fillEvidence, unwrap } from '../../../dist/qa/adapt.js';
 import { classifyNativeVerification } from '../../../dist/handlers/fill-verify.js';
 import { isRecord } from '../../../dist/qa/questions.js';
@@ -45,6 +48,7 @@ function fixture(throwSink = false) {
     QaDispatchError,
     HandlerError,
     extractMutationDisposition,
+    entryMismatchOf,
     describeError,
     fillEvidence,
     unwrap,

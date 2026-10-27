@@ -1898,6 +1898,72 @@ fn announced_runner_drivers_reach_the_recorder_in_order_and_count_as_progress() 
 }
 
 #[test]
+fn core_log_redacts_test_pii_and_withholds_each_write_after_secure_promotion() {
+    use qaren::exec::RealRunner;
+    use qaren::redact::{with_input_scope, InputValues};
+    use std::sync::Arc;
+    const CODE: &str = "synthetic-code-123456";
+    let repo = common::temp_repo();
+    let inputs = Arc::new(InputValues::from_entries([(
+        "QAREN_INPUT_CODE".into(),
+        CODE.into(),
+    )]));
+    with_input_scope(inputs.clone(), || {
+        let resolved = inputs.admit(&["CODE".into()]).unwrap();
+        resolved.declare_test_pii(&["CODE".into()]);
+        assert_eq!(
+            CmdOutput::failed(1, "Account address").summary(),
+            "[private output withheld]"
+        );
+        let entry = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .unwrap()
+            .join("qaren-core/dist/qa/walk.js");
+        let script = r#"
+            const entry = process.argv[1];
+            process.argv[1] = undefined;
+            const {guardCoreLog} = await import(entry);
+            const {RunInputs} = await import(new URL('./inputs.js', 'file://' + entry));
+            const {createWriter} = await import(new URL('./wire.js', 'file://' + entry));
+            const reader = (await import('node:readline')).createInterface({input:process.stdin});
+            reader.once('line', line => {
+                const {runId, payload} = JSON.parse(line);
+                const inputs = new RunInputs(payload.inputs, ['CODE'], undefined, ['CODE']);
+                guardCoreLog(inputs);
+                process.stderr.write('before ' + payload.inputs.CODE.slice(0, 7));
+                process.stderr.write(payload.inputs.CODE.slice(7) + '\n');
+                inputs.protectFill('CODE', true);
+                process.stderr.write('Account phone +44 7700 900123 and address 42 Test Street\n');
+                const writer = createWriter(line => process.stdout.write(line), runId);
+                writer.result({verdict:'PASS',path:'walk',blocks:[],steps:[],jev:{calls:0,medianMs:0},llmTurns:0,escapes:0,recoveries:0});
+                reader.close(); process.stdin.destroy();
+            });
+        "#;
+        let spec = CmdSpec::new(
+            "core fixture",
+            "node",
+            &["--input-type=module", "-e", script, entry.to_str().unwrap()],
+            5,
+        );
+        let mut runner = RealRunner::with_log_executable(env!("CARGO_BIN_EXE_qaren").into());
+        let log = repo.join("core.log");
+        let child =
+            core::spawn_private(&mut runner, &spec, &log, &request(), Some(&resolved), None)
+                .unwrap();
+        let outcome = core::wait(&mut runner, child, budgets(), &mut |_, _| {});
+        assert_eq!(outcome.verdict, Verdict::Pass);
+        runner.flush_logs().unwrap();
+        let stored = std::fs::read_to_string(log).unwrap();
+        assert!(stored.starts_with("before "), "{stored}");
+        assert!(stored.contains("[private output withheld]"), "{stored}");
+        for text in [CODE, "synthet", "123456", "Account phone", "42 Test Street"] {
+            assert!(!stored.contains(text), "{stored}");
+        }
+    });
+    std::fs::remove_dir_all(repo).unwrap();
+}
+
+#[test]
 fn a_malformed_runner_driver_announcement_is_a_protocol_violation() {
     for payload in [
         r#"{"kind":"runner_driver","pid":1}"#,

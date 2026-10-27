@@ -429,6 +429,39 @@ test('gh-581: secure uncontrolled masked value hard-fails and is not retried', a
   assert.equal((verify.opts.exactTarget as { secure?: boolean }).secure, true);
 });
 
+for (const platform of ['ios', 'android'] as const) {
+  test(`${platform} native binding reports secure discovery before typing`, async () => {
+    let discovered = false;
+    const { result, calls } = await withFillSeam(
+      {
+        platform,
+        fill: () => {
+          assert.equal(discovered, true);
+          return okResult({ typed: true });
+        },
+        verify: () => okResult({ verifyVerdict: 'secure-masked', verifyStable: true }),
+      },
+      () =>
+        performExactFill(
+          {
+            ref: '@e4',
+            text: 'value-a',
+            privateValue: false,
+            onPrivateInput: () => {
+              discovered = true;
+            },
+          },
+          null,
+          NATIVE_ONLY,
+        ),
+    );
+    assert.equal(envelope(result as never).code, 'TEXT_ENTRY_UNVERIFIED');
+    assert.equal(calls.filter((call) => call.cliArgs[0] === 'fill').length, 1);
+    const verify = calls.find((call) => call.cliArgs[0] === 'verify-input')!;
+    assert.equal((verify.opts.exactTarget as { secure?: boolean }).secure, true);
+  });
+}
+
 test('I5: the real fill envelope carries the evidence class the walker maps', async () => {
   const cases = [
     { verdict: 'secure-masked', stable: true, expected: 'masked' },
