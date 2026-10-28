@@ -1,4 +1,4 @@
-use crate::adapters::{android, ios};
+use crate::adapters::{android, ios, pnpm};
 use crate::commands::prepare::missing_android_sdk;
 use crate::commands::update::{dev_version, DEV_COMMIT, INSTALLER, PLUGIN_MANIFEST};
 use crate::config::{AndroidConfig, CheckConfig, DEFAULT_CONFIG_PATH};
@@ -229,6 +229,9 @@ pub fn doctor(
         ),
         disk(runner, cwd, home),
     ];
+    let app_root =
+        crate::run::app_root_for(&config_file, cwd).unwrap_or_else(|_| cwd.to_path_buf());
+    checks.push(pnpm_source(runner, &app_root));
     checks.extend(android_checks(
         runner,
         config.as_ref().and_then(|c| c.android.as_ref()),
@@ -249,8 +252,6 @@ pub fn doctor(
     if let Some(config) = &config {
         checks.push(video_policy_check(config.video, &config_file));
     }
-    let app_root =
-        crate::run::app_root_for(&config_file, cwd).unwrap_or_else(|_| cwd.to_path_buf());
     checks.extend(login_checks(runner, &app_root, config.as_ref()));
     checks.push(saved_blocks_check(runner, &app_root));
     checks.extend(leftover_rows(
@@ -530,6 +531,31 @@ fn tool(
         format!("{program} --version did not run: {}", output.summary()),
         fix,
     )
+}
+
+fn pnpm_source(runner: &mut dyn Runner, project_root: &Path) -> Check {
+    let detail = pnpm::source_detail(runner);
+    if pnpm::source(runner).is_none() {
+        return Check::warn(
+            "pnpm-source",
+            detail,
+            "put an installed pnpm executable on PATH",
+        );
+    }
+    let output = runner.run(
+        &pnpm::group_probe_spec(project_root)
+            .env("COREPACK_ENABLE_NETWORK", "0")
+            .env("COREPACK_ENABLE_AUTO_PIN", "0"),
+    );
+    if output.ok() && output.stdout == pnpm::GROUP_OK {
+        Check::pass("pnpm-source", detail)
+    } else {
+        Check::warn(
+            "pnpm-source",
+            format!("{detail}; PNPM_PROCESS_GROUP_UNSUPPORTED: exec did not prove process-group preservation ({})", output.summary()),
+            pnpm::GROUP_FIX,
+        )
+    }
 }
 
 fn disk(runner: &mut dyn Runner, cwd: &Path, home: &Path) -> Check {
@@ -1531,6 +1557,31 @@ mod tests {
         runner.expect_run("df -Pk", df(500_000_000));
     }
 
+    #[test]
+    fn pnpm_source_names_corepack_shim_and_actionable_group_fix() {
+        let scratch = Scratch::new("pnpm-source");
+        let target = scratch.exe("corepack/dist/pnpm.js");
+        let entry = scratch.link("bin/pnpm", &target);
+        let mut runner = MockRunner::new();
+        runner
+            .environment
+            .insert("PATH".into(), entry.parent().unwrap().display().to_string());
+        runner.expect_run("QAREN_PNPM_LAUNCH_GROUP", CmdOutput::failed(1, ""));
+        let check = pnpm_source(&mut runner, &scratch.0);
+        assert_eq!(check.status, Status::Warn);
+        assert!(check.detail.contains("PNPM_PROCESS_GROUP_UNSUPPORTED"));
+        assert!(check.detail.contains(entry.to_str().unwrap()));
+        assert!(check.detail.contains(target.to_str().unwrap()));
+        assert!(check
+            .fix
+            .unwrap()
+            .contains("installed pnpm executable first"));
+        assert_eq!(runner.calls.len(), 1);
+        assert!(runner.calls[0]
+            .env
+            .contains(&("COREPACK_ENABLE_NETWORK".into(), "0".into())));
+    }
+
     fn df(available_kb: u64) -> CmdOutput {
         CmdOutput::success(&format!(
             "Filesystem 1024-blocks Used Available Capacity Mounted on\n/dev/disk3 976490576 1 {available_kb} 45% /\n"
@@ -2348,7 +2399,7 @@ mod tests {
                 "pass"
             }
         );
-        assert_eq!(parsed["checks"].as_array().unwrap().len(), 27);
+        assert_eq!(parsed["checks"].as_array().unwrap().len(), 28);
     }
 
     #[test]

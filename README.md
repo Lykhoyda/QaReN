@@ -51,7 +51,7 @@ A plan names what to do and what to check:
 ## Requirements
 
 - An Apple silicon Mac with Xcode.
-- Node 24 or newer, with Corepack, and `pnpm` on `PATH`.
+- Node 24 or newer, with Corepack, and `pnpm` on `PATH` (see [launcher compatibility](packages/qaren-cli/README.md#doctor)).
 - An Expo app that uses `expo-dev-client` and pnpm, with a `pnpm-lock.yaml`.
 
 ## Set up QaReN
