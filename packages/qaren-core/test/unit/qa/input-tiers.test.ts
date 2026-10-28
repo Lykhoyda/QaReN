@@ -322,7 +322,10 @@ for (const checkSubject of ['supported', 'unknown'] as const) {
         checkSubject,
       });
       const login = screen([field]);
-      const f = walker([login], scriptedJudge(() => assert.fail('model-free')));
+      const f = walker(
+        [login],
+        scriptedJudge(() => assert.fail('model-free')),
+      );
       const { privacy, inputs } = privacyFor({ EMAIL }, ['EMAIL']);
       f.deps.privacy = privacy;
       let filled = false;
@@ -362,10 +365,13 @@ for (const checkSubject of ['supported', 'unknown'] as const) {
       assert.equal(inputs.hasStrictInputs, false);
       assert.equal(privacy.canScreenshot(), false);
       assert.ok(!result.failure?.seen.includes(INPUT_SCREEN_TEXT_WITHHELD));
-      assert.deepEqual(withInputs(inputs, () => describeError(new Error(`could not type ${EMAIL}`))), {
-        code: 'UNEXPECTED_ERROR',
-        message: `could not type ${MASK}`,
-      });
+      assert.deepEqual(
+        withInputs(inputs, () => describeError(new Error(`could not type ${EMAIL}`))),
+        {
+          code: 'UNEXPECTED_ERROR',
+          message: `could not type ${MASK}`,
+        },
+      );
     });
   }
 }
