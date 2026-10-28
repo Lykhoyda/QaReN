@@ -1,10 +1,10 @@
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { test } from 'node:test';
-import { decodePng } from '../../../dist/qa/tap-pixels.js';
+import { cropPng, decodePng, stablePixelChange } from '../../../dist/qa/tap-pixels.js';
 import { renderReason } from '../../../dist/qa/untrusted.js';
 import { parsePlan } from '../../../dist/qa/plan.js';
-import { join, screenSignature } from '../../../dist/qa/screen.js';
+import { elementFrame, join, screenSignature } from '../../../dist/qa/screen.js';
 import type { NativeNode, Screen } from '../../../dist/qa/screen.js';
 import { walkBlock } from '../../../dist/qa/walker.js';
 import type { ActResult, WalkerDeps } from '../../../dist/qa/walker.js';
@@ -128,6 +128,24 @@ test('a moved target offers no proof despite a visible pixel delta', async () =>
   await expectFailure(f);
   assert.equal(f.calls.filter((call) => call === 'pixel shot').length, 1);
 });
+
+for (const axis of ['x', 'y', 'width', 'height'] as const) {
+  test(`an unchanged option with a changed ${axis} offers no stale-crop proof`, async () => {
+    const before = fixture('moved-before');
+    const after = fixture('moved-after');
+    const initial = option(before);
+    const next = option(after);
+    elementFrame(next.elements[0])![axis] += 1;
+    const frame = elementFrame(initial.elements[0])!;
+    const originalCrop = cropPng(before, frame, 3)!;
+    const staleCrop = cropPng(after, frame, 3)!;
+    assert.equal(stablePixelChange(originalCrop, staleCrop, staleCrop), true);
+    assert.equal(screenSignature(initial), screenSignature(next));
+    const f = fake([initial, next], [before, after, after, after, after]);
+    await expectFailure(f);
+    assert.equal(f.calls.filter((call) => call === 'pixel shot').length, 1);
+  });
+}
 
 test('withheld, failed, missing and unsupported comparison shots offer no proof', async () => {
   const before = fixture('toggle1-before'),
