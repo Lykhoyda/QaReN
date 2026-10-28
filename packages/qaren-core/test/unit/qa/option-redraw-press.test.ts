@@ -189,7 +189,11 @@ for (const change of [
     };
     const outcome = await walkBlock(tap, f.deps);
     assert.notEqual(outcome.block.outcome, 'pass', JSON.stringify(outcome));
-    assert.equal(f.calls.filter((call) => call === 'pixel shot').length, 3);
+    assert.equal(
+      f.calls.filter((call) => call === 'pixel shot').length,
+      2,
+      'an invalid first after-shot stops further pixel capture',
+    );
   });
 }
 
