@@ -709,12 +709,15 @@ Pixel comparison requires one uniquely identified, hittable target outside alert
 and without a covered centre, with the app in front and a known frame. Scale is
 either reported by the screen capture or derived from the screenshot and the
 single native application root's dimensions in points; a derived scale must
-agree on both axes. Its identity, frame and scale must remain unchanged across
-the captures.
+agree on both axes. Before comparing pixels, QaReN re-finds the same target in
+the post-tap tree and requires its frame and scale to match the original baseline.
 One screenshot immediately before the first dispatch adds about 200 ms per
 eligible press; that baseline is retained across the retry. Only an otherwise
 unproven press with an unchanged screen comparison takes two after-shots,
-200 ms apart. The two control crops must agree and differ sufficiently from the
+200 ms apart. After both shots, QaReN reads the tree again and re-finds the target;
+a missing or ineligible target, or any change to its scale, x, y, width or height,
+withholds pixel proof, including a delayed reflow after the post-tap tree capture.
+The two control crops must agree and differ sufficiently from the
 original baseline; an unchanged selected chip or an unstable animation supplies
 no pixel proof. The [pixel comparator](../qaren-core/src/qa/tap-pixels.ts) owns
 the thresholds and supported PNG formats, and the
