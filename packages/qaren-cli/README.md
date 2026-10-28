@@ -1009,9 +1009,8 @@ final values also remain unverified. SECRET non-secure runtime inputs instead
 require an exact length/content match; a confirmed mismatch is never retyped, and it
 fails the step unless the one [Fill ladder](#fill-ladder) step to the change handler then
 verifies exactly. These comparisons run inside the app; only state and comparison metadata
-leave the process, never the value. Literal and TEST-PII Fill values keep ordinary
-readback unless a TEST-PII value collides with a SECRET value. For value-free SECRET
-mismatch facts and TEST-PII output redaction, see [Runtime inputs](#runtime-inputs).
+leave the process, never the value. For runtime-input tier selection, readback protection,
+value-free SECRET mismatch facts and TEST-PII output redaction, see [Runtime inputs](#runtime-inputs).
 
 Secure fields retain direct typing: they are never cleared, their
 values are never read, and the result stays unverified. **Known limit:** a prefilled
@@ -2062,18 +2061,24 @@ file, reference or secret store.
 Inputs are SECRET unless their named Fill explicitly opts in to TEST-PII with
 `(test-pii)` (or the older spelling `(non-secret)`), for example
 `Fill "email-field" with input TEST_EMAIL (test-pii)` for a staging test account; `(secret)`
-states the default. A secure field is SECRET whatever the plan says, and literal plan text is
-PUBLIC. A SECRET value is never read back to the host: for a controlled non-secure field,
+states the default. A secure field or a field whose check subject cannot be read safely
+promotes its runtime input to SECRET whatever the plan says; literal plan text is PUBLIC.
+A SECRET value is never read back to the host: for a controlled non-secure field,
 the app compares it in place, and a mismatch records only value-free `entryMismatch` facts
 (`len`, `exp`, `prefix`, `suffix`, `caseEq`) on the ledger row. Secure fields retain the
 [focused-fill verification limits](#fill-verification-and-keyboard-fallback).
-A TEST-PII value is read back in memory like literal text unless it collides with a SECRET
-value. The tier also relaxes execution hash and echo checks: pure fixture labels, identifiers
+A TEST-PII value uses ordinary in-memory readback on a readable, non-secure field unless
+it collides with a SECRET value. A native label classified as possibly containing the
+field's value does not alone promote an explicitly opted-in TEST-PII Fill to SECRET;
+label masking and media withholding still apply.
+The tier also relaxes execution hash and echo checks: pure fixture labels, identifiers
 and types retain their original hash operands, even at the filled field, and a redundant expected-echo declaration
 does not mask them to a constant. SECRET matches win on equal or overlapping values; a
 TEST-PII alias cannot leave a SECRET value unmasked in a label hash. Repeated declarations
 across the plan and configured login block must agree before device selection. There is no
-config, global switch or inferred environment policy. In a TEST-PII run only `core.log`,
+config, global switch or inferred environment policy. Any extra `QAREN_INPUT_` variable
+in the environment, even one the plan does not use, keeps logs withheld.
+In a TEST-PII run only `core.log`,
 failure screen text and Fill readback come back redacted by the declared values; Metro and
 other subprocess logs stay withheld as in a SECRET run. Declared-value redaction includes
 an e-mail's local part, plus-less local part, domain and
@@ -2118,10 +2123,9 @@ secret despite artifact redaction.
   Private literal fills stay unsavable.
 - With any input namespace present, Metro and other subprocess logs hold one withheld
   marker, preflight/subprocess output excerpts and command summaries are withheld, and
-  native runner output tails are not retained. In a TEST-PII run only `core.log`, failure
-  screen text and Fill readback come back redacted by the declared values. Filling a secure
-  field promotes that input to SECRET before typing; subsequent core log writes and failure
-  screen text are withheld. A run that requires inputs skips recording and screenshots.
+  native runner output tails are not retained. After an input is promoted to SECRET before
+  typing, subsequent core log writes and failure screen text are withheld. A run that
+  requires inputs skips recording and screenshots.
 - Slot runs retain value-free structured events in `core-diagnostics.jsonl` beside `core.log`:
   `metric` has measured stage timings, and `timing` has decision/dispatch timing, finite outcome
   codes and allowlisted native refusal codes. Dispatch refusals retain `refusalStage` and
@@ -2143,6 +2147,11 @@ secret despite artifact redaction.
   Fills add `dispatch-bind` and `dispatch-readback` spans and iOS mutating dispatches add
   `dispatch-native`, `dispatch-settle` and `dispatch-health` spans, each carrying the dispatching
   plan row's `line` when known.
+  When a runtime Fill target has privacy evidence, `fill-privacy` records only the
+  plan `line`, a fixed `cause` and the resulting `privateValue` protection flag; a private
+  label can therefore record `privateValue: false` for TEST-PII. The
+  [diagnostic implementation](../qaren-core/src/qa/diagnostics.ts) owns the allowed causes
+  and field validation.
   Attachment emits an `admission` point metric at each retry decision and once on cancellation
   or a `CDP_NOT_CONNECTED` refusal, with the decision (`retry`, `cancelled` or `refused`),
   the attempt count, last started and completed boundary, attach stage (only when the last

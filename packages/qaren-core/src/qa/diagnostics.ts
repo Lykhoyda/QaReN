@@ -1,10 +1,24 @@
 import { cleanProvenanceReadDiagnostic } from './label-provenance.js';
 import { NATIVE_CODES, REFUSAL_STAGES } from '../domain/qa-dispatch.js';
 import { cleanTimingEvent } from './timing.js';
-import { MEDIA_KINDS, MEDIA_SOURCES, WITHHOLD_CAUSES, type MediaLatch } from './privacy.js';
+import {
+  MEDIA_KINDS,
+  MEDIA_SOURCES,
+  WITHHOLD_CAUSES,
+  PRIVATE_INPUT_CAUSES,
+  type PrivateInputCause,
+  type MediaLatch,
+} from './privacy.js';
 import { isRecord } from './questions.js';
 import { cleanTargetMiss } from './target-miss.js';
 import { INTERRUPTION_VETOES, type InterruptionDiagnostic } from './recover.js';
+
+export interface FillPrivacyDiagnostic {
+  kind: 'fill-privacy';
+  line: number;
+  cause: PrivateInputCause;
+  privateValue: boolean;
+}
 
 export interface MediaWithheldDiagnostic {
   kind: 'media-withheld';
@@ -71,6 +85,22 @@ export function cleanDiagnostic(value: unknown): Record<string, unknown> | undef
     Number.isFinite(value[key]) &&
     value[key] >= 0 &&
     value[key] <= Number.MAX_SAFE_INTEGER;
+  if (value.kind === 'fill-privacy') {
+    if (
+      !number('line') ||
+      !Number.isSafeInteger(value.line) ||
+      value.line === 0 ||
+      !PRIVATE_INPUT_CAUSES.includes(value.cause as never) ||
+      typeof value.privateValue !== 'boolean'
+    )
+      return undefined;
+    return {
+      kind: value.kind,
+      line: value.line,
+      cause: value.cause,
+      privateValue: value.privateValue,
+    };
+  }
   if (value.kind === 'interruption-rejected') {
     const index = (key: string): boolean => number(key) && Number.isSafeInteger(value[key]);
     if (

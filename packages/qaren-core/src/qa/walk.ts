@@ -801,6 +801,7 @@ async function openSession(
     interruptionRejected: diagnostic,
     targetMiss: diagnostic,
     labelProvenanceDiagnostic: diagnostic,
+    fillPrivacy: diagnostic,
     loginOutcome: (outcome) => diagnostic({ kind: 'login-outcome', outcome }),
     hideDevMenu: () => act(() => recoverDevOverlays(overlays), false),
     ...(login ? { login } : {}),
