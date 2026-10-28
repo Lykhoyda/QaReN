@@ -20,6 +20,7 @@ Refusals exit `4` and mean the run could not start or could not decide; failures
 | `SCENARIO_INVALID`         | The configuration does not parse or fails validation            | Fix the key a validation detail names; see [Configuration](../configuration/)    |
 | `DEV_CLIENT_SCHEME_REQUIRED` | `devClientScheme` is missing or malformed                      | Set it to the app's registered URI scheme                                                   |
 | `NODE_UNSUPPORTED`         | Node is older than 24                                            | Point `nodePath` at Node 24 or newer                                                        |
+| `PNPM_PROCESS_GROUP_UNSUPPORTED` | The pnpm launcher did not prove process-group preservation | Follow the [launcher compatibility contract](https://github.com/Lykhoyda/QaReN/blob/develop/packages/qaren-cli/README.md#doctor) and the `pnpm-source` row in `qaren doctor` |
 | `DISK_BUDGET_EXCEEDED`     | Under 1 GiB free for the run storage root or the app, or under about 10 GiB for a clean iOS build | Free space on the volume `failure.detail` names, then re-run                                |
 
 ## Devices
