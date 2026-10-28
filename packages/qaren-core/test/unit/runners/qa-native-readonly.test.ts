@@ -176,6 +176,19 @@ for (const platform of ['ios', 'android'] as const) {
       assert.equal(context.authorizations, 0);
     });
   }
+  test(`${platform} unread verification of a field that left the screen keeps the dispatch context`, async () => {
+    const { run } = fixture(platform, true, {
+      ok: true,
+      data: { verifyVerdict: 'unreadable', verifyStable: false },
+    });
+    const context = new QaDispatchContext(10, () => 1);
+    const result = await run({ command: 'verifyInput', bundleId: 'qa.app', qaContext: context });
+    assert.doesNotThrow(() => context.assertComplete());
+    assert.ok(!result.isError);
+    const data = JSON.parse(result.content[0].text).data;
+    assert.equal(data.verifyVerdict, 'unreadable');
+    assert.equal(data.verifyStable, false);
+  });
 }
 
 for (const reason of [
