@@ -474,6 +474,19 @@ fn run_inner(
         }
     }
     prepare::check_prereqs(runner, &scenario, req.android_home.as_deref())?;
+    let pnpm = runner.run(&crate::adapters::pnpm::group_probe_spec(&cand.project_root));
+    if !pnpm.ok() || pnpm.stdout != crate::adapters::pnpm::GROUP_OK {
+        return Err(Failure::new(
+            "prereqs",
+            FailureCode::PnpmProcessGroupUnsupported,
+            format!(
+                "{}; its exec launch did not prove that it preserves QaReN's process group ({})",
+                crate::adapters::pnpm::source_detail(runner),
+                pnpm.summary()
+            ),
+            crate::adapters::pnpm::GROUP_FIX,
+        ));
+    }
     std::fs::create_dir_all(&req.runs_root).map_err(|e| {
         Failure::new(
             "preflight",

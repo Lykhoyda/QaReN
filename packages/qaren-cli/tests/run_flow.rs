@@ -1172,6 +1172,27 @@ fn script_preflight_with_status(
     inventory: &str,
     status: &str,
 ) {
+    script_preflight_to_pnpm(
+        mock,
+        repo,
+        command,
+        inventory,
+        status,
+        CmdOutput::success(qaren::adapters::pnpm::GROUP_OK),
+    );
+    mock.expect_run("df", df_ok());
+    mock.expect_run("ps", CmdOutput::success("Wed Aug 12 15:59:00 2026\n")); // self lstart
+    mock.expect_run("ps", CmdOutput::success("qaren check\n")); // self command
+}
+
+fn script_preflight_to_pnpm(
+    mock: &mut MockRunner,
+    repo: &Path,
+    command: &str,
+    inventory: &str,
+    status: &str,
+    pnpm_output: CmdOutput,
+) {
     mock.expect_run("node --version", CmdOutput::success("v26.8.1\n"));
     script_plan(mock, repo);
     mock.expect_run(command, CmdOutput::success(inventory));
@@ -1182,9 +1203,40 @@ fn script_preflight_with_status(
     for tool in IOS_TOOLS {
         mock.expect_run("which", CmdOutput::success(&format!("/usr/bin/{tool}\n")));
     }
-    mock.expect_run("df", df_ok());
-    mock.expect_run("ps", CmdOutput::success("Wed Aug 12 15:59:00 2026\n")); // self lstart
-    mock.expect_run("ps", CmdOutput::success("qaren check\n")); // self command
+    mock.expect_run("QAREN_PNPM_LAUNCH_GROUP", pnpm_output);
+}
+
+#[test]
+fn incompatible_pnpm_refuses_before_claim_install_or_metro_launch() {
+    for output in [
+        CmdOutput::failed(1, ""),
+        CmdOutput::success("unproven\n"),
+        CmdOutput {
+            timed_out: true,
+            ..Default::default()
+        },
+    ] {
+        let (repo, app) = app_repo();
+        let mut mock = MockRunner::new();
+        script_preflight_to_pnpm(
+            &mut mock,
+            &repo,
+            "simctl list devices booted",
+            &booted_json(),
+            UNTRACKED_PLAN,
+            output,
+        );
+        let receipt = run(&mut mock, &request(&repo, &app, 30));
+        assert_eq!(receipt.result, ReceiptResult::Refused);
+        assert!(FailureCode::PnpmProcessGroupUnsupported.is_refusal());
+        let failure = receipt.failure.as_ref().unwrap();
+        assert_eq!(failure.code, FailureCode::PnpmProcessGroupUnsupported);
+        assert!(failure.next_action.contains("installed pnpm executable"));
+        assert_eq!(mock.remaining(), 0);
+        assert!(mock.spawned_logs.is_empty());
+        assert!(!repo.join(".locks").exists());
+        assert!(!mock.calls.iter().any(|spec| spec.label == "pnpm-install"));
+    }
 }
 
 #[test]
@@ -2980,6 +3032,10 @@ fn an_unreadable_disk_budget_fails_closed_before_any_claim() {
     for tool in IOS_TOOLS {
         mock.expect_run("which", CmdOutput::success(&format!("/usr/bin/{tool}\n")));
     }
+    mock.expect_run(
+        "QAREN_PNPM_LAUNCH_GROUP",
+        CmdOutput::success(qaren::adapters::pnpm::GROUP_OK),
+    );
     mock.expect_run("df", CmdOutput::failed(1, "df: No such file or directory"));
 
     let receipt = run(&mut mock, &request(&repo, &app, 30));
@@ -3101,6 +3157,10 @@ fn two_booted_simulators_refuse_without_a_device_and_borrow_the_named_one_with_i
     for tool in IOS_TOOLS {
         mock.expect_run("which", CmdOutput::success(&format!("/usr/bin/{tool}\n")));
     }
+    mock.expect_run(
+        "QAREN_PNPM_LAUNCH_GROUP",
+        CmdOutput::success(qaren::adapters::pnpm::GROUP_OK),
+    );
     mock.expect_run("df", df_ok());
     mock.expect_run("ps", CmdOutput::success("Wed Aug 12 15:59:00 2026\n"));
     mock.expect_run("ps", CmdOutput::success("qaren check\n"));
@@ -3290,6 +3350,10 @@ fn script_android_preflight_requiring(
     for tool in ANDROID_TOOLS {
         mock.expect_run("which", CmdOutput::success(&format!("/usr/bin/{tool}\n")));
     }
+    mock.expect_run(
+        "QAREN_PNPM_LAUNCH_GROUP",
+        CmdOutput::success(qaren::adapters::pnpm::GROUP_OK),
+    );
     mock.expect_run("df", df_ok());
     mock.expect_run("ps", CmdOutput::success("Wed Aug 12 15:59:00 2026\n"));
     mock.expect_run("ps", CmdOutput::success("qaren check\n"));
@@ -6955,6 +7019,10 @@ fn script_pr_preflight_requiring(
     for tool in IOS_TOOLS {
         mock.expect_run("which", CmdOutput::success(&format!("/usr/bin/{tool}\n")));
     }
+    mock.expect_run(
+        "QAREN_PNPM_LAUNCH_GROUP",
+        CmdOutput::success(qaren::adapters::pnpm::GROUP_OK),
+    );
     mock.expect_run("df", df_ok());
     mock.expect_run("ps", CmdOutput::success("Wed Aug 12 15:59:00 2026\n"));
     mock.expect_run("ps", CmdOutput::success("qaren pr\n"));
@@ -8953,6 +9021,10 @@ fn script_android_pr_preflight(mock: &mut MockRunner, repo: &Path, wt: &Path, ap
     for tool in ANDROID_TOOLS {
         mock.expect_run("which", CmdOutput::success(&format!("/usr/bin/{tool}\n")));
     }
+    mock.expect_run(
+        "QAREN_PNPM_LAUNCH_GROUP",
+        CmdOutput::success(qaren::adapters::pnpm::GROUP_OK),
+    );
     mock.expect_run("df", df_ok());
     mock.expect_run("ps", CmdOutput::success("Wed Aug 12 15:59:00 2026\n"));
     mock.expect_run("ps", CmdOutput::success("qaren pr\n"));
