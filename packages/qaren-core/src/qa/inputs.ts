@@ -87,7 +87,7 @@ export class RunInputs {
       this.#strict.set(name, value);
       this.#privacy.classifyInputs([], [value]);
     }
-    return this.#strict.has(name);
+    return [...this.#strict.values()].includes(value);
   }
   get hasInputs(): boolean {
     return this.#values.size > 0;
@@ -119,7 +119,7 @@ export class RunInputs {
     throw this.#terminal;
   }
   expectEcho(identifier: string | undefined, inputName?: string): void {
-    if (inputName !== undefined && !this.#strict.has(inputName)) return;
+    if (inputName !== undefined && !this.protectFill(inputName)) return;
     if (identifier) this.#filled.add(identifier);
   }
   // Declared echoes hash as a constant; other labels must prove their redacted projection safe.
