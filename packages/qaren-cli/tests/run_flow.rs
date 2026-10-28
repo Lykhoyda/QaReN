@@ -2261,9 +2261,9 @@ fn host_present() -> CmdOutput {
 
 // The host was absent when the core started, so the one that survives a cancelled walk is the run's.
 #[test]
-fn a_cancelled_walk_terminates_the_runner_host_it_launched_then_releases_the_lease() {
+fn a_cancelled_walk_waits_for_its_runner_host_without_terminating_it() {
     for (after, reads, runner_host, lease) in [
-        (hosts_absent(), 1, "removed", "removed"),
+        (hosts_absent(), 1, "absent", "removed"),
         (host_present(), 3, "unresolved", "unresolved"),
     ] {
         let (repo, app) = app_repo();
@@ -2282,15 +2282,6 @@ fn a_cancelled_walk_terminates_the_runner_host_it_launched_then_releases_the_lea
             UDID,
             Some(host_present()),
         );
-        for bundle in [
-            "dev.lykhoyda.rndevagent.fastrunner",
-            "dev.lykhoyda.rndevagent.fastrunner.uitests.xctrunner",
-        ] {
-            mock.expect_run(
-                &format!("simctl terminate {UDID} {bundle}"),
-                CmdOutput::success(""),
-            );
-        }
         for _ in 0..reads {
             script_host_probe(&mut mock, UDID, after.clone());
         }
@@ -2304,6 +2295,10 @@ fn a_cancelled_walk_terminates_the_runner_host_it_launched_then_releases_the_lea
         );
         assert!(receipt.cleanup["runner_host"].starts_with(runner_host));
         assert!(receipt.cleanup["device_lease"].starts_with(lease));
+        assert!(mock
+            .calls
+            .iter()
+            .all(|spec| spec.label != "simctl-terminate"));
         assert_eq!(mock.remaining(), 0);
     }
 }
@@ -8603,6 +8598,7 @@ fn check_fails_fast_when_the_launched_ios_app_exits_and_names_the_missing_framew
     std::fs::create_dir_all(&reports).unwrap();
     let body = serde_json::json!({
         "procPath": format!("/Users/someone/Library/Developer/CoreSimulator/Devices/{UDID}/data/Containers/Bundle/Application/X/testapp.app/testapp"),
+        "captureTime": "2026-02-02 02:40:01.0000 +0000",
         "exception": {"type": "EXC_CRASH"},
         "termination": {"namespace": "DYLD", "indicator": "Library missing", "reasons": ["Library not loaded: @rpath/ReactNativeDependencies.framework/ReactNativeDependencies"]},
     });

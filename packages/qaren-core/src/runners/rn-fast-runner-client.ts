@@ -217,6 +217,7 @@ export function createReadySignalParser(): ReadySignalParser {
 // --- Singleton state ---
 
 let runnerProcess: ChildProcess | null = null;
+let runnerProcessDeviceId: string | undefined;
 let runnerDriverObserver: ((pid: number) => void) | undefined;
 
 // QaReN records each spawned runner driver; the driver leads its own process group.
@@ -224,14 +225,12 @@ export function observeRunnerDrivers(observer: ((pid: number) => void) | undefin
   runnerDriverObserver = observer;
 }
 
-function signalDriver(child: ChildProcess, signal: NodeJS.Signals): void {
+function cancelStartingRunner(child: ChildProcess): void {
   try {
-    if (child.pid !== undefined) process.kill(-child.pid, signal);
-    return;
+    child.kill('SIGINT');
   } catch {
-    // The group is gone or was never formed; the leader alone remains addressable.
+    // The driver has already exited.
   }
-  child.kill(signal);
 }
 // GH #629: monotonic count of launch xcodebuild children actually spawned.
 // ensureFastRunner swallows startFastRunner errors, so this is the only way a
@@ -949,6 +948,7 @@ export async function startFastRunner(
     });
 
     runnerProcess = child;
+    runnerProcessDeviceId = deviceId;
     if (child.pid !== undefined) runnerDriverObserver?.(child.pid);
     runnerLaunchCount += 1;
     runnerOutputTail = '';
@@ -965,7 +965,7 @@ export async function startFastRunner(
         reject(signal.reason);
         return;
       }
-      signalDriver(child, 'SIGTERM');
+      cancelStartingRunner(child);
       reject(new Error(`Fast runner did not become ready within ${READY_TIMEOUT_MS / 1000}s`));
     }, readyMs);
 
@@ -975,7 +975,6 @@ export async function startFastRunner(
       if (signal?.aborted) {
         resolved = true;
         clearTimeout(timer);
-        if (runnerProcess === child) clearStateFile();
         reject(signal.reason);
         return;
       }
@@ -1002,7 +1001,7 @@ export async function startFastRunner(
       };
       const processBirth = readProcessBirth(child.pid!);
       if (!processBirth) {
-        signalDriver(child, 'SIGTERM');
+        cancelStartingRunner(child);
         reject(
           new Error(
             'PROCESS_BIRTH_UNAVAILABLE: native runner process identity could not be proven',
@@ -1064,45 +1063,26 @@ export function getRunnerLaunchCount(): number {
   return runnerLaunchCount;
 }
 
-/**
- * GH #629: bounded settle before the single first-start retry. The READY
- * timeout SIGTERMs the launch xcodebuild, but its teardown is asynchronous —
- * wait for the child to actually exit (escalating to SIGKILL at the grace
- * cap) so a retry can never stack a second launch on a still-dying first one.
- */
+// A failed launch must exit before retry; never kill XCTest helpers during initialization.
 export async function awaitSpawnedRunnerExit(
   graceMs = 5000,
   expectedLaunchCount?: number,
 ): Promise<boolean> {
-  // A concurrent dispatch's start replaces the global handle (and a successful
-  // one leaves it live), so signalling it blind would SIGKILL a runner this
-  // caller never launched. Only the generation the caller observed is ours; a
-  // runner that came up meanwhile is someone else's success, never this
-  // caller's retry.
+  // A concurrent successful launch belongs to its caller.
   if (runnerState) return false;
   if (expectedLaunchCount !== undefined && runnerLaunchCount !== expectedLaunchCount) return false;
+  if (runnerProcess) cancelStartingRunner(runnerProcess);
   return awaitChildExit(runnerProcess, graceMs);
 }
 
 export async function awaitChildExit(child: ChildProcess | null, graceMs = 5000): Promise<boolean> {
   if (!child || child.exitCode !== null || child.signalCode !== null) return true;
   return new Promise<boolean>((resolve) => {
-    const killTimer = setTimeout(() => {
-      try {
-        child.kill('SIGKILL');
-      } catch {
-        /* already gone */
-      }
-    }, graceMs);
-    // Backstop: an unkillable zombie must not wedge the caller forever —
-    // resolve false so the caller refuses the retry instead of stacking a
-    // second launch on a process that provably survived SIGKILL.
     const backstop = setTimeout(() => {
       child.removeListener('exit', onExit);
       resolve(false);
-    }, graceMs + 2000);
+    }, graceMs);
     const onExit = (): void => {
-      clearTimeout(killTimer);
       clearTimeout(backstop);
       resolve(true);
     };
@@ -1110,11 +1090,20 @@ export async function awaitChildExit(child: ChildProcess | null, graceMs = 5000)
   });
 }
 
-// GH #383 (review amendment): adoption-aware teardown. A post-respawn stop
-// (session close, restart, maestro park) would otherwise no-op against empty
-// in-memory state and leak the persisted runner — so adopt first, then reap.
+// Adopt before teardown so recovery closes the persisted runner too.
 export async function stopFastRunner(deviceId?: string, signal?: AbortSignal): Promise<void> {
   adoptPersistedFastRunnerState(deviceId);
+  if (!runnerState && runnerProcess) {
+    if (deviceId && runnerProcessDeviceId !== deviceId) {
+      throw new Error(
+        'RUNNER_ADOPTION_REQUIRED: initializing iOS runner belongs to another device',
+      );
+    }
+    cancelStartingRunner(runnerProcess);
+    if (!(await awaitChildExit(runnerProcess, 30_000))) {
+      throw new Error('RUNNER_ADOPTION_REQUIRED: iOS runner initialization has not settled');
+    }
+  }
   await reapStaleFastRunner({ signal });
 }
 

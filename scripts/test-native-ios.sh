@@ -43,7 +43,7 @@ print(preferred or fallback)
 fi
 
 rm -rf "$RESULTS"
-xcodebuild test \
+exec xcodebuild test \
   -project RnFastRunner.xcodeproj \
   -scheme RnFastRunner \
   -destination "$DEST" \

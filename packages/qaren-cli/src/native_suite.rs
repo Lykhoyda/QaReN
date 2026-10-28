@@ -1,6 +1,8 @@
 use crate::adapters::ios;
 use crate::buildplan::{self, ReleaseOutcome};
-use crate::commands::cleanup::{cleanup_process_group, cleanup_scoped_runner_hosts, Outcome};
+use crate::commands::cleanup::{
+    cleanup_ios_automation_group, cleanup_scoped_runner_hosts, Outcome,
+};
 use crate::core;
 use crate::exec::{ChildHandle, CmdSpec, Runner};
 use crate::lease::{self, Lease};
@@ -146,12 +148,12 @@ fn finish(
             return Err("spawn identity was not persisted; lease retained".into())
         }
         SuiteProcess::Spawned { pgid, identity } => {
-            let mut group = cleanup_process_group(runner, identity.as_ref(), *pgid, None);
+            let mut group = cleanup_ios_automation_group(runner, identity.as_ref(), *pgid);
             if !group.clean()
                 && record.suite_exit.is_none()
                 && child.is_some_and(|child| matches!(child.try_wait(), Ok(Some(_))))
             {
-                group = cleanup_process_group(runner, identity.as_ref(), *pgid, None);
+                group = cleanup_ios_automation_group(runner, identity.as_ref(), *pgid);
             }
             group
         }

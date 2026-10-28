@@ -1404,7 +1404,8 @@ fn springboard_crash_after(runner: &mut dyn Runner, udid: &str, since_ms: u64) -
                 .map(|e| format!(" ({e})"))
                 .unwrap_or_default();
             return Some(format!(
-                "SpringBoard crashed on this simulator during the run or teardown{exception}; the result stands"
+                "SpringBoard crashed at {} on this simulator during the run or teardown{exception}; the result stands",
+                timefmt::iso8601_utc(facts.occurred_at_ms?)
             ));
         }
         if left == 0 || runner.cancellation().is_some() {
@@ -1575,6 +1576,7 @@ mod block_start_tests {
                 "procPath": "/Volumes/VOLUME/*/SpringBoard.app/SpringBoard",
                 "coalitionName": format!("com.apple.CoreSimulator.SimDevice.{coalition}"),
                 "exception": {"type": "EXC_BAD_ACCESS"},
+                "captureTime": "2026-02-02 02:40:01.0000 +0000",
             });
             let text = format!("{{\"bundleID\":\"com.apple.springboard\"}}\n{body}");
             std::fs::write(reports.join(format!("SpringBoard-{i}.ips")), text).unwrap();
@@ -1602,7 +1604,7 @@ mod block_start_tests {
         let note = springboard_crash_after(&mut runner, udid, start);
         assert_eq!(
             note.as_deref(),
-            Some("SpringBoard crashed on this simulator during the run or teardown (EXC_BAD_ACCESS); the result stands")
+            Some("SpringBoard crashed at 2026-02-02T02:40:01Z on this simulator during the run or teardown (EXC_BAD_ACCESS); the result stands")
         );
         assert_eq!(runner.now_epoch_ms(), start + 90_000);
         let _ = std::fs::remove_dir_all(home);
