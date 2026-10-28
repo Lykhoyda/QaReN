@@ -2291,8 +2291,10 @@ is at or after core spawn and whose device path or coalition matches the selecte
 simulator. File modification time and the header's report-delivery timestamp do
 not establish crash time; a missing or invalid `captureTime` is not attributed.
 A match adds `outcomes.springboard_crash` to the receipt and a lane-health entry to
-`run.json` history, including the crash time in UTC and optionally a sanitized exception type; report paths
-and raw contents are not copied. This observation never changes the run result,
+`run.json` history, including the crash time in UTC and optionally a sanitized
+exception type; report paths and raw contents are not copied. Attribution to this
+run is unverified: the device lease may already be released, so a report can
+belong to a later run. This observation never changes the run result,
 and an absent note does not prove that SpringBoard stayed healthy.
 
 Cleanup proves owned process-group and exact-simulator runner-host absence
@@ -3174,7 +3176,7 @@ These scenario-based verbs retain the preparation receipt contract below;
 ### Usage
 
 ```sh
-qaren prepare <scenario.yaml> [--device <udid> [--boot-device]] [--json] [--dry-run]
+qaren prepare <scenario.yaml> [--new | --device <udid> [--boot-device]] [--json] [--dry-run]
 qaren prewarm <scenario.yaml> [--json]
 qaren status  <run-id> [--json]
 qaren complete <run-id> <build-log> [--json]   # cooperative handoff only
@@ -3206,8 +3208,11 @@ prepare ──► validate (scenario schema, candidate git sha, lockfile sha256)
         ──► plan     native fingerprint + machine store + cache state ──► reuse | incremental | clean
                      (decision + evidence recorded; non-reuse takes the
                       host-level build serialization lock)
-        ──► allocate  iOS:  create + boot by default; with --device, borrow
-                            the exact simulator (see Existing iOS simulator)
+        ──► allocate  iOS:  reuse, create or fall back to a temporary simulator
+                            (see iOS simulator pool); with
+                            --new, create + boot a temporary qaren-<run-id>;
+                            with --device, borrow the exact simulator (see
+                            Existing iOS simulator)
                       NUC:  ssh <host> ~/bin/android-farm start <slot> qaren-<run-id>
                             ssh -N -L 127.0.0.1:<p>:127.0.0.1:<p>  (owned pid)
                             run-scoped adb server on adb_server_port with the
@@ -3230,10 +3235,92 @@ build+launch — prepare re-verifies the candidate, issues `handoff.json`, and
 finishes at phase `handed_off`; see the cooperative handoff section below.)
 ```
 
+### iOS simulator pool
+
+For a `build.owner: cli` iOS scenario without `--device` or `--new`, `prepare`
+reuses a QaReN-created simulator from this QaReN home's pool. A member is a
+simulator QaReN created as `qaren-pool-<run-id>`, recorded in
+`pool/ios/<UUID>.json` under the [QaReN home](#release-and-source-builds-side-by-side)
+(mode 0600). A simulator without a record is
+never scanned, claimed, reset, powered or deleted, whatever its name; to use
+one, pass it with `--device`.
+
+- **Matching.** One strict `simctl list devices -j` read must show the
+  record's exact UUID, available, with the record's name and with device type
+  and runtime equal to both the record and the scenario. The pool matches
+  full CoreSimulator identifiers
+  (`com.apple.CoreSimulator.SimDeviceType.<type>`,
+  `com.apple.CoreSimulator.SimRuntime.iOS-<version>`); a short form such as
+  `iOS26.4` is first resolved to the one installed identifier it names through
+  `simctl list devicetypes --json` or `simctl list runtimes --json`. A short
+  form that names no installed identifier, or more than one, keeps that run on
+  the temporary `qaren-<run-id>` simulator, and `device_pool` reports `fresh:`
+  with the reason. A record whose UUID the
+  inventory proves absent is deleted. A malformed record refuses with
+  `RUN_RECORD_INVALID`.
+- **Claim.** Candidates are tried in UUID order under the same device lease
+  as `check` and `--device`. A live holder, or a dead holder whose run reached
+  `ready`, `walking` or `handed_off`, is occupied: that run still owns the
+  session until `qaren cleanup <run-id>`. Any other dead holder is reclaimed
+  only through that run's own cleanup. Under the lease the member must be
+  Shutdown; a Booted member with no QaReN holder is released and skipped. When
+  the pool is at its cap, each skip reason, including the
+  `xcrun simctl shutdown <UUID>` hint, appears in the `device_pool` `fresh:`
+  note.
+- **Reset.** A claimed member is booted after dependencies, strict
+  foreign-driver admission and a durable pending stop, and is then reset:
+  the app is uninstalled and proven absent, which clears its container and
+  privacy grants, then `simctl keychain <UUID> reset` runs. An uninstall or
+  reset command that fails refuses `APP_RESET_FAILED`. The reset does
+  not erase: trusted root certificates, device-level defaults, other apps,
+  Safari and WebKit data, the pasteboard, photos, location and other
+  device-wide settings survive. Use `--new` when a run needs factory state.
+- **Cap and creation.** The scenario's `ios.max_devices` (default `1`, at least
+  `1`) caps the number of present members of any device type or runtime. It limits creation
+  only, never reuse. With no free member and the pool at the cap, including a
+  recount under the creation lock that finds a parallel prepare's new member,
+  the run keeps the temporary `qaren-<run-id>` path, and `device_pool` reports
+  `fresh:` with the occupied members or, when none matches the scenario, the
+  present ones. Below the cap, `prepare` takes the per-home creation lock
+  `pool/create-ios` under the same QaReN home, recounts, creates
+  `qaren-pool-<run-id>`, takes its device lease, writes its record, arms its stop and releases the lock
+  before booting. A held creation lock refuses with `DEVICE_BUSY` naming the
+  holding run and `qaren cleanup <run-id>` as the recovery; a creator that
+  failed or crashed keeps the lock, and pool creation stays blocked until that
+  cleanup. prepare never waits for a device.
+- **Return.** `qaren cleanup <run-id>` stops the run's processes, shuts the
+  member down after strict admission with an exact readback, keeps it and
+  releases the lease last. QaReN never deletes a pool member; delete one with
+  `xcrun simctl delete <UUID>` when no run holds it, and the next scan drops
+  its record. A creation that crashed before the stop was armed is an owned
+  temporary: cleanup deletes it by UUID and name and releases the lock.
+- **`--new`** keeps the previous behaviour: a temporary `qaren-<run-id>`,
+  with no lease and no record, deleted at cleanup and not counted. `--new`
+  with `--device` or `--boot-device`, or on another verb, is a usage error
+  (exit `2`, no receipt); with an Android scenario it refuses
+  `PLATFORM_UNSUPPORTED`. `build.owner: qaren` handoff always uses a temporary
+  simulator.
+- **`--dry-run`** names the member it would claim and the reset commands, the
+  `simctl create qaren-pool-<run-id>` it would run, or, at the cap, the
+  temporary `simctl create qaren-<run-id>` with the `fresh:` reason, and
+  claims, writes and prunes nothing. A member whose dead holder's run never reached `ready` is
+  reported as reused after reclaiming that run; a Booted one counts only if
+  that run armed its stop, since cleanup shuts down nothing else.
+- **Unproven process identity.** When `ps` cannot prove this prepare's own
+  birth identity, it cannot hold a device lease, so the run keeps the
+  temporary `qaren-<run-id>` path and `device_pool` reports `fresh:` with the
+  reason.
+
+The pool records and the cap are per QaReN home: runs using a different
+QaReN home never scan these records. Device leases follow the
+[lock-root contract](#ios-admission-and-cleanup) and are machine-wide by
+default, so a run using another QaReN home that borrows a pool member with
+`--device` contends on the same lease.
+
 ### Existing iOS simulator
 
 `prepare --device <UUID>` borrows that exact existing simulator instead of
-creating `qaren-<run-id>`, for a `build.owner: cli` iOS scenario. The UUID must
+using the pool, for a `build.owner: cli` iOS scenario. The UUID must
 name one available simulator whose device type and runtime equal the
 scenario's `ios.device_type` and `ios.runtime`. Names, `booted` and partial
 UUIDs are usage errors (exit `2`, no receipt); unavailable, ambiguous or
@@ -3261,7 +3348,8 @@ Booted with unchanged device type and runtime, alongside the other readiness
 probes. `qaren cleanup <run-id> --json`, once the prepare process has exited,
 stops the run's own processes, keeps the simulator (never shut down, erased or
 deleted) and then releases the lease. `--dry-run` shows the exact UUID and no
-create command, and claims nothing.
+create command, and claims nothing. `--device` on a pool member keeps these
+borrowed semantics: no reset and no shutdown.
 
 ## Scenarios
 
@@ -3599,19 +3687,12 @@ A scenario with `deps.policy: require-prewarm` then refuses to prepare without a
 (`DEPS_NOT_PREWARMED`) and installs with `--offline`, so no mid-run
 credential prompt can ever occur.
 
-**Prepared simulator lanes (evaluated, deferred).** Keeping a booted,
-pre-warmed simulator between runs would save the ~36s create+boot phase.
-The evaluation: a maintained lane needs an owner (who deletes it when its
-runtime/device-type pins change), a freshness rule (recreate on runtime
-update or after N days), and an ownership marker distinguishing it from
-user simulators — all solvable with the existing run-scoped-name machinery.
-It is deferred because native compile dominates whenever it is not already
-cached (the 2026-08-17 clean run spent 5m 42s building vs 5m 25s
-allocating) and a persistent simulator weakens the "no resource outlives
-its run" cleanup story. Once compile is short the balance flips — the
-incremental run spent 1m 31s in allocate against 1m 03s in
-build_and_ready — so revisit this once live reuse is measurable. A
-caller-maintained simulator can already be borrowed instead; see
+**Booted simulator lanes (deferred).** Default iOS prepare can reuse a
+shut-down QaReN-created simulator; see
+[iOS simulator pool](#ios-simulator-pool). Keeping a pool member booted
+between runs, to skip its boot as well, is deferred: cleanup shuts every
+member down so no booted resource outlives its run. A caller-maintained
+simulator can be borrowed instead; see
 [Existing iOS simulator](#existing-ios-simulator).
 
 ## Preparation ownership and safety rules
@@ -3653,8 +3734,11 @@ caller-maintained simulator can already be borrowed instead; see
   server port only counts once its pgid equals the group qaren just spawned —
   a foreign listener is a structured failure before any `adb connect`, so a
   `ready` receipt can never name a NUC lease while a local emulator answers.
-- **Cleanup is ownership-gated.** A simulator is deleted only when UDID *and*
-  run-scoped name (`qaren-<run-id>`) both match (a pending allocation whose
+- **Cleanup is ownership-gated.** A pool member or a borrowed simulator is
+  never deleted; a pool member is shut down and kept. A simulator is deleted
+  only when UDID *and* run-scoped name (`qaren-<run-id>`, or
+  `qaren-pool-<run-id>` for a creation that crashed before it joined the pool)
+  both match (a pending allocation whose
   create crashed before the UDID was learned is recovered by its unique
   run-scoped name, refusing on ambiguity). A process group is signalled only
   when the recorded leader's birth time (`ps lstart`) still matches immediately

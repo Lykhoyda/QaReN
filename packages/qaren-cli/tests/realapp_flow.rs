@@ -46,6 +46,10 @@ fn args(repo: &Path, scenario_path: &Path, android_home: Option<String>) -> Prep
         runs_root: repo.to_path_buf(),
         device: None,
         boot_device: false,
+        pool_root: repo.join(".pool"),
+        // iOS keeps the fresh temporary simulator (--new); the pool has its own tests.
+        new_device: std::fs::read_to_string(scenario_path)
+            .is_ok_and(|yaml| yaml.contains("platform: ios") && !yaml.contains("owner: qaren")),
     }
 }
 

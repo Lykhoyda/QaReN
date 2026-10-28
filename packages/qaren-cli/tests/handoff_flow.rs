@@ -42,6 +42,8 @@ fn prepare_args(scenario_path: &Path, android_home: Option<String>) -> PrepareAr
         runs_root: scenario_path.parent().unwrap().to_path_buf(),
         device: None,
         boot_device: false,
+        pool_root: scenario_path.parent().unwrap().join(".pool"),
+        new_device: false,
     }
 }
 
@@ -1413,6 +1415,8 @@ fn handoff_dry_run_plans_allocation_only() {
         runs_root: repo.to_path_buf(),
         device: None,
         boot_device: false,
+        pool_root: repo.join(".pool"),
+        new_device: false,
     };
     let receipt = prepare(&mut mock, &args);
     assert_eq!(receipt.result, ReceiptResult::Planned);

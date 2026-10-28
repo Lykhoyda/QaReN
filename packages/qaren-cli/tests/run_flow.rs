@@ -5596,6 +5596,7 @@ fn boot_device_refreshes_the_selected_state_after_reclaim_shuts_down_the_simulat
         record.scenario.ios = Some(qaren::scenario::IosSpec {
             device_type: "com.apple.CoreSimulator.SimDeviceType.iPhone-17".into(),
             runtime: "com.apple.CoreSimulator.SimRuntime.iOS-26-5".into(),
+            max_devices: None,
         });
         record.resources.ios_simulator = Some(IosSimResource {
             udid: UDID.into(),

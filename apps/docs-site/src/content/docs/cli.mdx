@@ -115,12 +115,14 @@ scenario is a strictly validated YAML file with `schema: qaren/1`.
 ### qaren prepare
 
 ```sh
-qaren prepare <scenario.yaml> [--device <udid> [--boot-device]] [--json] [--dry-run]
+qaren prepare <scenario.yaml> [--new | --device <udid> [--boot-device]] [--json] [--dry-run]
 ```
 
 Validates the scenario and the checked-out candidate, allocates the device, prepares the
 app and owned Metro, and emits a `ready` receipt with the run's device and Metro
 endpoint. `--dry-run` validates and prints the planned commands without allocating anything.
+For default iOS pool reuse, `ios.max_devices`, temporary fallbacks and `--new`, see the
+authoritative [iOS simulator pool contract](https://github.com/Lykhoyda/QaReN/blob/develop/packages/qaren-cli/README.md#ios-simulator-pool).
 For `--device` selection, boot permission and cleanup, see the authoritative
 [existing iOS simulator contract](https://github.com/Lykhoyda/QaReN/blob/develop/packages/qaren-cli/README.md#existing-ios-simulator).
 See [CLI-owned iOS build routes](https://github.com/Lykhoyda/QaReN/blob/develop/packages/qaren-cli/README.md#cli-owned-ios-build-routes)

@@ -273,7 +273,9 @@ pub fn cleanup_with_runtime(
     let owner_refusal =
         || Outcome::Refused("the run's qaren process is alive or unproven gone".to_string());
     let producers = record.resources.core.is_some() || !record.resources.runner_drivers.is_empty();
+    // A held pool creation lock means the creator may still be counting, creating or enrolling.
     let guarded_simulator = !record.resources.can_release_borrowed_ios_stop()
+        || record.resources.pool_create_lock.is_some()
         || (record.resources.device_borrowed
             && record.resources.ios_simulator.is_some()
             && record.resources.lease.is_some());
@@ -642,18 +644,21 @@ pub fn cleanup_with_runtime(
         let outcome = if !record.resources.can_release_build_ownership() {
             Outcome::Unresolved("build process cleanup is unproven; build lock retained".into())
         } else {
-            match crate::buildplan::release_lock(&lock.lock_dir, &lock.holder, &record.run_id) {
-                crate::buildplan::ReleaseOutcome::Removed => Outcome::Removed,
-                crate::buildplan::ReleaseOutcome::Absent => Outcome::Absent,
-                // Foreign is expected here: either this run never won the
-                // lock, or a later build legitimately adopted it after this
-                // run's prepare died (AdoptDead policy).
-                crate::buildplan::ReleaseOutcome::Foreign(_) => Outcome::Absent,
-                crate::buildplan::ReleaseOutcome::Refused(reason) => Outcome::Refused(reason),
-                crate::buildplan::ReleaseOutcome::Unresolved(reason) => Outcome::Unresolved(reason),
-            }
+            release_recorded_lock(&lock, &record.run_id)
         };
         outcomes.push(("build_lock".to_string(), outcome));
+    }
+    // Cleanup ran the simulator legs first, so a crashed creation's unrecorded simulator is gone before the count is.
+    if let Some(lock) = record.resources.pool_create_lock.clone() {
+        let simulator_clean = outcomes
+            .iter()
+            .all(|(leg, outcome)| leg != "simulator" || outcome.clean());
+        let outcome = if simulator_clean {
+            release_recorded_lock(&lock, &record.run_id)
+        } else {
+            Outcome::Unresolved("simulator cleanup is unproven; pool creation lock retained".into())
+        };
+        outcomes.push(("pool_create_lock".to_string(), outcome));
     }
 
     finish_cleanup(
@@ -665,6 +670,17 @@ pub fn cleanup_with_runtime(
         outcomes,
         true,
     )
+}
+
+fn release_recorded_lock(lock: &crate::runrecord::BuildLockResource, run_id: &str) -> Outcome {
+    match crate::buildplan::release_lock(&lock.lock_dir, &lock.holder, run_id) {
+        crate::buildplan::ReleaseOutcome::Removed => Outcome::Removed,
+        crate::buildplan::ReleaseOutcome::Absent => Outcome::Absent,
+        // Foreign: this run never won the lock, or a later build adopted it after this run died (AdoptDead).
+        crate::buildplan::ReleaseOutcome::Foreign(_) => Outcome::Absent,
+        crate::buildplan::ReleaseOutcome::Refused(reason) => Outcome::Refused(reason),
+        crate::buildplan::ReleaseOutcome::Unresolved(reason) => Outcome::Unresolved(reason),
+    }
 }
 
 #[allow(clippy::too_many_arguments)]
