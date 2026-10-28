@@ -4,7 +4,7 @@ import { test } from 'node:test';
 import { cropPng, decodePng, stablePixelChange } from '../../../dist/qa/tap-pixels.js';
 import { renderReason } from '../../../dist/qa/untrusted.js';
 import { parsePlan } from '../../../dist/qa/plan.js';
-import { elementFrame, join, screenSignature } from '../../../dist/qa/screen.js';
+import { applicationFrame, elementFrame, join, screenSignature } from '../../../dist/qa/screen.js';
 import type { NativeNode, Screen } from '../../../dist/qa/screen.js';
 import { walkBlock } from '../../../dist/qa/walker.js';
 import type { ActResult, WalkerDeps } from '../../../dist/qa/walker.js';
@@ -144,6 +144,51 @@ for (const axis of ['x', 'y', 'width', 'height'] as const) {
     const f = fake([initial, next], [before, after, after, after, after]);
     await expectFailure(f);
     assert.equal(f.calls.filter((call) => call === 'pixel shot').length, 1);
+  });
+}
+
+for (const change of [
+  'x',
+  'y',
+  'width',
+  'height',
+  'scale',
+  'root-width',
+  'root-height',
+  'missing',
+] as const) {
+  test(`delayed ${change} changes after the post-tap tree offer no pixel proof`, async () => {
+    const before = fixture('moved-before');
+    const after = fixture('moved-after');
+    const initial = change.startsWith('root-') ? iosOption(before) : option(before);
+    const next = change.startsWith('root-') ? iosOption(after) : option(after);
+    if (change === 'missing') next.elements = [];
+    else if (change === 'scale') next.pointScale = 2;
+    else if (change === 'root-width' || change === 'root-height')
+      applicationFrame(next)![change === 'root-width' ? 'width' : 'height'] += 1;
+    else elementFrame(next.elements[0])![change] += 1;
+    if (change !== 'missing') assert.equal(screenSignature(initial), screenSignature(next));
+    const frame = elementFrame(initial.elements.find((element) => element.testID === 'option')!)!;
+    assert.equal(
+      stablePixelChange(
+        cropPng(before, frame, 3)!,
+        cropPng(after, frame, 3)!,
+        cropPng(after, frame, 3)!,
+      ),
+      true,
+    );
+    let live = initial;
+    const f = fake([initial], [before, after, after, after, after]);
+    f.deps.captureScreen = async () => live;
+    const screenshot = f.deps.comparisonScreenshot!;
+    f.deps.comparisonScreenshot = async () => {
+      const bytes = await screenshot();
+      if (f.calls.filter((call) => call === 'pixel shot').length === 2) live = next;
+      return bytes;
+    };
+    const outcome = await walkBlock(tap, f.deps);
+    assert.notEqual(outcome.block.outcome, 'pass', JSON.stringify(outcome));
+    assert.equal(f.calls.filter((call) => call === 'pixel shot').length, 3);
   });
 }
 
