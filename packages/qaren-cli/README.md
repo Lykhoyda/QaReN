@@ -68,7 +68,7 @@ locations above. Legacy rn-dev-agent state is always checked at
 `~/.claude/rn-agent/`. A missing custom directory is treated as having no leftovers
 and is never created. Project-local `.mcp.json` remains relative to the app.
 
-The probes run outside any project with Corepack's network access disabled, so a
+The pnpm version probe runs outside any project with Corepack's network access disabled, so a
 pnpm that Corepack enabled but has not yet downloaded fails until you run
 `(cd / && pnpm --version)` once with network access; the fix line says so.
 
