@@ -12,8 +12,8 @@ Both use the GitHub CLI, so `gh` must be installed and signed in.
 
 :::caution
 Plans, reports and recordings of a private app stay private. Publication removes machine
-details and withholds typed values, but that does not make a private app's material safe
-to post on a public repository.
+details, but that does not make a private app's material safe to post on a public repository.
+Read the [video privacy limits](#video) before publishing recordings.
 :::
 
 ## qaren pr
@@ -68,9 +68,8 @@ label, but only when the pull request's head is still the tested commit.
 
 ### Saved blocks
 
-A block the walk saved is published only verbatim, and only when the walk's video was
-eligible and redaction would leave the block unchanged. Other blocks stay in the run's
-`blocks/` directory, and the receipt records `withheld <slug>: <reason>`.
+For saved-block publication eligibility and withholding outcomes, follow the
+[publication contract](https://github.com/Lykhoyda/QaReN/blob/develop/packages/qaren-cli/README.md#test-a-pull-request).
 
 Published blocks are committed to the pull request branch with a `Qaren-Run: <run-id>`
 trailer, using your own git identity and a push lease on the tested commit. When the branch

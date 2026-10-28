@@ -1458,9 +1458,12 @@ testIDs, geometry, character counts or element indices.
 rows retained after an interrupted walk. `mediaWithheld.screenshots` holds the
 first `reason`, optional `kind` or `source`, `line` and withheld screenshot `count`.
 `mediaWithheld.video` holds the publication-window cause and line, without a
-count, only when `videoPublication` is `withheld-privacy`.
+count: the strict privacy cause for strict or undeclared runs, or the protected
+cause for non-strict runs. `videoPublication` retains the strict verdict;
+`nonStrictPublication` supplies the separate non-strict verdict.
 The receipt includes one `media_withheld=<code>[/<kind|source>]@line <N>` note,
-preferring the screenshot cause. `report.md` marks each withheld row and explains
+preferring the video cause in non-strict mode and the screenshot cause otherwise.
+`report.md` marks each withheld row and explains
 the first screenshot cause and line. Line 0 means privacy latched before the walk.
 
 | Code | Meaning | What to do |
@@ -2167,7 +2170,8 @@ secret despite artifact redaction.
   produce the same marker. Other labels containing a known input use a redacted projection,
   verified by the same guard before hashing. This includes later account screens and inputs
   supplied by a configured login block that was never replayed. No echo declaration is
-  required for this masking; screenshots, video and output redaction stay withheld or masked.
+  required for this masking; screenshots remain withheld, video follows the
+  [declared policy](#video-publication), and output redaction remains active.
 - After a block's `Expect input NAME on screen` line, until the block ends, a label whose
   whole-value strict echoes are all of declared inputs hashes as the same constant marker; a
   label that also holds an undeclared input's value uses verified redaction instead. Every
@@ -3085,8 +3089,8 @@ a recorded port number also masks the same number elsewhere in the text. It then
 removes the `needs-qa` label only if the current head is the tested head; otherwise
 `publication.json` and the receipt record `retained-head-changed`.
 
-A saved block is published only verbatim, and only when the walk was eligible
-under the [video publication contract](#video-publication) and the
+A saved block is published only verbatim, and only when the walk met the strict
+[video publication rules](#video-publication) and the
 machine redaction would leave the block unchanged. Any other block stays in the
 run's `blocks/` directory and is never rewritten; `publication.json` and the
 receipt record `withheld <slug>: <reason>`. Published blocks are committed to the
@@ -3143,10 +3147,13 @@ video: non-strict
 ```
 
 - `strict`: today's privacy checks apply; clean walks can publish.
-- `non-strict`: use only when the app shows test data. Non-SECRET observations, literal fills and TEST-PII inputs can publish video. Detected SECRET causes still withhold it: secure fields (including empty fields), concealed fills, code rows and echoes attributable to protected values. A run holding SECRET runtime inputs also withholds video, even if they are unused.
+- `non-strict`: use only when the app shows test data. Non-SECRET observations, literal fills and TEST-PII inputs can publish video. Detected SECRET causes still withhold it: secure fields (including empty fields), fills into unreadable fields, concealed fills of protected values, code rows and echoes attributable to protected values. A readable, non-secure field whose native label may contain its value does not alone veto a PUBLIC or TEST-PII fill. A run holding SECRET runtime inputs also withholds video, even if they are unused.
 - Absent: strict rules apply and doctor reminds you to declare a policy. Any other value, including null, refuses `SCENARIO_INVALID`.
 
 The receipt, report and PR comment name the policy and the selected config: its app-relative path for files inside the invoking project, or its filename for external configs, with private values redacted. The path identifies the declaration, not the backend or dataset. Policy and eligibility are persisted with the run; `qaren publish` never re-reads the current app config. A missing or unknown eligibility verdict still withholds video. Saved-block publication and screenshots retain strict rules in this release.
+
+Only the selected config declares the video mode; no flag, environment variable,
+plan annotation or inferred backend selects it.
 
 SECRET text masking and no readback apply in both modes. A runtime input displayed in a non-secure field can be marked `(test-pii)` only if it is test data; that annotation cannot exempt secure fields or code rows. Non-strict is an operator declaration, not proof: an undeclared secret prefilled into a non-secure field, real personal data, or a value visible only between captures can appear in a published video. QaReN does not mask video regions or identify the backend. Upgrade every CLI/CI runtime before adding the key; older versions refuse it. Removing the key restores strict behavior.
 
