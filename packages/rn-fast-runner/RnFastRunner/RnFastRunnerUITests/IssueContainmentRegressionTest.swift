@@ -89,9 +89,14 @@ final class IssueContainmentRegressionTest: RnFastRunnerTests {
       throw XCTSkip("the simulator shows no software keyboard")
     }
     let snapshot = try serve(#"{"command":"snapshot"}"#)
+    let appFrame = app.frame
     guard let generation = snapshot.data?.snapshotGeneration,
           let key = snapshot.data?.nodes?.first(where: {
             $0.type == "Key" && $0.label?.count == 1 && $0.rect.width > 0 && $0.rect.height > 0
+              && KeyboardGuard.isProvenOnScreen(
+                appFrame: appFrame,
+                targetRect: CGRect(x: $0.rect.x, y: $0.rect.y, width: $0.rect.width, height: $0.rect.height)
+              )
           }),
           let label = key.label
     else { return XCTFail("snapshot should contain a labelled keyboard key") }
