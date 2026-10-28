@@ -192,6 +192,88 @@ test('a PUBLIC literal fill into a readable native label-private field can publi
   assert.equal(result.steps[0].screenshotWithheld, 'input-value');
 });
 
+for (const policy of [undefined, 'strict', 'non-strict'] as const) {
+  for (const route of ['native', 'focused', 'set-handler'] as const) {
+    test(`handler-detected private literal fill withholds ${policy ?? 'undeclared'} video (${route})`, async () => {
+      const field = screen([
+        element('@fixture', 'Fixture', { kind: 'input', testID: 'fixture', value: '' }),
+      ]);
+      const focused = {
+        ...screen([]),
+        keyboardVisible: true,
+        reactHostEvidence: {
+          complete: true,
+          hosts: [
+            {
+              testID: 'fixture',
+              role: null,
+              roleSource: 'none' as const,
+              capabilities: { fill: true },
+            },
+          ],
+        },
+      };
+      const privacy = new ObservedPrivacy();
+      const f = walker(
+        [],
+        scriptedJudge(() => assert.fail('literal steps are model-free')),
+      );
+      let filled = false;
+      let callbacks = 0;
+      const protect = (onPrivateInput?: () => void) => {
+        assert.ok(onPrivateInput);
+        onPrivateInput();
+        callbacks += 1;
+        filled = true;
+        return { ok: true, proven: true };
+      };
+      f.deps.privacy = privacy;
+      f.deps.videoPolicy = policy;
+      f.deps.captureScreen = async () => (filled ? ready() : route === 'focused' ? focused : field);
+      f.deps.fill = async (_ref, _value, _context, _privateValue, onPrivateInput) =>
+        route === 'set-handler'
+          ? {
+              ok: false,
+              mutation: 'observed',
+              error: 'TEXT_ENTRY_UNVERIFIED: retained target differs',
+            }
+          : protect(onPrivateInput);
+      f.deps.reactFocused = async () => true;
+      f.deps.typeFocused = async (
+        _ref,
+        _value,
+        _testID,
+        _context,
+        _requireFocused,
+        _privateValue,
+        onPrivateInput,
+      ) => protect(onPrivateInput);
+      f.deps.setByHandler = async (_testID, _value, _context, _privateValue, onPrivateInput) =>
+        protect(onPrivateInput);
+      const result = await runPlan(
+        parsePlan(`1. Fill "fixture" with "${canary}"\n✓ "Ready"`).blocks!,
+        f.deps,
+      );
+      assert.equal(result.verdict, 'PASS');
+      assert.equal(callbacks, 1);
+      assert.equal(result.nonStrictPublication, 'withheld-secret');
+      assert.equal(privacy.canScreenshot(), false);
+      assert.ok(
+        privacy
+          .privateSet()
+          .values.some((value) => value.text === canary && value.provenance === 'secret'),
+      );
+      assert.equal(privacy.redact(canary), '•••');
+      assert.ok(!JSON.stringify({ result, rows: f.rows }).includes(canary));
+      if (route !== 'focused') {
+        assert.deepEqual(privacy.secretWindowLatched(), { reason: 'secure-field' });
+        if (policy === 'non-strict')
+          assert.deepEqual(result.mediaWithheld?.video, { reason: 'secure-field', line: 1 });
+      }
+    });
+  }
+}
+
 test('protected runtime echoes retain protection provenance after the login window resets', () => {
   for (const strict of [false, true]) {
     for (const secure of [false, true]) {

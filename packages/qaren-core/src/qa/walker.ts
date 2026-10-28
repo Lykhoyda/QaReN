@@ -297,13 +297,6 @@ class EvidenceExpired extends Error {
   }
 }
 
-const promoteFill = (item: { input?: string }, identifier?: string): void => {
-  if (item.input !== undefined) {
-    currentInputs()?.protectFill(item.input, true);
-    currentInputs()?.expectEcho(identifier, item.input);
-  }
-};
-
 const unresolvedText = (quoted: string) =>
   new ResolutionError({
     refuse: 'VISIBILITY_UNSURE',
@@ -494,6 +487,14 @@ async function walkBlockScoped(
   const reactGaps = new Map<number, NonNullable<LedgerRow['reactCoverage']>>();
   let reactConnections: NonNullable<LedgerRow['reactConnections']> = [];
   const privateFills: number[] = [];
+  const promoteFill = (item: Item & { kind: 'fill' }, identifier?: string): void => {
+    privacy.observePrivateFill(fillText(item));
+    recordMediaLatch(privacy, sequence, deps, item.line);
+    if (item.input !== undefined) {
+      currentInputs()?.protectFill(item.input, true);
+      currentInputs()?.expectEcho(identifier, item.input);
+    } else if (!privateFills.includes(item.line)) privateFills.push(item.line);
+  };
   for (const item of block.items)
     if (item.kind === 'fill' && !typed.includes(fillText(item))) typed.push(fillText(item));
   const judge = deps.judge ?? unavailableJudge;

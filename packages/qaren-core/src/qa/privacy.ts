@@ -929,6 +929,11 @@ export class ObservedPrivacy {
     if (value) this.filledValues.add(value);
   }
 
+  observePrivateFill(value: string): void {
+    this.secret.add(value);
+    this.mark({ reason: 'secure-field' });
+  }
+
   concealFallback(
     value: string,
     protection: boolean | { secure: boolean; protectedValue: boolean } = false,
