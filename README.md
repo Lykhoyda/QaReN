@@ -60,10 +60,38 @@ Choose one of three installation options. QaReN 2.0 supports iOS simulators on A
 
 ### Ask your agent to install (recommended)
 
-Open Claude Code, Codex or Cursor in your app and paste the
-[installation prompt](https://lykhoyda.github.io/QaReN/getting-started/#ask-your-agent-to-install-recommended)
-using its copy button. It guides your agent through prerequisites, plugin installation
-and setup through the first smoke check.
+Open Claude Code, Codex or Cursor in your app and paste this prompt. The
+[getting started page](https://lykhoyda.github.io/QaReN/getting-started/#ask-your-agent-to-install-recommended)
+has a copy button for the same prompt.
+
+```text
+Set up QaReN in this app, from the app root, for my current host
+(Claude Code, Codex or Cursor).
+
+Check that this is an Apple silicon Mac and a pnpm Expo app using
+expo-dev-client with pnpm-lock.yaml. Install missing Node 24 or newer,
+Corepack and pnpm using user-writable locations. Check that full Xcode
+and an iOS simulator runtime are installed and ready. If a prerequisite
+needs administrator access, a license agreement or a manual download,
+stop and tell me the exact step I need to complete. Do not use sudo.
+
+Install the QaReN plugin for my host using the per-host instructions at
+https://github.com/Lykhoyda/QaReN#install-the-plugin-yourself
+If the host needs a plugin UI step or a session restart, tell me what to
+do and resume setup once the plugin is available.
+
+Run /qaren:setup; if slash commands are unavailable, load and follow the
+plugin's setup skill. It owns installing the matching qaren CLI, running
+qaren doctor, configuring this app and selecting the iOS simulator.
+Follow its source-install fallback only if the release is unavailable.
+Use the matching binary path it resolves; preserve any existing qaren
+command on PATH and keep the default QaReN home and installer options.
+
+Follow setup through writing .qaren/plans/smoke.md and running the first
+smoke check. Read the receipt and report result, run_id and next_action.
+If setup or the check stops, report the exact reason and fix; do not
+claim success before a passing receipt.
+```
 
 ### Install the plugin yourself
 
