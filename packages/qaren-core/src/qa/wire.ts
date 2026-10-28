@@ -43,6 +43,8 @@ export interface WireTarget {
   metroBundleRequests?: { path: string; atLaunch: number };
   // The CLI's last dev client manifest warm-up before launch.
   manifestWarm?: { ms: number; attempts: number };
+  // The CLI pinned this lane; the first screen must be observed before row 1.
+  warmLane?: true;
 }
 
 export interface WireRequest {
@@ -234,6 +236,7 @@ export function parsePublicRequest(line: string): WireRequest {
         target.manifestWarm.ms < 0 ||
         !Number.isSafeInteger(target.manifestWarm.attempts) ||
         target.manifestWarm.attempts < 1)) ||
+    (target.warmLane !== undefined && target.warmLane !== true) ||
     (p.loginBlock !== undefined && (!isValidActionId(p.loginBlock) || !p.loginMarker)) ||
     (p.loginMarker !== undefined && !validMarker(p.loginMarker));
   if (bad) throw new WireError('the request payload is missing required fields');

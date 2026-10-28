@@ -36,6 +36,7 @@ and [iOS admission diagnostics](https://github.com/Lykhoyda/QaReN/blob/develop/p
 | `DEVICE_BUSY`        | Another run holds the device's lease                                | Wait for that run to finish, or clean it up with `qaren cleanup <its-run-id>`; a live holder is never stolen |
 | `ARTIFACT_INSTALL_FAILED` | The cached dev-client verification or installation failed | Follow `next_action`; see the [cached-install recovery contract](https://github.com/Lykhoyda/QaReN/blob/develop/packages/qaren-cli/README.md#check-a-plan) |
 | `APP_EXITED_AT_LAUNCH` | The launched app exited before it became ready; on iOS the detail cites the simulator crash report | Follow `next_action`, which for a missing app-embedded framework is a CocoaPods reinstall; see the [launch readiness contract](https://github.com/Lykhoyda/QaReN/blob/develop/packages/qaren-cli/README.md#ios-simulator-lifecycle) |
+| `LANE_NOT_WARM` | The owned simulator failed the [warm-lane contract](https://github.com/Lykhoyda/QaReN/blob/develop/packages/qaren-cli/README.md#warm-lane) | Follow `next_action` and `failure.detail`; use the linked contract for settings, first-screen requirements and doctor diagnostics |
 
 ## During the walk
 

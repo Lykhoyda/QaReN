@@ -17,7 +17,7 @@ owns the guided onboarding procedure; [Check a plan](#check-a-plan) covers manua
 ## Doctor
 
 ```sh
-qaren doctor [--json] [--config .qaren/config.yaml]
+qaren doctor [--json] [--config .qaren/config.yaml] [--device <simulator-UUID>]
 ```
 
 Doctor prints the running binary's version, path, build, runtime and the
@@ -50,6 +50,7 @@ that can conflict with a session or is hygiene; `SKIP` is not applicable.
 | `runtime-dirs` | Interrupted installs and other versions under `$QAREN_HOME/runtime/` |
 | `source-checkout` | From a QaReN checkout: its source version (`<version>-dev.<commit>`) matches this binary |
 | `config` | `.qaren/config.yaml` (or `--config`) loads and validates |
+| `ios-lane` | Only with `--device`: read-only check of that simulator against the [warm-lane contract](#warm-lane) |
 | `1x-claude-plugin`, `1x-codex-plugin` | The rn-dev-agent 1.x plugin, marketplace and caches in Claude Code, Codex and Cursor |
 | `1x-mcp` | A hand-registered 1.x MCP server in `~/.claude.json`, `.mcp.json`, `~/.cursor/mcp.json` or `$CODEX_HOME/config.toml` |
 | `1x-binaries`, `1x-home-dirs` | The 1.x npm bins on `PATH`; `~/.rn-dev-agent/`, `~/.cache/rn-dev-agent/`, `~/Library/Caches/rn-dev-agent/`, `~/Library/Application Support/rn-dev-agent/` (or `$XDG_STATE_HOME/rn-dev-agent/`) and `~/.claude/rn-agent/` |
@@ -1985,6 +1986,59 @@ hide is attempted up to three times; if every attempt fails, or complete
 clearance evidence is not obtained within the reads, the walk refuses with
 `DEV_MENU_HIDE_UNVERIFIED` before the first step.
 
+### Warm lane
+
+A simulator the run explicitly owns is pinned before launch and, on `check`,
+its first screen is proven before row 1, so the leg starts on a pinned, launched
+app rather than an unknown device. Ownership means `prepare` on iOS (its created
+simulator or `--device <UUID>`), or any `check`/`pr --fresh-install` on its
+resolved simulator, including automatic selection, or `--boot-device` or
+`--restart-device` with an exact `--device`. Plain `check` on the
+booted simulator reads and writes none of its locale or keyboard settings.
+
+Before launch, on that UUID only, QaReN reads the device's global domain and
+`com.apple.Preferences` with `simctl spawn <UUID> defaults export` and writes
+the values that differ; a domain it cannot read counts as differing, so all of
+its pinned values are rewritten:
+
+| Domain | Key | Pinned value |
+|---|---|---|
+| global | `AppleLanguages` | `(en)` |
+| global | `AppleLocale` | `en_US` |
+| global | `AppleKeyboards` | `(en_US@sw=QWERTY;hw=Automatic)` |
+| global and `com.apple.Preferences` | `KeyboardAutocorrection`, `KeyboardPrediction`, `KeyboardShowPredictionBar`, `KeyboardAutocapitalization` | `false` |
+
+A fresh simulator has none of the keyboard keys and inherits the host region
+(for example `AppleLocale en_US@rg=dezzzz`); the values were probed on iOS 26.5
+and 27, where booted writes persist across reboots without a restart. The
+readback decides: a value the simulator does not keep refuses the run with
+`LANE_NOT_WARM` (exit 4) before the dev-menu defaults or launch. Simulator.app's
+hardware-keyboard switch lives in the host's
+`~/Library/Preferences/com.apple.iphonesimulator.plist`, shared by every
+simulator; QaReN changes only `DevicePreferences:<UUID>:ConnectHardwareKeyboard`
+for the resolved simulator to `false`, preserving the rest of the dictionary and
+all other devices, and creates `~/Library/Preferences` first when the home lacks
+it. A successful per-device read must prove `false`; an enabled,
+unset, failed or unreadable readback refuses with `LANE_NOT_WARM`. Doctor only
+reads the per-device key and fails unless it proves `false`. Its `ios-lane` row
+fails on differing defaults and names the keys; if neither defaults domain can
+be read (for example, the simulator is shut down), it warns instead.
+
+`check` then launches the app once and, before row 1, the core captures the first
+screen through the same projection the rows read: the app must be in front,
+in the foreground with a complete native capture, and show text. Otherwise the run
+refuses with `LANE_NOT_WARM` and no row runs. This proves a launched, visible
+app, not that the app finished loading: a splash screen with text passes.
+
+Once pinning succeeds, the receipt carries `lane` and `run.json` carries
+`resources.lane`, once per run; a refusal while pinning leaves no lane record, and its `failure.detail`
+names the key or the hardware keyboard. The record holds
+`device_id`, `build` (the native fingerprint), `layout`, `locale`, `normalized`
+(the keys this run wrote), `hardware_keyboard`, `pinned_at` and, for `check`,
+`first_screen` (`true` once observed, `false` on a first-screen refusal, absent
+when the run stopped earlier). Run one owned `prepare` or `check` per lane and
+build at the start of a session; later runs find the lane pinned and write nothing.
+
 ### Runtime inputs
 
 `Fill "staging-password" with input PASSWORD` types the value of `QAREN_INPUT_PASSWORD`;
@@ -3180,7 +3234,8 @@ dependencies, strict foreign-driver admission, boot, build, install or launch.
 It re-proves the lease and the exact target under custody before booting,
 before each install attempt, before launch and before publishing `ready`, and
 refuses rather than reboots a target that changed.
-Builds stay generic; only install, launch and probes address the UUID.
+Builds stay generic; only install, the [warm lane](#warm-lane) settings, launch
+and probes address the UUID.
 `ready` keeps the lease, Metro and app for attached agents, and `status`
 reports ready only while the run still holds that lease and the target is
 Booted with unchanged device type and runtime, alongside the other readiness

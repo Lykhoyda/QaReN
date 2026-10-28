@@ -53,6 +53,9 @@ pub struct CoreTarget {
     pub metro_bundle_requests: Option<MetroBundleRequests>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub manifest_warm: Option<ManifestWarm>,
+    // The CLI pinned this lane; the core must observe the app's first screen before row 1.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub warm_lane: bool,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -652,6 +655,8 @@ pub struct CoreOutcome {
     pub failure: Option<Failure>,
     // Exit/pipe grace expired; false is not proof that the process group is gone.
     pub group_survived: bool,
+    // The child sent its admitted envelope: the bundle, dev overlays and any warm-lane first screen were proven.
+    pub admitted: bool,
 }
 
 pub fn spawn_spec(
@@ -1268,6 +1273,7 @@ pub fn wait(
             }
         }
     }
+    let admitted = inbox.admitted;
     let (ledger, verdict, failure) = interpret(inbox, exit, deadline_failure, killed_after_result);
     CoreOutcome {
         pid,
@@ -1276,6 +1282,7 @@ pub fn wait(
         exit,
         failure,
         group_survived,
+        admitted,
     }
 }
 

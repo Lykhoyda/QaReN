@@ -2065,6 +2065,13 @@ fn check_runs_the_phases_in_order_and_ends_pass_with_a_report() {
         request_line["payload"]["target"]["manifestWarm"],
         serde_json::json!({ "ms": 0, "attempts": 2 })
     );
+    // Without an explicit lane opt-in the booted simulator's settings are never read or written.
+    assert!(request_line["payload"]["target"].get("warmLane").is_none());
+    assert!(!mock
+        .calls
+        .iter()
+        .any(|c| c.label.starts_with("simctl-lane")));
+    assert!(receipt.lane.is_none());
     assert_eq!(
         request_line["payload"]["preflightCalls"],
         probe_json()["callDetails"]
@@ -2456,7 +2463,7 @@ fn a_leased_device_refuses_before_any_provisioning() {
     for boot in [false, true] {
         let (repo, app) = app_repo();
         let lock_root = repo.join(".locks");
-        let mut holder = MockRunner::new();
+        let mut holder = qaren::exec::MockRunner::new();
         let held = qaren::lease::acquire(
             &mut holder,
             &lock_root,
@@ -2523,7 +2530,7 @@ const EARLIER_BIRTH: &str = "Wed Aug 12 15:00:00 2026";
 fn plant_holder(repo: &Path, edit: impl FnOnce(&mut RunRecord)) -> qaren::lease::Lease {
     let identity = common::identity(4242, EARLIER_BIRTH);
     let held = qaren::lease::acquire(
-        &mut MockRunner::new(),
+        &mut qaren::exec::MockRunner::new(),
         &repo.join(".locks"),
         Platform::Ios,
         UDID,
@@ -2656,7 +2663,7 @@ fn a_dead_holder_without_a_matching_record_or_clean_proof_keeps_its_lease() {
 fn a_dead_native_suite_holder_names_the_suite_recovery_command() {
     let (repo, app) = app_repo();
     let held = qaren::lease::acquire(
-        &mut MockRunner::new(),
+        &mut qaren::exec::MockRunner::new(),
         &repo.join(".locks"),
         Platform::Ios,
         UDID,
@@ -4890,6 +4897,19 @@ fn fresh_install_reset_build_readiness_walk_and_teardown_share_one_durable_lease
     let receipt = run(&mut runner, &req);
     assert_eq!(receipt.result, ReceiptResult::Pass, "{:?}", receipt.failure);
     assert_eq!(receipt.outcomes["fresh_install"], "proven_absent");
+    let lane = receipt
+        .lane
+        .as_ref()
+        .expect("auto-selected fresh install owns the lane");
+    assert_eq!(lane.device_id, UDID);
+    assert_eq!(lane.hardware_keyboard, Some(false));
+    assert_eq!(lane.first_screen, Some(true));
+    assert!(runner
+        .mock
+        .calls
+        .iter()
+        .filter(|c| c.label == "simctl-lane-read")
+        .all(|c| c.args[2] == UDID));
     assert_eq!(receipt.cleanup["device_lease"], "removed");
     assert_eq!(runner.mock.remaining(), 0);
     assert_direct_ios_launch(&runner.mock);
@@ -4912,6 +4932,7 @@ fn fresh_install_reset_build_readiness_walk_and_teardown_share_one_durable_lease
     let child_request: serde_json::Value =
         serde_json::from_str(runner.mock.piped_stdin_text(1).trim()).unwrap();
     assert_eq!(child_request["payload"]["lease"], runner.wire.unwrap());
+    assert_eq!(child_request["payload"]["target"]["warmLane"], true);
     let record = RunRecord::load(&req.runs_root, &run_id()).unwrap();
     assert_eq!(record.phase, Phase::Cleaned);
     assert!(record.resources.lease.is_none());
@@ -5679,6 +5700,65 @@ fn boot_device_refreshes_the_selected_state_after_reclaim_shuts_down_the_simulat
 }
 
 #[test]
+fn a_cold_first_screen_refuses_the_leg_before_row_one_and_is_recorded_once() {
+    let (repo, app) = app_repo();
+    let mut mock = MockRunner::new();
+    script_preflight_inventory(
+        &mut mock,
+        &repo,
+        "simctl list devices -j",
+        &available_inventory("Booted"),
+    );
+    script_admission(&mut mock);
+    common::script_ios_deps(&mut mock);
+    script_admission(&mut mock);
+    mock.expect_run(
+        "simctl list devices -j",
+        CmdOutput::success(&available_inventory("Booted")),
+    );
+    script_provision_after_deps(&mut mock);
+    script_drift_status(&mut mock);
+    script_host_probe(&mut mock, UDID, hosts_absent());
+    let refusal = serde_json::json!({"verdict":"REFUSED","code":"LANE_NOT_WARM",
+        "message":"no text was observed on the app's first screen","lease":"fixture-lease"});
+    mock.expect_spawn_piped(
+        "walk.js",
+        9000,
+        &format!("{}\n", envelope(2, "result", &refusal.to_string())),
+        Some(4),
+    );
+    script_core_identity(&mut mock);
+    script_teardown(&mut mock);
+    let mut runner = LeaseObservedRunner {
+        mock,
+        repo: repo.clone(),
+        wire: None,
+        observed: Vec::new(),
+        expect_fresh_install: false,
+    };
+    let mut req = request(&repo, &app, 30);
+    req.device = Some(UDID.to_string());
+    req.boot_device = true;
+
+    let receipt = run(&mut runner, &req);
+
+    assert_eq!(
+        receipt.result,
+        ReceiptResult::Refused,
+        "{}",
+        receipt.to_json()
+    );
+    assert_eq!(receipt.outcomes["core_exit"], "4");
+    let failure = receipt.failure.as_ref().unwrap();
+    assert_eq!(failure.code, FailureCode::LaneNotWarm);
+    assert!(failure.code.is_refusal());
+    let lane = receipt.lane.as_ref().expect("the warm-lane record");
+    assert_eq!(lane.first_screen, Some(false));
+    assert_eq!(receipt.ledger.as_ref().unwrap().steps, 0);
+    assert_eq!(runner.mock.remaining(), 0);
+}
+
+#[test]
 fn boot_device_admission_boot_readback_and_walk_share_a_durable_borrowed_lease() {
     for fresh in [false, true] {
         for initial in ["Shutdown", "Booted"] {
@@ -5736,6 +5816,20 @@ fn boot_device_admission_boot_readback_and_walk_share_a_durable_borrowed_lease()
                 receipt.failure
             );
             assert_eq!(runner.mock.remaining(), 0);
+            let lane = receipt.lane.as_ref().expect("an owned lane is pinned");
+            assert_eq!(lane.device_id, UDID);
+            assert_eq!(lane.first_screen, Some(true));
+            let request_line: serde_json::Value =
+                serde_json::from_str(runner.mock.piped_stdin_text(1).trim()).unwrap();
+            assert_eq!(request_line["payload"]["target"]["warmLane"], true);
+            let lane_reads: Vec<_> = runner
+                .mock
+                .calls
+                .iter()
+                .filter(|c| c.label == "simctl-lane-read")
+                .collect();
+            assert_eq!(lane_reads.len(), 2);
+            assert!(lane_reads.iter().all(|c| c.args[2] == UDID));
             assert_eq!(receipt.cleanup["device_lease"], "removed");
             assert_eq!(receipt.cleanup["simulator"], "kept");
             let mut phases = vec![

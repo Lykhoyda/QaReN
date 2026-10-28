@@ -589,6 +589,8 @@ fn run_inner(
         verb: verb(req),
         bundle_requests_at_launch: None,
         manifest_warm: None,
+        lane_owned: req.platform == Platform::Ios
+            && (req.boot_device || req.restart_device || req.fresh_install),
     };
     let finish_failed =
         |ctx: Ctx, failure: Failure| finish_failed(ctx, &node, &req.runtime_dir, failure, false);
@@ -911,6 +913,7 @@ fn run_inner(
                     at_launch,
                 }),
             manifest_warm: ctx.manifest_warm.clone(),
+            warm_lane: ctx.record.resources.lane.is_some(),
         },
     };
     let spec = core::spawn_spec(
@@ -994,6 +997,14 @@ fn run_inner(
             events::stage("steps", StageState::Failed, Some(code), None);
             events::close_running(StageState::Failed, Some(code), &["recording"]);
         }
+    }
+    // The core admits a warm lane only after it observed the app's first screen; an earlier refusal never reached it.
+    if let Some(lane) = ctx.record.resources.lane.as_mut() {
+        lane.first_screen = match &outcome.verdict {
+            _ if outcome.admitted => Some(true),
+            Verdict::Refused { code, .. } if code == "LANE_NOT_WARM" => Some(false),
+            _ => None,
+        };
     }
     let t = ctx.mark("walk", t);
     let drift = match (status_before, worktree_status(ctx.runner, &app_root)) {
@@ -1534,6 +1545,7 @@ fn refusal_code(code: &str) -> FailureCode {
         "PLAN_INPUT_MISSING" => FailureCode::PlanInputMissing,
         "PLAN_UNPARSEABLE" => FailureCode::PlanUnparseable,
         "BLOCK_START_MISSING" => FailureCode::BlockStartMissing,
+        "LANE_NOT_WARM" => FailureCode::LaneNotWarm,
         "JEV_AUTH_FAILED" => FailureCode::JevAuthFailed,
         "JEV_REQUEST_INVALID" => FailureCode::JevRequestInvalid,
         "JEV_UNREACHABLE" => FailureCode::JevUnreachable,
