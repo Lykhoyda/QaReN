@@ -4,7 +4,7 @@ import { test } from 'node:test';
 import { decodePng } from '../../../dist/qa/tap-pixels.js';
 import { renderReason } from '../../../dist/qa/untrusted.js';
 import { parsePlan } from '../../../dist/qa/plan.js';
-import { join, screenSignature } from '../../../dist/qa/screen.js';
+import { elementFrame, join, screenSignature } from '../../../dist/qa/screen.js';
 import type { NativeNode, Screen } from '../../../dist/qa/screen.js';
 import { walkBlock } from '../../../dist/qa/walker.js';
 import type { ActResult, WalkerDeps } from '../../../dist/qa/walker.js';
@@ -41,10 +41,11 @@ function fake(screens: Screen[], shots: (Uint8Array | undefined)[], proven = fal
   let clock = 0;
   const deps: WalkerDeps = {
     async captureScreen() {
-      return screens.length > 1 ? screens.shift()! : screens[0];
+      return screens[0];
     },
     async press(ref) {
       calls.push(`press ${ref}`);
+      if (screens.length > 1) screens.shift();
       return { ok: true, proven } satisfies ActResult;
     },
     async fill() {
@@ -127,6 +128,69 @@ test('a moved target offers no proof despite a visible pixel delta', async () =>
   const f = fake([option(before), option(after, 1)], [before, after, after, after, after]);
   await expectFailure(f);
   assert.equal(f.calls.filter((call) => call === 'pixel shot').length, 1);
+});
+
+test('each comparison shot rejects target changes before or during capture', async () => {
+  const before = fixture('toggle1-before'),
+    after = fixture('toggle1-after');
+  const changes: ((screen: Screen) => void)[] = [
+    (s) => {
+      elementFrame(s.elements[0])!.x += 1;
+    },
+    (s) => {
+      elementFrame(s.elements[0])!.y += 1;
+    },
+    (s) => {
+      elementFrame(s.elements[0])!.width += 1;
+    },
+    (s) => {
+      elementFrame(s.elements[0])!.height += 1;
+    },
+    (s) => {
+      s.elements[0].testID = 'other';
+    },
+    (s) => {
+      s.elements.push({ ...s.elements[0], ref: '@duplicate' });
+    },
+    (s) => {
+      s.elements[0].hittable = false;
+    },
+    (s) => {
+      s.front = 'picker';
+    },
+    (s) => {
+      s.pointScale = 2;
+    },
+    (s) => {
+      s.keyboardVisible = true;
+      s.keyboardFrame = { ...elementFrame(s.elements[0])! };
+    },
+  ];
+  for (const shot of [0, 1, 2]) {
+    for (const edge of ['before', 'during']) {
+      for (const change of changes) {
+        const f = fake([option(before)], [before, after, after, after, after]);
+        let shots = 0;
+        let pixelCaptures = 0;
+        let shifted = false;
+        f.deps.captureScreen = async (options) => {
+          const screen = option(before);
+          if (options?.platformPresence && pixelCaptures++ === shot * 2 && edge === 'before')
+            shifted = true;
+          if (shifted && options?.platformPresence) change(screen);
+          return screen;
+        };
+        const screenshot = f.deps.comparisonScreenshot!;
+        f.deps.comparisonScreenshot = async () => {
+          if (edge === 'during' && shots === shot) shifted = true;
+          shots++;
+          return screenshot();
+        };
+        const outcome = await walkBlock(tap, f.deps);
+        assert.notEqual(outcome.block.outcome, 'pass', `${shot} ${edge}`);
+      }
+    }
+  }
 });
 
 test('withheld, failed, missing and unsupported comparison shots offer no proof', async () => {

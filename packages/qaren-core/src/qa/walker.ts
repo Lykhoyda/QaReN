@@ -815,16 +815,38 @@ async function walkBlockScoped(
       return undefined;
     return { target: element, frame: { ...frame }, scale };
   };
+  const samePixelTarget = (
+    expected: NonNullable<ReturnType<typeof pixelTarget>>,
+    actual: ReturnType<typeof pixelTarget>,
+  ): boolean =>
+    actual !== undefined &&
+    JSON.stringify(actual.scale) === JSON.stringify(expected.scale) &&
+    actual.frame.x === expected.frame.x &&
+    actual.frame.y === expected.frame.y &&
+    actual.frame.width === expected.frame.width &&
+    actual.frame.height === expected.frame.height;
   const pixelShot = async (
+    item: Exclude<Item, { kind: 'check' }>,
     target: NonNullable<ReturnType<typeof pixelTarget>>,
   ): Promise<PixelCrop | undefined> => {
     assertActive();
     const allowed = () => privacy.canScreenshot() && !metadataOnly && !currentInputs()?.hasInputs;
     if (!allowed() || !deps.comparisonScreenshot) return undefined;
     try {
+      const before = await captureOnce(item, false, false, 'provenance');
+      usable(before, item);
+      if (!allowed() || !samePixelTarget(target, pixelTarget(before.screen, target.target)))
+        return undefined;
       const bytes = await deps.comparisonScreenshot();
+      const after = await captureOnce(item, false, false, 'provenance');
+      usable(before, item);
+      usable(after, item);
       assertActive();
-      return bytes && allowed() ? cropPng(bytes, target.frame, target.scale) : undefined;
+      return bytes &&
+        allowed() &&
+        samePixelTarget(target, pixelTarget(after.screen, target.target))
+        ? cropPng(bytes, target.frame, target.scale)
+        : undefined;
     } catch (error) {
       if (isAbort(error)) throw error;
       return undefined;
@@ -2620,8 +2642,7 @@ async function walkBlockScoped(
                 if (item.kind === 'press' && !pixelBaselineTaken) {
                   pixelBaselineTaken = true;
                   const target = element && pixelTarget(before.screen, element);
-                  // One deliberate before-shot (~200 ms) per eligible press preserves the first attempt's baseline.
-                  const crop = target && (await pixelShot(target));
+                  const crop = target && (await pixelShot(item, target));
                   if (target && crop) pixelBaseline = { target, crop };
                 }
                 return item.kind === 'press'
@@ -2769,19 +2790,15 @@ async function walkBlockScoped(
             const baseline = pixelBaseline.target;
             const previous = pixelTarget(before.screen, baseline.target);
             const current = pixelTarget(after.screen, baseline.target);
-            const identical = (target: ReturnType<typeof pixelTarget>) =>
-              target &&
-              sameIdentity(element!, baseline.target) &&
-              JSON.stringify(target.scale) === JSON.stringify(baseline.scale) &&
-              target.frame.x === baseline.frame.x &&
-              target.frame.y === baseline.frame.y &&
-              target.frame.width === baseline.frame.width &&
-              target.frame.height === baseline.frame.height;
-            if (identical(previous) && identical(current)) {
-              const first = await pixelShot(current!);
+            if (
+              sameIdentity(element, baseline.target) &&
+              samePixelTarget(baseline, previous) &&
+              samePixelTarget(baseline, current)
+            ) {
+              const first = await pixelShot(item, baseline);
               if (first) {
                 await deps.sleep(200);
-                const second = await pixelShot(current!);
+                const second = await pixelShot(item, baseline);
                 if (second) changed = stablePixelChange(pixelBaseline.crop, first, second);
               }
             }
