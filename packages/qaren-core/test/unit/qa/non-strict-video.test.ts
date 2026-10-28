@@ -161,7 +161,10 @@ test('login window resets pair a retained secure cause with the new window line'
   ]);
   capturePrivateScreen(wall, []);
   capturePrivateScreen(home, []);
-  const f = walker([], scriptedJudge(() => assert.fail('literal steps are model-free')));
+  const f = walker(
+    [],
+    scriptedJudge(() => assert.fail('literal steps are model-free')),
+  );
   f.deps.privacy = privacy;
   f.deps.videoPolicy = 'non-strict';
   f.deps.captureScreen = async () => (loggedIn ? home : wall);
