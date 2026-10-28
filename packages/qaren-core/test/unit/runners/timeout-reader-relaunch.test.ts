@@ -35,7 +35,11 @@ import {
 import { parseEnvelope } from '../../helpers/result-helpers.js';
 
 let healthReplies: ('down' | 'refused' | 'missing-presence' | 'alive')[] = [];
-let spawned: (EventEmitter & { stdout: PassThrough; stderr: PassThrough })[] = [];
+let spawned: (EventEmitter & {
+  stdout: PassThrough;
+  stderr: PassThrough;
+  signalCode: NodeJS.Signals | null;
+})[] = [];
 let emptySnapshots = 0;
 let launches = 0;
 let failLaunch = false;
@@ -882,6 +886,7 @@ test('a vanished reader leaves a post-mortem of host state and marker counts, ne
     assert.deepEqual(postMortem(), { hostChild: 'alive', ...markers });
 
     events.length = 0;
+    child.signalCode = 'SIGKILL';
     child.emit('exit', null, 'SIGKILL');
     await assert.rejects(
       runIOS({ command: 'snapshot', qaReadOnly: true, qaTiming }),
