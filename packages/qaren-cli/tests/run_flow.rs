@@ -2463,7 +2463,7 @@ fn a_leased_device_refuses_before_any_provisioning() {
     for boot in [false, true] {
         let (repo, app) = app_repo();
         let lock_root = repo.join(".locks");
-        let mut holder = MockRunner::new();
+        let mut holder = qaren::exec::MockRunner::new();
         let held = qaren::lease::acquire(
             &mut holder,
             &lock_root,
@@ -2530,7 +2530,7 @@ const EARLIER_BIRTH: &str = "Wed Aug 12 15:00:00 2026";
 fn plant_holder(repo: &Path, edit: impl FnOnce(&mut RunRecord)) -> qaren::lease::Lease {
     let identity = common::identity(4242, EARLIER_BIRTH);
     let held = qaren::lease::acquire(
-        &mut MockRunner::new(),
+        &mut qaren::exec::MockRunner::new(),
         &repo.join(".locks"),
         Platform::Ios,
         UDID,
@@ -2663,7 +2663,7 @@ fn a_dead_holder_without_a_matching_record_or_clean_proof_keeps_its_lease() {
 fn a_dead_native_suite_holder_names_the_suite_recovery_command() {
     let (repo, app) = app_repo();
     let held = qaren::lease::acquire(
-        &mut MockRunner::new(),
+        &mut qaren::exec::MockRunner::new(),
         &repo.join(".locks"),
         Platform::Ios,
         UDID,
