@@ -317,9 +317,8 @@ fn video_withholding(ledger: &Ledger, strict: &VideoPublication) -> Option<Strin
         && publication == VideoPublication::WithheldPrivacy
     {
         let escape = if cause.is_some_and(|cause| {
-            cause.reason == crate::core::WithholdCause::RuntimeInput
-                || (cause.reason == crate::core::WithholdCause::Echo
-                    && cause.source == Some(crate::core::MediaSource::Input))
+            cause.reason == crate::core::WithholdCause::Echo
+                && cause.source == Some(crate::core::MediaSource::Input)
         }) {
             " If this value is test data, declare the input (test-pii) to allow the video."
         } else {

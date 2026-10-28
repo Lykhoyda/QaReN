@@ -227,7 +227,7 @@ fn non_strict_secret_causes_get_specific_wording_and_eligible_inputs_get_the_esc
         for output in [&body, &local] {
             assert_eq!(
                 output.contains(hint),
-                reason == "runtime-input" || source == Some("input"),
+                source == Some("input"),
                 "{output}"
             );
             assert!(output.contains("Video withheld:"), "{output}");

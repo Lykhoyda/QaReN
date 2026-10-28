@@ -123,6 +123,105 @@ test('SECRET echoes cannot hide behind an earlier relaxed echo', () => {
   assert.equal(privacy.redact('hidden-password'), '•••');
 });
 
+test('runtime input fills report readable email and secure password causes separately', async () => {
+  for (const secure of [false, true]) {
+    const privacy = new ObservedPrivacy();
+    const inputs = new RunInputs({ FIXTURE: canary }, ['FIXTURE'], privacy);
+    let filled = false;
+    const f = walker(
+      [],
+      scriptedJudge(() => assert.fail('literal fills are model-free')),
+    );
+    f.deps.privacy = privacy;
+    f.deps.videoPolicy = 'non-strict';
+    f.deps.captureScreen = async () => {
+      if (!secure)
+        return screen([
+          element('@fixture', 'fixture', {
+            kind: 'input',
+            testID: 'fixture',
+            value: filled ? canary : '',
+          }),
+          ...ready().elements,
+        ]);
+      const nodes = [
+        {
+          ref: '@fixture',
+          type: 'SecureTextField',
+          identifier: 'fixture',
+          value: filled ? canary : '',
+          secure,
+          hittable: true,
+          enabled: true,
+          rect: { x: 10, y: 20, width: 200, height: 40 },
+        },
+      ];
+      const observed = applyNativePrivateInputs(
+        join(nodes, [], 'app', { native: 'complete', react: 'complete' }, undefined, {
+          source: 'xcui-live',
+          nodes: [{ status: 'observed', labelSource: 'none' }],
+        }),
+        nodes,
+      );
+      observed.elements.push(...ready().elements);
+      observed.visibleText.push('Ready');
+      return observed;
+    };
+    f.deps.fill = async () => {
+      filled = true;
+      return { ok: true, proven: true };
+    };
+    const result = await withInputs(inputs, () =>
+      runPlan(parsePlan('1. Fill "fixture" with input FIXTURE\n✓ "Ready"').blocks!, f.deps),
+    );
+    assert.equal(result.verdict, 'PASS', JSON.stringify(result));
+    assert.equal(result.nonStrictPublication, 'withheld-secret');
+    assert.equal(result.videoPublication, 'withheld-fill');
+    assert.equal(result.mediaWithheld?.video?.reason, secure ? 'secure-field' : 'echo');
+    assert.equal(result.mediaWithheld?.video?.source, secure ? undefined : 'input');
+    assert.ok(!JSON.stringify(result).includes(canary));
+  }
+});
+
+test('protected causes outrank runtime inputs and input echoes in either observation order', () => {
+  const blockers = [
+    (privacy: ObservedPrivacy) => privacy.observe(native('SecureTextField')),
+    (privacy: ObservedPrivacy) => privacy.observePrivateFill(canary),
+    (privacy: ObservedPrivacy) => privacy.concealFallback(canary),
+    (privacy: ObservedPrivacy) => {
+      privacy.didFill('4829');
+      privacy.observe(
+        join(
+          Array.from('4829', (label, i) => ({
+            ref: `@box${i}`,
+            type: 'StaticText',
+            label,
+            rect: { x: i * 48, y: 100, width: 42, height: 42 },
+          })),
+          [],
+        ),
+      );
+    },
+  ];
+  for (const block of blockers) {
+    for (const first of [false, true]) {
+      const privacy = new ObservedPrivacy();
+      if (first) block(privacy);
+      new RunInputs({ FIXTURE: canary }, ['FIXTURE'], privacy);
+      privacy.observe(native('TextField', canary));
+      if (!first) block(privacy);
+      const cause = privacy.secretWindowLatched();
+      assert.ok(cause);
+      assert.ok(['secure-field', 'concealed-fill', 'code-row'].includes(cause.reason));
+      privacy.observe(ready());
+      assert.deepEqual(privacy.secretWindowLatched(), cause);
+      privacy.startWindow();
+      assert.equal(privacy.secretWindowLatched(), undefined);
+      assert.equal(privacy.canScreenshot(), false);
+    }
+  }
+});
+
 test('concealed fills and code rows veto non-strict video', () => {
   const concealed = new ObservedPrivacy();
   concealed.concealFallback(canary);

@@ -974,8 +974,12 @@ export class ObservedPrivacy {
   }
 
   private markSecret(latch: MediaLatch): void {
-    this.secretWindowLatch ??= latch;
-    this.secretLatestLatch ??= latch;
+    const replaceable = (cause: MediaLatch | undefined): boolean =>
+      !cause ||
+      cause.reason === 'runtime-input' ||
+      (cause.reason === 'echo' && cause.source === 'input');
+    if (replaceable(this.secretWindowLatch)) this.secretWindowLatch = latch;
+    if (replaceable(this.secretLatestLatch)) this.secretLatestLatch = latch;
   }
 
   secretWindowLatched(): MediaLatch | undefined {
