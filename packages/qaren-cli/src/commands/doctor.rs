@@ -539,8 +539,11 @@ fn pnpm_source(runner: &mut dyn Runner, project_root: &Path) -> Check {
             "put an installed pnpm executable on PATH",
         );
     }
-    let output =
-        runner.run(&pnpm::group_probe_spec(project_root).env("COREPACK_ENABLE_NETWORK", "0"));
+    let output = runner.run(
+        &pnpm::group_probe_spec(project_root)
+            .env("COREPACK_ENABLE_NETWORK", "0")
+            .env("COREPACK_ENABLE_AUTO_PIN", "0"),
+    );
     if output.ok() && output.stdout == pnpm::GROUP_OK {
         Check::pass("pnpm-source", detail)
     } else {

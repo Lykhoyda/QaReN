@@ -35,7 +35,7 @@ pub fn group_probe_spec(project_root: &Path) -> CmdSpec {
     // No server starts: the probe exits even when a bootstrapper creates another group.
     const SCRIPT: &str = r#"QAREN_PNPM_LAUNCH_GROUP=$$
 export QAREN_PNPM_LAUNCH_GROUP
-exec pnpm exec /bin/sh -c 'group=$(/bin/ps -o pgid= -p "$$") || exit 1
+exec pnpm --silent exec /bin/sh -c 'group=$(/bin/ps -o pgid= -p "$$") || exit 1
 [ "$group" -eq "$QAREN_PNPM_LAUNCH_GROUP" ] || exit 1
 printf "qaren-pnpm-group-ok\n"'"#;
     CmdSpec::new("pnpm-group-probe", "/bin/sh", &["-c", SCRIPT], 30)

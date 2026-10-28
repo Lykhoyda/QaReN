@@ -4,6 +4,61 @@ use qaren::adapters::pnpm::{group_probe_spec, source, GROUP_OK};
 use qaren::commands::doctor::{doctor, Status};
 use qaren::exec::{CmdOutput, MockRunner, RealRunner, Runner};
 use std::os::unix::fs::{symlink, PermissionsExt};
+use std::process::Command;
+
+#[test]
+fn doctor_does_not_auto_pin_a_project_without_a_package_manager() {
+    let root = common::temp_repo();
+    let app = root.join("test-app");
+    let package = app.join("package.json");
+    let before = std::fs::read(&package).unwrap();
+    let bin = root.join("bin");
+    std::fs::create_dir(&bin).unwrap();
+    let pnpm = bin.join("pnpm");
+    std::fs::write(
+        &pnpm,
+        r#"#!/bin/sh
+if [ "${COREPACK_ENABLE_AUTO_PIN:-}" = 1 ] && [ "$PWD" = "$TEST_APP_ROOT" ]; then
+  printf '{"packageManager":"pnpm@11.5.2"}\n' > package.json
+fi
+if [ "$1" = --version ]; then
+  printf '11.5.2\n'
+  exit 0
+fi
+if [ "$1" = --silent ]; then shift; fi
+shift
+exec "$@"
+"#,
+    )
+    .unwrap();
+    std::fs::set_permissions(&pnpm, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let config = root.join("config.yaml");
+    std::fs::write(&config, "appId: com.example.fixture\n").unwrap();
+    let output = Command::new(env!("CARGO_BIN_EXE_qaren"))
+        .args(["doctor", "--json", "--config"])
+        .arg(&config)
+        .current_dir(&app)
+        .env("HOME", root.join("home"))
+        .env("QAREN_HOME", root.join("home/.qaren"))
+        .env("COREPACK_ENABLE_AUTO_PIN", "1")
+        .env("TEST_APP_ROOT", &app)
+        .env(
+            "PATH",
+            format!("{}:{}", bin.display(), std::env::var("PATH").unwrap()),
+        )
+        .output()
+        .unwrap();
+    let report: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    let row = report["checks"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|row| row["id"] == "pnpm-source")
+        .unwrap();
+    assert_eq!(row["status"], "pass");
+    assert_eq!(std::fs::read(&package).unwrap(), before);
+    std::fs::remove_dir_all(root).unwrap();
+}
 
 #[test]
 fn exec_probe_accepts_preserved_groups_and_refuses_bootstrap_group_changes() {
@@ -15,7 +70,13 @@ fn exec_probe_accepts_preserved_groups_and_refuses_bootstrap_group_changes() {
         let bin = root.join("bin with spaces");
         std::fs::create_dir(&bin).unwrap();
         let launcher = bin.join("pnpm");
-        std::fs::write(&launcher, format!("#!/bin/bash\n{body}\n")).unwrap();
+        std::fs::write(
+            &launcher,
+            format!(
+                "#!/bin/bash\nif [ \"$1\" = --silent ]; then shift; else printf 'Already up to date\\nDone in 25ms using pnpm v11.5.2\\n'; fi\n{body}\n"
+            ),
+        )
+        .unwrap();
         std::fs::set_permissions(&launcher, std::fs::Permissions::from_mode(0o755)).unwrap();
         let spec = group_probe_spec(&root).env("PATH", bin.to_str().unwrap());
         let output = RealRunner::new().run(&spec);
