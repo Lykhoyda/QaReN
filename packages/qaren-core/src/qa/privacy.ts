@@ -198,11 +198,22 @@ export function inputCheckSubject(element: Element): EvidenceStatus {
   );
 }
 
-// A field whose value is private evidence: native secure, or an input the screen model cannot read safely.
+export const PRIVATE_INPUT_CAUSES = [
+  'secure-field',
+  'unreadable-check-subject',
+  'label-may-be-value',
+] as const;
+export type PrivateInputCause = (typeof PRIVATE_INPUT_CAUSES)[number];
+
+export function privateInputCause(element: Element): PrivateInputCause | undefined {
+  if (element.secure) return 'secure-field';
+  if (inputCheckSubject(element) === 'unknown') return 'unreadable-check-subject';
+  if (nativeLabelMayBeValue(element)) return 'label-may-be-value';
+  return undefined;
+}
+
 export function isPrivateInput(element: Element): boolean {
-  return (
-    element.secure || inputCheckSubject(element) === 'unknown' || nativeLabelMayBeValue(element)
-  );
+  return privateInputCause(element) !== undefined;
 }
 
 export function nativeLabelMayBeValue(element: Element): boolean {

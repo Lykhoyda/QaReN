@@ -6,8 +6,16 @@ import {
   INPUT_SCREEN_TEXT_WITHHELD,
   MASK,
   ObservedPrivacy,
+  captureInputPrivacy,
   emailForms,
+  inputCheckSubject,
+  isPrivateInput,
+  nativeLabelMayBeValue,
 } from '../../../dist/qa/privacy.js';
+import { join as joinScreen } from '../../../dist/qa/screen.js';
+import { applyNativePrivateInputs } from '../../../dist/qa/private-input.js';
+import type { FillPrivacyDiagnostic } from '../../../dist/qa/diagnostics.js';
+import { cleanDiagnostic } from '../../../dist/qa/diagnostics.js';
 import { decideScreen } from '../../../dist/qa/resolve.js';
 import { describeError } from '../../../dist/qa/adapt.js';
 import { runPlan } from '../../../dist/qa/walker.js';
@@ -76,6 +84,172 @@ function privacyFor(values: Record<string, string>, testPii: string[]) {
   const inputs = new RunInputs(values, Object.keys(values), privacy, testPii);
   return { privacy, inputs };
 }
+
+for (const labelSource of ['none', 'value', 'descendant'] as const) {
+  for (const tier of ['test-pii', 'secret', 'secret-alias'] as const) {
+    test(`a readable native ${tier} Fill with ${labelSource} label privacy uses its declared tier`, async () => {
+      const nodes = [
+        {
+          ref: '@email',
+          type: 'TextField',
+          identifier: 'email',
+          ...(labelSource === 'none' ? {} : { label: EMAIL }),
+          value: '',
+          secure: false,
+          hittable: true,
+          enabled: true,
+          rect: { x: 10, y: 20, width: 200, height: 40 },
+        },
+      ];
+      const login = applyNativePrivateInputs(
+        joinScreen(nodes, [], 'app', { native: 'complete', react: 'complete' }, undefined, {
+          source: 'xcui-live',
+          nodes: [{ status: 'observed', labelSource }],
+        }),
+        nodes,
+      );
+      const target = login.elements[0];
+      assert.equal(target.secure, false);
+      assert.equal(inputCheckSubject(target), 'supported');
+      assert.equal(nativeLabelMayBeValue(target), true);
+      assert.equal(isPrivateInput(target), true);
+      const f = walker(
+        [login],
+        scriptedJudge(() => assert.fail('model-free')),
+      );
+      const { privacy, inputs } = privacyFor(
+        tier === 'secret-alias' ? { EMAIL, SECRET: EMAIL } : { EMAIL },
+        tier === 'secret' ? [] : ['EMAIL'],
+      );
+      f.deps.privacy = privacy;
+      const events: FillPrivacyDiagnostic[] = [];
+      f.deps.fillPrivacy = (event) => events.push(event);
+      let privateFill: boolean | undefined;
+      f.deps.fill = async (_ref, _text, _context, privateValue) => {
+        privateFill = privateValue;
+        return { ok: true, proven: true };
+      };
+      const result = await withInputs(inputs, () =>
+        runPlan(
+          parsePlan(`1. Fill "email" with input EMAIL${tier === 'secret' ? '' : ' (test-pii)'}`)
+            .blocks!,
+          f.deps,
+        ),
+      );
+      assert.equal(result.verdict, 'PASS');
+      assert.equal(
+        privateFill,
+        tier !== 'test-pii',
+        'only readable TEST-PII without a SECRET collision may reach host readback',
+      );
+      assert.equal(inputs.hasStrictInputs, tier !== 'test-pii');
+      assert.deepEqual(events, [
+        {
+          kind: 'fill-privacy',
+          line: 1,
+          cause: 'label-may-be-value',
+          privateValue: tier !== 'test-pii',
+        },
+      ]);
+      assert.equal(privacy.canScreenshot(), false);
+      assert.ok(!JSON.stringify({ result, rows: f.rows }).includes(EMAIL));
+    });
+  }
+}
+
+test('an unreadable TEST-PII target stays protected', async () => {
+  const target = element('@email', 'Email', { kind: 'input', testID: 'email' });
+  captureInputPrivacy(target, {
+    checkSubject: 'unknown',
+    nativeLabelMayBeValue: false,
+    values: [],
+  });
+  const f = walker(
+    [screen([target])],
+    scriptedJudge(() => assert.fail('model-free')),
+  );
+  const { privacy, inputs } = privacyFor({ EMAIL }, ['EMAIL']);
+  f.deps.privacy = privacy;
+  const events: FillPrivacyDiagnostic[] = [];
+  f.deps.fillPrivacy = (event) => events.push(event);
+  let privateFill: boolean | undefined;
+  f.deps.fill = async (_ref, _text, _context, privateValue) => {
+    privateFill = privateValue;
+    return { ok: true, proven: true };
+  };
+  const result = await withInputs(inputs, () =>
+    runPlan(parsePlan('1. Fill "email" with input EMAIL (test-pii)').blocks!, f.deps),
+  );
+  assert.equal(result.verdict, 'PASS');
+  assert.equal(privateFill, true);
+  assert.equal(inputs.hasStrictInputs, true);
+  assert.deepEqual(events, [
+    { kind: 'fill-privacy', line: 1, cause: 'unreadable-check-subject', privateValue: true },
+  ]);
+});
+
+for (const native of [{ type: 'TextField', secure: true }, { type: 'SecureTextField' }]) {
+  test(`TEST-PII cannot override native secure evidence ${JSON.stringify(native)}`, async () => {
+    const login = joinScreen(
+      [
+        {
+          ...native,
+          ref: '@code',
+          identifier: 'code',
+          label: 'Code',
+          hittable: true,
+          enabled: true,
+          rect: { x: 10, y: 20, width: 200, height: 40 },
+        },
+      ],
+      [],
+      'app',
+      { native: 'complete', react: 'complete' },
+      undefined,
+      { source: 'xcui-live', nodes: [{ status: 'observed', labelSource: 'direct' }] },
+    );
+    assert.equal(login.elements[0].secure, true);
+    const f = walker(
+      [login],
+      scriptedJudge(() => assert.fail('model-free')),
+    );
+    const { privacy, inputs } = privacyFor({ CODE: PASSWORD }, ['CODE']);
+    f.deps.privacy = privacy;
+    const events: FillPrivacyDiagnostic[] = [];
+    f.deps.fillPrivacy = (event) => events.push(event);
+    let fills = 0;
+    f.deps.fill = async (_ref, _text, _context, privateValue) => {
+      assert.equal(privateValue, true);
+      fills++;
+      return { ok: true, proven: true };
+    };
+    const result = await withInputs(inputs, () =>
+      runPlan(parsePlan('1. Fill "code" with input CODE (test-pii)').blocks!, f.deps),
+    );
+    assert.equal(result.verdict, 'PASS');
+    assert.equal(fills, 1);
+    assert.deepEqual(events, [
+      { kind: 'fill-privacy', line: 1, cause: 'secure-field', privateValue: true },
+    ]);
+    assert.equal(inputs.hasStrictInputs, true);
+    assert.ok(!JSON.stringify({ result, rows: f.rows }).includes(PASSWORD));
+  });
+}
+
+test('Fill privacy diagnostics retain only fixed causes, a line and a protection flag', () => {
+  const event = { kind: 'fill-privacy', line: 1, cause: 'secure-field', privateValue: true };
+  assert.deepEqual(cleanDiagnostic({ ...event, value: EMAIL, label: PASSWORD }), event);
+  for (const patch of [
+    { cause: EMAIL },
+    { cause: '' },
+    { line: 0 },
+    { line: -1 },
+    { line: 1.5 },
+    { line: Number.MAX_SAFE_INTEGER + 1 },
+    { privateValue: 'true' },
+  ])
+    assert.equal(cleanDiagnostic({ ...event, ...patch }), undefined);
+});
 
 test('SECRET value collisions protect TEST-PII fills regardless of slot name', () => {
   for (const [secret, alias] of [
@@ -322,6 +496,8 @@ test('a secure TEST-PII Fill promotes the run before typing and withholds later 
   );
   const { privacy, inputs } = privacyFor({ CODE: '123456' }, ['CODE']);
   f.deps.privacy = privacy;
+  const events: FillPrivacyDiagnostic[] = [];
+  f.deps.fillPrivacy = (event) => events.push(event);
   let account = false;
   f.deps.captureScreen = async () => (account ? accountScreen() : login);
   let typed = false;
@@ -345,6 +521,9 @@ test('a secure TEST-PII Fill promotes the run before typing and withholds later 
     ),
   );
   assert.equal(typed, true);
+  assert.deepEqual(events, [
+    { kind: 'fill-privacy', line: 1, cause: 'secure-field', privateValue: true },
+  ]);
   assert.equal(account, true);
   assert.equal(result.verdict, 'FAIL');
   assert.ok(result.failure?.seen.includes(INPUT_SCREEN_TEXT_WITHHELD));

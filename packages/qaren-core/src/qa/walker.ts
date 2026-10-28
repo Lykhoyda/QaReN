@@ -90,12 +90,14 @@ import type {
   BlockOutcomeDiagnostic,
   InterruptionRejectedDiagnostic,
   MediaWithheldDiagnostic,
+  FillPrivacyDiagnostic,
 } from './diagnostics.js';
 import { targetMissDiagnostic, type TargetMissDiagnostic } from './target-miss.js';
 import {
   concealsScreen,
   INPUT_SCREEN_TEXT_WITHHELD,
   isPrivateInput,
+  privateInputCause,
   MASK,
   ObservedPrivacy,
   matchPrivate,
@@ -234,6 +236,7 @@ export interface WalkerDeps {
   diagnostic?(event: WalkerTimingDiagnostic): void;
   targetMiss?(event: TargetMissDiagnostic): void;
   labelProvenanceDiagnostic?(event: LabelProvenanceDiagnostic): void;
+  fillPrivacy?(event: FillPrivacyDiagnostic): void;
   blockOutcome?(event: BlockOutcomeDiagnostic): void;
   interruptionRejected?(event: InterruptionRejectedDiagnostic): void;
   loginOutcome?(outcome: BlockOutcome): void;
@@ -292,15 +295,6 @@ class EvidenceExpired extends Error {
     super(itemExpired ? ITEM_DEADLINE_EXCEEDED : 'EVIDENCE_EXPIRED');
   }
 }
-
-// SECRET is the default tier; a TEST-PII input is read back like literal text.
-const secretFill = (
-  item: { input?: string; sensitivity?: 'non-secret' },
-  element?: Element,
-): boolean =>
-  item.input !== undefined &&
-  (currentInputs()?.protectFill(item.input, element !== undefined && isPrivateInput(element)) ??
-    item.sensitivity !== 'non-secret');
 
 const promoteFill = (item: { input?: string }, identifier?: string): void => {
   if (item.input !== undefined) {
@@ -471,6 +465,24 @@ async function walkBlockScoped(
   operations = new Map<number, number>(),
 ): Promise<WalkOutcome> {
   const replay = opts.mode === 'replay';
+  const secretFill = (
+    item: { input?: string; sensitivity?: 'non-secret'; line: number },
+    element?: Element,
+  ): boolean => {
+    if (item.input === undefined) return false;
+    const cause = element && privateInputCause(element);
+    const privateTarget =
+      cause !== undefined && (cause !== 'label-may-be-value' || item.sensitivity !== 'non-secret');
+    const privateValue =
+      currentInputs()?.protectFill(item.input, privateTarget) ?? item.sensitivity !== 'non-secret';
+    if (cause)
+      try {
+        deps.fillPrivacy?.({ kind: 'fill-privacy', line: item.line, cause, privateValue });
+      } catch {
+        // Diagnostics cannot change Fill privacy.
+      }
+    return privateValue;
+  };
   const rows: WalkRow[] = [];
   const reactGaps = new Map<number, NonNullable<LedgerRow['reactCoverage']>>();
   let reactConnections: NonNullable<LedgerRow['reactConnections']> = [];
