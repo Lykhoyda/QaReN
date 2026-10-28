@@ -19,7 +19,7 @@ hero:
       </figure>
   actions:
     - text: Set it up
-      link: getting-started/
+      link: '#get-started'
       icon: right-arrow
     - text: How it works
       link: '#how-it-works'
@@ -27,6 +27,16 @@ hero:
 ---
 
 import { Card, CardGrid, LinkCard, Steps } from '@astrojs/starlight/components';
+import AgentInstallPrompt from '../../components/AgentInstallPrompt.mdx';
+
+## Get started
+
+Open Claude Code, Codex or Cursor in your app. Copy this prompt, then paste it into
+your agent to set up QaReN for iOS simulators on an Apple silicon Mac:
+
+<AgentInstallPrompt />
+
+Prefer terminal commands or manual installation? See the [full installation guide](getting-started/).
 
 ## Your agent says it is done. Did anyone open the app?
 
@@ -92,14 +102,6 @@ happened.
 - **Your Mac:** an Apple silicon Mac with Xcode. QaReN 2.0 sets up and checks on an iOS
   simulator.
 - **Android:** coming in 2.1.
-
-## Get started
-
-Start with the [copyable agent setup prompt](getting-started/#ask-your-agent-to-install-recommended)
-in Claude Code, Codex or Cursor. The installation guide also keeps per-host plugin commands
-and manual source installation as alternatives.
-
-<LinkCard title="Getting started" description="Requirements, setup and your first passing check." href="getting-started/" />
 
 ## How it works
 
