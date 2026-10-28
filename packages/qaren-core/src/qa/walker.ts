@@ -299,7 +299,7 @@ const secretFill = (
   element?: Element,
 ): boolean =>
   item.input !== undefined &&
-  (currentInputs()?.protectFill(item.input, element !== undefined && isPrivateInput(element)) ??
+  (currentInputs()?.protectFill(item.input, element?.secure === true) ??
     item.sensitivity !== 'non-secret');
 
 const promoteFill = (item: { input?: string }, identifier?: string): void => {
