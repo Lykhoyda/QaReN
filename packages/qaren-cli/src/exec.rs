@@ -13,6 +13,8 @@ pub mod log;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct CmdSpec {
+    #[serde(skip)]
+    pub(crate) core_log: bool,
     pub label: String,
     pub program: String,
     pub args: Vec<String>,
@@ -30,6 +32,7 @@ pub struct CmdSpec {
 impl CmdSpec {
     pub fn new(label: &str, program: &str, args: &[&str], timeout_seconds: u64) -> Self {
         CmdSpec {
+            core_log: false,
             label: label.to_string(),
             program: program.to_string(),
             args: args.iter().map(|s| s.to_string()).collect(),
@@ -142,7 +145,7 @@ impl CmdOutput {
     }
 
     pub fn summary(&self) -> String {
-        if crate::redact::private_output_mode() {
+        if crate::redact::input_namespace_present() {
             return "[private output withheld]".into();
         }
         if self.timed_out {
@@ -566,7 +569,8 @@ impl Runner for RealRunner {
                     log::LogDrain::spawn_paired(&self.log_executable, stderr_log, true, false)?;
                 (log, Stdio::from(OwnedFd::from(stdout)), stderr)
             } else {
-                let (log, stderr) = log::LogDrain::spawn(&self.log_executable, stderr_log, false)?;
+                let (log, stderr) =
+                    log::LogDrain::spawn(&self.log_executable, stderr_log, false, spec.core_log)?;
                 (log, Stdio::piped(), stderr)
             };
             let mut cmd = Command::new(&spec.program);

@@ -31,6 +31,7 @@ pub enum FailureCode {
     BuildContended,
     DeviceClaimContended,
     DeviceUnavailable,
+    LaneNotWarm,
     DevClientSchemeRequired,
     IosBuildCapabilityUnavailable,
     ArtifactInstallFailed,
@@ -78,6 +79,7 @@ impl FailureCode {
             FailureCode::DepsNotPrewarmed
                 | FailureCode::DeviceClaimContended
                 | FailureCode::DeviceUnavailable
+                | FailureCode::LaneNotWarm
                 | FailureCode::BuildContended
                 | FailureCode::OwnershipUnproven
                 | FailureCode::HandoffNotPending

@@ -589,6 +589,7 @@ fn assert_ios_prepare_reuses_cached_client(workspace: bool) {
     mock.expect_run("qaren-request-probe", CmdOutput::success(""));
     mock.expect_run("expo-platform", CmdOutput::success(""));
     mock.expect_run("expo-platform", CmdOutput::success(""));
+    common::script_pinned_lane(&mut mock);
     common::script_devmenu_defaults(&mut mock, CmdOutput::success(""));
     mock.expect_run(
         "simctl launch --terminate-running-process",

@@ -169,6 +169,12 @@ export function elementViewport(element: Element): NativeNode['rect'] {
   return elementViewports.get(element);
 }
 
+// The one native application root's frame, in points; the iOS runner reports no point scale.
+export function applicationFrame(screen: Screen): NativeNode['rect'] {
+  const roots = screen.elements.filter((element) => applications.has(element));
+  return roots.length === 1 ? elementFrames.get(roots[0]) : undefined;
+}
+
 const joinedDiagnosticFacts = new WeakMap<
   Element,
   {

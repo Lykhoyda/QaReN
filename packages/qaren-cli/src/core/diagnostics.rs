@@ -619,7 +619,7 @@ impl Sink {
     pub(super) fn new(log: &Path) -> Self {
         let path = log.with_file_name("core-diagnostics.jsonl");
         Self {
-            file: crate::redact::private_output_mode()
+            file: crate::redact::input_namespace_present()
                 .then(|| private_file(&path))
                 .flatten(),
             path,

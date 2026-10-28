@@ -280,6 +280,21 @@ test('the target may carry the CLI manifest warm-up as counts only', () => {
     assert.throws(() => parseRequest(line(bad)), /missing required fields/);
 });
 
+test('the target may mark a pinned warm lane, and only with true', () => {
+  const line = (warmLane: unknown) =>
+    JSON.stringify({
+      v: 1,
+      runId: 'check-1',
+      seq: 1,
+      type: 'request',
+      payload: { ...request, target: { ...request.target, warmLane } },
+    });
+  assert.equal(parseRequest(line(true)).target.warmLane, true);
+  assert.equal(parseRequest(line(undefined)).target.warmLane, undefined);
+  for (const bad of [false, 'true', 1, null])
+    assert.throws(() => parseRequest(line(bad)), /missing required fields/);
+});
+
 test('a multibyte character split across chunks still decodes', async () => {
   const line = `${JSON.stringify({ v: 1, runId: 'check-1', seq: 1, type: 'request', payload: { ...request, plan: '✓ "Tasks"\n' } })}\n`;
   const bytes = Buffer.from(line, 'utf8');

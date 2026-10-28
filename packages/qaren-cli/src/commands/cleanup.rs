@@ -740,6 +740,7 @@ fn finish_cleanup(
     receipt.build = record.build.clone();
     receipt.core_cleanup = record.resources.core_cleanup.clone();
     receipt.fresh_install = record.resources.fresh_install.clone();
+    receipt.lane = record.resources.lane.clone();
     for (name, outcome) in &outcomes {
         receipt.cleanup.insert(name.clone(), outcome.render());
     }

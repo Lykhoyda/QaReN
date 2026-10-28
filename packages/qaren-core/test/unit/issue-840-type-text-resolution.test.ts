@@ -1621,3 +1621,79 @@ for (const disabledProps of [
     });
   }
 }
+
+test('a private compare mismatch returns value-free length facts', async () => {
+  // No lowercase letters, so a value slice cannot collide with the facts' own key names.
+  const alphabet = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789@.+-_';
+  const random = (length: number) =>
+    Array.from({ length }, () => alphabet[Math.floor(Math.random() * alphabet.length)]).join('');
+  for (let round = 0; round < 200; round += 1) {
+    const expected = random(3 + Math.floor(Math.random() * 30));
+    const cut = Math.floor(Math.random() * expected.length);
+    const observed =
+      round % 4 === 0
+        ? expected.toLowerCase() + (expected.toLowerCase() === expected ? 'X' : '')
+        : expected.slice(0, cut) + expected.slice(cut + 1 + Math.floor(Math.random() * 3));
+    const root = makeFiber('Root');
+    appendChild(
+      root,
+      makeFiber('TextInput', { testID: 'secret-field', value: observed, onChangeText() {} }),
+    );
+    const options = {
+      protectSecure: true,
+      privateValue: true,
+      valueState: true,
+      compareTo: expected,
+    };
+    const { value } = await createAgent(root).evaluate(
+      `__QAREN.readInputValue('secret-field', ${JSON.stringify(options)})`,
+    );
+    const read = JSON.parse(value as string);
+    assert.equal(read.exact, false);
+    assert.equal(read.value, null);
+    assert.deepEqual(Object.keys(read.mismatch).sort(), [
+      'caseEq',
+      'exp',
+      'len',
+      'prefix',
+      'suffix',
+    ]);
+    let prefix = 0;
+    while (observed[prefix] !== undefined && observed[prefix] === expected[prefix]) prefix += 1;
+    assert.deepEqual(read.mismatch, {
+      len: observed.length,
+      exp: expected.length,
+      prefix,
+      suffix: read.mismatch.suffix,
+      caseEq: observed.toLowerCase() === expected.toLowerCase(),
+    });
+    assert.ok(
+      read.mismatch.prefix + read.mismatch.suffix <= Math.min(observed.length, expected.length),
+    );
+    for (const field of Object.values(read.mismatch))
+      assert.ok(typeof field === 'number' || typeof field === 'boolean');
+    for (const secret of round % 4 === 0 ? [expected] : [expected, observed])
+      for (let at = 0; at + 3 <= secret.length; at += 1)
+        assert.ok(!value!.toString().includes(`"${secret.slice(at, at + 3)}`), value as string);
+  }
+});
+
+test('a private compare match carries no mismatch facts', async () => {
+  const root = makeFiber('Root');
+  appendChild(
+    root,
+    makeFiber('TextInput', { testID: 'secret-field', value: 'fake-pass-0000', onChangeText() {} }),
+  );
+  const { value } = await createAgent(root).evaluate(
+    `__QAREN.readInputValue('secret-field', ${JSON.stringify({ privateValue: true, valueState: true, compareTo: 'fake-pass-0000' })})`,
+  );
+  assert.deepEqual(JSON.parse(value as string), {
+    value: null,
+    controlled: true,
+    focused: false,
+    secure: false,
+    privateValue: true,
+    contentLength: 14,
+    exact: true,
+  });
+});

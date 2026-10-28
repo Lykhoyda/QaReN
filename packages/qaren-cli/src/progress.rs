@@ -214,6 +214,7 @@ mod tests {
             selector: None,
             kept: None,
             case_normalized: None,
+            entry_mismatch: None,
             dialog: None,
             method: None,
         }

@@ -531,6 +531,157 @@ pub fn devmenu_defaults_specs(udid: &str, app_id: &str) -> Vec<CmdSpec> {
     .collect()
 }
 
+pub const LANE_LAYOUT: &str = "en_US@sw=QWERTY;hw=Automatic";
+pub const LANE_LOCALE: &str = "en_US";
+const LANE_DOMAINS: [&str; 2] = ["-g", "com.apple.Preferences"];
+const LANE_KEYBOARD_OFF: [&str; 4] = [
+    "KeyboardAutocorrection",
+    "KeyboardPrediction",
+    "KeyboardShowPredictionBar",
+    "KeyboardAutocapitalization",
+];
+
+// (domain index, key, `defaults write` type and value, the value as `defaults export` prints it)
+pub fn lane_defaults() -> Vec<(usize, &'static str, [&'static str; 2], &'static str)> {
+    let mut pinned = vec![
+        (
+            0,
+            "AppleLanguages",
+            ["-array", "en"],
+            "<array><string>en</string></array>",
+        ),
+        (
+            0,
+            "AppleLocale",
+            ["-string", LANE_LOCALE],
+            "<string>en_US</string>",
+        ),
+        (
+            0,
+            "AppleKeyboards",
+            ["-array", LANE_LAYOUT],
+            "<array><string>en_US@sw=QWERTY;hw=Automatic</string></array>",
+        ),
+    ];
+    for domain in 0..LANE_DOMAINS.len() {
+        for key in LANE_KEYBOARD_OFF {
+            pinned.push((domain, key, ["-bool", "false"], "<false/>"));
+        }
+    }
+    pinned
+}
+
+pub fn lane_read_specs(udid: &str) -> Vec<CmdSpec> {
+    LANE_DOMAINS
+        .iter()
+        .map(|domain| {
+            CmdSpec::new(
+                "simctl-lane-read",
+                "xcrun",
+                &["simctl", "spawn", udid, "defaults", "export", domain, "-"],
+                20,
+            )
+        })
+        .collect()
+}
+
+pub fn lane_write_spec(udid: &str, entry: usize) -> CmdSpec {
+    let (domain, key, [kind, value], _) = lane_defaults()[entry];
+    CmdSpec::new(
+        "simctl-lane-defaults",
+        "xcrun",
+        &[
+            "simctl",
+            "spawn",
+            udid,
+            "defaults",
+            "write",
+            LANE_DOMAINS[domain],
+            key,
+            kind,
+            value,
+        ],
+        20,
+    )
+}
+
+// shortcut: relies on `defaults export` putting top-level keys one tab deep (iOS 26.5 and 27); fails closed, use a plist parser if a runtime changes it.
+fn exported_value(xml: &str, key: &str) -> Option<String> {
+    let mut lines = xml
+        .lines()
+        .skip_while(|line| *line != format!("\t<key>{key}</key>"));
+    lines.next()?;
+    Some(
+        lines
+            .take_while(|line| *line != "</dict>" && !line.starts_with("\t<key>"))
+            .map(str::trim)
+            .collect(),
+    )
+}
+
+// Indexes into lane_defaults() whose exported value differs; an unread domain counts as unpinned.
+pub fn lane_unpinned(exports: &[Option<String>]) -> Vec<usize> {
+    lane_defaults()
+        .iter()
+        .enumerate()
+        .filter(|(_, (domain, key, _, exported))| {
+            exports
+                .get(*domain)
+                .and_then(Option::as_deref)
+                .and_then(|xml| exported_value(xml, key))
+                .as_deref()
+                != Some(*exported)
+        })
+        .map(|(entry, _)| entry)
+        .collect()
+}
+
+pub fn hardware_keyboard_spec(home: &Path, udid: &str) -> CmdSpec {
+    let plist = home.join("Library/Preferences/com.apple.iphonesimulator.plist");
+    CmdSpec::new(
+        "plistbuddy-hardware-keyboard",
+        "/usr/libexec/PlistBuddy",
+        &[
+            "-c",
+            &format!("Print :DevicePreferences:{udid}:ConnectHardwareKeyboard"),
+            &plist.to_string_lossy(),
+        ],
+        10,
+    )
+}
+
+// PlistBuddy creates a missing plist but not its directory, which an isolated HOME may lack.
+pub fn simulator_preferences_dir_spec(home: &Path) -> CmdSpec {
+    CmdSpec::new(
+        "mkdir-simulator-preferences",
+        "/bin/mkdir",
+        &["-p", &home.join("Library/Preferences").to_string_lossy()],
+        10,
+    )
+}
+
+pub fn hardware_keyboard_write_spec(home: &Path, udid: &str, create: bool) -> CmdSpec {
+    let mut spec = hardware_keyboard_spec(home, udid);
+    spec.label = "plistbuddy-hardware-keyboard-write".to_string();
+    spec.args[1] = if create {
+        format!("Add :DevicePreferences:{udid}:ConnectHardwareKeyboard bool false")
+    } else {
+        format!("Set :DevicePreferences:{udid}:ConnectHardwareKeyboard false")
+    };
+    spec
+}
+
+pub fn parse_hardware_keyboard(output: &crate::exec::CmdOutput) -> Option<bool> {
+    if !output.ok() {
+        return None;
+    }
+    match output.stdout.trim() {
+        "true" | "1" => Some(true),
+        "false" | "0" => Some(false),
+        _ => None,
+    }
+}
+
 pub fn launch_spec(udid: &str, app_id: &str, metro_port: u16) -> CmdSpec {
     CmdSpec::new(
         "simctl-launch",
@@ -1209,5 +1360,163 @@ esac
             assert!(!runner.run_private(&symbols, &[]).clean(), "{mode}");
             let _ = std::fs::remove_dir_all(dir);
         }
+    }
+}
+
+#[cfg(test)]
+mod lane_tests {
+    use super::*;
+
+    const HEAD: &str =
+        "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<plist version=\"1.0\">\n<dict>\n";
+    const TAIL: &str = "</dict>\n</plist>\n";
+
+    fn plist(body: &str) -> Option<String> {
+        Some(format!("{HEAD}{body}{TAIL}"))
+    }
+
+    fn keyboard_off() -> String {
+        LANE_KEYBOARD_OFF
+            .iter()
+            .map(|key| format!("\t<key>{key}</key>\n\t<false/>\n"))
+            .collect()
+    }
+
+    fn pinned_global() -> String {
+        format!(
+            "\t<key>AppleKeyboards</key>\n\t<array>\n\t\t<string>{LANE_LAYOUT}</string>\n\t</array>\n\
+             \t<key>AppleLanguages</key>\n\t<array>\n\t\t<string>en</string>\n\t</array>\n\
+             \t<key>AppleLocale</key>\n\t<string>en_US</string>\n{}",
+            keyboard_off()
+        )
+    }
+
+    fn keys(entries: &[usize]) -> Vec<&'static str> {
+        let pinned = lane_defaults();
+        entries.iter().map(|&entry| pinned[entry].1).collect()
+    }
+
+    #[test]
+    fn a_pinned_lane_has_nothing_to_write() {
+        let exports = [plist(&pinned_global()), plist(&keyboard_off())];
+        assert!(lane_unpinned(&exports).is_empty());
+    }
+
+    #[test]
+    fn a_fresh_simulator_inherits_the_host_region_and_has_no_keyboard_keys() {
+        let fresh = "\t<key>AppleLanguages</key>\n\t<array>\n\t\t<string>en-US</string>\n\t\t<string>de-US</string>\n\t</array>\n\
+                     \t<key>AppleLocale</key>\n\t<string>en_US@rg=dezzzz</string>\n";
+        let unpinned = lane_unpinned(&[plist(fresh), None]);
+        assert_eq!(unpinned.len(), lane_defaults().len());
+        assert_eq!(
+            &keys(&unpinned)[..3],
+            ["AppleLanguages", "AppleLocale", "AppleKeyboards"]
+        );
+    }
+
+    #[test]
+    fn only_the_top_level_value_counts() {
+        let nested = format!(
+            "\t<key>Other</key>\n\t<dict>\n\t\t<key>AppleLocale</key>\n\t\t<string>en_US</string>\n\t</dict>\n{}",
+            pinned_global().replace("<string>en_US</string>", "<string>de_DE</string>")
+        );
+        assert_eq!(
+            keys(&lane_unpinned(&[plist(&nested), plist(&keyboard_off())])),
+            ["AppleLocale"]
+        );
+        let extra = pinned_global().replace(
+            "<string>en</string>\n",
+            "<string>en</string>\n\t\t<string>de</string>\n",
+        );
+        assert_eq!(
+            keys(&lane_unpinned(&[plist(&extra), plist(&keyboard_off())])),
+            ["AppleLanguages"]
+        );
+    }
+
+    #[test]
+    fn an_empty_export_is_unpinned_not_trusted() {
+        let unpinned = lane_unpinned(&[plist(""), plist(&keyboard_off())]);
+        assert_eq!(unpinned.len(), 3 + LANE_KEYBOARD_OFF.len());
+    }
+
+    #[test]
+    fn the_writes_are_exactly_the_approved_lane_settings() {
+        let writes: Vec<String> = (0..lane_defaults().len())
+            .map(|entry| lane_write_spec("U", entry).args[5..].join(" "))
+            .collect();
+        let mut expected = vec![
+            "-g AppleLanguages -array en".to_string(),
+            "-g AppleLocale -string en_US".to_string(),
+            "-g AppleKeyboards -array en_US@sw=QWERTY;hw=Automatic".to_string(),
+        ];
+        for domain in ["-g", "com.apple.Preferences"] {
+            for key in [
+                "KeyboardAutocorrection",
+                "KeyboardPrediction",
+                "KeyboardShowPredictionBar",
+                "KeyboardAutocapitalization",
+            ] {
+                expected.push(format!("{domain} {key} -bool false"));
+            }
+        }
+        assert_eq!(writes, expected);
+    }
+
+    #[test]
+    fn writes_target_only_the_named_simulator() {
+        for entry in 0..lane_defaults().len() {
+            let spec = lane_write_spec("UDID-1", entry);
+            assert_eq!(
+                &spec.args[..5],
+                ["simctl", "spawn", "UDID-1", "defaults", "write"]
+            );
+        }
+        let read = lane_read_specs("UDID-1");
+        assert!(read
+            .iter()
+            .all(|spec| spec.args[2] == "UDID-1" && spec.args[4] == "export"));
+    }
+
+    #[test]
+    fn hardware_keyboard_requires_one_successful_per_device_value() {
+        use crate::exec::CmdOutput;
+        for (value, expected) in [
+            ("true\n", Some(true)),
+            ("0\n", Some(false)),
+            ("false\n", Some(false)),
+            ("", None),
+            ("false\n1\n", None),
+        ] {
+            assert_eq!(
+                parse_hardware_keyboard(&CmdOutput::success(value)),
+                expected
+            );
+        }
+        let mut failed = CmdOutput::failed(1, "unreadable");
+        failed.stdout = "false\n".into();
+        assert_eq!(parse_hardware_keyboard(&failed), None);
+        for create in [false, true] {
+            let spec = hardware_keyboard_write_spec(Path::new("/h"), "UDID-1", create);
+            let command = if create { "Add" } else { "Set" };
+            let value = if create { "bool false" } else { "false" };
+            assert_eq!(
+                spec.args,
+                [
+                    "-c",
+                    &format!("{command} :DevicePreferences:UDID-1:ConnectHardwareKeyboard {value}"),
+                    "/h/Library/Preferences/com.apple.iphonesimulator.plist"
+                ]
+            );
+        }
+        let read = hardware_keyboard_spec(Path::new("/h"), "UDID-1");
+        assert_eq!(
+            read.args,
+            [
+                "-c",
+                "Print :DevicePreferences:UDID-1:ConnectHardwareKeyboard",
+                "/h/Library/Preferences/com.apple.iphonesimulator.plist"
+            ]
+        );
     }
 }

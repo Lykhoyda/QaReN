@@ -1,6 +1,6 @@
 [package]
 name = "qaren"
-version = "2.0.1"
+version = "2.0.2"
 edition = "2021"
 description = "QaReN: the QA run owner for React Native apps (provision, walk, record, publish)"
 publish = false

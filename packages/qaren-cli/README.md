@@ -17,7 +17,7 @@ owns the guided onboarding procedure; [Check a plan](#check-a-plan) covers manua
 ## Doctor
 
 ```sh
-qaren doctor [--json] [--config .qaren/config.yaml]
+qaren doctor [--json] [--config .qaren/config.yaml] [--device <simulator-UUID>]
 ```
 
 Doctor prints the running binary's version, path, build, runtime and the
@@ -50,6 +50,7 @@ that can conflict with a session or is hygiene; `SKIP` is not applicable.
 | `runtime-dirs` | Interrupted installs and other versions under `$QAREN_HOME/runtime/` |
 | `source-checkout` | From a QaReN checkout: its source version (`<version>-dev.<commit>`) matches this binary |
 | `config` | `.qaren/config.yaml` (or `--config`) loads and validates |
+| `ios-lane` | Only with `--device`: read-only check of that simulator against the [warm-lane contract](#warm-lane) |
 | `1x-claude-plugin`, `1x-codex-plugin` | The rn-dev-agent 1.x plugin, marketplace and caches in Claude Code, Codex and Cursor |
 | `1x-mcp` | A hand-registered 1.x MCP server in `~/.claude.json`, `.mcp.json`, `~/.cursor/mcp.json` or `$CODEX_HOME/config.toml` |
 | `1x-binaries`, `1x-home-dirs` | The 1.x npm bins on `PATH`; `~/.rn-dev-agent/`, `~/.cache/rn-dev-agent/`, `~/Library/Caches/rn-dev-agent/`, `~/Library/Application Support/rn-dev-agent/` (or `$XDG_STATE_HOME/rn-dev-agent/`) and `~/.claude/rn-agent/` |
@@ -700,9 +701,35 @@ live frame equals that owner's frame; the tap goes to the unchanged point. A lat
 screen change cannot turn a proven no-mutation refusal into a passing action.
 An unproven press passes only when the screen changes. That comparison includes
 each control's selected state (the iOS selected trait or Android accessibility
-selection), so a control that shows
-selection alone proves its press by becoming selected; a press that leaves it
-unchanged still fails, naming whether the target stayed selected.
+selection), so becoming selected can prove a press.
+When that comparison is unchanged and the runner explicitly reports the press
+unproven, QaReN can also verify a stable visible change within the tapped
+control's bounds, even when it exposes no accessibility state.
+
+Pixel comparison requires one uniquely identified, hittable target outside alerts
+and without a covered centre, with the app in front and a known frame. Scale is
+either reported by the screen capture or derived from the screenshot and the
+single native application root's dimensions in points; a derived scale must
+agree on both axes. Its identity, frame and scale must remain unchanged across
+the captures.
+One screenshot immediately before the first dispatch adds about 200 ms per
+eligible press; that baseline is retained across the retry. Only an otherwise
+unproven press with an unchanged screen comparison takes two after-shots,
+200 ms apart. The two control crops must agree and differ sufficiently from the
+original baseline; an unchanged selected chip or an unstable animation supplies
+no pixel proof. The [pixel comparator](../qaren-core/src/qa/tap-pixels.ts) owns
+the thresholds and supported PNG formats, and the
+[press regression tests](../qaren-core/test/unit/qa/option-redraw-press.test.ts)
+cover the retry and withholding boundaries.
+
+Comparison screenshots obey the ordinary screenshot privacy gates: no runtime
+inputs, no metadata-only capture and no active screenshot withholding. They use
+temporary files under the run directory that are removed after reading, and are
+not retained with ledger screenshots. Missing, failed or unsupported captures,
+ineligible targets and insufficient pixel change provide no proof; the existing
+retry and failure behavior remains. A press that leaves the screen unchanged
+still fails, naming whether the target stayed selected.
+
 Before its one retry, the walker re-captures until the same target (resolved
 through the same exact-identity rules as the step) holds one native frame
 across two captures, within the
@@ -880,6 +907,13 @@ this fallback; a stored testID replays through it exactly as the walk did, and
 the saved block stores the field's testID the focus proof used. Ambiguous targets
 and potentially mutated fills still fail.
 
+On iOS, if the bound field disappears after typing (for example, an auto-submitting
+code field), the runner skips its post-type attribute read and stops verification
+at the existence check instead of retrying value reads. Verification returns
+`unreadable` with `verifyStable: false`, preserving the `UNVERIFIED_FILL`
+classification above; disappearance does not prove the entered value or the
+submission outcome.
+
 On Android API 26 and later, a fresh read of the bound input with null text
 and no hint showing counts as empty, so clearing a plain field verifies as
 `exact`. A clear that reads back the placeholder remains `ambiguous`. Stale
@@ -958,13 +992,13 @@ becoming `123 456`, remain honestly unverified. Only a proven retained prefix fr
 the prior value followed by the requested text permits one bounded clear-and-retype,
 with the same focus and empty-state proofs. A retained prefix after that recovery
 fails with `TEXT_ENTRY_UNVERIFIED`; other mismatches remain unverified. Unreadable
-final values also remain unverified. Private non-secure runtime inputs instead
+final values also remain unverified. SECRET non-secure runtime inputs instead
 require an exact length/content match; a confirmed mismatch is never retyped, and it
 fails the step unless the one [Fill ladder](#fill-ladder) step to the change handler then
 verifies exactly. These comparisons run inside the app; only state and comparison metadata
-leave the process, never the value. Literal Fill values keep ordinary readback even when unrelated runtime
-inputs exist. Private character counts are omitted from the
-run's public output.
+leave the process, never the value. Literal and TEST-PII Fill values keep ordinary
+readback even when unrelated runtime inputs exist. For value-free SECRET mismatch
+facts and TEST-PII output redaction, see [Runtime inputs](#runtime-inputs).
 
 Secure fields retain direct typing: they are never cleared, their
 values are never read, and the result stays unverified. **Known limit:** a prefilled
@@ -1685,16 +1719,17 @@ can still reach the judge. Literal checks still evaluate the raw screen against
 the author-provided plan text. Values held only in app state, never placed in a
 secure field, are outside this presence-based rule.
 
-**Runs with runtime inputs.** Undeclared personal data shown beside a runtime
-input cannot be masked by value, so for the whole run failure screen-text
+**Runs with SECRET runtime inputs.** Undeclared personal data shown beside a runtime
+input cannot be masked by value, so while the run holds a SECRET input, failure screen-text
 evidence and app-derived identities in failure reasons, including moved-target
-identities, become `[screen text withheld: the run holds runtime inputs]`.
+identities, become `[screen text withheld: the run holds secret runtime inputs]`.
+A run whose inputs are all TEST-PII keeps that text, redacted by the declared values only.
 Existing secure-screen replacements take precedence. Target-miss diagnostic
 candidate labels become `•••`; possible-input labels are also withheld without
 runtime inputs. These failure-text replacements reach all outputs described in
 [App-derived failure text](#app-derived-failure-text). The step, its plan target,
 failure reason and geometry remain, subject to known-value masking. Runs without
-runtime inputs keep their screen-text context under the other masking rules below
+SECRET runtime inputs keep their screen-text context under the other masking rules below
 and the secure-field rule above.
 
 The Android runner keeps exact-fill values and reconstructable fallback
@@ -1712,8 +1747,10 @@ of them applies to output before dispatch, and hash and saved-block decisions us
 the whole value. The length thresholds and dispatch timing below describe literal fills
 and observed values.
 The shared [privacy matcher](../qaren-core/src/qa/privacy.ts) protects complete values of
-three or more characters after trimming, using case-sensitive substring matches
-for raw and trimmed NFC/NFD forms. Values containing at least three digits after
+three or more characters after trimming, using substring matches
+for raw and trimmed NFC/NFD forms. Literal and observed values match case-sensitively;
+runtime inputs follow the broader [declared-value redaction rules](#runtime-inputs).
+Values containing at least three digits after
 removing whitespace, punctuation and symbols also match with any sequence of
 those separators between digits. Model requests use
 opaque identity tokens; durable text uses `•••`; a match withholds saved blocks.
@@ -1721,7 +1758,7 @@ Displayed identifiers use the same matcher while operational identifiers remain
 usable. After dispatching a numeric code of at least three digits or a secure
 field fill, the same matcher also masks contiguous fragments in every outward
 projection, independent of layout or semantic kind. Complete-value matching runs
-first, preserving identity tokens even in quoted or prefixed text; fragment
+first, preserving identity tokens for exact values even in quoted or prefixed text; fragment
 matching processes only the text left unmasked. A fragment match masks the whole
 whitespace-delimited token containing it. Numeric runs must occur contiguously
 in the code after removing whitespace, punctuation and symbols, including single
@@ -1949,6 +1986,59 @@ hide is attempted up to three times; if every attempt fails, or complete
 clearance evidence is not obtained within the reads, the walk refuses with
 `DEV_MENU_HIDE_UNVERIFIED` before the first step.
 
+### Warm lane
+
+A simulator the run explicitly owns is pinned before launch and, on `check`,
+its first screen is proven before row 1, so the leg starts on a pinned, launched
+app rather than an unknown device. Ownership means `prepare` on iOS (its created
+simulator or `--device <UUID>`), or any `check`/`pr --fresh-install` on its
+resolved simulator, including automatic selection, or `--boot-device` or
+`--restart-device` with an exact `--device`. Plain `check` on the
+booted simulator reads and writes none of its locale or keyboard settings.
+
+Before launch, on that UUID only, QaReN reads the device's global domain and
+`com.apple.Preferences` with `simctl spawn <UUID> defaults export` and writes
+the values that differ; a domain it cannot read counts as differing, so all of
+its pinned values are rewritten:
+
+| Domain | Key | Pinned value |
+|---|---|---|
+| global | `AppleLanguages` | `(en)` |
+| global | `AppleLocale` | `en_US` |
+| global | `AppleKeyboards` | `(en_US@sw=QWERTY;hw=Automatic)` |
+| global and `com.apple.Preferences` | `KeyboardAutocorrection`, `KeyboardPrediction`, `KeyboardShowPredictionBar`, `KeyboardAutocapitalization` | `false` |
+
+A fresh simulator has none of the keyboard keys and inherits the host region
+(for example `AppleLocale en_US@rg=dezzzz`); the values were probed on iOS 26.5
+and 27, where booted writes persist across reboots without a restart. The
+readback decides: a value the simulator does not keep refuses the run with
+`LANE_NOT_WARM` (exit 4) before the dev-menu defaults or launch. Simulator.app's
+hardware-keyboard switch lives in the host's
+`~/Library/Preferences/com.apple.iphonesimulator.plist`, shared by every
+simulator; QaReN changes only `DevicePreferences:<UUID>:ConnectHardwareKeyboard`
+for the resolved simulator to `false`, preserving the rest of the dictionary and
+all other devices, and creates `~/Library/Preferences` first when the home lacks
+it. A successful per-device read must prove `false`; an enabled,
+unset, failed or unreadable readback refuses with `LANE_NOT_WARM`. Doctor only
+reads the per-device key and fails unless it proves `false`. Its `ios-lane` row
+fails on differing defaults and names the keys; if neither defaults domain can
+be read (for example, the simulator is shut down), it warns instead.
+
+`check` then launches the app once and, before row 1, the core captures the first
+screen through the same projection the rows read: the app must be in front,
+in the foreground with a complete native capture, and show text. Otherwise the run
+refuses with `LANE_NOT_WARM` and no row runs. This proves a launched, visible
+app, not that the app finished loading: a splash screen with text passes.
+
+Once pinning succeeds, the receipt carries `lane` and `run.json` carries
+`resources.lane`, once per run; a refusal while pinning leaves no lane record, and its `failure.detail`
+names the key or the hardware keyboard. The record holds
+`device_id`, `build` (the native fingerprint), `layout`, `locale`, `normalized`
+(the keys this run wrote), `hardware_keyboard`, `pinned_at` and, for `check`,
+`first_screen` (`true` once observed, `false` on a first-screen refusal, absent
+when the run stopped earlier). Run one owned `prepare` or `check` per lane and
+build at the start of a session; later runs find the lane pinned and write nothing.
+
 ### Runtime inputs
 
 `Fill "staging-password" with input PASSWORD` types the value of `QAREN_INPUT_PASSWORD`;
@@ -1956,18 +2046,36 @@ see the [plan guide](../../apps/docs-site/src/content/docs/plans.mdx) for the gr
 value bounds. The owner resolves the value before running qaren; qaren reads no `.env`
 file, reference or secret store.
 
-Inputs are strict unless their named Fill explicitly opts in, for example
-`Fill "code-field" with input FIXTURE_CODE (non-secret)` for an operator-designated dev or
-staging fixture. The flag relaxes only execution hash and echo checks: pure fixture
-labels, identifiers and types retain their original hash operands, even at the filled
-field, and a redundant expected-echo declaration does not mask them to a constant.
-Strict matches win on equal or overlapping values; a non-secret alias cannot leave a
-strict value unmasked in a label hash. Repeated declarations across the plan and configured login block must agree
-before device selection. There is no config, global switch or inferred environment policy.
-All values still receive log, model and artifact redaction; screenshots and video stay
-withheld. Never annotate real credentials: qaren cannot establish whether a backend is
-production or an input is a fixture, and misclassification permits execution hashing of
-that secret despite artifact redaction.
+Inputs are SECRET unless their named Fill explicitly opts in to TEST-PII with
+`(test-pii)` (or the older spelling `(non-secret)`), for example
+`Fill "email-field" with input TEST_EMAIL (test-pii)` for a staging test account; `(secret)`
+states the default. A secure field is SECRET whatever the plan says, and literal plan text is
+PUBLIC. A SECRET value is never read back to the host: for a controlled non-secure field,
+the app compares it in place, and a mismatch records only value-free `entryMismatch` facts
+(`len`, `exp`, `prefix`, `suffix`, `caseEq`) on the ledger row. Secure fields retain the
+[focused-fill verification limits](#fill-verification-and-keyboard-fallback).
+A TEST-PII value is read back in memory like literal text. The tier also relaxes
+execution hash and echo checks: pure fixture labels, identifiers and types retain their
+original hash operands, even at the filled field, and a redundant expected-echo declaration
+does not mask them to a constant. SECRET matches win on equal or overlapping values; a
+TEST-PII alias cannot leave a SECRET value unmasked in a label hash. Repeated declarations
+across the plan and configured login block must agree before device selection. There is no
+config, global switch or inferred environment policy. In a TEST-PII run only `core.log`,
+failure screen text and Fill readback come back redacted by the declared values; Metro and
+other subprocess logs stay withheld as in a SECRET run. Declared-value redaction includes
+an e-mail's local part, plus-less local part, domain and
+percent- or HTML-encoded forms; screenshots and video stay withheld. Derived e-mail forms
+shorter than 3 characters (for example a 2-letter local part) are not redacted on their own,
+while the full address and every longer derived form always are. Core evidence and CLI
+logs also redact Unicode case variants, including length-changing mappings such as
+`ß` to `SS`. Broader masking does not establish model equality: a derived e-mail form
+or case variant gets a plain mask, not the full value's identity token. Only the exact
+value and its trimmed NFC/NFD forms retain that identity; if an exact declared value
+and another input's derived form match the same span, the exact value wins. Declared-value
+redaction does not cover undeclared personal data the app shows beside a TEST-PII value.
+Never annotate real credentials: qaren cannot establish whether a backend is production or
+an input is a fixture, and misclassification permits reading and execution hashing of that
+secret despite artifact redaction.
 
 - `main` captures the `QAREN_INPUT_` namespace once into the
   [invocation-scoped redaction owner](src/redact.rs). Every child spawned by the CLI has the
@@ -1987,17 +2095,20 @@ that secret despite artifact redaction.
   before the session opens.
 - The core receives the values only inside its stdin request. The walker types them, saves
   slot fills as `inputText: { input: "PASSWORD" }` and replays saved and login blocks with
-  the current run's values. A non-secret slot saves as
-  `inputText: { input: "FIXTURE_CODE", sensitivity: "non-secret" }`, with no raw value.
-  When any slot is non-secret, every block's `planHash` uses a versioned `ns1:` digest of
-  normalized source steps and the sorted non-secret names. Policy changes invalidate saved
-  evidence across the run, including unchanged earlier blocks and removal of the last opt-in.
+  the current run's values. A TEST-PII slot saves as
+  `inputText: { input: "TEST_EMAIL", sensitivity: "non-secret" }` for either opt-in spelling,
+  with no raw value. When any slot is TEST-PII, every block's `planHash` uses a versioned
+  `ns1:` digest of normalized source steps and the sorted TEST-PII names. Policy changes
+  invalidate saved evidence across the run, including unchanged earlier blocks and removal of the last opt-in.
   Ordinary blocks re-walk; policy-stale configured login evidence refuses before session open
   and must be explicitly refreshed. Legacy strict-only hashes and login admission stay unchanged.
   Private literal fills stay unsavable.
-- With any input namespace present, subprocess logs hold one withheld marker, preflight and
-  core output excerpts are withheld, and native runner output tails are not retained. A run
-  that requires inputs skips recording and screenshots.
+- With any input namespace present, Metro and other subprocess logs hold one withheld
+  marker, preflight/subprocess output excerpts and command summaries are withheld, and
+  native runner output tails are not retained. In a TEST-PII run only `core.log`, failure
+  screen text and Fill readback come back redacted by the declared values. Filling a secure
+  field promotes that input to SECRET before typing; subsequent core log writes and failure
+  screen text are withheld. A run that requires inputs skips recording and screenshots.
 - Slot runs retain value-free structured events in `core-diagnostics.jsonl` beside `core.log`:
   `metric` has measured stage timings, and `timing` has decision/dispatch timing, finite outcome
   codes and allowlisted native refusal codes. Dispatch refusals retain `refusalStage` and
@@ -3210,7 +3321,8 @@ dependencies, strict foreign-driver admission, boot, build, install or launch.
 It re-proves the lease and the exact target under custody before booting,
 before each install attempt, before launch and before publishing `ready`, and
 refuses rather than reboots a target that changed.
-Builds stay generic; only install, launch and probes address the UUID.
+Builds stay generic; only install, the [warm lane](#warm-lane) settings, launch
+and probes address the UUID.
 `ready` keeps the lease, Metro and app for attached agents, and `status`
 reports ready only while the run still holds that lease and the target is
 Booted with unchanged device type and runtime, alongside the other readiness

@@ -665,10 +665,61 @@ mod tests {
             "macOS on <host>, <host>"
         );
     }
+
+    #[test]
+    fn a_padded_declared_input_is_redacted_in_its_trimmed_form() {
+        let inputs = super::InputValues::from_values(vec![" Alice Example ".to_string()]);
+        let clean = inputs.redact("Signed in as Alice Example");
+        assert_eq!(clean, "Signed in as [REDACTED_INPUT]");
+    }
+
+    #[test]
+    fn declared_inputs_are_redacted_in_any_letter_case_without_touching_the_marker() {
+        let inputs = super::InputValues::from_values(vec![
+            "QATESTER@EXAMPLE.TEST".to_string(),
+            "Input".to_string(),
+        ]);
+        let clean = inputs
+            .redact("signed in as qatester@example.test; Qatester at Example.Test; INPUT set");
+        for leaked in [
+            "qatester@example.test",
+            "Qatester",
+            "Example.Test",
+            "INPUT set",
+        ] {
+            assert!(!clean.contains(leaked), "{leaked}: {clean}");
+        }
+        assert_eq!(clean.matches("[REDACTED_INPUT]").count(), 4, "{clean}");
+        assert!(
+            clean.starts_with("signed in as [REDACTED_INPUT]; "),
+            "{clean}"
+        );
+    }
+    #[test]
+    fn unicode_input_casing_redacts_original_spans_in_both_directions() {
+        for (declared, variant) in [
+            ("Hauptstraße 42", "HAUPTSTRASSE 42"),
+            ("JÖRG", "jörg"),
+            ("ΟΣ", "ος"),
+            ("İSİM", "i\u{307}si\u{307}m"),
+            ("𐐀𐐁𐐂", "𐐨𐐩𐐪"),
+            ("JÖRG@EXAMPLE.TEST", "jörg@example.test"),
+        ] {
+            for (value, echo) in [(declared, variant), (variant, declared)] {
+                let inputs = super::InputValues::from_values(vec![value.into()]);
+                let raw = format!("🌍 before {echo}; {echo} after é");
+                assert_eq!(
+                    inputs.redact(&raw),
+                    "🌍 before [REDACTED_INPUT]; [REDACTED_INPUT] after é"
+                );
+            }
+        }
+    }
 }
 
 pub struct InputValues {
     entries: std::collections::BTreeMap<std::ffi::OsString, std::ffi::OsString>,
+    test_pii_only: std::sync::atomic::AtomicBool,
 }
 
 pub struct ResolvedInputs<'a> {
@@ -689,11 +740,31 @@ impl InputValues {
                 .into_iter()
                 .filter(|(key, _)| key.as_encoded_bytes().starts_with(b"QAREN_INPUT_"))
                 .collect(),
+            test_pii_only: Default::default(),
         }
+    }
+
+    // A log helper's redaction scope: values only, never consulted for withholding.
+    pub fn from_values(values: Vec<String>) -> Self {
+        Self::from_entries(
+            values
+                .into_iter()
+                .enumerate()
+                .map(|(i, value)| (format!("QAREN_INPUT_{i}").into(), value.into())),
+        )
     }
 
     pub fn has_namespace(&self) -> bool {
         !self.entries.is_empty()
+    }
+
+    fn values(&self) -> Vec<String> {
+        self.entries
+            .values()
+            .filter_map(|value| value.to_str())
+            .filter(|value| !value.is_empty())
+            .map(String::from)
+            .collect()
     }
 
     pub fn admit(&self, names: &[String]) -> Result<ResolvedInputs<'_>, crate::failure::Failure> {
@@ -767,20 +838,57 @@ impl InputValues {
 
     pub fn redact(&self, raw: &str) -> String {
         let mut forms: Vec<String> = self
-            .entries
             .values()
-            .filter_map(|value| value.to_str())
-            .filter(|value| !value.is_empty())
+            .into_iter()
             .flat_map(|value| {
-                let encoded = serde_json::to_string(value).unwrap_or_default();
-                [value.to_string(), encoded[1..encoded.len() - 1].to_string()]
+                let encoded = serde_json::to_string(&value).unwrap_or_default();
+                let mut forms = email_forms(&value);
+                forms.extend([
+                    encoded[1..encoded.len() - 1].to_string(),
+                    value.trim().to_string(),
+                    value,
+                ]);
+                forms.retain(|form| !form.is_empty());
+                forms
             })
             .collect();
         forms.sort_by_key(|value| std::cmp::Reverse(value.len()));
         forms.dedup();
-        forms.into_iter().fold(raw.to_string(), |text, value| {
-            text.replace(&value, "[REDACTED_INPUT]")
-        })
+        let fold = |text: &str| -> String {
+            text.chars()
+                .flat_map(|c| c.to_uppercase().flat_map(char::to_lowercase))
+                .collect()
+        };
+        let mut hay = String::new();
+        let mut offsets = Vec::new();
+        for (start, c) in raw.char_indices() {
+            let folded = fold(&c.to_string());
+            offsets.extend(std::iter::repeat_n(
+                (start, start + c.len_utf8()),
+                folded.len(),
+            ));
+            hay.push_str(&folded);
+        }
+        let mut spans: Vec<(usize, usize)> = Vec::new();
+        for form in forms {
+            for (start, found) in hay.match_indices(&fold(&form)) {
+                let end = offsets[start + found.len() - 1].1;
+                let start = offsets[start].0;
+                if spans.iter().all(|&(a, b)| end <= a || start >= b) {
+                    spans.push((start, end));
+                }
+            }
+        }
+        spans.sort_unstable();
+        let mut out = String::with_capacity(raw.len());
+        let mut at = 0;
+        for (start, end) in spans {
+            out.push_str(&raw[at..start]);
+            out.push_str("[REDACTED_INPUT]");
+            at = end;
+        }
+        out.push_str(&raw[at..]);
+        out
     }
 }
 
@@ -796,6 +904,19 @@ pub fn valid_input_name(name: &str) -> bool {
 impl ResolvedInputs<'_> {
     pub fn has_inputs(&self) -> bool {
         !self.names.is_empty()
+    }
+    pub fn declare_test_pii(&self, test_pii: &[String]) {
+        let only = self.has_inputs()
+            && self.owner.entries.keys().all(|key| {
+                key.to_str()
+                    .and_then(|key| key.strip_prefix("QAREN_INPUT_"))
+                    .is_some_and(|name| {
+                        self.names.iter().any(|n| n == name) && test_pii.iter().any(|n| n == name)
+                    })
+            });
+        self.owner
+            .test_pii_only
+            .store(only, std::sync::atomic::Ordering::SeqCst);
     }
     pub fn names(&self) -> &[String] {
         &self.names
@@ -881,7 +1002,62 @@ pub fn with_input_scope<T>(
 }
 
 pub fn private_output_mode() -> bool {
+    capture_input_scope().is_some_and(|scope| {
+        scope.has_namespace()
+            && !scope
+                .test_pii_only
+                .load(std::sync::atomic::Ordering::SeqCst)
+    })
+}
+
+pub fn input_namespace_present() -> bool {
     capture_input_scope().is_some_and(|scope| scope.has_namespace())
+}
+
+// What a log helper must redact when its output is not withheld.
+pub fn log_redaction_values() -> Vec<String> {
+    if private_output_mode() {
+        return Vec::new();
+    }
+    capture_input_scope().map_or_else(Vec::new, |scope| scope.values())
+}
+
+// Apps show a declared e-mail in parts or encoded, so each derived form is redacted with it.
+fn email_forms(value: &str) -> Vec<String> {
+    let whole = value.trim();
+    let Some((local, domain)) = whole.split_once('@') else {
+        return Vec::new();
+    };
+    if local.is_empty()
+        || domain.contains('@')
+        || !domain.trim_matches('.').contains('.')
+        || whole.chars().any(char::is_whitespace)
+    {
+        return Vec::new();
+    }
+    let percent = |text: &str| {
+        text.bytes()
+            .map(|b| {
+                if b.is_ascii_alphanumeric() || b"-_.!~*'()".contains(&b) {
+                    (b as char).to_string()
+                } else {
+                    format!("%{b:02X}")
+                }
+            })
+            .collect::<String>()
+    };
+    let mut forms = vec![
+        percent(whole),
+        whole.replacen('@', "&#64;", 1),
+        whole.replacen('@', "&#x40;", 1),
+        whole.replacen('@', "&commat;", 1),
+        local.to_string(),
+        percent(local),
+        local.split('+').next().unwrap_or(local).to_string(),
+        domain.to_string(),
+    ];
+    forms.retain(|form| form.chars().count() >= 3 && form != whole);
+    forms
 }
 
 pub fn redact_inputs(raw: &str) -> String {

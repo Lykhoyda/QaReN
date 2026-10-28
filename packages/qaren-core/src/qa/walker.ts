@@ -1,3 +1,4 @@
+import { cropPng, stablePixelChange, type PixelCrop, type PixelScale } from './tap-pixels.js';
 import {
   applyLabelProvenance,
   type LabelProvenance,
@@ -25,6 +26,7 @@ import {
   alertPressEffect,
   insideAlert,
   elementFrame,
+  applicationFrame,
   isNativeInput,
   describe,
 } from './screen.js';
@@ -132,6 +134,7 @@ import {
   type LedgerPath,
   type LedgerRow,
   type FillMethod,
+  type EntryMismatch,
   type Selector,
   type StepStart,
   REACT_GAPS,
@@ -153,6 +156,8 @@ export interface ActResult {
   ambiguous?: boolean;
   // An unverified fill whose field held the same shorter value on every attempt, one length per attempt.
   kept?: { typed: number; observed: number[] };
+  // A refused private fill's value-free difference from the requested text.
+  entryMismatch?: EntryMismatch;
   // The system dialog button the runner proved it tapped, with its frame; value-free.
   dialog?: { label: string; rect: { x: number; y: number; width: number; height: number } };
   // Android exact tap on an editable field: whether its keyboard was shown within the tap's settle budget.
@@ -180,7 +185,13 @@ export interface WalkerDeps {
     timing?: TimingObserver;
   }): Promise<Screen>;
   press(ref: string, context: QaDispatchContext): Promise<ActResult>;
-  fill(ref: string, text: string, context: QaDispatchContext): Promise<ActResult>;
+  fill(
+    ref: string,
+    text: string,
+    context: QaDispatchContext,
+    privateValue?: boolean,
+    onPrivateInput?: () => void,
+  ): Promise<ActResult>;
   // iOS only: type, proven only by a matching React read-back; testID identifies the pre-dispatch focus veto.
   typeFocused?(
     ref: string,
@@ -189,6 +200,7 @@ export interface WalkerDeps {
     context: QaDispatchContext,
     requireFocused?: boolean,
     privateValue?: boolean,
+    onPrivateInput?: () => void,
   ): Promise<ActResult>;
   // iOS only: positive React proof that the input with this testID is focused.
   reactFocused?(testID: string): Promise<boolean>;
@@ -198,6 +210,7 @@ export interface WalkerDeps {
     text: string,
     context: QaDispatchContext,
     privateValue?: boolean,
+    onPrivateInput?: () => void,
   ): Promise<ActResult>;
   // A value-free diagnostic line for the run log.
   note?(line: string): void;
@@ -212,6 +225,7 @@ export interface WalkerDeps {
   back(context: QaDispatchContext): Promise<ActResult>;
   dialog(action: 'accept' | 'dismiss', context: QaDispatchContext): Promise<ActResult>;
   screenshot(name: string): Promise<string | undefined>;
+  comparisonScreenshot?(): Promise<Uint8Array | undefined>;
   now(): number;
   sleep(ms: number): Promise<void>;
   row(row: LedgerRow): void;
@@ -278,6 +292,22 @@ class EvidenceExpired extends Error {
     super(itemExpired ? ITEM_DEADLINE_EXCEEDED : 'EVIDENCE_EXPIRED');
   }
 }
+
+// SECRET is the default tier; a TEST-PII input is read back like literal text.
+const secretFill = (
+  item: { input?: string; sensitivity?: 'non-secret' },
+  element?: Element,
+): boolean =>
+  item.input !== undefined &&
+  (currentInputs()?.protectFill(item.input, element !== undefined && isPrivateInput(element)) ??
+    item.sensitivity !== 'non-secret');
+
+const promoteFill = (item: { input?: string }, identifier?: string): void => {
+  if (item.input !== undefined) {
+    currentInputs()?.protectFill(item.input, true);
+    currentInputs()?.expectEcho(identifier, item.input);
+  }
+};
 
 const unresolvedText = (quoted: string) =>
   new ResolutionError({
@@ -455,6 +485,7 @@ async function walkBlockScoped(
   let mutationStarted = false;
   // The Fill ladder rung of the current item's last fill dispatch, and when the item began.
   let fillMethod: FillMethod | undefined;
+  let fillMismatch: EntryMismatch | undefined;
   let fillHandlerAttempted = false;
   let fillHandlerRefused = false;
   let itemStartedAt = 0;
@@ -766,6 +797,39 @@ async function walkBlockScoped(
     target.testID !== undefined
       ? e.testID === target.testID && e.kind === target.kind
       : e.testID === undefined && e.kind === target.kind && e.label === target.label;
+  const pixelTarget = (screen: Screen, target: Element) => {
+    const matches = screen.elements.filter((element) => sameIdentity(element, target));
+    const root = applicationFrame(screen);
+    const scale: PixelScale | undefined =
+      screen.pointScale !== undefined
+        ? Number.isFinite(screen.pointScale) && screen.pointScale > 0
+          ? screen.pointScale
+          : undefined
+        : root && root.width > 0 && root.height > 0
+          ? { width: root.width, height: root.height }
+          : undefined;
+    if (screen.front !== 'app' || matches.length !== 1 || scale === undefined) return undefined;
+    const element = matches[0];
+    const frame = elementFrame(element);
+    if (!frame || !element.hittable || insideAlert(element) || centreCovered(element, screen))
+      return undefined;
+    return { target: element, frame: { ...frame }, scale };
+  };
+  const pixelShot = async (
+    target: NonNullable<ReturnType<typeof pixelTarget>>,
+  ): Promise<PixelCrop | undefined> => {
+    assertActive();
+    const allowed = () => privacy.canScreenshot() && !metadataOnly && !currentInputs()?.hasInputs;
+    if (!allowed() || !deps.comparisonScreenshot) return undefined;
+    try {
+      const bytes = await deps.comparisonScreenshot();
+      assertActive();
+      return bytes && allowed() ? cropPng(bytes, target.frame, target.scale) : undefined;
+    } catch (error) {
+      if (isAbort(error)) throw error;
+      return undefined;
+    }
+  };
   const frameKey = (e: Element): string | undefined => {
     const rect = elementFrame(e);
     return rect ? [rect.x, rect.y, rect.width, rect.height].join(',') : undefined;
@@ -933,6 +997,7 @@ async function walkBlockScoped(
       // A scroll step's momentum outlives the step and its block; the next targeted dispatch settles first.
       if (item.kind === 'scroll') sequence.momentum = true;
       const result = await send(context);
+      if (result.entryMismatch) fillMismatch = result.entryMismatch;
       context.assertComplete();
       diagnostic(item, observation, 'dispatch', 'COMPLETED', context.authorizations);
       completed = true;
@@ -1004,6 +1069,7 @@ async function walkBlockScoped(
     row = {
       ...row,
       ...(fillMethod ? { method: fillMethod } : {}),
+      ...(fillMismatch && row.outcome !== 'pass' ? { entryMismatch: fillMismatch } : {}),
       operationId: operationFor(row.line),
       ...(reactCoverage ? { reactCoverage } : {}),
       ...(reactCoverage || reactConnections.length ? { reactConnections } : {}),
@@ -1287,7 +1353,7 @@ async function walkBlockScoped(
         ? '; the field changed only the letter case'
         : '';
   const keptCounts = (entry: ActResult) =>
-    entry.proven || currentInputs()?.hasInputs
+    entry.proven || currentInputs()?.hasStrictInputs
       ? {}
       : entry.kept
         ? { kept: { typed: entry.kept.typed, observed: [...entry.kept.observed] } }
@@ -1316,13 +1382,19 @@ async function walkBlockScoped(
     const fresh = await settledCapture(item);
     usable(fresh, item);
     if (!present(fresh.screen)) return undefined;
+    secretFill(
+      item,
+      fresh.screen.elements.find((element) => element.testID === testID),
+    );
     try {
       const result = await mutate(
         item,
         fresh,
         (context) => {
           fillHandlerAttempted = true;
-          return deps.setByHandler!(testID, fillText(item), context, item.input !== undefined);
+          return deps.setByHandler!(testID, fillText(item), context, secretFill(item), () =>
+            promoteFill(item, testID),
+          );
         },
         deadline,
       );
@@ -1371,6 +1443,7 @@ async function walkBlockScoped(
     | 'typed'
   > => {
     const quoted = item.target.quoted!;
+    secretFill(item, target.element);
     const nothingTyped = (reason: string, screen: Screen): WalkOutcome =>
       failed(item, attempt, `${reason}; nothing was typed`, screen, undefined);
     const proofMode = before.screen.keyboardVisible === true && deps.reactFocused !== undefined;
@@ -1480,7 +1553,8 @@ async function walkBlockScoped(
           again.oracleTestID,
           context,
           proofMode,
-          item.input !== undefined,
+          secretFill(item, again.element),
+          () => promoteFill(item, again.element.testID ?? again.oracleTestID),
         ),
       );
     } catch (error) {
@@ -1542,6 +1616,10 @@ async function walkBlockScoped(
     )
       return;
     if (!(await focusProven('none', quoted))) return;
+    secretFill(
+      item,
+      before.screen.elements.find((element) => element.testID === quoted),
+    );
     privacy.concealFallback(fillText(item), false, quoted);
     recordMediaLatch(privacy, sequence, deps, line);
     if (item.input === undefined) privateFills.push(item.line);
@@ -1549,7 +1627,9 @@ async function walkBlockScoped(
     currentInputs()?.expectEcho(quoted, item.input);
     try {
       entry = await mutate(item, before, (context) =>
-        deps.typeFocused!(quoted, fillText(item), quoted, context, true, item.input !== undefined),
+        deps.typeFocused!(quoted, fillText(item), quoted, context, true, secretFill(item), () =>
+          promoteFill(item, quoted),
+        ),
       );
     } catch (error) {
       if (isAbort(error)) throw error;
@@ -1893,9 +1973,14 @@ async function walkBlockScoped(
     }
     mutationStarted = false;
     fillMethod = undefined;
+    fillMismatch = undefined;
     fillHandlerAttempted = false;
     fillHandlerRefused = false;
     itemStartedAt = deps.now();
+    let pixelBaselineTaken = false;
+    let pixelBaseline:
+      | { target: NonNullable<ReturnType<typeof pixelTarget>>; crop: PixelCrop }
+      | undefined;
     attempts: for (;;) {
       line = item.line;
       deps.start?.({
@@ -2514,6 +2599,7 @@ async function walkBlockScoped(
                 within = clearanceBand(element, before.screen);
                 continue;
               }
+              if (item.kind === 'fill') secretFill(item, element);
               if (item.kind === 'fill' && element && isPrivateInput(element)) {
                 privacy.concealFallback(
                   fillText(item),
@@ -2530,17 +2616,26 @@ async function walkBlockScoped(
                 before.screen.front === 'dialog'
               )
                 throw dialogInFront();
-              act = await mutate(item, before, (context) =>
-                item.kind === 'press'
+              act = await mutate(item, before, async (context) => {
+                if (item.kind === 'press' && !pixelBaselineTaken) {
+                  pixelBaselineTaken = true;
+                  const target = element && pixelTarget(before.screen, element);
+                  // One deliberate before-shot (~200 ms) per eligible press preserves the first attempt's baseline.
+                  const crop = target && (await pixelShot(target));
+                  if (target && crop) pixelBaseline = { target, crop };
+                }
+                return item.kind === 'press'
                   ? deps.press(ref!, context)
                   : item.kind === 'fill'
-                    ? deps.fill(ref!, fillText(item), context)
+                    ? deps.fill(ref!, fillText(item), context, secretFill(item), () =>
+                        promoteFill(item, element?.testID),
+                      )
                     : item.kind === 'scroll'
                       ? deps.scroll(item.direction, context)
                       : item.kind === 'back'
                         ? deps.back(context)
-                        : deps.dialog(item.action, context),
-              );
+                        : deps.dialog(item.action, context);
+              });
               if (item.kind === 'fill') fillMethod = act.method ?? 'keyboard';
               if (!act.ok && act.ambiguous) {
                 outcome = failed(
@@ -2662,8 +2757,35 @@ async function walkBlockScoped(
             before.platformPresence ? 'provenance' : 'resolve',
           );
           // NOTE: a not-ok result is not a verdict; an act that timed out may still have landed.
-          const changed = screenSignature(after.screen) !== screenSignature(before.screen);
+          let changed = screenSignature(after.screen) !== screenSignature(before.screen);
           usable(after, item);
+          if (
+            !changed &&
+            item.kind === 'press' &&
+            act!.proven === false &&
+            pixelBaseline &&
+            element
+          ) {
+            const baseline = pixelBaseline.target;
+            const previous = pixelTarget(before.screen, baseline.target);
+            const current = pixelTarget(after.screen, baseline.target);
+            const identical = (target: ReturnType<typeof pixelTarget>) =>
+              target &&
+              sameIdentity(element!, baseline.target) &&
+              JSON.stringify(target.scale) === JSON.stringify(baseline.scale) &&
+              target.frame.x === baseline.frame.x &&
+              target.frame.y === baseline.frame.y &&
+              target.frame.width === baseline.frame.width &&
+              target.frame.height === baseline.frame.height;
+            if (identical(previous) && identical(current)) {
+              const first = await pixelShot(current!);
+              if (first) {
+                await deps.sleep(200);
+                const second = await pixelShot(current!);
+                if (second) changed = stablePixelChange(pixelBaseline.crop, first, second);
+              }
+            }
+          }
           diagnostic(item, after, 'decision', 'ACCEPTED');
           metric('readback', after);
           if (item.kind === 'fill') {
@@ -2721,7 +2843,7 @@ async function walkBlockScoped(
                       reason: redact(
                         'UNVERIFIED_FILL: the field changed only the letter case, so the fill was not verified',
                       ),
-                      ...(!currentInputs()?.hasInputs
+                      ...(!currentInputs()?.hasStrictInputs
                         ? { caseNormalized: { chars: [...fillText(item)].length } }
                         : {}),
                     }
@@ -2969,6 +3091,7 @@ function valueFree(row: Omit<LedgerRow, 'reason'>): LedgerRow {
     outcome,
     ...(row.unverifiedPress ? { unverifiedPress: true } : {}),
     ...(row.method ? { method: row.method } : {}),
+    ...(row.entryMismatch ? { entryMismatch: row.entryMismatch } : {}),
     ...(row.screenshotWithheld ? { screenshotWithheld: row.screenshotWithheld } : {}),
     ...(screenshot ? { screenshot } : {}),
     ...(timing ? { timing } : {}),
@@ -3168,7 +3291,7 @@ export async function runPlan(
       renderReason(
         reason,
         (text) => privacy.redact(text),
-        currentInputs()?.hasInputs ? INPUT_SCREEN_TEXT_WITHHELD : undefined,
+        currentInputs()?.hasStrictInputs ? INPUT_SCREEN_TEXT_WITHHELD : undefined,
       );
     const finish = (outcome?: WalkOutcome): WalkResult => {
       throwIfInputPrivacyRefused();

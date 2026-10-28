@@ -28,8 +28,9 @@ impl LogDrain {
         executable: &Path,
         path: &Path,
         withhold: bool,
+        core_log: bool,
     ) -> io::Result<(Self, UnixStream)> {
-        let (drain, output, _) = Self::start(executable, path, false, withhold, false)?;
+        let (drain, output, _) = Self::start(executable, path, false, withhold, false, core_log)?;
         Ok((drain, output))
     }
 
@@ -40,8 +41,14 @@ impl LogDrain {
         withhold: bool,
         count_bundle_requests: bool,
     ) -> io::Result<(Self, UnixStream, UnixStream)> {
-        let (drain, output, error) =
-            Self::start(executable, path, true, withhold, count_bundle_requests)?;
+        let (drain, output, error) = Self::start(
+            executable,
+            path,
+            true,
+            withhold,
+            count_bundle_requests,
+            false,
+        )?;
         Ok((
             drain,
             output,
@@ -55,6 +62,7 @@ impl LogDrain {
         paired: bool,
         withhold: bool,
         count_bundle_requests: bool,
+        core_log: bool,
     ) -> io::Result<(Self, UnixStream, Option<UnixStream>)> {
         let log = std::fs::OpenOptions::new()
             .create(true)
@@ -77,6 +85,19 @@ impl LogDrain {
         let key = serde_json::to_vec(&std::env::var("TYPESAFE_API_KEY").ok())
             .map_err(io::Error::other)?;
         let key_len = u32::try_from(key.len()).map_err(io::Error::other)?;
+        let withheld = withhold
+            || if core_log {
+                crate::redact::private_output_mode()
+            } else {
+                crate::redact::input_namespace_present()
+            };
+        let values = serde_json::to_vec(&if core_log && !withheld {
+            crate::redact::log_redaction_values()
+        } else {
+            Vec::new()
+        })
+        .map_err(io::Error::other)?;
+        let values_len = u32::try_from(values.len()).map_err(io::Error::other)?;
         let mut command = Command::new(executable);
         command
             .arg(HELPER_ARG)
@@ -102,7 +123,7 @@ impl LogDrain {
                 });
             }
         }
-        if withhold || crate::redact::private_output_mode() {
+        if withheld {
             command.arg(WITHHOLD_ARG);
         }
         if count_bundle_requests {
@@ -121,6 +142,8 @@ impl LogDrain {
             .control
             .write_all(&key_len.to_be_bytes())
             .and_then(|_| drain.control.write_all(&key))
+            .and_then(|_| drain.control.write_all(&values_len.to_be_bytes()))
+            .and_then(|_| drain.control.write_all(&values))
             .and_then(|_| drain.flush());
         if let Err(failure) = initialized {
             drop(output);
@@ -286,17 +309,30 @@ impl Lines {
     }
 }
 
+fn read_framed(control: &mut UnixStream) -> io::Result<Vec<u8>> {
+    let mut length = [0; 4];
+    control.read_exact(&mut length)?;
+    let mut bytes = vec![0; u32::from_be_bytes(length) as usize];
+    control.read_exact(&mut bytes)?;
+    Ok(bytes)
+}
+
 pub fn run_helper(paired: bool) -> io::Result<()> {
     let mut control = UnixStream::from(std::io::stdout().as_fd().try_clone_to_owned()?);
-    let key = if std::env::args().any(|arg| arg == KEY_CONTROL_ARG) {
-        let mut length = [0; 4];
-        control.read_exact(&mut length)?;
-        let mut key = vec![0; u32::from_be_bytes(length) as usize];
-        control.read_exact(&mut key)?;
-        serde_json::from_slice::<Option<String>>(&key).map_err(io::Error::other)?
+    let (key, values) = if std::env::args().any(|arg| arg == KEY_CONTROL_ARG) {
+        let key = serde_json::from_slice::<Option<String>>(&read_framed(&mut control)?)
+            .map_err(io::Error::other)?;
+        let values = serde_json::from_slice::<Vec<String>>(&read_framed(&mut control)?)
+            .map_err(io::Error::other)?;
+        (key, values)
     } else {
-        std::env::var("TYPESAFE_API_KEY").ok()
+        (std::env::var("TYPESAFE_API_KEY").ok(), Vec::new())
     };
+    let scope = std::sync::Arc::new(crate::redact::InputValues::from_values(values));
+    crate::redact::with_input_scope(scope, || drain(paired, control, key))
+}
+
+fn drain(paired: bool, mut control: UnixStream, key: Option<String>) -> io::Result<()> {
     if key.as_ref().is_some_and(|key| key.contains(['\r', '\n'])) {
         return Err(io::Error::other(
             "cannot stream-redact a multiline configured key",

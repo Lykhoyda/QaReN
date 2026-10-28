@@ -37,7 +37,8 @@ export interface MediaLatch {
 
 export const MASK = '•••';
 export const SCREEN_TEXT_WITHHELD = '[screen text withheld: a secure field is on screen]';
-export const INPUT_SCREEN_TEXT_WITHHELD = '[screen text withheld: the run holds runtime inputs]';
+export const INPUT_SCREEN_TEXT_WITHHELD =
+  '[screen text withheld: the run holds secret runtime inputs]';
 
 export function concealsScreen(screen: Screen): boolean {
   return screen.elements.some((element) => element.secure);
@@ -267,6 +268,8 @@ export const SHORT = 3;
 const escape = (value: string): string => value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 const chars = (text: string): number => [...text].length;
 const whole = (pattern: string): string => `(?<![${WORD}])${pattern}(?![${WORD}])`;
+const foldCase = (text: string): string =>
+  [...text].map((char) => char.toUpperCase().toLowerCase()).join('');
 
 function forms(value: string): string[] {
   return [
@@ -274,6 +277,23 @@ function forms(value: string): string[] {
       [value, value.trim()].flatMap((form) => [form, form.normalize('NFC'), form.normalize('NFD')]),
     ),
   ].filter(Boolean);
+}
+
+// Apps show a declared e-mail in parts or encoded, so each derived form is masked with it.
+export function emailForms(value: string): string[] {
+  const email = /^([^@\s]+)@([^@\s]+\.[^@\s]+)$/u.exec(value.trim());
+  if (!email) return [];
+  const [whole, local, domain] = email;
+  return [
+    ...new Set([
+      encodeURIComponent(whole),
+      ...['&#64;', '&#x40;', '&commat;'].map((at) => whole.replace('@', at)),
+      local,
+      encodeURIComponent(local),
+      local.split('+')[0],
+      domain,
+    ]),
+  ].filter((form) => chars(form) >= SHORT && form !== whole);
 }
 
 const DIGIT_GAP = '[\\s\\p{White_Space}\\p{P}\\p{S}]';
@@ -300,33 +320,83 @@ export function matchPrivate(
       )
         return [];
       const candidates = forms(value.text).flatMap((form) =>
-        value.provenance === 'input' ? [form, JSON.stringify(form).slice(1, -1)] : [form],
+        value.provenance === 'input'
+          ? [
+              form,
+              JSON.stringify(form).slice(1, -1),
+              // Derived forms widen output masking only; persisted decisions match the value itself.
+              ...(policy === 'persisted' ? [] : emailForms(form)),
+            ]
+          : [form],
       );
-      const patterns = [...new Set(candidates)].map((form) =>
-        value.provenance === 'code' || (value.provenance === 'secret' && length === 1)
-          ? whole(escape(form))
-          : escape(form),
-      );
+      const anyCase = value.provenance === 'input' && policy !== 'persisted';
+      const patterns = [...new Set(candidates)].map((form) => ({
+        pattern:
+          value.provenance === 'code' || (value.provenance === 'secret' && length === 1)
+            ? whole(escape(form))
+            : anyCase
+              ? escape(foldCase(form))
+              : escape(form),
+        length: form.length,
+        anyCase,
+      }));
       const digits = digitForm(value.text);
-      if (digits) patterns.push(digits);
-      return patterns.map((pattern) => ({ pattern, value: value.text }));
+      if (digits) patterns.push({ pattern: digits, length: digits.length, anyCase: false });
+      return patterns.map((pattern) => ({
+        ...pattern,
+        value: value.text,
+        input: value.provenance === 'input',
+      }));
     })
-    .sort((a, b) => b.pattern.length - a.pattern.length);
+    .sort((a, b) => b.length - a.length);
   const fragments = (set.fragments ?? []).flatMap(forms);
   if (!rules.length && !fragments.length) return { text, hit: false };
   let hit = false;
   const parts: { text: string; masked: boolean }[] = [];
   let offset = 0;
   if (rules.length) {
-    const pattern = new RegExp(rules.map((rule) => `(${rule.pattern})`).join('|'), 'gu');
-    for (const match of text.matchAll(pattern)) {
-      const index = rules.findIndex((_, i) => match[i + 1] !== undefined);
-      parts.push({ text: text.slice(offset, match.index), masked: false });
+    const starts: number[] = [];
+    const ends: number[] = [];
+    let folded = '';
+    let at = 0;
+    if (rules.some((rule) => rule.anyCase)) {
+      for (const char of text) {
+        const form = foldCase(char);
+        for (let i = 0; i < form.length; i++) {
+          starts.push(at);
+          ends.push(at + char.length);
+        }
+        folded += form;
+        at += char.length;
+      }
+    }
+    const matches = rules
+      .flatMap((rule) =>
+        [...(rule.anyCase ? folded : text).matchAll(new RegExp(rule.pattern, 'gu'))].map(
+          (match) => {
+            const start = rule.anyCase ? starts[match.index] : match.index;
+            const end = rule.anyCase
+              ? ends[match.index + match[0].length - 1]
+              : match.index + match[0].length;
+            return { start, end, rule, exact: forms(rule.value).includes(text.slice(start, end)) };
+          },
+        ),
+      )
+      .sort(
+        (a, b) =>
+          a.start - b.start ||
+          b.end - a.end ||
+          Number(b.exact) - Number(a.exact) ||
+          b.rule.length - a.rule.length,
+      );
+    for (const { start, end, rule, exact } of matches) {
+      if (start < offset) continue;
+      parts.push({ text: text.slice(offset, start), masked: false });
       parts.push({
-        text: policy === 'model' ? (token?.(rules[index].value) ?? MASK) : MASK,
+        text: policy === 'model' && (!rule.input || exact) ? (token?.(rule.value) ?? MASK) : MASK,
         masked: true,
       });
-      offset = match.index + match[0].length;
+      offset = end;
       hit = true;
     }
   }
@@ -691,6 +761,7 @@ export function formatSensitivePixels(
 
 export class ObservedPrivacy {
   private readonly inputValues = new Set<string>();
+  private readonly strictInputValues = new Set<string>();
   private readonly observed = new Set<string>();
   private readonly concealed = new Set<string>();
   private readonly secret = new Set<string>();
@@ -717,8 +788,9 @@ export class ObservedPrivacy {
     this.preclassified.push(...values.filter(Boolean));
   }
 
-  classifyInputs(values: readonly string[]): void {
+  classifyInputs(values: readonly string[], strict: readonly string[] = values): void {
     values.filter(Boolean).forEach((value) => this.inputValues.add(value));
+    strict.filter(Boolean).forEach((value) => this.strictInputValues.add(value));
     if (this.inputValues.size) this.mark({ reason: 'runtime-input' });
   }
 
@@ -919,10 +991,10 @@ export class ObservedPrivacy {
     return matchPrivate(text, this.privateSet(), 'durable').text;
   }
 
-  // Undeclared personal data shown beside runtime inputs cannot be masked by value, so no screen text leaves.
+  // Beside a SECRET input undeclared personal data cannot be masked by value; TEST-PII runs accept that.
   textWithheld(screen: Screen): string | undefined {
     if (concealsScreen(screen)) return SCREEN_TEXT_WITHHELD;
-    if (this.inputValues.size) return INPUT_SCREEN_TEXT_WITHHELD;
+    if (this.strictInputValues.size) return INPUT_SCREEN_TEXT_WITHHELD;
   }
 
   screenText(screen: Screen): string[] {
