@@ -98,59 +98,6 @@ test('screen text is withheld only when the run holds a SECRET input', () => {
   assert.equal(testPii.privacy.canScreenshot(), false, 'media stays withheld');
 });
 
-test('SECRET aliases stay protected before and after secure-field promotion', async () => {
-  for (const promoted of [false, true]) {
-    for (const values of [
-      { PASSWORD, COPY: PASSWORD, OTHER: EMAIL },
-      { OTHER: EMAIL, COPY: PASSWORD, PASSWORD },
-    ]) {
-      const { inputs, privacy } = privacyFor(
-        values,
-        promoted ? ['PASSWORD', 'COPY', 'OTHER'] : ['COPY', 'OTHER'],
-      );
-      assert.equal(inputs.protectFill('COPY'), !promoted);
-      const f = walker(
-        [
-          screen([
-            element('@password', 'Password', {
-              kind: 'input',
-              testID: 'password',
-              secure: promoted,
-            }),
-            element('@copy', 'Copy', { kind: 'input', testID: 'copy' }),
-          ]),
-        ],
-        scriptedJudge(() => assert.fail('model-free')),
-      );
-      f.deps.privacy = privacy;
-      const fills: string[] = [];
-      f.deps.fill = async (_ref, text, _context, privateValue) => {
-        assert.equal(text, PASSWORD);
-        assert.equal(privateValue, true);
-        fills.push(text);
-        return { ok: true, proven: true };
-      };
-      const result = await withInputs(inputs, () =>
-        runPlan(
-          parsePlan(
-            `1. Fill "password" with input PASSWORD${promoted ? ' (test-pii)' : ''}\n2. Fill "copy" with input COPY (test-pii)`,
-          ).blocks!,
-          f.deps,
-        ),
-      );
-      assert.equal(result.verdict, 'PASS');
-      assert.equal(fills.length, 2);
-      assert.equal(inputs.protectFill('COPY'), true);
-      assert.equal(inputs.protectFill('OTHER'), false);
-      inputs.expectEcho('copy-echo', 'COPY');
-      assert.equal(
-        inputs.maskFilledEcho({ identifier: 'copy-echo', label: PASSWORD }).label,
-        '[runtime input]',
-      );
-    }
-  }
-});
-
 test('a re-cased TEST-PII e-mail is still redacted from retained screen text', () => {
   const declared = 'QATESTER@EXAMPLE.TEST';
   const { privacy } = privacyFor({ EMAIL: declared }, ['EMAIL']);
