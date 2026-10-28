@@ -2782,8 +2782,9 @@ supported React TextInput; a label alone does not establish private-fill admissi
    meets the configured sign-in marker, QaReN replays `sign-in` from its first
    command and retries that step once. Inputs are required before device
    selection on every run with this login configuration, even if no login wall
-   appears. Runs with inputs withhold screenshots and video as documented under
-   [Runtime inputs](#runtime-inputs).
+   appears. For input-run screenshots and recording, follow
+   [Runtime inputs](#runtime-inputs); video publication follows the
+   [selected video policy](#video-publication).
 
 A block starting at Home with `Tap "Log out"` before its sign-in fills starts
 signed in. It cannot recover from a sign-in screen: its first command expects
