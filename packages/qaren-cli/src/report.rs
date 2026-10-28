@@ -316,17 +316,18 @@ fn video_withholding(ledger: &Ledger, strict: &VideoPublication) -> Option<Strin
     if ledger.video_policy == crate::record::VideoPolicy::NonStrict
         && publication == VideoPublication::WithheldPrivacy
     {
-        if cause.is_some_and(|cause| cause.reason == crate::core::WithholdCause::RuntimeInput) {
-            return Some("the run holds secret runtime inputs.".into());
-        }
         let escape = if cause.is_some_and(|cause| {
-            cause.reason == crate::core::WithholdCause::Echo
-                && cause.source == Some(crate::core::MediaSource::Input)
+            cause.reason == crate::core::WithholdCause::RuntimeInput
+                || (cause.reason == crate::core::WithholdCause::Echo
+                    && cause.source == Some(crate::core::MediaSource::Input))
         }) {
-            " A runtime input was shown in a non-secure field; mark it (test-pii) if it is test data."
+            " If this value is test data, declare the input (test-pii) to allow the video."
         } else {
             ""
         };
+        if cause.is_some_and(|cause| cause.reason == crate::core::WithholdCause::RuntimeInput) {
+            return Some(format!("the run holds secret runtime inputs.{escape}"));
+        }
         return Some(format!(
             "a protected field or value was on screen in the published window{code}.{escape}"
         ));

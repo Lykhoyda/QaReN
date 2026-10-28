@@ -168,20 +168,25 @@ fn the_verdict_is_structured() {
 }
 
 #[test]
-fn non_strict_secret_causes_get_specific_wording_and_only_attributable_input_echoes_get_the_escape()
-{
+fn non_strict_secret_causes_get_specific_wording_and_eligible_inputs_get_the_escape() {
     use qaren::record::{NonStrictPublication, VideoPolicy};
     for (reason, source) in [
         ("secure-field", None),
         ("code-row", None),
         ("concealed-fill", None),
+        ("input-value", None),
+        ("generic-value", None),
         ("runtime-input", None),
         ("echo", Some("input")),
         ("echo", Some("secret")),
+        ("echo", Some("concealed")),
+        ("echo", Some("code")),
+        ("echo", None),
     ] {
         let mut ledger = failing_ledger();
         ledger.video_policy = VideoPolicy::NonStrict;
         ledger.video_policy_source = Some(".qaren/target.yaml".into());
+        ledger.video_publication = Some(VideoPublication::WithheldFill);
         ledger.non_strict_publication = Some(NonStrictPublication::WithheldSecret);
         ledger.media_withheld = Some(
             serde_json::from_value(serde_json::json!({
@@ -210,7 +215,6 @@ fn non_strict_secret_causes_get_specific_wording_and_only_attributable_input_ech
                 "{body}"
             );
         }
-        assert_eq!(body.contains("mark it (test-pii)"), source == Some("input"));
         let local = qaren::report::render(&ReportInput {
             run_id: "check-policy",
             platform: "ios",
@@ -219,6 +223,35 @@ fn non_strict_secret_causes_get_specific_wording_and_only_attributable_input_ech
             ledger: &ledger,
         });
         assert!(local.contains("Video policy: non-strict (declared in .qaren/target.yaml)."));
+        let hint = "If this value is test data, declare the input (test-pii) to allow the video.";
+        for output in [&body, &local] {
+            assert_eq!(
+                output.contains(hint),
+                reason == "runtime-input" || source == Some("input"),
+                "{output}"
+            );
+            assert!(output.contains("Video withheld:"), "{output}");
+        }
+        for policy in [VideoPolicy::Strict, VideoPolicy::Undeclared] {
+            ledger.video_policy = policy;
+            let body = render(
+                &ledger,
+                false,
+                &VideoStatus::Available,
+                &VideoPublication::WithheldFill,
+            );
+            let local = qaren::report::render(&ReportInput {
+                run_id: "check-policy",
+                platform: "ios",
+                app_id: "com.test",
+                device: "test",
+                ledger: &ledger,
+            });
+            for output in [&body, &local] {
+                assert!(!output.contains(hint), "{output}");
+                assert!(output.contains("Video withheld:"), "{output}");
+            }
+        }
     }
 }
 
