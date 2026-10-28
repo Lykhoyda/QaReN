@@ -221,3 +221,32 @@ fn non_strict_secret_causes_get_specific_wording_and_only_attributable_input_ech
         assert!(local.contains("Video policy: non-strict (declared in .qaren/target.yaml)."));
     }
 }
+
+#[test]
+fn selected_config_wording_keeps_secret_and_machine_redaction() {
+    let inputs = std::sync::Arc::new(qaren::redact::InputValues::from_entries([(
+        "QAREN_INPUT_PASSWORD".into(),
+        "synthetic-config-secret".into(),
+    )]));
+    qaren::redact::with_input_scope(inputs, || {
+        for source in [
+            ".qaren/synthetic-config-secret.yaml",
+            "external config (synthetic-config-secret.yaml)",
+            "/srv/private-config/selected.yaml",
+        ] {
+            let mut ledger = failing_ledger();
+            ledger.video_policy_source = Some(source.into());
+            let body = render(
+                &ledger,
+                false,
+                &VideoStatus::Available,
+                &VideoPublication::WithheldPrivacy,
+            );
+            assert!(!body.contains("synthetic-config-secret"), "{body}");
+            assert!(!body.contains("/Users/qa"), "{body}");
+            assert!(!body.contains("/srv"), "{body}");
+            assert!(!body.contains("private-config"), "{body}");
+            assert!(body.contains("declare video: non-strict"), "{body}");
+        }
+    });
+}

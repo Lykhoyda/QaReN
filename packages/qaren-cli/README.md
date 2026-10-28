@@ -2115,7 +2115,9 @@ secret despite artifact redaction.
   marker, preflight/subprocess output excerpts and command summaries are withheld, and
   native runner output tails are not retained. After an input is promoted to SECRET before
   typing, subsequent core log writes and failure screen text are withheld. A run that
-  requires inputs skips recording and screenshots.
+  requires inputs skips screenshots. Recording is also skipped unless `video: non-strict`
+  is declared and the run holds only TEST-PII inputs; detected SECRET causes still
+  withhold video publication.
 - Slot runs retain value-free structured events in `core-diagnostics.jsonl` beside `core.log`:
   `metric` has measured stage timings, and `timing` has decision/dispatch timing, finite outcome
   codes and allowlisted native refusal codes. Dispatch refusals retain `refusalStage` and
@@ -3144,7 +3146,7 @@ video: non-strict
 - `non-strict`: use only when the app shows test data. Non-SECRET observations, literal fills and TEST-PII inputs can publish video. Detected SECRET causes still withhold it: secure fields (including empty fields), concealed fills, code rows and echoes attributable to protected values. A run holding SECRET runtime inputs also withholds video, even if they are unused.
 - Absent: strict rules apply and doctor reminds you to declare a policy. Any other value, including null, refuses `SCENARIO_INVALID`.
 
-The receipt, report and PR comment name the policy and the config path it came from. The path identifies the declaration, not the backend or dataset. Policy and eligibility are persisted with the run; `qaren publish` never re-reads the current app config. A missing or unknown eligibility verdict still withholds video. Saved-block publication and screenshots retain strict rules in this release.
+The receipt, report and PR comment name the policy and the selected config: its app-relative path for files inside the invoking project, or its filename for external configs, with private values redacted. The path identifies the declaration, not the backend or dataset. Policy and eligibility are persisted with the run; `qaren publish` never re-reads the current app config. A missing or unknown eligibility verdict still withholds video. Saved-block publication and screenshots retain strict rules in this release.
 
 SECRET text masking and no readback apply in both modes. A runtime input displayed in a non-secure field can be marked `(test-pii)` only if it is test data; that annotation cannot exempt secure fields or code rows. Non-strict is an operator declaration, not proof: an undeclared secret prefilled into a non-secure field, real personal data, or a value visible only between captures can appear in a published video. QaReN does not mask video regions or identify the backend. Upgrade every CLI/CI runtime before adding the key; older versions refuse it. Removing the key restores strict behavior.
 

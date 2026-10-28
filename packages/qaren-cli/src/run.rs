@@ -266,6 +266,25 @@ fn run_inner(
         req.shutdown_device_on_exit,
     )?;
     let (config, config_raw) = CheckConfig::load(&req.config_path)?;
+    let video_policy_source =
+        match req
+            .config_path
+            .strip_prefix(&req.project_root)
+            .ok()
+            .filter(|path| {
+                !path
+                    .components()
+                    .any(|part| part == std::path::Component::ParentDir)
+            }) {
+            Some(path) => path.display().to_string(),
+            None => format!(
+                "external config ({})",
+                req.config_path
+                    .file_name()
+                    .unwrap_or_default()
+                    .to_string_lossy()
+            ),
+        };
     config.validate_for_platform(req.platform)?;
     if req.platform == Platform::Ios {
         if let Some(workspace) = config.ios.as_ref().and_then(|ios| ios.build.as_ref()) {
@@ -596,10 +615,7 @@ fn run_inner(
         timings: Vec::new(),
         notes: vec![
             ("video_policy".into(), config.video.as_str().into()),
-            (
-                "video_policy_source".into(),
-                req.config_path.display().to_string(),
-            ),
+            ("video_policy_source".into(), video_policy_source.clone()),
         ],
         verb: verb(req),
         bundle_requests_at_launch: None,
@@ -1066,7 +1082,7 @@ fn run_inner(
     }
     // The canonical plan copy goes to .qaren/plans only, never into run evidence.
     outcome.ledger.video_policy = config.video;
-    outcome.ledger.video_policy_source = Some(req.config_path.display().to_string());
+    outcome.ledger.video_policy_source = Some(video_policy_source.clone());
     let recipe = outcome.ledger.recipe.take();
     let ledger_path = run_dir.join("ledger.json");
     if let Err(e) = std::fs::write(
@@ -1322,7 +1338,7 @@ fn run_inner(
             video_withholding_reason: video_publication.withholding_reason().map(str::to_string),
             video_publication,
             video_policy: config.video,
-            video_policy_source: Some(req.config_path.display().to_string()),
+            video_policy_source: Some(video_policy_source),
             non_strict_publication: outcome.ledger.non_strict_publication.clone(),
             tested_older_commit: tested_older_commit.is_some(),
             blocks,

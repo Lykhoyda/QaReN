@@ -9497,43 +9497,89 @@ fn saved_login_hints_use_names_and_the_first_screen_without_publishing_them() {
 #[test]
 fn video_declaration_reaches_the_child_and_durable_run_outputs() {
     for policy in [None, Some("strict"), Some("non-strict")] {
-        let (repo, app) = app_repo();
-        let req = request(&repo, &app, 30);
-        if let Some(policy) = policy {
-            let yaml = std::fs::read_to_string(&req.config_path).unwrap();
-            std::fs::write(&req.config_path, format!("{yaml}video: {policy}\n")).unwrap();
+        for selected in [
+            ".qaren/config.yaml",
+            ".qaren/target.yaml",
+            "external",
+            "external-parent",
+        ] {
+            let (repo, app) = app_repo();
+            let mut req = request(&repo, &app, 30);
+            if selected != ".qaren/config.yaml" {
+                let path = if selected == "external" {
+                    repo.join("selected.yaml")
+                } else if selected == "external-parent" {
+                    app.join("../selected.yaml")
+                } else {
+                    app.join(selected)
+                };
+                std::fs::copy(&req.config_path, &path).unwrap();
+                req.config_path = path;
+            }
+            assert!(req.config_path.is_absolute());
+            let source = if selected.starts_with("external") {
+                "external config (selected.yaml)"
+            } else {
+                selected
+            };
+            if let Some(policy) = policy {
+                let yaml = std::fs::read_to_string(&req.config_path).unwrap();
+                std::fs::write(&req.config_path, format!("{yaml}video: {policy}\n")).unwrap();
+            }
+            let mut mock = MockRunner::new();
+            script_preflight(&mut mock, &repo);
+            script_provision(&mut mock);
+            script_drift_status(&mut mock);
+            script_host_probe(&mut mock, UDID, hosts_absent());
+            mock.expect_spawn_piped("walk.js", 9000, &pass_stdout(), Some(0));
+            script_core_identity(&mut mock);
+            script_teardown(&mut mock);
+            let receipt = run(&mut mock, &req);
+            assert_eq!(receipt.result, ReceiptResult::Pass, "{:?}", receipt.failure);
+            let expected = policy.unwrap_or("undeclared");
+            assert_eq!(receipt.outcomes["video_policy"], expected);
+            assert_eq!(receipt.outcomes["video_policy_source"], source);
+            let request: serde_json::Value =
+                serde_json::from_str(mock.piped_stdin_text(1).trim()).unwrap();
+            assert_eq!(request["payload"]["videoPolicy"], expected);
+            let ledger: serde_json::Value = serde_json::from_slice(
+                &std::fs::read(repo.join("runs").join(run_id()).join("ledger.json")).unwrap(),
+            )
+            .unwrap();
+            assert_eq!(ledger["videoPolicy"], expected);
+            assert_eq!(ledger["videoPolicySource"], source);
+            let report = std::fs::read_to_string(&receipt.artifacts["report"]).unwrap();
+            assert!(report.contains("Video policy:"));
+            assert!(report.contains(source));
+            let ledger: qaren::core::Ledger = serde_json::from_value(ledger).unwrap();
+            let body = qaren::report::render_pr_comment(
+                &qaren::report::ReportInput {
+                    run_id: "check-policy",
+                    platform: "ios",
+                    app_id: "com.test",
+                    device: "test",
+                    ledger: &ledger,
+                },
+                None,
+                &qaren::report::PrRun {
+                    tested_sha: PR_HEAD,
+                    tested_older_commit: false,
+                    video: &qaren::record::VideoStatus::Available,
+                    screenshot: None,
+                    plan_sha256: "0",
+                    video_publication: &qaren::record::VideoPublication::WithheldPrivacy,
+                },
+                &qaren::redact::MachineIdentity::default(),
+            );
+            assert!(body.contains(source), "{body}");
+            assert!(!body.contains(&repo.display().to_string()), "{body}");
+            if policy.is_none() {
+                assert!(
+                    body.contains(&format!("declare video: non-strict in {source}.")),
+                    "{body}"
+                );
+            }
+            assert_eq!(mock.remaining(), 0);
         }
-        let mut mock = MockRunner::new();
-        script_preflight(&mut mock, &repo);
-        script_provision(&mut mock);
-        script_drift_status(&mut mock);
-        script_host_probe(&mut mock, UDID, hosts_absent());
-        mock.expect_spawn_piped("walk.js", 9000, &pass_stdout(), Some(0));
-        script_core_identity(&mut mock);
-        script_teardown(&mut mock);
-        let receipt = run(&mut mock, &req);
-        assert_eq!(receipt.result, ReceiptResult::Pass, "{:?}", receipt.failure);
-        let expected = policy.unwrap_or("undeclared");
-        assert_eq!(receipt.outcomes["video_policy"], expected);
-        assert_eq!(
-            receipt.outcomes["video_policy_source"],
-            req.config_path.display().to_string()
-        );
-        let request: serde_json::Value =
-            serde_json::from_str(mock.piped_stdin_text(1).trim()).unwrap();
-        assert_eq!(request["payload"]["videoPolicy"], expected);
-        let ledger: serde_json::Value = serde_json::from_slice(
-            &std::fs::read(repo.join("runs").join(run_id()).join("ledger.json")).unwrap(),
-        )
-        .unwrap();
-        assert_eq!(ledger["videoPolicy"], expected);
-        assert_eq!(
-            ledger["videoPolicySource"],
-            req.config_path.display().to_string()
-        );
-        let report = std::fs::read_to_string(&receipt.artifacts["report"]).unwrap();
-        assert!(report.contains("Video policy:"));
-        assert!(report.contains(&req.config_path.display().to_string()));
-        assert_eq!(mock.remaining(), 0);
     }
 }
