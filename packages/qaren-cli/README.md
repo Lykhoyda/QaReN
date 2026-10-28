@@ -2307,8 +2307,8 @@ matches. Refused or unresolved core or driver cleanup leaves the host untouched
 and retains the lease. A host that was already running, or any
 present or unknown host after that, retains the lease. Cleanup rechecks an unknown
 host observation up to three times, 200 ms apart, keeping the inventory and scoped
-process-list commands' own 30- and 20-second limits. After terminating an owned host,
-the same bounded reads allow its exit to settle. An unanswered or malformed read
+process-list commands' own 30- and 20-second limits. For a present owned host,
+the same bounded reads allow its natural exit to settle. An unanswered or malformed read
 never proves absence; a persistent unknown still requires later cleanup and retains
 the lease. When the pre-attach host
 probe cannot answer, the receipt records `runner_host_probe: unknown`. External cleanup of a leased
