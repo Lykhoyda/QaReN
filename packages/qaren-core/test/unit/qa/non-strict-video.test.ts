@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { ObservedPrivacy } from '../../../dist/qa/privacy.js';
+import { capturePrivateScreen, ObservedPrivacy } from '../../../dist/qa/privacy.js';
 import {
   applyNativePrivateInputs,
   NativeSnapshotIncomplete,
@@ -109,6 +109,78 @@ test('an empty secure field still vetoes non-strict video after a harmless first
   assert.equal(result.nonStrictPublication, 'withheld-secret');
   assert.equal(result.mediaWithheld?.screenshots?.reason, 'generic-value');
   assert.deepEqual(result.mediaWithheld?.video, { reason: 'secure-field', line: 2 });
+});
+
+test('replacement video causes carry their observation line into the ledger and diagnostic', async () => {
+  for (const echoFirst of [false, true]) {
+    const privacy = new ObservedPrivacy();
+    const inputs = new RunInputs({ FIXTURE: canary }, ['FIXTURE'], privacy);
+    const f = walker(
+      [
+        ready(),
+        ready(),
+        ready(),
+        echoFirst ? native('TextField', canary) : ready(),
+        native('SecureTextField'),
+        ready(),
+      ],
+      scriptedJudge(() => assert.fail('literal checks are model-free')),
+    );
+    const diagnostics: unknown[] = [];
+    f.deps.privacy = privacy;
+    f.deps.videoPolicy = 'non-strict';
+    f.deps.mediaWithheld = (event) => diagnostics.push(event);
+    const result = await withInputs(inputs, () =>
+      runPlan(parsePlan(Array(6).fill('✓ "Ready"').join('\n')).blocks!, f.deps),
+    );
+    assert.equal(result.verdict, 'PASS');
+    assert.deepEqual(result.mediaWithheld?.video, { reason: 'secure-field', line: 5 });
+    assert.deepEqual(diagnostics.at(-1), {
+      kind: 'media-withheld',
+      scope: 'video',
+      cause: { reason: 'secure-field' },
+      line: 5,
+    });
+    assert.equal(result.mediaWithheld?.screenshots?.line, 0);
+    assert.equal(result.nonStrictPublication, 'withheld-secret');
+  }
+});
+
+test('login window resets pair a retained secure cause with the new window line', async () => {
+  const privacy = new ObservedPrivacy();
+  const inputs = new RunInputs({ FIXTURE: canary }, ['FIXTURE'], privacy);
+  let loggedIn = false;
+  const wall = screen([
+    element('@login', 'Sign in', { testID: 'login-screen' }),
+    element('@password', '', { kind: 'input', secure: true }),
+  ]);
+  const home = screen([
+    element('@settings', 'Settings'),
+    element('@password', '', { kind: 'input', secure: true }),
+    ...ready().elements,
+  ]);
+  capturePrivateScreen(wall, []);
+  capturePrivateScreen(home, []);
+  const f = walker([], scriptedJudge(() => assert.fail('literal steps are model-free')));
+  f.deps.privacy = privacy;
+  f.deps.videoPolicy = 'non-strict';
+  f.deps.captureScreen = async () => (loggedIn ? home : wall);
+  f.deps.press = async (ref) => {
+    if (ref === '@login') loggedIn = true;
+    return { ok: true, proven: true };
+  };
+  f.deps.hideDevMenu = async () => ({ ok: true, proven: true });
+  f.deps.login = {
+    marker: { id: 'login-screen' },
+    block: parsePlan('1. Tap "Sign in"').blocks![0],
+  };
+  const result = await withInputs(inputs, () =>
+    runPlan(parsePlan('\n\n\n\n1. Tap "Settings"\n✓ "Ready"').blocks!, f.deps),
+  );
+  assert.equal(result.verdict, 'PASS');
+  assert.equal(typeof result.publishFromMs, 'number');
+  assert.deepEqual(result.mediaWithheld?.video, { reason: 'secure-field', line: 5 });
+  assert.equal(result.nonStrictPublication, 'withheld-secret');
 });
 
 test('SECRET echoes cannot hide behind an earlier relaxed echo', () => {

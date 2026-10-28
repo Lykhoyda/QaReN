@@ -94,6 +94,7 @@ import type {
 } from './diagnostics.js';
 import { targetMissDiagnostic, type TargetMissDiagnostic } from './target-miss.js';
 import {
+  type MediaLatch,
   concealsScreen,
   INPUT_SCREEN_TEXT_WITHHELD,
   isPrivateInput,
@@ -358,7 +359,12 @@ const recoveryTarget = (item: Item): RecoveryTarget | undefined => {
 
 export interface WalkSequence {
   observation: number;
-  latch?: { line: number; windowLine?: number; secretWindowLine?: number; count: number };
+  latch?: {
+    line: number;
+    windowLine?: number;
+    secretWindow?: { cause: MediaLatch; line: number };
+    count: number;
+  };
   operation?: number;
   publicationInterrupted?: boolean;
   momentum?: boolean;
@@ -385,12 +391,9 @@ function recordMediaLatch(
   }
   if (privacy.windowLatched() && sequence.latch && sequence.latch.windowLine === undefined)
     sequence.latch.windowLine = line;
-  if (
-    privacy.secretWindowLatched() &&
-    sequence.latch &&
-    sequence.latch.secretWindowLine === undefined
-  )
-    sequence.latch.secretWindowLine = line;
+  const secret = privacy.secretWindowLatched();
+  if (secret && sequence.latch && secret !== sequence.latch.secretWindow?.cause)
+    sequence.latch.secretWindow = { cause: secret, line };
 }
 
 // Title and button labels of a system prompt, held in memory only.
@@ -1764,7 +1767,8 @@ async function walkBlockScoped(
       privacy.startWindow();
       if (sequence.latch) {
         sequence.latch.windowLine = privacy.windowLatched() ? line : undefined;
-        sequence.latch.secretWindowLine = privacy.secretWindowLatched() ? line : undefined;
+        const cause = privacy.secretWindowLatched();
+        sequence.latch.secretWindow = cause ? { cause, line } : undefined;
       }
       sequence.window = { fromMs: deps.now(), typed: typed.length };
     }
@@ -3322,7 +3326,7 @@ export async function runPlan(
     const videoCause = () =>
       videoPolicy === 'non-strict'
         ? privacy.secretWindowLatched()
-          ? { ...privacy.secretWindowLatched()!, line: sequence.latch?.secretWindowLine ?? 0 }
+          ? { ...privacy.secretWindowLatched()!, line: sequence.latch?.secretWindow?.line ?? 0 }
           : secretGate()
             ? { reason: 'runtime-input' as const, line: 0 }
             : undefined
