@@ -41,10 +41,11 @@ function fake(screens: Screen[], shots: (Uint8Array | undefined)[], proven = fal
   let clock = 0;
   const deps: WalkerDeps = {
     async captureScreen() {
-      return screens.length > 1 ? screens.shift()! : screens[0];
+      return screens[0];
     },
     async press(ref) {
       calls.push(`press ${ref}`);
+      if (screens.length > 1) screens.shift();
       return { ok: true, proven } satisfies ActResult;
     },
     async fill() {
@@ -334,5 +335,68 @@ test('after-capture scale must agree with the original baseline', async () => {
     const f = fake([option(before), next], [before, after, after]);
     await expectFailure(f);
     assert.equal(f.calls.filter((call) => call === 'pixel shot').length, 1);
+  }
+});
+
+test('delayed changes around every comparison shot withhold pixel proof', async () => {
+  const before = fixture('toggle1-before');
+  const after = fixture('toggle1-after');
+  const changes: ((screen: Screen) => void)[] = [
+    (screen) => {
+      elementFrame(screen.elements[0])!.x += 1;
+    },
+    (screen) => {
+      elementFrame(screen.elements[0])!.y += 1;
+    },
+    (screen) => {
+      elementFrame(screen.elements[0])!.width += 1;
+    },
+    (screen) => {
+      elementFrame(screen.elements[0])!.height += 1;
+    },
+    (screen) => {
+      screen.pointScale = 2;
+    },
+    (screen) => {
+      screen.elements[0].testID = 'replacement';
+    },
+    (screen) => {
+      screen.elements[0].hittable = false;
+    },
+    (screen) => {
+      screen.front = 'picker';
+    },
+    (screen) => {
+      screen.elements.push({ ...screen.elements[0], ref: '@duplicate' });
+    },
+  ];
+  for (const shot of [1, 2, 3]) {
+    for (const phase of ['before', 'during']) {
+      for (const change of changes) {
+        const f = fake([option(before)], [before, after, after, after, after]);
+        let captures = 0;
+        let shots = 0;
+        let changedDuringShot = false;
+        const screenshot = f.deps.comparisonScreenshot!;
+        f.deps.captureScreen = async () => {
+          captures++;
+          const screen = option(before);
+          if ((phase === 'before' && captures === [0, 2, 5, 7][shot]) || changedDuringShot)
+            change(screen);
+          changedDuringShot = false;
+          return screen;
+        };
+        f.deps.comparisonScreenshot = async () => {
+          shots++;
+          const bytes = await screenshot();
+          if (phase === 'during' && shots === shot) changedDuringShot = true;
+          return bytes;
+        };
+        const outcome = await walkBlock(tap, f.deps, 0, [], undefined, undefined, {
+          singleAttempt: true,
+        });
+        assert.equal(outcome.block.outcome, 'fail', `${shot} ${phase}: ${JSON.stringify(outcome)}`);
+      }
+    }
   }
 });
