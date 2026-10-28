@@ -96,9 +96,10 @@ Every input has one of three tiers:
 2. Fill "password-field" with input PASSWORD
 ```
 
-A TEST-PII value is read back in memory to verify typing and diagnose a mismatch. In a
-TEST-PII run only `core.log`, failure screen text and Fill readback come back redacted by
-the declared values; Metro and other subprocess logs stay withheld as in a SECRET run.
+A TEST-PII value is read back in memory to verify typing and diagnose a mismatch unless it
+collides with a SECRET value. In a TEST-PII run only `core.log`, failure screen text and
+Fill readback come back redacted by the declared values; Metro and other subprocess logs
+stay withheld as in a SECRET run.
 For derived e-mail forms, Unicode case variants and the distinction between masking and
 model equality, follow the CLI guide's [declared-value redaction rules](https://github.com/Lykhoyda/QaReN/blob/develop/packages/qaren-cli/README.md#runtime-inputs).
 Screenshots and video stay withheld in any run that holds an input. A run that holds any
