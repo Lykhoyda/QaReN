@@ -12,6 +12,7 @@ pub enum FailureCode {
     CandidateRevisionMismatch,
     CandidateDrifted,
     PrereqMissing,
+    PnpmProcessGroupUnsupported,
     MetroPortOccupied,
     RunAlreadyExists,
     RunRecordUnavailable,
@@ -77,6 +78,7 @@ impl FailureCode {
         matches!(
             self,
             FailureCode::DepsNotPrewarmed
+                | FailureCode::PnpmProcessGroupUnsupported
                 | FailureCode::DeviceClaimContended
                 | FailureCode::DeviceUnavailable
                 | FailureCode::LaneNotWarm

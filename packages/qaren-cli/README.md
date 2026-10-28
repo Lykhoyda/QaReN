@@ -39,6 +39,7 @@ that can conflict with a session or is hygiene; `SKIP` is not applicable.
 |---|---|
 | `xcode`, `ios-runtime` | `xcodebuild -version`; an available iOS simulator runtime, and the configured `ios.runtime` by name or identifier |
 | `node`, `pnpm` | `QAREN_NODE` or `node` on `PATH` is 24 or newer; a configured `nodePath` is only checked to be an executable file, never run; `pnpm` runs |
+| `pnpm-source` | The first executable `pnpm` on `PATH` and its resolved source; Corepack shims include a fix for `PNPM_PROCESS_GROUP_UNSUPPORTED` |
 | `corepack`, `cocoapods` | `corepack` and `pod` run (warnings) |
 | `disk` | The volumes holding the current directory and your home have the roughly 10 GiB free a clean iOS build needs (warning) |
 | `host-memory`, `host-devices` | Free memory, memory pressure, booted simulators and running Android emulators; conservative concurrent lane headroom on macOS and Linux |
@@ -70,6 +71,15 @@ and is never created. Project-local `.mcp.json` remains relative to the app.
 The probes run outside any project with Corepack's network access disabled, so a
 pnpm that Corepack enabled but has not yet downloaded fails until you run
 `(cd / && pnpm --version)` once with network access; the fix line says so.
+
+Before claiming resources, `qaren check` runs a finite `pnpm exec` probe in the
+app directory. If the launcher changes the process group or the probe cannot
+prove group preservation, check refuses with `PNPM_PROCESS_GROUP_UNSUPPORTED`
+(exit 4). Select a compatible pnpm version whose `exec` preserves process groups
+(the Corepack pnpm 11.5.2 JavaScript launcher is supported). For a bootstrap shim,
+put the matching installed executable ahead of the shim on that command's `PATH`.
+Selecting the native executable alone does not fix a pnpm version whose own
+`exec` changes groups. Metro still must belong to the exact group QaReN started.
 
 ### Host budget
 

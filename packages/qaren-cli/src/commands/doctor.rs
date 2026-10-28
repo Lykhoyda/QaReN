@@ -1,4 +1,4 @@
-use crate::adapters::{android, ios};
+use crate::adapters::{android, ios, pnpm};
 use crate::commands::prepare::missing_android_sdk;
 use crate::commands::update::{dev_version, DEV_COMMIT, INSTALLER, PLUGIN_MANIFEST};
 use crate::config::{AndroidConfig, CheckConfig, DEFAULT_CONFIG_PATH};
@@ -229,6 +229,7 @@ pub fn doctor(
         ),
         disk(runner, cwd, home),
     ];
+    checks.push(pnpm_source(runner));
     checks.extend(android_checks(
         runner,
         config.as_ref().and_then(|c| c.android.as_ref()),
@@ -527,6 +528,32 @@ fn tool(
         format!("{program} --version did not run: {}", output.summary()),
         fix,
     )
+}
+
+fn pnpm_source(runner: &dyn Runner) -> Check {
+    let detail = pnpm::source_detail(runner);
+    match pnpm::source(runner) {
+        Some((_, resolved))
+            if resolved
+                .components()
+                .any(|part| part.as_os_str() == "corepack") =>
+        {
+            Check::warn(
+                "pnpm-source",
+                format!("Corepack shim: {detail}"),
+                format!(
+                    "if check refuses PNPM_PROCESS_GROUP_UNSUPPORTED: {}",
+                    pnpm::GROUP_FIX
+                ),
+            )
+        }
+        Some(_) => Check::pass("pnpm-source", detail),
+        None => Check::warn(
+            "pnpm-source",
+            detail,
+            "put an installed pnpm executable on PATH",
+        ),
+    }
 }
 
 fn disk(runner: &mut dyn Runner, cwd: &Path, home: &Path) -> Check {
@@ -1516,6 +1543,27 @@ mod tests {
         runner.expect_run("df -Pk", df(500_000_000));
     }
 
+    #[test]
+    fn pnpm_source_names_corepack_shim_and_actionable_group_fix_without_running_it() {
+        let scratch = Scratch::new("pnpm-source");
+        let target = scratch.exe("corepack/dist/pnpm.js");
+        let entry = scratch.link("bin/pnpm", &target);
+        let mut runner = MockRunner::new();
+        runner
+            .environment
+            .insert("PATH".into(), entry.parent().unwrap().display().to_string());
+        let check = pnpm_source(&runner);
+        assert_eq!(check.status, Status::Warn);
+        assert!(check.detail.contains("Corepack shim"));
+        assert!(check.detail.contains(entry.to_str().unwrap()));
+        assert!(check.detail.contains(target.to_str().unwrap()));
+        assert!(check
+            .fix
+            .unwrap()
+            .contains("PNPM_PROCESS_GROUP_UNSUPPORTED"));
+        assert!(runner.calls.is_empty());
+    }
+
     fn df(available_kb: u64) -> CmdOutput {
         CmdOutput::success(&format!(
             "Filesystem 1024-blocks Used Available Capacity Mounted on\n/dev/disk3 976490576 1 {available_kb} 45% /\n"
@@ -2333,7 +2381,7 @@ mod tests {
                 "pass"
             }
         );
-        assert_eq!(parsed["checks"].as_array().unwrap().len(), 27);
+        assert_eq!(parsed["checks"].as_array().unwrap().len(), 28);
     }
 
     #[test]
