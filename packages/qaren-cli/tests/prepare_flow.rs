@@ -5424,7 +5424,7 @@ fn admission_for(udid: &str, status: &str) -> CmdOutput {
 fn plant_pool_holder(repo: &std::path::Path, udid: &str, phase: Phase) -> qaren::lease::Lease {
     let identity = common::identity(4242, "Wed Aug 12 15:00:00 2026");
     let held = qaren::lease::acquire(
-        &mut MockRunner::new(),
+        &mut qaren::exec::MockRunner::new(),
         &repo.join(".locks"),
         qaren::scenario::Platform::Ios,
         udid,
