@@ -132,8 +132,10 @@ There is no `no longer` form or heading-level declaration.
   Whitespace is kept exactly. A value that looks like an unresolved reference, starting with
   a scheme such as `op://` or `vault:` or containing `${`, `$(` or `{{`, refuses
   `CORE_REFUSED`. Invalid values refuse with `runtime inputs are invalid`.
-- The value is masked in every output and never written by qaren to a file, log, saved
-  block or report, or sent to Jev; strict inputs are also protected from execution hashing.
+- The value is masked in text output, logs and reports, omitted from saved blocks and
+  redacted before sending to Jev; SECRET inputs are also protected from execution hashing.
+  With `video: non-strict`, visible TEST-PII values can appear unmasked in recorded and
+  published video when no SECRET cause withholds it. Input-run screenshots remain withheld.
   For log and media handling and the value-free events retained
   in `logs/core-diagnostics.jsonl`, see the CLI guide's
   [runtime-input diagnostics](https://github.com/Lykhoyda/QaReN/blob/develop/packages/qaren-cli/README.md#runtime-inputs).
