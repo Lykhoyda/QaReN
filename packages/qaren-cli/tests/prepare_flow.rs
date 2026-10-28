@@ -447,6 +447,20 @@ fn ios_prepare_disconnects_the_exact_device_hardware_keyboard_and_reads_it_back(
             );
         }
         assert_eq!(calls.last().unwrap().args, calls[0].args);
+        let labels: Vec<&str> = mock.calls.iter().map(|c| c.label.as_str()).collect();
+        let mkdir = labels
+            .iter()
+            .position(|l| *l == "mkdir-simulator-preferences")
+            .expect("the preferences directory is ensured before the write");
+        let write = labels
+            .iter()
+            .position(|l| *l == "plistbuddy-hardware-keyboard-write")
+            .unwrap();
+        assert!(mkdir < write);
+        assert_eq!(
+            mock.calls[mkdir].args,
+            ["-p", "/hermetic-home/Library/Preferences"]
+        );
         assert_eq!(mock.remaining(), 0);
     }
 }

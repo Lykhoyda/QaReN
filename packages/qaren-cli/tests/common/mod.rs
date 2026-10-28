@@ -607,6 +607,10 @@ impl qaren::exec::Runner for IosBuildRunner {
                 ..Default::default()
             };
         }
+        if spec.label == "mkdir-simulator-preferences" {
+            self.inner.calls.push(spec.clone());
+            return CmdOutput::success("");
+        }
         if spec.label == "plistbuddy-hardware-keyboard-write" {
             self.inner.calls.push(spec.clone());
             if self.hardware_keyboard_missing && spec.args[1].starts_with("Set ") {

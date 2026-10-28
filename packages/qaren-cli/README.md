@@ -2010,7 +2010,8 @@ hardware-keyboard switch lives in the host's
 `~/Library/Preferences/com.apple.iphonesimulator.plist`, shared by every
 simulator; QaReN changes only `DevicePreferences:<UUID>:ConnectHardwareKeyboard`
 for the resolved simulator to `false`, preserving the rest of the dictionary and
-all other devices. A successful per-device read must prove `false`; an enabled,
+all other devices, and creates `~/Library/Preferences` first when the home lacks
+it. A successful per-device read must prove `false`; an enabled,
 unset, failed or unreadable readback refuses with `LANE_NOT_WARM`. Doctor only
 reads the per-device key and fails unless it proves `false`. Its `ios-lane` row
 fails on differing defaults and names the keys; if neither defaults domain can

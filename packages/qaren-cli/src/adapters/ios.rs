@@ -611,6 +611,16 @@ pub fn hardware_keyboard_spec(home: &Path, udid: &str) -> CmdSpec {
     )
 }
 
+// PlistBuddy creates a missing plist but not its directory, which an isolated HOME may lack.
+pub fn simulator_preferences_dir_spec(home: &Path) -> CmdSpec {
+    CmdSpec::new(
+        "mkdir-simulator-preferences",
+        "/bin/mkdir",
+        &["-p", &home.join("Library/Preferences").to_string_lossy()],
+        10,
+    )
+}
+
 pub fn hardware_keyboard_write_spec(home: &Path, udid: &str, create: bool) -> CmdSpec {
     let mut spec = hardware_keyboard_spec(home, udid);
     spec.label = "plistbuddy-hardware-keyboard-write".to_string();

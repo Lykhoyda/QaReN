@@ -2387,6 +2387,11 @@ fn normalize_lane(ctx: &mut Ctx, udid: &str, deadline: u64) -> Result<(), Failur
             if initial == Some(false) {
                 initial
             } else {
+                lane_command(
+                    ctx,
+                    &ios::simulator_preferences_dir_spec(Path::new(&home)),
+                    deadline,
+                )?;
                 let set = lane_command(
                     ctx,
                     &ios::hardware_keyboard_write_spec(Path::new(&home), udid, false),
