@@ -2782,7 +2782,17 @@ async function walkBlockScoped(
               if (first) {
                 await deps.sleep(200);
                 const second = await pixelShot(current!);
-                if (second) changed = stablePixelChange(pixelBaseline.crop, first, second);
+                if (second) {
+                  const verified = await captureOnce(
+                    item,
+                    false,
+                    false,
+                    after.platformPresence ? 'provenance' : 'resolve',
+                  );
+                  usable(verified, item);
+                  if (identical(pixelTarget(verified.screen, baseline.target)))
+                    changed = stablePixelChange(pixelBaseline.crop, first, second);
+                }
               }
             }
           }
