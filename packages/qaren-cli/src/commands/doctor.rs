@@ -229,7 +229,9 @@ pub fn doctor(
         ),
         disk(runner, cwd, home),
     ];
-    checks.push(pnpm_source(runner));
+    let app_root =
+        crate::run::app_root_for(&config_file, cwd).unwrap_or_else(|_| cwd.to_path_buf());
+    checks.push(pnpm_source(runner, &app_root));
     checks.extend(android_checks(
         runner,
         config.as_ref().and_then(|c| c.android.as_ref()),
@@ -247,8 +249,6 @@ pub fn doctor(
     checks.push(runtime_dirs(&runtime_root));
     checks.push(source_checkout(runner, cwd));
     checks.push(config_row);
-    let app_root =
-        crate::run::app_root_for(&config_file, cwd).unwrap_or_else(|_| cwd.to_path_buf());
     checks.extend(login_checks(runner, &app_root, config.as_ref()));
     checks.push(saved_blocks_check(runner, &app_root));
     checks.extend(leftover_rows(
@@ -530,29 +530,25 @@ fn tool(
     )
 }
 
-fn pnpm_source(runner: &dyn Runner) -> Check {
+fn pnpm_source(runner: &mut dyn Runner, project_root: &Path) -> Check {
     let detail = pnpm::source_detail(runner);
-    match pnpm::source(runner) {
-        Some((_, resolved))
-            if resolved
-                .components()
-                .any(|part| part.as_os_str() == "corepack") =>
-        {
-            Check::warn(
-                "pnpm-source",
-                format!("Corepack shim: {detail}"),
-                format!(
-                    "if check refuses PNPM_PROCESS_GROUP_UNSUPPORTED: {}",
-                    pnpm::GROUP_FIX
-                ),
-            )
-        }
-        Some(_) => Check::pass("pnpm-source", detail),
-        None => Check::warn(
+    if pnpm::source(runner).is_none() {
+        return Check::warn(
             "pnpm-source",
             detail,
             "put an installed pnpm executable on PATH",
-        ),
+        );
+    }
+    let output =
+        runner.run(&pnpm::group_probe_spec(project_root).env("COREPACK_ENABLE_NETWORK", "0"));
+    if output.ok() && output.stdout == pnpm::GROUP_OK {
+        Check::pass("pnpm-source", detail)
+    } else {
+        Check::warn(
+            "pnpm-source",
+            format!("{detail}; PNPM_PROCESS_GROUP_UNSUPPORTED: exec did not prove process-group preservation ({})", output.summary()),
+            pnpm::GROUP_FIX,
+        )
     }
 }
 
@@ -1544,7 +1540,7 @@ mod tests {
     }
 
     #[test]
-    fn pnpm_source_names_corepack_shim_and_actionable_group_fix_without_running_it() {
+    fn pnpm_source_names_corepack_shim_and_actionable_group_fix() {
         let scratch = Scratch::new("pnpm-source");
         let target = scratch.exe("corepack/dist/pnpm.js");
         let entry = scratch.link("bin/pnpm", &target);
@@ -1552,16 +1548,20 @@ mod tests {
         runner
             .environment
             .insert("PATH".into(), entry.parent().unwrap().display().to_string());
-        let check = pnpm_source(&runner);
+        runner.expect_run("QAREN_PNPM_LAUNCH_GROUP", CmdOutput::failed(1, ""));
+        let check = pnpm_source(&mut runner, &scratch.0);
         assert_eq!(check.status, Status::Warn);
-        assert!(check.detail.contains("Corepack shim"));
+        assert!(check.detail.contains("PNPM_PROCESS_GROUP_UNSUPPORTED"));
         assert!(check.detail.contains(entry.to_str().unwrap()));
         assert!(check.detail.contains(target.to_str().unwrap()));
         assert!(check
             .fix
             .unwrap()
-            .contains("PNPM_PROCESS_GROUP_UNSUPPORTED"));
-        assert!(runner.calls.is_empty());
+            .contains("installed pnpm executable first"));
+        assert_eq!(runner.calls.len(), 1);
+        assert!(runner.calls[0]
+            .env
+            .contains(&("COREPACK_ENABLE_NETWORK".into(), "0".into())));
     }
 
     fn df(available_kb: u64) -> CmdOutput {
