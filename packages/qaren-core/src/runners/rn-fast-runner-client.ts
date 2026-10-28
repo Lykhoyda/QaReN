@@ -217,6 +217,7 @@ export function createReadySignalParser(): ReadySignalParser {
 // --- Singleton state ---
 
 let runnerProcess: ChildProcess | null = null;
+let runnerProcessDeviceId: string | undefined;
 let runnerDriverObserver: ((pid: number) => void) | undefined;
 
 // QaReN records each spawned runner driver; the driver leads its own process group.
@@ -224,14 +225,26 @@ export function observeRunnerDrivers(observer: ((pid: number) => void) | undefin
   runnerDriverObserver = observer;
 }
 
-function signalDriver(child: ChildProcess, signal: NodeJS.Signals): void {
-  try {
-    if (child.pid !== undefined) process.kill(-child.pid, signal);
-    return;
-  } catch {
-    // The group is gone or was never formed; the leader alone remains addressable.
+function hasLiveRunnerProcess(): boolean {
+  return (
+    runnerProcess?.pid !== undefined &&
+    runnerProcess.exitCode === null &&
+    runnerProcess.signalCode === null
+  );
+}
+
+function assertRunnerDriverExited(): void {
+  if (hasLiveRunnerProcess()) {
+    throw new Error('RUNNER_ADOPTION_REQUIRED: previous iOS runner driver has not exited');
   }
-  child.kill(signal);
+}
+
+function cancelStartingRunner(child: ChildProcess): void {
+  try {
+    child.kill('SIGINT');
+  } catch {
+    // The driver has already exited.
+  }
 }
 // GH #629: monotonic count of launch xcodebuild children actually spawned.
 // ensureFastRunner swallows startFastRunner errors, so this is the only way a
@@ -431,7 +444,7 @@ export function parseLegacyRunnerState(
 // pre-upgrade runner is discovered rather than orphaned (review amendment);
 // a dead legacy file is garbage and is removed immediately.
 export function adoptPersistedFastRunnerState(deviceId: string | undefined): void {
-  if (runnerState || !deviceId) return;
+  if (runnerState || hasLiveRunnerProcess() || !deviceId) return;
   const path = iosStatePath(deviceId);
   const raw = readJsonStateFile(path);
   if (raw !== null) {
@@ -886,6 +899,7 @@ export async function startFastRunner(
   opts: { forceLocalBuild?: boolean; attachOnly?: boolean; readyDeadline?: number } = {},
 ): Promise<FastRunnerState> {
   throwIfCancelled();
+  if (!runnerState) assertRunnerDriverExited();
   adoptPersistedFastRunnerState(deviceId);
   if (shouldReuseRunner(runnerState, deviceId)) return runnerState!;
   if (runnerState) await stopFastRunner(deviceId);
@@ -932,6 +946,7 @@ export async function startFastRunner(
   const signal = cancellationSignal();
   const readyMs = Math.min(READY_TIMEOUT_MS, (opts.readyDeadline ?? Infinity) - performance.now());
   if (!(readyMs > 0)) throw new Error('Fast runner readiness deadline elapsed');
+  assertRunnerDriverExited();
   return new Promise((resolve, reject) => {
     const child = spawn('xcodebuild', launch.args, {
       env: {
@@ -949,6 +964,7 @@ export async function startFastRunner(
     });
 
     runnerProcess = child;
+    runnerProcessDeviceId = deviceId;
     if (child.pid !== undefined) runnerDriverObserver?.(child.pid);
     runnerLaunchCount += 1;
     runnerOutputTail = '';
@@ -965,7 +981,7 @@ export async function startFastRunner(
         reject(signal.reason);
         return;
       }
-      signalDriver(child, 'SIGTERM');
+      cancelStartingRunner(child);
       reject(new Error(`Fast runner did not become ready within ${READY_TIMEOUT_MS / 1000}s`));
     }, readyMs);
 
@@ -975,7 +991,6 @@ export async function startFastRunner(
       if (signal?.aborted) {
         resolved = true;
         clearTimeout(timer);
-        if (runnerProcess === child) clearStateFile();
         reject(signal.reason);
         return;
       }
@@ -1002,7 +1017,7 @@ export async function startFastRunner(
       };
       const processBirth = readProcessBirth(child.pid!);
       if (!processBirth) {
-        signalDriver(child, 'SIGTERM');
+        cancelStartingRunner(child);
         reject(
           new Error(
             'PROCESS_BIRTH_UNAVAILABLE: native runner process identity could not be proven',
@@ -1064,45 +1079,28 @@ export function getRunnerLaunchCount(): number {
   return runnerLaunchCount;
 }
 
-/**
- * GH #629: bounded settle before the single first-start retry. The READY
- * timeout SIGTERMs the launch xcodebuild, but its teardown is asynchronous —
- * wait for the child to actually exit (escalating to SIGKILL at the grace
- * cap) so a retry can never stack a second launch on a still-dying first one.
- */
+// A failed launch must exit before retry; never kill XCTest helpers during initialization.
 export async function awaitSpawnedRunnerExit(
   graceMs = 5000,
   expectedLaunchCount?: number,
 ): Promise<boolean> {
-  // A concurrent dispatch's start replaces the global handle (and a successful
-  // one leaves it live), so signalling it blind would SIGKILL a runner this
-  // caller never launched. Only the generation the caller observed is ours; a
-  // runner that came up meanwhile is someone else's success, never this
-  // caller's retry.
+  // A concurrent successful launch belongs to its caller.
   if (runnerState) return false;
   if (expectedLaunchCount !== undefined && runnerLaunchCount !== expectedLaunchCount) return false;
-  return awaitChildExit(runnerProcess, graceMs);
+  const launchCount = runnerLaunchCount;
+  if (runnerProcess) cancelStartingRunner(runnerProcess);
+  const exited = await awaitChildExit(runnerProcess, graceMs);
+  return exited && runnerLaunchCount === launchCount && !runnerState;
 }
 
 export async function awaitChildExit(child: ChildProcess | null, graceMs = 5000): Promise<boolean> {
   if (!child || child.exitCode !== null || child.signalCode !== null) return true;
   return new Promise<boolean>((resolve) => {
-    const killTimer = setTimeout(() => {
-      try {
-        child.kill('SIGKILL');
-      } catch {
-        /* already gone */
-      }
-    }, graceMs);
-    // Backstop: an unkillable zombie must not wedge the caller forever —
-    // resolve false so the caller refuses the retry instead of stacking a
-    // second launch on a process that provably survived SIGKILL.
     const backstop = setTimeout(() => {
       child.removeListener('exit', onExit);
       resolve(false);
-    }, graceMs + 2000);
+    }, graceMs);
     const onExit = (): void => {
-      clearTimeout(killTimer);
       clearTimeout(backstop);
       resolve(true);
     };
@@ -1110,11 +1108,20 @@ export async function awaitChildExit(child: ChildProcess | null, graceMs = 5000)
   });
 }
 
-// GH #383 (review amendment): adoption-aware teardown. A post-respawn stop
-// (session close, restart, maestro park) would otherwise no-op against empty
-// in-memory state and leak the persisted runner — so adopt first, then reap.
+// Adopt before teardown so recovery closes the persisted runner too.
 export async function stopFastRunner(deviceId?: string, signal?: AbortSignal): Promise<void> {
   adoptPersistedFastRunnerState(deviceId);
+  if (!runnerState && runnerProcess) {
+    if (deviceId && runnerProcessDeviceId !== deviceId) {
+      throw new Error(
+        'RUNNER_ADOPTION_REQUIRED: initializing iOS runner belongs to another device',
+      );
+    }
+    cancelStartingRunner(runnerProcess);
+    if (!(await awaitChildExit(runnerProcess, 30_000))) {
+      throw new Error('RUNNER_ADOPTION_REQUIRED: iOS runner initialization has not settled');
+    }
+  }
   await reapStaleFastRunner({ signal });
 }
 
@@ -1205,6 +1212,7 @@ export function clearFastRunnerAfterVerifiedStop(binding: Record<string, unknown
   if (runnerProcess?.pid !== undefined && runnerProcess.pid !== expected.pid) {
     throw new Error('RUNNER_ADOPTION_REQUIRED: local runner process changed before cleanup');
   }
+  assertRunnerDriverExited();
   runnerState = null;
   runnerProcess = null;
   lastKnownCapabilities = [];
@@ -1288,24 +1296,7 @@ export async function fastHealthCheck(): Promise<boolean> {
   }
 }
 
-// ─── M7 / Phase 109: tri-state liveness probe ──────────────────────────
-//
-// Prior art: isFastRunnerAvailable() above only checks PID via
-// process.kill(pid, 0). A process whose PID is alive but whose HTTP
-// server has hung (crashed listener, wedged XCTest thread) would be
-// reported as available, and every device_press then stalled on a
-// 10s fetch timeout before falling back to the daemon.
-//
-// The tri-state distinction:
-//   'alive' — PID lives AND /health returns {ok:true}. Happy path.
-//   'stale' — PID lives but /health times out / 500s / ok:false.
-//             Must be reaped before a fresh startFastRunner.
-//   'dead'  — PID doesn't exist (or no state file). Cold-launch OK.
-//
-// Separation of concerns: the probe is read-only (clears state only
-// on 'dead' discovery, never mutates a living process). The reap
-// helper is the explicit action — SIGTERM, wait 500ms, SIGKILL if
-// still alive. Callers compose: probe → (stale ? reap : …) → act.
+// Liveness probes never signal a living process; shutdown belongs to reapStaleFastRunner.
 
 export type FastRunnerLiveness = 'alive' | 'stale' | 'dead';
 
@@ -1529,11 +1520,7 @@ function clearStateFile(): void {
   const path = runnerState ? iosStatePath(runnerState.deviceId) : null;
   runnerState = null;
   lastKnownCapabilities = [];
-  // M7 review (Gemini): null the child-process handle too. Previously a reap
-  // left `runnerProcess` pointing at a dead PID; the on('exit') handler would
-  // eventually self-heal, but during the window a concurrent stopFastRunner
-  // could signal an already-dead process. Clearing here is defensive.
-  runnerProcess = null;
+  if (!hasLiveRunnerProcess()) runnerProcess = null;
   if (path) deleteStateFile(path);
 }
 
@@ -1549,7 +1536,7 @@ function clearStateFileIfMatches(expected: StateSnapshot): void {
     runnerState = null;
     clearedCurrent = true;
   }
-  if (runnerProcess?.pid === expected.pid) {
+  if (runnerProcess?.pid === expected.pid && !hasLiveRunnerProcess()) {
     runnerProcess = null;
     clearedCurrent = true;
   }

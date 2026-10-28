@@ -1009,7 +1009,7 @@ fn recovery_rejects_a_corrupt_group_identity_before_any_cleanup_probe() {
 }
 
 #[test]
-fn timeout_cleanup_uses_owned_group_policy_and_positive_absence() {
+fn timeout_cleanup_interrupts_only_the_driver_and_requires_positive_absence() {
     for gone in [true, false] {
         let (mut runner, home) = setup();
         preflight(&mut runner, "Booted");
@@ -1019,10 +1019,7 @@ fn timeout_cleanup_uses_owned_group_policy_and_positive_absence() {
         runner.expect_run("stat=", CmdOutput::success("S"));
         runner.expect_run("lstart=", CmdOutput::success(BIRTH));
         runner.expect_run("stat=", CmdOutput::success("S"));
-        runner.expect_run("/bin/kill -TERM -- -9000", CmdOutput::success(""));
-        runner.expect_run("lstart=", CmdOutput::success(BIRTH));
-        runner.expect_run("stat=", CmdOutput::success("S"));
-        runner.expect_run("/bin/kill -KILL -- -9000", CmdOutput::success(""));
+        runner.expect_run("/bin/kill -INT -- 9000", CmdOutput::success(""));
         if gone {
             absent_group(&mut runner);
             absent_hosts(&mut runner);
@@ -1377,7 +1374,7 @@ fn reaping_the_leader_does_not_release_a_surviving_or_unknown_group() {
             }
         );
         assert_eq!(
-            runner.signals, 2,
+            runner.signals, 1,
             "a dead leader cannot authorize further signals"
         );
         let record: native_suite::NativeSuite =

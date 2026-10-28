@@ -2147,7 +2147,7 @@ secret despite artifact redaction.
   `block-outcome` with its first plan line and existing `pass`/`fail`/`refused` result; only saved-login
   recovery emits `login-outcome`. A block passing is its existing block result, not a new assertion
   of authentication. These events contain no block names, slot names, input-derived tokens, screen
-  text, selectors, hashes or error messages. Raw log withholding and masking stay unchanged.
+  text, selectors, hashes or error messages.
   Timing events are capped at 20,000 independently of the 10,000 outcome-marker cap; malformed
   diagnostics and sink failures are ignored without changing the run verdict or step deadline.
 - Before a strict or literal fill dispatch, the walker registers the target's identifier when available.
@@ -2276,23 +2276,33 @@ the driver to exit before falling back to `SIGTERM`, then `SIGKILL` after a
 can skip the request or interrupt these waits. Unknown process identity refuses
 termination with `RUNNER_ADOPTION_REQUIRED` rather than authorizing signals.
 
+Before runner readiness, cleanup interrupts only the `xcodebuild` driver and
+waits for its exit without force-killing its initializing XCTest helpers. The
+native iOS suite and recorded-driver recovery use the same driver-only
+interrupt, allowing up to 30 seconds for graceful cancellation. If group absence
+remains unproven, cleanup retains the resources and lease.
+A failed startup also retains its driver handle until exit is proven; a surviving
+driver blocks replacement with `RUNNER_ADOPTION_REQUIRED`.
+
 After teardown, an iOS check with a recorded runner driver polls
 `~/Library/Logs/DiagnosticReports` for up to 60 seconds, stopping early on a match
-or cancellation. It looks for a SpringBoard `.ips` report written since the core
-was spawned and matched to the selected simulator by device path or coalition.
+or cancellation. It looks for a SpringBoard `.ips` report whose body `captureTime`
+is at or after core spawn and whose device path or coalition matches the selected
+simulator. File modification time and the header's report-delivery timestamp do
+not establish crash time; a missing or invalid `captureTime` is not attributed.
 A match adds `outcomes.springboard_crash` to the receipt and a lane-health entry to
-`run.json` history, optionally including a sanitized exception type; report paths
+`run.json` history, including the crash time in UTC and optionally a sanitized exception type; report paths
 and raw contents are not copied. This observation never changes the run result,
 and an absent note does not prove that SpringBoard stayed healthy.
 
 Cleanup proves owned process-group and exact-simulator runner-host absence
 before releasing the lease. When the leased simulator had no runner host as the
-core started, the run records the host as its own; normal teardown, cancellation
-and dead-owner cleanup then terminate that host by bundle id on that exact
-simulator only after core cleanup proves removal or absence, and re-prove the
-host's absence. The core starts the runner's `xcodebuild` driver in its own
+core started, the run records the host as its own. Cleanup observes host absence
+after core and driver cleanup; a bundle id alone cannot prove that an automation
+session has finished initializing and does not authorize host termination.
+The core starts the runner's `xcodebuild` driver in its own
 process group and announces it; the CLI records that group with the driver's
-identity and signals it, before the host, only while that identity still
+identity and interrupts that driver alone only while that identity still
 matches. Refused or unresolved core or driver cleanup leaves the host untouched
 and retains the lease. A host that was already running, or any
 present or unknown host after that, retains the lease. Cleanup rechecks an unknown

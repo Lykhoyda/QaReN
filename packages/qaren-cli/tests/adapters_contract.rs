@@ -1088,6 +1088,77 @@ fn launchctl_parsing_requires_live_pid_and_exact_label() {
 }
 
 #[test]
+fn crash_scan_uses_capture_time_instead_of_report_delivery_time() {
+    let root = common::temp_repo();
+    let udid = "AAAABBBB-1111-2222-3333-444455556666";
+    let report = |time: &str, exception: &str| {
+        format!("{{\"bundleID\":\"com.apple.springboard\",\"timestamp\":\"2026-10-28 00:23:12.00 +0100\"}}\n{}", serde_json::json!({
+            "coalitionName": format!("com.apple.CoreSimulator.SimDevice.{udid}"),
+            "captureTime": time,
+            "exception": {"type": exception}
+        }))
+    };
+    let since = std::time::UNIX_EPOCH
+        + std::time::Duration::from_millis(
+            qaren::timefmt::parse_iso8601_utc("2026-10-27T23:23:00Z").unwrap(),
+        );
+    let path = root.join("SpringBoard.ips");
+    std::fs::write(
+        &path,
+        report("2026-10-28 00:22:29.3603 +0100", "EXC_BAD_ACCESS"),
+    )
+    .unwrap();
+    assert_eq!(
+        ios::recent_crash_facts(&root, ios::SPRINGBOARD_BUNDLE_ID, udid, since),
+        None
+    );
+    std::fs::write(&path, report("2026-10-28 00:23:01.1234 +0100", "EXC_CRASH")).unwrap();
+    std::fs::File::options()
+        .write(true)
+        .open(&path)
+        .unwrap()
+        .set_times(std::fs::FileTimes::new().set_modified(std::time::UNIX_EPOCH))
+        .unwrap();
+    assert_eq!(
+        ios::recent_crash_facts(&root, ios::SPRINGBOARD_BUNDLE_ID, udid, since)
+            .unwrap()
+            .exception
+            .as_deref(),
+        Some("EXC_CRASH")
+    );
+    let newest = root.join("SpringBoard-newest.ips");
+    std::fs::write(
+        &newest,
+        report("2026-10-27 18:23:02.9876 -0500", "EXC_NEWEST"),
+    )
+    .unwrap();
+    std::fs::File::options()
+        .write(true)
+        .open(&newest)
+        .unwrap()
+        .set_times(std::fs::FileTimes::new().set_modified(std::time::UNIX_EPOCH))
+        .unwrap();
+    let facts = ios::recent_crash_facts(&root, ios::SPRINGBOARD_BUNDLE_ID, udid, since).unwrap();
+    assert_eq!(facts.exception.as_deref(), Some("EXC_NEWEST"));
+    assert_eq!(
+        facts.occurred_at_ms,
+        qaren::timefmt::parse_iso8601_utc("2026-10-27T23:23:02Z").map(|ms| ms + 987)
+    );
+    std::fs::remove_file(newest).unwrap();
+    for invalid in [
+        "",
+        "2026-02-30 00:23:01.1234 +0100",
+        "2026-10-28 00:23:01.1234 +9960",
+    ] {
+        std::fs::write(&path, report(invalid, "EXC_CRASH")).unwrap();
+        assert_eq!(
+            ios::recent_crash_facts(&root, ios::SPRINGBOARD_BUNDLE_ID, udid, since),
+            None
+        );
+    }
+}
+
+#[test]
 fn crash_report_yields_only_tokens_for_this_app_on_this_simulator() {
     let udid = "AAAABBBB-1111-2222-3333-444455556666";
     let report = |bundle: &str, device: &str, exception: &str, reason: &str| {
@@ -1104,6 +1175,7 @@ fn crash_report_yields_only_tokens_for_this_app_on_this_simulator() {
     assert_eq!(
         ios::parse_crash_report(&report(app, udid, "EXC_CRASH", dylib), app, udid),
         Some(ios::CrashFacts {
+            occurred_at_ms: None,
             exception: Some("EXC_CRASH".into()),
             termination: Some("DYLD Library missing".into()),
             missing_library: Some("libMissing.dylib".into()),

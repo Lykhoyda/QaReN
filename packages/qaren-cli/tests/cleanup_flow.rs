@@ -1948,7 +1948,7 @@ fn cleanup_retains_the_device_lease_until_the_metro_group_is_proven_gone() {
 }
 
 #[test]
-fn a_dead_owners_runner_host_is_terminated_on_its_simulator_and_the_lease_released() {
+fn a_dead_owners_runner_host_must_exit_naturally_before_the_lease_is_released() {
     const UDID: &str = "1DC408C4-51DA-4C4F-ACA1-39881C916FDD";
     const HOSTS: [&str; 2] = [
         "dev.lykhoyda.rndevagent.fastrunner",
@@ -1983,12 +1983,6 @@ fn a_dead_owners_runner_host_is_terminated_on_its_simulator_and_the_lease_releas
             HOSTS[0]
         )),
     );
-    for bundle in HOSTS {
-        mock.expect_run(
-            &format!("simctl terminate {UDID} {bundle}"),
-            CmdOutput::success(""),
-        );
-    }
     mock.expect_run("simctl list devices -j", CmdOutput::success(&inventory));
     mock.expect_run(
         "launchctl list",
@@ -2003,9 +1997,13 @@ fn a_dead_owners_runner_host_is_terminated_on_its_simulator_and_the_lease_releas
         "{:?}",
         receipt.cleanup
     );
-    assert_eq!(receipt.cleanup["runner_host"], "removed");
+    assert_eq!(receipt.cleanup["runner_host"], "absent");
     assert_eq!(receipt.cleanup["device_lease"], "removed");
     assert!(!lock.exists());
+    assert!(mock
+        .calls
+        .iter()
+        .all(|spec| spec.label != "simctl-terminate"));
     assert_eq!(mock.remaining(), 0);
 }
 
@@ -2085,10 +2083,7 @@ fn a_dead_owner_s_recorded_runner_driver_group_is_signaled_and_the_lease_release
     mock.expect_run("ps -p 7000", CmdOutput::success("S"));
     mock.expect_run("lstart=", CmdOutput::success(LSTART));
     mock.expect_run("stat=", CmdOutput::success("S"));
-    mock.expect_run("/bin/kill -TERM -- -7000", CmdOutput::success(""));
-    mock.expect_run("lstart=", CmdOutput::success(LSTART));
-    mock.expect_run("stat=", CmdOutput::success("S"));
-    mock.expect_run("/bin/kill -KILL -- -7000", CmdOutput::success(""));
+    mock.expect_run("/bin/kill -INT -- 7000", CmdOutput::success(""));
     mock.expect_run("ps -A", CmdOutput::success("1 1 S\n"));
 
     let receipt = cleanup(&mut mock, &repo, "core-run");
