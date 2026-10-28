@@ -187,3 +187,22 @@ test('a PUBLIC literal fill into a readable native label-private field can publi
   assert.equal(result.nonStrictPublication, 'eligible');
   assert.equal(result.steps[0].screenshotWithheld, 'input-value');
 });
+
+test('protected runtime echoes retain protection provenance after the login window resets', () => {
+  for (const strict of [false, true]) {
+    for (const secure of [false, true]) {
+      const privacy = new ObservedPrivacy();
+      privacy.classifyInputs([canary], strict ? [canary] : []);
+      privacy.observe(screen([element('@fixture', 'Fixture', { kind: 'input', testID: 'fixture' })]));
+      privacy.concealFallback(canary, { secure, protectedValue: true }, 'fixture');
+      privacy.observe(screen([], [canary.toUpperCase()]));
+      privacy.startWindow();
+      assert.deepEqual(privacy.secretWindowLatched(), {
+        reason: 'echo',
+        source: secure ? 'secret' : 'concealed',
+      });
+      assert.equal(privacy.redact(canary), '•••');
+      assert.equal(privacy.canScreenshot(), false);
+    }
+  }
+});

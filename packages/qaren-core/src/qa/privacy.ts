@@ -1017,10 +1017,10 @@ export class ObservedPrivacy {
         ),
       ],
       values: [
-        ...tagged(this.inputValues, 'input'),
         ...tagged(this.provenCodes, 'code'),
         ...tagged(this.secret, 'secret'),
         ...tagged(this.concealed, 'concealed'),
+        ...tagged(this.inputValues, 'input'),
         ...tagged([...this.typed, ...this.preclassified], 'typed'),
         ...tagged(this.observed, 'observed'),
       ],

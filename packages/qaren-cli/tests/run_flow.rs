@@ -7027,17 +7027,31 @@ fn pr_runs_the_walk_on_a_worktree_at_the_head_with_a_recording_in_order() {
 }
 
 #[test]
-fn a_pr_run_with_runtime_inputs_never_starts_the_recorder_and_keeps_values_private() {
-    for non_secret in [false, true] {
+fn pr_runtime_input_recording_obeys_video_policy_and_secret_inventory() {
+    for (policy, non_secret, unused) in [
+        (None, false, false),
+        (None, true, false),
+        (Some("strict"), false, false),
+        (Some("strict"), true, false),
+        (Some("non-strict"), false, false),
+        (Some("non-strict"), true, false),
+        (Some("non-strict"), false, true),
+        (Some("non-strict"), true, true),
+    ] {
+        let records = policy == Some("non-strict") && non_secret && !unused;
         let secret = "synthetic\"slot\\value";
         let (repo, app) = app_repo();
-        let annotation = if non_secret { " (non-secret)" } else { "" };
+        let annotation = if non_secret { " (test-pii)" } else { "" };
         std::fs::write(
             app.join("plan.md"),
             format!("1. Fill \"password\" with input PASSWORD{annotation}\n"),
         )
         .unwrap();
         let mut req = pr_request(&repo, &app);
+        if let Some(policy) = policy {
+            let yaml = std::fs::read_to_string(&req.config_path).unwrap();
+            std::fs::write(&req.config_path, format!("{yaml}video: {policy}\n")).unwrap();
+        }
         req.runs_root = repo.join(".qaren/runs");
         let wt = req.runs_root.join(run_id()).join("wt");
         let mut runner = PrRunner {
@@ -7059,6 +7073,9 @@ fn a_pr_run_with_runtime_inputs_never_starts_the_recorder_and_keeps_values_priva
         script_provision(mock);
         script_pr_provenance_recheck(mock);
         script_drift_status(mock);
+        if records {
+            mock.expect_spawn_failure("recordVideo", "recorder spawn failure");
+        }
         script_host_probe(mock, UDID, hosts_absent());
         mock.expect_spawn_piped("walk.js", 9000, &pr_pass_stdout(), Some(0));
         script_core_identity(mock);
@@ -7072,15 +7089,19 @@ fn a_pr_run_with_runtime_inputs_never_starts_the_recorder_and_keeps_values_priva
             "gh pr view https://github.com/o/r/pull/12",
             pr_view_json(PR_HEAD),
         );
-        let inputs = std::sync::Arc::new(qaren::redact::InputValues::from_entries([
-            ("QAREN_INPUT_PASSWORD".into(), secret.into()),
-            ("QAREN_INPUT_UNUSED".into(), "unused-synthetic".into()),
-        ]));
+        let mut entries = vec![("QAREN_INPUT_PASSWORD".into(), secret.into())];
+        if unused {
+            entries.push(("QAREN_INPUT_UNUSED".into(), "unused-synthetic".into()));
+        }
+        let inputs = std::sync::Arc::new(qaren::redact::InputValues::from_entries(entries));
         let (receipt, events) =
             qaren::redact::with_input_scope(inputs, || run_with_events(&mut runner, &req));
         assert_eq!(receipt.result, ReceiptResult::Pass, "{:?}", receipt.failure);
         assert_eq!(runner.inner.remaining(), 0);
-        assert!(!labels(&runner.inner).iter().any(|l| l.contains("record")));
+        assert_eq!(
+            labels(&runner.inner).iter().any(|l| l.contains("record")),
+            records
+        );
         assert!(receipt.outcomes["video"].starts_with("unavailable("));
         assert_eq!(
             receipt.outcomes["platform_log"],
@@ -7092,7 +7113,11 @@ fn a_pr_run_with_runtime_inputs_never_starts_the_recorder_and_keeps_values_priva
                 .filter(|e| e["event"] == "stage" && e["payload"]["name"] == "recording")
                 .map(|e| e["payload"]["state"].as_str().unwrap())
                 .collect::<Vec<_>>(),
-            ["skipped"]
+            if records {
+                vec!["running", "failed"]
+            } else {
+                vec!["skipped"]
+            }
         );
         let escaped = serde_json::to_string(secret).unwrap();
         let escaped = &escaped[1..escaped.len() - 1];

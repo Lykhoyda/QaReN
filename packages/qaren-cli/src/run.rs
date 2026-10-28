@@ -846,7 +846,9 @@ fn run_inner(
     let mut video = None;
     // Taken before the spawn, so the trim offset can only cut later than the true admission frame.
     let recording_from = ctx.runner.now_epoch_ms();
-    if resolved_inputs.has_inputs() {
+    if resolved_inputs.has_inputs()
+        && (config.video != record::VideoPolicy::NonStrict || crate::redact::private_output_mode())
+    {
         events::stage("recording", StageState::Skipped, None, None);
         video = Some(VideoStatus::Unavailable(
             "runtime inputs withhold recording".to_string(),
