@@ -41,7 +41,7 @@ test('an already-exited child settles immediately without escalation', async () 
 });
 
 test('a child that honours SIGTERM settles true before the grace cap', async () => {
-  // The READY timeout has already sent SIGTERM in production; teardown is async.
+  // Observation also accepts an exit already requested by its owner.
   const child = spawnKeepAlive("setInterval(() => {}, 1000); console.log('ready');");
   await whenReady(child);
   child.kill('SIGTERM');
@@ -51,28 +51,26 @@ test('a child that honours SIGTERM settles true before the grace cap', async () 
   assert.equal(child.signalCode, 'SIGTERM');
 });
 
-test('a child that ignores SIGTERM is escalated to SIGKILL at the grace cap', async () => {
+test('a child that ignores cancellation is retained when the grace expires', async () => {
   const child = spawnKeepAlive(
-    "process.on('SIGTERM', () => {}); setInterval(() => {}, 1000); console.log('ready');",
+    "process.on('SIGINT', () => {}); setInterval(() => {}, 1000); console.log('ready');",
   );
-  await whenReady(child);
-  child.kill('SIGTERM');
-  const t0 = Date.now();
-  assert.equal(await awaitChildExit(child, 300), true);
-  const elapsed = Date.now() - t0;
-  assert.ok(elapsed >= 300, `escalation fired before the grace cap: ${elapsed}ms`);
-  assert.ok(elapsed < 2300, `escalation must not fall through to the backstop: ${elapsed}ms`);
-  // SIGKILL, not a voluntary exit: the escalation is what reaped it.
-  assert.equal(child.signalCode, 'SIGKILL');
-  assert.equal(child.exitCode, null);
+  try {
+    await whenReady(child);
+    child.kill('SIGINT');
+    assert.equal(await awaitChildExit(child, 50), false);
+    assert.equal(child.signalCode, null);
+    assert.equal(child.exitCode, null);
+  } finally {
+    child.kill('SIGKILL');
+    await new Promise((resolve) => child.once('exit', resolve));
+  }
 });
 
-test('a handle surviving SIGKILL is refused at the backstop (retry must not stack)', async (t) => {
+test('an initializing runner is never force-killed when the wait expires', async (t) => {
   t.mock.timers.enable({ apis: ['setTimeout'] });
-  // A real process cannot survive SIGKILL, so the unkillable-zombie shape is
-  // modelled with a handle that reports itself live and never emits 'exit'.
   const signals: Array<string | undefined> = [];
-  const zombie = Object.assign(new EventEmitter(), {
+  const child = Object.assign(new EventEmitter(), {
     exitCode: null,
     signalCode: null,
     kill: (signal?: string) => {
@@ -80,24 +78,9 @@ test('a handle surviving SIGKILL is refused at the backstop (retry must not stac
       return true;
     },
   }) as unknown as ChildProcess;
-
-  let settled: boolean | undefined;
-  const settling = awaitChildExit(zombie, 100).then((result) => {
-    settled = result;
-    return result;
-  });
-
+  const settling = awaitChildExit(child, 100);
   t.mock.timers.tick(100);
-  assert.deepEqual(signals, ['SIGKILL'], 'escalation is attempted before giving up');
-  t.mock.timers.tick(1999);
-  await Promise.resolve();
-  assert.equal(settled, undefined, 'the process remains unsettled before the backstop');
-
-  t.mock.timers.tick(1);
-  assert.equal(await settling, false, 'a surviving process must refuse the retry');
-  assert.equal(
-    (zombie as unknown as EventEmitter).listenerCount('exit'),
-    0,
-    'the exit listener must be removed when the backstop gives up',
-  );
+  assert.equal(await settling, false);
+  assert.deepEqual(signals, []);
+  assert.equal(child.listenerCount('exit'), 0);
 });

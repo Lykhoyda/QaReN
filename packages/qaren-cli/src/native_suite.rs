@@ -1,6 +1,8 @@
 use crate::adapters::ios;
 use crate::buildplan::{self, ReleaseOutcome};
-use crate::commands::cleanup::{cleanup_process_group, cleanup_scoped_runner_hosts, Outcome};
+use crate::commands::cleanup::{
+    cleanup_ios_automation_group, cleanup_scoped_runner_hosts, Outcome,
+};
 use crate::core;
 use crate::exec::{ChildHandle, CmdSpec, Runner};
 use crate::lease::{self, Lease};
@@ -118,13 +120,17 @@ fn release(record: &NativeSuite) -> Result<(), String> {
     }
 }
 
-fn rollback(dir: &Path, record: &mut NativeSuite) -> Result<(), String> {
+fn mark_not_spawned(record: &mut NativeSuite) {
     record.process = SuiteProcess::NotSpawned;
     record.cleanup = Some(CleanupEvidence {
         group: OutputText::from_output("not_spawned"),
         admission_clear: false,
         runner_host: None,
     });
+}
+
+fn rollback(dir: &Path, record: &mut NativeSuite) -> Result<(), String> {
+    mark_not_spawned(record);
     let saved = save(dir, record);
     release(record)?;
     saved
@@ -142,12 +148,12 @@ fn finish(
             return Err("spawn identity was not persisted; lease retained".into())
         }
         SuiteProcess::Spawned { pgid, identity } => {
-            let mut group = cleanup_process_group(runner, identity.as_ref(), *pgid, None);
+            let mut group = cleanup_ios_automation_group(runner, identity.as_ref(), *pgid);
             if !group.clean()
                 && record.suite_exit.is_none()
                 && child.is_some_and(|child| matches!(child.try_wait(), Ok(Some(_))))
             {
-                group = cleanup_process_group(runner, identity.as_ref(), *pgid, None);
+                group = cleanup_ios_automation_group(runner, identity.as_ref(), *pgid);
             }
             group
         }
@@ -428,6 +434,22 @@ pub fn recover(runner: &mut dyn Runner, run_id: &str) -> Result<NativeSuite, Str
             .is_some_and(|i| i.pid == record.owner.pid && i.started_at == record.owner.started_at)
     {
         return Err("actual device lease does not match the recorded suite owner".into());
+    }
+    if matches!(record.process, SuiteProcess::SpawnPending) {
+        if holder.group.is_some() {
+            return Err("pending spawn has a recorded process group; lease retained".into());
+        }
+        if !matches!(
+            cleanup_scoped_runner_hosts(runner, &record.device_id),
+            Outcome::Absent
+        ) {
+            return Err("exact simulator runner host absence is not proven; lease retained".into());
+        }
+        // The start gate cannot open until Spawned is durable.
+        mark_not_spawned(&mut record);
+        save(&dir, &record)?;
+        release(&record)?;
+        return Ok(record);
     }
     finish(runner, &dir, &mut record, None)?;
     Ok(record)

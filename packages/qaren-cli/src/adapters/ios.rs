@@ -1156,6 +1156,7 @@ pub fn app_pid_in_launchctl(launchctl_output: &str, app_id: &str) -> Option<u32>
 // Only short single-field tokens leave a crash report; paths and free-text reasons never do.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CrashFacts {
+    pub occurred_at_ms: Option<u64>,
     pub exception: Option<String>,
     pub termination: Option<String>,
     pub missing_library: Option<String>,
@@ -1208,11 +1209,43 @@ pub fn parse_crash_report(text: &str, app_id: &str, udid: &str) -> Option<CrashF
         .filter_map(|v| v.as_str())
         .find_map(missing_library_name);
     Some(CrashFacts {
+        occurred_at_ms: text_at("/captureTime").and_then(crash_time_epoch_ms),
         exception: text_at("/exception/type").and_then(crash_token),
         termination: (!termination_text.is_empty()).then_some(termination_text),
         missing_library_embedded: missing_library.as_ref().is_some_and(|(_, e)| *e),
         missing_library: missing_library.map(|(name, _)| name),
     })
+}
+
+fn crash_time_epoch_ms(value: &str) -> Option<u64> {
+    let (local, offset) = value.rsplit_once(' ')?;
+    let (date, fraction) = local.split_once('.').unwrap_or((local, "0"));
+    if date.len() != 19
+        || date.as_bytes()[10] != b' '
+        || fraction.is_empty()
+        || fraction.len() > 9
+        || !fraction.bytes().all(|b| b.is_ascii_digit())
+        || offset.len() != 5
+        || !matches!(offset.as_bytes()[0], b'+' | b'-')
+        || !offset.as_bytes()[1..].iter().all(u8::is_ascii_digit)
+    {
+        return None;
+    }
+    let utc = format!("{}T{}Z", date.get(..10)?, date.get(11..)?);
+    let whole = crate::timefmt::parse_iso8601_utc(&utc)?;
+    let millis = format!("{fraction:0<3}").get(..3)?.parse::<u64>().ok()?;
+    let hours = offset.get(1..3)?.parse::<u64>().ok()?;
+    let minutes = offset.get(3..5)?.parse::<u64>().ok()?;
+    if hours > 23 || minutes > 59 {
+        return None;
+    }
+    let zone_ms = (hours * 60 + minutes) * 60_000;
+    let local_ms = whole.checked_add(millis)?;
+    if offset.starts_with('+') {
+        local_ms.checked_sub(zone_ms)
+    } else {
+        local_ms.checked_add(zone_ms)
+    }
 }
 
 fn crash_token(raw: &str) -> Option<String> {
@@ -1237,7 +1270,7 @@ fn missing_library_name(reason: &str) -> Option<(String, bool)> {
     crash_token(name).map(|name| (name, embedded))
 }
 
-// The newest report for this app on this simulator written at or after `since`.
+// Report delivery can lag the crash; only captureTime establishes when it happened.
 pub fn recent_crash_facts(
     reports_dir: &Path,
     app_id: &str,
@@ -1253,10 +1286,7 @@ pub fn recent_crash_facts(
         let Ok(meta) = entry.metadata() else {
             continue;
         };
-        let Ok(modified) = meta.modified() else {
-            continue;
-        };
-        if !meta.is_file() || modified < since || meta.len() > CRASH_REPORT_MAX_BYTES {
+        if !meta.is_file() || meta.len() > CRASH_REPORT_MAX_BYTES {
             continue;
         }
         let Some(facts) = std::fs::read_to_string(&path)
@@ -1265,8 +1295,14 @@ pub fn recent_crash_facts(
         else {
             continue;
         };
-        if newest.as_ref().is_none_or(|(at, _)| modified > *at) {
-            newest = Some((modified, facts));
+        let Some(occurred_at) = facts
+            .occurred_at_ms
+            .and_then(|ms| std::time::UNIX_EPOCH.checked_add(std::time::Duration::from_millis(ms)))
+        else {
+            continue;
+        };
+        if occurred_at >= since && newest.as_ref().is_none_or(|(at, _)| occurred_at > *at) {
+            newest = Some((occurred_at, facts));
         }
     }
     newest.map(|(_, facts)| facts)

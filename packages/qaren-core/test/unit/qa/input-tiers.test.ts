@@ -77,6 +77,54 @@ function privacyFor(values: Record<string, string>, testPii: string[]) {
   return { privacy, inputs };
 }
 
+test('SECRET value collisions protect TEST-PII fills regardless of slot name', () => {
+  for (const [secret, alias] of [
+    ['same-value', 'same-value'],
+    ['café-value', 'cafe\u0301-value'],
+    ['left"right', 'left\\"right'],
+    ['123456', '12-34 56'],
+  ]) {
+    const { inputs } = privacyFor({ SECRET: secret, ALIAS: alias, FIXTURE: EMAIL }, [
+      'ALIAS',
+      'FIXTURE',
+    ]);
+    assert.equal(inputs.protectFill('ALIAS'), true);
+    assert.equal(inputs.protectFill('SECRET'), true);
+    assert.equal(inputs.protectFill('FIXTURE'), false);
+  }
+});
+
+test('a secure fill also protects another TEST-PII slot with the same value', () => {
+  const { inputs } = privacyFor({ CODE: PASSWORD, ALIAS: PASSWORD }, ['CODE', 'ALIAS']);
+  assert.equal(inputs.protectFill('ALIAS'), false);
+  assert.equal(inputs.protectFill('CODE', true), true);
+  assert.equal(inputs.protectFill('ALIAS'), true);
+});
+
+test('an aliased SECRET fill reaches the host as private and retains value-free evidence', async () => {
+  const login = screen([element('@code', 'Code', { kind: 'input', testID: 'code' })]);
+  const f = walker(
+    [login],
+    scriptedJudge(() => assert.fail('model-free')),
+  );
+  const { privacy, inputs } = privacyFor({ SECRET: PASSWORD, ALIAS: PASSWORD }, ['ALIAS']);
+  f.deps.privacy = privacy;
+  let fills = 0;
+  f.deps.fill = async (_ref, _text, _context, privateValue) => {
+    assert.equal(privateValue, true, 'host must not read back an aliased SECRET');
+    fills += 1;
+    return { ok: true, proven: true };
+  };
+  const result = await withInputs(inputs, () =>
+    runPlan(parsePlan('1. Fill "code" with input ALIAS (test-pii)').blocks!, f.deps),
+  );
+  assert.equal(fills, 1);
+  assert.equal(result.verdict, 'PASS');
+  assert.equal(privacy.canScreenshot(), false);
+  assert.ok(!JSON.stringify({ result, rows: f.rows }).includes(PASSWORD));
+  assert.equal(privacy.redact(`typed ${PASSWORD}`), `typed ${MASK}`);
+});
+
 test('screen text is withheld only when the run holds a SECRET input', () => {
   const shown = accountScreen();
   const secret = privacyFor({ EMAIL, PASSWORD }, ['EMAIL']);

@@ -815,19 +815,48 @@ async function walkBlockScoped(
       return undefined;
     return { target: element, frame: { ...frame }, scale };
   };
-  const pixelShot = async (
+  const samePixelTarget = (
+    current: ReturnType<typeof pixelTarget>,
     target: NonNullable<ReturnType<typeof pixelTarget>>,
-  ): Promise<PixelCrop | undefined> => {
+  ): boolean =>
+    !!current &&
+    sameIdentity(current.target, target.target) &&
+    JSON.stringify(current.scale) === JSON.stringify(target.scale) &&
+    current.frame.x === target.frame.x &&
+    current.frame.y === target.frame.y &&
+    current.frame.width === target.frame.width &&
+    current.frame.height === target.frame.height;
+  const pixelShot = async (
+    item: Exclude<Item, { kind: 'check' }>,
+    target: NonNullable<ReturnType<typeof pixelTarget>>,
+  ): Promise<{ stable: boolean; crop?: PixelCrop; observation?: Observation }> => {
     assertActive();
     const allowed = () => privacy.canScreenshot() && !metadataOnly && !currentInputs()?.hasInputs;
-    if (!allowed() || !deps.comparisonScreenshot) return undefined;
+    if (!allowed() || !deps.comparisonScreenshot) return { stable: true };
     try {
-      const bytes = await deps.comparisonScreenshot();
+      const before = await captureOnce(item);
+      if (!samePixelTarget(pixelTarget(before.screen, target.target), target))
+        return { stable: false };
+      let bytes: Uint8Array | undefined;
+      if (allowed()) {
+        try {
+          bytes = await deps.comparisonScreenshot();
+        } catch (error) {
+          if (isAbort(error)) throw error;
+        }
+      }
       assertActive();
-      return bytes && allowed() ? cropPng(bytes, target.frame, target.scale) : undefined;
+      const observation = await captureOnce(item);
+      if (!samePixelTarget(pixelTarget(observation.screen, target.target), target))
+        return { stable: false };
+      return {
+        stable: true,
+        observation,
+        crop: bytes && allowed() ? cropPng(bytes, target.frame, target.scale) : undefined,
+      };
     } catch (error) {
       if (isAbort(error)) throw error;
-      return undefined;
+      return { stable: false };
     }
   };
   const frameKey = (e: Element): string | undefined => {
@@ -2616,14 +2645,21 @@ async function walkBlockScoped(
                 before.screen.front === 'dialog'
               )
                 throw dialogInFront();
-              act = await mutate(item, before, async (context) => {
-                if (item.kind === 'press' && !pixelBaselineTaken) {
-                  pixelBaselineTaken = true;
-                  const target = element && pixelTarget(before.screen, element);
-                  // One deliberate before-shot (~200 ms) per eligible press preserves the first attempt's baseline.
-                  const crop = target && (await pixelShot(target));
-                  if (target && crop) pixelBaseline = { target, crop };
+              if (item.kind === 'press' && !pixelBaselineTaken) {
+                pixelBaselineTaken = true;
+                const target = element && pixelTarget(before.screen, element);
+                if (target) {
+                  const shot = await pixelShot(item, target);
+                  if (!shot.stable) throw new QaDispatchError('TARGET_MOVED_BEFORE_DISPATCH');
+                  if (shot.observation) {
+                    before = shot.observation;
+                    element = pixelTarget(before.screen, target.target)!.target;
+                    ref = element.ref;
+                  }
+                  if (shot.crop) pixelBaseline = { target, crop: shot.crop };
                 }
+              }
+              act = await mutate(item, before, async (context) => {
                 return item.kind === 'press'
                   ? deps.press(ref!, context)
                   : item.kind === 'fill'
@@ -2769,20 +2805,26 @@ async function walkBlockScoped(
             const baseline = pixelBaseline.target;
             const previous = pixelTarget(before.screen, baseline.target);
             const current = pixelTarget(after.screen, baseline.target);
-            const identical = (target: ReturnType<typeof pixelTarget>) =>
-              target &&
-              sameIdentity(element!, baseline.target) &&
-              JSON.stringify(target.scale) === JSON.stringify(baseline.scale) &&
-              target.frame.x === baseline.frame.x &&
-              target.frame.y === baseline.frame.y &&
-              target.frame.width === baseline.frame.width &&
-              target.frame.height === baseline.frame.height;
-            if (identical(previous) && identical(current)) {
-              const first = await pixelShot(current!);
-              if (first) {
+            if (
+              sameIdentity(element, baseline.target) &&
+              samePixelTarget(previous, baseline) &&
+              samePixelTarget(current, baseline)
+            ) {
+              const first = await pixelShot(item, current!);
+              if (first.crop) {
                 await deps.sleep(200);
-                const second = await pixelShot(current!);
-                if (second) changed = stablePixelChange(pixelBaseline.crop, first, second);
+                const second = await pixelShot(item, current!);
+                if (second.crop) {
+                  const verified = await captureOnce(
+                    item,
+                    false,
+                    false,
+                    after.platformPresence ? 'provenance' : 'resolve',
+                  );
+                  usable(verified, item);
+                  if (samePixelTarget(pixelTarget(verified.screen, baseline.target), baseline))
+                    changed = stablePixelChange(pixelBaseline.crop, first.crop, second.crop);
+                }
               }
             }
           }

@@ -1,10 +1,10 @@
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { test } from 'node:test';
-import { decodePng } from '../../../dist/qa/tap-pixels.js';
+import { cropPng, decodePng, stablePixelChange } from '../../../dist/qa/tap-pixels.js';
 import { renderReason } from '../../../dist/qa/untrusted.js';
 import { parsePlan } from '../../../dist/qa/plan.js';
-import { join, screenSignature } from '../../../dist/qa/screen.js';
+import { applicationFrame, elementFrame, join, screenSignature } from '../../../dist/qa/screen.js';
 import type { NativeNode, Screen } from '../../../dist/qa/screen.js';
 import { walkBlock } from '../../../dist/qa/walker.js';
 import type { ActResult, WalkerDeps } from '../../../dist/qa/walker.js';
@@ -41,10 +41,11 @@ function fake(screens: Screen[], shots: (Uint8Array | undefined)[], proven = fal
   let clock = 0;
   const deps: WalkerDeps = {
     async captureScreen() {
-      return screens.length > 1 ? screens.shift()! : screens[0];
+      return screens[0];
     },
     async press(ref) {
       calls.push(`press ${ref}`);
+      if (screens.length > 1) screens.shift();
       return { ok: true, proven } satisfies ActResult;
     },
     async fill() {
@@ -128,6 +129,73 @@ test('a moved target offers no proof despite a visible pixel delta', async () =>
   await expectFailure(f);
   assert.equal(f.calls.filter((call) => call === 'pixel shot').length, 1);
 });
+
+for (const axis of ['x', 'y', 'width', 'height'] as const) {
+  test(`an unchanged option with a changed ${axis} offers no stale-crop proof`, async () => {
+    const before = fixture('moved-before');
+    const after = fixture('moved-after');
+    const initial = option(before);
+    const next = option(after);
+    elementFrame(next.elements[0])![axis] += 1;
+    const frame = elementFrame(initial.elements[0])!;
+    const originalCrop = cropPng(before, frame, 3)!;
+    const staleCrop = cropPng(after, frame, 3)!;
+    assert.equal(stablePixelChange(originalCrop, staleCrop, staleCrop), true);
+    assert.equal(screenSignature(initial), screenSignature(next));
+    const f = fake([initial, next], [before, after, after, after, after]);
+    await expectFailure(f);
+    assert.equal(f.calls.filter((call) => call === 'pixel shot').length, 1);
+  });
+}
+
+for (const change of [
+  'x',
+  'y',
+  'width',
+  'height',
+  'scale',
+  'root-width',
+  'root-height',
+  'missing',
+] as const) {
+  test(`delayed ${change} changes after the post-tap tree offer no pixel proof`, async () => {
+    const before = fixture('moved-before');
+    const after = fixture('moved-after');
+    const initial = change.startsWith('root-') ? iosOption(before) : option(before);
+    const next = change.startsWith('root-') ? iosOption(after) : option(after);
+    if (change === 'missing') next.elements = [];
+    else if (change === 'scale') next.pointScale = 2;
+    else if (change === 'root-width' || change === 'root-height')
+      applicationFrame(next)![change === 'root-width' ? 'width' : 'height'] += 1;
+    else elementFrame(next.elements[0])![change] += 1;
+    if (change !== 'missing') assert.equal(screenSignature(initial), screenSignature(next));
+    const frame = elementFrame(initial.elements.find((element) => element.testID === 'option')!)!;
+    assert.equal(
+      stablePixelChange(
+        cropPng(before, frame, 3)!,
+        cropPng(after, frame, 3)!,
+        cropPng(after, frame, 3)!,
+      ),
+      true,
+    );
+    let live = initial;
+    const f = fake([initial], [before, after, after, after, after]);
+    f.deps.captureScreen = async () => live;
+    const screenshot = f.deps.comparisonScreenshot!;
+    f.deps.comparisonScreenshot = async () => {
+      const bytes = await screenshot();
+      if (f.calls.filter((call) => call === 'pixel shot').length === 2) live = next;
+      return bytes;
+    };
+    const outcome = await walkBlock(tap, f.deps);
+    assert.notEqual(outcome.block.outcome, 'pass', JSON.stringify(outcome));
+    assert.equal(
+      f.calls.filter((call) => call === 'pixel shot').length,
+      2,
+      'an invalid first after-shot stops further pixel capture',
+    );
+  });
+}
 
 test('withheld, failed, missing and unsupported comparison shots offer no proof', async () => {
   const before = fixture('toggle1-before'),
@@ -271,5 +339,110 @@ test('after-capture scale must agree with the original baseline', async () => {
     const f = fake([option(before), next], [before, after, after]);
     await expectFailure(f);
     assert.equal(f.calls.filter((call) => call === 'pixel shot').length, 1);
+  }
+});
+
+test('delayed changes around every comparison shot withhold pixel proof', async () => {
+  const before = fixture('toggle1-before');
+  const after = fixture('toggle1-after');
+  const changes: ((screen: Screen) => void)[] = [
+    (screen) => {
+      elementFrame(screen.elements[0])!.x += 1;
+    },
+    (screen) => {
+      elementFrame(screen.elements[0])!.y += 1;
+    },
+    (screen) => {
+      elementFrame(screen.elements[0])!.width += 1;
+    },
+    (screen) => {
+      elementFrame(screen.elements[0])!.height += 1;
+    },
+    (screen) => {
+      screen.pointScale = 2;
+    },
+    (screen) => {
+      screen.elements[0].testID = 'replacement';
+    },
+    (screen) => {
+      screen.elements[0].hittable = false;
+    },
+    (screen) => {
+      screen.front = 'picker';
+    },
+    (screen) => {
+      screen.elements.push({ ...screen.elements[0], ref: '@duplicate' });
+    },
+  ];
+  for (const shot of [1, 2, 3]) {
+    for (const phase of ['before', 'during']) {
+      for (const change of changes) {
+        const f = fake([option(before)], [before, after, after, after, after]);
+        let captures = 0;
+        let shots = 0;
+        let changedDuringShot = false;
+        const screenshot = f.deps.comparisonScreenshot!;
+        f.deps.captureScreen = async () => {
+          captures++;
+          const screen = option(before);
+          if ((phase === 'before' && captures === [0, 2, 5, 7][shot]) || changedDuringShot)
+            change(screen);
+          changedDuringShot = false;
+          return screen;
+        };
+        f.deps.comparisonScreenshot = async () => {
+          shots++;
+          const bytes = await screenshot();
+          if (phase === 'during' && shots === shot) changedDuringShot = true;
+          return bytes;
+        };
+        const outcome = await walkBlock(tap, f.deps, 0, [], undefined, undefined, {
+          singleAttempt: true,
+        });
+        assert.equal(outcome.block.outcome, 'fail', `${shot} ${phase}: ${JSON.stringify(outcome)}`);
+        assert.equal(f.calls.filter((call) => call.startsWith('press')).length, shot === 1 ? 0 : 1);
+      }
+    }
+  }
+});
+
+test('baseline recapture binds dispatch to the final native ref map', async () => {
+  const before = fixture('toggle1-before');
+  const after = fixture('toggle1-after');
+  const f = fake([option(before)], [before, after, after]);
+  let captures = 0;
+  let currentRef = '';
+  f.deps.captureScreen = async () => {
+    const screen = option(before);
+    currentRef = `@e${++captures}`;
+    screen.elements[0].ref = currentRef;
+    return screen;
+  };
+  f.deps.press = async (ref) => {
+    assert.equal(ref, currentRef);
+    assert.equal(ref, '@e3');
+    f.calls.push(`press ${ref}`);
+    return { ok: true, proven: false };
+  };
+  const outcome = await walkBlock(tap, f.deps);
+  assert.equal(outcome.block.outcome, 'pass', JSON.stringify(outcome));
+  assert.equal(f.calls.filter((call) => call.startsWith('press')).length, 1);
+});
+
+test('failed baseline recapture prevents dispatch even when comparison bytes are unavailable', async () => {
+  const before = fixture('toggle1-before');
+  for (const failedCapture of [2, 3]) {
+    const f = fake([option(before)], [undefined]);
+    let captures = 0;
+    f.deps.captureScreen = async () => {
+      if (++captures === failedCapture) throw new Error('capture failed');
+      return option(before);
+    };
+    const outcome = await walkBlock(tap, f.deps);
+    assert.equal(outcome.block.outcome, 'fail', JSON.stringify(outcome));
+    assert.equal(
+      f.calls.some((call) => call.startsWith('press')),
+      false,
+    );
   }
 });

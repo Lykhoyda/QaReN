@@ -710,12 +710,15 @@ Pixel comparison requires one uniquely identified, hittable target outside alert
 and without a covered centre, with the app in front and a known frame. Scale is
 either reported by the screen capture or derived from the screenshot and the
 single native application root's dimensions in points; a derived scale must
-agree on both axes. Its identity, frame and scale must remain unchanged across
-the captures.
+agree on both axes. Before comparing pixels, QaReN re-finds the same target in
+the post-tap tree and requires its frame and scale to match the original baseline.
 One screenshot immediately before the first dispatch adds about 200 ms per
 eligible press; that baseline is retained across the retry. Only an otherwise
 unproven press with an unchanged screen comparison takes two after-shots,
-200 ms apart. The two control crops must agree and differ sufficiently from the
+200 ms apart. After both shots, QaReN reads the tree again and re-finds the target;
+a missing or ineligible target, or any change to its scale, x, y, width or height,
+withholds pixel proof, including a delayed reflow after the post-tap tree capture.
+The two control crops must agree and differ sufficiently from the
 original baseline; an unchanged selected chip or an unstable animation supplies
 no pixel proof. The [pixel comparator](../qaren-core/src/qa/tap-pixels.ts) owns
 the thresholds and supported PNG formats, and the
@@ -997,8 +1000,8 @@ require an exact length/content match; a confirmed mismatch is never retyped, an
 fails the step unless the one [Fill ladder](#fill-ladder) step to the change handler then
 verifies exactly. These comparisons run inside the app; only state and comparison metadata
 leave the process, never the value. Literal and TEST-PII Fill values keep ordinary
-readback even when unrelated runtime inputs exist. For value-free SECRET mismatch
-facts and TEST-PII output redaction, see [Runtime inputs](#runtime-inputs).
+readback unless a TEST-PII value collides with a SECRET value. For value-free SECRET
+mismatch facts and TEST-PII output redaction, see [Runtime inputs](#runtime-inputs).
 
 Secure fields retain direct typing: they are never cleared, their
 values are never read, and the result stays unverified. **Known limit:** a prefilled
@@ -2054,9 +2057,9 @@ PUBLIC. A SECRET value is never read back to the host: for a controlled non-secu
 the app compares it in place, and a mismatch records only value-free `entryMismatch` facts
 (`len`, `exp`, `prefix`, `suffix`, `caseEq`) on the ledger row. Secure fields retain the
 [focused-fill verification limits](#fill-verification-and-keyboard-fallback).
-A TEST-PII value is read back in memory like literal text. The tier also relaxes
-execution hash and echo checks: pure fixture labels, identifiers and types retain their
-original hash operands, even at the filled field, and a redundant expected-echo declaration
+A TEST-PII value is read back in memory like literal text unless it collides with a SECRET
+value. The tier also relaxes execution hash and echo checks: pure fixture labels, identifiers
+and types retain their original hash operands, even at the filled field, and a redundant expected-echo declaration
 does not mask them to a constant. SECRET matches win on equal or overlapping values; a
 TEST-PII alias cannot leave a SECRET value unmasked in a label hash. Repeated declarations
 across the plan and configured login block must agree before device selection. There is no
@@ -2144,7 +2147,7 @@ secret despite artifact redaction.
   `block-outcome` with its first plan line and existing `pass`/`fail`/`refused` result; only saved-login
   recovery emits `login-outcome`. A block passing is its existing block result, not a new assertion
   of authentication. These events contain no block names, slot names, input-derived tokens, screen
-  text, selectors, hashes or error messages. Raw log withholding and masking stay unchanged.
+  text, selectors, hashes or error messages.
   Timing events are capped at 20,000 independently of the 10,000 outcome-marker cap; malformed
   diagnostics and sink failures are ignored without changing the run verdict or step deadline.
 - Before a strict or literal fill dispatch, the walker registers the target's identifier when available.
@@ -2251,6 +2254,12 @@ rewrites stored paths or retires old binaries. Processes using per-home roots,
 including older binaries and `QAREN_MACHINE_LOCKS=0` sessions, remain outside
 the shared namespace. Native suite recovery needs the original HOME and the
 original lock setting and, when set, the original `QAREN_HOME`.
+The native suite's `recover --run-id <ID>` also releases a `spawn_pending`
+claim after proving the original owner gone, matching the canonical holder,
+finding no recorded process group, and proving exact-simulator runner hosts
+absent. The suite cannot pass its start gate before `spawned` is saved; recovery
+saves `not_spawned` before releasing this claim and preserves its unknown suite
+exit. Live, unknown or foreign holders still refuse recovery.
 
 Checks, including `qaren pr`, claim a
 timestamped run directory atomically and retry with a numeric suffix when the
@@ -2267,25 +2276,35 @@ the driver to exit before falling back to `SIGTERM`, then `SIGKILL` after a
 can skip the request or interrupt these waits. Unknown process identity refuses
 termination with `RUNNER_ADOPTION_REQUIRED` rather than authorizing signals.
 
+Before runner readiness, cleanup interrupts only the `xcodebuild` driver and
+waits for its exit without force-killing its initializing XCTest helpers. The
+native iOS suite and recorded-driver recovery use the same driver-only
+interrupt, allowing up to 30 seconds for graceful cancellation. If group absence
+remains unproven, cleanup retains the resources and lease.
+A failed startup also retains its driver handle until exit is proven; a surviving
+driver blocks replacement with `RUNNER_ADOPTION_REQUIRED`.
+
 After teardown, an iOS check with a recorded runner driver polls
 `~/Library/Logs/DiagnosticReports` for up to 60 seconds, stopping early on a match
-or cancellation. It looks for a SpringBoard `.ips` report written since the core
-was spawned and matched to the selected simulator by device path or coalition.
+or cancellation. It looks for a SpringBoard `.ips` report whose body `captureTime`
+is at or after core spawn and whose device path or coalition matches the selected
+simulator. File modification time and the header's report-delivery timestamp do
+not establish crash time; a missing or invalid `captureTime` is not attributed.
 A match adds `outcomes.springboard_crash` to the receipt and a lane-health entry to
-`run.json` history, optionally including a sanitized exception type; report paths
-and raw contents are not copied. Crash timing relative to this run is unverified:
-the device lease may already be released, so a report can belong to a later run.
-This observation never changes the run result,
+`run.json` history, including the crash time in UTC and optionally a sanitized
+exception type; report paths and raw contents are not copied. Attribution to this
+run is unverified: the device lease may already be released, so a report can
+belong to a later run. This observation never changes the run result,
 and an absent note does not prove that SpringBoard stayed healthy.
 
 Cleanup proves owned process-group and exact-simulator runner-host absence
 before releasing the lease. When the leased simulator had no runner host as the
-core started, the run records the host as its own; normal teardown, cancellation
-and dead-owner cleanup then terminate that host by bundle id on that exact
-simulator only after core cleanup proves removal or absence, and re-prove the
-host's absence. The core starts the runner's `xcodebuild` driver in its own
+core started, the run records the host as its own. Cleanup observes host absence
+after core and driver cleanup; a bundle id alone cannot prove that an automation
+session has finished initializing and does not authorize host termination.
+The core starts the runner's `xcodebuild` driver in its own
 process group and announces it; the CLI records that group with the driver's
-identity and signals it, before the host, only while that identity still
+identity and interrupts that driver alone only while that identity still
 matches. Refused or unresolved core or driver cleanup leaves the host untouched
 and retains the lease. A host that was already running, or any
 present or unknown host after that, retains the lease. Cleanup rechecks an unknown

@@ -589,6 +589,7 @@ fn write_dyld_crash_report(home: &std::path::Path, udid: &str, library: &str) {
     let header = serde_json::json!({"bundleID": "com.rndevagent.testapp", "bug_type": "309"});
     let body = serde_json::json!({
         "procPath": format!("/Users/someone/Library/Developer/CoreSimulator/Devices/{udid}/data/Containers/Bundle/Application/X/testapp.app/testapp"),
+        "captureTime": "2026-02-02 02:40:01.0000 +0000",
         "exception": {"type": "EXC_CRASH", "signal": "SIGABRT"},
         "termination": {
             "namespace": "DYLD",
