@@ -1,7 +1,11 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { ObservedPrivacy } from '../../../dist/qa/privacy.js';
-import { applyNativePrivateInputs } from '../../../dist/qa/private-input.js';
+import {
+  applyNativePrivateInputs,
+  NativeSnapshotIncomplete,
+  ReactCaptureIncomplete,
+} from '../../../dist/qa/private-input.js';
 import { join } from '../../../dist/qa/screen.js';
 import { parsePlan } from '../../../dist/qa/plan.js';
 import { RunInputs, withInputs } from '../../../dist/qa/inputs.js';
@@ -208,3 +212,35 @@ test('protected runtime echoes retain protection provenance after the login wind
     }
   }
 });
+
+for (const policy of [undefined, 'strict', 'non-strict'] as const) {
+  for (const prior of ['clean', 'generic-value', 'plan-fill'] as const) {
+    for (const [kind, incomplete] of [
+      ['native', () => new NativeSnapshotIncomplete(0, ['unattested'])],
+      ['react', () => new ReactCaptureIncomplete('deadline')],
+    ] as const) {
+      test(`privacy-capture refusal withholds ${policy ?? 'undeclared'} video after ${prior} (${kind})`, async () => {
+        const observed = prior === 'generic-value' ? native('Other', canary) : ready();
+        const f = walker(
+          [],
+          scriptedJudge(() => assert.fail('literal checks are model-free')),
+        );
+        let captures = 0;
+        f.deps.videoPolicy = policy;
+        f.deps.captureScreen = async () => {
+          if (++captures > 1) throw incomplete();
+          return observed;
+        };
+        const plan =
+          '✓ "Ready"\n✓ "Ready"' +
+          (prior === 'plan-fill' ? '\n1. Fill "fixture" with "synthetic"' : '');
+        const result = await runPlan(parsePlan(plan).blocks!, f.deps);
+        assert.equal(result.verdict, 'REFUSED');
+        assert.equal(result.code, 'PRIVATE_INPUT_CAPTURE_UNKNOWN');
+        assert.equal(result.videoPublication, 'unknown');
+        assert.equal(result.publicationInterrupted, false);
+        assert.ok(!JSON.stringify(result).includes(canary));
+      });
+    }
+  }
+}

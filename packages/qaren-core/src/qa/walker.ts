@@ -3455,8 +3455,7 @@ export async function runPlan(
             code: refusal.code,
             message: refusal.message,
             verdict: 'REFUSED',
-            videoPublication:
-              ledger.videoPublication === 'eligible' ? 'unknown' : ledger.videoPublication,
+            videoPublication: 'unknown',
           }
         : ledger;
     };
