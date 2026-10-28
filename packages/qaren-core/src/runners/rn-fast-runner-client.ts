@@ -225,6 +225,20 @@ export function observeRunnerDrivers(observer: ((pid: number) => void) | undefin
   runnerDriverObserver = observer;
 }
 
+function hasLiveRunnerProcess(): boolean {
+  return (
+    runnerProcess?.pid !== undefined &&
+    runnerProcess.exitCode === null &&
+    runnerProcess.signalCode === null
+  );
+}
+
+function assertRunnerDriverExited(): void {
+  if (hasLiveRunnerProcess()) {
+    throw new Error('RUNNER_ADOPTION_REQUIRED: previous iOS runner driver has not exited');
+  }
+}
+
 function cancelStartingRunner(child: ChildProcess): void {
   try {
     child.kill('SIGINT');
@@ -430,7 +444,7 @@ export function parseLegacyRunnerState(
 // pre-upgrade runner is discovered rather than orphaned (review amendment);
 // a dead legacy file is garbage and is removed immediately.
 export function adoptPersistedFastRunnerState(deviceId: string | undefined): void {
-  if (runnerState || !deviceId) return;
+  if (runnerState || hasLiveRunnerProcess() || !deviceId) return;
   const path = iosStatePath(deviceId);
   const raw = readJsonStateFile(path);
   if (raw !== null) {
@@ -885,6 +899,7 @@ export async function startFastRunner(
   opts: { forceLocalBuild?: boolean; attachOnly?: boolean; readyDeadline?: number } = {},
 ): Promise<FastRunnerState> {
   throwIfCancelled();
+  if (!runnerState) assertRunnerDriverExited();
   adoptPersistedFastRunnerState(deviceId);
   if (shouldReuseRunner(runnerState, deviceId)) return runnerState!;
   if (runnerState) await stopFastRunner(deviceId);
@@ -931,6 +946,7 @@ export async function startFastRunner(
   const signal = cancellationSignal();
   const readyMs = Math.min(READY_TIMEOUT_MS, (opts.readyDeadline ?? Infinity) - performance.now());
   if (!(readyMs > 0)) throw new Error('Fast runner readiness deadline elapsed');
+  assertRunnerDriverExited();
   return new Promise((resolve, reject) => {
     const child = spawn('xcodebuild', launch.args, {
       env: {
@@ -1071,8 +1087,10 @@ export async function awaitSpawnedRunnerExit(
   // A concurrent successful launch belongs to its caller.
   if (runnerState) return false;
   if (expectedLaunchCount !== undefined && runnerLaunchCount !== expectedLaunchCount) return false;
+  const launchCount = runnerLaunchCount;
   if (runnerProcess) cancelStartingRunner(runnerProcess);
-  return awaitChildExit(runnerProcess, graceMs);
+  const exited = await awaitChildExit(runnerProcess, graceMs);
+  return exited && runnerLaunchCount === launchCount && !runnerState;
 }
 
 export async function awaitChildExit(child: ChildProcess | null, graceMs = 5000): Promise<boolean> {
@@ -1194,6 +1212,7 @@ export function clearFastRunnerAfterVerifiedStop(binding: Record<string, unknown
   if (runnerProcess?.pid !== undefined && runnerProcess.pid !== expected.pid) {
     throw new Error('RUNNER_ADOPTION_REQUIRED: local runner process changed before cleanup');
   }
+  assertRunnerDriverExited();
   runnerState = null;
   runnerProcess = null;
   lastKnownCapabilities = [];
@@ -1518,11 +1537,7 @@ function clearStateFile(): void {
   const path = runnerState ? iosStatePath(runnerState.deviceId) : null;
   runnerState = null;
   lastKnownCapabilities = [];
-  // M7 review (Gemini): null the child-process handle too. Previously a reap
-  // left `runnerProcess` pointing at a dead PID; the on('exit') handler would
-  // eventually self-heal, but during the window a concurrent stopFastRunner
-  // could signal an already-dead process. Clearing here is defensive.
-  runnerProcess = null;
+  if (!hasLiveRunnerProcess()) runnerProcess = null;
   if (path) deleteStateFile(path);
 }
 
@@ -1538,7 +1553,7 @@ function clearStateFileIfMatches(expected: StateSnapshot): void {
     runnerState = null;
     clearedCurrent = true;
   }
-  if (runnerProcess?.pid === expected.pid) {
+  if (runnerProcess?.pid === expected.pid && !hasLiveRunnerProcess()) {
     runnerProcess = null;
     clearedCurrent = true;
   }
