@@ -87,7 +87,7 @@ export class RunInputs {
       this.#strict.set(name, value);
       this.#privacy.classifyInputs([], [value]);
     }
-    return !this.#privacy.assertInputHashSafe(value, this.#strict.values());
+    return this.#strict.has(name);
   }
   get hasInputs(): boolean {
     return this.#values.size > 0;

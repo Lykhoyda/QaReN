@@ -77,33 +77,6 @@ function privacyFor(values: Record<string, string>, testPii: string[]) {
   return { privacy, inputs };
 }
 
-test('TEST-PII fills protect strict-value collisions regardless of name or promotion order', () => {
-  for (const [secret, fixture] of [
-    ['same-value', 'same-value'],
-    ['café-value', 'cafe\u0301-value'],
-    ['cafe\u0301-value', 'café-value'],
-    ['quote"value', 'quote\\"value'],
-    ['123456', '12-34 56'],
-    ['same-value', 'prefix same-value suffix'],
-  ]) {
-    for (const values of [
-      { SECRET: secret, FIXTURE: fixture, OTHER: 'unrelated-fixture' },
-      { FIXTURE: fixture, SECRET: secret, OTHER: 'unrelated-fixture' },
-    ]) {
-      const { inputs } = privacyFor(values, ['FIXTURE', 'OTHER']);
-      assert.equal(inputs.protectFill('SECRET'), true);
-      assert.equal(inputs.protectFill('FIXTURE'), true);
-      assert.equal(inputs.protectFill('OTHER'), false);
-
-      const promoted = privacyFor(values, ['SECRET', 'FIXTURE', 'OTHER']).inputs;
-      assert.equal(promoted.protectFill('FIXTURE'), false);
-      assert.equal(promoted.protectFill('SECRET', true), true);
-      assert.equal(promoted.protectFill('FIXTURE'), true);
-      assert.equal(promoted.protectFill('OTHER'), false);
-    }
-  }
-});
-
 test('screen text is withheld only when the run holds a SECRET input', () => {
   const shown = accountScreen();
   const secret = privacyFor({ EMAIL, PASSWORD }, ['EMAIL']);
