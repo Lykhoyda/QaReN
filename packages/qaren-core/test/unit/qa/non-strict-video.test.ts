@@ -193,7 +193,9 @@ test('protected runtime echoes retain protection provenance after the login wind
     for (const secure of [false, true]) {
       const privacy = new ObservedPrivacy();
       privacy.classifyInputs([canary], strict ? [canary] : []);
-      privacy.observe(screen([element('@fixture', 'Fixture', { kind: 'input', testID: 'fixture' })]));
+      privacy.observe(
+        screen([element('@fixture', 'Fixture', { kind: 'input', testID: 'fixture' })]),
+      );
       privacy.concealFallback(canary, { secure, protectedValue: true }, 'fixture');
       privacy.observe(screen([], [canary.toUpperCase()]));
       privacy.startWindow();
