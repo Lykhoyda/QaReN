@@ -1296,24 +1296,7 @@ export async function fastHealthCheck(): Promise<boolean> {
   }
 }
 
-// ─── M7 / Phase 109: tri-state liveness probe ──────────────────────────
-//
-// Prior art: isFastRunnerAvailable() above only checks PID via
-// process.kill(pid, 0). A process whose PID is alive but whose HTTP
-// server has hung (crashed listener, wedged XCTest thread) would be
-// reported as available, and every device_press then stalled on a
-// 10s fetch timeout before falling back to the daemon.
-//
-// The tri-state distinction:
-//   'alive' — PID lives AND /health returns {ok:true}. Happy path.
-//   'stale' — PID lives but /health times out / 500s / ok:false.
-//             Must be reaped before a fresh startFastRunner.
-//   'dead'  — PID doesn't exist (or no state file). Cold-launch OK.
-//
-// Separation of concerns: the probe is read-only (clears state only
-// on 'dead' discovery, never mutates a living process). The reap
-// helper is the explicit action — SIGTERM, wait 500ms, SIGKILL if
-// still alive. Callers compose: probe → (stale ? reap : …) → act.
+// Liveness probes never signal a living process; shutdown belongs to reapStaleFastRunner.
 
 export type FastRunnerLiveness = 'alive' | 'stale' | 'dead';
 

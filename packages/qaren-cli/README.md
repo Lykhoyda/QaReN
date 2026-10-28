@@ -2147,7 +2147,7 @@ secret despite artifact redaction.
   `block-outcome` with its first plan line and existing `pass`/`fail`/`refused` result; only saved-login
   recovery emits `login-outcome`. A block passing is its existing block result, not a new assertion
   of authentication. These events contain no block names, slot names, input-derived tokens, screen
-  text, selectors, hashes or error messages. Raw log withholding and masking stay unchanged.
+  text, selectors, hashes or error messages.
   Timing events are capped at 20,000 independently of the 10,000 outcome-marker cap; malformed
   diagnostics and sink failures are ignored without changing the run verdict or step deadline.
 - Before a strict or literal fill dispatch, the walker registers the target's identifier when available.
@@ -2281,6 +2281,8 @@ waits for its exit without force-killing its initializing XCTest helpers. The
 native iOS suite and recorded-driver recovery use the same driver-only
 interrupt, allowing up to 30 seconds for graceful cancellation. If group absence
 remains unproven, cleanup retains the resources and lease.
+A failed startup also retains its driver handle until exit is proven; a surviving
+driver blocks replacement with `RUNNER_ADOPTION_REQUIRED`.
 
 After teardown, an iOS check with a recorded runner driver polls
 `~/Library/Logs/DiagnosticReports` for up to 60 seconds, stopping early on a match
