@@ -397,6 +397,13 @@ fn slot_diagnostics_retain_only_allowlisted_events_without_affecting_the_result(
             r#"{"kind":"block-outcome","line":2,"outcome":"pass"}"#.into(),
             r#"{"kind":"login-outcome","outcome":"refused"}"#.into(),
             r#"{"kind":"interruption-rejected","line":2,"veto":"later-target","exactDeclineCount":1,"targetIndex":1}"#.into(),
+            r#"{"kind":"fill-privacy","line":2,"cause":"secure-field","privateValue":true}"#.into(),
+            r#"{"kind":"fill-privacy","line":2,"cause":"unreadable-check-subject","privateValue":true}"#.into(),
+            r#"{"kind":"fill-privacy","line":2,"cause":"label-may-be-value","privateValue":false}"#.into(),
+            format!(r#"{{"kind":"fill-privacy","line":2,"cause":"{secret}","privateValue":true}}"#),
+            format!(r#"{{"kind":"fill-privacy","line":2,"cause":"secure-field","privateValue":true,"value":"{secret}"}}"#),
+            r#"{"kind":"fill-privacy","line":0,"cause":"secure-field","privateValue":true}"#.into(),
+            r#"{"kind":"fill-privacy","line":2,"cause":"secure-field","privateValue":"true"}"#.into(),
             format!(r#"{{"kind":"interruption-rejected","line":2,"veto":"{secret}","exactDeclineCount":1}}"#),
             r#"{"kind":"interruption-rejected","line":2,"veto":"no-candidate","exactDeclineCount":1,"label":"Maybe later"}"#.into(),
             r#"{"kind":"interruption-rejected","line":2,"veto":"no-candidate","exactDeclineCount":0.5}"#.into(),
@@ -427,7 +434,7 @@ fn slot_diagnostics_retain_only_allowlisted_events_without_affecting_the_result(
             .lines()
             .map(|line| serde_json::from_str(line).unwrap())
             .collect();
-        assert_eq!(got.len(), 5);
+        assert_eq!(got.len(), 8);
         assert!(!stored.contains("Maybe later"));
         for (event, expected) in got.iter().zip(&payloads) {
             assert_eq!(

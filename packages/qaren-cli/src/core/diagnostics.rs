@@ -356,6 +356,31 @@ const ADMISSION_KEYS: &[&str] = &[
 fn clean(value: &Value) -> Option<Value> {
     let fields = value.as_object()?;
     let raw_kind = fields.get("kind")?.as_str()?;
+    if raw_kind == "fill-privacy" {
+        if fields
+            .keys()
+            .any(|key| !["kind", "line", "cause", "privateValue"].contains(&key.as_str()))
+        {
+            return None;
+        }
+        let line = fields.get("line")?.as_u64()?;
+        let cause = fields.get("cause")?.as_str()?;
+        if line == 0
+            || line > MAX_NUMBER as u64
+            || ![
+                "secure-field",
+                "unreadable-check-subject",
+                "label-may-be-value",
+            ]
+            .contains(&cause)
+        {
+            return None;
+        }
+        return Some(serde_json::json!({
+            "kind": raw_kind, "line": line, "cause": cause,
+            "privateValue": fields.get("privateValue")?.as_bool()?,
+        }));
+    }
     if raw_kind == "media-withheld" {
         let scope = fields.get("scope")?.as_str()?;
         if !["screenshots", "video"].contains(&scope) {
