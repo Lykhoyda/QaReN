@@ -1446,8 +1446,9 @@ Optional `kind` (for `generic-value`) and `source` (for `echo`) are closed
 categories, never app data. The [privacy implementation](../qaren-core/src/qa/privacy.ts)
 owns the allowed categories and per-screen cause precedence.
 
-A structured `media-withheld` diagnostic records the first cause and plan line
-per scope (`screenshots` or `video`) in `logs/core-diagnostics.jsonl`, and a
+A structured `media-withheld` diagnostic records the first screenshot cause and
+plan line, or the final publication-window video cause and its observation line,
+in `logs/core-diagnostics.jsonl`, and a
 `media-withheld` line in `logs/core.log` retains the same cause, scope and line.
 These records use the private diagnostic boundary with used runtime inputs,
 an exported unused `QAREN_INPUT_` namespace, or no inputs; raw subprocess output
@@ -1459,7 +1460,10 @@ rows retained after an interrupted walk. `mediaWithheld.screenshots` holds the
 first `reason`, optional `kind` or `source`, `line` and withheld screenshot `count`.
 `mediaWithheld.video` holds the publication-window cause and line, without a
 count: the strict privacy cause for strict or undeclared runs, or the protected
-cause for non-strict runs. `videoPublication` retains the strict verdict;
+cause for non-strict runs. In non-strict mode, a later protected cause replaces
+an earlier `runtime-input` or `echo` with source `input`, including its observation
+line. A successful pre-plan login resets the video window; a retained cause then
+uses the new window's starting line. `videoPublication` retains the strict verdict;
 `nonStrictPublication` supplies the separate non-strict verdict.
 The receipt includes one `media_withheld=<code>[/<kind|source>]@line <N>` note,
 preferring the video cause in non-strict mode and the screenshot cause otherwise.
@@ -3157,6 +3161,13 @@ Only the selected config declares the video mode; no flag, environment variable,
 plan annotation or inferred backend selects it.
 
 SECRET text masking and no readback apply in both modes. A runtime input displayed in a non-secure field can be marked `(test-pii)` only if it is test data; that annotation cannot exempt secure fields or code rows. Non-strict is an operator declaration, not proof: an undeclared secret prefilled into a non-secure field, real personal data, or a value visible only between captures can appear in a published video. QaReN does not mask video regions or identify the backend. Upgrade every CLI/CI runtime before adding the key; older versions refuse it. Removing the key restores strict behavior.
+
+For non-strict privacy withholding, the report and PR comment name the protected
+cause. They offer the `(test-pii)` hint when a SECRET input is observed in a readable,
+non-secure field and no disqualifying protected cause occurs in the publication
+window. Secure fields, code rows, protected concealed fills and handler-detected
+private fills suppress that hint, even when runtime-input classification came first.
+An unused SECRET input still withholds video without the hint.
 
 The following eligibility rules describe strict and undeclared runs. Both modes keep the same admission/login window, continuity, media validity and size limits.
 
