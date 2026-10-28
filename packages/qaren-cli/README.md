@@ -997,8 +997,8 @@ require an exact length/content match; a confirmed mismatch is never retyped, an
 fails the step unless the one [Fill ladder](#fill-ladder) step to the change handler then
 verifies exactly. These comparisons run inside the app; only state and comparison metadata
 leave the process, never the value. Literal and TEST-PII Fill values keep ordinary
-readback even when unrelated runtime inputs exist. For value-free SECRET mismatch
-facts and TEST-PII output redaction, see [Runtime inputs](#runtime-inputs).
+readback unless a TEST-PII value collides with a SECRET value. For value-free SECRET
+mismatch facts and TEST-PII output redaction, see [Runtime inputs](#runtime-inputs).
 
 Secure fields retain direct typing: they are never cleared, their
 values are never read, and the result stays unverified. **Known limit:** a prefilled
@@ -2054,9 +2054,9 @@ PUBLIC. A SECRET value is never read back to the host: for a controlled non-secu
 the app compares it in place, and a mismatch records only value-free `entryMismatch` facts
 (`len`, `exp`, `prefix`, `suffix`, `caseEq`) on the ledger row. Secure fields retain the
 [focused-fill verification limits](#fill-verification-and-keyboard-fallback).
-A TEST-PII value is read back in memory like literal text. The tier also relaxes
-execution hash and echo checks: pure fixture labels, identifiers and types retain their
-original hash operands, even at the filled field, and a redundant expected-echo declaration
+A TEST-PII value is read back in memory like literal text unless it collides with a SECRET
+value. The tier also relaxes execution hash and echo checks: pure fixture labels, identifiers
+and types retain their original hash operands, even at the filled field, and a redundant expected-echo declaration
 does not mask them to a constant. SECRET matches win on equal or overlapping values; a
 TEST-PII alias cannot leave a SECRET value unmasked in a label hash. Repeated declarations
 across the plan and configured login block must agree before device selection. There is no
