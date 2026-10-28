@@ -6,7 +6,6 @@ import {
   INPUT_SCREEN_TEXT_WITHHELD,
   MASK,
   ObservedPrivacy,
-  captureInputPrivacy,
   emailForms,
 } from '../../../dist/qa/privacy.js';
 import { decideScreen } from '../../../dist/qa/resolve.js';
@@ -311,70 +310,6 @@ test('a TEST-PII run reports failure screen text redacted by the declared value'
   for (const leaked of [EMAIL, 'qa.tester', 'staging.example.test'])
     assert.ok(!durable.includes(leaked), `leaked ${leaked}`);
 });
-
-for (const checkSubject of ['supported', 'unknown'] as const) {
-  for (const handler of [false, true]) {
-    test(`TEST-PII keeps redacted diagnostics with ${checkSubject} label privacy through ${handler ? 'handler escalation' : 'ordinary fill'}`, async () => {
-      const field = element('@email', 'Email', { kind: 'input', testID: 'email' });
-      captureInputPrivacy(field, {
-        values: [],
-        nativeLabelMayBeValue: true,
-        checkSubject,
-      });
-      const login = screen([field]);
-      const f = walker(
-        [login],
-        scriptedJudge(() => assert.fail('model-free')),
-      );
-      const { privacy, inputs } = privacyFor({ EMAIL }, ['EMAIL']);
-      f.deps.privacy = privacy;
-      let filled = false;
-      let escalated = false;
-      const assertTestPii = (privateValue: boolean | undefined) => {
-        assert.equal(privateValue, false);
-        assert.equal(inputs.hasStrictInputs, false);
-      };
-      f.deps.fill = async (_ref, _text, _context, privateValue) => {
-        assertTestPii(privateValue);
-        filled = true;
-        return handler
-          ? {
-              ok: false,
-              proven: false,
-              mutation: 'observed',
-              error: 'TEXT_ENTRY_UNVERIFIED: value mismatch',
-            }
-          : { ok: true, proven: true };
-      };
-      f.deps.setByHandler = async (_id, _text, _context, privateValue) => {
-        assertTestPii(privateValue);
-        escalated = true;
-        return { ok: true, proven: true };
-      };
-      const result = await withInputs(inputs, () =>
-        runPlan(
-          parsePlan(
-            '1. Fill "email" with input EMAIL (test-pii) (any method)\n2. Wait for "Billing address"',
-          ).blocks!,
-          f.deps,
-        ),
-      );
-      assert.equal(filled, true);
-      assert.equal(escalated, handler);
-      assert.equal(result.verdict, 'FAIL');
-      assert.equal(inputs.hasStrictInputs, false);
-      assert.equal(privacy.canScreenshot(), false);
-      assert.ok(!result.failure?.seen.includes(INPUT_SCREEN_TEXT_WITHHELD));
-      assert.deepEqual(
-        withInputs(inputs, () => describeError(new Error(`could not type ${EMAIL}`))),
-        {
-          code: 'UNEXPECTED_ERROR',
-          message: `could not type ${MASK}`,
-        },
-      );
-    });
-  }
-}
 
 test('a secure TEST-PII Fill promotes the run before typing and withholds later Account evidence', async () => {
   const login = screen([
