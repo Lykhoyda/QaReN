@@ -396,7 +396,49 @@ test('delayed changes around every comparison shot withhold pixel proof', async 
           singleAttempt: true,
         });
         assert.equal(outcome.block.outcome, 'fail', `${shot} ${phase}: ${JSON.stringify(outcome)}`);
+        assert.equal(f.calls.filter((call) => call.startsWith('press')).length, shot === 1 ? 0 : 1);
       }
     }
+  }
+});
+
+test('baseline recapture binds dispatch to the final native ref map', async () => {
+  const before = fixture('toggle1-before');
+  const after = fixture('toggle1-after');
+  const f = fake([option(before)], [before, after, after]);
+  let captures = 0;
+  let currentRef = '';
+  f.deps.captureScreen = async () => {
+    const screen = option(before);
+    currentRef = `@e${++captures}`;
+    screen.elements[0].ref = currentRef;
+    return screen;
+  };
+  f.deps.press = async (ref) => {
+    assert.equal(ref, currentRef);
+    assert.equal(ref, '@e3');
+    f.calls.push(`press ${ref}`);
+    return { ok: true, proven: false };
+  };
+  const outcome = await walkBlock(tap, f.deps);
+  assert.equal(outcome.block.outcome, 'pass', JSON.stringify(outcome));
+  assert.equal(f.calls.filter((call) => call.startsWith('press')).length, 1);
+});
+
+test('failed baseline recapture prevents dispatch even when comparison bytes are unavailable', async () => {
+  const before = fixture('toggle1-before');
+  for (const failedCapture of [2, 3]) {
+    const f = fake([option(before)], [undefined]);
+    let captures = 0;
+    f.deps.captureScreen = async () => {
+      if (++captures === failedCapture) throw new Error('capture failed');
+      return option(before);
+    };
+    const outcome = await walkBlock(tap, f.deps);
+    assert.equal(outcome.block.outcome, 'fail', JSON.stringify(outcome));
+    assert.equal(
+      f.calls.some((call) => call.startsWith('press')),
+      false,
+    );
   }
 });

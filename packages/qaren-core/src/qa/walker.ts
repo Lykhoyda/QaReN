@@ -829,22 +829,34 @@ async function walkBlockScoped(
   const pixelShot = async (
     item: Exclude<Item, { kind: 'check' }>,
     target: NonNullable<ReturnType<typeof pixelTarget>>,
-  ): Promise<PixelCrop | undefined> => {
+  ): Promise<{ stable: boolean; crop?: PixelCrop; observation?: Observation }> => {
     assertActive();
     const allowed = () => privacy.canScreenshot() && !metadataOnly && !currentInputs()?.hasInputs;
-    if (!allowed() || !deps.comparisonScreenshot) return undefined;
+    if (!allowed() || !deps.comparisonScreenshot) return { stable: true };
     try {
-      const matches = async () =>
-        samePixelTarget(pixelTarget((await captureOnce(item)).screen, target.target), target);
-      if (!(await matches()) || !allowed()) return undefined;
-      const bytes = await deps.comparisonScreenshot();
+      const before = await captureOnce(item);
+      if (!samePixelTarget(pixelTarget(before.screen, target.target), target))
+        return { stable: false };
+      let bytes: Uint8Array | undefined;
+      if (allowed()) {
+        try {
+          bytes = await deps.comparisonScreenshot();
+        } catch (error) {
+          if (isAbort(error)) throw error;
+        }
+      }
       assertActive();
-      return (await matches()) && bytes && allowed()
-        ? cropPng(bytes, target.frame, target.scale)
-        : undefined;
+      const observation = await captureOnce(item);
+      if (!samePixelTarget(pixelTarget(observation.screen, target.target), target))
+        return { stable: false };
+      return {
+        stable: true,
+        observation,
+        crop: bytes && allowed() ? cropPng(bytes, target.frame, target.scale) : undefined,
+      };
     } catch (error) {
       if (isAbort(error)) throw error;
-      return undefined;
+      return { stable: false };
     }
   };
   const frameKey = (e: Element): string | undefined => {
@@ -2633,14 +2645,21 @@ async function walkBlockScoped(
                 before.screen.front === 'dialog'
               )
                 throw dialogInFront();
-              act = await mutate(item, before, async (context) => {
-                if (item.kind === 'press' && !pixelBaselineTaken) {
-                  pixelBaselineTaken = true;
-                  const target = element && pixelTarget(before.screen, element);
-                  // One deliberate before-shot (~200 ms) per eligible press preserves the first attempt's baseline.
-                  const crop = target && (await pixelShot(item, target));
-                  if (target && crop) pixelBaseline = { target, crop };
+              if (item.kind === 'press' && !pixelBaselineTaken) {
+                pixelBaselineTaken = true;
+                const target = element && pixelTarget(before.screen, element);
+                if (target) {
+                  const shot = await pixelShot(item, target);
+                  if (!shot.stable) throw new QaDispatchError('TARGET_MOVED_BEFORE_DISPATCH');
+                  if (shot.observation) {
+                    before = shot.observation;
+                    element = pixelTarget(before.screen, target.target)!.target;
+                    ref = element.ref;
+                  }
+                  if (shot.crop) pixelBaseline = { target, crop: shot.crop };
                 }
+              }
+              act = await mutate(item, before, async (context) => {
                 return item.kind === 'press'
                   ? deps.press(ref!, context)
                   : item.kind === 'fill'
@@ -2792,10 +2811,10 @@ async function walkBlockScoped(
               samePixelTarget(current, baseline)
             ) {
               const first = await pixelShot(item, current!);
-              if (first) {
+              if (first.crop) {
                 await deps.sleep(200);
                 const second = await pixelShot(item, current!);
-                if (second) {
+                if (second.crop) {
                   const verified = await captureOnce(
                     item,
                     false,
@@ -2804,7 +2823,7 @@ async function walkBlockScoped(
                   );
                   usable(verified, item);
                   if (samePixelTarget(pixelTarget(verified.screen, baseline.target), baseline))
-                    changed = stablePixelChange(pixelBaseline.crop, first, second);
+                    changed = stablePixelChange(pixelBaseline.crop, first.crop, second.crop);
                 }
               }
             }
