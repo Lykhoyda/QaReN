@@ -21,6 +21,7 @@ loginMarker:
 | ----------------- | ---------------- | ------- | --------------------------------------------------------------------------------------------- |
 | `appId`           | string           | —       | Required. The app's bundle ID on iOS or package name on Android.                              |
 | `devClientScheme` | string           | —       | Required for `check` and `pr`. The app's registered dev-client URI scheme, 1–128 bytes matching `[A-Za-z][A-Za-z0-9+.-]*`. |
+| `video` | `strict` or `non-strict` | strict rules | Declared video privacy policy; see [video](#video). |
 | `packageManager`  | string           | `pnpm`  | The app's package manager. Only `pnpm` is supported.                                          |
 | `metroPort`       | integer          | `8791`  | The port of the Metro server the run starts. At least `1024`.                                 |
 | `nodePath`        | string           | `node` on `PATH` | An absolute path to the Node binary to use. It must be Node 24 or newer.             |
@@ -35,6 +36,14 @@ loginMarker:
 `loginBlock` and `loginMarker` are set together. `loginBlock` must be an action slug: it
 starts with a letter or digit, then letters, digits, `_`, `.` or `-`, at most 64 characters,
 without `..`.
+
+## `video`
+
+Set `video: strict` when screens can show real people's data, or `video: non-strict` only when this checkout runs an app showing test data. Strict can publish clean walks. Non-strict allows videos despite non-SECRET values and literal or TEST-PII fills; detected protected values still withhold video. Empty secure fields, code rows and concealed fills remain protected. SECRET text masking and no readback apply in both modes. Screenshots and saved-block publication keep strict rules in this release.
+
+An absent key uses strict rules; any other value (including null) refuses `SCENARIO_INVALID`. No flag, environment variable, plan annotation or inferred backend selects this mode. The chosen policy and selected config path are persisted for the run and shown by doctor, receipts, reports and PR comments. The config path identifies the declaration, not the backend or dataset. Unknown eligibility still withholds video.
+
+This declaration cannot establish that data is synthetic. Real data, unattributable secrets and values visible only between captures may reach a non-strict video; no video regions are masked. Upgrade every CLI/CI runtime before adding the key; older versions refuse it. Remove the key to roll back to strict. See the [video publication contract](https://github.com/Lykhoyda/QaReN/blob/develop/packages/qaren-cli/README.md#video-publication).
 
 ## `ios`
 

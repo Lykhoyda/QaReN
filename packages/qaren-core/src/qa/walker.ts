@@ -175,6 +175,7 @@ export interface WalkerDeps {
     report: ProvenanceReporter,
   ): Promise<LabelProvenance[] | undefined>;
   privacy?: ObservedPrivacy;
+  videoPolicy?: 'strict' | 'non-strict' | 'undeclared';
   mediaWithheld?(event: MediaWithheldDiagnostic): void;
   judge?: Judge;
   interruptionVeto?: boolean;
@@ -364,7 +365,7 @@ const recoveryTarget = (item: Item): RecoveryTarget | undefined => {
 
 export interface WalkSequence {
   observation: number;
-  latch?: { line: number; windowLine?: number; count: number };
+  latch?: { line: number; windowLine?: number; secretWindowLine?: number; count: number };
   operation?: number;
   publicationInterrupted?: boolean;
   momentum?: boolean;
@@ -391,6 +392,12 @@ function recordMediaLatch(
   }
   if (privacy.windowLatched() && sequence.latch && sequence.latch.windowLine === undefined)
     sequence.latch.windowLine = line;
+  if (
+    privacy.secretWindowLatched() &&
+    sequence.latch &&
+    sequence.latch.secretWindowLine === undefined
+  )
+    sequence.latch.secretWindowLine = line;
 }
 
 // Title and button labels of a system prompt, held in memory only.
@@ -1754,7 +1761,10 @@ async function walkBlockScoped(
       return { fail: ['the login block did not pass: ', ...segments(nested.failure.seen)] };
     if (!sequence.planPassed) {
       privacy.startWindow();
-      if (sequence.latch) sequence.latch.windowLine = privacy.windowLatched() ? line : undefined;
+      if (sequence.latch) {
+        sequence.latch.windowLine = privacy.windowLatched() ? line : undefined;
+        sequence.latch.secretWindowLine = privacy.secretWindowLatched() ? line : undefined;
+      }
       sequence.window = { fromMs: deps.now(), typed: typed.length };
     }
     return 'pass' as const;
@@ -2640,11 +2650,18 @@ async function walkBlockScoped(
                 within = clearanceBand(element, before.screen);
                 continue;
               }
-              if (item.kind === 'fill') secretFill(item, element);
+              const privateValue = item.kind === 'fill' && secretFill(item, element);
               if (item.kind === 'fill' && element && isPrivateInput(element)) {
                 privacy.concealFallback(
                   fillText(item),
-                  element.secure,
+                  {
+                    secure: element.secure,
+                    protectedValue: !(
+                      (item.input === undefined || item.sensitivity === 'non-secret') &&
+                      !privateValue &&
+                      privateInputCause(element) === 'label-may-be-value'
+                    ),
+                  },
                   element.testID ?? element.label,
                 );
                 recordMediaLatch(privacy, sequence, deps, line);
@@ -3290,6 +3307,32 @@ export async function runPlan(
         : (sequence.window ? privacy.windowClean() : privacy.canScreenshot())
           ? 'eligible'
           : 'withheld-privacy';
+    const videoPolicy = deps.videoPolicy ?? 'undeclared';
+    const secretGate = (): boolean =>
+      currentInputs()?.hasStrictInputs === true ||
+      blocks.some((block) =>
+        block.items.some(
+          (item) =>
+            item.kind === 'fill' && item.input !== undefined && item.sensitivity !== 'non-secret',
+        ),
+      );
+    const nonStrictPublication = (): 'eligible' | 'withheld-secret' =>
+      secretGate() || privacy.secretWindowLatched() ? 'withheld-secret' : 'eligible';
+    const videoCause = () =>
+      videoPolicy === 'non-strict'
+        ? privacy.secretWindowLatched()
+          ? { ...privacy.secretWindowLatched()!, line: sequence.latch?.secretWindowLine ?? 0 }
+          : secretGate()
+            ? { reason: 'runtime-input' as const, line: 0 }
+            : undefined
+        : videoPublication() === 'withheld-privacy'
+          ? {
+              ...(sequence.window ? privacy.windowLatched()! : privacy.latched()!),
+              line: sequence.window
+                ? (sequence.latch?.windowLine ?? sequence.latch?.line ?? 0)
+                : (sequence.latch?.line ?? 0),
+            }
+          : undefined;
     const calls = (): JevCall[] => [...preflightCalls, ...(deps.judge?.calls ?? [])];
     const sequence: WalkSequence = {
       observation: 0,
@@ -3374,6 +3417,8 @@ export async function runPlan(
           recoveries,
         ),
         videoPublication: videoPublication(),
+        videoPolicy,
+        nonStrictPublication: nonStrictPublication(),
         ...(sequence.latch
           ? {
               mediaWithheld: {
@@ -3382,16 +3427,7 @@ export async function runPlan(
                   line: sequence.latch.line,
                   count: sequence.latch.count,
                 },
-                ...(videoPublication() === 'withheld-privacy'
-                  ? {
-                      video: {
-                        ...(sequence.window ? privacy.windowLatched()! : privacy.latched()!),
-                        line: sequence.window
-                          ? (sequence.latch.windowLine ?? sequence.latch.line)
-                          : sequence.latch.line,
-                      },
-                    }
-                  : {}),
+                ...(videoCause() ? { video: videoCause()! } : {}),
               },
             }
           : {}),

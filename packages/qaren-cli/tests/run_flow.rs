@@ -9468,3 +9468,47 @@ fn saved_login_hints_use_names_and_the_first_screen_without_publishing_them() {
         assert!(!report.contains("login-email"));
     }
 }
+
+#[test]
+fn video_declaration_reaches_the_child_and_durable_run_outputs() {
+    for policy in [None, Some("strict"), Some("non-strict")] {
+        let (repo, app) = app_repo();
+        let req = request(&repo, &app, 30);
+        if let Some(policy) = policy {
+            let yaml = std::fs::read_to_string(&req.config_path).unwrap();
+            std::fs::write(&req.config_path, format!("{yaml}video: {policy}\n")).unwrap();
+        }
+        let mut mock = MockRunner::new();
+        script_preflight(&mut mock, &repo);
+        script_provision(&mut mock);
+        script_drift_status(&mut mock);
+        script_host_probe(&mut mock, UDID, hosts_absent());
+        mock.expect_spawn_piped("walk.js", 9000, &pass_stdout(), Some(0));
+        script_core_identity(&mut mock);
+        script_teardown(&mut mock);
+        let receipt = run(&mut mock, &req);
+        assert_eq!(receipt.result, ReceiptResult::Pass, "{:?}", receipt.failure);
+        let expected = policy.unwrap_or("undeclared");
+        assert_eq!(receipt.outcomes["video_policy"], expected);
+        assert_eq!(
+            receipt.outcomes["video_policy_source"],
+            req.config_path.display().to_string()
+        );
+        let request: serde_json::Value =
+            serde_json::from_str(mock.piped_stdin_text(1).trim()).unwrap();
+        assert_eq!(request["payload"]["videoPolicy"], expected);
+        let ledger: serde_json::Value = serde_json::from_slice(
+            &std::fs::read(repo.join("runs").join(run_id()).join("ledger.json")).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(ledger["videoPolicy"], expected);
+        assert_eq!(
+            ledger["videoPolicySource"],
+            req.config_path.display().to_string()
+        );
+        let report = std::fs::read_to_string(&receipt.artifacts["report"]).unwrap();
+        assert!(report.contains("Video policy:"));
+        assert!(report.contains(&req.config_path.display().to_string()));
+        assert_eq!(mock.remaining(), 0);
+    }
+}

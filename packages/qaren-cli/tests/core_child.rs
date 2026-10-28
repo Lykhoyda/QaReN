@@ -117,6 +117,7 @@ fn fresh_admission_refusal_reports_only_validated_probe_evidence_and_transport_s
 
 fn request() -> CoreRequest {
     CoreRequest {
+        video_policy: Default::default(),
         run_id: RUN.to_string(),
         t0: 1_770_000_000_000,
         walk_budget_ms: 300_000,

@@ -2065,14 +2065,14 @@ The tier also relaxes execution hash and echo checks: pure fixture labels, ident
 and types retain their original hash operands, even at the filled field, and a redundant expected-echo declaration
 does not mask them to a constant. SECRET matches win on equal or overlapping values; a
 TEST-PII alias cannot leave a SECRET value unmasked in a label hash. Repeated declarations
-across the plan and configured login block must agree before device selection. There is no
-config, global switch or inferred environment policy. Any extra `QAREN_INPUT_` variable
+across the plan and configured login block must agree before device selection. Input tiers have no
+config or global opt-in and no inferred environment policy; the separate [video policy](#video-publication) controls video publication only. Any extra `QAREN_INPUT_` variable
 in the environment, even one the plan does not use, keeps logs withheld.
 In a TEST-PII run only `core.log`,
 failure screen text and Fill readback come back redacted by the declared values; Metro and
 other subprocess logs stay withheld as in a SECRET run. Declared-value redaction includes
 an e-mail's local part, plus-less local part, domain and
-percent- or HTML-encoded forms; screenshots and video stay withheld. Derived e-mail forms
+percent- or HTML-encoded forms; screenshots stay withheld and video follows the [declared policy](#video-publication). Derived e-mail forms
 shorter than 3 characters (for example a 2-letter local part) are not redacted on their own,
 while the full address and every longer derived form always are. Core evidence and CLI
 logs also redact Unicode case variants, including length-changing mappings such as
@@ -3133,6 +3133,22 @@ its existence does not mean publication is active. Do not delete it to bypass
 contention.
 
 ### Video publication
+
+Declare the video policy in the selected app config (`--config <path>` selects another file):
+
+```yaml
+video: non-strict
+```
+
+- `strict`: today's privacy checks apply; clean walks can publish.
+- `non-strict`: use only when the app shows test data. Non-SECRET observations, literal fills and TEST-PII inputs can publish video. Detected SECRET causes still withhold it: secure fields (including empty fields), concealed fills, code rows and echoes attributable to protected values. A run holding SECRET runtime inputs also withholds video, even if they are unused.
+- Absent: strict rules apply and doctor reminds you to declare a policy. Any other value, including null, refuses `SCENARIO_INVALID`.
+
+The receipt, report and PR comment name the policy and the config path it came from. The path identifies the declaration, not the backend or dataset. Policy and eligibility are persisted with the run; `qaren publish` never re-reads the current app config. A missing or unknown eligibility verdict still withholds video. Saved-block publication and screenshots retain strict rules in this release.
+
+SECRET text masking and no readback apply in both modes. A runtime input displayed in a non-secure field can be marked `(test-pii)` only if it is test data; that annotation cannot exempt secure fields or code rows. Non-strict is an operator declaration, not proof: an undeclared secret prefilled into a non-secure field, real personal data, or a value visible only between captures can appear in a published video. QaReN does not mask video regions or identify the backend. Upgrade every CLI/CI runtime before adding the key; older versions refuse it. Removing the key restores strict behavior.
+
+The following eligibility rules describe strict and undeclared runs. Both modes keep the same admission/login window, continuity, media validity and size limits.
 
 Video publication eligibility and a value-free withholding reason are persisted
 in `pr.json`. A plan containing any fill/type step keeps the recording local,

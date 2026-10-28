@@ -352,6 +352,15 @@ fn run_inner(
     let input_owner = crate::redact::capture_input_scope().expect("run input scope");
     let resolved_inputs = input_owner.admit(&names)?;
     resolved_inputs.declare_test_pii(&non_secret_names(&inventory, &names)?);
+    if config.video == record::VideoPolicy::Undeclared {
+        eprintln!(
+            "{}",
+            crate::redact::redact_secrets(&format!(
+                "▸ video policy not declared in {}: strict rules apply",
+                req.config_path.display()
+            ))
+        );
+    }
     let login_snapshot = inventory.get("loginSnapshot").cloned();
     let prepared = preflight_inputs(
         runner,
@@ -585,7 +594,13 @@ fn run_inner(
         record,
         started_ms,
         timings: Vec::new(),
-        notes: Vec::new(),
+        notes: vec![
+            ("video_policy".into(), config.video.as_str().into()),
+            (
+                "video_policy_source".into(),
+                req.config_path.display().to_string(),
+            ),
+        ],
         verb: verb(req),
         bundle_requests_at_launch: None,
         manifest_warm: None,
@@ -898,6 +913,7 @@ fn run_inner(
         run_dir: run_dir.clone(),
         lease: lease.wire(),
         login_block: config.login_block.clone(),
+        video_policy: config.video,
         login_marker: config.login_marker.clone(),
         target: CoreTarget {
             device_id: device.id.clone(),
@@ -1047,6 +1063,8 @@ fn run_inner(
         }
     }
     // The canonical plan copy goes to .qaren/plans only, never into run evidence.
+    outcome.ledger.video_policy = config.video;
+    outcome.ledger.video_policy_source = Some(req.config_path.display().to_string());
     let recipe = outcome.ledger.recipe.take();
     let ledger_path = run_dir.join("ledger.json");
     if let Err(e) = std::fs::write(
@@ -1165,12 +1183,13 @@ fn run_inner(
         Err(f) => return Ok(ctx.fail(f)),
     };
 
-    if let Some(entry) = outcome
-        .ledger
-        .media_withheld
-        .as_ref()
-        .and_then(|media| media.screenshots.as_ref().or(media.video.as_ref()))
-    {
+    if let Some(entry) = outcome.ledger.media_withheld.as_ref().and_then(|media| {
+        if config.video == record::VideoPolicy::NonStrict {
+            media.video.as_ref().or(media.screenshots.as_ref())
+        } else {
+            media.screenshots.as_ref().or(media.video.as_ref())
+        }
+    }) {
         ctx.notes
             .push(("media_withheld".to_string(), entry.receipt_note()));
     }
@@ -1300,6 +1319,9 @@ fn run_inner(
             video,
             video_withholding_reason: video_publication.withholding_reason().map(str::to_string),
             video_publication,
+            video_policy: config.video,
+            video_policy_source: Some(req.config_path.display().to_string()),
+            non_strict_publication: outcome.ledger.non_strict_publication.clone(),
             tested_older_commit: tested_older_commit.is_some(),
             blocks,
             identity_values: identity_values(&device, config.metro_port, &ctx.record.resources),

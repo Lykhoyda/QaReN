@@ -699,6 +699,7 @@ async function openSession(
   const deps: WalkerDeps = {
     note: log,
     mediaWithheld: diagnostic,
+    videoPolicy: request.videoPolicy ?? 'undeclared',
     privacy,
     judge: createJev({ apiKey, now, timing }),
     interruptionVeto: !!apiKey,

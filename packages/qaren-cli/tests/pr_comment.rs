@@ -166,3 +166,58 @@ fn the_verdict_is_structured() {
     );
     assert!(body.contains("too large to attach"));
 }
+
+#[test]
+fn non_strict_secret_causes_get_specific_wording_and_only_attributable_input_echoes_get_the_escape()
+{
+    use qaren::record::{NonStrictPublication, VideoPolicy};
+    for (reason, source) in [
+        ("secure-field", None),
+        ("code-row", None),
+        ("concealed-fill", None),
+        ("runtime-input", None),
+        ("echo", Some("input")),
+        ("echo", Some("secret")),
+    ] {
+        let mut ledger = failing_ledger();
+        ledger.video_policy = VideoPolicy::NonStrict;
+        ledger.video_policy_source = Some(".qaren/target.yaml".into());
+        ledger.non_strict_publication = Some(NonStrictPublication::WithheldSecret);
+        ledger.media_withheld = Some(
+            serde_json::from_value(serde_json::json!({
+                "video": {"reason": reason, "source": source, "line": 7}
+            }))
+            .unwrap(),
+        );
+        let body = render(
+            &ledger,
+            false,
+            &VideoStatus::Available,
+            &VideoPublication::WithheldFill,
+        );
+        assert!(body.contains("Video policy: non-strict (declared in .qaren/target.yaml)."));
+        assert!(!body.contains("Video of the walk is attached"));
+        if reason == "runtime-input" {
+            assert!(
+                body.contains("Video withheld: the run holds secret runtime inputs."),
+                "{body}"
+            );
+        } else {
+            assert!(
+                body.contains(&format!(
+                    "a protected field or value was on screen in the published window ({reason})."
+                )),
+                "{body}"
+            );
+        }
+        assert_eq!(body.contains("mark it (test-pii)"), source == Some("input"));
+        let local = qaren::report::render(&ReportInput {
+            run_id: "check-policy",
+            platform: "ios",
+            app_id: "com.test",
+            device: "test",
+            ledger: &ledger,
+        });
+        assert!(local.contains("Video policy: non-strict (declared in .qaren/target.yaml)."));
+    }
+}

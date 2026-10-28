@@ -81,6 +81,8 @@ export interface BlockResult {
 export interface Ledger {
   verdict: 'PASS' | 'FAIL';
   videoPublication?: 'eligible' | 'withheld-fill' | 'withheld-privacy' | 'unknown';
+  videoPolicy?: 'strict' | 'non-strict' | 'undeclared';
+  nonStrictPublication?: 'eligible' | 'withheld-secret';
   mediaWithheld?: {
     screenshots?: MediaLatch & { line: number; count: number };
     video?: MediaLatch & { line: number };

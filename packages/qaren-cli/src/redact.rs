@@ -92,6 +92,14 @@ pub fn durable_json<T: serde::Serialize>(value: &T) -> serde_json::Result<String
             media.push(("/mediaWithheld".to_string(), serde_json::to_value(value)?));
         }
     }
+    if let Some(note) = projected
+        .pointer("/outcomes/video_policy")
+        .and_then(serde_json::Value::as_str)
+    {
+        if ["strict", "non-strict", "undeclared"].contains(&note) {
+            media.push(("/outcomes/video_policy".into(), note.into()));
+        }
+    }
     if let Some(steps) = projected.get("steps").and_then(serde_json::Value::as_array) {
         for (index, row) in steps.iter().enumerate() {
             if let Some(value) = row.get("screenshotWithheld") {
@@ -150,6 +158,8 @@ pub fn durable_json<T: serde::Serialize>(value: &T) -> serde_json::Result<String
                                 "resolvedBy",
                                 "outcome",
                                 "videoPublication",
+                                "videoPolicy",
+                                "nonStrictPublication",
                                 "method",
                             ]
                             .contains(&key.as_str())

@@ -288,6 +288,59 @@ fn reconnect_note(summary: &LedgerSummary) -> String {
     format!(" · React reconnected at line {}", lines.join(", "))
 }
 
+fn video_policy_text(ledger: &Ledger) -> String {
+    let source = ledger
+        .video_policy_source
+        .as_deref()
+        .unwrap_or("an unrecorded config path");
+    match ledger.video_policy {
+        crate::record::VideoPolicy::Undeclared => {
+            format!("Video policy: not declared in {source}, so strict rules apply.")
+        }
+        policy => format!("Video policy: {} (declared in {source}).", policy.as_str()),
+    }
+}
+
+fn video_withholding(ledger: &Ledger, strict: &VideoPublication) -> Option<String> {
+    let publication = ledger
+        .video_policy
+        .publication(strict, ledger.non_strict_publication.as_ref());
+    let reason = publication.withholding_reason()?;
+    let cause = ledger
+        .media_withheld
+        .as_ref()
+        .and_then(|media| media.video.as_ref());
+    let code = cause
+        .map(|entry| format!(" ({})", entry.reason.as_str()))
+        .unwrap_or_default();
+    if ledger.video_policy == crate::record::VideoPolicy::NonStrict
+        && publication == VideoPublication::WithheldPrivacy
+    {
+        if cause.is_some_and(|cause| cause.reason == crate::core::WithholdCause::RuntimeInput) {
+            return Some("the run holds secret runtime inputs.".into());
+        }
+        let escape = if cause.is_some_and(|cause| {
+            cause.reason == crate::core::WithholdCause::Echo
+                && cause.source == Some(crate::core::MediaSource::Input)
+        }) {
+            " A runtime input was shown in a non-secure field; mark it (test-pii) if it is test data."
+        } else {
+            ""
+        };
+        return Some(format!(
+            "a protected field or value was on screen in the published window{code}.{escape}"
+        ));
+    }
+    Some(format!(
+        "{reason}{}.",
+        if publication == VideoPublication::WithheldPrivacy {
+            code
+        } else {
+            String::new()
+        }
+    ))
+}
+
 pub fn render(input: &ReportInput<'_>) -> String {
     let summary = summarize(input.ledger);
     let mut out = String::new();
@@ -347,6 +400,13 @@ pub fn render(input: &ReportInput<'_>) -> String {
         }
     }
     out.push_str("\n## Run details\n\n");
+    out.push_str(&format!("- {}\n", prose(&video_policy_text(input.ledger))));
+    if let Some(reason) = video_withholding(
+        input.ledger,
+        &input.ledger.video_publication.clone().unwrap_or_default(),
+    ) {
+        out.push_str(&format!("- Video withheld: {}\n", prose(&reason)));
+    }
     if let Some(entry) = input
         .ledger
         .media_withheld
@@ -469,19 +529,20 @@ pub fn render_pr_comment(
         );
     }
     out.push_str("\n\n");
-    if let Some(reason) = pr.video_publication.withholding_reason() {
-        let code = if *pr.video_publication == VideoPublication::WithheldPrivacy {
-            input
+    out.push_str(&format!("{}\n\n", clean(&video_policy_text(input.ledger))));
+    if let Some(reason) = video_withholding(input.ledger, pr.video_publication) {
+        out.push_str(&format!("Video withheld: {}\n\n", clean(&reason)));
+        if input.ledger.video_policy == crate::record::VideoPolicy::Undeclared {
+            let source = input
                 .ledger
-                .media_withheld
-                .as_ref()
-                .and_then(|media| media.video.as_ref())
-                .map(|entry| format!(" ({})", entry.reason.as_str()))
-                .unwrap_or_default()
-        } else {
-            String::new()
-        };
-        out.push_str(&format!("Video withheld: {reason}{code}.\n\n"));
+                .video_policy_source
+                .as_deref()
+                .unwrap_or("the app config");
+            out.push_str(&format!(
+                "If this app shows test data only, declare video: non-strict in {}.\n\n",
+                clean(source)
+            ));
+        }
     } else {
         match pr.video {
             VideoStatus::Available => out.push_str("Video of the walk is attached below.\n\n"),
