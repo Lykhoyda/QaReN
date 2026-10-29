@@ -61,10 +61,11 @@ test('shared Rust/TypeScript fixtures retain the original unresolved-path predic
     const components = command.split('/').slice(1);
     return components.some(
       (component, index) =>
-        /^(?:maestro(?:-driver-iosUITests-Runner|\.\w+)?|WebDriverAgent(?:Runner)?(?:-Runner)?|RnFastRunner\S*|XCTRunner|xcodebuild|\S*UITests-?Runner)(?=$|[\s"'])/i.test(
+        /^(?:maestro(?:-driver-iosUITests-Runner|\.\w+)?|WebDriverAgent(?:Runner)?(?:-Runner)?|QarenIosRunner\S*|QaReN-Runner|XCTRunner|xcodebuild|\S*UITests-?Runner)(?=$|[\s"'])/i.test(
           component,
         ) ||
-        (index < components.length - 1 && /(?:UITests-?Runner|XCTRunner)\.app/i.test(component)) ||
+        (index < components.length - 1 &&
+          /(?:UITests-?Runner|XCTRunner|QaReN-Runner)\.app/i.test(component)) ||
         (/(?:^|\s)maestro\.cli\.[\w.$]+(?:\s|$)/i.test(command) &&
           /^java(?=$|[\s"'])/i.test(component)),
     );
@@ -94,7 +95,8 @@ test('shared Rust/TypeScript fixtures retain the original unresolved-path predic
     'UITestsRunner',
     'UITests-Runner',
     'XCTRunner.app',
-    'RnFastRunner',
+    'QarenIosRunner',
+    'QaReN-Runner',
     'WebDriverAgent',
   ];
   let seed = 12345;

@@ -30,7 +30,7 @@ test('an unreadable relevant process still prevents fresh-install admission', as
     'xcodebuild test -scheme Example',
     '/usr/bin/java -classpath lib maestro.cli.AppKt mcp',
     '/opt/bin/agent review /tmp/WebDriverAgent',
-    `/opt/bin/agent --prompt ${prompt}/tmp/RnFastRunnerUITests-Runner`,
+    `/opt/bin/agent --prompt ${prompt}/tmp/QaReN-Runner`,
     `/usr/bin/node -e ${prompt}/tmp/XCTRunner`,
     '/bin/bash --unknown-option /tmp/script.sh',
   ]) {

@@ -1,5 +1,4 @@
-// GH #384 (Story 03): tri-state quiescence-bypass status reported by the
-// iOS rn-fast-runner at startup (see QuiescenceStatus.swift).
+// Tri-state quiescence bypass reported by the iOS runner at startup.
 export type QuiescenceStatus = 'active' | 'disabled' | 'unavailable';
 
 // Same rollout shape as the keyboard guard (runners/keyboard-guard.ts):

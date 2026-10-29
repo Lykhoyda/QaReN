@@ -2574,6 +2574,16 @@ captures (a crash or restart), or a snapshot or platform-presence capture report
 refuses `APP_PROCESS_UNKNOWN`; a runner built from an older checkout needs a rebuild
 (`RN_RUNNER_BUILD=local`).
 
+### iOS runner
+
+The simulator shows `QaReN` (host) and `QaReN-Runner` (test runner); both remain
+installed in 2.0.4. The native source package is now `qaren-ios-runner`.
+An old `rn-fast-runner` directory cannot supply this version's runner. If startup
+reports a pre-2.0.4 runner directory, [update the installed release](../../README.md#keep-it-working)
+or use a fresh source checkout. Unset stale `QAREN_NATIVE_RUNNER_ROOT` or
+`QAREN_ROOT` overrides if they point at the old layout; no compatibility alias is
+provided.
+
 ### Saved plans
 
 `qaren check` keeps a fully passing plan in the app's `.qaren/plans/`, and `qaren plans [--json]`,

@@ -25,7 +25,7 @@ import {
   resetRunnerRebuildBudgetForCurrentPlugin,
   stopFastRunner,
   terminateRunnerHost,
-} from '../runners/rn-fast-runner-client.js';
+} from '../runners/qaren-ios-runner-client.js';
 import {
   stopAndroidRunner,
   reapActiveAndroidRunner,

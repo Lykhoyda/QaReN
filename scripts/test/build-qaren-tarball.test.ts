@@ -280,7 +280,7 @@ test('the runtime manifest names only the runner zips, never a qaren tarball', (
     version: '1.2.3',
     xcodeBuildVersion: '16.4',
     assets: {
-      ios: [{ name: 'rn-fast-runner-1.2.3-sim.zip', sha256: 'a'.repeat(64), bytes: 1 }],
+      ios: [{ name: 'qaren-ios-runner-1.2.3-sim.zip', sha256: 'a'.repeat(64), bytes: 1 }],
       android: [{ name: 'rn-android-runner-1.2.3.zip', sha256: 'b'.repeat(64), bytes: 2 }],
       qaren: {
         'darwin-arm64': {

@@ -21,7 +21,7 @@ import { chooseMaestroDispatch } from '../../dist/handlers/maestro-dispatch.js';
 import { createRunActionHandler } from '../../dist/handlers/run-action.js';
 import { createTmpProject } from '../helpers/tmp-project.js';
 import { buildReplayEngineStatus, MAESTRO_RUNNER_PIN } from '../../dist/domain/engine-pin.js';
-import { reapStaleFastRunner } from '../../dist/runners/rn-fast-runner-client.js';
+import { reapStaleFastRunner } from '../../dist/runners/qaren-ios-runner-client.js';
 import {
   normalizeSteps,
   replayFlow,
@@ -2174,7 +2174,7 @@ function nativeHandler(
     resolveEngineStatus: async () =>
       buildReplayEngineStatus('pinned-ok', MAESTRO_RUNNER_PIN.version, false),
     nativeVisionProbe: async ({ selectors }) => ({
-      source: 'rn-fast-runner-snapshot',
+      source: 'qaren-ios-runner-snapshot',
       nodeCount: 42,
       visibleSelectors: (typeof visible === 'function' ? visible() : visible) ? selectors : [],
       runtimeMajor: 26,
@@ -2278,7 +2278,7 @@ test('native-only blindness requires a WDA miss and same-screen native visibilit
     }),
   );
   assert.equal(env.code, 'NATIVE_SURFACE_BLIND');
-  assert.equal(env.meta?.nativeVision.source, 'rn-fast-runner-snapshot');
+  assert.equal(env.meta?.nativeVision.source, 'qaren-ios-runner-snapshot');
   assert.equal(env.meta?.nativeVision.visibleSelectorCount, 1);
   assert.equal(env.meta?.nativeVision.failedSelectorKind, 'text');
   assert.equal(env.meta?.nativeVision.runtimeVersionHeuristicIsProof, false);
@@ -2460,7 +2460,7 @@ test('a deadline reached during the failure-screen probe cannot become native bl
     nativeVisionProbe: async ({ selectors }) => {
       clock = 101;
       return {
-        source: 'rn-fast-runner-snapshot',
+        source: 'qaren-ios-runner-snapshot',
         nodeCount: 42,
         visibleSelectors: selectors,
         runtimeMajor: 26,
@@ -2507,7 +2507,7 @@ test('a deadline reached during failure-screen cleanup cannot become native blin
     resolveEngineStatus: async () =>
       buildReplayEngineStatus('pinned-ok', MAESTRO_RUNNER_PIN.version, false),
     nativeVisionProbe: async ({ selectors }) => ({
-      source: 'rn-fast-runner-snapshot',
+      source: 'qaren-ios-runner-snapshot',
       nodeCount: 42,
       visibleSelectors: selectors,
       runtimeMajor: 26,
@@ -2562,7 +2562,7 @@ test('a deadline reached during runner resume skips the failure-screen probe', a
     nativeVisionProbe: async ({ selectors }) => {
       comparisonProbes += 1;
       return {
-        source: 'rn-fast-runner-snapshot',
+        source: 'qaren-ios-runner-snapshot',
         nodeCount: 42,
         visibleSelectors: selectors,
         runtimeMajor: 26,

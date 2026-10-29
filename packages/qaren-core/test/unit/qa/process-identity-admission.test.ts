@@ -108,7 +108,7 @@ test('observed drivers, shells and Java remain unknown without inspecting their 
     'maestro',
     'maestro.sh',
     'WebDriverAgentRunner-Runner',
-    'RnFastRunnerUITests-Runner',
+    'QaReN-Runner',
     'XCTRunner',
     'ExampleUITestsRunner',
   ]) {

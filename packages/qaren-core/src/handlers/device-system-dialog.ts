@@ -378,7 +378,7 @@ async function handleSystemDialog(
         tappedLabel: runner.matchedLabel,
         tappedRect: runner.tappedRect,
         dialogTitle: runner.dialogTitle,
-        via: platform === 'ios' ? 'rn-fast-runner' : 'rn-android-runner',
+        via: platform === 'ios' ? 'qaren-ios-runner' : 'rn-android-runner',
       },
       { meta: { verify: 'exact' } },
     );

@@ -2283,14 +2283,7 @@ export async function runAndroid(args: RunAndroidArgs): Promise<ToolResult> {
   if (!resp.ok) {
     const message = resp.error?.message ?? 'Android runner returned !ok with no error';
     const code = resp.error?.code;
-    // Mirror the iOS `.type` runner-timeout shim (rn-fast-runner-client.ts:553-562).
-    // UIAutomator's `typeText` waits for window-content idle internally even with
-    // `Configurator.setWaitForIdleTimeout(0)`. RN apps with Reanimated/RAF active
-    // never report idle, so the call resolves with an `InvocationTargetException`
-    // wrapping "Could not detect idle state" AFTER the text has already been
-    // appended to the field. Live trials (Task 10) confirm the side-effect
-    // always succeeds — but that is attempt evidence, not field truth, so this
-    // shape fails as TYPE_IDLE_TIMEOUT with mutation:'possible' (GH #581).
+    // UIAutomator can time out after appending text, so attempt evidence cannot prove field truth.
     if (
       args.command === 'type' &&
       args.exactIdentifier === undefined &&

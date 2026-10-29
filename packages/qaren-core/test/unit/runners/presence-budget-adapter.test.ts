@@ -5,7 +5,7 @@ import {
   _setFetchForTest,
   _setRunnerStateForTest,
   runIOS,
-} from '../../../dist/runners/rn-fast-runner-client.js';
+} from '../../../dist/runners/qaren-ios-runner-client.js';
 import { clearRefMap } from '../../../dist/fast-runner-ref-map.js';
 import { REQUIRED_IOS_COMMANDS, REQUIRED_IOS_FEATURES } from '../../../dist/runners/protocol.js';
 import { parseEnvelope } from '../../helpers/result-helpers.js';

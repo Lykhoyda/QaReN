@@ -7,7 +7,7 @@ import {
   _setCapabilitiesForTest,
   observeAppProcess,
   runIOS,
-} from '../../../dist/runners/rn-fast-runner-client.js';
+} from '../../../dist/runners/qaren-ios-runner-client.js';
 import { QaDispatchContext } from '../../../dist/domain/qa-dispatch.js';
 import { withCancellation } from '../../../dist/domain/cancellation.js';
 import {

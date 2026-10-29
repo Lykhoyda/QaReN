@@ -3,7 +3,7 @@
 // post-reinstall mismatch surfaces RUNNER_PROTOCOL_MISMATCH.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { probeFastRunnerLivenessDetailed } from '../../dist/runners/rn-fast-runner-client.js';
+import { probeFastRunnerLivenessDetailed } from '../../dist/runners/qaren-ios-runner-client.js';
 import { ensureRunnerForCommand } from '../../dist/agent-device-wrapper.js';
 import { REQUIRED_IOS_COMMANDS, REQUIRED_IOS_FEATURES } from '../../dist/runners/protocol.js';
 

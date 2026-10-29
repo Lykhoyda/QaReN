@@ -125,10 +125,10 @@ test('native startup settles cancellation and rejects buffered readiness without
     await import('../../../dist/domain/cancellation.js');
   const previousRoot = process.env.QAREN_NATIVE_RUNNER_ROOT;
   process.env.QAREN_NATIVE_RUNNER_ROOT = root;
-  let ios: typeof import('../../../dist/runners/rn-fast-runner-client.js');
+  let ios: typeof import('../../../dist/runners/qaren-ios-runner-client.js');
   let android: typeof import('../../../dist/runners/rn-android-runner-client.js');
   try {
-    ios = await import('../../../dist/runners/rn-fast-runner-client.js');
+    ios = await import('../../../dist/runners/qaren-ios-runner-client.js');
     android = await import('../../../dist/runners/rn-android-runner-client.js');
   } finally {
     if (previousRoot === undefined) delete process.env.QAREN_NATIVE_RUNNER_ROOT;

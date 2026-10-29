@@ -3,9 +3,9 @@ import assert from 'node:assert/strict';
 import {
   parseReadySignal,
   createReadySignalParser,
-} from '../../dist/runners/rn-fast-runner-client.js';
+} from '../../dist/runners/qaren-ios-runner-client.js';
 
-// The imported rn-fast-runner XCTest replaced the legacy single-line
+// The imported qaren-ios-runner XCTest replaced the legacy single-line
 // `FASTXCT_READY {"port":N}` JSON signal with a two-line NSLog handshake:
 //   RN_FAST_RUNNER_LISTENER_READY
 //   RN_FAST_RUNNER_PORT=<port>

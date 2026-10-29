@@ -76,9 +76,6 @@ class CommandDispatcher(
     private val device: UiDevice = UiDevice.getInstance(instrumentation)
 
     companion object {
-        // GH #418: advertised in /health.commands. The Node sync test
-        // (cdp-bridge test/unit/gh-418-command-surface-sync.test.js) enforces
-        // that this list exactly matches the dispatch when-branches below.
         val SUPPORTED_COMMANDS = listOf(
             "snapshot", "tap", "press", "type", "fill", "verifyInput", "drag", "swipe",
             "scroll", "screenshot", "back", "dismissKeyboard", "keyboard", "longPress",

@@ -55,8 +55,8 @@ permissions:
 
 jobs:
   build-ios:
-    name: Build rn-fast-runner (iOS)
-    # macos-15 ships Xcode 16.x — required since RnFastRunner.xcodeproj moved to
+    name: Build qaren-ios-runner (iOS)
+    # macos-15 ships Xcode 16.x — required since QarenIosRunner.xcodeproj moved to
     # project format 77 (Xcode 15.4 on macos-14 refuses to open it). Same runner
     # choice as native-tests.yml and codeql.yml, which build this project green.
     runs-on: macos-15
@@ -81,8 +81,8 @@ jobs:
       - name: build-for-testing (no code signing, both arches)
         run: |
           xcodebuild build-for-testing \
-            -project packages/rn-fast-runner/RnFastRunner/RnFastRunner.xcodeproj \
-            -scheme RnFastRunner \
+            -project packages/qaren-ios-runner/QarenIosRunner/QarenIosRunner.xcodeproj \
+            -scheme QarenIosRunner \
             -destination 'generic/platform=iOS Simulator' \
             -derivedDataPath build/dd \
             CODE_SIGNING_ALLOWED=NO ONLY_ACTIVE_ARCH=NO
@@ -95,19 +95,19 @@ jobs:
           [ "$(git rev-parse HEAD)" = "$REF" ] || { echo "::error::checkout is not the candidate $REF" >&2; exit 1; }
           test -n "$(find build/dd/Build/Products -name '*.xctestrun' -print -quit)" \
             || { echo "no .xctestrun produced — unexpected DerivedData layout"; exit 1; }
-          ZIP="rn-fast-runner-$VERSION-sim.zip"
+          ZIP="qaren-ios-runner-$VERSION-sim.zip"
           (cd build/dd && zip -r "$GITHUB_WORKSPACE/$ZIP" Build/Products)
           {
             echo "sha256=$(shasum -a 256 "$ZIP" | cut -d' ' -f1)"
             echo "bytes=$(wc -c < "$ZIP" | tr -d ' ')"
-            echo "tree=$(git rev-parse HEAD:packages/rn-fast-runner)"
+            echo "tree=$(git rev-parse HEAD:packages/qaren-ios-runner)"
           } >> "$GITHUB_OUTPUT"
       - id: retain
         name: Retain the zip for the release transaction
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1 — SHA pin
         with:
-          name: rn-fast-runner-${{ inputs.version }}-sim
-          path: rn-fast-runner-${{ inputs.version }}-sim.zip
+          name: qaren-ios-runner-${{ inputs.version }}-sim
+          path: qaren-ios-runner-${{ inputs.version }}-sim.zip
           if-no-files-found: error
           compression-level: 0
           retention-days: 7
@@ -216,11 +216,11 @@ jobs:
             got=$(wc -c < "$zip" | tr -d ' ')
             [ "$got" = "$bytes" ] || { echo "::error::$1: retained length $got != producer $bytes" >&2; exit 1; }
           }
-          check "rn-fast-runner-$VERSION-sim.zip" "$IOS_SHA256" "$IOS_BYTES"
+          check "qaren-ios-runner-$VERSION-sim.zip" "$IOS_SHA256" "$IOS_BYTES"
           check "rn-android-runner-$VERSION.zip" "$ANDROID_SHA256" "$ANDROID_BYTES"
           node scripts/build-runner-manifest.mts \
             --version "$VERSION" \
-            --ios "handoff/rn-fast-runner-$VERSION-sim.zip" \
+            --ios "handoff/qaren-ios-runner-$VERSION-sim.zip" \
             --android "handoff/rn-android-runner-$VERSION.zip" \
             --out "$RUNNER_TEMP/runtime-runner-manifest.json"
       - id: pack

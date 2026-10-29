@@ -1,4 +1,4 @@
-// GH #210 Task 2: device_* auto-spawns the rn-fast-runner from the runAgentDevice iOS
+// GH #210 Task 2: device_* auto-spawns the qaren-ios-runner from the runAgentDevice iOS
 // choke point — cold-build-safe. decideRunnerSpawn is the pure decision; the runner only
 // auto-starts when a prebuilt .xctestrun exists (never a silent multi-minute xcodebuild).
 // ensureRunnerForCommand orchestrates probe→gate→start→re-verify and returns a STRUCTURED

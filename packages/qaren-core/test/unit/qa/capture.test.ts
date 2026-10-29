@@ -30,7 +30,7 @@ const interactive: DigestEntry[] = [
 ];
 const snapshotVerdict = {
   state: 'ok',
-  source: 'rn-fast-runner',
+  source: 'qaren-ios-runner',
   nodeCount: 1,
   refMapUpdated: true,
   reasons: [],

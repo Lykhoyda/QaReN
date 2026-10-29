@@ -24,13 +24,13 @@ import {
   markStalePrebuiltRunner,
   consumePendingFastRunnerArtifactNote,
   getRunnerPostMortem,
-} from './runners/rn-fast-runner-client.js';
-export { ensureFastRunner } from './runners/rn-fast-runner-client.js';
+} from './runners/qaren-ios-runner-client.js';
+export { ensureFastRunner } from './runners/qaren-ios-runner-client.js';
 import { getPluginVersion } from './runners/protocol.js';
 import type {
   FastRunnerLiveness,
   FastRunnerLivenessDetail,
-} from './runners/rn-fast-runner-client.js';
+} from './runners/qaren-ios-runner-client.js';
 import type { ToolErrorCode } from './types.js';
 import type { SettleProbes, SettleOutcome, waitForSettle } from './lifecycle/settle.js';
 import { resolveBootedIosUdid } from './handlers/device-screenshot-raw.js';
@@ -420,23 +420,7 @@ export function getAdbSerial(): string[] {
   return [];
 }
 
-// --- iOS short-circuit: route every supported command through rn-fast-runner ---
-//
-// GH #105 / rn-device iOS-MVP §3.1: iOS commands no longer touch agent-device
-// (neither the daemon nor the CLI). They go through our own HTTP runner via
-// runIOS(). The buildRunIOSArgs() helper translates the legacy CLI argv shape
-// (e.g. `['press', '@e3', '--hold-ms', '500']`) into the structured RunIOSArgs
-// the new client expects. The legacy daemon + CLI tiers below remain — they
-// now serve Android exclusively.
-//
-// GH #105 iOS-MVP follow-up (post-validation): the original short-circuit
-// list left `swipe` / `scroll` / `longpress` / `pinch` / `find` on the
-// legacy daemon/CLI path. Live validation showed the daemon respawns the
-// upstream AgentDeviceRunner on every such call, which then fights our
-// RnFastRunner for focus. Each of these now routes through the runner's
-// `/command` endpoint (the Swift `.drag` / `.longPress` / `.pinch` / `.findText`
-// handlers). Coordinate-based gestures: the Swift `.swipe` case is tvOS-only;
-// iOS coordinate-form swipes/scrolls use `.drag`.
+// iOS must stay on our runner because the legacy driver steals app focus.
 
 const RN_FAST_RUNNER_COMMANDS = new Set<string>([
   'snapshot',
@@ -480,7 +464,7 @@ export function getCachedScreenRect(): { width: number; height: number } | null 
 export function buildRunIOSArgs(
   cliArgs: string[],
   bundleId?: string,
-): import('./runners/rn-fast-runner-client.js').RunIOSArgs {
+): import('./runners/qaren-ios-runner-client.js').RunIOSArgs {
   const cmd = cliArgs[0];
   const positionals = positionalArgs(cliArgs);
   switch (cmd) {
@@ -493,7 +477,7 @@ export function buildRunIOSArgs(
           return { command: 'tap', _staleRef: ref, ...(bundleId ? { bundleId } : {}) };
         }
         const target = getFreshRefTarget(ref);
-        const built: import('./runners/rn-fast-runner-client.js').RunIOSArgs = {
+        const built: import('./runners/qaren-ios-runner-client.js').RunIOSArgs = {
           command: 'tap',
           x: center.x,
           y: center.y,
@@ -632,7 +616,7 @@ export function buildRunIOSArgs(
       if ([x1, y1, x2, y2].some((n) => Number.isNaN(n))) {
         throw new Error(`buildRunIOSArgs: ${cmd} requires four numeric coordinates`);
       }
-      const args: import('./runners/rn-fast-runner-client.js').RunIOSArgs = {
+      const args: import('./runners/qaren-ios-runner-client.js').RunIOSArgs = {
         command: 'drag',
         x: x1,
         y: y1,
@@ -654,7 +638,7 @@ export function buildRunIOSArgs(
       if (Number.isNaN(x) || Number.isNaN(y)) {
         throw new Error(`buildRunIOSArgs: longpress requires numeric x, y`);
       }
-      const args: import('./runners/rn-fast-runner-client.js').RunIOSArgs = {
+      const args: import('./runners/qaren-ios-runner-client.js').RunIOSArgs = {
         command: 'longPress',
         x,
         y,
@@ -673,7 +657,7 @@ export function buildRunIOSArgs(
       if (Number.isNaN(scale)) {
         throw new Error(`buildRunIOSArgs: pinch requires numeric scale`);
       }
-      const args: import('./runners/rn-fast-runner-client.js').RunIOSArgs = {
+      const args: import('./runners/qaren-ios-runner-client.js').RunIOSArgs = {
         command: 'pinch',
         scale,
         ...(bundleId ? { bundleId } : {}),
@@ -703,7 +687,7 @@ function exactTargetRebindFailure(inputRef: string): ToolResult {
 }
 
 function decorateExactTargetIOS(
-  ios: import('./runners/rn-fast-runner-client.js').RunIOSArgs,
+  ios: import('./runners/qaren-ios-runner-client.js').RunIOSArgs,
   exact: ExactTargetOpts,
 ): ToolResult | null {
   if (ios.command === 'verifyInput' && exact.operationToken) {
@@ -1035,14 +1019,14 @@ export function decideRunnerSpawn(input: {
     return {
       action: 'error',
       message:
-        'rn-fast-runner not started and no booted iOS simulator found. Boot a simulator and run `device_snapshot action=open appId=<your.app.id> platform=ios` first.',
+        'qaren-ios-runner not started and no booted iOS simulator found. Boot a simulator and run `device_snapshot action=open appId=<your.app.id> platform=ios` first.',
     };
   }
   if (!input.prebuilt) {
     return {
       action: 'error',
       message:
-        'rn-fast-runner not started and not prebuilt. Run `device_snapshot action=open appId=<your.app.id> platform=ios` first (one-time cold build, ~minutes), then retry — or pre-build once with `xcodebuild build-for-testing` (see plugin Prerequisites).',
+        'qaren-ios-runner not started and not prebuilt. Run `device_snapshot action=open appId=<your.app.id> platform=ios` first (one-time cold build, ~minutes), then retry — or pre-build once with `xcodebuild build-for-testing` (see plugin Prerequisites).',
     };
   }
   return { action: 'spawn', deviceId: input.deviceId };
@@ -1123,10 +1107,10 @@ async function rebuildStaleRunnerArtifact(
       ok: false,
       code,
       message: authorityMismatch
-        ? `rn-fast-runner was already cold-rebuilt once for plugin v${plugin} and still reports an authority identity mismatch. ` +
+        ? `qaren-ios-runner was already cold-rebuilt once for plugin v${plugin} and still reports an authority identity mismatch. ` +
           `If that rebuild failed transiently, delete the runner build/commands-rebuild.json marker and re-open to retry; ` +
           `otherwise update or reinstall the plugin.`
-        : `rn-fast-runner was already cold-rebuilt once for plugin v${plugin} and still lacks ` +
+        : `qaren-ios-runner was already cold-rebuilt once for plugin v${plugin} and still lacks ` +
           `required ${missingKind} (missing: ${missing}). If that rebuild failed transiently (sim ` +
           `not booted, xcodebuild flake), delete the runner build/commands-rebuild.json marker ` +
           `and re-open to retry; otherwise update or reinstall the plugin.`,
@@ -1175,8 +1159,8 @@ async function rebuildStaleRunnerArtifact(
     ok: false,
     code,
     message: authorityMismatch
-      ? 'rn-fast-runner still reports an authority identity mismatch after a cold rebuild.'
-      : `rn-fast-runner still lacks required ${missingKind} after a cold rebuild ` +
+      ? 'qaren-ios-runner still reports an authority identity mismatch after a cold rebuild.'
+      : `qaren-ios-runner still lacks required ${missingKind} after a cold rebuild ` +
         `(missing: ${(rebuilt.missingCommands ?? rebuilt.missingFeatures ?? first.missingCommands ?? first.missingFeatures ?? []).join(', ') || 'unknown'}). ` +
         `The plugin checkout itself may be outdated — update the plugin, then re-open the device session.`,
   };
@@ -1227,7 +1211,7 @@ export async function ensureRunnerForCommand(
             ? 'RN_FAST_RUNNER_STALE'
             : 'RUNNER_COMMANDS_STALE',
         message:
-          `rn-fast-runner artifact lacks required ${kind} (missing: ${missing}). ` +
+          `qaren-ios-runner artifact lacks required ${kind} (missing: ${missing}). ` +
           `Re-open the device session (device_snapshot action=open appId=${bundleId} platform=ios) ` +
           `to rebuild it (cold build, several minutes).`,
       };
@@ -1237,7 +1221,7 @@ export async function ensureRunnerForCommand(
         ok: false,
         code: 'RUNNER_OWNERSHIP_MISMATCH',
         message:
-          `rn-fast-runner authority identity does not match this session. ` +
+          `qaren-ios-runner authority identity does not match this session. ` +
           `Re-open the device session (device_snapshot action=open appId=${bundleId} platform=ios) to rebuild it.`,
       };
     }
@@ -1318,7 +1302,7 @@ export async function ensureRunnerForCommand(
         ok: false,
         code: 'RUNNER_OWNERSHIP_MISMATCH',
         message:
-          `rn-fast-runner authority identity does not match this session. ` +
+          `qaren-ios-runner authority identity does not match this session. ` +
           `Re-open the device session (device_snapshot action=open appId=${bundleId} platform=ios) to rebuild it.`,
       };
     }
@@ -1329,7 +1313,7 @@ export async function ensureRunnerForCommand(
       code:
         after.staleReason === 'missing-features' ? 'RN_FAST_RUNNER_STALE' : 'RUNNER_COMMANDS_STALE',
       message:
-        `rn-fast-runner artifact lacks required ${kind} (missing: ${missing}). ` +
+        `qaren-ios-runner artifact lacks required ${kind} (missing: ${missing}). ` +
         `Re-open the device session (device_snapshot action=open appId=${bundleId} platform=ios) ` +
         `to rebuild it (cold build, several minutes).`,
     };
@@ -1339,7 +1323,7 @@ export async function ensureRunnerForCommand(
       ok: false,
       code: 'RUNNER_PROTOCOL_MISMATCH',
       message:
-        `rn-fast-runner still speaks an incompatible wire protocol after reinstall ` +
+        `qaren-ios-runner still speaks an incompatible wire protocol after reinstall ` +
         `(runner protocol ${after.runnerProtocolVersion ?? 'none'}, runnerVersion ${after.runnerVersion ?? 'unknown'}). ` +
         `The prebuilt XCUITest artifact is stale — rebuild it: delete the runner build/DerivedData directory ` +
         `and re-open the device session (cold build), or run xcodebuild build-for-testing (see plugin Prerequisites).`,
@@ -1348,7 +1332,7 @@ export async function ensureRunnerForCommand(
   return {
     ok: false,
     message:
-      `rn-fast-runner did not become ready after auto-spawn${firstStartRetried ? ' (one internal retry included)' : ''}. ` +
+      `qaren-ios-runner did not become ready after auto-spawn${firstStartRetried ? ' (one internal retry included)' : ''}. ` +
       'Retry, or run `device_snapshot action=open appId=<your.app.id> platform=ios` to surface the build error.',
   };
 }
@@ -1496,7 +1480,7 @@ export async function settleAfterMutationWithOutcome(
     const capabilities = deps.capabilities
       ? deps.capabilities(ctx.platform)
       : ctx.platform === 'ios'
-        ? (await import('./runners/rn-fast-runner-client.js')).getFastRunnerCapabilities()
+        ? (await import('./runners/qaren-ios-runner-client.js')).getFastRunnerCapabilities()
         : (await import('./runners/rn-android-runner-client.js')).getAndroidRunnerCapabilities();
     const probes = deps.probes
       ? deps.probes(ctx.platform, ctx.appId)
@@ -1889,15 +1873,11 @@ export async function runNative(
     markSnapshotDirty();
   }
 
-  // GH #105 iOS-MVP §3.1: iOS short-circuit. Every supported command goes
-  // through our rn-fast-runner HTTP client (no daemon, no CLI). The runner
-  // is started lazily — if no session has cold-launched it yet, we surface
-  // a clear failure so the agent can call device_snapshot action=open.
   const targetPlatform = opts.platform ?? activeSession?.platform;
   if (targetPlatform === 'ios' && !opts.skipSession && RN_FAST_RUNNER_COMMANDS.has(cliArgs[0])) {
     const appId = activeSession?.appId ?? resolveBundleId('ios') ?? undefined;
     if (cliArgs[0] === 'snapshot' && cliArgs.includes('--platform-presence')) {
-      const { runIOS } = await import('./runners/rn-fast-runner-client.js');
+      const { runIOS } = await import('./runners/qaren-ios-runner-client.js');
       return runIOS({
         ...buildRunIOSArgs(cliArgs, appId),
         presenceBudgetMs: opts.presenceBudgetMs,
@@ -1923,7 +1903,7 @@ export async function runNative(
       upgradeNote = ready.note ?? consumePendingFastRunnerArtifactNote();
     }
     const { runIOS, captureFastRunnerCommandAuthority, verifyTypeResultAfterSettle } =
-      await import('./runners/rn-fast-runner-client.js');
+      await import('./runners/qaren-ios-runner-client.js');
     let ios = buildRunIOSArgs(cliArgs, appId);
     ios.qaContext = opts.qaContext;
     ios.qaReadOnly = opts.qaReadOnly;

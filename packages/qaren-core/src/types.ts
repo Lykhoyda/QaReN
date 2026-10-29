@@ -309,7 +309,7 @@ export type ToolErrorCode =
   | 'ASSERTION_FAILED' // expect_redux / expect_route / expect_text / expect_visible_by_testid
   | 'APP_HAS_REDBOX' // React-tree proof cannot classify selectors while the app error screen is active
   | 'SNAPSHOT_FAILED' // agent-device snapshot returned ok:false (distinct from "not present")
-  | 'RN_FAST_RUNNER_DOWN' // #210: iOS rn-fast-runner not running and could not be auto-spawned (not prebuilt / no device)
+  | 'RN_FAST_RUNNER_DOWN' // #210: iOS qaren-ios-runner not running and could not be auto-spawned (not prebuilt / no device)
   | 'RN_ANDROID_RUNNER_DOWN' // #243: rn-android-runner not reachable (cold-start race / can't bind port)
   | 'APP_LAUNCH_FAILED' // app launcher failed after the native runner was already ready
   | 'SCREENSHOT_FAILED' // rn-android-runner screenshot response missing pngBase64 payload
@@ -336,7 +336,7 @@ export type ToolErrorCode =
   | 'INVALID_BUNDLE_ID' // GH #262 codex-pair: cdp_restart explicit bundleId arg failed strict validation
   // GH #105 / B153: cdp_repair_action's snapshot landed on Agent Device Runner.
   | 'RUNNER_LEAK'
-  // GH #317: rn-fast-runner sees the selector but Maestro/WDA reported it not visible (empty a11y tree).
+  // GH #317: qaren-ios-runner sees the selector but Maestro/WDA reported it not visible (empty a11y tree).
   | 'TRANSPORT_BLIND'
   // GH #317 Phase 2
   | 'UNSUPPORTED_STEP'

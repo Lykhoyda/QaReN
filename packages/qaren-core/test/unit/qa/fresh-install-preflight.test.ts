@@ -35,8 +35,8 @@ const spacedExecutables = [
   `/Users/test/Library/Developer/CoreSimulator/Devices/${UDID}/data/My App - QAUITests-Runner.app/My App - QAUITests-Runner`,
   `/Users/test/Library/Developer/CoreSimulator/Devices/${UDID}/data/My 'QA' AppUITests-Runner.app/My 'QA' AppUITests-Runner`,
   `/Users/test/Library/Developer/CoreSimulator/Devices/${UDID}/data/My 'QA' AppUITestsRunner.app/My 'QA' AppUITestsRunner`,
-  `/Users/Test /QA/Library/Developer/CoreSimulator/Devices/${UDID}/data/RnFastRunnerUITests-Runner.app/RnFastRunnerUITests-Runner`,
-  `/Users/Test User/Library/Developer/CoreSimulator/Devices/${UDID}/data/RnFastRunnerUITests-Runner.app/RnFastRunnerUITests-Runner`,
+  `/Users/Test /QA/Library/Developer/CoreSimulator/Devices/${UDID}/data/QaReN-Runner.app/QaReN-Runner`,
+  `/Users/Test User/Library/Developer/CoreSimulator/Devices/${UDID}/data/QaReN-Runner.app/QaReN-Runner`,
   `/Users/Test Full Name/Library/Developer/CoreSimulator/Devices/${UDID}/data/WebDriverAgentRunner-Runner.app/WebDriverAgentRunner-Runner`,
 ];
 
@@ -173,11 +173,7 @@ test('admission evidence distinguishes scan and identity failures using reason c
     [ordinary, secret, { reason: 'scan_stderr' }],
     [`1 /bin/lo\0gin\n`, '', { reason: 'scan_corrupt' }],
     [`${ordinary}2 /usr/bin/login\n`, '', { reason: 'scan_pid_invalid' }],
-    [
-      driver('RnFastRunnerUITests-Runner', OTHER),
-      '',
-      { reason: 'observer_unavailable', candidates: 1 },
-    ],
+    [driver('QaReN-Runner', OTHER), '', { reason: 'observer_unavailable', candidates: 1 }],
   ] as const) {
     assert.deepEqual(await probeIosExternalRunnerAdmission(fakePs(stdout, stderr), UDID), {
       status: 'unknown',
@@ -186,20 +182,16 @@ test('admission evidence distinguishes scan and identity failures using reason c
   }
   assert.deepEqual(
     await probeIosExternalRunnerAdmission(
-      fakePs(driver('RnFastRunnerUITests-Runner', OTHER)),
+      fakePs(driver('QaReN-Runner', OTHER)),
       UDID,
       async () => null,
     ),
     { status: 'unknown', evidence: { reason: 'driver_identity_unproven', pid: 20 } },
   );
   assert.deepEqual(
-    await probeIosExternalRunnerAdmission(
-      fakePs(driver('RnFastRunnerUITests-Runner', OTHER)),
-      UDID,
-      async () => {
-        throw new Error(secret);
-      },
-    ),
+    await probeIosExternalRunnerAdmission(fakePs(driver('QaReN-Runner', OTHER)), UDID, async () => {
+      throw new Error(secret);
+    }),
     { status: 'unknown', evidence: { reason: 'observer_failed', pid: 20 } },
   );
 });
@@ -213,7 +205,7 @@ test('fresh-install CLI reports failed observer acquisition without exposing its
       { mode: 0o755 },
     );
     const result = await invoke(root, marker, [...args, '--process-observer', observer], {
-      FAKE_PS_STDOUT: driver('RnFastRunnerUITests-Runner', OTHER),
+      FAKE_PS_STDOUT: driver('QaReN-Runner', OTHER),
     });
     assert.equal(result.code, 4);
     assert.deepEqual(JSON.parse(result.stdout).evidence, {
@@ -228,7 +220,7 @@ test('strict detector includes foreign, own and generic test drivers without cha
   for (const name of [
     'maestro-driver-iosUITests-Runner',
     'WebDriverAgentRunner-Runner',
-    'RnFastRunnerUITests-Runner',
+    'QaReN-Runner',
     'XCTRunner',
     'ExampleUITests-Runner',
   ]) {
@@ -244,7 +236,7 @@ test('strict detector includes foreign, own and generic test drivers without cha
       name,
     );
   }
-  for (const name of ['RnFastRunnerUITests-Runner', 'XCTRunner', 'ExampleUITests-Runner']) {
+  for (const name of ['QaReN-Runner', 'XCTRunner', 'ExampleUITests-Runner']) {
     assert.equal(await detectIosExternalRunner(fakePs(driver(name)), UDID), null);
   }
   assert.ok(await detectIosExternalRunner(fakePs(driver('WebDriverAgentRunner-Runner')), UDID));
@@ -281,7 +273,7 @@ test('CLI, shell, Java and xcodebuild signatures are conservative, not arbitrary
   assert.equal(
     await probeIosExternalRunnerStrict(
       fakePs(
-        `20 /bin/agent prompt Maestro WebDriverAgent RnFastRunner XCTRunner xcodebuild test ${UDID}\n`,
+        `20 /bin/agent prompt Maestro WebDriverAgent QarenIosRunner XCTRunner xcodebuild test ${UDID}\n`,
       ),
       UDID,
     ),
@@ -307,7 +299,7 @@ test('only kernel evidence scopes a driver away to other simulators', async () =
   const maestro = '/opt/bin/maestro';
   const java = '/Library/Java/bin/java';
   const inOther = `/Users/t/Library/Developer/CoreSimulator/Devices/${OTHER}/data/X.app/XCTRunner`;
-  const run = ['xcodebuild', 'test-without-building', '-scheme', 'RnFastRunner'];
+  const run = ['xcodebuild', 'test-without-building', '-scheme', 'QarenIosRunner'];
   const cases: Array<[string, string, string[], 'clear' | 'busy' | 'unknown', string?]> = [
     ['runner app in another simulator', inOther, ['XCTRunner'], 'clear'],
     [
@@ -1095,7 +1087,7 @@ test('covered-family checklist keeps every legacy and strict-only driver family 
       '/tools/xcodebuild -xctestrun /tmp/WebDriverAgent.xctestrun',
       true,
     ],
-    ['RnFastRunner', '/tools/RnFastRunnerUITests-Runner', false],
+    ['QarenIosRunner', '/tools/QaReN-Runner', false],
     ['XCTRunner', '/tools/XCTRunner', false],
     ['generic UITests runner', '/tools/ExampleUITests-Runner', false],
     ['generic xcodebuild test', '/tools/xcodebuild test -scheme Example', false],
@@ -1169,7 +1161,7 @@ test('strict detector refuses ambiguous shell script paths and unresolved leadin
 
 test('strict executable ambiguity keeps word-only prompts clear and never attributes prompt paths as busy', async () => {
   const prompts = [
-    `review Maestro WebDriverAgent RnFastRunner XCTRunner My AppUITests-Runner ${UDID}`,
+    `review Maestro WebDriverAgent QarenIosRunner XCTRunner My AppUITests-Runner ${UDID}`,
     ...spacedExecutables.map((executable) => `review ${executable} test -destination id=${UDID}`),
     ...spacedShellScripts.map((script) => `review ${script} test --device ${UDID}`),
   ];
@@ -1196,7 +1188,7 @@ test('an agent CLI is classified by kernel identity, never by its one-argument p
   const prompt =
     `QA brief: run maestro test, /opt/homebrew/bin/maestro test --device ${UDID}, ` +
     `${spacedExecutables[1]} test-without-building -destination id=${UDID}, ` +
-    `/tmp/build/RnFastRunner.app/RnFastRunner, /tmp/XCTRunner, java -cp lib maestro.cli.AppKt mcp. ` +
+    `/tmp/build/QarenIosRunner.app/QarenIosRunner, /tmp/XCTRunner, java -cp lib maestro.cli.AppKt mcp. ` +
     'x'.repeat(9_000);
   const agents: Array<[string, string]> = [
     ['/opt/node/bin/node', `node /opt/node/bin/agent exec ${prompt}`],
@@ -1247,11 +1239,12 @@ test('an agent CLI is classified by kernel identity, never by its one-argument p
 });
 
 test('a shell running a -c string is classified by kernel identity, never by that string', async () => {
-  const source = '/repo/packages/rn-fast-runner/RnFastRunner/RnFastRunnerUITests/Runner.swift';
+  const source =
+    '/repo/packages/qaren-ios-runner/QarenIosRunner/QarenIosRunnerUITests/Runner.swift';
   const script = `sed -n 1,80p ${source}; /opt/homebrew/bin/maestro test --device ${UDID} /tmp/XCTRunner`;
   const xcodebuild = '/Applications/Xcode.app/Contents/Developer/usr/bin/xcodebuild';
   const realXcode = [xcodebuild, 'test-without-building', '-destination', `id=${UDID}`];
-  const runner = driver('RnFastRunnerUITests-Runner').slice(3, -1);
+  const runner = driver('QaReN-Runner').slice(3, -1);
   for (const [executable, command] of [
     ['/bin/zsh', `/bin/zsh -lc "${script}"`],
     ['/bin/bash', `/bin/bash -c '${script} ${'x'.repeat(9_000)}'`],
@@ -1464,7 +1457,7 @@ test('real CLI runs only the fake PATH ps and agrees on exit/status without leak
     for (const [env, status] of [
       [{}, 'clear'],
       [{ FAKE_PS_STDOUT: driver('WebDriverAgentRunner-Runner') }, 'busy'],
-      [{ FAKE_PS_STDOUT: driver('RnFastRunnerUITests-Runner') }, 'busy'],
+      [{ FAKE_PS_STDOUT: driver('QaReN-Runner') }, 'busy'],
       [{ FAKE_PS_STDOUT: driver('WebDriverAgentRunner-Runner', OTHER) }, 'unknown'],
       [{ FAKE_PS_STDOUT: `20 maestro mcp --output ${secret}\n` }, 'unknown'],
       [

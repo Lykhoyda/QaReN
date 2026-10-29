@@ -8,7 +8,7 @@ import test from 'node:test';
 test('native iOS tests disable parallel testing and preserve the explicit destination', () => {
   const root = mkdtempSync(join(tmpdir(), 'native-ios-command-'));
   try {
-    for (const dir of ['scripts', 'bin', 'packages/rn-fast-runner/RnFastRunner']) {
+    for (const dir of ['scripts', 'bin', 'packages/qaren-ios-runner/QarenIosRunner']) {
       mkdirSync(join(root, dir), { recursive: true });
     }
     const script = join(root, 'scripts/test-native-ios.sh');
@@ -37,9 +37,9 @@ test('native iOS tests disable parallel testing and preserve the explicit destin
       String(output.pid),
       'test',
       '-project',
-      'RnFastRunner.xcodeproj',
+      'QarenIosRunner.xcodeproj',
       '-scheme',
-      'RnFastRunner',
+      'QarenIosRunner',
       '-destination',
       destination,
       '-parallel-testing-enabled',
@@ -53,8 +53,8 @@ test('native iOS tests disable parallel testing and preserve the explicit destin
       'CODE_SIGNING_REQUIRED=NO',
       'ONLY_ACTIVE_ARCH=YES',
       'SWIFT_ACTIVE_COMPILATION_CONDITIONS=DEBUG RN_FAST_RUNNER_TEST_FAULTS',
-      '-skip-testing:RnFastRunnerUITests/RnFastRunnerTests',
-      '-skip-testing:RnFastRunnerUITests/SnapshotForegroundRegressionTest',
+      '-skip-testing:QarenIosRunnerUITests/QarenIosRunnerTests',
+      '-skip-testing:QarenIosRunnerUITests/SnapshotForegroundRegressionTest',
       '',
     ]);
   } finally {

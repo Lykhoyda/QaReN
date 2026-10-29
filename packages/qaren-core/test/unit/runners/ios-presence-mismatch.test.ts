@@ -6,7 +6,7 @@ import { captureScreen } from '../../../dist/qa/capture.js';
 import { nativeCapture } from '../qa/platform-presence-fixtures.ts';
 
 const native = new URL(
-  '../../../../rn-fast-runner/RnFastRunner/RnFastRunnerUITests/',
+  '../../../../qaren-ios-runner/QarenIosRunner/QarenIosRunnerUITests/',
   import.meta.url,
 );
 
@@ -22,8 +22,8 @@ test('production Swift revalidation reports only its first raw descriptor or hie
   if (available.error && 'code' in available.error && available.error.code === 'ENOENT')
     return t.skip('Swift toolchain unavailable');
   assert.equal(available.status, 0, available.stderr);
-  const models = readFileSync(new URL('RnFastRunnerTests+Models.swift', native), 'utf8');
-  const snapshot = readFileSync(new URL('RnFastRunnerTests+Snapshot.swift', native), 'utf8');
+  const models = readFileSync(new URL('QarenIosRunnerTests+Models.swift', native), 'utf8');
+  const snapshot = readFileSync(new URL('QarenIosRunnerTests+Snapshot.swift', native), 'utf8');
   const result = spawnSync('swift', ['-'], {
     encoding: 'utf8',
     timeout: 90_000,
