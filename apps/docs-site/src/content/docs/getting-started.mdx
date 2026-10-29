@@ -22,13 +22,15 @@ can install the plugin yourself if they are already available.
 
 ### Ask your agent to install (recommended)
 
-Open Claude Code, Codex or Cursor in your app. Copy this prompt using the copy button
-in the code block, then paste it into your agent:
+Open Claude Code, Codex or Cursor in your app. Other agents are untested. Copy this prompt
+using the copy button in the code block, then paste it into your agent:
 
 <AgentInstallPrompt />
 
 The agent may need you to complete an Xcode download, accept its license, install an
 iOS simulator runtime or finish a host's plugin UI step before it can continue.
+
+## Install without the prompt
 
 ### Install the plugin yourself
 
@@ -134,30 +136,6 @@ teardown was incomplete and setup offers to run it.
 
 ## First check
 
-Setup writes the smoke plan in this shape, with the text it picked from your first screen:
-
-```md title=".qaren/plans/smoke.md"
-## QA
-
-### First screen
-
-1. Wait for "<text>" to appear
-✓ "<text>"
-```
-
-Run it again yourself from the app's root directory, on the simulator setup used:
-
-```sh
-qaren check --plan-file .qaren/plans/smoke.md --device <udid> --json
-```
-
-`<udid>` is the simulator setup chose or booted. With exactly one booted simulator you can
-leave `--device <udid>` out; with several, `qaren check` refuses without it.
-
-Follow it from a second terminal:
-
-```sh
-qaren watch --latest
-```
-
-Next, [write a plan](../plans/) for a feature, or ask the `using-qaren` skill to write one.
+Setup already ran the smoke plan. Now [ask your agent](../plugin/) to QA something you
+changed, for example "QA the onboarding change". It writes the plan, runs it and reports
+the result.
