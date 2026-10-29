@@ -1414,11 +1414,22 @@ absence observations sharing one screen signature fails at its deadline with
 For a quoted value that is not a stored text selector, the failure adds why from
 identifiers and frames only: no captured element carries the identifier, several
 do, or the one that does is React-only, offscreen or has its centre covered.
-A quoted wait whose only match is React-only ends `TARGET_REACT_ONLY` with its
-React layout against its viewport, its accessible and nearest native ancestors,
-any scroll attempt and a next step: early when two like-for-like observations
-show it inside its viewport under an accessible ancestor, else at its deadline,
-after one scroll for native evidence when it lies past its scroll container's edge.
+When those stable absence observations identify one React-only match, the quoted
+wait fails with `TARGET_REACT_ONLY` (`PLAN_STEP_FAILED`, exit 1). Its detail uses
+identifiers, kinds and frames, without labels, placeholders or field values, to
+report the React layout against its viewport, accessible and nearest native
+ancestors, any scroll attempt and a next step. Unavailable layout is reported as
+`none`; React mounting alone never proves native visibility. Wait on a visible
+native wrapper or on-screen text, expose the field to accessibility, or explicitly
+scroll until it is visible before re-running.
+On iOS, complete React layout and native presence evidence can end the wait early
+when two like-for-like absence observations on one unchanged app screen show the
+field wholly inside its viewport under an accessible ancestor. A field wholly
+above or below its own native scroll container can instead receive one scroll
+within the wait's original budget, only when the safe drag band belongs to that
+container. A later visible native match passes normally. Missing or partially
+clipped layout preserves polling until the deadline; stored-ID replay and block
+start preconditions do not use this early failure or automatic scroll.
 Either unmet ending first gets [step recovery](#step-recovery), so a quoted wait
 behind a blocking screen or system dialog runs once more with its full budget.
 Scroll-until-text uses the same visibility verdict
