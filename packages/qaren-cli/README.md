@@ -73,9 +73,15 @@ pnpm that Corepack enabled but has not yet downloaded fails until you run
 `(cd / && pnpm --version)` once with network access; the fix line says so.
 
 Before claiming resources, `qaren check` runs a finite `pnpm exec` probe in the
-app directory. If the launcher changes the process group or the probe cannot
-prove group preservation, check refuses with `PNPM_PROCESS_GROUP_UNSUPPORTED`
-(exit 4). The probe's retries are bounded by `deadlines.install_deps_seconds`
+app directory. A completed probe that fails to prove group preservation refuses
+with `PNPM_PROCESS_GROUP_UNSUPPORTED` (exit 4). Select a compatible pnpm version
+whose `exec` preserves process groups (the Corepack pnpm 11.5.2 JavaScript launcher
+is supported). For a bootstrap shim, put the matching installed executable ahead
+of the shim on that command's `PATH`. Selecting the native executable alone does
+not fix a pnpm version whose own `exec` changes groups.
+
+Timeouts do not establish incompatibility. The probe's retries are bounded by
+`deadlines.install_deps_seconds`
 (a separate clock from the dependency install, which keeps its full allowance):
 a timed-out probe is retried up to three times in total with a doubled nominal
 bound (30, 60, 120 s, each floored to the whole seconds remaining) and a short
@@ -85,11 +91,11 @@ with `PNPM_PROBE_TIMED_OUT` (exit 4); it proves nothing about the launcher, and 
 busy host is the likely cause, so re-run when the machine is less loaded or run
 `qaren doctor`. A run that continues after more than one attempt records each as
 `outcomes.pnpm-group-probe_attempt_<n>` and `timings_ms.pnpm-group-probe_attempt_<n>`;
-the refusal lists the attempts in `failure.detail`. Select a compatible pnpm version whose `exec` preserves process groups
-(the Corepack pnpm 11.5.2 JavaScript launcher is supported). For a bootstrap shim,
-put the matching installed executable ahead of the shim on that command's `PATH`.
-Selecting the native executable alone does not fix a pnpm version whose own
-`exec` changes groups. Metro still must belong to the exact group QaReN started.
+the refusal lists the attempts in `failure.detail`. Doctor makes one offline
+attempt with a 30 s bound and no retries; a timeout warns in `pnpm-source` with
+the measured duration and `PNPM_PROBE_TIMED_OUT`, without recommending a different
+pnpm version. Host load alone never refuses `check`. Metro still must belong to
+the exact group QaReN started.
 
 ### Host budget
 
