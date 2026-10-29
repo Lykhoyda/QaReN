@@ -122,6 +122,7 @@ for (const labelSource of ['none', 'value', 'descendant'] as const) {
         tier === 'secret' ? [] : ['EMAIL'],
       );
       f.deps.privacy = privacy;
+      f.deps.videoPolicy = 'non-strict';
       const events: FillPrivacyDiagnostic[] = [];
       f.deps.fillPrivacy = (event) => events.push(event);
       let privateFill: boolean | undefined;
@@ -137,6 +138,10 @@ for (const labelSource of ['none', 'value', 'descendant'] as const) {
         ),
       );
       assert.equal(result.verdict, 'PASS');
+      assert.equal(
+        result.nonStrictPublication,
+        tier === 'test-pii' ? 'eligible' : 'withheld-secret',
+      );
       assert.equal(
         privateFill,
         tier !== 'test-pii',

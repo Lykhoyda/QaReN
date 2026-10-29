@@ -76,6 +76,9 @@ fn run_dir(cross_repository: bool) -> (PathBuf, PathBuf) {
     record.terminal = Some(final_terminal());
     record.save(&runs).unwrap();
     let pr = PrRunRecord {
+        video_policy: Default::default(),
+        video_policy_source: None,
+        non_strict_publication: None,
         number: 12,
         url: "https://github.com/o/r/pull/12".into(),
         head_ref_oid: TESTED.into(),
@@ -2377,5 +2380,72 @@ fn privacy_comment_names_only_the_video_cause() {
     assert!(body.contains("Video withheld: screenshot privacy disallowed capture during the walk (generic-value)."), "{body}");
     for private in ["987", "867", "typed", "other", "echo"] {
         assert!(!body.contains(private), "{body}");
+    }
+}
+
+#[test]
+fn persisted_non_strict_video_contract_never_relaxes_saved_blocks() {
+    for strict in [
+        "withheld-privacy",
+        "withheld-fill",
+        "unknown",
+        "future-status",
+    ] {
+        for non_strict in [
+            Some("eligible"),
+            Some("withheld-secret"),
+            Some("future-status"),
+            None,
+        ] {
+            let (runs, dir) = run_dir(false);
+            edit_pr(&dir, |pr| {
+                pr["videoPolicy"] = "non-strict".into();
+                pr["videoPolicySource"] = ".qaren/testing.yaml".into();
+                pr["videoPublication"] = strict.into();
+                if let Some(status) = non_strict {
+                    pr["nonStrictPublication"] = status.into();
+                }
+            });
+            let mut runner = Git(MockRunner::new());
+            script_comment_and_label(&mut runner.0);
+            let receipt = publish(&mut runner, &runs, RUN, &machine());
+            assert_eq!(
+                receipt.result,
+                ReceiptResult::Published,
+                "{:?}",
+                receipt.failure
+            );
+            let comment = runner
+                .0
+                .calls
+                .iter()
+                .find(|c| c.label == "gh-pr-comment")
+                .unwrap();
+            let expected = matches!(strict, "withheld-privacy" | "withheld-fill")
+                && non_strict == Some("eligible");
+            assert_eq!(
+                comment
+                    .args
+                    .iter()
+                    .any(|arg| arg == "./media/video-published.mp4"),
+                expected,
+                "{strict} {non_strict:?}"
+            );
+            let body = std::fs::read_to_string(dir.join("comment.md")).unwrap();
+            assert!(
+                body.contains("Video policy: non-strict (declared in .qaren/testing.yaml)."),
+                "{body}"
+            );
+            assert_eq!(
+                body.contains("Video of the walk is attached below."),
+                expected
+            );
+            assert_eq!(calls_named(&runner.0, "git-commit-blocks"), 0);
+            assert_eq!(
+                receipt.outcomes["writeback"],
+                "withheld tasks: the walk was not eligible for publication"
+            );
+            assert_eq!(runner.0.remaining(), 0);
+        }
     }
 }

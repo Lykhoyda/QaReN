@@ -249,6 +249,9 @@ pub fn doctor(
     checks.push(runtime_dirs(&runtime_root));
     checks.push(source_checkout(runner, cwd));
     checks.push(config_row);
+    if let Some(config) = &config {
+        checks.push(video_policy_check(config.video, &config_file));
+    }
     checks.extend(login_checks(runner, &app_root, config.as_ref()));
     checks.push(saved_blocks_check(runner, &app_root));
     checks.extend(leftover_rows(
@@ -910,6 +913,18 @@ fn source_checkout(runner: &mut dyn Runner, cwd: &Path) -> Check {
     }
 }
 
+fn video_policy_check(policy: crate::record::VideoPolicy, file: &Path) -> Check {
+    use crate::record::VideoPolicy;
+    let source = file.display();
+    match policy {
+        VideoPolicy::Unknown => Check::fail("video", "unknown video policy", "video must be strict or non-strict"),
+        VideoPolicy::Undeclared => Check::warn("video", format!("not declared in {source} (strict rules apply)"),
+            "add video: non-strict when this app shows test data only, or video: strict"),
+        VideoPolicy::Strict => Check::pass("video", format!("strict declared in {source} (today's privacy checks apply)")),
+        VideoPolicy::NonStrict => Check::pass("video", format!("non-strict declared in {source} (videos may be published; secret inputs stay withheld)")),
+    }
+}
+
 fn config_check(file: &Path) -> (Check, Option<CheckConfig>) {
     if !file.exists() {
         return (
@@ -924,7 +939,7 @@ fn config_check(file: &Path) -> (Check, Option<CheckConfig>) {
                 Check::fail(
                     "config",
                     format!("{}: {:?}", file.display(), failure.code),
-                    "fix the config using the documented .qaren/config.yaml schema",
+                    "fix the config using the documented .qaren/config.yaml schema; video must be strict or non-strict",
                 ),
                 None,
             )
@@ -3184,5 +3199,27 @@ mod lane_row_tests {
         runner.expect_run("defaults export", CmdOutput::failed(149, "not booted"));
         let row = lane_row(&mut runner, Path::new("/home"), UDID);
         assert_eq!(row.status, Status::Warn);
+    }
+}
+
+#[cfg(test)]
+mod video_tests {
+    use super::*;
+    use crate::record::VideoPolicy;
+
+    #[test]
+    fn policy_row_distinguishes_undeclared_and_both_declarations() {
+        let path = Path::new(".qaren/target.yaml");
+        for (policy, status) in [
+            (VideoPolicy::Undeclared, Status::Warn),
+            (VideoPolicy::Strict, Status::Pass),
+            (VideoPolicy::NonStrict, Status::Pass),
+        ] {
+            let row = video_policy_check(policy, path);
+            assert_eq!(row.status, status);
+            assert_eq!(row.id, "video");
+            assert!(row.detail.contains(".qaren/target.yaml"));
+            assert!(!row.detail.contains("screenshots"));
+        }
     }
 }

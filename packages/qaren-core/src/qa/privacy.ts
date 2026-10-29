@@ -775,6 +775,7 @@ export class ObservedPrivacy {
   private readonly strictInputValues = new Set<string>();
   private readonly observed = new Set<string>();
   private readonly concealed = new Set<string>();
+  private readonly protectedConcealed = new Set<string>();
   private readonly secret = new Set<string>();
   private readonly preclassified: string[] = [];
   private readonly filledValues = new Set<string>();
@@ -788,8 +789,14 @@ export class ObservedPrivacy {
   private firstLatch?: MediaLatch;
   private windowLatch?: MediaLatch;
   private latestLatch?: MediaLatch;
+  private secretWindowLatch?: MediaLatch;
+  private secretLatestLatch?: MediaLatch;
   // Fields typed into without a readable value, by any identity ('' is any input); only a seen field can leave.
-  private readonly concealedFields = new Set<{ ids: string[]; seen: boolean }>();
+  private readonly concealedFields = new Set<{
+    ids: string[];
+    seen: boolean;
+    protectedValue: boolean;
+  }>();
   private shown: Element[] = [];
 
   constructor(private readonly typed: readonly string[] = []) {}
@@ -803,6 +810,7 @@ export class ObservedPrivacy {
     values.filter(Boolean).forEach((value) => this.inputValues.add(value));
     strict.filter(Boolean).forEach((value) => this.strictInputValues.add(value));
     if (this.inputValues.size) this.mark({ reason: 'runtime-input' });
+    if (this.strictInputValues.size) this.markSecret({ reason: 'runtime-input' });
   }
 
   assertInputHashSafe(text: string, values: Iterable<string> = this.inputValues): boolean {
@@ -822,11 +830,16 @@ export class ObservedPrivacy {
   observe(screen: Screen): void {
     this.sensitiveLatest = false;
     this.latestLatch = undefined;
+    this.secretLatestLatch = undefined;
     this.shown = screen.elements.filter((element) => !element.offscreen);
     for (const field of this.concealedFields)
       if (this.showing(field.ids)) field.seen = true;
       else if (field.seen) this.concealedFields.delete(field);
-    if (this.concealedFields.size > 0) this.mark({ reason: 'concealed-fill' });
+    if (this.concealedFields.size > 0)
+      this.mark(
+        { reason: 'concealed-fill' },
+        [...this.concealedFields].some((field) => field.protectedValue),
+      );
     const cause = privateScreens.get(screen)?.cause;
     if (cause) this.mark(cause);
     for (const value of privateScreens.get(screen)?.secrets ?? []) this.secret.add(value);
@@ -870,24 +883,23 @@ export class ObservedPrivacy {
     ];
     const values = this.privateSet();
     const folded = text.map((line) => line.normalize('NFC').toLowerCase());
-    const match = values.values.find(
-      (value) =>
-        text.some(
-          (line) =>
-            matchPrivate(
-              line,
-              {
-                values: [value],
-                fragments: values.fragments?.filter((fragment) => fragment === value.text),
-              },
-              'persisted',
-            ).hit,
-        ) ||
-        (chars(value.text.trim()) < SHORT &&
-          forms(value.text).some((form) => text.some((line) => line.includes(form)))) ||
-        (chars(value.text.trim()) >= SHORT &&
-          folded.some((line) => line.includes(value.text.trim().normalize('NFC').toLowerCase()))),
-    );
+    const matches = (value: PrivateValue): boolean =>
+      text.some(
+        (line) =>
+          matchPrivate(
+            line,
+            {
+              values: [value],
+              fragments: values.fragments?.filter((fragment) => fragment === value.text),
+            },
+            'persisted',
+          ).hit,
+      ) ||
+      (chars(value.text.trim()) < SHORT &&
+        forms(value.text).some((form) => text.some((line) => line.includes(form)))) ||
+      (chars(value.text.trim()) >= SHORT &&
+        folded.some((line) => line.includes(value.text.trim().normalize('NFC').toLowerCase())));
+    const match = values.values.find(matches);
     if (
       text.some((line) => matchPrivate(line, values, 'persisted').hit) ||
       values.values.some(
@@ -902,6 +914,14 @@ export class ObservedPrivacy {
       )
     )
       this.mark({ reason: 'echo', ...(match ? { source: match.provenance } : {}) });
+    const secret = values.values.find(
+      (value) =>
+        (['secret', 'code'].includes(value.provenance) ||
+          (value.provenance === 'concealed' && this.protectedConcealed.has(value.text)) ||
+          (value.provenance === 'input' && this.strictInputValues.has(value.text))) &&
+        matches(value),
+    );
+    if (secret) this.markSecret({ reason: 'echo', source: secret.provenance });
   }
 
   didFill(value?: string): void {
@@ -909,13 +929,25 @@ export class ObservedPrivacy {
     if (value) this.filledValues.add(value);
   }
 
-  concealFallback(value: string, secure = false, ...fields: (string | undefined)[]): void {
+  observePrivateFill(value: string): void {
+    this.secret.add(value);
+    this.mark({ reason: 'secure-field' });
+  }
+
+  concealFallback(
+    value: string,
+    protection: boolean | { secure: boolean; protectedValue: boolean } = false,
+    ...fields: (string | undefined)[]
+  ): void {
+    const secure = typeof protection === 'boolean' ? protection : protection.secure;
+    const protectedValue = secure || typeof protection === 'boolean' || protection.protectedValue;
     const ids = fields.filter((field): field is string => Boolean(field));
     if (ids.length === 0) ids.push('');
-    this.concealedFields.add({ ids, seen: this.showing(ids) });
+    this.concealedFields.add({ ids, seen: this.showing(ids), protectedValue });
     this.concealed.add(value);
+    if (protectedValue) this.protectedConcealed.add(value);
     if (secure) this.secret.add(value);
-    this.mark({ reason: 'concealed-fill' });
+    this.mark({ reason: 'concealed-fill' }, protectedValue);
   }
 
   private showing(ids: readonly string[]): boolean {
@@ -928,13 +960,30 @@ export class ObservedPrivacy {
     );
   }
 
-  private mark(latch: MediaLatch): void {
+  private mark(
+    latch: MediaLatch,
+    secret = ['secure-field', 'concealed-fill', 'code-row'].includes(latch.reason),
+  ): void {
     this.firstLatch ??= latch;
     this.windowLatch ??= latch;
     this.latestLatch ??= latch;
     this.sensitivePixels = true;
     this.sensitiveInWindow = true;
     this.sensitiveLatest = true;
+    if (secret) this.markSecret(latch);
+  }
+
+  private markSecret(latch: MediaLatch): void {
+    const replaceable = (cause: MediaLatch | undefined): boolean =>
+      !cause ||
+      cause.reason === 'runtime-input' ||
+      (cause.reason === 'echo' && cause.source === 'input');
+    if (replaceable(this.secretWindowLatch)) this.secretWindowLatch = latch;
+    if (replaceable(this.secretLatestLatch)) this.secretLatestLatch = latch;
+  }
+
+  secretWindowLatched(): MediaLatch | undefined {
+    return this.secretWindowLatch;
   }
 
   latched(): MediaLatch | undefined {
@@ -953,6 +1002,7 @@ export class ObservedPrivacy {
   startWindow(): void {
     this.sensitiveInWindow = this.sensitiveLatest;
     this.windowLatch = this.latestLatch;
+    this.secretWindowLatch = this.secretLatestLatch;
   }
 
   windowClean(): boolean {
@@ -976,10 +1026,10 @@ export class ObservedPrivacy {
         ),
       ],
       values: [
-        ...tagged(this.inputValues, 'input'),
         ...tagged(this.provenCodes, 'code'),
         ...tagged(this.secret, 'secret'),
         ...tagged(this.concealed, 'concealed'),
+        ...tagged(this.inputValues, 'input'),
         ...tagged([...this.typed, ...this.preclassified], 'typed'),
         ...tagged(this.observed, 'observed'),
       ],

@@ -36,6 +36,7 @@ pub struct CoreRequest {
     pub lease: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub login_block: Option<String>,
+    pub video_policy: crate::record::VideoPolicy,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub login_marker: Option<crate::config::LoginMarker>,
     pub target: CoreTarget,
@@ -215,6 +216,16 @@ pub struct Ledger {
         deserialize_with = "passive"
     )]
     pub video_publication: Option<crate::record::VideoPublication>,
+    #[serde(default)]
+    pub video_policy: crate::record::VideoPolicy,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub video_policy_source: Option<String>,
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "passive"
+    )]
+    pub non_strict_publication: Option<crate::record::NonStrictPublication>,
     #[serde(
         default,
         skip_serializing_if = "Option::is_none",
@@ -1449,6 +1460,11 @@ fn refusal_ledger(result: &Value, rows: &[Row], seen: &str) -> Result<Ledger, St
     if let Some(eligibility) = result.get("videoPublication") {
         normalized["videoPublication"] = eligibility.clone();
     }
+    for key in ["videoPolicy", "nonStrictPublication"] {
+        if let Some(value) = result.get(key) {
+            normalized[key] = value.clone();
+        }
+    }
     if let Some(media) = result.get("mediaWithheld") {
         normalized["mediaWithheld"] = media.clone();
     }
@@ -1503,6 +1519,9 @@ pub fn synthesized_ledger(rows: &[Row], verdict: &str, seen: &str) -> Ledger {
     Ledger {
         verdict: verdict.to_string(),
         video_publication: None,
+        video_policy: Default::default(),
+        video_policy_source: None,
+        non_strict_publication: None,
         media_withheld: None,
         admitted_at_ms: None,
         publish_from_ms: None,

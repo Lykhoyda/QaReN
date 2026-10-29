@@ -85,6 +85,53 @@ impl VideoPublication {
     }
 }
 
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum VideoPolicy {
+    Strict,
+    NonStrict,
+    #[default]
+    Undeclared,
+    #[serde(other)]
+    Unknown,
+}
+
+impl VideoPolicy {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Strict => "strict",
+            Self::NonStrict => "non-strict",
+            Self::Undeclared => "undeclared",
+            Self::Unknown => "unknown",
+        }
+    }
+
+    pub fn publication(
+        self,
+        strict: &VideoPublication,
+        non_strict: Option<&NonStrictPublication>,
+    ) -> VideoPublication {
+        if self == Self::Unknown || *strict == VideoPublication::Unknown {
+            return VideoPublication::Unknown;
+        }
+        if self != Self::NonStrict {
+            return strict.clone();
+        }
+        match non_strict {
+            Some(NonStrictPublication::Eligible) => VideoPublication::Eligible,
+            Some(NonStrictPublication::WithheldSecret) => VideoPublication::WithheldPrivacy,
+            None => VideoPublication::Unknown,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum NonStrictPublication {
+    Eligible,
+    WithheldSecret,
+}
+
 fn media_dir(run_dir: &Path) -> PathBuf {
     run_dir.join("media")
 }

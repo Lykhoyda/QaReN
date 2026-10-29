@@ -1456,8 +1456,9 @@ Optional `kind` (for `generic-value`) and `source` (for `echo`) are closed
 categories, never app data. The [privacy implementation](../qaren-core/src/qa/privacy.ts)
 owns the allowed categories and per-screen cause precedence.
 
-A structured `media-withheld` diagnostic records the first cause and plan line
-per scope (`screenshots` or `video`) in `logs/core-diagnostics.jsonl`, and a
+A structured `media-withheld` diagnostic records the first screenshot cause and
+plan line, or the final publication-window video cause and its observation line,
+in `logs/core-diagnostics.jsonl`, and a
 `media-withheld` line in `logs/core.log` retains the same cause, scope and line.
 These records use the private diagnostic boundary with used runtime inputs,
 an exported unused `QAREN_INPUT_` namespace, or no inputs; raw subprocess output
@@ -1468,9 +1469,15 @@ testIDs, geometry, character counts or element indices.
 rows retained after an interrupted walk. `mediaWithheld.screenshots` holds the
 first `reason`, optional `kind` or `source`, `line` and withheld screenshot `count`.
 `mediaWithheld.video` holds the publication-window cause and line, without a
-count, only when `videoPublication` is `withheld-privacy`.
+count: the strict privacy cause for strict or undeclared runs, or the protected
+cause for non-strict runs. In non-strict mode, a later protected cause replaces
+an earlier `runtime-input` or `echo` with source `input`, including its observation
+line. A successful pre-plan login resets the video window; a retained cause then
+uses the new window's starting line. `videoPublication` retains the strict verdict;
+`nonStrictPublication` supplies the separate non-strict verdict.
 The receipt includes one `media_withheld=<code>[/<kind|source>]@line <N>` note,
-preferring the screenshot cause. `report.md` marks each withheld row and explains
+preferring the video cause in non-strict mode and the screenshot cause otherwise.
+`report.md` marks each withheld row and explains
 the first screenshot cause and line. Line 0 means privacy latched before the walk.
 
 | Code | Meaning | What to do |
@@ -2075,14 +2082,14 @@ The tier also relaxes execution hash and echo checks: pure fixture labels, ident
 and types retain their original hash operands, even at the filled field, and a redundant expected-echo declaration
 does not mask them to a constant. SECRET matches win on equal or overlapping values; a
 TEST-PII alias cannot leave a SECRET value unmasked in a label hash. Repeated declarations
-across the plan and configured login block must agree before device selection. There is no
-config, global switch or inferred environment policy. Any extra `QAREN_INPUT_` variable
+across the plan and configured login block must agree before device selection. Input tiers have no
+config or global opt-in and no inferred environment policy; the separate [video policy](#video-publication) controls video publication only. Any extra `QAREN_INPUT_` variable
 in the environment, even one the plan does not use, keeps logs withheld.
 In a TEST-PII run only `core.log`,
 failure screen text and Fill readback come back redacted by the declared values; Metro and
 other subprocess logs stay withheld as in a SECRET run. Declared-value redaction includes
 an e-mail's local part, plus-less local part, domain and
-percent- or HTML-encoded forms; screenshots and video stay withheld. Derived e-mail forms
+percent- or HTML-encoded forms; screenshots stay withheld and video follows the [declared policy](#video-publication). Derived e-mail forms
 shorter than 3 characters (for example a 2-letter local part) are not redacted on their own,
 while the full address and every longer derived form always are. Core evidence and CLI
 logs also redact Unicode case variants, including length-changing mappings such as
@@ -2125,7 +2132,9 @@ secret despite artifact redaction.
   marker, preflight/subprocess output excerpts and command summaries are withheld, and
   native runner output tails are not retained. After an input is promoted to SECRET before
   typing, subsequent core log writes and failure screen text are withheld. A run that
-  requires inputs skips recording and screenshots.
+  requires inputs skips screenshots. Recording is also skipped unless `video: non-strict`
+  is declared and the run holds only TEST-PII inputs; detected SECRET causes still
+  withhold video publication.
 - Slot runs retain value-free structured events in `core-diagnostics.jsonl` beside `core.log`:
   `metric` has measured stage timings, and `timing` has decision/dispatch timing, finite outcome
   codes and allowlisted native refusal codes. Dispatch refusals retain `refusalStage` and
@@ -2175,7 +2184,8 @@ secret despite artifact redaction.
   produce the same marker. Other labels containing a known input use a redacted projection,
   verified by the same guard before hashing. This includes later account screens and inputs
   supplied by a configured login block that was never replayed. No echo declaration is
-  required for this masking; screenshots, video and output redaction stay withheld or masked.
+  required for this masking; screenshots remain withheld, video follows the
+  [declared policy](#video-publication), and output redaction remains active.
 - After a block's `Expect input NAME on screen` line, until the block ends, a label whose
   whole-value strict echoes are all of declared inputs hashes as the same constant marker; a
   label that also holds an undeclared input's value uses verified redaction instead. Every
@@ -2786,8 +2796,9 @@ supported React TextInput; a label alone does not establish private-fill admissi
    meets the configured sign-in marker, QaReN replays `sign-in` from its first
    command and retries that step once. Inputs are required before device
    selection on every run with this login configuration, even if no login wall
-   appears. Runs with inputs withhold screenshots and video as documented under
-   [Runtime inputs](#runtime-inputs).
+   appears. For input-run screenshots and recording, follow
+   [Runtime inputs](#runtime-inputs); video publication follows the
+   [selected video policy](#video-publication).
 
 A block starting at Home with `Tap "Log out"` before its sign-in fills starts
 signed in. It cannot recover from a sign-in screen: its first command expects
@@ -3093,8 +3104,8 @@ a recorded port number also masks the same number elsewhere in the text. It then
 removes the `needs-qa` label only if the current head is the tested head; otherwise
 `publication.json` and the receipt record `retained-head-changed`.
 
-A saved block is published only verbatim, and only when the walk was eligible
-under the [video publication contract](#video-publication) and the
+A saved block is published only verbatim, and only when the walk met the strict
+[video publication rules](#video-publication) and the
 machine redaction would leave the block unchanged. Any other block stays in the
 run's `blocks/` directory and is never rewritten; `publication.json` and the
 receipt record `withheld <slug>: <reason>`. Published blocks are committed to the
@@ -3143,6 +3154,32 @@ its existence does not mean publication is active. Do not delete it to bypass
 contention.
 
 ### Video publication
+
+Declare the video policy in the selected app config (`--config <path>` selects another file):
+
+```yaml
+video: non-strict
+```
+
+- `strict`: today's privacy checks apply; clean walks can publish.
+- `non-strict`: use only when the app shows test data. Non-SECRET observations, literal fills and TEST-PII inputs can publish video. Detected SECRET causes still withhold it: secure fields (including empty fields), fills into unreadable fields, concealed fills of protected values, code rows and echoes attributable to protected values. A readable, non-secure field whose native label may contain its value does not alone veto a PUBLIC or TEST-PII fill. A run holding SECRET runtime inputs also withholds video, even if they are unused.
+- Absent: strict rules apply and doctor reminds you to declare a policy. Any other value, including null, refuses `SCENARIO_INVALID`.
+
+The receipt, report and PR comment name the policy and the selected config: its app-relative path for files inside the invoking project, or its filename for external configs, with private values redacted. The path identifies the declaration, not the backend or dataset. Policy and eligibility are persisted with the run; `qaren publish` never re-reads the current app config. A missing or unknown eligibility verdict still withholds video. Saved-block publication and screenshots retain strict rules in this release.
+
+Only the selected config declares the video mode; no flag, environment variable,
+plan annotation or inferred backend selects it.
+
+SECRET text masking and no readback apply in both modes. A runtime input displayed in a non-secure field can be marked `(test-pii)` only if it is test data; that annotation cannot exempt secure fields or code rows. Non-strict is an operator declaration, not proof: an undeclared secret prefilled into a non-secure field, real personal data, or a value visible only between captures can appear in a published video. QaReN does not mask video regions or identify the backend. Upgrade every CLI/CI runtime before adding the key; older versions refuse it. Removing the key restores strict behavior.
+
+For non-strict privacy withholding, the report and PR comment name the protected
+cause. They offer the `(test-pii)` hint when a SECRET input is observed in a readable,
+non-secure field and no disqualifying protected cause occurs in the publication
+window. Secure fields, code rows, protected concealed fills and handler-detected
+private fills suppress that hint, even when runtime-input classification came first.
+An unused SECRET input still withholds video without the hint.
+
+The following eligibility rules describe strict and undeclared runs. Both modes keep the same admission/login window, continuity, media validity and size limits.
 
 Video publication eligibility and a value-free withholding reason are persisted
 in `pr.json`. A plan containing any fill/type step keeps the recording local,
