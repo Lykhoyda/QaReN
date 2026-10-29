@@ -3017,10 +3017,13 @@ qaren pr <number|url> --platform android --plan-file plan.md --device emulator-5
 qaren publish <run-id> --json
 ```
 
-GitHub commands use `GH_TOKEN` or `GITHUB_TOKEN` when set, or the authentication
-stored by `gh auth login`. A lookup without usable authentication refuses
-`GITHUB_AUTH_UNAVAILABLE` (exit 4) before device admission. If authentication is
-available but the lookup fails, `PR_UNAVAILABLE` names the failure and advises
+Both commands require the GitHub CLI (`gh`). GitHub commands use `GH_TOKEN` or
+`GITHUB_TOKEN` when set, or the authentication stored by `gh auth login`. When
+`gh pr view` fails, QaReN checks `gh auth status`; if that also fails, it refuses
+`GITHUB_AUTH_UNAVAILABLE` (exit 4) before device admission, retaining both
+diagnostics and advising token setup, stored login or a network check. This
+refusal can also indicate a network outage. If authentication verification
+succeeds but the lookup fails, `PR_UNAVAILABLE` names the failure and advises
 checking pull request access and write permissions. See the
 [child environment contract](#plan-checks-and-screen-evidence) for token scope,
 dependency registry exceptions and redaction.
