@@ -1093,8 +1093,15 @@ ordinary toolchain variables remain available. Only core walk and plan-preflight
 receive `TYPESAFE_API_KEY`; core captures it and clears secret-named variables before
 spawning tools, preserving Jev authentication and the interruption safety veto.
 The log redactor receives its key over a private control socket; log and wire
-redaction mask literal and JSON-encoded keys. Only `pnpm-install` and `expo-prebuild`
-retain `NPM_TOKEN`, `NODE_AUTH_TOKEN`, `YARN_NPM_AUTH_TOKEN`, `COREPACK_NPM_TOKEN`,
+redaction mask literal and JSON-encoded keys. QaReN's `gh-pr-view`, `gh-pr-comment`,
+`gh-pr-edit`, `gh-auth-status`, `gh-user` and `gh-pr-comments` children retain
+`GH_TOKEN` and `GITHUB_TOKEN`; unrelated GitHub commands, app launch, Metro,
+native builds and the walker do not. GitHub token values are masked in durable
+text and JSON, including errors and publication comments. Log helpers receive
+redaction values over the private control socket rather than their environment;
+a token containing a carriage return or newline withholds subprocess logs.
+The existing `pnpm-install` and `expo-prebuild` exceptions retain
+`NPM_TOKEN`, `NODE_AUTH_TOKEN`, `YARN_NPM_AUTH_TOKEN`, `COREPACK_NPM_TOKEN`,
 `GITHUB_TOKEN` and `GH_TOKEN` for dependency preparation. The optional
 [`registryAuthEnv`](#check-a-plan) list adds exact-name exemptions only for those
 two labels. A nonempty list withholds both streams before returning captured
@@ -3012,9 +3019,11 @@ qaren publish <run-id> --json
 
 GitHub commands use `GH_TOKEN` or `GITHUB_TOKEN` when set, or the authentication
 stored by `gh auth login`. A lookup without usable authentication refuses
-`GITHUB_AUTH_UNAVAILABLE` (exit 4) before device admission. These tokens are
-scoped to QaReN's named GitHub children and the existing dependency registry
-exceptions; app launch, Metro, native builds and the walker do not receive them.
+`GITHUB_AUTH_UNAVAILABLE` (exit 4) before device admission. If authentication is
+available but the lookup fails, `PR_UNAVAILABLE` names the failure and advises
+checking pull request access and write permissions. See the
+[child environment contract](#plan-checks-and-screen-evidence) for token scope,
+dependency registry exceptions and redaction.
 
 Company plans, reports and recordings must remain private and must never be
 published to public product surfaces. Publication's value and machine-identity
