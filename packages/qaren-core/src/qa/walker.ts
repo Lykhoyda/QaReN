@@ -1777,6 +1777,10 @@ async function walkBlockScoped(
       return { fail: ['the login block did not pass: ', ...segments(nested.failure.seen)] };
     if (!sequence.planPassed) {
       privacy.startWindow();
+      if (deps.videoPolicy === 'non-strict') {
+        const cause = privacy.screenshotLatch(deps.videoPolicy);
+        sequence.screenshots = cause ? { cause, line, count: 0 } : undefined;
+      }
       if (sequence.latch) {
         sequence.latch.windowLine = privacy.windowLatched() ? line : undefined;
         const cause = privacy.secretWindowLatched();

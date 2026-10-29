@@ -999,7 +999,10 @@ export class ObservedPrivacy {
   }
 
   screenshotLatch(policy?: 'strict' | 'non-strict' | 'undeclared'): MediaLatch | undefined {
-    return policy === 'non-strict' ? this.secretWindowLatch : this.firstLatch;
+    return policy === 'non-strict'
+      ? (this.secretWindowLatch ??
+          (this.strictInputValues.size ? { reason: 'runtime-input' } : undefined))
+      : this.firstLatch;
   }
 
   // Published media starts here, still showing the latest screen; strict screenshots keep the run-wide flag.

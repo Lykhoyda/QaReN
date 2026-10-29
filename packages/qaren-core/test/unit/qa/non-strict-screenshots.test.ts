@@ -18,8 +18,18 @@ function native(type: string, value?: string) {
   return observed;
 }
 
-for (const secureHome of [false, true]) {
-  test(`non-strict screenshots share the login window with video (${secureHome ? 'secure' : 'clean'} home)`, async () => {
+for (const [secureHome, secretInput] of [
+  [false, false],
+  [true, false],
+  [false, true],
+]) {
+  test(`non-strict screenshots share the login window with video (${secureHome ? 'secure' : 'clean'} home, ${secretInput ? 'SECRET input' : 'no input'})`, async () => {
+    const privacy = new ObservedPrivacy();
+    const inputs = new RunInputs(
+      secretInput ? { FIXTURE: canary } : {},
+      secretInput ? ['FIXTURE'] : [],
+      privacy,
+    );
     const wall = screen([
       element('@login', 'Sign in', { testID: 'login-screen' }),
       element('@password', '', { kind: 'input', secure: true }),
@@ -36,6 +46,7 @@ for (const secureHome of [false, true]) {
       scriptedJudge(() => assert.fail('literal checks are model-free')),
     );
     let loggedIn = false;
+    f.deps.privacy = privacy;
     f.deps.videoPolicy = 'non-strict';
     f.deps.captureScreen = async () => (loggedIn ? home : wall);
     f.deps.press = async (ref) => {
@@ -47,11 +58,22 @@ for (const secureHome of [false, true]) {
       marker: { id: 'login-screen' },
       block: parsePlan('1. Tap "Sign in"').blocks![0],
     };
-    const result = await runPlan(parsePlan('1. Tap "Settings"\n✓ "Missing"').blocks!, f.deps);
+    const result = await withInputs(inputs, () =>
+      runPlan(parsePlan('1. Tap "Settings"\n✓ "Missing"').blocks!, f.deps),
+    );
     assert.equal(result.verdict, 'FAIL');
     assert.equal(typeof result.publishFromMs, 'number');
-    assert.equal(Boolean(result.failure?.screenshot), !secureHome);
-    assert.equal(result.nonStrictPublication, secureHome ? 'withheld-secret' : 'eligible');
+    const withheld = secureHome || secretInput;
+    assert.equal(Boolean(result.failure?.screenshot), !withheld);
+    assert.equal(result.nonStrictPublication, withheld ? 'withheld-secret' : 'eligible');
+    if (withheld) {
+      const reason = secureHome ? 'secure-field' : 'runtime-input';
+      assert.equal(result.steps.at(-1)?.screenshotWithheld, reason);
+      assert.equal(result.mediaWithheld?.screenshots?.reason, reason);
+      assert.ok(result.mediaWithheld!.screenshots!.count > 0);
+    } else {
+      assert.equal(result.mediaWithheld?.screenshots, undefined);
+    }
   });
 }
 
