@@ -3010,6 +3010,12 @@ qaren pr <number|url> --platform android --plan-file plan.md --device emulator-5
 qaren publish <run-id> --json
 ```
 
+GitHub commands use `GH_TOKEN` or `GITHUB_TOKEN` when set, or the authentication
+stored by `gh auth login`. A lookup without usable authentication refuses
+`GITHUB_AUTH_UNAVAILABLE` (exit 4) before device admission. These tokens are
+scoped to QaReN's named GitHub children and the existing dependency registry
+exceptions; app launch, Metro, native builds and the walker do not receive them.
+
 Company plans, reports and recordings must remain private and must never be
 published to public product surfaces. Publication's value and machine-identity
 redaction does not establish that company material is safe to publish.

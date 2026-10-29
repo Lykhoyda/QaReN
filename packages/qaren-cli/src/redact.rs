@@ -20,6 +20,24 @@ pub fn redact_known_key(raw: &str, key: Option<&str>) -> String {
         .replace(key, "[REDACTED_SECRET]")
 }
 
+pub(crate) fn github_auth_values() -> Vec<String> {
+    let mut values: Vec<_> = ["GH_TOKEN", "GITHUB_TOKEN"]
+        .iter()
+        .filter_map(|name| std::env::var(name).ok())
+        .filter(|value| !value.is_empty())
+        .collect();
+    values.sort_by_key(|value| std::cmp::Reverse(value.len()));
+    values
+}
+
+pub(crate) fn redact_github_tokens(raw: &str) -> String {
+    github_auth_values()
+        .iter()
+        .fold(raw.to_string(), |text, value| {
+            redact_known_key(&text, Some(value))
+        })
+}
+
 // Contains the phrase itself, so withholding is a fixed point for every later check.
 pub const PRIVATE_KEY_WITHHELD: &str = "[output withheld: contained private key material]";
 
@@ -131,7 +149,7 @@ pub fn durable_json<T: serde::Serialize>(value: &T) -> serde_json::Result<String
             return;
         }
         match value {
-            serde_json::Value::String(s) => *s = redact_inputs(s),
+            serde_json::Value::String(s) => *s = redact_github_tokens(&redact_inputs(s)),
             serde_json::Value::Array(items) => {
                 for (index, item) in items.iter_mut().enumerate() {
                     inputs(item, &format!("{path}/{index}"), media);
@@ -166,7 +184,14 @@ pub fn durable_json<T: serde::Serialize>(value: &T) -> serde_json::Result<String
                         {
                             inputs(&mut value, &child, media);
                         }
-                        (if closed { key } else { redact_inputs(&key) }, value)
+                        (
+                            if closed {
+                                key
+                            } else {
+                                redact_github_tokens(&redact_inputs(&key))
+                            },
+                            value,
+                        )
                     })
                     .collect();
             }
@@ -208,7 +233,7 @@ pub fn durable_json<T: serde::Serialize>(value: &T) -> serde_json::Result<String
 }
 
 pub fn redact_plain(raw: &str) -> String {
-    let safe = redact_inputs(&redact_api_key(raw));
+    let safe = redact_github_tokens(&redact_inputs(&redact_api_key(raw)));
     let raw = safe.as_str();
     let mut out = String::with_capacity(raw.len());
     let mut rest = raw;
@@ -1134,6 +1159,8 @@ pub fn scrub_secret_env(
                 .any(|part| name.windows(part.len()).any(|window| window == *part));
             let model =
                 key == "TYPESAFE_API_KEY" && matches!(label, "core-walk" | "plan-preflight");
+            let github = crate::github::is_github_child(label)
+                && (key == "GH_TOKEN" || key == "GITHUB_TOKEN");
             let registry = is_registry_child(label)
                 && ([
                     "NPM_TOKEN",
@@ -1149,7 +1176,7 @@ pub fn scrub_secret_env(
                         && registry_auth_env
                             .iter()
                             .any(|allowed| key.as_os_str() == std::ffi::OsStr::new(allowed))));
-            secret && !model && !registry
+            secret && !model && !registry && !github
         })
         .collect();
     for key in keys {

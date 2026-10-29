@@ -68,6 +68,7 @@ pub enum FailureCode {
     JevAuthFailed,
     JevRequestInvalid,
     PrUnavailable,
+    GithubAuthUnavailable,
     PrWorktreeFailed,
     PublishFailed,
 }
@@ -105,6 +106,7 @@ impl FailureCode {
                 | FailureCode::JevUnreachable
                 | FailureCode::JevAuthFailed
                 | FailureCode::JevRequestInvalid
+                | FailureCode::GithubAuthUnavailable
         )
     }
 }

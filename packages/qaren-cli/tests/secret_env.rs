@@ -112,6 +112,15 @@ fn secret_environment_fixture_worker() {
         "plan-preflight",
         "pnpm-install",
         "expo-prebuild",
+        "gh-pr-view",
+        "gh-pr-comment",
+        "gh-pr-edit",
+        "gh-auth-status",
+        "gh-other",
+        "metro",
+        "app-launch",
+        "xcodebuild-ios",
+        "gradle",
     ] {
         for route in ["captured", "piped", "group"] {
             let _ = std::fs::remove_file(dir.join("helper-env"));
@@ -145,7 +154,12 @@ fn secret_environment_fixture_worker() {
                 let allowed = (*name == "TYPESAFE_API_KEY"
                     && matches!(label, "core-walk" | "plan-preflight"))
                     || (REGISTRY.contains(name)
-                        && matches!(label, "pnpm-install" | "expo-prebuild"));
+                        && matches!(label, "pnpm-install" | "expo-prebuild"))
+                    || (["GH_TOKEN", "GITHUB_TOKEN"].contains(name)
+                        && matches!(
+                            label,
+                            "gh-pr-view" | "gh-pr-comment" | "gh-pr-edit" | "gh-auth-status"
+                        ));
                 assert_eq!(
                     observed.contains_key(name),
                     allowed,

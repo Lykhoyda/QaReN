@@ -5,6 +5,13 @@ use std::path::{Path, PathBuf};
 
 pub const NEEDS_QA: &str = "needs-qa";
 
+pub(crate) fn is_github_child(label: &str) -> bool {
+    matches!(
+        label,
+        "gh-pr-view" | "gh-pr-comment" | "gh-pr-edit" | "gh-auth-status"
+    )
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PrInfo {
@@ -39,7 +46,7 @@ fn gh_failure(what: &str, detail: String) -> Failure {
         "pr",
         FailureCode::PrUnavailable,
         format!("gh {what} failed: {detail}"),
-        "check `gh auth status` and the pull request, then re-run",
+        "set GH_TOKEN or GITHUB_TOKEN, or run `gh auth login`; check pull request access and write permissions, then re-run",
     )
 }
 
@@ -60,9 +67,20 @@ pub fn pr_view(runner: &mut dyn Runner, target: &str, cwd: &Path) -> Result<PrIn
         .cwd(cwd),
     );
     if !output.ok() {
+        let auth =
+            runner.run(&CmdSpec::new("gh-auth-status", "gh", &["auth", "status"], 60).cwd(cwd));
+        if !auth.ok() {
+            return Err(Failure::new(
+                "pr",
+                FailureCode::GithubAuthUnavailable,
+                "GitHub authentication is unavailable",
+                "set GH_TOKEN or GITHUB_TOKEN, or run `gh auth login`, then re-run",
+            ));
+        }
         return Err(gh_failure("pr view", output.summary()));
     }
-    let view: ViewJson = serde_json::from_str(output.stdout.trim())
+    let stdout = crate::redact::redact_github_tokens(&output.stdout);
+    let view: ViewJson = serde_json::from_str(stdout.trim())
         .map_err(|e| gh_failure("pr view", format!("unreadable JSON: {e}")))?;
     if view.head_ref_oid.len() != 40 || !view.head_ref_oid.bytes().all(|b| b.is_ascii_hexdigit()) {
         return Err(gh_failure(
@@ -121,8 +139,8 @@ pub fn comment_create(
     }
     let args: Vec<&str> = args.iter().map(String::as_str).collect();
     let output = runner.run(&CmdSpec::new("gh-pr-comment", "gh", &args, 600).cwd(cwd));
-    let url = output
-        .stdout
+    let stdout = crate::redact::redact_github_tokens(&output.stdout);
+    let url = stdout
         .lines()
         .map(str::trim)
         .find(|l| l.starts_with("https://"))
@@ -231,6 +249,38 @@ mod tests {
         );
         let failure = pr_view(&mut mock, "12", Path::new("/repo")).unwrap_err();
         assert_eq!(failure.code, FailureCode::PrUnavailable);
+    }
+
+    #[test]
+    fn lookup_failure_checks_auth_without_claiming_an_app_failure() {
+        for authenticated in [false, true] {
+            let mut mock = MockRunner::new();
+            mock.expect_run("gh pr view", CmdOutput::failed(1, "lookup denied"));
+            mock.expect_run(
+                "gh auth status",
+                if authenticated {
+                    CmdOutput::success("")
+                } else {
+                    CmdOutput::failed(1, "not logged in")
+                },
+            );
+            let failure = pr_view(&mut mock, "12", Path::new("/repo")).unwrap_err();
+            assert_eq!(
+                failure.code,
+                if authenticated {
+                    FailureCode::PrUnavailable
+                } else {
+                    FailureCode::GithubAuthUnavailable
+                }
+            );
+            assert_eq!(failure.code.is_refusal(), !authenticated);
+            for option in ["GH_TOKEN", "GITHUB_TOKEN", "gh auth login"] {
+                assert!(failure.next_action.contains(option));
+            }
+            assert_eq!(mock.calls[1].label, "gh-auth-status");
+            assert_eq!(mock.calls[1].cwd.as_deref(), Some(Path::new("/repo")));
+            assert_eq!(mock.remaining(), 0);
+        }
     }
 
     #[test]
