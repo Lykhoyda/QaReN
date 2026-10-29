@@ -242,8 +242,11 @@ export type GhPullRequest = {
   baseRefName?: string;
   headRefOid?: string;
   state: string;
+  title?: string;
+  mergeable?: string;
   autoMerge: string | null;
   mergeCommit?: string;
+  mergeMethod?: string;
 };
 export type GhRelease = {
   assets: Record<string, { uploads: number }>;
