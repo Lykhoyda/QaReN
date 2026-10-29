@@ -1472,8 +1472,9 @@ first `reason`, optional `kind` or `source`, `line` and withheld screenshot `cou
 count: the strict privacy cause for strict or undeclared runs, or the protected
 cause for non-strict runs. In non-strict mode, a later protected cause replaces
 an earlier `runtime-input` or `echo` with source `input`, including its observation
-line. A successful pre-plan login resets the video window; a retained cause then
-uses the new window's starting line. `videoPublication` retains the strict verdict;
+line. A successful pre-plan login resets the video window and, in non-strict mode,
+the screenshot cause and count; a retained cause then uses the new window's
+starting line. `videoPublication` retains the strict verdict;
 `nonStrictPublication` supplies the separate non-strict verdict.
 The receipt includes one `media_withheld=<code>[/<kind|source>]@line <N>` note,
 preferring the video cause in non-strict mode and the screenshot cause otherwise.
@@ -1612,7 +1613,8 @@ optional single whitespace character such as the no-break space iOS may insert,
 then `%`. The projection keeps the
 label and omits this native value, so the indicator alone does not trigger
 screenshot withholding. Other valued generic elements, malformed lookalikes,
-React input evidence and secure fields remain protected. The accepted residual
+React input evidence and secure fields retain their privacy classification;
+media withholding follows the [selected policy](#video-publication). The accepted residual
 risk is that an app element mimicking both patterns can expose its percentage
 in captured pixels. The shared patterns in
 [privacy.ts](../qaren-core/src/qa/privacy.ts) own the exact matching rule;
