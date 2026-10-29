@@ -279,7 +279,7 @@ it does not require the source checkout's `dist/` or `QAREN_RUNTIME` override.
 The SessionStart hook only runs `--print-bin`; it never downloads. That mode
 always exits 0 and prints either the verified binary path, an install or repair
 instruction, or nothing, so its exit status alone does not prove installation.
-`--install` also links `qaren` into the first standard user bin directory that is
+Without `--link`, `--install` also links `qaren` into the first standard user bin directory that is
 on PATH, exists and is writable: `~/.local/bin`, `~/bin`, `/opt/homebrew/bin` or
 `/usr/local/bin`, so an earlier IDE or toolchain bin is passed over. With none of
 those on PATH it uses the first writable absolute PATH directory, so the bare

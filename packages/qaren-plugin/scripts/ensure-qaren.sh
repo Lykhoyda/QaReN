@@ -392,7 +392,7 @@ install() {
   echo "$dest/bin/qaren"
 }
 
-# A release and a <release>-dev.<commit> source build are two lines that never relink each other.
+# Automatic linking preserves working links across release and source-build lines.
 line_of() { case "$1" in *-dev.*) echo dev ;; *) echo release ;; esac; }
 
 # Explicit linking stays in this HOME; automatic linking considers the first qaren on PATH.
