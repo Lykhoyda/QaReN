@@ -144,10 +144,13 @@ function prRecord(pr) {
     (gitDir() && pr.headRepo == null ? git('rev-parse', `refs/heads/${pr.headRefName}`) : null);
   return {
     number: pr.number,
+    url: `https://github.com/${process.env.GH_REPO ?? 'owner/repo'}/pull/${pr.number}`,
     state: pr.state,
+    mergeable: pr.mergeable ?? 'MERGEABLE',
     headRefName: pr.headRefName,
     baseRefName: pr.baseRefName,
     headRefOid,
+    isCrossRepository: pr.headRepo != null,
     autoMergeRequest: pr.autoMerge ? { mergeMethod: pr.autoMerge.toUpperCase() } : null,
     mergeCommit: pr.mergeCommit ? { oid: pr.mergeCommit } : null,
   };
@@ -257,6 +260,17 @@ if (group === 'release' && sub === 'view') {
     const tag = path.slice(path.lastIndexOf('/') + 1);
     if (!state.tags[tag]) notFound('Not Found');
     emit({ ref: `refs/tags/${tag}`, object: { sha: state.tags[tag], type: 'commit' } });
+  } else if (/^repos\/[^/]+\/[^/]+\/git\/ref\/heads\/.+$/.test(path)) {
+    const branch = path.slice(path.indexOf('/git/ref/heads/') + '/git/ref/heads/'.length);
+    emit({
+      ref: `refs/heads/${branch}`,
+      object: { sha: git('rev-parse', `refs/heads/${branch}`) },
+    });
+  } else if (/^repos\/[^/]+\/[^/]+\/compare\/[^/]+\.\.\.[^/]+$/.test(path)) {
+    const [base, head] = path.slice(path.lastIndexOf('/') + 1).split('...');
+    emit({
+      ahead_by: Number(git('rev-list', '--count', `refs/heads/${base}..refs/heads/${head}`)),
+    });
   } else if (/^repos\/[^/]+\/[^/]+\/commits\/[^/]+\/check-runs$/.test(path)) {
     const sha = path.split('/').at(-2);
     const params = new URLSearchParams(query ?? '');
@@ -286,6 +300,20 @@ if (group === 'release' && sub === 'view') {
       .slice(0, Number(flag('--limit') ?? 30))
       .map((pr) => project(prRecord(pr), flag('--json'))),
   );
+} else if (group === 'pr' && sub === 'create') {
+  state.nextPr ??= 1;
+  while (state.prs.some((p) => p.number === state.nextPr)) state.nextPr++;
+  const pr = {
+    number: state.nextPr++,
+    headRefName: flag('--head'),
+    baseRefName: flag('--base'),
+    title: flag('--title'),
+    state: 'OPEN',
+    autoMerge: null,
+  };
+  state.prs.push(pr);
+  writeState(state);
+  process.stdout.write(`${prRecord(pr).url}\n`);
 } else if (group === 'pr' && sub === 'view') {
   const pr = findPr(positional[2]);
   if (!pr) die(`no pull requests found for "${positional[2]}"`);
@@ -319,8 +347,9 @@ if (group === 'release' && sub === 'view') {
     }
     pr.state = 'MERGED';
     pr.mergeCommit = `merge-of-${head.slice(0, 12)}`;
+    pr.mergeMethod = has('--squash') ? 'squash' : has('--rebase') ? 'rebase' : 'merge';
     writeState(state);
-    process.stdout.write(`✓ Squashed and merged pull request #${pr.number}\n`);
+    process.stdout.write(`✓ Merged pull request #${pr.number} (${pr.mergeMethod})\n`);
   }
 } else {
   die(`gh stub: unsupported invocation: gh ${argv.join(' ')}`);
