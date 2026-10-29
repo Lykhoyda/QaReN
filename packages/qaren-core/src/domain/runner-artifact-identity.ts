@@ -16,12 +16,12 @@ export function assertRunnerAssetName(
   platform: RunnerPlatform,
 ): void {
   const expected =
-    platform === 'ios' ? `rn-fast-runner-${version}-sim.zip` : `rn-android-runner-${version}.zip`;
+    platform === 'ios' ? `qaren-ios-runner-${version}-sim.zip` : `rn-android-runner-${version}.zip`;
   if (name !== expected) {
     throw new RunnerArtifactMismatchError(
       version,
       platform,
-      `manifest names ${name}, expected ${expected}`,
+      `manifest names ${name}, expected ${expected}; use RN_RUNNER_BUILD=local on a source checkout until its runner release is published`,
     );
   }
 }

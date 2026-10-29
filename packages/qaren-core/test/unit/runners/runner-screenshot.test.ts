@@ -11,7 +11,7 @@ import {
   _setFetchForTest,
   _setRunnerStateForTest,
   captureRunnerScreenshot,
-} from '../../../dist/runners/rn-fast-runner-client.js';
+} from '../../../dist/runners/qaren-ios-runner-client.js';
 import { captureQaScreenshot } from '../../../dist/qa/screenshot.js';
 import {
   _setForTest as rawCapture,

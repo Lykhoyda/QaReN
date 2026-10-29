@@ -14,7 +14,7 @@ import {
   resolveRunnerRequestedPort,
   runIOS,
   verifyTypeResultAfterSettle,
-} from '../../dist/runners/rn-fast-runner-client.js';
+} from '../../dist/runners/qaren-ios-runner-client.js';
 import { okResult } from '../../dist/utils.js';
 
 function state() {
@@ -67,7 +67,7 @@ test('GH-588 runner lifecycle: default launch requests an isolated OS-assigned l
 test('GH-588 Slice C: deterministic wedge hook is compile-gated out of release artifacts', () => {
   const source = readFileSync(
     new URL(
-      '../../../rn-fast-runner/RnFastRunner/RnFastRunnerUITests/RnFastRunnerTests+CommandExecution.swift',
+      '../../../qaren-ios-runner/QarenIosRunner/QarenIosRunnerUITests/QarenIosRunnerTests+CommandExecution.swift',
       import.meta.url,
     ),
     'utf8',

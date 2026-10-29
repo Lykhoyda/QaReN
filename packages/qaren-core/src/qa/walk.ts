@@ -52,7 +52,7 @@ import {
   observeAppProcess,
   observeRunnerDrivers,
   observeRunnerRelaunches,
-} from '../runners/rn-fast-runner-client.js';
+} from '../runners/qaren-ios-runner-client.js';
 import type { ToolResult } from '../utils.js';
 import { HandlerError, adapt, describeError, fillEvidence, unwrap } from './adapt.js';
 import {

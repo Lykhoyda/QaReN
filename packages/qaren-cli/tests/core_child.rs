@@ -2050,7 +2050,7 @@ fn a_step_start_carrying_anything_but_its_identity_is_a_protocol_violation() {
 #[test]
 fn a_runner_driver_is_recorded_only_as_this_simulator_s_own_group_leader() {
     let command = "/usr/bin/xcodebuild test-without-building -project R.xcodeproj -destination platform=iOS Simulator,id=AAAA-1111";
-    let real = "xcodebuild test-without-building -project /p/RnFastRunner/RnFastRunner.xcodeproj -scheme RnFastRunner -destination platform=iOS Simulator,id=2E24DCF0-C991-4EB0-80CC-CCFEB9042A73 -derivedDataPath /p/build/DerivedData -only-testing:RnFastRunnerUITests/RnFastRunnerTests/testCommand";
+    let real = "xcodebuild test-without-building -project /p/QarenIosRunner/QarenIosRunner.xcodeproj -scheme QarenIosRunner -destination platform=iOS Simulator,id=2E24DCF0-C991-4EB0-80CC-CCFEB9042A73 -derivedDataPath /p/build/DerivedData -only-testing:QarenIosRunnerUITests/QarenIosRunnerTests/testCommand";
     assert!(qaren::redact::OutputText::from_output(real)
         .as_str()
         .contains("2E24DCF0-C991-4EB0-80CC-CCFEB9042A73"));

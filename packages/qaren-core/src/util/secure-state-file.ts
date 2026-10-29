@@ -54,7 +54,7 @@ export function deleteStateFile(path: string): void {
 // live pre-upgrade runner can be discovered → classified legacy → reaped;
 // deleted only after a successful relaunch persists the new per-device file.
 const LEGACY_TMP_STATE_FILES: Record<'ios' | 'android', string> = {
-  ios: '/tmp/rn-fast-runner-state.json',
+  ios: '/tmp/qaren-ios-runner-state.json',
   android: '/tmp/rn-android-runner-state.json',
 };
 

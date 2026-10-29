@@ -2574,6 +2574,8 @@ captures (a crash or restart), or a snapshot or platform-presence capture report
 refuses `APP_PROCESS_UNKNOWN`; a runner built from an older checkout needs a rebuild
 (`RN_RUNNER_BUILD=local`).
 
+The simulator shows `QaReN` (host) and `QaReN-Runner` (test runner).
+
 ### Saved plans
 
 `qaren check` keeps a fully passing plan in the app's `.qaren/plans/`, and `qaren plans [--json]`,

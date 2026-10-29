@@ -27,10 +27,10 @@ const REQUIRED_ANDROID_COMMANDS = requiredCommandsFromSource('REQUIRED_ANDROID_C
 const SWIFT_MODELS = join(
   REPO_ROOT,
   'packages',
-  'rn-fast-runner',
-  'RnFastRunner',
-  'RnFastRunnerUITests',
-  'RnFastRunnerTests+Models.swift',
+  'qaren-ios-runner',
+  'QarenIosRunner',
+  'QarenIosRunnerUITests',
+  'QarenIosRunnerTests+Models.swift',
 );
 const KOTLIN_DISPATCHER = join(
   REPO_ROOT,

@@ -44,7 +44,7 @@ jobs:
             exit 0
           fi
           CHANGED="$(git diff --name-only "$BASE_SHA"...HEAD)"
-          if echo "$CHANGED" | grep -qE '^packages/rn-fast-runner/|^scripts/test-native-ios\.sh$|^\.github/workflows/native-tests\.yml$'; then
+          if echo "$CHANGED" | grep -qE '^packages/qaren-ios-runner/|^scripts/test-native-ios\.sh$|^\.github/workflows/native-tests\.yml$'; then
             echo "ios=true" >> "$GITHUB_OUTPUT"
           else
             echo "ios=false" >> "$GITHUB_OUTPUT"
@@ -116,7 +116,7 @@ jobs:
     steps:
       - name: Skip notice (iOS unchanged)
         if: ${{ needs.changes.outputs.ios != 'true' }}
-        run: echo "No rn-fast-runner changes in this PR — skipping the simulator unit tests. Push-to-main runs them unconditionally."
+        run: echo "No qaren-ios-runner changes in this PR — skipping the simulator unit tests. Push-to-main runs them unconditionally."
       - name: Checkout
         if: ${{ needs.changes.outputs.ios == 'true' }}
         uses: actions/checkout@v4
@@ -149,5 +149,5 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: ios-unit-xcresult
-          path: packages/rn-fast-runner/build/native-tests.xcresult
+          path: packages/qaren-ios-runner/build/native-tests.xcresult
           retention-days: 7

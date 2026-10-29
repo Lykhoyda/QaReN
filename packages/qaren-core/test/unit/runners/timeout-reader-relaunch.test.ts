@@ -26,7 +26,7 @@ import {
   getFastRunnerState,
   runIOS,
   resolveReadyTimeoutMs,
-} from '../../../dist/runners/rn-fast-runner-client.js';
+} from '../../../dist/runners/qaren-ios-runner-client.js';
 import {
   getPluginVersion,
   REQUIRED_IOS_COMMANDS,
@@ -874,8 +874,8 @@ test('a vanished reader leaves a post-mortem of host state and marker counts, ne
     );
     child.stderr.write(`NNER_SEND_FAILED=${secret}\nx RN_FAST_RUNNER_ISSUE_CONTAINED=0\n`);
     child.stdout.write(
-      `/x/RnFastRunnerTests+Interaction.swift:320: error: -[RnFastRunnerUITests.RnFastRunnerTests testCommand] : Failed to get matching snapshot: ${secret}\n` +
-        `Test Case '-[RnFastRunnerUITests.RnFastRunnerTests testCommand]' failed (73.554 seconds).\n`,
+      `/x/QarenIosRunnerTests+Interaction.swift:320: error: -[QaReN.QarenIosRunnerTests testCommand] : Failed to get matching snapshot: ${secret}\n` +
+        `Test Case '-[QaReN.QarenIosRunnerTests testCommand]' failed (73.554 seconds).\n`,
     );
     await nextTurn();
     healthReplies = ['refused'];

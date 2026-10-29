@@ -5,7 +5,7 @@ import {
   _setFetchForTest,
   _setRunnerStateForTest,
   runIOS,
-} from '../../../dist/runners/rn-fast-runner-client.js';
+} from '../../../dist/runners/qaren-ios-runner-client.js';
 import {
   _setAndroidRunnerStateForTest,
   _setFetchForTest as _setAndroidFetchForTest,

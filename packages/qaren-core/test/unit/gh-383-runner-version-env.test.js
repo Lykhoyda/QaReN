@@ -8,7 +8,7 @@ import assert from 'node:assert/strict';
 import {
   buildRunnerPortEnv,
   buildRunnerVersionEnv,
-} from '../../dist/runners/rn-fast-runner-client.js';
+} from '../../dist/runners/qaren-ios-runner-client.js';
 
 test('gh-383: buildRunnerVersionEnv emits plain + TEST_RUNNER_-prefixed keys when known', () => {
   assert.deepEqual(buildRunnerVersionEnv('0.58.0'), {

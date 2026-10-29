@@ -188,7 +188,7 @@ jobs:
             echo "::error::candidate $P changes paths a version bump never generates: $FOREIGN" >&2
             exit 1
           fi
-          for TREE in packages/rn-fast-runner packages/rn-android-runner; do
+          for TREE in packages/qaren-ios-runner packages/rn-android-runner; do
             if [ "$(git rev-parse "$P:$TREE")" != "$(git rev-parse "$BASE:$TREE")" ]; then
               echo "::error::native inputs under $TREE differ between main and the candidate" >&2
               exit 1
@@ -258,7 +258,7 @@ jobs:
             got=$(wc -c < "$zip" | tr -d ' ')
             [ "$got" = "$bytes" ] || { echo "::error::$1: retained length $got != producer $bytes" >&2; exit 1; }
           }
-          check "rn-fast-runner-$VERSION-sim.zip" "$IOS_SHA256" "$IOS_BYTES"
+          check "qaren-ios-runner-$VERSION-sim.zip" "$IOS_SHA256" "$IOS_BYTES"
           check "rn-android-runner-$VERSION.zip" "$ANDROID_SHA256" "$ANDROID_BYTES"
           check "qaren-$VERSION-darwin-arm64.tar.gz" "$QAREN_ARM64_SHA256" "$QAREN_ARM64_BYTES"
 
@@ -266,7 +266,7 @@ jobs:
         run: |
           node scripts/build-runner-manifest.mts \
             --version "$VERSION" \
-            --ios "handoff/rn-fast-runner-$VERSION-sim.zip" \
+            --ios "handoff/qaren-ios-runner-$VERSION-sim.zip" \
             --android "handoff/rn-android-runner-$VERSION.zip" \
             --qaren-darwin-arm64 "handoff/qaren-$VERSION-darwin-arm64.tar.gz" \
             --out runner-manifest.json
@@ -344,7 +344,7 @@ jobs:
           [ "$(git rev-parse HEAD^)" = "$CANDIDATE" ] || { echo "::error::release head $HEAD is not one commit on top of the candidate $CANDIDATE" >&2; exit 1; }
           DELTA=$(git diff --name-only HEAD^ HEAD | sort | tr '\n' ' ')
           [ "$DELTA" = "packages/qaren-plugin/runner-manifest.json runner-manifest.json " ] || { echo "::error::release head $HEAD changes '$DELTA' beyond the trust root" >&2; exit 1; }
-          [ "$(git rev-parse HEAD:packages/rn-fast-runner)" = "$IOS_TREE" ] || { echo "::error::iOS runner sources differ from what the producer built" >&2; exit 1; }
+          [ "$(git rev-parse HEAD:packages/qaren-ios-runner)" = "$IOS_TREE" ] || { echo "::error::iOS runner sources differ from what the producer built" >&2; exit 1; }
           [ "$(git rev-parse HEAD:packages/rn-android-runner)" = "$ANDROID_TREE" ] || { echo "::error::Android runner sources differ from what the producer built" >&2; exit 1; }
           node scripts/runner-manifest-publication.mts --stage prepared \
             --candidate-sha "$HEAD" \

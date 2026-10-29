@@ -11,7 +11,7 @@ import {
   getFastRunnerState,
   runIOS,
   readIOSLabelProvenance,
-} from '../../../dist/runners/rn-fast-runner-client.js';
+} from '../../../dist/runners/qaren-ios-runner-client.js';
 import {
   clearRefMap,
   getCachedMetadata,

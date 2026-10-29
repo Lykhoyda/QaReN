@@ -1,5 +1,5 @@
 import { readFileSync } from 'node:fs';
-import type { RunIOSArgs } from './rn-fast-runner-client.js';
+import type { RunIOSArgs } from './qaren-ios-runner-client.js';
 import type { RunAndroidArgs } from './rn-android-runner-client.js';
 import { candidatePluginManifestFiles, firstExistingFile } from './runtime-paths.js';
 

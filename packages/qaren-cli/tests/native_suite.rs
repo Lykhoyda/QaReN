@@ -730,8 +730,8 @@ fn fixed_native_script_keeps_serial_execution_and_existing_skips() {
     assert!(args
         .windows(2)
         .any(|pair| pair == ["-parallel-testing-enabled", "NO"]));
-    assert!(args.contains(&"-skip-testing:RnFastRunnerUITests/RnFastRunnerTests"));
-    assert!(args.contains(&"-skip-testing:RnFastRunnerUITests/SnapshotForegroundRegressionTest"));
+    assert!(args.contains(&"-skip-testing:QarenIosRunnerUITests/QarenIosRunnerTests"));
+    assert!(args.contains(&"-skip-testing:QarenIosRunnerUITests/SnapshotForegroundRegressionTest"));
 }
 
 #[test]

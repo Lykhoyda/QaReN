@@ -12,13 +12,13 @@ const savedEnv = { ...process.env };
 process.env.QAREN_NATIVE_RUNNER_ROOT = root;
 process.env.QAREN_HOME = join(root, 'home');
 process.env.QAREN_DEVICE_LEASE = `retained-driver:${'f'.repeat(32)}`;
-const runnerRoot = join(root, 'rn-fast-runner');
-mkdirSync(join(runnerRoot, 'RnFastRunner', 'RnFastRunner.xcodeproj'), { recursive: true });
+const runnerRoot = join(root, 'qaren-ios-runner');
+mkdirSync(join(runnerRoot, 'QarenIosRunner', 'QarenIosRunner.xcodeproj'), { recursive: true });
 const products = join(runnerRoot, 'build', 'DerivedData', 'Build', 'Products');
 mkdirSync(products, { recursive: true });
 writeFileSync(join(products, 'fixture.xctestrun'), '');
 
-const runner = await import('../../dist/runners/rn-fast-runner-client.js');
+const runner = await import('../../dist/runners/qaren-ios-runner-client.js');
 const stateFiles = await import('../../dist/util/secure-state-file.js');
 const device = '00000000-0000-0000-0000-000000000001';
 const otherDevice = '00000000-0000-0000-0000-000000000002';

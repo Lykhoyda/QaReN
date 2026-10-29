@@ -9,9 +9,9 @@ const repoRoot = join(here, '..', '..', '..', '..');
 const swiftDir = join(
   repoRoot,
   'packages',
-  'rn-fast-runner',
-  'RnFastRunner',
-  'RnFastRunnerUITests',
+  'qaren-ios-runner',
+  'QarenIosRunner',
+  'QarenIosRunnerUITests',
 );
 
 // Drop // line comments so a commented-out token can never satisfy a match.
@@ -23,7 +23,7 @@ function stripLineComments(src) {
 }
 
 function swiftEnumRawValues() {
-  const src = readFileSync(join(swiftDir, 'RnFastRunnerTests+Models.swift'), 'utf-8');
+  const src = readFileSync(join(swiftDir, 'QarenIosRunnerTests+Models.swift'), 'utf-8');
   const body = src.match(/enum CommandType[^{]*\{([\s\S]*?)\n\}/)?.[1] ?? '';
   const out = [];
   for (const m of body.matchAll(/case (\w+)(?:\s*=\s*"([^"]+)")?/g)) out.push(m[2] ?? m[1]);
@@ -36,7 +36,7 @@ test('story-04 iOS: CommandType enumerates isScreenStatic', () => {
 
 test('story-04 iOS: /health capabilities construction references SCREEN_STATIC', () => {
   const src = stripLineComments(
-    readFileSync(join(swiftDir, 'RnFastRunnerTests+Transport.swift'), 'utf-8'),
+    readFileSync(join(swiftDir, 'QarenIosRunnerTests+Transport.swift'), 'utf-8'),
   );
   // Source-parse guard only: SCREEN_STATIC must appear inside the capabilities:
   // argument (bounded window, comments stripped, so a stray or commented token
@@ -48,7 +48,7 @@ test('story-04 iOS: /health capabilities construction references SCREEN_STATIC',
 
 test('story-04 iOS: isScreenStatic is a case label in isRunnerLifecycleCommand', () => {
   const src = stripLineComments(
-    readFileSync(join(swiftDir, 'RnFastRunnerTests+Lifecycle.swift'), 'utf-8'),
+    readFileSync(join(swiftDir, 'QarenIosRunnerTests+Lifecycle.swift'), 'utf-8'),
   );
   const fn = src.match(/func isRunnerLifecycleCommand[\s\S]*?\n\}/)?.[0] ?? '';
   // Case-label shape, comments stripped: a mention in a comment or dead string

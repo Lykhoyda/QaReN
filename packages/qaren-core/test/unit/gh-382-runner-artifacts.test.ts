@@ -83,8 +83,8 @@ test('verifyChecksums: flags mismatch and missing', () => {
 
 test('releaseAssetUrl: builds a v-prefixed release download URL', () => {
   assert.equal(
-    releaseAssetUrl('Lykhoyda/QaReN', '2.0.0-beta.3', 'rn-fast-runner-2.0.0-beta.3-sim.zip'),
-    'https://github.com/Lykhoyda/QaReN/releases/download/v2.0.0-beta.3/rn-fast-runner-2.0.0-beta.3-sim.zip',
+    releaseAssetUrl('Lykhoyda/QaReN', '2.0.0-beta.3', 'qaren-ios-runner-2.0.0-beta.3-sim.zip'),
+    'https://github.com/Lykhoyda/QaReN/releases/download/v2.0.0-beta.3/qaren-ios-runner-2.0.0-beta.3-sim.zip',
   );
 });
 
@@ -154,13 +154,13 @@ function makeDeps(cfg = {}) {
 const IOS_MANIFEST = {
   version: '2.0.0-beta.3',
   assets: {
-    ios: [{ name: 'rn-fast-runner-2.0.0-beta.3-sim.zip', sha256: 'GOOD', bytes: 4_200_000 }],
+    ios: [{ name: 'qaren-ios-runner-2.0.0-beta.3-sim.zip', sha256: 'GOOD', bytes: 4_200_000 }],
     android: [{ name: 'rn-android-runner-2.0.0-beta.3.zip', sha256: 'GOOD', bytes: 5_100_000 }],
   },
 };
 // Paths are relative to the extraction (products) dir the fake unzip receives.
-const IOS_EXTRACT = ['Build/Products/RnFastRunner.xctestrun'];
-const LOCAL_DD = '/plugin/scripts/rn-fast-runner/build/DerivedData';
+const IOS_EXTRACT = ['Build/Products/QarenIosRunner.xctestrun'];
+const LOCAL_DD = '/plugin/scripts/qaren-ios-runner/build/DerivedData';
 const LOCAL_APKS = {
   appApk: '/plugin/.../app-debug.apk',
   testApk: '/plugin/.../app-debug-androidTest.apk',
@@ -171,16 +171,16 @@ for (const cached of [false, true]) {
     const legacy = {
       version: '1.0.13',
       assets: {
-        ios: [{ name: 'rn-fast-runner-1.0.13-sim.zip', sha256: 'GOOD', bytes: 1 }],
+        ios: [{ name: 'qaren-ios-runner-1.0.13-sim.zip', sha256: 'GOOD', bytes: 1 }],
         android: [],
       },
     };
-    const zip = '/cache/1.0.13/ios/rn-fast-runner-1.0.13-sim.zip';
+    const zip = '/cache/1.0.13/ios/qaren-ios-runner-1.0.13-sim.zip';
     const { deps, calls } = makeDeps({
       manifest: legacy,
       extractProduces: IOS_EXTRACT,
       files: cached
-        ? [zip, '/cache/1.0.13/ios/products/Build/Products/RnFastRunner.xctestrun']
+        ? [zip, '/cache/1.0.13/ios/products/Build/Products/QarenIosRunner.xctestrun']
         : [],
       shas: { [zip]: 'GOOD' },
     });
@@ -198,7 +198,7 @@ for (const version of ['2.0.0', '2.0.0-rc.1']) {
       manifest: {
         version,
         assets: {
-          ios: [{ name: `rn-fast-runner-${version}-sim.zip`, sha256: 'GOOD', bytes: 1 }],
+          ios: [{ name: `qaren-ios-runner-${version}-sim.zip`, sha256: 'GOOD', bytes: 1 }],
           android: [],
         },
       },
@@ -215,16 +215,16 @@ for (const version of ['2.0.0', '2.0.0-rc.1']) {
 }
 
 test('a 2.0 checkout with a lagging legacy manifest builds shipped source without touching cache or network', async () => {
-  const zip = '/cache/1.0.13/ios/rn-fast-runner-1.0.13-sim.zip';
+  const zip = '/cache/1.0.13/ios/qaren-ios-runner-1.0.13-sim.zip';
   const { deps, calls } = makeDeps({
     manifest: {
       version: '1.0.13',
       assets: {
-        ios: [{ name: 'rn-fast-runner-1.0.13-sim.zip', sha256: 'GOOD', bytes: 1 }],
+        ios: [{ name: 'qaren-ios-runner-1.0.13-sim.zip', sha256: 'GOOD', bytes: 1 }],
         android: [],
       },
     },
-    files: [zip, '/cache/1.0.13/ios/products/Build/Products/RnFastRunner.xctestrun'],
+    files: [zip, '/cache/1.0.13/ios/products/Build/Products/QarenIosRunner.xctestrun'],
     shas: { [zip]: 'GOOD' },
   });
   const r = await resolveIosRunnerArtifacts('2.0.0', LOCAL_DD, deps);
@@ -241,7 +241,7 @@ test('runner startup surfaces an artifact mismatch as a typed refusal without re
       ...IOS_MANIFEST,
       assets: {
         ...IOS_MANIFEST.assets,
-        ios: [{ name: 'rn-fast-runner-1.0.13-sim.zip', sha256: 'GOOD', bytes: 1 }],
+        ios: [{ name: 'qaren-ios-runner-1.0.13-sim.zip', sha256: 'GOOD', bytes: 1 }],
       },
     },
   });
@@ -259,17 +259,17 @@ test('runner startup surfaces an artifact mismatch as a typed refusal without re
   });
   assert.equal(result.ok, false);
   assert.equal(result.code, 'RUNNER_VERSION_MISMATCH');
-  assert.match(result.message, /2\.0\.0-beta\.3.*rn-fast-runner-1\.0\.13-sim\.zip/);
+  assert.match(result.message, /2\.0\.0-beta\.3.*qaren-ios-runner-1\.0\.13-sim\.zip/);
   assert.equal(probes, 1);
   assert.deepEqual(calls.fetch, []);
   assert.deepEqual(calls.unzip, []);
 });
 
 for (const name of [
-  'rn-fast-runner-1.0.13-sim.zip',
-  'rn-fast-runner-2.0.0-sim.zip',
-  'rn-fast-runner-2.0.0-beta.2-sim.zip',
-  '../rn-fast-runner-2.0.0-beta.3-sim.zip',
+  'qaren-ios-runner-1.0.13-sim.zip',
+  'qaren-ios-runner-2.0.0-sim.zip',
+  'qaren-ios-runner-2.0.0-beta.2-sim.zip',
+  '../qaren-ios-runner-2.0.0-beta.3-sim.zip',
 ]) {
   test(`iOS: a matching manifest version cannot name another release's asset: ${name}`, async () => {
     const { deps, calls } = makeDeps({
@@ -280,7 +280,7 @@ for (const name of [
     });
     await assert.rejects(
       resolveIosRunnerArtifacts(IOS_MANIFEST.version, LOCAL_DD, deps),
-      /RUNNER_VERSION_MISMATCH.*manifest names/,
+      /RUNNER_VERSION_MISMATCH.*manifest names.*RN_RUNNER_BUILD=local/,
     );
     assert.deepEqual(calls.fetch, []);
     assert.deepEqual(calls.unzip, []);
@@ -321,10 +321,10 @@ test('iOS: no manifest at all -> build-local', async () => {
 
 test('iOS: valid cache -> cache, uses cached DD, no network', async () => {
   const cacheDir = join('/cache', '2.0.0-beta.3', 'ios');
-  const zip = join(cacheDir, 'rn-fast-runner-2.0.0-beta.3-sim.zip');
+  const zip = join(cacheDir, 'qaren-ios-runner-2.0.0-beta.3-sim.zip');
   const { deps, calls } = makeDeps({
     manifest: IOS_MANIFEST,
-    files: [zip, join(cacheDir, 'products/Build/Products/RnFastRunner.xctestrun')],
+    files: [zip, join(cacheDir, 'products/Build/Products/QarenIosRunner.xctestrun')],
     shas: { [zip]: 'GOOD' },
   });
   const r = await resolveIosRunnerArtifacts('2.0.0-beta.3', LOCAL_DD, deps);
@@ -335,10 +335,10 @@ test('iOS: valid cache -> cache, uses cached DD, no network', async () => {
 
 test('iOS: corrupt cache (wrong sha) -> falls to download', async () => {
   const cacheDir = join('/cache', '2.0.0-beta.3', 'ios');
-  const zip = join(cacheDir, 'rn-fast-runner-2.0.0-beta.3-sim.zip');
+  const zip = join(cacheDir, 'qaren-ios-runner-2.0.0-beta.3-sim.zip');
   const { deps, calls } = makeDeps({
     manifest: IOS_MANIFEST,
-    files: [zip, join(cacheDir, 'products/Build/Products/RnFastRunner.xctestrun')],
+    files: [zip, join(cacheDir, 'products/Build/Products/QarenIosRunner.xctestrun')],
     shas: { [zip]: 'CORRUPT' },
     downloadSha: 'GOOD',
     extractProduces: IOS_EXTRACT,
@@ -361,7 +361,7 @@ test('iOS: download ok -> downloaded, cached DD, fetch+unzip called, size-cap pa
   assert.equal(calls.fetch.length, 1);
   assert.equal(
     calls.fetch[0].url,
-    'https://github.com/Lykhoyda/QaReN/releases/download/v2.0.0-beta.3/rn-fast-runner-2.0.0-beta.3-sim.zip',
+    'https://github.com/Lykhoyda/QaReN/releases/download/v2.0.0-beta.3/qaren-ios-runner-2.0.0-beta.3-sim.zip',
   );
   assert.ok(calls.fetch[0].opts.maxBytes >= 4_200_000);
   assert.ok(calls.fetch[0].opts.timeoutMs > 0);
@@ -432,10 +432,10 @@ test('Android always uses the runner built from the shipped source, never a publ
 
 test('iOS: forceLocalBuild bypasses a valid cache -> build-local, no network', async () => {
   const cacheDir = join('/cache', '2.0.0-beta.3', 'ios');
-  const zip = join(cacheDir, 'rn-fast-runner-2.0.0-beta.3-sim.zip');
+  const zip = join(cacheDir, 'qaren-ios-runner-2.0.0-beta.3-sim.zip');
   const { deps, calls } = makeDeps({
     manifest: IOS_MANIFEST,
-    files: [zip, join(cacheDir, 'products/Build/Products/RnFastRunner.xctestrun')],
+    files: [zip, join(cacheDir, 'products/Build/Products/QarenIosRunner.xctestrun')],
     shas: { [zip]: 'GOOD' },
   });
   const r = await resolveIosRunnerArtifacts('2.0.0-beta.3', LOCAL_DD, deps, true);

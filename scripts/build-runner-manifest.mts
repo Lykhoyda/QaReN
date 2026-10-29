@@ -4,7 +4,7 @@
 // Usage (CI, after building the zips):
 //   node scripts/build-runner-manifest.mts \
 //     --version 0.62.3 \
-//     --ios path/to/rn-fast-runner-0.62.3-sim.zip \
+//     --ios path/to/qaren-ios-runner-0.62.3-sim.zip \
 //     --android path/to/rn-android-runner-0.62.3.zip \
 //     --xcode-build-version 15.4 \
 //     --qaren-darwin-arm64 path/to/qaren-0.62.3-darwin-arm64.tar.gz \

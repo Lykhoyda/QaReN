@@ -27,9 +27,9 @@ test('gh-383: RUNNER_PROTOCOL_VERSION agrees across TS, Swift, and Kotlin', () =
     join(
       REPO_ROOT,
       'packages',
-      'rn-fast-runner',
-      'RnFastRunner',
-      'RnFastRunnerUITests',
+      'qaren-ios-runner',
+      'QarenIosRunner',
+      'QarenIosRunnerUITests',
       'RunnerProtocol.swift',
     ),
     /static let version = (\d+)/,

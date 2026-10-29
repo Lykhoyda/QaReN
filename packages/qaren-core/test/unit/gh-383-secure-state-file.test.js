@@ -74,10 +74,10 @@ test('gh-383 state: cleanupLegacyTmpState deletes the pre-relocation /tmp files'
   // Spec migration branch: legacy /tmp state is ignored and best-effort deleted.
   // These are the real fixed legacy paths — nothing reads them after #383, so
   // creating + deleting them in a test is safe.
-  writeFileSync('/tmp/rn-fast-runner-state.json', '{}');
+  writeFileSync('/tmp/qaren-ios-runner-state.json', '{}');
   writeFileSync('/tmp/rn-android-runner-state.json', '{}');
   cleanupLegacyTmpState();
-  assert.equal(readJsonStateFile('/tmp/rn-fast-runner-state.json'), null);
+  assert.equal(readJsonStateFile('/tmp/qaren-ios-runner-state.json'), null);
   assert.equal(readJsonStateFile('/tmp/rn-android-runner-state.json'), null);
   cleanupLegacyTmpState();
 });

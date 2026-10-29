@@ -13,7 +13,7 @@ import {
   _setFetchForTest as setIosFetch,
   _setFastRunnerStateForTest,
   _resetCapabilitiesForTest as resetIosCaps,
-} from '../../dist/runners/rn-fast-runner-client.js';
+} from '../../dist/runners/qaren-ios-runner-client.js';
 
 const jsonResponse = (body) => new Response(JSON.stringify(body), { status: 200 });
 

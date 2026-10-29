@@ -37,7 +37,7 @@ export type QarenPlatform = keyof typeof RUST_TARGETS;
 
 // Every entry the CLI spawns from its runtime directory (packages/qaren-cli/src/core.rs).
 export const SPAWNED_ENTRIES = ['qa/walk.js', 'qa/fresh-install-preflight.js'] as const;
-const NATIVE_RUNNERS = ['rn-fast-runner', 'rn-android-runner'] as const;
+const NATIVE_RUNNERS = ['qaren-ios-runner', 'rn-android-runner'] as const;
 
 // Bundled CommonJS dependencies call require(); an ESM bundle only has one if we give it.
 const REQUIRE_BANNER =

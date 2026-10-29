@@ -5,7 +5,7 @@ import {
   getFastRunnerState,
   probeFastRunnerLiveness,
   reapStaleFastRunner,
-} from '../../dist/runners/rn-fast-runner-client.js';
+} from '../../dist/runners/qaren-ios-runner-client.js';
 import { REQUIRED_IOS_COMMANDS, REQUIRED_IOS_FEATURES } from '../../dist/runners/protocol.js';
 
 // M7 / D666 — hermetic tests for the tri-state fast-runner liveness probe.

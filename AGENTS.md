@@ -25,7 +25,7 @@ The package cut, literal `qaren check`, Jev seam, Phase 4 blocks, and PR run/pub
   SessionStart-only `hooks/hooks.json`, and `skills/`. `setup` (`/qaren:setup`),
   `using-qaren` and `feedback` are written for the 2.0 CLI. Its `package.json`
   is the version source for changesets and `qaren` is the only released package.
-- `packages/rn-fast-runner/` (package `qaren-ios-runner`) and
+- `packages/qaren-ios-runner/` (package `qaren-ios-runner`) and
   `packages/rn-android-runner/` (package `qaren-android-runner`): native
   runner sources.
 - `apps/docs-site/` (package `qaren-docs`): deliverable QaReN documentation site.
@@ -95,7 +95,7 @@ The package cut, literal `qaren check`, Jev seam, Phase 4 blocks, and PR run/pub
   `cargo test --manifest-path packages/qaren-cli/Cargo.toml --locked`.
 - Host surface: edit `packages/qaren-plugin/` in place. There is no mirror,
   no generated host copy and no sync gate.
-- Native runners: edit `packages/rn-fast-runner/` or
+- Native runners: edit `packages/qaren-ios-runner/` or
   `packages/rn-android-runner/`.
 - Docs site: edit `apps/docs-site/`, then `corepack yarn build:docs`.
 

@@ -14,7 +14,7 @@ import {
   runIOS,
   _setFetchForTest,
   _setFastRunnerStateForTest,
-} from '../../../dist/runners/rn-fast-runner-client.js';
+} from '../../../dist/runners/qaren-ios-runner-client.js';
 import { getLastSnapshotHash, hasRefMap, clearRefMap } from '../../../dist/fast-runner-ref-map.js';
 import { hashSnapshotNodes } from '../../../dist/lifecycle/settle-hash.js';
 import { waitForSettle } from '../../../dist/lifecycle/settle.js';

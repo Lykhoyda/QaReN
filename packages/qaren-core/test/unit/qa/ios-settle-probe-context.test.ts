@@ -21,7 +21,7 @@ import {
   _setCapabilitiesForTest,
   _setFastRunnerStateForTest,
   _setFetchForTest as setIosFetch,
-} from '../../../dist/runners/rn-fast-runner-client.js';
+} from '../../../dist/runners/qaren-ios-runner-client.js';
 import { REQUIRED_IOS_COMMANDS, REQUIRED_IOS_FEATURES } from '../../../dist/runners/protocol.js';
 import { element, screen, scriptedJudge, walker } from './judgment-fixtures.ts';
 

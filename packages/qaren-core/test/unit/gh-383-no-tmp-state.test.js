@@ -9,7 +9,7 @@ import { fileURLToPath } from 'node:url';
 
 const SRC = join(dirname(fileURLToPath(import.meta.url)), '..', '..', 'src');
 const CLIENTS = [
-  join(SRC, 'runners', 'rn-fast-runner-client.ts'),
+  join(SRC, 'runners', 'qaren-ios-runner-client.ts'),
   join(SRC, 'runners', 'rn-android-runner-client.ts'),
 ];
 
