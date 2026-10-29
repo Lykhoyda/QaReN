@@ -34,20 +34,22 @@ import {
   ADMISSION_LIVENESS,
   ADMISSION_BUNDLE_REQUESTS,
   type TimingEvent,
+  observeTiming,
 } from './timing.js';
 
 export interface AdmissionSteps {
   metroPort: number;
   readinessMs: number;
-  // After this long, a stall from a dead app or with no bundle request since launch refuses.
+  // Baseline stall refusal limit; patient manifest recovery may extend it.
   attachBudgetMs: number;
   remainingMs(): number;
   attach(deadline: number): Promise<void>;
   // Inside the attach deadline: the attached client must have run its bundle before anything reads it.
   bundleReady?(deadline: number): Promise<void>;
-  // A stalled launch gets one relaunch after its readiness wait; it may wait for Metro until the deadline.
+  manifest?(deadline: number, retry: ManifestRetry): Promise<ManifestWarm>;
+  // Only a proven slow manifest probe permits additional relaunches.
   relaunch?(deadline: number): Promise<ManifestWarm | void>;
-  // The launch's last manifest warm-up, replaced by the relaunch's.
+  // Initial warm-up measurements, replaced by each successful admission warm-up.
   launchWarm?: ManifestWarm;
   // Before relaunching without a target, preserve a live app with a bundle request.
   appAlive?(): Promise<boolean>;
@@ -58,6 +60,7 @@ export interface AdmissionSteps {
   prove(): Promise<ProveOutcome>;
   close(): Promise<void>;
   load?(): number;
+  timing?(event: TimingEvent): void;
   // Value-free facts at each retry decision and when admission ends without a proof.
   observe?(decision: AdmissionDecision, facts: AdmissionRefusalFacts): void;
 }
@@ -65,6 +68,11 @@ export interface AdmissionSteps {
 type Proven = Extract<ProveOutcome, { ok: true }>;
 
 export type ManifestWarm = { ms: number; attempts: number };
+export type ManifestProbe = { ms: number; outcome: 'ok' | 'failed' | 'timeout' };
+export interface ManifestRetry {
+  requestTimeoutMs?: number;
+  observe(probe: ManifestProbe): { deadline: number; backoffMs: number };
+}
 
 export type AdmissionBoundary = (typeof ADMISSION_BOUNDARIES)[number];
 export type AdmissionInnerClass = (typeof ADMISSION_INNER_CLASSES)[number];
@@ -469,9 +477,15 @@ export const DEV_CLIENT_REQUEST_TIMEOUT_MS = 10_000;
 // Metro rebuilds the manifest per request, so one fast answer does not predict the dev client's own.
 export const DEV_CLIENT_MANIFEST_MARGIN_MS = DEV_CLIENT_REQUEST_TIMEOUT_MS / 2;
 export const DEV_CLIENT_MANIFEST_ANSWERS = 2;
+const PATIENT_MANIFEST_MS = 90_000;
+const MAX_PATIENT_RELAUNCHES = 3;
 
 // Like the CLI's launch: (re)launch only once Metro answers the dev client's own manifest request with margin, twice in a row.
-export async function awaitDevClientManifest(url: string, deadline: number): Promise<ManifestWarm> {
+export async function awaitDevClientManifest(
+  url: string,
+  deadline: number,
+  retry?: ManifestRetry,
+): Promise<ManifestWarm> {
   let attempts = 0;
   let inMargin = 0;
   let ms: number | undefined;
@@ -479,23 +493,43 @@ export async function awaitDevClientManifest(url: string, deadline: number): Pro
     attempts++;
     const startedAt = performance.now();
     let response: Response | undefined;
+    let failure: unknown;
     try {
-      response = await cancellableFetch(fetch, url, {
-        headers: { 'expo-platform': 'ios', accept: 'application/expo+json,application/json' },
-        signal: AbortSignal.timeout(Math.max(1, Math.ceil(deadline - startedAt))),
-      });
-      await response.arrayBuffer();
+      await withDeadline(
+        Math.min(deadline, startedAt + (retry?.requestTimeoutMs ?? Infinity)),
+        new DOMException('dev client manifest probe timed out', 'TimeoutError'),
+        async () => {
+          response = await cancellableFetch(fetch, url, {
+            headers: { 'expo-platform': 'ios', accept: 'application/expo+json,application/json' },
+          });
+          await response.arrayBuffer();
+        },
+      );
     } catch (error) {
-      if (isAbort(error)) throw error;
-      if ((error as { name?: unknown } | null)?.name !== 'TimeoutError')
-        throw new Error(`dev client manifest request failed: ${describeError(error).message}`);
+      failure = error;
       response = undefined;
     }
     ms = Math.round(performance.now() - startedAt);
+    const timedOut = (failure as { name?: unknown } | null)?.name === 'TimeoutError';
+    const next = retry?.observe({
+      ms,
+      outcome: response?.ok ? 'ok' : timedOut ? 'timeout' : 'failed',
+    });
+    if (failure) {
+      if (isAbort(failure)) throw failure;
+      if (!timedOut)
+        throw new Error(`dev client manifest request failed: ${describeError(failure).message}`);
+    }
     if (response && !response.ok)
       throw new Error(`dev client manifest answered HTTP ${response.status}`);
     inMargin = response && ms < DEV_CLIENT_MANIFEST_MARGIN_MS ? inMargin + 1 : 0;
-    if (inMargin === DEV_CLIENT_MANIFEST_ANSWERS) return { ms, attempts };
+    if (next) deadline = next.deadline;
+    if (inMargin === DEV_CLIENT_MANIFEST_ANSWERS && performance.now() < deadline)
+      return { ms, attempts };
+    if (next) {
+      const pause = Math.min(next.backoffMs, deadline - performance.now());
+      if (pause > 0) await sleep(pause);
+    }
   }
   throw new Error(
     `dev client manifest never answered ${DEV_CLIENT_MANIFEST_ANSWERS} times in a row inside ${DEV_CLIENT_MANIFEST_MARGIN_MS / 1000}s, half the dev client's ${DEV_CLIENT_REQUEST_TIMEOUT_MS / 1000}s request timeout: ${ms === undefined ? 'no request' : `last ${ms} ms`} after ${attempts} attempts`,
@@ -507,7 +541,11 @@ async function attach(steps: AdmissionSteps, signal: AbortSignal): Promise<Prove
   const deadline = started + steps.remainingMs();
   const refuseStalledAt = started + steps.attachBudgetMs;
   const relaunchAt = started + steps.readinessMs;
-  let relaunched = false;
+  let relaunches = 0;
+  let patientUntil: number | undefined;
+  let patientRefuseAt = refuseStalledAt;
+  const probeTimings: number[] = [];
+  const relaunchTimings: number[] = [];
   let nextNoTargetProbe = started;
   // first probe/handshake timeout against a registered target; it gets a full readiness window before a relaunch
   let stallSeenAt: number | undefined;
@@ -530,7 +568,7 @@ async function attach(steps: AdmissionSteps, signal: AbortSignal): Promise<Prove
       lastStarted,
       lastCompleted,
       inner,
-      relaunches: relaunched ? 1 : 0,
+      relaunches,
       relaunchFailed: relaunchFailure !== undefined,
       liveness,
       ...(bundleRequest === 'not_probed' ? {} : { bundleRequest }),
@@ -608,7 +646,11 @@ async function attach(steps: AdmissionSteps, signal: AbortSignal): Promise<Prove
           let probed = false;
           if (
             !opened &&
-            !relaunched &&
+            (relaunches === 0 ||
+              (patientUntil !== undefined &&
+                relaunches < MAX_PATIENT_RELAUNCHES &&
+                noTarget &&
+                error.state === 'empty')) &&
             (!noTarget || performance.now() >= nextNoTargetProbe) &&
             steps.relaunch &&
             remaining >= steps.readinessMs &&
@@ -624,19 +666,135 @@ async function attach(steps: AdmissionSteps, signal: AbortSignal): Promise<Prove
               probed = true;
               nextNoTargetProbe = performance.now() + steps.readinessMs;
             }
-            if (!noTarget || liveness !== 'alive' || bundleRequest === 'not_received') {
-              relaunched = true;
+            if (
+              (!noTarget || liveness !== 'alive' || bundleRequest === 'not_received') &&
+              ((relaunches === 0 && patientUntil === undefined) ||
+                (liveness === 'alive' && bundleRequest === 'not_received'))
+            ) {
               try {
                 lastStarted = 'relaunch';
                 const relaunch = steps.relaunch;
-                const until = Math.max(refuseStalledAt, performance.now() + steps.readinessMs);
-                const warmed = await interruptible(() => relaunch(until));
-                if (warmed) warm = warmed;
-                lastCompleted = 'relaunch';
-                liveness = 'not_probed';
-                bundleRequest = 'not_probed';
+                const until = Math.min(
+                  deadline,
+                  Math.max(refuseStalledAt, performance.now() + steps.readinessMs),
+                );
+                const eligible =
+                  noTarget &&
+                  error.state === 'empty' &&
+                  liveness === 'alive' &&
+                  bundleRequest === 'not_received';
+                let backoffs = 0;
+                let warmDeadline =
+                  patientUntil === undefined
+                    ? until
+                    : Math.min(
+                        deadline,
+                        Math.max(patientUntil, performance.now() + steps.readinessMs),
+                      );
+                let warmFailure: { error: unknown } | undefined;
+                try {
+                  const warmed =
+                    steps.manifest &&
+                    (await steps.manifest(warmDeadline, {
+                      ...(eligible ? { requestTimeoutMs: DEV_CLIENT_REQUEST_TIMEOUT_MS } : {}),
+                      observe: (probe) => {
+                        probeTimings.push(probe.ms);
+                        observeTiming(steps.timing, {
+                          stage: 'manifest-probe',
+                          edge: 'end',
+                          outcome: probe.outcome === 'ok' ? 'ok' : 'failed',
+                          at: performance.now() - started,
+                          ms: probe.ms,
+                          count: probeTimings.length,
+                          method: probe.outcome === 'timeout' ? 'timeout' : 'unknown',
+                        });
+                        if (
+                          eligible &&
+                          patientUntil === undefined &&
+                          ((probe.outcome === 'ok' && probe.ms > DEV_CLIENT_REQUEST_TIMEOUT_MS) ||
+                            (probe.outcome === 'timeout' &&
+                              probe.ms >= DEV_CLIENT_REQUEST_TIMEOUT_MS))
+                        )
+                          warmDeadline = patientUntil = Math.min(
+                            deadline,
+                            performance.now() + PATIENT_MANIFEST_MS,
+                          );
+                        return {
+                          deadline: Math.min(
+                            deadline,
+                            performance.now() + steps.remainingMs(),
+                            warmDeadline,
+                          ),
+                          backoffMs:
+                            patientUntil === undefined
+                              ? 0
+                              : Math.min(5_000, 1_000 * 2 ** backoffs++),
+                        };
+                      },
+                    }));
+                  if (warmed) warm = warmed;
+                } catch (warmError) {
+                  if (isAbort(warmError)) throw warmError;
+                  warmFailure = { error: warmError };
+                }
+                let safe = true;
+                if (patientUntil !== undefined && noTarget) {
+                  liveness = await probeLiveness(steps);
+                  bundleRequest = await probeBundleRequest(steps);
+                  safe = liveness === 'alive' && bundleRequest === 'not_received';
+                  if (safe) await refuseForeignDriver(steps);
+                }
+                if (warmFailure && (safe || liveness === 'dead')) {
+                  relaunches++;
+                  throw warmFailure.error;
+                }
+                if (safe) {
+                  const launchDeadline =
+                    patientUntil === undefined
+                      ? until
+                      : Math.min(
+                          deadline,
+                          performance.now() + steps.remainingMs(),
+                          Math.max(refuseStalledAt, performance.now() + steps.readinessMs),
+                        );
+                  relaunches++;
+                  const launchStarted = performance.now();
+                  let outcome: TimingEvent['outcome'] = 'failed';
+                  try {
+                    const launched = await interruptible(() => relaunch(launchDeadline));
+                    if (launched) warm = launched;
+                    outcome = 'ok';
+                  } finally {
+                    const ms = Math.round(performance.now() - launchStarted);
+                    relaunchTimings.push(ms);
+                    observeTiming(steps.timing, {
+                      stage: 'dev-client-relaunch',
+                      edge: 'end',
+                      outcome,
+                      at: performance.now() - started,
+                      ms,
+                      count: relaunchTimings.length,
+                      relaunch: outcome === 'ok' ? 'ready' : 'failed',
+                    });
+                  }
+                  lastCompleted = 'relaunch';
+                  liveness = 'not_probed';
+                  bundleRequest = 'not_probed';
+                  if (patientUntil !== undefined) {
+                    nextNoTargetProbe = performance.now() + steps.readinessMs;
+                    patientRefuseAt = Math.max(refuseStalledAt, nextNoTargetProbe);
+                  }
+                } else {
+                  lastStarted = 'attach';
+                  lastCompleted = completed;
+                }
               } catch (relaunchError) {
-                if (isAbort(relaunchError)) throw relaunchError;
+                if (
+                  isAbort(relaunchError) ||
+                  (relaunchError instanceof HandlerError &&
+                    relaunchError.code === 'BUSY_FOREIGN_FLOW')
+                )
+                  throw relaunchError;
                 relaunchFailure = describeError(relaunchError).message;
                 throw error;
               }
@@ -645,13 +803,28 @@ async function attach(steps: AdmissionSteps, signal: AbortSignal): Promise<Prove
               lastCompleted = completed;
             }
           }
-          if (stalledAttach && lastStarted !== 'relaunch' && performance.now() >= refuseStalledAt) {
+          if (stalledAttach && lastStarted !== 'relaunch' && performance.now() >= patientRefuseAt) {
             if (!probed) {
               liveness = await probeLiveness(steps);
               if (liveness !== 'dead' && bundleRequest !== 'received' && steps.bundleRequested)
                 bundleRequest = await probeBundleRequest(steps);
             }
-            if (liveness === 'dead' || bundleRequest === 'not_received') throw error;
+            if (
+              liveness === 'dead' ||
+              (bundleRequest === 'not_received' &&
+                !(
+                  patientUntil !== undefined &&
+                  !opened &&
+                  steps.relaunch &&
+                  Math.min(deadline - performance.now(), steps.remainingMs()) >=
+                    steps.readinessMs &&
+                  relaunches < MAX_PATIENT_RELAUNCHES &&
+                  liveness === 'alive' &&
+                  noTarget &&
+                  error.state === 'empty'
+                ))
+            )
+              throw error;
           }
           observe('retry', facts(admissionInnerClass(error)));
           lastStarted = 'retry_wait';
@@ -702,9 +875,15 @@ async function attach(steps: AdmissionSteps, signal: AbortSignal): Promise<Prove
     } catch {
       // Diagnostics cannot change the refusal.
     }
+    const manifestCause =
+      bundleRequest !== 'not_received'
+        ? ''
+        : patientUntil !== undefined
+          ? `; host contention is the likely cause; QaReN manifest probes ${probeTimings.join(', ')} ms; relaunches ${relaunchTimings.join(', ')} ms`
+          : `; likely cause: the dev client's manifest request outlasted its ${DEV_CLIENT_REQUEST_TIMEOUT_MS / 1000}s timeout, so it never requested a bundle`;
     throw new HandlerError(
       'CDP_NOT_CONNECTED',
-      `cannot attach to the dev client through Metro ${steps.metroPort}: ${describeError(error).message} (observed ${refusal?.lastStarted ?? lastStarted}: ${inner}; app ${liveness}; bundle request ${bundleRequest}${warm ? `; last manifest warm-up ${warm.ms} ms after ${warm.attempts} attempts` : ''}${bundleRequest === 'not_received' ? `; likely cause: the dev client's manifest request outlasted its ${DEV_CLIENT_REQUEST_TIMEOUT_MS / 1000}s timeout, so it never requested a bundle` : ''}; host 1-minute load ${load.toFixed(1)}${relaunchFailure === undefined ? '' : `; relaunch failed: ${relaunchFailure}`})`,
+      `cannot attach to the dev client through Metro ${steps.metroPort}: ${describeError(error).message} (observed ${refusal?.lastStarted ?? lastStarted}: ${inner}; app ${liveness}; bundle request ${bundleRequest}${warm ? `; last manifest warm-up ${warm.ms} ms after ${warm.attempts} attempts` : ''}${manifestCause}; host 1-minute load ${load.toFixed(1)}${relaunchFailure === undefined ? '' : `; relaunch failed: ${relaunchFailure}`})`,
       refusal,
     );
   } finally {

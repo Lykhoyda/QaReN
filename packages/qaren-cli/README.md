@@ -2891,12 +2891,13 @@ aggregation; [CLI decoding](src/core.rs) and [report rendering](src/report.rs)
 own consumption.
 
 Launch admission shares the remaining walk deadline across target readiness,
-WebSocket handshakes, probes and retry sleeps; retries and the one relaunch never
-renew it. A stall without progress refuses earlier, once `deadlines.attach_seconds`
+WebSocket handshakes, probes and retry sleeps; retries and relaunches never
+renew it. Outside patient manifest recovery below, a stall without progress refuses
+earlier, once `deadlines.attach_seconds`
 (default 120; see the [deadline configuration reference](../../apps/docs-site/src/content/docs/configuration.mdx#deadlines)) has passed since admission began:
 a target-list wait that saw no target on the selected device, or whose list
 requests went unanswered, ends admission when the app job is proven dead or Metro
-has received no bundle request since the latest launch. The one relaunch rebases
+has received no bundle request since the latest launch. Each relaunch rebases
 the request count on Metro's count just before it (an unreadable count leaves the
 signal unknown), and liveness and the request signal are re-read at that point, so
 a request from an earlier launch keeps neither a dead nor a relaunched app waiting. The refusal follows the first readiness window ending
@@ -2936,7 +2937,7 @@ After a target-readiness wait that saw no target on the selected device, or
 persistent runtime-probe or WebSocket-handshake timeouts lasting a full readiness
 window from the first such timeout (never before the original readiness window
 ends), an iOS dev
-client can be relaunched once if the remaining deadline still covers a full
+client can normally be relaunched once if the remaining deadline still covers a full
 readiness wait. Individual target-list timeouts and inspector page closures do
 not trigger relaunch. Before a relaunch for a missing target, admission uses the
 [iOS app-job liveness rule](#check-a-plan). A live app skips that no-target
@@ -2969,8 +2970,26 @@ if that limit has passed); a manifest error, an unreachable Metro or no answer i
 time fails the relaunch. It relaunches on the exact simulator with the CLI's
 original `initialUrl` using `simctl launch --terminate-running-process` within
 the CLI launch's 60 s bound, then waits again within the original deadline; the
-relaunched app is never terminated again. A failed relaunch refuses without
-another wait.
+relaunched app is preserved unless the patient manifest recovery below applies.
+A failed relaunch refuses without another wait.
+
+Patient manifest recovery requires no CDP target, a live iOS app, no bundle request
+since launch, and a QaReN manifest probe exceeding or timing out at the client's
+10 s limit. This is a probe proxy, not a measurement of the client's own request.
+After the first slow probe, warming backs off from 1 s to 5 s for at most 90 s,
+clipped to the remaining walk budget. Two consecutive answers inside the 5 s
+margin permit relaunch; the same stalled launch can then receive up to two
+additional relaunches, each followed by a readiness window within the original
+walk deadline. Further warming uses the longer of the remaining patient window
+and one readiness window, clipped to the remaining walk budget. Liveness, bundle
+requests and foreign drivers
+are checked again before a patient relaunch, preserving an app that has requested
+its bundle while warming. Each QaReN probe and actual relaunch retains its duration
+in the run's private `logs/core-diagnostics.jsonl`, with or without runtime inputs.
+Persistent failure with no bundle request remains
+`CORE_REFUSED` / `CDP_NOT_CONNECTED`, with probe and relaunch timings and
+“host contention is the likely cause”. Other attach failures keep their existing
+recovery behavior.
 If the CLI's walk deadline expires before the core reports admission, the CLI
 also returns `CDP_NOT_CONNECTED` with measured host load (or an explicit
 unavailable measurement), regardless of load. After admission, deadline
@@ -2979,10 +2998,11 @@ The refusal names the observed boundary, typed failure, app liveness and request
 observation, probing liveness within the remaining deadline if this launch had
 not yet done so, and reading an unprobed request signal unless the app is proven
 dead. When available, `warmMs` records the final answer's milliseconds and
-`warmAttempts` the total request count from the CLI's successful manifest warm-up;
-a completed admission relaunch replaces them with its warm-up measurements.
-A failed relaunch retains the CLI measurements. With no bundle request it
-names the likely cause: the dev client's manifest request outlasted its timeout.
+`warmAttempts` the total request count from the latest successful manifest warm-up,
+initially the CLI's. A successful admission warm-up replaces them even if the
+subsequent relaunch fails or is skipped; a failed warm-up retains the previous
+measurements. With no bundle request, the likely-cause message follows the
+patient recovery distinction above.
 The deadline preserves the latest retry's failure class instead of
 replacing it with a generic probe timeout. Empty target lists, targets on another
 device, another bundle and unanswered list requests have distinct classes.
