@@ -2884,7 +2884,8 @@ own consumption.
 
 Launch admission shares the remaining walk deadline across target readiness,
 WebSocket handshakes, probes and retry sleeps; retries and relaunches never
-renew it. A stall without progress refuses earlier, once `deadlines.attach_seconds`
+renew it. Outside patient manifest recovery below, a stall without progress refuses
+earlier, once `deadlines.attach_seconds`
 (default 120; see the [deadline configuration reference](../../apps/docs-site/src/content/docs/configuration.mdx#deadlines)) has passed since admission began:
 a target-list wait that saw no target on the selected device, or whose list
 requests went unanswered, ends admission when the app job is proven dead or Metro
@@ -2976,7 +2977,8 @@ and one readiness window, clipped to the remaining walk budget. Liveness, bundle
 requests and foreign drivers
 are checked again before a patient relaunch, preserving an app that has requested
 its bundle while warming. Each QaReN probe and actual relaunch retains its duration
-in the run's private `core-diagnostics.jsonl`. Persistent failure remains
+in the run's private `logs/core-diagnostics.jsonl`, with or without runtime inputs.
+Persistent failure with no bundle request remains
 `CORE_REFUSED` / `CDP_NOT_CONNECTED`, with probe and relaunch timings and
 “host contention is the likely cause”. Other attach failures keep their existing
 recovery behavior.
@@ -2988,10 +2990,11 @@ The refusal names the observed boundary, typed failure, app liveness and request
 observation, probing liveness within the remaining deadline if this launch had
 not yet done so, and reading an unprobed request signal unless the app is proven
 dead. When available, `warmMs` records the final answer's milliseconds and
-`warmAttempts` the total request count from the CLI's successful manifest warm-up;
-a completed admission relaunch replaces them with its warm-up measurements.
-A failed relaunch retains the CLI measurements. With no bundle request it
-names the likely cause: the dev client's manifest request outlasted its timeout.
+`warmAttempts` the total request count from the latest successful manifest warm-up,
+initially the CLI's. A successful admission warm-up replaces them even if the
+subsequent relaunch fails or is skipped; a failed warm-up retains the previous
+measurements. With no bundle request, the likely-cause message follows the
+patient recovery distinction above.
 The deadline preserves the latest retry's failure class instead of
 replacing it with a generic probe timeout. Empty target lists, targets on another
 device, another bundle and unanswered list requests have distinct classes.

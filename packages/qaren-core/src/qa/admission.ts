@@ -40,7 +40,7 @@ import {
 export interface AdmissionSteps {
   metroPort: number;
   readinessMs: number;
-  // After this long, a stall from a dead app or with no bundle request since launch refuses.
+  // Baseline stall refusal limit; patient manifest recovery may extend it.
   attachBudgetMs: number;
   remainingMs(): number;
   attach(deadline: number): Promise<void>;
@@ -49,7 +49,7 @@ export interface AdmissionSteps {
   manifest?(deadline: number, retry: ManifestRetry): Promise<ManifestWarm>;
   // Only a proven slow manifest probe permits additional relaunches.
   relaunch?(deadline: number): Promise<ManifestWarm | void>;
-  // The launch's last manifest warm-up, replaced by the relaunch's.
+  // Initial warm-up measurements, replaced by each successful admission warm-up.
   launchWarm?: ManifestWarm;
   // Before relaunching without a target, preserve a live app with a bundle request.
   appAlive?(): Promise<boolean>;
