@@ -3168,11 +3168,12 @@ video. The video is the asset the comment upload already produced, used only whe
 attached it under the [video publication rules](#video-publication); a withheld or missing
 video shows the comment's own video sentence and no URL. A later publish replaces the section
 instead of adding one. Text outside the markers is kept byte for byte relative to the body
-publish last read; the description is read twice and written only when both reads agree, but
-GitHub offers no conditional edit, so a human edit landing between that read and the write
+publish last read; publish makes up to three reads and writes only after two consecutive
+reads agree. GitHub offers no conditional edit, so a human edit landing between that read and the write
 can still be lost. The comment is always posted first, and a skipped description leaves the
-receipt `Published` with `outcomes.description` naming why: a moved head or ambiguous markers
-are final, while a description that kept changing, an edit or read that GitHub refused, or a
+receipt `Published` with `outcomes.description` naming why. Head-drift skips are final when
+the head is neither the tested commit nor this run's verified saved-block writeback commit.
+Ambiguous-marker skips are also final, while a description that kept changing, an edit or read that GitHub refused, or a
 comment that could not be read back are retried by re-running `qaren publish`. The ambiguous-marker
 skip is final for that run: fix the marker pair so one QaReN start line precedes one end line,
 then publish from a new `qaren pr` run; this run's comment already holds the proof and video. Upgrade every
