@@ -818,10 +818,22 @@ fn a_trailing_url_is_ignored_unless_the_owner_attached_it() {
 #[test]
 fn a_moved_head_skips_the_description() {
     let moved = "d".repeat(40);
-    for body_moved in [false, true] {
+    for (body_moved, writeback_commit) in [
+        (false, None),
+        (true, None),
+        (false, Some(COMMIT)),
+        (true, Some(COMMIT)),
+    ] {
         let (runs, dir) = run_dir(false);
         describe_pr(&dir, |_| {});
         resume(&dir, true, Some("none"));
+        let mut state = publication(&dir);
+        state.writeback_commit = writeback_commit.map(Into::into);
+        std::fs::write(
+            dir.join("publication.json"),
+            serde_json::to_vec(&state).unwrap(),
+        )
+        .unwrap();
         let mut runner = Git(MockRunner::new());
         if body_moved {
             script_description(&mut runner.0, Some(comments_ending(ASSET)), &[], None);
@@ -914,11 +926,27 @@ fn a_refused_edit_is_reported_not_failed() {
     assert_eq!(publication(&dir).description, None);
 
     let mut again = Git(MockRunner::new());
-    script_description(
-        &mut again.0,
-        Some(comments_ending(ASSET)),
-        &[AUTHOR, AUTHOR],
-        Some(CmdOutput::success("")),
+    assert_eq!(publication(&dir).writeback_commit.as_deref(), Some(COMMIT));
+    assert_eq!(
+        publication(&dir).writeback,
+        Some(format!("committed {COMMIT}"))
+    );
+    again
+        .0
+        .expect_run("gh pr view https://github.com/o/r/pull/12", view_at(COMMIT));
+    again.0.expect_run(
+        "gh pr view 12 -R github.com/o/r --json comments",
+        comments_ending(ASSET),
+    );
+    for _ in 0..2 {
+        again.0.expect_run(
+            "gh pr view 12 -R github.com/o/r --json body,headRefOid",
+            body_at(AUTHOR, COMMIT),
+        );
+    }
+    again.0.expect_run(
+        "gh pr edit 12 -R github.com/o/r --body-file description.md",
+        CmdOutput::success(""),
     );
     let receipt = publish(&mut again, &runs, RUN, &machine());
     assert_eq!(receipt.outcomes["description"], "written");

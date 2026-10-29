@@ -831,8 +831,11 @@ fn describe(
 ) -> Result<Described, Failure> {
     let skip = |outcome: &str| Ok(Described::Persist(outcome.to_string()));
     let retry = |outcome: &str| Ok(Described::Retry(outcome.to_string()));
+    let accepted_head = |head: &str| {
+        head == pr.head_ref_oid || publication.writeback_commit.as_deref() == Some(head)
+    };
     match github::pr_view(runner, &pr.url, &pr.repo_root) {
-        Ok(current) if current.head_ref_oid != pr.head_ref_oid => return skip(HEAD_MOVED),
+        Ok(current) if !accepted_head(&current.head_ref_oid) => return skip(HEAD_MOVED),
         Ok(_) => {}
         Err(_) => return retry(PR_UNREADABLE),
     }
@@ -881,7 +884,7 @@ fn describe(
         let Ok(read) = github::pr_body(runner, &info, run_dir) else {
             return retry(PR_UNREADABLE);
         };
-        if read.head_ref_oid != pr.head_ref_oid {
+        if !accepted_head(&read.head_ref_oid) {
             return skip(HEAD_MOVED);
         }
         let Ok((body, replaced)) = report::splice_proof_section(&read.body, &section) else {
