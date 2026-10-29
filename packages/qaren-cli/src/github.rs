@@ -8,7 +8,12 @@ pub const NEEDS_QA: &str = "needs-qa";
 pub(crate) fn is_github_child(label: &str) -> bool {
     matches!(
         label,
-        "gh-pr-view" | "gh-pr-comment" | "gh-pr-edit" | "gh-auth-status"
+        "gh-pr-view"
+            | "gh-pr-comment"
+            | "gh-pr-edit"
+            | "gh-auth-status"
+            | "gh-user"
+            | "gh-pr-comments"
     )
 }
 
