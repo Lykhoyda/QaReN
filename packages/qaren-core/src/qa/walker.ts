@@ -29,6 +29,7 @@ import {
   applicationFrame,
   isNativeInput,
   describe,
+  reactOnlyFactsOf,
 } from './screen.js';
 import {
   type Resolution,
@@ -55,6 +56,9 @@ import {
   aggregateTargetVisible,
   targetNeedsPresence,
   presenceMiss,
+  reactOnlyMiss,
+  reactOnlyTarget,
+  reactOnlyViewport,
   visibleSelector,
 } from './resolve.js';
 import { literalEvidence, type LiteralNearMiss } from './evidence.js';
@@ -2146,17 +2150,109 @@ async function walkBlockScoped(
             }
             return observed.found;
           };
+          // Once a lone React-only identity is seen, later polls carry the React layout facts that explain it.
+          let reactFacts = false;
+          let attempt: 'scroll' | 'none' = 'none';
+          let scrolled: { before: Screen; container: Element; act: ActResult } | undefined;
           let found = await visible(observation, held?.decision);
           while (!found && deps.now() < deadline) {
+            const lone = reactOnlyTarget(item.target, observation.screen);
+            if (lone && !reactFacts) {
+              // A presence capture can join the same screen differently; compare like with like.
+              reactFacts = true;
+              absent = 0;
+              absentScreens.clear();
+            }
+            const proven =
+              lone &&
+              item.target.exact !== 'id' &&
+              !item.precondition &&
+              observation.screen.front === 'app' &&
+              (observation.screen.captureCoverage?.native ??
+                observation.screen.coverage?.native) === 'complete' &&
+              absent >= 2 &&
+              absentScreens.size === 1;
+            const view = proven ? reactOnlyViewport(lone) : undefined;
+            if (view?.where === 'inside' && reactOnlyFactsOf(lone!)?.accessibleAncestor) {
+              const reason = reactOnlyMiss(item.target, observation.screen, absent, attempt)!;
+              const recovering = await recovery(item, 1, reason);
+              if (recovering === 'retry') continue attempts;
+              if (recovering) return recovering;
+              return judged(
+                failed(item, 1, reason, observation.screen, await shoot(item)),
+                observation.screen,
+              );
+            }
+            if (
+              attempt === 'none' &&
+              view?.container &&
+              (view.where === 'below' || view.where === 'above') &&
+              // The swipe band must lie in the field's own scroll container.
+              scrollUntilContainer(item.target, observation.screen) === view.container
+            ) {
+              const before = observation.screen;
+              let act: ActResult | undefined;
+              try {
+                act = await mutate(
+                  item,
+                  observation,
+                  (context) =>
+                    deps.scroll(
+                      view.where === 'below' ? 'down' : 'up',
+                      context,
+                      undefined,
+                      scrollUntilBand(item.target, before),
+                    ),
+                  deadline,
+                );
+              } catch (error) {
+                // Stale evidence dispatched nothing; the next poll re-evaluates on a fresh capture.
+                if (isAbort(error) || !(error instanceof EvidenceExpired)) throw error;
+                if (error.itemExpired) break;
+              }
+              if (act) {
+                attempt = 'scroll';
+                sequence.momentum = true;
+                scrolled = { before, container: view.container, act };
+                // The screen this scroll moves is expected to change; count observations afresh.
+                absent = 0;
+                absentScreens.clear();
+              }
+            }
             await pause(Math.min(WAIT_POLL_MS, deadline - deps.now()));
             if (deps.now() >= deadline) break;
             try {
-              found = await visible(await capture(item));
+              const next = await captureOnce(
+                item,
+                false,
+                false,
+                reactFacts ? 'provenance' : 'resolve',
+              );
+              const navigation =
+                scrolled &&
+                scrollNavigationChange(scrolled.before, next.screen, scrolled.container);
+              if (navigation)
+                throw new ResolutionError({ refuse: 'SCROLL_NAVIGATED', reason: navigation });
+              found = await visible(next);
             } catch (error) {
               // A capture finishing past the deadline is not evidence; judge the ones already made.
               if (!(error instanceof EvidenceExpired) || !error.itemExpired) throw error;
               break;
             }
+            if (
+              !found &&
+              scrolled &&
+              !scrolled.act.ok &&
+              screenSignature(observation.screen) === screenSignature(scrolled.before)
+            )
+              return failed(
+                item,
+                1,
+                scrolled.act.error ?? 'scroll was not dispatched',
+                observation.screen,
+                await shoot(item),
+              );
+            scrolled = undefined;
           }
           if (!found) {
             if (unsure) throw unresolvedText(item.target.quoted!);
@@ -2181,14 +2277,18 @@ async function walkBlockScoped(
             if (replayMiss) throw replayMiss;
             // Repeated literal absence on one unchanged screen is an observed result, not uncertainty.
             const unchanged = absent >= 2 && absentScreens.size === 1;
-            const reason = unchanged
-              ? `"${item.target.quoted}" did not appear within ${budget / 1000}s; the screen did not change across ${absent} observations`
-              : ITEM_DEADLINE_EXCEEDED;
+            const reactOnly =
+              unchanged && reactOnlyMiss(item.target, observation.screen, absent, attempt);
+            const reason =
+              reactOnly ||
+              (unchanged
+                ? `"${item.target.quoted}" did not appear within ${budget / 1000}s; the screen did not change across ${absent} observations`
+                : ITEM_DEADLINE_EXCEEDED);
             const recovering = await recovery(item, 1, reason);
             if (recovering === 'retry') continue attempts;
             if (recovering) return recovering;
             if (unchanged) {
-              const miss = presenceMiss(item.target, observation.screen);
+              const miss = !reactOnly && presenceMiss(item.target, observation.screen);
               return judged(
                 failed(
                   item,

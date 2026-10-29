@@ -28,7 +28,12 @@ import {
 import type { NativePresence, NativePresenceNode } from './native-presence.js';
 import { associateHeadings, validateHostTypography } from './host-typography.js';
 import type { HeadingEvidence, HostTypography } from './host-typography.js';
-import { associateHosts, hostPath, type HostAssociationDiagnostic } from './host-association.js';
+import {
+  associateHosts,
+  hostPath,
+  nativeWindowIndex,
+  type HostAssociationDiagnostic,
+} from './host-association.js';
 
 export type Kind = 'button' | 'input' | 'switch' | 'link' | 'cell' | 'text' | 'image' | 'other';
 export type EvidenceStatus = 'supported' | 'unsupported' | 'unknown';
@@ -112,6 +117,21 @@ const reactInputHosts = new WeakMap<Element, number>();
 
 export function reactInputHostOf(element: Element): number | undefined {
   return reactInputHosts.get(element);
+}
+
+// Value-free React facts for an element absent from the native capture; a missing field was not measured.
+export interface ReactOnlyFacts {
+  host?: number;
+  // React's layout of the host, moved into native coordinates by its window's origin.
+  rect?: NonNullable<NativeNode['rect']>;
+  // The first host ancestor marked accessible; iOS exposes it as one element without descendants.
+  accessibleAncestor?: { element?: Element };
+  nativeAncestor?: Element;
+}
+const reactOnlyFacts = new WeakMap<Element, ReactOnlyFacts>();
+
+export function reactOnlyFactsOf(element: Element): ReactOnlyFacts | undefined {
+  return reactOnlyFacts.get(element);
 }
 
 const labelAncestors = new WeakMap<Element, Element[]>();
@@ -1076,6 +1096,35 @@ export function join(
     joinedDiagnosticFacts.set(element, diagnosticFacts);
     elements.push(element);
   });
+  const typography = reactHostEvidence?.typography;
+  for (const element of elements) {
+    if (!element.ref.startsWith('react:') || element.testID === undefined) continue;
+    const byId = reactHostEvidence?.hosts.flatMap((h, i) =>
+      h.testID === element.testID ? [i] : [],
+    );
+    const host = reactInputHostOf(element) ?? (byId?.length === 1 ? byId[0] : undefined);
+    const facts: ReactOnlyFacts = { host };
+    reactOnlyFacts.set(element, facts);
+    // shortcut: iOS only, where React's window points equal native points; Android needs its calibrated transform.
+    if (host === undefined || !typography?.complete || presence?.source !== 'xcui-live') continue;
+    let origin: NativeNode['rect'];
+    for (const parent of hostPath(typography, host)?.slice(1) ?? []) {
+      const nativeIndex = associations.get(parent)?.nativeIndex;
+      if (
+        !facts.accessibleAncestor &&
+        typography.nodes[parent].accessibility?.accessible === 'true'
+      )
+        facts.accessibleAncestor =
+          nativeIndex === undefined ? {} : { element: elements[nativeIndex] };
+      if (nativeIndex !== undefined && !facts.nativeAncestor) {
+        facts.nativeAncestor = elements[nativeIndex];
+        const window = nativeWindowIndex(nodes, nativeIndex);
+        origin = window === undefined ? undefined : nodes[window].rect;
+      }
+    }
+    const rect = typography.nodes[host].rect;
+    if (rect && origin) facts.rect = { ...rect, x: rect.x + origin.x, y: rect.y + origin.y };
+  }
 
   const ordered = nodes
     .map((n, i) => ({ n, i, e: elements[i] }))

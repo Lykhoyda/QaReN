@@ -1414,6 +1414,11 @@ absence observations sharing one screen signature fails at its deadline with
 For a quoted value that is not a stored text selector, the failure adds why from
 identifiers and frames only: no captured element carries the identifier, several
 do, or the one that does is React-only, offscreen or has its centre covered.
+A quoted wait whose only match is React-only ends `TARGET_REACT_ONLY` with its
+React layout against its viewport, its accessible and nearest native ancestors,
+any scroll attempt and a next step: early when two like-for-like observations
+show it inside its viewport under an accessible ancestor, else at its deadline,
+after one scroll for native evidence when it lies past its scroll container's edge.
 Either unmet ending first gets [step recovery](#step-recovery), so a quoted wait
 behind a blocking screen or system dialog runs once more with its full budget.
 Scroll-until-text uses the same visibility verdict

@@ -177,7 +177,8 @@ Jev judges it against the captured screen.
 
 A failing check or an unmet quoted wait can enter [step recovery](https://github.com/Lykhoyda/QaReN/blob/develop/packages/qaren-cli/README.md#step-recovery)
 before failing the plan. A literal check that still cannot be decided after a fresh
-capture ends `CHECK_UNSURE` if recovery cannot resolve it.
+capture ends `CHECK_UNSURE` if recovery cannot resolve it. A quoted wait whose only
+match is mounted in React but missing from the native screen ends `TARGET_REACT_ONLY`.
 
 ## When the plan needs `TYPESAFE_API_KEY`
 

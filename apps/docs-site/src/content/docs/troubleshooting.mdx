@@ -58,6 +58,7 @@ The screen layer's own codes appear at the start of `failure.detail` or in the r
 | ---------------------------- | ----------------------------------------------------------------------------- |
 | `TARGET_AMBIGUOUS`           | A quoted target, or a phrase target's scrolled-out name matches, matched two or more elements; each candidate is listed by kind, `testID` and frame. Use a unique `testID` or label. |
 | `TARGET_NOT_FOUND`           | A target did not resolve on screen                                            |
+| `TARGET_REACT_ONLY`          | A quoted wait's only match is mounted in React but absent from the native capture; the detail gives its React layout and accessible ancestor. Wait on the visible wrapper or on-screen text, or expose the field to accessibility |
 | `CHECK_UNSURE`               | A literal check could not be decided from a fresh capture                     |
 | `VISIBILITY_UNSURE`          | A wait ended with the target's visibility still unsure                        |
 | `SCREEN_EVIDENCE_INCOMPLETE` | The captured screen was not complete enough to act on safely                  |
