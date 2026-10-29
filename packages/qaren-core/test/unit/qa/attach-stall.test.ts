@@ -653,6 +653,7 @@ test('an app that dies during patient warming is not relaunched', async (t) => {
   const error = await fixture.run();
   assert.equal(error.code, 'CDP_NOT_CONNECTED');
   assert.equal(error.meta.liveness, 'dead');
+  assert.equal(error.meta.relaunches, 0);
   assert.equal(fixture.launches(), 0);
 });
 
@@ -672,4 +673,186 @@ test('a relaunch still running at the run deadline is cancelled within that budg
       .map((event) => [event.at, event.ms, event.outcome]),
     [[50_000, 21_000, 'failed']],
   );
+});
+
+for (const [name, requested] of [
+  ['received', async () => true],
+  ['unknown', async () => undefined],
+  [
+    'unreadable',
+    async () => {
+      throw new Error('unreadable');
+    },
+  ],
+] as const) {
+  test(`failed patient warming resumes attachment with a ${name} bundle signal`, async (t) => {
+    const facts: AdmissionRefusalFacts[] = [];
+    const fixture = patient(
+      t,
+      {
+        attach: async () => {
+          if (performance.now() < 40_000)
+            throw new TargetReadinessTimeoutError('no target', 'empty');
+        },
+        bundleRequested: async () => (performance.now() < 40_000 ? false : requested()),
+        observe: (_decision, fact) => facts.push(fact),
+      },
+      [15_000],
+    );
+    assert.equal((await fixture.run()).ok, true);
+    assert.equal(fixture.elapsed(), 100_500);
+    assert.equal(fixture.launches(), 0);
+    assert.equal(facts.at(-1)?.relaunches, 0);
+    assert.equal(facts.at(-1)?.relaunchFailed, false);
+    assert.equal(
+      fixture.receipt.filter((event) => event.stage === 'dev-client-relaunch').length,
+      0,
+    );
+  });
+}
+
+for (const durations of [[15_000, 15_000, 1_000, 1_000], [15_000]]) {
+  test(`patient rechecks preserve foreign-driver authority with probe durations ${durations}`, async (t) => {
+    let checks = 0;
+    const fixture = patient(
+      t,
+      {
+        foreignDriver: async () => (++checks === 1 ? undefined : 'foreign driver active'),
+      },
+      durations,
+    );
+    const error = await fixture.run();
+    assert.equal(error.code, 'BUSY_FOREIGN_FLOW');
+    assert.equal(error.message, 'foreign driver active');
+    assert.equal(fixture.launches(), 0);
+  });
+}
+
+test('a skipped successful patient warm-up records no relaunch', async (t) => {
+  const facts: AdmissionRefusalFacts[] = [];
+  const fixture = patient(t, {
+    attach: async () => {
+      if (performance.now() < 20_000) throw new TargetReadinessTimeoutError('no target', 'empty');
+    },
+    bundleRequested: async () => performance.now() >= 20_000,
+    observe: (_decision, fact) => facts.push(fact),
+  });
+  assert.equal((await fixture.run()).ok, true);
+  assert.equal(facts.at(-1)?.relaunches, 0);
+  assert.equal(fixture.launches(), 0);
+});
+
+test('an attempted failed patient relaunch still counts and records its duration', async (t) => {
+  const fixture = patient(t, {
+    relaunch: async () => {
+      await sleep(1_000);
+      throw new Error('launch failed');
+    },
+  });
+  const error = await fixture.run();
+  assert.equal(error.meta.relaunches, 1);
+  assert.equal(error.meta.relaunchFailed, true);
+  assert.deepEqual(
+    fixture.receipt
+      .filter((event) => event.stage === 'dev-client-relaunch')
+      .map((event) => [event.count, event.ms, event.outcome]),
+    [[1, 1_000, 'failed']],
+  );
+});
+
+test('a nearly expired patient window still allows the next warm-up readiness window', async (t) => {
+  let warms = 0;
+  let launches = 0;
+  const fixture = patient(
+    t,
+    {
+      attach: async () => {
+        if (launches < 2) throw new TargetReadinessTimeoutError('no target', 'empty');
+      },
+      manifest: async (deadline, retry) => {
+        if (++warms === 1) {
+          await sleep(10_000);
+          retry.observe({ ms: 10_000, outcome: 'timeout' });
+          await sleep(57_500);
+          return { ms: 1_000, attempts: 3 };
+        }
+        assert.equal(performance.now(), 97_500);
+        assert.equal(deadline, 127_500);
+        return awaitDevClientManifest('http://127.0.0.1:8081/', deadline, retry);
+      },
+      relaunch: async () => {
+        launches++;
+      },
+    },
+    [1_000],
+  );
+  assert.equal((await fixture.run(150_000)).ok, true);
+  assert.equal(launches, 2);
+});
+
+test('patient refusal does not wait for a relaunch that lacks a readiness budget', async (t) => {
+  const fixture = patient(t, {
+    attachBudgetMs: 60_000,
+    remainingMs: () => 110_000 - performance.now(),
+    attach: async () => {
+      throw new TargetReadinessTimeoutError('no target', 'empty');
+    },
+  });
+  const error = await fixture.run();
+  assert.equal(error.code, 'CDP_NOT_CONNECTED');
+  assert.equal(error.meta.relaunches, 2);
+  assert.equal(fixture.elapsed(), 92_000);
+});
+
+test('patient relaunch receives a fresh deadline capped by the current run budget', async (t) => {
+  let warms = 0;
+  let launches = 0;
+  const deadlines: number[][] = [];
+  const fixture = patient(t, {
+    remainingMs: () => 110_000 - performance.now(),
+    attach: async () => {
+      if (launches < 2) throw new TargetReadinessTimeoutError('no target', 'empty');
+    },
+    manifest: async (_deadline, retry) => {
+      if (++warms === 1) {
+        await sleep(10_000);
+        retry.observe({ ms: 10_000, outcome: 'timeout' });
+        await sleep(19_000);
+      } else {
+        await sleep(36_000);
+      }
+      return { ms: 1_000, attempts: 3 };
+    },
+    relaunch: async (deadline) => {
+      deadlines.push([performance.now(), deadline]);
+      launches++;
+    },
+  });
+  assert.equal((await fixture.run()).ok, true);
+  assert.deepEqual(deadlines, [
+    [29_000, 110_000],
+    [95_000, 110_000],
+  ]);
+});
+
+test('an opened session cannot retain the patient relaunch refusal exemption', async (t) => {
+  let launched = false;
+  let attached = false;
+  const fixture = patient(t, {
+    attachBudgetMs: 60_000,
+    attach: async () => {
+      if (!launched || attached) throw new TargetReadinessTimeoutError('no target', 'empty');
+      attached = true;
+    },
+    relaunch: async () => {
+      launched = true;
+    },
+    prove: async () => {
+      throw new CDPProbeTimeoutError('runtime unavailable');
+    },
+  });
+  const error = await fixture.run();
+  assert.equal(error.code, 'CDP_NOT_CONNECTED');
+  assert.equal(error.meta.relaunches, 1);
+  assert.equal(fixture.elapsed(), 60_000);
 });

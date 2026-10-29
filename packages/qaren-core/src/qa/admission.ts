@@ -668,9 +668,9 @@ async function attach(steps: AdmissionSteps, signal: AbortSignal): Promise<Prove
             }
             if (
               (!noTarget || liveness !== 'alive' || bundleRequest === 'not_received') &&
-              (relaunches === 0 || (liveness === 'alive' && bundleRequest === 'not_received'))
+              ((relaunches === 0 && patientUntil === undefined) ||
+                (liveness === 'alive' && bundleRequest === 'not_received'))
             ) {
-              relaunches++;
               try {
                 lastStarted = 'relaunch';
                 const relaunch = steps.relaunch;
@@ -689,48 +689,54 @@ async function attach(steps: AdmissionSteps, signal: AbortSignal): Promise<Prove
                     ? until
                     : Math.min(
                         deadline,
-                        patientUntil > performance.now()
-                          ? patientUntil
-                          : performance.now() + steps.readinessMs,
+                        Math.max(patientUntil, performance.now() + steps.readinessMs),
                       );
-                const warmed =
-                  steps.manifest &&
-                  (await steps.manifest(warmDeadline, {
-                    ...(eligible ? { requestTimeoutMs: DEV_CLIENT_REQUEST_TIMEOUT_MS } : {}),
-                    observe: (probe) => {
-                      probeTimings.push(probe.ms);
-                      observeTiming(steps.timing, {
-                        stage: 'manifest-probe',
-                        edge: 'end',
-                        outcome: probe.outcome === 'ok' ? 'ok' : 'failed',
-                        at: performance.now() - started,
-                        ms: probe.ms,
-                        count: probeTimings.length,
-                        method: probe.outcome === 'timeout' ? 'timeout' : 'unknown',
-                      });
-                      if (
-                        eligible &&
-                        patientUntil === undefined &&
-                        ((probe.outcome === 'ok' && probe.ms > DEV_CLIENT_REQUEST_TIMEOUT_MS) ||
-                          (probe.outcome === 'timeout' &&
-                            probe.ms >= DEV_CLIENT_REQUEST_TIMEOUT_MS))
-                      )
-                        warmDeadline = patientUntil = Math.min(
-                          deadline,
-                          performance.now() + PATIENT_MANIFEST_MS,
-                        );
-                      return {
-                        deadline: Math.min(
-                          deadline,
-                          performance.now() + steps.remainingMs(),
-                          warmDeadline,
-                        ),
-                        backoffMs:
-                          patientUntil === undefined ? 0 : Math.min(5_000, 1_000 * 2 ** backoffs++),
-                      };
-                    },
-                  }));
-                if (warmed) warm = warmed;
+                let warmFailure: { error: unknown } | undefined;
+                try {
+                  const warmed =
+                    steps.manifest &&
+                    (await steps.manifest(warmDeadline, {
+                      ...(eligible ? { requestTimeoutMs: DEV_CLIENT_REQUEST_TIMEOUT_MS } : {}),
+                      observe: (probe) => {
+                        probeTimings.push(probe.ms);
+                        observeTiming(steps.timing, {
+                          stage: 'manifest-probe',
+                          edge: 'end',
+                          outcome: probe.outcome === 'ok' ? 'ok' : 'failed',
+                          at: performance.now() - started,
+                          ms: probe.ms,
+                          count: probeTimings.length,
+                          method: probe.outcome === 'timeout' ? 'timeout' : 'unknown',
+                        });
+                        if (
+                          eligible &&
+                          patientUntil === undefined &&
+                          ((probe.outcome === 'ok' && probe.ms > DEV_CLIENT_REQUEST_TIMEOUT_MS) ||
+                            (probe.outcome === 'timeout' &&
+                              probe.ms >= DEV_CLIENT_REQUEST_TIMEOUT_MS))
+                        )
+                          warmDeadline = patientUntil = Math.min(
+                            deadline,
+                            performance.now() + PATIENT_MANIFEST_MS,
+                          );
+                        return {
+                          deadline: Math.min(
+                            deadline,
+                            performance.now() + steps.remainingMs(),
+                            warmDeadline,
+                          ),
+                          backoffMs:
+                            patientUntil === undefined
+                              ? 0
+                              : Math.min(5_000, 1_000 * 2 ** backoffs++),
+                        };
+                      },
+                    }));
+                  if (warmed) warm = warmed;
+                } catch (warmError) {
+                  if (isAbort(warmError)) throw warmError;
+                  warmFailure = { error: warmError };
+                }
                 let safe = true;
                 if (patientUntil !== undefined && noTarget) {
                   liveness = await probeLiveness(steps);
@@ -738,11 +744,24 @@ async function attach(steps: AdmissionSteps, signal: AbortSignal): Promise<Prove
                   safe = liveness === 'alive' && bundleRequest === 'not_received';
                   if (safe) await refuseForeignDriver(steps);
                 }
+                if (warmFailure && (safe || liveness === 'dead')) {
+                  relaunches++;
+                  throw warmFailure.error;
+                }
                 if (safe) {
+                  const launchDeadline =
+                    patientUntil === undefined
+                      ? until
+                      : Math.min(
+                          deadline,
+                          performance.now() + steps.remainingMs(),
+                          Math.max(refuseStalledAt, performance.now() + steps.readinessMs),
+                        );
+                  relaunches++;
                   const launchStarted = performance.now();
                   let outcome: TimingEvent['outcome'] = 'failed';
                   try {
-                    const launched = await interruptible(() => relaunch(until));
+                    const launched = await interruptible(() => relaunch(launchDeadline));
                     if (launched) warm = launched;
                     outcome = 'ok';
                   } finally {
@@ -770,7 +789,12 @@ async function attach(steps: AdmissionSteps, signal: AbortSignal): Promise<Prove
                   lastCompleted = completed;
                 }
               } catch (relaunchError) {
-                if (isAbort(relaunchError)) throw relaunchError;
+                if (
+                  isAbort(relaunchError) ||
+                  (relaunchError instanceof HandlerError &&
+                    relaunchError.code === 'BUSY_FOREIGN_FLOW')
+                )
+                  throw relaunchError;
                 relaunchFailure = describeError(relaunchError).message;
                 throw error;
               }
@@ -790,6 +814,10 @@ async function attach(steps: AdmissionSteps, signal: AbortSignal): Promise<Prove
               (bundleRequest === 'not_received' &&
                 !(
                   patientUntil !== undefined &&
+                  !opened &&
+                  steps.relaunch &&
+                  Math.min(deadline - performance.now(), steps.remainingMs()) >=
+                    steps.readinessMs &&
                   relaunches < MAX_PATIENT_RELAUNCHES &&
                   liveness === 'alive' &&
                   noTarget &&

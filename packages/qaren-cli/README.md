@@ -2971,8 +2971,9 @@ After the first slow probe, warming backs off from 1 s to 5 s for at most 90 s,
 clipped to the remaining walk budget. Two consecutive answers inside the 5 s
 margin permit relaunch; the same stalled launch can then receive up to two
 additional relaunches, each followed by a readiness window within the original
-walk deadline. Further warming uses the remaining patient window, or one
-readiness window if it has expired. Liveness, bundle requests and foreign drivers
+walk deadline. Further warming uses the longer of the remaining patient window
+and one readiness window, clipped to the remaining walk budget. Liveness, bundle
+requests and foreign drivers
 are checked again before a patient relaunch, preserving an app that has requested
 its bundle while warming. Each QaReN probe and actual relaunch retains its duration
 in the run's private `core-diagnostics.jsonl`. Persistent failure remains
