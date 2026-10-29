@@ -857,11 +857,22 @@ fn ambiguous_markers_skip_the_description_for_good() {
     assert_eq!(receipt.result, ReceiptResult::Published);
     assert_eq!(runner.0.remaining(), 0);
     assert!(!edited(&runner));
-    assert!(receipt.outcomes["description"].contains("markers are ambiguous"));
+    assert_eq!(
+        receipt.outcomes["description"],
+        "skipped for this run (the description's QaReN markers are ambiguous; the comment carries the proof)"
+    );
+    let next_action = "fix the marker pair in the pull request description so one QaReN start line precedes one end line, then publish a new qaren pr run; this run's comment already carries the proof and video";
+    assert_eq!(receipt.next_action, next_action);
     assert_eq!(
         publication(&dir).description,
         Some(receipt.outcomes["description"].clone())
     );
+    let mut again = Git(MockRunner::new());
+    let resumed = publish(&mut again, &runs, RUN, &machine());
+    assert_eq!(resumed.result, ReceiptResult::Published);
+    assert_eq!(resumed.outcomes["description"], receipt.outcomes["description"]);
+    assert_eq!(resumed.next_action, next_action);
+    assert!(again.0.calls.is_empty());
 }
 
 #[test]

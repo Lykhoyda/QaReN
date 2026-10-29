@@ -80,8 +80,9 @@ the section, and the text outside it is kept as publish last read it; a human ed
 moment between that read and the write can still be lost. A withheld or missing video never
 appears there: the section repeats the comment's video sentence instead. The section sits
 between a `<!-- qaren-proof:start -->` line and a `<!-- qaren-proof:end -->` line; a duplicated
-or reversed marker line makes publish skip the description until one start line precedes one
-end line again.
+or reversed marker line makes publish skip the description permanently for that run. Fix the
+marker pair so one QaReN start line precedes one end line, then publish from a new `qaren pr`
+run; this run's comment already holds the proof and video.
 When the head moved or the description cannot be written, the receipt names why in
 `outcomes.description` and the comment still carries the proof.
 

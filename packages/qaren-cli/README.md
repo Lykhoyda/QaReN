@@ -3173,7 +3173,9 @@ GitHub offers no conditional edit, so a human edit landing between that read and
 can still be lost. The comment is always posted first, and a skipped description leaves the
 receipt `Published` with `outcomes.description` naming why: a moved head or ambiguous markers
 are final, while a description that kept changing, an edit or read that GitHub refused, or a
-comment that could not be read back are retried by re-running `qaren publish`. Upgrade every
+comment that could not be read back are retried by re-running `qaren publish`. The ambiguous-marker
+skip is final for that run: fix the marker pair so one QaReN start line precedes one end line,
+then publish from a new `qaren pr` run; this run's comment already holds the proof and video. Upgrade every
 CLI/CI runtime before adding the key; older versions refuse it.
 
 A saved block is published only verbatim, and only when the walk met the strict

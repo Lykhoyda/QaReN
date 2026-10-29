@@ -787,6 +787,9 @@ pub fn publish(
     let described = matches!(description.as_deref(), Some("written" | "replaced"));
     receipt.next_action = match &failure {
         Some(f) => f.next_action.to_string(),
+        None if description.as_deref() == Some(MARKERS_AMBIGUOUS) => {
+            "fix the marker pair in the pull request description so one QaReN start line precedes one end line, then publish a new qaren pr run; this run's comment already carries the proof and video".to_string()
+        }
         None if retry => {
             "re-run qaren publish to write the proof section into the description".to_string()
         }
@@ -808,7 +811,7 @@ enum Described {
 
 const HEAD_MOVED: &str = "skipped (head moved; the comment carries the proof)";
 const MARKERS_AMBIGUOUS: &str =
-    "skipped (the description markers are ambiguous; leave one QaReN start line before one end line)";
+    "skipped for this run (the description's QaReN markers are ambiguous; the comment carries the proof)";
 const KEPT_CHANGING: &str = "skipped (the description kept changing; re-run qaren publish)";
 const EDIT_REFUSED: &str =
     "skipped (the description could not be edited; check write access, then re-run qaren publish)";
