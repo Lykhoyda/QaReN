@@ -98,6 +98,7 @@ Omit the block, write `deadlines: {}`, or write a bare
 that field.
 
 Out-of-range values are refused with `SCENARIO_INVALID`, rather than clamped.
+`install_deps_seconds` also bounds the pre-run pnpm process-group probe and its retries.
 A null, tilde, blank, negative, fractional, quoted, boolean, list, or object
 field value is a parse refusal, as is an unknown key, a camelCase alias, or a
 duplicate key. Explicit `deadlines: null` and `deadlines: ~` are also refused.
