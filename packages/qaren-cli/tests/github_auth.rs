@@ -20,6 +20,7 @@ fn isolated_github_auth_reaches_real_children_and_keeps_evidence_clean() {
         "stored",
         "none",
         "denied",
+        "network",
         "multiline",
     ] {
         let dir = common::temp_repo();
@@ -45,6 +46,7 @@ if [ -z "${{GH_TOKEN:-}}${{GITHUB_TOKEN:-}}" ] && [ ! -f "$HOME/stored-auth" ]; 
 fi
 printf '%s %s\n' "${{GH_TOKEN:-}}" "${{GITHUB_TOKEN:-}}" >&2
 printf '%s %s\n' "$1" "$2" >> "$QAREN_GITHUB_FIXTURE_DIR/calls"
+if [ "$FAKE_GH_MODE" = network ]; then echo 'network timeout' >&2; exit 1; fi
 if [ "$1 $2" = 'auth status' ]; then exit 0; fi
 if [ "$FAKE_GH_MODE" = denied ]; then echo 'Resource not accessible by token' >&2; exit 1; fi
 case "$1 $2" in
@@ -71,7 +73,7 @@ esac
             .env("GH_CONFIG_DIR", home.join("gh"))
             .env("QAREN_GITHUB_FIXTURE_DIR", &dir)
             .env("FAKE_GH_MODE", mode);
-        if matches!(mode, "gh" | "both" | "denied") {
+        if matches!(mode, "gh" | "both" | "denied" | "network") {
             worker.env("GH_TOKEN", GH);
         }
         if matches!(mode, "github" | "both") {
@@ -113,22 +115,29 @@ fn github_auth_fixture_worker() {
     let mode = std::env::var("FAKE_GH_MODE").unwrap();
     let mut runner = RealRunner::with_log_executable(env!("CARGO_BIN_EXE_qaren").into());
     let result = pr_view(&mut runner, "12", dir);
-    if matches!(mode.as_str(), "none" | "denied") {
+    if matches!(mode.as_str(), "none" | "denied" | "network") {
         let failure = result.unwrap_err();
         assert_eq!(
             failure.code,
-            if mode == "none" {
+            if mode != "denied" {
                 FailureCode::GithubAuthUnavailable
             } else {
                 FailureCode::PrUnavailable
             }
         );
-        assert_eq!(failure.code.is_refusal(), mode == "none");
+        assert_eq!(failure.code.is_refusal(), mode != "denied");
         assert!(failure.next_action.contains("GH_TOKEN"));
         assert!(failure.next_action.contains("GITHUB_TOKEN"));
         assert!(failure.next_action.contains("gh auth login"));
         if mode == "denied" {
             assert!(failure.next_action.contains("write permissions"));
+        }
+        if mode == "network" {
+            assert!(failure.detail.contains("network timeout"));
+            assert!(failure.detail.contains("[REDACTED_SECRET]"));
+            assert!(failure
+                .next_action
+                .contains("check network access to GitHub"));
         }
         assert_clean(&serde_json::to_string(&failure).unwrap());
         return;
@@ -191,6 +200,8 @@ fn github_auth_fixture_worker() {
     }
     if mode == "multiline" {
         assert_eq!(stored, "[private output withheld]\n");
+    } else if !value.is_empty() {
+        assert!(stored.contains("[REDACTED_INPUT]"));
     }
 }
 

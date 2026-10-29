@@ -78,8 +78,12 @@ pub fn pr_view(runner: &mut dyn Runner, target: &str, cwd: &Path) -> Result<PrIn
             return Err(Failure::new(
                 "pr",
                 FailureCode::GithubAuthUnavailable,
-                "GitHub authentication is unavailable",
-                "set GH_TOKEN or GITHUB_TOKEN, or run `gh auth login`, then re-run",
+                format!(
+                    "GitHub authentication could not be verified; gh pr view: {}; gh auth status: {}",
+                    output.summary(),
+                    auth.summary()
+                ),
+                "set GH_TOKEN or GITHUB_TOKEN, run `gh auth login`, or check network access to GitHub, then re-run",
             ));
         }
         return Err(gh_failure("pr view", output.summary()));
@@ -286,6 +290,24 @@ mod tests {
             assert_eq!(mock.calls[1].cwd.as_deref(), Some(Path::new("/repo")));
             assert_eq!(mock.remaining(), 0);
         }
+    }
+
+    #[test]
+    fn unavailable_auth_retains_lookup_and_auth_diagnostics_with_network_advice() {
+        let mut mock = MockRunner::new();
+        mock.expect_run("gh pr view", CmdOutput::failed(1, "lookup network timeout"));
+        mock.expect_run(
+            "gh auth status",
+            CmdOutput::failed(1, "auth network timeout"),
+        );
+        let failure = pr_view(&mut mock, "12", Path::new("/repo")).unwrap_err();
+        assert_eq!(failure.code, FailureCode::GithubAuthUnavailable);
+        assert!(failure.detail.contains("lookup network timeout"));
+        assert!(failure.detail.contains("auth network timeout"));
+        assert!(failure
+            .next_action
+            .contains("check network access to GitHub"));
+        assert_eq!(mock.remaining(), 0);
     }
 
     #[test]
