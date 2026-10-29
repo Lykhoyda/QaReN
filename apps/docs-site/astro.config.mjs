@@ -97,6 +97,10 @@ export default defineConfig({
             { label: 'Troubleshooting', slug: 'troubleshooting' },
             { label: 'rn-flow/1 replay dialect', slug: 'actions/rn-flow-1' },
             { label: 'Changelog', slug: 'changelog' },
+            {
+              label: 'Upgrading from rn-dev-agent 1.x',
+              link: 'https://github.com/Lykhoyda/QaReN/blob/develop/packages/qaren-cli/README.md#upgrading-from-rn-dev-agent-1x-1014-to-20',
+            },
           ],
         },
       ],
