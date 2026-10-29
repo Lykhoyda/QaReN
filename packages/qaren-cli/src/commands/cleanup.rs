@@ -273,7 +273,9 @@ pub fn cleanup_with_runtime(
     let owner_refusal =
         || Outcome::Refused("the run's qaren process is alive or unproven gone".to_string());
     let producers = record.resources.core.is_some() || !record.resources.runner_drivers.is_empty();
+    // A held pool creation lock means the creator may still be counting, creating or enrolling.
     let guarded_simulator = !record.resources.can_release_borrowed_ios_stop()
+        || record.resources.pool_create_lock.is_some()
         || (record.resources.device_borrowed
             && record.resources.ios_simulator.is_some()
             && record.resources.lease.is_some());
@@ -642,18 +644,21 @@ pub fn cleanup_with_runtime(
         let outcome = if !record.resources.can_release_build_ownership() {
             Outcome::Unresolved("build process cleanup is unproven; build lock retained".into())
         } else {
-            match crate::buildplan::release_lock(&lock.lock_dir, &lock.holder, &record.run_id) {
-                crate::buildplan::ReleaseOutcome::Removed => Outcome::Removed,
-                crate::buildplan::ReleaseOutcome::Absent => Outcome::Absent,
-                // Foreign is expected here: either this run never won the
-                // lock, or a later build legitimately adopted it after this
-                // run's prepare died (AdoptDead policy).
-                crate::buildplan::ReleaseOutcome::Foreign(_) => Outcome::Absent,
-                crate::buildplan::ReleaseOutcome::Refused(reason) => Outcome::Refused(reason),
-                crate::buildplan::ReleaseOutcome::Unresolved(reason) => Outcome::Unresolved(reason),
-            }
+            release_recorded_lock(&lock, &record.run_id)
         };
         outcomes.push(("build_lock".to_string(), outcome));
+    }
+    // Cleanup ran the simulator legs first, so a crashed creation's unrecorded simulator is gone before the count is.
+    if let Some(lock) = record.resources.pool_create_lock.clone() {
+        let simulator_clean = outcomes
+            .iter()
+            .all(|(leg, outcome)| leg != "simulator" || outcome.clean());
+        let outcome = if simulator_clean {
+            release_recorded_lock(&lock, &record.run_id)
+        } else {
+            Outcome::Unresolved("simulator cleanup is unproven; pool creation lock retained".into())
+        };
+        outcomes.push(("pool_create_lock".to_string(), outcome));
     }
 
     finish_cleanup(
@@ -665,6 +670,17 @@ pub fn cleanup_with_runtime(
         outcomes,
         true,
     )
+}
+
+fn release_recorded_lock(lock: &crate::runrecord::BuildLockResource, run_id: &str) -> Outcome {
+    match crate::buildplan::release_lock(&lock.lock_dir, &lock.holder, run_id) {
+        crate::buildplan::ReleaseOutcome::Removed => Outcome::Removed,
+        crate::buildplan::ReleaseOutcome::Absent => Outcome::Absent,
+        // Foreign: this run never won the lock, or a later build adopted it after this run died (AdoptDead).
+        crate::buildplan::ReleaseOutcome::Foreign(_) => Outcome::Absent,
+        crate::buildplan::ReleaseOutcome::Refused(reason) => Outcome::Refused(reason),
+        crate::buildplan::ReleaseOutcome::Unresolved(reason) => Outcome::Unresolved(reason),
+    }
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -724,6 +740,7 @@ fn finish_cleanup(
     receipt.build = record.build.clone();
     receipt.core_cleanup = record.resources.core_cleanup.clone();
     receipt.fresh_install = record.resources.fresh_install.clone();
+    receipt.lane = record.resources.lane.clone();
     for (name, outcome) in &outcomes {
         receipt.cleanup.insert(name.clone(), outcome.render());
     }
@@ -1228,7 +1245,7 @@ fn settled_runner_hosts(
     presence
 }
 
-// The owned host is terminated by bundle id on its exact simulator; absence is then re-proven.
+// A bundle id cannot prove whether XCTest is still initializing; only observe a leftover host.
 fn cleanup_owned_runner_host(
     runner: &mut dyn Runner,
     host: &crate::runrecord::RunnerHostResource,
@@ -1244,16 +1261,13 @@ fn cleanup_owned_runner_host(
         }
         ios::RunnerHostPresence::Present => {}
     }
-    for bundle_id in &host.bundle_ids {
-        runner.run(&ios::terminate_spec(&host.udid, bundle_id));
-    }
     match settled_runner_hosts(runner, &host.udid, true) {
-        ios::RunnerHostPresence::Absent => Outcome::Removed,
-        ios::RunnerHostPresence::Present => {
-            Outcome::Unresolved("the run's runner host is still present after terminate".into())
-        }
+        ios::RunnerHostPresence::Absent => Outcome::Absent,
+        ios::RunnerHostPresence::Present => Outcome::Unresolved(
+            "runner host remains; automation shutdown is unproven; left untouched".into(),
+        ),
         ios::RunnerHostPresence::Unknown => {
-            Outcome::Unresolved("runner host absence is unknown after terminate".into())
+            Outcome::Unresolved("runner host absence is unknown; left untouched".into())
         }
     }
 }
@@ -1270,7 +1284,7 @@ pub(crate) fn cleanup_runner_drivers(
     let mut outcomes = Vec::new();
     let mut kept = Vec::new();
     for driver in record.resources.runner_drivers.clone() {
-        let outcome = cleanup_process_group(runner, Some(&driver.identity), driver.pgid, None);
+        let outcome = cleanup_ios_automation_group(runner, Some(&driver.identity), driver.pgid);
         if !outcome.clean() {
             kept.push(driver);
         }
@@ -1295,6 +1309,62 @@ pub(crate) fn cleanup_runner_drivers(
             } else {
                 Outcome::Absent
             }),
+    )
+}
+
+// Interrupt only the driver so XCTest can cancel its session before its helpers exit.
+pub(crate) fn cleanup_ios_automation_group(
+    runner: &mut dyn Runner,
+    identity: Option<&PidIdentity>,
+    pgid: i32,
+) -> Outcome {
+    let mut cleanup_runner = crate::exec::CleanupRunner(runner);
+    let runner: &mut dyn Runner = &mut cleanup_runner;
+    if pgid < 2 {
+        return Outcome::Refused("invalid iOS automation process group".into());
+    }
+    runner.try_reap(pgid);
+    match metro::group_presence(runner, pgid) {
+        metro::GroupPresence::Absent => return Outcome::Absent,
+        metro::GroupPresence::Unknown => {
+            return Outcome::Unresolved("iOS automation group inventory is unknown".into())
+        }
+        metro::GroupPresence::Present => {}
+    }
+    let Some(identity) = identity.filter(|identity| identity.pid == pgid) else {
+        return Outcome::Unresolved("iOS automation driver identity is unproven".into());
+    };
+    if probe_pid_identity(runner, identity) != PidLiveness::AliveMatching {
+        runner.sleep(Duration::from_millis(300));
+        runner.try_reap(pgid);
+        return match metro::group_presence(runner, pgid) {
+            metro::GroupPresence::Absent => Outcome::Absent,
+            _ => Outcome::Unresolved("iOS automation driver ownership is unproven".into()),
+        };
+    }
+    if !crate::runrecord::probe_pid_birth(runner, identity).1 {
+        return Outcome::Unresolved("iOS automation driver birth changed; left untouched".into());
+    }
+    runner.run(&CmdSpec::new(
+        "kill-group",
+        "/bin/kill",
+        &["-INT", "--", &pgid.to_string()],
+        10,
+    ));
+    for _ in 0..30 {
+        runner.sleep(Duration::from_secs(1));
+        runner.try_reap(pgid);
+        match metro::group_presence(runner, pgid) {
+            metro::GroupPresence::Absent => return Outcome::Removed,
+            metro::GroupPresence::Unknown => break,
+            metro::GroupPresence::Present => {}
+        }
+        if probe_pid_identity(runner, identity) != PidLiveness::AliveMatching {
+            break;
+        }
+    }
+    Outcome::Unresolved(
+        "iOS automation did not finish graceful cancellation; left untouched".into(),
     )
 }
 
@@ -2203,7 +2273,42 @@ mod integrity_tests {
     }
 
     #[test]
-    fn owned_runner_host_exit_settles_after_terminate_without_more_signals() {
+    fn automation_cancellation_never_escalates_when_initialization_does_not_settle() {
+        let mut runner = MockRunner::new();
+        let identity = crate::runrecord::PidIdentity {
+            pid: 9000,
+            started_at: "Wed Aug 12 16:02:00 2026".into(),
+            command: crate::redact::OutputText::from_output(""),
+        };
+        let present = CmdOutput::success("1 1 S\n9000 9000 S\n9001 9000 S\n");
+        runner.expect_run("ps -A", present.clone());
+        for _ in 0..2 {
+            runner.expect_run("lstart=", CmdOutput::success(&identity.started_at));
+            runner.expect_run("stat=", CmdOutput::success("S"));
+        }
+        runner.expect_run("/bin/kill -INT -- 9000", CmdOutput::success(""));
+        for _ in 0..30 {
+            runner.expect_run("ps -A", present.clone());
+            runner.expect_run("lstart=", CmdOutput::success(&identity.started_at));
+            runner.expect_run("stat=", CmdOutput::success("S"));
+        }
+        assert!(matches!(
+            cleanup_ios_automation_group(&mut runner, Some(&identity), 9000),
+            Outcome::Unresolved(_)
+        ));
+        assert_eq!(runner.remaining(), 0);
+        assert_eq!(
+            runner
+                .calls
+                .iter()
+                .filter(|c| c.program == "/bin/kill")
+                .count(),
+            1
+        );
+    }
+
+    #[test]
+    fn owned_runner_host_waits_for_natural_exit_without_terminating() {
         for transient in [
             "PID Status Label\n42 0 dev.lykhoyda.rndevagent.fastrunner\n",
             "incomplete\n",
@@ -2213,7 +2318,6 @@ mod integrity_tests {
                 &mut runner,
                 CmdOutput::success("PID Status Label\n42 0 dev.lykhoyda.rndevagent.fastrunner\n"),
             );
-            runner.expect_run("simctl terminate", CmdOutput::success(""));
             host_probe(&mut runner, CmdOutput::success(transient));
             host_probe(
                 &mut runner,
@@ -2225,7 +2329,7 @@ mod integrity_tests {
             };
             assert!(matches!(
                 cleanup_owned_runner_host(&mut runner, &host),
-                Outcome::Removed
+                Outcome::Absent
             ));
             assert_eq!(runner.remaining(), 0);
             assert_eq!(
@@ -2234,7 +2338,7 @@ mod integrity_tests {
                     .iter()
                     .filter(|spec| spec.label == "simctl-terminate")
                     .count(),
-                1
+                0
             );
         }
     }

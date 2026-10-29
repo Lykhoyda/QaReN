@@ -246,8 +246,12 @@ fn deadline_parse_refusals_stay_generic() {
         "deadlines:\n  buildSeconds: 5400\n",
         "deadlineBudget: mistaken-value\n",
     ];
+    let repo = common::temp_repo().join("deadline-5400");
+    std::fs::create_dir_all(&repo).unwrap();
+    let config_path = repo.join("config.yaml");
     for block in blocks {
-        let failure = load(&config_yaml(block)).unwrap_err();
+        std::fs::write(&config_path, config_yaml(block)).unwrap();
+        let failure = CheckConfig::load(&config_path).unwrap_err();
         assert_eq!(failure.code, FailureCode::ScenarioInvalid, "{block}");
         let output = serde_json::to_string(&failure).unwrap();
         assert!(
@@ -256,7 +260,18 @@ fn deadline_parse_refusals_stay_generic() {
         );
         assert!(!output.contains("mistaken-value"), "{block}: {output}");
         assert!(!output.contains("18446744073709551616"), "{output}");
-        assert!(!output.contains("5400"), "{block}: {output}");
+        let mut without_path = serde_json::to_value(&failure).unwrap();
+        without_path["detail"] = failure
+            .detail
+            .to_string()
+            .replace(config_path.to_str().unwrap(), "<config path>")
+            .into();
+        assert!(
+            !serde_json::to_string(&without_path)
+                .unwrap()
+                .contains("5400"),
+            "{block}: {output}"
+        );
     }
 }
 
@@ -311,4 +326,38 @@ fn save_plans_is_an_optional_boolean() {
         Some(false)
     );
     assert!(load("appId: com.test.app\nsavePlans: maybe\n").is_err());
+}
+
+#[test]
+fn video_policy_is_explicit_and_invalid_values_refuse_without_echoing_them() {
+    use qaren::record::VideoPolicy;
+    let repo = common::temp_repo();
+    let path = repo.join("config.yaml");
+    for (suffix, expected) in [
+        ("", VideoPolicy::Undeclared),
+        ("video: strict\n", VideoPolicy::Strict),
+        ("video: non-strict\n", VideoPolicy::NonStrict),
+    ] {
+        std::fs::write(&path, format!("appId: com.test.app\n{suffix}")).unwrap();
+        assert_eq!(CheckConfig::load(&path).unwrap().0.video, expected);
+    }
+    for value in [
+        "undeclared",
+        "unknown",
+        "private-canary",
+        "null",
+        "true",
+        "1",
+        "[]",
+        "{}",
+        "\"\"",
+    ] {
+        std::fs::write(&path, format!("appId: com.test.app\nvideo: {value}\n")).unwrap();
+        let error = CheckConfig::load(&path).unwrap_err();
+        assert_eq!(error.code, FailureCode::ScenarioInvalid);
+        assert!(!error.detail.contains("private-canary"));
+        assert!(error
+            .next_action
+            .contains("video must be strict or non-strict"));
+    }
 }

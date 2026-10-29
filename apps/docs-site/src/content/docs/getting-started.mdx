@@ -4,23 +4,55 @@ description: Install qaren and the QaReN plugin, run /qaren:setup and reach a fi
 ---
 
 import { Steps } from '@astrojs/starlight/components';
+import AgentInstallPrompt from '../../components/AgentInstallPrompt.mdx';
 
 ## Requirements
 
 - An Apple silicon Mac with Xcode.
 - Node 24 or newer, with Corepack.
-- Rust and Cargo from [rustup.rs](https://rustup.rs), for the source install below.
-- `pnpm` on `PATH`; with Corepack, `corepack enable pnpm` provides it.
+- `pnpm` on `PATH`; with Corepack, `corepack enable pnpm` provides it; see [launcher compatibility](https://github.com/Lykhoyda/QaReN/blob/develop/packages/qaren-cli/README.md#doctor) for Corepack and bootstrap shims.
 - An Expo app that uses `expo-dev-client` and pnpm, with a `pnpm-lock.yaml`.
 
-Setup prepares an iOS simulator. See the
-[README's supported platforms](https://github.com/Lykhoyda/QaReN#set-up-qaren)
-for the current release boundary.
+QaReN 2.0 supports iOS simulators on Apple silicon.
 
 ## Install
 
-For plugin installation in Claude Code, Codex or Cursor and the matching release download,
-follow the [root README](https://github.com/Lykhoyda/QaReN#set-up-qaren).
+Choose one of three options. Your agent can prepare the prerequisites above, or you
+can install the plugin yourself if they are already available.
+
+### Ask your agent to install (recommended)
+
+Open Claude Code, Codex or Cursor in your app. Copy this prompt using the copy button
+in the code block, then paste it into your agent:
+
+<AgentInstallPrompt />
+
+The agent may need you to complete an Xcode download, accept its license, install an
+iOS simulator runtime or finish a host's plugin UI step before it can continue.
+
+### Install the plugin yourself
+
+Use the commands for your host:
+
+```sh
+# Claude Code
+claude plugin marketplace add Lykhoyda/QaReN
+claude plugin install qaren@qaren
+# Codex
+codex plugin marketplace add Lykhoyda/QaReN
+codex plugin add qaren@qaren
+# Cursor: add the marketplace, then install qaren from /plugin > Marketplace in
+# cursor-agent, or from Customize > Plugins in the editor
+cursor-agent plugin marketplace add https://github.com/Lykhoyda/QaReN
+```
+
+Then run `/qaren:setup` from your app's root. In Codex or Cursor, you can ask the
+agent to set up QaReN using the installed setup skill. Setup installs the matching
+CLI and runs the first smoke check; see [what setup does](#what-qarensetup-does).
+
+### Install from source
+
+This option also needs Rust and Cargo from [rustup.rs](https://rustup.rs).
 
 For an unreleased build or when the matching release asset is unavailable, install
 from a checkout of the [repository](https://github.com/Lykhoyda/QaReN):
@@ -55,11 +87,12 @@ from a checkout of the [repository](https://github.com/Lykhoyda/QaReN):
 
 ### Where `qaren` lands on PATH
 
-Follow the [installation contract](https://github.com/Lykhoyda/QaReN/blob/develop/packages/qaren-cli/README.md#plugin-runtime-installation) for PATH selection, existing-command protection, `--link` and interrupted-install recovery.
+Follow the [installation contract](https://github.com/Lykhoyda/QaReN/blob/develop/packages/qaren-cli/README.md#plugin-runtime-installation) for PATH selection, existing-command protection and interrupted-install recovery.
+Use the binary path the installer prints and keep its default options.
 
 ### Run a release and a source build side by side
 
-Follow [release and source builds side by side](https://github.com/Lykhoyda/QaReN/blob/develop/packages/qaren-cli/README.md#release-and-source-builds-side-by-side) for source versioning, `QAREN_HOME`, state lookup and shared device locks.
+Follow [release and source builds side by side](https://github.com/Lykhoyda/QaReN/blob/develop/packages/qaren-cli/README.md#release-and-source-builds-side-by-side) for source versioning, state lookup and shared device locks.
 
 ## What `/qaren:setup` does
 

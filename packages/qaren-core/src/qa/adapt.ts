@@ -70,8 +70,11 @@ export function fillEvidence(
 export function describeError(error: unknown): { code: string; message: string } {
   if (error instanceof InputPrivacyRefusal) return { code: 'CORE_REFUSED', message: error.message };
   const described = describeRawError(error);
-  return currentInputs()?.hasInputs
-    ? { code: described.code, message: '[private output withheld]' }
+  const inputs = currentInputs();
+  if (inputs?.hasStrictInputs)
+    return { code: described.code, message: '[private output withheld]' };
+  return inputs?.hasInputs
+    ? { ...described, message: inputs.redact(described.message) }
     : described;
 }
 

@@ -24,7 +24,7 @@ export const declareEcho = (name: string): void => {
 export class RunInputs {
   #values: ReadonlyMap<string, string>;
   #filled = new Set<string>();
-  #strict: ReadonlyMap<string, string>;
+  #strict: Map<string, string>;
   #nonSecret: readonly string[];
   #privacy: ObservedPrivacy;
   #refuse?: (reason: InputPrivacyRefusal) => void;
@@ -71,7 +71,7 @@ export class RunInputs {
     this.#nonSecret = Object.freeze([...new Set(nonSecretInputs)].sort());
     this.#strict = new Map([...this.#values].filter(([name]) => !this.#nonSecret.includes(name)));
     this.#privacy = privacy;
-    privacy.classifyInputs([...this.#values.values()]);
+    privacy.classifyInputs([...this.#values.values()], [...this.#strict.values()]);
   }
 
   names(): string[] {
@@ -80,8 +80,22 @@ export class RunInputs {
   nonSecretNames(): readonly string[] {
     return this.#nonSecret;
   }
+  protectFill(name: string, privateTarget = false): boolean {
+    const value = this.#values.get(name);
+    if (value === undefined) throw new Error('runtime inputs are invalid');
+    if (privateTarget && !this.#strict.has(name)) {
+      this.#strict.set(name, value);
+      this.#privacy.classifyInputs([], [value]);
+    }
+    return (
+      this.#strict.has(name) || !this.#privacy.assertInputHashSafe(value, this.#strict.values())
+    );
+  }
   get hasInputs(): boolean {
     return this.#values.size > 0;
+  }
+  get hasStrictInputs(): boolean {
+    return this.#strict.size > 0;
   }
   get terminal(): InputPrivacyRefusal | undefined {
     return this.#terminal;
@@ -107,7 +121,7 @@ export class RunInputs {
     throw this.#terminal;
   }
   expectEcho(identifier: string | undefined, inputName?: string): void {
-    if (inputName !== undefined && this.#nonSecret.includes(inputName)) return;
+    if (inputName !== undefined && !this.#strict.has(inputName)) return;
     if (identifier) this.#filled.add(identifier);
   }
   // Declared echoes hash as a constant; other labels must prove their redacted projection safe.

@@ -43,6 +43,8 @@ export interface WireTarget {
   metroBundleRequests?: { path: string; atLaunch: number };
   // The CLI's last dev client manifest warm-up before launch.
   manifestWarm?: { ms: number; attempts: number };
+  // The CLI pinned this lane; the first screen must be observed before row 1.
+  warmLane?: true;
 }
 
 export interface WireRequest {
@@ -59,6 +61,7 @@ export interface WireRequest {
   runDir: string;
   lease: string;
   target: WireTarget;
+  videoPolicy?: 'strict' | 'non-strict' | 'undeclared';
   loginBlock?: string;
   loginMarker?: LoginMarker;
   loginSnapshot?: { slug: string; content: string | null };
@@ -234,8 +237,11 @@ export function parsePublicRequest(line: string): WireRequest {
         target.manifestWarm.ms < 0 ||
         !Number.isSafeInteger(target.manifestWarm.attempts) ||
         target.manifestWarm.attempts < 1)) ||
+    (target.warmLane !== undefined && target.warmLane !== true) ||
     (p.loginBlock !== undefined && (!isValidActionId(p.loginBlock) || !p.loginMarker)) ||
-    (p.loginMarker !== undefined && !validMarker(p.loginMarker));
+    (p.loginMarker !== undefined && !validMarker(p.loginMarker)) ||
+    (p.videoPolicy !== undefined &&
+      !['strict', 'non-strict', 'undeclared'].includes(p.videoPolicy));
   if (bad) throw new WireError('the request payload is missing required fields');
   if (p.runId !== envelope.runId) throw new WireError('the request payload names another run');
   const {
@@ -257,6 +263,7 @@ export function parsePublicRequest(line: string): WireRequest {
     'runDir',
     'lease',
     'target',
+    'videoPolicy',
     'loginBlock',
     'loginMarker',
     'loginSnapshot',

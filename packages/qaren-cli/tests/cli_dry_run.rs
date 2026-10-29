@@ -521,3 +521,36 @@ fn non_utf8_native_root_fails_before_publication_or_run_record_serialization() {
         assert!(!fixture.join(".qaren").exists());
     }
 }
+
+#[test]
+fn new_is_prepare_only_and_excludes_an_existing_device() {
+    for args in [
+        vec![
+            "prepare",
+            "missing",
+            "--new",
+            "--device",
+            "1DC408C4-51DA-4C4F-ACA1-39881C916FDD",
+        ],
+        vec![
+            "prepare",
+            "missing",
+            "--new",
+            "--device",
+            "1DC408C4-51DA-4C4F-ACA1-39881C916FDD",
+            "--boot-device",
+        ],
+        vec!["check", "--plan-file", "missing", "--new"],
+        vec!["cleanup", "missing", "--new"],
+    ] {
+        let output = Command::new(env!("CARGO_BIN_EXE_qaren"))
+            .args(&args)
+            .output()
+            .unwrap();
+        assert_eq!(output.status.code(), Some(2), "{args:?}");
+        assert!(output.stdout.is_empty(), "{args:?}");
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(stderr.contains("--new"), "{stderr}");
+        assert!(!stderr.contains("unknown flag"), "{stderr}");
+    }
+}

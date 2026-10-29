@@ -1948,7 +1948,7 @@ fn cleanup_retains_the_device_lease_until_the_metro_group_is_proven_gone() {
 }
 
 #[test]
-fn a_dead_owners_runner_host_is_terminated_on_its_simulator_and_the_lease_released() {
+fn a_dead_owners_runner_host_must_exit_naturally_before_the_lease_is_released() {
     const UDID: &str = "1DC408C4-51DA-4C4F-ACA1-39881C916FDD";
     const HOSTS: [&str; 2] = [
         "dev.lykhoyda.rndevagent.fastrunner",
@@ -1983,12 +1983,6 @@ fn a_dead_owners_runner_host_is_terminated_on_its_simulator_and_the_lease_releas
             HOSTS[0]
         )),
     );
-    for bundle in HOSTS {
-        mock.expect_run(
-            &format!("simctl terminate {UDID} {bundle}"),
-            CmdOutput::success(""),
-        );
-    }
     mock.expect_run("simctl list devices -j", CmdOutput::success(&inventory));
     mock.expect_run(
         "launchctl list",
@@ -2003,9 +1997,13 @@ fn a_dead_owners_runner_host_is_terminated_on_its_simulator_and_the_lease_releas
         "{:?}",
         receipt.cleanup
     );
-    assert_eq!(receipt.cleanup["runner_host"], "removed");
+    assert_eq!(receipt.cleanup["runner_host"], "absent");
     assert_eq!(receipt.cleanup["device_lease"], "removed");
     assert!(!lock.exists());
+    assert!(mock
+        .calls
+        .iter()
+        .all(|spec| spec.label != "simctl-terminate"));
     assert_eq!(mock.remaining(), 0);
 }
 
@@ -2085,10 +2083,7 @@ fn a_dead_owner_s_recorded_runner_driver_group_is_signaled_and_the_lease_release
     mock.expect_run("ps -p 7000", CmdOutput::success("S"));
     mock.expect_run("lstart=", CmdOutput::success(LSTART));
     mock.expect_run("stat=", CmdOutput::success("S"));
-    mock.expect_run("/bin/kill -TERM -- -7000", CmdOutput::success(""));
-    mock.expect_run("lstart=", CmdOutput::success(LSTART));
-    mock.expect_run("stat=", CmdOutput::success("S"));
-    mock.expect_run("/bin/kill -KILL -- -7000", CmdOutput::success(""));
+    mock.expect_run("/bin/kill -INT -- 7000", CmdOutput::success(""));
     mock.expect_run("ps -A", CmdOutput::success("1 1 S\n"));
 
     let receipt = cleanup(&mut mock, &repo, "core-run");
@@ -2976,6 +2971,7 @@ fn borrowed_ios_record(repo: &std::path::Path) -> RunRecord {
     record.scenario.ios = Some(qaren::scenario::IosSpec {
         device_type: BORROWED_IOS_TYPE.into(),
         runtime: BORROWED_IOS_RUNTIME.into(),
+        max_devices: None,
     });
     record.resources.device_borrowed = true;
     record.resources.ios_simulator = Some(IosSimResource {
@@ -3547,5 +3543,168 @@ fn borrowed_ios_stop_in_cleanup_enforces_owner_lease_quiescence_admission_and_id
         assert!(stored.resources.lease.is_none());
         assert!(stored.resources.pr_worktree.is_none());
         assert_eq!(retry.remaining(), 0, "{fault}");
+    }
+}
+
+#[test]
+fn crashed_pool_creation_deletes_the_owned_simulator_and_releases_the_creation_lock() {
+    let repo = common::temp_repo();
+    let run_id = "pool-crash-run";
+    let mut record = common::base_record(
+        &repo,
+        &common::ios_scenario_yaml(8791),
+        run_id,
+        Phase::Failed,
+    );
+    let name = format!("qaren-pool-{run_id}");
+    record.resources.ios_simulator = Some(IosSimResource {
+        udid: BORROWED_IOS_UDID.into(),
+        name: name.clone(),
+        device_type: "com.apple.CoreSimulator.SimDeviceType.iPhone-17-Pro".into(),
+        runtime: "com.apple.CoreSimulator.SimRuntime.iOS-26-4".into(),
+    });
+    let lease = qaren::lease::acquire(
+        &mut MockRunner::new(),
+        &repo.join("locks"),
+        qaren::scenario::Platform::Ios,
+        BORROWED_IOS_UDID,
+        run_id,
+        None,
+    )
+    .unwrap();
+    record.resources.lease = Some(lease.clone());
+    let holder = qaren::buildplan::LockHolder {
+        holder: format!("qaren-{run_id}"),
+        run_id: run_id.into(),
+        identity: None,
+        at: "2026-10-22T00:00:00Z".into(),
+        home: None,
+        qaren_home: None,
+        group: None,
+    };
+    let pool_root = repo.join(".pool");
+    assert!(matches!(
+        qaren::buildplan::claim_lock(
+            &mut MockRunner::new(),
+            &pool_root,
+            "create-ios",
+            &holder,
+            qaren::buildplan::LockPolicy::Strict,
+        ),
+        qaren::buildplan::LockOutcome::Claimed { .. }
+    ));
+    record.resources.pool_create_lock = Some(qaren::runrecord::BuildLockResource {
+        lock_dir: pool_root.join("create-ios"),
+        holder: holder.holder.clone(),
+    });
+    record.save(&repo).unwrap();
+    let inventory =
+        serde_json::json!({"devices": {"com.apple.CoreSimulator.SimRuntime.iOS-26-4": [{
+            "udid": BORROWED_IOS_UDID, "name": name, "state": "Shutdown", "isAvailable": true,
+            "deviceTypeIdentifier": "com.apple.CoreSimulator.SimDeviceType.iPhone-17-Pro",
+        }]}})
+        .to_string();
+
+    let mut mock = MockRunner::new();
+    owner_gone(&mut mock);
+    mock.expect_run("simctl list devices -j", CmdOutput::success(&inventory));
+    mock.expect_run(
+        &format!("simctl delete {BORROWED_IOS_UDID}"),
+        CmdOutput::success(""),
+    );
+    let receipt = cleanup(&mut mock, &repo, run_id);
+
+    assert_eq!(
+        receipt.result,
+        ReceiptResult::Cleaned,
+        "{}",
+        receipt.to_json()
+    );
+    assert!(receipt.cleanup["simulator"].starts_with("removed"));
+    assert_eq!(receipt.cleanup["pool_create_lock"], "removed");
+    assert_eq!(receipt.cleanup["device_lease"], "removed");
+    assert_eq!(mock.remaining(), 0);
+    assert!(!pool_root.join("create-ios").exists());
+    assert!(!lease.lock_dir.exists());
+}
+
+#[test]
+fn cleanup_never_releases_the_pool_creation_lock_of_a_live_creator() {
+    // Lock claimed before the pending simulator is recorded, and after it.
+    for pending_simulator in [false, true] {
+        let repo = common::temp_repo();
+        let run_id = "pool-creating-run";
+        let mut record = common::base_record(
+            &repo,
+            &common::ios_scenario_yaml(8791),
+            run_id,
+            Phase::DepsInstalled,
+        );
+        if pending_simulator {
+            record.resources.ios_simulator = Some(IosSimResource {
+                udid: String::new(),
+                name: format!("qaren-pool-{run_id}"),
+                device_type: "com.apple.CoreSimulator.SimDeviceType.iPhone-17-Pro".into(),
+                runtime: "com.apple.CoreSimulator.SimRuntime.iOS-26-4".into(),
+            });
+        }
+        let holder = qaren::buildplan::LockHolder {
+            holder: format!("qaren-{run_id}"),
+            run_id: run_id.into(),
+            identity: None,
+            at: "2026-10-27T00:00:00Z".into(),
+            home: None,
+            qaren_home: None,
+            group: None,
+        };
+        let pool_root = repo.join(".pool");
+        assert!(matches!(
+            qaren::buildplan::claim_lock(
+                &mut MockRunner::new(),
+                &pool_root,
+                "create-ios",
+                &holder,
+                qaren::buildplan::LockPolicy::Strict,
+            ),
+            qaren::buildplan::LockOutcome::Claimed { .. }
+        ));
+        record.resources.pool_create_lock = Some(qaren::runrecord::BuildLockResource {
+            lock_dir: pool_root.join("create-ios"),
+            holder: holder.holder.clone(),
+        });
+        record.save(&repo).unwrap();
+        let before = std::fs::read(RunRecord::path(&repo, run_id)).unwrap();
+
+        let mut mock = MockRunner::new();
+        mock.expect_run(
+            "ps -p 999 -o lstart=",
+            CmdOutput::success("Wed Aug 12 15:00:00 2026"),
+        );
+        mock.expect_run("ps -p 999 -o stat=", CmdOutput::success("S"));
+        let receipt = cleanup(&mut mock, &repo, run_id);
+
+        assert_eq!(
+            receipt.result,
+            ReceiptResult::Refused,
+            "pending_simulator={pending_simulator}: {}",
+            receipt.to_json()
+        );
+        assert_eq!(mock.remaining(), 0, "pending_simulator={pending_simulator}");
+        assert!(
+            !mock.calls.iter().any(|c| c.rendered().contains("simctl")),
+            "pending_simulator={pending_simulator}"
+        );
+        assert_eq!(
+            qaren::buildplan::read_holder(&pool_root.join("create-ios"))
+                .unwrap()
+                .run_id,
+            run_id,
+            "pending_simulator={pending_simulator}"
+        );
+        assert_eq!(
+            std::fs::read(RunRecord::path(&repo, run_id)).unwrap(),
+            before,
+            "pending_simulator={pending_simulator}"
+        );
     }
 }

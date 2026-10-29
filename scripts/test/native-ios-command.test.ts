@@ -15,7 +15,7 @@ test('native iOS tests disable parallel testing and preserve the explicit destin
     copyFileSync(new URL('../test-native-ios.sh', import.meta.url), script);
     symlinkSync('/usr/bin/dirname', join(root, 'bin/dirname'));
     symlinkSync('/bin/rm', join(root, 'bin/rm'));
-    writeFileSync(join(root, 'bin/xcodebuild'), '#!/bin/bash\nprintf \'%s\\0\' "$@"\n', {
+    writeFileSync(join(root, 'bin/xcodebuild'), '#!/bin/bash\nprintf \'%s\\0\' "$$" "$@"\n', {
       mode: 0o755,
     });
     const destination = 'platform=iOS Simulator,id=00000000-0000-0000-0000-000000000001';
@@ -34,6 +34,7 @@ test('native iOS tests disable parallel testing and preserve the explicit destin
     assert.equal(output.status, 0, output.stdout + output.stderr);
     assert.equal(output.stderr, '');
     assert.deepEqual(output.stdout.split('\0'), [
+      String(output.pid),
       'test',
       '-project',
       'RnFastRunner.xcodeproj',

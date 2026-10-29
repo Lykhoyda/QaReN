@@ -371,6 +371,8 @@ fn prepare_refuses_a_borrowed_emulator_scenario_before_any_command() {
             runs_root: dir.clone(),
             device: None,
             boot_device: false,
+            pool_root: dir.join(".pool"),
+            new_device: false,
         },
     );
     let failure = receipt.failure.unwrap();
@@ -500,4 +502,22 @@ fn scenario_deadline_bounds_match_the_shared_contract_and_keep_defaults() {
         assert_eq!(loaded.code, FailureCode::ScenarioInvalid);
         assert_eq!(loaded.detail.to_string(), failure.detail.to_string());
     }
+}
+
+#[test]
+fn max_devices_zero_is_invalid_and_absent_defaults_to_one() {
+    let base = valid_ios_yaml();
+    let runtime = base
+        .lines()
+        .find(|l| l.trim_start().starts_with("runtime:"))
+        .unwrap()
+        .to_string();
+    let with = |cap: &str| base.replace(&runtime, &format!("{runtime}\n  max_devices: {cap}"));
+    let failure = parse(&with("0")).unwrap_err();
+    assert_eq!(failure.code, FailureCode::ScenarioInvalid);
+    assert!(failure.detail.to_string().contains("max_devices"));
+    assert_eq!(parse(&with("3")).unwrap().ios.unwrap().max_devices, Some(3));
+    let absent = parse(&base).unwrap().ios.unwrap();
+    assert_eq!(absent.max_devices, None);
+    assert_eq!(qaren::pool::default_cap(&absent), 1);
 }

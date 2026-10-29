@@ -51,12 +51,51 @@ A plan names what to do and what to check:
 ## Requirements
 
 - An Apple silicon Mac with Xcode.
-- Node 24 or newer, with Corepack, and `pnpm` on `PATH`.
+- Node 24 or newer, with Corepack, and `pnpm` on `PATH` (see [launcher compatibility](packages/qaren-cli/README.md#doctor)).
 - An Expo app that uses `expo-dev-client` and pnpm, with a `pnpm-lock.yaml`.
 
 ## Set up QaReN
 
-Install the plugin:
+Choose one of three installation options. QaReN 2.0 supports iOS simulators on Apple silicon.
+
+### Ask your agent to install (recommended)
+
+Open Claude Code, Codex or Cursor in your app and paste this prompt. The
+[getting started page](https://lykhoyda.github.io/QaReN/getting-started/#ask-your-agent-to-install-recommended)
+has a copy button for the same prompt.
+
+```text
+Set up QaReN in this app, from the app root, for my current host
+(Claude Code, Codex or Cursor).
+
+Check that this is an Apple silicon Mac and a pnpm Expo app using
+expo-dev-client with pnpm-lock.yaml. Install missing Node 24 or newer,
+Corepack and pnpm using user-writable locations. Check that full Xcode
+and an iOS simulator runtime are installed and ready. If a prerequisite
+needs administrator access, a license agreement or a manual download,
+stop and tell me the exact step I need to complete. Do not use sudo.
+
+Install the QaReN plugin for my host using the per-host instructions at
+https://github.com/Lykhoyda/QaReN#install-the-plugin-yourself
+If the host needs a plugin UI step or a session restart, tell me what to
+do and resume setup once the plugin is available.
+
+Run /qaren:setup; if slash commands are unavailable, load and follow the
+plugin's setup skill. It owns installing the matching qaren CLI, running
+qaren doctor, configuring this app and selecting the iOS simulator.
+Follow its source-install fallback only if the release is unavailable.
+Use the matching binary path it resolves; preserve any existing qaren
+command on PATH and keep the default QaReN home and installer options.
+
+Follow setup through writing .qaren/plans/smoke.md and running the first
+smoke check. Read the receipt and report result, run_id and next_action.
+If setup or the check stops, report the exact reason and fix; do not
+claim success before a passing receipt.
+```
+
+### Install the plugin yourself
+
+If the prerequisites above are already installed, use your host's commands:
 
 ```sh
 # Claude Code
@@ -80,8 +119,6 @@ the first check. The [setup skill](packages/qaren-plugin/skills/setup/SKILL.md) 
 the details. If the installed plugin has no QaReN tarball yet, use the
 [source installation](#install-from-source) below.
 
-QaReN 2.0 supports iOS simulators on Apple silicon. Android: coming in 2.1.
-
 ### Install from source
 
 To run an unreleased build, install from a checkout's root (needs Rust/Cargo as well):
@@ -92,8 +129,8 @@ bash scripts/install-qaren-from-source.sh
 
 The build is versioned `<plugin version>-dev.<commit>`, so it installs beside a released
 `qaren` instead of replacing it, builds its runners from source and never relinks a
-release's `qaren` without `--link`. Set `QAREN_HOME` to keep its runs and state apart as
-well; see [release and source builds side by side](packages/qaren-cli/README.md#release-and-source-builds-side-by-side).
+release's `qaren` with the default installer options. Use the binary path the installer
+prints and keep the default QaReN home; see [release and source builds side by side](packages/qaren-cli/README.md#release-and-source-builds-side-by-side).
 
 Load that checkout's plugin with
 `claude --plugin-dir /absolute/path/to/checkout/packages/qaren-plugin`. The
@@ -169,3 +206,5 @@ Report bugs in [GitHub Issues](https://github.com/Lykhoyda/QaReN/issues) or with
 `/qaren:feedback`; see [SECURITY.md](SECURITY.md) for vulnerabilities.
 
 QaReN is released under the [MIT License](LICENSE).
+
+Video evidence uses strict privacy rules by default. Apps showing test data can declare `video: non-strict` in their selected config; detected SECRET causes still withhold video. See [Video publication](packages/qaren-cli/README.md#video-publication) for the policy and its limits.

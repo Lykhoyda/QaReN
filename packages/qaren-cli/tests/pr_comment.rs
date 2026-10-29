@@ -166,3 +166,120 @@ fn the_verdict_is_structured() {
     );
     assert!(body.contains("too large to attach"));
 }
+
+#[test]
+fn non_strict_secret_causes_get_specific_wording_and_eligible_inputs_get_the_escape() {
+    use qaren::record::{NonStrictPublication, VideoPolicy};
+    for (reason, source) in [
+        ("secure-field", None),
+        ("code-row", None),
+        ("concealed-fill", None),
+        ("input-value", None),
+        ("generic-value", None),
+        ("runtime-input", None),
+        ("echo", Some("input")),
+        ("echo", Some("secret")),
+        ("echo", Some("concealed")),
+        ("echo", Some("code")),
+        ("echo", None),
+    ] {
+        let mut ledger = failing_ledger();
+        ledger.video_policy = VideoPolicy::NonStrict;
+        ledger.video_policy_source = Some(".qaren/target.yaml".into());
+        ledger.video_publication = Some(VideoPublication::WithheldFill);
+        ledger.non_strict_publication = Some(NonStrictPublication::WithheldSecret);
+        ledger.media_withheld = Some(
+            serde_json::from_value(serde_json::json!({
+                "video": {"reason": reason, "source": source, "line": 7}
+            }))
+            .unwrap(),
+        );
+        let body = render(
+            &ledger,
+            false,
+            &VideoStatus::Available,
+            &VideoPublication::WithheldFill,
+        );
+        assert!(body.contains("Video policy: non-strict (declared in .qaren/target.yaml)."));
+        assert!(!body.contains("Video of the walk is attached"));
+        if reason == "runtime-input" {
+            assert!(
+                body.contains("Video withheld: the run holds secret runtime inputs."),
+                "{body}"
+            );
+        } else {
+            assert!(
+                body.contains(&format!(
+                    "a protected field or value was on screen in the published window ({reason})."
+                )),
+                "{body}"
+            );
+        }
+        let local = qaren::report::render(&ReportInput {
+            run_id: "check-policy",
+            platform: "ios",
+            app_id: "com.test",
+            device: "test",
+            ledger: &ledger,
+        });
+        assert!(local.contains("Video policy: non-strict (declared in .qaren/target.yaml)."));
+        let hint = "If this value is test data, declare the input (test-pii) to allow the video.";
+        for output in [&body, &local] {
+            assert_eq!(
+                output.contains(hint),
+                source == Some("input"),
+                "{output}"
+            );
+            assert!(output.contains("Video withheld:"), "{output}");
+        }
+        for policy in [VideoPolicy::Strict, VideoPolicy::Undeclared] {
+            ledger.video_policy = policy;
+            let body = render(
+                &ledger,
+                false,
+                &VideoStatus::Available,
+                &VideoPublication::WithheldFill,
+            );
+            let local = qaren::report::render(&ReportInput {
+                run_id: "check-policy",
+                platform: "ios",
+                app_id: "com.test",
+                device: "test",
+                ledger: &ledger,
+            });
+            for output in [&body, &local] {
+                assert!(!output.contains(hint), "{output}");
+                assert!(output.contains("Video withheld:"), "{output}");
+            }
+        }
+    }
+}
+
+#[test]
+fn selected_config_wording_keeps_secret_and_machine_redaction() {
+    let inputs = std::sync::Arc::new(qaren::redact::InputValues::from_entries([(
+        "QAREN_INPUT_PASSWORD".into(),
+        "synthetic-config-secret".into(),
+    )]));
+    qaren::redact::with_input_scope(inputs, || {
+        for source in [
+            ".qaren/synthetic-config-secret.yaml",
+            "external config (synthetic-config-secret.yaml)",
+            "/srv/private-config/selected.yaml",
+        ] {
+            let mut ledger = failing_ledger();
+            ledger.video_policy_source = Some(source.into());
+            let body = render(
+                &ledger,
+                false,
+                &VideoStatus::Available,
+                &VideoPublication::WithheldPrivacy,
+            );
+            assert!(!body.contains("synthetic-config-secret"), "{body}");
+            assert!(!body.contains("/Users/qa"), "{body}");
+            assert!(!body.contains("/srv"), "{body}");
+            assert!(!body.contains("private-config"), "{body}");
+            assert!(body.contains("declare video: non-strict"), "{body}");
+        }
+    });
+}

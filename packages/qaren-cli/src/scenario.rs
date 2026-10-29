@@ -84,6 +84,9 @@ pub struct MetroSpec {
 pub struct IosSpec {
     pub device_type: String,
     pub runtime: String,
+    // Cap on QaReN-created pool simulators in this QaReN home; unset means 1.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_devices: Option<u32>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -474,6 +477,9 @@ impl Scenario {
                             "{field} {value:?} must be a CoreSimulator identifier ([A-Za-z0-9.-], not starting with -)"
                         )));
                     }
+                }
+                if ios.max_devices == Some(0) {
+                    return Err(invalid("ios.max_devices must be at least 1".into()));
                 }
             }
             Platform::Android => {

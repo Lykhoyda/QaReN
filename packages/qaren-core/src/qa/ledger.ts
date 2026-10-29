@@ -15,6 +15,15 @@ export type ReactConnectionEvent = 'lost' | 'reconnected';
 // The Fill ladder rung a fill row used: keyboard typing, in-app clear then typing, or the change handler.
 export type FillMethod = 'keyboard' | 'clear-type' | 'set-handler';
 
+// Observed and expected lengths, shared prefix and suffix lengths, and whether only letter case differs.
+export interface EntryMismatch {
+  len: number;
+  exp: number;
+  prefix: number;
+  suffix: number;
+  caseEq: boolean;
+}
+
 export interface LedgerRow {
   block: string;
   operationId?: number;
@@ -38,6 +47,8 @@ export interface LedgerRow {
   kept?: { typed: number; observed: number[] };
   // Characters typed into a field that changed only their letter case.
   caseNormalized?: { chars: number };
+  // How a refused private fill differed, as counts only.
+  entryMismatch?: EntryMismatch;
   // The system dialog button the runner proved it tapped.
   dialog?: { label: string; rect: { x: number; y: number; width: number; height: number } };
   method?: FillMethod;
@@ -70,6 +81,8 @@ export interface BlockResult {
 export interface Ledger {
   verdict: 'PASS' | 'FAIL';
   videoPublication?: 'eligible' | 'withheld-fill' | 'withheld-privacy' | 'unknown';
+  videoPolicy?: 'strict' | 'non-strict' | 'undeclared';
+  nonStrictPublication?: 'eligible' | 'withheld-secret';
   mediaWithheld?: {
     screenshots?: MediaLatch & { line: number; count: number };
     video?: MediaLatch & { line: number };

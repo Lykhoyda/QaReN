@@ -17,13 +17,13 @@ owns the guided onboarding procedure; [Check a plan](#check-a-plan) covers manua
 ## Doctor
 
 ```sh
-qaren doctor [--json] [--config .qaren/config.yaml]
+qaren doctor [--json] [--config .qaren/config.yaml] [--device <simulator-UUID>]
 ```
 
 Doctor prints the running binary's version, path, build, runtime and the
 [`QAREN_HOME`](#release-and-source-builds-side-by-side) in use, then one
 `PASS`, `WARN`, `FAIL` or `SKIP` row per check, each problem with its manual fix.
-It only reads files and runs bounded version, inventory and host-statistics probes:
+It only reads files and runs bounded version, process-group, inventory and host-statistics probes:
 it never writes, deletes, starts a device or restarts a service. It does not run ADB
 or start an ADB server. In text and JSON output, Doctor never prints
 file contents, environment variable values, credentials or any other config value;
@@ -39,6 +39,7 @@ that can conflict with a session or is hygiene; `SKIP` is not applicable.
 |---|---|
 | `xcode`, `ios-runtime` | `xcodebuild -version`; an available iOS simulator runtime, and the configured `ios.runtime` by name or identifier |
 | `node`, `pnpm` | `QAREN_NODE` or `node` on `PATH` is 24 or newer; a configured `nodePath` is only checked to be an executable file, never run; `pnpm` runs |
+| `pnpm-source` | The first executable `pnpm` on `PATH` and its resolved source; an offline exec probe in the app root must prove process-group preservation to pass, otherwise the row warns with the fix for `PNPM_PROCESS_GROUP_UNSUPPORTED` |
 | `corepack`, `cocoapods` | `corepack` and `pod` run (warnings) |
 | `disk` | The volumes holding the current directory and your home have the roughly 10 GiB free a clean iOS build needs (warning) |
 | `host-memory`, `host-devices` | Free memory, memory pressure, booted simulators and running Android emulators; conservative concurrent lane headroom on macOS and Linux |
@@ -50,6 +51,7 @@ that can conflict with a session or is hygiene; `SKIP` is not applicable.
 | `runtime-dirs` | Interrupted installs and other versions under `$QAREN_HOME/runtime/` |
 | `source-checkout` | From a QaReN checkout: its source version (`<version>-dev.<commit>`) matches this binary |
 | `config` | `.qaren/config.yaml` (or `--config`) loads and validates |
+| `ios-lane` | Only with `--device`: read-only check of that simulator against the [warm-lane contract](#warm-lane) |
 | `1x-claude-plugin`, `1x-codex-plugin` | The rn-dev-agent 1.x plugin, marketplace and caches in Claude Code, Codex and Cursor |
 | `1x-mcp` | A hand-registered 1.x MCP server in `~/.claude.json`, `.mcp.json`, `~/.cursor/mcp.json` or `$CODEX_HOME/config.toml` |
 | `1x-binaries`, `1x-home-dirs` | The 1.x npm bins on `PATH`; `~/.rn-dev-agent/`, `~/.cache/rn-dev-agent/`, `~/Library/Caches/rn-dev-agent/`, `~/Library/Application Support/rn-dev-agent/` (or `$XDG_STATE_HOME/rn-dev-agent/`) and `~/.claude/rn-agent/` |
@@ -66,9 +68,18 @@ locations above. Legacy rn-dev-agent state is always checked at
 `~/.claude/rn-agent/`. A missing custom directory is treated as having no leftovers
 and is never created. Project-local `.mcp.json` remains relative to the app.
 
-The probes run outside any project with Corepack's network access disabled, so a
+The pnpm version probe runs outside any project with Corepack's network access disabled, so a
 pnpm that Corepack enabled but has not yet downloaded fails until you run
 `(cd / && pnpm --version)` once with network access; the fix line says so.
+
+Before claiming resources, `qaren check` runs a finite `pnpm exec` probe in the
+app directory. If the launcher changes the process group or the probe cannot
+prove group preservation, check refuses with `PNPM_PROCESS_GROUP_UNSUPPORTED`
+(exit 4). Select a compatible pnpm version whose `exec` preserves process groups
+(the Corepack pnpm 11.5.2 JavaScript launcher is supported). For a bootstrap shim,
+put the matching installed executable ahead of the shim on that command's `PATH`.
+Selecting the native executable alone does not fix a pnpm version whose own
+`exec` changes groups. Metro still must belong to the exact group QaReN started.
 
 ### Host budget
 
@@ -700,9 +711,38 @@ live frame equals that owner's frame; the tap goes to the unchanged point. A lat
 screen change cannot turn a proven no-mutation refusal into a passing action.
 An unproven press passes only when the screen changes. That comparison includes
 each control's selected state (the iOS selected trait or Android accessibility
-selection), so a control that shows
-selection alone proves its press by becoming selected; a press that leaves it
-unchanged still fails, naming whether the target stayed selected.
+selection), so becoming selected can prove a press.
+When that comparison is unchanged and the runner explicitly reports the press
+unproven, QaReN can also verify a stable visible change within the tapped
+control's bounds, even when it exposes no accessibility state.
+
+Pixel comparison requires one uniquely identified, hittable target outside alerts
+and without a covered centre, with the app in front and a known frame. Scale is
+either reported by the screen capture or derived from the screenshot and the
+single native application root's dimensions in points; a derived scale must
+agree on both axes. Before comparing pixels, QaReN re-finds the same target in
+the post-tap tree and requires its frame and scale to match the original baseline.
+One screenshot immediately before the first dispatch adds about 200 ms per
+eligible press; that baseline is retained across the retry. Only an otherwise
+unproven press with an unchanged screen comparison takes two after-shots,
+200 ms apart. After both shots, QaReN reads the tree again and re-finds the target;
+a missing or ineligible target, or any change to its scale, x, y, width or height,
+withholds pixel proof, including a delayed reflow after the post-tap tree capture.
+The two control crops must agree and differ sufficiently from the
+original baseline; an unchanged selected chip or an unstable animation supplies
+no pixel proof. The [pixel comparator](../qaren-core/src/qa/tap-pixels.ts) owns
+the thresholds and supported PNG formats, and the
+[press regression tests](../qaren-core/test/unit/qa/option-redraw-press.test.ts)
+cover the retry and withholding boundaries.
+
+Comparison screenshots obey the ordinary screenshot privacy gates: no runtime
+inputs, no metadata-only capture and no active screenshot withholding. They use
+temporary files under the run directory that are removed after reading, and are
+not retained with ledger screenshots. Missing, failed or unsupported captures,
+ineligible targets and insufficient pixel change provide no proof; the existing
+retry and failure behavior remains. A press that leaves the screen unchanged
+still fails, naming whether the target stayed selected.
+
 Before its one retry, the walker re-captures until the same target (resolved
 through the same exact-identity rules as the step) holds one native frame
 across two captures, within the
@@ -880,6 +920,13 @@ this fallback; a stored testID replays through it exactly as the walk did, and
 the saved block stores the field's testID the focus proof used. Ambiguous targets
 and potentially mutated fills still fail.
 
+On iOS, if the bound field disappears after typing (for example, an auto-submitting
+code field), the runner skips its post-type attribute read and stops verification
+at the existence check instead of retrying value reads. Verification returns
+`unreadable` with `verifyStable: false`, preserving the `UNVERIFIED_FILL`
+classification above; disappearance does not prove the entered value or the
+submission outcome.
+
 On Android API 26 and later, a fresh read of the bound input with null text
 and no hint showing counts as empty, so clearing a plain field verifies as
 `exact`. A clear that reads back the placeholder remains `ambiguous`. Stale
@@ -958,13 +1005,12 @@ becoming `123 456`, remain honestly unverified. Only a proven retained prefix fr
 the prior value followed by the requested text permits one bounded clear-and-retype,
 with the same focus and empty-state proofs. A retained prefix after that recovery
 fails with `TEXT_ENTRY_UNVERIFIED`; other mismatches remain unverified. Unreadable
-final values also remain unverified. Private non-secure runtime inputs instead
+final values also remain unverified. SECRET non-secure runtime inputs instead
 require an exact length/content match; a confirmed mismatch is never retyped, and it
 fails the step unless the one [Fill ladder](#fill-ladder) step to the change handler then
 verifies exactly. These comparisons run inside the app; only state and comparison metadata
-leave the process, never the value. Literal Fill values keep ordinary readback even when unrelated runtime
-inputs exist. Private character counts are omitted from the
-run's public output.
+leave the process, never the value. For runtime-input tier selection, readback protection,
+value-free SECRET mismatch facts and TEST-PII output redaction, see [Runtime inputs](#runtime-inputs).
 
 Secure fields retain direct typing: they are never cleared, their
 values are never read, and the result stays unverified. **Known limit:** a prefilled
@@ -1410,8 +1456,9 @@ Optional `kind` (for `generic-value`) and `source` (for `echo`) are closed
 categories, never app data. The [privacy implementation](../qaren-core/src/qa/privacy.ts)
 owns the allowed categories and per-screen cause precedence.
 
-A structured `media-withheld` diagnostic records the first cause and plan line
-per scope (`screenshots` or `video`) in `logs/core-diagnostics.jsonl`, and a
+A structured `media-withheld` diagnostic records the first screenshot cause and
+plan line, or the final publication-window video cause and its observation line,
+in `logs/core-diagnostics.jsonl`, and a
 `media-withheld` line in `logs/core.log` retains the same cause, scope and line.
 These records use the private diagnostic boundary with used runtime inputs,
 an exported unused `QAREN_INPUT_` namespace, or no inputs; raw subprocess output
@@ -1422,9 +1469,15 @@ testIDs, geometry, character counts or element indices.
 rows retained after an interrupted walk. `mediaWithheld.screenshots` holds the
 first `reason`, optional `kind` or `source`, `line` and withheld screenshot `count`.
 `mediaWithheld.video` holds the publication-window cause and line, without a
-count, only when `videoPublication` is `withheld-privacy`.
+count: the strict privacy cause for strict or undeclared runs, or the protected
+cause for non-strict runs. In non-strict mode, a later protected cause replaces
+an earlier `runtime-input` or `echo` with source `input`, including its observation
+line. A successful pre-plan login resets the video window; a retained cause then
+uses the new window's starting line. `videoPublication` retains the strict verdict;
+`nonStrictPublication` supplies the separate non-strict verdict.
 The receipt includes one `media_withheld=<code>[/<kind|source>]@line <N>` note,
-preferring the screenshot cause. `report.md` marks each withheld row and explains
+preferring the video cause in non-strict mode and the screenshot cause otherwise.
+`report.md` marks each withheld row and explains
 the first screenshot cause and line. Line 0 means privacy latched before the walk.
 
 | Code | Meaning | What to do |
@@ -1685,16 +1738,17 @@ can still reach the judge. Literal checks still evaluate the raw screen against
 the author-provided plan text. Values held only in app state, never placed in a
 secure field, are outside this presence-based rule.
 
-**Runs with runtime inputs.** Undeclared personal data shown beside a runtime
-input cannot be masked by value, so for the whole run failure screen-text
+**Runs with SECRET runtime inputs.** Undeclared personal data shown beside a runtime
+input cannot be masked by value, so while the run holds a SECRET input, failure screen-text
 evidence and app-derived identities in failure reasons, including moved-target
-identities, become `[screen text withheld: the run holds runtime inputs]`.
+identities, become `[screen text withheld: the run holds secret runtime inputs]`.
+A run whose inputs are all TEST-PII keeps that text, redacted by the declared values only.
 Existing secure-screen replacements take precedence. Target-miss diagnostic
 candidate labels become `•••`; possible-input labels are also withheld without
 runtime inputs. These failure-text replacements reach all outputs described in
 [App-derived failure text](#app-derived-failure-text). The step, its plan target,
 failure reason and geometry remain, subject to known-value masking. Runs without
-runtime inputs keep their screen-text context under the other masking rules below
+SECRET runtime inputs keep their screen-text context under the other masking rules below
 and the secure-field rule above.
 
 The Android runner keeps exact-fill values and reconstructable fallback
@@ -1712,8 +1766,10 @@ of them applies to output before dispatch, and hash and saved-block decisions us
 the whole value. The length thresholds and dispatch timing below describe literal fills
 and observed values.
 The shared [privacy matcher](../qaren-core/src/qa/privacy.ts) protects complete values of
-three or more characters after trimming, using case-sensitive substring matches
-for raw and trimmed NFC/NFD forms. Values containing at least three digits after
+three or more characters after trimming, using substring matches
+for raw and trimmed NFC/NFD forms. Literal and observed values match case-sensitively;
+runtime inputs follow the broader [declared-value redaction rules](#runtime-inputs).
+Values containing at least three digits after
 removing whitespace, punctuation and symbols also match with any sequence of
 those separators between digits. Model requests use
 opaque identity tokens; durable text uses `•••`; a match withholds saved blocks.
@@ -1721,7 +1777,7 @@ Displayed identifiers use the same matcher while operational identifiers remain
 usable. After dispatching a numeric code of at least three digits or a secure
 field fill, the same matcher also masks contiguous fragments in every outward
 projection, independent of layout or semantic kind. Complete-value matching runs
-first, preserving identity tokens even in quoted or prefixed text; fragment
+first, preserving identity tokens for exact values even in quoted or prefixed text; fragment
 matching processes only the text left unmasked. A fragment match masks the whole
 whitespace-delimited token containing it. Numeric runs must occur contiguously
 in the code after removing whitespace, punctuation and symbols, including single
@@ -1949,6 +2005,59 @@ hide is attempted up to three times; if every attempt fails, or complete
 clearance evidence is not obtained within the reads, the walk refuses with
 `DEV_MENU_HIDE_UNVERIFIED` before the first step.
 
+### Warm lane
+
+A simulator the run explicitly owns is pinned before launch and, on `check`,
+its first screen is proven before row 1, so the leg starts on a pinned, launched
+app rather than an unknown device. Ownership means `prepare` on iOS (its created
+simulator or `--device <UUID>`), or any `check`/`pr --fresh-install` on its
+resolved simulator, including automatic selection, or `--boot-device` or
+`--restart-device` with an exact `--device`. Plain `check` on the
+booted simulator reads and writes none of its locale or keyboard settings.
+
+Before launch, on that UUID only, QaReN reads the device's global domain and
+`com.apple.Preferences` with `simctl spawn <UUID> defaults export` and writes
+the values that differ; a domain it cannot read counts as differing, so all of
+its pinned values are rewritten:
+
+| Domain | Key | Pinned value |
+|---|---|---|
+| global | `AppleLanguages` | `(en)` |
+| global | `AppleLocale` | `en_US` |
+| global | `AppleKeyboards` | `(en_US@sw=QWERTY;hw=Automatic)` |
+| global and `com.apple.Preferences` | `KeyboardAutocorrection`, `KeyboardPrediction`, `KeyboardShowPredictionBar`, `KeyboardAutocapitalization` | `false` |
+
+A fresh simulator has none of the keyboard keys and inherits the host region
+(for example `AppleLocale en_US@rg=dezzzz`); the values were probed on iOS 26.5
+and 27, where booted writes persist across reboots without a restart. The
+readback decides: a value the simulator does not keep refuses the run with
+`LANE_NOT_WARM` (exit 4) before the dev-menu defaults or launch. Simulator.app's
+hardware-keyboard switch lives in the host's
+`~/Library/Preferences/com.apple.iphonesimulator.plist`, shared by every
+simulator; QaReN changes only `DevicePreferences:<UUID>:ConnectHardwareKeyboard`
+for the resolved simulator to `false`, preserving the rest of the dictionary and
+all other devices, and creates `~/Library/Preferences` first when the home lacks
+it. A successful per-device read must prove `false`; an enabled,
+unset, failed or unreadable readback refuses with `LANE_NOT_WARM`. Doctor only
+reads the per-device key and fails unless it proves `false`. Its `ios-lane` row
+fails on differing defaults and names the keys; if neither defaults domain can
+be read (for example, the simulator is shut down), it warns instead.
+
+`check` then launches the app once and, before row 1, the core captures the first
+screen through the same projection the rows read: the app must be in front,
+in the foreground with a complete native capture, and show text. Otherwise the run
+refuses with `LANE_NOT_WARM` and no row runs. This proves a launched, visible
+app, not that the app finished loading: a splash screen with text passes.
+
+Once pinning succeeds, the receipt carries `lane` and `run.json` carries
+`resources.lane`, once per run; a refusal while pinning leaves no lane record, and its `failure.detail`
+names the key or the hardware keyboard. The record holds
+`device_id`, `build` (the native fingerprint), `layout`, `locale`, `normalized`
+(the keys this run wrote), `hardware_keyboard`, `pinned_at` and, for `check`,
+`first_screen` (`true` once observed, `false` on a first-screen refusal, absent
+when the run stopped earlier). Run one owned `prepare` or `check` per lane and
+build at the start of a session; later runs find the lane pinned and write nothing.
+
 ### Runtime inputs
 
 `Fill "staging-password" with input PASSWORD` types the value of `QAREN_INPUT_PASSWORD`;
@@ -1956,18 +2065,42 @@ see the [plan guide](../../apps/docs-site/src/content/docs/plans.mdx) for the gr
 value bounds. The owner resolves the value before running qaren; qaren reads no `.env`
 file, reference or secret store.
 
-Inputs are strict unless their named Fill explicitly opts in, for example
-`Fill "code-field" with input FIXTURE_CODE (non-secret)` for an operator-designated dev or
-staging fixture. The flag relaxes only execution hash and echo checks: pure fixture
-labels, identifiers and types retain their original hash operands, even at the filled
-field, and a redundant expected-echo declaration does not mask them to a constant.
-Strict matches win on equal or overlapping values; a non-secret alias cannot leave a
-strict value unmasked in a label hash. Repeated declarations across the plan and configured login block must agree
-before device selection. There is no config, global switch or inferred environment policy.
-All values still receive log, model and artifact redaction; screenshots and video stay
-withheld. Never annotate real credentials: qaren cannot establish whether a backend is
-production or an input is a fixture, and misclassification permits execution hashing of
-that secret despite artifact redaction.
+Inputs are SECRET unless their named Fill explicitly opts in to TEST-PII with
+`(test-pii)` (or the older spelling `(non-secret)`), for example
+`Fill "email-field" with input TEST_EMAIL (test-pii)` for a staging test account; `(secret)`
+states the default. A secure field or a field whose check subject cannot be read safely
+promotes its runtime input to SECRET whatever the plan says; literal plan text is PUBLIC.
+A SECRET value is never read back to the host: for a controlled non-secure field,
+the app compares it in place, and a mismatch records only value-free `entryMismatch` facts
+(`len`, `exp`, `prefix`, `suffix`, `caseEq`) on the ledger row. Secure fields retain the
+[focused-fill verification limits](#fill-verification-and-keyboard-fallback).
+A TEST-PII value uses ordinary in-memory readback on a readable, non-secure field unless
+it collides with a SECRET value. A native label classified as possibly containing the
+field's value does not alone promote an explicitly opted-in TEST-PII Fill to SECRET;
+label masking and media withholding still apply.
+The tier also relaxes execution hash and echo checks: pure fixture labels, identifiers
+and types retain their original hash operands, even at the filled field, and a redundant expected-echo declaration
+does not mask them to a constant. SECRET matches win on equal or overlapping values; a
+TEST-PII alias cannot leave a SECRET value unmasked in a label hash. Repeated declarations
+across the plan and configured login block must agree before device selection. Input tiers have no
+config or global opt-in and no inferred environment policy; the separate [video policy](#video-publication) controls video publication only. Any extra `QAREN_INPUT_` variable
+in the environment, even one the plan does not use, keeps logs withheld.
+In a TEST-PII run only `core.log`,
+failure screen text and Fill readback come back redacted by the declared values; Metro and
+other subprocess logs stay withheld as in a SECRET run. Declared-value redaction includes
+an e-mail's local part, plus-less local part, domain and
+percent- or HTML-encoded forms; screenshots stay withheld and video follows the [declared policy](#video-publication). Derived e-mail forms
+shorter than 3 characters (for example a 2-letter local part) are not redacted on their own,
+while the full address and every longer derived form always are. Core evidence and CLI
+logs also redact Unicode case variants, including length-changing mappings such as
+`ß` to `SS`. Broader masking does not establish model equality: a derived e-mail form
+or case variant gets a plain mask, not the full value's identity token. Only the exact
+value and its trimmed NFC/NFD forms retain that identity; if an exact declared value
+and another input's derived form match the same span, the exact value wins. Declared-value
+redaction does not cover undeclared personal data the app shows beside a TEST-PII value.
+Never annotate real credentials: qaren cannot establish whether a backend is production or
+an input is a fixture, and misclassification permits reading and execution hashing of that
+secret despite artifact redaction.
 
 - `main` captures the `QAREN_INPUT_` namespace once into the
   [invocation-scoped redaction owner](src/redact.rs). Every child spawned by the CLI has the
@@ -1987,17 +2120,21 @@ that secret despite artifact redaction.
   before the session opens.
 - The core receives the values only inside its stdin request. The walker types them, saves
   slot fills as `inputText: { input: "PASSWORD" }` and replays saved and login blocks with
-  the current run's values. A non-secret slot saves as
-  `inputText: { input: "FIXTURE_CODE", sensitivity: "non-secret" }`, with no raw value.
-  When any slot is non-secret, every block's `planHash` uses a versioned `ns1:` digest of
-  normalized source steps and the sorted non-secret names. Policy changes invalidate saved
-  evidence across the run, including unchanged earlier blocks and removal of the last opt-in.
+  the current run's values. A TEST-PII slot saves as
+  `inputText: { input: "TEST_EMAIL", sensitivity: "non-secret" }` for either opt-in spelling,
+  with no raw value. When any slot is TEST-PII, every block's `planHash` uses a versioned
+  `ns1:` digest of normalized source steps and the sorted TEST-PII names. Policy changes
+  invalidate saved evidence across the run, including unchanged earlier blocks and removal of the last opt-in.
   Ordinary blocks re-walk; policy-stale configured login evidence refuses before session open
   and must be explicitly refreshed. Legacy strict-only hashes and login admission stay unchanged.
   Private literal fills stay unsavable.
-- With any input namespace present, subprocess logs hold one withheld marker, preflight and
-  core output excerpts are withheld, and native runner output tails are not retained. A run
-  that requires inputs skips recording and screenshots.
+- With any input namespace present, Metro and other subprocess logs hold one withheld
+  marker, preflight/subprocess output excerpts and command summaries are withheld, and
+  native runner output tails are not retained. After an input is promoted to SECRET before
+  typing, subsequent core log writes and failure screen text are withheld. A run that
+  requires inputs skips screenshots. Recording is also skipped unless `video: non-strict`
+  is declared and the run holds only TEST-PII inputs; detected SECRET causes still
+  withhold video publication.
 - Slot runs retain value-free structured events in `core-diagnostics.jsonl` beside `core.log`:
   `metric` has measured stage timings, and `timing` has decision/dispatch timing, finite outcome
   codes and allowlisted native refusal codes. Dispatch refusals retain `refusalStage` and
@@ -2019,6 +2156,11 @@ that secret despite artifact redaction.
   Fills add `dispatch-bind` and `dispatch-readback` spans and iOS mutating dispatches add
   `dispatch-native`, `dispatch-settle` and `dispatch-health` spans, each carrying the dispatching
   plan row's `line` when known.
+  When a runtime Fill target has privacy evidence, `fill-privacy` records only the
+  plan `line`, a fixed `cause` and the resulting `privateValue` protection flag; a private
+  label can therefore record `privateValue: false` for TEST-PII. The
+  [diagnostic implementation](../qaren-core/src/qa/diagnostics.ts) owns the allowed causes
+  and field validation.
   Attachment emits an `admission` point metric at each retry decision and once on cancellation
   or a `CDP_NOT_CONNECTED` refusal, with the decision (`retry`, `cancelled` or `refused`),
   the attempt count, last started and completed boundary, attach stage (only when the last
@@ -2033,7 +2175,7 @@ that secret despite artifact redaction.
   `block-outcome` with its first plan line and existing `pass`/`fail`/`refused` result; only saved-login
   recovery emits `login-outcome`. A block passing is its existing block result, not a new assertion
   of authentication. These events contain no block names, slot names, input-derived tokens, screen
-  text, selectors, hashes or error messages. Raw log withholding and masking stay unchanged.
+  text, selectors, hashes or error messages.
   Timing events are capped at 20,000 independently of the 10,000 outcome-marker cap; malformed
   diagnostics and sink failures are ignored without changing the run verdict or step deadline.
 - Before a strict or literal fill dispatch, the walker registers the target's identifier when available.
@@ -2042,7 +2184,8 @@ that secret despite artifact redaction.
   produce the same marker. Other labels containing a known input use a redacted projection,
   verified by the same guard before hashing. This includes later account screens and inputs
   supplied by a configured login block that was never replayed. No echo declaration is
-  required for this masking; screenshots, video and output redaction stay withheld or masked.
+  required for this masking; screenshots remain withheld, video follows the
+  [declared policy](#video-publication), and output redaction remains active.
 - After a block's `Expect input NAME on screen` line, until the block ends, a label whose
   whole-value strict echoes are all of declared inputs hashes as the same constant marker; a
   label that also holds an undeclared input's value uses verified redaction instead. Every
@@ -2140,6 +2283,12 @@ rewrites stored paths or retires old binaries. Processes using per-home roots,
 including older binaries and `QAREN_MACHINE_LOCKS=0` sessions, remain outside
 the shared namespace. Native suite recovery needs the original HOME and the
 original lock setting and, when set, the original `QAREN_HOME`.
+The native suite's `recover --run-id <ID>` also releases a `spawn_pending`
+claim after proving the original owner gone, matching the canonical holder,
+finding no recorded process group, and proving exact-simulator runner hosts
+absent. The suite cannot pass its start gate before `spawned` is saved; recovery
+saves `not_spawned` before releasing this claim and preserves its unknown suite
+exit. Live, unknown or foreign holders still refuse recovery.
 
 Checks, including `qaren pr`, claim a
 timestamped run directory atomically and retry with a numeric suffix when the
@@ -2156,23 +2305,35 @@ the driver to exit before falling back to `SIGTERM`, then `SIGKILL` after a
 can skip the request or interrupt these waits. Unknown process identity refuses
 termination with `RUNNER_ADOPTION_REQUIRED` rather than authorizing signals.
 
+Before runner readiness, cleanup interrupts only the `xcodebuild` driver and
+waits for its exit without force-killing its initializing XCTest helpers. The
+native iOS suite and recorded-driver recovery use the same driver-only
+interrupt, allowing up to 30 seconds for graceful cancellation. If group absence
+remains unproven, cleanup retains the resources and lease.
+A failed startup also retains its driver handle until exit is proven; a surviving
+driver blocks replacement with `RUNNER_ADOPTION_REQUIRED`.
+
 After teardown, an iOS check with a recorded runner driver polls
 `~/Library/Logs/DiagnosticReports` for up to 60 seconds, stopping early on a match
-or cancellation. It looks for a SpringBoard `.ips` report written since the core
-was spawned and matched to the selected simulator by device path or coalition.
+or cancellation. It looks for a SpringBoard `.ips` report whose body `captureTime`
+is at or after core spawn and whose device path or coalition matches the selected
+simulator. File modification time and the header's report-delivery timestamp do
+not establish crash time; a missing or invalid `captureTime` is not attributed.
 A match adds `outcomes.springboard_crash` to the receipt and a lane-health entry to
-`run.json` history, optionally including a sanitized exception type; report paths
-and raw contents are not copied. This observation never changes the run result,
+`run.json` history, including the crash time in UTC and optionally a sanitized
+exception type; report paths and raw contents are not copied. Attribution to this
+run is unverified: the device lease may already be released, so a report can
+belong to a later run. This observation never changes the run result,
 and an absent note does not prove that SpringBoard stayed healthy.
 
 Cleanup proves owned process-group and exact-simulator runner-host absence
 before releasing the lease. When the leased simulator had no runner host as the
-core started, the run records the host as its own; normal teardown, cancellation
-and dead-owner cleanup then terminate that host by bundle id on that exact
-simulator only after core cleanup proves removal or absence, and re-prove the
-host's absence. The core starts the runner's `xcodebuild` driver in its own
+core started, the run records the host as its own. Cleanup observes host absence
+after core and driver cleanup; a bundle id alone cannot prove that an automation
+session has finished initializing and does not authorize host termination.
+The core starts the runner's `xcodebuild` driver in its own
 process group and announces it; the CLI records that group with the driver's
-identity and signals it, before the host, only while that identity still
+identity and interrupts that driver alone only while that identity still
 matches. Refused or unresolved core or driver cleanup leaves the host untouched
 and retains the lease. A host that was already running, or any
 present or unknown host after that, retains the lease. Cleanup rechecks an unknown
@@ -2635,8 +2796,9 @@ supported React TextInput; a label alone does not establish private-fill admissi
    meets the configured sign-in marker, QaReN replays `sign-in` from its first
    command and retries that step once. Inputs are required before device
    selection on every run with this login configuration, even if no login wall
-   appears. Runs with inputs withhold screenshots and video as documented under
-   [Runtime inputs](#runtime-inputs).
+   appears. For input-run screenshots and recording, follow
+   [Runtime inputs](#runtime-inputs); video publication follows the
+   [selected video policy](#video-publication).
 
 A block starting at Home with `Tap "Log out"` before its sign-in fills starts
 signed in. It cannot recover from a sign-in screen: its first command expects
@@ -2942,8 +3104,8 @@ a recorded port number also masks the same number elsewhere in the text. It then
 removes the `needs-qa` label only if the current head is the tested head; otherwise
 `publication.json` and the receipt record `retained-head-changed`.
 
-A saved block is published only verbatim, and only when the walk was eligible
-under the [video publication contract](#video-publication) and the
+A saved block is published only verbatim, and only when the walk met the strict
+[video publication rules](#video-publication) and the
 machine redaction would leave the block unchanged. Any other block stays in the
 run's `blocks/` directory and is never rewritten; `publication.json` and the
 receipt record `withheld <slug>: <reason>`. Published blocks are committed to the
@@ -2992,6 +3154,32 @@ its existence does not mean publication is active. Do not delete it to bypass
 contention.
 
 ### Video publication
+
+Declare the video policy in the selected app config (`--config <path>` selects another file):
+
+```yaml
+video: non-strict
+```
+
+- `strict`: today's privacy checks apply; clean walks can publish.
+- `non-strict`: use only when the app shows test data. Non-SECRET observations, literal fills and TEST-PII inputs can publish video. Detected SECRET causes still withhold it: secure fields (including empty fields), fills into unreadable fields, concealed fills of protected values, code rows and echoes attributable to protected values. A readable, non-secure field whose native label may contain its value does not alone veto a PUBLIC or TEST-PII fill. A run holding SECRET runtime inputs also withholds video, even if they are unused.
+- Absent: strict rules apply and doctor reminds you to declare a policy. Any other value, including null, refuses `SCENARIO_INVALID`.
+
+The receipt, report and PR comment name the policy and the selected config: its app-relative path for files inside the invoking project, or its filename for external configs, with private values redacted. The path identifies the declaration, not the backend or dataset. Policy and eligibility are persisted with the run; `qaren publish` never re-reads the current app config. A missing or unknown eligibility verdict still withholds video. Saved-block publication and screenshots retain strict rules in this release.
+
+Only the selected config declares the video mode; no flag, environment variable,
+plan annotation or inferred backend selects it.
+
+SECRET text masking and no readback apply in both modes. A runtime input displayed in a non-secure field can be marked `(test-pii)` only if it is test data; that annotation cannot exempt secure fields or code rows. Non-strict is an operator declaration, not proof: an undeclared secret prefilled into a non-secure field, real personal data, or a value visible only between captures can appear in a published video. QaReN does not mask video regions or identify the backend. Upgrade every CLI/CI runtime before adding the key; older versions refuse it. Removing the key restores strict behavior.
+
+For non-strict privacy withholding, the report and PR comment name the protected
+cause. They offer the `(test-pii)` hint when a SECRET input is observed in a readable,
+non-secure field and no disqualifying protected cause occurs in the publication
+window. Secure fields, code rows, protected concealed fills and handler-detected
+private fills suppress that hint, even when runtime-input classification came first.
+An unused SECRET input still withholds video without the hint.
+
+The following eligibility rules describe strict and undeclared runs. Both modes keep the same admission/login window, continuity, media validity and size limits.
 
 Video publication eligibility and a value-free withholding reason are persisted
 in `pr.json`. A plan containing any fill/type step keeps the recording local,
@@ -3044,7 +3232,7 @@ These scenario-based verbs retain the preparation receipt contract below;
 ### Usage
 
 ```sh
-qaren prepare <scenario.yaml> [--device <udid> [--boot-device]] [--json] [--dry-run]
+qaren prepare <scenario.yaml> [--new | --device <udid> [--boot-device]] [--json] [--dry-run]
 qaren prewarm <scenario.yaml> [--json]
 qaren status  <run-id> [--json]
 qaren complete <run-id> <build-log> [--json]   # cooperative handoff only
@@ -3076,8 +3264,11 @@ prepare ──► validate (scenario schema, candidate git sha, lockfile sha256)
         ──► plan     native fingerprint + machine store + cache state ──► reuse | incremental | clean
                      (decision + evidence recorded; non-reuse takes the
                       host-level build serialization lock)
-        ──► allocate  iOS:  create + boot by default; with --device, borrow
-                            the exact simulator (see Existing iOS simulator)
+        ──► allocate  iOS:  reuse, create or fall back to a temporary simulator
+                            (see iOS simulator pool); with
+                            --new, create + boot a temporary qaren-<run-id>;
+                            with --device, borrow the exact simulator (see
+                            Existing iOS simulator)
                       NUC:  ssh <host> ~/bin/android-farm start <slot> qaren-<run-id>
                             ssh -N -L 127.0.0.1:<p>:127.0.0.1:<p>  (owned pid)
                             run-scoped adb server on adb_server_port with the
@@ -3100,10 +3291,92 @@ build+launch — prepare re-verifies the candidate, issues `handoff.json`, and
 finishes at phase `handed_off`; see the cooperative handoff section below.)
 ```
 
+### iOS simulator pool
+
+For a `build.owner: cli` iOS scenario without `--device` or `--new`, `prepare`
+reuses a QaReN-created simulator from this QaReN home's pool. A member is a
+simulator QaReN created as `qaren-pool-<run-id>`, recorded in
+`pool/ios/<UUID>.json` under the [QaReN home](#release-and-source-builds-side-by-side)
+(mode 0600). A simulator without a record is
+never scanned, claimed, reset, powered or deleted, whatever its name; to use
+one, pass it with `--device`.
+
+- **Matching.** One strict `simctl list devices -j` read must show the
+  record's exact UUID, available, with the record's name and with device type
+  and runtime equal to both the record and the scenario. The pool matches
+  full CoreSimulator identifiers
+  (`com.apple.CoreSimulator.SimDeviceType.<type>`,
+  `com.apple.CoreSimulator.SimRuntime.iOS-<version>`); a short form such as
+  `iOS26.4` is first resolved to the one installed identifier it names through
+  `simctl list devicetypes --json` or `simctl list runtimes --json`. A short
+  form that names no installed identifier, or more than one, keeps that run on
+  the temporary `qaren-<run-id>` simulator, and `device_pool` reports `fresh:`
+  with the reason. A record whose UUID the
+  inventory proves absent is deleted. A malformed record refuses with
+  `RUN_RECORD_INVALID`.
+- **Claim.** Candidates are tried in UUID order under the same device lease
+  as `check` and `--device`. A live holder, or a dead holder whose run reached
+  `ready`, `walking` or `handed_off`, is occupied: that run still owns the
+  session until `qaren cleanup <run-id>`. Any other dead holder is reclaimed
+  only through that run's own cleanup. Under the lease the member must be
+  Shutdown; a Booted member with no QaReN holder is released and skipped. When
+  the pool is at its cap, each skip reason, including the
+  `xcrun simctl shutdown <UUID>` hint, appears in the `device_pool` `fresh:`
+  note.
+- **Reset.** A claimed member is booted after dependencies, strict
+  foreign-driver admission and a durable pending stop, and is then reset:
+  the app is uninstalled and proven absent, which clears its container and
+  privacy grants, then `simctl keychain <UUID> reset` runs. An uninstall or
+  reset command that fails refuses `APP_RESET_FAILED`. The reset does
+  not erase: trusted root certificates, device-level defaults, other apps,
+  Safari and WebKit data, the pasteboard, photos, location and other
+  device-wide settings survive. Use `--new` when a run needs factory state.
+- **Cap and creation.** The scenario's `ios.max_devices` (default `1`, at least
+  `1`) caps the number of present members of any device type or runtime. It limits creation
+  only, never reuse. With no free member and the pool at the cap, including a
+  recount under the creation lock that finds a parallel prepare's new member,
+  the run keeps the temporary `qaren-<run-id>` path, and `device_pool` reports
+  `fresh:` with the occupied members or, when none matches the scenario, the
+  present ones. Below the cap, `prepare` takes the per-home creation lock
+  `pool/create-ios` under the same QaReN home, recounts, creates
+  `qaren-pool-<run-id>`, takes its device lease, writes its record, arms its stop and releases the lock
+  before booting. A held creation lock refuses with `DEVICE_BUSY` naming the
+  holding run and `qaren cleanup <run-id>` as the recovery; a creator that
+  failed or crashed keeps the lock, and pool creation stays blocked until that
+  cleanup. prepare never waits for a device.
+- **Return.** `qaren cleanup <run-id>` stops the run's processes, shuts the
+  member down after strict admission with an exact readback, keeps it and
+  releases the lease last. QaReN never deletes a pool member; delete one with
+  `xcrun simctl delete <UUID>` when no run holds it, and the next scan drops
+  its record. A creation that crashed before the stop was armed is an owned
+  temporary: cleanup deletes it by UUID and name and releases the lock.
+- **`--new`** keeps the previous behaviour: a temporary `qaren-<run-id>`,
+  with no lease and no record, deleted at cleanup and not counted. `--new`
+  with `--device` or `--boot-device`, or on another verb, is a usage error
+  (exit `2`, no receipt); with an Android scenario it refuses
+  `PLATFORM_UNSUPPORTED`. `build.owner: qaren` handoff always uses a temporary
+  simulator.
+- **`--dry-run`** names the member it would claim and the reset commands, the
+  `simctl create qaren-pool-<run-id>` it would run, or, at the cap, the
+  temporary `simctl create qaren-<run-id>` with the `fresh:` reason, and
+  claims, writes and prunes nothing. A member whose dead holder's run never reached `ready` is
+  reported as reused after reclaiming that run; a Booted one counts only if
+  that run armed its stop, since cleanup shuts down nothing else.
+- **Unproven process identity.** When `ps` cannot prove this prepare's own
+  birth identity, it cannot hold a device lease, so the run keeps the
+  temporary `qaren-<run-id>` path and `device_pool` reports `fresh:` with the
+  reason.
+
+The pool records and the cap are per QaReN home: runs using a different
+QaReN home never scan these records. Device leases follow the
+[lock-root contract](#ios-admission-and-cleanup) and are machine-wide by
+default, so a run using another QaReN home that borrows a pool member with
+`--device` contends on the same lease.
+
 ### Existing iOS simulator
 
 `prepare --device <UUID>` borrows that exact existing simulator instead of
-creating `qaren-<run-id>`, for a `build.owner: cli` iOS scenario. The UUID must
+using the pool, for a `build.owner: cli` iOS scenario. The UUID must
 name one available simulator whose device type and runtime equal the
 scenario's `ios.device_type` and `ios.runtime`. Names, `booted` and partial
 UUIDs are usage errors (exit `2`, no receipt); unavailable, ambiguous or
@@ -3123,14 +3396,16 @@ dependencies, strict foreign-driver admission, boot, build, install or launch.
 It re-proves the lease and the exact target under custody before booting,
 before each install attempt, before launch and before publishing `ready`, and
 refuses rather than reboots a target that changed.
-Builds stay generic; only install, launch and probes address the UUID.
+Builds stay generic; only install, the [warm lane](#warm-lane) settings, launch
+and probes address the UUID.
 `ready` keeps the lease, Metro and app for attached agents, and `status`
 reports ready only while the run still holds that lease and the target is
 Booted with unchanged device type and runtime, alongside the other readiness
 probes. `qaren cleanup <run-id> --json`, once the prepare process has exited,
 stops the run's own processes, keeps the simulator (never shut down, erased or
 deleted) and then releases the lease. `--dry-run` shows the exact UUID and no
-create command, and claims nothing.
+create command, and claims nothing. `--device` on a pool member keeps these
+borrowed semantics: no reset and no shutdown.
 
 ## Scenarios
 
@@ -3468,19 +3743,12 @@ A scenario with `deps.policy: require-prewarm` then refuses to prepare without a
 (`DEPS_NOT_PREWARMED`) and installs with `--offline`, so no mid-run
 credential prompt can ever occur.
 
-**Prepared simulator lanes (evaluated, deferred).** Keeping a booted,
-pre-warmed simulator between runs would save the ~36s create+boot phase.
-The evaluation: a maintained lane needs an owner (who deletes it when its
-runtime/device-type pins change), a freshness rule (recreate on runtime
-update or after N days), and an ownership marker distinguishing it from
-user simulators — all solvable with the existing run-scoped-name machinery.
-It is deferred because native compile dominates whenever it is not already
-cached (the 2026-08-17 clean run spent 5m 42s building vs 5m 25s
-allocating) and a persistent simulator weakens the "no resource outlives
-its run" cleanup story. Once compile is short the balance flips — the
-incremental run spent 1m 31s in allocate against 1m 03s in
-build_and_ready — so revisit this once live reuse is measurable. A
-caller-maintained simulator can already be borrowed instead; see
+**Booted simulator lanes (deferred).** Default iOS prepare can reuse a
+shut-down QaReN-created simulator; see
+[iOS simulator pool](#ios-simulator-pool). Keeping a pool member booted
+between runs, to skip its boot as well, is deferred: cleanup shuts every
+member down so no booted resource outlives its run. A caller-maintained
+simulator can be borrowed instead; see
 [Existing iOS simulator](#existing-ios-simulator).
 
 ## Preparation ownership and safety rules
@@ -3522,8 +3790,11 @@ caller-maintained simulator can already be borrowed instead; see
   server port only counts once its pgid equals the group qaren just spawned —
   a foreign listener is a structured failure before any `adb connect`, so a
   `ready` receipt can never name a NUC lease while a local emulator answers.
-- **Cleanup is ownership-gated.** A simulator is deleted only when UDID *and*
-  run-scoped name (`qaren-<run-id>`) both match (a pending allocation whose
+- **Cleanup is ownership-gated.** A pool member or a borrowed simulator is
+  never deleted; a pool member is shut down and kept. A simulator is deleted
+  only when UDID *and* run-scoped name (`qaren-<run-id>`, or
+  `qaren-pool-<run-id>` for a creation that crashed before it joined the pool)
+  both match (a pending allocation whose
   create crashed before the UDID was learned is recovered by its unique
   run-scoped name, refusing on ambiguity). A process group is signalled only
   when the recorded leader's birth time (`ps lstart`) still matches immediately

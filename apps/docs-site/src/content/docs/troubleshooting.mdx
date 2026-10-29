@@ -20,6 +20,7 @@ Refusals exit `4` and mean the run could not start or could not decide; failures
 | `SCENARIO_INVALID`         | The configuration does not parse or fails validation            | Fix the key a validation detail names; see [Configuration](../configuration/)    |
 | `DEV_CLIENT_SCHEME_REQUIRED` | `devClientScheme` is missing or malformed                      | Set it to the app's registered URI scheme                                                   |
 | `NODE_UNSUPPORTED`         | Node is older than 24                                            | Point `nodePath` at Node 24 or newer                                                        |
+| `PNPM_PROCESS_GROUP_UNSUPPORTED` | The pnpm launcher did not prove process-group preservation | Follow the [launcher compatibility contract](https://github.com/Lykhoyda/QaReN/blob/develop/packages/qaren-cli/README.md#doctor) and the `pnpm-source` row in `qaren doctor` |
 | `DISK_BUDGET_EXCEEDED`     | Under 1 GiB free for the run storage root or the app, or under about 10 GiB for a clean iOS build | Free space on the volume `failure.detail` names, then re-run                                |
 
 ## Devices
@@ -36,6 +37,7 @@ and [iOS admission diagnostics](https://github.com/Lykhoyda/QaReN/blob/develop/p
 | `DEVICE_BUSY`        | Another run holds the device's lease                                | Wait for that run to finish, or clean it up with `qaren cleanup <its-run-id>`; a live holder is never stolen |
 | `ARTIFACT_INSTALL_FAILED` | The cached dev-client verification or installation failed | Follow `next_action`; see the [cached-install recovery contract](https://github.com/Lykhoyda/QaReN/blob/develop/packages/qaren-cli/README.md#check-a-plan) |
 | `APP_EXITED_AT_LAUNCH` | The launched app exited before it became ready; on iOS the detail cites the simulator crash report | Follow `next_action`, which for a missing app-embedded framework is a CocoaPods reinstall; see the [launch readiness contract](https://github.com/Lykhoyda/QaReN/blob/develop/packages/qaren-cli/README.md#ios-simulator-lifecycle) |
+| `LANE_NOT_WARM` | The owned simulator failed the [warm-lane contract](https://github.com/Lykhoyda/QaReN/blob/develop/packages/qaren-cli/README.md#warm-lane) | Follow `next_action` and `failure.detail`; use the linked contract for settings, first-screen requirements and doctor diagnostics |
 
 ## During the walk
 
@@ -89,4 +91,4 @@ to get around it.
 ## Why were my screenshots withheld?
 
 See the authoritative [withheld media guide](https://github.com/Lykhoyda/QaReN/blob/develop/packages/qaren-cli/README.md#why-were-my-screenshots-withheld)
-for reason codes, remedies, diagnostic locations and how screenshots and video retain their first cause.
+for reason codes, remedies, diagnostic locations and screenshot and video cause selection.

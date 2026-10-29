@@ -1172,6 +1172,27 @@ fn script_preflight_with_status(
     inventory: &str,
     status: &str,
 ) {
+    script_preflight_to_pnpm(
+        mock,
+        repo,
+        command,
+        inventory,
+        status,
+        CmdOutput::success(qaren::adapters::pnpm::GROUP_OK),
+    );
+    mock.expect_run("df", df_ok());
+    mock.expect_run("ps", CmdOutput::success("Wed Aug 12 15:59:00 2026\n")); // self lstart
+    mock.expect_run("ps", CmdOutput::success("qaren check\n")); // self command
+}
+
+fn script_preflight_to_pnpm(
+    mock: &mut MockRunner,
+    repo: &Path,
+    command: &str,
+    inventory: &str,
+    status: &str,
+    pnpm_output: CmdOutput,
+) {
     mock.expect_run("node --version", CmdOutput::success("v26.8.1\n"));
     script_plan(mock, repo);
     mock.expect_run(command, CmdOutput::success(inventory));
@@ -1182,9 +1203,40 @@ fn script_preflight_with_status(
     for tool in IOS_TOOLS {
         mock.expect_run("which", CmdOutput::success(&format!("/usr/bin/{tool}\n")));
     }
-    mock.expect_run("df", df_ok());
-    mock.expect_run("ps", CmdOutput::success("Wed Aug 12 15:59:00 2026\n")); // self lstart
-    mock.expect_run("ps", CmdOutput::success("qaren check\n")); // self command
+    mock.expect_run("QAREN_PNPM_LAUNCH_GROUP", pnpm_output);
+}
+
+#[test]
+fn incompatible_pnpm_refuses_before_claim_install_or_metro_launch() {
+    for output in [
+        CmdOutput::failed(1, ""),
+        CmdOutput::success("unproven\n"),
+        CmdOutput {
+            timed_out: true,
+            ..Default::default()
+        },
+    ] {
+        let (repo, app) = app_repo();
+        let mut mock = MockRunner::new();
+        script_preflight_to_pnpm(
+            &mut mock,
+            &repo,
+            "simctl list devices booted",
+            &booted_json(),
+            UNTRACKED_PLAN,
+            output,
+        );
+        let receipt = run(&mut mock, &request(&repo, &app, 30));
+        assert_eq!(receipt.result, ReceiptResult::Refused);
+        assert!(FailureCode::PnpmProcessGroupUnsupported.is_refusal());
+        let failure = receipt.failure.as_ref().unwrap();
+        assert_eq!(failure.code, FailureCode::PnpmProcessGroupUnsupported);
+        assert!(failure.next_action.contains("installed pnpm executable"));
+        assert_eq!(mock.remaining(), 0);
+        assert!(mock.spawned_logs.is_empty());
+        assert!(!repo.join(".locks").exists());
+        assert!(!mock.calls.iter().any(|spec| spec.label == "pnpm-install"));
+    }
 }
 
 #[test]
@@ -2065,6 +2117,13 @@ fn check_runs_the_phases_in_order_and_ends_pass_with_a_report() {
         request_line["payload"]["target"]["manifestWarm"],
         serde_json::json!({ "ms": 0, "attempts": 2 })
     );
+    // Without an explicit lane opt-in the booted simulator's settings are never read or written.
+    assert!(request_line["payload"]["target"].get("warmLane").is_none());
+    assert!(!mock
+        .calls
+        .iter()
+        .any(|c| c.label.starts_with("simctl-lane")));
+    assert!(receipt.lane.is_none());
     assert_eq!(
         request_line["payload"]["preflightCalls"],
         probe_json()["callDetails"]
@@ -2254,9 +2313,9 @@ fn host_present() -> CmdOutput {
 
 // The host was absent when the core started, so the one that survives a cancelled walk is the run's.
 #[test]
-fn a_cancelled_walk_terminates_the_runner_host_it_launched_then_releases_the_lease() {
+fn a_cancelled_walk_waits_for_its_runner_host_without_terminating_it() {
     for (after, reads, runner_host, lease) in [
-        (hosts_absent(), 1, "removed", "removed"),
+        (hosts_absent(), 1, "absent", "removed"),
         (host_present(), 3, "unresolved", "unresolved"),
     ] {
         let (repo, app) = app_repo();
@@ -2275,15 +2334,6 @@ fn a_cancelled_walk_terminates_the_runner_host_it_launched_then_releases_the_lea
             UDID,
             Some(host_present()),
         );
-        for bundle in [
-            "dev.lykhoyda.rndevagent.fastrunner",
-            "dev.lykhoyda.rndevagent.fastrunner.uitests.xctrunner",
-        ] {
-            mock.expect_run(
-                &format!("simctl terminate {UDID} {bundle}"),
-                CmdOutput::success(""),
-            );
-        }
         for _ in 0..reads {
             script_host_probe(&mut mock, UDID, after.clone());
         }
@@ -2297,6 +2347,10 @@ fn a_cancelled_walk_terminates_the_runner_host_it_launched_then_releases_the_lea
         );
         assert!(receipt.cleanup["runner_host"].starts_with(runner_host));
         assert!(receipt.cleanup["device_lease"].starts_with(lease));
+        assert!(mock
+            .calls
+            .iter()
+            .all(|spec| spec.label != "simctl-terminate"));
         assert_eq!(mock.remaining(), 0);
     }
 }
@@ -2456,7 +2510,7 @@ fn a_leased_device_refuses_before_any_provisioning() {
     for boot in [false, true] {
         let (repo, app) = app_repo();
         let lock_root = repo.join(".locks");
-        let mut holder = MockRunner::new();
+        let mut holder = qaren::exec::MockRunner::new();
         let held = qaren::lease::acquire(
             &mut holder,
             &lock_root,
@@ -2523,7 +2577,7 @@ const EARLIER_BIRTH: &str = "Wed Aug 12 15:00:00 2026";
 fn plant_holder(repo: &Path, edit: impl FnOnce(&mut RunRecord)) -> qaren::lease::Lease {
     let identity = common::identity(4242, EARLIER_BIRTH);
     let held = qaren::lease::acquire(
-        &mut MockRunner::new(),
+        &mut qaren::exec::MockRunner::new(),
         &repo.join(".locks"),
         Platform::Ios,
         UDID,
@@ -2656,7 +2710,7 @@ fn a_dead_holder_without_a_matching_record_or_clean_proof_keeps_its_lease() {
 fn a_dead_native_suite_holder_names_the_suite_recovery_command() {
     let (repo, app) = app_repo();
     let held = qaren::lease::acquire(
-        &mut MockRunner::new(),
+        &mut qaren::exec::MockRunner::new(),
         &repo.join(".locks"),
         Platform::Ios,
         UDID,
@@ -2978,6 +3032,10 @@ fn an_unreadable_disk_budget_fails_closed_before_any_claim() {
     for tool in IOS_TOOLS {
         mock.expect_run("which", CmdOutput::success(&format!("/usr/bin/{tool}\n")));
     }
+    mock.expect_run(
+        "QAREN_PNPM_LAUNCH_GROUP",
+        CmdOutput::success(qaren::adapters::pnpm::GROUP_OK),
+    );
     mock.expect_run("df", CmdOutput::failed(1, "df: No such file or directory"));
 
     let receipt = run(&mut mock, &request(&repo, &app, 30));
@@ -3099,6 +3157,10 @@ fn two_booted_simulators_refuse_without_a_device_and_borrow_the_named_one_with_i
     for tool in IOS_TOOLS {
         mock.expect_run("which", CmdOutput::success(&format!("/usr/bin/{tool}\n")));
     }
+    mock.expect_run(
+        "QAREN_PNPM_LAUNCH_GROUP",
+        CmdOutput::success(qaren::adapters::pnpm::GROUP_OK),
+    );
     mock.expect_run("df", df_ok());
     mock.expect_run("ps", CmdOutput::success("Wed Aug 12 15:59:00 2026\n"));
     mock.expect_run("ps", CmdOutput::success("qaren check\n"));
@@ -3288,6 +3350,10 @@ fn script_android_preflight_requiring(
     for tool in ANDROID_TOOLS {
         mock.expect_run("which", CmdOutput::success(&format!("/usr/bin/{tool}\n")));
     }
+    mock.expect_run(
+        "QAREN_PNPM_LAUNCH_GROUP",
+        CmdOutput::success(qaren::adapters::pnpm::GROUP_OK),
+    );
     mock.expect_run("df", df_ok());
     mock.expect_run("ps", CmdOutput::success("Wed Aug 12 15:59:00 2026\n"));
     mock.expect_run("ps", CmdOutput::success("qaren check\n"));
@@ -4890,6 +4956,19 @@ fn fresh_install_reset_build_readiness_walk_and_teardown_share_one_durable_lease
     let receipt = run(&mut runner, &req);
     assert_eq!(receipt.result, ReceiptResult::Pass, "{:?}", receipt.failure);
     assert_eq!(receipt.outcomes["fresh_install"], "proven_absent");
+    let lane = receipt
+        .lane
+        .as_ref()
+        .expect("auto-selected fresh install owns the lane");
+    assert_eq!(lane.device_id, UDID);
+    assert_eq!(lane.hardware_keyboard, Some(false));
+    assert_eq!(lane.first_screen, Some(true));
+    assert!(runner
+        .mock
+        .calls
+        .iter()
+        .filter(|c| c.label == "simctl-lane-read")
+        .all(|c| c.args[2] == UDID));
     assert_eq!(receipt.cleanup["device_lease"], "removed");
     assert_eq!(runner.mock.remaining(), 0);
     assert_direct_ios_launch(&runner.mock);
@@ -4912,6 +4991,7 @@ fn fresh_install_reset_build_readiness_walk_and_teardown_share_one_durable_lease
     let child_request: serde_json::Value =
         serde_json::from_str(runner.mock.piped_stdin_text(1).trim()).unwrap();
     assert_eq!(child_request["payload"]["lease"], runner.wire.unwrap());
+    assert_eq!(child_request["payload"]["target"]["warmLane"], true);
     let record = RunRecord::load(&req.runs_root, &run_id()).unwrap();
     assert_eq!(record.phase, Phase::Cleaned);
     assert!(record.resources.lease.is_none());
@@ -5580,6 +5660,7 @@ fn boot_device_refreshes_the_selected_state_after_reclaim_shuts_down_the_simulat
         record.scenario.ios = Some(qaren::scenario::IosSpec {
             device_type: "com.apple.CoreSimulator.SimDeviceType.iPhone-17".into(),
             runtime: "com.apple.CoreSimulator.SimRuntime.iOS-26-5".into(),
+            max_devices: None,
         });
         record.resources.ios_simulator = Some(IosSimResource {
             udid: UDID.into(),
@@ -5679,6 +5760,65 @@ fn boot_device_refreshes_the_selected_state_after_reclaim_shuts_down_the_simulat
 }
 
 #[test]
+fn a_cold_first_screen_refuses_the_leg_before_row_one_and_is_recorded_once() {
+    let (repo, app) = app_repo();
+    let mut mock = MockRunner::new();
+    script_preflight_inventory(
+        &mut mock,
+        &repo,
+        "simctl list devices -j",
+        &available_inventory("Booted"),
+    );
+    script_admission(&mut mock);
+    common::script_ios_deps(&mut mock);
+    script_admission(&mut mock);
+    mock.expect_run(
+        "simctl list devices -j",
+        CmdOutput::success(&available_inventory("Booted")),
+    );
+    script_provision_after_deps(&mut mock);
+    script_drift_status(&mut mock);
+    script_host_probe(&mut mock, UDID, hosts_absent());
+    let refusal = serde_json::json!({"verdict":"REFUSED","code":"LANE_NOT_WARM",
+        "message":"no text was observed on the app's first screen","lease":"fixture-lease"});
+    mock.expect_spawn_piped(
+        "walk.js",
+        9000,
+        &format!("{}\n", envelope(2, "result", &refusal.to_string())),
+        Some(4),
+    );
+    script_core_identity(&mut mock);
+    script_teardown(&mut mock);
+    let mut runner = LeaseObservedRunner {
+        mock,
+        repo: repo.clone(),
+        wire: None,
+        observed: Vec::new(),
+        expect_fresh_install: false,
+    };
+    let mut req = request(&repo, &app, 30);
+    req.device = Some(UDID.to_string());
+    req.boot_device = true;
+
+    let receipt = run(&mut runner, &req);
+
+    assert_eq!(
+        receipt.result,
+        ReceiptResult::Refused,
+        "{}",
+        receipt.to_json()
+    );
+    assert_eq!(receipt.outcomes["core_exit"], "4");
+    let failure = receipt.failure.as_ref().unwrap();
+    assert_eq!(failure.code, FailureCode::LaneNotWarm);
+    assert!(failure.code.is_refusal());
+    let lane = receipt.lane.as_ref().expect("the warm-lane record");
+    assert_eq!(lane.first_screen, Some(false));
+    assert_eq!(receipt.ledger.as_ref().unwrap().steps, 0);
+    assert_eq!(runner.mock.remaining(), 0);
+}
+
+#[test]
 fn boot_device_admission_boot_readback_and_walk_share_a_durable_borrowed_lease() {
     for fresh in [false, true] {
         for initial in ["Shutdown", "Booted"] {
@@ -5736,6 +5876,20 @@ fn boot_device_admission_boot_readback_and_walk_share_a_durable_borrowed_lease()
                 receipt.failure
             );
             assert_eq!(runner.mock.remaining(), 0);
+            let lane = receipt.lane.as_ref().expect("an owned lane is pinned");
+            assert_eq!(lane.device_id, UDID);
+            assert_eq!(lane.first_screen, Some(true));
+            let request_line: serde_json::Value =
+                serde_json::from_str(runner.mock.piped_stdin_text(1).trim()).unwrap();
+            assert_eq!(request_line["payload"]["target"]["warmLane"], true);
+            let lane_reads: Vec<_> = runner
+                .mock
+                .calls
+                .iter()
+                .filter(|c| c.label == "simctl-lane-read")
+                .collect();
+            assert_eq!(lane_reads.len(), 2);
+            assert!(lane_reads.iter().all(|c| c.args[2] == UDID));
             assert_eq!(receipt.cleanup["device_lease"], "removed");
             assert_eq!(receipt.cleanup["simulator"], "kept");
             let mut phases = vec![
@@ -6865,6 +7019,10 @@ fn script_pr_preflight_requiring(
     for tool in IOS_TOOLS {
         mock.expect_run("which", CmdOutput::success(&format!("/usr/bin/{tool}\n")));
     }
+    mock.expect_run(
+        "QAREN_PNPM_LAUNCH_GROUP",
+        CmdOutput::success(qaren::adapters::pnpm::GROUP_OK),
+    );
     mock.expect_run("df", df_ok());
     mock.expect_run("ps", CmdOutput::success("Wed Aug 12 15:59:00 2026\n"));
     mock.expect_run("ps", CmdOutput::success("qaren pr\n"));
@@ -6937,17 +7095,31 @@ fn pr_runs_the_walk_on_a_worktree_at_the_head_with_a_recording_in_order() {
 }
 
 #[test]
-fn a_pr_run_with_runtime_inputs_never_starts_the_recorder_and_keeps_values_private() {
-    for non_secret in [false, true] {
+fn pr_runtime_input_recording_obeys_video_policy_and_secret_inventory() {
+    for (policy, non_secret, unused) in [
+        (None, false, false),
+        (None, true, false),
+        (Some("strict"), false, false),
+        (Some("strict"), true, false),
+        (Some("non-strict"), false, false),
+        (Some("non-strict"), true, false),
+        (Some("non-strict"), false, true),
+        (Some("non-strict"), true, true),
+    ] {
+        let records = policy == Some("non-strict") && non_secret && !unused;
         let secret = "synthetic\"slot\\value";
         let (repo, app) = app_repo();
-        let annotation = if non_secret { " (non-secret)" } else { "" };
+        let annotation = if non_secret { " (test-pii)" } else { "" };
         std::fs::write(
             app.join("plan.md"),
             format!("1. Fill \"password\" with input PASSWORD{annotation}\n"),
         )
         .unwrap();
         let mut req = pr_request(&repo, &app);
+        if let Some(policy) = policy {
+            let yaml = std::fs::read_to_string(&req.config_path).unwrap();
+            std::fs::write(&req.config_path, format!("{yaml}video: {policy}\n")).unwrap();
+        }
         req.runs_root = repo.join(".qaren/runs");
         let wt = req.runs_root.join(run_id()).join("wt");
         let mut runner = PrRunner {
@@ -6969,6 +7141,9 @@ fn a_pr_run_with_runtime_inputs_never_starts_the_recorder_and_keeps_values_priva
         script_provision(mock);
         script_pr_provenance_recheck(mock);
         script_drift_status(mock);
+        if records {
+            mock.expect_spawn_failure("recordVideo", "recorder spawn failure");
+        }
         script_host_probe(mock, UDID, hosts_absent());
         mock.expect_spawn_piped("walk.js", 9000, &pr_pass_stdout(), Some(0));
         script_core_identity(mock);
@@ -6982,15 +7157,19 @@ fn a_pr_run_with_runtime_inputs_never_starts_the_recorder_and_keeps_values_priva
             "gh pr view https://github.com/o/r/pull/12",
             pr_view_json(PR_HEAD),
         );
-        let inputs = std::sync::Arc::new(qaren::redact::InputValues::from_entries([
-            ("QAREN_INPUT_PASSWORD".into(), secret.into()),
-            ("QAREN_INPUT_UNUSED".into(), "unused-synthetic".into()),
-        ]));
+        let mut entries = vec![("QAREN_INPUT_PASSWORD".into(), secret.into())];
+        if unused {
+            entries.push(("QAREN_INPUT_UNUSED".into(), "unused-synthetic".into()));
+        }
+        let inputs = std::sync::Arc::new(qaren::redact::InputValues::from_entries(entries));
         let (receipt, events) =
             qaren::redact::with_input_scope(inputs, || run_with_events(&mut runner, &req));
         assert_eq!(receipt.result, ReceiptResult::Pass, "{:?}", receipt.failure);
         assert_eq!(runner.inner.remaining(), 0);
-        assert!(!labels(&runner.inner).iter().any(|l| l.contains("record")));
+        assert_eq!(
+            labels(&runner.inner).iter().any(|l| l.contains("record")),
+            records
+        );
         assert!(receipt.outcomes["video"].starts_with("unavailable("));
         assert_eq!(
             receipt.outcomes["platform_log"],
@@ -7002,7 +7181,11 @@ fn a_pr_run_with_runtime_inputs_never_starts_the_recorder_and_keeps_values_priva
                 .filter(|e| e["event"] == "stage" && e["payload"]["name"] == "recording")
                 .map(|e| e["payload"]["state"].as_str().unwrap())
                 .collect::<Vec<_>>(),
-            ["skipped"]
+            if records {
+                vec!["running", "failed"]
+            } else {
+                vec!["skipped"]
+            }
         );
         let escaped = serde_json::to_string(secret).unwrap();
         let escaped = &escaped[1..escaped.len() - 1];
@@ -8509,6 +8692,7 @@ fn check_fails_fast_when_the_launched_ios_app_exits_and_names_the_missing_framew
     std::fs::create_dir_all(&reports).unwrap();
     let body = serde_json::json!({
         "procPath": format!("/Users/someone/Library/Developer/CoreSimulator/Devices/{UDID}/data/Containers/Bundle/Application/X/testapp.app/testapp"),
+        "captureTime": "2026-02-02 02:40:01.0000 +0000",
         "exception": {"type": "EXC_CRASH"},
         "termination": {"namespace": "DYLD", "indicator": "Library missing", "reasons": ["Library not loaded: @rpath/ReactNativeDependencies.framework/ReactNativeDependencies"]},
     });
@@ -8862,6 +9046,10 @@ fn script_android_pr_preflight(mock: &mut MockRunner, repo: &Path, wt: &Path, ap
     for tool in ANDROID_TOOLS {
         mock.expect_run("which", CmdOutput::success(&format!("/usr/bin/{tool}\n")));
     }
+    mock.expect_run(
+        "QAREN_PNPM_LAUNCH_GROUP",
+        CmdOutput::success(qaren::adapters::pnpm::GROUP_OK),
+    );
     mock.expect_run("df", df_ok());
     mock.expect_run("ps", CmdOutput::success("Wed Aug 12 15:59:00 2026\n"));
     mock.expect_run("ps", CmdOutput::success("qaren pr\n"));
@@ -9375,5 +9563,95 @@ fn saved_login_hints_use_names_and_the_first_screen_without_publishing_them() {
         let report = std::fs::read_to_string(&receipt.artifacts["report"]).unwrap();
         assert!(!report.contains("loginMarker:"));
         assert!(!report.contains("login-email"));
+    }
+}
+
+#[test]
+fn video_declaration_reaches_the_child_and_durable_run_outputs() {
+    for policy in [None, Some("strict"), Some("non-strict")] {
+        for selected in [
+            ".qaren/config.yaml",
+            ".qaren/target.yaml",
+            "external",
+            "external-parent",
+        ] {
+            let (repo, app) = app_repo();
+            let mut req = request(&repo, &app, 30);
+            if selected != ".qaren/config.yaml" {
+                let path = if selected == "external" {
+                    repo.join("selected.yaml")
+                } else if selected == "external-parent" {
+                    app.join("../selected.yaml")
+                } else {
+                    app.join(selected)
+                };
+                std::fs::copy(&req.config_path, &path).unwrap();
+                req.config_path = path;
+            }
+            assert!(req.config_path.is_absolute());
+            let source = if selected.starts_with("external") {
+                "external config (selected.yaml)"
+            } else {
+                selected
+            };
+            if let Some(policy) = policy {
+                let yaml = std::fs::read_to_string(&req.config_path).unwrap();
+                std::fs::write(&req.config_path, format!("{yaml}video: {policy}\n")).unwrap();
+            }
+            let mut mock = MockRunner::new();
+            script_preflight(&mut mock, &repo);
+            script_provision(&mut mock);
+            script_drift_status(&mut mock);
+            script_host_probe(&mut mock, UDID, hosts_absent());
+            mock.expect_spawn_piped("walk.js", 9000, &pass_stdout(), Some(0));
+            script_core_identity(&mut mock);
+            script_teardown(&mut mock);
+            let receipt = run(&mut mock, &req);
+            assert_eq!(receipt.result, ReceiptResult::Pass, "{:?}", receipt.failure);
+            let expected = policy.unwrap_or("undeclared");
+            assert_eq!(receipt.outcomes["video_policy"], expected);
+            assert_eq!(receipt.outcomes["video_policy_source"], source);
+            let request: serde_json::Value =
+                serde_json::from_str(mock.piped_stdin_text(1).trim()).unwrap();
+            assert_eq!(request["payload"]["videoPolicy"], expected);
+            let ledger: serde_json::Value = serde_json::from_slice(
+                &std::fs::read(repo.join("runs").join(run_id()).join("ledger.json")).unwrap(),
+            )
+            .unwrap();
+            assert_eq!(ledger["videoPolicy"], expected);
+            assert_eq!(ledger["videoPolicySource"], source);
+            let report = std::fs::read_to_string(&receipt.artifacts["report"]).unwrap();
+            assert!(report.contains("Video policy:"));
+            assert!(report.contains(source));
+            let ledger: qaren::core::Ledger = serde_json::from_value(ledger).unwrap();
+            let body = qaren::report::render_pr_comment(
+                &qaren::report::ReportInput {
+                    run_id: "check-policy",
+                    platform: "ios",
+                    app_id: "com.test",
+                    device: "test",
+                    ledger: &ledger,
+                },
+                None,
+                &qaren::report::PrRun {
+                    tested_sha: PR_HEAD,
+                    tested_older_commit: false,
+                    video: &qaren::record::VideoStatus::Available,
+                    screenshot: None,
+                    plan_sha256: "0",
+                    video_publication: &qaren::record::VideoPublication::WithheldPrivacy,
+                },
+                &qaren::redact::MachineIdentity::default(),
+            );
+            assert!(body.contains(source), "{body}");
+            assert!(!body.contains(&repo.display().to_string()), "{body}");
+            if policy.is_none() {
+                assert!(
+                    body.contains(&format!("declare video: non-strict in {source}.")),
+                    "{body}"
+                );
+            }
+            assert_eq!(mock.remaining(), 0);
+        }
     }
 }

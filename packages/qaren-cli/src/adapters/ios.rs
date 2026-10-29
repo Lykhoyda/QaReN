@@ -102,6 +102,32 @@ pub fn list_runtimes_spec() -> CmdSpec {
     )
 }
 
+pub fn list_devicetypes_spec() -> CmdSpec {
+    CmdSpec::new(
+        "simctl-list-devicetypes",
+        "xcrun",
+        &["simctl", "list", "devicetypes", "--json"],
+        30,
+    )
+}
+
+// (name, identifier) of each installed device type.
+pub fn parse_devicetypes(list_json: &str) -> Vec<(String, String)> {
+    let parsed: serde_json::Value = serde_json::from_str(list_json).unwrap_or_default();
+    parsed
+        .get("devicetypes")
+        .and_then(serde_json::Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(|t| {
+            Some((
+                t.get("name")?.as_str()?.to_string(),
+                t.get("identifier")?.as_str()?.to_string(),
+            ))
+        })
+        .collect()
+}
+
 // (name, identifier) of each available iOS runtime; `simctl create` accepts either.
 pub fn parse_available_runtimes(list_json: &str) -> Vec<(String, String)> {
     let parsed: serde_json::Value = serde_json::from_str(list_json).unwrap_or_default();
@@ -130,6 +156,19 @@ pub fn parse_available_runtimes(list_json: &str) -> Vec<(String, String)> {
 
 pub fn sim_name(run_id: &str) -> String {
     format!("qaren-{run_id}")
+}
+
+pub fn pool_sim_name(run_id: &str) -> String {
+    format!("qaren-pool-{run_id}")
+}
+
+pub fn keychain_reset_spec(udid: &str) -> CmdSpec {
+    CmdSpec::new(
+        "simctl-keychain-reset",
+        "xcrun",
+        &["simctl", "keychain", udid, "reset"],
+        30,
+    )
 }
 
 pub fn create_spec(name: &str, device_type: &str, runtime: &str) -> CmdSpec {
@@ -490,6 +529,157 @@ pub fn devmenu_defaults_specs(udid: &str, app_id: &str) -> Vec<CmdSpec> {
         )
     })
     .collect()
+}
+
+pub const LANE_LAYOUT: &str = "en_US@sw=QWERTY;hw=Automatic";
+pub const LANE_LOCALE: &str = "en_US";
+const LANE_DOMAINS: [&str; 2] = ["-g", "com.apple.Preferences"];
+const LANE_KEYBOARD_OFF: [&str; 4] = [
+    "KeyboardAutocorrection",
+    "KeyboardPrediction",
+    "KeyboardShowPredictionBar",
+    "KeyboardAutocapitalization",
+];
+
+// (domain index, key, `defaults write` type and value, the value as `defaults export` prints it)
+pub fn lane_defaults() -> Vec<(usize, &'static str, [&'static str; 2], &'static str)> {
+    let mut pinned = vec![
+        (
+            0,
+            "AppleLanguages",
+            ["-array", "en"],
+            "<array><string>en</string></array>",
+        ),
+        (
+            0,
+            "AppleLocale",
+            ["-string", LANE_LOCALE],
+            "<string>en_US</string>",
+        ),
+        (
+            0,
+            "AppleKeyboards",
+            ["-array", LANE_LAYOUT],
+            "<array><string>en_US@sw=QWERTY;hw=Automatic</string></array>",
+        ),
+    ];
+    for domain in 0..LANE_DOMAINS.len() {
+        for key in LANE_KEYBOARD_OFF {
+            pinned.push((domain, key, ["-bool", "false"], "<false/>"));
+        }
+    }
+    pinned
+}
+
+pub fn lane_read_specs(udid: &str) -> Vec<CmdSpec> {
+    LANE_DOMAINS
+        .iter()
+        .map(|domain| {
+            CmdSpec::new(
+                "simctl-lane-read",
+                "xcrun",
+                &["simctl", "spawn", udid, "defaults", "export", domain, "-"],
+                20,
+            )
+        })
+        .collect()
+}
+
+pub fn lane_write_spec(udid: &str, entry: usize) -> CmdSpec {
+    let (domain, key, [kind, value], _) = lane_defaults()[entry];
+    CmdSpec::new(
+        "simctl-lane-defaults",
+        "xcrun",
+        &[
+            "simctl",
+            "spawn",
+            udid,
+            "defaults",
+            "write",
+            LANE_DOMAINS[domain],
+            key,
+            kind,
+            value,
+        ],
+        20,
+    )
+}
+
+// shortcut: relies on `defaults export` putting top-level keys one tab deep (iOS 26.5 and 27); fails closed, use a plist parser if a runtime changes it.
+fn exported_value(xml: &str, key: &str) -> Option<String> {
+    let mut lines = xml
+        .lines()
+        .skip_while(|line| *line != format!("\t<key>{key}</key>"));
+    lines.next()?;
+    Some(
+        lines
+            .take_while(|line| *line != "</dict>" && !line.starts_with("\t<key>"))
+            .map(str::trim)
+            .collect(),
+    )
+}
+
+// Indexes into lane_defaults() whose exported value differs; an unread domain counts as unpinned.
+pub fn lane_unpinned(exports: &[Option<String>]) -> Vec<usize> {
+    lane_defaults()
+        .iter()
+        .enumerate()
+        .filter(|(_, (domain, key, _, exported))| {
+            exports
+                .get(*domain)
+                .and_then(Option::as_deref)
+                .and_then(|xml| exported_value(xml, key))
+                .as_deref()
+                != Some(*exported)
+        })
+        .map(|(entry, _)| entry)
+        .collect()
+}
+
+pub fn hardware_keyboard_spec(home: &Path, udid: &str) -> CmdSpec {
+    let plist = home.join("Library/Preferences/com.apple.iphonesimulator.plist");
+    CmdSpec::new(
+        "plistbuddy-hardware-keyboard",
+        "/usr/libexec/PlistBuddy",
+        &[
+            "-c",
+            &format!("Print :DevicePreferences:{udid}:ConnectHardwareKeyboard"),
+            &plist.to_string_lossy(),
+        ],
+        10,
+    )
+}
+
+// PlistBuddy creates a missing plist but not its directory, which an isolated HOME may lack.
+pub fn simulator_preferences_dir_spec(home: &Path) -> CmdSpec {
+    CmdSpec::new(
+        "mkdir-simulator-preferences",
+        "/bin/mkdir",
+        &["-p", &home.join("Library/Preferences").to_string_lossy()],
+        10,
+    )
+}
+
+pub fn hardware_keyboard_write_spec(home: &Path, udid: &str, create: bool) -> CmdSpec {
+    let mut spec = hardware_keyboard_spec(home, udid);
+    spec.label = "plistbuddy-hardware-keyboard-write".to_string();
+    spec.args[1] = if create {
+        format!("Add :DevicePreferences:{udid}:ConnectHardwareKeyboard bool false")
+    } else {
+        format!("Set :DevicePreferences:{udid}:ConnectHardwareKeyboard false")
+    };
+    spec
+}
+
+pub fn parse_hardware_keyboard(output: &crate::exec::CmdOutput) -> Option<bool> {
+    if !output.ok() {
+        return None;
+    }
+    match output.stdout.trim() {
+        "true" | "1" => Some(true),
+        "false" | "0" => Some(false),
+        _ => None,
+    }
 }
 
 pub fn launch_spec(udid: &str, app_id: &str, metro_port: u16) -> CmdSpec {
@@ -966,6 +1156,7 @@ pub fn app_pid_in_launchctl(launchctl_output: &str, app_id: &str) -> Option<u32>
 // Only short single-field tokens leave a crash report; paths and free-text reasons never do.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CrashFacts {
+    pub occurred_at_ms: Option<u64>,
     pub exception: Option<String>,
     pub termination: Option<String>,
     pub missing_library: Option<String>,
@@ -1018,11 +1209,43 @@ pub fn parse_crash_report(text: &str, app_id: &str, udid: &str) -> Option<CrashF
         .filter_map(|v| v.as_str())
         .find_map(missing_library_name);
     Some(CrashFacts {
+        occurred_at_ms: text_at("/captureTime").and_then(crash_time_epoch_ms),
         exception: text_at("/exception/type").and_then(crash_token),
         termination: (!termination_text.is_empty()).then_some(termination_text),
         missing_library_embedded: missing_library.as_ref().is_some_and(|(_, e)| *e),
         missing_library: missing_library.map(|(name, _)| name),
     })
+}
+
+fn crash_time_epoch_ms(value: &str) -> Option<u64> {
+    let (local, offset) = value.rsplit_once(' ')?;
+    let (date, fraction) = local.split_once('.').unwrap_or((local, "0"));
+    if date.len() != 19
+        || date.as_bytes()[10] != b' '
+        || fraction.is_empty()
+        || fraction.len() > 9
+        || !fraction.bytes().all(|b| b.is_ascii_digit())
+        || offset.len() != 5
+        || !matches!(offset.as_bytes()[0], b'+' | b'-')
+        || !offset.as_bytes()[1..].iter().all(u8::is_ascii_digit)
+    {
+        return None;
+    }
+    let utc = format!("{}T{}Z", date.get(..10)?, date.get(11..)?);
+    let whole = crate::timefmt::parse_iso8601_utc(&utc)?;
+    let millis = format!("{fraction:0<3}").get(..3)?.parse::<u64>().ok()?;
+    let hours = offset.get(1..3)?.parse::<u64>().ok()?;
+    let minutes = offset.get(3..5)?.parse::<u64>().ok()?;
+    if hours > 23 || minutes > 59 {
+        return None;
+    }
+    let zone_ms = (hours * 60 + minutes) * 60_000;
+    let local_ms = whole.checked_add(millis)?;
+    if offset.starts_with('+') {
+        local_ms.checked_sub(zone_ms)
+    } else {
+        local_ms.checked_add(zone_ms)
+    }
 }
 
 fn crash_token(raw: &str) -> Option<String> {
@@ -1047,7 +1270,7 @@ fn missing_library_name(reason: &str) -> Option<(String, bool)> {
     crash_token(name).map(|name| (name, embedded))
 }
 
-// The newest report for this app on this simulator written at or after `since`.
+// Report delivery can lag the crash; only captureTime establishes when it happened.
 pub fn recent_crash_facts(
     reports_dir: &Path,
     app_id: &str,
@@ -1063,10 +1286,7 @@ pub fn recent_crash_facts(
         let Ok(meta) = entry.metadata() else {
             continue;
         };
-        let Ok(modified) = meta.modified() else {
-            continue;
-        };
-        if !meta.is_file() || modified < since || meta.len() > CRASH_REPORT_MAX_BYTES {
+        if !meta.is_file() || meta.len() > CRASH_REPORT_MAX_BYTES {
             continue;
         }
         let Some(facts) = std::fs::read_to_string(&path)
@@ -1075,8 +1295,14 @@ pub fn recent_crash_facts(
         else {
             continue;
         };
-        if newest.as_ref().is_none_or(|(at, _)| modified > *at) {
-            newest = Some((modified, facts));
+        let Some(occurred_at) = facts
+            .occurred_at_ms
+            .and_then(|ms| std::time::UNIX_EPOCH.checked_add(std::time::Duration::from_millis(ms)))
+        else {
+            continue;
+        };
+        if occurred_at >= since && newest.as_ref().is_none_or(|(at, _)| occurred_at > *at) {
+            newest = Some((occurred_at, facts));
         }
     }
     newest.map(|(_, facts)| facts)
@@ -1170,5 +1396,163 @@ esac
             assert!(!runner.run_private(&symbols, &[]).clean(), "{mode}");
             let _ = std::fs::remove_dir_all(dir);
         }
+    }
+}
+
+#[cfg(test)]
+mod lane_tests {
+    use super::*;
+
+    const HEAD: &str =
+        "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<plist version=\"1.0\">\n<dict>\n";
+    const TAIL: &str = "</dict>\n</plist>\n";
+
+    fn plist(body: &str) -> Option<String> {
+        Some(format!("{HEAD}{body}{TAIL}"))
+    }
+
+    fn keyboard_off() -> String {
+        LANE_KEYBOARD_OFF
+            .iter()
+            .map(|key| format!("\t<key>{key}</key>\n\t<false/>\n"))
+            .collect()
+    }
+
+    fn pinned_global() -> String {
+        format!(
+            "\t<key>AppleKeyboards</key>\n\t<array>\n\t\t<string>{LANE_LAYOUT}</string>\n\t</array>\n\
+             \t<key>AppleLanguages</key>\n\t<array>\n\t\t<string>en</string>\n\t</array>\n\
+             \t<key>AppleLocale</key>\n\t<string>en_US</string>\n{}",
+            keyboard_off()
+        )
+    }
+
+    fn keys(entries: &[usize]) -> Vec<&'static str> {
+        let pinned = lane_defaults();
+        entries.iter().map(|&entry| pinned[entry].1).collect()
+    }
+
+    #[test]
+    fn a_pinned_lane_has_nothing_to_write() {
+        let exports = [plist(&pinned_global()), plist(&keyboard_off())];
+        assert!(lane_unpinned(&exports).is_empty());
+    }
+
+    #[test]
+    fn a_fresh_simulator_inherits_the_host_region_and_has_no_keyboard_keys() {
+        let fresh = "\t<key>AppleLanguages</key>\n\t<array>\n\t\t<string>en-US</string>\n\t\t<string>de-US</string>\n\t</array>\n\
+                     \t<key>AppleLocale</key>\n\t<string>en_US@rg=dezzzz</string>\n";
+        let unpinned = lane_unpinned(&[plist(fresh), None]);
+        assert_eq!(unpinned.len(), lane_defaults().len());
+        assert_eq!(
+            &keys(&unpinned)[..3],
+            ["AppleLanguages", "AppleLocale", "AppleKeyboards"]
+        );
+    }
+
+    #[test]
+    fn only_the_top_level_value_counts() {
+        let nested = format!(
+            "\t<key>Other</key>\n\t<dict>\n\t\t<key>AppleLocale</key>\n\t\t<string>en_US</string>\n\t</dict>\n{}",
+            pinned_global().replace("<string>en_US</string>", "<string>de_DE</string>")
+        );
+        assert_eq!(
+            keys(&lane_unpinned(&[plist(&nested), plist(&keyboard_off())])),
+            ["AppleLocale"]
+        );
+        let extra = pinned_global().replace(
+            "<string>en</string>\n",
+            "<string>en</string>\n\t\t<string>de</string>\n",
+        );
+        assert_eq!(
+            keys(&lane_unpinned(&[plist(&extra), plist(&keyboard_off())])),
+            ["AppleLanguages"]
+        );
+    }
+
+    #[test]
+    fn an_empty_export_is_unpinned_not_trusted() {
+        let unpinned = lane_unpinned(&[plist(""), plist(&keyboard_off())]);
+        assert_eq!(unpinned.len(), 3 + LANE_KEYBOARD_OFF.len());
+    }
+
+    #[test]
+    fn the_writes_are_exactly_the_approved_lane_settings() {
+        let writes: Vec<String> = (0..lane_defaults().len())
+            .map(|entry| lane_write_spec("U", entry).args[5..].join(" "))
+            .collect();
+        let mut expected = vec![
+            "-g AppleLanguages -array en".to_string(),
+            "-g AppleLocale -string en_US".to_string(),
+            "-g AppleKeyboards -array en_US@sw=QWERTY;hw=Automatic".to_string(),
+        ];
+        for domain in ["-g", "com.apple.Preferences"] {
+            for key in [
+                "KeyboardAutocorrection",
+                "KeyboardPrediction",
+                "KeyboardShowPredictionBar",
+                "KeyboardAutocapitalization",
+            ] {
+                expected.push(format!("{domain} {key} -bool false"));
+            }
+        }
+        assert_eq!(writes, expected);
+    }
+
+    #[test]
+    fn writes_target_only_the_named_simulator() {
+        for entry in 0..lane_defaults().len() {
+            let spec = lane_write_spec("UDID-1", entry);
+            assert_eq!(
+                &spec.args[..5],
+                ["simctl", "spawn", "UDID-1", "defaults", "write"]
+            );
+        }
+        let read = lane_read_specs("UDID-1");
+        assert!(read
+            .iter()
+            .all(|spec| spec.args[2] == "UDID-1" && spec.args[4] == "export"));
+    }
+
+    #[test]
+    fn hardware_keyboard_requires_one_successful_per_device_value() {
+        use crate::exec::CmdOutput;
+        for (value, expected) in [
+            ("true\n", Some(true)),
+            ("0\n", Some(false)),
+            ("false\n", Some(false)),
+            ("", None),
+            ("false\n1\n", None),
+        ] {
+            assert_eq!(
+                parse_hardware_keyboard(&CmdOutput::success(value)),
+                expected
+            );
+        }
+        let mut failed = CmdOutput::failed(1, "unreadable");
+        failed.stdout = "false\n".into();
+        assert_eq!(parse_hardware_keyboard(&failed), None);
+        for create in [false, true] {
+            let spec = hardware_keyboard_write_spec(Path::new("/h"), "UDID-1", create);
+            let command = if create { "Add" } else { "Set" };
+            let value = if create { "bool false" } else { "false" };
+            assert_eq!(
+                spec.args,
+                [
+                    "-c",
+                    &format!("{command} :DevicePreferences:UDID-1:ConnectHardwareKeyboard {value}"),
+                    "/h/Library/Preferences/com.apple.iphonesimulator.plist"
+                ]
+            );
+        }
+        let read = hardware_keyboard_spec(Path::new("/h"), "UDID-1");
+        assert_eq!(
+            read.args,
+            [
+                "-c",
+                "Print :DevicePreferences:UDID-1:ConnectHardwareKeyboard",
+                "/h/Library/Preferences/com.apple.iphonesimulator.plist"
+            ]
+        );
     }
 }

@@ -58,17 +58,10 @@ any value, when:
 - the [React coverage contract](https://github.com/Lykhoyda/QaReN/blob/develop/packages/qaren-cli/README.md#check-a-plan)
   withholds persistence for the block or walk.
 
-A fill from a [runtime input](../plans/#runtime-inputs) is saved by name only, as
-`inputText: { input: "PASSWORD" }`, and replays with the current run's value.
-A fixture annotated `(non-secret)` retains its classification as
-`inputText: { input: "FIXTURE_CODE", sensitivity: "non-secret" }`; neither form stores values.
-An effective non-secret policy gives every block a versioned `ns1:` plan hash, binding
-its source steps and the sorted non-secret names for the whole run. Changing a later
-block's policy can therefore invalidate an earlier block, including when the last opt-in
-is removed. Ordinary blocks re-walk on a mismatch; a configured login block with stale
-policy refuses before the session opens and needs an explicit refresh. Legacy strict-only
-hashes and login admission stay unchanged. An
-`Expect input NAME on screen` line is saved as its plan line and a `# qaren: echo NAME`
+For symbolic runtime-input slots, tier encoding, run-wide policy hashes and refreshing
+policy-stale login blocks, follow the CLI guide's
+[runtime-input persistence contract](https://github.com/Lykhoyda/QaReN/blob/develop/packages/qaren-cli/README.md#runtime-inputs).
+An `Expect input NAME on screen` line is saved as its plan line and a `# qaren: echo NAME`
 marker. Older qaren versions cannot replay such a block.
 
 An edited or incompatible block file is treated as new and walked again. Existing saved

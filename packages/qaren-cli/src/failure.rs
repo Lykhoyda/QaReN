@@ -12,6 +12,7 @@ pub enum FailureCode {
     CandidateRevisionMismatch,
     CandidateDrifted,
     PrereqMissing,
+    PnpmProcessGroupUnsupported,
     MetroPortOccupied,
     RunAlreadyExists,
     RunRecordUnavailable,
@@ -31,6 +32,7 @@ pub enum FailureCode {
     BuildContended,
     DeviceClaimContended,
     DeviceUnavailable,
+    LaneNotWarm,
     DevClientSchemeRequired,
     IosBuildCapabilityUnavailable,
     ArtifactInstallFailed,
@@ -76,8 +78,10 @@ impl FailureCode {
         matches!(
             self,
             FailureCode::DepsNotPrewarmed
+                | FailureCode::PnpmProcessGroupUnsupported
                 | FailureCode::DeviceClaimContended
                 | FailureCode::DeviceUnavailable
+                | FailureCode::LaneNotWarm
                 | FailureCode::BuildContended
                 | FailureCode::OwnershipUnproven
                 | FailureCode::HandoffNotPending

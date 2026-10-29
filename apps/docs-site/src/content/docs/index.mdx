@@ -19,7 +19,7 @@ hero:
       </figure>
   actions:
     - text: Set it up
-      link: getting-started/
+      link: '#get-started'
       icon: right-arrow
     - text: How it works
       link: '#how-it-works'
@@ -27,6 +27,16 @@ hero:
 ---
 
 import { Card, CardGrid, LinkCard, Steps } from '@astrojs/starlight/components';
+import AgentInstallPrompt from '../../components/AgentInstallPrompt.mdx';
+
+## Get started
+
+Open Claude Code, Codex or Cursor in your app. Copy this prompt, then paste it into
+your agent to set up QaReN for iOS simulators on an Apple silicon Mac:
+
+<AgentInstallPrompt />
+
+Prefer terminal commands or manual installation? See the [full installation guide](getting-started/).
 
 ## Your agent says it is done. Did anyone open the app?
 
@@ -92,26 +102,6 @@ happened.
 - **Your Mac:** an Apple silicon Mac with Xcode. QaReN 2.0 sets up and checks on an iOS
   simulator.
 - **Android:** coming in 2.1.
-
-## Get started
-
-Install the plugin in your agent, then run `/qaren:setup` from your app's root (in Codex or
-Cursor, ask it to set up QaReN). Setup installs
-the `qaren` command, writes the app's config, picks a simulator and runs a first smoke check.
-
-```sh
-# Claude Code
-claude plugin marketplace add Lykhoyda/QaReN
-claude plugin install qaren@qaren
-# Codex
-codex plugin marketplace add Lykhoyda/QaReN
-codex plugin add qaren@qaren
-# Cursor: add the marketplace, then install qaren from /plugin > Marketplace in
-# cursor-agent, or from Customize > Plugins in the editor
-cursor-agent plugin marketplace add https://github.com/Lykhoyda/QaReN
-```
-
-<LinkCard title="Getting started" description="Requirements, setup and your first passing check." href="getting-started/" />
 
 ## How it works
 

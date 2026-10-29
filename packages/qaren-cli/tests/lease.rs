@@ -238,6 +238,7 @@ fn dead_holder_reclaim_completes_pending_borrowed_ios_stop_before_releasing_leas
     record.scenario.ios = Some(qaren::scenario::IosSpec {
         device_type: device_type.into(),
         runtime: runtime.into(),
+        max_devices: None,
     });
     record.resources.device_borrowed = true;
     record.resources.ios_simulator = Some(IosSimResource {

@@ -117,6 +117,7 @@ fn fresh_admission_refusal_reports_only_validated_probe_evidence_and_transport_s
 
 fn request() -> CoreRequest {
     CoreRequest {
+        video_policy: Default::default(),
         run_id: RUN.to_string(),
         t0: 1_770_000_000_000,
         walk_budget_ms: 300_000,
@@ -139,6 +140,7 @@ fn request() -> CoreRequest {
             worktree: PathBuf::from("/tmp/app"),
             metro_bundle_requests: None,
             manifest_warm: None,
+            warm_lane: false,
         },
     }
 }
@@ -396,6 +398,13 @@ fn slot_diagnostics_retain_only_allowlisted_events_without_affecting_the_result(
             r#"{"kind":"block-outcome","line":2,"outcome":"pass"}"#.into(),
             r#"{"kind":"login-outcome","outcome":"refused"}"#.into(),
             r#"{"kind":"interruption-rejected","line":2,"veto":"later-target","exactDeclineCount":1,"targetIndex":1}"#.into(),
+            r#"{"kind":"fill-privacy","line":2,"cause":"secure-field","privateValue":true}"#.into(),
+            r#"{"kind":"fill-privacy","line":2,"cause":"unreadable-check-subject","privateValue":true}"#.into(),
+            r#"{"kind":"fill-privacy","line":2,"cause":"label-may-be-value","privateValue":false}"#.into(),
+            format!(r#"{{"kind":"fill-privacy","line":2,"cause":"{secret}","privateValue":true}}"#),
+            format!(r#"{{"kind":"fill-privacy","line":2,"cause":"secure-field","privateValue":true,"value":"{secret}"}}"#),
+            r#"{"kind":"fill-privacy","line":0,"cause":"secure-field","privateValue":true}"#.into(),
+            r#"{"kind":"fill-privacy","line":2,"cause":"secure-field","privateValue":"true"}"#.into(),
             format!(r#"{{"kind":"interruption-rejected","line":2,"veto":"{secret}","exactDeclineCount":1}}"#),
             r#"{"kind":"interruption-rejected","line":2,"veto":"no-candidate","exactDeclineCount":1,"label":"Maybe later"}"#.into(),
             r#"{"kind":"interruption-rejected","line":2,"veto":"no-candidate","exactDeclineCount":0.5}"#.into(),
@@ -426,7 +435,7 @@ fn slot_diagnostics_retain_only_allowlisted_events_without_affecting_the_result(
             .lines()
             .map(|line| serde_json::from_str(line).unwrap())
             .collect();
-        assert_eq!(got.len(), 5);
+        assert_eq!(got.len(), 8);
         assert!(!stored.contains("Maybe later"));
         for (event, expected) in got.iter().zip(&payloads) {
             assert_eq!(
@@ -1895,6 +1904,72 @@ fn announced_runner_drivers_reach_the_recorder_in_order_and_count_as_progress() 
     });
     assert_eq!(outcome.verdict, Verdict::Pass, "{:?}", outcome.failure);
     assert_eq!(recorded, [4242, 4343]);
+}
+
+#[test]
+fn core_log_redacts_test_pii_and_withholds_each_write_after_secure_promotion() {
+    use qaren::exec::RealRunner;
+    use qaren::redact::{with_input_scope, InputValues};
+    use std::sync::Arc;
+    const CODE: &str = "synthetic-code-123456";
+    let repo = common::temp_repo();
+    let inputs = Arc::new(InputValues::from_entries([(
+        "QAREN_INPUT_CODE".into(),
+        CODE.into(),
+    )]));
+    with_input_scope(inputs.clone(), || {
+        let resolved = inputs.admit(&["CODE".into()]).unwrap();
+        resolved.declare_test_pii(&["CODE".into()]);
+        assert_eq!(
+            CmdOutput::failed(1, "Account address").summary(),
+            "[private output withheld]"
+        );
+        let entry = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .unwrap()
+            .join("qaren-core/dist/qa/walk.js");
+        let script = r#"
+            const entry = process.argv[1];
+            process.argv[1] = undefined;
+            const {guardCoreLog} = await import(entry);
+            const {RunInputs} = await import(new URL('./inputs.js', 'file://' + entry));
+            const {createWriter} = await import(new URL('./wire.js', 'file://' + entry));
+            const reader = (await import('node:readline')).createInterface({input:process.stdin});
+            reader.once('line', line => {
+                const {runId, payload} = JSON.parse(line);
+                const inputs = new RunInputs(payload.inputs, ['CODE'], undefined, ['CODE']);
+                guardCoreLog(inputs);
+                process.stderr.write('before ' + payload.inputs.CODE.slice(0, 7));
+                process.stderr.write(payload.inputs.CODE.slice(7) + '\n');
+                inputs.protectFill('CODE', true);
+                process.stderr.write('Account phone +44 7700 900123 and address 42 Test Street\n');
+                const writer = createWriter(line => process.stdout.write(line), runId);
+                writer.result({verdict:'PASS',path:'walk',blocks:[],steps:[],jev:{calls:0,medianMs:0},llmTurns:0,escapes:0,recoveries:0});
+                reader.close(); process.stdin.destroy();
+            });
+        "#;
+        let spec = CmdSpec::new(
+            "core fixture",
+            "node",
+            &["--input-type=module", "-e", script, entry.to_str().unwrap()],
+            5,
+        );
+        let mut runner = RealRunner::with_log_executable(env!("CARGO_BIN_EXE_qaren").into());
+        let log = repo.join("core.log");
+        let child =
+            core::spawn_private(&mut runner, &spec, &log, &request(), Some(&resolved), None)
+                .unwrap();
+        let outcome = core::wait(&mut runner, child, budgets(), &mut |_, _| {});
+        assert_eq!(outcome.verdict, Verdict::Pass);
+        runner.flush_logs().unwrap();
+        let stored = std::fs::read_to_string(log).unwrap();
+        assert!(stored.starts_with("before "), "{stored}");
+        assert!(stored.contains("[private output withheld]"), "{stored}");
+        for text in [CODE, "synthet", "123456", "Account phone", "42 Test Street"] {
+            assert!(!stored.contains(text), "{stored}");
+        }
+    });
+    std::fs::remove_dir_all(repo).unwrap();
 }
 
 #[test]

@@ -11,6 +11,8 @@ pub const DEFAULT_METRO_PORT: u16 = 8791;
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
 pub struct CheckConfig {
     pub app_id: String,
+    #[serde(default, deserialize_with = "declared_video_policy")]
+    pub video: crate::record::VideoPolicy,
     #[serde(default = "d_package_manager")]
     pub package_manager: String,
     #[serde(
@@ -37,6 +39,18 @@ pub struct CheckConfig {
     // Nested keys stay snake_case; this block does not inherit camelCase.
     #[serde(default)]
     pub deadlines: Deadlines,
+}
+
+fn declared_video_policy<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> Result<crate::record::VideoPolicy, D::Error> {
+    match String::deserialize(deserializer)?.as_str() {
+        "strict" => Ok(crate::record::VideoPolicy::Strict),
+        "non-strict" => Ok(crate::record::VideoPolicy::NonStrict),
+        _ => Err(serde::de::Error::custom(
+            "video must be strict or non-strict",
+        )),
+    }
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -108,7 +122,7 @@ impl CheckConfig {
                 "config",
                 FailureCode::ScenarioInvalid,
                 format!("{} does not parse as check configuration", path.display()),
-                "fix .qaren/config.yaml (keys: appId, packageManager, metroPort, ios, android, nodePath, devClientScheme, loginBlock, loginMarker, savePlans, registryAuthEnv, deadlines)",
+                "fix .qaren/config.yaml (video must be strict or non-strict; keys: video, appId, packageManager, metroPort, ios, android, nodePath, devClientScheme, loginBlock, loginMarker, savePlans, registryAuthEnv, deadlines)",
             )
         })?;
         config.validate(path)?;

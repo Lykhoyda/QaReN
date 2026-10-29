@@ -3,7 +3,7 @@ use qaren::report::{render, ReportInput};
 use serde_json::json;
 
 fn ledger(steps: serde_json::Value, speed: serde_json::Value) -> serde_json::Value {
-    json!({"verdict":"PASS","path":"walk","publicationInterrupted":false,"blocks":[],"steps":steps,
+    json!({"verdict":"PASS","path":"walk","videoPolicy":"undeclared","publicationInterrupted":false,"blocks":[],"steps":steps,
         "jev":{"calls":0,"medianMs":0,"inputTokens":0,"callDetails":[]},"llmTurns":0,"escapes":0,"recoveries":0,"speed":speed})
 }
 

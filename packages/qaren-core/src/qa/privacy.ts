@@ -37,7 +37,8 @@ export interface MediaLatch {
 
 export const MASK = '•••';
 export const SCREEN_TEXT_WITHHELD = '[screen text withheld: a secure field is on screen]';
-export const INPUT_SCREEN_TEXT_WITHHELD = '[screen text withheld: the run holds runtime inputs]';
+export const INPUT_SCREEN_TEXT_WITHHELD =
+  '[screen text withheld: the run holds secret runtime inputs]';
 
 export function concealsScreen(screen: Screen): boolean {
   return screen.elements.some((element) => element.secure);
@@ -197,11 +198,22 @@ export function inputCheckSubject(element: Element): EvidenceStatus {
   );
 }
 
-// A field whose value is private evidence: native secure, or an input the screen model cannot read safely.
+export const PRIVATE_INPUT_CAUSES = [
+  'secure-field',
+  'unreadable-check-subject',
+  'label-may-be-value',
+] as const;
+export type PrivateInputCause = (typeof PRIVATE_INPUT_CAUSES)[number];
+
+export function privateInputCause(element: Element): PrivateInputCause | undefined {
+  if (element.secure) return 'secure-field';
+  if (inputCheckSubject(element) === 'unknown') return 'unreadable-check-subject';
+  if (nativeLabelMayBeValue(element)) return 'label-may-be-value';
+  return undefined;
+}
+
 export function isPrivateInput(element: Element): boolean {
-  return (
-    element.secure || inputCheckSubject(element) === 'unknown' || nativeLabelMayBeValue(element)
-  );
+  return privateInputCause(element) !== undefined;
 }
 
 export function nativeLabelMayBeValue(element: Element): boolean {
@@ -267,6 +279,8 @@ export const SHORT = 3;
 const escape = (value: string): string => value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 const chars = (text: string): number => [...text].length;
 const whole = (pattern: string): string => `(?<![${WORD}])${pattern}(?![${WORD}])`;
+const foldCase = (text: string): string =>
+  [...text].map((char) => char.toUpperCase().toLowerCase()).join('');
 
 function forms(value: string): string[] {
   return [
@@ -274,6 +288,23 @@ function forms(value: string): string[] {
       [value, value.trim()].flatMap((form) => [form, form.normalize('NFC'), form.normalize('NFD')]),
     ),
   ].filter(Boolean);
+}
+
+// Apps show a declared e-mail in parts or encoded, so each derived form is masked with it.
+export function emailForms(value: string): string[] {
+  const email = /^([^@\s]+)@([^@\s]+\.[^@\s]+)$/u.exec(value.trim());
+  if (!email) return [];
+  const [whole, local, domain] = email;
+  return [
+    ...new Set([
+      encodeURIComponent(whole),
+      ...['&#64;', '&#x40;', '&commat;'].map((at) => whole.replace('@', at)),
+      local,
+      encodeURIComponent(local),
+      local.split('+')[0],
+      domain,
+    ]),
+  ].filter((form) => chars(form) >= SHORT && form !== whole);
 }
 
 const DIGIT_GAP = '[\\s\\p{White_Space}\\p{P}\\p{S}]';
@@ -300,33 +331,83 @@ export function matchPrivate(
       )
         return [];
       const candidates = forms(value.text).flatMap((form) =>
-        value.provenance === 'input' ? [form, JSON.stringify(form).slice(1, -1)] : [form],
+        value.provenance === 'input'
+          ? [
+              form,
+              JSON.stringify(form).slice(1, -1),
+              // Derived forms widen output masking only; persisted decisions match the value itself.
+              ...(policy === 'persisted' ? [] : emailForms(form)),
+            ]
+          : [form],
       );
-      const patterns = [...new Set(candidates)].map((form) =>
-        value.provenance === 'code' || (value.provenance === 'secret' && length === 1)
-          ? whole(escape(form))
-          : escape(form),
-      );
+      const anyCase = value.provenance === 'input' && policy !== 'persisted';
+      const patterns = [...new Set(candidates)].map((form) => ({
+        pattern:
+          value.provenance === 'code' || (value.provenance === 'secret' && length === 1)
+            ? whole(escape(form))
+            : anyCase
+              ? escape(foldCase(form))
+              : escape(form),
+        length: form.length,
+        anyCase,
+      }));
       const digits = digitForm(value.text);
-      if (digits) patterns.push(digits);
-      return patterns.map((pattern) => ({ pattern, value: value.text }));
+      if (digits) patterns.push({ pattern: digits, length: digits.length, anyCase: false });
+      return patterns.map((pattern) => ({
+        ...pattern,
+        value: value.text,
+        input: value.provenance === 'input',
+      }));
     })
-    .sort((a, b) => b.pattern.length - a.pattern.length);
+    .sort((a, b) => b.length - a.length);
   const fragments = (set.fragments ?? []).flatMap(forms);
   if (!rules.length && !fragments.length) return { text, hit: false };
   let hit = false;
   const parts: { text: string; masked: boolean }[] = [];
   let offset = 0;
   if (rules.length) {
-    const pattern = new RegExp(rules.map((rule) => `(${rule.pattern})`).join('|'), 'gu');
-    for (const match of text.matchAll(pattern)) {
-      const index = rules.findIndex((_, i) => match[i + 1] !== undefined);
-      parts.push({ text: text.slice(offset, match.index), masked: false });
+    const starts: number[] = [];
+    const ends: number[] = [];
+    let folded = '';
+    let at = 0;
+    if (rules.some((rule) => rule.anyCase)) {
+      for (const char of text) {
+        const form = foldCase(char);
+        for (let i = 0; i < form.length; i++) {
+          starts.push(at);
+          ends.push(at + char.length);
+        }
+        folded += form;
+        at += char.length;
+      }
+    }
+    const matches = rules
+      .flatMap((rule) =>
+        [...(rule.anyCase ? folded : text).matchAll(new RegExp(rule.pattern, 'gu'))].map(
+          (match) => {
+            const start = rule.anyCase ? starts[match.index] : match.index;
+            const end = rule.anyCase
+              ? ends[match.index + match[0].length - 1]
+              : match.index + match[0].length;
+            return { start, end, rule, exact: forms(rule.value).includes(text.slice(start, end)) };
+          },
+        ),
+      )
+      .sort(
+        (a, b) =>
+          a.start - b.start ||
+          b.end - a.end ||
+          Number(b.exact) - Number(a.exact) ||
+          b.rule.length - a.rule.length,
+      );
+    for (const { start, end, rule, exact } of matches) {
+      if (start < offset) continue;
+      parts.push({ text: text.slice(offset, start), masked: false });
       parts.push({
-        text: policy === 'model' ? (token?.(rules[index].value) ?? MASK) : MASK,
+        text: policy === 'model' && (!rule.input || exact) ? (token?.(rule.value) ?? MASK) : MASK,
         masked: true,
       });
-      offset = match.index + match[0].length;
+      offset = end;
       hit = true;
     }
   }
@@ -691,8 +772,10 @@ export function formatSensitivePixels(
 
 export class ObservedPrivacy {
   private readonly inputValues = new Set<string>();
+  private readonly strictInputValues = new Set<string>();
   private readonly observed = new Set<string>();
   private readonly concealed = new Set<string>();
+  private readonly protectedConcealed = new Set<string>();
   private readonly secret = new Set<string>();
   private readonly preclassified: string[] = [];
   private readonly filledValues = new Set<string>();
@@ -706,8 +789,14 @@ export class ObservedPrivacy {
   private firstLatch?: MediaLatch;
   private windowLatch?: MediaLatch;
   private latestLatch?: MediaLatch;
+  private secretWindowLatch?: MediaLatch;
+  private secretLatestLatch?: MediaLatch;
   // Fields typed into without a readable value, by any identity ('' is any input); only a seen field can leave.
-  private readonly concealedFields = new Set<{ ids: string[]; seen: boolean }>();
+  private readonly concealedFields = new Set<{
+    ids: string[];
+    seen: boolean;
+    protectedValue: boolean;
+  }>();
   private shown: Element[] = [];
 
   constructor(private readonly typed: readonly string[] = []) {}
@@ -717,9 +806,11 @@ export class ObservedPrivacy {
     this.preclassified.push(...values.filter(Boolean));
   }
 
-  classifyInputs(values: readonly string[]): void {
+  classifyInputs(values: readonly string[], strict: readonly string[] = values): void {
     values.filter(Boolean).forEach((value) => this.inputValues.add(value));
+    strict.filter(Boolean).forEach((value) => this.strictInputValues.add(value));
     if (this.inputValues.size) this.mark({ reason: 'runtime-input' });
+    if (this.strictInputValues.size) this.markSecret({ reason: 'runtime-input' });
   }
 
   assertInputHashSafe(text: string, values: Iterable<string> = this.inputValues): boolean {
@@ -739,11 +830,16 @@ export class ObservedPrivacy {
   observe(screen: Screen): void {
     this.sensitiveLatest = false;
     this.latestLatch = undefined;
+    this.secretLatestLatch = undefined;
     this.shown = screen.elements.filter((element) => !element.offscreen);
     for (const field of this.concealedFields)
       if (this.showing(field.ids)) field.seen = true;
       else if (field.seen) this.concealedFields.delete(field);
-    if (this.concealedFields.size > 0) this.mark({ reason: 'concealed-fill' });
+    if (this.concealedFields.size > 0)
+      this.mark(
+        { reason: 'concealed-fill' },
+        [...this.concealedFields].some((field) => field.protectedValue),
+      );
     const cause = privateScreens.get(screen)?.cause;
     if (cause) this.mark(cause);
     for (const value of privateScreens.get(screen)?.secrets ?? []) this.secret.add(value);
@@ -787,24 +883,23 @@ export class ObservedPrivacy {
     ];
     const values = this.privateSet();
     const folded = text.map((line) => line.normalize('NFC').toLowerCase());
-    const match = values.values.find(
-      (value) =>
-        text.some(
-          (line) =>
-            matchPrivate(
-              line,
-              {
-                values: [value],
-                fragments: values.fragments?.filter((fragment) => fragment === value.text),
-              },
-              'persisted',
-            ).hit,
-        ) ||
-        (chars(value.text.trim()) < SHORT &&
-          forms(value.text).some((form) => text.some((line) => line.includes(form)))) ||
-        (chars(value.text.trim()) >= SHORT &&
-          folded.some((line) => line.includes(value.text.trim().normalize('NFC').toLowerCase()))),
-    );
+    const matches = (value: PrivateValue): boolean =>
+      text.some(
+        (line) =>
+          matchPrivate(
+            line,
+            {
+              values: [value],
+              fragments: values.fragments?.filter((fragment) => fragment === value.text),
+            },
+            'persisted',
+          ).hit,
+      ) ||
+      (chars(value.text.trim()) < SHORT &&
+        forms(value.text).some((form) => text.some((line) => line.includes(form)))) ||
+      (chars(value.text.trim()) >= SHORT &&
+        folded.some((line) => line.includes(value.text.trim().normalize('NFC').toLowerCase())));
+    const match = values.values.find(matches);
     if (
       text.some((line) => matchPrivate(line, values, 'persisted').hit) ||
       values.values.some(
@@ -819,6 +914,14 @@ export class ObservedPrivacy {
       )
     )
       this.mark({ reason: 'echo', ...(match ? { source: match.provenance } : {}) });
+    const secret = values.values.find(
+      (value) =>
+        (['secret', 'code'].includes(value.provenance) ||
+          (value.provenance === 'concealed' && this.protectedConcealed.has(value.text)) ||
+          (value.provenance === 'input' && this.strictInputValues.has(value.text))) &&
+        matches(value),
+    );
+    if (secret) this.markSecret({ reason: 'echo', source: secret.provenance });
   }
 
   didFill(value?: string): void {
@@ -826,13 +929,25 @@ export class ObservedPrivacy {
     if (value) this.filledValues.add(value);
   }
 
-  concealFallback(value: string, secure = false, ...fields: (string | undefined)[]): void {
+  observePrivateFill(value: string): void {
+    this.secret.add(value);
+    this.mark({ reason: 'secure-field' });
+  }
+
+  concealFallback(
+    value: string,
+    protection: boolean | { secure: boolean; protectedValue: boolean } = false,
+    ...fields: (string | undefined)[]
+  ): void {
+    const secure = typeof protection === 'boolean' ? protection : protection.secure;
+    const protectedValue = secure || typeof protection === 'boolean' || protection.protectedValue;
     const ids = fields.filter((field): field is string => Boolean(field));
     if (ids.length === 0) ids.push('');
-    this.concealedFields.add({ ids, seen: this.showing(ids) });
+    this.concealedFields.add({ ids, seen: this.showing(ids), protectedValue });
     this.concealed.add(value);
+    if (protectedValue) this.protectedConcealed.add(value);
     if (secure) this.secret.add(value);
-    this.mark({ reason: 'concealed-fill' });
+    this.mark({ reason: 'concealed-fill' }, protectedValue);
   }
 
   private showing(ids: readonly string[]): boolean {
@@ -845,13 +960,30 @@ export class ObservedPrivacy {
     );
   }
 
-  private mark(latch: MediaLatch): void {
+  private mark(
+    latch: MediaLatch,
+    secret = ['secure-field', 'concealed-fill', 'code-row'].includes(latch.reason),
+  ): void {
     this.firstLatch ??= latch;
     this.windowLatch ??= latch;
     this.latestLatch ??= latch;
     this.sensitivePixels = true;
     this.sensitiveInWindow = true;
     this.sensitiveLatest = true;
+    if (secret) this.markSecret(latch);
+  }
+
+  private markSecret(latch: MediaLatch): void {
+    const replaceable = (cause: MediaLatch | undefined): boolean =>
+      !cause ||
+      cause.reason === 'runtime-input' ||
+      (cause.reason === 'echo' && cause.source === 'input');
+    if (replaceable(this.secretWindowLatch)) this.secretWindowLatch = latch;
+    if (replaceable(this.secretLatestLatch)) this.secretLatestLatch = latch;
+  }
+
+  secretWindowLatched(): MediaLatch | undefined {
+    return this.secretWindowLatch;
   }
 
   latched(): MediaLatch | undefined {
@@ -870,6 +1002,7 @@ export class ObservedPrivacy {
   startWindow(): void {
     this.sensitiveInWindow = this.sensitiveLatest;
     this.windowLatch = this.latestLatch;
+    this.secretWindowLatch = this.secretLatestLatch;
   }
 
   windowClean(): boolean {
@@ -893,10 +1026,10 @@ export class ObservedPrivacy {
         ),
       ],
       values: [
-        ...tagged(this.inputValues, 'input'),
         ...tagged(this.provenCodes, 'code'),
         ...tagged(this.secret, 'secret'),
         ...tagged(this.concealed, 'concealed'),
+        ...tagged(this.inputValues, 'input'),
         ...tagged([...this.typed, ...this.preclassified], 'typed'),
         ...tagged(this.observed, 'observed'),
       ],
@@ -919,10 +1052,10 @@ export class ObservedPrivacy {
     return matchPrivate(text, this.privateSet(), 'durable').text;
   }
 
-  // Undeclared personal data shown beside runtime inputs cannot be masked by value, so no screen text leaves.
+  // Beside a SECRET input undeclared personal data cannot be masked by value; TEST-PII runs accept that.
   textWithheld(screen: Screen): string | undefined {
     if (concealsScreen(screen)) return SCREEN_TEXT_WITHHELD;
-    if (this.inputValues.size) return INPUT_SCREEN_TEXT_WITHHELD;
+    if (this.strictInputValues.size) return INPUT_SCREEN_TEXT_WITHHELD;
   }
 
   screenText(screen: Screen): string[] {

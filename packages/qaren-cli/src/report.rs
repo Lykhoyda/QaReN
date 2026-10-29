@@ -288,6 +288,59 @@ fn reconnect_note(summary: &LedgerSummary) -> String {
     format!(" · React reconnected at line {}", lines.join(", "))
 }
 
+fn video_policy_text(ledger: &Ledger) -> String {
+    let source = ledger
+        .video_policy_source
+        .as_deref()
+        .unwrap_or("an unrecorded config path");
+    match ledger.video_policy {
+        crate::record::VideoPolicy::Undeclared => {
+            format!("Video policy: not declared in {source}, so strict rules apply.")
+        }
+        policy => format!("Video policy: {} (declared in {source}).", policy.as_str()),
+    }
+}
+
+fn video_withholding(ledger: &Ledger, strict: &VideoPublication) -> Option<String> {
+    let publication = ledger
+        .video_policy
+        .publication(strict, ledger.non_strict_publication.as_ref());
+    let reason = publication.withholding_reason()?;
+    let cause = ledger
+        .media_withheld
+        .as_ref()
+        .and_then(|media| media.video.as_ref());
+    let code = cause
+        .map(|entry| format!(" ({})", entry.reason.as_str()))
+        .unwrap_or_default();
+    if ledger.video_policy == crate::record::VideoPolicy::NonStrict
+        && publication == VideoPublication::WithheldPrivacy
+    {
+        let escape = if cause.is_some_and(|cause| {
+            cause.reason == crate::core::WithholdCause::Echo
+                && cause.source == Some(crate::core::MediaSource::Input)
+        }) {
+            " If this value is test data, declare the input (test-pii) to allow the video."
+        } else {
+            ""
+        };
+        if cause.is_some_and(|cause| cause.reason == crate::core::WithholdCause::RuntimeInput) {
+            return Some(format!("the run holds secret runtime inputs.{escape}"));
+        }
+        return Some(format!(
+            "a protected field or value was on screen in the published window{code}.{escape}"
+        ));
+    }
+    Some(format!(
+        "{reason}{}.",
+        if publication == VideoPublication::WithheldPrivacy {
+            code
+        } else {
+            String::new()
+        }
+    ))
+}
+
 pub fn render(input: &ReportInput<'_>) -> String {
     let summary = summarize(input.ledger);
     let mut out = String::new();
@@ -347,6 +400,13 @@ pub fn render(input: &ReportInput<'_>) -> String {
         }
     }
     out.push_str("\n## Run details\n\n");
+    out.push_str(&format!("- {}\n", prose(&video_policy_text(input.ledger))));
+    if let Some(reason) = video_withholding(
+        input.ledger,
+        &input.ledger.video_publication.clone().unwrap_or_default(),
+    ) {
+        out.push_str(&format!("- Video withheld: {}\n", prose(&reason)));
+    }
     if let Some(entry) = input
         .ledger
         .media_withheld
@@ -469,19 +529,20 @@ pub fn render_pr_comment(
         );
     }
     out.push_str("\n\n");
-    if let Some(reason) = pr.video_publication.withholding_reason() {
-        let code = if *pr.video_publication == VideoPublication::WithheldPrivacy {
-            input
+    out.push_str(&format!("{}\n\n", clean(&video_policy_text(input.ledger))));
+    if let Some(reason) = video_withholding(input.ledger, pr.video_publication) {
+        out.push_str(&format!("Video withheld: {}\n\n", clean(&reason)));
+        if input.ledger.video_policy == crate::record::VideoPolicy::Undeclared {
+            let source = input
                 .ledger
-                .media_withheld
-                .as_ref()
-                .and_then(|media| media.video.as_ref())
-                .map(|entry| format!(" ({})", entry.reason.as_str()))
-                .unwrap_or_default()
-        } else {
-            String::new()
-        };
-        out.push_str(&format!("Video withheld: {reason}{code}.\n\n"));
+                .video_policy_source
+                .as_deref()
+                .unwrap_or("the app config");
+            out.push_str(&format!(
+                "If this app shows test data only, declare video: non-strict in {}.\n\n",
+                clean(source)
+            ));
+        }
     } else {
         match pr.video {
             VideoStatus::Available => out.push_str("Video of the walk is attached below.\n\n"),
@@ -895,6 +956,32 @@ mod tests {
             line.ends_with("; field kept 10 of 13 chars on 2 attempts\n"),
             "{line}"
         );
+    }
+
+    #[test]
+    fn entry_mismatch_counts_survive_a_masked_reason_in_the_report() {
+        let ledger: Ledger = serde_json::from_value(serde_json::json!({
+            "verdict": "FAIL", "path": "walk", "blocks": [],
+            "steps": [{
+                "block": "b", "line": 5, "attempt": 1, "kind": "step", "resolvedBy": "exact",
+                "t": 0, "outcome": "fail",
+                "reason": "TEXT_ENTRY_UNVERIFIED: The private input differs from the requested text (len •••, exp •••, prefix •••, suffix •••); not retrying.",
+                "entryMismatch": { "len": 17, "exp": 22, "prefix": 2, "suffix": 15, "caseEq": false },
+            }],
+            "jev": { "calls": 0, "medianMs": 0 }, "llmTurns": 0, "escapes": 0, "recoveries": 0,
+        }))
+        .unwrap();
+        let line = row_line(&ledger.steps[0]);
+        assert!(
+            line.ends_with("; field held 17 of 22 chars, first 2 and last 15 matching\n"),
+            "{line}"
+        );
+        let malformed: crate::core::Row = serde_json::from_value(serde_json::json!({
+            "block": "b", "line": 5, "attempt": 1, "kind": "step", "resolvedBy": "exact",
+            "t": 0, "outcome": "fail", "entryMismatch": { "len": "seventeen" },
+        }))
+        .unwrap();
+        assert_eq!(malformed.entry_mismatch, None);
     }
 
     #[test]

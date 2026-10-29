@@ -356,6 +356,31 @@ const ADMISSION_KEYS: &[&str] = &[
 fn clean(value: &Value) -> Option<Value> {
     let fields = value.as_object()?;
     let raw_kind = fields.get("kind")?.as_str()?;
+    if raw_kind == "fill-privacy" {
+        if fields
+            .keys()
+            .any(|key| !["kind", "line", "cause", "privateValue"].contains(&key.as_str()))
+        {
+            return None;
+        }
+        let line = fields.get("line")?.as_u64()?;
+        let cause = fields.get("cause")?.as_str()?;
+        if line == 0
+            || line > MAX_NUMBER as u64
+            || ![
+                "secure-field",
+                "unreadable-check-subject",
+                "label-may-be-value",
+            ]
+            .contains(&cause)
+        {
+            return None;
+        }
+        return Some(serde_json::json!({
+            "kind": raw_kind, "line": line, "cause": cause,
+            "privateValue": fields.get("privateValue")?.as_bool()?,
+        }));
+    }
     if raw_kind == "media-withheld" {
         let scope = fields.get("scope")?.as_str()?;
         if !["screenshots", "video"].contains(&scope) {
@@ -619,7 +644,7 @@ impl Sink {
     pub(super) fn new(log: &Path) -> Self {
         let path = log.with_file_name("core-diagnostics.jsonl");
         Self {
-            file: crate::redact::private_output_mode()
+            file: crate::redact::input_namespace_present()
                 .then(|| private_file(&path))
                 .flatten(),
             path,

@@ -2,7 +2,7 @@ import { QaDispatchError } from '../domain/qa-dispatch.js';
 import { ownedLogin, parseInputPreflight } from './input-preflight.js';
 import { readAndroidLabelProvenance } from '../runners/rn-android-runner-client.js';
 import { ObservedPrivacy } from './privacy.js';
-import { InputPrivacyRefusal, withInputs, currentInputs } from './inputs.js';
+import { InputPrivacyRefusal, withInputs, currentInputs, type RunInputs } from './inputs.js';
 import {
   cancellationSignal,
   interruptible,
@@ -11,6 +11,7 @@ import {
 } from '../domain/cancellation.js';
 import { readFileSync, realpathSync } from 'node:fs';
 import { join } from 'node:path';
+import { mkdtemp, readFile, rm } from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
 import { parseArgs } from 'node:util';
 import { CDPClient } from '../cdp-client.js';
@@ -29,6 +30,7 @@ import {
   createDevicePressHandler,
   createDeviceScrollHandler,
   readReactInputValue,
+  entryMismatchOf,
 } from '../handlers/device-interact.js';
 import { captureQaScreenshot } from './screenshot.js';
 import {
@@ -78,6 +80,7 @@ import { summarizeJev } from './ledger.js';
 import { isSecretEnvName, redactApiKey, setRedactionKey } from '../util/redact.js';
 import { createStop, watchOwnerPipe, watchParent } from './stop.js';
 import { prove } from './prove.js';
+import { firstScreenFacts, warmLaneRefusal } from './warm-lane.js';
 import {
   admissionMetric,
   admit,
@@ -108,6 +111,28 @@ const log = (message: string): void => {
     `qaren-core: ${redactApiKey(currentInputs()?.redact(message) ?? message)}\n`,
   );
 };
+
+export function guardCoreLog(inputs: RunInputs): void {
+  if (!inputs.hasInputs) return;
+  const write = process.stderr.write.bind(process.stderr);
+  process.stderr.write = ((chunk: unknown, ...args: unknown[]) => {
+    if (inputs.hasStrictInputs) {
+      const callback = args.find((arg) => typeof arg === 'function') as (() => void) | undefined;
+      return write('[private output withheld]\n', callback);
+    }
+    // The core matcher also covers trimmed and Unicode-normalized forms the CLI redactor cannot.
+    const text =
+      typeof chunk === 'string'
+        ? chunk
+        : chunk instanceof Uint8Array
+          ? Buffer.from(chunk).toString('utf8')
+          : undefined;
+    return Reflect.apply(write, process.stderr, [
+      text === undefined ? chunk : inputs.redact(text),
+      ...args,
+    ]);
+  }) as typeof process.stderr.write;
+}
 
 export async function reactFocused(client: CDPClient | null, testID: string): Promise<boolean> {
   return (await readReactInputValue(client, testID, { focusOnly: true }))?.focused === true;
@@ -309,6 +334,7 @@ function act(
           ...(fillMethodOf(error instanceof HandlerError ? error.meta : undefined)
             ? { method: fillMethodOf((error as HandlerError).meta) }
             : {}),
+          ...entryMismatchFrom(error),
         };
       }
     },
@@ -337,6 +363,7 @@ function act(
         ...(fillMethodOf(error instanceof HandlerError ? error.meta : undefined)
           ? { method: fillMethodOf((error as HandlerError).meta) }
           : {}),
+        ...entryMismatchFrom(error),
       };
     },
   );
@@ -404,6 +431,12 @@ function logActionSettle(meta?: Record<string, unknown>, timing?: TimingContext)
   } catch {
     // Diagnostics cannot change an action's outcome.
   }
+}
+
+function entryMismatchFrom(error: unknown): Pick<ActResult, 'entryMismatch'> {
+  const entryMismatch =
+    error instanceof HandlerError ? entryMismatchOf(error.meta?.entryMismatch) : undefined;
+  return entryMismatch ? { entryMismatch } : {};
 }
 
 function fillMethodOf(meta: Record<string, unknown> | undefined): ActResult['method'] {
@@ -666,6 +699,7 @@ async function openSession(
   const deps: WalkerDeps = {
     note: log,
     mediaWithheld: diagnostic,
+    videoPolicy: request.videoPolicy ?? 'undeclared',
     privacy,
     judge: createJev({ apiKey, now, timing }),
     interruptionVeto: !!apiKey,
@@ -706,11 +740,23 @@ async function openSession(
         now,
         observe: timing,
       }),
-    fill: (ref, text, qaContext) =>
-      act(() => fill({ ref, text, qaContext, qaTiming: { now, observe: timing } }), true, {
-        now,
-        observe: timing,
-      }),
+    fill: (ref, text, qaContext, privateValue, onPrivateInput) =>
+      act(
+        () =>
+          fill({
+            ref,
+            text,
+            qaContext,
+            privateValue,
+            onPrivateInput,
+            qaTiming: { now, observe: timing },
+          }),
+        true,
+        {
+          now,
+          observe: timing,
+        },
+      ),
     scroll: (direction, qaContext, clearance, within) =>
       act(() => scroll({ ...scrollArgs(direction, clearance, within), qaContext }), false),
     back: (qaContext) => act(() => back({ qaContext }), false),
@@ -722,6 +768,21 @@ async function openSession(
             : dismiss({ platform, qaContext, note: log }),
         false,
       ),
+    async comparisonScreenshot() {
+      if (stop.stopping || currentInputs()?.hasInputs) return undefined;
+      const directory = await mkdtemp(join(request.runDir, '.tap-pixels-'));
+      try {
+        return await stop.track(async () => {
+          const path = join(directory, 'capture.png');
+          const shot = await captureQaScreenshot(platform, path, target.deviceId, appId);
+          return shot.ok && !stop.stopping && !currentInputs()?.hasInputs
+            ? await readFile(path)
+            : undefined;
+        });
+      } finally {
+        await rm(directory, { recursive: true, force: true });
+      }
+    },
     async screenshot(name) {
       if (stop.stopping || currentInputs()?.hasInputs) return undefined;
       const path = join(request.runDir, name);
@@ -741,6 +802,7 @@ async function openSession(
     interruptionRejected: diagnostic,
     targetMiss: diagnostic,
     labelProvenanceDiagnostic: diagnostic,
+    fillPrivacy: diagnostic,
     loginOutcome: (outcome) => diagnostic({ kind: 'login-outcome', outcome }),
     hideDevMenu: () => act(() => recoverDevOverlays(overlays), false),
     ...(login ? { login } : {}),
@@ -754,7 +816,15 @@ async function openSession(
       ? {
           appProcess: {},
           reactFocused: (testID: string) => reactFocused(cdpClientOrNull(getClient), testID),
-          typeFocused: (ref, text, testID, qaContext, requireFocused, privateValue) =>
+          typeFocused: (
+            ref,
+            text,
+            testID,
+            qaContext,
+            requireFocused,
+            privateValue,
+            onPrivateInput,
+          ) =>
             act(
               () =>
                 fill({
@@ -767,13 +837,14 @@ async function openSession(
                   skipFinalValidation: true,
                   clearFirst: true,
                   privateValue,
+                  onPrivateInput,
                   qaContext,
                   qaTiming: { now, observe: timing },
                 }),
               false,
               { now, observe: timing },
             ),
-          setByHandler: (testID, text, qaContext, privateValue) =>
+          setByHandler: (testID, text, qaContext, privateValue, onPrivateInput) =>
             act(
               () =>
                 fill({
@@ -782,6 +853,7 @@ async function openSession(
                   testID,
                   setByHandler: true,
                   privateValue,
+                  onPrivateInput,
                   qaContext,
                   qaTiming: { now, observe: timing },
                 }),
@@ -839,6 +911,7 @@ async function main(): Promise<void> {
     );
   }
   privateRun = parsed.inputs.hasInputs;
+  guardCoreLog(parsed.inputs);
   parsed.inputs.onRefusal((reason) => stop.begin(reason));
   return withInputs(parsed.inputs, () =>
     mainRequest(parsed.request, parsed.privacy, cliParent, apiKey),
@@ -982,6 +1055,24 @@ async function mainRequest(
     return refuse('RUN_CANCELLED', 'the run was cancelled before the walk started', () =>
       opened.close(),
     );
+  // A pinned lane proves its first screen once, before row 1, through the projection rows read.
+  if (request.target.warmLane) {
+    let refusal: string | undefined;
+    try {
+      const screen = await stop.track(() =>
+        opened.deps.captureScreen({ platformPresence: request.platform === 'ios' }),
+      );
+      log(`warm lane first screen: ${firstScreenFacts(screen)}`);
+      refusal = warmLaneRefusal(screen);
+    } catch (error) {
+      refusal = `the first screen could not be read (${describeError(error).code})`;
+    }
+    if (stop.stopping)
+      return refuse('RUN_CANCELLED', 'the run was cancelled before the walk started', () =>
+        opened.close(),
+      );
+    if (refusal) return refuse('LANE_NOT_WARM', refusal, () => opened.close());
+  }
   writer.admitted();
   try {
     const ledger = await stop.track(() =>

@@ -36,6 +36,7 @@ pub struct CoreRequest {
     pub lease: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub login_block: Option<String>,
+    pub video_policy: crate::record::VideoPolicy,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub login_marker: Option<crate::config::LoginMarker>,
     pub target: CoreTarget,
@@ -53,6 +54,9 @@ pub struct CoreTarget {
     pub metro_bundle_requests: Option<MetroBundleRequests>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub manifest_warm: Option<ManifestWarm>,
+    // The CLI pinned this lane; the core must observe the app's first screen before row 1.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub warm_lane: bool,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -212,6 +216,16 @@ pub struct Ledger {
         deserialize_with = "passive"
     )]
     pub video_publication: Option<crate::record::VideoPublication>,
+    #[serde(default)]
+    pub video_policy: crate::record::VideoPolicy,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub video_policy_source: Option<String>,
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "passive"
+    )]
+    pub non_strict_publication: Option<crate::record::NonStrictPublication>,
     #[serde(
         default,
         skip_serializing_if = "Option::is_none",
@@ -383,6 +397,12 @@ pub struct Row {
     pub kept: Option<KeptCounts>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub case_normalized: Option<CaseNormalized>,
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "passive"
+    )]
+    pub entry_mismatch: Option<EntryMismatch>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub dialog: Option<DialogTap>,
     #[serde(
@@ -449,14 +469,46 @@ pub struct CaseNormalized {
     pub chars: u64,
 }
 
+// How a refused private fill differed from the requested text, as counts only.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct EntryMismatch {
+    pub len: u64,
+    pub exp: u64,
+    pub prefix: u64,
+    pub suffix: u64,
+    pub case_eq: bool,
+}
+
+impl EntryMismatch {
+    pub fn detail(&self) -> String {
+        format!(
+            "field held {} of {} chars, first {} and last {} matching{}",
+            self.len,
+            self.exp,
+            self.prefix,
+            self.suffix,
+            if self.case_eq {
+                ", letter case only"
+            } else {
+                ""
+            }
+        )
+    }
+}
+
 impl Row {
     // The value-free count line for an unverified fill, rendered from numbers the masking never saw.
     pub fn fill_detail(&self) -> Option<String> {
-        self.kept.as_ref().and_then(KeptCounts::detail).or_else(|| {
-            self.case_normalized
-                .as_ref()
-                .map(|n| format!("field case-normalized {} chars", n.chars))
-        })
+        self.kept
+            .as_ref()
+            .and_then(KeptCounts::detail)
+            .or_else(|| {
+                self.case_normalized
+                    .as_ref()
+                    .map(|n| format!("field case-normalized {} chars", n.chars))
+            })
+            .or_else(|| self.entry_mismatch.as_ref().map(EntryMismatch::detail))
     }
 }
 
@@ -614,6 +666,8 @@ pub struct CoreOutcome {
     pub failure: Option<Failure>,
     // Exit/pipe grace expired; false is not proof that the process group is gone.
     pub group_survived: bool,
+    // The child sent its admitted envelope: the bundle, dev overlays and any warm-lane first screen were proven.
+    pub admitted: bool,
 }
 
 pub fn spawn_spec(
@@ -847,7 +901,9 @@ pub fn spawn_private(
     login_snapshot: Option<&Value>,
 ) -> Result<CoreChild, Failure> {
     crate::cancel::ensure_running(runner, "core")?;
-    let mut child = runner.spawn_piped(spec, stderr_log).map_err(|e| {
+    let mut core_spec = spec.clone();
+    core_spec.core_log = true;
+    let mut child = runner.spawn_piped(&core_spec, stderr_log).map_err(|e| {
         Failure::new(
             "core",
             FailureCode::CoreSpawnFailed,
@@ -1070,7 +1126,7 @@ impl Inbox {
 }
 
 fn excerpt(line: &str) -> String {
-    if crate::redact::private_output_mode() {
+    if crate::redact::input_namespace_present() {
         return "[private output withheld]".into();
     }
     redact_secrets(line).chars().take(120).collect()
@@ -1228,6 +1284,7 @@ pub fn wait(
             }
         }
     }
+    let admitted = inbox.admitted;
     let (ledger, verdict, failure) = interpret(inbox, exit, deadline_failure, killed_after_result);
     CoreOutcome {
         pid,
@@ -1236,6 +1293,7 @@ pub fn wait(
         exit,
         failure,
         group_survived,
+        admitted,
     }
 }
 
@@ -1402,6 +1460,11 @@ fn refusal_ledger(result: &Value, rows: &[Row], seen: &str) -> Result<Ledger, St
     if let Some(eligibility) = result.get("videoPublication") {
         normalized["videoPublication"] = eligibility.clone();
     }
+    for key in ["videoPolicy", "nonStrictPublication"] {
+        if let Some(value) = result.get(key) {
+            normalized[key] = value.clone();
+        }
+    }
     if let Some(media) = result.get("mediaWithheld") {
         normalized["mediaWithheld"] = media.clone();
     }
@@ -1456,6 +1519,9 @@ pub fn synthesized_ledger(rows: &[Row], verdict: &str, seen: &str) -> Ledger {
     Ledger {
         verdict: verdict.to_string(),
         video_publication: None,
+        video_policy: Default::default(),
+        video_policy_source: None,
+        non_strict_publication: None,
         media_withheld: None,
         admitted_at_ms: None,
         publish_from_ms: None,

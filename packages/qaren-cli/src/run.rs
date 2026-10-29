@@ -266,6 +266,25 @@ fn run_inner(
         req.shutdown_device_on_exit,
     )?;
     let (config, config_raw) = CheckConfig::load(&req.config_path)?;
+    let video_policy_source =
+        match req
+            .config_path
+            .strip_prefix(&req.project_root)
+            .ok()
+            .filter(|path| {
+                !path
+                    .components()
+                    .any(|part| part == std::path::Component::ParentDir)
+            }) {
+            Some(path) => path.display().to_string(),
+            None => format!(
+                "external config ({})",
+                req.config_path
+                    .file_name()
+                    .unwrap_or_default()
+                    .to_string_lossy()
+            ),
+        };
     config.validate_for_platform(req.platform)?;
     if req.platform == Platform::Ios {
         if let Some(workspace) = config.ios.as_ref().and_then(|ios| ios.build.as_ref()) {
@@ -351,6 +370,16 @@ fn run_inner(
     }
     let input_owner = crate::redact::capture_input_scope().expect("run input scope");
     let resolved_inputs = input_owner.admit(&names)?;
+    resolved_inputs.declare_test_pii(&non_secret_names(&inventory, &names)?);
+    if config.video == record::VideoPolicy::Undeclared {
+        eprintln!(
+            "{}",
+            crate::redact::redact_secrets(&format!(
+                "▸ video policy not declared in {}: strict rules apply",
+                req.config_path.display()
+            ))
+        );
+    }
     let login_snapshot = inventory.get("loginSnapshot").cloned();
     let prepared = preflight_inputs(
         runner,
@@ -473,6 +502,19 @@ fn run_inner(
         }
     }
     prepare::check_prereqs(runner, &scenario, req.android_home.as_deref())?;
+    let pnpm = runner.run(&crate::adapters::pnpm::group_probe_spec(&cand.project_root));
+    if !pnpm.ok() || pnpm.stdout != crate::adapters::pnpm::GROUP_OK {
+        return Err(Failure::new(
+            "prereqs",
+            FailureCode::PnpmProcessGroupUnsupported,
+            format!(
+                "{}; its exec launch did not prove that it preserves QaReN's process group ({})",
+                crate::adapters::pnpm::source_detail(runner),
+                pnpm.summary()
+            ),
+            crate::adapters::pnpm::GROUP_FIX,
+        ));
+    }
     std::fs::create_dir_all(&req.runs_root).map_err(|e| {
         Failure::new(
             "preflight",
@@ -584,10 +626,15 @@ fn run_inner(
         record,
         started_ms,
         timings: Vec::new(),
-        notes: Vec::new(),
+        notes: vec![
+            ("video_policy".into(), config.video.as_str().into()),
+            ("video_policy_source".into(), video_policy_source.clone()),
+        ],
         verb: verb(req),
         bundle_requests_at_launch: None,
         manifest_warm: None,
+        lane_owned: req.platform == Platform::Ios
+            && (req.boot_device || req.restart_device || req.fresh_install),
     };
     let finish_failed =
         |ctx: Ctx, failure: Failure| finish_failed(ctx, &node, &req.runtime_dir, failure, false);
@@ -828,7 +875,9 @@ fn run_inner(
     let mut video = None;
     // Taken before the spawn, so the trim offset can only cut later than the true admission frame.
     let recording_from = ctx.runner.now_epoch_ms();
-    if resolved_inputs.has_inputs() {
+    if resolved_inputs.has_inputs()
+        && (config.video != record::VideoPolicy::NonStrict || crate::redact::private_output_mode())
+    {
         events::stage("recording", StageState::Skipped, None, None);
         video = Some(VideoStatus::Unavailable(
             "runtime inputs withhold recording".to_string(),
@@ -895,6 +944,7 @@ fn run_inner(
         run_dir: run_dir.clone(),
         lease: lease.wire(),
         login_block: config.login_block.clone(),
+        video_policy: config.video,
         login_marker: config.login_marker.clone(),
         target: CoreTarget {
             device_id: device.id.clone(),
@@ -910,6 +960,7 @@ fn run_inner(
                     at_launch,
                 }),
             manifest_warm: ctx.manifest_warm.clone(),
+            warm_lane: ctx.record.resources.lane.is_some(),
         },
     };
     let spec = core::spawn_spec(
@@ -994,6 +1045,14 @@ fn run_inner(
             events::close_running(StageState::Failed, Some(code), &["recording"]);
         }
     }
+    // The core admits a warm lane only after it observed the app's first screen; an earlier refusal never reached it.
+    if let Some(lane) = ctx.record.resources.lane.as_mut() {
+        lane.first_screen = match &outcome.verdict {
+            _ if outcome.admitted => Some(true),
+            Verdict::Refused { code, .. } if code == "LANE_NOT_WARM" => Some(false),
+            _ => None,
+        };
+    }
     let t = ctx.mark("walk", t);
     let drift = match (status_before, worktree_status(ctx.runner, &app_root)) {
         (Some(before), Some(after)) => worktree_drift(&before, &after),
@@ -1035,6 +1094,8 @@ fn run_inner(
         }
     }
     // The canonical plan copy goes to .qaren/plans only, never into run evidence.
+    outcome.ledger.video_policy = config.video;
+    outcome.ledger.video_policy_source = Some(video_policy_source.clone());
     let recipe = outcome.ledger.recipe.take();
     let ledger_path = run_dir.join("ledger.json");
     if let Err(e) = std::fs::write(
@@ -1153,12 +1214,13 @@ fn run_inner(
         Err(f) => return Ok(ctx.fail(f)),
     };
 
-    if let Some(entry) = outcome
-        .ledger
-        .media_withheld
-        .as_ref()
-        .and_then(|media| media.screenshots.as_ref().or(media.video.as_ref()))
-    {
+    if let Some(entry) = outcome.ledger.media_withheld.as_ref().and_then(|media| {
+        if config.video == record::VideoPolicy::NonStrict {
+            media.video.as_ref().or(media.screenshots.as_ref())
+        } else {
+            media.screenshots.as_ref().or(media.video.as_ref())
+        }
+    }) {
         ctx.notes
             .push(("media_withheld".to_string(), entry.receipt_note()));
     }
@@ -1288,6 +1350,9 @@ fn run_inner(
             video,
             video_withholding_reason: video_publication.withholding_reason().map(str::to_string),
             video_publication,
+            video_policy: config.video,
+            video_policy_source: Some(video_policy_source),
+            non_strict_publication: outcome.ledger.non_strict_publication.clone(),
             tested_older_commit: tested_older_commit.is_some(),
             blocks,
             identity_values: identity_values(&device, config.metro_port, &ctx.record.resources),
@@ -1392,7 +1457,8 @@ fn springboard_crash_after(runner: &mut dyn Runner, udid: &str, since_ms: u64) -
                 .map(|e| format!(" ({e})"))
                 .unwrap_or_default();
             return Some(format!(
-                "SpringBoard crashed on this simulator during the run or teardown{exception}; the result stands"
+                "Observed a SpringBoard crash at {} on this simulator{exception}; attribution to this run is unverified; the result stands",
+                timefmt::iso8601_utc(facts.occurred_at_ms?)
             ));
         }
         if left == 0 || runner.cancellation().is_some() {
@@ -1533,6 +1599,7 @@ fn refusal_code(code: &str) -> FailureCode {
         "PLAN_INPUT_MISSING" => FailureCode::PlanInputMissing,
         "PLAN_UNPARSEABLE" => FailureCode::PlanUnparseable,
         "BLOCK_START_MISSING" => FailureCode::BlockStartMissing,
+        "LANE_NOT_WARM" => FailureCode::LaneNotWarm,
         "JEV_AUTH_FAILED" => FailureCode::JevAuthFailed,
         "JEV_REQUEST_INVALID" => FailureCode::JevRequestInvalid,
         "JEV_UNREACHABLE" => FailureCode::JevUnreachable,
@@ -1562,6 +1629,7 @@ mod block_start_tests {
                 "procPath": "/Volumes/VOLUME/*/SpringBoard.app/SpringBoard",
                 "coalitionName": format!("com.apple.CoreSimulator.SimDevice.{coalition}"),
                 "exception": {"type": "EXC_BAD_ACCESS"},
+                "captureTime": "2026-02-02 02:40:01.0000 +0000",
             });
             let text = format!("{{\"bundleID\":\"com.apple.springboard\"}}\n{body}");
             std::fs::write(reports.join(format!("SpringBoard-{i}.ips")), text).unwrap();
@@ -1570,7 +1638,7 @@ mod block_start_tests {
     }
 
     #[test]
-    fn springboard_report_on_this_simulator_is_noted_without_waiting() {
+    fn springboard_report_after_teardown_is_not_attributed_to_this_run() {
         let udid = "AAAABBBB-1111-2222-3333-444455556666";
         let home = home_with_reports("springboard-found", &["FFFF", udid]);
         let mut runner = crate::exec::MockRunner::new();
@@ -1578,20 +1646,20 @@ mod block_start_tests {
             .environment
             .insert("HOME".into(), home.display().to_string());
         let start = runner.now_epoch_ms();
-        let report_time = std::time::UNIX_EPOCH + std::time::Duration::from_millis(start + 1_000);
+        let report_time = std::time::UNIX_EPOCH + std::time::Duration::from_millis(start + 91_000);
         std::fs::File::options()
             .write(true)
             .open(home.join("Library/Logs/DiagnosticReports/SpringBoard-1.ips"))
             .unwrap()
             .set_times(std::fs::FileTimes::new().set_modified(report_time))
             .unwrap();
-        runner.sleep(std::time::Duration::from_secs(90));
+        runner.sleep(std::time::Duration::from_secs(92));
         let note = springboard_crash_after(&mut runner, udid, start);
         assert_eq!(
             note.as_deref(),
-            Some("SpringBoard crashed on this simulator during the run or teardown (EXC_BAD_ACCESS); the result stands")
+            Some("Observed a SpringBoard crash at 2026-02-02T02:40:01Z on this simulator (EXC_BAD_ACCESS); attribution to this run is unverified; the result stands")
         );
-        assert_eq!(runner.now_epoch_ms(), start + 90_000);
+        assert_eq!(runner.now_epoch_ms(), start + 92_000);
         let _ = std::fs::remove_dir_all(home);
     }
 
@@ -1635,7 +1703,7 @@ fn app_presence(
     }
 }
 
-fn reset_app(
+pub(crate) fn reset_app(
     ctx: &mut Ctx,
     udid: &str,
     app_id: &str,
@@ -2432,6 +2500,7 @@ fn build_scenario(
         ios: device.ios.as_ref().map(|(device_type, runtime)| IosSpec {
             device_type: device_type.clone(),
             runtime: runtime.clone(),
+            max_devices: None,
         }),
         android: None,
         android_usb: None,

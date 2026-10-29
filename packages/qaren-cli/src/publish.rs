@@ -30,6 +30,12 @@ pub struct PrRunRecord {
     pub video: VideoStatus,
     #[serde(default, deserialize_with = "video_publication")]
     pub video_publication: VideoPublication,
+    #[serde(default)]
+    pub video_policy: record::VideoPolicy,
+    #[serde(default)]
+    pub video_policy_source: Option<String>,
+    #[serde(default, deserialize_with = "non_strict_publication")]
+    pub non_strict_publication: Option<record::NonStrictPublication>,
     #[serde(default, deserialize_with = "withholding_reason")]
     pub video_withholding_reason: Option<String>,
     #[serde(default)]
@@ -42,6 +48,12 @@ pub struct PrRunRecord {
 
 fn video_publication<'de, D: serde::Deserializer<'de>>(d: D) -> Result<VideoPublication, D::Error> {
     Ok(serde_json::from_value(serde_json::Value::deserialize(d)?).unwrap_or_default())
+}
+
+fn non_strict_publication<'de, D: serde::Deserializer<'de>>(
+    d: D,
+) -> Result<Option<record::NonStrictPublication>, D::Error> {
+    Ok(serde_json::from_value(serde_json::Value::deserialize(d)?).ok())
 }
 
 fn withholding_reason<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Option<String>, D::Error> {
@@ -739,7 +751,10 @@ fn publish_inner(
     if publication.comment_url.is_none() {
         let mut attachments = Vec::new();
         let mut video = pr.video.clone();
-        if pr.video_publication == VideoPublication::Eligible
+        let video_publication = pr
+            .video_policy
+            .publication(&pr.video_publication, pr.non_strict_publication.as_ref());
+        if video_publication == VideoPublication::Eligible
             && pr.video == VideoStatus::Available
             && record::published_video_path(&run_dir).is_file()
         {
@@ -770,7 +785,10 @@ fn publish_inner(
             attempted,
             &mut publishing_actor,
             &mut || {
-                let ledger: Ledger = read_json(&run_dir.join("ledger.json"))?;
+                let mut ledger: Ledger = read_json(&run_dir.join("ledger.json"))?;
+                ledger.video_policy = pr.video_policy;
+                ledger.video_policy_source = pr.video_policy_source.clone();
+                ledger.non_strict_publication = pr.non_strict_publication.clone();
                 Ok(report::render_pr_comment(
                     &ReportInput {
                         run_id,

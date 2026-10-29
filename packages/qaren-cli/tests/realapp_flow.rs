@@ -46,6 +46,10 @@ fn args(repo: &Path, scenario_path: &Path, android_home: Option<String>) -> Prep
         runs_root: repo.to_path_buf(),
         device: None,
         boot_device: false,
+        pool_root: repo.join(".pool"),
+        // iOS keeps the fresh temporary simulator (--new); the pool has its own tests.
+        new_device: std::fs::read_to_string(scenario_path)
+            .is_ok_and(|yaml| yaml.contains("platform: ios") && !yaml.contains("owner: qaren")),
     }
 }
 
@@ -585,6 +589,7 @@ fn assert_ios_prepare_reuses_cached_client(workspace: bool) {
     mock.expect_run("qaren-request-probe", CmdOutput::success(""));
     mock.expect_run("expo-platform", CmdOutput::success(""));
     mock.expect_run("expo-platform", CmdOutput::success(""));
+    common::script_pinned_lane(&mut mock);
     common::script_devmenu_defaults(&mut mock, CmdOutput::success(""));
     mock.expect_run(
         "simctl launch --terminate-running-process",

@@ -395,7 +395,7 @@ test('input policy inventory refuses conflicts and malformed annotations without
   const judge = scriptedJudge([]);
   for (const plan of [
     `${source}\n### Later\n1. Fill "again" with input SLOT_A (non-secret)`,
-    source.replace('SLOT_A', 'SLOT_A (secret)'),
+    source.replace('SLOT_A', 'SLOT_A (sekret)'),
     source.replace('SLOT_A', 'SLOT_A (nonsecret)'),
     source.replace('SLOT_A', 'SLOT_A (non-secret) trailing'),
     '1. Fill "field" with "literal" (non-secret)',
