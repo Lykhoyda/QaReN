@@ -288,10 +288,18 @@ is already on PATH, only the first one is considered, so an install never shadow
 another. That link is replaced when it points into this `QAREN_HOME`'s runtime at the
 same line: a release replaces a release, and a source build (`<version>-dev.<commit>`)
 replaces a source build. A link into another `QAREN_HOME`, or a working link of the
-other line, is kept with a notice unless `--install --link` is passed; any other file
-is left alone with a notice.
+other line, is kept with a notice; any other file is left alone with a notice.
 If no PATH directory qualifies, it links `~/.local/bin/qaren` and prints
 `export PATH="$HOME/.local/bin:$PATH"`; run that line to use the bare command.
+With `--install --link`, the only link written is `$HOME/.local/bin/qaren` for the
+current `HOME`, even if another `qaren` appears on PATH. An install link there can
+be replaced across `QAREN_HOME` or release/source-build lines; other files are kept.
+Links elsewhere are never changed by `--link`. A different `qaren` found on PATH
+produces a shadow warning naming its path and this build's absolute command; put
+`$HOME/.local/bin` first on PATH to use this build by name. The source installer
+accepts the same `--link` option, so it can switch this HOME's link between a release
+and a development build.
+Every successful link step reports the written link and its target on stderr.
 It never edits shell rc files. Link problems are stderr notices and do not fail
 installation; stdout remains exactly the installed binary path, which you can
 use directly if linking fails.

@@ -8,8 +8,9 @@
 #                                                 downloads (or takes) the tarball, verifies its
 #                                                 sha256 and length against runner-manifest.json,
 #                                                 installs it into $QAREN_HOME/runtime/<v>/ (default ~/.qaren)
-#                                                 and links qaren onto PATH; --link also replaces a link to
-#                                                 another QAREN_HOME or the other line (release or -dev build);
+#                                                 and links qaren onto PATH; --link writes only $HOME/.local/bin/qaren,
+#                                                 replacing install links to another QAREN_HOME or release/dev line;
+#                                                 link details and PATH shadow warnings go to stderr;
 #                                                 stdout is exactly the binary path; rerun --install after interruption
 set -euo pipefail
 
@@ -394,35 +395,43 @@ install() {
 # A release and a <release>-dev.<commit> source build are two lines that never relink each other.
 line_of() { case "$1" in *-dev.*) echo dev ;; *) echo release ;; esac; }
 
-# Only the qaren that runs first on PATH is ever (re)linked, so an install never shadows another.
+# Explicit linking stays in this HOME; automatic linking considers the first qaren on PATH.
 # A link problem is a stderr notice, never a failed install.
 link_on_path() {
-  local bin="$1" dir="" target tmp candidate pass on_path=false current linked version
+  local bin="$1" dir="" target tmp candidate pass on_path=false current linked version shadow=""
   local -a path_dirs
   IFS=: read -r -a path_dirs <<< "$PATH"
-  # Empty and relative entries resolve against the caller's directory, not a stable bin.
-  for candidate in "${path_dirs[@]}"; do
-    [[ "$candidate" == /* ]] && { [ -e "$candidate/qaren" ] || [ -L "$candidate/qaren" ]; } || continue
-    dir="$candidate"
-    on_path=true
-    break
-  done
-  # Prefer a standard user bin; otherwise any writable PATH entry keeps qaren invocable at once.
-  [ -n "$dir" ] || for pass in standard any; do
+  if [ "$LINK" = 1 ]; then
+    dir="$HOME/.local/bin"
+    shadow=$(command -v qaren || true)
     for candidate in "${path_dirs[@]}"; do
-      [[ "$candidate" == /* ]] && [ -d "$candidate" ] && [ -w "$candidate" ] || continue
-      if [ "$pass" = standard ]; then
-        case "$candidate" in
-          "$HOME/.local/bin" | "$HOME/bin" | /opt/homebrew/bin | /usr/local/bin) ;;
-          *) continue ;;
-        esac
-      fi
+      [ "$candidate" != "$dir" ] || on_path=true
+    done
+  else
+    # Empty and relative entries resolve against the caller's directory, not a stable bin.
+    for candidate in "${path_dirs[@]}"; do
+      [[ "$candidate" == /* ]] && { [ -e "$candidate/qaren" ] || [ -L "$candidate/qaren" ]; } || continue
       dir="$candidate"
       on_path=true
-      break 2
+      break
     done
-  done
-  dir="${dir:-$HOME/.local/bin}"
+    # Prefer a standard user bin; otherwise any writable PATH entry keeps qaren invocable at once.
+    [ -n "$dir" ] || for pass in standard any; do
+      for candidate in "${path_dirs[@]}"; do
+        [[ "$candidate" == /* ]] && [ -d "$candidate" ] && [ -w "$candidate" ] || continue
+        if [ "$pass" = standard ]; then
+          case "$candidate" in
+            "$HOME/.local/bin" | "$HOME/bin" | /opt/homebrew/bin | /usr/local/bin) ;;
+            *) continue ;;
+          esac
+        fi
+        dir="$candidate"
+        on_path=true
+        break 2
+      done
+    done
+    dir="${dir:-$HOME/.local/bin}"
+  fi
   target="$dir/qaren"
   mkdir -p "$dir" 2>/dev/null || { echo "qaren: cannot create $dir; run qaren as $bin" >&2; return 0; }
   if [ -e "$target" ] || [ -L "$target" ]; then
@@ -454,8 +463,16 @@ link_on_path() {
     echo "qaren: cannot link $target; run qaren as $bin" >&2
     return 0
   fi
+  echo "qaren: linked $target -> $bin" >&2
+  if [ -n "$shadow" ] && [ "$shadow" != "$target" ]; then
+    echo "qaren: $shadow may shadow $target on PATH; run this build as $bin, or put $dir first on PATH" >&2
+  fi
   if [ "$on_path" = false ]; then
-    echo "qaren: no writable directory is on PATH; add ~/.local/bin to PATH: export PATH=\"\$HOME/.local/bin:\$PATH\"" >&2
+    if [ "$LINK" = 1 ]; then
+      echo "qaren: $dir is not on PATH; add it: export PATH=\"\$HOME/.local/bin:\$PATH\"" >&2
+    else
+      echo "qaren: no writable directory is on PATH; add ~/.local/bin to PATH: export PATH=\"\$HOME/.local/bin:\$PATH\"" >&2
+    fi
   fi
 }
 

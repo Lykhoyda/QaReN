@@ -26,10 +26,21 @@ check() {
 tmp="$(mktemp -d)"
 trap 'rm -rf "$tmp"' EXIT
 
-mkdir -p "$tmp/stubs" "$tmp/plugin/scripts"
+mkdir -p "$tmp/stubs" "$tmp/plugin/scripts" "$tmp/tools" "$tmp/minimal-tools"
+REQUIRED_TOOLS="uname dirname cat tar gzip shasum wc cut tr head du mktemp mkdir mv cp rm find ls sleep perl"
+for tool in $REQUIRED_TOOLS bash node readlink ln python3 chmod grep sort basename seq diff dd; do
+  tool_path=$(command -v "$tool") || exit 1
+  ln -s "$tool_path" "$tmp/tools/$tool"
+  case "$tool" in node | python3) ;; *) ln -s "$tool_path" "$tmp/minimal-tools/$tool" ;; esac
+done
+if command -v bsdtar >/dev/null 2>&1; then
+  ln -s "$(command -v bsdtar)" "$tmp/tools/bsdtar"
+fi
+export HOME="$tmp/home" PATH="$tmp/tools"
+unset QAREN_HOME
 cp "$SCRIPT" "$tmp/plugin/scripts/ensure-qaren.sh"
 if [ "$(/usr/sbin/sysctl -n hw.optional.arm64 2>/dev/null)" = 1 ]; then
-  out=$(HOME="$tmp/home" PATH=/usr/bin:/bin /bin/bash "$tmp/plugin/scripts/ensure-qaren.sh" --print-bin 2>"$tmp/stderr")
+  out=$(HOME="$tmp/home" PATH="$tmp/minimal-tools" /bin/bash "$tmp/plugin/scripts/ensure-qaren.sh" --print-bin 2>"$tmp/stderr")
   check "minimal PATH: missing manifest exits 0" 0 "$?"
   check "minimal PATH: missing manifest leaves stdout empty" "" "$out"
   check "minimal PATH: native Apple silicon reaches manifest validation" "qaren: this plugin carries no runner-manifest.json" "$(cat "$tmp/stderr")"
@@ -43,10 +54,9 @@ chmod +x "$tmp/stubs/sysctl" "$tmp/stubs/curl"
 # sleep records its pid so the parked children of killed installers can be cleaned up.
 printf '#!/bin/sh\necho $$ >> "%s/sleep-pids"\nexec "%s" "$@"\n' "$tmp" "$(command -v sleep)" > "$tmp/stubs/sleep"
 chmod +x "$tmp/stubs/uname" "$tmp/stubs/sleep"
-# ~/bin leads the standard bins, so default installs never link into the real /opt/homebrew/bin or /usr/local/bin.
-export PATH="$tmp/stubs:$tmp/home/bin:$PATH"
+# All PATH entries belong to the fixture; no install can reach a real qaren link.
+export PATH="$tmp/stubs:$tmp/home/bin:$tmp/tools"
 mkdir -p "$tmp/home/bin"
-REQUIRED_TOOLS="uname dirname cat tar gzip shasum wc cut tr head du mktemp mkdir mv cp rm find ls sleep perl"
 
 # make_tarball <out> <kind>: good | dotdot | absolute | symlink | stray | bomb | manyfiles | large | flood | rodir | zerodir
 make_tarball() {
@@ -119,11 +129,11 @@ for hardware in 0 absent; do
   check "Intel $hardware: hook exits 0" 0 "$?"
   check "Intel $hardware: hook leaves stdout empty" "" "$out"
   check "Intel $hardware: hook prints one unsupported diagnostic" "qaren: qaren 2.0 supports Apple silicon Macs only" "$(cat "$tmp/stderr")"
-  out=$(FAKE_ARCH=x86_64 FAKE_ARM64="$hardware" HOME="$tmp/home" PATH="$tmp/stubs:/usr/bin:/bin" /bin/bash "$tmp/plugin/scripts/ensure-qaren.sh" --print-bin 2>"$tmp/stderr")
+  out=$(FAKE_ARCH=x86_64 FAKE_ARM64="$hardware" HOME="$tmp/home" PATH="$tmp/stubs:$tmp/minimal-tools" /bin/bash "$tmp/plugin/scripts/ensure-qaren.sh" --print-bin 2>"$tmp/stderr")
   check "Intel $hardware with minimal PATH: hook exits 0" 0 "$?"
   check "Intel $hardware with minimal PATH: stdout empty" "" "$out"
   check "Intel $hardware with minimal PATH: unsupported" "qaren: qaren 2.0 supports Apple silicon Macs only" "$(cat "$tmp/stderr")"
-  FAKE_ARCH=x86_64 FAKE_ARM64="$hardware" PATH="$tmp/stubs:/usr/bin:/bin" run_install "$tmp/missing.tgz" > "$tmp/intel-stdout"
+  FAKE_ARCH=x86_64 FAKE_ARM64="$hardware" PATH="$tmp/stubs:$tmp/minimal-tools" run_install "$tmp/missing.tgz" > "$tmp/intel-stdout"
   check "Intel $hardware with minimal PATH: install refuses" yes "$([ "$?" != 0 ] && echo yes || echo no)"
   check "Intel $hardware with minimal PATH: unsupported" "qaren 2.0 supports Apple silicon Macs only" "$(cat "$tmp/stderr")"
 done
@@ -895,8 +905,45 @@ check "no shadow: the other home's link is kept" "$tmp/other/.qaren/runtime/2.0.
 check "no shadow: no second link is made" "no no" \
   "$([ -e "$tmp/home/bin/qaren" ] && echo yes || echo no) $([ -e "$LINK" ] && echo yes || echo no)"
 check "no shadow: names the other QAREN_HOME" yes "$(grep -q 'another QAREN_HOME' "$tmp/stderr" && echo yes || echo "no: $(cat "$tmp/stderr")")"
+# An empty HOME bin before another home's qaren must receive its own link.
+OWN_PATH="$tmp/home/.local/bin:$tmp/read-only-tools:$tmp/app-bin"
+out=$(QAREN_HOME="$tmp/home/.qaren" PATH="$OWN_PATH" HOME="$tmp/home" bash "$tmp/plugin/scripts/ensure-qaren.sh" --install --from-file "$tmp/good.tgz" --link 2>"$tmp/stderr"); rc=$?
+check "own HOME: --link succeeds with binary-only stdout" "0 $REAL_DEST/bin/qaren" "$rc $out"
+check "own HOME: the other home's link is unchanged" "$tmp/other/.qaren/runtime/2.0.0/bin/qaren" "$(readlink "$tmp/app-bin/qaren")"
+check "own HOME: --link creates the HOME link" "$REAL_DEST/bin/qaren" "$(readlink "$LINK")"
+check "own HOME: warns about the other PATH entry and names this build" yes \
+  "$(grep -Fq "$tmp/app-bin/qaren may shadow $LINK" "$tmp/stderr" && grep -Fq "run this build as $REAL_DEST/bin/qaren" "$tmp/stderr" && echo yes || echo "no: $(cat "$tmp/stderr")")"
+check "own HOME: reports the link written" yes "$(grep -Fxq "qaren: linked $LINK -> $REAL_DEST/bin/qaren" "$tmp/stderr" && echo yes || echo no)"
+
 PATH="$SHADOW_PATH" HOME="$tmp/home" bash "$tmp/plugin/scripts/ensure-qaren.sh" --install --from-file "$tmp/good.tgz" --link >/dev/null 2>"$tmp/stderr"
-check "no shadow: --link replaces the first qaren on PATH" "$REAL_DEST/bin/qaren" "$(readlink "$tmp/app-bin/qaren")"
+check "shadow: an earlier qaren is unchanged" "$tmp/other/.qaren/runtime/2.0.0/bin/qaren" "$(readlink "$tmp/app-bin/qaren")"
+check "shadow: warns when the HOME link is later on PATH" yes "$(grep -Fq "$tmp/app-bin/qaren may shadow $LINK" "$tmp/stderr" && echo yes || echo no)"
+
+rm "$LINK"
+ln -s "$tmp/other/.qaren/runtime/2.0.0/bin/qaren" "$LINK"
+QAREN_HOME="$tmp/home/.qaren" PATH="$OWN_PATH" HOME="$tmp/home" bash "$tmp/plugin/scripts/ensure-qaren.sh" --install --from-file "$tmp/good.tgz" --link >/dev/null 2>"$tmp/stderr"
+check "own HOME: --link replaces a link into another QAREN_HOME" "$REAL_DEST/bin/qaren" "$(readlink "$LINK")"
+check "own HOME: no shadow warning for its own link" no "$(grep -q 'may shadow' "$tmp/stderr" && echo yes || echo no)"
+
+install_as "$DEV" "$tmp/dev.tgz" --link >/dev/null
+install_as "$RELEASE" "$tmp/good.tgz" --link >/dev/null
+check "lines: --link moves the dev link back to the release" "$REAL_DEST/bin/qaren" "$(readlink "$LINK")"
+
+rm -rf "$tmp/home/.local"
+PATH="$tmp/read-only-tools" HOME="$tmp/home" bash "$tmp/plugin/scripts/ensure-qaren.sh" --install --from-file "$tmp/good.tgz" --link >/dev/null 2>"$tmp/stderr"
+check "own HOME: --link creates a missing bin outside PATH" "$REAL_DEST/bin/qaren" "$(readlink "$LINK")"
+check "own HOME: --link prints the PATH fix" yes "$(grep -Fq 'export PATH="$HOME/.local/bin:$PATH"' "$tmp/stderr" && echo yes || echo no)"
+
+rm "$LINK"
+printf 'mine\n' > "$LINK"
+PATH="$OWN_PATH" HOME="$tmp/home" bash "$tmp/plugin/scripts/ensure-qaren.sh" --install --from-file "$tmp/good.tgz" --link >/dev/null 2>"$tmp/stderr"; rc=$?
+check "own HOME: --link preserves a regular file" "0 mine" "$rc $(cat "$LINK")"
+check "own HOME: no link reported when the file is kept" no "$(grep -q '^qaren: linked ' "$tmp/stderr" && echo yes || echo no)"
+
+out=$(HOME="$tmp/home" PATH="$tmp/tools" bash "$ROOT/scripts/install-qaren-from-source.sh" --help); rc=$?
+check "source help: exits before building or installing" 0 "$rc"
+check "source help: describes HOME-only linking" yes "$(grep -Fq '$HOME/.local/bin/qaren' <<< "$out" && echo yes || echo no)"
+
 rm -f "$tmp/app-bin/qaren"
 
 chmod 755 "$tmp/read-only-tools"
