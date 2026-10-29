@@ -57,7 +57,7 @@ test('an Android runner occlusion refusal reaches the walker typed, mutation-fre
   const { setActiveSessionInMemoryForTest, resetActiveSessionInMemoryForTest } =
     await import('../../dist/agent-device-wrapper.js');
   const { _setAndroidRunnerStateForTest, _setFetchForTest } =
-    await import('../../dist/runners/rn-android-runner-client.js');
+    await import('../../dist/runners/qaren-android-runner-client.js');
   const {
     REQUIRED_ANDROID_COMMANDS,
     REQUIRED_ANDROID_FEATURES,

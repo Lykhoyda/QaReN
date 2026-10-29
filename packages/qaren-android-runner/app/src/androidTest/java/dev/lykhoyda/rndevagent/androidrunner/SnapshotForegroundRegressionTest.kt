@@ -50,6 +50,6 @@ class SnapshotForegroundRegressionTest {
 
         val json = response.toString()
         assertTrue("expected target testID tab-home in snapshot: $json", json.contains("tab-home"))
-        assertFalse("snapshot captured runner or launcher instead of target app: $json", json.contains("rn-dev-agent Android runner"))
+        assertFalse("snapshot captured runner or launcher instead of target app: $json", json.contains("QaReN Android Runner"))
     }
 }

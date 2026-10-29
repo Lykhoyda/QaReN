@@ -32,7 +32,7 @@ import {
   startAndroidRunner,
   runAndroid,
   consumePendingAndroidUpgradeNote,
-} from '../runners/rn-android-runner-client.js';
+} from '../runners/qaren-android-runner-client.js';
 import { launchApp } from './app-lifecycle.js';
 import { markCdpStale } from '../cdp/recovery.js';
 import {
@@ -505,7 +505,7 @@ export function createDeviceSnapshotHandler(
 
       // Task 9 of Android-MVP: warn on competing Android UIAutomator /
       // agent-device processes that would contend for input + focus with
-      // our rn-android-runner. Fires by default (Task 11 flipped the
+      // our qaren-android-runner. Fires by default (Task 11 flipped the
       // runner default-on); opt-out via RN_ANDROID_RUNNER=0.
       if (platform === 'android' && process.env.RN_ANDROID_RUNNER !== '0') {
         await detectAndroidExternalRunner(undefined, getAdbSerial())

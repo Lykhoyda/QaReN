@@ -960,7 +960,7 @@
     "meta": {
       "snapshotVerdict": {
         "state": "ok",
-        "source": "rn-android-runner",
+        "source": "qaren-android-runner",
         "nodeCount": 67,
         "refMapUpdated": true,
         "reasons": []
