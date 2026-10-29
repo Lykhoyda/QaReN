@@ -894,7 +894,7 @@ rm "$LINK" && ln -s "$REAL_TMP/home/.qaren/runtime/9.8.6/bin/qaren" "$LINK"
 install_as "$RELEASE" "$tmp/good.tgz" >/dev/null
 check "lines: a release upgrade still relinks the working older release" "$REAL_DEST/bin/qaren" "$(readlink "$LINK")"
 
-# A qaren already first on PATH is the only link touched, so no install ever shadows it.
+# Without --link, only the first qaren on PATH is considered, so automatic linking never shadows it.
 mkdir -p "$tmp/app-bin" "$tmp/other/.qaren/runtime/2.0.0/bin"
 cp "$DEST/bin/qaren" "$tmp/other/.qaren/runtime/2.0.0/bin/qaren"
 rm -f "$tmp/app-bin/qaren" "$LINK" "$tmp/home/bin/qaren"
