@@ -18,6 +18,8 @@ interface Form {
   typography?: boolean;
   front?: Front;
   native?: 'complete' | 'incomplete';
+  // A second, unrelated scroll view below the form, which scroll-until would pick as its band.
+  otherScroll?: boolean;
 }
 
 function form(presence: boolean, f: Form = {}) {
@@ -56,6 +58,15 @@ function form(presence: boolean, f: Form = {}) {
         ]
       : []),
   ];
+  if (f.otherScroll)
+    nodes.push({
+      ref: '@o',
+      index: nodes.length,
+      parentIndex: 0,
+      type: 'ScrollView',
+      identifier: 'other-scroll',
+      rect: { x: 0, y: O + 620, width: 390, height: 200 },
+    });
   const view = (hostIndex: number, parent: number | null, type: string, a: string, y: number) => ({
     hostIndex,
     parentHostIndex: parent,
@@ -191,6 +202,15 @@ test('a field still React-only after its one scroll ends with the typed reason a
   );
   assert.deepEqual(r.actions, ['scroll down']);
   assert.equal(r.elapsed, WAIT_BUDGET_MS);
+});
+
+test('a field above its scroll view scrolls up, and never through another container', async () => {
+  const above = await wait([{ fieldY: -200, accessible: false }]);
+  assert.deepEqual(above.actions, ['scroll up']);
+  assert.match(seen(above), / above its viewport; .*; attempt=scroll; /);
+  const other = await wait([{ fieldY: 700, accessible: false, otherScroll: true }]);
+  assert.deepEqual(other.actions, []);
+  assert.match(seen(other), / below its viewport; .*; attempt=none; /);
 });
 
 test('a scroll that moves nothing fails with the dispatch error', async () => {
