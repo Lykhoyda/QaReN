@@ -21,6 +21,7 @@ Refusals exit `4` and mean the run could not start or could not decide; failures
 | `DEV_CLIENT_SCHEME_REQUIRED` | `devClientScheme` is missing or malformed                      | Set it to the app's registered URI scheme                                                   |
 | `NODE_UNSUPPORTED`         | Node is older than 24                                            | Point `nodePath` at Node 24 or newer                                                        |
 | `PNPM_PROCESS_GROUP_UNSUPPORTED` | The pnpm launcher did not prove process-group preservation | Follow the [launcher compatibility contract](https://github.com/Lykhoyda/QaReN/blob/develop/packages/qaren-cli/README.md#doctor) and the `pnpm-source` row in `qaren doctor` |
+| `GITHUB_AUTH_UNAVAILABLE` | PR lookup could not use GitHub authentication | Follow the [GitHub authentication contract](https://github.com/Lykhoyda/QaReN/blob/develop/packages/qaren-cli/README.md#test-a-pull-request) |
 | `DISK_BUDGET_EXCEEDED`     | Under 1 GiB free for the run storage root or the app, or under about 10 GiB for a clean iOS build | Free space on the volume `failure.detail` names, then re-run                                |
 
 ## Devices
@@ -70,7 +71,7 @@ The screen layer's own codes appear at the start of `failure.detail` or in the r
 | `CLEANUP_INCOMPLETE`  | `qaren cleanup` could not resolve some resources                     | Re-run `qaren cleanup <run-id> --json`                           |
 | `OWNERSHIP_UNPROVEN`  | The run's processes were not proven gone                             | Run `qaren cleanup <run-id>`, then re-run `qaren pr`             |
 | `RUN_CANCELLED`       | The run was cancelled                                                | Re-run when ready; the cleanup map names anything retained       |
-| `PR_UNAVAILABLE`      | `gh` could not read the pull request                                 | Check `gh auth status` and the pull request, then re-run         |
+| `PR_UNAVAILABLE`      | Pull request lookup, comment creation or label edit failed; failed `qaren pr` lookups also check authentication | Follow the [GitHub authentication contract](https://github.com/Lykhoyda/QaReN/blob/develop/packages/qaren-cli/README.md#test-a-pull-request) |
 
 ## Incomplete teardown
 

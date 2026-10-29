@@ -80,7 +80,10 @@ fn every_spawn_path_scrubs_secret_names_and_preserves_only_the_ruled_exemptions(
         .env("QAREN_ENV_FIXTURE_DIR", &dir)
         .env("QAREN_LOG_ENV_RECEIPT", dir.join("helper-env"));
     for name in SECRETS.iter().chain(KEPT) {
-        worker.env(name, format!("synthetic-{name}-value"));
+        worker.env(
+            name,
+            format!("synthetic-{name}-credential-0123456789abcdef0123456789abcdef"),
+        );
     }
     let result = worker.output().unwrap();
     std::fs::remove_dir_all(dir).unwrap();
@@ -112,6 +115,17 @@ fn secret_environment_fixture_worker() {
         "plan-preflight",
         "pnpm-install",
         "expo-prebuild",
+        "gh-pr-view",
+        "gh-pr-comment",
+        "gh-pr-edit",
+        "gh-auth-status",
+        "gh-user",
+        "gh-pr-comments",
+        "gh-other",
+        "metro",
+        "app-launch",
+        "xcodebuild-ios",
+        "gradle",
     ] {
         for route in ["captured", "piped", "group"] {
             let _ = std::fs::remove_file(dir.join("helper-env"));
@@ -145,7 +159,17 @@ fn secret_environment_fixture_worker() {
                 let allowed = (*name == "TYPESAFE_API_KEY"
                     && matches!(label, "core-walk" | "plan-preflight"))
                     || (REGISTRY.contains(name)
-                        && matches!(label, "pnpm-install" | "expo-prebuild"));
+                        && matches!(label, "pnpm-install" | "expo-prebuild"))
+                    || (["GH_TOKEN", "GITHUB_TOKEN"].contains(name)
+                        && matches!(
+                            label,
+                            "gh-pr-view"
+                                | "gh-pr-comment"
+                                | "gh-pr-edit"
+                                | "gh-auth-status"
+                                | "gh-user"
+                                | "gh-pr-comments"
+                        ));
                 assert_eq!(
                     observed.contains_key(name),
                     allowed,
@@ -154,7 +178,10 @@ fn secret_environment_fixture_worker() {
                 if allowed && route != "group" {
                     assert_eq!(
                         observed.get(name).copied(),
-                        Some(format!("synthetic-{name}-value").as_str()),
+                        Some(
+                            format!("synthetic-{name}-credential-0123456789abcdef0123456789abcdef")
+                                .as_str()
+                        ),
                         "{label} {route} {name}"
                     );
                 }
@@ -162,7 +189,10 @@ fn secret_environment_fixture_worker() {
             for name in KEPT {
                 assert_eq!(
                     observed.get(name).copied(),
-                    Some(format!("synthetic-{name}-value").as_str()),
+                    Some(
+                        format!("synthetic-{name}-credential-0123456789abcdef0123456789abcdef")
+                            .as_str()
+                    ),
                     "{label} {route} {name}"
                 );
             }
