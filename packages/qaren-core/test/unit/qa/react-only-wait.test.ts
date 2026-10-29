@@ -287,6 +287,10 @@ test("a native carrier keeps today's miss text and requests no React facts", asy
     /did not appear within 15s; .*no captured element carries the identifier "absent-id"/,
   );
   assert.ok(r.presence.every((p) => !p));
+  // The field's native carrier drops its React-only twin, so the wait passes at once.
+  const twin = await wait([{ accessible: false, nativeField: true }]);
+  assert.equal(twin.result.verdict, 'PASS', seen(twin));
+  assert.deepEqual(twin.presence, [false]);
   assert.equal(
     reactOnlyMiss(
       { quoted: 'name-field', phrase: 'name-field' },
