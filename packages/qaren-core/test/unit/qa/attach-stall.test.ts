@@ -24,6 +24,8 @@ import {
 } from '../../../dist/cdp/connect.js';
 import { CDPRequestTimeoutError } from '../../../dist/cdp/transport.js';
 import { createStop } from '../../../dist/qa/stop.js';
+import { sleep } from '../../../dist/domain/cancellation.js';
+import { createTimingObserver, type RecordedTimingEvent } from '../../../dist/qa/timing.js';
 
 function stalled(t: TestContext, overrides: Partial<AdmissionSteps> = {}) {
   let now = 0;
@@ -438,5 +440,236 @@ test('a manifest error or an unreachable Metro fails the relaunch at once', asyn
   await assert.rejects(
     awaitDevClientManifest(`http://127.0.0.1:${port}/`, performance.now() + 60_000),
     /dev client manifest request failed/,
+  );
+});
+
+function patient(
+  t: TestContext,
+  overrides: Partial<AdmissionSteps> = {},
+  durations = [15_000, 15_000, 1_000, 1_000],
+) {
+  const receipt: RecordedTimingEvent[] = [];
+  const timing = createTimingObserver((event) => receipt.push(event));
+  let requests = 0;
+  let launches = 0;
+  t.mock.method(globalThis, 'fetch', async () => {
+    await sleep(durations[Math.min(requests++, durations.length - 1)]!);
+    return new Response('{}');
+  });
+  const fixture = stalled(t, {
+    attach: async () => {
+      if (launches === 0) throw new TargetReadinessTimeoutError('no target', 'empty');
+    },
+    bundleRequested: async () => false,
+    manifest: (deadline, retry) =>
+      awaitDevClientManifest('http://127.0.0.1:8081/', deadline, retry),
+    relaunch: async () => {
+      launches++;
+    },
+    open: async () => undefined,
+    prove: proven,
+    timing,
+    ...overrides,
+  });
+  return { ...fixture, receipt, launches: () => launches, requests: () => requests };
+}
+
+test('patient warming recovers transient slow QaReN manifest probes and records every attempt', async (t) => {
+  const fixture = patient(t);
+  assert.equal((await fixture.run()).ok, true);
+  assert.equal(fixture.launches(), 1);
+  assert.ok(fixture.elapsed() < 100_000);
+  const probes = fixture.receipt.filter((event) => event.stage === 'manifest-probe');
+  assert.equal(probes.length, fixture.requests());
+  assert.deepEqual(
+    probes.map((event) => [event.ms, event.outcome, event.method]),
+    [
+      [10_000, 'failed', 'timeout'],
+      [10_000, 'failed', 'timeout'],
+      [1_000, 'ok', 'unknown'],
+      [1_000, 'ok', 'unknown'],
+    ],
+  );
+  assert.deepEqual(
+    probes.map((event) => event.at),
+    [10_000, 21_000, 24_000, 29_000],
+  );
+  assert.deepEqual(
+    fixture.receipt
+      .filter((event) => event.stage === 'dev-client-relaunch')
+      .map((event) => [event.relaunch, event.ms]),
+    [['ready', 0]],
+  );
+});
+
+test('persistent slow QaReN probes refuse after one bounded patient window with timings', async (t) => {
+  const fixture = patient(t, {}, [15_000]);
+  const error = await fixture.run();
+  assert.equal(error.code, 'CDP_NOT_CONNECTED');
+  assert.equal(fixture.elapsed(), 100_000);
+  assert.equal(fixture.launches(), 0);
+  assert.match(error.message, /host contention is the likely cause; QaReN manifest probes 10000, /);
+  assert.doesNotMatch(error.message, /the dev client's manifest request outlasted/);
+  assert.equal(
+    fixture.receipt.filter((event) => event.stage === 'manifest-probe').length,
+    fixture.requests(),
+  );
+  assert.ok(fixture.receipt.every((event) => event.at <= 100_000));
+});
+
+test('patient warming and relaunches cannot overrun the remaining run budget', async (t) => {
+  const fixture = patient(t, { remainingMs: () => 40_000 - performance.now() }, [15_000]);
+  const error = await fixture.run(41_000);
+  assert.equal(error.code, 'CDP_NOT_CONNECTED');
+  assert.equal(fixture.elapsed(), 40_000);
+  assert.equal(fixture.launches(), 0);
+  assert.match(error.message, /host contention is the likely cause/);
+  assert.ok(fixture.receipt.every((event) => event.at <= 40_000));
+});
+
+test('only the slow-probe proxy permits two additional relaunches', async (t) => {
+  let relaunches = 0;
+  const fixture = patient(t, {
+    attach: async () => {
+      if (relaunches < 3) throw new TargetReadinessTimeoutError('no target', 'empty');
+    },
+    relaunch: async () => {
+      relaunches++;
+    },
+  });
+  assert.equal((await fixture.run()).ok, true);
+  const launches = fixture.receipt.filter((event) => event.stage === 'dev-client-relaunch');
+  assert.equal(relaunches, 3);
+  assert.equal(launches.length, 3);
+  assert.deepEqual(
+    launches.map((event) => event.count),
+    [1, 2, 3],
+  );
+});
+
+test('patient recovery stops after its two additional relaunches when no target appears', async (t) => {
+  const fixture = patient(t, {
+    attach: async () => {
+      throw new TargetReadinessTimeoutError('no target', 'empty');
+    },
+  });
+  const error = await fixture.run(200_000);
+  assert.equal(error.code, 'CDP_NOT_CONNECTED');
+  assert.equal(fixture.launches(), 3);
+  assert.equal(error.meta.relaunches, 3);
+  assert.ok(fixture.elapsed() <= 120_000 + 3 * 30_000);
+});
+
+test('a bundle request arriving during patient warming prevents another relaunch', async (t) => {
+  const fixture = patient(t, {
+    attach: async () => {
+      if (performance.now() < 20_000) throw new TargetReadinessTimeoutError('no target', 'empty');
+    },
+    bundleRequested: async () => performance.now() >= 20_000,
+  });
+  assert.equal((await fixture.run()).ok, true);
+  assert.equal(fixture.launches(), 0);
+});
+
+test('a requested bundle with no CDP target never enters patient warming', async (t) => {
+  const fixture = patient(t, {
+    attach: async () => {
+      throw new TargetReadinessTimeoutError('no target', 'empty');
+    },
+    bundleRequested: async () => true,
+  });
+  await fixture.waiting();
+  assert.equal(fixture.requests(), 0);
+  assert.equal(fixture.launches(), 0);
+});
+
+test('fast manifest probes retain the single relaunch and original attach deadline', async (t) => {
+  const fixture = patient(
+    t,
+    {
+      attach: async () => {
+        throw new TargetReadinessTimeoutError('no target', 'empty');
+      },
+    },
+    [1_000],
+  );
+  const error = await fixture.run();
+  assert.equal(error.code, 'CDP_NOT_CONNECTED');
+  assert.equal(fixture.launches(), 1);
+  assert.equal(fixture.elapsed(), 120_000);
+  assert.doesNotMatch(error.message, /host contention/);
+});
+
+for (const [name, state, alive] of [
+  ['a dead app', 'empty', false],
+  ['another device', 'other_device', true],
+  ['an unclassified target wait', undefined, true],
+] as const) {
+  test(`slow manifest probes for ${name} do not activate patient recovery`, async (t) => {
+    const fixture = patient(
+      t,
+      {
+        attach: async () => {
+          throw new TargetReadinessTimeoutError('no target', state);
+        },
+        appAlive: async () => alive,
+      },
+      [15_000],
+    );
+    const error = await fixture.run();
+    assert.equal(error.code, 'CDP_NOT_CONNECTED');
+    assert.equal(fixture.elapsed(), 120_000);
+    assert.equal(fixture.launches(), 0);
+    assert.doesNotMatch(error.message, /host contention/);
+    assert.ok(
+      fixture.receipt
+        .filter((event) => event.stage === 'manifest-probe')
+        .every((event) => event.ms === 15_000),
+    );
+  });
+}
+
+test('a slow HTTP failure is not evidence for patient manifest recovery', async (t) => {
+  const fixture = patient(t);
+  t.mock.method(globalThis, 'fetch', async () => {
+    await sleep(9_000);
+    return new Response('', { status: 500 });
+  });
+  const error = await fixture.run();
+  assert.equal(error.code, 'CDP_NOT_CONNECTED');
+  assert.match(error.message, /manifest answered HTTP 500/);
+  assert.doesNotMatch(error.message, /host contention/);
+  assert.equal(fixture.launches(), 0);
+  assert.equal(fixture.receipt.filter((event) => event.stage === 'manifest-probe').length, 1);
+});
+
+test('an app that dies during patient warming is not relaunched', async (t) => {
+  const fixture = patient(t, {
+    appAlive: async () => performance.now() < 20_000,
+    attach: async () => {
+      throw new TargetReadinessTimeoutError('no target', 'empty');
+    },
+  });
+  const error = await fixture.run();
+  assert.equal(error.code, 'CDP_NOT_CONNECTED');
+  assert.equal(error.meta.liveness, 'dead');
+  assert.equal(fixture.launches(), 0);
+});
+
+test('a relaunch still running at the run deadline is cancelled within that budget', async (t) => {
+  const fixture = patient(t, {
+    remainingMs: () => 50_000 - performance.now(),
+    relaunch: async () => {
+      await sleep(60_000);
+    },
+  });
+  const error = await fixture.run(51_000);
+  assert.equal(error.code, 'CDP_NOT_CONNECTED');
+  assert.equal(fixture.elapsed(), 50_000);
+  assert.deepEqual(
+    fixture.receipt
+      .filter((event) => event.stage === 'dev-client-relaunch')
+      .map((event) => [event.at, event.ms, event.outcome]),
+    [[50_000, 21_000, 'failed']],
   );
 });

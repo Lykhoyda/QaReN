@@ -51,6 +51,8 @@ export const TIMING_STAGES = [
   'keyboard',
   'relaunch',
   'admission',
+  'manifest-probe',
+  'dev-client-relaunch',
   'runner-post-mortem',
   'dispatch-bind',
   'dispatch-native',

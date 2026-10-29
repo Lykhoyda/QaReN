@@ -2397,3 +2397,52 @@ fn media_diagnostics_reach_the_private_sink_with_unused_or_absent_inputs() {
         });
     }
 }
+
+#[test]
+fn manifest_probe_and_relaunch_timings_reach_the_run_receipt() {
+    use qaren::redact::{with_input_scope, InputValues};
+    use std::ffi::OsString;
+    use std::sync::Arc;
+    let verify = || {
+        let repo = common::temp_repo();
+        let events = [
+            serde_json::json!({
+                "kind": "metric", "stage": "manifest-probe", "edge": "end", "outcome": "failed",
+                "at": 10000, "ms": 10000, "count": 1, "method": "timeout"
+            }),
+            serde_json::json!({
+                "kind": "metric", "stage": "manifest-probe", "edge": "end", "outcome": "ok",
+                "at": 12000, "ms": 1000, "count": 2, "method": "unknown"
+            }),
+            serde_json::json!({
+                "kind": "metric", "stage": "dev-client-relaunch", "edge": "end", "outcome": "ok",
+                "at": 13000, "ms": 500, "count": 1, "relaunch": "ready"
+            }),
+        ];
+        let mut stdout = String::new();
+        for (i, event) in events.iter().enumerate() {
+            stdout.push_str(&envelope(i as u64 + 2, "diagnostic", &event.to_string()));
+            stdout.push('\n');
+        }
+        stdout.push_str(&envelope(5, "result", &pass_ledger(&[])));
+        stdout.push('\n');
+        let mut mock = MockRunner::new();
+        mock.expect_spawn_piped("walk.js", 9000, &stdout, Some(0));
+        let result = run_child(&mut mock, &repo.join("core.log"));
+        assert_eq!(result.verdict, Verdict::Pass);
+        let stored = std::fs::read_to_string(repo.join("core-diagnostics.jsonl")).unwrap();
+        let actual: Vec<serde_json::Value> = stored
+            .lines()
+            .map(|line| serde_json::from_str(line).unwrap())
+            .collect();
+        assert_eq!(actual, events);
+    };
+    verify();
+    with_input_scope(
+        Arc::new(InputValues::from_entries([(
+            OsString::from("QAREN_INPUT_PASSWORD"),
+            OsString::from("synthetic-password"),
+        )])),
+        verify,
+    );
+}
