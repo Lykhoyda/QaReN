@@ -150,7 +150,7 @@ Once setup has passed, ask your agent in plain words:
   and files it only after you confirm.
 
 What comes back: a verdict (PASS, FAIL, or a refusal that says what to fix); a report with
-one line per step and available screenshots; on a pull request, a comment with the verdict, the tested
+one line per step and screenshots; on a pull request, a comment with the verdict, the tested
 commit, the plan lines and the video when it can be published.
 
 The `using-qaren` skill writes plans for a feature and runs them.
