@@ -657,10 +657,14 @@ jobs:
             printf 'number=\nurl=\nhead=\n' >> "$GITHUB_OUTPUT"
             exit 0
           fi
-          MAIN=$(gh api "repos/{owner}/{repo}/git/ref/heads/main" --jq '.object.sha')
           # A fork's "main" branch matches --head main too; only this repository's main is the sync.
-          NUMBER=$(gh pr list --head main --base develop --state open --json number,isCrossRepository \
-            --jq '[.[] | select(.isCrossRepository == false)] | first | .number // empty')
+          PR=$(gh pr list --head main --base develop --state open --json number,isCrossRepository,autoMergeRequest \
+            --jq '[.[] | select(.isCrossRepository == false)] | first // empty')
+          NUMBER=$(jq -r '.number // empty' <<< "$PR")
+          if [ -n "$(jq -r '.autoMergeRequest // empty' <<< "$PR")" ]; then
+            gh pr merge --disable-auto "$NUMBER"
+          fi
+          MAIN=$(gh api "repos/{owner}/{repo}/git/ref/heads/main" --jq '.object.sha')
           if [ -z "$NUMBER" ]; then
             URL=$(gh pr create --head main --base develop \
               --title "Sync main into develop after v$VERSION" \

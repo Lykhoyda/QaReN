@@ -25,6 +25,7 @@ import {
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { runInNewContext } from 'node:vm';
 import {
   assertPreparedCandidate,
   assertVersion,
@@ -1868,6 +1869,35 @@ test('an open sync PR is reused, never duplicated', () => {
   }
 });
 
+for (const autoMerge of ['squash', 'merge']) {
+  for (const ready of [false, true]) {
+    test(`a reused sync PR retires ${autoMerge} auto-merge before checking readiness (${ready})`, () => {
+      const fixture = syncFixture({
+        headChecks: ready ? requiredChecks() : [],
+        prs: [
+          versionPr({ state: 'MERGED' }),
+          { number: 12, headRefName: 'main', baseRefName: 'develop', state: 'OPEN', autoMerge },
+        ],
+      });
+      try {
+        const run = runSync(fixture);
+        assert.equal(run.ok, ready, run.failed?.stderr);
+        const pr = syncPr(fixture)!;
+        assert.equal(pr.autoMerge, null);
+        assert.equal(pr.state, ready ? 'MERGED' : 'OPEN');
+        assert.equal(pr.mergeMethod, ready ? 'merge' : undefined);
+        const calls = ghCalls(fixture);
+        const disabled = calls.indexOf('pr merge --disable-auto 12');
+        assert.ok(disabled >= 0);
+        assert.ok(disabled < calls.findIndex((call) => call.includes('check-runs')));
+        assert.ok(!calls.some((call) => call.startsWith('pr create')));
+      } finally {
+        fixture.cleanup();
+      }
+    });
+  }
+}
+
 test('a fork PR from a branch named main is never taken for the sync', () => {
   const fork: GhPullRequest = {
     number: 12,
@@ -1957,21 +1987,18 @@ test('a conflicting sync PR fails without waiting, squashing or forcing', () => 
   }
 });
 
-test('the sync runs only after the version PR merged, and no release PR is ever squashed', () => {
+test('the sync runs only after a successful release merge and unless cancelled', () => {
   assert.deepEqual(release.jobs['sync-develop'].needs, ['version', 'merge']);
-  assert.match(String(release.jobs['sync-develop'].if), /needs\.merge\.result == 'success'/);
-  for (const { jobId, step } of everyRun(release)) {
-    for (const tokens of shellCommands(step.run!)) {
-      if (
-        tokens[0] === 'gh' &&
-        tokens[1] === 'pr' &&
-        tokens[2] === 'merge' &&
-        !tokens.includes('--disable-auto')
-      ) {
-        assert.ok(
-          tokens.includes('--merge') && !tokens.includes('--squash'),
-          `${jobId}: ${tokens.join(' ')}`,
-        );
+  const condition = release.jobs['sync-develop'].if!.replace(/^\$\{\{\s*|\s*\}\}$/g, '');
+  const outcomes = ['success', 'failure', 'cancelled', 'skipped'];
+  for (const version of outcomes) {
+    for (const merge of outcomes) {
+      for (const cancelled of [false, true]) {
+        const actual = runInNewContext(condition, {
+          cancelled: () => cancelled,
+          needs: { version: { result: version }, merge: { result: merge } },
+        });
+        assert.equal(actual, !cancelled && merge === 'success', `${version}/${merge}/${cancelled}`);
       }
     }
   }
