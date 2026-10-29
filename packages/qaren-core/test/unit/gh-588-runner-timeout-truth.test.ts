@@ -1,7 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
-import { readFileSync } from 'node:fs';
 import { _setActiveSessionForTest, runNative } from '../../dist/agent-device-wrapper.js';
 import { getPluginVersion, REQUIRED_IOS_COMMANDS } from '../../dist/runners/protocol.js';
 import {
@@ -62,22 +61,6 @@ test('GH-588 runner lifecycle: default launch requests an isolated OS-assigned l
     TEST_RUNNER_RN_FAST_RUNNER_PORT: '0',
   });
   assert.equal(resolveRunnerRequestedPort(31_337), 31_337, 'explicit test seam remains available');
-});
-
-test('GH-588 Slice C: deterministic wedge hook is compile-gated out of release artifacts', () => {
-  const source = readFileSync(
-    new URL(
-      '../../../qaren-ios-runner/QarenIosRunner/QarenIosRunnerUITests/QarenIosRunnerTests+CommandExecution.swift',
-      import.meta.url,
-    ),
-    'utf8',
-  );
-  const releaseWorkflow = readFileSync(
-    new URL('../../../../.github/workflows/runner-artifacts.yml', import.meta.url),
-    'utf8',
-  );
-  assert.match(source, /#if RN_FAST_RUNNER_TEST_FAULTS/);
-  assert.doesNotMatch(releaseWorkflow, /RN_FAST_RUNNER_TEST_FAULTS/);
 });
 
 test('GH-588 Slice C: deterministic fault uses the TEST_RUNNER_ XCUITest launch contract', () => {

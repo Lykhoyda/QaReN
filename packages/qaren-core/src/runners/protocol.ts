@@ -3,11 +3,6 @@ import type { RunIOSArgs } from './qaren-ios-runner-client.js';
 import type { RunAndroidArgs } from './rn-android-runner-client.js';
 import { candidatePluginManifestFiles, firstExistingFile } from './runtime-paths.js';
 
-// GH #383: the native runner /command wire protocol version. Mirrored by
-// RunnerProtocol.swift (iOS) and RunnerProtocol.kt (Android); the tri-file
-// sync test gh-383-protocol-sync.test.js enforces agreement. Bump when the
-// wire shape changes incompatibly; raise MIN_SUPPORTED when old runners can
-// no longer be driven.
 export const RUNNER_PROTOCOL_VERSION = 2;
 export const MIN_SUPPORTED_RUNNER_PROTOCOL = 1;
 
@@ -23,10 +18,6 @@ export type RunnerCompatibility =
   | { compatible: true }
   | { compatible: false; reason: RunnerIncompatibilityReason; missing?: string[] };
 
-// GH #418: every wire verb the bridge can POST to each runner's /command —
-// a curated subset of the client command unions (lifecycle/tvOS verbs are
-// deliberately not gated). The satisfies tie makes a typo'd verb a compile
-// error; gh-418-command-surface-sync.test.js enforces the native side.
 export const REQUIRED_IOS_COMMANDS = [
   'tap',
   'type',

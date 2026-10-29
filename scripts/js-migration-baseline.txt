@@ -95,14 +95,12 @@ packages/qaren-core/test/unit/gh-383-android-state-relocation.test.js
 packages/qaren-core/test/unit/gh-383-ios-protocol-gate.test.js
 packages/qaren-core/test/unit/gh-383-ios-state-relocation.test.js
 packages/qaren-core/test/unit/gh-383-launch-plumbing.test.js
-packages/qaren-core/test/unit/gh-383-no-tmp-state.test.js
 packages/qaren-core/test/unit/gh-383-open-path-surfacing.test.js
 packages/qaren-core/test/unit/gh-383-protocol-sync.test.js
 packages/qaren-core/test/unit/gh-383-runner-version-env.test.js
 packages/qaren-core/test/unit/gh-383-secure-state-file.test.js
 packages/qaren-core/test/unit/gh-418-android-command-gate.test.js
 packages/qaren-core/test/unit/gh-418-command-surface-classify.test.js
-packages/qaren-core/test/unit/gh-418-command-surface-sync.test.js
 packages/qaren-core/test/unit/gh-418-ios-command-gate.test.js
 packages/qaren-core/test/unit/gh-418-ios-keyboard-verb.test.js
 packages/qaren-core/test/unit/gh-418-remediation.test.js
@@ -165,7 +163,6 @@ packages/qaren-core/test/unit/settle-hash.test.js
 packages/qaren-core/test/unit/settle-wiring.test.js
 packages/qaren-core/test/unit/stale-ref-detection.test.js
 packages/qaren-core/test/unit/status-actionstore.test.js
-packages/qaren-core/test/unit/story-04-runner-surfaces.test.js
 packages/qaren-core/test/unit/suppress-ios-autocorrect.test.js
 packages/qaren-core/test/unit/task7-resolve-ladder.test.js
 packages/qaren-core/test/unit/test-recorder-generators.test.js
