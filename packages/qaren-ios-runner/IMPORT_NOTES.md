@@ -15,11 +15,11 @@ going forward — no upstream-sync relationship is maintained.
 - System modal handling (alerts/permission dialogs)
 - Transport (embedded FlyingFox HTTP server)
 
-## Renamed at import time
+## Current names
 
-All upstream identifiers (the project name, app/test targets, scheme, Swift
-class names, bundle id, and splash text) were rewritten to the `QarenIosRunner*`
-namespace as a single import-time sweep. Final names:
+The original import identifiers were replaced. The package was renamed from
+`rn-fast-runner` to `qaren-ios-runner` in 2.0.4; current Xcode names are defined in
+[`project.pbxproj`](QarenIosRunner/QarenIosRunner.xcodeproj/project.pbxproj):
 
 | Concern | Value |
 |---------|-------|
@@ -30,7 +30,8 @@ namespace as a single import-time sweep. Final names:
 | Bundle id | `dev.lykhoyda.rndevagent.fastrunner` |
 | Splash text | `QaReN` / `iOS runner` |
 
-The simulator shows `QaReN` (host) and `QaReN-Runner` (test runner).
+See the [iOS runner guidance](../qaren-cli/README.md#ios-runner) for installed app
+labels and migration from older runner directories.
 The splash title carries the stable `runner-splash-title` accessibility
 identifier that launch-contract tests key on.
 
