@@ -47,6 +47,9 @@ name: Release
 # PREREQUISITES (must be enabled in repo settings — cannot be set from this file):
 #   - Settings > Actions > General > "Allow GitHub Actions to create and approve pull requests"
 #   - Branch protection on main requiring the "Build & Test" status check.
+#   - main allows merge commits only; develop allows merge commits for sync PRs
+#     and squash merges for feature PRs.
+#   - develop requires "Build & Test", "Lint & format" and "Require changeset".
 
 on:
   push:
