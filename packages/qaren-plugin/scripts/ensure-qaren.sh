@@ -403,7 +403,6 @@ link_on_path() {
   IFS=: read -r -a path_dirs <<< "$PATH"
   if [ "$LINK" = 1 ]; then
     dir="$HOME/.local/bin"
-    shadow=$(command -v qaren || true)
     for candidate in "${path_dirs[@]}"; do
       [ "$candidate" != "$dir" ] || on_path=true
     done
@@ -464,6 +463,9 @@ link_on_path() {
     return 0
   fi
   echo "qaren: linked $target -> $bin" >&2
+  if [ "$LINK" = 1 ]; then
+    shadow=$(command -v qaren || true)
+  fi
   if [ -n "$shadow" ] && [ "$shadow" != "$target" ]; then
     echo "qaren: $shadow may shadow $target on PATH; run this build as $bin, or put $dir first on PATH" >&2
   fi

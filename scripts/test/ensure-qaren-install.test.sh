@@ -911,8 +911,8 @@ out=$(QAREN_HOME="$tmp/home/.qaren" PATH="$OWN_PATH" HOME="$tmp/home" bash "$tmp
 check "own HOME: --link succeeds with binary-only stdout" "0 $REAL_DEST/bin/qaren" "$rc $out"
 check "own HOME: the other home's link is unchanged" "$tmp/other/.qaren/runtime/2.0.0/bin/qaren" "$(readlink "$tmp/app-bin/qaren")"
 check "own HOME: --link creates the HOME link" "$REAL_DEST/bin/qaren" "$(readlink "$LINK")"
-check "own HOME: warns about the other PATH entry and names this build" yes \
-  "$(grep -Fq "$tmp/app-bin/qaren may shadow $LINK" "$tmp/stderr" && grep -Fq "run this build as $REAL_DEST/bin/qaren" "$tmp/stderr" && echo yes || echo "no: $(cat "$tmp/stderr")")"
+check "own HOME: no shadow warning when the new HOME link is first" no \
+  "$(grep -q 'may shadow' "$tmp/stderr" && echo yes || echo no)"
 check "own HOME: reports the link written" yes "$(grep -Fxq "qaren: linked $LINK -> $REAL_DEST/bin/qaren" "$tmp/stderr" && echo yes || echo no)"
 
 PATH="$SHADOW_PATH" HOME="$tmp/home" bash "$tmp/plugin/scripts/ensure-qaren.sh" --install --from-file "$tmp/good.tgz" --link >/dev/null 2>"$tmp/stderr"

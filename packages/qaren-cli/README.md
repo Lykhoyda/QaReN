@@ -294,9 +294,9 @@ If no PATH directory qualifies, it links `~/.local/bin/qaren` and prints
 With `--install --link`, the only link written is `$HOME/.local/bin/qaren` for the
 current `HOME`, even if another `qaren` appears on PATH. An install link there can
 be replaced across `QAREN_HOME` or release/source-build lines; other files are kept.
-Links elsewhere are never changed by `--link`. A different `qaren` found on PATH
-produces a shadow warning naming its path and this build's absolute command; put
-`$HOME/.local/bin` first on PATH to use this build by name. The source installer
+Links elsewhere are never changed by `--link`. A different `qaren` earlier on PATH
+than the new link produces a shadow warning naming its path and this build's
+absolute command; put `$HOME/.local/bin` first on PATH to use this build by name. The source installer
 accepts the same `--link` option, so it can switch this HOME's link between a release
 and a development build.
 Every successful link step reports the written link and its target on stderr.
