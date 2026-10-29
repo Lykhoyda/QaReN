@@ -136,8 +136,7 @@ for (const policy of [undefined, 'strict', 'non-strict'] as const) {
           : undefined;
       const run = () => walkBlock(tap, f.deps, 0, [], privacy);
       const outcome = inputs ? await withInputs(inputs, run) : await run();
-      const allowed =
-        policy === 'non-strict' && (carrier === 'ordinary' || carrier === 'test-pii');
+      const allowed = policy === 'non-strict' && (carrier === 'ordinary' || carrier === 'test-pii');
       assert.equal(outcome.block.outcome, allowed ? 'pass' : 'fail');
       assert.equal(f.calls.filter((call) => call === 'pixel shot').length, allowed ? 3 : 0);
     });
