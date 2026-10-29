@@ -2384,6 +2384,101 @@ fn privacy_comment_names_only_the_video_cause() {
 }
 
 #[test]
+fn screenshots_follow_the_persisted_video_mode_from_walk_to_pr_comment() {
+    for policy in ["absent", "strict", "non-strict"] {
+        for carrier in ["artwork", "test-pii", "secret", "secure"] {
+            let (runs, dir) = run_dir(false);
+            let output = std::process::Command::new("node")
+                .current_dir(Path::new(env!("CARGO_MANIFEST_DIR")).join("../qaren-core"))
+                .env("SCREENSHOT_POLICY", policy)
+                .env("SCREENSHOT_CARRIER", carrier)
+                .args(["--input-type=module", "--eval", r#"
+import assert from 'node:assert/strict';
+import { RunInputs, withInputs } from './dist/qa/inputs.js';
+import { parsePlan } from './dist/qa/plan.js';
+import { ObservedPrivacy } from './dist/qa/privacy.js';
+import { applyNativePrivateInputs } from './dist/qa/private-input.js';
+import { join } from './dist/qa/screen.js';
+import { runPlan } from './dist/qa/walker.js';
+import { scriptedJudge, walker } from './test/unit/qa/judgment-fixtures.ts';
+const policy = process.env.SCREENSHOT_POLICY;
+const carrier = process.env.SCREENSHOT_CARRIER;
+const value = 'synthetic-screenshot-canary';
+const nodes = [{ ref: '@artwork', type: carrier === 'secure' ? 'SecureTextField' : 'Other',
+  value: carrier === 'secure' ? undefined : value }];
+const observed = applyNativePrivateInputs(join(nodes, []), nodes);
+const f = walker([observed], scriptedJudge(() => assert.fail('literal checks are model-free')));
+f.deps.videoPolicy = policy === 'absent' ? undefined : policy;
+f.deps.screenshot = async () => 'screenshots/01.png';
+const privacy = new ObservedPrivacy();
+f.deps.privacy = privacy;
+const walk = () => runPlan(parsePlan('✓ "Missing"').blocks, f.deps);
+const inputs = ['test-pii', 'secret'].includes(carrier)
+  ? new RunInputs({ FIXTURE: value }, ['FIXTURE'], privacy, carrier === 'test-pii' ? ['FIXTURE'] : [])
+  : undefined;
+const ledger = inputs ? await withInputs(inputs, walk) : await walk();
+process.stdout.write(JSON.stringify(ledger));
+"#])
+                .output()
+                .expect("node on PATH is required for core screenshot projection");
+            assert!(
+                output.status.success(),
+                "{}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+            let ledger: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+            std::fs::write(dir.join("ledger.json"), &output.stdout).unwrap();
+            edit_pr(&dir, |pr| {
+                pr["blocks"] = serde_json::json!([]);
+                pr["videoPolicy"] = ledger["videoPolicy"].clone();
+                pr["videoPolicySource"] = ".qaren/testing.yaml".into();
+                pr["videoPublication"] = ledger["videoPublication"].clone();
+                pr["nonStrictPublication"] = ledger["nonStrictPublication"].clone();
+            });
+            let mut runner = Git(MockRunner::new());
+            script_comment_and_label(&mut runner.0);
+            let receipt = publish(&mut runner, &runs, RUN, &machine());
+            assert_eq!(
+                receipt.result,
+                ReceiptResult::Published,
+                "{:?}",
+                receipt.failure
+            );
+            let comment = runner
+                .0
+                .calls
+                .iter()
+                .find(|call| call.label == "gh-pr-comment")
+                .unwrap();
+            let expected = policy == "non-strict" && matches!(carrier, "artwork" | "test-pii");
+            assert_eq!(
+                comment
+                    .args
+                    .iter()
+                    .any(|arg| arg == "./screenshots/01.png#Failing step"),
+                expected,
+                "{policy} {carrier}"
+            );
+            let body = std::fs::read_to_string(dir.join("comment.md")).unwrap();
+            assert_eq!(
+                body.contains("![Failing step]"),
+                expected,
+                "{policy} {carrier}: {body}"
+            );
+            let wording = if policy == "absent" {
+                "Video policy: not declared in .qaren/testing.yaml, so strict rules apply."
+                    .to_string()
+            } else {
+                format!("Video policy: {policy} (declared in .qaren/testing.yaml).")
+            };
+            assert!(body.contains(&wording), "{body}");
+            assert!(!body.contains("synthetic-screenshot-canary"));
+            assert_eq!(runner.0.remaining(), 0);
+        }
+    }
+}
+
+#[test]
 fn persisted_non_strict_video_contract_never_relaxes_saved_blocks() {
     for strict in [
         "withheld-privacy",

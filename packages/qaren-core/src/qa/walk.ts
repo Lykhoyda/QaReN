@@ -784,10 +784,10 @@ async function openSession(
       }
     },
     async screenshot(name) {
-      if (stop.stopping || currentInputs()?.hasInputs) return undefined;
+      if (stop.stopping) return undefined;
       const path = join(request.runDir, name);
       const shot = await stop.track(() =>
-        captureQaScreenshot(platform, path, target.deviceId, appId),
+        captureQaScreenshot(platform, path, target.deviceId, appId, request.videoPolicy),
       );
       if (!shot.ok) log(`screenshot ${name} failed: ${shot.reason}`);
       return shot.ok ? name : undefined;

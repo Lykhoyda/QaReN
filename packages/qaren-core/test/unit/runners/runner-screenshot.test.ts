@@ -13,6 +13,7 @@ import {
   captureRunnerScreenshot,
 } from '../../../dist/runners/rn-fast-runner-client.js';
 import { captureQaScreenshot } from '../../../dist/qa/screenshot.js';
+import { RunInputs, withInputs } from '../../../dist/qa/inputs.js';
 import {
   _setForTest as rawCapture,
   _resetForTest as resetRawCapture,
@@ -98,6 +99,32 @@ test('a runner screenshot moves out of the runner container to the row path', as
       'data',
     ],
   ]);
+});
+
+test('the capture adapter permits TEST-PII inputs only in non-strict mode', async () => {
+  for (const policy of [undefined, 'strict', 'non-strict'] as const) {
+    for (const nonSecret of [false, true]) {
+      const inputs = new RunInputs(
+        { FIXTURE: 'synthetic-fixture' },
+        ['FIXTURE'],
+        undefined,
+        nonSecret ? ['FIXTURE'] : [],
+      );
+      writeFileSync(join(container, 'tmp', 'screenshot-3.png'), 'png-bytes');
+      runnerReturns({ message: 'tmp/screenshot-3.png' });
+      const destination = join(container, `${policy}-${nonSecret}.png`);
+      const result = await withInputs(inputs, () =>
+        captureQaScreenshot('ios', destination, UDID, 'com.test', policy),
+      );
+      const allowed = policy === 'non-strict' && nonSecret;
+      assert.deepEqual(
+        result,
+        allowed ? { ok: true } : { ok: false, reason: 'WITHHELD_PRIVATE_INPUT' },
+      );
+      assert.equal(existsSync(destination), allowed);
+      assert.equal(rawCalls, 0);
+    }
+  }
 });
 
 test('a refused or unexpected runner screenshot reports unavailable', async () => {
