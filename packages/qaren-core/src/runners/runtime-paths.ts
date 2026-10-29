@@ -53,7 +53,7 @@ export function legacyNativeRunnerDirHint(
   if (!legacyName) return undefined;
   const legacyDir = candidateDirsFor(legacyName, baseDir).find(isDirectory);
   return legacyDir
-    ? `found pre-2.0.4 runner directory ${legacyDir}; rename it to ${runnerName} or unset QAREN_NATIVE_RUNNER_ROOT/QAREN_ROOT`
+    ? `found pre-2.0.4 runner directory ${legacyDir}; this version cannot use it: install the current runner (qaren update, or a fresh source checkout) or unset QAREN_NATIVE_RUNNER_ROOT/QAREN_ROOT`
     : undefined;
 }
 

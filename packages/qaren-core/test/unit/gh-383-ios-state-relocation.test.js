@@ -1,4 +1,4 @@
-// GH #383: iOS runner state moves from /tmp/qaren-ios-runner-state.json to a
+// GH #383: iOS runner state moves from a shared /tmp path to a
 // per-UDID hardened file under <stateDir>/runner-state/ios-<udid>.json.
 import { test, afterEach } from 'node:test';
 import assert from 'node:assert/strict';

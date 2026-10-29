@@ -36,6 +36,12 @@ packages/qaren-ios-runner/**/xcuserdata/
 packages/qaren-ios-runner/**/DerivedData/
 packages/qaren-ios-runner/**/project.xcworkspace/xcshareddata/
 
+# pre-2.0.4 iOS runner build output; drop in 2.1
+packages/rn-fast-runner/build/
+packages/rn-fast-runner/**/xcuserdata/
+packages/rn-fast-runner/**/DerivedData/
+packages/rn-fast-runner/**/project.xcworkspace/xcshareddata/
+
 # Gradle build artifacts for the Android runner
 packages/rn-android-runner/.gradle/
 packages/rn-android-runner/.kotlin/

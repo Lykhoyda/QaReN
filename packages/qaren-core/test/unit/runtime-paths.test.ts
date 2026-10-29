@@ -96,7 +96,7 @@ test('the legacy iOS hint names only an existing directory and never resolves it
     else process.env.QAREN_ROOT = oldRoot;
     rmSync(root, { recursive: true, force: true });
   });
-  const base = join(root, 'runtime', 'qa');
+  const base = join(root, 'x', 'runtime', 'qa');
   const legacy = join(root, 'rn-fast-runner');
   assert.equal(legacyNativeRunnerDirHint('qaren-ios-runner', base), undefined);
   writeFileSync(legacy, 'not a directory');
@@ -105,7 +105,7 @@ test('the legacy iOS hint names only an existing directory and never resolves it
   mkdirSync(legacy);
   assert.equal(
     legacyNativeRunnerDirHint('qaren-ios-runner', base),
-    `found pre-2.0.4 runner directory ${legacy}; rename it to qaren-ios-runner or unset QAREN_NATIVE_RUNNER_ROOT/QAREN_ROOT`,
+    `found pre-2.0.4 runner directory ${legacy}; this version cannot use it: install the current runner (qaren update, or a fresh source checkout) or unset QAREN_NATIVE_RUNNER_ROOT/QAREN_ROOT`,
   );
   assert.equal(resolveNativeRunnerDir('qaren-ios-runner', base), join(root, 'qaren-ios-runner'));
   assert.equal(legacyNativeRunnerDirHint('rn-android-runner', base), undefined);

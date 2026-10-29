@@ -31,7 +31,7 @@
       shouldAutocreateTestPlan = "NO">
       <TestPlans>
          <TestPlanReference
-            reference = "container:QaReN.xctestplan"
+            reference = "container:QarenIosRunnerUITests.xctestplan"
             default = "YES">
          </TestPlanReference>
       </TestPlans>
