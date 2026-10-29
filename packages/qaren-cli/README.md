@@ -3160,6 +3160,22 @@ a recorded port number also masks the same number elsewhere in the text. It then
 removes the `needs-qa` label only if the current head is the tested head; otherwise
 `publication.json` and the receipt record `retained-head-changed`.
 
+With `proofInDescription: true` in the app config when `qaren pr` runs (the choice is
+persisted in `pr.json`; publish never re-reads the config), `qaren publish` also writes one
+section between `<!-- qaren-proof:start -->` and `<!-- qaren-proof:end -->` lines into the
+pull request description: the verdict, the tested commit, a link to the comment, and the
+video. The video is the asset the comment upload already produced, used only when the comment
+attached it under the [video publication rules](#video-publication); a withheld or missing
+video shows the comment's own video sentence and no URL. A later publish replaces the section
+instead of adding one. Text outside the markers is kept byte for byte relative to the body
+publish last read; the description is read twice and written only when both reads agree, but
+GitHub offers no conditional edit, so a human edit landing between that read and the write
+can still be lost. The comment is always posted first, and a skipped description leaves the
+receipt `Published` with `outcomes.description` naming why: a moved head or ambiguous markers
+are final, while a description that kept changing, an edit or read that GitHub refused, or a
+comment that could not be read back are retried by re-running `qaren publish`. Upgrade every
+CLI/CI runtime before adding the key; older versions refuse it.
+
 A saved block is published only verbatim, and only when the walk met the strict
 [video publication rules](#video-publication) and the
 machine redaction would leave the block unchanged. Any other block stays in the

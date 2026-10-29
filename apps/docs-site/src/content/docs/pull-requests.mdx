@@ -70,6 +70,21 @@ The host name, home directory, user name, absolute paths, device IDs, serials, p
 private network addresses are removed from the comment. Publish then removes the `needs-qa`
 label, but only when the pull request's head is still the tested commit.
 
+### The description
+
+With `proofInDescription: true` in [the config](../configuration/#keys) when `qaren pr` runs,
+publish also writes a QaReN-owned section into the pull request description, after posting
+the comment. The section holds the verdict, the tested commit, a link to the comment and the
+video the comment already uploaded. A later publish for a new head replaces
+the section, and the text outside it is kept as publish last read it; a human edit made in the
+moment between that read and the write can still be lost. A withheld or missing video never
+appears there: the section repeats the comment's video sentence instead. The section sits
+between a `<!-- qaren-proof:start -->` line and a `<!-- qaren-proof:end -->` line; a duplicated
+or reversed marker line makes publish skip the description until one start line precedes one
+end line again.
+When the head moved or the description cannot be written, the receipt names why in
+`outcomes.description` and the comment still carries the proof.
+
 ### Saved blocks
 
 For saved-block publication eligibility and withholding outcomes, follow the
