@@ -4,7 +4,7 @@
 borrowed iOS simulator or Android emulator, prepares the app and Metro,
 starts the TypeScript screen child, walks a Markdown plan, writes evidence,
 and tears down owned resources.
-For the product introduction and installation, see the [root README](../../README.md).
+This file is the CLI reference; the product introduction and the agent path are in the [root README](../../README.md).
 The scenario-based preparation verbs remain available for explicit iOS,
 NUC Android and USB Android setup experiments.
 
