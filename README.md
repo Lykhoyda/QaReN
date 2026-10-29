@@ -137,37 +137,31 @@ Load that checkout's plugin with
 [installation contract](packages/qaren-cli/README.md#plugin-runtime-installation) covers
 PATH linking and existing-command protection.
 
-## Use it
+## Ask your agent
 
-```sh
-qaren check --plan-file plan.md --json      # check the working tree
-qaren watch --latest                        # follow a run from a second terminal
-qaren pr <number|url> --plan-file plan.md --json
-qaren publish <run-id> --json
-```
+Once setup has passed, ask your agent in plain words:
 
-`qaren publish` needs an authenticated `gh`. Read
-[Test a pull request](packages/qaren-cli/README.md#test-a-pull-request) before running
-it: it comments on the pull request, can push saved blocks to its branch and can remove the
-`needs-qa` label, and its redaction does not make private material safe to post.
+- "QA this feature": it picks a saved plan or writes one from the feature's screens in
+  source, then runs it on your working tree.
+- "QA PR #12": it runs the plan at the pull request's head, and posts the result to the
+  pull request only when you ask, after you confirm the plan and recording may be posted.
+- "Follow the run": it follows the latest run live.
+- "Report a QaReN bug": it drafts a sanitized GitHub issue about QaReN, shows it in full,
+  and files it only after you confirm.
 
-The `using-qaren` skill writes plans for a feature and runs them. The
-[CLI guide](packages/qaren-cli/README.md) covers
-[plans and receipts](packages/qaren-cli/README.md#check-a-plan),
-[saved blocks](packages/qaren-cli/README.md#saved-blocks),
-[pull requests](packages/qaren-cli/README.md#test-a-pull-request) and
-[watching a run](packages/qaren-cli/README.md#watch-a-run).
+What comes back: a verdict (PASS, FAIL, or a refusal that says what to fix); a report with
+one line per step and screenshots; on a pull request, a comment with the verdict, the tested
+commit, the plan lines and the video when it can be published.
+
+The `using-qaren` skill writes plans for a feature and runs them.
 
 ## Keep it working
 
-Run `qaren doctor` to diagnose the host, the install and rn-dev-agent 1.x leftovers; see
-[Doctor](packages/qaren-cli/README.md#doctor).
+Ask your agent to run QaReN's doctor and to update QaReN; the commands are in the reference below.
 
 To update a released install, update the plugin in your host. Claude Code's next session
 prints the command that installs the matching `qaren`; running setup again installs it
-too. A source
-install updates with `qaren update` from the checkout root, which fast-forwards,
-rebuilds and reinstalls, and refuses a checkout with local changes.
+too.
 
 <a id="prebuilt-runners"></a>
 
@@ -188,6 +182,31 @@ remain intact and other versions are unaffected. A spent rebuild budget still re
 the current start. Authority mismatches and stale local runners do not mark the prebuilt.
 If the marker cannot be written, the rebuild budget still applies, but persistent
 rejection is not guaranteed.
+
+## The `qaren` CLI (reference)
+
+```sh
+qaren check --plan-file plan.md --json      # check the working tree
+qaren watch --latest                        # follow a run from a second terminal
+qaren pr <number|url> --plan-file plan.md --json
+qaren publish <run-id> --json
+```
+
+`qaren publish` needs an authenticated `gh`. Read
+[Test a pull request](packages/qaren-cli/README.md#test-a-pull-request) before running
+it: it comments on the pull request, can push saved blocks to its branch and can remove the
+`needs-qa` label, and its redaction does not make private material safe to post.
+
+Run `qaren doctor` to diagnose the host, the install and rn-dev-agent 1.x leftovers; see
+[Doctor](packages/qaren-cli/README.md#doctor). A source
+install updates with `qaren update` from the checkout root, which fast-forwards,
+rebuilds and reinstalls, and refuses a checkout with local changes.
+
+The [CLI guide](packages/qaren-cli/README.md) covers
+[plans and receipts](packages/qaren-cli/README.md#check-a-plan),
+[saved blocks](packages/qaren-cli/README.md#saved-blocks),
+[pull requests](packages/qaren-cli/README.md#test-a-pull-request) and
+[watching a run](packages/qaren-cli/README.md#watch-a-run).
 
 ## Upgrading from rn-dev-agent 1.x
 
