@@ -470,7 +470,12 @@ async function openSession(
       ['type-call', 'type-readback', 'relayout-retap', 'settle', 'keyboard'].includes(event.stage)
     )
       event = { ...event, line: currentLine };
-    if (currentInputs()?.hasInputs) diagnostic({ kind: 'metric', ...event });
+    if (
+      currentInputs()?.hasInputs ||
+      event.stage === 'manifest-probe' ||
+      event.stage === 'dev-client-relaunch'
+    )
+      diagnostic({ kind: 'metric', ...event });
     else process.stderr.write(redactApiKey(formatTimingEvent(event)));
   });
   const cdp = new CDPClient(target.metroPort);
@@ -539,15 +544,20 @@ async function openSession(
         // Same launch the CLI made: once Metro answers the manifest in time, terminate and open the dev client on its Metro.
         ...(platform === 'ios'
           ? {
-              relaunch: async (deadline: number) => {
-                const url = devClientLaunchUrl(target);
-                const manifest = await awaitDevClientManifest(url, deadline);
-                log(
-                  `relaunching after the manifest answered in ${manifest.ms} ms (attempt ${manifest.attempts})`,
+              manifest: async (deadline, retry) => {
+                const manifest = await awaitDevClientManifest(
+                  devClientLaunchUrl(target),
+                  deadline,
+                  retry,
                 );
-                bundleRequests?.relaunching();
-                await relaunchIosDevClient(appId, target.deviceId, url);
+                log(
+                  `QaReN manifest probe answered in ${manifest.ms} ms (attempt ${manifest.attempts})`,
+                );
                 return manifest;
+              },
+              relaunch: async () => {
+                bundleRequests?.relaunching();
+                await relaunchIosDevClient(appId, target.deviceId, devClientLaunchUrl(target));
               },
               appAlive: async () => {
                 const alive = await isAppRunning('ios', appId, undefined, target.deviceId);
@@ -596,6 +606,7 @@ async function openSession(
         prove: () => prove({ evaluate: (expr) => cdp.evaluate(expr) }, target),
         close,
         observe: (decision, facts) => timing(admissionMetric(decision, facts, attachStage, now())),
+        timing: (event) => timing({ ...event, at: now() }),
       },
       stop,
     ).catch(logRefusal),

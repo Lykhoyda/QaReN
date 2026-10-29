@@ -7095,6 +7095,29 @@ fn pr_runs_the_walk_on_a_worktree_at_the_head_with_a_recording_in_order() {
 }
 
 #[test]
+fn pr_without_github_auth_refuses_before_device_or_worktree_admission() {
+    let (repo, app) = app_repo();
+    let mut mock = MockRunner::new();
+    mock.expect_run("node --version", CmdOutput::success("v26.8.1\n"));
+    mock.expect_run("git", CmdOutput::success(&format!("{}\n", repo.display())));
+    mock.expect_run(
+        "gh pr view",
+        CmdOutput::failed(1, "authentication required"),
+    );
+    mock.expect_run("gh auth status", CmdOutput::failed(1, "not logged in"));
+    let receipt = run(&mut mock, &pr_request(&repo, &app));
+    assert_eq!(receipt.result, ReceiptResult::Refused);
+    assert_eq!(
+        receipt.failure.unwrap().code,
+        FailureCode::GithubAuthUnavailable
+    );
+    assert_eq!(mock.remaining(), 0);
+    assert_eq!(mock.calls.len(), 4);
+    assert!(!repo.join("runs").exists());
+    std::fs::remove_dir_all(repo).unwrap();
+}
+
+#[test]
 fn pr_runtime_input_recording_obeys_video_policy_and_secret_inventory() {
     for (policy, non_secret, unused) in [
         (None, false, false),

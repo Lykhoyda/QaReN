@@ -91,12 +91,18 @@ impl LogDrain {
             } else {
                 crate::redact::input_namespace_present()
             };
-        let values = serde_json::to_vec(&if core_log && !withheld {
+        let mut redaction_values = if core_log && !withheld {
             crate::redact::log_redaction_values()
         } else {
             Vec::new()
-        })
-        .map_err(io::Error::other)?;
+        };
+        let github_values = crate::redact::github_auth_values();
+        let withheld = withheld
+            || github_values
+                .iter()
+                .any(|value| value.contains(['\r', '\n']));
+        redaction_values.extend(github_values);
+        let values = serde_json::to_vec(&redaction_values).map_err(io::Error::other)?;
         let values_len = u32::try_from(values.len()).map_err(io::Error::other)?;
         let mut command = Command::new(executable);
         command
