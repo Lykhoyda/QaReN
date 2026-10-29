@@ -34,6 +34,8 @@ jobs:
   # PR → only when Swift/Xcode files (or this workflow) changed; push/schedule → always.
   changes:
     name: Detect changed languages
+    # Skip the Version Packages PR (and with it `analyze`); its merge push to main runs the full scan.
+    if: github.head_ref != 'changeset-release/main' || github.base_ref != 'main' || github.event.pull_request.user.login != 'github-actions[bot]' || github.event.pull_request.head.repo.full_name != github.repository
     runs-on: ubuntu-slim
     outputs:
       swift: ${{ steps.detect.outputs.swift }}
