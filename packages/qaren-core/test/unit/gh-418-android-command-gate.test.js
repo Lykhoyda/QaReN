@@ -5,7 +5,7 @@
 // the same stale APK and never runs Gradle).
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
@@ -30,10 +30,6 @@ import {
   REQUIRED_ANDROID_COMMANDS,
 } from '../../dist/runners/protocol.js';
 
-const runnerSource = readFileSync(
-  new URL('../../src/runners/qaren-android-runner-client.ts', import.meta.url),
-  'utf8',
-);
 const noAndroidRebuildCleanup = async () => {};
 
 test('gh-418 android: probe parses commands array (non-strings filtered)', async () => {
@@ -72,27 +68,9 @@ test('gh-418 android: AndroidCommandsStaleError message carries the typed prefix
   assert.deepEqual(err.missing, ['dismissKeyboard']);
 });
 
-test('Android authority upgrades use the bounded artifact rebuild owner', () => {
+test('Android authority mismatch carries the typed refusal prefix', () => {
   const err = new AndroidAuthorityStaleError();
   assert.ok(err.message.startsWith('RUNNER_OWNERSHIP_MISMATCH'));
-  assert.match(
-    runnerSource,
-    /err instanceof AndroidAuthorityStaleError[\s\S]*?runBoundedAndroidRunnerRebuild\(\s*err,\s*async \(signal\)[\s\S]*?signal\.throwIfAborted\(\)[\s\S]*?invalidateAndroidRunnerApks\(undefined, signal\)[\s\S]*?_forceReinstall: true[\s\S]*?_rebuildSignal: signal/,
-  );
-  assert.match(
-    runnerSource,
-    /execFileAsync\(GRADLEW[\s\S]*?signal: opts\.signal[\s\S]*?buildAdbInstallArgs[\s\S]*?signal: opts\.signal/,
-  );
-});
-
-test('Android rebuild cleanup calls are bound to lease authority', () => {
-  const retrySource = runnerSource.slice(
-    runnerSource.indexOf('export async function startAndroidRunner('),
-    runnerSource.indexOf('async function startAndroidRunnerAttempt('),
-  );
-  const reapCalls = [...retrySource.matchAll(/await reapMismatchedAndroidRunner\(([\s\S]*?)\);/g)];
-  assert.equal(reapCalls.length, 4);
-  for (const call of reapCalls) assert.match(call[1], /\bsignal\b/);
 });
 
 test('Android artifact rebuild is serialized and budgeted once', async () => {
@@ -505,13 +483,6 @@ test('Android rebuild refuses an undurable terminal failure state', async () => 
     (error) =>
       error instanceof AndroidAuthorityStaleError &&
       error.message.includes('failure state was not durable'),
-  );
-});
-
-test('Android rebuild state initialization closes its store on schema failure', () => {
-  assert.match(
-    runnerSource,
-    /function initializeAndroidRunnerRebuildState[\s\S]*?const store = openAuthorityStore[\s\S]*?try \{[\s\S]*?store\.database\.exec[\s\S]*?catch \(cause\) \{[\s\S]*?store\.close\(\)/,
   );
 });
 

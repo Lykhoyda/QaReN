@@ -518,8 +518,7 @@ removes the runner's forwards on the selected emulator, force-stops both runner
 packages, and verifies absence through `forward --list` and the runner package's
 entry in `dumpsys activity processes`; output that is not a recognised processes
 dump leaves the leg unresolved. The runner port and packages are defined in
-[`src/adapters/android.rs`](src/adapters/android.rs) and checked against the core by
-the [runner sync test](../qaren-core/test/unit/qaren-cli-android-runner-sync.test.ts).
+[`src/adapters/android.rs`](src/adapters/android.rs).
 A walk that never started a runner reads as `absent`; a run that never reached
 the walk needs no runner release. An unproven leg keeps the lease, so a later
 `qaren cleanup <run-id>` can finish. Cleanup preserves the adb server, installed
