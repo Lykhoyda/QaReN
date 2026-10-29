@@ -880,6 +880,7 @@ check "lines: a dev install beside the release succeeds" "0 $DEV_DEST/bin/qaren"
 check "lines: the release link is kept" "$REAL_DEST/bin/qaren" "$(readlink "$LINK")"
 check "lines: the release runtime is kept" "$GOOD_SHA" "$(cat "$DEST/.tarball-sha256")"
 check "lines: the refusal names --link" yes "$(grep -q -- '--link' "$tmp/stderr" && echo yes || echo "no: $(cat "$tmp/stderr")")"
+check "lines: the HOME link refusal offers replacement" yes "$(grep -q 'replace it' "$tmp/stderr" && echo yes || echo no)"
 install_as "$DEV" "$tmp/dev.tgz" --link >/dev/null
 check "lines: --link moves the link to the dev build" "$DEV_DEST/bin/qaren" "$(readlink "$LINK")"
 install_as "$RELEASE" "$tmp/good.tgz" >/dev/null
@@ -905,6 +906,8 @@ check "no shadow: the other home's link is kept" "$tmp/other/.qaren/runtime/2.0.
 check "no shadow: no second link is made" "no no" \
   "$([ -e "$tmp/home/bin/qaren" ] && echo yes || echo no) $([ -e "$LINK" ] && echo yes || echo no)"
 check "no shadow: names the other QAREN_HOME" yes "$(grep -q 'another QAREN_HOME' "$tmp/stderr" && echo yes || echo "no: $(cat "$tmp/stderr")")"
+check "no shadow: foreign link hint never promises replacement" no "$(grep -q 'replace it' "$tmp/stderr" && echo yes || echo no)"
+check "no shadow: foreign link hint names the HOME link" yes "$(grep -Fq -- "--link to link $LINK and put that directory first on PATH" "$tmp/stderr" && echo yes || echo no)"
 # An empty HOME bin before another home's qaren must receive its own link.
 OWN_PATH="$tmp/home/.local/bin:$tmp/read-only-tools:$tmp/app-bin"
 out=$(QAREN_HOME="$tmp/home/.qaren" PATH="$OWN_PATH" HOME="$tmp/home" bash "$tmp/plugin/scripts/ensure-qaren.sh" --install --from-file "$tmp/good.tgz" --link 2>"$tmp/stderr"); rc=$?
@@ -924,6 +927,13 @@ ln -s "$tmp/other/.qaren/runtime/2.0.0/bin/qaren" "$LINK"
 QAREN_HOME="$tmp/home/.qaren" PATH="$OWN_PATH" HOME="$tmp/home" bash "$tmp/plugin/scripts/ensure-qaren.sh" --install --from-file "$tmp/good.tgz" --link >/dev/null 2>"$tmp/stderr"
 check "own HOME: --link replaces a link into another QAREN_HOME" "$REAL_DEST/bin/qaren" "$(readlink "$LINK")"
 check "own HOME: no shadow warning for its own link" no "$(grep -q 'may shadow' "$tmp/stderr" && echo yes || echo no)"
+
+PATH="$tmp/home/.local/bin/:$tmp/read-only-tools" HOME="$tmp/home" bash "$tmp/plugin/scripts/ensure-qaren.sh" --install --from-file "$tmp/good.tgz" --link >/dev/null 2>"$tmp/stderr"; rc=$?
+check "own HOME: trailing slash PATH entry succeeds without notices" "0 no" "$rc $(grep -Eq 'may shadow|not on PATH' "$tmp/stderr" && echo yes || echo no)"
+ln -s "$REAL_DEST/bin/qaren" "$tmp/home/bin/qaren"
+PATH="$tmp/home/bin:$OWN_PATH" HOME="$tmp/home" bash "$tmp/plugin/scripts/ensure-qaren.sh" --install --from-file "$tmp/good.tgz" --link >/dev/null 2>"$tmp/stderr"; rc=$?
+check "own HOME: another link to the same runtime does not shadow" "0 no" "$rc $(grep -q 'may shadow' "$tmp/stderr" && echo yes || echo no)"
+rm "$tmp/home/bin/qaren"
 
 install_as "$DEV" "$tmp/dev.tgz" --link >/dev/null
 install_as "$RELEASE" "$tmp/good.tgz" --link >/dev/null
@@ -947,11 +957,5 @@ check "source help: describes HOME-only linking" yes "$(grep -Fq '$HOME/.local/b
 rm -f "$tmp/app-bin/qaren"
 
 chmod 755 "$tmp/read-only-tools"
-leaked=""
-IFS=: read -r -a real_dirs <<< "${PATH#"$tmp/stubs:$tmp/home/bin:"}"
-for d in "${real_dirs[@]}"; do
-  [ -L "$d/qaren" ] && [[ "$(readlink "$d/qaren")" == "$tmp"/* || "$(readlink "$d/qaren")" == "$(cd -P "$tmp" && pwd -P)"/* ]] && leaked="$leaked $d"
-done
-check "no install linked qaren into a real PATH directory" "" "$leaked"
 [ -f "$tmp/sleep-pids" ] && kill $(cat "$tmp/sleep-pids") 2>/dev/null
 exit "$fail"

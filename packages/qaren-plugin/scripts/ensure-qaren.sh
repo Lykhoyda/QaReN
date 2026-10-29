@@ -398,13 +398,13 @@ line_of() { case "$1" in *-dev.*) echo dev ;; *) echo release ;; esac; }
 # Explicit linking stays in this HOME; automatic linking considers the first qaren on PATH.
 # A link problem is a stderr notice, never a failed install.
 link_on_path() {
-  local bin="$1" dir="" target tmp candidate pass on_path=false current linked version shadow=""
+  local bin="$1" dir="" target tmp candidate pass on_path=false current linked version shadow="" link_hint
   local -a path_dirs
   IFS=: read -r -a path_dirs <<< "$PATH"
   if [ "$LINK" = 1 ]; then
     dir="$HOME/.local/bin"
     for candidate in "${path_dirs[@]}"; do
-      [ "$candidate" != "$dir" ] || on_path=true
+      [ "${candidate%/}" != "$dir" ] || on_path=true
     done
   else
     # Empty and relative entries resolve against the caller's directory, not a stable bin.
@@ -444,13 +444,15 @@ link_on_path() {
     version="${bin%/bin/qaren}"
     version="${version##*/}"
     if [ "$LINK" = 0 ]; then
+      link_hint="rerun --install --link to link $HOME/.local/bin/qaren and put that directory first on PATH"
+      [ "$target" != "$HOME/.local/bin/qaren" ] || link_hint="rerun --install with --link to replace it"
       if [[ "$current" != "$RUNTIME_ROOT"/* ]]; then
-        echo "qaren: $target links qaren $linked from another QAREN_HOME; run qaren as $bin, or rerun --install with --link to replace it" >&2
+        echo "qaren: $target links qaren $linked from another QAREN_HOME; run qaren as $bin, or $link_hint" >&2
         return 0
       fi
       # A link whose runtime here is gone serves nobody, so only a working one keeps its line.
       if [ -e "$target" ] && [ "$(line_of "$linked")" != "$(line_of "$version")" ]; then
-        echo "qaren: $target runs qaren $linked, not this $(line_of "$version") build; run qaren as $bin, or rerun --install with --link to replace it" >&2
+        echo "qaren: $target runs qaren $linked, not this $(line_of "$version") build; run qaren as $bin, or $link_hint" >&2
         return 0
       fi
     fi
@@ -466,7 +468,7 @@ link_on_path() {
   if [ "$LINK" = 1 ]; then
     shadow=$(command -v qaren || true)
   fi
-  if [ -n "$shadow" ] && [ "$shadow" != "$target" ]; then
+  if [ -n "$shadow" ] && ! [ "$shadow" -ef "$target" ]; then
     echo "qaren: $shadow may shadow $target on PATH; run this build as $bin, or put $dir first on PATH" >&2
   fi
   if [ "$on_path" = false ]; then
