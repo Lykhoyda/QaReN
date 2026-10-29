@@ -861,7 +861,12 @@ async function walkBlockScoped(
     target: NonNullable<ReturnType<typeof pixelTarget>>,
   ): Promise<{ stable: boolean; crop?: PixelCrop; observation?: Observation }> => {
     assertActive();
-    const allowed = () => privacy.canScreenshot() && !metadataOnly && !currentInputs()?.hasInputs;
+    const allowed = () =>
+      !privacy.screenshotLatch(deps.videoPolicy) &&
+      !metadataOnly &&
+      !(deps.videoPolicy === 'non-strict'
+        ? currentInputs()?.hasStrictInputs
+        : currentInputs()?.hasInputs);
     if (!allowed() || !deps.comparisonScreenshot) return { stable: true };
     try {
       const before = await captureOnce(item);

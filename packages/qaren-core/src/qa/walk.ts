@@ -769,15 +769,24 @@ async function openSession(
         false,
       ),
     async comparisonScreenshot() {
-      if (stop.stopping || currentInputs()?.hasInputs) return undefined;
+      const withheld = () =>
+        stop.stopping ||
+        (request.videoPolicy === 'non-strict'
+          ? currentInputs()?.hasStrictInputs
+          : currentInputs()?.hasInputs);
+      if (withheld()) return undefined;
       const directory = await mkdtemp(join(request.runDir, '.tap-pixels-'));
       try {
         return await stop.track(async () => {
           const path = join(directory, 'capture.png');
-          const shot = await captureQaScreenshot(platform, path, target.deviceId, appId);
-          return shot.ok && !stop.stopping && !currentInputs()?.hasInputs
-            ? await readFile(path)
-            : undefined;
+          const shot = await captureQaScreenshot(
+            platform,
+            path,
+            target.deviceId,
+            appId,
+            request.videoPolicy,
+          );
+          return shot.ok && !withheld() ? await readFile(path) : undefined;
         });
       } finally {
         await rm(directory, { recursive: true, force: true });

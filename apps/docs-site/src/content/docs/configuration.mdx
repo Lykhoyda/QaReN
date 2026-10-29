@@ -21,7 +21,7 @@ loginMarker:
 | ----------------- | ---------------- | ------- | --------------------------------------------------------------------------------------------- |
 | `appId`           | string           | —       | Required. The app's bundle ID on iOS or package name on Android.                              |
 | `devClientScheme` | string           | —       | Required for `check` and `pr`. The app's registered dev-client URI scheme, 1–128 bytes matching `[A-Za-z][A-Za-z0-9+.-]*`. |
-| `video` | `strict` or `non-strict` | strict rules | Declared video privacy policy; see [video](#video). |
+| `video` | `strict` or `non-strict` | strict rules | Screenshot and video privacy policy; see [video](#video). |
 | `packageManager`  | string           | `pnpm`  | The app's package manager. Only `pnpm` is supported.                                          |
 | `metroPort`       | integer          | `8791`  | The port of the Metro server the run starts. At least `1024`.                                 |
 | `nodePath`        | string           | `node` on `PATH` | An absolute path to the Node binary to use. It must be Node 24 or newer.             |

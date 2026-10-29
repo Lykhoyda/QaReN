@@ -10,6 +10,7 @@ import { walkBlock } from '../../../dist/qa/walker.js';
 import type { ActResult, WalkerDeps } from '../../../dist/qa/walker.js';
 import { RunInputs, withInputs } from '../../../dist/qa/inputs.js';
 import { ObservedPrivacy } from '../../../dist/qa/privacy.js';
+import { applyNativePrivateInputs } from '../../../dist/qa/private-input.js';
 
 const fixture = (name: string) =>
   readFileSync(new URL(`../../fixtures/tap-pixels/${name}.png`, import.meta.url));
@@ -104,6 +105,44 @@ test('a stable visible toggle with no accessibility state passes on its first pr
     'pixel shot',
   ]);
 });
+
+for (const policy of [undefined, 'strict', 'non-strict'] as const) {
+  for (const carrier of ['ordinary', 'test-pii', 'secret', 'secure'] as const) {
+    test(`${policy ?? 'absent'} pixel-only toggles respect ${carrier} screenshot privacy`, async () => {
+      const before = fixture('toggle1-before'),
+        after = fixture('toggle1-after');
+      const f = fake([option(before)], [before, after, after]);
+      const privacy = new ObservedPrivacy();
+      f.deps.privacy = privacy;
+      f.deps.videoPolicy = policy;
+      if (carrier === 'ordinary' || carrier === 'secure') {
+        const nodes = [
+          {
+            ref: '@carrier',
+            type: carrier === 'secure' ? 'SecureTextField' : 'Other',
+            value: carrier === 'ordinary' ? 'synthetic-toggle-value' : undefined,
+          },
+        ];
+        privacy.observe(applyNativePrivateInputs(join(nodes, []), nodes));
+      }
+      const inputs =
+        carrier === 'test-pii' || carrier === 'secret'
+          ? new RunInputs(
+              { FIXTURE: 'synthetic-toggle-value' },
+              ['FIXTURE'],
+              privacy,
+              carrier === 'test-pii' ? ['FIXTURE'] : [],
+            )
+          : undefined;
+      const run = () => walkBlock(tap, f.deps, 0, [], privacy);
+      const outcome = inputs ? await withInputs(inputs, run) : await run();
+      const allowed =
+        policy === 'non-strict' && (carrier === 'ordinary' || carrier === 'test-pii');
+      assert.equal(outcome.block.outcome, allowed ? 'pass' : 'fail');
+      assert.equal(f.calls.filter((call) => call === 'pixel shot').length, allowed ? 3 : 0);
+    });
+  }
+}
 
 test('an unchanged chip still fails after two attempts', async () => {
   const before = fixture('chip-before'),
