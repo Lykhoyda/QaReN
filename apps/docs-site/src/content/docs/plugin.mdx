@@ -3,13 +3,34 @@ title: Use QaReN from your agent
 description: The QaReN plugin's three skills and what each host loads.
 ---
 
+Once [setup](../getting-started/) has passed, ask your agent in plain words. The plugin's
+skills tell it what to run; none of them drives a device directly.
+
+| Ask your agent         | What it does                                                                                                                                          |
+| ---------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------- |
+| "QA this feature"      | Picks a saved plan or writes one from the feature's screens in source, then runs it on your working tree.                                             |
+| "QA PR #12"            | Runs the plan at the pull request's head. It posts the result to the pull request only when you ask, after you confirm the plan and recording may be posted. |
+| "Follow the run"       | Follows the latest run live.                                                                                                                          |
+| "Report a QaReN bug"   | Drafts a sanitized GitHub issue about QaReN, shows it in full, and files it only after you confirm.                                                    |
+
+## What comes back
+
+A verdict (PASS, FAIL, or a refusal that says what to fix); a report with one line per step and
+screenshots when available. When you ask to publish a pull request run, a comment includes
+the verdict, the tested commit, the plan lines and the video when it can be published.
+
+To read what the agent wrote or ran, see [Write a plan](../plans/),
+[Test a pull request](../pull-requests/) and [Saved blocks](../saved-blocks/).
+
+## Skills
+
 The `qaren` plugin teaches a coding agent to drive the `qaren` CLI. It ships three skills.
 Each one runs the CLI; none of them drives a device directly.
 
 | Skill         | Claude Code name    | Use it to                                                                                                           |
 | ------------- | ------------------- | ------------------------------------------------------------------------------------------------------------------- |
 | `setup`       | `/qaren:setup`      | install `qaren` onto PATH, write `.qaren/config.yaml`, pick the simulator and run a first smoke check. See [Getting started](../getting-started/). |
-| `using-qaren` | `/qaren:using-qaren` | write a plan for a feature, then run `qaren check` on the working tree or `qaren pr` on a pull request, and report the receipt. |
+| `using-qaren` | `/qaren:using-qaren` | write a plan for a feature, then run [`qaren check`](../cli/#qaren-check) on the working tree or [`qaren pr`](../cli/#qaren-pr) on a pull request, and report the receipt. |
 | `feedback`    | `/qaren:feedback`   | draft a sanitized GitHub issue about QaReN, show it in full, and file it only after you confirm.                   |
 
 Codex and Cursor invoke the same skills with their own syntax. In Claude Code, Codex or
