@@ -1,5 +1,24 @@
 # qaren
 
+## 2.0.3
+
+### Patch Changes
+
+- 4197438: Make a copyable agent setup prompt the primary installation path in the docs and README while keeping per-host plugin commands and manual source installation.
+- 4197438: Show the copyable agent install prompt on the docs landing page and share it with the installation guide.
+- 4197438: Add an explicit non-strict video policy for test data while preserving detected SECRET withholding and strict publication defaults.
+- 4197438: Use each crash report's capture time for iOS lane-health attribution and gracefully cancel native-suite and recovery drivers without force-killing initializing XCTest helpers.
+- 4197438: Fix native iOS suite log-helper dispatch and safely recover simulator leases after a failed spawn.
+- 4197438: A tap on an option that exposes no accessibility state now passes when the tapped control visibly changes on screen within its own bounds.
+- 4197438: Prevent false passing option taps after delayed layout shifts by rechecking target geometry after comparison screenshots.
+- 4197438: Refuse incompatible pnpm bootstrap launchers before resource acquisition with an actionable typed reason and report pnpm's source in doctor.
+- 4197438: Default iOS `qaren prepare` now reuses a free QaReN-created simulator from a per-home pool capped by `ios.max_devices`, and `--new` keeps the previous fresh temporary simulator.
+- 4197438: Prevent host readback of TEST-PII inputs whose values collide with a SECRET input.
+- 4197438: Runtime inputs now follow SECRET, TEST-PII and PUBLIC tiers: TEST-PII Fill readback, failure screen text and core.log are redacted by declared values while subprocess logs and media stay withheld, secure fields promote inputs to SECRET, and SECRET refusals report only value-free mismatch facts.
+- 4197438: Allow explicitly declared TEST-PII fills to use ordinary readback on readable non-secure fields with private native labels while retaining SECRET protections and recording value-free privacy causes.
+- 4197438: A Fill into a code field that submits itself and leaves the screen no longer waits about ten seconds reading back the vanished field; its result is unchanged.
+- 4197438: An iOS simulator a run explicitly owns now has its locale and keyboard pinned before launch, `check` then proves its first screen before row 1 and refuses as `LANE_NOT_WARM` otherwise, the receipt records the lane once as `lane`, and `qaren doctor --device <UUID>` checks the pinned settings.
+
 ## 2.0.2
 
 ### Patch Changes
