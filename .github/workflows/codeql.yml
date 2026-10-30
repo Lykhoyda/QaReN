@@ -3,7 +3,7 @@ name: CodeQL
 # Advanced CodeQL setup. Replaces the repo's previous "default setup" because
 # autobuild can't locate our nested Swift Xcode project at
 # packages/qaren-ios-runner/QarenIosRunner/QarenIosRunner.xcodeproj or our nested
-# Android Gradle project at packages/rn-android-runner/. This workflow runs
+# Android Gradle project at packages/qaren-android-runner/. This workflow runs
 # each language's correct build command and lets CodeQL trace the resulting
 # artifacts.
 #
@@ -118,9 +118,9 @@ jobs:
           build-mode: ${{ matrix.build-mode }}
           config-file: ${{ matrix.config-file }}
 
-      - name: Build rn-android-runner
+      - name: Build qaren-android-runner
         if: ${{ matrix.language == 'java-kotlin' }}
-        working-directory: packages/rn-android-runner
+        working-directory: packages/qaren-android-runner
         run: ./gradlew :app:assembleDebugAndroidTest --no-daemon
 
       # Use the macos-15 runner's preinstalled Xcode (16.x); skip the slow

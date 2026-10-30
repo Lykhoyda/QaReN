@@ -329,6 +329,21 @@ fn save_plans_is_an_optional_boolean() {
 }
 
 #[test]
+fn proof_in_description_is_an_optional_boolean() {
+    assert_eq!(
+        load("appId: com.test.app\n").unwrap().proof_in_description,
+        None
+    );
+    assert_eq!(
+        load("appId: com.test.app\nproofInDescription: true\n")
+            .unwrap()
+            .proof_in_description,
+        Some(true)
+    );
+    assert!(load("appId: com.test.app\nproofInDescription: maybe\n").is_err());
+}
+
+#[test]
 fn video_policy_is_explicit_and_invalid_values_refuse_without_echoing_them() {
     use qaren::record::VideoPolicy;
     let repo = common::temp_repo();

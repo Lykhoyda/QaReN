@@ -44,6 +44,8 @@ pub struct PrRunRecord {
     pub blocks: Vec<String>,
     #[serde(default)]
     pub identity_values: Vec<String>,
+    #[serde(default)]
+    pub proof_in_description: bool,
 }
 
 fn video_publication<'de, D: serde::Deserializer<'de>>(d: D) -> Result<VideoPublication, D::Error> {
@@ -78,12 +80,17 @@ pub struct Publication {
     pub blocks_comment_attempted: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub writeback: Option<String>,
+    #[serde(default)]
+    pub video_attached: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
 }
 
 const PUBLICATION: &str = "publication.json";
 const LOCK: &str = "publish.lock";
 const COMMENT_BODY: &str = "comment.md";
 const BLOCKS_BODY: &str = "blocks-comment.md";
+const DESCRIPTION_BODY: &str = "description.md";
 
 fn failure(detail: impl Into<String>, next: impl Into<String>) -> Failure {
     Failure::new("publish", FailureCode::PublishFailed, detail, next)
@@ -129,6 +136,23 @@ fn pr_info(pr: &PrRunRecord) -> PrInfo {
     }
 }
 
+#[derive(Deserialize)]
+struct Author {
+    login: String,
+}
+
+#[derive(Deserialize)]
+struct Comment {
+    body: String,
+    url: String,
+    author: Option<Author>,
+}
+
+#[derive(Deserialize)]
+struct Comments {
+    comments: Vec<Comment>,
+}
+
 fn find_own_comment(
     runner: &mut dyn Runner,
     pr: &PrInfo,
@@ -136,20 +160,20 @@ fn find_own_comment(
     actor: &str,
     cwd: &Path,
 ) -> Result<Option<String>, Failure> {
-    #[derive(Deserialize)]
-    struct Author {
-        login: String,
-    }
-    #[derive(Deserialize)]
-    struct Comment {
-        body: String,
-        url: String,
-        author: Option<Author>,
-    }
-    #[derive(Deserialize)]
-    struct Comments {
-        comments: Vec<Comment>,
-    }
+    Ok(list_comments(runner, pr, cwd)?
+        .into_iter()
+        .find(|c| {
+            c.body.lines().next() == Some(marker)
+                && c.author.as_ref().is_some_and(|a| a.login == actor)
+        })
+        .map(|c| c.url))
+}
+
+fn list_comments(
+    runner: &mut dyn Runner,
+    pr: &PrInfo,
+    cwd: &Path,
+) -> Result<Vec<Comment>, Failure> {
     let repo = pr.repo().ok_or_else(|| {
         failure(
             format!("unexpected PR URL {}", pr.url),
@@ -188,14 +212,51 @@ fn find_own_comment(
             "re-run qaren publish",
         )
     })?;
-    Ok(comments
-        .comments
-        .into_iter()
-        .find(|c| {
-            c.body.lines().next() == Some(marker)
-                && c.author.as_ref().is_some_and(|a| a.login == actor)
-        })
-        .map(|c| c.url))
+    Ok(comments.comments)
+}
+
+// gh appends an unreferenced video as a bare URL on its own final line; comment bodies are
+// editable, so the line is validated rather than trusted.
+fn comment_video_url(
+    runner: &mut dyn Runner,
+    pr: &PrInfo,
+    comment_url: &str,
+    cwd: &Path,
+) -> Result<Option<String>, Failure> {
+    let comments = list_comments(runner, pr, cwd)?;
+    let Some(comment) = comments.into_iter().find(|c| c.url == comment_url) else {
+        return Ok(None);
+    };
+    let last = comment
+        .body
+        .lines()
+        .map(str::trim)
+        .rfind(|line| !line.is_empty())
+        .unwrap_or_default();
+    let valid = last.len() > "https://".len()
+        && last.starts_with("https://")
+        && last != comment_url
+        && last.chars().all(|c| {
+            c.is_ascii_graphic()
+                && !matches!(c, '<' | '>' | '"' | '`' | '\\' | '(' | ')' | '[' | ']')
+        });
+    Ok(valid.then(|| last.to_string()))
+}
+
+fn publish_ledger(run_dir: &Path, pr: &PrRunRecord) -> Result<Ledger, Failure> {
+    let mut ledger: Ledger = read_json(&run_dir.join("ledger.json"))?;
+    ledger.video_policy = pr.video_policy;
+    ledger.video_policy_source = pr.video_policy_source.clone();
+    ledger.non_strict_publication = pr.non_strict_publication.clone();
+    Ok(ledger)
+}
+
+fn effective_video(pr: &PrRunRecord, attached: bool) -> VideoStatus {
+    if pr.video == VideoStatus::Available && !attached {
+        VideoStatus::Unavailable("published recording is unavailable".into())
+    } else {
+        pr.video.clone()
+    }
 }
 
 fn authenticated_login(runner: &mut dyn Runner, cwd: &Path) -> Result<String, Failure> {
@@ -684,7 +745,15 @@ pub fn publish(
     machine: &MachineIdentity,
 ) -> Receipt {
     let mut publication = Publication::default();
-    let outcome = publish_inner(runner, runs_root, run_id, machine, &mut publication);
+    let mut transient = None;
+    let outcome = publish_inner(
+        runner,
+        runs_root,
+        run_id,
+        machine,
+        &mut publication,
+        &mut transient,
+    );
     let (result, failure) = match outcome {
         Ok(()) => (ReceiptResult::Published, None),
         Err(f) if f.code.is_refusal() => (ReceiptResult::Refused, Some(f)),
@@ -708,13 +777,134 @@ pub fn publish(
             .outcomes
             .insert("writeback".into(), writeback.clone());
     }
+    let retry = transient.is_some();
+    let description = publication.description.or(transient);
+    if let Some(description) = &description {
+        receipt
+            .outcomes
+            .insert("description".into(), description.clone());
+    }
+    let described = matches!(description.as_deref(), Some("written" | "replaced"));
     receipt.next_action = match &failure {
         Some(f) => f.next_action.to_string(),
+        None if description.as_deref() == Some(MARKERS_AMBIGUOUS) => {
+            "fix the marker pair in the pull request description so one QaReN start line precedes one end line, then publish a new qaren pr run; this run's comment already carries the proof and video".to_string()
+        }
+        None if retry => {
+            "re-run qaren publish to write the proof section into the description".to_string()
+        }
+        None if described => {
+            "nothing left; the pull request has the QA comment and the proof section".to_string()
+        }
         None => "nothing left; the pull request has the QA comment".to_string(),
     };
     receipt.failure = failure;
     receipt.commands_executed = runner.commands_executed();
     receipt
+}
+
+// A skip the next publish may recover is reported, not persisted.
+enum Described {
+    Persist(String),
+    Retry(String),
+}
+
+const HEAD_MOVED: &str = "skipped (head moved; the comment carries the proof)";
+const MARKERS_AMBIGUOUS: &str =
+    "skipped for this run (the description's QaReN markers are ambiguous; the comment carries the proof)";
+const KEPT_CHANGING: &str = "skipped (the description kept changing; re-run qaren publish)";
+const EDIT_REFUSED: &str =
+    "skipped (the description could not be edited; check write access, then re-run qaren publish)";
+const COMMENT_UNREADABLE: &str =
+    "skipped (the comment could not be read back; re-run qaren publish)";
+const PR_UNREADABLE: &str = "skipped (the pull request could not be read; re-run qaren publish)";
+
+// Writes the QaReN section into the PR description. Only local I/O fails the receipt.
+fn describe(
+    runner: &mut dyn Runner,
+    run_dir: &Path,
+    run_id: &str,
+    refusal: Option<&Failure>,
+    pr: &PrRunRecord,
+    publication: &Publication,
+    machine: &MachineIdentity,
+) -> Result<Described, Failure> {
+    let skip = |outcome: &str| Ok(Described::Persist(outcome.to_string()));
+    let retry = |outcome: &str| Ok(Described::Retry(outcome.to_string()));
+    let accepted_head = |head: &str| {
+        head == pr.head_ref_oid || publication.writeback_commit.as_deref() == Some(head)
+    };
+    match github::pr_view(runner, &pr.url, &pr.repo_root) {
+        Ok(current) if !accepted_head(&current.head_ref_oid) => return skip(HEAD_MOVED),
+        Ok(_) => {}
+        Err(_) => return retry(PR_UNREADABLE),
+    }
+    let info = pr_info(pr);
+    let comment_url = publication.comment_url.as_deref().unwrap_or_default();
+    // The policy owner decides again; a read-back never overrides a withheld video.
+    let eligible = publication.video_attached
+        && pr
+            .video_policy
+            .publication(&pr.video_publication, pr.non_strict_publication.as_ref())
+            == VideoPublication::Eligible;
+    let video_url = if eligible {
+        match comment_video_url(runner, &info, comment_url, run_dir) {
+            Ok(url) => url,
+            Err(_) => return retry(COMMENT_UNREADABLE),
+        }
+    } else {
+        None
+    };
+    let ledger = publish_ledger(run_dir, pr)?;
+    let video = effective_video(pr, publication.video_attached);
+    let section = report::render_pr_description(
+        &ReportInput {
+            run_id,
+            platform: &pr.platform,
+            app_id: &pr.app_id,
+            device: &pr.device,
+            ledger: &ledger,
+        },
+        refusal,
+        &PrRun {
+            tested_sha: &pr.head_ref_oid,
+            tested_older_commit: pr.tested_older_commit,
+            video: &video,
+            screenshot: None,
+            plan_sha256: &pr.plan_sha256,
+            video_publication: &pr.video_publication,
+        },
+        machine,
+        comment_url,
+        video_url.as_deref(),
+    );
+    // Two equal reads in a row stand in for the conditional update GitHub does not offer.
+    let mut previous: Option<String> = None;
+    for _ in 0..3 {
+        let Ok(read) = github::pr_body(runner, &info, run_dir) else {
+            return retry(PR_UNREADABLE);
+        };
+        if !accepted_head(&read.head_ref_oid) {
+            return skip(HEAD_MOVED);
+        }
+        let Ok((body, replaced)) = report::splice_proof_section(&read.body, &section) else {
+            return skip(MARKERS_AMBIGUOUS);
+        };
+        if previous.as_deref() == Some(read.body.as_str()) {
+            std::fs::write(run_dir.join(DESCRIPTION_BODY), body).map_err(|e| {
+                failure(
+                    format!("cannot write {DESCRIPTION_BODY}: {e}"),
+                    "fix the run directory permissions, then re-run",
+                )
+            })?;
+            if github::edit_body(runner, &info, Path::new(DESCRIPTION_BODY), run_dir).is_err() {
+                return retry(EDIT_REFUSED);
+            }
+            return skip(if replaced { "replaced" } else { "written" });
+        }
+        previous = Some(read.body);
+    }
+    retry(KEPT_CHANGING)
 }
 
 fn publish_inner(
@@ -723,6 +913,7 @@ fn publish_inner(
     run_id: &str,
     machine: &MachineIdentity,
     publication: &mut Publication,
+    transient: &mut Option<String>,
 ) -> Result<(), Failure> {
     validate_run_id(run_id)?;
     let run_dir = RunRecord::run_dir(runs_root, run_id);
@@ -750,7 +941,6 @@ fn publish_inner(
     let mut publishing_actor = None;
     if publication.comment_url.is_none() {
         let mut attachments = Vec::new();
-        let mut video = pr.video.clone();
         let video_publication = pr
             .video_policy
             .publication(&pr.video_publication, pr.non_strict_publication.as_ref());
@@ -760,9 +950,8 @@ fn publish_inner(
         {
             attachments.push((PathBuf::from("./media/video-published.mp4"), None));
         }
-        if pr.video == VideoStatus::Available && attachments.is_empty() {
-            video = VideoStatus::Unavailable("published recording is unavailable".into());
-        }
+        let video_attached = !attachments.is_empty();
+        let video = effective_video(&pr, video_attached);
         let ledger: Option<Ledger> = read_json(&run_dir.join("ledger.json")).ok();
         let mut screenshot = None;
         if let Some(shot) = ledger.as_ref().and_then(report::failing_screenshot) {
@@ -785,10 +974,7 @@ fn publish_inner(
             attempted,
             &mut publishing_actor,
             &mut || {
-                let mut ledger: Ledger = read_json(&run_dir.join("ledger.json"))?;
-                ledger.video_policy = pr.video_policy;
-                ledger.video_policy_source = pr.video_policy_source.clone();
-                ledger.non_strict_publication = pr.non_strict_publication.clone();
+                let ledger = publish_ledger(&run_dir, &pr)?;
                 Ok(report::render_pr_comment(
                     &ReportInput {
                         run_id,
@@ -812,6 +998,7 @@ fn publish_inner(
             &mut || {
                 publication.rendered = true;
                 publication.comment_attempted = true;
+                publication.video_attached = video_attached;
                 save(&run_dir, publication)
             },
         )?;
@@ -828,6 +1015,17 @@ fn publish_inner(
             if removed { "removed" } else { "absent" }.to_string()
         });
         save(&run_dir, publication)?;
+    }
+
+    if pr.proof_in_description && publication.description.is_none() {
+        let refusal = run.failure.as_ref();
+        match describe(runner, &run_dir, run_id, refusal, &pr, publication, machine)? {
+            Described::Persist(outcome) => {
+                publication.description = Some(outcome);
+                save(&run_dir, publication)?;
+            }
+            Described::Retry(outcome) => *transient = Some(outcome),
+        }
     }
 
     if publication.writeback.is_none() {

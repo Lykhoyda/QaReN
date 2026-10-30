@@ -18,10 +18,11 @@ test('native startup settles cancellation and rejects buffered readiness without
     ['debug/app-debug.apk', 'readiness fixture main APK'],
     ['androidTest/debug/app-debug-androidTest.apk', 'readiness fixture test APK'],
   ]) {
-    const apk = join(root, 'rn-android-runner/app/build/outputs/apk', relativePath);
+    const apk = join(root, 'qaren-android-runner/app/build/outputs/apk', relativePath);
     fs.mkdirSync(dirname(apk), { recursive: true });
     fs.writeFileSync(apk, bytes);
   }
+  fs.writeFileSync(join(root, 'qaren-android-runner/gradlew'), '');
   t.after(() => removeFixture(root, { recursive: true, force: true }));
   const originalExists = fs.existsSync;
   const originalReadDir = fs.readdirSync;
@@ -43,7 +44,7 @@ test('native startup settles cancellation and rejects buffered readiness without
     mutations.push(['mkdir', ...args]);
     // Provisioning coordinates real APK files through the fixture's outputs
     // lock; keep that filesystem lifecycle real while stubbing durable state.
-    if (String(args[0]).startsWith(join(root, 'rn-android-runner/app/build'))) {
+    if (String(args[0]).startsWith(join(root, 'qaren-android-runner/app/build'))) {
       return Reflect.apply(originalMkdir, fs, args);
     }
   });
@@ -126,10 +127,10 @@ test('native startup settles cancellation and rejects buffered readiness without
   const previousRoot = process.env.QAREN_NATIVE_RUNNER_ROOT;
   process.env.QAREN_NATIVE_RUNNER_ROOT = root;
   let ios: typeof import('../../../dist/runners/qaren-ios-runner-client.js');
-  let android: typeof import('../../../dist/runners/rn-android-runner-client.js');
+  let android: typeof import('../../../dist/runners/qaren-android-runner-client.js');
   try {
     ios = await import('../../../dist/runners/qaren-ios-runner-client.js');
-    android = await import('../../../dist/runners/rn-android-runner-client.js');
+    android = await import('../../../dist/runners/qaren-android-runner-client.js');
   } finally {
     if (previousRoot === undefined) delete process.env.QAREN_NATIVE_RUNNER_ROOT;
     else process.env.QAREN_NATIVE_RUNNER_ROOT = previousRoot;

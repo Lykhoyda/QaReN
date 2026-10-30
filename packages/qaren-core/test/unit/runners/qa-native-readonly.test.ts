@@ -11,7 +11,7 @@ import {
   runAndroid,
   _setAndroidRunnerStateForTest,
   _setFetchForTest as androidFetch,
-} from '../../../dist/runners/rn-android-runner-client.js';
+} from '../../../dist/runners/qaren-android-runner-client.js';
 import {
   REQUIRED_IOS_COMMANDS,
   REQUIRED_IOS_FEATURES,

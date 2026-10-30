@@ -12,7 +12,7 @@ test('Android runner short-circuit is env-gated and platform-scoped', () => {
   assert.match(source, /targetPlatform === ['"]android['"]/);
   assert.match(source, /process\.env\.RN_ANDROID_RUNNER !== ['"]0['"]/);
   assert.match(source, /RN_ANDROID_RUNNER_COMMANDS\.has\(cliArgs\[0\]\)/);
-  assert.match(source, /import\(['"]\.\/runners\/rn-android-runner-client\.js['"]\)/);
+  assert.match(source, /import\(['"]\.\/runners\/qaren-android-runner-client\.js['"]\)/);
 });
 
 test('Android runner command set covers all MVP verbs', () => {

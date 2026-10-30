@@ -24,8 +24,8 @@ test('native runner candidates include the source-checkout package path', () => 
 
 test('native runner candidates include the installed runtime runners directory', () => {
   assert.ok(
-    candidateNativeRunnerDirs('rn-android-runner', runtimeBase).includes(
-      join('/runtime', 'runners', 'rn-android-runner'),
+    candidateNativeRunnerDirs('qaren-android-runner', runtimeBase).includes(
+      join('/runtime', 'runners', 'qaren-android-runner'),
     ),
   );
 });
@@ -108,10 +108,37 @@ test('the legacy iOS hint names only an existing directory and never resolves it
     `found pre-2.0.4 runner directory ${legacy}; this version cannot use it: install the current runner (qaren update, or a fresh source checkout) or unset QAREN_NATIVE_RUNNER_ROOT/QAREN_ROOT`,
   );
   assert.equal(resolveNativeRunnerDir('qaren-ios-runner', base), join(root, 'qaren-ios-runner'));
-  assert.equal(legacyNativeRunnerDirHint('rn-android-runner', base), undefined);
+  assert.equal(legacyNativeRunnerDirHint('qaren-android-runner', base), undefined);
   const current = join(root, 'qaren-ios-runner');
   mkdirSync(current);
   assert.equal(resolveNativeRunnerDir('qaren-ios-runner', base), current);
   mkdirSync(join(root, 'repo', 'packages', 'rn-fast-runner'), { recursive: true });
   assert.ok(legacyNativeRunnerDirHint('qaren-ios-runner', base)?.includes(legacy));
+});
+
+test('the legacy Android hint names only an existing directory and never resolves it for launch', (t) => {
+  const root = mkdtempSync(join(tmpdir(), 'qaren-runtime-paths-'));
+  const oldNativeRoot = process.env.QAREN_NATIVE_RUNNER_ROOT;
+  const oldRoot = process.env.QAREN_ROOT;
+  process.env.QAREN_NATIVE_RUNNER_ROOT = root;
+  delete process.env.QAREN_ROOT;
+  t.after(() => {
+    if (oldNativeRoot === undefined) delete process.env.QAREN_NATIVE_RUNNER_ROOT;
+    else process.env.QAREN_NATIVE_RUNNER_ROOT = oldNativeRoot;
+    if (oldRoot === undefined) delete process.env.QAREN_ROOT;
+    else process.env.QAREN_ROOT = oldRoot;
+    rmSync(root, { recursive: true, force: true });
+  });
+  const base = join(root, 'x', 'runtime', 'qa');
+  const legacy = join(root, 'rn-android-runner');
+  mkdirSync(legacy);
+  assert.equal(
+    legacyNativeRunnerDirHint('qaren-android-runner', base),
+    `found pre-2.0.4 runner directory ${legacy}; this version cannot use it: install the current runner (qaren update, or a fresh source checkout) or unset QAREN_NATIVE_RUNNER_ROOT/QAREN_ROOT`,
+  );
+  assert.equal(
+    resolveNativeRunnerDir('qaren-android-runner', base),
+    join(root, 'qaren-android-runner'),
+  );
+  assert.equal(legacyNativeRunnerDirHint('qaren-ios-runner', base), undefined);
 });

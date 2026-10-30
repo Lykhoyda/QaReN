@@ -8,7 +8,7 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { androidRunnerProcessListed } from '../../dist/runners/rn-android-runner-client.js';
+import { androidRunnerProcessListed } from '../../dist/runners/qaren-android-runner-client.js';
 
 const FIXTURES = join(
   dirname(fileURLToPath(import.meta.url)),

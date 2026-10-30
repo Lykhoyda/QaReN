@@ -4,7 +4,7 @@ import {
   runAndroid,
   _setFetchForTest,
   _setAndroidRunnerStateForTest,
-} from '../../../dist/runners/rn-android-runner-client.js';
+} from '../../../dist/runners/qaren-android-runner-client.js';
 import { refCenter, clearRefMap } from '../../../dist/fast-runner-ref-map.js';
 import {
   REQUIRED_ANDROID_COMMANDS,

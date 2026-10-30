@@ -155,7 +155,7 @@ packages/qaren-core/test/unit/runner-disable-errors.test.js
 packages/qaren-core/test/unit/runner-leak-recovery.test.js
 packages/qaren-core/test/unit/runners/external-runner-detect.test.js
 packages/qaren-core/test/unit/runners/gh-424-cold-build-xctestrun.test.js
-packages/qaren-core/test/unit/runners/rn-android-runner-client.test.js
+packages/qaren-core/test/unit/runners/qaren-android-runner-client.test.js
 packages/qaren-core/test/unit/runners/qaren-ios-runner-client.test.js
 packages/qaren-core/test/unit/salient-digest.test.js
 packages/qaren-core/test/unit/settle-engine.test.js

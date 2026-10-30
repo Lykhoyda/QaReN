@@ -61,7 +61,7 @@ const ADVERTISED = '0.76.6';
 const VERSION = '0.76.7';
 const TAG = `v${VERSION}`;
 const IOS_ZIP = `qaren-ios-runner-${VERSION}-sim.zip`;
-const ANDROID_ZIP = `rn-android-runner-${VERSION}.zip`;
+const ANDROID_ZIP = `qaren-android-runner-${VERSION}.zip`;
 const QAREN_ARM64_TGZ = `qaren-${VERSION}-darwin-arm64.tar.gz`;
 const IOS_BYTES = 'ios-runner-zip-bytes';
 const ANDROID_BYTES = 'android-runner-zip-bytes';
@@ -107,7 +107,7 @@ function manifestFor(
           ],
           android: [
             {
-              name: `rn-android-runner-${version}.zip`,
+              name: `qaren-android-runner-${version}.zip`,
               sha256: sha256(android),
               bytes: android.length,
             },
@@ -346,7 +346,7 @@ test('only exact SemVer releases are accepted as versions', () => {
 test('expected release asset names stay pinned to the client download contract', () => {
   assert.deepEqual(expectedRunnerAssets('1.0.9'), {
     ios: 'qaren-ios-runner-1.0.9-sim.zip',
-    android: 'rn-android-runner-1.0.9.zip',
+    android: 'qaren-android-runner-1.0.9.zip',
     qaren: {
       'darwin-arm64': 'qaren-1.0.9-darwin-arm64.tar.gz',
     },
@@ -544,7 +544,7 @@ function createFixture(options: FixtureOptions = {}): Fixture {
   for (const path of MANIFEST_PATHS)
     write(seed, path, manifestFor(ADVERTISED, 'old-ios', 'old-android'));
   write(seed, 'packages/qaren-ios-runner/README.md', 'ios runner sources\n');
-  write(seed, 'packages/rn-android-runner/README.md', 'android runner sources\n');
+  write(seed, 'packages/qaren-android-runner/README.md', 'android runner sources\n');
   write(seed, 'README.md', 'unrelated repository content\n');
   write(seed, '.changeset/pending.md', "---\n'qaren': patch\n---\n\nA change.\n");
   for (const script of [
@@ -926,12 +926,12 @@ test('the qaren crate version bump is a generated path', () => {
 
 test('a candidate whose native runner sources differ from main is refused even on a generated path', () => {
   const fixture = createFixture({
-    candidateExtraFiles: { 'packages/rn-android-runner/package.json': '{"version": "0.2.0"}\n' },
+    candidateExtraFiles: { 'packages/qaren-android-runner/package.json': '{"version": "0.2.0"}\n' },
   });
   try {
     const run = runVersionStep(fixture, CANDIDATE_STEP);
     assert.equal(run.ok, false);
-    assert.match(run.failed!.stderr, /native inputs under packages\/rn-android-runner differ/);
+    assert.match(run.failed!.stderr, /native inputs under packages\/qaren-android-runner differ/);
   } finally {
     fixture.cleanup();
   }
@@ -1052,7 +1052,7 @@ test('a missing retained zip is a partial handoff and refuses', () => {
       env: baseEnv(fixture),
     });
     assert.equal(run.ok, false);
-    assert.match(run.failed!.stderr, /retained rn-android-runner-0\.76\.7\.zip is missing/);
+    assert.match(run.failed!.stderr, /retained qaren-android-runner-0\.76\.7\.zip is missing/);
   } finally {
     fixture.cleanup();
   }
@@ -1103,7 +1103,7 @@ function treeCtx(fixture: Fixture, ref: string): Record<string, string> {
       '--git-dir',
       fixture.origin,
       'rev-parse',
-      `${ref}:packages/rn-android-runner`,
+      `${ref}:packages/qaren-android-runner`,
     ).trim(),
   };
 }
@@ -2130,7 +2130,7 @@ test('a stale root, tampered bytes, a wrong length, a missing zip, a draft or a 
         delete s.releases[TAG].assets[ANDROID_ZIP];
         writeFileSync(join(f.root, 'gh-state', 'state.json'), JSON.stringify(s));
       },
-      /carries no rn-android-runner/,
+      /carries no qaren-android-runner/,
     ],
     [
       'draft',
