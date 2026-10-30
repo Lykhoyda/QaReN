@@ -3573,6 +3573,49 @@ fn revision_pin_mismatch_fails_validation() {
 }
 
 #[test]
+fn a_build_that_outlives_the_window_is_still_stopped_and_releases_the_lock() {
+    let repo = common::temp_repo();
+    let scenario_path = write_scenario(
+        &repo,
+        &format!(
+            "{}deadlines:\n  build_seconds: 30\n",
+            ios_scenario_yaml(8791)
+        ),
+    );
+    let mut mock = MockRunner::new();
+    script_ios_prepare_to_claim(&mut mock, &repo);
+    mock.expect_spawn_piped("expo run:ios", 5000, "", None);
+    mock.expect_run("ps", CmdOutput::success(LSTART));
+    mock.expect_run("ps", CmdOutput::success("qaren-build"));
+    // Teardown after the window expired: inventory, TERM, KILL, then proven absence.
+    mock.expect_run("ps -A", CmdOutput::success("1 1 S\n5000 5000 S\n"));
+    mock.expect_run("ps -p 5000 -o lstart=", CmdOutput::success(LSTART));
+    mock.expect_run("ps -p 5000 -o stat=", CmdOutput::success("S"));
+    mock.expect_run("lstart=", CmdOutput::success(LSTART));
+    mock.expect_run("stat=", CmdOutput::success("S"));
+    mock.expect_run("/bin/kill -TERM -- -5000", CmdOutput::success(""));
+    mock.expect_run("lstart=", CmdOutput::success(LSTART));
+    mock.expect_run("stat=", CmdOutput::success("S"));
+    mock.expect_run("/bin/kill -KILL -- -5000", CmdOutput::success(""));
+    mock.expect_run("ps -A", CmdOutput::success("1 1 S\n"));
+    let args = prepare_args(&scenario_path, false, None);
+
+    let receipt = prepare(&mut mock, &args);
+
+    assert_eq!(mock.remaining(), 0);
+    let failure = receipt.failure.as_ref().unwrap();
+    assert_eq!(failure.code, FailureCode::BuildFailed, "{failure:?}");
+    assert_eq!(
+        failure.recovery.as_ref().unwrap().reason,
+        qaren::failure::RecoveryReason::BuildBudgetExhausted
+    );
+    let record = RunRecord::load(&repo, &receipt.run_id).unwrap();
+    assert!(record.resources.build_process().is_none(), "build stopped");
+    assert!(record.resources.build_lock.is_none());
+    assert!(!args.lock_root.join("native-build-ios").exists());
+}
+
+#[test]
 fn build_budget_expiry_after_build_releases_lock_without_publication() {
     let repo = common::temp_repo();
     let scenario_path = write_scenario(&repo, &ios_scenario_yaml(8791));
