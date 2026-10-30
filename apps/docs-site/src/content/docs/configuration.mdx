@@ -98,9 +98,9 @@ When an iOS run needs a native build, `build_seconds` is one window that
 starts when the run asks for the machine's native-build lock: waiting for
 another run's build, the native build, its verification and its cache
 publication all share it. A run that spends it waiting refuses
-`BUILD_CONTENDED` and names the run holding the lock. Install, Metro start,
-launch and readiness then share a fresh `build_seconds` window, as they do
-for a cached build.
+`BUILD_CONTENDED` and names the run holding the lock. As for a cached build,
+install, launch and readiness then share a fresh `build_seconds` window, and
+Metro startup has a separate one.
 
 Each limit is a whole number of seconds from 30 through 7200 inclusive.
 Omit the block, write `deadlines: {}`, or write a bare
