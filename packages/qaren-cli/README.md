@@ -2397,7 +2397,9 @@ before the holder died or re-created by an orphaned build writing its output, do
 count. Before a native build or native suite is let past its start gate, its process
 group is recorded in the holder, as is a `qaren` process's own group when it leads
 one; that group must also have no live members, otherwise the refusal names the lock
-and the `pgrep -g` check to wait on. A `qaren` group whose leader pid now belongs to
+and the `pgrep -g` check to wait on. The iOS native-build lock additionally
+requires that group to have been recorded: its holder may have died after starting
+a build it had not yet recorded, so such an orphan is kept. A `qaren` group whose leader pid now belongs to
 another process is not checked, since a reused pid proves its old group is gone. `qaren cleanup <run-id>` for a run with no
 `run.json` releases that run's locks under the same proof, and the receipt of a run
 that released an orphaned lock notes it.
@@ -3334,8 +3336,9 @@ validates the scenario + candidate and emits the planned command sequence
 prepare ──► validate (scenario schema, candidate git sha, lockfile sha256)
         ──► prereqs  (tools present, metro port free)
         ──► plan     native fingerprint + machine store + cache state ──► reuse | incremental | clean
-                     (decision + evidence recorded; non-reuse takes the
-                      host-level build serialization lock)
+                     (decision + evidence recorded; Android non-reuse takes the
+                      host-level build serialization lock here, iOS after
+                      allocation and only around build and publication)
         ──► allocate  iOS:  reuse, create or fall back to a temporary simulator
                             (see iOS simulator pool); with
                             --new, create + boot a temporary qaren-<run-id>;
@@ -3792,14 +3795,38 @@ state. An ambiguous artifact (zero or several bundles) skips caching with a reco
 reason, never a guess. Only a saved state permits ownership rebinding.
 
 **Build serialization.** Native builds (incremental and clean) take a
-host-level `native-build-<platform>` lock before allocation. A live holder
-is a structured refusal (`BUILD_CONTENDED`, exit 4). Android can adopt a
-provably dead holder's lock. iOS refuses an existing lock until its run's
+host-level `native-build-<platform>` lock. On iOS the lock covers only the
+build: `prepare`, `check` and `pr` claim it after the device is allocated and
+release it once the artifact is verified, the pre-publication candidate and
+fingerprint checks pass and the cache entry is written; Metro, install,
+launch and readiness run afterwards, and the final drift checks still run
+after readiness. A contended iOS claim waits, polling every second, within the
+same build budget (`deadlines.build_seconds`) that the prebuild, build,
+verification and publication then share; each subprocess gets only the time
+left. Running that budget out while waiting is a refusal (`BUILD_CONTENDED`,
+exit 4) whose next action names the holder run, whether it is alive, whether
+its recorded build group still runs, and how long this run waited, for example
+`BUILD_CONTENDED: native-build-ios is held by run <id> (alive: yes; no build process for 9 min); waited 600 s of the budget. Next: wait for that run or re-run once later; if the holder is dead, run its qaren cleanup from its home (its resources only).`
+After 120 s of a live holder with no build group running the wait notes
+`holder_idle_after_build`; a live or unproven holder is never taken. Running
+the budget out after the claim is `BUILD_FAILED`. The receipt's `build_lock`
+reports `holder`, `waited_s`, `holder_alive`, `holder_build_process`,
+`hold_s`, `no_build_observed_s` and `observation` (`none`, `observed` or
+`unreadable`), never a home, lock path, token, PID or command, and failures on
+these paths carry a `recovery` object with the ordered recovery ladder and
+whether this run must clean up its own resources. `qaren doctor` reports the
+lock's current state as `native-build-lock` without claiming it. A run that
+cannot observe its own process identity refuses `PREREQ_MISSING` before
+claiming. An unresolved release stops the run (`RUN_RECORD_UPDATE_FAILED`)
+and the lock stays recorded for `qaren cleanup`.
+Android claims before allocation, refuses a live holder at once and can adopt
+a provably dead holder's lock. iOS keeps an existing lock until its run's
 cleanup proves the finite build group retired, or until an
 [orphaned lock](#ios-admission-and-cleanup)'s recorded group has no live members;
-a dead CLI alone is insufficient.
-The lock is released after preparation or by cleanup only when owned build
-authority is retired.
+a dead CLI alone is insufficient, and an orphan that never recorded a build
+group is kept.
+The lock is released after publication (iOS), after preparation (Android) or
+by cleanup, only when owned build authority is retired.
 
 **Credential-authorized dependency prewarming.** Under `deps.policy:
 require-prewarm`, `qaren prewarm <scenario>` is the one deliberate network

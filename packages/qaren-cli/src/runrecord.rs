@@ -553,6 +553,31 @@ pub struct RunRecord {
     pub history: Vec<HistoryEntry>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub terminal: Option<TerminalResult>,
+    // What this run saw of the native-build lock; ownership stays in resources.build_lock.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub build_lock: Option<BuildLockObservation>,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum LockObservation {
+    #[default]
+    None,
+    Observed,
+    Unreadable,
+}
+
+// Safe holder facts only: no home, lock path, token, PID or command.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct BuildLockObservation {
+    // The last contending run, absent when the claim was never contended.
+    pub holder: Option<String>,
+    pub waited_s: u64,
+    pub holder_alive: Option<bool>,
+    pub holder_build_process: Option<bool>,
+    pub hold_s: Option<u64>,
+    pub no_build_observed_s: u64,
+    pub observation: LockObservation,
 }
 
 // Written once, after video finalization and teardown; publication trusts nothing else.

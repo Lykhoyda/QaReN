@@ -94,6 +94,12 @@ exited or Metro has received no bundle request since launch.
 | `device_boot_seconds`  | `420`             |
 | `attach_seconds`       | `120`             |
 
+On iOS, `build_seconds` is one window that starts when the run asks for the
+machine's native-build lock: waiting for another run's build, the native
+build, its verification and its cache publication all share it. A run that
+spends it waiting refuses `BUILD_CONTENDED` and names the run holding the
+lock; install, launch and readiness keep their own limits.
+
 Each limit is a whole number of seconds from 30 through 7200 inclusive.
 Omit the block, write `deadlines: {}`, or write a bare
 `deadlines:` to keep every default. A field that is present overrides only
