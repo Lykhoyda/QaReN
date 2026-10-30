@@ -858,6 +858,32 @@ function idSeen(id: string | undefined, screen: Screen): boolean {
   return ids.length === 1 && !ids[0].element.offscreen && !centreCovered(ids[0].element, screen);
 }
 
+export function targetOnScreen(screen: Screen, target: Target): boolean {
+  const quoted = target.quoted;
+  if (quoted === undefined) return true;
+  if (
+    target.exact !== 'text' &&
+    idIdentities(quoted, screen).some(
+      ({ element }) => !element.offscreen && !centreCovered(element, screen),
+    )
+  )
+    return true;
+  return (
+    target.exact !== 'id' &&
+    literalEvidence(screen, quoted, 'contains').verdict !== 'fail' &&
+    screen.elements.some(
+      (e) =>
+        (e.label?.includes(quoted) ||
+          e.value?.includes(quoted) ||
+          (e.kind === 'input' &&
+            e.value !== undefined &&
+            `${e.label ?? e.placeholder ?? e.testID ?? 'input'}: ${e.value}`.includes(quoted))) &&
+        !e.offscreen &&
+        !centreCovered(e, screen),
+    )
+  );
+}
+
 // Why a quoted wait saw no match, from identifiers and frames only, never labels or text.
 export function presenceMiss(target: Target, screen: Screen): string | undefined {
   const quoted = target.quoted;

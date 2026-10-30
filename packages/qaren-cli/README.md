@@ -2816,15 +2816,19 @@ See the [recovery regressions](../qaren-core/test/unit/qa/walker-recover.test.ts
 and [freshness regressions](../qaren-core/test/unit/qa/temporal-walker.test.ts).
 
 App interruptions need no app-specific configuration. Recovery requires complete
-native capture and React coverage, with the current quoted target (or literal
-check) and the later quoted targets of the current block absent from a fresh
-capture. Targets in later blocks never block recovery by being visible; they
+native capture and React coverage, with no on-screen, uncovered match for the
+current quoted target (or literal check) or the later quoted targets of the
+current block in a fresh capture. A target whose centre is covered by a detected
+sheet or scrim does not prevent recovery merely because it remains in the capture.
+Targets in later blocks never block recovery by being visible; they
 only keep their own planned control and controls inside them. A later target
 declared as a decline label from the list below
 (case-insensitive, unless explicitly targeted by ID) is exempt from this absence
 guard, so non-control text such as `Maybe later` does not prevent closing a sheet
 with `Close`. The current target is never exempt. ID-only targets are checked by
-test ID, text-only targets by text, and unqualified targets by either.
+test ID, text-only targets by contained label or value text (including composed
+input text), and unqualified targets by either. Any on-screen, uncovered match
+vetoes dismissal, even when another matching ID is offscreen.
 Exactly one eligible control must be visible, hittable, enabled,
 non-secure and have proven press support, with one of these exact English labels:
 `Close`, `Not now`, `Not Now`, `Maybe later`, `Later`, `Skip`, `No thanks`,
@@ -2835,8 +2839,8 @@ effective selector is left for that step; decline-label matching is case-insensi
 Within a replayed block, recovery retains the declared target for the exemption
 and uses its stored selector to protect the planned control. Targets in later
 blocks use their declared identities until those blocks are prepared for replay.
-A visible non-exempt target in the current block, uncertain absence for a target
-subject to the absence guard, or a control inside any plan target prevents
+A non-exempt on-screen, uncovered target in the current block, uncertain absence
+for a target subject to the absence guard, or a control inside any plan target prevents
 dismissal. Phrase-only current targets cannot establish this
 deterministic absence guard.
 

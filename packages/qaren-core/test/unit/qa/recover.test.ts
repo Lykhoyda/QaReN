@@ -1,8 +1,12 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { recover } from '../../../dist/qa/recover.js';
+import { dismissCandidate, recover } from '../../../dist/qa/recover.js';
 import type { RecoverDeps } from '../../../dist/qa/recover.js';
-import type { Screen } from '../../../dist/qa/screen.js';
+import { join, type NativeNode, type Screen } from '../../../dist/qa/screen.js';
+import { centreCovered, targetEvidence } from '../../../dist/qa/resolve.js';
+import { parsePlan, type Target } from '../../../dist/qa/plan.js';
+import { runPlan } from '../../../dist/qa/walker.js';
+import { scriptedJudge, walker } from './judgment-fixtures.ts';
 
 function screen(front: Screen['front'], extra: Partial<Screen> = {}): Screen {
   return { elements: [], visibleText: ['Home'], front, ...extra };
@@ -127,4 +131,211 @@ test('a floating dev-menu button that stays fails with the reason', async () => 
   assert.deepEqual(await recover(screen('dev-fab'), d.deps), {
     fail: 'the dev menu in front could not be hidden: DEV_MENU_HIDE_UNVERIFIED: still on screen',
   });
+});
+
+const homeTarget: Target = { phrase: 'home', quoted: 'home', exact: 'id' };
+
+function sheetScreen(covered = true, declines = ['Close'], extraNodes: NativeNode[] = []): Screen {
+  const rect = { x: 0, y: 0, width: 400, height: 800 };
+  const nodes: NativeNode[] = [
+    { ref: '@app', type: 'Application', rect },
+    { ref: '@window', type: 'Window', parentIndex: 0, rect },
+    {
+      ref: '@scroll',
+      type: 'ScrollView',
+      parentIndex: 1,
+      rect: { x: 0, y: 100, width: 400, height: 650 },
+    },
+    {
+      ref: '@home',
+      type: 'StaticText',
+      parentIndex: 2,
+      identifier: 'home',
+      label: 'Welcome Home',
+      rect: { x: 20, y: covered ? 500 : 200, width: 200, height: 40 },
+    },
+    ...extraNodes,
+    ...(declines.length
+      ? [
+          {
+            ref: '@scrim',
+            type: 'Other',
+            parentIndex: 1,
+            hittable: true,
+            rect: { x: 0, y: 400, width: 400, height: 400 },
+          },
+        ]
+      : []),
+    ...declines.map((label, index) => ({
+      ref: `@decline${index}`,
+      type: 'Button',
+      parentIndex: 1,
+      label,
+      hittable: true,
+      rect: { x: 20 + index * 150, y: 450, width: 100, height: 40 },
+    })),
+  ];
+  return join(nodes, [], 'app', { native: 'complete', react: 'complete' }, undefined, {
+    source: 'xcui-live',
+    nodes: nodes.map(() => ({ status: 'observed', labelSource: 'direct' })),
+  });
+}
+
+test('a centre-covered id target allows the sheet decline', () => {
+  const snapshot = sheetScreen();
+  assert.equal(centreCovered(snapshot.elements[3], snapshot), true);
+  assert.equal(targetEvidence(homeTarget, snapshot), 'fail');
+  assert.deepEqual(dismissCandidate(snapshot, [homeTarget]), { label: 'Close' });
+});
+
+test('an uncovered id target still vetoes recovery', () => {
+  const snapshot = sheetScreen(false);
+  assert.equal(targetEvidence(homeTarget, snapshot), 'pass');
+  assert.equal(dismissCandidate(snapshot, [homeTarget]), undefined);
+});
+
+for (const exact of [undefined, 'id'] as const) {
+  test(`an uncovered id carrier with an offscreen twin still vetoes recovery (${exact})`, () => {
+    const snapshot = sheetScreen(
+      false,
+      ['Close'],
+      [
+        {
+          ref: '@offscreen-home',
+          type: 'StaticText',
+          parentIndex: 2,
+          identifier: 'home',
+          rect: { x: 20, y: 900, width: 200, height: 40 },
+        },
+      ],
+    );
+    const carriers = snapshot.elements.filter((e) => e.testID === 'home');
+    assert.equal(carriers.length, 2);
+    assert.equal(carriers[0].offscreen, false);
+    assert.equal(centreCovered(carriers[0], snapshot), false);
+    assert.equal(carriers[1].offscreen, true);
+    assert.equal(dismissCandidate(snapshot, [{ ...homeTarget, exact }]), undefined);
+  });
+}
+
+for (const exact of [undefined, 'text'] as const) {
+  for (const identity of [
+    { label: 'Status' },
+    { placeholder: 'Status' },
+    { testID: 'Status' },
+    {},
+  ] as const) {
+    test(`composed input text vetoes recovery only when uncovered (${exact}, ${JSON.stringify(identity)})`, () => {
+      const quoted = `${Object.keys(identity).length ? 'Status' : 'input'}: Ready`;
+      const target = { phrase: quoted, quoted, exact };
+      for (const covered of [false, true]) {
+        const snapshot = sheetScreen(
+          true,
+          ['Close'],
+          [
+            {
+              ref: '@field',
+              type: 'TextField',
+              parentIndex: 2,
+              label:
+                'label' in identity
+                  ? identity.label
+                  : 'placeholder' in identity
+                    ? identity.placeholder
+                    : undefined,
+              identifier: 'testID' in identity ? identity.testID : undefined,
+              value: 'Ready',
+              rect: { x: 20, y: covered ? 550 : 250, width: 200, height: 40 },
+            },
+          ],
+        );
+        if ('placeholder' in identity) {
+          const field = snapshot.elements.find((e) => e.ref === '@field')!;
+          delete field.label;
+          field.placeholder = identity.placeholder;
+        }
+        assert.ok(snapshot.visibleText.includes(quoted));
+        for (const targets of [[target], [{ phrase: 'absent', quoted: 'absent' }, target]]) {
+          assert.deepEqual(
+            dismissCandidate(snapshot, targets),
+            covered ? { label: 'Close' } : undefined,
+          );
+        }
+      }
+    });
+  }
+
+  test(`input-value text vetoes recovery only when uncovered (${exact})`, () => {
+    const target = { phrase: 'Ready', quoted: 'Ready', exact };
+    for (const covered of [false, true]) {
+      const snapshot = sheetScreen(
+        true,
+        ['Close'],
+        [
+          {
+            ref: '@field',
+            type: 'TextField',
+            parentIndex: 2,
+            label: 'Status',
+            value: 'Ready',
+            rect: { x: 20, y: covered ? 550 : 250, width: 200, height: 40 },
+          },
+        ],
+      );
+      const field = snapshot.elements.find((e) => e.ref === '@field')!;
+      assert.equal(field.value, 'Ready');
+      assert.equal(centreCovered(field, snapshot), covered);
+      assert.deepEqual(
+        dismissCandidate(snapshot, [target]),
+        covered ? { label: 'Close' } : undefined,
+      );
+    }
+  });
+}
+
+test('a later target covered by the scrim does not veto recovery', () => {
+  assert.deepEqual(
+    dismissCandidate(sheetScreen(), [{ phrase: 'absent', quoted: 'absent' }, homeTarget]),
+    { label: 'Close' },
+  );
+});
+
+for (const exact of [undefined, 'text'] as const) {
+  test(`a text target uses uncovered contains matches for recovery (${exact})`, () => {
+    const target = { phrase: 'Home', quoted: 'Home', exact };
+    assert.deepEqual(dismissCandidate(sheetScreen(), [target]), { label: 'Close' });
+    assert.equal(dismissCandidate(sheetScreen(false), [target]), undefined);
+  });
+}
+
+test('a covered target with two decline controls still refuses as ambiguous', () => {
+  const candidate = dismissCandidate(sheetScreen(true, ['Close', 'Not now']), [homeTarget]);
+  assert.ok(candidate && 'refuse' in candidate);
+  assert.equal(candidate.refuse.code, 'INTERRUPTION_AMBIGUOUS');
+});
+
+test('a wait for an id behind the scrim dismisses Close once and then passes', async () => {
+  let snapshot = sheetScreen();
+  const f = walker(
+    [snapshot],
+    scriptedJudge(() => assert.fail('no model needed')),
+  );
+  f.deps.captureScreen = async () => snapshot;
+  f.deps.hideDevMenu = async () => assert.fail('no dev menu');
+  f.deps.press = async (ref) => {
+    f.actions.push(`press ${ref}`);
+    snapshot = sheetScreen(true, []);
+    return { ok: true, proven: false, executed: true };
+  };
+  const result = await runPlan(parsePlan('1. Wait for "home"').blocks!, f.deps);
+  assert.equal(result.verdict, 'PASS', result.failure?.seen);
+  assert.deepEqual(f.actions, ['press @decline0']);
+  assert.equal(result.recoveries, 1);
+  const retry = result.steps.find((row) => row.outcome === 'retry');
+  assert.ok(retry?.operationId);
+  assert.deepEqual(
+    result.steps.filter((row) => row.operationId === retry.operationId).map((row) => row.outcome),
+    ['retry', 'pass'],
+  );
+  assert.match(retry.reason ?? '', /recovered: dismissed an app screen with Close/);
 });
