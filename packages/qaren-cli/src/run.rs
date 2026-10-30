@@ -2148,7 +2148,9 @@ fn hold_after_walk(
     }
     let target_class = match &outcome.verdict {
         Verdict::Fail => true,
-        Verdict::Refused { code, .. } => code.starts_with("TARGET_"),
+        Verdict::Refused { code, .. } => {
+            code.starts_with("TARGET_") || code == "PRESS_NOT_REGISTERED"
+        }
         Verdict::Pass => false,
     };
     // A synthesized failure (deadline kill, missing result, contract violation) is not a plan deviation.

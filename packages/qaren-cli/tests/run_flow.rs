@@ -3285,6 +3285,27 @@ fn only_a_target_class_refusal_holds() {
 }
 
 #[test]
+fn an_admitted_press_not_registered_refusal_holds() {
+    let refusal = r#"{"verdict":"REFUSED","code":"PRESS_NOT_REGISTERED","message":"selection remains unobservable"}"#;
+    let (repo, app) = app_repo();
+    let mut mock = MockRunner::new();
+    script_held_result(&mut mock, &repo, refusal, 4);
+
+    let receipt = run(&mut mock, &request(&repo, &app, 30));
+
+    assert_eq!(receipt.result, ReceiptResult::Refused);
+    assert_eq!(mock.remaining(), 0, "{:?}", labels(&mock));
+    assert!(receipt.cleanup["metro"].starts_with("held: "));
+    assert_eq!(receipt.cleanup["simulator"], "kept");
+    assert!(receipt.cleanup["device_lease"].starts_with("held: "));
+    assert!(receipt.held.is_some());
+    let record = RunRecord::load(&repo.join("runs"), &run_id()).unwrap();
+    assert!(record.resources.metro.is_some());
+    assert!(record.resources.lease.is_some());
+    assert_eq!(record.held, receipt.held);
+}
+
+#[test]
 fn qaren_cleanup_releases_a_held_run() {
     let (repo, app) = app_repo();
     let mut mock = MockRunner::new();

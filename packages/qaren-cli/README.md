@@ -2513,7 +2513,7 @@ that released an orphaned lock notes it.
 Do not delete locks to bypass unresolved ownership.
 
 A failed iOS `check` walk is held for inspection. After the app was admitted, an uncancelled `FAIL` or
-`TARGET_*` refusal reported by the core (not one QaReN synthesizes after a deadline kill or a
+`TARGET_*` or `PRESS_NOT_REGISTERED` refusal reported by the core (not one QaReN synthesizes after a deadline kill or a
 missing result) is eligible. Teardown still stops the build, core, runner driver, runner host and recorder and
 releases the build lock. It skips stopping Metro (`metro=held: …`), skips any armed simulator
 stop, and keeps the device lease (`device_lease=held: …`). Teardown never terminates the app,
