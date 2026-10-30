@@ -45,6 +45,7 @@ that can conflict with a session or is hygiene; `SKIP` is not applicable.
 | `host-memory`, `host-devices` | Free memory, memory pressure, booted simulators and running Android emulators; conservative concurrent lane headroom on macOS and Linux |
 | `simulator-service` | A five-second `simctl list devices -j` probe on macOS; attributable uninterruptible simulator process evidence when unresponsive |
 | `host-load` | One-, five- and fifteen-minute load averages, logical CPU count and sampled CPU idle; warns about readiness deadlines under load |
+| `native-build-lock` | Read-only iOS [build-lock observation](#native-fingerprint-build-selection); never claims or reclaims the lock |
 | `android-sdk`, `android-avd` | When `android` is configured: `ANDROID_HOME`, an executable `adb` file (never run; its version is not checked), the emulator binary and the configured AVD via `emulator -list-avds` |
 | `qaren-path` | The first `qaren` on `PATH` is this binary and the installed build; later copies warn, and so does a separate install that `PATH` runs instead (another `QAREN_HOME` or the other release or source-build line) |
 | `installed-build` | The runtime under `$QAREN_HOME/runtime/<version>/` and the runtime `check` would use (`QAREN_RUNTIME` when set) are complete; a binary outside it that `PATH` runs instead of an install fails |
@@ -3522,13 +3523,13 @@ ios:
 
 For `prepare`, the same pair belongs under `build.ios_workspace` in the scenario, alongside `build.owner: cli`. Workspace paths are relative to the app root, remain under `ios/`, and must resolve through plain directories to an existing `.xcworkspace` with a plain `contents.xcworkspacedata` file. No scheme discovery, Expo upgrade or automatic fallback after a failed build occurs. An iOS section in shared `check` config does not select this route for Android.
 
-Both CLI-owned iOS routes start a separate owned Metro process group after native-directory preparation and before finite compilation, letting Metro start while the build runs. Verified cached-app reuse starts Metro before installation instead, without spawning it again. Installation still requires a verified simulator bundle; launch waits for proven Metro ownership, `/status` readiness and dev-client manifest warmup. Dry-run command lists reflect this ordering. Failed iOS `prepare` attempts clean up early Metro and report the outcome in `cleanup.metro`; unresolved ownership remains recorded for [cleanup](#ios-admission-and-cleanup).
+Both CLI-owned iOS routes finish the protected build before starting a separate owned Metro process group; see [build serialization](#native-fingerprint-build-selection) for the lock boundary. They then follow the cached-app reuse path, which starts Metro before installation without spawning it again. Installation still requires a verified simulator bundle; launch waits for proven Metro ownership, `/status` readiness and dev-client manifest warmup. Failed iOS `prepare` attempts clean up any started Metro and report the outcome in `cleanup.metro`; unresolved ownership remains recorded for [cleanup](#ios-admission-and-cleanup). The iOS non-reuse dry-run list still places Metro before compilation; use the lifecycle described here for execution ordering.
 
 The workspace route runs `xcrun xcodebuild` in Debug against the generic iOS Simulator destination, with certificate-free ad-hoc simulator signing (`CODE_SIGN_IDENTITY=-`, no team or provisioning profile) so entitlements such as keychain access survive, and the React Native packager launch disabled. Products and DerivedData are isolated under the run directory. The existing finite-build process group and lock remain authoritative; only a clean exit with proven group shutdown can proceed to single-bundle verification, exact-device installation and launch. A missing or ambiguous app, wrong bundle/platform/scheme or unsupported dev-client launcher still fails before installation. Workspace and scheme selection, and the build-settings revision, participate in the native cache fingerprint, so an earlier unsigned workspace build is not reused; see [Native-fingerprint build selection](#native-fingerprint-build-selection) for the shared store and toolchain binding used by both routes.
 
 **Native preparation remains explicit.** Supply a workspace whose native dependencies and generated inputs are ready for Xcode. QaReN retains its existing clean/incremental policy: an unproven generated native directory is regenerated through owned `expo prebuild --clean`, then the workspace is revalidated before compilation; a git-visible native tree is not regenerated. The workspace route adds no CocoaPods synchronization or codegen command of its own, and workspace existence is not proof that those inputs are current after a dependency update. A build failure is reported, not retried through another backend.
 
-After verified cache publication and proven build-group shutdown, successful workspace builds retire their run-local products and DerivedData. Failed builds, failed publication or unresolved cleanup retain outputs; symlinked retirement roots are not followed. Unknown build-group cleanup continues to retain the build lock and device lease for `qaren cleanup`.
+After verified cache publication and proven build-group shutdown, successful workspace builds retire their run-local products and DerivedData. The Expo route retires its run-local source app. Retirement requires the cached artifact reference to be saved and the build lock to be released with that release persisted first. Failed builds, failed publication or unresolved release or persistence retain outputs; symlinked retirement roots are not followed. Unknown build-group cleanup continues to retain the build lock and device lease for `qaren cleanup`.
 
 ### Cooperative handoff mode (`build.owner: qaren`)
 
@@ -3808,7 +3809,8 @@ reason, never a guess. Only a saved state permits ownership rebinding.
 host-level `native-build-<platform>` lock. On iOS the lock covers only the
 build: `prepare`, `check` and `pr` claim it after the device is allocated and
 release it once the artifact is verified, the pre-publication candidate and
-fingerprint checks pass and the cache entry is written; Metro, install,
+fingerprint checks pass and cache publication is persisted, before
+[run-owned output retirement](#cli-owned-ios-build-routes); Metro, install,
 launch and readiness run afterwards, and the final drift checks still run
 after readiness. A contended iOS claim waits, polling every second, within the
 same build budget (`deadlines.build_seconds`) that the prebuild, build,
@@ -3832,11 +3834,8 @@ cannot observe its own process identity refuses `PREREQ_MISSING` before
 claiming. An unresolved release stops the run (`RUN_RECORD_UPDATE_FAILED`)
 and the lock stays recorded for `qaren cleanup`.
 Android claims before allocation, refuses a live holder at once and can adopt
-a provably dead holder's lock. iOS keeps an existing lock until its run's
-cleanup proves the finite build group retired, or until an
-[orphaned lock](#ios-admission-and-cleanup)'s recorded group has no live members;
-a dead CLI alone is insufficient, and an orphan that never recorded a build
-group is kept.
+a provably dead holder's lock. iOS recovery follows the
+[cleanup and orphaned-lock proof rules](#ios-admission-and-cleanup).
 The lock is released after publication (iOS), after preparation (Android) or
 by cleanup, only when owned build authority is retired.
 
