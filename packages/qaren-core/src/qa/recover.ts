@@ -1,7 +1,7 @@
 import type { Target } from './plan.js';
 import { ancestorsOf, hostAssociationIdentity, type Element, type Screen } from './screen.js';
 import type { HostAssociationDiagnostic } from './host-association.js';
-import { literalEvidence } from './evidence.js';
+import { targetOnScreen } from './resolve.js';
 import type { Reason } from './untrusted.js';
 import type { ActResult } from './walker.js';
 
@@ -149,12 +149,7 @@ export function dismissCandidate(
         (target.declared ?? target).exact !== 'id' &&
         DECLINE_LOWER.has((target.declared ?? target).quoted?.toLowerCase() ?? '')
       ) &&
-      (target.quoted === undefined ||
-        (target.exact !== 'id' &&
-          literalEvidence(screen, target.quoted, 'contains').verdict !== 'fail') ||
-        screen.elements.some(
-          (e) => !e.offscreen && target.exact !== 'text' && e.testID === target.quoted,
-        )),
+      targetOnScreen(screen, target),
   );
   if (targetIndex !== -1)
     return rejected(targetIndex === 0 ? 'current-target' : 'later-target', targetIndex);
