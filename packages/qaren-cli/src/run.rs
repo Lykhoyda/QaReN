@@ -635,7 +635,6 @@ fn run_inner(
     };
     // After reclaim, so a dead holder's surviving Metro is stopped by its own cleanup first.
     if let Err(f) = prepare::check_port_free(runner, config.metro_port) {
-        let f = name_held_port_owner(&req.runs_root, config.metro_port, f);
         return Err(lease::release_or_annotate(&lease, f));
     }
 
@@ -1279,7 +1278,7 @@ fn run_inner(
             .filter(|_| !ctx.record.resources.runner_drivers.is_empty())
             .map(|sim| sim.udid.clone());
         let hold = hold_after_walk(&mut ctx, req, &plan, &outcome);
-        let (mut cleanup, all_clean, ownership_proven) = teardown(
+        let (mut cleanup, mut all_clean, mut ownership_proven) = teardown(
             &mut ctx,
             &node,
             &req.runtime_dir,
@@ -1414,6 +1413,13 @@ fn run_inner(
             }
             Ok(()) => failure.as_ref().map(|f| f.code) == Some(FailureCode::RunCancelled),
         };
+        if cancelled && ctx.record.held.take().is_some() {
+            let (released, clean, proven) =
+                teardown(&mut ctx, &node, &req.runtime_dir, false, false, false);
+            cleanup.extend(released);
+            all_clean = clean;
+            ownership_proven = proven;
+        }
         ctx.record.terminal = Some(TerminalResult {
             verdict: outcome.ledger.verdict.clone(),
             cancelled,
@@ -1432,6 +1438,31 @@ fn run_inner(
             .push_history(at, &format!("check finished: {}", note.join(" ")));
         if let Err(f) = ctx.save() {
             return ctx.fail(f);
+        }
+        if let Err(late) = ensure_running(ctx.runner, "publish") {
+            if failure.as_ref().map(|f| f.code) != Some(FailureCode::RunCancelled) {
+                result = ReceiptResult::Refused;
+                failure = Some(late);
+            }
+            if ctx.record.held.take().is_some() {
+                let (released, clean, proven) =
+                    teardown(&mut ctx, &node, &req.runtime_dir, false, false, false);
+                cleanup.extend(released);
+                all_clean = clean;
+                ownership_proven = proven;
+            }
+            let terminal = ctx.record.terminal.as_mut().unwrap();
+            terminal.cancelled = true;
+            terminal.ownership_proven = ownership_proven;
+            ctx.record.phase = if all_clean {
+                Phase::Cleaned
+            } else {
+                Phase::Walking
+            };
+            ctx.record.failure = failure.clone();
+            if let Err(f) = ctx.save() {
+                return ctx.fail(f);
+            }
         }
         if let (Some(pr), Some(video)) = (&pr_state, published_video) {
             let video_publication = outcome.ledger.video_publication.clone().unwrap_or_default();
@@ -1460,15 +1491,7 @@ fn run_inner(
                 identity_values: identity_values(&device, config.metro_port, &ctx.record.resources),
             };
             let bytes = serde_json::to_vec_pretty(&pr_record).unwrap_or_default();
-            if let Err(late) = ensure_running(ctx.runner, "publish") {
-                result = ReceiptResult::Refused;
-                failure = Some(late);
-                ctx.record.terminal.as_mut().unwrap().cancelled = true;
-                ctx.record.failure = failure.clone();
-                if let Err(f) = ctx.save() {
-                    return ctx.fail(f);
-                }
-            } else if !ctx.record.terminal.as_ref().unwrap().cancelled {
+            if !ctx.record.terminal.as_ref().unwrap().cancelled {
                 if let Err(e) = std::fs::write(run_dir.join("pr.json"), bytes) {
                     ctx.notes
                         .push(("pr_record".to_string(), format!("could not persist: {e}")));
@@ -2077,35 +2100,6 @@ fn finish_failed(
         receipt.cleanup.insert(name, rendered);
     }
     receipt
-}
-
-// A held run on another device keeps its Metro port; name that run instead of a foreign listener.
-pub fn name_held_port_owner(runs_root: &Path, port: u16, mut failure: Failure) -> Failure {
-    if failure.code != FailureCode::MetroPortOccupied {
-        return failure;
-    }
-    // shortcut: scans this home's runs on the refusal path only; a run held from another QaReN home keeps the generic advice.
-    let held = std::fs::read_dir(runs_root)
-        .into_iter()
-        .flatten()
-        .flatten()
-        .filter_map(|entry| RunRecord::load(runs_root, &entry.file_name().to_string_lossy()).ok())
-        .find(|record| {
-            record.held.is_some()
-                && record.phase == Phase::Walking
-                && record
-                    .resources
-                    .metro
-                    .as_ref()
-                    .is_some_and(|m| m.port == port)
-        });
-    if let Some(record) = held {
-        failure.next_action = crate::redact::OutputText::from_output(&format!(
-            "run {0} holds Metro on port {port} for inspection; run qaren cleanup {0} --json, then re-run",
-            record.run_id
-        ));
-    }
-    failure
 }
 
 // Only a core-reported FAIL or target-class refusal after admission holds; a cancelled run gets normal teardown.

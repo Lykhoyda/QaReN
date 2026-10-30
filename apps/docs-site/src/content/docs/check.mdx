@@ -148,7 +148,7 @@ retained, and `next_action` is `qaren cleanup <run-id> --json`. `qaren status <r
 hold and live probes, and `qaren doctor --device <udid>` names the run holding that simulator. A hold
 ends with `qaren cleanup <run-id>` or when the next run on that device reclaims it. It never times
 out. The held Metro keeps its port, so a run on another simulator with the same `metroPort`
-refuses `METRO_PORT_OCCUPIED` and names the held run to clean up first.
+refuses `METRO_PORT_OCCUPIED`.
 
 | Setting | Effect |
 | --- | --- |

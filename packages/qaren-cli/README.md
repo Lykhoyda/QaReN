@@ -2428,8 +2428,8 @@ outright. Without either, a non-empty `CI`, a `## Cleanup` plan heading or
 decides for both `check` and `pr`, and the default is to hold for `check` and not for `pr`. See
 [check](../../apps/docs-site/src/content/docs/check.mdx) for the table. A held `pr` run keeps its
 worktree and records its producers as unproven, so `qaren publish` refuses it even after cleanup;
-re-run `qaren pr` to publish. When another run's Metro port is taken by a held run, the
-`METRO_PORT_OCCUPIED` refusal names that run's cleanup command. Android never holds.
+re-run `qaren pr` to publish. A held Metro keeps its port; another run using that port
+refuses `METRO_PORT_OCCUPIED`. Android never holds.
 
 The iOS runner's XCTest result bundles under `Logs/Test` in both its local
 DerivedData and current-version prebuilt cache are removed after successful

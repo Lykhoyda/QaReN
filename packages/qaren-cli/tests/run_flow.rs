@@ -3135,6 +3135,55 @@ fn a_failed_ios_check_holds_metro_the_simulator_and_the_lease_for_inspection() {
 }
 
 #[test]
+fn cancellation_after_held_cleanup_releases_resources_and_clears_the_hold() {
+    let (repo, app) = app_repo();
+    let mut mock = MockRunner::new();
+    script_held_walk(&mut mock, &repo);
+    script_metro_teardown(&mut mock, UDID, Some(hosts_absent()));
+
+    let mut runner = CancelAfterRunSave(mock, repo.join("runs"), |r| r.held.is_some());
+    let receipt = run(&mut runner, &request(&repo, &app, 30));
+
+    assert_eq!(receipt.result, ReceiptResult::Refused);
+    assert_eq!(receipt.failure.unwrap().code, FailureCode::RunCancelled);
+    assert!(receipt.held.is_none());
+    assert_eq!(receipt.cleanup["metro"], "removed");
+    assert_eq!(receipt.cleanup["device_lease"], "removed");
+    assert_eq!(receipt.cleanup["simulator"], "kept");
+    let record = RunRecord::load(&repo.join("runs"), &run_id()).unwrap();
+    assert_eq!(record.phase, Phase::Cleaned);
+    assert!(record.held.is_none());
+    assert!(record.resources.metro.is_none());
+    assert!(record.resources.lease.is_none());
+    assert!(record.terminal.unwrap().cancelled);
+    assert_eq!(runner.0.remaining(), 0);
+}
+
+#[test]
+fn cancellation_after_a_held_terminal_save_releases_resources() {
+    let (repo, app) = app_repo();
+    let mut mock = MockRunner::new();
+    script_held_walk(&mut mock, &repo);
+    script_metro_teardown(&mut mock, UDID, Some(hosts_absent()));
+    let mut runner = CancelAfterRunSave(mock, repo.join("runs"), |r| r.terminal.is_some());
+
+    let receipt = run(&mut runner, &request(&repo, &app, 30));
+
+    assert_eq!(receipt.result, ReceiptResult::Refused);
+    assert_eq!(receipt.failure.unwrap().code, FailureCode::RunCancelled);
+    assert!(receipt.held.is_none());
+    assert_eq!(receipt.cleanup["metro"], "removed");
+    assert_eq!(receipt.cleanup["device_lease"], "removed");
+    let record = RunRecord::load(&repo.join("runs"), &run_id()).unwrap();
+    assert_eq!(record.phase, Phase::Cleaned);
+    assert!(record.held.is_none());
+    assert!(record.resources.metro.is_none());
+    assert!(record.resources.lease.is_none());
+    assert!(record.terminal.unwrap().cancelled);
+    assert_eq!(runner.0.remaining(), 0);
+}
+
+#[test]
 fn only_a_target_class_refusal_holds() {
     let target =
         r#"{"verdict":"REFUSED","code":"TARGET_AMBIGUOUS","message":"two controls match"}"#;
@@ -3195,32 +3244,33 @@ fn qaren_cleanup_releases_a_held_run() {
 }
 
 #[test]
-fn a_port_refusal_names_the_held_run_that_owns_the_metro_port() {
+fn a_stale_held_port_record_preserves_foreign_listener_advice() {
+    let (held_repo, held_app) = app_repo();
+    let mut holder = MockRunner::new();
+    script_held_walk(&mut holder, &held_repo);
+    let held_req = request(&held_repo, &held_app, 30);
+    assert!(run(&mut holder, &held_req).held.is_some());
+
     let (repo, app) = app_repo();
     let mut mock = MockRunner::new();
-    script_held_walk(&mut mock, &repo);
-    let req = request(&repo, &app, 30);
-    run(&mut mock, &req);
-    let occupied = || {
-        qaren::failure::Failure::new(
-            "prereqs",
-            FailureCode::MetroPortOccupied,
-            "metro port is already owned",
-            "pick a different metro.port in the scenario or stop the foreign listener yourself",
-        )
-    };
+    script_preflight_until_lease(&mut mock, &repo);
+    mock.expect_run("lsof", CmdOutput::success("12345\n"));
+    let mut req = request(&repo, &app, 30);
+    req.runs_root = held_req.runs_root;
 
-    let named = qaren::run::name_held_port_owner(&req.runs_root, 8791, occupied());
-    let other = qaren::run::name_held_port_owner(&req.runs_root, 9999, occupied());
+    let receipt = run(&mut mock, &req);
 
     assert_eq!(
-        named.next_action.to_string(),
-        format!(
-            "run {0} holds Metro on port 8791 for inspection; run qaren cleanup {0} --json, then re-run",
-            run_id()
-        )
+        receipt.failure.as_ref().unwrap().code,
+        FailureCode::MetroPortOccupied
     );
-    assert_eq!(other.next_action, occupied().next_action);
+    assert!(receipt
+        .failure
+        .unwrap()
+        .next_action
+        .contains("foreign listener"));
+    assert_eq!(mock.remaining(), 0);
+    assert_eq!(holder.remaining(), 0);
 }
 
 #[test]
@@ -8688,9 +8738,9 @@ fn a_playable_encode_reclaims_the_runs_raw_capture_and_reports_the_bytes() {
     }
 }
 
-struct CancelAfterTerminalSave(PrRunner, PathBuf);
+struct CancelAfterRunSave<T>(T, PathBuf, fn(&RunRecord) -> bool);
 
-impl Runner for CancelAfterTerminalSave {
+impl<T: Runner> Runner for CancelAfterRunSave<T> {
     fn env_var(&self, name: &str) -> Option<String> {
         self.0.env_var(name)
     }
@@ -8723,7 +8773,7 @@ impl Runner for CancelAfterTerminalSave {
     fn cancellation(&self) -> Option<String> {
         if RunRecord::load(&self.1, &run_id())
             .ok()
-            .is_some_and(|record| record.terminal.is_some())
+            .is_some_and(|record| (self.2)(&record))
         {
             Some("received SIGTERM".into())
         } else {
@@ -8736,7 +8786,7 @@ impl Runner for CancelAfterTerminalSave {
 fn cancellation_during_terminal_save_withholds_the_publish_handoff() {
     let (repo, app) = app_repo();
     let wt = repo.join("runs").join(run_id()).join("wt");
-    let mut runner = CancelAfterTerminalSave(
+    let mut runner = CancelAfterRunSave(
         PrRunner {
             inner: MockRunner::new(),
             app: app.clone(),
@@ -8746,6 +8796,7 @@ fn cancellation_during_terminal_save_withholds_the_publish_handoff() {
             worktree_config_planted: false,
         },
         repo.join("runs"),
+        |r| r.terminal.is_some(),
     );
     let mock = &mut runner.0.inner;
     script_pr_preflight(mock, &repo, &wt);
