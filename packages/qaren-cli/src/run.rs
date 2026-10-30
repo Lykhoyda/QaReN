@@ -881,7 +881,8 @@ fn run_inner(
             }
         }
         // iOS claims its build lock inside build_ios_locked, so the lock covers only the build.
-        let ios_build = plan_decision.decision != BuildDecision::Reuse && req.platform == Platform::Ios;
+        let ios_build =
+            plan_decision.decision != BuildDecision::Reuse && req.platform == Platform::Ios;
         if plan_decision.decision != BuildDecision::Reuse && !ios_build {
             if let Err(f) = prepare::claim_build_lock(&mut ctx, &req.lock_root) {
                 return finish_failed(ctx, f);
@@ -1364,6 +1365,21 @@ fn run_inner(
                 })),
             ),
         };
+        if outcome.ledger.press_evidence.is_some() {
+            if let (Some(failure), Verdict::Refused { code, .. }) = (&mut failure, &outcome.verdict)
+            {
+                if matches!(
+                    code.as_str(),
+                    "PRESS_NOT_REGISTERED"
+                        | "NATIVE_CAPTURE_UNAVAILABLE"
+                        | "ITEM_DEADLINE_EXCEEDED"
+                        | "EVIDENCE_EXPIRED"
+                        | "RUN_CANCELLED"
+                ) {
+                    *failure = failure.clone().with_press_recovery(code);
+                }
+            }
+        }
         let mut tested_older_commit = None;
         let mut published_video = None;
         if let Some(pr) = &pr_state {
@@ -1734,6 +1750,7 @@ pub fn worktree_drift(before: &BTreeSet<String>, after: &BTreeSet<String>) -> Ve
 
 fn refusal_code(code: &str) -> FailureCode {
     match code {
+        "PRESS_NOT_REGISTERED" => FailureCode::PressNotRegistered,
         "METRO_ORIGIN_MISMATCH" => FailureCode::MetroOriginMismatch,
         "PLAN_INPUT_MISSING" => FailureCode::PlanInputMissing,
         "PLAN_UNPARSEABLE" => FailureCode::PlanUnparseable,

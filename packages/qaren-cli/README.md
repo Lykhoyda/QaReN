@@ -735,9 +735,57 @@ may resolve live to that control: it agrees only when the same-type,
 same-label owning ancestor in the retained snapshot contains the label and the
 live frame equals that owner's frame; the tap goes to the unchanged point. A later
 screen change cannot turn a proven no-mutation refusal into a passing action.
-An unproven press passes only when the screen changes. That comparison includes
-each control's selected state (the iOS selected trait or Android accessibility
-selection), so becoming selected can prove a press.
+For an iOS native-backed button not reported selected, inside a scroll container
+no taller than three times the target's height and with a visible enabled button
+beside it on the same row, QaReN requires exactly one match for the target's
+identity, retaining its original reference and reporting selected after the press,
+while that identity remains on screen. Identity is kind plus testID when present,
+otherwise kind plus label on an element without a testID. If no element
+with that identity remains after the tap, the existing screen-change contract
+applies, allowing navigation or replacement to pass. The walker also accepts
+authoritative effect proof, but the current iOS press adapter does not supply it;
+selection readback is the supported evidence for these controls. After the first
+post-tap capture, if the identity remains without bound selection or effect proof,
+it takes one additional immediate read-only capture for delayed selection
+within the pre-tap observation's remaining lifetime: the earlier of 10 seconds
+after that capture completes and 32 seconds after it starts. Neither readback
+renews this window. While the identity remains, an unrelated screen change or
+pixel highlight cannot pass this candidate. Otherwise it refuses `PRESS_NOT_REGISTERED` (exit 4), with
+closed `pressEvidence` describing identity/selection uncertainty, outside-target
+semantic change, one or two capture attempts, and `heldPress: not_tried_unsafe`.
+
+This is a structural heuristic: capture does not prove horizontal scrolling,
+its responder behavior, or a selected-state contract. iOS omits false selected
+state, so an invisible successful toggle and a swallowed tap look alike. QaReN
+sends no second tap or held press that could undo the toggle. The refusal does
+not prove that the app callback failed. The fixed next action is
+`rerun_then_ask_app_team_expose_selection_in_row_list`. The refusal includes this
+guidance, with N post-tap observations and M milliseconds from tap dispatch to
+the final readback:
+
+> The tap did not change the control's selected state (N observations over M ms); the control sits in a row-shaped scrolling list, which can swallow synthetic taps. Next: re-run once; if it repeats on the same control, ask the app team to make the selection reachable for automated taps (for example by disabling the list's own scrolling for this set) or to expose the selected state another way.
+
+Its ordered
+recovery ladder skips held press as unsafe and app/Metro/runner restart, device
+restart, native rebuild, and cleanup/fresh prepare as unable to verify the
+selection contract. A capture fault instead makes those later recovery options
+available, restricted to owned resources and explicit approval for state loss,
+with `reprepare_after_capture_recovery` as the next action. The walker has exited,
+so no receipt offers another read within that walk's observation window.
+No recovery action runs automatically. Deadline or cancellation returns
+`rerun_when_ready`. If teardown retains resources, the receipt's top-level
+`qaren cleanup <run> --json` action takes precedence: it releases owned resources
+without performing the ladder's cleanup-and-fresh-prepare rung.
+Controls outside this heuristic keep the existing press contract;
+unselected controls outside it remain a verification gap.
+
+Outside that candidate, an unproven press passes when the screen changes. That comparison includes each
+control's selected state (the iOS selected trait or Android accessibility
+selection), so a selected state appearing or disappearing proves a press. With
+an unchanged comparison, a successful tap on a control that was already selected
+and is still selected under the same element reference afterwards passes with
+the evidence `already selected, no change`; the tap is still sent, and a refused or errored
+tap gets no such pass.
 When that comparison is unchanged and the runner explicitly reports the press
 unproven, QaReN can also verify a stable visible change within the tapped
 control's bounds, even when it exposes no accessibility state.
@@ -750,8 +798,9 @@ agree on both axes. Before comparing pixels, QaReN re-finds the same target in
 the post-tap tree and requires its frame and scale to match the original baseline.
 One screenshot immediately before the first dispatch adds about 200 ms per
 eligible press; that baseline is retained across the retry. Only an otherwise
-unproven press with an unchanged screen comparison takes two after-shots,
-200 ms apart. After both shots, QaReN reads the tree again and re-finds the target;
+unproven press with an unchanged screen comparison that has not passed as already
+selected takes two after-shots, 200 ms apart. After both shots, QaReN reads the
+tree again and re-finds the target;
 a missing or ineligible target, or any change to its scale, x, y, width or height,
 withholds pixel proof, including a delayed reflow after the post-tap tree capture.
 The two control crops must agree and differ sufficiently from the
@@ -766,10 +815,12 @@ inputs, no metadata-only capture and no active screenshot withholding. They use
 temporary files under the run directory that are removed after reading, and are
 not retained with ledger screenshots. Missing, failed or unsupported captures,
 ineligible targets and insufficient pixel change provide no proof; the existing
-retry and failure behavior remains. A press that leaves the screen unchanged
-still fails, naming whether the target stayed selected.
+retry and failure behavior remains. A press without pixel proof that leaves a
+control not reported selected unchanged still fails, naming whether the target
+was reported selected before and after.
 
-Before its one retry, the walker re-captures until the same target (resolved
+For presses outside the selection heuristic, before its one retry the walker
+re-captures until the same target (resolved
 through the same exact-identity rules as the step) holds one native frame
 across two captures, within the
 existing settle readbacks, and the retry dispatches only that target at its
@@ -2745,6 +2796,9 @@ flagging; listing still works. Saved files stay untracked until you commit them,
 nested in its repository they do not make the next run's candidate dirty.
 
 ### Step recovery
+
+Selection-proof refusals bypass step recovery; follow the
+[press evidence contract](#occluded-taps-and-focus) before retrying.
 
 An observed React Native red box fails the current step immediately, including
 during login replay, with error-screen evidence in `failure.seen` projected through

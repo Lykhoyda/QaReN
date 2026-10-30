@@ -221,9 +221,7 @@ pub(crate) fn finish_receipt(ctx: Ctx, result: ReceiptResult, failure: Option<Fa
         }
         failure
     });
-    receipt.recovery = failure
-        .as_ref()
-        .and_then(|f| f.recovery.as_deref().cloned());
+    receipt.recovery = failure.as_ref().and_then(|f| f.build_recovery().cloned());
     receipt.failure = failure;
     receipt.next_action = next_action;
     receipt.commands_executed = ctx.runner.commands_executed();
@@ -5308,8 +5306,10 @@ mod launch_tests {
         use std::os::unix::fs::DirBuilderExt;
 
         for workspace in [false, true] {
-            let root = std::env::temp_dir()
-                .join(format!("qaren-retirement-{}-{workspace}", std::process::id()));
+            let root = std::env::temp_dir().join(format!(
+                "qaren-retirement-{}-{workspace}",
+                std::process::id()
+            ));
             std::fs::DirBuilder::new()
                 .mode(0o700)
                 .create(&root)
