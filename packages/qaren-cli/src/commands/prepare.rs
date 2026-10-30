@@ -3609,7 +3609,10 @@ fn prune_stale_artifacts(platform_dir: &Path, app_id: &str, keep_fp_key: &str) -
     pruned
 }
 
-pub(crate) fn record_build_result(ctx: &mut Ctx, fp: &NativeFingerprint) -> Result<(), Failure> {
+pub(crate) fn record_build_result(
+    ctx: &mut Ctx,
+    fp: &NativeFingerprint,
+) -> Result<Option<CachedArtifact>, Failure> {
     let platform = platform_dir(ctx.record.scenario.platform);
     let repo_root = ctx.record.candidate.repo_root.clone();
     let project_root = ctx.record.candidate.project_root.clone();
@@ -3629,7 +3632,7 @@ pub(crate) fn record_build_result(ctx: &mut Ctx, fp: &NativeFingerprint) -> Resu
             ensure_running(ctx.runner, "native_cache")?;
             ctx.notes
                 .push(("artifact_cache".into(), format!("skipped: {reason}")));
-            return Ok(());
+            return Ok(None);
         }
     };
     let ios = platform == "ios";
@@ -3706,7 +3709,7 @@ pub(crate) fn record_build_result(ctx: &mut Ctx, fp: &NativeFingerprint) -> Resu
             ensure_running(ctx.runner, "native_cache")?;
             ctx.notes
                 .push(("artifact_cache".into(), format!("skipped: {reason}")));
-            return Ok(());
+            return Ok(None);
         }
     };
     let artifact = CachedArtifact {
@@ -3756,7 +3759,7 @@ pub(crate) fn record_build_result(ctx: &mut Ctx, fp: &NativeFingerprint) -> Resu
         }
         ctx.notes
             .push(("artifact_cache".into(), format!("skipped: {e}")));
-        return Ok(());
+        return Ok(None);
     }
     if ios {
         ensure_build_budget(ctx)?;
@@ -3769,7 +3772,7 @@ pub(crate) fn record_build_result(ctx: &mut Ctx, fp: &NativeFingerprint) -> Resu
             "native_cache_state".to_string(),
             format!("could not persist {}: {e}", path.display()),
         ));
-        return Ok(());
+        return Ok(None);
     }
     if let Some(copy) = private_copy.take() {
         copy.retain();
@@ -3825,7 +3828,7 @@ pub(crate) fn record_build_result(ctx: &mut Ctx, fp: &NativeFingerprint) -> Resu
     ctx.notes.push(("artifact_cache".into(), published));
     if publication_failed {
         ensure_running(ctx.runner, "native_cache")?;
-        return Ok(());
+        return Ok(None);
     }
     if !ios {
         let keep = bucket
@@ -3845,21 +3848,25 @@ pub(crate) fn record_build_result(ctx: &mut Ctx, fp: &NativeFingerprint) -> Resu
                 ),
             ));
         }
-        return Ok(());
+        return Ok(None);
     }
     if !ctx.record.resources.can_release_build_ownership() {
-        return Ok(());
+        return Ok(None);
     }
     let (Some(source), cached) = (verified, artifact) else {
-        return Ok(());
+        return Ok(None);
     };
     ctx.record.build.as_mut().expect("build planned").artifact = Some(cached);
     if let Err(e) = ctx.save() {
         ctx.record.build.as_mut().expect("build planned").artifact = Some(source);
         ctx.notes
             .push(("ios_build_output".into(), format!("retained: {}", e.detail)));
-        return Ok(());
+        return Ok(None);
     }
+    Ok(Some(source))
+}
+
+fn retire_ios_build_output(ctx: &mut Ctx, source: CachedArtifact) -> Result<(), Failure> {
     let run_dir = RunRecord::run_dir(&ctx.runs_root, &ctx.record.run_id);
     let output = run_dir.join("ios-build");
     if source.kind != ArtifactKind::AppBundle
@@ -4234,14 +4241,27 @@ pub(crate) fn build_ios_locked(
         recheck_candidate(ctx)?;
         let fp = recheck_fingerprint(ctx, plan)?;
         ensure_build_budget(ctx)?;
-        record_build_result(ctx, &fp)?;
+        let retirement = record_build_result(ctx, &fp)?;
         // Publication refuses to commit after expiry; spending the budget inside it still fails the build.
-        ensure_build_budget(ctx)
+        ensure_build_budget(ctx)?;
+        Ok(retirement)
     })();
-    let released = release_ios_build_lock(ctx);
-    result?;
-    released?;
+    finish_ios_build(ctx, result, retire_ios_build_output)?;
     Ok(ctx.record.build.clone().expect("build planned"))
+}
+
+fn finish_ios_build(
+    ctx: &mut Ctx,
+    result: Result<Option<CachedArtifact>, Failure>,
+    retire: impl FnOnce(&mut Ctx, CachedArtifact) -> Result<(), Failure>,
+) -> Result<(), Failure> {
+    let released = release_ios_build_lock(ctx);
+    let retirement = result?;
+    released?;
+    if let Some(source) = retirement {
+        retire(ctx, source)?;
+    }
+    Ok(())
 }
 
 fn build_ios(ctx: &mut Ctx) -> Result<(), Failure> {
@@ -5223,6 +5243,144 @@ fn launch_failure(
 mod launch_tests {
     use super::*;
     use crate::exec::CmdOutput;
+
+    #[test]
+    fn recording_a_build_releases_lock_before_retirement() {
+        for workspace in [false, true] {
+            let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                .join("target")
+                .join(format!("retirement-{}-{workspace}", std::process::id()));
+            std::fs::create_dir(&root).unwrap();
+            let mut scenario: Scenario =
+                serde_yaml::from_str(include_str!("../../scenarios/ios-simulator.yaml")).unwrap();
+            if workspace {
+                scenario.build.ios_workspace = Some(crate::scenario::IosWorkspaceBuild {
+                    workspace: "ios/App.xcworkspace".into(),
+                    scheme: "App".into(),
+                });
+            }
+            let mut record = RunRecord {
+                schema: RUN_SCHEMA.into(),
+                run_id: "retirement".into(),
+                created_at: "2026-10-30T00:00:00Z".into(),
+                scenario,
+                scenario_path: root.join("scenario.yaml"),
+                scenario_sha256: "0".repeat(64),
+                candidate: candidate::Candidate {
+                    repo_root: root.clone(),
+                    project_root: root.join("test-app"),
+                    app_id: "com.rndevagent.testapp".into(),
+                    git_sha: "b".repeat(40),
+                    git_dirty: false,
+                    lockfile_sha256: None,
+                    worktree_fingerprint: None,
+                },
+                phase: Phase::Building,
+                substage: None,
+                prepare: None,
+                build: Some(BuildPlan {
+                    decision: BuildDecision::Clean,
+                    fingerprint: "rnfp1:test".into(),
+                    reason: crate::redact::OutputText::from_output("test build"),
+                    evidence: Vec::new(),
+                    artifact: None,
+                    regenerate_native_dir: false,
+                }),
+                handoff: None,
+                resources: Default::default(),
+                failure: None,
+                history: Vec::new(),
+                terminal: None,
+                build_lock: None,
+            };
+            let run_dir = RunRecord::run_dir(&root, &record.run_id);
+            let output = run_dir.join("ios-build");
+            let app = output.join("testapp.app");
+            let derived = run_dir.join("ios-derived-data");
+            std::fs::create_dir_all(&app).unwrap();
+            std::fs::write(app.join("binary"), b"native bits").unwrap();
+            if workspace {
+                std::fs::create_dir(&derived).unwrap();
+                std::fs::write(derived.join("build-data"), b"derived bits").unwrap();
+            }
+            record.build.as_mut().unwrap().artifact = Some(CachedArtifact {
+                sha256: buildplan::hash_artifact(&app).unwrap(),
+                path: app.clone(),
+                kind: ArtifactKind::AppBundle,
+            });
+            let mut runner = crate::exec::MockRunner::new();
+            let lock_root = root.join("locks");
+            let holder = LockHolder {
+                holder: "retirement-holder".into(),
+                run_id: record.run_id.clone(),
+                identity: None,
+                at: record.created_at.clone(),
+                home: None,
+                qaren_home: None,
+                group: None,
+            };
+            assert!(matches!(
+                buildplan::claim_lock(
+                    &mut runner,
+                    &lock_root,
+                    "ios-build",
+                    &holder,
+                    LockPolicy::Strict
+                ),
+                LockOutcome::Claimed { .. }
+            ));
+            let lock_dir = buildplan::lock_dir(&lock_root, "ios-build");
+            record.resources.build_lock = Some(BuildLockResource {
+                lock_dir: lock_dir.clone(),
+                holder: holder.holder,
+            });
+            let mut ctx = Ctx {
+                runner: &mut runner,
+                runs_root: root.clone(),
+                native_cache_root: root.join("native-store"),
+                native_store_entry: None,
+                record,
+                started_ms: 0,
+                timings: Vec::new(),
+                notes: Vec::new(),
+                verb: "prepare",
+                bundle_requests_at_launch: None,
+                manifest_warm: None,
+                lane_owned: false,
+                build_deadline_ms: None,
+            };
+            ctx.save().unwrap();
+            let fp = NativeFingerprint {
+                value: "rnfp1:test".into(),
+                file_count: 1,
+                native_dir_in_candidate: false,
+                complete: true,
+                incompleteness: Vec::new(),
+                parts: Default::default(),
+                expo_fingerprint_ms: None,
+                expo_unavailable: None,
+            };
+            let retirement = record_build_result(&mut ctx, &fp).unwrap();
+            assert!(retirement.is_some());
+            assert!(lock_dir.is_dir());
+            assert!(app.is_dir());
+            finish_ios_build(&mut ctx, Ok(retirement), |ctx, source| {
+                assert!(!lock_dir.exists());
+                assert!(ctx.record.resources.build_lock.is_none());
+                let saved = RunRecord::load(&root, "retirement").unwrap();
+                assert!(saved.resources.build_lock.is_none());
+                let cached = saved.build.unwrap().artifact.unwrap();
+                assert_ne!(cached.path, app);
+                assert!(cached.path.is_dir());
+                assert!(output.is_dir());
+                retire_ios_build_output(ctx, source)
+            })
+            .unwrap();
+            assert!(!output.exists());
+            assert!(!derived.exists());
+            std::fs::remove_dir_all(&root).unwrap();
+        }
+    }
 
     #[test]
     fn artifact_install_failure_distinguishes_invalid_artifact_timeout_and_install_error() {
