@@ -377,7 +377,7 @@ fn ios_toolchain_match(
     let Some(compiler) = compiler else {
         return Check::skip(ID, "iOS compiler inspection requires macOS");
     };
-    let modes = ios_toolchain::requested_modes(runner, app, None);
+    let modes = ios_toolchain::requested_modes(runner, app);
     let linkage = ios_toolchain::Linkage::inspect(app);
     let source_requested = ios_toolchain::has_expo_dependency(app)
         && (modes.expo == Mode::Off

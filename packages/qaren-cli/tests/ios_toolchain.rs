@@ -1,9 +1,7 @@
 use qaren::ios_toolchain::{classify_failure, SwiftVersion};
 mod common;
 use qaren::exec::{CmdOutput, MockRunner};
-use qaren::ios_toolchain::{
-    inspect, requested_modes, CompilerIdentity, Linkage, Mode, NativeBuildConfig,
-};
+use qaren::ios_toolchain::{inspect, requested_modes, CompilerIdentity, Linkage, Mode};
 use std::path::Path;
 
 fn write(root: &Path, path: &str, body: &str) {
@@ -122,40 +120,15 @@ fn requested_mode_is_separate_from_installed_pods() {
     );
     write(&root, "node_modules/expo-modules-core/package.json", "{}");
     let mut runner = MockRunner::new();
-    assert_eq!(requested_modes(&runner, &root, None).expo, Mode::On);
+    assert_eq!(requested_modes(&runner, &root).expo, Mode::On);
     runner
         .environment
         .insert("EXPO_USE_PRECOMPILED_MODULES".into(), "0".into());
-    let desired = requested_modes(&runner, &root, None);
+    let desired = requested_modes(&runner, &root);
     assert_eq!(desired.expo, Mode::Off);
     assert_eq!(Linkage::inspect(&root).expo, Mode::Unknown);
     write(&root, "app.config.ts", "export default {};");
-    assert_eq!(requested_modes(&runner, &root, None).expo, Mode::Unknown);
-    assert_eq!(
-        requested_modes(
-            &runner,
-            &root,
-            Some(NativeBuildConfig {
-                precompiled_modules: Some(false),
-                ..Default::default()
-            })
-        )
-        .expo,
-        Mode::Off
-    );
-    write(&root, "ios/Podfile", "custom_native_policy()\n");
-    assert_eq!(
-        requested_modes(
-            &runner,
-            &root,
-            Some(NativeBuildConfig {
-                precompiled_modules: Some(false),
-                ..Default::default()
-            })
-        )
-        .expo,
-        Mode::Unknown
-    );
+    assert_eq!(requested_modes(&runner, &root).expo, Mode::Unknown);
 }
 
 #[test]
@@ -172,18 +145,18 @@ fn static_plugin_modes_conflicts_and_invalid_env_are_explicit() {
         r#"{"expo":{"plugins":[["expo-build-properties",{"ios":{"usePrecompiledModules":false,"buildReactNativeFromSource":true}}]]}}"#,
     );
     let mut runner = MockRunner::new();
-    let selected = requested_modes(&runner, &root, None);
+    let selected = requested_modes(&runner, &root);
     assert_eq!(selected.expo, Mode::Off);
     runner
         .environment
         .insert("EXPO_USE_PRECOMPILED_MODULES".into(), "true".into());
-    assert_eq!(requested_modes(&runner, &root, None).expo, Mode::Unknown);
+    assert_eq!(requested_modes(&runner, &root).expo, Mode::Unknown);
     write(
         &root,
         "app.json",
         r#"{"expo":{"plugins":[["expo-build-properties",{"ios":{"usePrecompiledModules":false}}],["expo-build-properties",{"ios":{"usePrecompiledModules":true}}]]}}"#,
     );
-    assert_eq!(requested_modes(&runner, &root, None).expo, Mode::Unknown);
+    assert_eq!(requested_modes(&runner, &root).expo, Mode::Unknown);
     runner.environment.remove("EXPO_USE_PRECOMPILED_MODULES");
     write(
         &root,
@@ -199,13 +172,13 @@ fn static_plugin_modes_conflicts_and_invalid_env_are_explicit() {
     runner
         .environment
         .insert("EXPO_USE_PRECOMPILED_MODULES".into(), "1".into());
-    assert_eq!(requested_modes(&runner, &root, None).expo, Mode::Off);
+    assert_eq!(requested_modes(&runner, &root).expo, Mode::Off);
     let injected = include_str!("fixtures/ios-standard-podfile.txt").replace(
         "target 'HelloWorld' do",
         "target 'HelloWorld' do; ENV['EXPO_USE_PRECOMPILED_MODULES'] = '1'",
     );
     write(&root, "ios/Podfile", &injected);
-    assert_eq!(requested_modes(&runner, &root, None).expo, Mode::Unknown);
+    assert_eq!(requested_modes(&runner, &root).expo, Mode::Unknown);
 }
 
 #[test]

@@ -242,11 +242,7 @@ fn standard_podfile(text: &str) -> bool {
     )
 }
 
-pub fn requested_modes(
-    runner: &dyn Runner,
-    app: &Path,
-    evaluated: Option<NativeBuildConfig>,
-) -> RequestedModes {
+pub fn requested_modes(runner: &dyn Runner, app: &Path) -> RequestedModes {
     let mut result = RequestedModes::default();
     let package = json_at(app, "package.json").unwrap_or(Value::Null);
     let uses_expo = contains_expo(&package);
@@ -260,7 +256,7 @@ pub fn requested_modes(
     .any(|name| app.join(name).exists());
     let config = json_at(app, "app.json");
     let selected = if dynamic {
-        evaluated
+        None
     } else {
         config
             .as_ref()
