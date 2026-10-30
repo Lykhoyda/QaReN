@@ -721,8 +721,8 @@ An unproven press passes when the screen changes. That comparison includes each
 control's selected state (the iOS selected trait or Android accessibility
 selection), so a selected state appearing or disappearing proves a press. With
 an unchanged comparison, a successful tap on a control that was already selected
-and, by the same element, is still selected afterwards passes with the evidence
-`already selected, no change`; the tap is still sent, and a refused or errored
+and is still selected under the same element reference afterwards passes with
+the evidence `already selected, no change`; the tap is still sent, and a refused or errored
 tap gets no such pass.
 When that comparison is unchanged and the runner explicitly reports the press
 unproven, QaReN can also verify a stable visible change within the tapped
@@ -736,8 +736,9 @@ agree on both axes. Before comparing pixels, QaReN re-finds the same target in
 the post-tap tree and requires its frame and scale to match the original baseline.
 One screenshot immediately before the first dispatch adds about 200 ms per
 eligible press; that baseline is retained across the retry. Only an otherwise
-unproven press with an unchanged screen comparison takes two after-shots,
-200 ms apart. After both shots, QaReN reads the tree again and re-finds the target;
+unproven press with an unchanged screen comparison that has not passed as already
+selected takes two after-shots, 200 ms apart. After both shots, QaReN reads the
+tree again and re-finds the target;
 a missing or ineligible target, or any change to its scale, x, y, width or height,
 withholds pixel proof, including a delayed reflow after the post-tap tree capture.
 The two control crops must agree and differ sufficiently from the
