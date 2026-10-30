@@ -57,6 +57,7 @@ import type { ToolResult } from '../utils.js';
 import { HandlerError, adapt, describeError, fillEvidence, unwrap } from './adapt.js';
 import {
   AppProcessGoneError,
+  boundedCapture,
   captureScreen,
   nativeDevOverlayUncleared,
   postAdmissionSnapshots,
@@ -725,26 +726,29 @@ async function openSession(
     },
     captureScreen: (options) =>
       stop.track(() =>
-        captureScreen({
-          appId,
-          requirePrivateInputs: true,
-          observation: options?.observation,
-          platformPresence: options?.platformPresence,
-          now,
-          timing: options?.timing,
-          warn: log,
-          native: (presenceBudgetMs) =>
-            rawSnapshot(
-              options?.platformPresence,
-              presenceBudgetMs,
-              options?.timing ? { now, observe: options.timing } : undefined,
-            ).catch((error: unknown) => {
-              if (error instanceof HandlerError && error.meta?.reason === 'app-not-running')
-                throw new AppProcessGoneError();
-              throw error;
-            }),
-          react: () => captureReact(options?.platformPresence === true),
-        }),
+        boundedCapture(options?.budgetMs, () =>
+          captureScreen({
+            appId,
+            requirePrivateInputs: true,
+            observation: options?.observation,
+            platformPresence: options?.platformPresence,
+            budgetMs: options?.budgetMs,
+            now,
+            timing: options?.timing,
+            warn: log,
+            native: (presenceBudgetMs) =>
+              rawSnapshot(
+                options?.platformPresence,
+                presenceBudgetMs,
+                options?.timing ? { now, observe: options.timing } : undefined,
+              ).catch((error: unknown) => {
+                if (error instanceof HandlerError && error.meta?.reason === 'app-not-running')
+                  throw new AppProcessGoneError();
+                throw error;
+              }),
+            react: () => captureReact(options?.platformPresence === true),
+          }),
+        ),
       ),
     press: (ref, qaContext) =>
       act(() => press({ ref, qaContext, qaTiming: { now, observe: timing } }), false, {

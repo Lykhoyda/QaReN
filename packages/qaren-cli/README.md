@@ -1409,14 +1409,57 @@ covered rows and other scroll origins still get one clearance swipe. See the
 [scroll-until direction regressions](../qaren-core/test/unit/qa/scroll-until-direction.test.ts).
 
 Waits poll unresolved text as not yet present and end with `VISIBILITY_UNSURE`
-when the final evidence remains unsure. A quoted wait with at least two definite
-absence observations sharing one screen signature fails at its deadline with
+when the final evidence remains unsure. Initial captures, polling captures and
+evidence-refresh captures, including a refresh during the first visibility check,
+share the wait's deadline for both quoted and phrase targets. A wait whose first
+capture never completes fails with `TARGET_WAIT_TIMEOUT` and
+`cause=capture-deadline`, with `next_action=inspect_capture_health`. If a later
+refresh reaches the deadline, the wait ends
+from its completed observations; a phrase wait whose visibility remains undecided
+ends with `VISIBILITY_UNSURE: ITEM_DEADLINE_EXCEEDED`.
+A quoted wait with at least two definite
+absence observations sharing one screen signature normally fails at its deadline with
 “did not appear”; it does not report expired evidence for that stable absence.
 For a quoted value that is not a stored text selector, the failure adds why from
 identifiers and frames only: no captured element carries the identifier, several
 do, or the one that does is React-only, offscreen or has its centre covered.
-Either unmet ending first gets [step recovery](#step-recovery), so a quoted wait
-behind a blocking screen or system dialog runs once more with its full budget.
+When those stable absence observations identify one React-only match, the quoted
+wait fails with `TARGET_REACT_ONLY` (`PLAN_STEP_FAILED`, exit 1). Its detail uses
+identifiers, kinds and frames, without labels, placeholders or field values, to
+report the React layout against its viewport, accessible and nearest native
+ancestors, any scroll attempt and a next step. Unavailable layout is reported as
+`none`; React mounting alone never proves native visibility. Wait on a visible
+native wrapper or on-screen text, expose the field to accessibility, or explicitly
+scroll until it is visible before re-running.
+After two ordinary absence observations of that React-only match on one unchanged
+screen, the wait makes exactly one presence capture to read React's layout, bounded
+by the wait's remaining time; later polls stay ordinary, and a recovery retry does
+not repeat that read. If a React-only match was observed but never classified,
+including when the layout read or a later capture is cut off at the deadline,
+the wait fails with `TARGET_REACT_ONLY` reporting
+`layout=unavailable`, a `cause` (`acquisition-deadline` or `wait-deadline`), the
+last capture stage, observation and presence-read counts, timings, and
+`next_action=inspect_capture_health` or `inspect_wait_target`, with no recovery,
+screenshot or further capture. Neither this ending nor `TARGET_WAIT_TIMEOUT`
+marks the plan step itself as wrong.
+On iOS, that complete React layout and native presence evidence can end the wait early
+when the absence observations on one unchanged app screen show the
+field wholly inside its viewport under an accessible ancestor. The viewport is
+the nearest native scroll container clipped by its ancestors, or the native
+window when there is no scroll container. A field wholly above or below that
+clipped viewport can instead receive one scroll
+within the wait's original budget, only when the safe drag band belongs to that
+container. Scrolling does not renew or shorten the wait's budget; a field that
+remains below or above the viewport keeps polling until the deadline, and its final
+detail labels the layout `react layout before scroll`. A later
+visible native match passes normally. Missing or partially
+clipped layout preserves polling until the deadline; stored-ID replay and block
+start preconditions do not use this early failure or automatic scroll.
+After a classified React-only miss, [step recovery](#step-recovery) may capture
+only within the wait's remaining time. If that capture reaches the deadline, or
+no time remains, the React-only failure reason stands. Other eligible unmet quoted
+waits retain ordinary recovery. When recovery clears a blocking screen or system
+dialog, the wait runs once more with its full budget.
 Scroll-until-text uses the same visibility verdict
 within its scroll and time budgets. Literal checks re-ask from a fresh capture
 and use `CHECK_UNSURE` if uncertainty remains. This is distinct from acquisition
@@ -2679,7 +2722,8 @@ and never triggers recovery.
 
 An action without success evidence after its one retry, a step target that
 does not resolve, a definite failed check, an unmet quoted wait, or a phrase check still
-unsure after its re-ask gets a deterministic recovery, then the step runs once more from a fresh
+unsure after its re-ask gets a deterministic recovery, subject to the
+[quoted-wait deadline limits](#plan-checks-and-screen-evidence), then the step runs once more from a fresh
 capture. If it fails again, a second recovery may decline a different system prompt or app
 interruption once the first is proven gone. An app interruption with the same decline label
 fails with `the app interruption did not disappear`; a different kind of interruption or
