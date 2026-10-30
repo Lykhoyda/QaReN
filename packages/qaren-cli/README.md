@@ -1995,7 +1995,8 @@ The verification contract is owned by [`src/adapters/ios.rs`](src/adapters/ios.r
 
 Once the run record is saved, `check` and `pr` attempt ownership-gated resource
 teardown before returning a receipt, including after preparation failures, core
-refusals and failed or timed-out walks. The receipt's `cleanup` map reports
+refusals and failed or timed-out walks, subject to the
+[failed iOS check inspection policy](#ios-admission-and-cleanup). The receipt's `cleanup` map reports
 resource outcomes; unresolved ownership can retain resources and the device
 lease for `qaren cleanup <run-id>`. This is infrastructure teardown: it does not
 execute remaining plan steps to delete app or staging-account data created by
