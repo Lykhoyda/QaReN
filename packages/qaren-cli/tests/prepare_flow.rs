@@ -3573,6 +3573,49 @@ fn revision_pin_mismatch_fails_validation() {
 }
 
 #[test]
+fn build_budget_expiry_after_build_releases_lock_without_publication() {
+    let repo = common::temp_repo();
+    let scenario_path = write_scenario(&repo, &ios_scenario_yaml(8791));
+    let mut mock = MockRunner::new();
+    script_ios_prepare_to_claim(&mut mock, &repo);
+    mock.expect_spawn_piped("expo run:ios", 5000, "", Some(0));
+    mock.expect_run("ps", CmdOutput::success(LSTART));
+    mock.expect_run("ps", CmdOutput::success("qaren-build"));
+    mock.expect_run("ps -A", CmdOutput::success("1 1 S\n"));
+    mock.advance_on = Some(("ps -A".into(), 2_400_000));
+    let args = prepare_args(&scenario_path, false, None);
+    let receipt = prepare(&mut mock, &args);
+    assert_eq!(receipt.result, ReceiptResult::Failed);
+    let failure = receipt.failure.unwrap();
+    assert_eq!(failure.code, FailureCode::BuildFailed);
+    assert_eq!(
+        failure.recovery.unwrap().reason,
+        qaren::failure::RecoveryReason::BuildBudgetExhausted
+    );
+    let record = RunRecord::load(&repo, &receipt.run_id).unwrap();
+    assert!(record.resources.build_lock.is_none());
+    assert!(!args.lock_root.join("native-build-ios").exists());
+    assert!(!qaren::buildplan::state_path(
+        &record.candidate.repo_root,
+        "ios",
+        &record.candidate.app_id
+    )
+    .exists());
+    let plan = record.build.unwrap();
+    assert!(plan.artifact.is_none());
+    assert!(!qaren::buildplan::store_dir(
+        &args.native_cache_root,
+        "ios",
+        &record.candidate.app_id,
+        &plan.fingerprint
+    )
+    .join("artifact.json")
+    .exists());
+    assert!(!mock.calls.iter().any(|call| call.label == "ios-app-info"));
+    assert_eq!(mock.remaining(), 0);
+}
+
+#[test]
 fn build_process_death_fails_with_log_evidence() {
     let repo = common::temp_repo();
     let scenario_path = write_scenario(&repo, &ios_scenario_yaml(8791));
@@ -3613,6 +3656,11 @@ fn build_process_death_fails_with_log_evidence() {
     assert_eq!(mock.remaining(), 0, "the liveness probe must have run");
     let record = RunRecord::load(&repo, &receipt.run_id).unwrap();
     assert_eq!(record.phase, Phase::Failed);
+    assert!(record.resources.build_lock.is_none());
+    assert!(!prepare_args(&scenario_path, false, None)
+        .lock_root
+        .join("native-build-ios")
+        .exists());
     assert!(
         record.resources.metro.is_none(),
         "Metro never starts before the build is published"
@@ -4030,6 +4078,10 @@ fn unproven_or_unpersisted_build_group_absence_retains_run_output() {
         };
         let receipt = prepare(&mut probing, &prepare_args(&scenario, false, None));
         assert_eq!(receipt.result, ReceiptResult::Failed, "{fault}");
+        assert_eq!(
+            receipt.outcomes["build_lock_release"],
+            "retained: the build group is not proven gone"
+        );
         let record = RunRecord::load(&repo, &receipt.run_id).unwrap();
         assert!(record.resources.build_process().is_some(), "{fault}");
         assert!(
@@ -6578,8 +6630,14 @@ fn a_contended_ios_build_waits_for_the_holder_then_builds_and_releases_before_in
     empty(&mut mock);
     // The holder finishes during the third poll.
     let released = lock.clone();
+    let acquired_at = std::sync::Arc::new(std::sync::Mutex::new(None));
+    let observed_acquisition = acquired_at.clone();
     let mut polls = 0;
     mock.observe = Some(Box::new(move |spec| {
+        if spec.label == "ps-lstart" && spec.args.iter().any(|arg| arg == "5000") {
+            *observed_acquisition.lock().unwrap() =
+                Some(qaren::buildplan::read_holder(&released).unwrap().at);
+        }
         if spec.label == "ps-groups" {
             polls += 1;
             if polls == 3 {
@@ -6595,6 +6653,10 @@ fn a_contended_ios_build_waits_for_the_holder_then_builds_and_releases_before_in
         ReceiptResult::Ready,
         "{:?}",
         receipt.failure
+    );
+    assert_eq!(
+        acquired_at.lock().unwrap().as_deref(),
+        Some(qaren::timefmt::iso8601_utc(1_770_000_003_000).as_str())
     );
     assert_eq!(mock.remaining(), 0);
     let seen = receipt.build_lock.expect("the wait is recorded");
@@ -6613,6 +6675,53 @@ fn a_contended_ios_build_waits_for_the_holder_then_builds_and_releases_before_in
     assert_eq!(
         record.build_lock.unwrap().holder.as_deref(),
         Some("holder-run")
+    );
+}
+
+#[test]
+fn holder_probes_stop_at_the_shared_build_deadline() {
+    let repo = common::temp_repo();
+    let scenario = write_scenario(
+        &repo,
+        &format!(
+            "{}deadlines:\n  build_seconds: 32\n",
+            ios_scenario_yaml(8791)
+        ),
+    );
+    let lock = seed_build_holder(&repo);
+    let mut mock = MockRunner::new();
+    script_ios_prepare_to_claim(&mut mock, &repo);
+    script_live_idle_holder_polls(&mut mock, 10);
+    mock.expect_run("ps -p 4242 -o lstart=", CmdOutput::success(HOLDER_BIRTH));
+    mock.expect_run("ps -p 4242 -o stat=", CmdOutput::success("S"));
+    mock.advance_on = Some(("-p 4242".into(), 1000));
+
+    let receipt = prepare(&mut mock, &prepare_args(&scenario, false, None));
+
+    assert_eq!(
+        receipt.failure.as_ref().unwrap().code,
+        FailureCode::BuildContended
+    );
+    assert_eq!(receipt.build_lock.unwrap().waited_s, 32);
+    let probes: Vec<_> = mock
+        .calls
+        .iter()
+        .filter(|call| call.args.iter().any(|arg| arg == "4242"))
+        .collect();
+    assert_eq!(probes.len(), 22);
+    assert_eq!(probes[20].timeout_seconds, 2);
+    assert_eq!(probes[21].timeout_seconds, 1);
+    assert_eq!(
+        mock.calls
+            .iter()
+            .filter(|call| call.label == "ps-groups")
+            .count(),
+        10
+    );
+    assert_eq!(mock.remaining(), 0);
+    assert_eq!(
+        qaren::buildplan::read_holder(&lock).unwrap().run_id,
+        "holder-run"
     );
 }
 
@@ -6823,6 +6932,10 @@ fn an_unresolved_build_lock_release_stops_before_install_and_keeps_the_lock() {
     assert_eq!(
         failure.recovery.as_ref().unwrap().reason,
         qaren::failure::RecoveryReason::OwnershipUnresolved
+    );
+    assert_eq!(
+        receipt.outcomes["build_lock_release"],
+        "retained: lock release was refused or unresolved"
     );
     assert!(lock.exists());
     let record = RunRecord::load(&repo, &receipt.run_id).unwrap();
