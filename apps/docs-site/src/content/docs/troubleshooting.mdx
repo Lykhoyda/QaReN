@@ -69,8 +69,8 @@ The screen layer's own codes appear at the start of `failure.detail` or in the r
 
 | Code                  | What happened                                                        | What to do                                                       |
 | --------------------- | -------------------------------------------------------------------- | ---------------------------------------------------------------- |
-| `CLEANUP_INCOMPLETE`  | `qaren cleanup` could not resolve some resources                     | Re-run `qaren cleanup <run-id> --json`                           |
-| `OWNERSHIP_UNPROVEN`  | The run's processes were not proven gone                             | Run `qaren cleanup <run-id>`, then re-run `qaren pr`             |
+| `CLEANUP_INCOMPLETE`  | `qaren cleanup` could not resolve some resources                     | Follow the receipt's `next_action` and the [cleanup contract](https://github.com/Lykhoyda/QaReN/blob/develop/packages/qaren-cli/README.md#ios-admission-and-cleanup) |
+| `OWNERSHIP_UNPROVEN`  | The run's processes were not proven gone                             | Follow the receipt's `next_action` and the [cleanup contract](https://github.com/Lykhoyda/QaReN/blob/develop/packages/qaren-cli/README.md#ios-admission-and-cleanup) |
 | `RUN_CANCELLED`       | The run was cancelled                                                | Re-run when ready; the cleanup map names anything retained       |
 | `PR_UNAVAILABLE`      | Pull request lookup, comment creation or label edit failed; failed `qaren pr` lookups also check authentication | Follow the [GitHub authentication contract](https://github.com/Lykhoyda/QaReN/blob/develop/packages/qaren-cli/README.md#test-a-pull-request) |
 
@@ -85,10 +85,11 @@ released. Run:
 qaren cleanup <run-id> --json
 ```
 
-It finishes the teardown from the run's own records and releases the lease once every resource
-is accounted for. Do not delete locks in the
-[configured namespace](https://github.com/Lykhoyda/QaReN/blob/develop/packages/qaren-cli/README.md#ios-admission-and-cleanup)
-to get around it.
+It resumes teardown from the run's own records. If it refuses, follow the receipt's
+`next_action`; see the authoritative
+[cleanup contract](https://github.com/Lykhoyda/QaReN/blob/develop/packages/qaren-cli/README.md#ios-admission-and-cleanup)
+for recorded iOS runner recovery and lease-release requirements. Do not delete locks
+to get around a refusal.
 
 ## Why were my screenshots withheld?
 

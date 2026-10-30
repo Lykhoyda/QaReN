@@ -2346,10 +2346,11 @@ the driver to exit before falling back to `SIGTERM`, then `SIGKILL` after a
 can skip the request or interrupt these waits. Unknown process identity refuses
 termination with `RUNNER_ADOPTION_REQUIRED` rather than authorizing signals.
 
-Before runner readiness, cleanup interrupts only the `xcodebuild` driver and
+Before runner readiness, graceful cleanup interrupts only the `xcodebuild` driver and
 waits for its exit without force-killing its initializing XCTest helpers. The
-native iOS suite and recorded-driver recovery use the same driver-only
-interrupt, allowing up to 30 seconds for graceful cancellation. If group absence
+native iOS suite and automatic recorded-driver teardown use the same driver-only
+interrupt, allowing up to 30 seconds for graceful cancellation. Explicit cleanup
+can escalate under the ownership requirements below. If group absence
 remains unproven, cleanup retains the resources and lease.
 A failed startup also retains its driver handle until exit is proven; a surviving
 driver blocks replacement with `RUNNER_ADOPTION_REQUIRED`.
@@ -2370,8 +2371,14 @@ and an absent note does not prove that SpringBoard stayed healthy.
 Cleanup proves owned process-group and exact-simulator runner-host absence
 before releasing the lease, even when the driver's original group has disappeared.
 Driver retirement must be saved before host, simulator or lease cleanup proceeds;
-a failed save retains ownership. Temporary simulator deletion also requires producer
-and host absence. Borrowed simulators normally remain intact; a previously authorized
+a failed save retains ownership. Both automatic teardown and explicit cleanup save
+positive runner-host absence proof before releasing the lease; a failed checkpoint
+retains ownership. A later cleanup can
+use that saved completion to finish remaining work, such as PR worktree removal,
+after the lease is gone or belongs to a later run, without touching that run's host.
+A missing lease alone never proves completion. Simulator shutdown or deletion still
+requires fresh ownership and absence checks. Temporary simulator deletion also
+requires producer and host absence. Borrowed simulators normally remain intact; a previously authorized
 borrowed stop or pooled shutdown loses volatile state, and temporary deletion loses
 app data. A final record-save failure reports failure and the actual lease outcome.
 
