@@ -92,29 +92,14 @@ fn contains_expo(package: &Value) -> bool {
     })
 }
 
-pub(crate) fn has_expo_dependency(app: &Path) -> bool {
-    json_at(app, "package.json").is_some_and(|package| contains_expo(&package))
-}
-
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RequestedModes {
     pub expo: Mode,
-    pub rncore: Mode,
-    pub jsi: Mode,
-}
-
-impl RequestedModes {
-    pub fn complete(&self) -> bool {
-        [self.expo, self.rncore, self.jsi]
-            .iter()
-            .all(|mode| *mode != Mode::Unknown)
-    }
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct NativeBuildConfig {
     pub precompiled_modules: Option<bool>,
-    pub build_react_native_from_source: Option<bool>,
 }
 
 impl NativeBuildConfig {
@@ -135,20 +120,12 @@ impl NativeBuildConfig {
                 continue;
             };
             ios.as_object()?;
-            for (key, mode) in [
-                ("usePrecompiledModules", &mut selected.precompiled_modules),
-                (
-                    "buildReactNativeFromSource",
-                    &mut selected.build_react_native_from_source,
-                ),
-            ] {
-                if let Some(value) = ios.get(key) {
-                    let value = value.as_bool()?;
-                    if mode.is_some_and(|old| old != value) {
-                        return None;
-                    }
-                    *mode = Some(value);
+            if let Some(value) = ios.get("usePrecompiledModules") {
+                let value = value.as_bool()?;
+                if selected.precompiled_modules.is_some_and(|old| old != value) {
+                    return None;
                 }
+                selected.precompiled_modules = Some(value);
             }
         }
         Some(selected)
@@ -210,24 +187,6 @@ pub fn requested_modes(
     app: &Path,
     evaluated: Option<NativeBuildConfig>,
 ) -> RequestedModes {
-    requested_modes_for_build(runner, app, evaluated, false)
-}
-
-pub(crate) fn requested_modes_for_build(
-    runner: &dyn Runner,
-    app: &Path,
-    evaluated: Option<NativeBuildConfig>,
-    generated: bool,
-) -> RequestedModes {
-    resolved_modes_for_build(runner, app, evaluated, generated).0
-}
-
-pub(crate) fn resolved_modes_for_build(
-    runner: &dyn Runner,
-    app: &Path,
-    evaluated: Option<NativeBuildConfig>,
-    generated: bool,
-) -> (RequestedModes, Vec<&'static str>) {
     let mut result = RequestedModes::default();
     let package = json_at(app, "package.json").unwrap_or(Value::Null);
     let uses_expo = contains_expo(&package);
@@ -295,15 +254,11 @@ pub(crate) fn resolved_modes_for_build(
             p.contains("ENV['EXPO_USE_PRECOMPILED_MODULES'] = '0' if")
         });
     let forced_off = force_disable_supported
-        && if generated {
-            configured == Some(false)
-        } else {
-            properties
-                .as_ref()
-                .and_then(|p| p.get("EXPO_USE_PRECOMPILED_MODULES"))
-                .and_then(Value::as_str)
-                == Some("false")
-        };
+        && properties
+            .as_ref()
+            .and_then(|p| p.get("EXPO_USE_PRECOMPILED_MODULES"))
+            .and_then(Value::as_str)
+            == Some("false");
     result.expo = if !uses_expo && !package_absent(app, "expo-modules-core") {
         Mode::Unknown
     } else if !uses_expo {
@@ -322,7 +277,6 @@ pub(crate) fn resolved_modes_for_build(
         }
     } else if let Some(setting) = properties
         .as_ref()
-        .filter(|_| !generated)
         .and_then(|p| p.get("EXPO_USE_PRECOMPILED_MODULES"))
     {
         boolean_mode(setting.as_str())
@@ -333,119 +287,18 @@ pub(crate) fn resolved_modes_for_build(
             _ => Mode::Unknown,
         }
     };
-    result.rncore = if !supported_podfile && package.pointer("/dependencies/react-native").is_some()
-    {
-        Mode::Unknown
-    } else {
-        runner
-            .env_var("RCT_USE_PREBUILT_RNCORE")
-            .as_deref()
-            .map(inherited_mode)
-            .unwrap_or_else(|| {
-                if selected.is_some_and(|c| c.build_react_native_from_source == Some(true))
-                    || properties
-                        .as_ref()
-                        .filter(|_| !generated)
-                        .and_then(|p| p.get("ios.buildReactNativeFromSource"))
-                        .and_then(Value::as_str)
-                        == Some("true")
-                {
-                    Mode::Off
-                } else if !package
-                    .get("dependencies")
-                    .is_some_and(|deps| deps.get("react-native").is_some())
-                {
-                    Mode::Off
-                } else if supported_podfile {
-                    let version = package_root(app, "react-native")
-                        .and_then(|root| json_at(&root, "package.json"))
-                        .and_then(|p| p.get("version")?.as_str().map(str::to_owned))
-                        .or_else(|| {
-                            package
-                                .pointer("/dependencies/react-native")?
-                                .as_str()
-                                .map(str::to_owned)
-                        });
-                    match version.as_deref().and_then(SwiftVersion::parse) {
-                        Some(version)
-                            if version
-                                >= SwiftVersion::parse("0.84").expect("constant version") =>
-                        {
-                            Mode::On
-                        }
-                        Some(_) => Mode::Off,
-                        None => Mode::Unknown,
-                    }
-                } else {
-                    Mode::Unknown
-                }
-            })
-    };
-    result.jsi = if let Some(root) = package_root(app, "expo-modules-jsi") {
-        let spec = read_at(&root, Path::new("apple/ExpoModulesJSI.podspec"), 64 * 1024);
-        if spec.is_some_and(|s| {
-            let normalized = s
-                .lines()
-                .map(str::trim)
-                .filter(|line| !line.is_empty() && !line.starts_with('#'))
-                .collect::<Vec<_>>()
-                .join("\n");
-            sha256_hex(normalized.as_bytes())
-                == "64fd74976d70e116c17eebbd6484bdbb39bcb04028ceff17fce5df2d4ccfdc88"
-        }) {
-            Mode::On
-        } else {
-            Mode::Unknown
-        }
-    } else if package_absent(app, "expo-modules-jsi") {
-        Mode::Off
-    } else {
-        Mode::Unknown
-    };
-    let mut unknown = Vec::new();
-    if result.expo == Mode::Unknown {
-        unknown.push(if !supported_podfile {
-            "expo mode unknown: ios/Podfile is not a recognized configuration; ask the app owner to verify its precompiled-module selection"
-        } else if selected.is_none() {
-            "expo mode unknown: app.json or dynamic app config could not be resolved; verify the app's expo-build-properties settings"
-        } else if inherited.is_some() {
-            "expo mode unknown: EXPO_USE_PRECOMPILED_MODULES must be 0 or 1; correct it before regenerating pods"
-        } else {
-            "expo mode unknown: installed Expo version or ios/Podfile.properties.json could not establish a default; verify the installed version and precompiled-module setting"
-        });
-    }
-    if result.rncore == Mode::Unknown {
-        unknown.push(if !supported_podfile {
-            "rncore mode unknown: ios/Podfile is not a recognized configuration; ask the app owner to verify its React Native source/prebuilt selection"
-        } else if runner.env_var("RCT_USE_PREBUILT_RNCORE").is_some() {
-            "rncore mode unknown: RCT_USE_PREBUILT_RNCORE must be 0 or 1; correct it before regenerating pods"
-        } else {
-            "rncore mode unknown: installed react-native version could not establish a default; verify the installed version and buildReactNativeFromSource setting"
-        });
-    }
-    if result.jsi == Mode::Unknown {
-        unknown.push("jsi mode unknown: expo-modules-jsi/apple/ExpoModulesJSI.podspec is missing or not a recognized configuration; ask the app owner to verify its source/prebuilt selection");
-    }
-    (result, unknown)
+    result
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Linkage {
     pub expo: Mode,
-    pub jsi: Mode,
-    pub digest: Option<String>,
-    expo_applicable: bool,
 }
 
 impl Linkage {
     pub fn inspect(app: &Path) -> Self {
         let mut result = Self::default();
-        result.expo_applicable = package_root(app, "expo-modules-core").is_some()
-            || app
-                .join("ios/Pods/Local Podspecs/ExpoModulesCore.podspec.json")
-                .exists();
-        let mut evidence = Vec::new();
-        for (i, (_, module)) in PACKAGES.iter().enumerate() {
+        for (_, module) in &PACKAGES[..1] {
             let path = format!("ios/Pods/Local Podspecs/{module}.podspec.json");
             let Some(spec) = json_at(app, &path) else {
                 continue;
@@ -478,26 +331,9 @@ impl Linkage {
             } else {
                 Mode::Unknown
             };
-            if i == 0 {
-                result.expo = mode
-            } else {
-                result.jsi = mode
-            }
-            evidence.push((spec, support));
-        }
-        if !evidence.is_empty() || !result.expo_applicable {
-            result.digest = Some(sha256_hex(
-                &serde_json::to_vec(&evidence).expect("JSON evidence"),
-            ));
+            result.expo = mode;
         }
         result
-    }
-
-    pub fn matches(&self, requested: &RequestedModes) -> bool {
-        requested.complete()
-            && ((self.expo != Mode::Unknown && self.expo == requested.expo)
-                || (!self.expo_applicable && requested.expo == Mode::Off))
-            && (requested.jsi == Mode::Off || self.jsi == requested.jsi)
     }
 }
 
@@ -756,112 +592,4 @@ fn inspect_packages(
         observation.incomplete = true;
     }
     observation
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::exec::MockRunner;
-    use std::os::unix::fs::DirBuilderExt;
-
-    #[test]
-    fn unresolved_mode_diagnostics_identify_the_source_to_verify() {
-        let root =
-            std::env::temp_dir().join(format!("qaren-mode-diagnostics-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&root);
-        std::fs::create_dir_all(&root).unwrap();
-        std::fs::write(
-            root.join("package.json"),
-            r#"{"dependencies":{"expo":"56.0.0","react-native":"0.84.0"}}"#,
-        )
-        .unwrap();
-        let mut runner = MockRunner::new();
-        runner
-            .environment
-            .insert("EXPO_USE_PRECOMPILED_MODULES".into(), "invalid".into());
-        runner
-            .environment
-            .insert("RCT_USE_PREBUILT_RNCORE".into(), "invalid".into());
-        let (_, unknown) = resolved_modes_for_build(&runner, &root, None, false);
-        assert!(unknown
-            .iter()
-            .any(|s| s.contains("expo mode unknown: EXPO_USE_PRECOMPILED_MODULES")));
-        assert!(unknown
-            .iter()
-            .any(|s| s.contains("rncore mode unknown: RCT_USE_PREBUILT_RNCORE")));
-        runner.environment.clear();
-        std::fs::write(root.join("app.json"), "invalid").unwrap();
-        let (_, unknown) = resolved_modes_for_build(&runner, &root, None, false);
-        assert!(unknown
-            .iter()
-            .any(|s| s.contains("expo mode unknown: app.json")));
-        std::fs::remove_file(root.join("app.json")).unwrap();
-        std::fs::write(
-            root.join("package.json"),
-            r#"{"dependencies":{"expo":"invalid","react-native":"invalid"}}"#,
-        )
-        .unwrap();
-        let (_, unknown) = resolved_modes_for_build(&runner, &root, None, false);
-        assert!(unknown
-            .iter()
-            .any(|s| s.contains("expo mode unknown: installed Expo version")));
-        assert!(unknown
-            .iter()
-            .any(|s| s.contains("rncore mode unknown: installed react-native version")));
-        std::fs::create_dir_all(root.join("ios")).unwrap();
-        std::fs::write(root.join("ios/Podfile"), "custom").unwrap();
-        let (_, unknown) = resolved_modes_for_build(&runner, &root, None, false);
-        assert!(unknown
-            .iter()
-            .any(|s| s.contains("expo mode unknown: ios/Podfile")));
-        assert!(unknown
-            .iter()
-            .any(|s| s.contains("rncore mode unknown: ios/Podfile")));
-        std::fs::remove_dir_all(root).unwrap();
-    }
-
-    #[test]
-    fn generated_modes_stay_stable_across_pod_regeneration_and_both_env_transitions() {
-        let root = std::env::temp_dir().join(format!(
-            "qaren-modes-{}-{}",
-            std::process::id(),
-            crate::timefmt::epoch_ms()
-        ));
-        std::fs::DirBuilder::new()
-            .mode(0o700)
-            .create(&root)
-            .unwrap();
-        std::fs::write(
-            root.join("package.json"),
-            r#"{"dependencies":{"expo":"56.0.0","react-native":"0.84.0"}}"#,
-        )
-        .unwrap();
-        let mut runner = MockRunner::new();
-        for env in ["0", "1", "0"] {
-            runner
-                .environment
-                .insert("EXPO_USE_PRECOMPILED_MODULES".into(), env.into());
-            let before = requested_modes_for_build(&runner, &root, None, true);
-            assert_eq!(before.expo, inherited_mode(env));
-            std::fs::create_dir_all(root.join("ios")).unwrap();
-            std::fs::write(
-                root.join("ios/Podfile"),
-                include_str!("../../tests/fixtures/ios-standard-podfile.txt"),
-            )
-            .unwrap();
-            std::fs::write(root.join("ios/Podfile.properties.json"), r#"{"EXPO_USE_PRECOMPILED_MODULES":"false","ios.buildReactNativeFromSource":"true"}"#).unwrap();
-            let after = requested_modes_for_build(&runner, &root, None, true);
-            assert_eq!(before, after);
-            assert_eq!(after.rncore, Mode::On);
-            std::fs::remove_dir_all(root.join("ios")).unwrap();
-        }
-        let untouched = requested_modes_for_build(&runner, &root, None, true);
-        assert_eq!(untouched.expo, Mode::Off);
-        std::fs::write(root.join("app.json"), r#"{"expo":{"plugins":[["expo-build-properties",{"ios":{"buildReactNativeFromSource":true}}]]}}"#).unwrap();
-        assert_eq!(
-            requested_modes_for_build(&runner, &root, None, true).rncore,
-            Mode::Off
-        );
-        std::fs::remove_dir_all(root).unwrap();
-    }
 }

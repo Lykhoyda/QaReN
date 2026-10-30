@@ -13,7 +13,7 @@ fn prior_fingerprint() -> NativeFingerprint {
         parts: Default::default(),
         expo_fingerprint_ms: None,
         expo_unavailable: None,
-        ios_identity: None,
+        ios_compiler: None,
     }
 }
 
@@ -1013,18 +1013,7 @@ fn static_config_without_expo_binds_the_xcode_version() {
     let fp = fingerprint(&root);
     assert!(fp.complete, "{:?}", fp.incompleteness);
     assert_eq!(fp.expo_fingerprint_ms, None);
-    assert_eq!(
-        fp.parts.keys().collect::<Vec<_>>(),
-        [
-            "rnfp",
-            "toolchain",
-            "toolchain.expo-mode",
-            "toolchain.jsi-mode",
-            "toolchain.rncore-mode",
-            "toolchain.swift",
-            "toolchain.xcode"
-        ]
-    );
+    assert_eq!(fp.parts.keys().collect::<Vec<_>>(), ["rnfp", "toolchain"]);
     assert_ne!(fp.parts["rnfp"], fp.value);
     assert_eq!(
         matching_build(&root, &fp, "ios").decision,
@@ -1057,21 +1046,12 @@ fn static_expo_config_binds_the_evaluated_native_inputs() {
     assert!(fp.complete, "{:?}", fp.incompleteness);
     assert_eq!(
         fp.parts.keys().collect::<Vec<_>>(),
-        [
-            "expo",
-            "rnfp",
-            "toolchain",
-            "toolchain.expo-mode",
-            "toolchain.jsi-mode",
-            "toolchain.rncore-mode",
-            "toolchain.swift",
-            "toolchain.xcode"
-        ]
+        ["expo", "rnfp", "toolchain"]
     );
     assert_eq!(fp.parts["expo"], format!("expo:{EXPO_H}"));
     assert_eq!(
         fp.value,
-        "rnfp1:88ce93548f0c7fffb4cfb152591c9615121a905ecd8332ff920e799f418488d7"
+        "rnfp1:f5dfeed325ed9c3a20232ae15a6fb6edc278d9288b75ef2db9e838c990dd72cf"
     );
     assert!(fp.expo_fingerprint_ms.is_some());
     assert_eq!(
@@ -1104,18 +1084,7 @@ fn static_expo_fallback_stays_complete_and_can_reuse_its_native_identity() {
             common::script_xcode(m);
         });
         assert!(fp.complete, "{section}: {:?}", fp.incompleteness);
-        assert_eq!(
-            fp.parts.keys().collect::<Vec<_>>(),
-            [
-                "rnfp",
-                "toolchain",
-                "toolchain.expo-mode",
-                "toolchain.jsi-mode",
-                "toolchain.rncore-mode",
-                "toolchain.swift",
-                "toolchain.xcode"
-            ]
-        );
+        assert_eq!(fp.parts.keys().collect::<Vec<_>>(), ["rnfp", "toolchain"]);
         assert!(fp
             .expo_unavailable
             .as_deref()
@@ -1175,16 +1144,7 @@ fn evaluated_dynamic_config_clears_only_its_own_incompleteness_and_reuses() {
     assert!(fp.complete, "{:?}", fp.incompleteness);
     assert_eq!(
         fp.parts.keys().collect::<Vec<_>>(),
-        [
-            "expo",
-            "rnfp",
-            "toolchain",
-            "toolchain.expo-mode",
-            "toolchain.jsi-mode",
-            "toolchain.rncore-mode",
-            "toolchain.swift",
-            "toolchain.xcode"
-        ]
+        ["expo", "rnfp", "toolchain"]
     );
     assert_eq!(fp.parts["expo"], format!("expo:{EXPO_H}"));
     assert_ne!(fp.value, fp.parts["rnfp"]);
@@ -1192,7 +1152,7 @@ fn evaluated_dynamic_config_clears_only_its_own_incompleteness_and_reuses() {
     assert_eq!(
         runner.private_inputs.len(),
         4,
-        "all four Expo and compiler calls use private capture"
+        "Expo and compiler probes use private capture"
     );
     let plan = matching_build(&root, &fp, "ios");
     assert_eq!(
@@ -1530,33 +1490,33 @@ fn a_pnpm_dependency_check_preamble_on_stdout_is_ignored() {
 }
 
 #[test]
-fn unresolved_modes_name_the_affected_native_inputs_without_their_contents() {
+fn diagnostic_compiler_and_mode_inputs_preserve_the_existing_cache_key() {
     let root = common::temp_repo();
-    std::fs::write(
-        root.join("package.json"),
-        r#"{"dependencies":{"react-native":"0.84.0"}}"#,
-    )
-    .unwrap();
-    std::fs::create_dir_all(root.join("ios")).unwrap();
-    std::fs::write(root.join("ios/Podfile"), "private_custom_pod_configuration").unwrap();
-    std::fs::create_dir_all(root.join("node_modules/expo-modules-jsi/apple")).unwrap();
-    std::fs::write(
-        root.join("node_modules/expo-modules-jsi/apple/ExpoModulesJSI.podspec"),
-        "private_podspec_configuration",
-    )
-    .unwrap();
-    let mut runner = MockRunner::new();
-    runner.expect_run(
-        "ls-files",
-        CmdOutput::success("package.json\0ios/Podfile\0"),
-    );
-    common::script_xcode(&mut runner);
-    let fp = compute(&mut runner, &root, &root, "ios").unwrap();
-    assert!(!fp.complete);
-    let reason = fp.incompleteness.join("; ");
-    assert!(reason.contains("rncore mode unknown: ios/Podfile"));
-    assert!(reason.contains("jsi mode unknown: expo-modules-jsi/apple/ExpoModulesJSI.podspec"));
-    assert!(!reason.contains("private_custom"));
-    assert!(!reason.contains("private_podspec"));
-    assert_eq!(runner.remaining(), 0);
+    let mut values = Vec::new();
+    for (mode, swift) in [("0", "6.3.1"), ("1", "6.4")] {
+        let mut runner = MockRunner::new();
+        runner
+            .environment
+            .insert("EXPO_USE_PRECOMPILED_MODULES".into(), mode.into());
+        runner
+            .environment
+            .insert("RCT_USE_PREBUILT_RNCORE".into(), mode.into());
+        runner.expect_run("ls-files", CmdOutput::success(""));
+        runner.expect_run(
+            "xcodebuild -version",
+            CmdOutput::success(common::XCODE_VERSION),
+        );
+        runner.expect_run(
+            "xcrun swift --version",
+            CmdOutput::success(&format!(
+                "Apple Swift version {swift} (swiftlang-fixture clang-fixture)\n"
+            )),
+        );
+        let fp = compute(&mut runner, &root, &root, "ios").unwrap();
+        assert!(fp.complete);
+        assert_eq!(fp.parts.keys().collect::<Vec<_>>(), ["rnfp", "toolchain"]);
+        values.push(fp.value);
+        assert_eq!(runner.remaining(), 0);
+    }
+    assert_eq!(values[0], values[1]);
 }

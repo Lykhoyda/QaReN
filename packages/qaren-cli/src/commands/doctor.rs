@@ -424,21 +424,47 @@ fn ios_toolchain_match(
 }
 
 fn native_cache_root(runner: &dyn Runner) -> Check {
-    use crate::buildplan::{self, CacheAvailability};
     const ID: &str = "native-cache-root";
     if !cfg!(target_os = "macos") {
         return Check::skip(ID, "iOS cache mount inspection requires macOS");
     }
     let explicit = runner.env_var("QAREN_NATIVE_CACHE_ROOT");
-    let root = buildplan::resolve_native_cache_root(
+    let root = crate::buildplan::resolve_native_cache_root(
         explicit.as_deref().map(std::ffi::OsStr::new),
         unsafe { libc::geteuid() },
     );
-    match root.ok().and_then(|root| buildplan::anchor_native_cache(&root).ok()) {
-        Some(anchor) if anchor.availability == CacheAvailability::Present => Check::pass(ID, "native build cache root is present on its mounted filesystem"),
-        Some(_) => Check::pass(ID, "native build cache root is absent on a mounted filesystem; allow a cold build, no cache relocation is required"),
-        None => Check::warn(ID, "native build cache volume unavailable; cache reuse cannot be checked", buildplan::CACHE_VOLUME_FIX),
+    match root.ok().and_then(|root| cache_filesystem_mounted(&root).ok()) {
+        Some(true) => Check::pass(ID, "native build cache filesystem is mounted; an absent cache requires a cold build"),
+        _ => Check::warn(ID, "native build cache volume unavailable; cache reuse cannot be checked", "remount the configured cache volume or explicitly set QAREN_NATIVE_CACHE_ROOT to a mounted private absolute directory, then re-run qaren doctor --json"),
     }
+}
+
+#[cfg(target_os = "macos")]
+fn cache_filesystem_mounted(root: &Path) -> std::io::Result<bool> {
+    use std::os::fd::AsRawFd;
+    use std::os::unix::ffi::OsStrExt;
+    let ancestor = root
+        .ancestors()
+        .find(|path| path.exists())
+        .ok_or_else(|| std::io::Error::from(std::io::ErrorKind::NotFound))?;
+    let file = std::fs::File::open(ancestor)?;
+    let mut stat = std::mem::MaybeUninit::<libc::statfs>::uninit();
+    if unsafe { libc::fstatfs(file.as_raw_fd(), stat.as_mut_ptr()) } != 0 {
+        return Err(std::io::Error::last_os_error());
+    }
+    let stat = unsafe { stat.assume_init() };
+    let mounted_on = unsafe { std::ffi::CStr::from_ptr(stat.f_mntonname.as_ptr()) }.to_bytes();
+    let boundary = root
+        .strip_prefix("/Volumes")
+        .ok()
+        .and_then(|path| path.components().next())
+        .map(|volume| Path::new("/Volumes").join(volume));
+    Ok(boundary.is_none_or(|path| path.as_os_str().as_bytes() == mounted_on))
+}
+
+#[cfg(not(target_os = "macos"))]
+fn cache_filesystem_mounted(_: &Path) -> std::io::Result<bool> {
+    Err(std::io::ErrorKind::Unsupported.into())
 }
 
 fn ios_runtimes(runner: &mut dyn Runner, configured: Option<&str>) -> Check {
@@ -1661,6 +1687,33 @@ mod tests {
 
     fn plist_probe(runner: &mut MockRunner) {
         runner.expect_run("plutil -convert", CmdOutput::success(r#"{"AvailableLibraries":[{"LibraryIdentifier":"simulator","SupportedPlatform":"ios","SupportedPlatformVariant":"simulator"}]}"#));
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn cache_mount_warning_is_read_only_and_does_not_require_a_cache_entry() {
+        let s = Scratch::new("cache-mount-warning");
+        let root = s.dir("mounted").join("absent/cache");
+        let mut runner = MockRunner::new();
+        runner.environment.insert(
+            "QAREN_NATIVE_CACHE_ROOT".into(),
+            root.to_string_lossy().into_owned(),
+        );
+        assert_eq!(native_cache_root(&runner).status, Status::Pass);
+        assert!(!root.exists());
+        let missing = format!(
+            "/Volumes/qaren-unmounted-fixture-{}/cache",
+            std::process::id()
+        );
+        assert!(!Path::new(&missing).exists());
+        runner
+            .environment
+            .insert("QAREN_NATIVE_CACHE_ROOT".into(), missing.clone());
+        let warning = native_cache_root(&runner);
+        assert_eq!(warning.status, Status::Warn);
+        assert!(warning.fix.unwrap().contains("remount"));
+        assert!(!Path::new(&missing).exists());
+        assert!(runner.calls.is_empty());
     }
 
     #[test]

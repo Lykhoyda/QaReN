@@ -19,10 +19,7 @@ pub struct NativeFingerprint {
     pub expo_fingerprint_ms: Option<u64>,
     // The closed-template cause when the app's Expo fingerprint could not be computed.
     pub expo_unavailable: Option<String>,
-    pub ios_identity: Option<(
-        crate::ios_toolchain::CompilerIdentity,
-        crate::ios_toolchain::RequestedModes,
-    )>,
+    pub ios_compiler: Option<crate::ios_toolchain::CompilerIdentity>,
 }
 
 impl NativeFingerprint {
@@ -87,6 +84,27 @@ fn is_dynamic_config(rel: &str) -> bool {
         rel,
         "app.config.js" | "app.config.ts" | "app.config.mjs" | "app.config.cjs"
     )
+}
+
+fn uses_expo(project_root: &Path) -> bool {
+    std::fs::read_to_string(project_root.join("package.json"))
+        .ok()
+        .and_then(|text| serde_json::from_str::<serde_json::Value>(&text).ok())
+        .is_some_and(|package| {
+            [
+                "dependencies",
+                "devDependencies",
+                "optionalDependencies",
+                "peerDependencies",
+            ]
+            .iter()
+            .any(|section| {
+                package
+                    .get(section)
+                    .and_then(|deps| deps.as_object())
+                    .is_some_and(|deps| deps.contains_key("expo"))
+            })
+        })
 }
 
 #[derive(Debug, Default)]
@@ -784,18 +802,12 @@ pub fn compute(
     let mut evaluated: Option<String> = None;
     let mut expo_fingerprint_ms = None;
     let mut expo_unavailable = None;
-    let mut evaluated_mode = None;
-    if platform_dir == "ios"
-        && (dynamic_config.is_some() || crate::ios_toolchain::has_expo_dependency(project_root))
-    {
+    if platform_dir == "ios" && (dynamic_config.is_some() || uses_expo(project_root)) {
         let started = runner.monotonic_ms();
         let expo = expo_fingerprint(runner, project_root, platform_dir);
         expo_fingerprint_ms = Some(runner.monotonic_ms().saturating_sub(started));
         match expo {
-            Ok((expo, mode)) => {
-                evaluated = Some(expo);
-                evaluated_mode = mode;
-            }
+            Ok(expo) => evaluated = Some(expo),
             Err(reason) => expo_unavailable = Some(reason),
         }
     }
@@ -809,36 +821,20 @@ pub fn compute(
             incompleteness.push(format!("Expo fingerprint unavailable: {reason}"));
         }
     }
-    let mut mode_unknown = Vec::new();
-    let ios_identity = (platform_dir == "ios"
+    // Failed dynamic-config evaluation already forbids reuse; static Expo fallback still binds Xcode.
+    let ios_compiler = (platform_dir == "ios"
         && (dynamic_config.is_none() || expo_unavailable.is_none()))
-    .then(|| {
-        let compiler = crate::ios_toolchain::CompilerIdentity::collect(runner);
-        let (modes, unknown) = crate::ios_toolchain::resolved_modes_for_build(
-            runner,
-            project_root,
-            evaluated_mode,
-            !inputs.iter().any(|rel| rel.starts_with("ios/")),
-        );
-        mode_unknown = unknown;
-        (compiler, modes)
-    });
-    let toolchain = ios_identity.as_ref().map(|(compiler, modes)| {
-        if compiler.complete() && modes.complete() {
-            Ok(sha256_hex(
-                &serde_json::to_vec(&("qaren-ios-toolchain/2", compiler, modes))
-                    .expect("toolchain identity"),
-            ))
-        } else {
-            if !compiler.complete() {
-                mode_unknown.push("selected Xcode/Swift compiler identity is unknown; verify DEVELOPER_DIR and TOOLCHAINS, then re-run qaren doctor --json");
-            }
-            Err(mode_unknown.join("; "))
-        }
+    .then(|| crate::ios_toolchain::CompilerIdentity::collect(runner));
+    let toolchain = ios_compiler.as_ref().map(|compiler| {
+        compiler
+            .xcode_hash
+            .as_ref()
+            .map(|hash| format!("xcode:{hash}"))
+            .ok_or_else(|| "xcodebuild -version failed".to_string())
     });
     if let Some(Err(reason)) = &toolchain {
         incompleteness.push(format!(
-            "toolchain identity unavailable ({reason}); reuse with unresolved toolchain or mode inputs is unprovable"
+            "toolchain identity unavailable ({reason}); reuse across an unknown Xcode is unprovable"
         ));
     }
     if inputs.contains("app.json") {
@@ -948,19 +944,6 @@ pub fn compute(
     let file_count = entries.len();
     let rnfp = format!("{FINGERPRINT_VERSION}:{}", sha256_hex(manifest.as_bytes()));
     let mut parts = BTreeMap::from([("rnfp".to_string(), rnfp.clone())]);
-    if let Some((compiler, modes)) = &ios_identity {
-        parts.extend(compiler.parts());
-        for (name, mode) in [
-            ("expo", modes.expo),
-            ("rncore", modes.rncore),
-            ("jsi", modes.jsi),
-        ] {
-            parts.insert(
-                format!("toolchain.{name}-mode"),
-                sha256_hex(mode.as_str().as_bytes()),
-            );
-        }
-    }
     let value = match toolchain {
         Some(toolchain) => {
             let toolchain = toolchain.unwrap_or_else(|_| "unavailable".to_string());
@@ -986,7 +969,7 @@ pub fn compute(
         parts,
         expo_fingerprint_ms,
         expo_unavailable,
-        ios_identity,
+        ios_compiler,
     })
 }
 
@@ -1010,7 +993,7 @@ fn expo_fingerprint(
     runner: &mut dyn Runner,
     project_root: &Path,
     platform: &str,
-) -> Result<(String, Option<crate::ios_toolchain::NativeBuildConfig>), String> {
+) -> Result<String, String> {
     let root = project_root.to_string_lossy();
     let resolved = runner.run_private(
         &expo_fingerprint_spec(
@@ -1062,18 +1045,7 @@ fn expo_fingerprint(
     {
         return Err("@expo/fingerprint output carried no evaluated Expo config".to_string());
     }
-    let mode = result
-        .get("sources")
-        .and_then(|v| v.as_array())
-        .and_then(|sources| {
-            sources.iter().find_map(|source| {
-                (source.get("id")?.as_str()? == "expoConfig").then_some(())?;
-                let config: serde_json::Value =
-                    serde_json::from_str(source.get("contents")?.as_str()?).ok()?;
-                crate::ios_toolchain::NativeBuildConfig::from_config(&config)
-            })
-        });
-    Ok((format!("expo:{hash}"), mode))
+    Ok(format!("expo:{hash}"))
 }
 
 // pnpm can print its dependency check to stdout before the child's own output.
