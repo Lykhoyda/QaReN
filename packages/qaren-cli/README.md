@@ -1101,7 +1101,10 @@ the receipt's `failure` carries `screen`, `suggestion` and `subreason`.
 These diagnostics also survive a refused walk, including `BLOCK_START_MISSING`
 for an absent saved-block start marker; the receipt preserves its refusal code
 and exit code, and applies the same repeat matching described below.
-`screen` lists up to 20 controls from the last observed screen, the target's
+`screen`, the last-observed text in `failure.seen`, and the suggestion use the
+newest admitted observation, including captures taken during step recovery;
+the failed judgment's reason retains its original screen evidence.
+`screen` lists up to 20 controls from that observation, the target's
 own matches first, with role, testID, label, enabled, hittable, off-screen
 state and a primary mark for the first enabled, hittable, on-screen button in
 screen order whose masked label, trimmed and case-insensitive, is Continue,
@@ -1123,7 +1126,12 @@ the last 20 `check` runs failed the same plan line with the same code and
 subreason on the same platform, app, recorded Git revision, worktree fingerprint
 and plan hash, `failure.repeat` names it and `next_action` leads with
 "same failure, plan unchanged". For `evidence-incomplete`, the notice instead
-follows the existing re-run advice. The scan is informational and reads the run
+follows the existing re-run advice. Plan identity and step-line comparison ignore
+QaReN's prepended broken-plan marker lines, so automatically flagging a saved
+plan does not prevent repeat matching. Receipt step numbers remain physical
+plan lines. A superseding CLI failure, such as cancellation, a deadline or
+candidate drift, keeps its own guidance instead of the walk's target diagnostics.
+The scan is informational and reads the run
 records only. `report.md` shows the same
 screen as a table under the failed step.
 
