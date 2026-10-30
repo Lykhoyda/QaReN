@@ -1427,6 +1427,7 @@ fn run_inner(
                 tested_older_commit: tested_older_commit.is_some(),
                 blocks,
                 identity_values: identity_values(&device, config.metro_port, &ctx.record.resources),
+                proof_in_description: config.proof_in_description == Some(true),
             };
             let bytes = serde_json::to_vec_pretty(&pr_record).unwrap_or_default();
             if let Err(late) = ensure_running(ctx.runner, "publish") {

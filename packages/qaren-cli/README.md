@@ -3243,6 +3243,26 @@ a recorded port number also masks the same number elsewhere in the text. It then
 removes the `needs-qa` label only if the current head is the tested head; otherwise
 `publication.json` and the receipt record `retained-head-changed`.
 
+With `proofInDescription: true` in the app config when `qaren pr` runs (the choice is
+persisted in `pr.json`; publish never re-reads the config), `qaren publish` also writes one
+section between `<!-- qaren-proof:start -->` and `<!-- qaren-proof:end -->` lines into the
+pull request description: the verdict, the tested commit, a link to the comment, and the
+video. The video is the asset the comment upload already produced, used only when the comment
+attached it under the [video publication rules](#video-publication); a withheld or missing
+video shows the comment's own video sentence and no URL. Publishing a new `qaren pr` run
+replaces an existing section instead of adding one; re-publishing a run whose section was
+already written leaves it unchanged. Text outside the markers is kept byte for byte relative to the body
+publish last read; publish makes up to three reads and writes only after two consecutive
+reads agree. GitHub offers no conditional edit, so a human edit landing between that read and the write
+can still be lost. The comment is always posted first, and a skipped description leaves the
+receipt `Published` with `outcomes.description` naming why. Head-drift skips are final when
+the head is neither the tested commit nor this run's verified saved-block writeback commit.
+If the description kept changing, GitHub refused an edit or read, or the comment could not
+be read back, re-run `qaren publish` to retry the description. The ambiguous-marker
+skip is final for that run: fix the marker pair so one QaReN start line precedes one end line,
+then publish from a new `qaren pr` run; this run's comment already holds the proof and video. Upgrade every
+CLI/CI runtime before adding the key; older versions refuse it.
+
 A saved block is published only verbatim, and only when the walk met the strict
 [video publication rules](#video-publication) and the
 machine redaction would leave the block unchanged. Any other block stays in the
