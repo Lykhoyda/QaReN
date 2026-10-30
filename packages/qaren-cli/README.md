@@ -2388,14 +2388,21 @@ attempted signals and matched identity evidence without process ids, commands or
 Retained-driver failures synchronize `failure.next_action` and top-level `next_action`
 with `failure.recovery` (`key: ios_runner_cleanup`), extending the existing recovery
 ladder. Follow that advice: explicit owned-runner cleanup is the supported recovery;
-standalone simulator shutdown is unavailable, and rebuilding cannot clear a surviving
-driver. Missing proof means retain and report; storage failures require restoring
+rebuilding cannot clear a surviving driver. If explicit host recovery fails, request
+shutdown of only that simulator, obtain approval first if it is lent, then retry cleanup;
+QaReN has no standalone shutdown command. Missing driver proof means retain and report;
+storage failures require restoring
 write access before one cleanup retry. Fresh preparation follows proven absence.
 
 When the leased simulator had no runner host as the
 core started, the run records the host as its own. Cleanup observes host absence
-after core and driver cleanup; a bundle id alone cannot prove that an automation
-session has finished initializing and does not authorize host termination.
+after core and driver cleanup. Automatic teardown only observes host absence.
+Explicit cleanup may terminate the fixed runner host and test-host bundles only
+with a freshly matching exact-device lease and saved token, durable driver retirement,
+and a complete scoped host inventory containing no other active application.
+It never terminates a configurable app bundle. Each matching constant is terminated
+at most once, followed by bounded absence probes and a durable host checkpoint.
+Any failed command, unreadable or mixed inventory, or lost ownership retains the lease.
 The core starts the runner's `xcodebuild` driver in its own
 process group and announces it; the CLI records that group with the driver's
 identity and interrupts that driver alone only while that identity still
@@ -2411,8 +2418,9 @@ truncated or ambiguous identities refuse. Unknown or foreign processes and helpe
 groups are never escalation targets.
 
 Refused or unresolved core or driver cleanup leaves the host untouched
-and retains the lease. A host that was already running, or any
-present or unknown host after that, retains the lease. Cleanup rechecks an unknown
+and retains the lease. Automatic teardown also retains any present or unknown host.
+Explicit cleanup retains it unless the host recovery proof above succeeds.
+Cleanup rechecks an unknown
 host observation up to three times, 200 ms apart, keeping the inventory and scoped
 process-list commands' own 30- and 20-second limits. After terminating an owned host,
 the same bounded reads allow its exit to settle. An unanswered or malformed read

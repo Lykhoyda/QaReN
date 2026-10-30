@@ -74,6 +74,9 @@ fn fixture(family: &str) -> (PathBuf, RunRecord, FakeRunner) {
         sleeps: vec![],
         observations: 0,
         step_inventory_reads: 0,
+        host_bundles: vec![],
+        host_terminations: vec![],
+        host_settle_remaining: 0,
     };
     (root, record, fake)
 }
@@ -90,6 +93,9 @@ struct FakeRunner {
     sleeps: Vec<Duration>,
     observations: usize,
     step_inventory_reads: usize,
+    host_bundles: Vec<&'static str>,
+    host_terminations: Vec<String>,
+    host_settle_remaining: usize,
 }
 
 impl FakeRunner {
@@ -175,13 +181,67 @@ impl FakeRunner {
                 "deviceTypeIdentifier":"iPhone"}]}})
                 .to_string(),
             ),
+            "simctl-terminate" => {
+                assert_eq!(spec.args[..3], ["simctl", "terminate", DEVICE]);
+                let bundle = spec.args[3].clone();
+                assert!(matches!(bundle.as_str(), qaren::adapters::ios::RUNNER_HOST_BUNDLE_ID | qaren::adapters::ios::RUNNER_TEST_HOST_BUNDLE_ID));
+                self.host_terminations.push(bundle.clone());
+                if self.fault == "host_terminate_error" { return CmdOutput::failed(1, "refused"); }
+                if self.fault == "host_terminate_timeout" {
+                    let mut output = CmdOutput::success("");
+                    output.timed_out = true;
+                    output.exit_code = None;
+                    return output;
+                }
+                if self.fault == "host_terminate_stderr" {
+                    let mut output = CmdOutput::success("");
+                    output.stderr = "warning".into();
+                    return output;
+                }
+                if self.fault == "host_exit_together" { self.host_bundles.clear(); }
+                if !matches!(self.fault, "host_survives" | "host_delayed") {
+                    self.host_bundles.retain(|id| *id != bundle);
+                }
+                CmdOutput::success("")
+            }
             "simctl-launchctl" => {
-                if self.fault == "host_storage" && !self.storage_block().exists() { std::fs::create_dir(self.storage_block()).unwrap(); }
-                CmdOutput::success(if self.fault == "host_remaining" {
-                "PID Status Label\n42 0 dev.lykhoyda.rndevagent.fastrunner\n"
-            } else {
-                "PID Status Label\n1 0 com.apple.SpringBoard\n"
-            }) },
+                if self.fault == "host_storage" && !self.storage_block().exists() {
+                    std::fs::create_dir(self.storage_block()).unwrap();
+                }
+                if self.fault == "host_unknown" || (self.fault == "host_unknown_after" && !self.host_terminations.is_empty()) {
+                    return CmdOutput::failed(1, "refused");
+                }
+                if self.fault == "host_lease_changed"
+                    || (self.fault == "host_lease_changed_after" && !self.host_terminations.is_empty())
+                {
+                    let record = RunRecord::load(&self.root, "orphan-run").unwrap();
+                    let lease = record.resources.lease.unwrap();
+                    let mut holder = qaren::buildplan::read_holder(&lease.lock_dir).unwrap();
+                    holder.holder = "later-holder".into();
+                    qaren::buildplan::save_json(&lease.lock_dir.join("holder.json"), &holder).unwrap();
+                }
+                if self.fault == "host_token_changed" {
+                    let mut record = RunRecord::load(&self.root, "orphan-run").unwrap();
+                    record.resources.lease.as_mut().unwrap().token = "different-token".into();
+                    record.save(&self.root).unwrap();
+                }
+                if self.fault == "host_delayed" && !self.host_terminations.is_empty() {
+                    if self.host_settle_remaining == 0 { self.host_bundles.clear(); }
+                    else { self.host_settle_remaining -= 1; }
+                }
+                let mut rows = "PID Status Label\n1 0 com.apple.SpringBoard\n".to_string();
+                if self.fault == "host_remaining" {
+                    rows.push_str("42 0 dev.lykhoyda.rndevagent.fastrunner\n");
+                }
+                for (index, bundle) in self.host_bundles.iter().enumerate() {
+                    rows.push_str(&format!("{} 0 UIKitApplication:{bundle}[abc][rb-legacy]\n", 42 + index));
+                }
+                if self.fault == "host_foreign" || (self.fault == "host_foreign_after" && !self.host_terminations.is_empty()) {
+                    rows.push_str("99 0 UIKitApplication:com.example.foreign[foreign]\n");
+                }
+                if self.fault == "host_truncated" { rows.pop(); }
+                CmdOutput::success(&rows)
+            }
             _ if spec.args.iter().any(|s| s == "-A") => {
                 if (self.fault == "exit_between_steps" && self.signals.len() == 2)
                     || (self.fault == "exit_before_int" && self.signals.is_empty())
@@ -357,9 +417,11 @@ fn unknown_or_foreign_evidence_never_gets_a_signal_or_releases_the_lease() {
     ] {
         let (_, record, mut fake) = fixture("QarenIosRunner");
         fake.fault = fault;
+        fake.host_bundles = vec![qaren::adapters::ios::RUNNER_HOST_BUNDLE_ID];
         let lease = record.resources.lease.unwrap().lock_dir;
         let receipt = fake.run_cleanup(RunnerCleanupPolicy::ReapRecordedDriver);
         assert!(fake.signals.is_empty(), "{fault}");
+        assert!(fake.host_terminations.is_empty(), "{fault}");
         assert!(lease.exists(), "{fault}");
         let failure = receipt.failure.unwrap();
         assert_eq!(receipt.next_action, failure.next_action.as_str());
@@ -430,9 +492,11 @@ fn lossless_command_and_lease_gates_refuse_without_signaling() {
             record.resources.runner_drivers[0].identity.command =
                 qaren::redact::OutputText::from_output(&fake.argv.join(" "));
         }
+        fake.host_bundles = vec![qaren::adapters::ios::RUNNER_HOST_BUNDLE_ID];
         record.save(&root).unwrap();
         let receipt = fake.run_cleanup(RunnerCleanupPolicy::ReapRecordedDriver);
         assert!(fake.signals.is_empty(), "{fault}");
+        assert!(fake.host_terminations.is_empty(), "{fault}");
         assert_ne!(receipt.result, ReceiptResult::Cleaned, "{fault}");
         assert_eq!(
             receipt.failure.as_ref().unwrap().code,
@@ -548,8 +612,11 @@ fn host_absence_storage_failure_retains_the_device_and_lease() {
         record.resources.device_borrowed = borrowed;
         record.save(&root).unwrap();
         fake.fault = "host_storage";
+        fake.host_bundles = vec![qaren::adapters::ios::RUNNER_HOST_BUNDLE_ID];
         let receipt = fake.run_cleanup(RunnerCleanupPolicy::ReapRecordedDriver);
         assert_eq!(receipt.result, ReceiptResult::Failed);
+        assert_eq!(fake.host_terminations.len(), 1);
+        assert!(!fake.simulator_deleted);
         assert_eq!(receipt.failure.unwrap().code, FailureCode::RunRecordUpdateFailed);
         assert_ne!(receipt.cleanup["device_lease"], "removed");
         assert!(record.resources.lease.unwrap().lock_dir.exists());
@@ -710,18 +777,166 @@ fn simulator_runner_app_without_a_host_driver_has_a_terminal_supported_next_step
     record.save(&root).unwrap();
     fake.fault = "host_remaining";
     let receipt = fake.run_cleanup(RunnerCleanupPolicy::ReapRecordedDriver);
-    assert_eq!(receipt.result, ReceiptResult::Failed);
+    assert_eq!(receipt.result, ReceiptResult::Refused);
     assert!(fake.signals.is_empty());
     assert!(fake.mock.calls.iter().all(|s| s.label != "simctl-terminate"
         && s.label != "simctl-shutdown"
         && s.label != "simctl-delete"));
     assert!(record.resources.lease.unwrap().lock_dir.exists());
     let failure = receipt.failure.unwrap();
-    assert_eq!(failure.code, FailureCode::CleanupIncomplete);
+    assert_eq!(failure.code, FailureCode::OwnershipUnproven);
     let recovery = failure.recovery.unwrap();
+    assert_eq!(recovery.reason, RecoveryReason::HostCleanupFailed);
+    assert_eq!(recovery.action, RecoveryAction::RequestExactSimulatorShutdown);
+    assert_eq!(recovery.next_rung, Some(3));
+    assert!(recovery.ladder[2].applicable);
+    assert!(recovery.requires_user_ok);
+    assert!(receipt.next_action.contains("only this run's simulator"));
+    assert_eq!(receipt.next_action, failure.next_action.as_str());
+}
+
+#[test]
+fn explicit_cleanup_terminates_only_constant_hosts_after_driver_retirement() {
+    use qaren::adapters::ios::{RUNNER_HOST_BUNDLE_ID, RUNNER_TEST_HOST_BUNDLE_ID};
+    for (initially_alive, fault) in [(false, ""), (true, ""), (false, "host_exit_together")] {
+        let (root, record, mut fake) = fixture("QarenIosRunner");
+        fake.alive = initially_alive;
+        fake.fault = fault;
+        fake.host_bundles = vec![RUNNER_HOST_BUNDLE_ID, RUNNER_TEST_HOST_BUNDLE_ID];
+        let receipt = fake.run_cleanup(RunnerCleanupPolicy::ReapRecordedDriver);
+        assert_eq!(receipt.result, ReceiptResult::Cleaned, "{}", receipt.to_json());
+        assert_eq!(receipt.cleanup["runner_host"], "removed");
+        let expected = if fault == "host_exit_together" { vec![RUNNER_HOST_BUNDLE_ID] }
+            else { vec![RUNNER_HOST_BUNDLE_ID, RUNNER_TEST_HOST_BUNDLE_ID] };
+        assert_eq!(fake.host_terminations, expected);
+        assert!(!record.resources.lease.unwrap().lock_dir.exists());
+        let stored = RunRecord::load(&root, "orphan-run").unwrap();
+        assert!(stored.resources.runner_host_absent);
+        assert!(stored.resources.runner_drivers.is_empty());
+        assert_eq!(fake.signals.len(), if initially_alive { 3 } else { 0 });
+        assert_eq!(fake.run_cleanup(RunnerCleanupPolicy::ReapRecordedDriver).result, ReceiptResult::Cleaned);
+        assert_eq!(fake.host_terminations, expected);
+    }
+}
+
+#[test]
+fn explicit_host_cleanup_uses_the_existing_settle_polls() {
+    let (_, _, mut fake) = fixture("QarenIosRunner");
+    fake.alive = false;
+    fake.host_bundles = vec![qaren::adapters::ios::RUNNER_HOST_BUNDLE_ID];
+    fake.fault = "host_delayed";
+    fake.host_settle_remaining = 2;
+    let receipt = fake.run_cleanup(RunnerCleanupPolicy::ReapRecordedDriver);
+    assert_eq!(receipt.result, ReceiptResult::Cleaned);
+    assert_eq!(fake.host_terminations.len(), 1);
+    assert_eq!(fake.sleeps.iter().filter(|d| **d == Duration::from_millis(200)).count(), 2);
+}
+
+#[test]
+fn automatic_host_cleanup_never_terminates_and_keeps_its_existing_advice() {
+    let (_, record, mut fake) = fixture("QarenIosRunner");
+    fake.exit_after = 1;
+    fake.host_bundles = vec![qaren::adapters::ios::RUNNER_HOST_BUNDLE_ID];
+    let receipt = fake.run_cleanup(RunnerCleanupPolicy::GracefulOnly);
+    assert_eq!(receipt.result, ReceiptResult::Failed);
+    assert!(fake.host_terminations.is_empty());
+    assert!(record.resources.lease.unwrap().lock_dir.exists());
+    let recovery = receipt.recovery.unwrap();
     assert_eq!(recovery.reason, RecoveryReason::HostRemaining);
     assert_eq!(recovery.action, RecoveryAction::RetainAndReport);
-    assert!(!recovery.ladder[2].applicable);
     assert!(recovery.ladder[2].instruction.contains("unavailable"));
-    assert_eq!(receipt.next_action, failure.next_action.as_str());
+}
+
+#[test]
+fn failed_explicit_host_cleanup_retains_the_lease_and_selects_exact_shutdown_advice() {
+    for (fault, attempts) in [
+        ("host_foreign", 0), ("host_unknown", 0), ("host_truncated", 0),
+        ("host_lease_changed", 0), ("host_token_changed", 0),
+        ("host_terminate_error", 1), ("host_terminate_stderr", 1),
+        ("host_terminate_timeout", 1), ("host_lease_changed_after", 1),
+        ("host_survives", 1), ("host_unknown_after", 1),
+    ] {
+        let (root, record, mut fake) = fixture("QarenIosRunner");
+        fake.alive = false;
+        fake.host_bundles = vec![qaren::adapters::ios::RUNNER_HOST_BUNDLE_ID];
+        fake.fault = fault;
+        let receipt = fake.run_cleanup(RunnerCleanupPolicy::ReapRecordedDriver);
+        assert_ne!(receipt.result, ReceiptResult::Cleaned, "{fault}");
+        assert!(record.resources.lease.unwrap().lock_dir.exists(), "{fault}");
+        assert!(!RunRecord::load(&root, "orphan-run").unwrap().resources.runner_host_absent, "{fault}");
+        assert_eq!(fake.host_terminations.len(), attempts, "{fault}");
+        assert!(fake.signals.is_empty(), "{fault}");
+        let failure = receipt.failure.unwrap();
+        assert_eq!(failure.next_action.as_str(), receipt.next_action);
+        let recovery = failure.recovery.unwrap();
+        assert_eq!(recovery.reason, RecoveryReason::HostCleanupFailed, "{fault}");
+        assert_eq!(recovery.action, RecoveryAction::RequestExactSimulatorShutdown, "{fault}");
+        assert_eq!(recovery.next_rung, Some(3));
+        assert!(recovery.destroys_state && recovery.requires_user_ok);
+    }
+}
+
+#[test]
+fn explicit_host_cleanup_rechecks_inventory_before_the_second_bundle() {
+    use qaren::adapters::ios::{RUNNER_HOST_BUNDLE_ID, RUNNER_TEST_HOST_BUNDLE_ID};
+    let (_, record, mut fake) = fixture("QarenIosRunner");
+    fake.alive = false;
+    fake.host_bundles = vec![RUNNER_HOST_BUNDLE_ID, RUNNER_TEST_HOST_BUNDLE_ID];
+    fake.fault = "host_foreign_after";
+    let receipt = fake.run_cleanup(RunnerCleanupPolicy::ReapRecordedDriver);
+    assert_ne!(receipt.result, ReceiptResult::Cleaned);
+    assert_eq!(fake.host_terminations, [RUNNER_HOST_BUNDLE_ID]);
+    assert!(record.resources.lease.unwrap().lock_dir.exists());
+}
+
+#[test]
+fn invalid_explicit_host_authority_never_terminates() {
+    use qaren::adapters::ios::RUNNER_HOST_BUNDLE_ID;
+    for fault in ["missing-retirement", "wrong-device", "empty-token", "wrong-host-device"] {
+        let (root, mut record, mut fake) = fixture("QarenIosRunner");
+        fake.alive = false;
+        fake.host_bundles = vec![RUNNER_HOST_BUNDLE_ID];
+        record.resources.runner_host = Some(qaren::runrecord::RunnerHostResource {
+            udid: DEVICE.into(), bundle_ids: vec![RUNNER_HOST_BUNDLE_ID.into()],
+        });
+        match fault {
+            "missing-retirement" => record.resources.runner_drivers.clear(),
+            "wrong-device" => {
+                record.resources.lease = Some(qaren::lease::acquire(
+                    &mut MockRunner::new(), &root.join("locks"), Platform::Ios,
+                    "AAAABBBB-1111-2222-3333-444455557777", &record.run_id, None,
+                ).unwrap());
+            }
+            "empty-token" => record.resources.lease.as_mut().unwrap().token.clear(),
+            "wrong-host-device" => record.resources.runner_host.as_mut().unwrap().udid = "AAAABBBB-1111-2222-3333-444455557777".into(),
+            _ => unreachable!(),
+        }
+        record.save(&root).unwrap();
+        let receipt = fake.run_cleanup(RunnerCleanupPolicy::ReapRecordedDriver);
+        assert_eq!(receipt.result, ReceiptResult::Refused, "{fault}: {}", receipt.to_json());
+        assert!(fake.host_terminations.is_empty(), "{fault}");
+        assert!(fake.signals.is_empty(), "{fault}");
+        assert!(record.resources.lease.unwrap().lock_dir.exists(), "{fault}");
+        let expected = if matches!(fault, "wrong-device" | "empty-token") {
+            RecoveryAction::RetainAndReport
+        } else {
+            RecoveryAction::RequestExactSimulatorShutdown
+        };
+        assert_eq!(receipt.recovery.unwrap().action, expected, "{fault}");
+    }
+}
+
+#[test]
+fn explicit_host_cleanup_preserves_a_holder_that_changes_between_bundles() {
+    use qaren::adapters::ios::{RUNNER_HOST_BUNDLE_ID, RUNNER_TEST_HOST_BUNDLE_ID};
+    let (_, record, mut fake) = fixture("QarenIosRunner");
+    fake.alive = false;
+    fake.host_bundles = vec![RUNNER_HOST_BUNDLE_ID, RUNNER_TEST_HOST_BUNDLE_ID];
+    fake.fault = "host_lease_changed_after";
+    let receipt = fake.run_cleanup(RunnerCleanupPolicy::ReapRecordedDriver);
+    assert_eq!(receipt.result, ReceiptResult::Refused);
+    assert_eq!(fake.host_terminations, [RUNNER_HOST_BUNDLE_ID]);
+    let holder = qaren::buildplan::read_holder(&record.resources.lease.unwrap().lock_dir).unwrap();
+    assert_eq!(holder.holder, "later-holder");
+    assert_eq!(receipt.recovery.unwrap().action, RecoveryAction::RequestExactSimulatorShutdown);
 }

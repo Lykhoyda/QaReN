@@ -122,6 +122,34 @@ pub(super) fn core_quiescent(record: &RunRecord) -> bool {
         })
 }
 
+pub(super) fn device_lease_matches(record: &RunRecord, saved: &RunRecord) -> bool {
+    let Some(sim) = record.resources.ios_simulator.as_ref() else {
+        return false;
+    };
+    let Some(lease) = record.resources.lease.as_ref() else {
+        return false;
+    };
+    let Some(saved_lease) = saved.resources.lease.as_ref() else {
+        return false;
+    };
+    !(record.scenario.platform != Platform::Ios
+        || saved
+            .resources
+            .ios_simulator
+            .as_ref()
+            .is_none_or(|s| s.udid != sim.udid)
+        || lease.token.is_empty()
+        || lease.run_id != record.run_id
+        || saved_lease.run_id != lease.run_id
+        || saved_lease.holder != lease.holder
+        || saved_lease.token != lease.token
+        || saved_lease.lock_dir != lease.lock_dir
+        || lease.lock_dir.file_name().and_then(|s| s.to_str())
+            != Some(crate::lease::lock_name(Platform::Ios, &sim.udid).as_str())
+        || !crate::buildplan::read_holder(&lease.lock_dir)
+            .is_some_and(|h| h.holder == lease.holder && h.run_id == lease.run_id))
+}
+
 fn context_proof(
     runner: &mut dyn Runner,
     record: &RunRecord,
@@ -135,24 +163,7 @@ fn context_proof(
         .ios_simulator
         .as_ref()
         .ok_or(LeaseUnproven)?;
-    let lease = record.resources.lease.as_ref().ok_or(LeaseUnproven)?;
-    let saved_lease = saved.resources.lease.as_ref().ok_or(LeaseUnproven)?;
-    if record.scenario.platform != Platform::Ios
-        || saved
-            .resources
-            .ios_simulator
-            .as_ref()
-            .is_none_or(|s| s.udid != sim.udid)
-        || lease.run_id != record.run_id
-        || saved_lease.run_id != lease.run_id
-        || saved_lease.holder != lease.holder
-        || saved_lease.token != lease.token
-        || saved_lease.lock_dir != lease.lock_dir
-        || lease.lock_dir.file_name().and_then(|s| s.to_str())
-            != Some(crate::lease::lock_name(Platform::Ios, &sim.udid).as_str())
-        || !crate::buildplan::read_holder(&lease.lock_dir)
-            .is_some_and(|h| h.holder == lease.holder && h.run_id == lease.run_id)
-    {
+    if !device_lease_matches(record, &saved) {
         return Err(LeaseUnproven);
     }
     if !saved.resources.runner_drivers.iter().any(|d| {

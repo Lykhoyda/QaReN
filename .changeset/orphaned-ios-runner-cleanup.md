@@ -2,4 +2,4 @@
 "qaren": patch
 ---
 
-Recover a recorded iOS runner that survives graceful cancellation during explicit cleanup while preserving automatic teardown safety.
+Recover owned iOS runner drivers and simulator hosts during explicit cleanup while preserving automatic teardown safety.

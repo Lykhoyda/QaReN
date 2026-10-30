@@ -388,7 +388,18 @@ pub fn cleanup_with_policy(
         }
     }
 
-    if let Some(outcome) = cleanup_runner_host(runner, &mut record, runs_root) {
+    if let Some(outcome) = cleanup_runner_host_with_policy(runner, &mut record, runs_root, policy) {
+        if policy == RunnerCleanupPolicy::ReapRecordedDriver
+            && !outcome.clean()
+            && record.resources.runner_drivers.is_empty()
+            && runner::core_quiescent(&record)
+            && record.resources.runner_cleanup_cause.is_none()
+        {
+            mark_runner_reason(
+                &mut record,
+                crate::failure::RecoveryReason::HostCleanupFailed,
+            );
+        }
         outcomes.push(("runner_host".to_string(), outcome));
     }
 
@@ -803,6 +814,7 @@ fn finish_cleanup(
     let result = if all_clean {
         ReceiptResult::Cleaned
     } else if independent_refusal
+        || (any_refused && runner_reason == Some(RecoveryReason::HostCleanupFailed))
         || (any_refused && runner_reason.is_none())
         || runner_reason.is_some_and(|r| {
             matches!(
@@ -1403,6 +1415,105 @@ fn cleanup_owned_runner_host(
     }
 }
 
+fn runner_host_reap_proven(record: &RunRecord, runs_root: &Path) -> bool {
+    let Ok(saved) = RunRecord::load(runs_root, &record.run_id) else {
+        return false;
+    };
+    let drivers_retired = |record: &RunRecord| {
+        record.resources.runner_drivers.is_empty()
+            && runner::core_quiescent(record)
+            && record
+                .resources
+                .runner_driver_cleanup
+                .as_ref()
+                .is_some_and(|e| {
+                    !e.retired.is_empty()
+                        && e.retired.len() == e.details.drivers.len()
+                        && e.retired.iter().all(|retired| *retired)
+                        && e.details.drivers.iter().all(|d| {
+                            matches!(
+                                d.result,
+                                crate::runrecord::RunnerDriverResult::Absent
+                                    | crate::runrecord::RunnerDriverResult::Removed
+                                    | crate::runrecord::RunnerDriverResult::Reaped
+                            )
+                        })
+                })
+    };
+    runner::device_lease_matches(record, &saved)
+        && drivers_retired(record)
+        && drivers_retired(&saved)
+        && record.resources.runner_host.as_ref().is_none_or(|host| {
+            record
+                .resources
+                .ios_simulator
+                .as_ref()
+                .is_some_and(|sim| host.udid == sim.udid)
+        })
+}
+
+fn cleanup_explicit_runner_hosts(
+    runner: &mut dyn Runner,
+    record: &RunRecord,
+    runs_root: &Path,
+    udid: &str,
+) -> Outcome {
+    let Some(inventory) = ios::probe_runner_host_inventory(runner, udid) else {
+        return Outcome::Unresolved("runner host inventory is unreadable; left untouched".into());
+    };
+    if inventory.foreign_app {
+        return Outcome::Refused(
+            "runner host inventory includes another application; left untouched".into(),
+        );
+    }
+    if inventory.bundle_ids.is_empty() {
+        return Outcome::Absent;
+    }
+    for (index, bundle) in inventory.bundle_ids.into_iter().enumerate() {
+        if index > 0 {
+            let Some(current) = ios::probe_runner_host_inventory(runner, udid) else {
+                return Outcome::Unresolved(
+                    "runner host inventory is unreadable; lease retained".into(),
+                );
+            };
+            if current.foreign_app {
+                return Outcome::Refused(
+                    "runner host inventory includes another application; lease retained".into(),
+                );
+            }
+            if !current.bundle_ids.contains(&bundle) {
+                continue;
+            }
+        }
+        if !runner_host_reap_proven(record, runs_root) {
+            return Outcome::Refused(
+                "runner host lease or driver retirement proof is unproven; left untouched".into(),
+            );
+        }
+        let output = runner.run(&ios::terminate_spec(udid, bundle));
+        if !output.ok() || !output.stderr.is_empty() {
+            return Outcome::Unresolved(
+                "runner host termination did not complete; lease retained".into(),
+            );
+        }
+    }
+    let presence = settled_runner_hosts(runner, udid, true);
+    if !runner_host_reap_proven(record, runs_root) {
+        return Outcome::Refused(
+            "runner host lease or driver retirement proof changed; lease retained".into(),
+        );
+    }
+    match presence {
+        ios::RunnerHostPresence::Absent => Outcome::Removed,
+        ios::RunnerHostPresence::Present => {
+            Outcome::Unresolved("runner host remains after termination; lease retained".into())
+        }
+        ios::RunnerHostPresence::Unknown => Outcome::Unresolved(
+            "runner host absence is unknown after termination; lease retained".into(),
+        ),
+    }
+}
+
 pub(crate) fn cleanup_runner_drivers(
     runner: &mut dyn Runner,
     record: &mut RunRecord,
@@ -1617,6 +1728,15 @@ pub(crate) fn cleanup_runner_host(
     record: &mut RunRecord,
     runs_root: &Path,
 ) -> Option<Outcome> {
+    cleanup_runner_host_with_policy(runner, record, runs_root, RunnerCleanupPolicy::GracefulOnly)
+}
+
+fn cleanup_runner_host_with_policy(
+    runner: &mut dyn Runner,
+    record: &mut RunRecord,
+    runs_root: &Path,
+    policy: RunnerCleanupPolicy,
+) -> Option<Outcome> {
     let mut cleanup_runner = crate::exec::CleanupRunner(runner);
     let runner: &mut dyn Runner = &mut cleanup_runner;
     let sim = record.resources.ios_simulator.as_ref()?;
@@ -1631,9 +1751,14 @@ pub(crate) fn cleanup_runner_host(
     let completed = record.resources.runner_host_absent
         && record.resources.runner_drivers.is_empty()
         && runner::core_quiescent(record)
-        && record.resources.runner_driver_cleanup.as_ref().is_none_or(|e| {
-            e.retired.len() == e.details.drivers.len() && e.retired.iter().all(|retired| *retired)
-        });
+        && record
+            .resources
+            .runner_driver_cleanup
+            .as_ref()
+            .is_none_or(|e| {
+                e.retired.len() == e.details.drivers.len()
+                    && e.retired.iter().all(|retired| *retired)
+            });
     let Some(lease) = record.resources.lease.as_ref() else {
         return if completed {
             None
@@ -1676,9 +1801,13 @@ pub(crate) fn cleanup_runner_host(
             "runner driver quiescence is unproven; runner host left untouched".into(),
         ));
     }
-    let outcome = match record.resources.runner_host.as_ref() {
-        Some(host) if host.udid == sim.udid => cleanup_owned_runner_host(runner, host),
-        _ => cleanup_scoped_runner_hosts(runner, &sim.udid),
+    let outcome = if policy == RunnerCleanupPolicy::ReapRecordedDriver {
+        cleanup_explicit_runner_hosts(runner, record, runs_root, &sim.udid)
+    } else {
+        match record.resources.runner_host.as_ref() {
+            Some(host) if host.udid == sim.udid => cleanup_owned_runner_host(runner, host),
+            _ => cleanup_scoped_runner_hosts(runner, &sim.udid),
+        }
     };
     record.resources.runner_host_absent = outcome.clean();
     if outcome.clean() && record.save(runs_root).is_err() {

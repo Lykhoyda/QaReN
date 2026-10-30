@@ -148,6 +148,7 @@ pub enum RecoveryReason {
     DriverSurvived,
     GroupRemaining,
     HostRemaining,
+    HostCleanupFailed,
     DriverExited,
     StorageFailed,
 }
@@ -274,14 +275,16 @@ impl Recovery {
         borrowed: bool,
     ) -> Self {
         use RecoveryAction::*;
+        let shutdown = reason == RecoveryReason::HostCleanupFailed;
         let instructions = [
             format!("After the recorded driver exits, run qaren cleanup {run_id} --json once; if it remains live, continue to runner recovery."),
-            format!("Run qaren cleanup {run_id} --json; it can stop only this run's matching recorded driver. If cleanup refuses, follow its next_action."),
-            format!("Request shutdown of only this run's simulator, then run qaren cleanup {run_id} --json; obtain user approval first if the simulator is lent. This step is unavailable: there is no supported standalone shutdown command."),
+            format!("Run qaren cleanup {run_id} --json; it can stop this run's proven runner driver and matching simulator hosts. If cleanup refuses, follow its next_action."),
+            format!("Request shutdown of only this run's simulator, then run qaren cleanup {run_id} --json; obtain user approval first if the simulator is lent.{}", if shutdown { "" } else { " This step is unavailable: there is no supported standalone shutdown command." }),
             "Do not rebuild native code to clear a surviving runner process; continue to the final recovery rung.".into(),
             format!("After owned resources are proven absent, run qaren cleanup {run_id} --json, then a fresh qaren prepare for the scenario; if cleanup still refuses, stop and report retained resources."),
         ];
         let (next_rung, action) = match reason {
+            RecoveryReason::HostCleanupFailed => (Some(3), RequestExactSimulatorShutdown),
             RecoveryReason::GracefulPending => (Some(2), CleanupOwnedRunner),
             RecoveryReason::DriverExited => (Some(1), RetryCleanupAfterExit),
             RecoveryReason::StorageFailed => (Some(1), RepairRecordStorage),
@@ -319,8 +322,8 @@ impl Recovery {
             next_rung,
             action,
             automatic: false,
-            destroys_state: next_rung.is_some() && destroys_state,
-            requires_user_ok: next_rung.is_some() && needs_user_ok,
+            destroys_state: shutdown || (next_rung.is_some() && destroys_state),
+            requires_user_ok: (shutdown && borrowed) || (next_rung.is_some() && needs_user_ok),
             own_cleanup_required: true,
             own_run_id: Option::None,
             ladder,
